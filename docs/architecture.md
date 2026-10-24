@@ -426,6 +426,12 @@ descriptions are not reconstructible from a process-local socket snapshot, so
 an ancillary batch containing one fails atomically with `EOPNOTSUPP`; Kandelo
 does not pretend that a copied socket record is the original endpoint.
 
+Header/table/control snapshots, decoded iovecs and control records, gathered
+bytes and blocked vector-I/O requests own ordinary I/O admission credit.
+Gather reads each guest range directly into its admitted final destination,
+without another iovec-sized temporary allocation. Admission refusal precedes
+backing I/O and leaves an existing queued message available for retry.
+
 Nested `sendmsg.msg_name` accepts exactly the same 128-byte input maximum as
 `sendto`; it cannot bypass that check by living inside `msghdr`.
 
@@ -438,6 +444,16 @@ scatters the result across the caller's iovecs. It publishes `msg_namelen`,
 zero-length one: on EAGAIN the host parks a retry and calls again with the
 same header, so zeroing `msg_controllen` would leave that retry with no
 control capacity.
+
+SCM_RIGHTS output uses a fixed 4 KiB stack window rather than allocating a
+control-sized buffer after installing descriptors. It preserves caller-native
+headers, little-endian fd values, alignment and zero padding across windows.
+Control copyout failure cancels newly received descriptors; later result-header
+copyout failure cancels the same installed prefix before returning an error.
+A preceding payload/address copyout failure drops queued rights without
+installing them. Cancellation releases OFD/backing ownership but is not a guest
+`close`: it must not remove the receiver's existing process locks on that file.
+An ordinary later close still performs normal POSIX process-lock removal.
 
 Both retain what a retry must not re-read. A blocked `sendmsg` keeps its
 in-flight descriptors in `BlockingRetryTarget::Sendmsg` and a retry uses
@@ -1281,10 +1297,17 @@ is sufficient by itself: the host verifies the Process is actually `Exited`
 before publishing a clean exit.
 During process exit, Node and browser may briefly retain exact channel objects
 until Worker termination completes.
-Once Rust has made that Process Exited, those channels can finish only musl's
-`exit_group`/`exit` transport handshake; every other late syscall stays parked
-and never re-enters kernel state. Final teardown removes all PID-prefixed thread
-channel, fork-context, and clear-TID metadata.
+Once Rust has made that Process Exited, the host retires pending sibling
+mailboxes with the private cooperative-exit signal and a raw interruption,
+never by dispatching their old syscall into Rust. Host timers, engine futex
+waiters and request capabilities are retired before that publication. A later
+`exit_group`/`exit` completes only its transport handshake; it cannot replace
+the original Rust exit status or repeat parent notification. Late clone
+continuations must still own their original request and a live process, and
+cannot publish after terminal admission. Computing workers without a pending
+boundary still require bounded forced retirement; cooperative wake is not
+proof that every worker stopped. Final teardown removes all PID-prefixed
+thread channel, fork-context, and clear-TID metadata.
 
 ### fork()
 
@@ -1505,6 +1528,24 @@ reopen, and replay at the authoritative cookie before its next read. Stateful
 objects additionally retain their kernel-global backings: eventfd counters,
 timerfd timers, signalfd masks, memfd contents and cursors, procfs snapshots,
 pipes, sockets, PTYs, terminal devices, and listener queues.
+
+Descriptor-backing arenas retain ordinary I/O credit for their actual slot
+capacity, including free slots. A new value is published only after fallible
+arena preparation; eventfd, timerfd, signalfd, memfd, epoll, procfs, synthetic
+regular-file and PCM creation propagate refusal through their prepared
+descriptor. PCM backing admission precedes the exclusive transport claim.
+An arena slot remains occupied while a shared mapping pins its value after the
+final descriptor closes, and cannot alias a newly created object until final
+unpin. Payload credit follows that same lifetime, independently of retained
+arena capacity.
+
+Memfd payloads use admitted buffers. Growth through write, positioned write,
+truncate and mapped-file writeback prepares capacity before changing bytes or
+content generation. Append commits its cursor only after successful mutation;
+refusal preserves bytes, size, cursor and generation. In-place overwrite needs
+no new payload allocation. Empty writes do not extend a seek-created hole or
+advance the append cursor, and truncate-to-zero releases payload storage while
+preserving the file cursor. These are volatile RAM backings, not OPFS capacity.
 
 PTY readiness is kernel-owned. Master input becoming readable (including
 canonical EOF), slave output becoming available, canonical/raw mode changes,
@@ -1969,6 +2010,61 @@ kernel-owned file needs neither a retained host handle nor a per-syscall
 cache policy: the kernel pins the inode for its mappings, observes
 descriptor writes through a content generation its filesystem advances on
 every write and truncation, and writes each publication through to the file.
+Pending file-mapping writeback tracks dirty bytes within each cached page,
+not just a dirty-page flag. Successful short-write prefixes retire immediately;
+retry writes only the remaining dirty runs, preserving later descriptor writes
+to other bytes. Generation reconciliation refreshes clean bytes without losing
+pending stores and discards stores invalidated by truncation. A mapping's
+comparison snapshot advances as its changed bytes enter the shared backing,
+even when subsequent writeback fails, so retry cannot replay an already
+accepted prefix over a newer descriptor write. Dirty-byte tracking nodes use
+fallible shared I/O admission before cache mutation.
+
+Unreleased storage-memory work also admits file-cache page payloads and
+cache nodes through that shared budget, reclaims only clean pages on
+admission pressure, and prepares replacement pages before publishing a
+refresh. Failure invalidation walks resident cache entries without
+allocating a logical-page cohort. File publication reads process memory
+through fixed page scratch and streams changed runs, retaining accepted
+progress if a later page read fails. These changes are not in checkpoint
+1.13. The subsequent chunk admits retained mapping snapshots,
+anonymous backing bytes, fork rollback/replacement payloads and mapping
+registry nodes. File mapping preparation runs before VM allocation in the
+Rust dispatcher; host registration consumes the prepared snapshot/nodes.
+Middle-unmap splits reserve their right-hand snapshot/node before VM
+mutation and commit without allocation, using the current comparison bytes.
+Remap prepares authoritative bytes before VM mutation and retains the old
+tracker until the new process write succeeds. No new host import or kernel
+export is needed. The snapshot/preflight prefix passes an actual guest's
+8 GiB sparse-window/oversized-map refusal and strict recovery case under a
+64 MiB kernel ceiling on Node and all three browser engines.
+Subsequent source moves host-driven `munmap` publication before
+VM mutation, preserving the old mapping on publication error. Teardown scans
+unpublished bytes with fixed scratch after failed publication and records
+their loss before dropping the mapping; a failed import alone is not called
+a lost store. This detects failure, not guaranteed durability for an unsynced
+store under exhausted resources. Checkpoint 1.14 also admits backing-registry
+nodes and identity strings before retaining handles. Process mapping tables
+include their teardown guard at registration; adapter memory extents are
+queried as scalars instead of copied into a map. SysV version nodes have
+explicit admission and last-attachment release. Prepared file mappings bind
+to the exact process, address and source handle before host registration.
+Failed nonfixed process-memory growth rolls back the VM reservation and
+preparation before returning `ENOMEM`; an unproven rollback fails the kernel
+generation. The rebuilt ABI 51 checkpoint passes the sparse-window/refusal
+and strict-recovery regression on Node and all three browser engines.
+Broader application acceptance and aggregate storage-memory measurements
+remain open; no whole-memory bound is claimed.
+A normal guest regression also holds a 512 KiB shared mapping into an 8 GiB
+sparse file while streaming 8 MiB of distinct writeback data and filling a
+long-name namespace to `ENOMEM`. Reclaim, mutation retry and strict fresh-worker
+recovery pass on Node and Chromium, Firefox and WebKit, within a 64 MiB kernel
+ceiling. This demonstrates that combined workload, not every simultaneous
+resource limit or an aggregate host/engine memory bound.
+Successful rootfs/tmpfs truncation and truncating opens, and memfd truncation,
+also notify the mapping table before subsequent growth can hide a smaller EOF.
+These notifications run after filesystem/backing borrows end and invalidate
+pending bytes without allocating teardown or page-selection cohorts.
 
 Host-file mappings add a backend-qualified stable identity and retain the
 original fd's host handle for the mapping lifetime. Identity is derived and
@@ -2052,14 +2148,15 @@ parent memory while the caller yielded, changing the purported syscall-time
 snapshot.
 
 Once admitted, the host captures the parent's current memory length before the
-first asynchronous host operation. Node, Chromium and Firefox acquire and
-populate a fresh shared backing directly. WebKit captures plain snapshot bytes
-first, then constructs the child's shared memory in a disposable worker realm
-to avoid synchronous garbage collection stalling the kernel realm. The
-allocator charges both the temporary snapshot and the pending child backing
-against its sampled byte budget, including concurrent pending allocations.
-It rechecks guest growth before publishing a constructed memory. Machine
-shutdown cancels pending construction workers before draining process creators.
+first asynchronous host operation. The current source candidate acquires and
+populates a fresh shared backing directly on Node and every browser engine.
+It no longer selects WebKit's disposable construction factory, whose separate
+collection realm reproduces native reservation refusal in controlled tests.
+The optional asynchronous allocator boundary still charges its temporary
+snapshot and pending child backing, including concurrent pending allocations,
+and rechecks guest growth before publishing a constructed memory. Native
+constructor exhaustion maps to `ENOMEM` without changing unrelated errors.
+Machine shutdown closes creator admission before draining admitted work.
 This preserves the syscall-time snapshot even if a sibling thread execs while
 the child Worker is prepared. The child copies the current length, not the
 configured maximum, because `memory.size()` and the accessible address-space
@@ -2122,8 +2219,57 @@ checks, `nosuid`, sticky directories, `O_EXCL`, FIFOs and AF_UNIX socket nodes
 behave the same on all of them. Creating, removing, linking or renaming an
 entry requires write and search permission on its parent, and a sticky
 directory limits removal and rename to the entry's or directory's owner. On
-the in-kernel filesystems `fsync` succeeds without host work: they have no
-separate durable backing.
+the ephemeral in-kernel filesystems `fsync` succeeds without host work: they
+have no separate durable backing. An opt-in persistent root instead flushes
+its Rust-owned journal through the host storage adapter and reports failures.
+
+Persistent-root `statfs` computes the canonical composed-checkpoint footprint
+from live inodes, retaining allocations held by open descriptions or
+shared mappings after unlink. It uses the mounted block and inode ceilings,
+counts sparse data and indirect pointers through a bounded journal iterator,
+and includes directory packing and the in-body deferred-file section. It does
+not build an export image or collect a file-sized block list to answer a
+free-space query. The directory counter needs only the at-most-16 padding
+regions created before the writer switches to its directory index; later
+padding is not reusable under that writer policy. These are logical filesystem
+statistics, not the immutable base and journal's physical storage usage or the
+host's quota. The allocated-block total is cached: successful writes charge
+their accepted prefixes, and namespace commits install their preflighted total
+after updating the live tree. Truncate, final inode release, and verified-file
+materialization invalidate it. Cold queries still scan the live filesystem
+with bounded scratch; this is not yet a fully incremental truncate/lifetime
+allocation ledger.
+
+Ordinary persistent writes plan at most 64 blocks before each cache-sized
+chunk, probing visible block ranges in the base image, checkpoint, journal
+tail, and dirty cache. They reserve new data and missing single-, double-,
+and triple-indirect groups without a file-sized allocation list. Overwriting
+allocated blocks remains possible at zero free space; a write requiring new
+blocks returns its accepted prefix or `ENOSPC`. Fixed-overwrite writes also
+charge holes inside an existing sparse file. Namespace preflight merges changed
+names into each affected directory's sorted keys, counts its exact packed
+footprint, charges new inode content, and credits victims only when no links,
+descriptors, or mapping pins retain them. Deferred records and archive
+descriptors follow that same lifetime. A cross-directory rename can reuse a
+block released in its source directory without temporarily overcommitting the
+disk. Journal or logical-capacity failures leave the live namespace unchanged.
+Partial truncation rewrites a boundary block only if it is allocated; shrinking
+a sparse hole does not allocate data or pointer blocks. Mapped writeback keeps
+the originating storage errno through Rust's page writer and flush operations;
+`msync`, `fsync`, and `fdatasync` report logical `ENOSPC` and retain dirty data
+for retry after another descriptor reclaims space. The host forwards the
+kernel's negative errno for range publication and failed `MAP_FIXED`
+publication, rather than converting every failure to `EIO`. Native tests also
+exercise partial writes and retry. Persistent verified reads preserve deferred
+descriptions and do not charge cached content as new disk allocations.
+Whole-system bounds on namespace, recovery, archive, transport, and export
+metadata remain unfinished; see
+`docs/persistence-plan.md`.
+
+Image loading preserves non-directory hard links as shared inodes rather than
+independent copies. This includes deferred files, symbolic links, and named
+FIFOs, and keeps both link counts and the shared inode identity when a
+persistent checkpoint becomes the next boot image.
 
 Set-ID follows the ordinary POSIX mount model. `/` honours set-user-ID and
 set-group-ID bits unless the boot spec declares it `nosuid`; the scratch
@@ -2157,12 +2303,1009 @@ either description, or whose metadata declares a different `kernelAbi`, is
 refused (`EINVAL` / `EPROTO`), and the boot fails at that cause; there is no
 host-side fallback.
 
-The kernel keeps the tree's metadata, every guest change, and every file the
-guest creates in its own memory. Unmodified file content stays in the image:
+Normally, the kernel keeps the tree's metadata, every guest change, and
+every file the guest creates in its own memory. Unmodified file content stays
+in the image:
 the kernel reads it on demand through `host_image_read`, a positioned window
 onto the bytes the worker entry holds (`imageReadFromContainer` in
 `host/src/vfs/rootfs-lazy-archives.ts`). Writing to an image-backed file
-copies it into kernel memory first.
+copies it into kernel memory first unless experimental fixed-overwrite or
+resizable persistence is enabled.
+
+`crates/runtime-core/src/persistent_overlay.rs` prototypes a separate,
+append-only durable overlay bound to a specific base-image SHA-256 digest. It
+records inode metadata, fixed-size file blocks, and directory-entry changes
+in checksummed transactions, publishes them after a storage flush, and drops
+an incomplete trailing transaction during recovery. Its experimental file
+helpers read unchanged blocks from the base image, journal only blocks touched
+by writes, and record logical length separately, so sparse offsets need not
+allocate the gap. Recovery keeps file-block locations and digests, not file-block
+contents, in memory. Reads verify changed blocks against their digests and keep
+at most 64 recently used 4 KiB blocks (256 KiB) in a cache. The metadata and
+block-location maps share the admission budget described below, while indexed
+checkpoints remain on storage with bounded page caches. This does not bound
+all namespace, cache and recovery memory. `host/src/vfs/overlay-storage.ts`
+supplies an exact, positioned I/O adapter over the existing Node and OPFS
+filesystem backends. `crates/overlay-prototype` is a separate Wasm harness that
+connects the Rust journal to this OPFS adapter. Its browser test creates a
+named file, writes across base-image blocks and at an 8 GiB sparse offset,
+restarts both workers, and checks namespace recovery and wrong-base rejection
+in Chromium, Firefox, and WebKit.
+Fixed-overwrite mode is selected with
+`NodeKernelHost.experimentalFixedPersistencePath` or
+`BrowserKernel.experimentalFixedPersistenceName` (on boot or init). It hashes
+the loaded VFS image, opens the corresponding journal, and replays changes to
+existing image-backed regular files. Writes within their original length enter
+a 64-block (256 KiB) dirty cache and are immediately visible to reads. Dirty
+eviction, `fsync`, `fdatasync`, and graceful destroy commit and flush these
+blocks. A crash may lose writes without a successful flush; a failed flush
+reports an error and poisons further writes rather than claiming durability.
+One guest write spanning more than 64 blocks is processed in cache-sized
+chunks; failure after earlier chunks returns their short byte count.
+OPFS quota exhaustion reports `ENOSPC` at the flush or eviction that reaches
+storage, not necessarily at the earlier buffered write.
+The read cache is separately bounded to 64 blocks. Creation, deletion, rename,
+truncation, explicit metadata changes,
+growth past EOF,
+writes to deferred/digest-declared/set-ID files, and writes to files created
+in memory during boot fail with `EROFS` or `EFBIG`. This is an intentionally
+incomplete opt-in filesystem contract, not general persistent POSIX storage.
+Write-induced mtime/ctime updates are visible during a session but not replayed.
+The journal may describe inode and namespace changes, but this mode rejects
+them during recovery until rootfs can replay them accurately.
+
+Browser sessions can restore a saved OPFS image through positioned reads with
+a separate 4 MiB clean-page cache. First installation streams the composed
+image from the Rust writer to a generation file in OPFS in 1 MiB chunks,
+with one acknowledged chunk in flight between composer and page. The page
+checks each chunk from storage, then publishes a manifest only while that boot
+still owns the session, under the same exclusive Web Lock as the write. A
+superseded boot cannot publish its staged image; an interrupted generation
+without a manifest is reclaimed before the next installation of that name.
+Persistent direct and scoped Pages source fetches stage decoded bytes in OPFS
+with bounded chunks, and composition reads the source through positioned calls.
+Aggregate recovery and whole-process memory acceptance remain unfinished, so
+this is not yet general production persistent POSIX storage. Browser sessions use
+an OPFS `FileSystemSyncAccessHandle` in the kernel worker;
+its exclusive handle provides the single-writer lease and is closed on destroy.
+Node sessions use an absolute journal path and a sibling `.lock` directory;
+concurrent Node sessions fail closed, and a crash may require manual removal
+of a stale lock after confirming no writer remains. Journal paths must be
+private; neither adapter protects against an external writer. Offsets must
+fit JavaScript's safe-integer range. Nonpersistent boots still materialize
+source bytes. Journal-tail maps are admitted separately from namespace state;
+indexed checkpoints do not retain a location for every changed block in RAM.
+
+Resizable persistence is selected with
+`NodeKernelHost.experimentalResizablePersistencePath` or
+`BrowserKernel.experimentalResizablePersistenceName`. It supports sparse file
+growth and truncation, journal-created files, directory and link mutations,
+inode metadata, and filesystem nodes for FIFOs and sockets. Pipe contents and
+socket endpoints are session-local. Resizable timestamp writeback persists
+bounded batches of inode records; this does not change fixed-overwrite mode's
+restrictions. Logical capacity and resource admission failures remain distinct
+from host storage quota failures. The full POSIX and release acceptance gates
+remain in `docs/persistence-plan.md`.
+
+Both hosts stage compacted journals and indexed checkpoints in separate slots.
+The Rust kernel verifies live content and prepares the replacement; the host
+flushes, seals and verifies that target before activating it in the same worker
+turn. Boot prefers the highest verified generation, while kernel replay still
+validates its filesystem semantics. A source-bound seal prevents a rejected
+target from superseding later source writes. Failed or ambiguous recovery must
+not silently create a fresh computer. If a source still has a nonempty invalid
+seal and nonempty journal with a length different from its descendant's source
+binding, recovery refuses that descendant unless a verified different-generation
+identity establishes slot reuse. It must not reinterpret failed verification as
+proof of retirement, or fall through from that unresolved candidate to legacy.
+A newer independently eligible candidate may still boot. Empty/missing source
+seals retain retirement compatibility; this is not a guarantee against arbitrary
+same-length corruption. Live compaction flush-invalidates the reused slot's seal
+before touching its journal or index, so an interrupted reuse does not retain a
+misleading old seal. Rust owns activation-control encoding, checksums, numeric
+and slot validation, generation transitions and selection between the two
+control replicas. Node and browser workers use the same bounded, immediate
+kernel scratch entry; no JavaScript policy fallback is used. The host retains
+control-file publication, repair and close ordering. The source Rust seal
+codec also encodes and checks versioned seal headers, validates their numeric
+and source-slot fields, and computes streaming SHA-256. Hash contexts are
+bounded explicit packets, not retained native handles. The host reuses one
+60 KiB read window and one hash courier for the seal's chunk walk; the native
+entry fits the existing channel-sized scratch region without raising its
+memory ceiling. A capability probe refuses a stale kernel/module as missing
+policy, not as corrupt stored data. Hash-context and resource failures never
+authorize corrupt-generation fallback. Journal header length and base identity
+come from the same Rust parser used by native journal recovery and unindexed
+conversion. It
+checks the complete header's magic, version and SHA-256 before returning the
+identity. A nonempty unsealed journal with a damaged or incomplete header is
+refused before activation controls are created or changed. Header resource,
+transport and unsupported-operation failures remain distinct from corruption.
+The host does not interpret journal field offsets. Checkpoint-index header
+inspection shares Rust's native mount parser, including magic, supported
+version, checksum, journal boundary, sequence and count-overflow checks.
+Rust supplies the conversion threshold and decides whether a checked index
+requires conversion; malformed large-index headers are refused before
+activation publication. Source-binding eligibility is also native policy.
+The host submits bounded evidence about verified predecessors, slot reuse,
+source lengths and retirement; Rust returns eligible, stale, superseded or
+unresolved, or requests a source-digest check before making that decision.
+An ambiguous unverified source cannot become proof of retirement. The codec
+retains no candidate table or opaque native handle. Rust also supplies seal
+chunk geometry and total length, and verifies observed journal/index/seal
+lengths, expected base identity and appended-tail admission. The host submits
+only bounded metadata and performs checksum-slot reads and I/O/publication
+choreography;
+broader candidate selection, fallback retention and cleanup still use shared
+host policy; moving remaining portable policy to Rust
+and completing the crash/handoff failure matrix remain required. There is no
+measured workload-performance claim.
+
+The browser worker registers raw OPFS image, journal, index, seal and
+snapshot close obligations before validation or generation publication.
+Its storage-close ledger retains provisional owners and sticky close
+failures, even when higher-level cleanup logs or loses the wrapper.
+Admitted initialization/export operations drain before final storage
+closure. A handle acquired late during retirement must be closed or
+recorded unproven before that drain finishes. The ledger attempts every
+remaining close and cannot acknowledge while a failure remains.
+Deferred-spool close rejection is also retained rather than cleared.
+
+A settled persistent `init_error` from the exact current Worker allows
+the main-thread proxy to request the existing bounded destroy handshake
+before readiness. Only an acknowledged storage close plus successful
+realm termination releases its computer/journal leases. Fatal or
+transport failure, missing/malformed/rejected acknowledgement, or failed
+termination preserves ownership. Old Worker events cannot authorize
+cleanup for a replacement. All three browser engines exercise early and
+provisional initialization failure, native close refusal and pending
+snapshot acquisition during shutdown; these cuts are not a complete
+crash-safety or whole-memory acceptance claim.
+
+The host policy has a durable-snapshot crash-cut test that interrupts every
+observed storage/activation boundary before and after its effect, including
+successful operations whose acknowledgement is lost. It reopens the surviving
+bytes through production seal verification and generation selection. The model
+tests flush-only and write-through persistence for legacy, sealed and extended
+slot layouts, including obsolete-generation cleanup. It does not run Rust
+journal replay or simulate arbitrary torn sectors, OS power loss, device flush
+guarantees or browser ownership races; real Node/OPFS acceptance remains separate.
+
+Regular-file allocation traversal uses a positioned Rust cursor with three
+4 KiB pointer-page slots and no heap-owned block list. It skips absent
+indirect branches, clamps ranges to EOF, validates encountered pointers, and
+preserves underlying I/O errors. Image loading records a density flag and
+scalar allocation total per embedded file, including sparse pointer overhead,
+rather than retaining a logical block number for every allocated block.
+Journal recovery computes composed totals from positioned base/index streams
+before publishing namespace or metadata updates. Accepted write prefixes add
+their reserved allocation cost; truncation counts its retained prefix before
+committing and changes the scalar only after success. Cold statistics and
+namespace capacity preflight use these totals without walking file blocks or
+reading image storage. The Rust replay/export APIs receive a borrowed image
+reader; it is not retained on an inode or mount. No host storage ABI changed.
+Regular image reads, buffered read-modify-write batches and streamed export
+reuse one inode and at most three authenticated 4 KiB pointer pages for the
+current source file within each synchronous operation. The cursor is
+stack-owned, smaller than 16 KiB, and discarded on a file switch or at the
+end of the operation. It is not retained per inode or descriptor. Journal-backed
+reads share it across their 4 KiB base callbacks. This avoids cycling inode, indirect-pointer and
+data pages through a two-page checked-data cache for every emitted block;
+it does not increase the configured cache or memory ceiling. Failed pointer
+refills do not publish their partial bytes. Container export reads the same
+prepared structural plan for both its header and body.
+Snapshot sizing uses those scalar totals, with positioned recounts for sparse
+immutable protected content. Sparse output allocations are passed directly
+into the writer by a repeatable visitor, not retained in a file-sized list.
+The visitor validates ordering and EOF before allocating the output inode,
+then traverses again to construct it; storage errors discard the unpublished
+plan without changing the mounted tree or journal. Dense composed files are
+recognized arithmetically from their size and allocation total.
+The journal's composed-allocation walk can consume a positioned base cursor
+while merging checkpoint entries, metadata-tail overrides, dirty blocks, and
+truncate fences. It retains only the next base block, not a copied base list,
+and does not request another source block after an early successful lookup.
+Sparse write admission and partial-tail truncation use positioned image
+metadata rather than searching retained block numbers. Source errors propagate
+before the mutation, and fully fenced base ranges do not read the source.
+Dense allocation checks retain their arithmetic path. There is no retained
+base sparse map to clone during export, and no temporary output block list.
+Namespace, recovery, content extents, and aggregate export metadata still need
+admission budgets before general bounded export is complete.
+
+The image writer is append-only: it never frees an inode or physical block.
+Its first-fit allocation order therefore forms a contiguous prefix, whose end
+is the existing total-minus-free count. The writer and finished image no
+longer retain allocation bitmap buffers. Positioned export synthesizes each
+bitmap slice directly from those scalar prefix counts, including a partial
+last byte and zero-filled unused capacity. The on-disk bitmap regions, inode
+numbers, allocation order, and format are unchanged. Serialized bitmap regions
+still grow with declared capacity, but their bytes need not reside in runtime
+memory. Indirect-pointer pages use runs of consecutive slots and arithmetic
+pointer values, materializing their little-endian bytes only when read. A page
+with more than 64 runs, or an out-of-order insertion, falls back to a single
+4 KiB buffer; it does not grow an unbounded run list. This representation
+preserves the existing physical allocation order and on-disk pointer trees.
+The number of pointer pages and content extents still scales with the output
+layout. Their aggregate admission budgets, inode-table pages, and directory
+metadata remain unfinished whole-system memory bounds.
+
+Stopping the live journal compactor closes its timer admission and joins any
+operation already in flight. Node and browser destruction await that join
+before syncing or closing storage, including post-activation legacy-source
+cleanup and publication of the active handle set. Disabling a timer alone is
+not a storage-release fence. Browser shutdown without storage acknowledgement
+continues to retain its writer leases; the join does not weaken that guard.
+
+In-body deferred metadata (`SDEF`) is decoded through positioned reads of at
+most 4 KiB instead of first allocating its declared file length. Framing and
+field limits are validated before copying field bytes; positive short reads
+are completed and underlying storage errors remain typed. The default
+admission budget charges at most 8 MiB across record/archive models and their
+path, URI, and opaque payload bytes, using portable conservative model charges
+of 128 and 96 bytes respectively. Decoding reserves model vectors fallibly;
+the writer charges its vector capacities before accepting a description and
+uses fallible field copies before creating an output inode. Encoding reserves
+its exact bounded serialized size. Malformed framing returns `EINVAL`;
+admission or allocation exhaustion returns `ENOMEM`, not logical `ENOSPC`.
+This is a metadata admission policy, not an image-capacity or format limit.
+It does not include allocator overhead, rootfs namespace/description clones,
+container JSON/KLZY, long symlinks, or aggregate recovery/snapshot scratch;
+those still need their own admission and peak-memory acceptance.
+
+Image directory loading also streams. One Rust `DirectoryCursor` borrows
+names from a 4 KiB buffer; the rootfs walk descends in on-disk record order
+with the current path and ancestor positions instead of copying/sorting whole
+directories and retaining sibling paths. Each saved position is 144 bytes plus
+its path-length field; stack growth and path construction use fallible reserves.
+Guest inode numbers and hardlinks are preserved, and the mounted namespace and
+export remain name-ordered. Image lookup uses the same cursor while retaining
+full-directory corruption validation before returning a match. Source failures
+preserve the cursor position; a failed rootfs load resets the partial tree.
+This bounds directory-width staging, not the live namespace, traversal depth,
+or aggregate memory. The collecting compatibility directory API, including
+image-publication policy inspection, still requires separate budget review.
+
+Post-load FIFO registration uses a separate borrowed namespace cursor with
+one active path and depth-only iterator frames, not a queue of sibling paths
+or a complete list of FIFO names. Trees without FIFO inodes skip that walk.
+Reset filters existing registrations by the backing pipe's rootfs device
+identity, so unreachable rootfs aliases are removed without traversing a
+possibly partial tree, while FIFOs on other mounts survive obscured rootfs
+names. Name-reference release preserves open endpoints and their data; closed
+unreferenced pipes can be reclaimed. Restoring aliases refreshes cached pipe
+metadata from the inode's actual link count. Registry names and prepared AVL
+nodes own ordinary I/O credits. Creation, hard links and directory/file renames
+prepare copied paths and replacement nodes before the namespace operation;
+registry publication performs no allocation. Same-inode rename preserves both
+aliases. Rootfs syscall dispatch applies the same live alias updates as tmpfs
+and host mounts. Registry restoration stages every missing name, alias mapping,
+backing buffer and arena slot before changing registry entries or name counts;
+refusal leaves the existing registry intact. During recovery, a bounded
+projected walk merges base directory entries with sorted replay changes and
+created-inode slot assignments. It stages the future registry, including
+pending metadata updates and final link counts, before namespace-credit
+exchange or publication. Traversal retains one path and depth bookmarks, not a
+copy of the rootfs. Failed preparation releases the staged owners and leaves
+the old namespace/registry usable for retry. Publication then retires old
+rootfs names and installs prepared names/slots without fallible FIFO work,
+preserving foreign registrations and open old backing. This is not an
+allocation-free reset or a whole-process memory bound.
+Restoration excludes shadowed tmpfs paths and requires matching device/inode
+identity before reusing a registration, so a foreign FIFO cannot become an
+alias of an underlying rootfs inode. FD metadata operations on named kernel
+FIFOs route to their namespace owner, and the cached metadata is refreshed
+before final unlink for subsequent open-unlinked `fstat`. Registry path
+copies retain I/O credit across nested filesystem/host calls rather than
+holding borrowed names into mutable registry storage.
+
+Named FIFO markers have no resident ring buffer until an I/O open. `O_PATH`
+and a nonblocking writer refused with `ENXIO` do not allocate one. Before
+publishing an endpoint or rendezvous reservation, Rust fallibly reserves the
+buffer and charges twice its actual `Vec` capacity against ordinary shared I/O
+memory, using the same conservative backing allowance as other I/O owners.
+There is no additional named-FIFO payload pool. Admission or allocation failure returns `ENOMEM`
+without a phantom peer, waiter or reserved-fd leak. Blocking opens reserve an
+fd before preparing data storage. Existing endpoints share one allocation,
+including inherited and queued `SCM_RIGHTS` references. Last I/O-endpoint
+release discards the volatile data and frees the buffer/credit even if names
+or path-only references retain the inode. Logical pipe capacity remains
+64 KiB, and neither open buffers nor this memory quota count as filesystem
+blocks or OPFS storage. Anonymous and socket stream rings use that same
+fallible I/O admission before allocation. Pipe arena capacity also retains
+I/O credits while slots are free; growth admits old and new backing together.
+Contiguous pair allocation prepares both payloads and arena capacity before
+publishing either pipe, and descriptor reservations roll back on refusal.
+Host-stdin payload/slot preparation precedes closing the original fd 0.
+Impossible descriptor limits fail before that close, and failed later
+installation releases the unclaimed pipe and its payload. Unclaimed buffers
+have no exposed waiters, so disposal does not allocate readiness events.
+Nested DRI/KMS payloads, other guest-pointer/socket/backing storage, wake delivery,
+allocator/RSS accounting and the remaining aggregate-memory gates are separate
+work; these bounded owners alone do not establish a whole-process ceiling.
+
+Inode arenas have an explicit reservation/publication boundary. Persistent
+creation reserves both inode slots and enough free-index capacity before
+committing its namespace transaction, then publishes into prepared slots.
+Replay reserves all newly described inodes before clearing FIFO registrations
+or applying metadata/namespace changes. Ordinary creation and initial-root
+allocation are fallible too. Final inode release and creation rollback can
+return admitted slots without growing the reclamation vector. Memory
+reservation failures report `ENOMEM`, separately from logical inode `ENOSPC`;
+reserved capacity is not counted as allocated disk space. A failed preparation
+can retain spare capacity, which the shared Rust metadata ledger charges.
+The ledger also admits owned directory names before journal publication,
+symlink targets, deferred descriptions, archive descriptors, and image JSON.
+`rootfsMetadataBytes` defaults to and cannot exceed the smaller of 64 MiB and
+one eighth of the configured kernel address-space ceiling on either host.
+Temporary metadata reservations have separate headroom of twice that limit.
+Image loading uses a fallibly prepared visited-inode/hardlink map in this
+temporary class. Its ancestor stack, current and pending paths, and hardlink
+component arrays admit capacity before allocating; vector growth admits the
+old/new overlap. These owners are released after loading or a reset-on-error,
+separately from the retained inode and namespace charges.
+The image module exposes the same Rust budget for composition and validation.
+Decoded SDEF fields are admitted before allocation; a resource failure remains
+`ENOMEM`, not image corruption or permission to select stale recovery data.
+These are modeled charges, not allocator/RSS accounting or a global filesystem
+quota: aggregate journal/index admission, FIFO resources and
+the remaining recovery/snapshot/writer owners still need admission review.
+
+`/proc/kandelo/fs_memory` exposes versioned, kernel-lifetime admission
+telemetry through ordinary guest file reads. It reports current live and
+temporary credits, the current live limit, and live/temporary/combined
+high-water credits for namespace, ordinary journal, reserved journal
+writeback, ordinary I/O and reserved I/O writeback. A shared tracker records
+their simultaneous aggregate high water as ownership changes; it is not the
+sum of independent component peaks. Refused admission does not increase the
+counter; admitted credit can precede an allocation that later fails, so these
+remain credits rather than allocated bytes. Credit transfer preserves the
+aggregate while promotion/demotion can change class peaks. The shared I/O
+pool also serves some non-filesystem owners, such as pipe payloads.
+
+Each budget is sampled separately while the serialized kernel entry owns
+execution. A concurrent native caller must not assume a cross-budget atomic
+snapshot. Counters are captured before the report allocates its admitted
+output buffer; that allocation can fail with `ENOMEM` and affects later
+lifetime high water. Peaks survive reclaim, filesystem reset and lowered
+limits; they can therefore exceed a newly reduced limit without proving a
+new admission violation. A fresh kernel is required for an independent
+fixed-profile measurement. Neither the counters nor kernel page counts
+measure browser heap, guest memories or composer/codec-worker memory.
+
+Disposable image workers report their own grown native memory in 64 KiB
+pages without exposing their `WebAssembly.Memory` to the main thread.
+Positioned composition additionally reports retained source/frozen-source
+and returned-image byte counts; the normal persistent path returns no whole
+image bytes. Its client attaches the page-level manifest admission snapshot
+before settling. These counts identify owners, not allocator/RSS bytes, and
+separate worker peaks must not be added as simultaneous physical memory.
+
+The browser codec admits at most 16 MiB of module input per private copy.
+Inspection can overlap two such copies; this is not a 16 MiB total limit or
+an image-capacity bound. Control input is copied through an exact 64-byte
+span. Stream input is copied into at most one owned 1 MiB chunk, with an
+additional transferred window of at most 64 KiB. Exhausted chunks are
+released before awaiting another input. Captured, validated lengths and
+fixed-length views keep growable shared backings from enlarging a copy
+after admission. Copying does not provide an atomic snapshot against
+concurrent producer writes. The producer's original buffers and iterator
+retention remain caller-owned and outside these private-copy bounds.
+
+Optional codec memory observations arrive after storage-close processing;
+the client invokes its observer after requesting worker termination.
+Neither that request nor this diagnostic proves physical reclamation.
+Diagnostic failure must not hide a storage error or turn an uncertain close
+into permission to delete the staged target.
+
+Both host APIs expose `getStorageMetadataMemoryUsage()`, returning
+`used`, `peak` and `limit` for the kernel worker's shared host-storage
+metadata pool. These are modeled JavaScript-retention credits, separate
+from Rust admission and actual process memory. The saved-image manifest
+operation pool and caller-owned results are outside this worker pool.
+
+Snapshot export admits its traversal stacks, visited/emitted inode maps,
+declared-archive identities, copied pending names, symlink/deferred metadata
+and retained content-source records in the common I/O allowance. Move-only
+buffers admit old/new growth overlap before moving owners; refusal destroys
+only the unpublished export plan, leaving the live tree available for retry.
+Traversal credit releases when planning ends. Content-source credit remains
+with the streaming plan until EOF, cancellation, replacement or reset. Writer
+inode-table and superblock payloads use the same admitted storage and retain
+their credit in the finished image. Inode-table growth is prepared before its
+allocator counters change. Materialized writer blocks, compressed pointer-run
+vectors, fallback pointer pages and directory-index vectors use the same
+move-only buffers. Their map nodes and content-extent records use fallible
+prepared AVL entries admitted against that I/O pool, rather than infallible
+standard B-tree insertion. Pointer expansion admits both its old runs and new
+page before replacement. Materialized blocks retain only their occupied byte
+prefix, expanding under old/new admission; emission synthesizes the unchanged
+zero tail rather than retaining a full 4 KiB for every small directory.
+Directory append, record splitting and indexed-slot reuse prepare destination
+growth before modifying existing records or consuming a valid free slot.
+Directory-index credit ends before deferred-section sealing;
+the finished image retains block, pointer and extent credit until it drops.
+The current deferred-section writer candidate prepares each record/archive's
+node and actual owned field capacity against the same I/O pool before copying
+or namespace publication. The fixed 8 MiB SDEF metadata cap separately charges
+actual record/archive counts and field lengths, not phantom vector capacity.
+Buffered and streaming serialization share validation and field emission.
+Production encoding drains prepared nodes through one admitted 4 KiB packing
+buffer; it does not retain a complete encoded section beside its input fields
+and output blocks. Removed values retain their credit until their bytes drop.
+
+Pending metadata also reserves 256 KiB of finalization headroom plus the
+projected output blocks' concrete map-node charges within the existing I/O
+allowance. Preparation reserves only each increment; publication merges it
+allocation-free. Encoding releases that reservation before actual output
+allocation, while retiring input owners supplies later capacity. The reserve
+covers packing, the superblock and a maximum-sized record's output burst;
+output-node charges account for overhead accumulated across the whole section.
+It is reserved admission capacity, not another resident payload or an increased
+profile limit. Declaring even an empty section is fallible and prepares its
+hidden inode before publishing the declaration. Subsequent inode creation
+prepares backing for the eventual hidden inode without assigning its number or
+extending visible table length. Geometric table growth can fall back to exact
+required capacity under pressure, still admitting old/new backing together.
+
+Snapshot traversal and identity maps retire before writer finalization. A
+failed plan retries once after `ENOMEM` only if reclaiming disposable verified
+read/proof and journal-read caches actually releases I/O credit; ordinary
+dirty data and authoritative journal state are not evicted. The retry returns
+its actual result, including provider failures. These writer changes have
+focused native evidence; current Node/browser/product acceptance is separate.
+They do not establish whole-system memory bounds or RSS accounting.
+
+Rootfs directory names own preallocated AVL nodes rather than inserting into
+a standard B-tree after commit. Preparation first admits the existing
+768-byte node model plus twice the owned name capacity, copies the name with
+a fallible reserve, and allocates the node with its concrete layout. A null
+allocation returns `ENOMEM` and releases both the name and its credit. A
+compile-time assertion keeps twice the concrete node size within that model.
+Publication only links/rotates prepared nodes; replacement retains the prior
+key and releases unused preparation. Removal frees nodes without allocating.
+Existing namespace/recovery credit exchanges include that prepared ownership.
+
+Directory lookup, insertion, removal and exclusive successor queries are
+ordered tree operations. Forward/reverse iteration uses fixed reference
+stacks, no heap allocation, and an exact remaining-entry count so mixed-end
+iteration does not repeat entries. Each stack has twice the target pointer's
+bit width: an AVL tree of that height would need more addressable nodes than
+the target can contain. Iterator lifetime borrows the tree, preventing safe
+mutation while its references are live. The only new unsafe operation is the
+fallible concrete allocation/initialization transferred into `Box` ownership.
+Depth-first namespace traversal saves compact immutable key-range bookmarks,
+not full iterator stacks at every ancestor. Resume reconstructs the bounded
+iterator paths from those keys. The existing 16 KiB traversal-scratch test
+keeps its original bound. Journal maps and other scratch still need admission;
+these mechanisms do not establish allocator/RSS bounds or measured speed.
+
+Retained base-directory keys used by journal compaction are admitted too.
+They distinguish required base-name tombstones from disposable history.
+Rust stores them in an AVL tree with logarithmic lookup/insertion and
+logarithmic call depth, independent of filesystem path depth. Each prepared
+entry reserves twice its concrete node size and owned name capacity from the
+resident metadata ledger. Both the name reserve and the aligned node allocation
+are fallible; a null allocation returns `ENOMEM` and releases ownership.
+The node is allocated with its exact layout and transferred to `Box` only
+after initialization, so normal drop reclaims both children and its credit.
+Namespace mutation prepares nodes before journal commit, then links them
+without allocating. New directory names and retained nodes are staged against
+temporary headroom, then atomically exchange credits with names the transaction
+removes. Rejected admission leaves the namespace unchanged; a failed commit
+reverses the exchange before returning. Publication consumes the admitted
+removals. This lets unlink reclaim metadata at the resident limit instead of
+requiring extra resident space for its base-name tombstone. Recovery admits
+the retained set before publishing its namespace.
+Compaction filters/rebalances existing nodes without allocating and releases
+removed entries' credits. These charges do not prove a whole-process RSS bound
+or admit the aggregate journal/index state listed above.
+
+Journal transaction publication also prepares its metadata, block-location
+and checkpoint-invalidation nodes before writing. These three ordered maps
+use fallibly allocated AVL nodes. All record decoding, owned name/value copies
+and node preparation precede the storage write and flush. Successful flush
+publishes only prepared ownership, cache invalidations and revision scalars;
+zero-fence minima reuse their prepared eight-byte values. A preparation
+failure returns `ENOMEM` without poisoning the writer or publishing the
+transaction, so it may be retried. Storage write/flush errors retain the
+existing sticky-failure behavior. Replay propagates node-allocation failures
+before changing the mounted namespace or truncating a valid journal.
+
+The transaction encoder validates and computes its entire size before
+allocation, rejects frames above 1 MiB, and reserves the encoded output
+fallibly. Decoding validates the whole payload before exposing borrowed
+records, without allocating a decoded record vector or copying its names and
+values. Replay prepares owned metadata only when retaining it, and hashes
+file blocks directly from the frame before preparing their location nodes.
+Indexed verification and legacy-conversion callbacks borrow record payloads.
+Compacted block and metadata index cursors share one fallibly grown frame
+buffer capped by the 1 MiB transaction limit. They emit one record at a time
+rather than retaining a second pending-record vector; only an emitted
+metadata directory key needs a bounded fallible name copy. A malformed record,
+count, checksum or fixed-mode metadata record fails before the cursor emits
+any entry from that transaction. A failed buffer/name allocation terminates
+that cursor with `ENOMEM` without rewriting its source; a fresh cursor can
+retry. No throughput or whole-process peak-memory improvement is implied.
+Checkpoint metadata-key decoding likewise fallibly copies its bounded name;
+the index's two page buffers remain fixed-sized. Journal map iteration and
+bounded block ranges use fixed reference stacks rather than heap traversal
+buffers. These changes remove post-flush allocation from journal state
+publication. Journal map ownership is now charged to a shared profile-aware
+state budget, including preparation and retired replacement ownership;
+remaining cache/scratch and recovery/snapshot peaks still require aggregate
+admission and measured process-memory acceptance.
+
+Journal read-block, dirty-block and metadata-cache slot vectors are now
+fallibly reserved at their 64-entry limits before opening can write even a
+new journal header. The dirty-file-size table is a pre-reserved sorted
+64-entry vector rather than an allocating B-tree. Publication and LRU moves
+assert a reserved slot and cannot grow those tables. Resident block payloads
+are 4 KiB each; metadata values are at most 4 KiB and cached directory keys at
+most 255 bytes. Indexed value lengths are checked before copying. These are
+per-journal entry/payload bounds, not measured allocator/RSS guarantees.
+
+Read misses, returned/cached metadata copies, write-block preparation, sync
+batches and eviction batches use fallible reserves and copies. Metadata
+cache hits clone their result before changing LRU order; a failed miss does
+not evict a valid entry. Eviction stages only victim keys and one copied
+payload per victim, not two copies. All fallible staging precedes victim
+commit, removal and acceptance of the new chunk. Allocation failure preserves
+accepted dirty bytes and sizes for read/retry without poisoning the journal;
+a large write returns only a prefix already accepted by earlier chunks.
+Storage write/flush failures keep their separate sticky-error policy.
+Aggregate profile-aware journal/map/cache budgeting and whole-process peak
+acceptance remain separate work.
+
+Boot can retry a memory-limited journal through the bounded Rust legacy
+converter even below the byte-based conversion threshold. This is permitted
+only when Rust reports that the failed recovery did not publish namespace,
+allocation-statistic or FIFO changes. The host reads that scalar immediately
+after `ENOMEM` in the same kernel entry and attaches it to the rejection;
+an unqualified resource error is not retry authority. Rust clears this state
+before publication, on reset, and when refusing an already active mount.
+The scalar export is included in the branch's ABI 53 snapshot.
+FIFO-registry allocation now completes before this publication boundary.
+A refusal there can therefore qualify as pristine; once namespace changes
+publish, recovery still cannot reuse the kernel after a later failure.
+
+The host attempts at most one conversion for that rejection, into a separate
+slot that preserves verified fallbacks. Rust validates and converts the
+source, then the host seals/verifies the target and mounts it before selecting
+the new generation. Failed conversion, quota exhaustion or rejected target
+leaves the source in place and fails closed; a target rejection alone does not
+prove source corruption. It must not select an older generation merely
+because the newest exhausted memory. A failure after namespace publication
+does not qualify and still requires a fresh machine boot. This retry is not
+an aggregate memory bound or proof that any live namespace fits its profile.
+
+The current candidate records generation activation independently of seals.
+Two fixed 128-byte activation controls bind publication sequence, base digest,
+generation, slot and immutable seal digest. Recovery selects only that
+identity; a damaged activated seal, index or committed journal does not permit
+mounting an older retained journal. Native Rust validation remains authoritative
+for journal and index contents. Without controls, unexplained damaged generation
+data refuses recovery rather than proving that an older source is fresh.
+
+Before target mutation, selection anchors the current source and repairs both
+control replicas. A degraded pair repairs its missing or stale replica first,
+never overwriting the sole newest record first. Activation and both control
+write/truncate/flush operations run synchronously before guest dispatch. An
+unconfirmed activation synchronously poisons the kernel-entry gate before any
+queued continuation can run, even though worker termination is asynchronous.
+The host retains possibly aliased target handles instead of truncating them.
+
+Activation owners are terminal after publication failure or close. Failed
+descriptor cleanup retains one bounded, charged quarantine obligation; further
+acquisition refuses rather than losing descriptor ownership or retrying a
+potentially reused numeric descriptor. Realm teardown is the final release
+boundary when close cannot be proven. Generation metadata charges include
+the two controls and their owner.
+
+These host publication changes apply to both Node and OPFS within the
+ABI 53 candidate. Earlier prototype hosts that ignore the controls are
+not supported writers or downgrade targets. Checksums detect damage; they do
+not reconstruct lost data or detect coordinated replay of every control and
+data file. Browser flush still does not establish OS/device power-loss safety.
+Checkpoint 1.18 and its remaining application acceptance failures are tracked in the
+[recovery work](persistence-plan.md#remaining-same-namespace-freshness-boundary).
+
+Journal state has a separate admission budget from live namespace metadata:
+both hosts configure the smaller of 32 MiB and one eighth of the kernel
+address-space ceiling. Each prepared map node reserves twice its concrete
+node size plus twice its owned key/value capacities before allocation; a
+metadata record reserves before copying its borrowed name/value. Published,
+staged and retired replacement nodes all retain credit until their ownership
+drops. Replacement exchanges whole nodes, preserving the credit for the old
+key/value until that retired entry is destroyed. Truncation pruning, checkpoint
+release, failed preparation and mount reset release the corresponding credits.
+
+The journal budget includes a fixed 256 KiB writeback reserve, unavailable to
+ordinary state preparation. Bounded dirty-block/size flushes and at most 64
+small inode timestamp records may use it if ordinary admission is full. These
+already accepted changes can drain without admitting further writes or new
+timestamp owners while the reserve is in use. Timestamp writeback also bypasses
+the active-tail limit, like dirty-block flushing, rather than stranding a
+pending sync behind admission intended for new mutations. Allocation or I/O
+can still fail and must be reported; this reserves admission, not physical RAM.
+
+Rust reports pressure at half the ordinary state allowance or whenever the
+writeback reserve is used. Node and browser boot/live compaction consult that
+decision even below the serialized-byte threshold. Production resizable
+compaction streams its metadata into the target rather than building another
+resident metadata map. At activation, retained base-directory keys validate
+their checkpoint lookup decisions into existing tree nodes first; only after
+all lookups succeed does a no-allocation prune remove keys and release credit.
+A lookup failure leaves all keys/credits intact. The convenience Rust
+`compact_metadata_into` mode still retains its intermediate metadata within
+the same admission limit; production uses the streamed reachable-metadata mode.
+Journal cache slots and clean/dirty payloads, retained metadata-cache ownership,
+encoded/replayed transaction frames and prepared-publication vectors now share
+an I/O admission pool with ordinary and archive verified-read tables, chunks
+and streaming verification buffers. Both hosts configure the smaller of 32 MiB
+and one eighth of the kernel ceiling. A fixed 2 MiB slice is reserved for dirty
+writeback cloning, framing and publication scratch; ordinary cache fills cannot
+spend it. Accepted dirty data can drain when ordinary admission is exhausted.
+This is distinct from the journal-state node reserve described above.
+
+Typed I/O buffers reserve twice their actual vector capacity, retain credit
+through consuming iterators, and forbid growth without admission. Frame-buffer
+growth admits both old and replacement allocations before copying, preserving
+the original on refusal. Cached metadata reserves names and values before
+copying them; payload credit lives with the retained cache entry. Failed ordinary
+transaction admission happens before journal publication and does not poison
+the writer. Physical allocation and storage operations can still fail.
+
+Descriptor heap slots, blocked-FIFO waiter nodes/paths and depth-sized
+namespace-walk buffers also use ordinary I/O admission, never the writeback
+reserve. Descriptor tables keep three slots inline; this avoids allocating
+descriptor storage for stdio, not the separate OFD/process allocations.
+Reservations are invisible and noninherited, installation cannot allocate,
+and freeing the last occupied heap slot drops its allocation and credit.
+Spawn copies and fork restoration admit descriptor storage before child
+publication. Pipe/socketpair creation reserves both descriptors before backing
+publication; exclusive character-device opens reserve before acquiring their
+owner. Namespace traversal prepares ancestry/path growth before consuming an
+entry and can retry that entry after refusal.
+
+Open-file-description (OFD) arenas retain ordinary I/O credit for their actual
+slot capacity, including free slots. Growth admits old and replacement backing
+together; fork restoration grows geometrically with an exact-size fallback.
+Preparation reserves an invisible slot, an immutable shared pathname and the
+shared mutable offset/status/owner state. Shared owners include conservative
+control-block credit and release it only with their final reference, including
+queued descriptor transfers. Initial device-sidecar boxes and nested DRI/KMS
+metadata, pending flips and completion bytes are admitted too. Prepared
+slots do not appear in iteration or child copies, and cancellation drops their
+owned credit without publishing a descriptor.
+
+File creation/truncation, host opens, exclusive device claims, socket accept
+queue removal and transferred graphics-backing reference acquisition follow
+descriptor/OFD preparation. A blocked FIFO open retains its prepared descriptor
+through rendezvous; cancellation and process/thread cleanup release both
+reservations. Stdio creation and child inheritance propagate admission failure
+rather than allocating OFDs infallibly. A failed accept leaves its pending
+connection, bytes and queued rights available for a later retry.
+
+Host-backed directory iteration admits a reusable name buffer before advancing
+the iterator. A record that does not fit moves that same buffer into its OFD's
+pending entry without another allocation; retry preserves the observed inode,
+name and type. Admission refusal returns earlier completed records, or
+`ENOMEM` if none were produced, without consuming a new host entry. FIFO type
+lookup compares the parent/name components without allocating a joined path.
+An inherited directory reopens at its shared guest-visible cookie instead of
+copying the parent's pending bytes or sharing its process-local host iterator.
+
+Procfs snapshots own admitted output bytes, including foreign-process content
+and writeback-loss reports. Numeric, group-list and map formatting writes
+directly into that output rather than allocating intermediate formatted strings
+or a joined group list. Cmdline/environment output computes its required byte
+length before copying. Snapshot refusal occurs before backing/descriptor
+publication and propagates `ENOMEM`, not a missing-process answer. Process
+inspection borrows process names, walks process records directly and sizes
+cmdlines without materializing them in its first pass.
+
+Epoll interest storage, resolved snapshots, poll scratch and event output also
+carry I/O credit. Wait scratch is admitted before a new temporary mask is
+installed. A terminal preparation error on an existing retry restores only its
+matching Active top frame and replacement mask; unrelated enclosing waits are
+not popped. Deliverable signals retain the existing dequeue/restore handoff.
+Host watched-fd enumeration and nested epoll polling use allocation-free scans;
+they do not treat a refused snapshot allocation as an empty interest list.
+Nested polling releases the backing-table lock before recursion.
+
+Graphics registry, GEM-handle and KMS-framebuffer maps use fallible prepared
+nodes charged to the same ordinary I/O pool. Handle/framebuffer preparation
+precedes backing references and host operations; admission refusal does not
+publish a partial object. Fork-sidecar cloning and decoding admit their own
+maps and queued flips, including space for every future completion. Page-flip
+acceptance reserves both the pending record and its eventual 32-byte event
+before latching host scanout or advancing commit statistics. Vblank retirement
+then appends without allocating, including when ordinary I/O credit is full.
+DRI mmap-binding capacity is admitted before VM allocation or host binding;
+unmap and lifecycle unbinds do not allocate an intermediate binding list.
+Nested GL-query staging is admitted too. These charges cover Rust metadata
+and staging, not host pixel buffers, shared-memory reservations or WebGL
+resources; they do not by themselves establish a whole-system memory bound.
+
+Each evdev input-ring owner admits and allocates its complete 24 KiB capacity
+before an open or fork-state decode can publish it. Its conservative backing
+credit follows the final shared ring reference, not an individual descriptor.
+Input delivery cannot grow the ring: overflow discards one oldest complete
+record, preserves the newest event and latches `SYN_DROPPED`. A checked monotonic
+delivery epoch in each shared ring suppresses duplicate fork aliases without
+allocating a temporary identity list during event fanout.
+
+Fork/exec descriptor-selection plans admit their sorted alias counts against
+ordinary I/O memory; descriptor and OFD entries are iterated directly rather
+than collected into extra vectors. Fork output buffers, socket-root and
+ownership-rollback plans, and the child's retained anonymous-pipe replay pairs
+also carry admission. Output-buffer exhaustion is distinguished internally
+from allocation refusal: only the former retries with a larger output buffer.
+Graphics sidecar decoding acquires no backing references; successful fork and
+spawn acquire them after all fallible inheritance preparation, avoiding leaks
+when decoding or later admission fails.
+
+Shared host-handle reference records also own ordinary I/O credit through
+prepared AVL nodes. First sharing is fallible, and reference increments check
+overflow. Fork/spawn first group their host handles and prepare all new records
+and final counts before changing any inherited resource reference. Once other
+fallible resource preparation succeeds, publishing the host counts allocates
+nothing. Failed preparation leaves existing counts intact; final close drops
+the record and its credit.
+
+Retained SCM_RIGHTS batches own admitted vector capacity through blocked-send
+templates, stream/datagram queues, peeks and consuming receives. Template and
+peek cloning share one implementation that prepares the complete array before
+retaining references or copying guest-visible carrier bytes. Stream ancillary
+queue growth admits old and replacement capacity before publishing either
+carrier bytes or descriptor ownership. Receiver descriptor-index arrays admit
+their capacity before the first fd installation. A control-capacity cutoff
+drops excess queued entries in place, without allocating a detached suffix.
+
+Datagram queues and their payloads also retain ordinary I/O credits. Slot
+growth admits old and replacement arrays before constructing a new packet;
+geometric growth may fall back to the exact required capacity. AF_UNIX reliable
+datagrams return `ENOMEM` on admission refusal and `EAGAIN` at the queue limit,
+without changing accepted packets. UDP keeps its unreliable tail-drop policy
+for a full queue or failed queue/payload admission. Failed payload construction
+may leave prepared queue capacity retained and charged; socket destruction
+releases it. Existing packet data/order and readiness are not fabricated by a
+failed enqueue. Inheritance does not copy consume-once packet queues.
+
+Socket arenas retain ordinary I/O credit for their actual slot capacity,
+including free slots. Socket options, historical bound names, device and TCP
+policy names, multicast membership/source arrays and legacy accept indices
+also own admitted capacity. Default construction, child copies and decoding
+are fallible; nested clone failure releases the incomplete copy without
+changing the source. The reserved netlink queue field uses admitted owners
+too; this is not additional netlink protocol support.
+
+INET binding tables and per-binding owner arrays prepare growth before
+replacing a prior binding. Inheritance prepares all owner capacity and grouped
+host-network-handle map nodes before acquiring common backing references.
+Publishing those prepared binding/reference records does not allocate;
+network-reference metadata is released on final close. Production IPv4 UDP
+delivery walks copied endpoint records without
+allocating an endpoint snapshot or retaining a global-registry borrow across
+packet delivery. These serialized routing loops do not mutate the binding
+roster while iterating it.
+
+AF_UNIX registry names, map nodes and owner arrays spend the same ordinary
+allowance. Bind prepares registration before creating its filesystem marker.
+Rename prepares both FIFO and socket registry changes before the namespace
+operation, including socket names beneath a moved directory; successful
+publication transfers existing socket owners without allocating. A failed
+preparation or namespace operation does not publish the prepared rename.
+Canonical namespace-resolution scratch remains a separate memory obligation.
+
+Shared accept-queue arenas and pending connection records are admitted too.
+Same-process and cross-process connect, and host connection injection, prepare
+queue capacity before pipes or client-state publication. Accepted-socket
+metadata and arena capacity are prepared before removing the pending record.
+Refusal preserves its bytes and queued descriptors for retry. Socketpair
+prepares both socket defaults/slots and descriptors before allocating pipes.
+String-valued getsockopt outputs and their terminating byte propagate admission
+failure before copying the result into guest memory.
+
+Queued SCM_RIGHTS identity counts and promised deferred-cleanup records admit
+old and replacement capacities before growth. Destruction enqueues into already
+reserved storage without allocating. Empty identity tables release their
+capacity; cleanup storage releases only after both pending records and promised
+destructors are gone. These bounds do not cover remaining process/address-space
+ownership, fixed-ABI wrappers, canonical namespace scratch, wakeup queues
+or all other kernel/host owners, including host graphics payloads and engine
+reservations.
+
+Legacy guest-byte staging and IPC structure copies use the ordinary admitted
+buffer owner as well. SysV message input removes its native type prefix in
+place rather than allocating a second text copy. Message copy-out validates
+the caller's native type and address arithmetic, then writes a fixed header
+and the owned message body without allocating after queue consumption.
+Blocked-retry slot arrays retain credit, as do captured SysV send messages;
+an existing host-preflight binding accepts its first captured input and never
+replaces it on a later retry. Failure to retain the required binding is a
+terminal resource error, not a request to reread the caller's buffer later.
+
+Opaque channel records own admitted input snapshots, decoded span/range and
+nested-vector arrays, and prepared output-copy plans. Validation errors map
+to `EINVAL`; admission errors map to `ENOMEM`, before dispatch. Preparation
+admits all eventual copy-back bytes while the immutable record and decoded
+metadata are still live. After dispatch, the plan snapshots every output
+source before writing any destination, preserving overlapping layouts without
+a post-operation allocation. Scratch addresses must remain valid through that
+copy-back. No channel, record or caller-native byte layout changes.
+
+Legacy directory-stream arenas and shared immutable path owners are admitted
+before host open. Iteration and rewind can retain a path alias without another
+pathname allocation. Procfs/devfs listing arrays, copied/numeric names and PID
+cohorts carry ordinary credit; failed generation does not publish a partial or
+fabricated-empty listing. PID-existence checks query authoritative membership
+without collecting a list. Epoll wake-index output validates its capacity and
+writes fixed records from its admitted interest snapshot without extra index
+or encoded-byte vectors.
+
+POSIX message-queue names, objects, descriptors and operation pins use admitted
+prepared map nodes. Creation prepares the descriptor, object and copied name
+before publishing any of them; an additional open or pin prepares its node
+before increasing ownership counts. Message data and queue slots prepare
+before changing order, accounting or notification state. Receiving transfers
+the existing payload owner, so the bytes remain charged until their consumer
+releases them, including after unlink and final descriptor close.
+
+SysV message/semaphore/shared-memory objects and operation pins also own
+ordinary I/O credit. Public IDs, generations and pin IDs are selected without
+mutation, then advanced only after preparation succeeds. Semaphore storage,
+GETALL/SETALL arrays, message payloads/slots, shared-memory backing bytes and
+Wasm semaphore-operation staging use admitted buffers. Logical queue limits
+and permission checks remain distinct from memory refusal (`ENOMEM`). These
+charges do not change IPC persistence, process-sharing or removal semantics.
+
+Removing a pinned SysV message queue or semaphore set moves its existing map
+node from public-ID lookup to generation-keyed retirement. The key has the
+same fixed-width representation, so no new node or payload allocation is
+needed at removal. Old pins still refer only to their original generation
+when the public ID is reused; final release frees the retired node and its
+owned payload. Extracted prepared-map nodes normalize their detached-leaf
+height before reinsertion, preserving AVL balance across these transfers,
+replacement extraction and first-node extraction.
+
+Process mmap and host-reserved-region arrays also spend ordinary I/O credit.
+Fixed replacement prepares the projected mapping count before unmapping;
+whole removal, trimming and replacement that fit retained capacity require no
+new admission. A middle unmap admits its extra record before device unbinds,
+and moving mremap admits both the new interval and any old-interval split
+before publication. Fork mapping decode owns admitted capacity and restores
+address order without allocating sorting scratch. Process SysV attachment
+record arrays retain credit through draining and cleanup.
+
+Thread-record arenas prepare after caller validation but before task-ID
+allocation or deterministic thread-creation publication. Timer-record arenas
+prepare before publishing a new timer; reuse of a free slot allocates nothing.
+Host timer-cleanup cohorts carry credit and prepare completely before changing
+alarm, notification or timer state. These internal Rust owners do not change
+guest/host byte layouts, increase profile ceilings or establish a whole-system
+memory bound. Nested signal queues, other process metadata, shared mapping
+coherence stores and host bookkeeping remain separate audit obligations.
+
+Process argv/environment and replacement transactions use admitted nested byte
+and slot owners. Staging failure poisons the transaction without changing the
+live pair; committing a prepared pair allocates nothing. Spawn prepares both
+vectors before allocating its identity or applying file actions. Reaping a
+retained process-group leader moves its existing metadata into limbo rather
+than copying it after teardown. Fork/exec decode and saved fork actions own
+admitted buffers, including action paths; applying actions transfers the whole
+arena instead of collecting another vector.
+
+CWD shares the same admitted immutable path representation as OFDs. The root
+and empty path representations require no heap allocation. Chdir prepares a
+new pathname before assignment; fchdir can retain its existing OFD path without
+allocating. Supplementary credentials store their existing maximum of 32 group
+IDs inline, preserving order and duplicates without heap allocation during
+credential transitions or fork decode. Procfs self readlink output uses
+admitted copied/formatted bytes.
+
+The ABI 53 candidate makes `kernel_push_argv` result-bearing: zero on success,
+negative errno on refusal. The libc import and saved-fork startup check match;
+startup exits rather than proceeding with an incomplete vector. Channel-worker
+CRT imports do not support that legacy mutation path and return `ENOSYS`
+instead of silently ignoring it. Current startup still uses the atomic kernel
+metadata-replacement path. Reserved init creation now propagates metadata
+admission refusal before publishing PID 1 or consuming a user task ID. These
+source/ABI changes require rebuilt SDK/program/image acceptance; a regenerated
+snapshot alone does not validate the previously frozen browser checkpoint.
+
+The process registry's inline records and listener round-robin nodes now
+spend ordinary I/O credit. A prepared map slot owns both credit and the physical
+uninitialized node before task-ID allocation; constructing its final value
+does not allocate another node. Fork/spawn complete node preparation before
+acquiring inherited machine-wide references or publishing the child. Reaping
+a retained group leader reuses its original node for limbo publication.
+
+Removal transfers existing OFD, directory and socket arenas into a private
+cleanup owner rather than collecting new close vectors. After authoritative
+removal/limbo publication and pruning, Rust streams directory closes before
+file closes, drains the already-reserved ancillary-release queue, releases
+framebuffer ownership, then closes last-reference network handles and releases
+mouse/clipboard ownership. Deferred PRIME releases also destroy their host
+backing at the last reference. HostIO supplies the small I/O capabilities;
+Node and browser use the same Rust ordering and ownership policy. Test-only
+effect collectors do not enter production paths. This does not claim that
+unconverted wake/signal or host bookkeeping allocations are already bounded.
+
+Group-signal and terminal delivery walk PID membership using a cursor rather
+than allocating a cohort that could fail after accepting input. Listener
+selection counts and revisits live targets without temporary vectors; new
+round-robin nodes admit before cursor publication, and failure propagates as
+`ENOMEM` without returning a fabricated absent listener. Device fanout uses
+allocation-free mutable visitors, and wait selection reads the first matching
+status before mutating that exact child. Existing priority, ownership and
+`WNOWAIT` rules remain unchanged. Actual workload cost is still unmeasured.
+
+Clean journal reads evict old payloads before retrying admission. Verified reads
+reclaim local chunks and inactive verification tables, then can reclaim other
+read-cache owners while keeping the current verification identity. Journal
+cache reclamation uses a nonblocking lock attempt so nested I/O cannot deadlock
+on a journal already borrowed by its caller. Persistent writes reclaim clean
+read caches at half ordinary I/O allowance before staging another chunk. These
+operations never discard dirty data, pending file sizes or journal state.
+No workload-performance or process-RSS claim follows from this policy.
+
+Compaction and legacy-conversion mutation batches also admit their slot arrays
+and owned name/value capacities before copying. Successful flush releases the
+batch payload credit; failed flush retains it with the still-owned records.
+Direct journal writes and truncation use the same ownership discipline. Indexed
+metadata walks admit their value buffer before visiting a record. Inode-record
+encoding uses fallible allocation; bounded timestamp batches and generation
+vectors use writeback-scratch admission, so ordinary exhaustion cannot strand
+already accepted data and timestamps.
+
+Legacy external sorting admits its prescan, run, cursor, serialization, merge
+and copyback buffers. Prescan buffers drop before sorting; run-generation
+buffers drop before merge passes; emission batches/cursors drop before index
+construction. This avoids retaining all phase workspaces simultaneously.
+The 4,096-record sort run and storage formats are unchanged. Native conversion
+tests exercise odd/even merge-pass counts under a 6 MiB ordinary allowance,
+including source preservation and indexed reopen. These are admission-credit
+observations, not process RSS. Rootfs compaction's live-inode planning vector
+uses namespace temporary admission before initializing the target journal.
+
+This pool does not yet cover every filesystem allocation. Remaining work
+includes caller-owned metadata results and checkpoint-structure ownership,
+snapshot/recovery union peaks, FIFO resources and transport bookkeeping. Some
+internal allocations remain infallible. Actual whole-process peak and workload
+acceptance remain open. ABI stays 51; image, journal and checkpoint formats
+are unchanged.
+
+Namespace recovery prepares its final changes and link counts before clearing
+FIFO registrations or publishing created inodes. Replay vectors, owned key
+copies and iterative directory-graph validation use fallible temporary
+admission; graph validation does not clone the namespace into nested maps.
+Unchanged names need no new ownership, and value-only updates retain their
+existing owned keys. New keys are staged under temporary headroom. Before
+publication, Rust atomically exchanges their credits with credits for base
+keys being removed, checking both resident and temporary limits. A rejected
+exchange restores the old credits without changing the tree. This avoids
+charging both old and replacement names against the resident limit during
+recovery. It does not yet bound every recovery structure or guarantee that
+every live filesystem can reboot at its exact resident budget: the union of
+base and live journal-created inodes and their fields remains a separate peak.
+
+Recovery reconstructs created inodes referenced by the final namespace, not
+every inode ever described in the journal. A bounded metadata cursor merges
+checkpoint and tail records while allowing individual inode lookups between
+steps. Cursor buffers have fallible temporary admission and reject oversized
+values before copying them. Base indices, scalar updates, referenced IDs,
+created descriptors, eligible sizes and allocation totals are also admitted
+temporary vectors. Detached directory tombstones may be skipped only after
+their parent descriptor has been validated as a directory. Unused inode
+descriptors and orphan file-size/block owners still undergo semantic
+validation; malformed, unknown or nonregular data owners remain errors.
+The highest described inode number advances allocation even when its object
+is not reconstructed, preventing reuse against retained journal records.
+This removes the deleted-inode reconstruction peak, not the remaining
+base-plus-live arena/field peak or unadmitted journal structures. Retained
+base-directory keys now use the separately described fallible AVL admission.
 
 A deferred file is one the image names but does not carry: a URL-backed lazy
 file, or a member of a lazy ZIP archive. The image records its real size, the
@@ -2171,10 +3314,390 @@ directory listing never fetch. The first read or exec asks the host for the
 bytes with `host_fetch_deferred(uri, ...)`; the host fetches the URI through
 its lazy transport (`buildRootfsLazyWiring`), answers `EAGAIN` while the fetch
 is in flight, and the guest's ordinary retry finishes the read once the bytes
-land. The kernel checks an archive's digest before caching any of it, keeps
-the archive and each extracted member in kernel memory, and never evicts
-them. Archives may be sealed into atomic activation cohorts (`seal.rs`); the
-kernel verifies the cohort digests when it loads the image.
+land. Ephemeral roots check an archive's digest before caching its whole body
+and extracted members in kernel memory, without eviction. Persistent roots use
+the bounded positioned path below. Archives may be sealed into atomic
+activation cohorts (`seal.rs`); the kernel verifies the cohort digests when it
+loads the image.
+
+Persistent digest-declared reads do not turn deferred descriptors into embedded
+checkpoint content. The Rust verified-read cache authenticates the complete
+file in 1 MiB windows, retaining at most 8 MiB of per-chunk SHA-256 tables
+across 64 files and four 1 MiB data chunks. A cache miss authenticates fetched
+bytes against the previously authenticated chunk hash before exposing them;
+transport bytes are not assumed immutable. Evicting a file's table requires
+whole-file verification again. A file too large for one table uses a bounded
+verified-window fallback, rehashing the file for each window; that path has
+not met a throughput acceptance gate. Rejecting a shared URI clears every
+dependent verification proof so prefetch must wait for replacement transport
+bytes.
+
+Persistent archive reads do not retain a whole ZIP or decoded member. Rust
+authenticates raw archive bytes before interpreting their directory, using a
+separate verified-read cache with the same 8 MiB hash-table / 64-object and
+four 1 MiB chunk limits. The file and archive caches therefore have independent
+budgets, not a combined 12 MiB limit. Legacy resources without an expected
+digest remain unverified against an authoritative source identity.
+ZIP32 directory entries are indexed by filename hash and positioned-header
+offset; a lookup still compares the exact filename. The index avoids a complete
+directory scan for each new member, without retaining every name or header.
+At most 4 MiB of indexes across 64 archives are retained. A new transient index
+can contain the format's 65,535 entries; directory parsing uses a 65,557-byte
+end-record tail and a reusable 65,535-byte name buffer, not an archive-sized
+allocation. ZIP64, encrypted entries, and data descriptors remain unsupported.
+
+Stored members read directly through the authenticated archive source. DEFLATE
+members use incremental miniz state, 64 KiB input/output buffers, and at most
+eight decoder checkpoints per reader, spaced by at least 1 MiB of output.
+Rootfs retains at most two readers; a native unit test limits each reader's
+heap retention to less than 1 MiB, excluding allocator overhead. Sequential
+reads advance the decoder rather than restarting for every small request.
+Backward seeks resume a retained checkpoint or decode the uncovered prefix
+again; compressed random access is not constant-cost. URI rejection clears
+raw/file proofs, directory indexes, and decoder state together. Activating a
+persistent mount also drops whole-archive caches warmed while ephemeral.
+This cannot shrink a Wasm memory that already grew before activation.
+
+The 96 MiB stored/DEFLATE integration fixtures stream from private server files
+instead of allocating complete bodies, then read through guest `dd`, strict
+journal recovery, and a positioned checkpoint under a 64 MiB kernel ceiling
+on Node and all three browser engines. These are bounded-path functional
+checks, not aggregate peak-memory or sustained-workload benchmarks.
+Caller-owned closed-asset bundles and aggregate recovery/export scratch still
+need complete ownership accounting. Host URI admission is described below;
+it does not establish a whole-process memory bound.
+The verified-read limits alone are not a whole-system memory bound. Ordinary
+reads preserve deferred archive identity and URI/digest metadata in snapshots;
+external resources remain an offline dependency unless separately mirrored.
+Ephemeral write-copy-on-write behavior is unchanged.
+
+Persistent roots stage deferred transport in one private temporary byte file
+per kernel worker instead of retaining completed resources as JavaScript
+arrays. `DeferredByteSpool` serializes downloads, applies the native declared
+transfer bound, and streams each response into positioned storage. Native URIs
+remain the staging identities; deployment aliases are
+resolved only at the fetch boundary and cannot share writable staging extents.
+Storage reads and writes use at most 64 KiB per storage call; OPFS uses one
+64 KiB nonshared
+bounce buffer because kernel destinations can be shared Wasm memory. Retrying
+or rejecting a URI reuses its extent rather than appending another complete
+copy. Extents grow from received bytes, not the declared maximum, so a short
+response cannot reserve a resource-sized hole before the next download. A
+growing retry can relocate its prefix with at most 64 KiB of copy scratch;
+other URI extents remain unchanged. Retired extents are reclaimed with the
+temporary store, not by journal compaction. Only completed transfers become
+readable. Rust still verifies lengths,
+whole-file digests, and authenticated chunk reads; staging is not a second
+filesystem or content authority. Node's local asset responses also stream from
+their files rather than first reading a complete asset into a buffer.
+
+Node unlinks the private temporary file immediately after opening it, so its
+descriptor owns the bytes until close or process death. This requires no-follow
+opens and an unlinkable open temporary file; unsupported platforms fail
+initialization. Browser stores live
+under `kandelo-deferred-bytes`: a worker holds a per-store Web Lock, and a
+separate cleanup lock serializes creation and abandoned-store reclamation.
+Cleanup preserves live owners and unrelated entries. A terminated worker's
+lock is eventually released; a later open retries reclamation if OPFS has not
+yet released its handle. Shutdown aborts active and queued transport work,
+closes the backing file, and attempts removal. These are disposable caches,
+not recovery generations: they are not synced as guest data, cannot replace
+an unavailable deferred source after reboot, and consume separate physical
+storage quota. Transport storage preserves `ENOSPC`, `ENOMEM`, and `EROFS`
+rather than reporting every failure as `EIO`.
+
+Each active persistent deferred transfer has a 30-second inactivity deadline.
+Only positive bytes successfully staged renew it; empty chunks, observer
+notifications, and retry attempts do not. Expiry reports `ETIMEDOUT` and releases
+the serialized queue. Fetch, read, retry-delay, and cleanup waits are abortable,
+even if a custom fetcher ignores its signal or cancellation never settles.
+Late responses are discarded and cannot publish or modify staged bytes after
+cancellation. This cannot force a custom fetcher to release its own resources,
+nor interrupt synchronous work that blocks the worker's event loop.
+Deferred readers share one settlement signal per active cohort. Timed waits
+register admitted, removable listeners rather than adding another promise
+reaction to every pending fetch. Timeout or settlement removes the listener
+and clears its timer; settlement releases the signal's retained metadata.
+Inspection and prepared-exec retries observe monotonic transfer progress,
+rather than imposing a 30-second total limit on healthy large downloads.
+Without progress, their existing 30-second backstop remains in force.
+Shutdown closes creator admission and cancels deferred work before waiting for
+admitted creators to drain; otherwise a blocked lazy exec could prevent the
+normal dirty-file sync from running before forced worker termination. Transfer
+cancellation leaves completed spool sources readable through final mapping
+publication and dirty-file sync. Only final storage retirement closes those
+sources and releases their metadata; late transfers cannot republish entries.
+
+Each kernel worker has one shared host storage-metadata admission ledger,
+limited to the smaller of 16 MiB and one eighth of its configured kernel
+address-space ceiling. This is a separate, conservative JavaScript ownership
+model, not a deduction from Wasm memory and not an allocator/RSS measurement.
+URI limits, pending/ready/failed transport slots, queued spool requests, spool
+span identities and generation-discovery bookkeeping share this ledger.
+Admission precedes retention or storage acquisition and returns `ENOMEM`
+without treating the computer as corrupt or silently selecting an older
+generation. Serialized inspection snapshots and their decoded URI table
+overlap while both owners are charged. Discard, failed admission and final
+retirement return the corresponding credit. A canceled custom fetch retains
+its pending ownership until its actual completion; cancellation is not proof
+that a caller-owned asynchronous operation has released its resources.
+
+Generation discovery streams OPFS directory entries or Node directory reads
+instead of collecting an unbounded directory first. A serialized generation
+operation admits identifiers before retaining candidate dictionaries or
+opening generation files. Failure rolls back its new identifiers; successful
+identifiers remain conservatively charged until machine retirement, including
+historical identifiers whose files have been removed. Ordinary compaction
+reuses its ring slots. There is no fixed generation-count cap independent of
+the shared budget. Seal writing, verification and prefix hashing each reuse
+one bounded data scratch buffer rather than allocating a new one per chunk.
+
+New positioned-image exports and decoded source staging use a streaming
+whole-image SHA-256 descriptor, independent of image length, rather than a
+retained array of per-MiB digests. Node and OPFS readers accept either the new
+descriptor or legacy chunk descriptors, but reject mixed metadata. Export
+flushes and reads the staged bytes back through bounded scratch before
+returning integrity metadata; positioned boot verifies the complete stored
+image before publication. These checks do not promise continual detection of
+storage changes after a verified immutable image has been opened.
+
+Container export streams length prefixes and borrowed metadata-section bytes
+directly into the caller's output window. It does not clone the retained
+metadata or build a contiguous trailer for each chunk. The original metadata
+owner stays charged; EOF and explicit cancellation release the export plan.
+This preserves ordinary container loading and the existing byte format.
+
+An experimental `runtime-core::persistent_image` envelope supplies Rust-owned
+streaming construction and demand-verified positioned reads for the fast-boot
+work. The new `rootfs::load_persistent_image` path mounts its logical VFSI
+payload and keeps the bounded verified cache for later file reads and image
+export. The source browser composer produces this envelope; the frozen
+WordPress checkpoint has not yet been rebuilt with it.
+Creation explicitly selects CRC32C accidental-corruption checking or SHA-256
+content binding; that choice is recorded in the canonical header identity,
+not selected again at open. Both readers retain one source and use bounded,
+I/O-admitted data/index caches whose budgets are independent of image size
+and checking policy. The core writer owns one target, which may itself be an
+exclusive borrow, and returns an identity after flush. The positioned image
+module adds bounded stored-byte readback before releasing that identity to
+its host caller; crash-safe generation publication remains a separate step.
+CRC does not become cryptographic payload
+protection because the small header identity uses SHA-256.
+
+The positioned module's streaming writer is under integration. Its host
+imports are only positioned source reads and token-bound target size, read,
+write, truncate and flush operations. Rust constructs headers and checking
+trees, checks stored payload blocks in bounded steps, and refuses a nested
+writer operation before retaining any new target. The host retains the
+exclusive physical handle through completion or cancellation. Ordinary VFSI
+composition remains available and the default image module still has zero
+imports. `KandeloImageFs.createPositioned` and its explicit-policy
+`writePersistentImageTo`/`exportPersistentImageTo` methods expose this writer
+to both Node file and browser OPFS adapters, with separate write/readback
+progress. `createFromPositionedImage` can mount its output with an expected
+identity and bounded Rust caches. The source browser composer and checkpoint
+flow now publish these images through version 6 manifests. New computers
+default to CRC32C, with SHA-256 available as an explicit creation option;
+reopen and checkpoint retain the recorded choice. Header inspection in the
+Rust module admits a saved base using a bounded ordinary prefix supplied by
+the host, without another OPFS sync handle or a payload scan. The frozen
+WordPress demo has not yet been rebuilt with this integration.
+
+Clean base data/proof pages participate in Rust's shared I/O-pressure and
+export/compaction reclamation. Reclamation retains source/identity and cache
+records while dropping page storage and its admission credits; rereads must
+verify again. Cache growth refusal can reuse an already admitted same-kind
+page. It does not evict accepted dirty journal data or turn an actual
+resource refusal into successful I/O.
+
+Verified base state uses a separate lock from the rootfs namespace. Each
+positioned read holds that owner only through verification and copying, not
+through a filesystem walk or deferred-resource lookup. Rust retains one raw
+reader adapter; the host must keep its physical file handle/provider alive
+until that kernel generation is destroyed. Failed loads and plain-image
+replacement clear both the namespace and verified cache. Journal attachment
+requires the mounted envelope identity before opening journal/index storage.
+The kernel checks the physical envelope length and uses that bound identity
+without hashing the complete payload again. Ordinary VFSI mounting and its
+existing full-digest attachment path remain available.
+
+Node's `rootfsPersistentImageBinding` and browser
+`initFromOpfsImage({ persistentImageBinding })` carry the expected identity
+and explicit read-cache budgets to the shared worker. They are mutually
+exclusive with whole-image host integrity descriptors. In this mode the
+transport does no filesystem caching or hashing: Node reads positioned bytes
+directly and OPFS reuses one 64 KiB bounce buffer because browser storage
+APIs need an ordinary buffer rather than kernel shared memory. Rust checks
+the canonical algorithm, geometry, proofs and contents. Focused Node and
+Chromium/Firefox/WebKit tests cover native streaming creation, stored-byte
+verification, cancellation and real kernel-worker journal restart. Complete
+large-image, pressure and crash acceptance remain separate. The running
+WordPress checkpoint uses the existing publication format and whole-image
+checks.
+
+The source browser computer manifest's version 6 stores the checked-base
+identity, physical and logical lengths, checking policy, journal,
+initialization flag and safe-integer generation. Version 6 is the canonical
+source saved-computer envelope; the frozen checkpoint still uses version 5's
+whole-image digest. The current source rejects
+earlier prototype envelopes and recognized future versions without conversion,
+archive fallback or source-image recomposition; compatibility with those
+prototypes is not a supported contract. Ordinary product VFS image loading
+remains supported and is distinct from saved-computer envelope admission.
+Unsupported versions propagate as format errors rather than entering metadata
+corruption recovery. These are browser publication-envelope changes,
+not changes to KIFS, the Rust journal/index formats or guest syscall layout.
+
+Whole-file host inspection uses a bounded ordinary result buffer rather than
+retaining every read chunk and allocating another whole-file merge. Node and
+browser expose `maxVfsFileReadBytes`; its default is the smaller of 64 MiB
+and one quarter of the kernel memory ceiling. Exceeding the allowance fails
+with `ENOMEM` without truncation or kernel teardown. Explicit ranges remain
+independently bounded to 1 MiB. Executable preflight keeps the existing
+program-transfer bound, independent of this inspection setting. Rust owns
+followed stat and namespace reads, including host mounts; the host only
+admits and copies the returned bytes. A size hint does not establish EOF,
+and short reads do not discard later bytes. Published whole-file results
+belong to the caller; the allowance is per operation, not a global budget
+for arbitrary numbers of retained results. Guest POSIX file reads remain
+separate and are not restricted by this host convenience-result allowance.
+
+The archived previous pair is not a recovery replica: it can lack later
+acknowledged writes. The new, still-unreleased coordinator separates that
+archive from an active binding in `<computer>.active.base.json`. Publication
+writes a checksummed prepared record containing the exact source and target
+manifests, commits the target primary, then commits the matching active
+record before returning success. Both controls identify the same latest
+base/journal; neither copies file data. The normal page repairs and activates
+a selected pair after native kernel admission but before starting services.
+Low-level callers must honor that writable-use fence as well.
+
+Rust owns the prepared/active binding transition rules and selection between
+primary, target and source. The browser submits a fixed 64-byte evidence packet
+containing versions, generations, initialization state and observed manifest/
+content equality; it does not decide which image is newest. Selection retains
+no native state and reads no image data. The disposable image-codec worker
+runs this policy through the existing native control export and terminates
+before returning the bounded result. The host still owns JSON serialization,
+manifest hashing, OPFS handles, locks, publication ordering and lifecycle.
+Resource and unsupported-operation errors propagate, rather than becoming
+damaged-control evidence that could authorize fallback.
+
+Checkpoint staging also retains an attempt capability tied to the original
+source journal handoff, source content/generation and staged target digest.
+Validation authorizes the exact target handoff. New publication requires both
+same, still-held leases; releasing and reacquiring a journal name cannot bless
+an old snapshot. Only an already active exact target can be retried without
+the original handoffs. Arbitrary-input replacement helpers intentionally
+replace state and do not establish snapshot provenance. A lease excludes
+other owners, not its own kernel: the checkpoint source must stay quiescent
+through export and handoff.
+
+One damaged or stale control can be repaired using the other valid current
+control. A prepared target has not been exposed for writable use and can
+still have a proven fresh source; an active target cannot fall back to an
+older archive merely because that archive is intact. Missing or damaged
+latest payloads without a fresh copy cause explicit refusal, not reset or
+rollback. Journal-header inspection accepts canonical sealed-generation
+files after compaction retires the legacy journal; native admission still
+decides generation/index validity. Resource and unsupported-format errors
+are not treated as corruption. Two lost controls, or coordinated replay of
+both controls to an older internally consistent pair, cannot be repaired or
+detected solely by these local checksums. This is not a guarantee against
+arbitrary storage rollback, browser eviction or OS power loss. Publication
+fault coverage and release acceptance remain open in the persistence plan.
+
+Private browser composition bounds patch-text inputs to 1 MiB and transfers
+them through at most 64 KiB of image-module scratch per read. Configured assets
+use incremental hashes and native chunk writes, with a 32 MiB aggregate payload
+limit per composition because their modified builder content remains resident.
+These are staging-input bounds, not persistent file-size or logical-capacity
+limits. Hash/refusal/cancellation errors discard the private composition before
+publication, even when native staging has already consumed earlier chunks.
+The host owns response intake; Rust remains authoritative for file operations.
+
+Container export has an explicit native cancellation operation. A failed host
+sink releases its admitted plan inside the owning kernel entry; a fatal Wasm
+failure does not attempt reentry. Builder iterator cleanup also cancels, using
+an exact owner so an abandoned older iterator cannot cancel a newer export.
+The additive cancellation export is batched into ABI 53; a host requiring it refuses
+an older kernel's export operation before starting a plan. Component limits and
+plan cleanup are not aggregate process-memory acceptance.
+
+The separate RXPT metadata stream traverses the mounted tree with an iterative
+stack and one reusable path, both admitted against the ordinary I/O allowance.
+It retains only an entry-count/length summary between reads, not an encoded
+namespace. Each requested range is preflighted before output is touched;
+EOF, reset and cancellation release stream authority. This requires the
+existing quiescent-export gate: the summary is not a concurrent snapshot of
+arbitrary mutations. Lazy-entry enumeration uses the same borrowed traversal
+and writes its existing wire format directly into caller memory after
+preflight, including size probes and short-output checks. Returned journal
+metadata and archive payload copies carry I/O admission with their owners.
+These native bounds do not admit the host's decoded JavaScript object cohort.
+
+Resizable journal recovery validates its complete proposed namespace using
+virtual inode indices before planning physical arena slots. Only base inodes
+with no remaining names, open handles or mapping pins can supply reclaimed
+slots. Live base inode indices remain stable. The admitted slot plan reserves
+only genuinely additional capacity and supplies the same mapping to staged
+FIFO records and namespace publication. After every fallible preparation and
+name-credit admission succeeds, publication removes old names before reusing
+their directory-parent slots, installs created inodes, and applies the mapped
+namespace/link counts. A resource refusal before publication leaves the base
+tree intact; it cannot authorize journal fallback or silently reset a computer.
+
+Archive cohort verification borrows the binary payload's descriptor, group
+and member fields. Group/member tables spend the ordinary I/O allowance;
+canonical cohort identities feed SHA-256 incrementally instead of building a
+second identity buffer. Sealing admits each encoded replacement and its
+returned table before allocation, with reservations retained through return
+and iteration. Archive registration also uses the borrowed codec and admitted
+encoded output. Resource exhaustion reports `ENOMEM`, not an authentication
+failure or an excuse to ignore a cohort. The wire format, canonical digest
+ordering and distinction between malformed and unauthenticated payloads are
+unchanged.
+
+Manifest reads check the serialized file size before `text()` or `JSON.parse`.
+A shared per-realm 64 MiB conservative metadata ledger admits parse/stringify
+overlap across locked operations, with an 8 MiB per-input serialized bound.
+The modeled charge is twelve times serialized UTF-8 bytes plus owner overhead;
+actual allocator/RSS acceptance remains separate. A manifest can refuse
+with `ENOMEM` below the per-file bound when its retained cohort or concurrent
+overlap cannot fit. This refusal is not corruption and cannot select an older
+generation. JSON serialization estimates escaped output before allocation,
+rejects cycles, deep nesting, accessors and conversion hooks, and retains the
+output's charge until its operation ends. The depth limit is 64. Canonical
+saved-computer manifests reject obsolete per-chunk digest tables rather than
+retaining or converting them. Returned positioned handles expose a
+constant-sized integrity descriptor; bounded composition/URL metadata belongs
+to their caller, not a retained image-sized chunk table. Saved computers use
+positioned loading; the former resident saved-image compatibility API is removed.
+
+Nonpersistent boots retain the in-memory transport path. Caller-owned closed
+assets and custom fetch implementations can still allocate complete bodies;
+the storage-call limit does not bound a fetcher's chunk allocation. Image
+integrity descriptors, archive decoding, namespace metadata, recovery, and
+export scratch still need complete aggregate accounting. Inactivity handling
+is tested separately from storage-pressure
+and sustained-workload acceptance; serialization is not a claim of improved
+throughput. This transport change does not establish a whole-system memory bound.
+
+Persistent hosts share a 30-second graceful shutdown deadline so queued
+synchronous storage work, compaction retirement, process teardown and final
+sync can finish before worker-realm fallback. Expiry is not an acknowledgement:
+unconfirmed browser writer leases remain held, late acknowledgements cannot
+authorize handoff, and reported sync failures remain visible. Nonpersistent
+browser and Node machines retain their two- and five-second deadlines.
+
+`NodeKernelHost` and `BrowserKernel` accept an optional `kernelMaxPages` to
+lower the kernel's memory ceiling, in 64 KiB pages. It cannot raise the selected
+runtime profile's ceiling; the Wasm loader still enforces the module's minimum.
+This is separate from guest process memory and filesystem capacity. The shared
+Node/OPFS capacity workflow reads a 96 MiB verified deferred file with a 64 MiB
+kernel ceiling and an 8 MiB logical disk, preserving both free space and
+deferred descriptions through reboot and checkpoint. Host transport and
+closed-asset buffers are not covered by that kernel ceiling.
 
 Relative URIs are resolved against the deployment at fetch time: the browser
 uses `BrowserKernel`'s `lazyUrlBase`, Node the peer
@@ -2190,6 +3713,37 @@ The host stages and reads kernel-owned files only through kernel exports
 `kernel_rootfs_mkdir_parents`). Writes, unlink, spawn preflight reads and the
 browser's TLS root certificate use these methods. Worker inspection uses
 the namespace methods below, including foreign mounts and cross-mount links.
+
+For resizable persistent browsers, host-managed TLS provisioning runs after
+journal selection, recovery and any boot-time compaction, but before the worker
+reports readiness. Missing certificate directories and replacement certificate
+bytes therefore use the ordinary Rust journaled namespace and data paths,
+rather than leaving an ephemeral regular inode in a persistent tree. The
+managed certificate name is unlinked before replacement; this also handles
+read-only or digest-bound deferred base certificates without fetching their
+obsolete contents or weakening immutable-source checks. Sibling files remain
+guest-owned and survive certificate rotation.
+
+Optional TLS provisioning must not strand an otherwise usable full filesystem.
+Only a native `ENOMEM` or `ENOSPC` followed by a successful persistence sync may
+continue boot with a public host diagnostic that guest HTTPS may fail. A failed
+sync, including a poisoned writer after an OPFS quota/flush failure, rejects
+initialization. An errno alone cannot distinguish those cases. Other errors
+remain fatal. The checked ancestor-creation helper preserves actual errors and
+partial prefixes, allows resizable journals and still rejects fixed-overwrite
+namespace mutation. These changes retain the ABI 53 export signatures.
+
+Host directory and lazy-resource inspection copy native snapshots under the
+shared host transport budget. Expected admission `ENOMEM` is captured inside
+the serialized entry, before copying the refused chunk. The same inline
+scratch lease then reads the same native producer at its terminal offset,
+releasing the Rust snapshot and its I/O credit without rebuilding it. Only
+after successful zero-length cleanup does the original resource error escape
+outside the fatal-on-throw ingress. Prior copied-chunk credits release in the
+operation's `finally`. Native traps, unexpected exceptions and failed cleanup
+still fail the kernel generation. This preserves ordinary read, stat, retry
+and durable-write behavior after resource refusal on both hosts; it does not
+turn a poisoned persistence writer into a clean admission error.
 
 Lazy archive materialization currently supports ZIP. The former TypeScript
 filesystem also supported gzip-compressed TAR (`tar-gzip-v1`) deferred
@@ -2240,6 +3794,15 @@ and acquires no descriptors. A directory snapshot includes each entry's
 current mode, size, uid/gid and symlink target. Copied snapshots stream
 through allocator-owned scratch within one kernel entry and are freed
 at EOF. The main thread receives plain metadata and transferable bytes.
+Returned entry/name/target owners and encoded directory/URI snapshot caches
+spend the ordinary I/O allowance. Encoders prepare capacity before appending
+fields; only a complete snapshot is published, and EOF releases its backing
+credit. Ordinary allowance exhaustion is reported, not shown as an empty
+directory. Lazy-resource cohorts sort admitted borrowed URI references and
+merge maximum declared sizes before copying the unique owned names. This
+does not fetch bodies or change identities. Canonical namespace-resolution
+scratch and JavaScript-side bookkeeping remain separate memory obligations;
+these snapshots do not establish a whole-system peak bound.
 Root listings include the kernel's virtual mounts even when the image omits
 them. Procfs/devfs listings share the guest directory enumerators. Numeric
 `/proc/<pid>/fd` and `fdinfo` use that process's live descriptors; a fresh
@@ -2360,8 +3923,13 @@ images may omit the field.
 
 `NodeKernelHost` accepts
 `rootfsImage: "default" | ArrayBuffer | Uint8Array | undefined`. With
-`"default"` (the path used by the vitest suite), the host reads
-`host/wasm/rootfs.vfs.zst`. Whatever the caller supplies, the host zstd-decodes
+`"default"` (the path used by the vitest suite), the host first resolves
+`programs/rootfs.vfs.zst` through the binary resolver's selected architecture
+and provenance policy. Only a missing registered artifact permits fallback
+to the standalone `rootfs.vfs.zst` alias, which can resolve to
+`host/wasm/rootfs.vfs.zst`. A present artifact rejected by policy, or an I/O
+failure, is not permission to boot a stale alias. Whatever the caller supplies,
+the host zstd-decodes
 it (`maybeDecompressImage`, `host/src/vfs/vfs-image-transport.ts`, which bounds
 the decompressed size before decoding) and the worker hands the decoded bytes
 to the kernel. The image supplies both `/etc/ssl/cert.pem` and
@@ -2437,6 +4005,27 @@ from there; the browser fetches it once and installs it with
 (`host/src/vfs/vfs-image-filesystem.ts`) is the interface builders and the
 image helpers in `host/src/vfs/image-helpers.ts` are written against.
 
+The bridge's whole-file `readFile` rejects lengths that do not fit its wasm32
+buffer arguments with `EOVERFLOW`, rather than silently reading a low-word
+prefix. Large files remain accessible through bounded `open`/`read`/`close`
+operations with full-width positions. Image capacity is not a request to
+allocate a file-sized buffer.
+
+Builder handle writes now transfer at most 64 KiB into the Rust positioned
+write entry point and return the actual count; they do not read, merge or
+replace the old file in JavaScript. Builder helpers loop over partial progress.
+Explicit image-builder set-ID modes are restored after a successful patch,
+preserving the producer's existing metadata contract; guest writes still use
+the kernel's ordinary set-ID-clearing rules.
+
+The nonpersistent copy-on-write backend remains resident: materializing a
+borrowed file must fit the native address space and available heap, or return
+`ENOMEM` before replacing the borrowed inode. Writes at unrepresentable
+resident-buffer offsets return `EFBIG`; reads beyond resident EOF return zero
+instead of wrapping onto the low word. This is distinct from the persistent
+overlay, whose positioned file offsets and logical sizes can exceed runtime
+memory.
+
 A builder creates a tree (`KandeloImageFs.create()`), writes files,
 directories, symlinks and ownership into it, registers lazy files and lazy
 archives with their URIs and digests, and calls `saveImage()`, which returns
@@ -2479,6 +4068,33 @@ recreated on the next boot. Deferred files that were never read stay deferred
 after export, with their URIs and digests. Callers must await the export
 before destroying the host.
 
+The file-export methods use a separately named synchronous borrowed-chunk
+path on both hosts. One ordinary host destination is allocated after entry
+admission and reused for the stream. Only `kernel-scratch.ts` can create its
+opaque capability; callers cannot adopt a kernel, process or shared backing.
+The lease validates its readable range and destination attachment before a
+direct copy, then expires before the file/hash sink sees the ordinary prefix.
+The sink must return synchronously without a value. Attachment is checked
+again after the sink; detachment or sink failure aborts the export without
+poisoning the kernel or publishing a replacement. Byte counts are captured
+before callbacks, including callbacks that transfer owned chunks. The
+original owned visitor and buffered export keep independent chunk ownership;
+they must not be switched to reused backing. File export bounds payload
+staging, not snapshot-plan or digest-list metadata.
+
+The shared kernel adapter also reuses one cleared 64 KiB transport backing
+across ordinary image, journal, index and compaction reads. Exact views use
+captured intrinsic slots rather than caller-controlled species constructors;
+no provider receives live Rust memory. Nested borrowing refuses before
+changing the active window, and detached backing is replaced for retry.
+Larger requests retain their existing fresh temporary allocation behavior;
+this is not a bound on every possible host request. OPFS's clean-page reader
+recycles at most 64 fixed 64 KiB backings, retaining a failed refill's backing
+for retry without caching partial bytes. Its integrity verifier reuses one
+1 MiB window across awaited digests. These ownership bounds avoid payload-sized
+garbage accumulation during a synchronous export; they do not establish
+whole-process RSS, metadata admission or performance improvements.
+
 The browser demos consume images through `BrowserKernel.boot`; service
 demos run dinit (`/sbin/dinit --container`), which reads `/etc/dinit.d/*`
 from the image and brings up the service tree, and single-program demos exec
@@ -2510,21 +4126,49 @@ image, give it to `NodeKernelHost`, and start `/sbin/dinit` with
 `spawnFromVfs()`.
 
 **Binary format.** A `.vfs.zst` file is one zstd frame around a VFSI
-container (`crates/runtime-core/src/vfsi_container.rs`). Decompressed:
+container (`crates/runtime-core/src/vfsi_container.rs`). Raw `.vfs` files
+carry the same container without compression. Decompressed:
 
 ```
 Offset   Size   Field
 0        4      Magic: 0x56465349 ("VFSI")
-4        4      Version: 1
+4        4      Version: 1 or 2
 8        4      Flags: bit 0 = lazy files, bit 1 = lazy archives, bit 2 = metadata,
                 bit 3 = typed lazy archives, bit 4 = kernel lazy linkage (KLZY)
-12       4      Filesystem body length (N)
-16       N      KIFS filesystem body (superblock magic "KIFS"); deferred-file
+12       4      V1: filesystem body length (N); V2: header size (24)
+16       8      V2 only: 64-bit filesystem body length (N)
+H        N      KIFS filesystem body (superblock magic "KIFS"); deferred-file
                 records live inside it in the SDEF section
-16+N     ...    Optional trailing sections, each a 4-byte length and bytes:
+H+N      ...    Optional trailing sections, each a 4-byte length and bytes:
                 lazy-file JSON (bit 0), lazy-archive JSON (bit 1), image-metadata
                 JSON (bit 2), and the KLZY section (bit 4)
 ```
+
+`H` is 16 for v1 and 24 for v2. The writer preserves v1 for bodies that fit
+its 32-bit length and uses v2 only above that boundary. KIFS has a separate
+superblock version: v1 addresses 10 + 1,024 + 1,024² blocks per file, while
+v2 adds a triple-indirect pointer at inode bytes 124–127 and addresses another
+1,024³ blocks. The writer keeps KIFS v1 unless a file exceeds its limit; a
+VFSI v2 container may contain either KIFS version.
+On dereference, the kernel rejects nonzero data and indirect pointers outside
+the superblock's declared data-block range, so a damaged pointer cannot alias
+filesystem metadata or a trailing section. This is a bounds check, not a
+replacement for the staged image's whole-file integrity verification.
+Malformed directory records and incomplete terminal records now return `EIO`
+instead of silently omitting later names from a listing or lookup.
+Snapshot export leaves unwritten blocks of new journal-backed regular files
+unallocated in KIFS, so their logical size need not determine body size. The
+kernel records sparse block maps for image-backed regular files during boot
+and preserves their holes when exporting, including through journal changes.
+Growing or truncating and re-extending an originally dense image-backed file
+also leaves its new zero range unallocated in a composed snapshot.
+Node can boot a decoded `.vfs` file through `NodeKernelHost.rootfsImageFile`:
+the kernel worker owns a read-only, no-follow file descriptor and a bounded
+64-page positioned-read cache instead of copying the image into an
+`ArrayBuffer`. An optional staged-image integrity descriptor verifies every
+chunk before boot. The byte-array and default compressed-image Node paths
+still materialize their decoded images; external native writers can race a
+file-backed boot unless the caller keeps the source quiescent.
 
 ## Networking
 
@@ -2666,6 +4310,36 @@ Browsers cannot create external raw TCP or UDP sockets. Local loopback and `Loca
    unaffected.
 
 3. **Service Worker HTTP Bridge**: For server demos (nginx, WordPress), a service worker intercepts browser `fetch()` requests to a configurable URL prefix (e.g., `/app/`) and forwards them to the kernel via a MessagePort connection pump. The kernel injects the request as a TCP connection to nginx's listening socket, and nginx's response flows back through the pipe to the service worker.
+
+The injected HTTP pump is shared with Node's `fetchInKernel`. It retains a
+request offset across short or zero pipe writes, wakes readers after accepted
+bytes, and yields between attempts so the guest can consume the bounded TCP
+pipe. Response draining proceeds alongside request delivery, including when a
+server rejects a request before reading its entire body. One timeout covers
+both directions; completion, timeout and ordinary errors close the host's
+pipe ends. The caller's raw response byte ceiling is enforced before retaining
+each response chunk. Request and response bodies are still buffered in full;
+this is backpressure handling, not a streaming or whole-system memory bound.
+
+One per-kernel admission gate now bounds injected HTTP work on both hosts.
+It admits at most 16 active pumps, scaled down to one per MiB of the
+profile-derived ordinary I/O allowance on smaller kernels, with a minimum
+of one. At most 128 requests wait; queue time counts against the original
+request deadline and an expired waiter never injects a connection. A full
+queue fails explicitly. Raw request construction happens after admission;
+the caller's original request/body can remain retained while waiting, so
+the queue count is not a byte bound on caller-owned inputs. Injection
+`ENOMEM` remains a real error and is not retried. Empty-response retries
+release their previous permit first and share the remaining deadline.
+
+Each injected connection currently charges two 64 KiB pipe buffers at twice
+capacity against the same ordinary I/O pool as filesystem work. Unbounded
+asset fan-out can therefore refuse connections even when overall system
+memory remains available. The admission gate bounds active HTTP pumps, not
+all TCP ingress or abandoned server-side backlog ownership after timeout.
+Native cancellation of unaccepted connections and admission needed to drain
+a pressured backlog remain separate acceptance work; increasing the pool is
+not a substitute for either.
 
 `TcpNetworkBackend`, `FetchNetworkBackend`, `TlsNetworkBackend`, and `LocalVirtualNetwork` share one numeric-address and hostname validator. It accepts decimal one-, two-, three-, and four-component IPv4 forms within their component widths, rejects malformed or overflowing numeric forms, enforces ASCII host-label syntax and DNS length limits, and preserves one trailing root dot. The Node TCP backend resolves validated names through the host resolver. The browser HTTP fetch/TLS bridges synthesize IPv4 mappings for syntactically acceptable DNS names; `LocalVirtualNetwork` resolves only aliases registered by attached machines. None of the browser paths adds browser DNS resolution or AF_INET6 transport.
 
@@ -3058,17 +4732,56 @@ advances playback; the worklet remains its clock. Audio demand reaches the UI
 as a plain notification sampled in the kernel worker. Main is not the audio
 clock and does not drain through a timer. At 48 kHz one render quantum is about 2.7 ms; browser
 device `baseLatency`/`outputLatency` is additional and platform-dependent.
-After machine teardown drains the shared ring, a running browser context is
-suspended to hand already-rendered blocks to the output device, then retained
-for a bounded base/output-latency-plus-quantum settlement interval. Teardown
-then tells the processor to release its transport: it drops both memory views,
-closes its kernel connection, acknowledges release, and returns false from
-rendering. Disconnecting a source processor that keeps returning true leaves
-it alive in Web Audio. The independent mirror bounds retained wrappers even
-before collection in the persistent worklet realm. The default
-page-wide context stays open to avoid WebKit's context-close thread leak;
-private contexts supplied by embedders are closed. Teardown never resumes a
-suspended or interrupted context, preserving browser user activation.
+The browser host's demand-driven preparation leaves the worklet
+unattached at kernel ready until native generation/state records guest audio
+activity. A user gesture can prime and resume the shared context first, with
+no kernel backing passed to a processor; later demand binds the normal sink
+to that same context. Explicit preparation remains immediate. This preserves
+browser activation separately from transport ownership and does not change
+Node's clocked sink or native PCM semantics. Unused primed contexts can shut
+down without a nonexistent processor acknowledgement; attached processors
+still require exact detach. Module preparation has a bounded close wait,
+terminal late continuations and context quarantine. Neither the module-load
+activation nor public Promise-returning wrappers retain a descriptor across an
+unresolved await.
+After machine teardown drains the shared ring, driver close first refuses new
+audio control operations and bounds settlement of admitted context transitions.
+Resume and suspend each retain at most one in-flight operation; stale
+continuations cannot reopen a closed driver. A still-pending transition blocks
+reuse of the page-shared audio context. A missing processor detach acknowledgement
+blocks subsequent shared audio attachment until reload. Both failures are
+reported, but neither retains kernel memory through the independent PCM mirror,
+so neither blocks replacement kernels or independent persistent-storage shutdown.
+The connected processor is asked to detach before context suspension, so the
+acknowledgement does not depend on post-suspension scheduling. A running
+browser context is then suspended to hand already-rendered blocks to the
+output device and retained for a bounded base/output-latency-plus-quantum
+settlement interval. A page-shared
+context survives machine switches for the suspected runtime defect recorded in
+[`WEBKIT-AUDIOWORKLET-CLOSE-LEAK`](../tests/runtime-workarounds/WEBKIT-AUDIOWORKLET-CLOSE-LEAK/entry.md);
+an explicitly supplied private context is closed. Before disconnecting its node
+and closing the message port, the driver waits for the processor to clear both
+mirror views, close its kernel connection and acknowledge detach. Later render
+callbacks return false. Disconnecting alone does not end a source processor
+that keeps returning true. The independent mirror bounds retained wrappers
+even before collection in the persistent worklet realm.
+Detach is bounded; a missing acknowledgement is reported, not proof of release.
+Storage acknowledgement remains a separate ownership fact.
+Preparation retains the node immediately after construction. A later connection
+failure must retire that owner too; a missing detach acknowledgement cannot be
+hidden by forgetting the node. State observers cannot interrupt ownership
+transitions. Closing during module loading prevents subsequent node construction.
+Teardown never resumes a suspended or interrupted context, preserving the
+browser's user-activation boundary. Host memory admission and actual process
+memory validation must still include this cross-realm transport ownership.
+Native resume is requested on the trusted-gesture stack even while worklet
+module preparation is pending. The render thread makes at most eight attempts
+per split 64-bit cursor read; an unstable or abandoned odd sequence yields
+silence for that quantum without advancing consumption. It must not spin
+forever and prevent terminal detach messages from being serviced. Settled
+cursors permit playback on the next quantum. This prevents an independently
+reproducible worklet hang class, not proof of the cause of an application
+checkpoint's missing acknowledgement.
 Node uses the same cursor and wakeup contract with a wall-clock-paced null sink
 for headless execution, so callbacks cannot run at CPU speed. Its running tick
 follows the negotiated fragment duration, preserves fractional-frame drift,

@@ -9,7 +9,6 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::hint::spin_loop;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -33,7 +32,7 @@ struct SharedBacking<T> {
 
 /// A stable-index table with one reference per owning OFD in each process.
 pub struct SharedBackingTable<T> {
-    entries: Vec<Option<SharedBacking<T>>>,
+    entries: crate::IoBuffer<Option<SharedBacking<T>>>,
     #[cfg(test)]
     next_generation: u64,
 }
@@ -41,13 +40,18 @@ pub struct SharedBackingTable<T> {
 impl<T> SharedBackingTable<T> {
     fn new() -> Self {
         Self {
-            entries: Vec::new(),
+            entries: crate::IoBuffer::new(),
             #[cfg(test)]
             next_generation: 1,
         }
     }
 
-    pub fn alloc(&mut self, value: T) -> usize {
+    #[cfg(test)]
+    pub fn alloc(&mut self, value: T) -> usize { self.try_alloc(value).unwrap() }
+
+    pub fn try_alloc(&mut self, value: T) -> Result<usize, Errno> {
+        let index = self.entries.iter().position(Option::is_none).unwrap_or(self.entries.len());
+        if index == self.entries.len() { self.entries.try_reserve(1)?; }
         #[cfg(test)]
         let entry = {
             let generation = self.next_generation;
@@ -62,19 +66,9 @@ impl<T> SharedBackingTable<T> {
         #[cfg(not(test))]
         let entry = SharedBacking { refs: 1, pins: 0, value };
 
-        if let Some((idx, slot)) = self
-            .entries
-            .iter_mut()
-            .enumerate()
-            .find(|(_, slot)| slot.is_none())
-        {
-            *slot = Some(entry);
-            return idx;
-        }
-
-        let idx = self.entries.len();
-        self.entries.push(Some(entry));
-        idx
+        if index == self.entries.len() { self.entries.push(Some(entry)); }
+        else { self.entries[index] = Some(entry); }
+        Ok(index)
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (usize, &mut T)> {
@@ -191,7 +185,7 @@ impl<T> SharedBackingTable<T> {
 /// Shared contents and cursor for a memfd open file description.
 #[derive(Debug)]
 pub struct MemFdBacking {
-    pub data: Vec<u8>,
+    pub data: crate::IoBuffer<u8>,
     pub offset: i64,
     /// Advanced by every mutation of `data` (write, pwrite, ftruncate, a
     /// shared-mapping writeback). The shared-mapping layer compares it to
@@ -202,7 +196,7 @@ pub struct MemFdBacking {
 impl MemFdBacking {
     pub fn new() -> Self {
         Self {
-            data: Vec::new(),
+            data: crate::IoBuffer::new(),
             offset: 0,
             content_gen: 0,
         }
@@ -212,12 +206,32 @@ impl MemFdBacking {
     pub fn touch_modified(&mut self) {
         self.content_gen = self.content_gen.wrapping_add(1);
     }
+
+    pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> Result<usize, Errno> {
+        if bytes.is_empty() { return Ok(0); }
+        let end = offset.checked_add(bytes.len()).ok_or(Errno::EFBIG)?;
+        if end > self.data.len() {
+            self.data.try_reserve(end - self.data.len())?;
+            self.data.resize(end, 0);
+        }
+        self.data[offset..end].copy_from_slice(bytes);
+        self.touch_modified();
+        Ok(bytes.len())
+    }
+
+    pub fn resize(&mut self, length: usize) -> Result<(), Errno> {
+        if length > self.data.len() { self.data.try_reserve(length - self.data.len())?; }
+        if length == 0 { self.data = crate::IoBuffer::new(); }
+        else { self.data.resize(length, 0); }
+        self.touch_modified();
+        Ok(())
+    }
 }
 
 /// Immutable procfs snapshot plus the shared open-file-description cursor.
 #[derive(Debug)]
 pub struct ProcfsBacking {
-    pub data: Vec<u8>,
+    pub data: crate::IoBuffer<u8>,
     pub offset: i64,
 }
 
@@ -235,7 +249,7 @@ impl SyntheticRegularBacking {
 }
 
 impl ProcfsBacking {
-    pub fn new(data: Vec<u8>) -> Self {
+    pub fn new(data: crate::IoBuffer<u8>) -> Self {
         Self { data, offset: 0 }
     }
 }
@@ -329,10 +343,13 @@ fn with_synthetic_regulars<R>(
     SYNTHETIC_REGULARS.with(f)
 }
 
-pub fn alloc_synthetic_regular() -> i64 {
-    let idx = with_synthetic_regulars(|table| table.alloc(SyntheticRegularBacking::new()));
-    -(SYNTHETIC_REGULAR_HANDLE_BASE + idx as i64)
+pub fn try_alloc_synthetic_regular() -> Result<i64, Errno> {
+    let idx = with_synthetic_regulars(|table| table.try_alloc(SyntheticRegularBacking::new()))?;
+    Ok(-(SYNTHETIC_REGULAR_HANDLE_BASE + idx as i64))
 }
+
+#[cfg(test)]
+pub fn alloc_synthetic_regular() -> i64 { try_alloc_synthetic_regular().unwrap() }
 
 pub fn is_synthetic_regular_handle(host_handle: i64) -> bool {
     // Bounded below by the tmpfs file-handle base so the two negative-handle
@@ -449,15 +466,14 @@ pub fn is_live_managed_ofd(file_type: FileType, host_handle: i64) -> bool {
 pub fn removed_backings_for_exec(
     old: &Process,
     replacement: &Process,
-) -> Result<Vec<(FileType, i64)>, Errno> {
-    let old_backings: Vec<(FileType, i64)> = old
-        .ofd_table
-        .iter()
-        .filter_map(|(_, ofd)| {
-            manages_ofd(ofd.file_type, ofd.host_handle).then_some((ofd.file_type, ofd.host_handle))
-        })
-        .collect();
-    let mut retained = alloc::vec![false; old_backings.len()];
+) -> Result<crate::IoBuffer<(FileType, i64)>, Errno> {
+    let count = old.ofd_table.iter().filter(|(_, ofd)| manages_ofd(ofd.file_type, ofd.host_handle)).count();
+    let mut old_backings = crate::IoBuffer::try_with_capacity(count)?;
+    for (_, ofd) in old.ofd_table.iter() {
+        if manages_ofd(ofd.file_type, ofd.host_handle) { old_backings.push((ofd.file_type, ofd.host_handle)); }
+    }
+    let mut retained = crate::IoBuffer::try_with_capacity(count)?;
+    retained.resize(count, false);
 
     for (_, ofd) in replacement.ofd_table.iter() {
         if !manages_ofd(ofd.file_type, ofd.host_handle) {
@@ -473,11 +489,13 @@ pub fn removed_backings_for_exec(
         retained[idx] = true;
     }
 
-    Ok(old_backings
-        .into_iter()
-        .zip(retained)
-        .filter_map(|(key, retained)| (!retained).then_some(key))
-        .collect())
+    let mut position = 0;
+    old_backings.retain(|_| {
+        let removed = !retained[position];
+        position += 1;
+        removed
+    });
+    Ok(old_backings)
 }
 
 #[cfg_attr(
@@ -651,6 +669,65 @@ pub fn release_for_ofd(file_type: FileType, host_handle: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{GlobalBackingTable, SharedBackingTable};
+
+    #[test]
+    fn arena_refusal_and_mapping_pins_preserve_payload_ownership_and_indices() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut table = SharedBackingTable::new();
+        let payload = crate::IoBuffer::copy_from(b"owned").unwrap();
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            assert!(matches!(table.try_alloc(payload), Err(wasm_posix_shared::Errno::ENOMEM)));
+            assert!(table.entries.is_empty());
+            assert_eq!(table.next_generation, 1);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        let payload = crate::IoBuffer::copy_from(b"owned").unwrap();
+        let payload_credit = crate::io_buffer::IO_MEMORY.usage().0 - baseline;
+        let index = table.try_alloc(payload).unwrap();
+        table.pin(index).unwrap();
+        assert!(table.release(index));
+        assert!(!table.is_owned(index));
+        assert_eq!(table.get(index).unwrap(), b"owned");
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            let second = table.try_alloc(crate::IoBuffer::new()).unwrap();
+            assert_ne!(second, index);
+            assert!(table.release(second));
+            table.unpin(index);
+            assert!(table.get(index).is_none());
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held - payload_credit);
+        }
+        drop(table);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn memfd_payload_refusal_preserves_bytes_cursor_and_generation() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut backing = super::MemFdBacking::new();
+        backing.write_at(0, b"original").unwrap();
+        backing.offset = 4;
+        let generation = backing.content_gen;
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(backing.write_at(64, b"new"), Err(wasm_posix_shared::Errno::ENOMEM));
+            assert_eq!(backing.resize(64), Err(wasm_posix_shared::Errno::ENOMEM));
+            assert_eq!(backing.data, b"original");
+            assert_eq!(backing.offset, 4);
+            assert_eq!(backing.content_gen, generation);
+            assert_eq!(backing.write_at(usize::MAX, b""), Ok(0));
+            assert_eq!(backing.content_gen, generation);
+            assert_eq!(backing.write_at(0, b"changed!"), Ok(8));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+            backing.resize(0).unwrap();
+            assert_eq!(backing.offset, 4);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+    }
 
     #[test]
     fn shared_backing_reuses_only_freed_slots() {

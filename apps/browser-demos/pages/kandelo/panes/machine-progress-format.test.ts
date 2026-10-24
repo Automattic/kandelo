@@ -40,7 +40,35 @@ test("no total yields no percentage", () => {
     unit: "processes", status: "loading",
   });
   assert.equal(f.percent, null);
-  assert.equal(f.detail, "0 processes");
+  assert.equal(f.detail, "Waiting for guest processes to stop…");
+});
+
+test("download and OPFS mount name their actual operations without claiming an image copy", () => {
+  const progress = {
+    phase: "image", label: "shell.vfs.zst", completed: 1719230,
+    total: 1719230, unit: "bytes", status: "complete",
+  } as const;
+  assert.equal(formatMachineProgress({ ...progress, operation: "download" }).headline,
+    "Downloading shell.vfs.zst");
+  const mount = formatMachineProgress({ ...progress, completed: 0, total: undefined, status: "loading", operation: "mount" });
+  assert.equal(mount.headline, "Opening shell.vfs.zst from OPFS");
+  assert.equal(mount.percent, null);
+  assert.equal(mount.detail, "Reading filesystem metadata and recovering journal; file blocks load on demand");
+});
+
+test("checkpoint stages without counts are active, not zero bytes or invented percentages", () => {
+  const progress = {
+    phase: "image", label: "Replaying filesystem journal", completed: 0,
+    unit: "bytes", status: "loading", operation: "checkpoint",
+  } as const;
+  assert.deepEqual(formatMachineProgress(progress), {
+    headline: progress.label, detail: "Working…", percent: null,
+    valueText: "Working; total not yet known",
+  });
+  const measured = formatMachineProgress({ ...progress, label: "Verifying filesystem snapshot", completed: 1024, total: 2048 });
+  assert.equal(measured.headline, "Verifying filesystem snapshot");
+  assert.equal(measured.detail, "1.0 KiB / 2.0 KiB");
+  assert.equal(measured.percent, 50);
 });
 
 test("an error shows its message rather than a count", () => {

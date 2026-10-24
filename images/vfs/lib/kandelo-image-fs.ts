@@ -1,8 +1,13 @@
 
 import { maybeDecompressImage } from "../../../host/src/vfs/vfs-image-transport";
 import { ERRNO, OPEN_FLAGS } from "../../../host/src/generated/abi";
+import { createStorageHasher } from "../../../host/src/vfs/overlay-seal-codec";
 import type { VfsImageMetadata } from "../../../host/src/vfs/vfs-image-filesystem";
 import type { ZipEntry } from "../../../host/src/vfs/zip";
+import { persistentImageIdentityWords, snapshotPersistentImageReadBinding, type PersistentImageReadBinding } from "../../../host/src/vfs/image-integrity";
+import { PositionedImageTargets, type PositionedImageTarget } from "./positioned-image-targets";
+import { ImageManifestMemoryScope, imageJsonOperationMemory } from "../../../host/src/vfs/image-manifest-memory";
+import { storageMetadataError } from "../../../host/src/vfs/storage-memory-budget";
 import {
   normalizeLazyArchiveMountPrefix,
   planLazyArchiveEntries,
@@ -19,13 +24,14 @@ import {
  * packages go in the LAMP image, how WordPress is preinstalled — are product
  * configuration and are not touched. This is the seam they sit on.
  *
- * # The module imports nothing
+ * # The default module imports nothing
  *
  * `WebAssembly.instantiate(bytes)` is called with NO import object, because
  * `crates/kandelo-image-module` has no import section at all — not even `env.memory`.
  * That is verified on every build of the module rather than assumed here, and
  * it is what makes this a bridge to a self-contained component rather than a
- * new host surface: a host implements nothing for it.
+ * new host surface: a host implements nothing for it. The separate positioned
+ * variant imports one read function for OPFS-backed composition.
  */
 
 /** Metadata a builder reads back, as `lstat` returns it. */
@@ -43,12 +49,54 @@ export interface KandeloImageStat {
   archiveId: number;
 }
 
-interface ModuleExports {
+interface PersistentWriterExports {
+  sm_persistent_image_begin(target: number, lengthLo: number, lengthHi: number, policy: number): number;
+  sm_persistent_image_push(pointer: number, length: number): number;
+  sm_persistent_image_finish(): number;
+  sm_persistent_image_check_step(): number;
+  sm_persistent_image_identity_word(index: number): bigint;
+  sm_persistent_image_cancel(): number;
+  sm_persistent_image_inspect(lengthLo: number, lengthHi: number, ...binding: number[]): bigint;
+}
+
+export type PersistentImageIntegrityPolicy = "crc32c" | "sha256";
+export interface PersistentImageWriteResult {
+  readonly identitySha256: string;
+  readonly payloadLength: number;
+  readonly physicalLength: number;
+  readonly integrityPolicy: PersistentImageIntegrityPolicy;
+}
+export interface PersistentImageWriteOptions {
+  readonly signal?: AbortSignal;
+  readonly onProgress?: (progress: { phase: "write" | "verify"; bytes: number; total: number }) => void | Promise<void>;
+}
+
+function imageStep<Value>(value: Value | PromiseLike<Value>, signal?: AbortSignal): Promise<Value> {
+  if (signal === undefined) return Promise.resolve(value);
+  return new Promise<Value>((resolve, reject) => {
+    let active = true;
+    const finish = (failed: boolean, result: unknown): void => {
+      if (!active) return;
+      active = false;
+      signal.removeEventListener("abort", abort);
+      if (failed) reject(result);
+      else resolve(result as Value);
+    };
+    const abort = (): void => finish(true, signal.reason ?? new DOMException("Image operation aborted", "AbortError"));
+    signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve(value).then(result => finish(false, result), error => finish(true, error));
+    if (signal.aborted) abort();
+  });
+}
+
+interface ModuleExports extends Partial<PersistentWriterExports> {
   memory: WebAssembly.Memory;
   sm_alloc(len: number): number;
   sm_free(ptr: number, len: number): void;
+  sm_overlay_activation_codec?: (operation: number, input: number, inputLength: number, output: number, outputCapacity: number) => number;
   sm_reset(rootMode: number, uid: number, gid: number): number;
   sm_image_metadata(out: number, outLen: number): number;
+  sm_loaded_image_capacity(): bigint;
   sm_mkdir(p: number, pl: number, mode: number, uid: number, gid: number): number;
   sm_mkdir_parents(p: number, pl: number, mode: number, uid: number, gid: number): number;
   sm_symlink(t: number, tl: number, l: number, ll: number, uid: number, gid: number): number;
@@ -56,7 +104,14 @@ interface ModuleExports {
   sm_chown(p: number, pl: number, uid: number, gid: number, clearSetid: number): number;
   sm_unlink(p: number, pl: number): number;
   sm_write_file(p: number, pl: number, mode: number, c: number, cl: number): number;
+  sm_write_file_chunk(p: number, pl: number, offset: bigint, mode: number, truncate: number, c: number, cl: number): number;
+  sm_export_image_cancel(): void;
   sm_load_image(ptr: number, len: number): number;
+  sm_set_metadata_budget_bytes(limit: number): number;
+  sm_metadata_used_bytes(): number;
+  sm_load_image_positioned?: (lengthLo: number, lengthHi: number) => number;
+  sm_load_persistent_image?: (lengthLo: number, lengthHi: number, ...binding: number[]) => number;
+  sm_export_image_length?: () => bigint;
   sm_lstat(p: number, pl: number, o: number, ol: number): number;
   sm_readlink(p: number, pl: number, o: number, ol: number): number;
   sm_read_file(p: number, pl: number, offset: bigint, o: number, ol: number): number;
@@ -150,7 +205,21 @@ function canonicalize(path: string): string {
 }
 
 export class KandeloImageFs {
-  private constructor(private readonly exports: ModuleExports) {}
+  private exportOwner: object | null = null;
+  private persistentWriteActive = false;
+
+  getMemoryPages(): number {
+    return this.exports.memory.buffer.byteLength / 65536;
+  }
+
+  private constructor(private readonly exports: ModuleExports, private readonly targets?: PositionedImageTargets) {
+    if (typeof exports.sm_loaded_image_capacity !== "function") {
+      throw new Error("Kandelo image module lacks its loaded-capacity export; rebuild the image modules");
+    }
+    if (typeof exports.sm_write_file_chunk !== "function" || typeof exports.sm_export_image_cancel !== "function") {
+      throw new Error("Kandelo image module lacks bounded I/O and export cancellation; rebuild the image modules");
+    }
+  }
 
   /**
    * Instantiate the module and create an empty image tree.
@@ -211,6 +280,155 @@ export class KandeloImageFs {
     return fs;
   }
 
+  static createFromPositionedImage(
+    moduleBytes: Uint8Array,
+    imageLength: number,
+    readAt: (offset: number, destination: Uint8Array) => number,
+    persistentBinding?: PersistentImageReadBinding,
+    sourceSha256?: string,
+  ): KandeloImageFs {
+    if (!Number.isSafeInteger(imageLength) || imageLength <= 0) {
+      throw new Error("positioned VFS image length is invalid");
+    }
+    const binding = persistentBinding === undefined ? undefined : snapshotPersistentImageReadBinding(persistentBinding);
+    if (sourceSha256 !== undefined && (binding !== undefined || !/^[0-9a-f]{64}$/.test(sourceSha256))) {
+      throw new Error("Positioned source digest requires a raw image and a valid SHA-256 identity");
+    }
+    const fs = this.instantiatePositioned(moduleBytes, readAt);
+    if (sourceSha256 !== undefined) {
+      const hasher = createStorageHasher((operation, bytes) => fs.overlayActivationCodecCall(operation, bytes));
+      const scratch = new Uint8Array(65536);
+      for (let offset = 0; offset < imageLength;) {
+        const destination = scratch.subarray(0, Math.min(scratch.length, imageLength - offset));
+        const count = fs.check(readAt(offset, destination), "verifyPositionedSource", "");
+        if (!Number.isInteger(count) || count <= 0 || count > destination.length) {
+          throw new KandeloImageError(ERRNO.EIO, "verifyPositionedSource", "");
+        }
+        hasher.update(destination.subarray(0, count));
+        offset += count;
+      }
+      const digest = Array.from(hasher.finish(), byte => byte.toString(16).padStart(2, "0")).join("");
+      if (digest !== sourceSha256) throw new KandeloImageError(ERRNO.EIO, "verifyPositionedSource", "");
+    }
+    const load: ((lengthLo: number, lengthHi: number, ...words: number[]) => number) | undefined =
+      binding === undefined ? fs.exports.sm_load_image_positioned : fs.exports.sm_load_persistent_image;
+    if (typeof load !== "function") throw new Error("positioned VFS image module lacks its load export");
+    const lengthLo = imageLength >>> 0;
+    const lengthHi = Math.floor(imageLength / 0x1_0000_0000);
+    fs.check(binding === undefined ? load(lengthLo, lengthHi) : load(lengthLo, lengthHi,
+      ...persistentImageIdentityWords(binding.identitySha256), binding.dataCachePages, binding.indexCachePages),
+    "loadImagePositioned", "");
+    fs.refreshLoadedImageState();
+    return fs;
+  }
+
+  static createPositioned(moduleBytes: Uint8Array, rootMode = 0o755): KandeloImageFs {
+    const fs = this.instantiatePositioned(moduleBytes, () => -ERRNO.ENOSYS);
+    fs.check(fs.exports.sm_reset(rootMode, 0, 0), "reset", "/");
+    return fs;
+  }
+
+  static inspectPersistentImage(
+    moduleBytes: Uint8Array,
+    physicalLength: number,
+    readAt: (offset: number, destination: Uint8Array) => number,
+    identitySha256: string,
+    policy: PersistentImageIntegrityPolicy,
+  ): number {
+    return this.inspectPersistentImageState(moduleBytes, physicalLength, readAt, identitySha256, policy).payloadLength;
+  }
+
+  static inspectPersistentImageState(
+    moduleBytes: Uint8Array,
+    physicalLength: number,
+    readAt: (offset: number, destination: Uint8Array) => number,
+    identitySha256: string,
+    policy: PersistentImageIntegrityPolicy,
+  ): { payloadLength: number; memoryPages: number } {
+    if (!Number.isSafeInteger(physicalLength) || physicalLength <= 0 || (policy !== "crc32c" && policy !== "sha256")) {
+      throw new Error("Persistent image length or integrity policy is invalid");
+    }
+    const words = persistentImageIdentityWords(identitySha256);
+    const filesystem = this.instantiatePositioned(moduleBytes, readAt);
+    const inspect = filesystem.exports.sm_persistent_image_inspect;
+    if (typeof inspect !== "function") throw new Error("Image module lacks its persistent header inspector; rebuild the positioned image module");
+    const length = inspect(physicalLength >>> 0, Math.floor(physicalLength / 0x1_0000_0000), ...words, policy === "crc32c" ? 1 : 2);
+    if (length < 0n) throw new KandeloImageError(Number(-length), "inspectPersistentImage", "");
+    const payloadLength = Number(length);
+    if (!Number.isSafeInteger(payloadLength) || payloadLength <= 0 || payloadLength >= physicalLength) {
+      throw new KandeloImageError(ERRNO.EOVERFLOW, "inspectPersistentImage", "");
+    }
+    return { payloadLength, memoryPages: filesystem.getMemoryPages() };
+  }
+
+  exportImageLength(): number {
+    if (this.persistentWriteActive) throw new Error("Persistent image writer is busy");
+    if (this.exportOwner !== null) throw new Error("Image export is busy");
+    if (typeof this.exports.sm_export_image_length !== "function") throw new Error("Image module lacks its export geometry; rebuild the positioned image module");
+    const owner = {};
+    this.exportOwner = owner;
+    try {
+      const length = this.exports.sm_export_image_length();
+      if (length < 0n) throw new KandeloImageError(Number(-length), "exportImageLength", "");
+      const value = Number(length);
+      if (!Number.isSafeInteger(value) || value <= 0) throw new KandeloImageError(ERRNO.EOVERFLOW, "exportImageLength", "");
+      return value;
+    } finally {
+      if (this.exportOwner === owner) {
+        this.exportOwner = null;
+        this.exports.sm_export_image_cancel();
+      }
+    }
+  }
+
+  private static instantiatePositioned(
+    moduleBytes: Uint8Array,
+    readAt: (offset: number, destination: Uint8Array) => number,
+  ): KandeloImageFs {
+    const module = new WebAssembly.Module(
+      moduleBytes.buffer.slice(
+        moduleBytes.byteOffset,
+        moduleBytes.byteOffset + moduleBytes.byteLength,
+      ) as ArrayBuffer,
+    );
+    const imports = WebAssembly.Module.imports(module);
+    const expected = ["host_image_read", "host_image_target_size", "host_image_target_read",
+      "host_image_target_write", "host_image_target_truncate", "host_image_target_flush"].sort();
+    if (
+      imports.length !== expected.length ||
+      imports.some(item => item.module !== "env" || item.kind !== "function") ||
+      imports.map(item => item.name).sort().some((name, index) => name !== expected[index])
+    ) {
+      throw new Error("positioned VFS image module has an unexpected import contract");
+    }
+    let memory: WebAssembly.Memory | undefined;
+    const targets = new PositionedImageTargets(() => memory);
+    const env = {
+        ...targets.imports,
+        host_image_read: (offset: bigint, ptr: number, len: number): number => {
+          if (
+            memory === undefined ||
+            !Number.isSafeInteger(ptr) || ptr < 0 ||
+            !Number.isSafeInteger(len) || len < 0 ||
+            ptr + len > memory.buffer.byteLength
+          ) return -ERRNO.EFAULT;
+          const position = Number(offset);
+          if (!Number.isSafeInteger(position) || position < 0) return -ERRNO.EOVERFLOW;
+          try {
+            const count = readAt(position, new Uint8Array(memory.buffer, ptr, len));
+            if (!Number.isInteger(count) || count > len || count < -4095) return -ERRNO.EIO;
+            return count;
+          } catch {
+            return -ERRNO.EIO;
+          }
+        },
+    };
+    const instance = new WebAssembly.Instance(module, { env });
+    const exports = instance.exports as unknown as ModuleExports;
+    memory = exports.memory;
+    return new KandeloImageFs(exports, targets);
+  }
+
   /**
    * A view over the module's memory, taken FRESH on every access.
    *
@@ -264,6 +482,23 @@ export class KandeloImageFs {
     return this.withBytes(encoder.encode(path), fn);
   }
 
+  overlayActivationCodecCall(operation: number, input: Uint8Array): Uint8Array | number {
+    if (input.length > 61552) throw new RangeError("Overlay control codec input exceeds its transport bound");
+    const outputCapacity = operation <= 3 ? 128 : 144;
+    const codec = this.exports.sm_overlay_activation_codec;
+    if (codec === undefined) throw new Error("Image module lacks native activation policy; rebuild it");
+    return this.withBytes(input, (pointer, length) => {
+      const output = this.exports.sm_alloc(outputCapacity);
+      if (output === 0) throw new Error("Activation codec output allocation failed");
+      try {
+        const count = codec(operation, pointer, length, output, outputCapacity);
+        if (count < 0) return count;
+        if (!Number.isInteger(count) || count > outputCapacity) throw new Error("Native overlay codec returned an invalid byte count");
+        return this.mem.slice(output, output + count);
+      } finally { this.exports.sm_free(output, outputCapacity); }
+    });
+  }
+
   /** Discard the tree. The release half of release-before-create. */
   reset(rootMode = 0o755): void {
     // One call: creating the root is part of the same transition, and a
@@ -271,6 +506,18 @@ export class KandeloImageFs {
     // the two old calls was never one anything wanted.
     this.check(this.exports.sm_reset(rootMode, 0, 0), "reset", "/");
     this.lastMetadata = null;
+    this.archiveIdsNeedRefresh = false;
+  }
+
+  setMetadataBudgetBytes(limit: number): void {
+    if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 0xffff_ffff) {
+      throw new RangeError("metadata budget must be a positive u32 byte count");
+    }
+    this.check(this.exports.sm_set_metadata_budget_bytes(limit), "setMetadataBudgetBytes", "/");
+  }
+
+  metadataUsedBytes(): number {
+    return this.exports.sm_metadata_used_bytes() >>> 0;
   }
 
   mkdir(path: string, mode: number, uid = 0, gid = 0): void {
@@ -343,6 +590,17 @@ export class KandeloImageFs {
     this.withPath(path, (p, pl) =>
       this.withBytes(content, (c, cl) =>
         this.check(this.exports.sm_write_file(p, pl, mode, c, cl), "write", path)));
+  }
+
+  writeFileChunk(path: string, offset: number, content: Uint8Array, mode = 0o644, truncate = false): number {
+    if (!Number.isSafeInteger(offset) || offset < 0 || content.byteLength > 64 * 1024) {
+      throw new KandeloImageError(ERRNO.EINVAL, "writeFileChunk", path);
+    }
+    const written = this.withPath(path, (pointer, pathLength) => this.withBytes(content, (data, length) =>
+      this.check(this.exports.sm_write_file_chunk(pointer, pathLength, BigInt(offset), mode,
+        truncate ? 1 : 0, data, length), "writeFileChunk", path)));
+    if (written !== content.byteLength) throw new KandeloImageError(ERRNO.EIO, "writeFileChunk", path);
+    return written;
   }
 
   /**
@@ -421,6 +679,9 @@ export class KandeloImageFs {
     // anywhere. A builder that copied a file through an alias would have
     // written a truncated one into an image.
     const { size } = this.stat(path);
+    if (!Number.isSafeInteger(size) || size < 0 || size > 0xffff_ffff) {
+      throw new KandeloImageError(ERRNO.EOVERFLOW, "read", path);
+    }
     if (size === 0) return new Uint8Array(0);
     const out = this.exports.sm_alloc(size);
     if (out === 0) throw new Error("kandelo-image-module: allocation failed");
@@ -562,18 +823,6 @@ export class KandeloImageFs {
     throw new KandeloImageError(ERRNO.ELOOP, "stat", path);
   }
 
-  /**
-   * Write into an open handle at `position`, or at the handle's own cursor.
-   *
-   * Read-modify-write, because the module addresses whole files. That is not
-   * the quadratic cost it looks like: `writeVfsBinary` hands over the entire
-   * remaining buffer in one call, so a binary is written in a single pass. A
-   * caller that dribbled bytes in would pay for it, and no builder does.
-   *
-   * A write past the end zero-fills the gap, which is what a POSIX write to a
-   * position beyond EOF does. Silently dropping the gap would produce a file
-   * whose length disagreed with where its bytes are.
-   */
   write(
     handle: number,
     buffer: Uint8Array,
@@ -583,20 +832,21 @@ export class KandeloImageFs {
     const open = this.openFiles.get(handle);
     if (!open) throw new Error(`kandelo-image-module: bad file handle ${handle}`);
     const at = position ?? open.offset;
-    const incoming = buffer.subarray(0, Math.min(length, buffer.byteLength));
-
-    const existing = this.readFile(open.path);
-    const end = Math.max(existing.byteLength, at + incoming.byteLength);
-    const next = new Uint8Array(end);
-    next.set(existing, 0);
-    next.set(incoming, at);
-    // The file's mode NOW, not the one the handle was opened with: a write is
-    // never a chmod, and a caller that chmod'd between opening and writing
-    // means it.
-    this.writeFile(open.path, next, this.stat(open.path).mode & 0o7777);
-
-    if (position === null) open.offset = at + incoming.byteLength;
-    return incoming.byteLength;
+    if (!Number.isSafeInteger(length) || length < 0 || !Number.isSafeInteger(at) || at < 0) {
+      throw new KandeloImageError(ERRNO.EINVAL, "write", open.path);
+    }
+    const incoming = buffer.subarray(0, Math.min(length, buffer.byteLength, 64 * 1024));
+    if (!Number.isSafeInteger(at + incoming.byteLength)) {
+      throw new KandeloImageError(ERRNO.EOVERFLOW, "write", open.path);
+    }
+    if (incoming.byteLength === 0) return 0;
+    const mode = this.stat(open.path).mode & 0o7777;
+    const written = this.withPath(open.path, (pointer, pathLength) => this.withBytes(incoming, (data, count) =>
+      this.check(this.exports.sm_write_file_chunk(pointer, pathLength, BigInt(at), mode, 0, data, count), "write", open.path)));
+    if (written > incoming.byteLength) throw new KandeloImageError(ERRNO.EIO, "write", open.path);
+    if (written > 0 && (mode & 0o6000) !== 0) this.chmod(open.path, mode);
+    if (position === null) open.offset = at + written;
+    return written;
   }
 
   /**
@@ -607,7 +857,10 @@ export class KandeloImageFs {
     const open = this.openFiles.get(handle);
     if (!open) throw new Error(`kandelo-image-module: bad file handle ${handle}`);
     const at = position ?? open.offset;
-    const want = Math.min(length, buf.byteLength);
+    if (!Number.isSafeInteger(length) || length < 0 || !Number.isSafeInteger(at) || at < 0) {
+      throw new KandeloImageError(ERRNO.EINVAL, "read", open.path);
+    }
+    const want = Math.min(length, buf.byteLength, 64 * 1024);
     if (want === 0) return 0;
 
     const out = this.exports.sm_alloc(want);
@@ -764,6 +1017,7 @@ export class KandeloImageFs {
     symlinkTargets?: Map<string, string>;
     integrity?: { sha256: string; bytes: number };
   }): number {
+    this.refreshArchiveIds();
     const planned = planLazyArchiveEntries(
       args.url,
       args.entries,
@@ -854,6 +1108,15 @@ export class KandeloImageFs {
 
   /** Archive ids are assigned here; 0 means "no archive" to the module. */
   private lastArchiveId = 0;
+  private archiveIdsNeedRefresh = false;
+
+  private refreshArchiveIds(): void {
+    if (!this.archiveIdsNeedRefresh) return;
+    for (const archive of this.lazyEntries().archives) {
+      if (archive.archiveId > this.lastArchiveId) this.lastArchiveId = archive.archiveId;
+    }
+    this.archiveIdsNeedRefresh = false;
+  }
 
   registerArchiveMember(args: {
     path: string;
@@ -1087,6 +1350,14 @@ export class KandeloImageFs {
     return this.exportImageFacts().capacityBytes;
   }
 
+  loadedImageCapacityBytes(): number {
+    const capacity = Number(this.exports.sm_loaded_image_capacity());
+    if (!Number.isSafeInteger(capacity) || capacity <= 0) {
+      throw new Error("Kandelo image module has no loaded image capacity");
+    }
+    return capacity;
+  }
+
   /**
    * Are the bytes this path REFERS TO absent from the image?
    *
@@ -1202,8 +1473,10 @@ export class KandeloImageFs {
    * while it is being worked on.
    */
   setExportTimestamp(ms: number | null): void {
+    const previous = this.normalizeTimestampsMs;
     this.normalizeTimestampsMs = ms;
-    this.setImageMetadata(this.lastMetadata);
+    try { this.setImageMetadata(this.imageOptionsMetadata()); }
+    catch (error) { this.normalizeTimestampsMs = previous; throw error; }
   }
 
   private normalizeTimestampsMs: number | null = null;
@@ -1229,11 +1502,18 @@ export class KandeloImageFs {
   private requestedCapacityBytes = 0;
 
   setImageCapacity(bytes: number): void {
+    const previous = this.requestedCapacityBytes;
     this.requestedCapacityBytes = bytes;
-    this.setImageMetadata(this.lastMetadata);
+    try { this.setImageMetadata(this.imageOptionsMetadata()); }
+    catch (error) { this.requestedCapacityBytes = previous; throw error; }
   }
 
   private lastMetadata: unknown | null = null;
+
+  private imageOptionsMetadata(): unknown | null {
+    if (this.lastMetadata === undefined) this.lastMetadata = this.getImageMetadata();
+    return this.lastMetadata;
+  }
 
   /**
    * The image metadata this filesystem carries, or null when it carries none.
@@ -1250,40 +1530,46 @@ export class KandeloImageFs {
       "",
     );
     if (size === 0) return null;
-    const buf = this.exports.sm_alloc(size);
-    if (buf === 0) throw new Error("kandelo-image-module: allocation failed");
+    const scope = new ImageManifestMemoryScope(imageJsonOperationMemory);
     try {
-      const n = this.check(
-        this.exports.sm_image_metadata(buf, size),
-        "getImageMetadata",
-        "",
-      );
-      return JSON.parse(decoder.decode(this.mem.subarray(buf, buf + n))) as
-        VfsImageMetadata;
+      scope.retain(size);
+      const buf = this.exports.sm_alloc(size);
+      if (buf === 0) throw storageMetadataError();
+      try {
+        const n = this.check(
+          this.exports.sm_image_metadata(buf, size),
+          "getImageMetadata",
+          "",
+        );
+        return JSON.parse(decoder.decode(this.mem.subarray(buf, buf + n))) as VfsImageMetadata;
+      } finally { this.exports.sm_free(buf, size); }
     } finally {
-      this.exports.sm_free(buf, size);
+      scope.dispose();
     }
   }
 
   setImageMetadata(metadata: unknown | null): void {
-    this.lastMetadata = metadata;
-    const bytes = metadata === null
-      ? new Uint8Array(0)
-      : encoder.encode(JSON.stringify(metadata));
-    this.withBytes(bytes, (p, pl) =>
-      this.check(
-        this.exports.sm_set_image_options(
-          BigInt(this.requestedCapacityBytes),
-          bytes.byteLength === 0 ? 0 : p,
-          pl,
-          // Negative means "each inode keeps its own times". There is no such
-          // instant, so the whole negative range is free to mean unset without
-          // stealing a representable value.
-          BigInt(this.normalizeTimestampsMs ?? -1),
-        ),
-        "setImageMetadata",
-        "",
-      ));
+    const scope = new ImageManifestMemoryScope(imageJsonOperationMemory);
+    try {
+      const bytes = metadata === null
+        ? new Uint8Array(0)
+        : encoder.encode(scope.encode(metadata));
+      this.withBytes(bytes, (pointer, length) =>
+        this.check(
+          this.exports.sm_set_image_options(
+            BigInt(this.requestedCapacityBytes),
+            bytes.byteLength === 0 ? 0 : pointer,
+            length,
+            // Negative means "each inode keeps its own times". There is no such
+            // instant, so the whole negative range is free to mean unset without
+            // stealing a representable value.
+            BigInt(this.normalizeTimestampsMs ?? -1),
+          ),
+          "setImageMetadata",
+          "",
+        ));
+      this.lastMetadata = metadata;
+    } finally { scope.dispose(); }
   }
 
   /**
@@ -1336,7 +1622,7 @@ export class KandeloImageFs {
   static readImageCapacity(image: Uint8Array): { maxByteLength: number } {
     const fs = KandeloImageFs.create();
     fs.loadImage(image);
-    return { maxByteLength: fs.exportCapacityBytes() };
+    return { maxByteLength: fs.loadedImageCapacityBytes() };
   }
 
   /**
@@ -1372,64 +1658,28 @@ export class KandeloImageFs {
     );
     const ptr = this.exports.sm_alloc(image.byteLength);
     if (ptr === 0) throw new Error("kandelo-image-module: allocation failed");
+    let entries: number;
     try {
       this.mem.set(image, ptr);
-      const entries = this.check(
+      entries = this.check(
         this.exports.sm_load_image(ptr, image.byteLength),
         "loadImage",
         "",
       );
-      // GAP 17. `sm_set_image_options` carries capacity and metadata together,
-      // so `setImageCapacity` re-sends the metadata from `lastMetadata` — which
-      // is correct only while this bridge is the metadata's only author. A load
-      // makes the KERNEL an author: it restores what the image declared, and
-      // this bridge still remembers null. Sizing a derived image after loading
-      // its base would then clear the base's declared ABI, which is exactly the
-      // sequence the shell and php-test builders perform. Refreshed here
-      // because this is the only moment it can change behind the bridge's back.
-      this.lastMetadata = this.getImageMetadata();
-      // The same hazard on the OTHER field the one entry point carries. `sm_set_image_options` sends capacity AND metadata
-      // together, so each has to survive a load that the kernel authored --
-      // and only the metadata was refreshed here.
-      //
-      // A load restores the image's declared capacity inside the module; this
-      // bridge went on remembering 0, so the next `setImageMetadata` sent 0
-      // and CLEARED it. The shell composer does exactly that: load a 256 MiB
-      // base, write files, then save with metadata. The image came out
-      // declaring 143 MiB -- sized to its own tree -- and failed its product
-      // profile at the publication gate.
-      //
-      // `sm_check_headroom` answers this without building an export, so a load
-      // pays one ABI crossing rather than a plan for a 250 MiB image.
-      this.requestedCapacityBytes = this.exportCapacityBytes();
-      // GAP 25, the same shape once more, on the counter rather than a field.
-      //
-      // Archive ids are assigned HERE, by this bridge, counting up from zero —
-      // and a load fills the tree with archives the bridge never assigned. The
-      // next `registerLazyArchive` then minted id 1 again, collided with the
-      // loaded image's archive 1, and failed `EINVAL` from the module's own
-      // "one id, two archives" refusal.
-      //
-      // It is reachable in production, not only in a fixture: the shell
-      // composer loads a source rootfs and registers the shell's lazy archives
-      // into it. It has not fired only because today's source rootfs carries
-      // none — so the first base image that ships with an archive would have
-      // broken the build that composes from it.
-      //
-      // Asked of the MODULE, which holds the tree, rather than tracked
-      // alongside it: a counter the bridge maintains through a load is a second
-      // author for a fact the image already carries.
-      const loadedArchives = this.lazyEntries().archives;
-      for (const archive of loadedArchives) {
-        if (archive.archiveId > this.lastArchiveId) {
-          this.lastArchiveId = archive.archiveId;
-        }
-      }
-      return entries;
     } catch (error) {
       this.exports.sm_free(ptr, image.byteLength);
       throw error;
     }
+    this.refreshLoadedImageState();
+    return entries;
+  }
+
+  private refreshLoadedImageState(): void {
+    this.lastMetadata = undefined;
+    this.requestedCapacityBytes = this.loadedImageCapacityBytes();
+    this.archiveIdsNeedRefresh = true;
+    this.refreshArchiveIds();
+    this.lastMetadata = this.getImageMetadata();
   }
 
   /**
@@ -1567,14 +1817,185 @@ export class KandeloImageFs {
     }
   }
 
-  exportImage(chunkBytes = 1 << 20): Uint8Array {
+  private persistentWriterExports(): PersistentWriterExports {
+    for (const name of ["sm_persistent_image_begin", "sm_persistent_image_push", "sm_persistent_image_finish",
+      "sm_persistent_image_check_step", "sm_persistent_image_identity_word", "sm_persistent_image_cancel"] as const) {
+      if (typeof this.exports[name] !== "function") throw new Error("Image module lacks its persistent writer; rebuild the positioned image module");
+    }
+    return this.exports as ModuleExports & PersistentWriterExports;
+  }
+
+  async writePersistentImageTo(
+    target: PositionedImageTarget,
+    payloadLength: number,
+    policy: PersistentImageIntegrityPolicy,
+    chunks: Iterable<Uint8Array> | AsyncIterable<Uint8Array>,
+    options: PersistentImageWriteOptions = {},
+  ): Promise<PersistentImageWriteResult> {
+    if (this.persistentWriteActive) throw new Error("Persistent image writer is busy");
+    if (this.targets === undefined) throw new Error("Persistent image writing requires the positioned image module");
+    if (!Number.isSafeInteger(payloadLength) || payloadLength <= 0 || (policy !== "crc32c" && policy !== "sha256")) {
+      throw new Error("Persistent image length or integrity policy is invalid");
+    }
+    const writer = this.persistentWriterExports();
+    this.persistentWriteActive = true;
+    let token: number | undefined;
+    let pointer = 0;
+    let cancelRequired = false;
+    let primaryFailure: unknown;
+    let failed = false;
+    let iterator: Iterator<Uint8Array> | AsyncIterator<Uint8Array> | undefined;
+    let sourceComplete = false;
+    try {
+      options.signal?.throwIfAborted();
+      token = this.targets.attach(target);
+      const begun = writer.sm_persistent_image_begin(token, payloadLength >>> 0,
+        Math.floor(payloadLength / 0x1_0000_0000), policy === "crc32c" ? 1 : 2);
+      cancelRequired = begun !== -ERRNO.EBUSY;
+      this.check(begun, "beginPersistentImage", "");
+      pointer = this.exports.sm_alloc(65536);
+      if (pointer === 0) throw new KandeloImageError(ERRNO.ENOMEM, "persistentImageScratch", "");
+      let accepted = 0;
+      let steps = 0;
+      const progress = async (phase: "write" | "verify", bytes: number): Promise<void> => {
+        options.signal?.throwIfAborted();
+        await imageStep(options.onProgress?.({ phase, bytes, total: payloadLength }), options.signal);
+        if (++steps % 16 === 0) await imageStep(new Promise<void>(resolve => setTimeout(resolve, 0)), options.signal);
+        options.signal?.throwIfAborted();
+      };
+      await progress("write", 0);
+      options.signal?.throwIfAborted();
+      iterator = Symbol.asyncIterator in chunks
+        ? chunks[Symbol.asyncIterator]() : chunks[Symbol.iterator]();
+      for (;;) {
+        options.signal?.throwIfAborted();
+        const next = await imageStep(iterator.next(), options.signal);
+        options.signal?.throwIfAborted();
+        if (next.done) { sourceComplete = true; break; }
+        const chunk = next.value;
+        options.signal?.throwIfAborted();
+        if (!(chunk instanceof Uint8Array) || chunk.length > payloadLength - accepted) {
+          throw new KandeloImageError(ERRNO.EINVAL, "persistentImageInput", "");
+        }
+        for (let offset = 0; offset < chunk.length; offset += 65536) {
+          const count = Math.min(65536, chunk.length - offset);
+          this.mem.set(chunk.subarray(offset, offset + count), pointer);
+          options.signal?.throwIfAborted();
+          this.check(writer.sm_persistent_image_push(pointer, count), "writePersistentImage", "");
+          accepted += count;
+          await progress("write", accepted);
+          options.signal?.throwIfAborted();
+        }
+      }
+      if (accepted !== payloadLength) throw new KandeloImageError(ERRNO.EINVAL, "incompletePersistentImage", "");
+      this.check(writer.sm_persistent_image_finish(), "finishPersistentImage", "");
+      let checked = 0;
+      await progress("verify", 0);
+      options.signal?.throwIfAborted();
+      for (;;) {
+        const count = this.check(writer.sm_persistent_image_check_step(), "verifyStoredPersistentImage", "");
+        if (count === 0) break;
+        checked += count;
+        await progress("verify", checked);
+        options.signal?.throwIfAborted();
+      }
+      if (checked !== payloadLength) throw new KandeloImageError(ERRNO.EIO, "incompletePersistentImageReadback", "");
+      const word = (index: number): number => {
+        const value = writer.sm_persistent_image_identity_word(index);
+        if (value < 0n) throw new KandeloImageError(Number(-value), "persistentImageIdentity", "");
+        if (value > 0xffff_ffffn) throw new KandeloImageError(ERRNO.EIO, "persistentImageIdentity", "");
+        return Number(value);
+      };
+      let identitySha256 = "";
+      for (let index = 0; index < 8; index++) {
+        const value = word(index);
+        for (let byte = 0; byte < 4; byte++) identitySha256 += ((value >>> (byte * 8)) & 255).toString(16).padStart(2, "0");
+      }
+      const actualPayload = word(8) + word(9) * 0x1_0000_0000;
+      const physicalLength = word(10) + word(11) * 0x1_0000_0000;
+      if (actualPayload !== payloadLength || !Number.isSafeInteger(physicalLength) || physicalLength <= payloadLength) {
+        throw new KandeloImageError(ERRNO.EIO, "persistentImageGeometry", "");
+      }
+      options.signal?.throwIfAborted();
+      return Object.freeze({ identitySha256, payloadLength, physicalLength, integrityPolicy: policy });
+    } catch (error) {
+      primaryFailure = error;
+      failed = true;
+      throw error;
+    } finally {
+      let sourceCleanupFailure: { error: unknown } | undefined;
+      if (iterator !== undefined && !sourceComplete) {
+        try {
+          const cleanup = iterator.return?.();
+          if (cleanup !== undefined) void Promise.resolve(cleanup).catch(error => {
+            console.warn("Persistent image input cleanup did not complete successfully", error);
+          });
+        } catch (error) { sourceCleanupFailure = { error }; }
+      }
+      if (pointer !== 0) this.exports.sm_free(pointer, 65536);
+      try {
+        if (cancelRequired) this.check(writer.sm_persistent_image_cancel(), "cancelPersistentImage", "");
+        if (token !== undefined) this.targets.detach(token);
+        this.persistentWriteActive = false;
+      } catch (cleanupFailure) {
+        if (failed) throw new AggregateError([primaryFailure, cleanupFailure], "Persistent image operation and cleanup failed");
+        throw cleanupFailure;
+      }
+      if (sourceCleanupFailure !== undefined) {
+        throw new AggregateError(failed ? [primaryFailure, sourceCleanupFailure.error] : [sourceCleanupFailure.error],
+          "Persistent image input cleanup failed");
+      }
+    }
+  }
+
+  async exportPersistentImageTo(
+    target: PositionedImageTarget,
+    policy: PersistentImageIntegrityPolicy,
+    options: PersistentImageWriteOptions = {},
+  ): Promise<PersistentImageWriteResult> {
+    if (this.persistentWriteActive) throw new Error("Persistent image writer is busy");
+    if (typeof this.exports.sm_export_image_length !== "function") throw new Error("Image module lacks its export geometry; rebuild the positioned image module");
+    const owner = {};
+    this.exportOwner = owner;
+    try {
+      const length = this.exports.sm_export_image_length();
+      if (length < 0n) throw new KandeloImageError(Number(-length), "persistentExportLength", "");
+      return await this.writePersistentImageTo(target, Number(length), policy, this.ownedExportImageChunks(65536, owner), options);
+    } finally {
+      if (this.exportOwner === owner) {
+        this.exportOwner = null;
+        this.exports.sm_export_image_cancel();
+      }
+    }
+  }
+
+  *exportImageChunks(chunkBytes = 1 << 20): IterableIterator<Uint8Array> {
+    if (!Number.isSafeInteger(chunkBytes) || chunkBytes <= 0) {
+      throw new Error("kandelo-image-module: invalid export chunk size");
+    }
+    const owner = {};
+    this.exportOwner = owner;
+    try {
+      yield* this.ownedExportImageChunks(chunkBytes, owner);
+    } finally {
+      if (this.exportOwner === owner) {
+        this.exportOwner = null;
+        this.exports.sm_export_image_cancel();
+      }
+    }
+  }
+
+  private *ownedExportImageChunks(chunkBytes: number, owner: object): IterableIterator<Uint8Array> {
+    if (!Number.isSafeInteger(chunkBytes) || chunkBytes <= 0) {
+      throw new Error("kandelo-image-module: invalid export chunk size");
+    }
+    if (this.exportOwner !== owner) throw new Error("kandelo-image-module: image export was superseded");
     const ptr = this.exports.sm_alloc(chunkBytes);
     if (ptr === 0) throw new Error("kandelo-image-module: allocation failed");
     try {
-      const parts: Uint8Array[] = [];
-      let total = 0;
       let offset = 0n;
       for (;;) {
+        if (this.exportOwner !== owner) throw new Error("kandelo-image-module: image export was superseded");
         const n = this.check(
           this.exports.sm_export_image_read(offset, ptr, chunkBytes),
           "exportImage",
@@ -1583,20 +2004,32 @@ export class KandeloImageFs {
         if (n === 0) break;
         // A fresh view per chunk: the module may have grown its memory while
         // building the image, which detaches any view taken before.
-        parts.push(this.mem.slice(ptr, ptr + n));
-        total += n;
+        yield this.mem.slice(ptr, ptr + n);
         offset += BigInt(n);
       }
-      const out = new Uint8Array(total);
-      let at = 0;
-      for (const part of parts) {
-        out.set(part, at);
-        at += part.byteLength;
-      }
-      return out;
     } finally {
+      if (this.exportOwner === owner) {
+        this.exportOwner = null;
+        this.exports.sm_export_image_cancel();
+      }
       this.exports.sm_free(ptr, chunkBytes);
     }
+  }
+
+  exportImage(chunkBytes = 1 << 20): Uint8Array {
+    const parts: Uint8Array[] = [];
+    let total = 0;
+    for (const part of this.exportImageChunks(chunkBytes)) {
+      parts.push(part);
+      total += part.byteLength;
+    }
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const part of parts) {
+      out.set(part, at);
+      at += part.byteLength;
+    }
+    return out;
   }
 }
 

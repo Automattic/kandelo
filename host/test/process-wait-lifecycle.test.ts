@@ -1832,6 +1832,38 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.threadForkContexts.has("7:256")).toBe(false);
   });
 
+  it("revokes a registered futex completion before an exited mailbox is reused", async () => {
+    let releaseWait!: (value: "ok") => void;
+    const engineWait = new Promise<"ok">(resolve => { releaseWait = resolve; });
+    const waitAsync = vi.spyOn(Atomics, "waitAsync").mockReturnValue({ async: true, value: engineWait });
+    try {
+      const memory = createSharedMemory();
+      const channel = createChannel(7, memory);
+      const worker = createWorkerHarness({});
+      registerMainChannel(worker, channel);
+      observeRelisten(worker);
+      markPending(channel);
+      dispatchLifecycleSyscall(worker, channel, ABI_SYSCALLS.Futex, [4096, 0, 0, 0, 0, 0]);
+      expect(worker.pendingFutexWaits.size).toBe(1);
+      worker.notifyHostProcessCrashed(7, 9);
+      expect(worker.pendingFutexWaits.size).toBe(0);
+      expect(readCompletion(channel)).toMatchObject({ retVal: -1, errVal: 4 });
+      markPending(channel);
+      const view = new DataView(memory.buffer, channel.channelOffset);
+      view.setUint32(CH_SYSCALL, ABI_SYSCALLS.Exit, true);
+      view.setBigInt64(CH_RETURN, 12345n, true);
+      releaseWait("ok");
+      await engineWait;
+      expect(readStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
+      expect(view.getBigInt64(CH_RETURN, true)).toBe(12345n);
+      worker.handleSyscall(channel);
+      expect(readCompletion(channel)).toEqual({ retVal: 0, errVal: 0, status: CHANNEL_STATUS_COMPLETE });
+    } finally {
+      releaseWait("ok");
+      waitAsync.mockRestore();
+    }
+  });
+
   it("parks exact mailbox notifications while materializing completed output", async () => {
     const kernelMemory = createSharedMemory();
     const processMemory = createSharedMemory();
@@ -2237,7 +2269,7 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(relistenChannel).toHaveBeenCalledWith(channel);
   });
 
-  it("discards every parked and deferred channel without publication on signal death", () => {
+  it("replaces parked and deferred completions with terminal retirement on signal death", () => {
     const memory = createSharedMemory();
     const first = createChannel(42, memory, 0);
     const second = createChannel(42, memory, 256);
@@ -2270,8 +2302,10 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.stoppedPids.has(42)).toBe(false);
     expect(worker.parkedChannelCompletions.size).toBe(0);
     expect(worker.deferredStoppedChannels.size).toBe(0);
-    expect(readStatus(first)).toBe(CHANNEL_STATUS_PENDING);
-    expect(readStatus(second)).toBe(CHANNEL_STATUS_PENDING);
+    for (const retired of [first, second]) {
+      expect(readCompletion(retired)).toEqual({ retVal: -1, errVal: 4, status: CHANNEL_STATUS_COMPLETE });
+      expect(new DataView(retired.memory.buffer, retired.channelOffset).getUint32(CH_SIG_SIGNUM, true)).toBe(9);
+    }
     expect(onExit).toHaveBeenCalledWith(42, 137);
   });
 
@@ -2430,8 +2464,8 @@ describe("Rust-owned process wait lifecycle", () => {
       expect(setCurrentTid).toHaveBeenCalledWith(pid, tid);
       expect(markSignaled).toHaveBeenCalledWith(pid, 11);
       expect(onExit).toHaveBeenCalledWith(pid, 139);
-      expect(channel.handling).toBe(true);
-      expect(readStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
+      expect(readCompletion(channel)).toEqual({ retVal: -1, errVal: 4, status: CHANNEL_STATUS_COMPLETE });
+      expect(new DataView(memory.buffer, channel.channelOffset).getUint32(CH_SIG_SIGNUM, true)).toBe(9);
       expect(error).toHaveBeenCalledWith(
         "[handleSyscall] FATAL task binding error: " +
           `Kernel rejected tid ${tid} for process ${pid}: errno 3`,
@@ -2474,8 +2508,8 @@ describe("Rust-owned process wait lifecycle", () => {
 
       expect(markSignaled).toHaveBeenCalledWith(pid, 11);
       expect(onExit).toHaveBeenCalledWith(pid, 139);
-      expect(threadChannel.handling).toBe(true);
-      expect(readStatus(threadChannel)).toBe(CHANNEL_STATUS_PENDING);
+      expect(readCompletion(threadChannel)).toEqual({ retVal: -1, errVal: 4, status: CHANNEL_STATUS_COMPLETE });
+      expect(new DataView(memory.buffer, threadChannel.channelOffset).getUint32(CH_SIG_SIGNUM, true)).toBe(9);
       expect(error).toHaveBeenCalledWith(
         `[handleSyscall] FATAL task binding error: ${expected}`,
       );
@@ -2692,7 +2726,7 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.hostReaped.has(42)).toBe(true);
     expect(onExit).toHaveBeenCalledWith(42, 128 + SIGTERM);
     expect(commitProcessExit).not.toHaveBeenCalled();
-    expect(readStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
+    expect(readCompletion(channel)).toEqual({ retVal: 0, errVal: 0, status: CHANNEL_STATUS_COMPLETE });
   });
 
   it("fails closed when Rust returns a different committed exit status", () => {

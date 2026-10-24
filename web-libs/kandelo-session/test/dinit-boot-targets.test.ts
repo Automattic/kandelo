@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  parseDinitBootTargets,
   readDinitBootTargets,
   type DinitBootTargetsFileSystem,
 } from "../src/dinit-boot-targets";
@@ -48,6 +49,12 @@ function fixture(
 }
 
 describe("readDinitBootTargets", () => {
+  it("parses positioned kernel bytes with the same service rules", () => {
+    const bytes = new TextEncoder().encode("type = internal\ndepends-on = alpha\n# ignored\ndepends-on=bravo\n");
+    expect(parseDinitBootTargets(bytes, "boot")).toEqual(["alpha", "bravo"]);
+    expect(() => parseDinitBootTargets(new Uint8Array(65_537), "boot")).toThrow("exceeds 65536 bytes");
+  });
+
   it("reads the depends-on closure from the target's dinit service file", () => {
     const { fs } = fixture(
       "type = internal\ndepends-on = php-fpm\ndepends-on = nginx\n",

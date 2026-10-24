@@ -4,6 +4,7 @@ import { AudioActivityLatch } from "./audio/audio-activity-latch";
 import { markPcmFatalError, pcmControlWords, snapshotPcmTransport } from "./audio/pcm-transport";
 import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/remote-segment-runtime";
 import { OwnedJobs } from "./owned-jobs";
+import { formatHostErrorDiagnostic } from "./host-diagnostic";
 /**
  * Kernel Worker Entry Point — Dedicated web worker that hosts the
  * CentralizedKernelWorker and manages all process lifecycle.
@@ -12,8 +13,6 @@ import { OwnedJobs } from "./owned-jobs";
  * instance, process spawning (fork/exec/clone), and the HTTP connection pump.
  */
 
-import { BrowserProcessMemoryFactory } from "./browser-process-memory-factory";
-import { runtimeMemoryProfileSignals } from "./runtime-memory-profile";
 import { installBrowserSetImmediatePolyfill } from "./browser-immediate-polyfill";
 
 installBrowserSetImmediatePolyfill();
@@ -52,7 +51,16 @@ import * as rootImage from "./vfs/root-image-facts";
 import { DEFAULT_MOUNT_SPEC } from "./vfs/default-mounts";
 import type { LazyFetch } from "./vfs/lazy-download-event";
 import { imageReadFromContainer } from "./vfs/rootfs-lazy-archives";
+import { OpfsImageReader } from "./vfs/opfs-image-reader";
+import { DeferredByteSpool } from "./vfs/deferred-byte-spool";
+import { openOpfsDeferredByteStorage } from "./vfs/opfs-deferred-byte-storage";
 import { BrowserTimeProvider } from "./vfs/time";
+import { OpfsOverlayStorageFile } from "./vfs/overlay-storage";
+import { writeAndVerifyRootfsImage } from "./vfs/staged-rootfs-image";
+import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
+import { collectBootOverlayGenerations, compactOverlayGenerationForBoot, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
+import { UnconfirmedOverlayActivationError } from "./vfs/overlay-generation-activation";
+import { OverlayGenerationMetadata } from "./vfs/overlay-generation-metadata";
 import { restoreBrowserKernelInitMounts } from "./browser-kernel-vfs-init";
 import type { MountConfig } from "./vfs/types";
 import { TlsNetworkBackend } from "./networking/tls-network-backend";
@@ -104,8 +112,10 @@ import type {
 } from "./worker-protocol";
 import { ThreadPageAllocator } from "./thread-allocator";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
+import { KernelScratchError } from "./kernel-scratch";
 import {
   DIRENT_TYPES,
+  ERRNO,
   FILE_MODES,
   OPEN_FLAGS,
   PROCESS_FORK_MODE_VFORK,
@@ -145,7 +155,8 @@ import type {
 import {
   initializeBrowserCorsProxyForWorker,
 } from "./browser-kernel-protocol";
-import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
+import { closeKernelRealmStorage, kernelRealmDestroyResult } from "./kernel-realm-destroy";
+import { StorageCloseLedger } from "./storage-close-ledger";
 import { createDestroyProgressReporter } from "./destroy-progress-reporter";
 import {
   configureRootfsOverlayFromImage,
@@ -155,6 +166,7 @@ import {
   isRootfsMissingFileError,
   readRootfsFileWithRetry,
   readNamespaceFileWithRetry,
+  readNamespaceFileRangeWithRetry,
   retireSupersededExecGeneration,
   signalFromExitStatus,
   type ProcessGenerationOwnership,
@@ -166,13 +178,19 @@ const O_WRONLY_CREAT_TRUNC =
   OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
 // State
 let kernelWorker: CentralizedKernelWorker;
+let persistentOverlay: PersistentOverlayStorage | null = null;
+let persistentOverlayIndex: PersistentOverlayStorage | null = null;
+let liveOverlayCompactor: LiveOverlayCompactor | null = null;
+let overlayGenerationMetadata: OverlayGenerationMetadata | null = null;
+let opfsImageReader: OpfsImageReader | null = null;
+const storageCloseLedger = new StorageCloseLedger();
+let deferredByteSpool: DeferredByteSpool | undefined;
 let workerAdapter: BrowserWorkerAdapter;
 let io: VirtualPlatformIO;
 const vfsChangeSubscriptions = new Map<string, () => void>();
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let processMemoryAllocator: ProcessMemoryAllocator;
-let processMemoryFactory: BrowserProcessMemoryFactory | undefined;
 const processMemoryRetirementPressureHook =
   createProcessMemoryRetirementPressureHook();
 let defaultEnv: string[] = [];
@@ -745,10 +763,7 @@ function resetBridgePendingRequests(): void {
 }
 
 function formatError(err: unknown): string {
-  if (err instanceof Error) {
-    return err.stack ? `${err.message}\n${err.stack}` : err.message;
-  }
-  return String(err);
+  return formatHostErrorDiagnostic(err);
 }
 
 function respondTransferredBytes(requestId: number, result: Uint8Array) {
@@ -880,6 +895,17 @@ const remoteSegmentRuntime = new RemoteSegmentRuntime();
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   initReady = false;
   initFailure = null;
+  if (msg.opfsImage !== undefined) {
+    if (msg.vfsImage.byteLength !== 0) {
+      throw new Error("rootfs image cannot have both OPFS and in-memory sources");
+    }
+    if (msg.rootfsPersistentImageBinding !== undefined && msg.opfsImageIntegrity !== undefined) {
+      throw new Error("persistent image binding cannot be combined with whole-image integrity metadata");
+    }
+    opfsImageReader = await OpfsImageReader.open(msg.opfsImage, msg.opfsImageIntegrity, storageCloseLedger, msg.rootfsPersistentImageBinding !== undefined);
+  } else if (msg.rootfsPersistentImageBinding !== undefined) {
+    throw new Error("persistent image binding requires an OPFS source");
+  }
   // WHY: structured cloning strips the host-side freeze. Revalidate into one
   // worker-owned immutable copy before either browser network path sees it.
   const {
@@ -906,14 +932,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     "KANDELO_TEST_EXEC_WORKER_CONSTRUCTION_FAILURE=once",
   );
   injectedExecWorkerConstructionFailure = false;
-  processMemoryFactory = runtimeMemoryProfileSignals({
-    userAgent: navigator.userAgent,
-    maxTouchPoints: navigator.maxTouchPoints,
-  }).chargesDeclaredCeilings ? new BrowserProcessMemoryFactory() : undefined;
   processMemoryAllocator = new ProcessMemoryAllocator({
-    createMemoryAsync: processMemoryFactory
-      ? (request) => processMemoryFactory!.allocate(request)
-      : undefined,
     // The sampled byte budget is the concurrency authority. Keep the count
     // ceiling high enough that small address spaces do not inherit the
     // historically unenforced maxWorkers value as a new process-count limit.
@@ -1001,6 +1020,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       useSharedMemory: true,
       defaultThreadSlots,
       kernelMaxPages: msg.config.kernelMaxPages,
+      rootfsMetadataBytes: msg.config.rootfsMetadataBytes,
+      maxVfsFileReadBytes: msg.config.maxVfsFileReadBytes,
       enableSyscallLog: msg.config.enableSyscallLog,
       syscallLogPtrWidth: msg.config.syscallLogPtrWidth,
     },
@@ -1162,13 +1183,20 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // image does not carry before `init` loads them. Mirrors the Node entry.
   let finalizeRootfsTransport: (() => void) | undefined;
   if (rootImage.has()) {
+    if (msg.experimentalFixedPersistenceName !== undefined || msg.experimentalResizablePersistenceName !== undefined) {
+      deferredByteSpool = await DeferredByteSpool.open(openOpfsDeferredByteStorage, kernelWorker.rootfsTransportMetadataBudget());
+    }
     finalizeRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
-      imageRead: imageReadFromContainer(msg.vfsImage),
-      imageBytes: msg.vfsImage,
+      imageRead: opfsImageReader === null
+        ? imageReadFromContainer(msg.vfsImage)
+        : (at, destination) => opfsImageReader!.readAt(at, destination),
+      imageLength: opfsImageReader?.length ?? msg.vfsImage.byteLength,
+      persistentImageBinding: msg.rootfsPersistentImageBinding,
       onLazyProgress: (event) => post({ type: "lazy_download", event }),
       foreignPrefixes: rootfsForeignPrefixes,
       nosuid: rootImage.nosuid(),
       lazyFetcher: rootfsLazyFetcher,
+      deferredByteSpool,
       lazyUrlBase: msg.lazyUrlBase,
       lazyUrlMap: msg.lazyUrlMap,
     });
@@ -1186,22 +1214,35 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // A failure is reported, not swallowed: every outbound HTTPS connection this
   // session is terminated by the MITM, so a guest that does not trust the CA
   // would otherwise fail later with a confusing certificate error.
-  if (rootImage.has()) {
+  const installBrowserCa = () => {
+    if (!rootImage.has()) return;
     try {
       kernelWorker.rootfsMkdirParents(BROWSER_MITM_CA_BUNDLE_PATH, 0o755);
+      if (msg.experimentalResizablePersistenceName !== undefined) {
+        kernelWorker.rootfsUnlinkFile(BROWSER_MITM_CA_BUNDLE_PATH);
+      }
       kernelWorker.rootfsWriteFile(
         BROWSER_MITM_CA_BUNDLE_PATH,
         new TextEncoder().encode(caCertPem),
         0o644,
       );
-    } catch (e) {
+    } catch (error) {
       console.error(
         `[kernel-worker] Failed to install the MITM CA certificate at ${BROWSER_MITM_CA_BUNDLE_PATH};`
         + " guest TLS clients will reject every HTTPS connection this session:",
-        e,
+        error,
       );
+      if (msg.experimentalResizablePersistenceName !== undefined) {
+        if (!(error instanceof KernelScratchError)
+          || (error.errno !== ERRNO.ENOMEM && error.errno !== ERRNO.ENOSPC)) throw error;
+        try { kernelWorker.syncRootfsPersistence(); }
+        catch { throw error; }
+        post({ type: "host_diagnostic", pid: 0, source: "Browser TLS",
+          message: `TLS bundle unavailable after a clean persistence sync; guest HTTPS may fail: ${formatError(error)}` });
+      }
     }
-  }
+  };
+  if (msg.experimentalResizablePersistenceName === undefined) installBrowserCa();
 
   // Forward bounded pixels, never an entire process address space.
   kernelWorker.framebuffers.onChange((pid, ev) => {
@@ -1276,7 +1317,69 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     resetBridgePendingRequests();
   }
 
+  const persistenceName = msg.experimentalResizablePersistenceName ?? msg.experimentalFixedPersistenceName;
+  if (msg.requireExistingRootfsPersistence && persistenceName === undefined) {
+    throw new Error("requireExistingRootfsPersistence requires a journal name");
+  }
+  if (persistenceName !== undefined) {
+    if (msg.experimentalResizablePersistenceName !== undefined
+      && msg.experimentalFixedPersistenceName !== undefined) {
+      throw new Error("fixed and resizable persistence modes are mutually exclusive");
+    }
+    if (!rootImage.has()) throw new Error("rootfs persistence requires a rootfs image");
+    const resizable = msg.experimentalResizablePersistenceName !== undefined;
+    overlayGenerationMetadata = new OverlayGenerationMetadata(kernelWorker.rootfsTransportMetadataBudget());
+    const files = {
+      metadata: overlayGenerationMetadata,
+      activationCodec: kernelWorker.overlayActivationCodec(),
+      sealCodec: kernelWorker.overlaySealCodec(),
+      listSlots: () => OpfsOverlayStorageFile.listSlots(persistenceName),
+      open: (slot, file, create) => OpfsOverlayStorageFile.openFile(
+        persistenceName, slot, file, create, storageCloseLedger,
+      ),
+      remove: (slot, file) => OpfsOverlayStorageFile.removeFile(persistenceName, slot, file),
+    } satisfies import("./vfs/overlay-generation-selection").OverlayGenerationFiles;
+    const selected = await enableBestOverlayGeneration(
+      files,
+      (storage, index, checkpointEnd) => {
+        if (resizable) kernelWorker.enableResizableRootfsPersistence(storage, index, checkpointEnd);
+        else kernelWorker.enableFixedRootfsPersistence(storage, index, checkpointEnd);
+      },
+      msg.requireExistingRootfsPersistence,
+      (source, target, index) => kernelWorker.convertUnindexedRootfsPersistence(source, target, index, resizable),
+      (error) => {
+        post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `conversion cleanup failed: ${formatError(error)}` });
+      },
+    );
+    const handoff = {
+      memoryPressure: () => kernelWorker.rootfsJournalStateMemory().pressure,
+      prepare: (storage: PersistentOverlayStorage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),
+      checkpoint: (index: PersistentOverlayStorage) => kernelWorker.checkpointPreparedRootfsPersistence(index),
+      activate: () => kernelWorker.activateRootfsPersistenceCompaction(),
+      cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
+      fail: (error: UnconfirmedOverlayActivationError) => kernelWorker.failPersistenceWriter(error),
+    };
+    const recovered = await collectBootOverlayGenerations(selected, files, (error) => {
+      post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `generation retirement failed: ${formatError(error)}` });
+    });
+    const active = await compactOverlayGenerationForBoot(recovered, files, handoff, (error) => {
+      post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `boot compaction deferred (ENOSPC): ${formatError(error)}` });
+    });
+    persistentOverlay = active.journal;
+    persistentOverlayIndex = active.index ?? null;
+    liveOverlayCompactor = new LiveOverlayCompactor(active, files, handoff, (next) => {
+      persistentOverlay = next.journal;
+      persistentOverlayIndex = next.index ?? null;
+    }, (error) => {
+      if (error instanceof UnconfirmedOverlayActivationError) kernelWorker.failPersistenceWriter(error);
+      post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `live compaction failed: ${formatError(error)}` });
+    });
+  }
+
+  if (msg.experimentalResizablePersistenceName !== undefined) installBrowserCa();
+
   initReady = true;
+  liveOverlayCompactor?.start();
 
   const pcmTransport = kernelWorker.claimPcmTransport(true);
   pcmMirror = new BrowserPcmMirror(pcmTransport);
@@ -2220,8 +2323,6 @@ async function handleOrdinaryFork(
   // WHY: teardown and compilation below yield. A sibling exec may then retire
   // the parent's exact generation, so the committed fork must pass
   // retired-memory admission and capture its bytes before the first await.
-  // On WebKit the allocator also charges the temporary snapshot while a
-  // disposable worker constructs the child's independently owned Memory.
   const memoryStatsBeforeClone = sampleProcessMemoryStats(
     vforkMechanismTraceEnabled,
     processMemoryAllocator,
@@ -3685,6 +3786,24 @@ async function handleReadVfsFile(
   }
 }
 
+async function handleReadVfsFileRange(
+  msg: Extract<MainToKernelMessage, { type: "read_vfs_file_range" }>,
+) {
+  if (!rootImage.has()) { respond(msg.requestId, null); return; }
+  let releaseMutation: (() => void) | undefined;
+  try {
+    releaseMutation = rootfsSnapshotGate.beginMutation("read or materialize a rootfs file range");
+    const data = await readNamespaceFileRangeWithRetry(kernelWorker, msg.path, msg.offset, msg.length);
+    if (data === null) respond(msg.requestId, null);
+    else respondTransferredBytes(msg.requestId, data);
+  } catch (error) {
+    if (isRootfsMissingFileError(error)) respond(msg.requestId, null);
+    else respondError(msg.requestId, formatError(error));
+  } finally {
+    releaseMutation?.();
+  }
+}
+
 // Directory listing and stat are answered here for the same reason file reads
 // are: the worker owns the VFS, so the main thread asks instead of reaching in.
 async function handleReadVfsDir(
@@ -3837,6 +3956,80 @@ async function handleExportRootfsImage(
       return kernelWorker.rootfsExportContainerRead();
     });
     respondTransferredBytes(msg.requestId, image);
+  } catch (error) {
+    respondError(msg.requestId, formatError(error));
+  }
+}
+
+async function handleExportRootfsImageToFile(
+  msg: Extract<MainToKernelMessage, { type: "export_rootfs_image_to_file" }>,
+) {
+  if (!rootImage.has()) {
+    respondError(msg.requestId, "VFS is not initialized");
+    return;
+  }
+  if (!initReady) {
+    respondError(msg.requestId, "rootfs export requires an initialized kernel");
+    return;
+  }
+  try {
+    const integrity = await rootfsSnapshotGate.runSnapshot(async () => {
+      if (processes.size !== 0 || processTeardowns.size !== 0 || workerTeardowns.size !== 0) {
+        throw new Error("rootfs export requires a quiescent kernel with no live or tearing-down processes");
+      }
+      const handle = await msg.file.createSyncAccessHandle();
+      const close = storageCloseLedger.retain(() => { handle.close(); });
+      let completed = false;
+      let started = false;
+      try {
+        if (handle.getSize() !== 0) {
+          throw new Error("rootfs export requires an empty OPFS staging file");
+        }
+        started = true;
+        const integrity = writeAndVerifyRootfsImage(
+          (visit) => kernelWorker.rootfsExportContainerVisitBorrowed(visit),
+          {
+            writeAllAt(offset, bytes) {
+              let written = 0;
+              while (written < bytes.byteLength) {
+                const count = handle.write(bytes.subarray(written), { at: offset + written });
+                if (count <= 0 || count > bytes.byteLength - written) {
+                  throw new Error("rootfs export OPFS write made no progress");
+                }
+                written += count;
+              }
+            },
+            readExactAt(offset, bytes) {
+              let read = 0;
+              while (read < bytes.byteLength) {
+                const count = handle.read(bytes.subarray(read), { at: offset + read });
+                if (count <= 0 || count > bytes.byteLength - read) {
+                  throw new Error("rootfs export OPFS read made no progress");
+                }
+                read += count;
+              }
+            },
+            setSize: (length) => handle.truncate(length),
+            flush: () => handle.flush(),
+            getSize: () => handle.getSize(),
+          },
+          msg.reportProgress
+            ? (progress) => post({ type: "rootfs_image_export_progress", requestId: msg.requestId, progress })
+            : undefined,
+        );
+        completed = true;
+        return integrity;
+      } finally {
+        if (started && !completed) {
+          try {
+            handle.truncate(0);
+            handle.flush();
+          } catch {}
+        }
+        close();
+      }
+    });
+    respond(msg.requestId, integrity);
   } catch (error) {
     respondError(msg.requestId, formatError(error));
   }
@@ -4083,6 +4276,9 @@ function handlePickListenerTarget(
 }
 
 async function performDestroy() {
+  await liveOverlayCompactor?.stop();
+  liveOverlayCompactor = null;
+  await storageCloseLedger.beginRetirement();
   // Phase 1 — wake every Atomics.wait-blocked worker so it cooperatively exits.
   // [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
   // WORKAROUND, remove when the engine bug is fixed; see
@@ -4099,30 +4295,24 @@ async function performDestroy() {
   const destroyProgress = createDestroyProgressReporter((event) =>
     post({ type: "destroy_progress", event }),
   );
-  let woken = new Set<number>();
-  try { woken = await kernelWorker.killAllBlockedForTeardown(); } catch (e) {
-    console.error(`[kernel-worker] killAllBlockedForTeardown failed: ${e}`);
+  let retiringPids = new Set<number>();
+  try { retiringPids = await kernelWorker.beginKernelTeardown(); } catch (e) {
+    console.error(`[kernel-worker] beginKernelTeardown failed: ${e}`);
   }
-  destroyProgress.startDraining(woken.size);
-
-  // Phase 2 — drain. The woken workers run their exit path and post `{exit}`,
-  // which fires handleExit → removes them from `processes` and terminates them
-  // while idle (reclaimed). Wait only for the pids we woke — a process we did
-  // not wake (e.g. one already exited via a sibling thread) never posts `{exit}`
-  // and is force-terminated below instead of waited on. Bounded.
+  destroyProgress.startDraining(retiringPids.size);
   const drainDeadline = Date.now() + DESTROY_KILL_DRAIN_TIMEOUT_MS;
   const liveWokenCount = () => {
     let live = 0;
-    for (const pid of woken) if (processes.has(pid)) live++;
+    for (const pid of retiringPids) if (processes.has(pid)) live++;
     return live;
   };
   let liveWoken = liveWokenCount();
   while (liveWoken > 0 && Date.now() < drainDeadline) {
-    destroyProgress.drained(woken.size - liveWoken);
+    destroyProgress.drained(retiringPids.size - liveWoken);
     await delay(DESTROY_KILL_DRAIN_POLL_MS);
     liveWoken = liveWokenCount();
   }
-  destroyProgress.drained(woken.size - liveWoken);
+  destroyProgress.drained(retiringPids.size - liveWoken);
   if (liveWoken > 0) {
     console.warn(`[kernel-worker] destroy drain timed out with woken process(es) still live; force-terminating`);
   }
@@ -4189,12 +4379,12 @@ async function performDestroy() {
   let gracefulDetachComplete =
     processGenerationDetaches.pendingCount === 0 && processes.size === 0;
   threadModuleCache.clear();
-  kernelWorker.wasmModules.clear();
+  kernelWorker?.wasmModules.clear();
   threadWorkers.clear();
   threadedProcessPids.clear();
   ptyByPid.clear();
   await waitForProcessTeardowns();
-  if (!(await kernelWorker.waitForPcmDrain(PCM_DESTROY_DRAIN_TIMEOUT_MS))) {
+  if (kernelWorker !== undefined && !(await kernelWorker.waitForPcmDrain(PCM_DESTROY_DRAIN_TIMEOUT_MS))) {
     post({
       type: "host_diagnostic",
       pid: 0,
@@ -4203,20 +4393,47 @@ async function performDestroy() {
         "Audio clock did not consume the queued close tail before machine teardown; the remaining tail was discarded.",
     });
   }
-  framebufferMirrors.clear();
-  remoteSegmentRuntime.close();
-  pcmMirror?.close();
-  pcmMirror = null;
-  pcmAudioActivity?.stop();
-  pcmAudioActivity = null;
-  pcmConnection?.close();
-  pcmConnection = null;
-  kernelWorker.shutdownPcmTransport();
+  let persistenceSyncFailure: string | undefined;
+  if (persistentOverlay !== null) {
+    try {
+      kernelWorker.syncRootfsPersistence();
+    } catch (error) {
+      persistenceSyncFailure = `rootfs persistence shutdown sync failed: ${formatError(error)}`;
+      console.error(persistenceSyncFailure);
+    }
+  }
+  let storageCleanupFailure: { error: unknown } | null = null;
+  try {
+    closeKernelRealmStorage([
+      () => framebufferMirrors.clear(),
+      () => remoteSegmentRuntime.close(),
+      () => { pcmMirror?.close(); pcmMirror = null; },
+      () => { pcmAudioActivity?.stop(); pcmAudioActivity = null; },
+      () => { pcmConnection?.close(); pcmConnection = null; },
+      () => kernelWorker?.disposeRootfsDeferredTransport(),
+      () => { overlayGenerationMetadata?.dispose(); overlayGenerationMetadata = null; },
+      () => kernelWorker?.shutdownPcmTransport(),
+      () => { persistentOverlay?.close(); persistentOverlay = null; },
+      () => { persistentOverlayIndex?.close(); persistentOverlayIndex = null; },
+      () => { opfsImageReader?.close(); opfsImageReader = null; },
+      () => storageCloseLedger.closeAll(),
+    ]);
+  } catch (error) {
+    storageCleanupFailure = { error };
+  }
+  try {
+    await deferredByteSpool?.close();
+    deferredByteSpool = undefined;
+  } catch (error) {
+    storageCleanupFailure = { error: storageCleanupFailure === null ? error
+      : new AggregateError([storageCleanupFailure.error, error], "kernel storage cleanup failed") };
+  }
+  if (storageCleanupFailure !== null) throw storageCleanupFailure.error;
   initReady = false;
   initFailure = "kernel worker destroyed";
   if (gracefulDetachComplete) {
     try {
-      processMemoryAllocator.clear();
+      processMemoryAllocator?.clear();
     } catch (error) {
       gracefulDetachComplete = false;
       console.warn(
@@ -4232,22 +4449,25 @@ async function performDestroy() {
       "fallback",
     );
   }
-  return kernelRealmDestroyResult(gracefulDetachComplete);
+  return kernelRealmDestroyResult(gracefulDetachComplete, persistenceSyncFailure);
 }
 
 async function handleDestroy(
   msg: Extract<MainToKernelMessage, { type: "destroy" }>,
 ) {
-  // WHY: browser message and syscall callbacks overlap whenever an async
-  // handler yields. The shared gate closes admission synchronously, drains
-  // every creator already in flight, and runs this terminal sweep only once.
-  // Browser main still terminates this whole worker realm on timeout.
-  const destroy = processMemoryCreators.closeAndRunAfterDrain(performDestroy);
-  // Closing the creator gate happens synchronously. Cancel allocations before
-  // awaiting its drain, including a constructor stalled in its own realm.
-  processMemoryFactory?.dispose();
-  const result = await destroy;
-  respond(msg.requestId, result);
+  try {
+    initReady = false;
+    // WHY: browser message and syscall callbacks overlap whenever an async
+    // handler yields. The shared gate closes admission synchronously, drains
+    // every creator already in flight, and runs this terminal sweep only once.
+    // Browser main still terminates this whole worker realm on timeout.
+    const destroy = processMemoryCreators.closeAndRunAfterDrain(performDestroy);
+    deferredByteSpool?.cancelTransfers();
+    const result = await destroy;
+    respond(msg.requestId, result);
+  } catch (error) {
+    respondError(msg.requestId, formatError(error));
+  }
 }
 
 // ── PTY ──
@@ -4404,7 +4624,7 @@ function readFileFromFs(path: string): ArrayBuffer | null {
   // A diagnostic read (a service's log for a failure report): one immediate
   // kernel entry, and any failure, including a busy entry gate, is "no log".
   try {
-    const data = kernelWorker.rootfsReadFile(path);
+    const data = kernelWorker.rootfsInspectFile(path);
     if (data.byteLength === 0) return null;
     return data.buffer.slice(
       data.byteOffset,
@@ -4452,13 +4672,19 @@ sw.onmessage = (e: MessageEvent) => {
   if (handleRemoteNetworkMessage(remoteSegmentRuntime, msg, initReady, respond, respondError)) return;
   switch (msg.type) {
     case "init":
-      void handleInit(msg).catch((err) => {
+      void storageCloseLedger.run(() => handleInit(msg)).catch((err) => {
+        if (err instanceof UnconfirmedOverlayActivationError) kernelWorker.failPersistenceWriter(err);
         const error = formatError(err);
-        remoteSegmentRuntime.close();
         initReady = false;
         initFailure = error;
         console.error("[kernel-worker] init failed:", err);
-        post({ type: "init_error", error });
+        post({
+          type: "init_error",
+          error,
+          ...(err instanceof NoValidOverlayGenerationError
+            ? { recovery: "no-valid-overlay-generation" as const }
+            : {}),
+        });
       });
       break;
     case "read_owned_job":
@@ -4481,11 +4707,16 @@ sw.onmessage = (e: MessageEvent) => {
       break;
     case "terminate_process": void handleTerminateProcess(msg); break;
     case "read_vfs_file": void handleReadVfsFile(msg); break;
+    case "read_vfs_file_range": void handleReadVfsFileRange(msg); break;
     case "read_vfs_dir": void handleReadVfsDir(msg); break;
     case "stat_vfs_path": void handleStatVfsPath(msg); break;
     case "write_vfs_file": handleWriteVfsFile(msg); break;
     case "unlink_vfs_file": handleUnlinkVfsFile(msg); break;
     case "export_rootfs_image": void handleExportRootfsImage(msg); break;
+    case "export_rootfs_image_to_file":
+      void storageCloseLedger.run(() => handleExportRootfsImageToFile(msg))
+        .catch(error => respondError(msg.requestId, formatError(error)));
+      break;
     case "clipboard_offer": void handleClipboardOffer(msg); break;
     case "clipboard_guest_wait": void handleClipboardGuestWait(msg); break;
     case "append_stdin_data": kernelWorker.appendStdinData(msg.pid, msg.data); break;
@@ -4521,6 +4752,14 @@ sw.onmessage = (e: MessageEvent) => {
     case "get_kernel_memory_pages": {
       try {
         respond(msg.requestId, kernelWorker.getKernelMemoryPages());
+      } catch (err) {
+        respondError(msg.requestId, (err as Error)?.message ?? String(err));
+      }
+      break;
+    }
+    case "get_storage_metadata_memory_usage": {
+      try {
+        respond(msg.requestId, kernelWorker.rootfsTransportMetadataBudget().snapshot());
       } catch (err) {
         respondError(msg.requestId, (err as Error)?.message ?? String(err));
       }

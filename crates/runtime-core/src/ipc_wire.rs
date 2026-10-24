@@ -415,7 +415,7 @@ pub fn read_sem_values_from_guest(
     pid: i32,
     addr: u64,
     count: usize,
-) -> Result<alloc::vec::Vec<u8>, Errno> {
+) -> Result<crate::IoBuffer<u8>, Errno> {
     let bytes = count
         .checked_mul(size_of::<u16>())
         .ok_or(Errno::EOVERFLOW)?;
@@ -452,7 +452,7 @@ pub fn read_sysv_msgbuf_from_guest(
     addr: u64,
     text_bytes: usize,
     pointer_width: u32,
-) -> Result<(i64, alloc::vec::Vec<u8>), Errno> {
+) -> Result<(i64, crate::IoBuffer<u8>), Errno> {
     let prefix = native_long_bytes(pointer_width)?;
     let total = prefix.checked_add(text_bytes).ok_or(Errno::EINVAL)?;
     // The queue itself refuses anything larger, so this is the widest request
@@ -461,9 +461,11 @@ pub fn read_sysv_msgbuf_from_guest(
     let limit = prefix
         .checked_add(wasm_posix_shared::platform_limits::SYSV_MSG_MAX_BYTES)
         .ok_or(Errno::EINVAL)?;
-    let raw = guest_ptr::read_guest_bytes(host, pid, addr, total, limit)?;
+    let mut raw = guest_ptr::read_guest_bytes(host, pid, addr, total, limit)?;
     let mtype = guest_ptr::native_long(&raw, 0, prefix as u8)?;
-    Ok((mtype, raw[prefix..].to_vec()))
+    raw.copy_within(prefix.., 0);
+    raw.truncate(text_bytes);
+    Ok((mtype, raw))
 }
 
 /// Publish a received message into a caller's `struct msgbuf`.
@@ -481,11 +483,13 @@ pub fn write_sysv_msgbuf_to_guest(
     pointer_width: u32,
 ) -> Result<(), Errno> {
     let prefix = native_long_bytes(pointer_width)?;
-    let total = prefix.checked_add(text.len()).ok_or(Errno::EINVAL)?;
-    let mut out = guest_ptr::zeroed_staging(total, total)?;
-    guest_ptr::write_native_long(&mut out, 0, prefix as u8, mtype)?;
-    out[prefix..].copy_from_slice(text);
-    guest_ptr::write_guest_bytes(host, pid, addr, &out)
+    prefix.checked_add(text.len()).ok_or(Errno::EINVAL)?;
+    let payload_addr = addr.checked_add(prefix as u64).ok_or(Errno::EFAULT)?;
+    payload_addr.checked_add(text.len() as u64).ok_or(Errno::EFAULT)?;
+    let mut header = [0u8; 8];
+    guest_ptr::write_native_long(&mut header, 0, prefix as u8, mtype)?;
+    guest_ptr::write_guest_bytes(host, pid, addr, &header[..prefix])?;
+    guest_ptr::write_guest_bytes_at_any_address(host, pid, payload_addr, text)
 }
 
 /// Byte width of the calling process's `long`.
@@ -563,6 +567,20 @@ fn read_ulong(input: &[u8], offset: usize, width: usize) -> Result<u64, Errno> {
 mod tests {
     use super::*;
     use alloc::vec;
+
+    #[test]
+    fn sysv_copyout_needs_no_new_admission_after_message_consumption() {
+        use crate::process::test_host::GuestMemoryHost;
+        for width in [4, 8] {
+            let mut host = GuestMemoryHost::new(0x1000, 32);
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            write_sysv_msgbuf_to_guest(&mut host, 1, 0x1000, 7, b"message", width).unwrap();
+            assert_eq!(guest_ptr::native_long(host.peek(0x1000, width as usize), 0, width as u8), Ok(7));
+            assert_eq!(host.peek(0x1000 + width as u64, 7), b"message");
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        }
+    }
 
     fn sample_info() -> SemSetInfo {
         SemSetInfo {

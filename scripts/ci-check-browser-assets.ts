@@ -11,6 +11,7 @@ import {
 } from "../apps/browser-demos/browser-binary-imports.mjs";
 import {
   browserImageModule32ModuleSpecifier,
+  browserPositionedImageModule32ModuleSpecifier,
   browserKernelModuleSpecifier,
   browserRootfsModuleSpecifier,
 } from "../apps/browser-demos/browser-module-contract.mjs";
@@ -21,6 +22,7 @@ import {
 // assemble the boot image, and the browser cannot boot without an image.
 const BROWSER_WASM_MODULE_ARTIFACTS: ReadonlyArray<readonly [string, string]> = [
   [browserImageModule32ModuleSpecifier, "kandelo_image_module32.wasm"],
+  [browserPositionedImageModule32ModuleSpecifier, "kandelo_image_module_positioned32.wasm"],
 ];
 
 export function browserAssetImportsForPolicy(

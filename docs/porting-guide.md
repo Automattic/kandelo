@@ -114,6 +114,14 @@ resolver understands only `>=` constraints, so a recipe needing an exact match
 must check it itself and fail loudly. See
 `packages/registry/qtbase/build-qtbase.sh`.
 
+Perl's bundled host `miniperl` is configured separately from the Wasm target.
+The pinned perl-cross defaults assume glibc's named `LC_ALL` components;
+Darwin returns slash-separated components in category order. The Perl recipe
+supplies the native format through `--host-set-*` options on Darwin only.
+These options must not change the target interpreter's locale configuration
+or disable its locale support. Set `WASM_POSIX_BUILD_JOBS` to bound the recipe's
+make parallelism independently of the outer package scheduler.
+
 **A generator the pinned host package does not ship**: A host package built for
 the build machine carries only the generators that machine's platform enables,
 which is not always the set a cross-build needs. nixpkgs' darwin `qtbase` has no

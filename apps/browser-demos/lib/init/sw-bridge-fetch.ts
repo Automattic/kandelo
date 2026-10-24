@@ -16,6 +16,8 @@ import { HttpBridgeHost, type HttpRequest } from "../http-bridge";
 import { initServiceWorkerBridge } from "./service-worker-bridge";
 
 interface ServiceWorkerFetchBridgeOptions {
+  persistentComputerName?: string;
+  isActive?: () => boolean;
   timeoutMs?: number;
   debugLog?: (line: string) => void;
   onRequestStart?: (request: HttpRequest) => ((status: number | null, error?: string) => void) | undefined;
@@ -36,6 +38,10 @@ export function attachBridgeToKernel(
   };
 
   bridge.onRequest(async (requestId, request: HttpRequest) => {
+    if (options?.isActive?.() === false) {
+      bridge.error(requestId, "HTTP bridge retired");
+      return;
+    }
     const completed = options?.onRequestStart?.(request);
     updatePendingRequests(1);
     try {
@@ -80,7 +86,7 @@ export async function setupServiceWorkerFetchBridge(
   sessionId: string,
   options?: ServiceWorkerFetchBridgeOptions,
 ): Promise<{ bridge: HttpBridgeHost; name: string; appPrefix: string }> {
-  const created = await initServiceWorkerBridge(swUrl, scopePath, sessionId);
+  const created = await initServiceWorkerBridge(swUrl, scopePath, sessionId, options?.persistentComputerName);
   if (!created) {
     throw new Error("Service workers unavailable — HTTP bridge not initialized");
   }
@@ -90,6 +96,7 @@ export async function setupServiceWorkerFetchBridge(
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.addEventListener("message", (event) => {
       if (event.data?.type !== "need-bridge") return;
+      if (options?.isActive?.() === false) return;
       const replyPort = event.ports[0];
       if (!replyPort) return;
       const fresh = new HttpBridgeHost();
@@ -116,6 +123,7 @@ export async function setupServiceWorkerFetchBridge(
       navigator.serviceWorker.controller?.postMessage({
         type: "instance-closing",
         name,
+        sessionId,
       });
     });
   }

@@ -116,6 +116,13 @@ export interface LazyDownloadEvent {
 /** Stage of a machine switch that can report progress. */
 export type MachinePhase = "destroying" | "image";
 
+export interface ImageDecompressionProgress {
+  completed: number;
+  total?: number;
+  status: "loading" | "complete" | "error";
+  error?: string;
+}
+
 /**
  * Progress of a machine switch: tearing the outgoing machine down, then
  * loading the incoming machine's VFS image.
@@ -123,8 +130,8 @@ export type MachinePhase = "destroying" | "image";
  * Deliberately separate from {@link LazyDownloadEvent}: both halves run while
  * no kernel is attached, and `attachKernel` clears the lazy-download ledger.
  *
- * Every field is a scalar. This record must never retain image bytes or
- * process memory — the main thread is not an owner of machine memory.
+ * Progress counters contain only scalars. This record must never retain image
+ * bytes or process memory — the main thread is not an owner of machine memory.
  *
  * `total` is absent when no total is known, which callers render as
  * indeterminate rather than inventing a denominator. `totalProvisional` marks
@@ -140,6 +147,8 @@ export interface MachineProgress {
   unit: "processes" | "bytes";
   status: "loading" | "complete" | "error";
   error?: string;
+  operation?: "download" | "mount" | "checkpoint";
+  decompression?: ImageDecompressionProgress;
 }
 
 /**
@@ -915,6 +924,8 @@ export interface KernelHost {
   applyBootDescriptor(desc: BootDescriptor): Promise<void>;
   halt(): Promise<void>;
   reboot(): Promise<void>;
+  supportsPersistentImageCheckpoint?(): boolean;
+  checkpointPersistentImage?(): Promise<void>;
 
   // dmesg ring
   subscribeDmesg(cb: (line: DmesgLine) => void): () => void;
@@ -1308,6 +1319,7 @@ export interface LiveKernelHostOptions {
   presentation?: DemoPresentation;
   /** Live-mode reboot hook supplied by the browser page. */
   applyBootDescriptor?: (desc: BootDescriptor, host: LiveKernelHost) => Promise<void>;
+  checkpointPersistentImage?: (host: LiveKernelHost) => Promise<void>;
   /** Preset list for galleryQuery("presets"). */
   galleryItems?: GalleryItem[];
 }
@@ -1387,6 +1399,7 @@ export class LiveKernelHost implements KernelHost {
   private _descriptor: BootDescriptor;
   private presentation: DemoPresentation;
   private applyBootDescriptorImpl?: NonNullable<LiveKernelHostOptions["applyBootDescriptor"]>;
+  private checkpointPersistentImageImpl?: NonNullable<LiveKernelHostOptions["checkpointPersistentImage"]>;
   private galleryItems: GalleryItem[];
   private webPreview: WebPreviewState | null = null;
   private demoGuide: DemoGuideConfig | null = null;
@@ -1464,6 +1477,7 @@ export class LiveKernelHost implements KernelHost {
     this.kernel = undefined;
     this.shell = opts.shell;
     this.applyBootDescriptorImpl = opts.applyBootDescriptor;
+    this.checkpointPersistentImageImpl = opts.checkpointPersistentImage;
     this.galleryItems = opts.galleryItems ?? [];
     if (opts.kernel) {
       this.attachKernel(opts.kernel);
@@ -1737,12 +1751,18 @@ export class LiveKernelHost implements KernelHost {
    * lazy-download ledger.
    */
   setMachineProgress(progress: MachineProgress | null): void {
-    this.machineProgress = progress === null ? null : { ...progress };
+    this.machineProgress = progress === null ? null : {
+      ...progress,
+      ...(progress.decompression === undefined ? {} : { decompression: { ...progress.decompression } }),
+    };
     this.machineProgressListeners.emit(this.machineProgress);
   }
 
   getMachineProgress(): MachineProgress | null {
-    return this.machineProgress === null ? null : { ...this.machineProgress };
+    return this.machineProgress === null ? null : {
+      ...this.machineProgress,
+      ...(this.machineProgress.decompression === undefined ? {} : { decompression: { ...this.machineProgress.decompression } }),
+    };
   }
 
   subscribeMachineProgress(
@@ -1926,6 +1946,17 @@ export class LiveKernelHost implements KernelHost {
       return;
     }
     await this.applyBootDescriptorImpl(desc, this);
+  }
+
+  supportsPersistentImageCheckpoint(): boolean {
+    return this.checkpointPersistentImageImpl !== undefined;
+  }
+
+  async checkpointPersistentImage(): Promise<void> {
+    if (!this.checkpointPersistentImageImpl) {
+      throw new Error("persistent image checkpoint is unavailable");
+    }
+    await this.checkpointPersistentImageImpl(this);
   }
 
   async halt(): Promise<void> {

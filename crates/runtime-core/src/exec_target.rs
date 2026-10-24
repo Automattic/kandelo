@@ -89,7 +89,7 @@ pub struct PreparedExecTarget {
     stat: WasmStat,
     statfs: WasmStatfs,
     #[allow(dead_code)] // Retained only for Task 11 diagnostics, never authority.
-    diagnostic_path: Vec<u8>,
+    diagnostic_path: crate::ofd::OfdPath,
     observed_bytes: Vec<u8>,
     observed_ranges: Vec<(usize, usize)>,
     content_drifted: bool,
@@ -104,8 +104,9 @@ impl PreparedExecTarget {
         file_id: Option<FileId>,
         stat: WasmStat,
         statfs: WasmStatfs,
-        diagnostic_path: Vec<u8>,
+        diagnostic_path: impl AsRef<[u8]>,
     ) -> Result<Self, Errno> {
+        let diagnostic_path = crate::ofd::OfdPath::copy_from(diagnostic_path.as_ref())?;
         let size = usize::try_from(stat.st_size).map_err(|_| Errno::EOVERFLOW)?;
         if size > platform_limits::MAX_REPORTABLE_TRANSFER_BYTES {
             return Err(Errno::EFBIG);
@@ -355,7 +356,7 @@ fn retain_empty_path_target(
         // The overlay statfs carries the `/` mount's real `nosuid` flag, so an
         // AT_EMPTY_PATH exec of a set-ID overlay binary honors (or, on a nosuid
         // mount, drops) the set-ID bits exactly like the pathname exec path.
-        crate::rootfs::statfs(&diagnostic_path)?
+        crate::rootfs::statfs_for_exec(&diagnostic_path)?
     } else if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
         crate::tmpfs::statfs(&diagnostic_path)?
     } else {

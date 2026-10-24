@@ -3316,10 +3316,9 @@ const KANDELO_IMAGE_MODULE_NODE_NAME: &str = "kandelo-image-module";
 /// The machinery is written over this table, rather than for that one module,
 /// so the build, freshness and projection rules live in one place.
 ///
-/// "Co-resident" names the pipeline, not the module's memory model: the image
-/// writer imports nothing, not even `env.memory`, and owns its own linear
-/// memory. Do not infer build flags or memory placement from membership in
-/// this table; each module's `build-wasm.sh` owns those.
+/// "Co-resident" names the pipeline, not the module's memory model. The
+/// standalone writer imports nothing; its positioned variant imports one
+/// byte reader. Each module's `build-wasm.sh` owns those build contracts.
 pub(crate) struct CoresidentSideModule {
     /// Projection node name; also the identity the consumer's root-level
     /// member rule admits.
@@ -3346,7 +3345,10 @@ pub(crate) const CORESIDENT_SIDE_MODULES: &[CoresidentSideModule] = &[Coresident
     // The image writer is not compiled per pointer width. It BUILDS an image
     // rather than sharing a guest's address space, so one wasm32 module writes
     // images consumed by wasm32 and wasm64 guests alike.
-    artifacts: &[("kandelo_image_module32.wasm", "wasm32", true)],
+    artifacts: &[
+        ("kandelo_image_module32.wasm", "wasm32", true),
+        ("kandelo_image_module_positioned32.wasm", "wasm32", true),
+    ],
     closure_description: "crates/kandelo-image-module, crates/runtime-core and their \
                           workspace dependencies",
 }];
@@ -3457,27 +3459,25 @@ fn coresident_side_module_projection(
     })
 }
 
-/// One source-only projection node per co-resident artifact. Each is a single
-/// root-level member so the consumer admits it under its root-level member
-/// rule (`binary-resolver.ts`).
+/// One source-only projection node per co-resident module and architecture.
+/// Every member stays root-level and explicitly allowlisted by the consumer.
 fn coresident_side_module_nodes(
     module: &CoresidentSideModule,
     projection: &CoresidentSideModuleProjection,
 ) -> Vec<SourceOnlyProgramNodeV1> {
-    projection
-        .members
-        .iter()
-        .map(|member| {
-            let target_arch = module
-                .artifacts
-                .iter()
-                .find(|(name, _, _)| *name == member.mirror_path)
-                .map(|(_, arch, _)| *arch)
-                .unwrap_or("wasm32");
-            // The node's manifest identity is a stable declaration tag bound to
-            // the module's name (the members ARE the artifacts, not a package
-            // manifest); its cache key is the build key that gates freshness;
-            // its receipt digest binds the projected member content.
+    let mut by_arch: BTreeMap<&str, Vec<MaterializedProgramMemberV1>> = BTreeMap::new();
+    for member in &projection.members {
+        let target_arch = module
+            .artifacts
+            .iter()
+            .find(|(name, _, _)| *name == member.mirror_path)
+            .map(|(_, arch, _)| *arch)
+            .unwrap_or("wasm32");
+        by_arch.entry(target_arch).or_default().push(member.clone());
+    }
+    by_arch
+        .into_iter()
+        .map(|(target_arch, members)| {
             let manifest_sha256 = sha256_bytes(
                 format!("kandelo-coresident-side-module-node-v1\0{}", module.node_name).as_bytes(),
             );
@@ -3485,11 +3485,13 @@ fn coresident_side_module_nodes(
             receipt.update(b"kandelo-coresident-side-module-receipt-v1\0");
             receipt.update((module.node_name.len() as u64).to_le_bytes());
             receipt.update(module.node_name.as_bytes());
-            receipt.update((member.mirror_path.len() as u64).to_le_bytes());
-            receipt.update(member.mirror_path.as_bytes());
-            receipt.update(member.sha256.as_bytes());
-            receipt.update(member.size.to_le_bytes());
-            receipt.update((member.mode as u64).to_le_bytes());
+            for member in &members {
+                receipt.update((member.mirror_path.len() as u64).to_le_bytes());
+                receipt.update(member.mirror_path.as_bytes());
+                receipt.update(member.sha256.as_bytes());
+                receipt.update(member.size.to_le_bytes());
+                receipt.update((member.mode as u64).to_le_bytes());
+            }
             let cache_receipt_sha256 = crate::util::hex(&receipt.finalize());
             SourceOnlyProgramNodeV1 {
                 node: SourceOnlyProgramNodeIdentityV1 {
@@ -3500,7 +3502,7 @@ fn coresident_side_module_nodes(
                 manifest_sha256,
                 cache_key_sha256: projection.closure_sha.clone(),
                 cache_receipt_sha256,
-                members: vec![member.clone()],
+                members,
             }
         })
         .collect()
@@ -8399,6 +8401,7 @@ materialization = "lazy"
     // and known keys, so no Cargo workspace / `cargo metadata` run is needed.
 
     const IMAGE_MODULE_ARTIFACT: &str = "kandelo_image_module32.wasm";
+    const POSITIONED_IMAGE_MODULE_ARTIFACT: &str = "kandelo_image_module_positioned32.wasm";
 
     fn image_module() -> &'static CoresidentSideModule {
         CORESIDENT_SIDE_MODULES
@@ -8422,7 +8425,8 @@ materialization = "lazy"
                     "cacheKeySha256": cache_key,
                     "cacheReceiptSha256": "00",
                     "members": [
-                        { "sourceArtifact": IMAGE_MODULE_ARTIFACT, "mirrorPath": IMAGE_MODULE_ARTIFACT, "mode": 420, "size": size, "sha256": sha256 }
+                        { "sourceArtifact": IMAGE_MODULE_ARTIFACT, "mirrorPath": IMAGE_MODULE_ARTIFACT, "mode": 420, "size": size, "sha256": sha256 },
+                        { "sourceArtifact": POSITIONED_IMAGE_MODULE_ARTIFACT, "mirrorPath": POSITIONED_IMAGE_MODULE_ARTIFACT, "mode": 420, "size": size, "sha256": sha256 }
                     ]
                 }
             ]
@@ -8435,7 +8439,10 @@ materialization = "lazy"
         let module = image_module();
         assert_eq!(module.script, "crates/kandelo-image-module/build-wasm.sh");
         assert_eq!(module.closure_crates, &["kandelo-image-module", "runtime-core"]);
-        assert_eq!(module.artifacts, &[(IMAGE_MODULE_ARTIFACT, "wasm32", true)]);
+        assert_eq!(module.artifacts, &[
+            (IMAGE_MODULE_ARTIFACT, "wasm32", true),
+            (POSITIONED_IMAGE_MODULE_ARTIFACT, "wasm32", true),
+        ]);
     }
 
     #[test]
@@ -8445,6 +8452,7 @@ materialization = "lazy"
         fs::create_dir_all(&output_root).unwrap();
         let bytes = b"image-module-bytes-fresh";
         fs::write(output_root.join(IMAGE_MODULE_ARTIFACT), bytes).unwrap();
+        fs::write(output_root.join(POSITIONED_IMAGE_MODULE_ARTIFACT), bytes).unwrap();
         let manifest =
             image_module_manifest("deadbeef", bytes.len() as u64, &sha256_bytes(bytes));
         check_projected_side_module_freshness(
@@ -8465,6 +8473,7 @@ materialization = "lazy"
         fs::create_dir_all(&output_root).unwrap();
         let bytes = b"image-module-bytes";
         fs::write(output_root.join(IMAGE_MODULE_ARTIFACT), bytes).unwrap();
+        fs::write(output_root.join(POSITIONED_IMAGE_MODULE_ARTIFACT), bytes).unwrap();
         let manifest =
             image_module_manifest("oldclosurekey", bytes.len() as u64, &sha256_bytes(bytes));
         let err = check_projected_side_module_freshness(
@@ -8490,6 +8499,7 @@ materialization = "lazy"
         fs::create_dir_all(&output_root).unwrap();
         let staged = b"the-actually-staged-newer-bytes";
         fs::write(output_root.join(IMAGE_MODULE_ARTIFACT), staged).unwrap();
+        fs::write(output_root.join(POSITIONED_IMAGE_MODULE_ARTIFACT), staged).unwrap();
         let manifest =
             image_module_manifest("matchingkey", 999, &sha256_bytes(b"older-manifest-bytes"));
         let err = check_projected_side_module_freshness(
@@ -8575,11 +8585,13 @@ materialization = "lazy"
 
         let bytes = b"image-module-bytes".to_vec();
         fs::write(repo.join("local-binaries").join(IMAGE_MODULE_ARTIFACT), &bytes).unwrap();
+        fs::write(repo.join("local-binaries").join(POSITIONED_IMAGE_MODULE_ARTIFACT), &bytes).unwrap();
         assert!(
             !coresident_side_module_projection_is_current_with(&output_root, repo, recorded),
             "a module missing from the tier is not current",
         );
         fs::write(output_root.join(IMAGE_MODULE_ARTIFACT), &bytes).unwrap();
+        fs::write(output_root.join(POSITIONED_IMAGE_MODULE_ARTIFACT), &bytes).unwrap();
         assert!(
             !coresident_side_module_projection_is_current_with(&output_root, repo, recorded),
             "equal bytes without a manifest are not current",
@@ -8642,6 +8654,28 @@ materialization = "lazy"
             node.cache_receipt_sha256, second[0].cache_receipt_sha256,
             "the receipt must bind the projected member content",
         );
+    }
+
+    #[test]
+    fn coresident_node_groups_both_image_writers_under_one_architecture() {
+        let members = [IMAGE_MODULE_ARTIFACT, POSITIONED_IMAGE_MODULE_ARTIFACT]
+            .into_iter()
+            .map(|name| MaterializedProgramMemberV1 {
+                source_artifact: name.to_string(),
+                mirror_path: name.to_string(),
+                mode: 0o644,
+                size: 3,
+                sha256: "1".repeat(64),
+            })
+            .collect();
+        let projection = CoresidentSideModuleProjection {
+            closure_sha: "k".repeat(64),
+            members,
+        };
+        let nodes = coresident_side_module_nodes(image_module(), &projection);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].node.target_arch, "wasm32");
+        assert_eq!(nodes[0].members, projection.members);
     }
 
     /// A package whose build LOADS a co-resident module must key on that

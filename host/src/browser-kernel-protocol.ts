@@ -2,10 +2,13 @@ import type { RemoteSegmentInit } from "./networking/remote-segment-port";
 import type { VfsChangeEvent } from "./vfs/types";
 // Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
 // for which types are NOT shared and why.
+import type { OpfsImageIntegrity } from "./vfs/opfs-image-reader";
+import type { StagedRootfsImageProgress } from "./vfs/staged-rootfs-image";
 export type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
   GetSpawnScratchCapacityRequestMessage,
   EnumProcsRequestMessage,
@@ -39,6 +42,7 @@ export type {
   WakeBlockedWritersMessage,
   HttpRequestMessage,
   WriteVfsFileMessage,
+  ReadVfsFileRangeMessage,
   ProcEventMessage,
   AttachRemotePeerMessage,
   RemoteNetworkSnapshotMessage,
@@ -50,6 +54,7 @@ import type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
   GetSpawnScratchCapacityRequestMessage,
   EnumProcsRequestMessage,
@@ -83,6 +88,7 @@ import type {
   WakeBlockedWritersMessage,
   HttpRequestMessage,
   WriteVfsFileMessage,
+  ReadVfsFileRangeMessage,
   ProcEventMessage,
   AttachRemotePeerMessage,
   RemoteNetworkSnapshotMessage,
@@ -164,6 +170,13 @@ export interface InitMessage {
    * them into the image.
    */
   vfsImage: Uint8Array;
+  /** Positioned OPFS source in place of `vfsImage`; opened by the kernel worker. */
+  opfsImage?: FileSystemFileHandle;
+  opfsImageIntegrity?: OpfsImageIntegrity;
+  rootfsPersistentImageBinding?: import("./vfs/image-integrity").PersistentImageReadBinding;
+  experimentalFixedPersistenceName?: string;
+  experimentalResizablePersistenceName?: string;
+  requireExistingRootfsPersistence?: boolean;
   /** Exact image/scratch mount contract. Absent preserves the host default. */
   rootfsMountSpec?: MountSpec[];
   /** Base URL for relative lazy file/archive URLs stored in vfsImage. */
@@ -190,6 +203,8 @@ export interface InitMessage {
     maxMemoryPages: number;
     /** Ceiling for the kernel's own wasm address space, in 64 KiB pages. */
     kernelMaxPages: number;
+    rootfsMetadataBytes?: number;
+    maxVfsFileReadBytes?: number;
     /** Identifier of the runtime memory profile these budgets came from. */
     memoryProfileId: string;
     /**
@@ -406,6 +421,19 @@ export interface ClipboardGuestWaitMessage {
   timeoutMs?: number;
 }
 
+export interface ExportRootfsImageToFileMessage {
+  type: "export_rootfs_image_to_file";
+  requestId: number;
+  file: FileSystemFileHandle;
+  reportProgress?: boolean;
+}
+
+export interface RootfsImageExportProgressMessage {
+  type: "rootfs_image_export_progress";
+  requestId: number;
+  progress: StagedRootfsImageProgress;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | AttachRemotePeerMessage
@@ -417,11 +445,13 @@ export type MainToKernelMessage =
   | SpawnMessage
   | TerminateProcessMessage
   | ReadVfsFileMessage
+  | ReadVfsFileRangeMessage
   | ReadVfsDirMessage
   | StatVfsPathMessage
   | WriteVfsFileMessage
   | UnlinkVfsFileMessage
   | ExportRootfsImageMessage
+  | ExportRootfsImageToFileMessage
   | ClipboardOfferMessage
   | ClipboardGuestWaitMessage
   | AppendStdinDataMessage
@@ -443,6 +473,7 @@ export type MainToKernelMessage =
   | RegisterPtyOutputMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetStorageMetadataMemoryUsageRequestMessage
   | GetWasmModuleCacheStatsRequestMessage
   | GetSpawnScratchCapacityRequestMessage
   | MouseInjectMessage
@@ -607,6 +638,7 @@ export type KernelToMainMessage =
   | HttpBridgePendingMessage
   | LazyDownloadMessage
   | DestroyProgressMessage
+  | RootfsImageExportProgressMessage
   | VfsChangeMessage;
 
 export interface WatchVfsChangesMessage {

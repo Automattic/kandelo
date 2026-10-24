@@ -213,7 +213,12 @@ pub mod process_layout;
 ///     finish a collection that is suspected to be handed to a blocked thread
 ///     and to starve other workers' collections. docs/abi-versioning.md
 ///     ("ABI 52").
-pub const ABI_VERSION: u32 = 52;
+/// 53: persistent rootfs uses positioned journal, checkpoint and compaction
+///     storage through three required `env.host_overlay_*` import families.
+///     `kernel_push_argv` returns an admission status; persistent sync calls
+///     publish shared mappings before flushing. docs/abi-versioning.md
+///     ("ABI 53") describes the boundary.
+pub const ABI_VERSION: u32 = 53;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///

@@ -157,7 +157,7 @@ run_exact_abi_source_vitest() {
         case "$path" in
             host/test/*.test.ts|host/test/*/*.test.ts|\
             web-libs/*/test/*.test.ts|packages/registry/*/test/*.test.ts|\
-            tests/package-system/*.test.ts|examples/dlopen/*.test.ts)
+            tests/package-system/*.test.ts|examples/dlopen/*.test.ts|scripts/*.test.mjs)
                 ;;
             *)
                 echo "ci-run-test-suite: unsupported Vitest evidence path at $classes:$line_number" >&2

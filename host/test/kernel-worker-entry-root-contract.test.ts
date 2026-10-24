@@ -46,13 +46,14 @@ const FORBIDDEN_WORKER_MEMBERS = new Set([
 // public ingress: `configureRootfsOverlayFromImage` calls
 // `configureRootfsOverlay`, `readRootfsFileWithRetry` calls
 // `rootfsReadFile`, and `readNamespaceFileWithRetry` calls
-// `rootfsInspectFile` through the same entry-gated retry path. The last test
-// below pins the declarations, so a helper cannot join this list without
-// living where both entries share it.
+// `rootfsInspectFile`; the ranged reader calls `rootfsInspectFileRange` through
+// the same entry-gated retry path. The declaration check keeps these helpers
+// where both entries share them.
 const REVIEWED_KERNEL_WORKER_HELPERS = new Set([
   "configureRootfsOverlayFromImage",
   "readRootfsFileWithRetry",
   "readNamespaceFileWithRetry",
+  "readNamespaceFileRangeWithRetry",
 ]);
 
 type Finding = {

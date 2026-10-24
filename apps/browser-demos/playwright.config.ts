@@ -7,6 +7,7 @@ import {
   playwrightTestIgnoreForEnvironment,
   shouldReuseExistingPlaywrightServer,
 } from "./playwright-server-policy";
+import { browserStorageHome } from "./playwright-storage";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.KANDELO_PLAYWRIGHT_PORT ?? 5401);
@@ -149,6 +150,7 @@ const chromiumLaunchArgs = [
 ];
 
 export default defineConfig({
+  globalSetup: join(__dirname, "playwright-storage-setup.ts"),
   testDir: join(__dirname, "test"),
   testMatch: "*.spec.ts",
   // The assembled-site and exact-product proofs read protected handoffs during
@@ -232,7 +234,15 @@ export default defineConfig({
     },
     {
       name: "webkit",
-      use: { browserName: "webkit" },
+      use: {
+        browserName: "webkit",
+        launchOptions: {
+          env: process.platform === "darwin"
+            ? { ...browserLaunchEnv, CFFIXED_USER_HOME: browserStorageHome("webkit") }
+            : browserLaunchEnv,
+          args: sharedLaunchArgs.length > 0 ? sharedLaunchArgs : undefined,
+        },
+      },
     },
   ],
 });

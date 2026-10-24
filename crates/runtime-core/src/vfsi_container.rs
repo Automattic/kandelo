@@ -11,7 +11,7 @@
 //! # Layout
 //!
 //! ```text
-//! header(16) | body | u32 lazyLen | lazyJson
+//! header(16 for v1, 24 for v2) | body | u32 lazyLen | lazyJson
 //!                   | u32 archiveLen | archiveJson   (flag 1<<1)
 //!                   | u32 metadataLen | metadataJson (flag 1<<2)
 //!                   | u32 klzyLen | KLZY             (flag 1<<4)
@@ -62,7 +62,8 @@ use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
 
 use crate::kandelo_image_fs::{
-    VFSI_CONTAINER_MAGIC, VFSI_CONTAINER_VERSION, VFSI_HEADER_SIZE, VFS_IMAGE_FLAG_HAS_LAZY,
+    VFSI_CONTAINER_MAGIC, VFSI_CONTAINER_VERSION, VFSI_EXTENDED_CONTAINER_VERSION,
+    VFSI_EXTENDED_HEADER_SIZE, VFSI_HEADER_SIZE, VFS_IMAGE_FLAG_HAS_LAZY,
     VFS_IMAGE_FLAG_HAS_LAZY_ARCHIVES, VFS_IMAGE_FLAG_HAS_METADATA,
     VFS_IMAGE_FLAG_HAS_TYPED_LAZY_ARCHIVES,
 };
@@ -92,6 +93,10 @@ pub struct ContainerSections<'a> {
 }
 
 impl ContainerSections<'_> {
+    fn parts(&self) -> [Option<&[u8]>; 4] {
+        [Some(self.lazy_json), self.archive_json, self.metadata_json, self.kernel_lazy]
+    }
+
     /// The flag word these sections imply.
     ///
     /// `HAS_TYPED_LAZY_ARCHIVES` tracks `HAS_LAZY_ARCHIVES` exactly, because
@@ -116,19 +121,18 @@ impl ContainerSections<'_> {
     }
 }
 
-/// Every length in the container is a `u32`, so a section or body that does not
-/// fit is a real limit rather than an overflow to wrap silently. Named so a
+/// Every section length is a `u32`, so a section that does not fit is a real
+/// limit rather than an overflow to wrap silently. Named so a
 /// caller can refuse an oversized section at the point it is handed one, rather
 /// than at the point the container is written.
 pub const MAX_SECTION_LEN: u32 = u32::MAX;
 
-/// Every length in the container is a `u32`, so a section or body that does
-/// not fit is a real limit and not an overflow to wrap silently.
+/// Version 1 body and all section lengths are `u32`, never wrapped silently.
 fn len_u32(len: usize, _what: &'static str) -> Result<u32, Errno> {
     u32::try_from(len).map_err(|_| Errno::EINVAL)
 }
 
-/// The 16-byte container header.
+/// The 16-byte version 1 container header.
 pub fn header(body_len: usize, flags: u32) -> Result<[u8; VFSI_HEADER_SIZE], Errno> {
     let body_len = len_u32(body_len, "body")?;
     let mut out = [0u8; VFSI_HEADER_SIZE];
@@ -139,9 +143,24 @@ pub fn header(body_len: usize, flags: u32) -> Result<[u8; VFSI_HEADER_SIZE], Err
     Ok(out)
 }
 
+pub fn header_for_body(body_len: u64, flags: u32) -> Result<Vec<u8>, Errno> {
+    if body_len <= u32::MAX as u64 {
+        return Ok(header(body_len as usize, flags)?.to_vec());
+    }
+    let mut out = alloc::vec![0u8; VFSI_EXTENDED_HEADER_SIZE];
+    out[0..4].copy_from_slice(&VFSI_CONTAINER_MAGIC.to_le_bytes());
+    out[4..8].copy_from_slice(&VFSI_EXTENDED_CONTAINER_VERSION.to_le_bytes());
+    out[8..12].copy_from_slice(&flags.to_le_bytes());
+    out[12..16].copy_from_slice(&(VFSI_EXTENDED_HEADER_SIZE as u32).to_le_bytes());
+    out[16..24].copy_from_slice(&body_len.to_le_bytes());
+    Ok(out)
+}
+
 /// Every section after the body, in container order.
 pub fn trailer(sections: &ContainerSections<'_>) -> Result<Vec<u8>, Errno> {
     let mut out = Vec::new();
+    let length = usize::try_from(trailer_len(sections)?).map_err(|_| Errno::ENOMEM)?;
+    out.try_reserve_exact(length).map_err(|_| Errno::ENOMEM)?;
     let mut push = |bytes: &[u8], what: &'static str| -> Result<(), Errno> {
         out.extend_from_slice(&len_u32(bytes.len(), what)?.to_le_bytes());
         out.extend_from_slice(bytes);
@@ -160,9 +179,38 @@ pub fn trailer(sections: &ContainerSections<'_>) -> Result<Vec<u8>, Errno> {
     Ok(out)
 }
 
+pub fn trailer_len(sections: &ContainerSections<'_>) -> Result<u64, Errno> {
+    sections.parts().into_iter().flatten().try_fold(0u64, |length, part| {
+        length.checked_add(4 + u64::from(len_u32(part.len(), "section")?))
+            .ok_or(Errno::EINVAL)
+    })
+}
+
+pub fn trailer_read(sections: &ContainerSections<'_>, offset: u64, out: &mut [u8]) -> Result<usize, Errno> {
+    if offset >= trailer_len(sections)? || out.is_empty() {
+        return Ok(0);
+    }
+    let mut cursor = 0u64;
+    let mut copied = 0;
+    for section in sections.parts().into_iter().flatten() {
+        let length = len_u32(section.len(), "section")?.to_le_bytes();
+        for part in [&length[..], section] {
+            let start = offset.saturating_sub(cursor).min(part.len() as u64) as usize;
+            let count = (part.len() - start).min(out.len() - copied);
+            out[copied..copied + count].copy_from_slice(&part[start..start + count]);
+            copied += count;
+            cursor += part.len() as u64;
+            if copied == out.len() {
+                return Ok(copied);
+            }
+        }
+    }
+    Ok(copied)
+}
+
 /// Whole container, for callers that can hold the image.
 pub fn wrap(body: &[u8], sections: &ContainerSections<'_>) -> Result<Vec<u8>, Errno> {
-    let head = header(body.len(), sections.flags())?;
+    let head = header_for_body(body.len() as u64, sections.flags())?;
     let tail = trailer(sections)?;
     let mut out = Vec::new();
     out.try_reserve(head.len() + body.len() + tail.len())
@@ -176,7 +224,37 @@ pub fn wrap(body: &[u8], sections: &ContainerSections<'_>) -> Result<Vec<u8>, Er
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kandelo_image_fs;
+    use crate::kandelo_image_fs::{self, BlockSource};
+
+    struct SparseContainer {
+        head: Vec<u8>,
+        tail: Vec<u8>,
+        body_len: u64,
+    }
+
+    impl BlockSource for SparseContainer {
+        fn len(&self) -> u64 {
+            self.head.len() as u64 + self.body_len + self.tail.len() as u64
+        }
+
+        fn read_exact_at(&self, offset: u64, dst: &mut [u8]) -> Result<(), Errno> {
+            if offset.checked_add(dst.len() as u64).is_none_or(|end| end > self.len()) {
+                return Err(Errno::EIO);
+            }
+            let tail_start = self.head.len() as u64 + self.body_len;
+            for (index, byte) in dst.iter_mut().enumerate() {
+                let position = offset + index as u64;
+                *byte = if position < self.head.len() as u64 {
+                    self.head[position as usize]
+                } else if position >= tail_start {
+                    self.tail[(position - tail_start) as usize]
+                } else {
+                    0
+                };
+            }
+            Ok(())
+        }
+    }
 
     const BODY: &[u8] = b"not a real image body, but the container does not care";
 
@@ -270,6 +348,30 @@ mod tests {
     }
 
     #[test]
+    fn positioned_trailer_reads_preserve_every_section_and_boundary() {
+        for archive in [None, Some(&b""[..]), Some(&b"ARCH"[..])] {
+            for metadata in [None, Some(&b""[..]), Some(&b"METADATA"[..])] {
+                for kernel_lazy in [None, Some(&b"KLZY"[..])] {
+                    let sections = sections(b"LAZY", archive, metadata, kernel_lazy);
+                    let expected = trailer(&sections).unwrap();
+                    assert_eq!(trailer_len(&sections), Ok(expected.len() as u64));
+                    for offset in 0..=expected.len() + 1 {
+                        for capacity in [0, 1, 3, 4, 7, 64] {
+                            let mut out = [0xa5; 64];
+                            let count = trailer_read(&sections, offset as u64, &mut out[..capacity]).unwrap();
+                            let start = offset.min(expected.len());
+                            let end = (start + capacity).min(expected.len());
+                            assert_eq!(&out[..count], &expected[start..end]);
+                            assert!(out[count..].iter().all(|byte| *byte == 0xa5));
+                        }
+                    }
+                    assert_eq!(trailer_read(&sections, u64::MAX, &mut [0; 16]), Ok(0));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_container_carries_no_bytes_its_flags_do_not_account_for() {
         // Every section in the trailer is claimed by a flag (or, for the lazy
         // JSON, unconditional). A section written without a flag to claim it is
@@ -345,5 +447,46 @@ mod tests {
     #[test]
     fn an_oversized_length_is_refused_rather_than_wrapped() {
         assert_eq!(header(u32::MAX as usize + 1, 0), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn extended_header_addresses_a_large_body_and_its_sections() {
+        let body_len = u32::MAX as u64 + 4097;
+        let sections = sections(b"lazy", Some(b"archive"), Some(b"metadata"), Some(b"KLZY"));
+        let head = header_for_body(body_len, sections.flags()).expect("header");
+        assert_eq!(head.len(), VFSI_EXTENDED_HEADER_SIZE);
+        assert_eq!(u32::from_le_bytes(head[4..8].try_into().unwrap()), VFSI_EXTENDED_CONTAINER_VERSION);
+        let source = SparseContainer {
+            head,
+            tail: trailer(&sections).expect("trailer"),
+            body_len,
+        };
+        assert_eq!(kandelo_image_fs::kandelo_image_span(&source), Ok((24, body_len)));
+        assert_eq!(kandelo_image_fs::container_flags(&source), Ok(sections.flags()));
+        for (span, expected) in [
+            (kandelo_image_fs::metadata_span(&source).expect("metadata"), &b"metadata"[..]),
+            (kandelo_image_fs::kernel_lazy_span(&source).expect("kernel lazy"), &b"KLZY"[..]),
+        ] {
+            let (offset, len) = span.expect("section span");
+            let mut bytes = alloc::vec![0; len as usize];
+            source.read_exact_at(offset, &mut bytes).expect("section bytes");
+            assert_eq!(bytes, expected);
+        }
+    }
+
+    #[test]
+    fn extended_header_refuses_wrong_geometry_and_wraparound() {
+        let mut source = SparseContainer {
+            head: header_for_body(u32::MAX as u64 + 1, 0).expect("header"),
+            tail: Vec::new(),
+            body_len: u32::MAX as u64 + 1,
+        };
+        source.head[12..16].copy_from_slice(&16u32.to_le_bytes());
+        assert_eq!(kandelo_image_fs::kandelo_image_span(&source), Err(Errno::EINVAL));
+        source.head[12..16].copy_from_slice(&24u32.to_le_bytes());
+        source.head[16..24].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert_eq!(kandelo_image_fs::kandelo_image_span(&source), Err(Errno::EINVAL));
+        source.head[16..24].copy_from_slice(&(source.body_len + 1).to_le_bytes());
+        assert_eq!(kandelo_image_fs::kandelo_image_span(&source), Err(Errno::EINVAL));
     }
 }

@@ -1,5 +1,5 @@
 {
-  "abi_version": 52,
+  "abi_version": 53,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -1164,7 +1164,7 @@
       }
     ],
     "manifest": {
-      "abi_version": 52,
+      "abi_version": 53,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -2819,6 +2819,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_overlay_activation_codec",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_pcm_claim_transport",
       "signature": "(i32) -> (i32)"
     },
@@ -2960,7 +2965,7 @@
     {
       "kind": "func",
       "name": "kernel_push_argv",
-      "signature": "(i32,i32) -> ()"
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3009,6 +3014,56 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_activate_persistence_compaction",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_cancel_persistence_compaction",
+      "signature": "() -> ()"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_checkpoint_prepared_persistence",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_convert_unindexed_fixed_persistence",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_convert_unindexed_resizable_persistence",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_enable_fixed_persistence",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_enable_fixed_persistence_indexed",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_enable_resizable_persistence",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_enable_resizable_persistence_indexed",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_export_container_cancel",
+      "signature": "() -> ()"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_export_container_read",
       "signature": "(i32,i32,i32,i32) -> (i32)"
     },
@@ -3034,6 +3089,26 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_io_limit_bytes",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_io_used_bytes",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_journal_state_memory_pressure",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_journal_state_used_bytes",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_lazy_resource_limits",
       "signature": "(i32,i32,i32) -> (i32)"
     },
@@ -3049,8 +3124,28 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_load_persistent_image",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_metadata_used_bytes",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_mkdir_parents",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_persistence_recovery_is_pristine",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_prepare_persistence_compaction",
+      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3069,8 +3164,28 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_set_io_budget_bytes",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_set_journal_state_budget_bytes",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_set_metadata_budget_bytes",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_stat_mode",
       "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_sync_persistence",
+      "signature": "() -> (i32)"
     },
     {
       "kind": "func",

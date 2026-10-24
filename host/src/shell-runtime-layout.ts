@@ -10,7 +10,8 @@ export function populateShellRuntimeLayout(fs: VfsImageFilesystem): void {
   for (const dir of [
     "/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin",
     "/usr/share", "/usr/share/misc", "/usr/share/file",
-    "/etc", "/root", "/tmp", "/home", "/home/maker", "/dev", "/usr/sbin",
+    "/etc", "/root", "/tmp", "/home", "/home/maker", "/home/projects",
+    "/dev", "/usr/sbin",
   ]) {
     ensureDirRecursive(fs, dir);
   }
@@ -18,6 +19,8 @@ export function populateShellRuntimeLayout(fs: VfsImageFilesystem): void {
   fs.chmod("/tmp", 0o1777);
   fs.chmod("/root", 0o700);
   fs.chown("/home/maker", 1000, 1000);
+  fs.chown("/home/projects", 1000, 1000);
+  fs.chmod("/home/projects", 0o755);
 
   const gitconfig = [
     "[maintenance]",

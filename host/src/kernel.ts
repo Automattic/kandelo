@@ -28,6 +28,7 @@ import type {
   StatfsResult,
 } from "./types";
 import { checkedHostFileOffset } from "./file-offset";
+import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
 import { isHostAppendContractError } from "./append-contract";
 import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { FramebufferRegistry } from "./framebuffer/registry";
@@ -153,6 +154,7 @@ const intrinsicTypedArrayByteLength = Object.getOwnPropertyDescriptor(
   "byteLength",
 )!.get!;
 const IntrinsicUint8Array = Uint8Array;
+const intrinsicUint8ArrayFill = Uint8Array.prototype.fill;
 const IntrinsicInt32Array = Int32Array;
 const IntrinsicDataView = DataView;
 const IntrinsicWasmMemory = WebAssembly.Memory;
@@ -900,6 +902,12 @@ export class WasmPosixKernel {
   #rootfsImageProvider:
     | ((offset: bigint, dest: Uint8Array) => number)
     | undefined = undefined;
+  #persistentOverlayStorage: PersistentOverlayStorage | null = null;
+  #persistentOverlayTargetStorage: PersistentOverlayStorage | null = null;
+  #persistentOverlayCompactionStorage: PersistentOverlayStorage | null = null;
+  #reportedStorageReadFailure = false;
+  #storageReadStaging: Uint8Array | null = null;
+  #storageReadStagingInUse = false;
   private waitpidSab: SharedArrayBuffer | null = null;
   /**
    * A backend directory iterator may already have advanced before the host
@@ -1144,6 +1152,18 @@ export class WasmPosixKernel {
     provider: (offset: bigint, dest: Uint8Array) => number,
   ): void {
     this.#rootfsImageProvider = provider;
+  }
+
+  setPersistentOverlayStorage(storage: PersistentOverlayStorage | null): void {
+    this.#persistentOverlayStorage = storage;
+  }
+
+  setPersistentOverlayTargetStorage(storage: PersistentOverlayStorage | null): void {
+    this.#persistentOverlayTargetStorage = storage;
+  }
+
+  setPersistentOverlayCompactionStorage(storage: PersistentOverlayStorage | null): void {
+    this.#persistentOverlayCompactionStorage = storage;
   }
 
   constructor(
@@ -1897,6 +1917,102 @@ export class WasmPosixKernel {
           } catch {
             return -14; // EFAULT
           }
+        },
+        host_overlay_len: (): bigint => {
+          const storage = this.#persistentOverlayStorage;
+          if (storage === null) return -38n;
+          try { return BigInt(storage.len()); } catch (error) { return BigInt(negErrno(error)); }
+        },
+        host_overlay_read: (offset: bigint, ptr: KernelPointer, len: number): number => {
+          const storage = this.#persistentOverlayStorage;
+          if (storage === null) return -38;
+          try {
+            const destination = this.#rustLentKernelDestination(ptr, len, "host_overlay_read destination");
+            return this.#readOverlayIntoDestination("overlay", storage, offset, destination);
+          } catch (error) {
+            this.#reportStorageReadFailure("overlay read", offset, len, error);
+            return negErrno(error);
+          }
+        },
+        host_overlay_write: (offset: bigint, ptr: KernelPointer, len: number): number => {
+          const storage = this.#persistentOverlayStorage;
+          if (storage === null) return -38;
+          try { storage.writeAllAt(offset, this.#readKernelBytes(ptr, len)); return 0; }
+          catch (error) { return negErrno(error); }
+        },
+        host_overlay_flush: (): number => {
+          const storage = this.#persistentOverlayStorage;
+          if (storage === null) return -38;
+          try { storage.flush(); return 0; } catch (error) { return negErrno(error); }
+        },
+        host_overlay_truncate: (length: bigint): number => {
+          const storage = this.#persistentOverlayStorage;
+          if (storage === null) return -38;
+          try { storage.truncate(length); return 0; } catch (error) { return negErrno(error); }
+        },
+        host_overlay_target_len: (): bigint => {
+          const storage = this.#persistentOverlayTargetStorage;
+          if (storage === null) return -38n;
+          try { return BigInt(storage.len()); } catch (error) { return BigInt(negErrno(error)); }
+        },
+        host_overlay_target_read: (offset: bigint, ptr: KernelPointer, len: number): number => {
+          const storage = this.#persistentOverlayTargetStorage;
+          if (storage === null) return -38;
+          try {
+            const destination = this.#rustLentKernelDestination(ptr, len, "host_overlay_target_read destination");
+            return this.#readOverlayIntoDestination("overlay target", storage, offset, destination);
+          } catch (error) {
+            this.#reportStorageReadFailure("overlay target read", offset, len, error);
+            return negErrno(error);
+          }
+        },
+        host_overlay_target_write: (offset: bigint, ptr: KernelPointer, len: number): number => {
+          const storage = this.#persistentOverlayTargetStorage;
+          if (storage === null) return -38;
+          try { storage.writeAllAt(offset, this.#readKernelBytes(ptr, len)); return 0; }
+          catch (error) { return negErrno(error); }
+        },
+        host_overlay_target_flush: (): number => {
+          const storage = this.#persistentOverlayTargetStorage;
+          if (storage === null) return -38;
+          try { storage.flush(); return 0; } catch (error) { return negErrno(error); }
+        },
+        host_overlay_target_truncate: (length: bigint): number => {
+          const storage = this.#persistentOverlayTargetStorage;
+          if (storage === null) return -38;
+          try { storage.truncate(length); return 0; } catch (error) { return negErrno(error); }
+        },
+        host_overlay_compaction_len: (): bigint => {
+          const storage = this.#persistentOverlayCompactionStorage;
+          if (storage === null) return -38n;
+          try { return BigInt(storage.len()); } catch (error) { return BigInt(negErrno(error)); }
+        },
+        host_overlay_compaction_read: (offset: bigint, ptr: KernelPointer, len: number): number => {
+          const storage = this.#persistentOverlayCompactionStorage;
+          if (storage === null) return -38;
+          try {
+            const destination = this.#rustLentKernelDestination(ptr, len, "host_overlay_compaction_read destination");
+            return this.#readOverlayIntoDestination("overlay compaction", storage, offset, destination);
+          } catch (error) {
+            this.#reportStorageReadFailure("overlay compaction read", offset, len, error);
+            return negErrno(error);
+          }
+        },
+        host_overlay_compaction_write: (offset: bigint, ptr: KernelPointer, len: number): number => {
+          const storage = this.#persistentOverlayCompactionStorage;
+          if (storage === null) return -38;
+          try { storage.writeAllAt(offset, this.#readKernelBytes(ptr, len)); return 0; }
+          catch (error) { return negErrno(error); }
+        },
+        host_overlay_compaction_flush: (): number => {
+          const storage = this.#persistentOverlayCompactionStorage;
+          if (storage === null) return -38;
+          try { storage.flush(); return 0; } catch (error) { return negErrno(error); }
+        },
+        host_overlay_compaction_truncate: (length: bigint): number => {
+          const storage = this.#persistentOverlayCompactionStorage;
+          if (storage === null) return -38;
+          try { storage.truncate(length); return 0; } catch (error) { return negErrno(error); }
         },
         host_pwrite: (
           handle: bigint,
@@ -3280,21 +3396,65 @@ export class WasmPosixKernel {
     offset: bigint,
     destination: RustLentKernelDestination,
   ): number {
+    if (this.#rootfsImageProvider === undefined) return -38;
+    return this.#withStorageReadStaging("image", offset, destination.capacity,
+      staged => this.#hostImageReadWithStaging(offset, destination, staged));
+  }
+
+  #withStorageReadStaging(stage: string, offset: bigint, capacity: number, read: (bytes: Uint8Array) => number): number {
+    if (this.#storageReadStagingInUse) return -5;
+    this.#storageReadStagingInUse = true;
+    try {
+      let bytes: Uint8Array;
+      try {
+        if (capacity <= 64 * 1024) {
+          let scratch = this.#storageReadStaging;
+          if (scratch === null || intrinsicApply(intrinsicTypedArrayByteLength, scratch, []) !== 64 * 1024) {
+            scratch = new IntrinsicUint8Array(64 * 1024);
+            this.#storageReadStaging = scratch;
+          }
+          intrinsicApply(intrinsicUint8ArrayFill, scratch, [0]);
+          const backing = intrinsicApply(intrinsicTypedArrayBuffer, scratch, []) as ArrayBufferLike;
+          bytes = new IntrinsicUint8Array(backing, 0, capacity);
+        } else {
+          bytes = new IntrinsicUint8Array(capacity);
+        }
+      } catch (error) {
+        this.#reportStorageReadFailure(`${stage} staging allocation`, offset, capacity, error);
+        return -12;
+      }
+      return read(bytes);
+    } finally {
+      this.#storageReadStagingInUse = false;
+    }
+  }
+
+  #readOverlayIntoDestination(stage: string, storage: PersistentOverlayStorage, offset: bigint, destination: RustLentKernelDestination): number {
+    return this.#withStorageReadStaging(stage, offset, destination.capacity, bytes => {
+      storage.readExactAt(offset, bytes);
+      if (intrinsicApply(intrinsicTypedArrayByteLength, bytes, []) !== destination.capacity) {
+        throw new KernelScratchError("persistent storage detached its read destination", 5);
+      }
+      this.#writeKernelBytes(destination, bytes);
+      return 0;
+    });
+  }
+
+  #hostImageReadWithStaging(
+    offset: bigint,
+    destination: RustLentKernelDestination,
+    staged: Uint8Array,
+  ): number {
     const provider = this.#rootfsImageProvider;
     if (provider === undefined) {
       return -38; // ENOSYS
     }
     const destinationCapacity = destination.capacity;
-    let staged: Uint8Array;
-    try {
-      staged = new IntrinsicUint8Array(destinationCapacity);
-    } catch {
-      return -12; // ENOMEM
-    }
     let result: number;
     try {
       result = provider(offset, staged);
-    } catch {
+    } catch (error) {
+      this.#reportStorageReadFailure("image provider", offset, destinationCapacity, error);
       return -5; // EIO: the provider violated its byte-source contract.
     }
     if (!Number.isSafeInteger(result) || result > destinationCapacity) {
@@ -3307,13 +3467,21 @@ export class WasmPosixKernel {
       try {
         this.#writeKernelBytes(
           destination,
-          subarrayUint8Array(staged, 0, result),
+          new IntrinsicUint8Array(intrinsicApply(intrinsicTypedArrayBuffer, staged, []) as ArrayBufferLike, 0, result),
         );
       } catch {
         return -14; // EFAULT
       }
     }
     return result;
+  }
+
+  #reportStorageReadFailure(stage: string, offset: bigint, capacity: number, error: unknown): void {
+    if (this.#reportedStorageReadFailure) return;
+    this.#reportedStorageReadFailure = true;
+    try {
+      console.warn(`[Kernel storage read] ${stage} failed at byte ${offset} for ${capacity} bytes: ${String(error).slice(0, 2000)}`);
+    } catch {}
   }
 
   /**

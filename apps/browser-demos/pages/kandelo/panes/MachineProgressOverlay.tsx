@@ -15,8 +15,13 @@ export const MachineProgressOverlay: React.FC = () => {
   const progress = useMachineProgress();
   if (progress === null) return null;
 
-  const { headline, detail, percent, valueText } =
-    formatMachineProgress(progress);
+  const rows = [formatMachineProgress(progress)];
+  if (progress.decompression !== undefined) {
+    rows.push({
+      ...formatMachineProgress({ ...progress.decompression, phase: "image", label: progress.label, unit: "bytes" }),
+      headline: `Decompressing ${progress.label}`,
+    });
+  }
 
   return (
     <div
@@ -25,23 +30,27 @@ export const MachineProgressOverlay: React.FC = () => {
       aria-live="polite"
     >
       <div className="kmprogress-card">
-        <div className="kmprogress-headline">{headline}</div>
-        <div
-          className={`kmprogress-bar${percent === null ? " indeterminate" : ""}`}
-          role="progressbar"
-          aria-label={headline}
-          {...(percent === null
-            ? { "aria-valuetext": valueText }
-            : {
-              "aria-valuenow": Math.round(percent),
-              "aria-valuemin": 0,
-              "aria-valuemax": 100,
-              "aria-valuetext": valueText,
-            })}
-        >
-          <span style={{ width: percent === null ? "44%" : `${percent}%` }} />
-        </div>
-        <div className="kmprogress-detail">{detail}</div>
+        {rows.map(({ headline, detail, percent, valueText }) => (
+          <div className="kmprogress-row" key={headline}>
+            <div className="kmprogress-headline">{headline}</div>
+            <div
+              className={`kmprogress-bar${percent === null ? " indeterminate" : ""}`}
+              role="progressbar"
+              aria-label={headline}
+              {...(percent === null
+                ? { "aria-valuetext": valueText }
+                : {
+                  "aria-valuenow": Math.round(percent),
+                  "aria-valuemin": 0,
+                  "aria-valuemax": 100,
+                  "aria-valuetext": valueText,
+                })}
+            >
+              <span style={{ width: percent === null ? "44%" : `${percent}%` }} />
+            </div>
+            <div className="kmprogress-detail">{detail}</div>
+          </div>
+        ))}
       </div>
     </div>
   );

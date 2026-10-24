@@ -360,6 +360,14 @@ export const App: React.FC = () => {
       <InternalsPopup
         activeTab={internalsTab}
         onTab={(tab) => setInternalsTab(tab as InternalsTab)}
+        onCheckpoint={host.supportsPersistentImageCheckpoint?.() && surface.status === "running"
+          ? () => {
+            if (!window.confirm("Checkpoint this persistent computer? Running processes will stop while Kandelo verifies and replaces its VFS image. Keep this tab open until it reboots.")) return;
+            void host.checkpointPersistentImage?.().catch((error) => {
+              console.warn("persistent image checkpoint failed:", error);
+            });
+          }
+          : undefined}
       />
     )
     : null;
@@ -525,7 +533,8 @@ const AudioStatusToast: React.FC<{
 const InternalsPopup: React.FC<{
   activeTab: string;
   onTab: (id: string) => void;
-}> = ({ activeTab, onTab }) => (
+  onCheckpoint?: () => void;
+}> = ({ activeTab, onTab, onCheckpoint }) => (
   <div className="kinternals-popup">
     <div className="kinternals-tabs" role="tablist" aria-label="Internals sections">
       {INSPECTOR_TABS.map((tab) => (
@@ -540,6 +549,12 @@ const InternalsPopup: React.FC<{
           {tab.label}
         </button>
       ))}
+      {onCheckpoint && (
+        <button type="button" className="kinternals-checkpoint" onClick={onCheckpoint}
+          title="Optional full-image snapshot and reboot. Normal filesystem persistence does not require this.">
+          Checkpoint image
+        </button>
+      )}
     </div>
     <Inspector tab={activeTab} showTitle={false} />
   </div>

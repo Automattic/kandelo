@@ -42,6 +42,7 @@
 use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
 use sha2::{Digest, Sha256};
+use crate::IoBuffer;
 
 /// Layout version. A reader that does not know a version refuses rather than
 /// guessing, because a misread seal is a seal that passes for the wrong bytes.
@@ -124,6 +125,73 @@ pub struct ArchivePayload {
     pub seal: SealState,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArchiveSealRef<'a> {
+    pub id: &'a [u8],
+    pub member: &'a [u8],
+    pub expected_count: u32,
+    pub cohort_digest: [u8; 32],
+    pub descriptor_digest: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SealStateRef<'a> {
+    None,
+    Pending { id: &'a [u8], member: &'a [u8], expected_count: u32 },
+    Sealed(ArchiveSealRef<'a>),
+}
+
+impl<'a> SealStateRef<'a> {
+    pub fn cohort(&self) -> Option<(&'a [u8], &'a [u8], u32)> {
+        match self {
+            Self::None => None,
+            Self::Pending { id, member, expected_count } => Some((id, member, *expected_count)),
+            Self::Sealed(seal) => Some((seal.id, seal.member, seal.expected_count)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArchivePayloadRef<'a> {
+    pub descriptor: &'a [u8],
+    pub seal: SealStateRef<'a>,
+}
+
+pub fn encode_ref(payload: &ArchivePayloadRef<'_>) -> Result<IoBuffer<u8>, Errno> {
+    u32::try_from(payload.descriptor.len()).map_err(|_| Errno::EINVAL)?;
+    let mut length = 9usize.checked_add(payload.descriptor.len()).ok_or(Errno::ENOMEM)?;
+    if let Some((id, member, _)) = payload.seal.cohort() {
+        u32::try_from(id.len()).map_err(|_| Errno::EINVAL)?;
+        u32::try_from(member.len()).map_err(|_| Errno::EINVAL)?;
+        length = length.checked_add(12).and_then(|length| length.checked_add(id.len()))
+            .and_then(|length| length.checked_add(member.len())).ok_or(Errno::ENOMEM)?;
+        if matches!(payload.seal, SealStateRef::Sealed(_)) {
+            length = length.checked_add(64).ok_or(Errno::ENOMEM)?;
+        }
+    }
+    let mut output = IoBuffer::try_with_capacity(length)?;
+    output.extend_from_slice(&PAYLOAD_VERSION.to_le_bytes());
+    output.extend_from_slice(&(payload.descriptor.len() as u32).to_le_bytes());
+    output.extend_from_slice(payload.descriptor);
+    output.push(match payload.seal {
+        SealStateRef::None => 0,
+        SealStateRef::Sealed(_) => 1,
+        SealStateRef::Pending { .. } => 2,
+    });
+    if let Some((id, member, expected_count)) = payload.seal.cohort() {
+        output.extend_from_slice(&(id.len() as u32).to_le_bytes());
+        output.extend_from_slice(id);
+        output.extend_from_slice(&(member.len() as u32).to_le_bytes());
+        output.extend_from_slice(member);
+        output.extend_from_slice(&expected_count.to_le_bytes());
+        if let SealStateRef::Sealed(seal) = payload.seal {
+            output.extend_from_slice(&seal.cohort_digest);
+            output.extend_from_slice(&seal.descriptor_digest);
+        }
+    }
+    Ok(output)
+}
+
 fn put_u32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_le_bytes());
 }
@@ -186,12 +254,16 @@ impl<'a> Reader<'a> {
         Ok(u32::from_le_bytes(word))
     }
 
-    fn bytes(&mut self) -> Result<Vec<u8>, Errno> {
+    fn bytes_ref(&mut self) -> Result<&'a [u8], Errno> {
         let len = self.u32()? as usize;
         let end = self.at.checked_add(len).ok_or(Errno::EINVAL)?;
         let slice = self.bytes.get(self.at..end).ok_or(Errno::EINVAL)?;
         self.at = end;
-        Ok(slice.to_vec())
+        Ok(slice)
+    }
+
+    fn bytes(&mut self) -> Result<Vec<u8>, Errno> {
+        Ok(self.bytes_ref()?.to_vec())
     }
 
     fn digest(&mut self) -> Result<[u8; 32], Errno> {
@@ -208,6 +280,33 @@ impl<'a> Reader<'a> {
         self.at += 1;
         Ok(value)
     }
+}
+
+pub fn decode_ref(bytes: &[u8]) -> Result<ArchivePayloadRef<'_>, Errno> {
+    if bytes.is_empty() {
+        return Ok(ArchivePayloadRef { descriptor: &[], seal: SealStateRef::None });
+    }
+    let mut reader = Reader { bytes, at: 0 };
+    if reader.u32()? != PAYLOAD_VERSION { return Err(Errno::EINVAL); }
+    let descriptor = reader.bytes_ref()?;
+    let seal = match reader.byte()? {
+        0 => SealStateRef::None,
+        1 => SealStateRef::Sealed(ArchiveSealRef {
+            id: reader.bytes_ref()?,
+            member: reader.bytes_ref()?,
+            expected_count: reader.u32()?,
+            cohort_digest: reader.digest()?,
+            descriptor_digest: reader.digest()?,
+        }),
+        2 => SealStateRef::Pending {
+            id: reader.bytes_ref()?,
+            member: reader.bytes_ref()?,
+            expected_count: reader.u32()?,
+        },
+        _ => return Err(Errno::EINVAL),
+    };
+    if reader.at != bytes.len() { return Err(Errno::EINVAL); }
+    Ok(ArchivePayloadRef { descriptor, seal })
 }
 
 /// Decode an archive payload.
@@ -315,76 +414,97 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
 /// yet — a cohort short of the count it declared, two members disagreeing about
 /// that count, one member name standing for two archives. None of them is a
 /// question about authenticity, which is what `EPERM` is reserved for.
-pub fn seal_cohorts(archives: &[(u32, Vec<u8>)]) -> Result<Vec<(u32, Vec<u8>)>, Errno> {
-    // (id, expected_count, [(archive_id, member, descriptor, descriptor_digest)])
-    struct Cohort {
-        id: Vec<u8>,
-        expected_count: u32,
-        members: Vec<(u32, Vec<u8>, Vec<u8>, [u8; 32])>,
+pub fn seal_cohorts<Bytes: AsRef<[u8]>>(archives: &[(u32, Bytes)]) -> Result<IoBuffer<(u32, IoBuffer<u8>)>, Errno> {
+    let mut cohorts = collect_cohorts(archives, false)?;
+    let count = cohorts.iter().try_fold(0usize, |count, cohort| {
+        count.checked_add(cohort.members.len()).ok_or(Errno::ENOMEM)
+    })?;
+    let mut output = IoBuffer::try_with_capacity(count)?;
+    for cohort in &mut cohorts {
+        let cohort_digest = cohort.digest()?;
+        for member in &cohort.members {
+            output.push((member.archive_id, encode_ref(&ArchivePayloadRef {
+                descriptor: member.descriptor,
+                seal: SealStateRef::Sealed(ArchiveSealRef {
+                    id: cohort.id,
+                    member: member.name,
+                    expected_count: cohort.expected_count,
+                    cohort_digest,
+                    descriptor_digest: member.descriptor_digest,
+                }),
+            })?));
+        }
     }
-    let mut cohorts: Vec<Cohort> = Vec::new();
+    Ok(output)
+}
 
-    for (archive_id, bytes) in archives {
-        let payload = decode(bytes)?;
-        let Some((id, member, expected_count)) = payload.seal.cohort() else {
-            continue;
+struct CohortMember<'a> {
+    archive_id: u32,
+    ordinal: usize,
+    name: &'a [u8],
+    descriptor: &'a [u8],
+    descriptor_digest: [u8; 32],
+}
+
+struct Cohort<'a> {
+    id: &'a [u8],
+    expected_count: u32,
+    declared_digest: Option<[u8; 32]>,
+    members: IoBuffer<CohortMember<'a>>,
+}
+
+impl Cohort<'_> {
+    fn digest(&mut self) -> Result<[u8; 32], Errno> {
+        self.members.sort_unstable_by(|left, right| left.name.cmp(right.name));
+        let mut hasher = Sha256::new();
+        hasher.update(COHORT_TAG);
+        hasher.update(u32::try_from(self.id.len()).map_err(|_| Errno::EINVAL)?.to_le_bytes());
+        hasher.update(self.id);
+        hasher.update(u32::try_from(self.members.len()).map_err(|_| Errno::EINVAL)?.to_le_bytes());
+        for member in &self.members {
+            hasher.update(u32::try_from(member.name.len()).map_err(|_| Errno::EINVAL)?.to_le_bytes());
+            hasher.update(member.name);
+            hasher.update(member.descriptor_digest);
+        }
+        self.members.sort_unstable_by_key(|member| member.ordinal);
+        Ok(hasher.finalize().into())
+    }
+}
+
+fn collect_cohorts<Bytes: AsRef<[u8]>>(archives: &[(u32, Bytes)], verify: bool) -> Result<IoBuffer<Cohort<'_>>, Errno> {
+    let refusal = if verify { Errno::EPERM } else { Errno::EINVAL };
+    let mut cohorts: IoBuffer<Cohort<'_>> = IoBuffer::new();
+    for (ordinal, (archive_id, bytes)) in archives.iter().enumerate() {
+        let payload = decode_ref(bytes.as_ref())?;
+        let Some((id, name, expected_count)) = payload.seal.cohort() else { continue; };
+        let descriptor_digest = sha256(payload.descriptor);
+        let declared_digest = if verify {
+            let SealStateRef::Sealed(seal) = payload.seal else { return Err(refusal); };
+            if descriptor_digest != seal.descriptor_digest { return Err(refusal); }
+            Some(seal.cohort_digest)
+        } else {
+            None
         };
-        let digest = sha256(&payload.descriptor);
-        let entry = (*archive_id, member.to_vec(), payload.descriptor.clone(), digest);
-        match cohorts.iter_mut().find(|cohort| cohort.id == id) {
-            None => cohorts.push(Cohort {
-                id: id.to_vec(),
-                expected_count,
-                members: alloc::vec![entry],
-            }),
-            Some(cohort) => {
-                // One cohort, one count. Two members disagreeing is a producer
-                // that changed its mind halfway, and believing either one would
-                // pick the answer by declaration order.
-                if cohort.expected_count != expected_count {
-                    return Err(Errno::EINVAL);
-                }
-                // A member name identifies an archive WITHIN the cohort, and
-                // the identity digest is taken over the names. Two archives
-                // sharing one would make the identity ambiguous.
-                if cohort.members.iter().any(|(_, name, _, _)| name == member) {
-                    return Err(Errno::EINVAL);
-                }
-                cohort.members.push(entry);
+        let member = CohortMember { archive_id: *archive_id, ordinal, name, descriptor: payload.descriptor, descriptor_digest };
+        if let Some(cohort) = cohorts.iter_mut().find(|cohort| cohort.id == id) {
+            if cohort.expected_count != expected_count || cohort.declared_digest != declared_digest
+                || cohort.members.iter().any(|member| member.name == name)
+            {
+                return Err(refusal);
             }
+            cohort.members.try_push(member)?;
+        } else {
+            let mut members = IoBuffer::new();
+            members.try_push(member)?;
+            cohorts.try_push(Cohort { id, expected_count, declared_digest, members })?;
         }
     }
-
-    let mut out = Vec::new();
-    for cohort in cohorts.iter() {
-        if u32::try_from(cohort.members.len()).map_err(|_| Errno::EINVAL)?
-            != cohort.expected_count
-        {
-            return Err(Errno::EINVAL);
-        }
-        let mut identity: Vec<(Vec<u8>, [u8; 32])> = cohort
-            .members
-            .iter()
-            .map(|(_, member, _, digest)| (member.clone(), *digest))
-            .collect();
-        let cohort_digest = sha256(&cohort_identity(&cohort.id, &mut identity)?);
-        for (archive_id, member, descriptor, descriptor_digest) in cohort.members.iter() {
-            out.push((
-                *archive_id,
-                encode(&ArchivePayload {
-                    descriptor: descriptor.clone(),
-                    seal: SealState::Sealed(ArchiveSeal {
-                        id: cohort.id.clone(),
-                        member: member.clone(),
-                        expected_count: cohort.expected_count,
-                        cohort_digest,
-                        descriptor_digest: *descriptor_digest,
-                    }),
-                })?,
-            ));
+    for cohort in &cohorts {
+        if u32::try_from(cohort.members.len()).map_err(|_| Errno::EINVAL)? != cohort.expected_count {
+            return Err(refusal);
         }
     }
-    Ok(out)
+    Ok(cohorts)
 }
 
 /// Authenticate every sealed activation cohort among a loaded image's archives.
@@ -401,14 +521,23 @@ pub fn seal_cohorts(archives: &[(u32, Vec<u8>)]) -> Result<Vec<(u32, Vec<u8>)>, 
 /// authenticate. Collapsing them would make "this image is corrupt" and "this
 /// image has been tampered with" the same event, and only one of those is a
 /// bug report.
-pub fn verify_cohorts(archives: &[(u32, Vec<u8>)]) -> Result<(), Errno> {
+pub fn verify_cohorts<Bytes: AsRef<[u8]>>(archives: &[(u32, Bytes)]) -> Result<(), Errno> {
+    let mut cohorts = collect_cohorts(archives, true)?;
+    for cohort in &mut cohorts {
+        if Some(cohort.digest()?) != cohort.declared_digest { return Err(Errno::EPERM); }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn verify_cohorts_owned<Bytes: AsRef<[u8]>>(archives: &[(u32, Bytes)]) -> Result<(), Errno> {
     // (id, expected_count, cohort_digest, members)
     let mut cohorts: Vec<(Vec<u8>, u32, [u8; 32], Vec<(Vec<u8>, [u8; 32])>)> = Vec::new();
 
     for (_archive_id, bytes) in archives {
         // Decoded ONCE. Decoding twice would let a payload that parsed
         // differently on the second read pass a check made against the first.
-        let payload = decode(bytes)?;
+        let payload = decode(bytes.as_ref())?;
         let descriptor = payload.descriptor;
         let seal = match payload.seal {
             SealState::None => continue,
@@ -464,6 +593,97 @@ pub fn verify_cohorts(archives: &[(u32, Vec<u8>)]) -> Result<(), Errno> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn borrowed_payload_encoding_matches_owned_bytes_and_rejects_the_same_truncations() {
+        for payload in [
+            ArchivePayload { descriptor: b"descriptor".to_vec(), seal: SealState::None },
+            ArchivePayload {
+                descriptor: b"pending descriptor".to_vec(),
+                seal: SealState::Pending { id: b"group".to_vec(), member: b"member".to_vec(), expected_count: 2 },
+            },
+            sealed(b"group", b"member", 1, b"sealed descriptor"),
+        ] {
+            let expected = encode(&payload).unwrap();
+            let borrowed = decode_ref(&expected).unwrap();
+            assert_eq!(encode_ref(&borrowed).unwrap(), expected);
+            for end in 1..expected.len() {
+                assert_eq!(decode_ref(&expected[..end]), Err(Errno::EINVAL));
+            }
+            let mut trailing = expected.clone();
+            trailing.push(0);
+            assert_eq!(decode_ref(&trailing), Err(Errno::EINVAL));
+        }
+    }
+
+    #[test]
+    fn cohort_verification_borrows_large_fields_under_a_small_scratch_budget() {
+        let name = alloc::vec![b'n'; 128 * 1024];
+        let descriptor = alloc::vec![b'd'; 256 * 1024];
+        let archives = seal_cohort(&name, &[(&name, &descriptor)], 1);
+        assert_eq!(verify_cohorts_owned(&archives), Ok(()));
+        let before = crate::io_buffer::IO_MEMORY.usage().0;
+        let _budget = crate::io_buffer::test_budget(before + 4096);
+        assert_eq!(verify_cohorts(&archives), Ok(()));
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, before);
+        assert_eq!(seal_cohorts(&archives), Err(Errno::ENOMEM));
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, before);
+    }
+
+    #[test]
+    fn cohort_sealing_preserves_canonical_bytes_and_admission_through_iteration() {
+        let first = seal_cohort(b"first", &[(b"z", b"desc-z"), (b"a", b"desc-a")], 2);
+        let second = seal_cohort(b"second", &[(b"m", b"desc-m")], 1);
+        let archives = alloc::vec![first[0].clone(), (3, second[0].1.clone()), first[1].clone()];
+        let before = crate::io_buffer::IO_MEMORY.usage().0;
+        let sealed = seal_cohorts(&archives).unwrap();
+        assert_eq!(sealed[0].0, archives[0].0);
+        assert_eq!(sealed[1].0, archives[2].0);
+        assert_eq!(sealed[2].0, archives[1].0);
+        assert_eq!(sealed[0].1, archives[0].1);
+        assert_eq!(sealed[1].1, archives[2].1);
+        assert_eq!(sealed[2].1, archives[1].1);
+        let mut iterator = sealed.into_iter();
+        let (_, payload) = iterator.next().unwrap();
+        drop(iterator);
+        assert!(crate::io_buffer::IO_MEMORY.usage().0 >= before + payload.len() * 2);
+        drop(payload);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, before);
+        for limit in [0, 512, 1024, 1536, 2048, 4096, 8192] {
+            let _budget = crate::io_buffer::test_budget(before + limit);
+            let result = seal_cohorts(&archives);
+            match result {
+                Ok(payloads) => {
+                    assert_eq!(payloads[0].1, archives[0].1);
+                    assert_eq!(payloads[1].1, archives[2].1);
+                    assert_eq!(payloads[2].1, archives[1].1);
+                    drop(payloads);
+                }
+                Err(error) => assert_eq!(error, Errno::ENOMEM),
+            }
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, before);
+        }
+        assert_eq!(verify_cohorts(&archives), Ok(()));
+    }
+
+    #[test]
+    fn cohort_verification_refusal_releases_scratch_without_changing_inputs() {
+        let mut archives = seal_cohort(b"group", &[(b"z", b"z"), (b"a", b"a")], 2);
+        let expected = archives.clone();
+        let before = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _budget = crate::io_buffer::test_budget(before);
+            assert_eq!(verify_cohorts(&archives), Err(Errno::ENOMEM));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, before);
+        }
+        assert_eq!(archives, expected);
+        assert_eq!(verify_cohorts(&archives), Ok(()));
+        let mut payload = decode(&archives[1].1).unwrap();
+        sealed_mut(&mut payload).member = b"z".to_vec();
+        archives[1].1 = encode(&payload).unwrap();
+        assert_eq!(verify_cohorts(&archives), verify_cohorts_owned(&archives));
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, before);
+    }
 
     /// Reach the seal of a payload the test itself just sealed. Panicking on
     /// any other state is the point: a test that meant to perturb a seal and

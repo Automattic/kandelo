@@ -17,8 +17,9 @@
 //!
 //! Each object also reports a *content generation* that its storage layer
 //! advances on every write, truncation and `O_TRUNC` open. Because every
-//! writer of these files runs in the kernel, comparing it is enough for the
-//! mapping table to see descriptor I/O, without a hook in each file syscall.
+//! writer of these files runs in the kernel, comparing it detects descriptor
+//! I/O. Truncation also notifies the mapping table at publication so a later
+//! growth cannot conceal an intervening shrink from pending dirty bytes.
 
 use alloc::string::String;
 use wasm_posix_shared::Errno;
@@ -83,6 +84,12 @@ pub fn mapping_handle_for(file_type: FileType, host_handle: i64) -> Option<i64> 
 /// Whether `handle` is a kernel mapping handle rather than a host handle.
 pub fn is_kernel_mapping_handle(handle: i64) -> bool {
     decode(handle).is_ok()
+}
+
+pub(crate) fn notify_truncated(file_type: FileType, host_handle: i64, size: u64) {
+    if let Some(handle) = mapping_handle_for(file_type, host_handle) {
+        unsafe { crate::memory::global_shared_mapping_table() }.notify_file_truncated(handle, size);
+    }
 }
 
 /// The backing key for a kernel mapping handle.
@@ -158,13 +165,7 @@ pub fn pwrite(handle: i64, offset: u64, src: &[u8], host: &mut dyn HostIO) -> Re
         Object::MemFd(index) => with_memfds(|table| {
             let backing = table.get_mut(index).ok_or(Errno::EBADF)?;
             let start = usize::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
-            let end = start.checked_add(src.len()).ok_or(Errno::EFBIG)?;
-            if end > backing.data.len() {
-                backing.data.resize(end, 0);
-            }
-            backing.data[start..end].copy_from_slice(src);
-            backing.touch_modified();
-            Ok(src.len())
+            backing.write_at(start, src)
         }),
     }
 }
@@ -257,7 +258,7 @@ mod tests {
     fn a_memfd_stays_readable_through_a_pin_after_its_last_descriptor() {
         let index = with_memfds(|table| {
             let mut backing = crate::descriptor_backing::MemFdBacking::new();
-            backing.data = b"abc".to_vec();
+            backing.data = crate::IoBuffer::copy_from(b"abc").unwrap();
             table.alloc(backing)
         });
         let ofd_handle = -((index as i64) + 1);

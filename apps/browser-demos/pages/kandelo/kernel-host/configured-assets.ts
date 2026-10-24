@@ -1,6 +1,11 @@
-import { writeVfsBinary } from "../../../../../host/src/vfs/image-helpers";
+import { ensureDirRecursive } from "../../../../../host/src/vfs/image-helpers";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import type { KandeloImageFs } from "../../../../../images/vfs/lib/kandelo-image-fs";
 import type { DemoAssetConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
+import { ERRNO } from "../../../../../host/src/generated/abi";
+
+export const MAX_CONFIGURED_ASSET_BYTES = 32 * 1024 * 1024;
 
 const DEV_CORS_PROXY_PATH = import.meta.env.BASE_URL + "__kandelo_cors_proxy";
 
@@ -11,26 +16,57 @@ export async function stageConfiguredAssets(
   tick: (message: string) => void,
   assertCurrent: () => void,
 ): Promise<void> {
+  let stagedBytes = 0;
   for (const asset of assets) {
     tick(`staging ${asset.path}...`);
     const response = await fetch(demoAssetFetchUrl(asset));
     if (!response.ok) {
-      throw new Error(
+      const failure = new Error(
         `fetch failed for ${asset.path}: ${response.status} ${response.statusText}`,
       );
+      try { await response.body?.cancel(failure); }
+      catch (cleanup) { throw new AggregateError([failure, cleanup], "Asset response and cancellation failed"); }
+      throw failure;
     }
-    const buffer = await response.arrayBuffer();
-    assertCurrent();
-    if (asset.sha256) {
-      const digest = await sha256Hex(buffer);
+    const reader = response.body?.getReader();
+    const hash = sha256.create();
+    let offset = 0;
+    try {
       assertCurrent();
-      if (digest !== asset.sha256) {
+      const parent = asset.path.slice(0, asset.path.lastIndexOf("/")) || "/";
+      ensureDirRecursive(fs, parent);
+      if (reader !== undefined) for (;;) {
+        const next = await reader.read();
+        assertCurrent();
+        if (next.done) break;
+        for (let start = 0; start < next.value.byteLength; start += 64 * 1024) {
+          const chunk = next.value.subarray(start, start + 64 * 1024);
+          if (!Number.isSafeInteger(offset + chunk.byteLength)) throw new Error(`Asset ${asset.path} is too large`);
+          if (chunk.byteLength > MAX_CONFIGURED_ASSET_BYTES - stagedBytes) {
+            throw Object.assign(new Error(`Configured assets exceed the ${MAX_CONFIGURED_ASSET_BYTES}-byte resident staging limit`),
+              { code: "ENOMEM", errno: ERRNO.ENOMEM });
+          }
+          stagedBytes += chunk.byteLength;
+          hash.update(chunk);
+          fs.writeFileChunk(asset.path, offset, chunk, asset.mode ?? 0o644, offset === 0);
+          offset += chunk.byteLength;
+        }
+      }
+      if (offset === 0) fs.writeFileChunk(asset.path, 0, new Uint8Array(0), asset.mode ?? 0o644, true);
+      const digest = bytesToHex(hash.digest());
+      assertCurrent();
+      if (asset.sha256 !== undefined && digest !== asset.sha256) {
         throw new Error(
           `${asset.path} sha256 mismatch: expected ${asset.sha256}, got ${digest}`,
         );
       }
+    } catch (error) {
+      try { await reader?.cancel(error); }
+      catch (cleanup) { throw new AggregateError([error, cleanup], "Asset intake and cancellation failed"); }
+      throw error;
+    } finally {
+      reader?.releaseLock();
     }
-    writeVfsBinary(fs, asset.path, new Uint8Array(buffer), asset.mode ?? 0o644);
   }
 }
 
@@ -61,11 +97,4 @@ function demoAssetFetchUrl(asset: DemoAssetConfig): string {
   const proxyUrl = new URL(DEV_CORS_PROXY_PATH, window.location.href);
   proxyUrl.searchParams.set("url", asset.url);
   return proxyUrl.href;
-}
-
-async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
 }

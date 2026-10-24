@@ -61,7 +61,6 @@ export class BrowserProcessMemoryFactory {
       const finish = (
         error?: Error,
         memory?: WebAssembly.Memory,
-        retryInOwnerRealm = false,
       ) => {
         if (finished) return;
         finished = true;
@@ -76,20 +75,6 @@ export class BrowserProcessMemoryFactory {
           } catch (terminationError) {
             error ??= terminationError instanceof Error
               ? terminationError : new Error(String(terminationError));
-            retryInOwnerRealm = false;
-          }
-        }
-        if (retryInOwnerRealm) {
-          // JavaScriptCore retries native allocation by collecting the caller's
-          // VM. A disposable VM cannot collect retired wrappers in the owning
-          // kernel VM. Make one final attempt there, after the worker is gone;
-          // admission, ceilings, freshness and rollback remain the allocator's.
-          try {
-            memory = createProcessMemory(request);
-            error = undefined;
-          } catch (ownerError) {
-            error = ownerError instanceof Error
-              ? ownerError : new Error(String(ownerError));
           }
         }
         if (error) reject(error);
@@ -106,10 +91,11 @@ export class BrowserProcessMemoryFactory {
           if (event.data?.memory instanceof WebAssembly.Memory) {
             finish(undefined, event.data.memory);
           } else {
-            finish(new Error(typeof event.data?.error === "string"
-              ? event.data.error : "Invalid process memory reply"), undefined,
-              typeof event.data?.error === "string"
-                && event.data.constructorErrorName === "RangeError");
+            const message = typeof event.data?.error === "string"
+              ? event.data.error : "Invalid process memory reply";
+            finish(typeof event.data?.error === "string"
+              && event.data.constructorErrorName === "RangeError"
+              ? new RangeError(message) : new Error(message));
           }
         };
         worker.onerror = (event) => finish(new Error(event.message));

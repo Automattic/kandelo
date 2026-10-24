@@ -1,4 +1,5 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { StorageMemoryBudget, STORAGE_ENTRY_BYTES } from "../src/vfs/storage-memory-budget";
 import {
   buildRootfsLazyWiring,
   waitForDeferredFetch,
@@ -17,6 +18,17 @@ import {
  * microtask-queueing changes around thenable resolution. */
 function flushMicrotasks(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function gatedFetcher(bytes: Uint8Array | Error) {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const fetcher = async (): Promise<Uint8Array> => {
+    await gate;
+    if (bytes instanceof Error) throw bytes;
+    return bytes;
+  };
+  return { fetcher, release };
 }
 
 type DeferredProvider = (
@@ -38,6 +50,124 @@ function archiveReaderOf(
 }
 
 describe("buildRootfsLazyWiring", () => {
+  it("reclaims timed waiters without accumulating promise reactions on a pending fetch", async () => {
+    vi.useFakeTimers();
+    const budget = new StorageMemoryBudget(32 * 1024);
+    const { fetcher, release } = gatedFetcher(new Uint8Array([7]));
+    const wiring = buildRootfsLazyWiring(fetcher, undefined, budget);
+    try {
+      expect(wiring.deferredProvider("u", 0n, new Uint8Array(1))).toBe(-11);
+      const signal = wiring.whenFetchSettles()!;
+      const baseline = budget.used;
+      const reactions = vi.spyOn(signal, "then");
+      for (let iteration = 0; iteration < 1_000; iteration++) {
+        expect(wiring.whenFetchSettles()).toBe(signal);
+        const wait = waitForDeferredFetch(signal, 1);
+        expect(budget.used).toBeGreaterThan(baseline);
+        await vi.advanceTimersByTimeAsync(1);
+        await wait;
+        expect(budget.used).toBe(baseline);
+      }
+      expect(reactions).not.toHaveBeenCalled();
+      reactions.mockRestore();
+      release();
+      await signal;
+      wiring.dispose();
+      expect(budget.used).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { release(); wiring.dispose(); vi.useRealTimers(); }
+  });
+
+  it("admits concurrent waiters before timers and permits retry after reclaim", async () => {
+    vi.useFakeTimers();
+    const budget = new StorageMemoryBudget(16 * 1024);
+    const { fetcher, release } = gatedFetcher(new Uint8Array([7]));
+    const wiring = buildRootfsLazyWiring(fetcher, undefined, budget);
+    try {
+      expect(wiring.deferredProvider("u", 0n, new Uint8Array(1))).toBe(-11);
+      const signal = wiring.whenFetchSettles()!;
+      const baseline = budget.used;
+      const occupied = budget.reserve(budget.limit - budget.used);
+      await expect(waitForDeferredFetch(signal, 100)).rejects.toMatchObject({ code: "ENOMEM" });
+      expect(budget.used).toBe(budget.limit);
+      expect(vi.getTimerCount()).toBe(0);
+      occupied.release();
+      const waits = Array.from({ length: 4 }, () => waitForDeferredFetch(signal, 100));
+      expect(vi.getTimerCount()).toBe(4);
+      expect(budget.used).toBeGreaterThan(baseline);
+      release();
+      await Promise.all(waits);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(wiring.whenFetchSettles()).toBeNull();
+      wiring.dispose();
+      expect(budget.used).toBe(0);
+    } finally { release(); wiring.dispose(); vi.useRealTimers(); }
+  });
+
+  it("replaces a completed cohort signal while another fetch remains pending", async () => {
+    const first = gatedFetcher(new Uint8Array([1]));
+    const second = gatedFetcher(new Uint8Array([2]));
+    const budget = new StorageMemoryBudget(32 * 1024);
+    const wiring = buildRootfsLazyWiring(uri => uri === "a" ? first.fetcher() : second.fetcher(), undefined, budget);
+    expect(wiring.deferredProvider("a", 0n, new Uint8Array(1))).toBe(-11);
+    expect(wiring.deferredProvider("b", 0n, new Uint8Array(1))).toBe(-11);
+    const initial = wiring.whenFetchSettles()!;
+    const wait = waitForDeferredFetch(initial, 10_000);
+    first.release();
+    await wait;
+    const next = wiring.whenFetchSettles()!;
+    expect(next).not.toBeNull();
+    expect(next).not.toBe(initial);
+    wiring.dispose();
+    expect(budget.used).toBeGreaterThan(0);
+    second.release();
+    await next;
+    expect(budget.used).toBe(0);
+  });
+
+  it("refuses slot admission before starting transport and retries after shared credit reclamation", async () => {
+    const budget = new StorageMemoryBudget(8192);
+    const occupied = budget.reserve(4096);
+    let calls = 0;
+    const wiring = buildRootfsLazyWiring(async () => { calls++; return new Uint8Array([7]); }, undefined, budget);
+    const baseline = budget.used;
+    expect(wiring.deferredProvider("uri", 0n, new Uint8Array(1))).toBe(-12);
+    expect(wiring.deferredProvider("uri", 0n, new Uint8Array(1))).toBe(-12);
+    expect(calls).toBe(0);
+    expect(budget.used).toBe(baseline);
+    occupied.release();
+    expect(wiring.deferredProvider("uri", 0n, new Uint8Array(1))).toBe(-11);
+    await wiring.whenFetchSettles();
+    const result = new Uint8Array(1);
+    expect(wiring.deferredProvider("uri", 0n, result)).toBe(1);
+    expect(result[0]).toBe(7);
+    expect(calls).toBe(1);
+    wiring.discardDeferred("uri");
+    expect(budget.used).toBe(2 * STORAGE_ENTRY_BYTES);
+    wiring.dispose();
+    expect(budget.used).toBe(0);
+  });
+
+  it("retains pending ownership through disposal and rejects late publication", async () => {
+    const budget = new StorageMemoryBudget(8192);
+    let complete!: (bytes: Uint8Array) => void;
+    const fetch = new Promise<Uint8Array>(resolve => { complete = resolve; });
+    const progress: string[] = [];
+    const wiring = buildRootfsLazyWiring(() => fetch, event => { progress.push(event.status); }, budget);
+    expect(wiring.deferredProvider("uri", 0n, new Uint8Array(1))).toBe(-11);
+    const settled = wiring.whenFetchSettles();
+    expect(settled).not.toBeNull();
+    wiring.dispose();
+    expect(budget.used).toBeGreaterThan(0);
+    expect(wiring.deferredProvider("uri", 0n, new Uint8Array(1))).toBe(-5);
+    complete(new Uint8Array([7]));
+    await settled;
+    expect(budget.used).toBe(0);
+    expect(progress).toEqual(["started"]);
+    expect(wiring.deferredProvider("uri", 0n, new Uint8Array(1))).toBe(-5);
+    wiring.dispose();
+    expect(budget.used).toBe(0);
+  });
   const ARCHIVE_SIZE = 20;
   const archiveBytes = new Uint8Array(ARCHIVE_SIZE);
   for (let i = 0; i < ARCHIVE_SIZE; i++) archiveBytes[i] = i;
@@ -234,17 +364,6 @@ describe("one address space, so nothing needs routing", () => {
 // fetch is in flight, and it settles only AFTER the slot holds the answer, so
 // the retry it releases reads bytes rather than EAGAIN again.
 describe("deferred fetch settlement", () => {
-  function gatedFetcher(bytes: Uint8Array | Error) {
-    let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    const fetcher = async (): Promise<Uint8Array> => {
-      await gate;
-      if (bytes instanceof Error) throw bytes;
-      return bytes;
-    };
-    return { fetcher, release };
-  }
-
   it("is null with nothing in flight, and settles after the bytes are servable", async () => {
     const { fetcher, release } = gatedFetcher(new Uint8Array([7, 8, 9]));
     const { deferredProvider, whenFetchSettles } = buildRootfsLazyWiring(fetcher);

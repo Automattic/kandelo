@@ -9,9 +9,13 @@ description = "Standalone wasm entry point for building VFS images from a host b
 name = "kandelo_image_module"
 crate-type = ["cdylib", "rlib"]
 
+[features]
+positioned-image = ["dep:spin"]
+
 [dependencies]
 runtime-core = { path = "../runtime-core" }
 wasm-posix-shared = { path = "../shared" }
+spin = { version = "=0.12.2", default-features = false, features = ["mutex", "spin_mutex"], optional = true }
 # `default-features = false` for no_std, exactly as `crates/fork-codec` takes
 # it: this module is a no_std + alloc unit and must stay one.
 sha2 = { version = "0.10", default-features = false }

@@ -11,6 +11,7 @@
 // WebKit's collector to reclaim it between boots.
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import imageModuleUrl from "@kandelo-image-module32-wasm?url";
+import positionedImageModuleUrl from "@kandelo-image-module-positioned32-wasm?url";
 import { overlayEtcFromRootfs } from "../../../images/vfs/lib/rootfs-etc-overlay";
 import { isWebKitLikeBrowser } from "./browser-engine";
 
@@ -110,6 +111,18 @@ export function ensureImageWriterInstalled(): Promise<void> {
     KandeloImageFs.installModuleBytes(new Uint8Array(await response.arrayBuffer()));
   })();
   return moduleInstall;
+}
+
+let positionedModuleBytes: Promise<Uint8Array> | null = null;
+export function loadPositionedImageWriterModuleBytes(): Promise<Uint8Array> {
+  positionedModuleBytes ??= (async () => {
+    const response = await fetch(positionedImageModuleUrl);
+    if (!response.ok) {
+      throw new Error(`failed to fetch the positioned VFS image writer (${response.status})`);
+    }
+    return new Uint8Array(await response.arrayBuffer());
+  })();
+  return positionedModuleBytes;
 }
 
 /**

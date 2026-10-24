@@ -199,6 +199,54 @@ the measurement window or limits. The Node spawn-churn test uses 256
 children with unchanged 2 MiB-per-child and 64 MiB late-growth limits.
 See [the window calibration](../measurements/2026-10-20-process-memory-rss-window.md).
 
+## Playwright storage on macOS
+
+The browser-demos Playwright configuration gives WebKit a
+run-owned CoreFoundation home. WebKit's OPFS data can otherwise land in
+`~/Library/WebKit/org.webkit.Playwright/WebsiteData`, outside the temporary
+profile passed to `launchPersistentContext`. Removing that profile alone
+does not reclaim those bytes. The run-owned home stays stable across browser
+restarts in the same run and is removed after normal suite teardown.
+Use owned persistent contexts for OPFS tests and inherit the project's launch
+environment, as the existing persistence suites do. In the pinned macOS
+WebKit runner, a new nonpersistent context can reject even
+`navigator.storage.getDirectory()` with an `UnknownError`; a subsequent
+cleanup request can then stall. Diagnose the fixture's storage access before
+attributing that failure to filesystem recovery or masking it with retries.
+Firefox's separate home-directory workaround is unchanged: macOS privacy
+protection can reject traversal of its standard user directories, even in
+an isolated home. Do not bypass those protections with a blanket sweeper.
+
+WebKit also creates `FileSystemWritableStream*` staging copies in the macOS
+temporary directory's
+`com.apple.WebKit.Networking+org.webkit.Playwright` subdirectory. These are
+file contents, not diagnostic logs. Changing `TMPDIR` does not redirect this
+Darwin-managed directory; see
+[WebKit's temporary-file implementation](https://github.com/WebKit/WebKit/blob/main/Source/WTF/wtf/cocoa/FileSystemCocoa.mm).
+Teardown removes only matching regular,
+single-linked, current-user files absent from the pre-run inventory. It
+refuses cleanup while a Playwright WebKit process is running, checks open
+descriptors with the macOS system `lsof`, and rechecks file identity before
+unlinking. Inspection failures leave the files untouched and emit a warning.
+It never sweeps the whole shared directory or the existing global data store.
+
+Set `KANDELO_PLAYWRIGHT_KEEP_STORAGE=1` inside the dev shell to retain a run
+for diagnosis. For a one-shot command, pass it after the environment boundary:
+`scripts/dev-shell.sh env KANDELO_PLAYWRIGHT_KEEP_STORAGE=1 ...`.
+Do not change the shared dev-shell keep-list just for this browser-runner
+option: that script is a declared toolchain input to every package cache key.
+A killed
+runner cannot execute teardown, and concurrent WebKit runs may defer cleanup;
+retained roots and preexisting shared-directory files need separate, explicit
+inspection before removal. Do not delete an active browser's profile or OPFS
+store to reclaim test space. This housekeeping does not change Kandelo's
+persistence, durability or crash-recovery semantics.
+
+`npm run test:unit` includes the cleanup safety tests. On macOS, run
+`npx playwright test test/playwright-storage.spec.ts --project=webkit` to
+check real OPFS writes and strict reopen in the isolated home. That regression
+is explicitly macOS/WebKit-only; other platforms and engines skip it.
+
 ## Waiting on long builds and suites
 
 `./run.sh setup`, `local-build`, full Vitest, and the conformance suites can

@@ -1,8 +1,8 @@
 extern crate alloc;
 
-use alloc::boxed::Box;
-use alloc::collections::{BTreeMap, VecDeque};
-use alloc::rc::Rc;
+#[cfg(test)]
+use crate::IoBox as Box;
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell, UnsafeCell};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -10,7 +10,11 @@ use wasm_posix_shared::Errno;
 use wasm_posix_shared::flags::{O_ACCMODE, O_APPEND, O_NONBLOCK, O_PATH};
 
 use crate::fd::FdTable;
+use crate::io_buffer::IoBuffer;
+use crate::io_owner::{IoRc, IoBox};
+use crate::metadata_budget::MetadataBytes;
 use crate::lock::{FileId, OfdId};
+use crate::prepared_map::{PreparedEntry, PreparedMap};
 
 // OFD table slots are process-local and reusable, so they cannot identify an
 // open file description across fork or over its lifetime. Keep a separate
@@ -24,14 +28,14 @@ static LAST_OFD_ID: AtomicU64 = AtomicU64::new(0);
 /// descriptor-lifetime state.  A high-water `Vec` avoids allocator churn in
 /// the Wasm kernel while the sorted OfdId key keeps lookups bounded by the
 /// number of simultaneously in-flight descriptions.
-struct InFlightOfdRefs(UnsafeCell<Option<Vec<(OfdId, u32)>>>);
+struct InFlightOfdRefs(UnsafeCell<Option<IoBuffer<(OfdId, u32)>>>);
 unsafe impl Sync for InFlightOfdRefs {}
 
 static IN_FLIGHT_OFD_REFS: InFlightOfdRefs = InFlightOfdRefs(UnsafeCell::new(None));
 
-fn in_flight_ofd_refs() -> &'static mut Vec<(OfdId, u32)> {
+fn in_flight_ofd_refs() -> &'static mut IoBuffer<(OfdId, u32)> {
     let slot = unsafe { &mut *IN_FLIGHT_OFD_REFS.0.get() };
-    slot.get_or_insert_with(Vec::new)
+    slot.get_or_insert_with(IoBuffer::new)
 }
 
 fn allocate_ofd_id() -> OfdId {
@@ -50,16 +54,25 @@ fn observe_ofd_id(id: OfdId) {
 
 /// Add one SCM_RIGHTS queue reference for an existing open description.
 pub fn retain_in_flight_ofd(id: OfdId) -> Result<(), Errno> {
+    retain_queued_reference(in_flight_ofd_refs(), id)
+}
+
+fn retain_queued_reference(refs: &mut IoBuffer<(OfdId, u32)>, id: OfdId) -> Result<(), Errno> {
     if id.0 == 0 {
         return Err(Errno::EINVAL);
     }
-    let refs = in_flight_ofd_refs();
     match refs.binary_search_by_key(&id, |(candidate, _)| *candidate) {
         Ok(index) => {
             refs[index].1 = refs[index].1.checked_add(1).ok_or(Errno::EOVERFLOW)?;
         }
         Err(index) => {
-            refs.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+            if refs.len() == refs.capacity() {
+                let capacity = refs.len().checked_add(1).ok_or(Errno::ENOMEM)?
+                    .max(refs.capacity().saturating_mul(2));
+                refs.reserve_with(capacity, |replacement| {
+                    replacement.try_reserve_exact(capacity).map_err(|_| Errno::ENOMEM)
+                })?;
+            }
             refs.insert(index, (id, 1));
         }
     }
@@ -69,7 +82,10 @@ pub fn retain_in_flight_ofd(id: OfdId) -> Result<(), Errno> {
 /// Drop one SCM_RIGHTS queue reference. Returns true when no queued reference
 /// for this identity remains.
 pub fn release_in_flight_ofd(id: OfdId) -> bool {
-    let refs = in_flight_ofd_refs();
+    release_queued_reference(in_flight_ofd_refs(), id)
+}
+
+fn release_queued_reference(refs: &mut IoBuffer<(OfdId, u32)>, id: OfdId) -> bool {
     let Ok(index) = refs.binary_search_by_key(&id, |(candidate, _)| *candidate) else {
         debug_assert!(false, "released an OfdId without an in-flight reference");
         return false;
@@ -79,6 +95,9 @@ pub fn release_in_flight_ofd(id: OfdId) -> bool {
         false
     } else {
         refs.remove(index);
+        if refs.is_empty() {
+            *refs = IoBuffer::new_in(refs.budget());
+        }
         true
     }
 }
@@ -87,6 +106,45 @@ pub fn has_in_flight_ofd(id: OfdId) -> bool {
     in_flight_ofd_refs()
         .binary_search_by_key(&id, |(candidate, _)| *candidate)
         .is_ok()
+}
+
+pub(crate) struct InheritedOfdRefs {
+    counts: IoBuffer<(usize, u32)>,
+    pub(crate) descriptor_count: usize,
+}
+
+impl InheritedOfdRefs {
+    pub(crate) fn prepare(table: &OfdTable, fds: &FdTable, excluded_flags: u32) -> Result<Self, Errno> {
+        let descriptor_count = fds.iter().filter(|(_, entry)| entry.fd_flags & excluded_flags == 0).count();
+        let mut counts = IoBuffer::allocate(descriptor_count, false, |counts| {
+            counts.try_reserve_exact(descriptor_count).map_err(|_| Errno::ENOMEM)
+        })?;
+        for (_, entry) in fds.iter().filter(|(_, entry)| entry.fd_flags & excluded_flags == 0) {
+            let index = entry.ofd_ref.0;
+            if table.get(index).is_none() { return Err(Errno::EBADF); }
+            counts.push((index, 1u32));
+        }
+        counts.sort_unstable_by_key(|(index, _)| *index);
+        let mut unique = 0;
+        for read in 0..counts.len() {
+            let (index, count) = counts[read];
+            if unique > 0 && counts[unique - 1].0 == index {
+                counts[unique - 1].1 = counts[unique - 1].1.checked_add(count).ok_or(Errno::EOVERFLOW)?;
+            } else {
+                counts[unique] = (index, count);
+                unique += 1;
+            }
+        }
+        counts.truncate(unique);
+        Ok(Self { counts, descriptor_count })
+    }
+
+    pub(crate) fn count(&self, index: usize) -> u32 {
+        self.counts.binary_search_by_key(&index, |(candidate, _)| *candidate)
+            .map(|position| self.counts[position].1).unwrap_or(0)
+    }
+
+    pub(crate) fn len(&self) -> usize { self.counts.len() }
 }
 
 // ── Global host handle refcount table ──
@@ -100,23 +158,83 @@ pub fn has_in_flight_ofd(id: OfdId) -> bool {
 // This prevents fork children from invalidating host file handles that the
 // parent (or other children) still use.
 
-struct HostHandleRefs(UnsafeCell<Option<BTreeMap<i64, u32>>>);
+struct HostHandleRefs(UnsafeCell<PreparedMap<i64, u32>>);
 unsafe impl Sync for HostHandleRefs {}
 
-static HOST_HANDLE_REFS: HostHandleRefs = HostHandleRefs(UnsafeCell::new(None));
+static HOST_HANDLE_REFS: HostHandleRefs = HostHandleRefs(UnsafeCell::new(PreparedMap::new()));
 
-fn get_host_handle_refs() -> &'static mut BTreeMap<i64, u32> {
-    let opt = unsafe { &mut *HOST_HANDLE_REFS.0.get() };
-    opt.get_or_insert_with(BTreeMap::new)
+fn get_host_handle_refs() -> &'static mut PreparedMap<i64, u32> {
+    unsafe { &mut *HOST_HANDLE_REFS.0.get() }
 }
 
 /// Register that a host handle is now shared by one more process (fork).
 /// If the handle is being forked for the first time, sets count to 2
 /// (parent + child). Otherwise increments by 1.
-pub fn host_handle_fork_ref(h: i64) {
+pub fn host_handle_fork_ref(handle: i64) -> Result<(), Errno> {
     let refs = get_host_handle_refs();
-    let count = refs.entry(h).or_insert(1); // 1 = the parent already has it
-    *count += 1; // +1 for the child
+    if let Some(count) = refs.get_mut(&handle) {
+        *count = count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        return Ok(());
+    }
+    let reservation = PreparedEntry::<i64, u32>::reserve_in(&crate::io_buffer::IO_MEMORY, 0)?;
+    let entry = PreparedEntry::new_reserved_in(&crate::io_buffer::IO_MEMORY, handle, 2, reservation)?;
+    refs.insert_prepared(entry);
+    Ok(())
+}
+
+pub(crate) struct PreparedHostHandleRefs {
+    entries: IoBuffer<(i64, u32, Option<PreparedEntry<i64, u32>>)>,
+}
+
+fn inherited_host_handle(ofd: &OpenFileDesc) -> Option<i64> {
+    (ofd.host_handle >= 0 && matches!(ofd.file_type,
+        FileType::Regular | FileType::Directory | FileType::CharDevice | FileType::Pipe))
+        .then_some(ofd.host_handle)
+}
+
+impl PreparedHostHandleRefs {
+    pub(crate) fn prepare(table: &OfdTable) -> Result<Self, Errno> {
+        let count = table.iter().filter_map(|(_, ofd)| inherited_host_handle(ofd)).count();
+        let mut entries = IoBuffer::try_with_capacity(count)?;
+        for (_, ofd) in table.iter() {
+            if let Some(handle) = inherited_host_handle(ofd) { entries.push((handle, 1u32, None)); }
+        }
+        entries.sort_unstable_by_key(|entry| entry.0);
+        let mut unique = 0;
+        for read in 0..entries.len() {
+            let handle = entries[read].0;
+            if unique > 0 && entries[unique - 1].0 == handle {
+                entries[unique - 1].1 = entries[unique - 1].1.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+            } else {
+                entries[unique] = (handle, 1, None);
+                unique += 1;
+            }
+        }
+        entries.truncate(unique);
+        let refs = get_host_handle_refs();
+        for (handle, count, prepared) in &mut entries {
+            let current = refs.get(handle).copied();
+            *count = current.unwrap_or(1).checked_add(*count).ok_or(Errno::EOVERFLOW)?;
+            if current.is_none() {
+                let reservation = PreparedEntry::<i64, u32>::reserve_in(&crate::io_buffer::IO_MEMORY, 0)?;
+                *prepared = Some(PreparedEntry::new_reserved_in(&crate::io_buffer::IO_MEMORY,
+                    *handle, *count, reservation)?);
+            }
+        }
+        Ok(Self { entries })
+    }
+
+    pub(crate) fn publish(self) {
+        let refs = get_host_handle_refs();
+        for (handle, count, prepared) in self.entries {
+            if let Some(prepared) = prepared {
+                assert!(!refs.contains_key(&handle), "prepared host handle changed before publication");
+                refs.insert_prepared(prepared);
+            } else {
+                *refs.get_mut(&handle).expect("prepared host handle disappeared") = count;
+            }
+        }
+    }
 }
 
 /// Decrement the cross-process refcount for a host handle.
@@ -127,7 +245,7 @@ pub fn host_handle_close_ref(h: i64) -> bool {
     if let Some(count) = refs.get_mut(&h) {
         *count -= 1;
         if *count == 0 {
-            refs.remove(&h);
+            drop(refs.remove_entry(&h));
             return true;
         }
         return false;
@@ -222,10 +340,10 @@ const _: () = assert!(
 /// the same `DriFdState`; a fresh `open()` yields a new OFD with
 /// `DriFdState::default()`. This matches Linux per-fd handle
 /// namespacing.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct DriFdState {
     /// GEM-handle → global `BoId` map for this fd.
-    pub handles: BTreeMap<u32, crate::dri::BoId>,
+    pub handles: PreparedMap<u32, crate::dri::BoId>,
     /// Next handle id to issue on this fd. Linux numbers from 1.
     pub next_handle: u32,
     /// GL session state for this fd's renderD128 handle. `None`
@@ -237,12 +355,21 @@ pub struct DriFdState {
 impl Default for DriFdState {
     fn default() -> Self {
         DriFdState {
-            handles: BTreeMap::new(),
+            handles: PreparedMap::new(),
             next_handle: 1,
             gl: None,
         }
     }
 }
+
+impl DriFdState {
+    pub(crate) fn try_clone(&self) -> Result<Self, Errno> {
+        Ok(Self { handles: self.handles.try_clone_io()?, next_handle: self.next_handle, gl: self.gl.clone() })
+    }
+}
+
+#[cfg(test)]
+impl Clone for DriFdState { fn clone(&self) -> Self { self.try_clone().unwrap() } }
 
 /// A KMS framebuffer object — i.e. one slot in the per-fd `fbs` map,
 /// keyed by the `fb_id` MODE_ADDFB2 returned.
@@ -255,6 +382,10 @@ pub struct KmsFb {
     pub stride: u32,
 }
 
+impl crate::prepared_map::MapMemory for KmsFb {
+    fn heap_bytes(&self) -> Result<usize, Errno> { Ok(0) }
+}
+
 /// A page-flip queued by `DRM_IOCTL_MODE_PAGE_FLIP` and not yet
 /// drained as a `DRM_EVENT_FLIP_COMPLETE` to the caller.
 #[derive(Clone, Copy, Debug)]
@@ -265,22 +396,40 @@ pub struct PendingFlip {
 }
 
 /// Per-fd KMS state for `/dev/dri/card0` opens.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct KmsFdState {
     pub holds_master: bool,
     /// A visible cursor owns a BO reference independently of GEM handles.
     pub cursor_bo: Option<u32>,
-    pub fbs: BTreeMap<u32, KmsFb>,
+    pub fbs: PreparedMap<u32, KmsFb>,
     pub next_fb_id: u32,
-    pub pending_flips: Vec<PendingFlip>,
-    pub event_ring: VecDeque<u8>,
+    pub pending_flips: IoBuffer<PendingFlip>,
+    pub event_ring: crate::IoDeque<u8>,
 }
+
+impl KmsFdState {
+    pub(crate) fn prepare_flip(&mut self) -> Result<(), Errno> {
+        self.pending_flips.try_reserve(1)?;
+        let bytes = self.pending_flips.len().checked_add(1).and_then(|count| count.checked_mul(32)).ok_or(Errno::ENOMEM)?;
+        self.event_ring.try_reserve(bytes)
+    }
+
+    pub(crate) fn try_clone(&self) -> Result<Self, Errno> {
+        let pending_bytes = self.pending_flips.len().checked_mul(32).ok_or(Errno::ENOMEM)?;
+        Ok(Self { holds_master: self.holds_master, cursor_bo: self.cursor_bo, fbs: self.fbs.try_clone_io()?, next_fb_id: self.next_fb_id,
+            pending_flips: IoBuffer::copy_from(&self.pending_flips)?,
+            event_ring: self.event_ring.try_clone_with_headroom(pending_bytes)? })
+    }
+}
+
+#[cfg(test)]
+impl Clone for KmsFdState { fn clone(&self) -> Self { self.try_clone().unwrap() } }
 
 /// DRI sidecar on [`OpenFileDesc::dri_state`]. A card0 OFD needs both
 /// a GEM-handle namespace (for `MODE_ADDFB2` lookups against
 /// `PRIME_FD_TO_HANDLE`-imported bos) and a KMS scope, so the three
 /// DRI fd kinds share a single sum type.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum DriOfdState {
     /// fd allocated by `DRM_IOCTL_PRIME_HANDLE_TO_FD`.
     PrimeBo(PrimeBoState),
@@ -289,6 +438,19 @@ pub enum DriOfdState {
     /// fd from `open("/dev/dri/card0")`.
     Card { dri: DriFdState, kms: KmsFdState },
 }
+
+impl DriOfdState {
+    pub(crate) fn try_clone(&self) -> Result<Self, Errno> {
+        Ok(match self {
+            Self::PrimeBo(prime) => Self::PrimeBo(prime.clone()),
+            Self::RenderNode(dri) => Self::RenderNode(dri.try_clone()?),
+            Self::Card { dri, kms } => Self::Card { dri: dri.try_clone()?, kms: kms.try_clone()? },
+        })
+    }
+}
+
+#[cfg(test)]
+impl Clone for DriOfdState { fn clone(&self) -> Self { self.try_clone().unwrap() } }
 
 /// Per-OFD ring cap: 1024 `struct input_event` records (24 KiB).
 pub const INPUT_RING_MAX_RECORDS: usize = 1024;
@@ -324,7 +486,8 @@ pub const INPUT_RING_MAX_BYTES: usize = INPUT_RING_MAX_RECORDS * 24;
 /// consumed by whichever sharer reads first; two independent `open()`s
 /// each get their own ring and see the stream independently. Only
 /// `device` is per-descriptor immutable state safe to copy.
-#[derive(Default, Clone, Debug)]
+#[derive(Clone, Debug)]
+#[cfg_attr(test, derive(Default))]
 pub struct InputFdState {
     /// Which device this fd is bound to (0 = kbd, 1 = ptr). Cached
     /// to avoid a second `VirtualDevice` lookup on read / poll.
@@ -340,16 +503,60 @@ pub struct InputFdState {
 /// Held behind [`SharedInputRing`]'s `Rc<RefCell<…>>`; do not copy this
 /// struct across a descriptor boundary — clone the `SharedInputRing`
 /// handle so the ring stays shared.
-#[derive(Default, Clone, Debug)]
+#[derive(Debug)]
 pub struct InputRing {
     /// Ring of 24-byte `WpkInputEvent` records. Bounded at
     /// [`INPUT_RING_MAX_BYTES`].
-    pub event_ring: VecDeque<u8>,
+    pub event_ring: InputEventRing,
 
     /// Set when an event push found the ring full; cleared on the
     /// next `read()` *after* a `SYN_DROPPED` synthetic record is
     /// delivered at the head of that read's output.
     pub dropped: bool,
+    delivered_epoch: u64,
+}
+
+pub struct InputEventRing {
+    values: VecDeque<u8>,
+    _reservation: crate::metadata_budget::MetadataReservation<'static>,
+}
+
+impl InputEventRing {
+    fn try_new() -> Result<Self, Errno> {
+        let mut reservation = crate::io_buffer::reserve_payload(INPUT_RING_MAX_BYTES, false)?;
+        let mut values = VecDeque::new();
+        values.try_reserve_exact(INPUT_RING_MAX_BYTES).map_err(|_| Errno::ENOMEM)?;
+        reservation.resize(values.capacity().checked_mul(2).ok_or(Errno::ENOMEM)?)?;
+        Ok(Self { values, _reservation: reservation })
+    }
+
+    pub(crate) fn push_back(&mut self, value: u8) {
+        assert!(self.values.len() < INPUT_RING_MAX_BYTES);
+        self.values.push_back(value);
+    }
+
+    pub(crate) fn pop_front(&mut self) -> Option<u8> { self.values.pop_front() }
+}
+
+impl core::ops::Deref for InputEventRing {
+    type Target = VecDeque<u8>;
+    fn deref(&self) -> &Self::Target { &self.values }
+}
+
+impl core::fmt::Debug for InputEventRing {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { self.values.fmt(formatter) }
+}
+
+impl InputRing {
+    pub(crate) fn try_new() -> Result<Self, Errno> {
+        Ok(Self { event_ring: InputEventRing::try_new()?, dropped: false, delivered_epoch: 0 })
+    }
+
+    pub(crate) fn begin_delivery(&mut self, epoch: u64) -> bool {
+        if self.delivered_epoch == epoch { return false; }
+        self.delivered_epoch = epoch;
+        true
+    }
 }
 
 /// Exact-ownership, interior-mutable handle to one OFD's evdev ring.
@@ -359,20 +566,27 @@ pub struct InputRing {
 /// keep one `Rc`, so all descriptors of an OFD identity share a single
 /// ring. This is kernel-internal and does not change the guest/host ABI.
 #[derive(Clone, Debug)]
-pub struct SharedInputRing(Rc<RefCell<InputRing>>);
+pub struct SharedInputRing(IoRc<RefCell<InputRing>>);
 
+#[cfg(test)]
 impl Default for SharedInputRing {
     fn default() -> Self {
-        Self(Rc::new(RefCell::new(InputRing::default())))
+        Self::try_new().unwrap()
     }
 }
 
 impl SharedInputRing {
+    pub fn try_new() -> Result<Self, Errno> { Self::try_from_ring(InputRing::try_new()?) }
+
+    pub fn try_from_ring(ring: InputRing) -> Result<Self, Errno> {
+        Ok(Self(IoRc::try_new(RefCell::new(ring))?))
+    }
     /// Wrap an already-populated ring (used by fork deserialization,
     /// which reconstructs the point-in-time ring contents before the
     /// relink step re-shares the parent's live handle).
+    #[cfg(test)]
     pub fn from_ring(ring: InputRing) -> Self {
-        Self(Rc::new(RefCell::new(ring)))
+        Self::try_from_ring(ring).unwrap()
     }
 
     /// Shared read borrow of the ring.
@@ -389,16 +603,16 @@ impl SharedInputRing {
     /// out event exactly once per shared ring (parent and child that
     /// share an OFD must not each receive their own copy).
     pub fn identity(&self) -> usize {
-        Rc::as_ptr(&self.0) as *const () as usize
+        self.0.identity()
     }
 
     #[cfg(test)]
     pub fn ref_count(&self) -> usize {
-        Rc::strong_count(&self.0)
+        self.0.strong_count()
     }
 }
 
-#[derive(Clone)]
+#[cfg_attr(test, derive(Clone))]
 pub struct OpenFileDesc {
     /// Machine-wide identity of this open file description. Independent
     /// opens receive distinct IDs; dup, fork, and exec preserve an ID.
@@ -418,7 +632,7 @@ pub struct OpenFileDesc {
     pub shared_state: SharedOfdState,
     pub host_handle: i64,
     pub ref_count: u32,
-    pub path: Vec<u8>, // resolved absolute path
+    pub path: OfdPath,
     /// Host directory handle for getdents64 iteration (lazily opened).
     /// -1 means not yet opened, -2 means exhausted (EOF).
     pub dir_host_handle: i64,
@@ -435,11 +649,11 @@ pub struct OpenFileDesc {
     pub dir_pending_entry: Option<PendingDirEntry>,
     /// DRI sidecar; see [`DriOfdState`]. Boxed so non-DRI OFDs pay
     /// only one pointer slot.
-    pub dri_state: Option<Box<DriOfdState>>,
+    pub dri_state: Option<IoBox<DriOfdState>>,
     /// evdev sidecar for `/dev/input/event{0,1}` OFDs; see
     /// [`InputFdState`]. Boxed so non-evdev OFDs pay only one pointer
     /// slot. Parallel to [`Self::dri_state`] (disjoint state machines).
-    pub input_state: Option<Box<InputFdState>>,
+    pub input_state: Option<IoBox<InputFdState>>,
 }
 
 struct SharedOfdStateInner {
@@ -470,17 +684,22 @@ impl Drop for SharedOfdStateInner {
 ///
 /// This is kernel-internal and does not change the guest/host ABI.
 #[derive(Clone)]
-pub struct SharedOfdState(Rc<SharedOfdStateInner>);
+pub struct SharedOfdState(IoRc<SharedOfdStateInner>);
 
 impl SharedOfdState {
+    #[cfg(test)]
     pub fn new(status_flags: u32, offset: i64, owner_pid: u32) -> Self {
-        Self(Rc::new(SharedOfdStateInner {
+        Self::try_new(status_flags, offset, owner_pid).unwrap()
+    }
+
+    pub fn try_new(status_flags: u32, offset: i64, owner_pid: u32) -> Result<Self, Errno> {
+        Ok(Self(IoRc::try_new(SharedOfdStateInner {
             status_flags: Cell::new(status_flags),
             offset: Cell::new(offset),
             owner_pid: Cell::new(owner_pid),
             position_generation: Cell::new(0),
             epoll_identity: Cell::new(None),
-        }))
+        })?))
     }
 
     fn status_flags(&self) -> u32 {
@@ -516,14 +735,94 @@ impl SharedOfdState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
+enum PathStorage {
+    Empty,
+    Root,
+    Owned(IoRc<MetadataBytes<'static>>),
+}
+
+#[derive(Clone, Debug)]
+pub struct OfdPath(PathStorage);
+
+impl OfdPath {
+    pub const fn root() -> Self { Self(PathStorage::Root) }
+
+    pub fn copy_from(path: &[u8]) -> Result<Self, Errno> {
+        if path.is_empty() { return Ok(Self(PathStorage::Empty)); }
+        if path == b"/" { return Ok(Self::root()); }
+        Ok(Self(PathStorage::Owned(IoRc::try_new(MetadataBytes::copy_from(&crate::io_buffer::IO_MEMORY, path)?)?)))
+    }
+
+    pub fn as_slice(&self) -> &[u8] {
+        match &self.0 {
+            PathStorage::Empty => &[],
+            PathStorage::Root => b"/",
+            PathStorage::Owned(path) => path.as_ref(),
+        }
+    }
+}
+
+impl core::ops::Deref for OfdPath {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] { self.as_slice() }
+}
+
+impl AsRef<[u8]> for OfdPath {
+    fn as_ref(&self) -> &[u8] { self.as_slice() }
+}
+
+impl<Other: AsRef<[u8]> + ?Sized> PartialEq<Other> for OfdPath {
+    fn eq(&self, other: &Other) -> bool { self.as_slice() == other.as_ref() }
+}
+
+#[derive(Debug, PartialEq)]
 pub struct PendingDirEntry {
     pub ino: u64,
     pub d_type: u8,
-    pub name: Vec<u8>,
+    name: IoBuffer<u8>,
+}
+
+impl Eq for PendingDirEntry {}
+
+impl PendingDirEntry {
+    #[cfg(test)]
+    pub fn new(ino: u64, d_type: u8, name: &[u8]) -> Result<Self, Errno> {
+        let mut buffer = IoBuffer::new();
+        buffer.reserve_with(name.len(), |bytes| bytes.try_reserve_exact(name.len()).map_err(|_| Errno::ENOMEM))?;
+        buffer.extend_from_slice(name);
+        Ok(Self::from_buffer(ino, d_type, buffer))
+    }
+
+    pub(crate) fn from_buffer(ino: u64, d_type: u8, name: IoBuffer<u8>) -> Self {
+        Self { ino, d_type, name }
+    }
+
+    pub fn name(&self) -> &[u8] { &self.name }
+
+    pub(crate) fn into_parts(self) -> (u64, u8, IoBuffer<u8>) { (self.ino, self.d_type, self.name) }
+}
+
+#[cfg(test)]
+impl Clone for PendingDirEntry {
+    fn clone(&self) -> Self { Self::new(self.ino, self.d_type, self.name()).unwrap() }
 }
 
 impl OpenFileDesc {
+    fn try_clone(&self) -> Result<Self, Errno> {
+        let dri_state = self.dri_state.as_ref().map(|state| IoBox::try_new(state.try_clone()?)).transpose()?;
+        let input_state = self.input_state.as_ref().map(|state| IoBox::try_new((**state).clone())).transpose()?;
+        let mut cloned = Self {
+            ofd_id: self.ofd_id, file_id: self.file_id, file_type: self.file_type,
+            shared_state: self.shared_state.clone(), host_handle: self.host_handle,
+            ref_count: self.ref_count, path: self.path.clone(), dir_host_handle: self.dir_host_handle,
+            dir_synth_state: self.dir_synth_state, dir_entry_offset: self.dir_entry_offset,
+            dir_position_generation: self.dir_position_generation, dir_pending_entry: None,
+            dri_state, input_state,
+        };
+        cloned.reset_directory_iterator_for_reopen();
+        Ok(cloned)
+    }
     pub fn status_flags(&self) -> u32 {
         self.shared_state.status_flags()
     }
@@ -558,7 +857,7 @@ impl OpenFileDesc {
 
     #[cfg(test)]
     pub fn shared_state_ref_count(&self) -> usize {
-        Rc::strong_count(&self.shared_state.0)
+        self.shared_state.0.strong_count()
     }
 
     /// Restore object identity after fork deserialization preserved only an
@@ -667,7 +966,7 @@ impl OpenFileDesc {
         if !matches!(self.dri_state.as_deref(), Some(DriOfdState::PrimeBo(_))) {
             return None;
         }
-        match *self.dri_state.take().unwrap() {
+        match self.dri_state.take().unwrap().into_inner() {
             DriOfdState::PrimeBo(p) => Some(p),
             _ => unreachable!(),
         }
@@ -699,33 +998,53 @@ impl OpenFileDesc {
 
 }
 
-#[derive(Clone)]
 pub struct OfdTable {
-    entries: Vec<Option<OpenFileDesc>>,
+    entries: IoBuffer<OfdSlot>,
+}
+
+enum OfdSlot {
+    Free,
+    Reserved,
+    Open(OpenFileDesc),
+}
+
+pub struct PreparedOfd {
+    index: usize,
+    value: OpenFileDesc,
+}
+
+#[cfg(test)]
+impl Clone for OfdTable {
+    fn clone(&self) -> Self { self.try_clone().unwrap() }
+}
+
+impl PreparedOfd {
+    pub fn value_mut(&mut self) -> &mut OpenFileDesc { &mut self.value }
 }
 
 impl OfdTable {
     pub fn new() -> Self {
         OfdTable {
-            entries: Vec::new(),
+            entries: IoBuffer::new(),
         }
     }
 
     /// Create a new open file description. Returns the OFD index.
     /// Reuses freed slots when available.
-    pub fn create(
+    pub fn prepare(
         &mut self,
         file_type: FileType,
         status_flags: u32,
-        host_handle: i64,
-        path: Vec<u8>,
-    ) -> usize {
+        path: &[u8],
+    ) -> Result<PreparedOfd, Errno> {
+        let path = OfdPath::copy_from(path)?;
+        let shared_state = SharedOfdState::try_new(status_flags, 0, 0)?;
         let ofd = OpenFileDesc {
             ofd_id: allocate_ofd_id(),
             file_id: None,
             file_type,
-            shared_state: SharedOfdState::new(status_flags, 0, 0),
-            host_handle,
+            shared_state,
+            host_handle: -1,
             ref_count: 1,
             path,
             dir_host_handle: -1,
@@ -737,13 +1056,19 @@ impl OfdTable {
             input_state: None,
         };
 
-        self.insert(ofd)
+        self.reserve(ofd)
+    }
+
+    #[cfg(test)]
+    pub fn create(&mut self, file_type: FileType, status_flags: u32, host_handle: i64, path: Vec<u8>) -> usize {
+        let prepared = self.prepare(file_type, status_flags, &path).unwrap();
+        self.publish(prepared, host_handle)
     }
 
     /// Install an open description transferred through SCM_RIGHTS. The queued
     /// descriptor already owns one machine-wide backing reference, so this
     /// preserves its identity instead of allocating a new one.
-    pub fn create_transferred(
+    pub fn prepare_transferred(
         &mut self,
         ofd_id: OfdId,
         file_id: Option<FileId>,
@@ -752,8 +1077,8 @@ impl OfdTable {
         host_handle: i64,
         _offset: i64,
         shared_state: SharedOfdState,
-        path: Vec<u8>,
-    ) -> usize {
+        path: OfdPath,
+    ) -> Result<PreparedOfd, Errno> {
         observe_ofd_id(ofd_id);
         debug_assert_eq!(
             shared_state.status_flags() & O_ACCMODE,
@@ -777,32 +1102,46 @@ impl OfdTable {
             input_state: None,
         };
         ofd.reset_directory_iterator_for_reopen();
-        self.insert(ofd)
+        self.reserve(ofd)
     }
 
-    fn insert(&mut self, ofd: OpenFileDesc) -> usize {
-        // Search for a free (None) slot to reuse.
-        for i in 0..self.entries.len() {
-            if self.entries[i].is_none() {
-                self.entries[i] = Some(ofd);
-                return i;
+    fn reserve(&mut self, value: OpenFileDesc) -> Result<PreparedOfd, Errno> {
+        for index in 0..self.entries.len() {
+            if matches!(self.entries[index], OfdSlot::Free) {
+                self.entries[index] = OfdSlot::Reserved;
+                return Ok(PreparedOfd { index, value });
             }
         }
+        let index = self.entries.len();
+        self.entries.try_push(OfdSlot::Reserved)?;
+        Ok(PreparedOfd { index, value })
+    }
 
-        // No free slot; append.
-        let idx = self.entries.len();
-        self.entries.push(Some(ofd));
-        idx
+    pub fn publish(&mut self, mut prepared: PreparedOfd, host_handle: i64) -> usize {
+        assert!(matches!(self.entries.get(prepared.index), Some(OfdSlot::Reserved)), "prepared OFD slot changed");
+        prepared.value.host_handle = host_handle;
+        self.entries[prepared.index] = OfdSlot::Open(prepared.value);
+        prepared.index
+    }
+
+    pub fn cancel(&mut self, prepared: PreparedOfd) {
+        assert!(matches!(self.entries.get(prepared.index), Some(OfdSlot::Reserved)), "prepared OFD cancellation lost its slot");
+        self.entries[prepared.index] = OfdSlot::Free;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reserved_count(&self) -> usize {
+        self.entries.iter().filter(|slot| matches!(slot, OfdSlot::Reserved)).count()
     }
 
     /// Get a reference to the OFD at `idx`, or `None` if the slot is empty or out of range.
     pub fn get(&self, idx: usize) -> Option<&OpenFileDesc> {
-        self.entries.get(idx).and_then(|slot| slot.as_ref())
+        match self.entries.get(idx)? { OfdSlot::Open(value) => Some(value), _ => None }
     }
 
     /// Get a mutable reference to the OFD at `idx`, or `None` if the slot is empty or out of range.
     pub fn get_mut(&mut self, idx: usize) -> Option<&mut OpenFileDesc> {
-        self.entries.get_mut(idx).and_then(|slot| slot.as_mut())
+        match self.entries.get_mut(idx)? { OfdSlot::Open(value) => Some(value), _ => None }
     }
 
     /// Keep only references actually inherited through a descriptor table.
@@ -812,30 +1151,22 @@ impl OfdTable {
     /// parent's count would either retain an OFD with no child fd or leave a
     /// phantom reference after the child's last real fd closes.
     pub fn retain_fd_references(&mut self, fd_table: &FdTable) -> Result<(), Errno> {
-        let mut inherited_refs = BTreeMap::<usize, u32>::new();
-        for (_, entry) in fd_table.iter() {
-            let index = entry.ofd_ref.0;
-            if self.get(index).is_none() {
-                return Err(Errno::EBADF);
-            }
-            let count = inherited_refs.entry(index).or_insert(0);
-            *count = count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
-        }
+        let inherited_refs = InheritedOfdRefs::prepare(self, fd_table, 0)?;
 
         for (index, slot) in self.entries.iter_mut().enumerate() {
-            let Some(ofd) = slot.as_mut() else {
+            let OfdSlot::Open(ofd) = slot else {
                 continue;
             };
-            if let Some(count) = inherited_refs.remove(&index) {
+            let count = inherited_refs.count(index);
+            if count > 0 {
                 ofd.ref_count = count;
             } else {
                 // This clone has not acquired a machine-wide backing
                 // reference yet, so dropping an unreferenced local copy must
                 // not run ordinary final-close bookkeeping.
-                *slot = None;
+                *slot = OfdSlot::Free;
             }
         }
-        debug_assert!(inherited_refs.is_empty());
         Ok(())
     }
 
@@ -866,7 +1197,7 @@ impl OfdTable {
     /// Decrement the reference count for the OFD at `idx`.
     /// Returns `true` if the OFD was freed (ref_count reached 0).
     pub fn dec_ref(&mut self, idx: usize) -> bool {
-        let should_free = if let Some(ofd) = self.entries.get_mut(idx).and_then(|s| s.as_mut()) {
+        let should_free = if let Some(ofd) = self.get_mut(idx) {
             ofd.ref_count -= 1;
             ofd.ref_count == 0
         } else {
@@ -874,7 +1205,7 @@ impl OfdTable {
         };
 
         if should_free {
-            self.entries[idx] = None;
+            self.entries[idx] = OfdSlot::Free;
             true
         } else {
             false
@@ -886,7 +1217,7 @@ impl OfdTable {
         self.entries
             .iter()
             .enumerate()
-            .filter_map(|(i, e)| e.as_ref().map(|ofd| (i, ofd)))
+            .filter_map(|(index, entry)| match entry { OfdSlot::Open(value) => Some((index, value)), _ => None })
     }
 
     /// Mutably iterate over all open file descriptions with their
@@ -896,15 +1227,57 @@ impl OfdTable {
         self.entries
             .iter_mut()
             .enumerate()
-            .filter_map(|(i, e)| e.as_mut().map(|ofd| (i, ofd)))
+            .filter_map(|(index, entry)| match entry { OfdSlot::Open(value) => Some((index, value)), _ => None })
     }
 
     /// Reconstruct an OfdTable from raw entries. Used by fork deserialization.
-    pub fn from_raw(entries: Vec<Option<OpenFileDesc>>) -> Self {
-        for ofd in entries.iter().flatten() {
-            observe_ofd_id(ofd.ofd_id);
+    pub fn try_from_raw(entries: Vec<Option<OpenFileDesc>>) -> Result<Self, Errno> {
+        let mut admitted = IoBuffer::new();
+        admitted.reserve_with(entries.len(), |slots| slots.try_reserve_exact(entries.len()).map_err(|_| Errno::ENOMEM))?;
+        for entry in entries {
+            admitted.push(match entry {
+                Some(ofd) => { observe_ofd_id(ofd.ofd_id); OfdSlot::Open(ofd) },
+                None => OfdSlot::Free,
+            });
         }
-        OfdTable { entries }
+        Ok(OfdTable { entries: admitted })
+    }
+
+    pub fn restore_entry(&mut self, index: usize, value: OpenFileDesc) -> Result<(), Errno> {
+        let length = index.checked_add(1).ok_or(Errno::ENOMEM)?;
+        if length > self.entries.capacity() {
+            let capacity = length.max(self.entries.capacity().saturating_mul(2)).max(4);
+            if self.entries.reserve_with(capacity, |entries| entries.try_reserve_exact(capacity).map_err(|_| Errno::ENOMEM)).is_err() {
+                self.entries.reserve_with(length, |entries| entries.try_reserve_exact(length).map_err(|_| Errno::ENOMEM))?;
+            }
+        }
+        while self.entries.len() < length { self.entries.push(OfdSlot::Free); }
+        if !matches!(self.entries[index], OfdSlot::Free) { return Err(Errno::EINVAL); }
+        observe_ofd_id(value.ofd_id);
+        self.entries[index] = OfdSlot::Open(value);
+        Ok(())
+    }
+
+    pub fn try_clone(&self) -> Result<Self, Errno> {
+        let mut entries = IoBuffer::new();
+        entries.reserve_with(self.entries.len(), |slots| slots.try_reserve_exact(self.entries.len()).map_err(|_| Errno::ENOMEM))?;
+        for slot in self.entries.iter() {
+            entries.push(match slot { OfdSlot::Open(value) => OfdSlot::Open(value.try_clone()?), _ => OfdSlot::Free });
+        }
+        Ok(Self { entries })
+    }
+
+    #[cfg(test)]
+    pub fn from_raw(entries: Vec<Option<OpenFileDesc>>) -> Self { Self::try_from_raw(entries).unwrap() }
+
+    #[cfg(test)]
+    pub fn create_transferred(
+        &mut self, ofd_id: OfdId, file_id: Option<FileId>, file_type: FileType,
+        status_flags: u32, host_handle: i64, offset: i64, shared_state: SharedOfdState, path: impl AsRef<[u8]>,
+    ) -> usize {
+        let prepared = self.prepare_transferred(ofd_id, file_id, file_type, status_flags, host_handle,
+            offset, shared_state, OfdPath::copy_from(path.as_ref()).unwrap()).unwrap();
+        self.publish(prepared, host_handle)
     }
 
     /// Update status flags with F_SETFL semantics.
@@ -949,7 +1322,202 @@ impl OfdTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_paths_and_shared_cwd_aliases_need_no_new_admission() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(OfdPath::root(), b"/");
+            assert_eq!(OfdPath::copy_from(b"/").unwrap(), b"/");
+            assert_eq!(OfdPath::copy_from(b"").unwrap(), b"");
+            assert!(matches!(OfdPath::copy_from(b"/tmp"), Err(Errno::ENOMEM)));
+        }
+        let path = OfdPath::copy_from(b"/tmp").unwrap();
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            let alias = path.clone();
+            assert_eq!(alias.as_slice().as_ptr(), path.as_slice().as_ptr());
+            drop(path);
+            assert_eq!(alias, b"/tmp");
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+            drop(alias);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+    }
+
+    #[test]
+    fn ofd_path_state_and_arena_refusal_each_leave_no_unpublished_owner() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let path = OfdPath::copy_from(b"/refusal").unwrap();
+        let path_bytes = crate::io_buffer::IO_MEMORY.usage().0 - baseline;
+        drop(path);
+        let state = SharedOfdState::try_new(0, 0, 0).unwrap();
+        let state_bytes = crate::io_buffer::IO_MEMORY.usage().0 - baseline;
+        drop(state);
+        for available in [0, path_bytes, path_bytes + state_bytes] {
+            let mut table = OfdTable::new();
+            let _limit = crate::io_buffer::test_budget(baseline + available);
+            assert!(matches!(table.prepare(FileType::Regular, O_RDONLY, b"/refusal"), Err(Errno::ENOMEM)));
+            assert_eq!(table.reserved_count(), 0);
+            assert_eq!(table.iter().count(), 0);
+            assert_eq!(table.entries.len(), 0);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+    }
+
+    #[test]
+    fn prepared_ofd_owns_path_state_and_slot_before_allocation_free_publication() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut table = OfdTable::new();
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert!(matches!(table.prepare(FileType::Regular, O_PATH, b"/prepared"), Err(Errno::ENOMEM)));
+        }
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        let mut prepared = table.prepare(FileType::Regular, O_PATH, b"/prepared").unwrap();
+        let index = prepared.index;
+        let path = prepared.value.path.clone();
+        let state = prepared.value.shared_state.clone();
+        prepared.value_mut().set_offset(37);
+        assert_eq!(table.iter().count(), 0);
+        assert!(table.get(index).is_none());
+        let retained = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(retained);
+            assert_eq!(table.publish(prepared, 71), index);
+            assert_eq!(table.get(index).unwrap().offset(), 37);
+            assert!(matches!(table.try_clone(), Err(Errno::ENOMEM)));
+            assert_eq!(table.iter().count(), 1);
+        }
+        assert!(table.dec_ref(index));
+        drop(table);
+        assert_eq!(path.as_slice(), b"/prepared");
+        assert_eq!(state.offset(), 37);
+        assert!(crate::io_buffer::IO_MEMORY.usage().0 > baseline);
+        drop((path, state));
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn prepared_ofd_reservations_are_distinct_cancellable_and_not_inherited() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut table = OfdTable::new();
+        let first = table.prepare(FileType::Regular, 0, b"/first").unwrap();
+        let second = table.prepare(FileType::Regular, 0, b"/second").unwrap();
+        let first_index = first.index;
+        let second_index = second.index;
+        assert_ne!(first_index, second_index);
+        let child = table.try_clone().unwrap();
+        assert_eq!(child.iter().count(), 0);
+        table.cancel(first);
+        let replacement = table.prepare(FileType::Regular, 0, b"/replacement").unwrap();
+        assert_eq!(replacement.index, first_index);
+        assert_eq!(table.publish(second, 31), second_index);
+        assert_eq!(table.publish(replacement, 32), first_index);
+        assert_eq!(table.iter().count(), 2);
+        drop((table, child));
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
     use wasm_posix_shared::flags::*;
+
+    #[test]
+    fn queued_identity_growth_is_admitted_and_final_release_reclaims_capacity() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut refs = IoBuffer::new();
+        let first = OfdId(17);
+        let second = OfdId(29);
+        assert_eq!(retain_queued_reference(&mut refs, OfdId(0)), Err(Errno::EINVAL));
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(retain_queued_reference(&mut refs, first), Err(Errno::ENOMEM));
+        }
+        assert!(refs.is_empty());
+        retain_queued_reference(&mut refs, first).unwrap();
+        let old = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(old);
+            retain_queued_reference(&mut refs, first).unwrap();
+            assert_eq!(retain_queued_reference(&mut refs, second), Err(Errno::ENOMEM));
+            assert_eq!(&*refs, &[(first, 2)]);
+        }
+        retain_queued_reference(&mut refs, second).unwrap();
+        assert_eq!(&*refs, &[(first, 2), (second, 1)]);
+        assert!(!release_queued_reference(&mut refs, first));
+        assert!(release_queued_reference(&mut refs, first));
+        assert!(release_queued_reference(&mut refs, second));
+        assert_eq!(refs.capacity(), 0);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        retain_queued_reference(&mut refs, second).unwrap();
+        assert!(release_queued_reference(&mut refs, second));
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn queued_identity_refcount_overflow_does_not_change_ownership() {
+        let mut refs = IoBuffer::new();
+        retain_queued_reference(&mut refs, OfdId(31)).unwrap();
+        refs[0].1 = u32::MAX;
+        assert_eq!(retain_queued_reference(&mut refs, OfdId(31)), Err(Errno::EOVERFLOW));
+        assert_eq!(refs[0].1, u32::MAX);
+        refs[0].1 = 1;
+        assert!(release_queued_reference(&mut refs, OfdId(31)));
+    }
+
+    #[test]
+    fn inheritance_plan_counts_only_visible_aliases_and_releases_owned_capacity() {
+        use crate::fd::OpenFileDescRef;
+        use wasm_posix_shared::fd_flags::FD_CLOFORK;
+        let mut table = OfdTable::new();
+        let first = table.create(FileType::Regular, O_RDONLY, 41, Vec::new());
+        let second = table.create(FileType::Regular, O_RDONLY, 43, Vec::new());
+        let retry_only = table.create(FileType::Regular, O_RDONLY, 47, Vec::new());
+        let mut fds = FdTable::new();
+        fds.alloc(OpenFileDescRef(second), 0).unwrap();
+        fds.alloc(OpenFileDescRef(first), FD_CLOFORK).unwrap();
+        fds.alloc(OpenFileDescRef(first), 0).unwrap();
+        fds.alloc(OpenFileDescRef(first), 0).unwrap();
+        fds.reserve().unwrap();
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert!(matches!(InheritedOfdRefs::prepare(&table, &fds, FD_CLOFORK), Err(Errno::ENOMEM)));
+        }
+        let plan = InheritedOfdRefs::prepare(&table, &fds, FD_CLOFORK).unwrap();
+        assert_eq!(plan.descriptor_count, 3);
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan.count(first), 2);
+        assert_eq!(plan.count(second), 1);
+        assert_eq!(plan.count(retry_only), 0);
+        assert_eq!(plan.count(usize::MAX), 0);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline + plan.counts.capacity() * core::mem::size_of::<(usize, u32)>() * 2);
+        drop(plan);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn inheritance_preparation_refusal_does_not_rewrite_any_local_reference() {
+        let mut table = OfdTable::new();
+        let inherited = table.create(FileType::Regular, O_RDONLY, 53, Vec::new());
+        let retry_only = table.create(FileType::Regular, O_RDONLY, 59, Vec::new());
+        let retired_bytes = table.get(retry_only).unwrap().shared_state.0.admitted_bytes();
+        table.inc_ref(inherited);
+        let mut fds = FdTable::new();
+        fds.alloc(crate::fd::OpenFileDescRef(inherited), 0).unwrap();
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(table.retain_fd_references(&fds), Err(Errno::ENOMEM));
+        }
+        assert_eq!(table.get(inherited).unwrap().ref_count, 2);
+        assert_eq!(table.get(retry_only).unwrap().ref_count, 1);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        table.retain_fd_references(&fds).unwrap();
+        assert_eq!(table.get(inherited).unwrap().ref_count, 1);
+        assert!(table.get(retry_only).is_none());
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline - retired_bytes);
+    }
 
     #[test]
     fn test_create_ofd() {
@@ -1159,11 +1727,7 @@ mod tests {
         source_ofd.dir_host_handle = 99;
         source_ofd.dir_synth_state = 2;
         source_ofd.dir_entry_offset = 7;
-        source_ofd.dir_pending_entry = Some(PendingDirEntry {
-            ino: 123,
-            d_type: 8,
-            name: b"pending".to_vec(),
-        });
+        source_ofd.dir_pending_entry = Some(PendingDirEntry::new(123, 8, b"pending").unwrap());
         let source_snapshot = source_ofd.clone();
 
         let mut receiver = OfdTable::new();
@@ -1189,7 +1753,7 @@ mod tests {
         // the sender's live iterator or staged record.
         let source = source.get(source_idx).unwrap();
         assert_eq!(source.dir_host_handle, 99);
-        assert_eq!(source.dir_pending_entry.as_ref().unwrap().name, b"pending");
+        assert_eq!(source.dir_pending_entry.as_ref().unwrap().name(), b"pending");
     }
 
     #[test]
@@ -1311,6 +1875,57 @@ mod tests {
     }
 
     #[test]
+    fn graphics_clone_rolls_back_nodes_and_prepares_future_completions() {
+        let mut dri = DriFdState::default();
+        for handle in 1..=4 {
+            dri.handles.try_insert_io(handle, handle + 100).unwrap();
+        }
+        dri.next_handle = 5;
+        let mut kms = KmsFdState::default();
+        kms.fbs.try_insert_io(1, KmsFb { bo_id: 101, width: 8, height: 8,
+            pixel_format: 0, stride: 32 }).unwrap();
+        kms.next_fb_id = 1;
+        kms.event_ring.try_reserve(2).unwrap();
+        kms.event_ring.extend_from_slice(&[7, 8]);
+        kms.prepare_flip().unwrap();
+        kms.pending_flips.push(PendingFlip { crtc_id: 1, fb_id: 1, user_data: 0x1234 });
+        let source = DriOfdState::Card { dri, kms };
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        for successful_nodes in [0, 1, 3, 4] {
+            crate::prepared_map::fail_after_allocations(successful_nodes);
+            let result = source.try_clone();
+            crate::prepared_map::fail_after_allocations(usize::MAX);
+            assert!(matches!(result, Err(Errno::ENOMEM)));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        let mut proc = crate::process::Process::new(1);
+        let index = proc.ofd_table.create(FileType::CharDevice, O_RDWR, -9, b"/dev/dri/card0".to_vec());
+        proc.ofd_table.get_mut(index).unwrap().dri_state =
+            Some(crate::IoBox::try_new(source.try_clone().unwrap()).unwrap());
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            crate::dri::drain_pending_flips_for_process(&mut proc, 19, 2, 3);
+            let kms = proc.ofd_table.get_mut(index).unwrap().kms_mut().unwrap();
+            assert!(kms.pending_flips.is_empty());
+            assert_eq!(kms.event_ring.len(), 34);
+            assert_eq!(kms.event_ring.pop_front(), Some(7));
+            assert_eq!(kms.event_ring.pop_front(), Some(8));
+            let mut event = [0u8; 32];
+            for byte in &mut event { *byte = kms.event_ring.pop_front().unwrap(); }
+            assert_eq!(u64::from_le_bytes(event[8..16].try_into().unwrap()), 0x1234);
+            assert_eq!(u32::from_le_bytes(event[24..28].try_into().unwrap()), 19);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        }
+        drop(proc);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        let DriOfdState::Card { dri, kms } = source else { unreachable!() };
+        assert_eq!(dri.handles.len(), 4);
+        assert_eq!(kms.pending_flips.len(), 1);
+        assert_eq!(kms.event_ring.len(), 2);
+    }
+
+    #[test]
     fn take_prime_bo_clears_state() {
         let mut table = OfdTable::new();
         let idx = table.create(FileType::Regular, O_RDWR, -100, b"<prime>".to_vec());
@@ -1374,10 +1989,100 @@ mod tests {
     }
 
     #[test]
+    fn shared_input_ring_admission_and_payload_credit_follow_the_last_alias() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        for allowance in [0, 2 * INPUT_RING_MAX_BYTES] {
+            let _limit = crate::io_buffer::test_budget(baseline + allowance);
+            assert!(matches!(SharedInputRing::try_new(), Err(Errno::ENOMEM)));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        let ring = SharedInputRing::try_new().unwrap();
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        assert!(held > baseline + 2 * INPUT_RING_MAX_BYTES);
+        let _limit = crate::io_buffer::test_budget(held);
+        let alias = ring.clone();
+        drop(ring);
+        for _ in 0..INPUT_RING_MAX_RECORDS {
+            let mut payload = alias.borrow_mut();
+            for value in 0..24 { payload.event_ring.push_back(value); }
+        }
+        assert_eq!(alias.borrow().event_ring.len(), INPUT_RING_MAX_BYTES);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        drop(alias);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
     fn input_ring_cap_bytes_is_24_kib() {
         // Lock the per-fd memory budget so it cannot drift silently.
         assert_eq!(INPUT_RING_MAX_RECORDS, 1024);
         assert_eq!(INPUT_RING_MAX_BYTES, 24 * 1024);
+    }
+
+    #[test]
+    fn inherited_host_handle_plan_prepares_all_nodes_before_reference_publication() {
+        const FIRST: i64 = 910_001;
+        const EXISTING: i64 = 910_002;
+        const LAST: i64 = 910_003;
+        let mut table = OfdTable::new();
+        for handle in [FIRST, EXISTING, FIRST, LAST] {
+            table.create(FileType::Regular, O_RDONLY, handle, Vec::new());
+        }
+        let before_refs = crate::io_buffer::IO_MEMORY.usage().0;
+        host_handle_fork_ref(EXISTING).unwrap();
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert!(matches!(PreparedHostHandleRefs::prepare(&table), Err(Errno::ENOMEM)));
+        }
+        crate::prepared_map::fail_after_allocations(1);
+        let result = PreparedHostHandleRefs::prepare(&table);
+        crate::prepared_map::fail_after_allocations(usize::MAX);
+        assert!(matches!(result, Err(Errno::ENOMEM)));
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        assert_eq!(host_handle_ref_count(FIRST), 0);
+        assert_eq!(host_handle_ref_count(EXISTING), 2);
+        assert_eq!(host_handle_ref_count(LAST), 0);
+        let prepared = PreparedHostHandleRefs::prepare(&table).unwrap();
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            prepared.publish();
+        }
+        assert_eq!(host_handle_ref_count(FIRST), 3);
+        assert_eq!(host_handle_ref_count(EXISTING), 3);
+        assert_eq!(host_handle_ref_count(LAST), 2);
+        for (handle, count) in [(FIRST, 3), (EXISTING, 3), (LAST, 2)] {
+            for remaining in (0..count).rev() {
+                assert_eq!(host_handle_close_ref(handle), remaining == 0);
+            }
+            assert_eq!(host_handle_ref_count(handle), 0);
+        }
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, before_refs);
+    }
+
+    #[test]
+    fn inherited_directory_keeps_parent_pending_bytes_without_cloning_them() {
+        let mut table = OfdTable::new();
+        let index = table.create(FileType::Directory, O_RDONLY, 19, b"/directory".to_vec());
+        let ofd = table.get_mut(index).unwrap();
+        ofd.set_directory_offset(2);
+        ofd.dir_host_handle = 71;
+        ofd.dir_synth_state = 2;
+        ofd.dir_entry_offset = 2;
+        ofd.dir_pending_entry = Some(PendingDirEntry::new(42, 8, b"pending").unwrap());
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let child_arena = 2 * core::mem::size_of::<OfdSlot>();
+        let _limit = crate::io_buffer::test_budget(baseline + child_arena);
+        let child = table.try_clone().unwrap();
+        let inherited = child.get(index).unwrap();
+        assert_eq!(inherited.dir_host_handle, -1);
+        assert_eq!(inherited.dir_entry_offset, 2);
+        assert!(inherited.dir_pending_entry.is_none());
+        assert_eq!(table.get(index).unwrap().dir_pending_entry.as_ref().unwrap().name(), b"pending");
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline + child_arena);
+        drop(child);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
     }
 
     #[test]
