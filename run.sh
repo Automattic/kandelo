@@ -2675,6 +2675,9 @@ cmd_local_build() {
         ] +
         (if $failed > 0 then ["  Failed:     \($failed)"] else [] end) +
         (if $blocked > 0 then ["  Blocked:    \($blocked)"] else [] end) +
+        (if .outcome == "failed" and $failed == 0 and $blocked == 0
+         then ["  Publish:    failed after every node succeeded (see above)"]
+         else [] end) +
         ["  Output:     local-binaries/source-only-v1"] |
         .[]
     ' "$result_file"
