@@ -55,7 +55,7 @@ scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh ce8cd9dbcf
 scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh
 ```
 
-The 84 current cases cover image siblings and retained framebuffer storage,
+The 86 current cases cover image siblings and retained framebuffer storage,
 redefinition, cleanup, invalid handles, repeated contexts, the shared
 shader/program namespace, boolean numeric conversion, vectors longer than
 four elements, unchanged query output after device failure and EGL config
@@ -191,3 +191,14 @@ with actual C staging bytes, not public C sharing or Rust marshalling.
 Host tests separately cover failed native restore/retry, retained capture
 cleanup and malformed/nested BEGIN/END. Complete context-loss recovery
 and interrupted private-name cleanup remain open.
+
+
+The checked uniform-value cases read scalar/vector/matrix widths without
+prior reflection, protect destination guards and preserve outputs after
+allocation, transport or reply failure. The actual C vec4 regression fails
+against unchanged c0d87638be. Driver-level shared-context browser checks
+cover native and forwarded values for matrix/vector/array/boolean types,
+source retirement, failed-link executable retention, successful relink
+invalidation, deletion pending/current release and final native shader/
+program cleanup. They use source host code with a synthetic kernel scratch
+adapter; public C sharing and normal guest marshalling remain separate.

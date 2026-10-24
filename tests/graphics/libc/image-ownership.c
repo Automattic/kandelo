@@ -176,6 +176,7 @@ static void overlap_wait(int phase) {
 }
 static uint32_t shader_names[2], program_names[2];
 static unsigned shaders_created, programs_created;
+static unsigned uniform_count = 4, uniform_failure, uniform_queries, uniform_integer;
 static int numeric_queries;
 static int string_generation;
 static unsigned context_create_calls;
@@ -584,6 +585,37 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             } else { assert(action == 4); free(upload_pending); upload_pending = NULL; upload_aborts++; }
             const uint32_t reply[3] = {failure == 2 ? 1u : 0u,failure == 2 ? 0 : failure == 4 ? token+1 : token,failure == 3 ? 0 : 0x47514c33u};
             memcpy(output,reply,12); return 0;
+        }
+        if (q->op == 0x1f || q->op == 0x10 || q->op == 0x11) {
+            assert(latest_allocation);
+            uniform_queries++;
+            const GLfloat values[4] = {0.25f, -1.75f, 2.5f, 1.0f};
+            if (q->op == 0x1f) {
+                assert(q->in_buf_len == 12 && q->out_buf_len == 76);
+                if (uniform_failure == 1) {
+                    errno = EIO;
+                    return -1;
+                }
+                uint8_t *reply = latest_allocation;
+                memset(reply, 0, 76);
+                const uint32_t count = uniform_failure == 3 ? 17 : uniform_count,
+                               magic = uniform_failure == 4 ? 0 : 0x47514c33u,
+                               status = uniform_failure == 2 ? 1 : 0;
+                memcpy(reply, &status, 4);
+                memcpy(reply + 4, &count, 4);
+                memcpy(reply + 72, &magic, 4);
+                for (unsigned i = 0; i < uniform_count; i++) {
+                    if (uniform_integer) {
+                        const GLint value = (GLint)i - 2;
+                        memcpy(reply + 8 + i * 4, &value, 4);
+                    } else {
+                        GLfloat value = uniform_count == 4 ? values[i] : (GLfloat)i + .25f;
+                        memcpy(reply + 8 + i * 4, &value, 4);
+                    }
+                }
+            } else
+                memcpy(latest_allocation, values, q->out_buf_len < 16 ? q->out_buf_len : 16);
+            return 0;
         }
         if (q->op == QOP_GET_STRING && string_generation) {
             const char *value = string_generation == 1 ? "renderer A" : "renderer B";
@@ -1056,6 +1088,64 @@ int main(int argc, char **argv) {
         glShaderSource(9,-1,NULL,NULL); assert(glGetError() == GL_INVALID_VALUE);
         free(text); assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-core-source"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-uniform-values")) {
+        GLfloat values[17];
+        for (unsigned i = 0; i < 17; i++)
+            values[i] = 99;
+        glGetUniformfv(9, 7, values);
+        assert(values[0] == 0.25f && values[1] == -1.75f && values[2] == 2.5f &&
+               values[3] == 1.0f && values[4] == 99);
+        for (unsigned count = 1; count <= 16; count++) {
+            if (count != 1 && count != 2 && count != 3 && count != 9 && count != 16)
+                continue;
+            uniform_count = count;
+            for (unsigned i = 0; i < 17; i++)
+                values[i] = 99;
+            glGetUniformfv(9, 7, values);
+            for (unsigned i = 0; i < count; i++)
+                assert(values[i] == (GLfloat)i + .25f);
+            assert(values[count] == 99);
+        }
+        uniform_integer = 1;
+        uniform_count = 4;
+        GLint integers[5] = {99, 99, 99, 99, 99};
+        glGetUniformiv(9, 7, integers);
+        assert(integers[0] == -2 && integers[1] == -1 && integers[2] == 0 && integers[3] == 1 &&
+               integers[4] == 99);
+        uniform_integer = 0;
+        unsigned queries = uniform_queries;
+        glGetUniformfv(9, 7, NULL);
+        assert(uniform_queries == queries);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-uniform-values");
+        return 0;
+    }
+    if (!strcmp(argv[1], "encoder-uniform-errors")) {
+        GLfloat values[5] = {99, 99, 99, 99, 99};
+        for (unsigned failure = 1; failure <= 4; failure++) {
+            uniform_failure = failure;
+            if (failure == 2)
+                query_gl_error = GL_INVALID_OPERATION;
+            glGetUniformfv(9, 7, values);
+            assert(glGetError() == GL_INVALID_OPERATION);
+            for (unsigned i = 0; i < 5; i++)
+                assert(values[i] == 99);
+        }
+        uniform_failure = 0;
+        uniform_count = 0;
+        glGetUniformfv(9, 7, values);
+        assert(glGetError() == GL_INVALID_OPERATION && values[0] == 99);
+        uniform_count = 4;
+        fail_malloc = 1;
+        glGetUniformfv(9, 7, values);
+        fail_malloc = 0;
+        assert(glGetError() == GL_OUT_OF_MEMORY && values[0] == 99);
+        glGetUniformfv(9, 7, values);
+        assert(values[3] == 1 && values[4] == 99);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-uniform-errors");
+        return 0;
     }
     if (!strcmp(argv[1], "encoder-core-reflection")) {
         void (*active)(GLuint,GLuint,GLsizei,GLsizei *,GLint *,GLenum *,GLchar *) = (void (*)(GLuint,GLuint,GLsizei,GLsizei *,GLint *,GLenum *,GLchar *))eglGetProcAddress("glGetActiveAttrib");

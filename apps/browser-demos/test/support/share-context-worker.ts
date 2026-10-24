@@ -15,9 +15,9 @@ self.onmessage=({data})=>{
       const canvas=data.canvas as OffscreenCanvas;
       gl=canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true});
       if(!gl)throw new Error("native WebGL2 unavailable");
-      for(const [createName,deleteName,isName] of [["createTexture","deleteTexture","isTexture"],["createFramebuffer","deleteFramebuffer","isFramebuffer"],["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"]]) {
+      for(const [createName,deleteName,isName] of [["createTexture","deleteTexture","isTexture"],["createFramebuffer","deleteFramebuffer","isFramebuffer"],["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],...(data.uniforms?[["createProgram","deleteProgram","isProgram"],["createShader","deleteShader","isShader"]]:[])]) {
         const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
-        api[createName]=()=>{const value=create();if(value){created.push(value);live.push(()=>isLive(value));}return value;};
+        api[createName]=(...args:unknown[])=>{const value=create(...args);if(value){created.push(value);live.push(()=>isLive(value));}return value;};
         api[deleteName]=(value:object|null)=>{if(value)deleted.push(value);destroy(value);};
       }
       memory=new WebAssembly.Memory({initial:2,maximum:2});
@@ -42,11 +42,11 @@ self.onmessage=({data})=>{
       view.setUint16(0,op,true);view.setUint16(2,4*words.length+tail.length,true);
       words.forEach((word,index)=>view.setUint32(4+4*index,word,true));bytes.set(tail,4+4*words.length);
       if(forwarded)channels[i].onSubmit(bytes);
-      else {new Uint8Array(memory!.buffer,4096,bytes.length).set(bytes);requireZero(imports!.host_gl_submit(7,0,bytes.length,11+i),"submit");}
+      else {new Uint8Array(memory!.buffer,4096,bytes.length).set(bytes);requireZero(imports!.host_gl_submit(7,0,bytes.length,11+i),`submit op ${op.toString(16)}`);}
     };
-    const query=(i:number,op:number,words:number[],length:number)=>{
-      const input=new Uint8Array(words.length*4),view=new DataView(input.buffer);
-      words.forEach((word,index)=>view.setUint32(index*4,word,true));
+    const query=(i:number,op:number,words:number[],length:number,tail=new Uint8Array())=>{
+      const input=new Uint8Array(words.length*4+tail.length),view=new DataView(input.buffer);
+      words.forEach((word,index)=>view.setUint32(index*4,word,true));input.set(tail,words.length*4);
       if(forwarded) {
         const reply=channels[i].onQuery!(op,input,length);if(reply.rc!==length)throw new Error(`query: ${reply.rc}`);return [...reply.bytes];
       }
@@ -64,6 +64,58 @@ self.onmessage=({data})=>{
       send(i,O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,17,0]);
     };
     const destroy=(i:number)=>{if(forwarded)channels[i].onDestroyContext!();else imports!.host_gl_destroy_context(7,21+i);};
+    if(data.uniforms) {
+      create(0);current(0);storage(0,[0,0,0,255]);attachment(0);
+      const shader=(name:number,type:number,text:string)=>{
+        send(0,O.OP_CREATE_SHADER,[type,name]);const bytes=new TextEncoder().encode(text);
+        send(0,O.OP_SHADER_SOURCE,[name,bytes.length],bytes);send(0,O.OP_COMPILE_SHADER,[name]);
+      };
+      shader(10,0x8b31,"void main(){gl_Position=vec4(0.,0.,0.,1.);gl_PointSize=1.;}");
+      shader(11,0x8b30,"precision mediump float;uniform vec4 colorValue;uniform mat3 normal;uniform mat4 transform;uniform vec3 items[2];uniform bvec4 flags;uniform float scalar;void main(){gl_FragColor=colorValue+vec4(items[0]+items[1],0.)*scalar+vec4(flags)*.0001+vec4(normal[0][0]+transform[0][0])*.0001;}");
+      send(0,O.OP_CREATE_PROGRAM,[20]);send(0,O.OP_ATTACH_SHADER,[20,10]);send(0,O.OP_ATTACH_SHADER,[20,11]);
+      send(0,O.OP_LINK_PROGRAM,[20]);send(0,O.OP_USE_PROGRAM,[20]);
+      const location=(i:number,name:string)=>{
+        const bytes=new TextEncoder().encode(name),reply=query(i,O.QOP_GET_UNIFORM_LOC,[20,bytes.length],4,bytes);
+        const result=new DataView(new Uint8Array(reply).buffer).getInt32(0,true);if(result<0)throw new Error(`inactive uniform ${name}`);return result;
+      };
+      const names=["colorValue","normal","transform","items[0]","items[1]","flags","scalar"];
+      const locations=names.map(name=>location(0,name));
+      const floats=(i:number,op:number,words:number[],values:number[])=>send(i,op,words,new Uint8Array(new Float32Array(values).buffer));
+      const matrix3=[1,2,3,4,5,6,7,8,9],matrix4=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];
+      floats(0,O.OP_UNIFORM4F,[locations[0]],[.25,.5,.75,1]);
+      floats(0,O.OP_UNIFORM_MATRIX3FV,[locations[1],1,0],matrix3);
+      floats(0,O.OP_UNIFORM_MATRIX4FV,[locations[2],1,0],matrix4);
+      floats(0,O.OP_UNIFORM3FV,[locations[3],2],[1,2,3,4,5,6]);
+      send(0,O.OP_UNIFORM4IV,[locations[5],1],new Uint8Array(new Int32Array([1,0,1,0]).buffer));
+      floats(0,O.OP_UNIFORM1F,[locations[6]],[.5]);
+      create(1,0);current(1);
+      const values=(i:number,loc:number,integer=0)=>{
+        const bytes=query(i,O.QOP_GET_UNIFORM_VALUES,[20,loc,integer],76),view=new DataView(new Uint8Array(bytes).buffer);
+        if(view.getUint32(72,true)!==0x47514c33)throw new Error("uniform reply incomplete");
+        const status=view.getUint32(0,true),count=view.getUint32(4,true);
+        return {status,count,values:Array.from({length:count},(_,n)=>integer?view.getInt32(8+n*4,true):view.getFloat32(8+n*4,true))};
+      };
+      const shared=locations.map(loc=>values(1,loc)),integers=values(1,locations[0],1),booleans=values(1,locations[5],1);
+      // Querying does not require installing the program in this peer.
+      destroy(0);const survivor=values(1,locations[0]);
+      current(1);send(1,O.OP_USE_PROGRAM,[20]);floats(1,O.OP_UNIFORM4F,[locations[0]],[1,0,0,1]);floats(1,O.OP_UNIFORM1F,[locations[6]],[0]);
+      storage(1,[0,0,0,255]);attachment(1);send(1,O.OP_VIEWPORT,[0,0,1,1]);send(1,O.OP_DRAW_ARRAYS,[0,0,1]);const rendered=pixels(1);
+      const badSource=new TextEncoder().encode("this is invalid GLSL");send(1,O.OP_SHADER_SOURCE,[11,badSource.length],badSource);send(1,O.OP_COMPILE_SHADER,[11]);send(1,O.OP_LINK_PROGRAM,[20]);
+      const failedLink=values(1,locations[0]),failedError=query(1,O.QOP_GET_ERROR,[],4);
+      send(1,O.OP_DRAW_ARRAYS,[0,0,1]);const retainedExecutable=pixels(1);
+      const goodSource=new TextEncoder().encode("precision mediump float;uniform vec4 colorValue;void main(){gl_FragColor=colorValue;}");
+      send(1,O.OP_SHADER_SOURCE,[11,goodSource.length],goodSource);send(1,O.OP_COMPILE_SHADER,[11]);
+      send(1,O.OP_LINK_PROGRAM,[20]);const invalidated=values(1,locations[0]);const staleError=query(1,O.QOP_GET_ERROR,[],4);
+      const fresh=location(1,"colorValue"),relinked=values(1,fresh);
+      send(1,O.OP_DELETE_PROGRAM,[20]);const pending=values(1,fresh);send(1,O.OP_USE_PROGRAM,[0]);const afterDelete=values(1,fresh);const deletedError=query(1,O.QOP_GET_ERROR,[],4);
+      destroy(1);
+      for(const i of [0,1]) {
+        if(forwarded){channels[i].onUnbind!(11+i);if(channels[i].onPresent!()!==-5)throw new Error("retired session revived");}
+        else imports!.host_gl_unbind(7,11+i);
+      }
+      const clean=forwarded?null:created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
+      postMessage({type:"uniform_values_result",shared,integers,booleans,survivor,rendered,failedLink,failedError,retainedExecutable,invalidated,staleError,relinked,pending,afterDelete,deletedError,clean,error:forwarded?0:gl!.getError()});return;
+    }
     create(0);current(0);storage(0,[255,0,0,255]);attachment(0);const red=pixels(0);
     create(1,0);current(1);attachment(1);const sharedRed=pixels(1);
     send(1,O.OP_BIND_TEXTURE,[0x0de1,17]);

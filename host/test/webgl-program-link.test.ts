@@ -18,6 +18,8 @@ class NativePrograms {
   error = 0;
   failCreate = false;
   uniformWrites = 0;
+  uniformValue: unknown = new Float32Array([0.25,-1.75,2.5,1]);
+  getUniform() { return this.uniformValue; }
   createShader() { return { compiled: true, deleted: false }; }
   createProgram(): Program | null {
     if (this.failCreate) { this.error = 0x505; return null; }
@@ -96,6 +98,56 @@ describe("program link attempts and installed executables", () => {
     expect(parent.registry.shareObjects(1,12,0)).toBe(true);
     return peer;
   }
+
+  function uniformReply(b: ReturnType<typeof setup>["b"], name=20, location=1, integer=0) {
+    const input = new Uint8Array(12), reply = new Uint8Array(76).fill(0xaa);
+    [name,location,integer].forEach((word,i)=>new DataView(input.buffer).setUint32(i*4,word,true));
+    expect(runGlQuery(b,O.QOP_GET_UNIFORM_VALUES,input,reply)).toBe(76);
+    const v=new DataView(reply.buffer), count=v.getUint32(4,true);
+    expect(v.getUint32(72,true)).toBe(0x47514c33);
+    return {status:v.getUint32(0,true),count,values:Array.from({length:count},(_,i)=>integer?v.getInt32(8+i*4,true):v.getFloat32(8+i*4,true)),reply};
+  }
+  it.each([1,2,3,4,9,16])("gets %s uniform values without prior C reflection and through a shared peer",count=>{
+    const parent=setup(),peer=sharePeer(parent);
+    parent.native.uniformValue=new Float32Array(Array.from({length:count},(_,i)=>i+.25));
+    const result=uniformReply(peer);
+    expect(result.status).toBe(0);expect(result.count).toBe(count);
+    expect(result.values).toEqual([...parent.native.uniformValue as Float32Array]);
+    expect([...result.reply.slice(8+count*4,72)]).toEqual(new Array((16-count)*4).fill(0));
+  });
+  it("converts uniform booleans and rounds float results for integer getters",()=>{
+    const {b,native}=setup();native.uniformValue=[true,false,true,false];
+    expect(uniformReply(b,20,1,1).values).toEqual([1,0,1,0]);
+    native.uniformValue=new Float32Array([.25,-1.75,2.5,1]);
+    expect(uniformReply(b,20,1,1).values).toEqual([0,-2,3,1]);
+  });
+  it("checks program type, link state and location ownership without publishing failed values",()=>{
+    const {b,native,original}=setup();
+    for(const [name,location,error] of [[0,1,0x501],[10,1,0x502],[20,-1,0x502],[20,99,0x502]]) {
+      const result=uniformReply(b,name,location);expect(result.status).toBe(1);expect(result.count).toBe(0);expect(b.errors.pop()).toBe(error);
+    }
+    b.uniformLocationPrograms.set(1,99);expect(uniformReply(b).status).toBe(1);expect(b.errors.pop()).toBe(0x502);
+    b.uniformLocationPrograms.set(1,20);original.linked=false;expect(uniformReply(b).status).toBe(1);expect(b.errors.pop()).toBe(0x502);
+    original.linked=true;native.getUniform=()=>{native.error=0x502;return new Float32Array(16).fill(42);};
+    expect(uniformReply(b).status).toBe(1);expect(b.errors.pop()).toBe(0x502);
+  });
+  it("invalidates shared locations after successful peer relink and rejects failed link queries",()=>{
+    const parent=setup(),peer=sharePeer(parent);
+    (peer.shaders.get(11) as unknown as Shader).compiled=false;
+    linkProgramRetainingExecutable(peer,20);expect(uniformReply(parent.b).status).toBe(1);expect(parent.b.errors.pop()).toBe(0x502);
+    (peer.shaders.get(11) as unknown as Shader).compiled=true;
+    linkProgramRetainingExecutable(peer,20);expect(parent.b.uniformLocations.has(1)).toBe(false);
+    expect(uniformReply(parent.b).status).toBe(1);expect(parent.b.errors.pop()).toBe(0x502);
+  });
+  it("rejects malformed uniform requests before writing and rejects impossible native widths",()=>{
+    const {b,native}=setup();const input=new Uint8Array(12),reply=new Uint8Array(76).fill(0xaa);
+    new DataView(input.buffer).setUint32(8,2,true);
+    expect(runGlQuery(b,O.QOP_GET_UNIFORM_VALUES,input,reply)).toBe(-22);
+    expect(runGlQuery(b,O.QOP_GET_UNIFORM_VALUES,input.slice(0,8),reply)).toBe(-22);
+    expect(runGlQuery(b,O.QOP_GET_UNIFORM_VALUES,new Uint8Array(12),reply.slice(0,75))).toBe(-22);
+    expect([...reply]).toEqual(new Array(76).fill(0xaa));
+    native.uniformValue=new Float32Array(17);expect(uniformReply(b).status).toBe(1);expect(b.errors.pop()).toBe(0x502);
+  });
 
   it("retains a deleted shared program until every current owner releases it", () => {
     const parent = setup(), peer = sharePeer(parent);

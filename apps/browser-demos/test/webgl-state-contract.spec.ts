@@ -1944,3 +1944,42 @@ for(const mode of ["native","forwarded"] as const) {
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
+
+
+for(const mode of ["native","forwarded"] as const) {
+  test(`checked shared uniform values survive source retirement and reject relinked locations through ${mode} dispatch`,async({page})=>{
+    await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
+    const root=fileURLToPath(new URL("../../../",import.meta.url));
+    const result=await page.evaluate(async({root,mode})=>{
+      const canvas=document.createElement("canvas");canvas.width=canvas.height=1;document.body.replaceChildren(canvas);
+      const gl=mode==="forwarded"?canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true})!:null;
+      const created:object[]=[],deleted:object[]=[],live:Array<()=>boolean>=[];
+      if(gl)for(const [createName,deleteName,isName] of [["createTexture","deleteTexture","isTexture"],["createFramebuffer","deleteFramebuffer","isFramebuffer"],["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],["createProgram","deleteProgram","isProgram"],["createShader","deleteShader","isShader"]]) {
+        const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
+        api[createName]=(...args:unknown[])=>{const value=create(...args);if(value){created.push(value);live.push(()=>isLive(value));}return value;};
+        api[deleteName]=(value:object|null)=>{if(value)deleted.push(value);destroy(value);};
+      }
+      const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/share-context-worker.ts`,location.href),{type:"module"});
+      const {setupMainForward}=await import(new URL(`/@fs/${root}host/src/webgl/main-forward.ts`,location.href).href);
+      const dispose=mode==="forwarded"?setupMainForward(worker,canvas,7):()=>{};
+      try {
+        const result=await new Promise<any>((resolve,reject)=>{
+          const timeout=setTimeout(()=>reject(new Error("uniform values worker timed out")),35000);
+          worker.addEventListener("error",event=>{clearTimeout(timeout);reject(new Error(event.message));});
+          worker.addEventListener("message",({data})=>{
+            if(data.type==="uniform_values_result"){clearTimeout(timeout);resolve(data);}
+            if(data.type==="share_context_failed"){clearTimeout(timeout);reject(new Error(data.error));}
+          });
+          if(mode==="forwarded")worker.postMessage({mode,uniforms:true});
+          else {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,uniforms:true,canvas:offscreen},[offscreen]);}
+        });
+        if(gl){result.clean=created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());result.error=gl.getError();}
+        return result;
+      } finally {worker.terminate();dispose();}
+    },{root,mode});
+    const ok=(values:number[])=>({status:0,count:values.length,values});
+    expect(result).toEqual({type:"uniform_values_result",shared:[ok([.25,.5,.75,1]),ok([1,2,3,4,5,6,7,8,9]),ok([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]),ok([1,2,3]),ok([4,5,6]),ok([1,0,1,0]),ok([.5])],
+      integers:ok([0,1,1,1]),booleans:ok([1,0,1,0]),survivor:ok([.25,.5,.75,1]),rendered:[255,0,0,255],failedLink:{status:1,count:0,values:[]},failedError:[2,5,0,0],retainedExecutable:[255,0,0,255],invalidated:{status:1,count:0,values:[]},staleError:[2,5,0,0],relinked:ok([0,0,0,0]),pending:ok([0,0,0,0]),afterDelete:{status:1,count:0,values:[]},deletedError:[1,5,0,0],clean:true,error:0});
+    expect(await memoryBoundaryFailures(page)).toEqual([]);
+  });
+}

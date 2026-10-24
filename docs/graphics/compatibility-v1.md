@@ -62,7 +62,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Multiple public contexts have focused native/source-browser coverage; full rollback, hints and CTS remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
 | G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffers plus client attributes use a bounded presence query; core buffer/vertex queries preserve logical state. Client staging now retains/restores actual ARRAY identity across peer deletion/reuse (operation table 6). Full size/limit/negative coverage remains open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core attribute/source/attachment reflection, acknowledged large-source uploads and validation entrypoints are implemented; complete executable/attribute/uniform validation still needs work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
-| G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
+| G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Checked renderer replies now supply complete element widths/values without C reflection caches and preserve failed-query outputs. Shared-peer/source-retirement/relink cases have focused evidence; stable/repeated location identity, long names, active-uniform truncation and complete setter/type/array validation remain open | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization, core parameter queries and context-owned default texture objects are implemented in host source; complete target/state/error and guest CTS audit remain open | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
 | G07 | Raster/depth/stencil/blend/clear/readback; ES2 §§3,4 | Main provides offscreen color/depth/stencil; no broad CTS evidence | bridge, query, present-target | CTS functional render families; real pixels all three engines | partial |
 | G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | Default/user identities and read/draw state remain distinct; attachment records retain deleted texture/RBO storage, including unbound containers and separate packed depth/stencil points. Core attachment/renderbuffer queries implemented; full storage/negative/CTS coverage remains open | encoder, registry, image references, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
@@ -2323,3 +2323,83 @@ were source-host declarations and private test objects. Standalone resolver ABI 
 `5985c3c727`; no epoch change requires regeneration here. Normal artifacts,
 guest CTS, cage/sway, full browser-memory and POSIX/conformance remain
 deferred until implementation is ready. The complete goal stays active.
+
+
+## Authoritative uniform values without C caches (2026-10-24)
+
+The former C cache defaulted to one value unless an application had
+previously enumerated a uniform's type. It also matched truncated names,
+shared one record across array elements and survived relinking. A plain
+vec4 getter could therefore leave three values untouched even in one
+context. The new native regression reproduces that failure against
+unchanged `c0d87638be` before the implementation:
+`.context/graphics-uniform-baseline-native.log`.
+
+`glGetUniformfv` and `glGetUniformiv` now use one renderer reply containing
+the actual element width and values. The entire per-context width/name
+cache and its reflection-order coupling are removed. The shared host group
+already owns program/location associations; the query checks program type,
+location ownership and successful link state, then reads the native value
+without installing the program. It supports scalar, vector and square
+matrix counts 1/2/3/4/9/16, returns one array element, preserves matrix
+column order and converts booleans or integer/float results. These rules
+follow [GLES 2.0 sections 6.1.2 and 6.1.8](https://registry.khronos.org/OpenGL/specs/es/2.0/es_full_spec_2.0.pdf).
+
+Additive `QOP_GET_UNIFORM_VALUES` (0x001F) takes program, signed location
+and a 0/1 integer-result selector in 12 bytes. The fixed 76-byte reply has
+status at 0, count at 4, sixteen value words at 8 and completion magic at
+72; unused values are zero. Protocol-shape errors reject before writing.
+GL errors carry checked failure status and remain in the context's error
+queue. C validates status, completion and allowed count before copying
+only the returned values. Transport/allocation failure and malformed or
+failed replies leave all caller output unchanged. Table version advances
+to 7 within ABI 58: existing commands, queries, syscall layouts and imports
+are unchanged. INIT admits compatible versions 1 through 7; a regression
+explicitly includes 1, 5, 6 and 7 and rejects zero/future tables.
+
+Focused evidence:
+
+| Check | Result | Evidence |
+|---|---|---|
+| Actual native EGL/GLES C with device double and UBSan | 86 cases passed | `.context/graphics-uniform-final-c-wasm.log` |
+| Private wasm32 EGL/GLES objects/link and public entrypoint audit | Passed, 150 guards and 142/142 GLES2 core definitions/resolvers | `.context/graphics-uniform-final-c-wasm.log` |
+| Host graphics source and Node/browser declarations | 396 cases in 19 files and declarations passed | `.context/graphics-uniform-stable-host.log` |
+| Real Chromium/Firefox/WebKit source rendering | 147 passed, no skips | `.context/graphics-uniform-stable-browser.log` |
+| Kernel GLIO, shared GL layouts and ioctl-filter cases | 47, 4 and 18 passed | `.context/graphics-uniform-rust-abi.log` |
+| ABI source/snapshot/generated consistency | Passed, ABI 58 / table 7 | `.context/graphics-uniform-rust-abi.log` |
+| Browser protocol/memory-boundary negatives | 12 passed | `.context/graphics-uniform-memory-boundary.log` |
+
+Two new native cases check every permitted width without prior reflection,
+float/integer destination guards, no-output calls, transport and allocation
+failure, GL failure status, invalid counts and missing completion. Ten new
+host cases check widths through a sharing peer, conversions, program/type/
+location/link rejection, native error capture, shared relink invalidation
+and malformed spans. The native device double supplies integer results
+explicitly; actual renderer conversion is checked separately.
+
+Six added browser executions construct driver-level shared contexts
+through native worker imports and real worker-to-main forwarding. They
+read vec4, mat3, mat4, distinct vec3 array elements, bvec4 and scalar values
+through a peer without installing its program, then destroy the source and
+read again. They render red, provoke a failed link, reject the uniform
+query while the previous installed executable still renders red, relink
+successfully, reject old locations and read fresh zero-initialized values.
+Deletion-pending queries work while the program is current; after release,
+queries report INVALID_VALUE. Native textures/FBOs/renderbuffers and every
+created shader/program retire at final teardown. A test-instrumentation
+wrapper initially dropped createShader's argument; the expanded checks
+passed after forwarding its arguments. No engine defect is claimed.
+These tests use a synthetic kernel scratch adapter and source host code;
+they do not execute public C sharing or Rust guest marshalling.
+
+This removes the C uniform-width metadata prerequisite for sharing. It
+does not finish the program/uniform contract: stable repeated location
+identity, long names, active-uniform truncation, uniform setters and the
+full link/executable error audit remain open. C image alias/storage/sampler
+ownership, interrupted staging cleanup, context loss, remaining EGL/GLES/
+GBM/KMS requirements and the full normal-artifact/conformance phase remain
+required. Normal SDK/program/package/image rebuilds, CTS, compositors,
+full browser-memory and POSIX checks stay deferred until implementation
+is ready. Kernel compilation here only inspects ABI exports; standalone
+resolver ABI 58 checks remain historical from `5985c3c727`. The complete
+goal stays active.

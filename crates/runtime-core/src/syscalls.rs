@@ -52496,11 +52496,11 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
-    fn glio_op_table_six_preserves_legacy_sessions_and_rejects_future_tables() {
+    fn glio_op_table_growth_preserves_legacy_sessions_and_rejects_future_tables() {
         use wasm_posix_shared::gl;
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
-        for version in [1, 5, gl::OP_VERSION] {
+        for version in [1, 5, 6, gl::OP_VERSION] {
             let (root, generation) = glio_display_test(&mut proc, &mut host, version).unwrap();
             let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
             let mut info = glio_init_bytes(gl::GlInitInfo {

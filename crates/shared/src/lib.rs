@@ -5182,7 +5182,7 @@ pub mod gl {
     /// Version of the GLES op-table. Bumped independently of `ABI_VERSION`
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
     /// at compile time; GLIO_INIT accepts compatible versions 1..=OP_VERSION.
-    pub const OP_VERSION: u32 = 6;
+    pub const OP_VERSION: u32 = 7;
 
     // --- ioctl request numbers (DRM 'D' magic, starting at 0x40) -----------
 
@@ -5397,6 +5397,11 @@ pub mod gl {
     // followed by bytes for CHUNK. BEGIN=1, CHUNK=2, COMMIT=3, ABORT=4.
     // Existing checked envelope contains an echoed token on success.
     pub const QOP_SHADER_SOURCE_UPLOAD: u32 = 0x001E;
+
+    /// V7: in {u32 program, i32 location, u32 integer_result (0/1)}.
+    /// Out: status, count, 16 value words (unused zero), completion magic.
+    /// The checked 76-byte reply obtains width and values atomically.
+    pub const QOP_GET_UNIFORM_VALUES: u32 = 0x001F;
 
     // --- marshalled ioctl argument structs ---------------------------------
 
@@ -7099,6 +7104,7 @@ mod gl_tests {
             QOP_GET_RENDERBUFFER_PARAMETER,
             QOP_GET_TEX_PARAMETER,
             QOP_SHADER_SOURCE_UPLOAD,
+            QOP_GET_UNIFORM_VALUES,
         ];
         for (i, &a) in qops.iter().enumerate() {
             for &b in &qops[i + 1..] {

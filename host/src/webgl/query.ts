@@ -16,14 +16,14 @@
  * delete and would collide). Indices are number-keyed for clean u32
  * round-tripping.
  */
-import { runStateQuery } from "./state-query.js";
+import { checkedQueryReply, runStateQuery } from "./state-query.js";
 import { runObjectQuery } from "./object-query.js";
 import { runShaderSourceUpload } from "./shader-source.js";
 import { canonicalBuffer } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
 import { getGlesExtensionString } from "./capabilities.js";
-import { checkedGlCall, currentProgramName } from "./program-objects.js";
+import { checkedGlCall, currentProgramName, recordGlError } from "./program-objects.js";
 import { captureNativeGlErrors } from "./errors.js";
 import { boundFramebuffer, isDefaultFramebuffer, validFramebufferTarget, GL_FRAMEBUFFER_UNDEFINED } from "./framebuffer.js";
 
@@ -360,6 +360,35 @@ export function runGlQuery(
       outDv.setUint32(8, info.type, true);
       out.set(nameBytes.subarray(0, nameLen), 12);
       return 12 + nameLen;
+    }
+
+    // V7: one checked reply contains the width and values of one element.
+    // Program/location ownership lives in the shared group, not a C cache.
+    case O.QOP_GET_UNIFORM_VALUES: {
+      if (input.length !== 12 || out.length < 76) return -22;
+      const name = inDv.getUint32(0,true), index = inDv.getInt32(4,true), integer = inDv.getUint32(8,true);
+      if (integer > 1) return -22;
+      return checkedQueryReply(b,out,68,payload => {
+        const fail = (error: number) => { recordGlError(b,error); return -22; };
+        const program = b.programs.get(name);
+        if (!program) return fail(b.shaders.has(name) ? 0x502 : 0x501);
+        const location = b.uniformLocations.get(index);
+        if (!location || b.uniformLocationPrograms.get(index) !== name) return fail(0x502);
+        let linked = false, value: unknown;
+        if (!checkedGlCall(b,() => { linked = !!gl.getProgramParameter(program,0x8b82); })) return -5;
+        if (!linked) return fail(0x502);
+        if (!checkedGlCall(b,() => { value = gl.getUniform(program,location); })) return -5;
+        if (value == null || !(typeof value === "number" || typeof value === "boolean" || Array.isArray(value) || ArrayBuffer.isView(value))) return fail(0x502);
+        const values = normalizeNumericValues(value,0);
+        if (![1,2,3,4,9,16].includes(values.length)) return fail(0x502);
+        const result = new DataView(payload.buffer);
+        result.setUint32(0,values.length,true);
+        for (let i=0;i<values.length;i++) {
+          if (integer) result.setInt32(4+i*4,integerQueryValue(values[i],0),true);
+          else result.setFloat32(4+i*4,values[i],true);
+        }
+        return payload.length;
+      });
     }
 
     // in: u32 programName, i32 locationIndex; out: f32 values[]

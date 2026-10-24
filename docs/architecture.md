@@ -3786,9 +3786,8 @@ ownership. Release and thread exit flush before dropping current references;
 destroy-current and terminate-current defer backend retirement until release.
 Each created EGL context also owns an opaque heap encoder record. The
 current thread binding selects that record; it contains the cursor, client
-arrays, upload layout, errors, image siblings,
-uniform metadata and returned strings. An unbound thread cannot mutate
-another context's client state. Release preserves the record for transfer
+arrays, upload layout, errors, image siblings and returned strings. An
+unbound thread cannot mutate another context's client state. Release preserves the record for transfer
 to another thread; final destruction retires its image references and
 frees it without selecting it or emitting into another command stream.
 Allocation failure precedes backend creation and leaves no published
@@ -3808,7 +3807,7 @@ context destruction releases it. Full indeterminate-submit recovery and
 interrupted temporary-name cleanup remain open.
 Local reference cleanup precedes releasing the common owner. The private
 shared-owner constructor is tested; public C sharing still rejects until
-image aliases and program/link metadata are complete.
+image aliases and the remaining program/link contract are complete.
 User-visible context/surface handles are monotonic. Each backend
 session admits one context and surface. The public EGL facade allocates
 additional sessions for independent context/surface records within a
@@ -3840,7 +3839,7 @@ guest marshalling and the public C cross-context facade remain unvalidated.
 
 The GLES bridge exposes a GLES2 API over WebGL2. Operation-table version 2
 adds commands while preserving version 1 tags and payloads. `GLIO_INIT`
-accepts versions 1 through 6, and rejects zero or newer versions with `ENOSYS`.
+accepts versions 1 through 7, and rejects zero or newer versions with `ENOSYS`.
 Its version and extension strings describe that API. Extension queries carry
 an optional operation-table version: legacy requests retain their empty list,
 while version 2 advertises bridged capabilities. Optional float rendering and
@@ -3852,6 +3851,14 @@ an invalid trailing TLV record cannot execute earlier records in that batch.
 This does not roll back valid commands that report ordinary GL errors.
 The source-only host gate is `cd host && npx vitest run --config
 vitest.graphics.config.ts`; rendered and guest integration checks are separate.
+Uniform getters use one checked, fixed-size renderer reply carrying count
+and values. They do not depend on an earlier reflection call or a C width
+cache. Shared program/location associations validate ownership and link
+state before reading without changing the current program. C publishes
+only a completed successful reply; failed or malformed results preserve
+caller output. Table 7 adds this query within ABI 58, preserving all older
+tags/layouts. Stable repeated location identity, long names and the full
+setter/reflection/link audit remain open.
 See [the graphics compatibility inventory](graphics/compatibility-v1.md).
 Texture uploads copy shared and
 possibly unaligned guest bytes into the typed views WebGL requires. GLES2's

@@ -34,8 +34,6 @@
 
 #define WPK_GL_MAX_ATTRIBS 16u
 #define WPK_GL_TEXTURE_UNITS 32
-#define WPK_GL_MAX_UNIFORM_META 512
-#define WPK_GL_UNIFORM_NAME_MAX 128
 
 enum wpk_name_space {
     WPK_NAMES_BUFFER,
@@ -201,13 +199,6 @@ struct wpk_image_attachment {
     struct wpk_egl_image *image;
     struct wpk_image_attachment *next;
 };
-struct uniform_meta {
-    GLuint program;
-    GLint location;
-    uint32_t values;
-    char name[WPK_GL_UNIFORM_NAME_MAX];
-};
-
 struct wpk_array_capture {
     struct wpk_object_name *object;
     GLuint name;
@@ -242,8 +233,6 @@ struct wpk_gles_context {
     struct wpk_image_attachment *image_attachments;
     GLuint bound_framebuffer;
     uint32_t next_vertex_array;
-    struct uniform_meta uniform_meta[WPK_GL_MAX_UNIFORM_META];
-    uint32_t uniform_meta_count;
     char version[256];
     char glsl_version[256];
     char vendor[256];
@@ -269,8 +258,6 @@ struct wpk_gles_context {
 #define g_image_attachments (_wpk_gl_current_encoder()->image_attachments)
 #define g_bound_framebuffer (_wpk_gl_current_encoder()->bound_framebuffer)
 #define g_next_vertex_array (_wpk_gl_current_encoder()->next_vertex_array)
-#define g_uniform_meta (_wpk_gl_current_encoder()->uniform_meta)
-#define g_uniform_meta_count (_wpk_gl_current_encoder()->uniform_meta_count)
 
 struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *source) {
     struct wpk_gles_context *state = calloc(1, sizeof *state);
@@ -1634,7 +1621,8 @@ void glDeleteBuffers(GLsizei n, const GLuint *names) {
     emit_name_array(OP_DELETE_BUFFERS, n, names);
 }
 
-static void link_uniform_location(GLuint program, const char *name, GLint location);
+static int checked_query_reply(uint32_t op, const void *input, uint32_t input_len, uint8_t *reply,
+                               uint32_t payload);
 static uint32_t query_value_count(GLenum pname);
 
 /* ----- uniforms ----------------------------------------------------- */
@@ -1807,8 +1795,8 @@ GLint glGetUniformLocation(GLuint program, const GLchar *name) {
     memcpy(in + 4, &nlen_u32, 4);
     memcpy(in + 8, name, nlen);
     int32_t loc = -1;
-    if (_wpk_gl_query_into(QOP_GET_UNIFORM_LOC, in, (uint32_t)(8 + nlen), &loc, 4) != 0) return -1;
-    link_uniform_location(program, name, loc);
+    if (_wpk_gl_query_into(QOP_GET_UNIFORM_LOC, in, (uint32_t)(8 + nlen), &loc, 4) != 0)
+        return -1;
     return loc;
 }
 
@@ -2285,120 +2273,6 @@ void glGetBooleanv(GLenum pname, GLboolean *data) {
     if (_wpk_gl_query_into(QOP_GET_FLOATV, &p, 4, values, count * sizeof *values) == 0)
         for (uint32_t i = 0; i < count; i++) data[i] = values[i] != 0.0f ? GL_TRUE : GL_FALSE;
     if (values != small) free(values);
-}
-
-static uint32_t uniform_value_count(GLenum type) {
-    switch (type) {
-    case GL_FLOAT:
-    case GL_INT:
-    case GL_BOOL:
-    case GL_SAMPLER_2D:
-    case GL_SAMPLER_CUBE:
-        return 1;
-    case GL_FLOAT_VEC2:
-    case GL_INT_VEC2:
-    case GL_BOOL_VEC2:
-        return 2;
-    case GL_FLOAT_VEC3:
-    case GL_INT_VEC3:
-    case GL_BOOL_VEC3:
-        return 3;
-    case GL_FLOAT_VEC4:
-    case GL_INT_VEC4:
-    case GL_BOOL_VEC4:
-    case GL_FLOAT_MAT2:
-        return 4;
-    case GL_FLOAT_MAT3:
-        return 9;
-    case GL_FLOAT_MAT4:
-        return 16;
-    default:
-        return 1;
-    }
-}
-
-static int uniform_meta_name_equals(const char *a, const char *b) {
-    return strncmp(a, b, WPK_GL_UNIFORM_NAME_MAX) == 0;
-}
-
-static struct uniform_meta *find_uniform_meta_by_name(GLuint program, const char *name) {
-    if (!name) return NULL;
-    for (uint32_t i = 0; i < g_uniform_meta_count; i++) {
-        if (g_uniform_meta[i].program == program && uniform_meta_name_equals(g_uniform_meta[i].name, name))
-            return &g_uniform_meta[i];
-    }
-
-    char base[WPK_GL_UNIFORM_NAME_MAX];
-    size_t len = strnlen(name, sizeof base - 1);
-    if (len >= sizeof base) len = sizeof base - 1;
-    memcpy(base, name, len);
-    base[len] = '\0';
-    char *bracket = strchr(base, '[');
-    if (!bracket) return NULL;
-    *bracket = '\0';
-
-    for (uint32_t i = 0; i < g_uniform_meta_count; i++) {
-        if (g_uniform_meta[i].program == program && uniform_meta_name_equals(g_uniform_meta[i].name, base))
-            return &g_uniform_meta[i];
-    }
-    return NULL;
-}
-
-static struct uniform_meta *find_uniform_meta_by_location(GLuint program, GLint location) {
-    for (uint32_t i = 0; i < g_uniform_meta_count; i++) {
-        if (g_uniform_meta[i].program == program && g_uniform_meta[i].location == location)
-            return &g_uniform_meta[i];
-    }
-    return NULL;
-}
-
-static struct uniform_meta *alloc_uniform_meta(GLuint program, const char *name) {
-    struct uniform_meta *m = find_uniform_meta_by_name(program, name);
-    if (m) return m;
-    uint32_t slot = g_uniform_meta_count < WPK_GL_MAX_UNIFORM_META
-        ? g_uniform_meta_count++
-        : (program + (uint32_t)(uintptr_t)name) % WPK_GL_MAX_UNIFORM_META;
-    m = &g_uniform_meta[slot];
-    memset(m, 0, sizeof *m);
-    m->program = program;
-    m->location = -1;
-    if (name) {
-        strncpy(m->name, name, sizeof m->name - 1);
-        m->name[sizeof m->name - 1] = '\0';
-    }
-    return m;
-}
-
-static void remember_uniform_meta(GLuint program, const char *name, GLenum type) {
-    if (!name || name[0] == '\0') return;
-    uint32_t values = uniform_value_count(type);
-    struct uniform_meta *m = alloc_uniform_meta(program, name);
-    m->values = values;
-
-    size_t len = strnlen(name, WPK_GL_UNIFORM_NAME_MAX - 1);
-    if (len > 3 && strcmp(name + len - 3, "[0]") == 0) {
-        char base[WPK_GL_UNIFORM_NAME_MAX];
-        size_t base_len = len - 3;
-        if (base_len >= sizeof base) base_len = sizeof base - 1;
-        memcpy(base, name, base_len);
-        base[base_len] = '\0';
-        m = alloc_uniform_meta(program, base);
-        m->values = values;
-    }
-}
-
-static void link_uniform_location(GLuint program, const char *name, GLint location) {
-    if (location < 0) return;
-    struct uniform_meta *m = find_uniform_meta_by_name(program, name);
-    if (!m) m = alloc_uniform_meta(program, name);
-    if (m->values == 0) m->values = 1;
-    m->location = location;
-}
-
-static uint32_t uniform_values_for_location(GLuint program, GLint location) {
-    struct uniform_meta *m = find_uniform_meta_by_location(program, location);
-    if (!m || m->values == 0) return 1;
-    return m->values;
 }
 
 void glTexParameterf(GLenum target, GLenum pname, GLfloat param) {
@@ -2908,36 +2782,35 @@ void glGetActiveUniform(GLuint program, GLuint index, GLsizei bufSize,
     if (name_len > (uint32_t)(bufSize - 1)) name_len = (uint32_t)(bufSize - 1);
     memcpy(name, out + 12, name_len);
     name[name_len] = '\0';
-    remember_uniform_meta(program, name, (GLenum)uniform_type);
     if (length) *length = (GLsizei)name_len;
     if (size) *size = uniform_size;
     if (type) *type = (GLenum)uniform_type;
 }
 
+/* A single renderer read supplies both width and values. C reflection order,
+ * name truncation and another shared context's relink cannot stale a cache. */
+static void get_uniform_values(GLuint program, GLint location, int integer, void *params) {
+    if (!params)
+        return;
+    const uint32_t input[3] = {program, (uint32_t)location, (uint32_t)integer};
+    uint8_t reply[76];
+    if (!checked_query_reply(QOP_GET_UNIFORM_VALUES, input, sizeof input, reply, 68))
+        return;
+    uint32_t count;
+    memcpy(&count, reply + 4, 4);
+    if (count != 1 && count != 2 && count != 3 && count != 4 && count != 9 && count != 16) {
+        raise_client_error(GL_INVALID_OPERATION);
+        return;
+    }
+    memcpy(params, reply + 8, count * 4);
+}
 void glGetUniformfv(GLuint program, GLint location, GLfloat *params) {
     if (!_wpk_gl_current_encoder()) return;
-    if (!params) return;
-    uint8_t in[8];
-    uint32_t p = program;
-    int32_t loc = location;
-    memcpy(in, &p, 4);
-    memcpy(in + 4, &loc, 4);
-    uint32_t values = uniform_values_for_location(program, location);
-    memset(params, 0, values * sizeof(GLfloat));
-    (void)_wpk_gl_query_into(QOP_GET_UNIFORMFV, in, sizeof in, params, values * sizeof(GLfloat));
+    get_uniform_values(program, location, 0, params);
 }
-
 void glGetUniformiv(GLuint program, GLint location, GLint *params) {
     if (!_wpk_gl_current_encoder()) return;
-    if (!params) return;
-    uint8_t in[8];
-    uint32_t p = program;
-    int32_t loc = location;
-    memcpy(in, &p, 4);
-    memcpy(in + 4, &loc, 4);
-    uint32_t values = uniform_values_for_location(program, location);
-    memset(params, 0, values * sizeof(GLint));
-    (void)_wpk_gl_query_into(QOP_GET_UNIFORMIV, in, sizeof in, params, values * sizeof(GLint));
+    get_uniform_values(program, location, 1, params);
 }
 
 void glFlush(void) {
