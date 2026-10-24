@@ -13,6 +13,8 @@ fn emit_mode(input: &[u8], activations: bool) -> Vec<u8> {
     let activation = activations.then(|| {
         use fork_instrument::{call_graph, instrument};
         let fork = call_graph::find_import_func(&module, "h.fork").unwrap();
+        let initial = call_graph::analyze_reaching_closure(&module, fork);
+        fork_instrument::legacy_eh::normalize_fork_path(&mut module, &initial.activations).unwrap();
         let reaching = call_graph::analyze_reaching_closure(&module, fork);
         let mut locals: Vec<_> = reaching
             .activations

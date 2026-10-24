@@ -107,6 +107,7 @@ pub(super) fn plan<'a>(
             limits.continuation,
         )?;
         plan.catches.bind_types(&mut support)?;
+        plan.legacy.bind_types(&mut support)?;
         support.result_block(&plan.results)?;
         for call in &plan.continuation.calls {
             let (target, source_type) = target(scan, runtime, call.kind)?;

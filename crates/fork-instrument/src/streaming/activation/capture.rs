@@ -6,8 +6,9 @@ use crate::streaming::runtime::{load, ptr_const, store};
 use crate::streaming::{
     CallContinuation, CatchFrameIo, ContinuationHooks, ContinuationLimits, ContinuationPlan,
     DispatchEnvironment, DispatchLimits, FrameAddress, FrameCodecPair, FrameEnvironment,
-    FrameLayout, FunctionIr, LocalKey, NativeRuntimeIndices, RegionId, RegionKind, Scan,
-    SourceInstruction, SourceTypes, emit_continuation_dispatch, plan_continuations_with,
+    FrameLayout, FunctionIr, LegacyHandlerLimits, LocalKey, NativeLegacyPlan, NativeRuntimeIndices,
+    RegionId, RegionKind, Scan, SourceInstruction, SourceTypes, emit_dispatch,
+    plan_continuations_with,
 };
 use anyhow::{Context, Result, ensure};
 use std::{borrow::Cow, collections::BTreeSet};
@@ -24,6 +25,7 @@ pub struct NativeActivationPlan {
     pub reference_io: Option<NativeReferenceIo>,
     pub tail_transfers: Option<TailTransferPlan>,
     pub catches: NativeCatchPlan,
+    pub legacy: NativeLegacyPlan,
 }
 impl NativeActivationPlan {
     #[allow(clippy::too_many_arguments)]
@@ -60,6 +62,16 @@ impl NativeActivationPlan {
                 work: limits.work,
             },
         )?;
+        let mut legacy = NativeLegacyPlan::discover(
+            scan,
+            body,
+            source_types,
+            map,
+            LegacyHandlerLimits {
+                metadata_bytes: limits.metadata_bytes,
+                work: limits.work,
+            },
+        )?;
         let (continuation, call_selector) = plan_continuations_with(
             scan,
             body,
@@ -70,6 +82,7 @@ impl NativeActivationPlan {
             limits,
             |frame, calls, _, references| {
                 catches.allocate(frame, references)?;
+                legacy.allocate(frame, calls, references)?;
                 if calls.len() > 1 {
                     Ok(Some(frame.temporary(ValType::I32)?))
                 } else {
@@ -89,6 +102,7 @@ impl NativeActivationPlan {
             reference_io: None,
             tail_transfers: None,
             catches,
+            legacy,
         })
     }
     pub fn bind_tail_transfers(&mut self, tails: TailTransferPlan) -> Result<()> {
@@ -120,10 +134,9 @@ pub struct ActivationEmission {
     pub boundary: Option<u32>,
 }
 
-/// Linked-frame wrapper, including modern catch ownership and live restart.
-/// Catch wrapper types and tail routes must be bound before emission. Legacy
-/// handlers require normalization; unsupported plans fail before exposing a
-/// body as a fork artifact.
+/// Linked-frame wrapper, including explicit catch ownership and live restart.
+/// Modern/legacy control types and tail routes must be bound before emission.
+/// Legacy arms lower around their existing source continuation sequences.
 ///
 /// The dispatcher sits inside seven labels, outside-to-inside:
 /// `normal_exit -> escaping_exception -> outer_try -> restart_loop ->
@@ -152,9 +165,12 @@ where
     ensure!(
         body.regions
             .iter()
-            .all(|region| region.kind != RegionKind::LegacyTry
-                || !body.instructions[region.opener.unwrap()].retained),
-        "native activation requires legacy exception normalization"
+            .enumerate()
+            .all(|(index, region)| region.kind != RegionKind::LegacyTry
+                || !body.instructions[region.opener.unwrap()].retained
+                || plan.legacy.delegates.contains_key(&RegionId(index))
+                || plan.legacy.regions.contains_key(&RegionId(index))),
+        "native activation is missing its legacy control plan"
     );
     ensure!(
         plan.tail_transfers.is_some()
@@ -175,6 +191,7 @@ where
         "native activation reference-frame I/O is not installed"
     );
     plan.catches.validate_emission()?;
+    plan.legacy.validate_emission()?;
     let shape = layout.codec_shape(plan.catches.selector.is_some(), &continuation.references);
     ensure!(
         emission.scalar_codecs.is_none() || shape.is_some(),
@@ -222,9 +239,10 @@ where
         catches: &plan.catches,
         runtime,
     };
-    emit_continuation_dispatch(
+    emit_dispatch(
         body,
         continuation,
+        Some((&plan.legacy, runtime.unwind_tag)),
         &mut adapter,
         &mut output,
         DispatchEnvironment {

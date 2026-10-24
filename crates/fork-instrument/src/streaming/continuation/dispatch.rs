@@ -2,13 +2,18 @@
 //! call transport and function-wide capture policy; this emits no declarations.
 use super::{CallContinuation, ContinuationLandingKind, ContinuationPlan, SequenceId};
 use crate::streaming::{
-    FrameLayout, FunctionIr, LocalKey, RegionId, RegionKind, SourceInstruction,
+    FrameLayout, FunctionIr, LegacyHandlerId, LocalKey, NativeLegacyPlan, RegionId, RegionKind,
+    SourceInstruction,
 };
 use anyhow::{Context, Result, ensure};
 use std::{borrow::Cow, ops::Range};
 use wasm_encoder::{BlockType, Catch, Function, HeapType, Instruction, reencode::Reencode};
 
 const BUCKET: usize = 32;
+mod delegates;
+mod forwarding;
+mod legacy;
+use legacy::LegacyTask;
 
 #[derive(Clone, Copy, Debug)]
 pub struct DispatchEnvironment {
@@ -111,9 +116,24 @@ enum Label {
     SourceWrapper(RegionId),
     Synthetic(usize),
     External,
+    LegacyBody(RegionId),
+    DelegateForward(RegionId),
+    DelegateNormal(SequenceId),
+    DelegateBody(RegionId),
+    DelegatePrivate(RegionId),
+    DelegateCapture(RegionId),
+    LegacyPrivate(RegionId),
+    LegacyCapture(LegacyHandlerId),
+    LegacyHandlerBody(LegacyHandlerId),
+    LegacyHandlerPrivate(LegacyHandlerId),
+    LegacyHandlerException(LegacyHandlerId),
+    LegacyExit(LegacyHandlerId, RegionId),
 }
 enum Task {
     Sequence(SequenceId),
+    SequenceContent(SequenceId),
+    ForwardEnd(SequenceId),
+    DelegateEnd(RegionId),
     Node {
         sequence: SequenceId,
         landings: Range<usize>,
@@ -125,6 +145,7 @@ enum Task {
     Capture(SequenceId, usize),
     Close(usize),
     RegionEnd(RegionId),
+    Legacy(LegacyTask),
 }
 impl Task {
     fn metadata_bytes(&self) -> Result<usize> {
@@ -153,6 +174,8 @@ struct Emitter<'a, 'b, T> {
     source_wrappers: Vec<usize>,
     work: usize,
     queued_bytes: usize,
+    legacy: Option<&'a NativeLegacyPlan>,
+    legacy_unwind: Option<u32>,
 }
 
 /// Emit the original function's content, excluding its final End, inside an
@@ -161,6 +184,21 @@ struct Emitter<'a, 'b, T> {
 pub fn emit_continuation_dispatch<T: ContinuationHooks>(
     body: &FunctionIr<'_>,
     plan: &ContinuationPlan,
+    hooks: &mut T,
+    output: &mut Function,
+    environment: DispatchEnvironment,
+    limits: DispatchLimits,
+) -> Result<()>
+where
+    T::Error: std::error::Error + Send + Sync + 'static,
+{
+    emit_dispatch(body, plan, None, hooks, output, environment, limits)
+}
+
+pub(crate) fn emit_dispatch<T: ContinuationHooks>(
+    body: &FunctionIr<'_>,
+    plan: &ContinuationPlan,
+    legacy: Option<(&NativeLegacyPlan, u32)>,
     hooks: &mut T,
     output: &mut Function,
     environment: DispatchEnvironment,
@@ -218,6 +256,8 @@ where
         source_wrappers: vec![0; body.regions.len()],
         work: limits.work,
         queued_bytes: 128,
+        legacy: legacy.map(|(plan, _)| plan),
+        legacy_unwind: legacy.map(|(_, tag)| tag),
     };
     emitter.run()?;
     ensure!(
@@ -285,6 +325,14 @@ where
             self.step(1)?;
             match task {
                 Task::Sequence(id) => {
+                    if self.enter_forwarding(id)? {
+                        continue;
+                    }
+                    self.push(Task::SequenceContent(id))?;
+                }
+                Task::ForwardEnd(id) => self.end_forwarding(id)?,
+                Task::DelegateEnd(id) => self.end_delegate(id)?,
+                Task::SequenceContent(id) => {
                     let sequence = &self.plan.sequences[id.0];
                     if sequence.calls.is_none() {
                         self.push(Task::Source(sequence.source.clone()))?;
@@ -316,6 +364,7 @@ where
                 Task::RegionEnd(region) => {
                     self.source_instruction(self.body.regions[region.0].end)?
                 }
+                Task::Legacy(task) => self.legacy_task(task)?,
             }
             self.check()?;
         }
@@ -537,6 +586,18 @@ where
         Ok(())
     }
     fn enter_region(&mut self, region: RegionId) -> Result<()> {
+        if self
+            .legacy
+            .is_some_and(|plan| plan.delegates.contains_key(&region))
+        {
+            return self.enter_delegate(region);
+        }
+        if self
+            .legacy
+            .is_some_and(|plan| plan.regions.contains_key(&region))
+        {
+            return self.enter_legacy_region(region);
+        }
         self.source_instruction(self.body.regions[region.0].opener.unwrap())?;
         self.push(Task::RegionEnd(region))?;
         let arms = self.sequence_by_region[region.0].clone();
@@ -589,6 +650,9 @@ where
                 self.labels.pop() == Some(Label::Source(source.region)),
                 "unbalanced original source label"
             );
+        }
+        if self.emit_legacy_rethrow(index)? {
+            return Ok(());
         }
         match source.operation {
             Operator::LocalGet { local_index } => {
@@ -664,14 +728,14 @@ where
                     relative_depth: depth,
                     ..
                 } => {
-                    *depth = self.depth(Label::Source(transfer.targets[0]))?;
+                    *depth = self.source_depth(index, transfer.targets[0])?;
                 }
                 Instruction::BrTable(table, default) => {
                     self.step(transfer.targets.len())?;
                     let mapped = transfer
                         .targets
                         .iter()
-                        .map(|&r| self.depth(Label::Source(r)))
+                        .map(|&r| self.source_depth(index, r))
                         .collect::<Result<Vec<_>>>()?;
                     *default = *mapped.last().unwrap();
                     *table = Cow::Owned(mapped[..mapped.len() - 1].to_vec());
@@ -686,7 +750,7 @@ where
                 .iter_mut()
                 .zip(&self.body.regions[region.0].handlers)
             {
-                let depth = self.depth(Label::Source(handler.target.unwrap()))?;
+                let depth = self.source_depth(index, handler.target.unwrap())?;
                 match catch {
                     Catch::One { label, .. }
                     | Catch::OneRef { label, .. }
@@ -696,9 +760,12 @@ where
             }
         }
         if let Instruction::Delegate(depth) = &mut encoded {
-            *depth = self.depth(Label::Source(
-                self.body.regions[source.region.0].delegate.unwrap(),
-            ))?;
+            ensure!(
+                self.legacy.is_none(),
+                "unlowered legacy delegate reached native dispatch"
+            );
+            let target = self.body.regions[source.region.0].delegate.unwrap();
+            *depth = self.depth(Label::Source(target))?;
         }
         self.hooks.emit_continuation_source(
             source,
@@ -722,11 +789,12 @@ where
                 let depths = handlers
                     .iter()
                     .map(|handler| {
-                        self.depth(Label::Source(
+                        self.source_depth(
+                            self.body.regions[source.region.0].opener.unwrap(),
                             handler
                                 .target
                                 .context("wrapped handler has no source target")?,
-                        ))
+                        )
                     })
                     .collect::<Result<Vec<_>>>()?;
                 self.hooks.emit_continuation_region_end(

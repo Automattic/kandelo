@@ -447,19 +447,43 @@ defect: when `catch_all_ref` rethrows a raw broker value, Walrus leaves its
 scratch reservation behind on normal, rewind and live-abort exits. Native
 emission must release that reservation completely. The fixture verifies the
 known oracle failure separately instead of weakening native cleanup checks.
+
 `LegacyHandlerPlan` discovers legacy exception ownership in one original
 function. It assigns each attached handler a parent link, resolves named
 rethrows and shares typed cleanup targets across repeated branches. Work
 and metadata limits cover discovery and ancestor walks. Original operator
-coordinates and branch signatures remain unchanged. Differential checks
-compare owned-exception counts and rethrow cleanup with the unchanged
-Walrus normalizer, including nested handlers and reference branches. A
-valid detached legacy catch makes the Walrus parser panic; that failure is
-recorded separately from the shared positive assertions.
+coordinates and branch signatures remain unchanged. `NativeLegacyPlan`
+adds typed controls and nullable exception locals while the frame is open,
+then freezes their block signatures with activation support. Emission
+lowers the existing body and handler sequences directly; it does not
+construct another instruction tree. Only handlers active at a call add
+their exceptions to that call's reference vector. Replay throws the
+restored exception before running the try body to re-enter the same arm.
 
-This ownership plan does not lower handlers or enable legacy replay.
-Legacy-handler normalization remains unfinished, and native activation
-emission still rejects it. Production continues to use Walrus.
+Normal exits, escaping foreign exceptions, branch-table/reference exits
+and modern catch jumps release exited handler ownership. Private unwind
+preserves it until capture. A rethrow intercepted by an inner catch keeps
+the original exception available for later rethrows and forks. Legacy
+delegates become modern exception branches to typed forwarding landings
+in the original target arm. Foreign forwarding clears exited owners;
+private unwind reaches activation capture without clearing them.
+
+Seventeen control fixtures execute original-input baselines, normal runs,
+fresh-instance replay and live allocation-failure restart on both pointer
+widths and scalar codec policies. They include nested/sibling handlers,
+typed inputs, scalar/vector/reference payloads, brokered catch-all values,
+reused rethrow contexts, typed exits and delegates to functions, outer
+tries, loops, if arms and catch arms. A composed GC fixture also exercises
+legacy typed-exception replay with indirect tail transport, module state
+and virtual scratch spills. Emitted activation fixtures contain no legacy
+exception instructions. Production continues to use Walrus.
+
+The unchanged oracle runs shared positive assertions where it supports
+these inputs. Separate checks record its detached-catch parser panic,
+delegates bypassing frame capture or an outer handler, and premature
+cleanup when an inner catch intercepts a rethrow. Additional delegate
+target scopes and typed legacy inputs use original-input execution and
+strict native replay assertions rather than those broken oracle paths.
 
 `FrameCodecCatalog` interns scalar save/restore recipes before output starts.
 It emits each helper serially and shares restores across save-commit policies.
@@ -676,7 +700,7 @@ the unobservable root, and the unchanged oracle harvest traps. This test does
 not weaken the ordinary cross-backend replay assertions.
 
 These remain component fixtures rather than the normal production path.
-Legacy exception normalization, import adapters, process-level integration,
+Import adapters, process-level integration,
 artifact certification and production backend integration remain work. No
 end-to-end memory improvement is claimed.
 

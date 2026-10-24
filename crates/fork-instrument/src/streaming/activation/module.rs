@@ -158,6 +158,7 @@ impl<'a> NativeActivations<'a> {
         plan.bind_tail_transfers(tails)?;
         plan.bind_reference_io(&self.kinds, self.limits.metadata_bytes)?;
         plan.catches.bind_frozen_types(&self.support)?;
+        plan.legacy.bind_frozen_types(&self.support)?;
         let scalar_codecs = if self.options.shared_codecs {
             plan.continuation
                 .frame

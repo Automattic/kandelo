@@ -11,6 +11,8 @@ use std::{collections::BTreeMap, ops::Range};
 use wasmparser::Operator;
 
 mod discover;
+mod native;
+pub use native::*;
 #[cfg(test)]
 mod oracle_tests;
 #[cfg(test)]
@@ -55,6 +57,8 @@ pub struct LegacyRethrow {
     pub instruction: usize,
     pub point: ProgramPoint,
     pub exception: LegacyHandlerId,
+    /// Ownership potentially exited by this rethrow. Actual release must
+    /// wait for handler exit: an inner catch can intercept the exception.
     pub cleanup: LegacyCleanup,
 }
 
@@ -79,6 +83,13 @@ impl LegacyHandlerPlan {
     }
     pub fn exits(&self) -> impl Iterator<Item = ((LegacyHandlerId, RegionId), LegacyCleanup)> + '_ {
         self.exits.iter().map(|(&key, &cleanup)| (key, cleanup))
+    }
+    pub(crate) fn exit_cleanup(
+        &self,
+        owner: LegacyHandlerId,
+        target: RegionId,
+    ) -> Option<LegacyCleanup> {
+        self.exits.get(&(owner, target)).copied()
     }
     pub fn cleanup_handlers(
         &self,

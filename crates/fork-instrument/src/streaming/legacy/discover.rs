@@ -66,17 +66,18 @@ pub(super) fn discover(
             }
             _ => {}
         }
-        if transfers
+        let transfer = if transfers
             .peek()
-            .is_none_or(|transfer| transfer.instruction != index)
+            .is_some_and(|transfer| transfer.instruction == index)
         {
-            continue;
-        }
-        let transfer = transfers.next().unwrap();
+            transfers.next()
+        } else {
+            None
+        };
         if !source.retained {
             continue;
         }
-        if transfer.kind == TransferKind::Rethrow {
+        if let Some(transfer) = transfer.filter(|transfer| transfer.kind == TransferKind::Rethrow) {
             budget.work(1)?;
             let exception = caught[transfer.targets[0].0]
                 .context("legacy rethrow does not target an active handler")?;
@@ -93,30 +94,54 @@ pub(super) fn discover(
                 exception,
                 cleanup,
             });
-        } else if matches!(
-            transfer.kind,
-            TransferKind::Branch | TransferKind::Conditional | TransferKind::Table
-        ) {
+        } else if let Some(transfer) = transfer.filter(|transfer| {
+            matches!(
+                transfer.kind,
+                TransferKind::Branch | TransferKind::Conditional | TransferKind::Table
+            )
+        }) {
             for &target in &transfer.targets {
-                budget.work(1)?;
-                let keep = inherited[target.0];
-                if active == keep {
-                    continue;
-                }
-                let first = active.context("branch enters a legacy handler")?;
-                let key = (first, target);
-                if plan.exits.contains_key(&key) {
-                    continue;
-                }
-                let cleanup = LegacyCleanup { first, keep };
-                validate_cleanup(&plan, cleanup, &mut budget)?;
-                budget.metadata(1)?;
-                plan.exits.insert(key, cleanup);
+                add_exit(&mut plan, active, inherited[target.0], target, &mut budget)?;
+            }
+        }
+        if let Some(region) = source.opens
+            && body.regions[region.0].kind == RegionKind::TryTable
+        {
+            for handler in &body.regions[region.0].handlers {
+                let target = handler
+                    .target
+                    .context("modern catch has no source target")?;
+                // A modern clause can branch directly out of a legacy arm,
+                // bypassing its ordinary exception/normal-exit cleanup.
+                add_exit(&mut plan, active, inherited[target.0], target, &mut budget)?;
             }
         }
     }
     ensure!(active.is_none(), "unclosed legacy handler ownership");
     Ok(plan)
+}
+
+fn add_exit(
+    plan: &mut LegacyHandlerPlan,
+    active: Option<LegacyHandlerId>,
+    keep: Option<LegacyHandlerId>,
+    target: RegionId,
+    budget: &mut Budget,
+) -> Result<()> {
+    budget.work(1)?;
+    if active == keep {
+        return Ok(());
+    }
+    let first = active.context("branch enters a legacy handler")?;
+    let key = (first, target);
+    if plan.exits.contains_key(&key) {
+        return Ok(());
+    }
+    let cleanup = LegacyCleanup { first, keep };
+    validate_cleanup(plan, cleanup, budget)?;
+    budget.metadata(1)?;
+    plan.exits.insert(key, cleanup);
+    Ok(())
 }
 
 fn validate_cleanup(

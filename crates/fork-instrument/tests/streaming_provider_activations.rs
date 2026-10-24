@@ -4,10 +4,19 @@ mod native;
 mod oracle;
 #[test]
 fn real_providers_compose_with_activation_catches_globals_tables_and_fresh_replay() {
+    run_fixture(include_str!("fixtures/streaming_provider_activation.wat"));
+}
+#[test]
+fn legacy_handlers_rethrow_their_owned_exception_after_fresh_replay_and_live_abort() {
+    run_fixture(include_str!(
+        "fixtures/streaming_legacy_provider_activation.wat"
+    ));
+}
+fn run_fixture(fixture: &str) {
     for wide in [false, true] {
         for scratch in [false, true] {
             let input = wat::parse_str(
-                include_str!("fixtures/streaming_provider_activation.wat")
+                fixture
                     .replace("@WIDTH@", if wide { "i64" } else { "" })
                     .replace("@POINTER@", if wide { "i64" } else { "i32" })
                     .replace(
