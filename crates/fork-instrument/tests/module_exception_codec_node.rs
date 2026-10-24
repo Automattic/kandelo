@@ -7,17 +7,28 @@ use std::{
 use fork_instrument::module_exception_codec;
 use walrus::Module;
 
-fn fixture_module() -> Vec<u8> {
-    let input = wat::parse_str(
-        r#"
+#[path = "support/streaming_exceptions.rs"]
+mod native;
+
+fn fixture_input(wide: bool) -> Vec<u8> {
+    let source = r#"
         (module
           (import "env" "memory" (memory 2))
           (tag $test (export "test_tag") (param i32 i64))
           (tag $inner (export "inner_tag") (param i32))
+          (tag $vector (export "vector_tag") (param v128))
           (tag $outer (export "outer_tag") (param (ref null exn))))
-        "#,
-    )
-    .expect("provider fixture WAT");
+        "#;
+    wat::parse_str(if wide {
+        source.replace("(memory 2)", "(memory i64 2)")
+    } else {
+        source.into()
+    })
+    .expect("provider fixture WAT")
+}
+
+fn fixture_module() -> Vec<u8> {
+    let input = fixture_input(false);
     let mut module = Module::from_buffer(&input).expect("provider fixture module");
     let memory = module.memories.iter().next().expect("provider memory").id();
     module_exception_codec::inject(&mut module, memory).expect("inject exception codec");
@@ -30,6 +41,7 @@ fn helper_module() -> Vec<u8> {
         (module
           (import "provider" "tag" (tag $test (param i32 i64)))
           (import "provider" "inner_tag" (tag $inner (param i32)))
+          (import "provider" "vector_tag" (tag $vector (param v128)))
           (import "provider" "outer_tag"
             (tag $outer (param (ref null exn))))
           (import "provider" "encode"
@@ -100,6 +112,27 @@ fn helper_module() -> Vec<u8> {
             (local.get $outer_exception)
             (call $encode))
 
+          (func (export "capture_vector") (result i32)
+            (local $exception (ref null exn))
+            block $caught (result v128 (ref exn))
+              try_table (catch_ref $vector $caught)
+                v128.const i64x2 0x102030405060708 0x1122334455667788
+                throw $vector
+              end
+              unreachable
+            end
+            local.set $exception drop
+            local.get $exception call $encode)
+
+          (func (export "vector_high") (param i32) (result i64)
+            block $caught (result v128)
+              try_table (catch $vector $caught)
+                local.get 0 call $decode ref.as_non_null throw_ref
+              end
+              unreachable
+            end
+            i64x2.extract_lane 1)
+
           (func (export "nested_payload") (param i32) (result i32)
             (block $caught_inner (result i32)
               (try_table (catch $inner $caught_inner)
@@ -133,6 +166,20 @@ fn anyref_dependencies() -> Vec<u8> {
 
 #[test]
 fn fresh_node_instance_reconstructs_exact_tag_and_alias_identity() {
+    run_node(fixture_module(), false);
+}
+
+#[test]
+fn native_exact_tag_codec_reconstructs_aliases_and_nested_exceptions_on_both_widths() {
+    for wide in [false, true] {
+        let input = fixture_input(wide);
+        let output = native::emit(&input);
+        assert_eq!(native::emit(&input), output);
+        run_node(output, wide);
+    }
+}
+
+fn run_node(provider: Vec<u8>, wide: bool) {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock")
@@ -142,180 +189,18 @@ fn fresh_node_instance_reconstructs_exact_tag_and_alias_identity() {
         std::process::id(),
     ));
     fs::create_dir(&directory).expect("create fixture directory");
-    fs::write(directory.join("provider.wasm"), fixture_module()).expect("write provider");
+    fs::write(directory.join("provider.wasm"), provider).expect("write provider");
+    let memory = wat::parse_str(format!(
+        "(module (memory (export \"memory\") {} 2))",
+        if wide { "i64" } else { "" }
+    ))
+    .unwrap();
+    fs::write(directory.join("memory.wasm"), memory).expect("write memory factory");
     fs::write(directory.join("helper.wasm"), helper_module()).expect("write helper");
     fs::write(directory.join("anyref.wasm"), anyref_dependencies()).expect("write anyref");
     fs::write(
         directory.join("test.mjs"),
-        r#"
-import { readFileSync } from "node:fs";
-
-const providerModule = new WebAssembly.Module(readFileSync(
-  new URL("./provider.wasm", import.meta.url),
-));
-const helperModule = new WebAssembly.Module(readFileSync(
-  new URL("./helper.wasm", import.meta.url),
-));
-const anyrefModule = new WebAssembly.Module(readFileSync(
-  new URL("./anyref.wasm", import.meta.url),
-));
-const anyrefs = new WebAssembly.Instance(anyrefModule).exports;
-const recipes = new Map();
-let nextRecipe = 1;
-
-function instantiate(memory) {
-  let provider;
-  const ids = new WeakMap();
-  const scratch = [];
-  let scratchTop = 0x10000;
-  const thrown = (slot) => {
-    try {
-      provider.exports.__wpk_fork_ref_exn_throw_slot(slot);
-    } catch (value) {
-      return value;
-    }
-    throw new Error("exception scratch slot returned");
-  };
-  const imports = {
-    env: {
-      memory,
-      __wpk_fork_module_activation:
-        new WebAssembly.Global({ value: "i32", mutable: false }, 0),
-      __wpk_fork_ref_exn_lookup(slot) {
-        return ids.get(thrown(slot)) ?? 0;
-      },
-      __wpk_fork_ref_exn_claim(slot) {
-        const value = thrown(slot);
-        let id = ids.get(value);
-        if (id === undefined) {
-          id = nextRecipe++;
-          ids.set(value, id);
-        }
-        return id;
-      },
-      __wpk_fork_ref_exn_define(
-        id, activation, tag, layout,
-        scalarPointer, scalarLength, refsPointer, refCount,
-      ) {
-        recipes.set(id, {
-          activation, tag, layout,
-          scalars: new Uint8Array(
-            memory.buffer,
-            scalarPointer,
-            scalarLength,
-          ).slice(),
-          refs: new Uint32Array(
-            memory.buffer,
-            refsPointer,
-            refCount,
-          ).slice(),
-        });
-      },
-      __wpk_fork_ref_exn_load(
-        id, activation, tag, layout,
-        scalarPointer, scalarLength, refsPointer, refCount,
-      ) {
-        const recipe = recipes.get(id);
-        if (
-          !recipe
-          || recipe.activation !== activation
-          || recipe.tag !== tag
-          || recipe.layout !== layout
-          || recipe.scalars.length !== scalarLength
-          || recipe.refs.length !== refCount
-        ) return 0;
-        new Uint8Array(memory.buffer, scalarPointer, scalarLength)
-          .set(recipe.scalars);
-        new Uint32Array(memory.buffer, refsPointer, refCount)
-          .set(recipe.refs);
-        return 1;
-      },
-      __wpk_fork_ref_exn_route(id, activation) {
-        const recipe = recipes.get(id);
-        return recipe?.activation === activation ? recipe.layout : -1;
-      },
-      __wpk_fork_ref_exn_cache_index(id) {
-        return id;
-      },
-      __wpk_fork_ref_exn_broker_encode() {
-        throw new Error("known local tag unexpectedly reached broker encode");
-      },
-      __wpk_fork_ref_exn_broker_throw_recipe() {
-        throw new Error("known local tag unexpectedly reached broker decode");
-      },
-      __wpk_fork_ref_exn_ingress_throw() {
-        throw new Error("known local tag unexpectedly used ingress");
-      },
-      __wpk_fork_ref_scratch_reserve(size) {
-        const aligned = (size + 15) & ~15;
-        const address = scratchTop;
-        scratchTop += aligned;
-        scratch.push({ address, size, aligned });
-        new Uint8Array(memory.buffer, address, aligned).fill(0);
-        return address;
-      },
-      __wpk_fork_ref_scratch_release(address, size) {
-        const reservation = scratch.pop();
-        if (
-          !reservation
-          || reservation.address !== address
-          || reservation.size !== size
-        ) throw new Error("non-LIFO scratch release");
-        new Uint8Array(memory.buffer, address, reservation.aligned).fill(0);
-        scratchTop = address;
-      },
-      __wpk_fork_ref_encode_funcref() { throw new Error("unused funcref"); },
-      __wpk_fork_ref_decode_funcref() { throw new Error("unused funcref"); },
-      __wpk_fork_ref_encode_externref() { throw new Error("unused externref"); },
-      __wpk_fork_ref_decode_externref() { throw new Error("unused externref"); },
-      __wpk_fork_ref_encode_anyref: anyrefs.encode,
-      __wpk_fork_ref_decode_anyref: anyrefs.decode,
-    },
-  };
-  provider = new WebAssembly.Instance(providerModule, imports);
-  const helper = new WebAssembly.Instance(helperModule, {
-    provider: {
-      tag: provider.exports.test_tag,
-      inner_tag: provider.exports.inner_tag,
-      outer_tag: provider.exports.outer_tag,
-      encode: provider.exports.__wpk_fork_ref_encode_exnref,
-      decode: provider.exports.__wpk_fork_ref_decode_exnref,
-    },
-  });
-  return { provider, helper };
-}
-
-const parent = instantiate(new WebAssembly.Memory({ initial: 2 }));
-const recipe = parent.helper.exports.capture(0x78563412, 0x102030405060708n);
-if (recipe !== 1) throw new Error(`unexpected recipe ${recipe}`);
-const nestedRecipe = parent.helper.exports.capture_nested(0x1234abcd);
-
-// This is a genuinely fresh provider instance with a different local Tag.
-const child = instantiate(new WebAssembly.Memory({ initial: 2 }));
-if (child.provider.exports.test_tag === parent.provider.exports.test_tag) {
-  throw new Error("fresh module unexpectedly reused local tag identity");
-}
-if (child.helper.exports.payload_i32(recipe) !== 0x78563412) {
-  throw new Error("child lost i32 exception payload bits");
-}
-if (child.helper.exports.payload_i64(recipe) !== 0x102030405060708n) {
-  throw new Error("child lost i64 exception payload bits");
-}
-const catchDecoded = () => {
-  try {
-    child.helper.exports.throw_decoded(recipe);
-  } catch (value) {
-    return value;
-  }
-  throw new Error("decoded exception returned without throwing");
-};
-if (catchDecoded() !== catchDecoded()) {
-  throw new Error("child did not cache reconstructed exnref identity");
-}
-if (child.helper.exports.nested_payload(nestedRecipe) !== 0x1234abcd) {
-  throw new Error("child lost recursively encoded exnref payload");
-}
-"#,
+        include_str!("fixtures/streaming_exception_codec.mjs"),
     )
     .expect("write Node test");
 

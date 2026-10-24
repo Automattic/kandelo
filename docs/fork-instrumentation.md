@@ -201,7 +201,10 @@ in declaration order, skips reference globals and the child-owned
 width follows the original primary memory and all source memory/global uses
 are remapped after added imports. End controls call the optional codec cleanup,
 release the buffer alias, then publish NORMAL. Typed local codec providers may
-be supplied as already planned final-index overrides. These controls have
+be supplied as already planned final-index overrides or reserved helper
+ordinals relative to the frozen function base. Conflicting overrides and
+index overflow fail during planning; no placeholder codec imports are needed.
+These controls have
 native/Walrus layout and import-signature comparisons and wasm32/wasm64 Node
 execution tests for capture, rewind and abort. A composed native fixture also
 executes table/drop tracking outside the fork closure.
@@ -211,6 +214,27 @@ reference reconstruction, complete module-state capture/bootstrap or artifact
 certification. Emitting its controls alone produces no fork capability marker
 and is not a complete fork-instrumented program. No browser, ABI integration
 or end-to-end memory claim follows from these component tests.
+
+`NativeExceptionCodec` now plans and serially emits the owning module's eight
+exact-tag exception helpers. It uses the original process memory for bounded
+transaction exchange ranges, keeps `exnref` values in private Wasm tables, and
+crosses the JavaScript broker boundary with scalar IDs. Encoding claims recipe
+identity before recursive payload encoding. Decoding releases exchange memory
+before decoding child recipes and caches reconstructed exceptions by shared
+recipe ID. Tag handlers pool typed locals across layouts, so repeated static
+tag signatures do not multiply physical helper locals. Planning, import
+reservation, signature interning, encoding and decoding are separate modules.
+
+Its descriptor matches the unchanged Walrus codec byte-for-byte for scalar,
+reference and vector layouts. A shared Node fixture executes both backends;
+the native provider additionally runs on memory64. It covers exact local tags
+in fresh instances, scalar/vector bits, recursively nested exceptions, alias
+identity, brokered values, ingress, cache cleanup, invalid IDs and disjoint
+transaction scratch. Budget tests reject metadata, work and output exhaustion;
+256 repeated tag signatures keep the same physical local count. These are
+provider component checks. Linked activation replay through catch-all and
+reference-bearing catches, local garbage-collection providers and full module
+bootstrap remain unfinished. Provider metadata alone certifies no artifact.
 
 `FrameBuilder` now plans one function's activation storage. It keeps parameters
 and first-used original locals in lexical order, assigns synthetic value keys,
@@ -254,8 +278,8 @@ input parameters and produces invalid Wasm for the typed-input fixture; those
 native cases instead have independent Wasm validation and execution evidence.
 Differential planning checks cover reference, vector and catch-all payloads,
 including 448 static regions sharing constant physical temporary storage.
-Complete exception/reference recipe providers, linked replay of those payloads
-and legacy-handler normalization remain unfinished. The normal production
+Complete reference recipe providers, linked exception-payload replay and
+legacy-handler normalization remain unfinished. The normal production
 backend still uses Walrus.
 
 `FrameCodecCatalog` interns scalar save/restore recipes before output starts.

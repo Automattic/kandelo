@@ -263,3 +263,78 @@ fn native_runtime_cleanup_and_codec_overrides_preserve_final_helpers() {
         ));
     }
 }
+
+#[test]
+fn native_runtime_resolves_reserved_provider_ordinals_and_rejects_conflicts_or_overflow() {
+    let input = wat::parse_str("(module)").unwrap();
+    let scan = scan(&input).unwrap();
+    let pair = CodecPair {
+        encode: 7,
+        decode: 8,
+    };
+    let runtime = NativeRuntime::plan(
+        &scan,
+        RuntimeInputs {
+            helper_codecs: NativeCodecOverrides {
+                exnref: Some(pair),
+                cleanup: Some(13),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        8192,
+    )
+    .unwrap();
+    let base = runtime.imports_plan().helper_function_base();
+    assert_eq!(runtime.indices().codecs.exnref.encode, base + 7);
+    assert_eq!(runtime.indices().codecs.exnref.decode, base + 8);
+    assert_eq!(runtime.imports_plan().len(), 17, "no unused exnref imports");
+    let body = runtime.emit_control(1, 1024).unwrap().into_raw_body();
+    let body = wasmparser::FunctionBody::new(wasmparser::BinaryReader::new(&body, 0));
+    assert!(
+        matches!(body.get_operators_reader().unwrap().read().unwrap(), Operator::Call { function_index } if function_index == base + 13)
+    );
+    let conflict = NativeRuntime::plan(
+        &scan,
+        RuntimeInputs {
+            codecs: NativeCodecOverrides {
+                exnref: Some(pair),
+                ..Default::default()
+            },
+            helper_codecs: NativeCodecOverrides {
+                exnref: Some(pair),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        8192,
+    );
+    assert!(
+        conflict
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("both final and relative")
+    );
+    let overflow = NativeRuntime::plan(
+        &scan,
+        RuntimeInputs {
+            helper_codecs: NativeCodecOverrides {
+                exnref: Some(CodecPair {
+                    encode: u32::MAX,
+                    decode: u32::MAX,
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        8192,
+    );
+    assert!(
+        overflow
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("provider index overflow")
+    );
+}

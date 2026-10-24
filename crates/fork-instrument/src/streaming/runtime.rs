@@ -52,6 +52,18 @@ pub struct RuntimeInputs {
     pub types: Vec<FuncType>,
     pub imports: Vec<PlannedImport>,
     pub codecs: NativeCodecOverrides,
+    /// Provider functions reserved after the source functions, relative to
+    /// `imports.helper_function_base()`. Runtime controls occupy ordinals 0..7;
+    /// later catalogs may reserve their helpers before imports are frozen.
+    /// This avoids a declaration cycle and unused placeholder codec imports.
+    pub helper_codecs: NativeCodecOverrides,
+}
+
+#[derive(Clone, Copy)]
+enum CodecLocation {
+    Final(CodecPair),
+    Helper(CodecPair),
+    Import(CodecPair),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -233,13 +245,14 @@ impl NativeRuntime {
             budget,
         )?;
         let mut codecs = [None; 4];
-        for (i, reference, encode, decode, override_pair) in [
+        for (i, reference, encode, decode, override_pair, helper_pair) in [
             (
                 0,
                 RefType::FUNCREF,
                 names::IMPORT_REF_ENCODE_FUNCREF,
                 names::IMPORT_REF_DECODE_FUNCREF,
                 inputs.codecs.funcref,
+                inputs.helper_codecs.funcref,
             ),
             (
                 1,
@@ -247,6 +260,7 @@ impl NativeRuntime {
                 names::IMPORT_REF_ENCODE_EXTERNREF,
                 names::IMPORT_REF_DECODE_EXTERNREF,
                 inputs.codecs.externref,
+                inputs.helper_codecs.externref,
             ),
             (
                 2,
@@ -254,6 +268,7 @@ impl NativeRuntime {
                 names::IMPORT_REF_ENCODE_EXNREF,
                 names::IMPORT_REF_DECODE_EXNREF,
                 inputs.codecs.exnref,
+                inputs.helper_codecs.exnref,
             ),
             (
                 3,
@@ -261,10 +276,19 @@ impl NativeRuntime {
                 names::IMPORT_REF_ENCODE_ANYREF,
                 names::IMPORT_REF_DECODE_ANYREF,
                 inputs.codecs.anyref,
+                inputs.helper_codecs.anyref,
             ),
         ] {
+            ensure!(
+                override_pair.is_none() || helper_pair.is_none(),
+                "runtime codec has both final and relative helper overrides"
+            );
             if let Some(pair) = override_pair {
-                codecs[i] = Some((true, pair));
+                codecs[i] = Some(CodecLocation::Final(pair));
+                continue;
+            }
+            if let Some(pair) = helper_pair {
+                codecs[i] = Some(CodecLocation::Helper(pair));
                 continue;
             }
             let encode_ty = add_type(
@@ -295,7 +319,7 @@ impl NativeRuntime {
                 EntityType::Function(decode_ty),
                 budget,
             )?;
-            codecs[i] = Some((false, CodecPair { encode, decode }));
+            codecs[i] = Some(CodecLocation::Import(CodecPair { encode, decode }));
         }
         let mut imports = FrozenImports::new(scan, inputs.imports, budget)?;
         let index = |ordinal| {
@@ -303,24 +327,40 @@ impl NativeRuntime {
                 .index(ordinal)
                 .expect("frozen runtime import ordinal")
         };
-        let pair = |i: usize| {
-            let (already_final, p) = codecs[i].unwrap();
-            if already_final {
-                p
-            } else {
-                CodecPair {
+        let helper = imports.helper_function_base();
+        let helper_index = |ordinal: u32| {
+            helper
+                .checked_add(ordinal)
+                .context("runtime provider index overflow")
+        };
+        let pair = |i: usize| -> Result<CodecPair> {
+            Ok(match codecs[i].unwrap() {
+                CodecLocation::Final(pair) => pair,
+                CodecLocation::Helper(pair) => CodecPair {
+                    encode: helper_index(pair.encode)?,
+                    decode: helper_index(pair.decode)?,
+                },
+                CodecLocation::Import(p) => CodecPair {
                     encode: index(p.encode),
                     decode: index(p.decode),
-                }
-            }
+                },
+            })
         };
         let reference_codecs = NativeReferenceCodecs {
-            funcref: pair(0),
-            externref: pair(1),
-            exnref: pair(2),
-            anyref: pair(3),
+            funcref: pair(0)?,
+            externref: pair(1)?,
+            exnref: pair(2)?,
+            anyref: pair(3)?,
         };
-        let helper = imports.helper_function_base();
+        ensure!(
+            inputs.codecs.cleanup.is_none() || inputs.helper_codecs.cleanup.is_none(),
+            "runtime cleanup has both final and relative helper overrides"
+        );
+        let cleanup = inputs.codecs.cleanup.or(inputs
+            .helper_codecs
+            .cleanup
+            .map(helper_index)
+            .transpose()?);
         ensure!(
             helper.checked_add(7).is_some(),
             "runtime helper function index overflow"
@@ -443,7 +483,7 @@ impl NativeRuntime {
             memory,
             frames_start,
             fixed_prefix,
-            cleanup: inputs.codecs.cleanup,
+            cleanup,
         })
     }
     pub fn indices(&self) -> NativeRuntimeIndices {
