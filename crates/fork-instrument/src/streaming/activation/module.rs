@@ -88,6 +88,28 @@ impl<'a> NativeActivations<'a> {
             .iter()
             .map(|(&function, &entry)| (function, entry))
     }
+    fn can_replay_lexically(&self, function: u32) -> bool {
+        // WHY: a materialized callee restores its parameters on entry and
+        // throws the private unwind itself. Routing it through two helpers
+        // multiplies native stack depth, especially during abort replay.
+        // A fork-reaching tail can erase that callee's frame, so it must keep
+        // catalog routing to the actual next activation instead.
+        self.entries.contains_key(&function)
+            && self
+                .reaching
+                .tail_sites
+                .range(
+                    ProgramPoint {
+                        function,
+                        offset: 0,
+                    }..=ProgramPoint {
+                        function,
+                        offset: usize::MAX,
+                    },
+                )
+                .next()
+                .is_none()
+    }
     pub fn emit_helper(&self, ordinal: u32, limit: usize) -> Result<Function> {
         if ordinal < self.support.declarations().function_count() {
             self.support.emit_helper(ordinal, limit)

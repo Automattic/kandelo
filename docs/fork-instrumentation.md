@@ -20,7 +20,7 @@ For motivation, tradeoffs, and the rollout plan that led here, read
 for the post-rollout switch-dispatch redesign and non-fork-path-call gating
 that fix the kernel-side-effect re-fire bug, read
 [`plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md`](plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md).
-ABI version: `46` (see
+ABI version: `50` (see
 [`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs) — see
 [abi-versioning.md](abi-versioning.md) for the policy).
 
@@ -85,7 +85,8 @@ The source hook also composes with already-lowered indirect transports: it
 preserves the selected direct/tail route and reconciles its physical table
 before invocation. A separate guard lookup supports generated call sites.
 Native sparse-table ownership and runtime hooks now supply those frozen indices,
-as described below; production composition remains unfinished.
+as described below. `NativePipeline` and `native::instrument` compose these
+components into the opt-in complete transform described later in this section.
 Validator-canonical concrete heap identities are resolved to source type
 indices before output remapping; they are never encoded as binary indices.
 
@@ -776,6 +777,13 @@ execute normal, fresh and failed-capture replay across both pointer and table
 widths. The unchanged Walrus thread wrapper fails validation on table64 and
 does not provide the native wrapper's table-generation guard; its other replay
 assertions run unchanged on table32.
+
+Native direct calls to materialized activations replay lexically when the
+callee has no fork-reaching tail transfer. The callee restores its parameters
+on entry and owns its private unwind postamble. Catalog routing remains for
+imports, indirect/reference calls and possible tail-transparent targets.
+This avoids retaining routing frames for ordinary direct recursion and its
+abort replay, without introducing a new tail-call feature requirement.
 
 Both CLI backends now snapshot the opened input before analysis and publish
 only after transformation, optional Binaryen optimization and validation

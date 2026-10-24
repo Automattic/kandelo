@@ -53,7 +53,7 @@ impl<T: NativeSourceHooks> ContinuationHooks for Calls<'_, '_, '_, T> {
         &mut self,
         _: u32,
         call: &CallContinuation,
-        _: &SourceInstruction<'_>,
+        source: &SourceInstruction<'_>,
         _: &FrameLayout,
         output: &mut Function,
         limit: usize,
@@ -61,6 +61,16 @@ impl<T: NativeSourceHooks> ContinuationHooks for Calls<'_, '_, '_, T> {
     where
         Self::Error: std::error::Error + Send + Sync + 'static,
     {
+        if let ReferenceCallKind::Direct(function) = call.kind {
+            if self.catalog.can_replay_lexically(function) {
+                output.instruction(&self.instruction(source.operation.clone())?);
+                ensure!(
+                    output.byte_len() <= limit,
+                    "activation call exceeds output budget"
+                );
+                return Ok(());
+            }
+        }
         let (target, source_type) = planning::target(self.scan, self.hooks, call.kind)?;
         let (params, results) = planning::signature(
             self.scan,
