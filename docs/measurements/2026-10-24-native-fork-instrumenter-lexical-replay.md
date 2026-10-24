@@ -83,5 +83,7 @@ The same production source passed 667 instrumenter tests, 23 focused Node
 checks, five native side-module checks and the 57-check three-engine browser
 matrix (including two explicit WebKit stack-boundary cases). The broader
 Rust workspace passed 3,200 tests, xtask passed 726, and the ABI snapshot
-check passed. Selected conformance checks and the final-source Codex rerun
-remain pending on the draft PR.
+check passed. Selected native conformance checks passed: seven libc, 18 POSIX signal and
+113 Sortix process/signal/I/O checks. Two upstream Sortix signal cases retain
+their documented implementation-defined `SA_RESTART` skips. The final-source
+Codex rerun remains pending on the draft PR.
