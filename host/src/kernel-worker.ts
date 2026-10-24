@@ -29,10 +29,16 @@ import type { VfsChangeEvent } from "./vfs/types";
  * explanatory only and generated-file drift tests cover the live values.
  */
 import { ERRNO } from "./generated/abi";
+import { selectRootfsHostMetadataBytes, selectRootfsIoBytes, selectRootfsJournalStateBytes, selectRootfsMetadataBytes, selectVfsFileReadBytes } from "./runtime-memory-profile";
+import { StorageMemoryBudget, type StorageMetadataMap } from "./vfs/storage-memory-budget";
+import { persistentImageIdentityWords, snapshotPersistentImageReadBinding, type PersistentImageReadBinding } from "./vfs/image-integrity";
 import { RejectedOverlayGenerationError } from "./vfs/overlay-generation-selection";
 import { decodeInspectionDirectory, decodeInspectionStat, decodeInspectionResourceLimits } from "./vfs/rootfs-inspection";
+import { createOverlayActivationCodec, type OverlayActivationCodec } from "./vfs/overlay-activation-codec";
+import { createOverlaySealCodec, type OverlaySealCodec } from "./vfs/overlay-seal-codec";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { assertVfsFileRange } from "./vfs/file-range";
+import { FileReadBuffer, FileReadBufferError } from "./vfs/file-read-buffer";
 
 
 import { LongTimeouts, MAX_ENGINE_TIMER_DELAY_MS } from "./long-timeout";
@@ -57,6 +63,7 @@ import {
   validateKernelEntryGateOwnership,
 } from "./kernel-entry-gate";
 import {
+  allocateOwnedHostByteDestination,
   allocateKernelScratchRegion,
   checkedKernelExportPointer,
   checkedMemoryRange,
@@ -64,12 +71,14 @@ import {
   checkedWasmPointer,
   intrinsicUint8ArrayView,
   KernelScratchError,
+  ownedHostByteDestinationPrefix,
   reserveKernelScratchRegion,
   validateKernelScratchRegionOwnership,
   type KernelScratchExportName,
   type KernelScratchExportPointer,
   type KernelScratchLease,
   type KernelScratchRegion,
+  type OwnedHostByteDestination,
 } from "./kernel-scratch";
 import {
   canonicalGuestUnsignedScalar,
@@ -95,12 +104,14 @@ import type { DeferredFetchSettled } from "./vfs/rootfs-lazy-archives";
 import { OverlayStorageUnexpectedEofError, type PersistentOverlayStorage } from "./vfs/overlay-storage";
 import { WasmModuleCache } from "./wasm-module-cache";
 import {
+  BoundedHttpResponseChunks,
   buildRawHttpRequest,
   parseRawHttpResponse,
   type HttpRequest,
   type HttpResponse,
   type SendHttpRequestOptions,
 } from "./networking/in-kernel-http";
+import { HttpRequestAdmission } from "./networking/http-request-admission";
 import {
   ABI_KERNEL_EXPORT,
   ABI_SYSCALL_NAMES,
@@ -247,6 +258,7 @@ import {
 import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
 import {
   ABI_CONTRACT_SECTION,
+  DEFAULT_KERNEL_MAX_PAGES,
   readWasmCustomSectionPayload,
   WASM_PAGE_SIZE,
 } from "./constants";
@@ -3072,6 +3084,7 @@ export class CentralizedKernelWorker {
    * its fetch. Null until configured, or when the pipe offers none.
    */
   #rootfsDeferredSettled: DeferredFetchSettled | null = null;
+  #rootfsDeferredProgressAt: (() => number | undefined) | undefined;
   #rootfsDeferredInvalidator: ((uri: string) => void) | undefined;
   /**
    * Canonical mount points of the host filesystems still mounted under the
@@ -3111,6 +3124,7 @@ export class CentralizedKernelWorker {
    * reader remains available after load for image-backed file content.
    */
   #rootfsImageLength = 0;
+  #rootfsPersistentImageBinding: PersistentImageReadBinding | null = null;
   /**
    * A positioned reader over the `/` image, in container coordinates. The
    * worker entry backs it with memory or a positioned storage handle.
@@ -3128,6 +3142,8 @@ export class CentralizedKernelWorker {
    *    the image does not carry them.
    */
   #rootfsImageRead: ((offset: number, dest: Uint8Array) => number) | null = null;
+  readonly #rootfsTransportMetadata: StorageMemoryBudget;
+  #rootfsTransportDispose: (() => void) | undefined;
   #scratchBoundaryTestHooks: ScratchBoundaryTestHooks | null = null;
   /** ABI version read from the kernel wasm at startup. */
   private kernelAbiVersion: number = 0;
@@ -3171,6 +3187,7 @@ export class CentralizedKernelWorker {
   /** Capacity travels with the allocator-owned pointer. */
   #scratchRegion: KernelScratchRegion | null = null;
   #pcmTransportDescriptor: PcmTransportDescriptor | null = null;
+  #terminalProcessTeardown = false;
   #pcmWakeObserverGeneration = 0;
   /**
    * Host-side half of the Rust reservation state machine.
@@ -3564,6 +3581,8 @@ export class CentralizedKernelWorker {
     number,
     { pending: Uint8Array[]; closeWhenDrained: boolean }
   >();
+  readonly #httpAdmission = new HttpRequestAdmission();
+  readonly #httpRequests = new Set<(error: Error) => void>();
   /** pid → its host stdin pipe; only routes setStdinData/appendStdinData. */
   #hostStdinPipeByPid = new Map<number, number>();
   /** Pids whose host stdin was fully delivered and its write end closed. */
@@ -3722,6 +3741,7 @@ export class CentralizedKernelWorker {
         "CentralizedKernelWorker does not permit subclass dispatch overrides",
       );
     }
+    this.#rootfsTransportMetadata = new StorageMemoryBudget(selectRootfsHostMetadataBytes(config.kernelMaxPages));
     this.#schedulerReceiver = globalThis;
     this.#scheduleImmediate = setImmediate;
     this.#cancelImmediate = clearImmediate;
@@ -5461,10 +5481,16 @@ export class CentralizedKernelWorker {
    * Permanently stop dispatch through an instance whose global Rust state can
    * no longer be proven reusable.
    */
+  failPersistenceWriter(error: Error): void {
+    this.#failKernelInstance(error);
+  }
+
   #failKernelInstance(error: Error): void {
     if (this.#kernelFatalError !== null) return;
     this.#kernelEntryGate.fail(error);
     this.#kernelFatalError = error;
+    this.#httpAdmission.close(error);
+    for (const refuse of this.#httpRequests) refuse(error);
     this.#initialized = false;
     // A poisoned generation can never execute or explicitly settle a parked
     // request again. Drop every detached snapshot synchronously so neither
@@ -5526,10 +5552,17 @@ export class CentralizedKernelWorker {
      *  {@link deferredFetchSettled}. */
     deferredSettled?: DeferredFetchSettled,
     deferredInvalidator?: (uri: string) => void,
+    deferredProgressAt?: () => number | undefined,
+    deferredDispose?: () => void,
+    persistentImageBinding?: PersistentImageReadBinding,
   ): void {
+    const binding = persistentImageBinding === undefined ? null : snapshotPersistentImageReadBinding(persistentImageBinding);
+    this.#rootfsTransportDispose?.();
+    this.#rootfsTransportDispose = deferredDispose;
     this.#rootfsDeferredProvider = deferredProvider;
     this.#rootfsDeferredSettled = deferredSettled ?? null;
     this.#rootfsDeferredInvalidator = deferredInvalidator;
+    this.#rootfsDeferredProgressAt = deferredProgressAt;
     this.#rootfsForeignPrefixes = foreignMountPrefixes ?? [];
     this.#rootfsNosuid = rootNosuid === true;
     if (!Number.isSafeInteger(imageLength) || imageLength <= 0) {
@@ -5537,6 +5570,50 @@ export class CentralizedKernelWorker {
     }
     this.#rootfsImageLength = imageLength;
     this.#rootfsImageRead = imageRead;
+    this.#rootfsPersistentImageBinding = binding;
+  }
+
+  rootfsTransportMetadataBudget(): StorageMemoryBudget {
+    return this.#rootfsTransportMetadata;
+  }
+
+  disposeRootfsDeferredTransport(): void {
+    this.#rootfsTransportDispose?.();
+    this.#rootfsTransportDispose = undefined;
+  }
+
+  overlayActivationCodec(): OverlayActivationCodec {
+    return createOverlayActivationCodec((operation, input) => this.#overlayControlCodecCall(operation, input));
+  }
+
+  overlaySealCodec(): OverlaySealCodec {
+    return createOverlaySealCodec((operation, input) => this.#overlayControlCodecCall(operation, input));
+  }
+
+  #overlayControlCodecCall(operation: number, input: Uint8Array): Uint8Array | number {
+      if (input.length > 61552) throw new RangeError("Overlay control codec input exceeds its transport bound");
+      const outputCapacity = operation <= 3 ? 128 : 144;
+      const outputOffset = Math.max(256, Math.ceil(input.length / 16) * 16);
+      let result: Uint8Array | number = -ENOSYS;
+      let protocolFailure: Error | undefined;
+      this.#runImmediateKernelEntry("kernel overlay activation policy", entry => {
+        if (typeof entry.instance.exports.kernel_overlay_activation_codec !== "function") return;
+        const region = this.#requireMainScratchRegion();
+        if (region.capacity < outputOffset + outputCapacity) { result = -ENOMEM; return; }
+        region.withLease(lease => {
+          lease.copyFrom(input, 0, 0, input.length);
+          const count = this.#invokeEntryScratchExport(entry, lease, "kernel_overlay_activation_codec", [
+            operation, lease.exportPointer(0, input.length), input.length,
+            lease.exportPointer(outputOffset, outputCapacity), outputCapacity,
+          ]);
+          if (Number.isInteger(count) && count < 0) { result = count; return; }
+          if (!Number.isInteger(count) || count > outputCapacity) { protocolFailure = new Error("Native overlay codec returned an invalid byte count"); return; }
+          try { result = lease.copyOut(outputOffset, count); }
+          catch (error) { if (error instanceof RangeError) result = -ENOMEM; else throw error; }
+        });
+      });
+      if (protocolFailure !== undefined) throw protocolFailure;
+      return result;
   }
 
   enableFixedRootfsPersistence(
@@ -5571,6 +5648,7 @@ export class CentralizedKernelWorker {
     this.#kernel.setPersistentOverlayTargetStorage(index === undefined ? null : monitor(index));
     this.#kernel.setPersistentOverlayCompactionStorage(null);
     let status: number | undefined;
+    let pristineRecovery = false;
     try {
       this.#runImmediateKernelEntry("enable rootfs persistence", (entry) => {
         const exports = this.#kernelInstanceForEntry(entry).exports;
@@ -5590,6 +5668,11 @@ export class CentralizedKernelWorker {
         status = index === undefined
           ? enable(lengthLo, lengthHi)
           : enable(lengthLo, lengthHi, checkpointEnd! >>> 0, Math.floor(checkpointEnd! / 0x1_0000_0000));
+        if (status === -ERRNO.ENOMEM) {
+          const pristine = exports.kernel_rootfs_persistence_recovery_is_pristine as (() => number) | undefined;
+          if (typeof pristine !== "function") throw new Error("kernel lacks persistence recovery-state export");
+          pristineRecovery = pristine() === 1;
+        }
         return undefined;
       });
       if (observed.failure !== null) {
@@ -5599,13 +5682,14 @@ export class CentralizedKernelWorker {
         ), observed.failure.cause);
       }
       if (status === undefined) throw new Error("kernel did not report rootfs persistence status");
-      if (status !== 0) throw new RejectedOverlayGenerationError(resizable ? "resizable" : "fixed", -status);
+      if (status !== 0) throw new RejectedOverlayGenerationError(resizable ? "resizable" : "fixed", -status, pristineRecovery);
       this.#kernel.setPersistentOverlayStorage(storage);
       this.#kernel.setPersistentOverlayTargetStorage(index ?? null);
       this.#persistentOverlayImportSlot = 0;
       this.#persistentOverlayIndexSlot = index === undefined ? null : 1;
       this.#persistentOverlayActiveStorage = storage;
     } catch (error) {
+      this.#rethrowKernelEntryFatal(error);
       this.#kernel.setPersistentOverlayStorage(null);
       this.#kernel.setPersistentOverlayTargetStorage(null);
       throw error;
@@ -5807,6 +5891,38 @@ export class CentralizedKernelWorker {
     if (status !== 0) throw new Error(`rootfs persistence sync failed (errno ${-(status ?? 5)})`);
   }
 
+  rootfsJournalStateMemory(): { used: number; pressure: boolean } {
+    let result: { used: number; pressure: boolean } | undefined;
+    this.#runImmediateKernelEntry("read rootfs journal memory", (entry) => {
+      const exports = this.#kernelInstanceForEntry(entry).exports;
+      const used = exports.kernel_rootfs_journal_state_used_bytes as (() => number) | undefined;
+      const pressure = exports.kernel_rootfs_journal_state_memory_pressure as (() => number) | undefined;
+      if (typeof used !== "function" || typeof pressure !== "function") {
+        throw new Error("kernel lacks journal-state memory exports");
+      }
+      result = { used: used(), pressure: pressure() === 1 };
+      return undefined;
+    });
+    if (result === undefined) throw new Error("kernel did not report journal-state memory");
+    return result;
+  }
+
+  rootfsIoMemory(): { used: number; limit: number } {
+    let result: { used: number; limit: number } | undefined;
+    this.#runImmediateKernelEntry("read rootfs I/O memory", (entry) => {
+      const exports = this.#kernelInstanceForEntry(entry).exports;
+      const used = exports.kernel_rootfs_io_used_bytes as (() => number) | undefined;
+      const limit = exports.kernel_rootfs_io_limit_bytes as (() => number) | undefined;
+      if (typeof used !== "function" || typeof limit !== "function") {
+        throw new Error("kernel lacks I/O memory exports");
+      }
+      result = { used: used(), limit: limit() };
+      return undefined;
+    });
+    if (result === undefined) throw new Error("kernel did not report I/O memory");
+    return result;
+  }
+
   /**
    * If a rootfs overlay image was configured, have the kernel parse it and
    * install the byte provider before any guest filesystem op runs: publish the
@@ -5818,7 +5934,7 @@ export class CentralizedKernelWorker {
    * failure here has no second opinion to fall back to and must not silently
    * become a `/`-less boot: it throws, and the boot fails at the real cause.
    */
-  #maybeLoadKernelRootfs(instance: WebAssembly.Instance): void {
+  #maybeLoadKernelRootfs(instance: WebAssembly.Instance): Error | undefined {
     const imageLength = this.#rootfsImageLength;
     const imageRead = this.#rootfsImageRead;
     const provider = this.#rootfsDeferredProvider;
@@ -5839,15 +5955,39 @@ export class CentralizedKernelWorker {
     const loadImage = instance.exports.kernel_rootfs_load_image as
       | ((lenLo: number, lenHi: number) => number)
       | undefined;
+    const setMetadataBudget = instance.exports.kernel_rootfs_set_metadata_budget_bytes as
+      | ((limit: number) => number)
+      | undefined;
     if (
       typeof setNow !== "function" ||
       typeof alloc !== "function" ||
       typeof enable !== "function" ||
+      typeof setMetadataBudget !== "function" ||
       typeof loadImage !== "function"
     ) {
       throw new Error(
         "kernel wasm is missing the rootfs overlay exports required to own `/`",
       );
+    }
+
+    const metadataBudgetBytes = selectRootfsMetadataBytes(this.config.rootfsMetadataBytes, this.config.kernelMaxPages);
+    const budgetStatus = setMetadataBudget(metadataBudgetBytes);
+    if (budgetStatus !== 0) {
+      return Object.assign(new Error(`kernel refused rootfs metadata budget ${metadataBudgetBytes} bytes (errno ${-budgetStatus})`), { errno: -budgetStatus });
+    }
+    const setJournalBudget = instance.exports.kernel_rootfs_set_journal_state_budget_bytes as ((limit: number) => number) | undefined;
+    if (typeof setJournalBudget !== "function") throw new Error("kernel lacks journal-state budget export");
+    const journalBudgetBytes = selectRootfsJournalStateBytes(this.config.kernelMaxPages);
+    const journalBudgetStatus = setJournalBudget(journalBudgetBytes);
+    if (journalBudgetStatus !== 0) {
+      return Object.assign(new Error(`kernel refused journal-state budget ${journalBudgetBytes} bytes (errno ${-journalBudgetStatus})`), { errno: -journalBudgetStatus });
+    }
+    const setIoBudget = instance.exports.kernel_rootfs_set_io_budget_bytes as ((limit: number) => number) | undefined;
+    if (typeof setIoBudget !== "function") throw new Error("kernel lacks I/O budget export");
+    const ioBudgetBytes = selectRootfsIoBytes(this.config.kernelMaxPages);
+    const ioBudgetStatus = setIoBudget(ioBudgetBytes);
+    if (ioBudgetStatus !== 0) {
+      return Object.assign(new Error(`kernel refused I/O budget ${ioBudgetBytes} bytes (errno ${-ioBudgetStatus})`), { errno: -ioBudgetStatus });
     }
 
     const nowMs = Date.now();
@@ -5870,7 +6010,22 @@ export class CentralizedKernelWorker {
     });
     const imageLenLo = imageLength >>> 0;
     const imageLenHi = Math.floor(imageLength / 0x1_0000_0000);
-    const loaded = loadImage(imageLenLo, imageLenHi);
+    let loaded: number;
+    const binding = this.#rootfsPersistentImageBinding;
+    if (binding === null) {
+      loaded = loadImage(imageLenLo, imageLenHi);
+    } else {
+      const loadPersistentImage = instance.exports.kernel_rootfs_load_persistent_image as
+        ((...args: number[]) => number) | undefined;
+      if (typeof loadPersistentImage !== "function") {
+        return new Error("kernel lacks demand-verified persistent image support");
+      }
+      const [digest0, digest1, digest2, digest3, digest4, digest5, digest6, digest7] =
+        persistentImageIdentityWords(binding.identitySha256);
+      const dataCachePages = binding.dataCachePages;
+      const indexCachePages = binding.indexCachePages;
+      loaded = loadPersistentImage(imageLenLo, imageLenHi, digest0, digest1, digest2, digest3, digest4, digest5, digest6, digest7, dataCachePages, indexCachePages);
+    }
     if (loaded < 0) {
       // `-EINVAL` here is most often an image that declares neither deferred-
       // file section (`SDEF` or the older `KLZY`), which the kernel refuses
@@ -5878,10 +6033,14 @@ export class CentralizedKernelWorker {
       // reports size 0. Say
       // so, because "rebuild the image" is the fix and a bare errno is not a
       // hint. Every other code is a real image or transport defect.
-      throw new Error(
-        `kernel refused the \`/\` VFS image (errno ${-loaded}); `
-        + "an image with neither an SDEF nor a KLZY deferred-file section must be rebuilt",
-      );
+      const hint = loaded === -ERRNO.ENOMEM
+        ? `; rootfs metadata budget is ${metadataBudgetBytes} bytes (kernel ceiling is ${this.config.kernelMaxPages ?? DEFAULT_KERNEL_MAX_PAGES} pages)`
+        : loaded === -ERRNO.EINVAL
+          ? binding === null
+            ? "; an image with neither an SDEF nor a KLZY deferred-file section must be rebuilt"
+            : "; persistent base format, geometry or verified metadata is invalid"
+          : "";
+      return Object.assign(new Error(`kernel refused the \`/\` VFS image (errno ${-loaded})${hint}`), { errno: -loaded });
     }
     this.#kernel.setRootfsDeferredProvider(provider);
     this.#kernel.setRootfsDeferredInvalidator(this.#rootfsDeferredInvalidator);
@@ -5932,6 +6091,10 @@ export class CentralizedKernelWorker {
     return this.#rootfsDeferredSettled?.() ?? null;
   }
 
+  deferredFetchProgressAt(): number | undefined {
+    return this.#rootfsDeferredProgressAt?.();
+  }
+
   /**
    * Read the entire rootfs file at `path` through the in-kernel overlay. The
    * host has no `/` mount, so this is how it reads authoritative `/` bytes:
@@ -5943,25 +6106,29 @@ export class CentralizedKernelWorker {
    * if a kernel entry is already active (the RPC caller retries).
    */
   rootfsReadFile(path: string): Uint8Array {
-    return this.#rootfsReadFileExport(path, "kernel_rootfs_read_file");
+    return this.#rootfsReadFileExport(path, 0, Number.POSITIVE_INFINITY, MAX_REPORTABLE_TRANSFER_BYTES, ERRNO.EFBIG);
   }
 
   rootfsInspectFile(path: string): Uint8Array {
-    return this.#rootfsReadFileExport(path, "kernel_rootfs_inspect_read_file");
+    return this.#rootfsReadFileExport(path);
   }
 
   rootfsInspectFileRange(path: string, offset: number, length: number): Uint8Array {
     assertVfsFileRange(offset, length);
-    return this.#rootfsReadFileExport(path, "kernel_rootfs_inspect_read_file", offset, length);
+    return this.#rootfsReadFileExport(path, offset, length, length);
   }
 
   #rootfsReadFileExport(
     path: string,
-    name: "kernel_rootfs_read_file" | "kernel_rootfs_inspect_read_file",
     initialOffset = 0,
     maxBytes = Number.POSITIVE_INFINITY,
+    resultLimit = selectVfsFileReadBytes(this.config.maxVfsFileReadBytes, this.config.kernelMaxPages),
+    overflowErrno: number = ENOMEM,
   ): Uint8Array {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    if (path.length > POSIX_PATH_MAX_BYTES) {
+      throw new KernelScratchError("rootfs read path too long", ENAMETOOLONG);
+    }
     const encodedPath = new TextEncoder().encode(path);
     const pathLen = encodedPath.byteLength;
     if (pathLen > POSIX_PATH_MAX_BYTES) {
@@ -5972,11 +6139,12 @@ export class CentralizedKernelWorker {
     // throw there is treated as a fatal kernel fault. Capture it and raise it
     // after the entry returns.
     let failErrno = 0;
+    let failureMessage = "rootfs read failed";
     this.#runImmediateKernelEntry(
       "kernel rootfs read file",
       (entry) => {
         if (
-          typeof entry.instance.exports[name] !== "function"
+          typeof entry.instance.exports.kernel_rootfs_inspect_read_file !== "function"
         ) {
           failErrno = ENOSYS;
           return undefined;
@@ -5987,13 +6155,51 @@ export class CentralizedKernelWorker {
           failErrno = ENAMETOOLONG;
           return undefined;
         }
-        const chunks: Uint8Array[] = [];
+        let hint = 0;
+        if (!Number.isFinite(maxBytes)) {
+          const statOffset = Math.ceil(pathLen / 8) * 8;
+          if (statOffset + STRUCT_SIZE_WASM_STAT > region.capacity) {
+            failErrno = ENAMETOOLONG;
+            return undefined;
+          }
+          region.withLease(lease => {
+            lease.copyFrom(encodedPath, 0, 0, pathLen);
+            const result = this.#invokeEntryScratchExport(entry, lease, "kernel_rootfs_inspect_stat", [
+              lease.exportPointer(0, pathLen), pathLen,
+              lease.exportPointer(statOffset, STRUCT_SIZE_WASM_STAT), STRUCT_SIZE_WASM_STAT,
+            ]);
+            if (result !== 0) {
+              failErrno = Number.isSafeInteger(result) && result < 0 ? -result : EIO;
+              return;
+            }
+            try {
+              const stat = decodeInspectionStat(lease.dataView(statOffset, STRUCT_SIZE_WASM_STAT));
+              if ((stat.mode & FILE_MODES.S_IFMT) !== FILE_MODES.S_IFREG) {
+                failErrno = (stat.mode & FILE_MODES.S_IFMT) === FILE_MODES.S_IFDIR ? ERRNO.EISDIR : EINVAL;
+                return;
+              }
+              hint = stat.size;
+            } catch (error) {
+              if (!(error instanceof KernelScratchError)) throw error;
+              failErrno = error.errno;
+            }
+          });
+          if (failErrno !== 0) return undefined;
+        }
+        let destination: FileReadBuffer;
+        try { destination = new FileReadBuffer(resultLimit, hint, overflowErrno); }
+        catch (error) {
+          if (!(error instanceof FileReadBufferError)) throw error;
+          failErrno = error.errno;
+          failureMessage = error.message;
+          return undefined;
+        }
         let fileOffset = initialOffset;
         let total = 0;
         for (;;) {
           const remaining = maxBytes - total;
           if (remaining <= 0) break;
-          const chunkCap = Math.min(bufferCap, remaining);
+          const chunkCap = Math.min(bufferCap, remaining, resultLimit - total + 1);
           const res: { errno: number; bytes: Uint8Array | null } =
             region.withLease((lease) => {
               lease.copyFrom(encodedPath, 0, 0, pathLen);
@@ -6002,7 +6208,7 @@ export class CentralizedKernelWorker {
               const result = this.#invokeEntryScratchExport(
                 entry,
                 lease,
-                name,
+                "kernel_rootfs_inspect_read_file",
                 [
                   pathPtr,
                   pathLen,
@@ -6012,39 +6218,37 @@ export class CentralizedKernelWorker {
                   chunkCap,
                 ],
               );
-              if (!Number.isSafeInteger(result)) return { errno: EIO, bytes: null };
+              if (!Number.isSafeInteger(result) || result > chunkCap) return { errno: EIO, bytes: null };
               if (result < 0) return { errno: -result, bytes: null };
-              return {
-                errno: 0,
-                bytes: result === 0 ? null : lease.copyOut(pathLen, result),
-              };
+              try { return { errno: 0, bytes: result === 0 ? null : lease.copyOut(pathLen, result) }; }
+              catch (error) {
+                if (!(error instanceof RangeError)) throw error;
+                return { errno: ENOMEM, bytes: null };
+              }
             });
           if (res.errno !== 0) {
             failErrno = res.errno;
             break;
           }
           if (res.bytes === null) break;
-          chunks.push(res.bytes);
+          try { destination.append(res.bytes); }
+          catch (error) {
+            if (!(error instanceof FileReadBufferError)) throw error;
+            failErrno = error.errno;
+            failureMessage = error.message;
+            break;
+          }
           fileOffset += res.bytes.byteLength;
           total += res.bytes.byteLength;
-          // rootfs read returns min(request, bytes-remaining); a short read is
-          // therefore EOF, so a further crossing is unnecessary.
-          if (res.bytes.byteLength < chunkCap) break;
         }
         if (failErrno === 0) {
-          const merged = new Uint8Array(total);
-          let at = 0;
-          for (const c of chunks) {
-            merged.set(c, at);
-            at += c.byteLength;
-          }
-          output = merged;
+          output = destination.finish();
         }
         return undefined;
       },
     );
     if (failErrno !== 0) {
-      throw new KernelScratchError("rootfs read failed", failErrno);
+      throw new KernelScratchError(failureMessage, failErrno);
     }
     return output;
   }
@@ -6085,15 +6289,24 @@ export class CentralizedKernelWorker {
   }
 
   rootfsExportContainerVisit(visit: (offset: number, bytes: Uint8Array) => void): number {
+    return this.#rootfsExportContainerVisit(visit, false);
+  }
+
+  rootfsExportContainerVisitBorrowed(visit: (offset: number, bytes: Uint8Array) => void): number {
+    return this.#rootfsExportContainerVisit(visit, true);
+  }
+
+  #rootfsExportContainerVisit(visit: (offset: number, bytes: Uint8Array) => void, borrowed: boolean): number {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     let failErrno = 0;
     let sinkError: unknown;
     let sinkFailed = false;
     let offset = 0;
     this.#runImmediateKernelEntry("kernel rootfs export image", (entry) => {
+      const cancel = this.#kernelInstanceForEntry(entry).exports.kernel_rootfs_export_container_cancel as (() => void) | undefined;
       if (
         typeof entry.instance.exports.kernel_rootfs_export_container_read
-          !== "function"
+          !== "function" || typeof cancel !== "function"
       ) {
         failErrno = ENOSYS;
         return undefined;
@@ -6104,52 +6317,80 @@ export class CentralizedKernelWorker {
         failErrno = EIO;
         return undefined;
       }
-      for (;;) {
-        const res: { errno: number; bytes: Uint8Array | null } =
-          region.withLease((lease) => {
-            const bufPtr = lease.exportPointer(0, chunkCap);
-            const result = this.#invokeEntryScratchExport(
-              entry,
-              lease,
-              "kernel_rootfs_export_container_read",
-              [
-                offset >>> 0,
-                Math.floor(offset / 0x1_0000_0000),
-                bufPtr,
-                chunkCap,
-              ],
-            );
-            if (!Number.isSafeInteger(result)) return { errno: EIO, bytes: null };
-            if (result < 0) return { errno: -result, bytes: null };
-            return {
-              errno: 0,
-              bytes: result === 0 ? null : lease.copyOut(0, result),
-            };
-          });
-        if (res.errno !== 0) {
-          failErrno = res.errno;
-          break;
-        }
-        // Zero is the end of the image. A short chunk is not.
-        if (res.bytes === null) break;
-        if (!Number.isSafeInteger(offset + res.bytes.byteLength)) {
-          failErrno = EIO;
-          break;
-        }
+      let staging: OwnedHostByteDestination | undefined;
+      if (borrowed) {
         try {
-          visit(offset, res.bytes);
+          staging = allocateOwnedHostByteDestination(chunkCap);
         } catch (error) {
-          sinkError = error;
-          sinkFailed = true;
-          break;
+          if (!(error instanceof RangeError)) throw error;
+          failErrno = ENOMEM;
+          return undefined;
         }
-        offset += res.bytes.byteLength;
+      }
+      let completed = false;
+      let nativeFailure = false;
+      try {
+        for (;;) {
+          const res: { errno: number; bytes: Uint8Array | null } =
+            region.withLease((lease) => {
+              const bufPtr = lease.exportPointer(0, chunkCap);
+              const result = this.#invokeEntryScratchExport(
+                entry,
+                lease,
+                "kernel_rootfs_export_container_read",
+                [
+                  offset >>> 0,
+                  Math.floor(offset / 0x1_0000_0000),
+                  bufPtr,
+                  chunkCap,
+                ],
+              );
+              if (!Number.isSafeInteger(result)) return { errno: EIO, bytes: null };
+              if (result < 0) return { errno: -result, bytes: null };
+              if (staging !== undefined && result > 0) {
+                lease.copyToOwnedHostDestination(staging, 0, result);
+                return { errno: 0, bytes: ownedHostByteDestinationPrefix(staging, result) };
+              }
+              return {
+                errno: 0,
+                bytes: result === 0 ? null : lease.copyOut(0, result),
+              };
+            });
+          if (res.errno !== 0) {
+            failErrno = res.errno;
+            break;
+          }
+          // Zero is the end of the image. A short chunk is not.
+          if (res.bytes === null) { completed = true; break; }
+          const chunkBytes = res.bytes.byteLength;
+          if (!Number.isSafeInteger(offset + chunkBytes)) {
+            failErrno = EIO;
+            break;
+          }
+          try {
+            const sinkResult = visit(offset, res.bytes);
+            if (borrowed && sinkResult !== undefined) {
+              throw new KernelScratchError("borrowed rootfs export sink must complete synchronously without a return value", EINVAL);
+            }
+            if (staging !== undefined) ownedHostByteDestinationPrefix(staging, 0);
+          } catch (error) {
+            sinkError = error;
+            sinkFailed = true;
+            break;
+          }
+          offset += chunkBytes;
+        }
+      } catch (error) {
+        if (isKernelExportFailure(error)) nativeFailure = true;
+        throw error;
+      } finally {
+        if (!completed && !nativeFailure) cancel();
       }
       return undefined;
     });
     if (sinkFailed) throw sinkError;
     if (failErrno !== 0) {
-      throw new KernelScratchError("rootfs export image failed", failErrno);
+      throw new KernelScratchError(`rootfs export image failed at byte ${offset} (errno ${failErrno})`, failErrno);
     }
     return offset;
   }
@@ -6516,55 +6757,78 @@ export class CentralizedKernelWorker {
   }
 
   rootfsReadDirectory(path: string): VfsDirEntrySnapshot[] {
-    return decodeInspectionDirectory(this.#readRootfsInspectionSnapshot(path));
+    return this.#readRootfsInspectionSnapshot(path, decodeInspectionDirectory);
   }
 
-  rootfsLazyResourceLimits(): Map<string, number> {
-    return decodeInspectionResourceLimits(this.#readRootfsInspectionSnapshot());
+  rootfsLazyResourceLimits(budget = this.#rootfsTransportMetadata): StorageMetadataMap<string, number> {
+    return this.#readRootfsInspectionSnapshot(undefined, bytes => decodeInspectionResourceLimits(bytes, budget), budget);
   }
 
-  #readRootfsInspectionSnapshot(path?: string): Uint8Array {
+  #readRootfsInspectionSnapshot<Result>(
+    path: string | undefined,
+    decode: (bytes: Uint8Array) => Result,
+    budget = this.#rootfsTransportMetadata,
+  ): Result {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     const encoded = new TextEncoder().encode(path ?? "");
     if (encoded.length >= POSIX_PATH_MAX_BYTES) {
       throw new KernelScratchError("Inspection path too long", ENAMETOOLONG);
     }
     const chunks: Uint8Array[] = [];
+    const admission = budget.reserve(0);
     let offset = 0;
     let failErrno = 0;
+    let admissionFailure: Error | undefined;
     // All chunks are read in one serialized entry: another inspection cannot
     // replace the native snapshot between chunks, and no guest can mutate it.
-    this.#runImmediateKernelEntry("inspect filesystem metadata", (entry) => {
-      const region = this.#requireMainScratchRegion();
-      const outputOffset = Math.ceil(encoded.length / 8) * 8;
-      const capacity = region.capacity - outputOffset;
-      if (capacity <= 0) throw new KernelScratchError("Inspection scratch capacity", EIO);
-      region.withLease((lease) => {
-        lease.copyFrom(encoded, 0, 0, encoded.length);
-        for (;;) {
-          const output = lease.exportPointer(outputOffset, capacity);
-          const result = path === undefined
-            ? this.#invokeEntryScratchExport(entry, lease, "kernel_rootfs_lazy_resource_limits", [offset, output, capacity])
-            : this.#invokeEntryScratchExport(entry, lease, "kernel_rootfs_inspect_directory", [
-                lease.exportPointer(0, encoded.length), encoded.length, offset, output, capacity,
-              ]);
-          if (!Number.isSafeInteger(result) || result < 0 || result > capacity) {
-            failErrno = Number.isSafeInteger(result) && result < 0 ? -result : EIO;
-            break;
+    try {
+      this.#runImmediateKernelEntry("inspect filesystem metadata", (entry) => {
+        const region = this.#requireMainScratchRegion();
+        const outputOffset = Math.ceil(encoded.length / 8) * 8;
+        const capacity = region.capacity - outputOffset;
+        if (capacity <= 0) throw new KernelScratchError("Inspection scratch capacity", EIO);
+        region.withLease((lease) => {
+          lease.copyFrom(encoded, 0, 0, encoded.length);
+          for (;;) {
+            const output = lease.exportPointer(outputOffset, capacity);
+            const result = path === undefined
+              ? this.#invokeEntryScratchExport(entry, lease, "kernel_rootfs_lazy_resource_limits", [offset, output, capacity])
+              : this.#invokeEntryScratchExport(entry, lease, "kernel_rootfs_inspect_directory", [
+                  lease.exportPointer(0, encoded.length), encoded.length, offset, output, capacity,
+                ]);
+            if (!Number.isSafeInteger(result) || result < 0 || result > capacity) {
+              failErrno = Number.isSafeInteger(result) && result < 0 ? -result : EIO;
+              break;
+            }
+            if (result === 0) break;
+            try { admission.resize((offset + result) * (path === undefined ? 2 : 4)); }
+            catch (error) {
+              if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOMEM"
+                || !("errno" in error) || error.errno !== ENOMEM) throw error;
+              const cancelOutput = lease.exportPointer(outputOffset, capacity);
+              const cancelled = path === undefined
+                ? this.#invokeEntryScratchExport(entry, lease, "kernel_rootfs_lazy_resource_limits", [0xffff_ffff, cancelOutput, capacity])
+                : this.#invokeEntryScratchExport(entry, lease, "kernel_rootfs_inspect_directory", [
+                    lease.exportPointer(0, encoded.length), encoded.length, 0xffff_ffff, cancelOutput, capacity,
+                  ]);
+              if (cancelled !== 0) throw new Error(`Filesystem inspection cancellation failed: ${cancelled}`);
+              admissionFailure = error;
+              break;
+            }
+            chunks.push(lease.copyOut(outputOffset, result));
+            offset += result;
+            if (offset > 0xffff_ffff) { failErrno = ERRNO.EOVERFLOW; break; }
           }
-          if (result === 0) break;
-          chunks.push(lease.copyOut(outputOffset, result));
-          offset += result;
-          if (offset > 0xffff_ffff) { failErrno = ERRNO.EOVERFLOW; break; }
-        }
+        });
+        return undefined;
       });
-      return undefined;
-    });
-    if (failErrno !== 0) throw new KernelScratchError("Filesystem inspection failed", failErrno);
-    const bytes = new Uint8Array(offset);
-    let at = 0;
-    for (const chunk of chunks) { bytes.set(chunk, at); at += chunk.length; }
-    return bytes;
+      if (admissionFailure !== undefined) throw admissionFailure;
+      if (failErrno !== 0) throw new KernelScratchError("Filesystem inspection failed", failErrno);
+      const bytes = new Uint8Array(offset);
+      let at = 0;
+      for (const chunk of chunks) { bytes.set(chunk, at); at += chunk.length; }
+      return decode(bytes);
+    } finally { admission.release(); }
   }
 
   /**
@@ -6604,6 +6868,7 @@ export class CentralizedKernelWorker {
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
       throw new KernelReentrantEntryError("kernel initialization completion");
     }
+    let rootfsLoadFailure: Error | undefined;
     let initializedRuntime: {
       readonly abiVersion: number;
       readonly mainScratch: KernelScratchRegion;
@@ -6655,7 +6920,8 @@ export class CentralizedKernelWorker {
         // Hand scratch-mount ownership to the in-kernel tmpfs, and the `/`
         // tree to the in-kernel rootfs, before any guest filesystem op runs.
         enableKernelTmpfs(instance);
-        this.#maybeLoadKernelRootfs(instance);
+        rootfsLoadFailure = this.#maybeLoadKernelRootfs(instance);
+        if (rootfsLoadFailure !== undefined) return undefined;
 
         // Blocking-wait deadlines are kernel state on CLOCK_MONOTONIC, not
         // host wall-clock arithmetic. Hand that authority over before any
@@ -6700,6 +6966,7 @@ export class CentralizedKernelWorker {
         return undefined;
       },
     );
+    if (rootfsLoadFailure !== undefined) throw rootfsLoadFailure;
     if (deferred || initializedRuntime === undefined) {
       throw new KernelReentrantEntryError("kernel initialization completion");
     }
@@ -10776,6 +11043,11 @@ export class CentralizedKernelWorker {
     }
     this.#releaseBlockingRetrySnapshot(channel, entry);
     this.cancelParkedFifoOpen(channel, entry, retrySnapshot?.syscallNr);
+    this.closeWaitDeadline(channel, entry);
+    this.retireChannelHostWaits(channel, entry);
+  }
+
+  private retireChannelHostWaits(channel: ChannelInfo, entry?: KernelWorkerEntryContext): void {
     this.discardStoppedChannelState(channel);
     this.resumePreparedSignals?.delete(channel);
     this.activeChannelRequests?.delete(channel);
@@ -10788,7 +11060,6 @@ export class CentralizedKernelWorker {
     const signalWait = this.pendingSignalWaits?.get(signalWaitKey);
     if (signalWait) this.#cancelRegisteredTimeout(signalWait.timer);
     this.pendingSignalWaits?.delete(signalWaitKey);
-    this.closeWaitDeadline(channel, entry);
 
     const sleep = this.pendingSleeps?.get(channel);
     if (sleep) this.#cancelRegisteredTimeout(sleep.timer);
@@ -10797,17 +11068,7 @@ export class CentralizedKernelWorker {
     const futex = this.pendingFutexWaits?.get(channel);
     if (futex) {
       this.pendingFutexWaits.delete(channel);
-      if (futex.retire) futex.retire();
-      else {
-        try {
-          Atomics.notify(
-            new Int32Array(channel.memory.buffer),
-            futex.futexIndex,
-          );
-        } catch {
-          // A detached discarded memory has no waiter left to release.
-        }
-      }
+      futex.retire();
     }
 
     const poll = this.pendingPollRetries?.get(channel);
@@ -10825,7 +11086,6 @@ export class CentralizedKernelWorker {
       this.#cancelRegisteredImmediate(select.timer);
     }
     this.pendingSelectRetries?.delete(channel);
-    this.closeWaitDeadline(channel, entry);
     channel.readinessFinalCheck = undefined;
     if (channel.epollWaitToken !== undefined) {
       const token = channel.epollWaitToken;
@@ -11032,15 +11292,17 @@ export class CentralizedKernelWorker {
     if (!this.isRegisteredChannel(channel) || this.hostReaped?.has(channel.pid)) {
       return false;
     }
+    let exitSignal = 0;
     try {
-      if (this.#getProcessExitSignal(channel.pid, entry) > 0) {
-        this.#handleProcessTerminatedWithinKernelEntry(channel, entry);
-        return false;
-      }
+      exitSignal = this.#getProcessExitSignal(channel.pid, entry);
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
       // Older compatible kernels lack the additive exit-signal query; channel
       // identity remains the best available liveness evidence there.
+    }
+    if (exitSignal > 0) {
+      this.#handleProcessTerminatedWithinKernelEntry(channel, entry);
+      return false;
     }
     return true;
   }
@@ -11502,7 +11764,7 @@ export class CentralizedKernelWorker {
     // A waitAsync continuation from the discarded exec image may run after a
     // replacement registration with the same pid has been installed.
     if (!this.isRegisteredChannel(channel)) return;
-    if (this.deferChannelWhileStopped(channel)) return;
+    if (!this.#terminalProcessTeardown && this.deferChannelWhileStopped(channel)) return;
 
     // Re-create Int32Array view in case memory was grown
     const i32View = new Int32Array(
@@ -11858,6 +12120,7 @@ export class CentralizedKernelWorker {
     entry: KernelWorkerEntryContext,
   ): void {
     if (!this.#captureChannelRequest(channel, entry)) return;
+    if (this.#completeTerminalTeardownChannel(channel, entry)) return;
     if (this.handleExitedProcessChannel(channel, entry)) return;
     if (this.deferChannelWhileStopped(channel)) return;
     try {
@@ -12567,6 +12830,10 @@ export class CentralizedKernelWorker {
     entry?: KernelWorkerEntryContext,
   ): boolean {
     if (!this.hostReaped?.has(channel.pid)) return false;
+    this.retireChannelHostWaits(channel, entry);
+    this.#forgetBlockingRetrySnapshotAfterKernelLifecycle(channel);
+    channel.waitHandle = undefined;
+    channel.pollSigmaskSwapped = undefined;
 
     const processView = new DataView(
       channel.memory.buffer,
@@ -12580,6 +12847,7 @@ export class CentralizedKernelWorker {
       // duplicate into the dead Process or repeat parent/onExit notification.
       this.completeProcessExitHandshake(channel, syscallNr, entry);
     } else {
+      this.discardStoppedChannelState(channel);
       // Rust has already committed exit. A parked Worker still needs to
       // unwind: JSC cannot reclaim it through terminate() while Atomics.wait
       // is blocked. A private terminal marker unwinds it without another
@@ -12608,6 +12876,25 @@ export class CentralizedKernelWorker {
     }
   }
 
+  #retireExitedProcessChannels(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+    initiatingChannel?: ChannelInfo,
+  ): void {
+    if (!this.hostReaped.has(pid)) return;
+    const registration = this.processes.get(pid);
+    if (!registration) return;
+    for (const channel of registration.channels) {
+      if (channel === initiatingChannel) continue;
+      this.discardStoppedChannelState(channel);
+      const status = Atomics.load(
+        new Int32Array(channel.memory.buffer, channel.channelOffset),
+        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+      );
+      if (status === CH_PENDING) this.handleExitedProcessChannel(channel, entry);
+    }
+  }
+
   private completeProcessExitHandshake(
     channel: ChannelInfo,
     syscallNr: number,
@@ -12632,6 +12919,7 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     entry: KernelWorkerEntryContext,
   ): void {
+    if (this.#completeTerminalTeardownChannel(channel, entry)) return;
     // Bind every argument and generic payload read to the one Memory generation
     // that carried this notification. A concurrent memory.grow may replace the
     // Memory.buffer getter result, but must not splice a newer range proof onto
@@ -13886,6 +14174,16 @@ export class CentralizedKernelWorker {
     }
 
     try {
+      if (syscallNr === SYS_MUNMAP && origArgs[1] > 0 && origArgs[0] % 65536 === 0) {
+        const flushStatus = this.flushSharedMappings(channel,
+          [origArgs[0], alignWasmPageLength(origArgs[1])], entry);
+        if (this.hostReaped?.has(channel.pid)) return;
+        if (flushStatus < 0) {
+          this.completeChannel(channel, syscallNr, origArgs, undefined,
+            -1, -flushStatus, [], undefined, entry);
+          return;
+        }
+      }
       if (syscallNr === SYS_MREMAP) {
         const preflightError = this.preflightFileSharedMremap(
           channel.pid,
@@ -13955,7 +14253,7 @@ export class CentralizedKernelWorker {
             }
             return;
           }
-          if (!flushedReplacement) {
+          if (flushedReplacement < 0) {
             if (fileSharedMmapPreparation?.kind === "prepared") {
               this.releasePreparedSharedMmap(
                 fileSharedMmapPreparation.context,
@@ -13969,7 +14267,7 @@ export class CentralizedKernelWorker {
               origArgs,
               undefined,
               -1,
-              EIO,
+              -flushedReplacement,
               [],
               undefined,
               entry,
@@ -14261,7 +14559,32 @@ export class CentralizedKernelWorker {
             );
             fileSharedMmapPreparation = null;
           }
-          throw err;
+          if (syscallNr === SYS_MMAP && (origArgs[3] & MAP_FIXED) === 0) {
+            let rollback: { retVal: number; errVal: number };
+            try {
+              rollback = this.runSyntheticMemorySyscall(channel, SYS_MUNMAP,
+                [retVal, alignWasmPageLength(origArgs[1])], entry);
+            } catch (rollbackError) {
+              this.#rethrowKernelEntryFatal(rollbackError);
+              this.#failKernelInstance(new Error("Unable to roll back mmap after process-memory setup failed", { cause: rollbackError }));
+              return;
+            }
+            if (this.hostReaped?.has(channel.pid)) return;
+            if (rollback.retVal !== 0 || rollback.errVal !== 0) {
+              this.#failKernelInstance(new Error(`Kernel rejected mmap rollback after process-memory setup failed: errno ${rollback.errVal}`));
+              return;
+            }
+            fileSharedMmapPreparation = null;
+            if (err instanceof RangeError && channel.memory.buffer.byteLength < retVal + origArgs[1]) {
+              retVal = -1;
+              publicationRetVal = -1;
+              errVal = ENOMEM;
+            } else {
+              throw err;
+            }
+          } else {
+            throw err;
+          }
         }
       }
 
@@ -14403,10 +14726,11 @@ export class CentralizedKernelWorker {
 
       // --- msync: flush MAP_SHARED regions back to file ---
       if (syscallNr === SYS_MSYNC && retVal === 0) {
-        if (!this.flushSharedMappings(channel, origArgs, entry)) {
+        const flushStatus = this.flushSharedMappings(channel, origArgs, entry);
+        if (flushStatus < 0) {
           retVal = -1;
           publicationRetVal = -1;
-          errVal = EIO;
+          errVal = -flushStatus;
         } else if ((origArgs[2] & MS_SYNC) !== 0 && this.#rootfsImageLength !== 0) {
           const sync = this.#kernelInstanceForEntry(entry).exports
             .kernel_rootfs_sync_persistence as (() => number) | undefined;
@@ -14427,8 +14751,6 @@ export class CentralizedKernelWorker {
           origArgs[0],
           alignWasmPageLength(origArgs[1]),
         ];
-        this.flushSharedMappings(channel, unmapArgs, entry);
-        if (this.hostReaped?.has(channel.pid)) return;
         this.cleanupSharedMappings(
           channel.pid,
           unmapArgs[0]!,
@@ -15210,7 +15532,7 @@ export class CentralizedKernelWorker {
       );
     }
     if (
-      this.stoppedPids?.has(channel.pid) &&
+      !this.#terminalProcessTeardown && this.stoppedPids?.has(channel.pid) &&
       this.isRegisteredChannel(channel)
     ) {
       const parkedCompletions = (this.parkedChannelCompletions ??= new Map());
@@ -15310,6 +15632,7 @@ export class CentralizedKernelWorker {
 
   /** Hold one exact mailbox at a syscall boundary while its process is stopped. */
   private deferChannelWhileStopped(channel: ChannelInfo): boolean {
+    if (this.#terminalProcessTeardown) return false;
     const testHook = this.#scratchBoundaryTestHooks?.deferChannelWhileStopped;
     if (testHook) return testHook(channel);
     if (!this.stoppedPids?.has(channel.pid)) return false;
@@ -15880,6 +16203,14 @@ export class CentralizedKernelWorker {
    * the glue treats a queued SIGKILL unambiguously as "exit now".
    */
   killAllBlockedForTeardown(): Promise<Set<number>> {
+    return this.#beginProcessTeardown(false);
+  }
+
+  beginKernelTeardown(): Promise<Set<number>> {
+    return this.#beginProcessTeardown(true);
+  }
+
+  #beginProcessTeardown(terminal: boolean): Promise<Set<number>> {
     if (this.#kernelFatalError !== null) {
       return this.#resolvePromise(new Set<number>());
     }
@@ -15888,8 +16219,9 @@ export class CentralizedKernelWorker {
         this.#runOrDeferKernelEntry(
           "blocked-process teardown wake",
           (entry) => {
+            if (terminal) this.#terminalProcessTeardown = true;
             const woken =
-              this.#killAllBlockedForTeardownWithinKernelEntry(entry);
+              this.#killAllBlockedForTeardownWithinKernelEntry(entry, terminal);
             entry.deferProtocolEffect(() => {
               // WHY: destroy must not start its bounded drain until all
               // channel publications registered by this teardown scope have
@@ -15909,6 +16241,7 @@ export class CentralizedKernelWorker {
 
   #killAllBlockedForTeardownWithinKernelEntry(
     entry: KernelWorkerEntryContext,
+    includeRunning: boolean,
   ): Set<number> {
     // Drop all pending-retry bookkeeping first so nothing tries to re-arm a
     // syscall behind the teardown. The actual wake is driven off the channels'
@@ -15957,7 +16290,9 @@ export class CentralizedKernelWorker {
         || (getExitStatus !== undefined && getExitStatus(registration.pid) !== -1);
       // Exited processes can still own parked Workers. Their duplicate exit
       // transport preserves Rust's recorded status while those Workers unwind.
+      if (includeRunning) woken.add(registration.pid);
       for (const channel of registration.channels) {
+        if (includeRunning) this.discardStoppedChannelState(channel);
         let status: number;
         try {
           const i32 = new Int32Array(channel.memory.buffer, channel.channelOffset);
@@ -15967,6 +16302,15 @@ export class CentralizedKernelWorker {
           );
         } catch { continue; }
         if (status !== CH_PENDING) continue;
+        if (includeRunning) {
+          const syscall = new DataView(channel.memory.buffer, channel.channelOffset).getUint32(CH_SYSCALL, true);
+          if (syscall === SYS_EXIT || syscall === SYS_EXIT_GROUP) {
+            entry.deferProtocolEffect(() => {
+              this.relistenChannel(channel);
+            });
+            continue;
+          }
+        }
         try {
           this.wakeChannelForTeardownExit(channel, entry, alreadyExited);
           woken.add(channel.pid);
@@ -15977,6 +16321,25 @@ export class CentralizedKernelWorker {
       }
     }
     return woken;
+  }
+
+  #completeTerminalTeardownChannel(
+    channel: ChannelInfo,
+    entry: KernelWorkerEntryContext,
+  ): boolean {
+    if (!this.#terminalProcessTeardown) return false;
+    if (!this.isRegisteredChannel(channel)) return true;
+    const status = Atomics.load(
+      new Int32Array(channel.memory.buffer, channel.channelOffset),
+      CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+    );
+    if (status !== CH_PENDING) return true;
+    this.discardStoppedChannelState(channel);
+    if (this.handleExitedProcessChannel(channel, entry)) return true;
+    const syscall = new DataView(channel.memory.buffer, channel.channelOffset).getUint32(CH_SYSCALL, true);
+    if (syscall === SYS_EXIT || syscall === SYS_EXIT_GROUP) return false;
+    this.wakeChannelForTeardownExit(channel, entry);
+    return true;
   }
 
   /**
@@ -16351,7 +16714,7 @@ export class CentralizedKernelWorker {
     const channels = this.activeChannels.slice();
     for (const channel of channels) {
       if (!this.isRegisteredChannel(channel)) continue;
-      if (this.stoppedPids?.has(channel.pid)) {
+      if (!this.#terminalProcessTeardown && this.stoppedPids?.has(channel.pid)) {
         const stoppedView = new Int32Array(
           channel.memory.buffer,
           channel.channelOffset,
@@ -19706,6 +20069,7 @@ export class CentralizedKernelWorker {
     outputWrites: ChannelOutputWrite[],
     entry: KernelWorkerEntryContext,
   ): void {
+    if (this.#terminalProcessTeardown || this.hostReaped?.has(channel.pid)) return;
     // Check if a signal became pending during the sleep
     const deliveredSignal = this.#dequeueSignalForDelivery(channel, entry);
     if (this.#finishSignalTermination(channel, entry)) return;
@@ -24248,6 +24612,7 @@ export class CentralizedKernelWorker {
     }
 
     const attachment = cloneState.cloneAttachment!;
+    const cloneRequest = this.activeChannelRequests.get(channel);
     entry.deferProtocolTransactionStart(() => {
       let transaction: Promise<void>;
       try {
@@ -24259,6 +24624,12 @@ export class CentralizedKernelWorker {
           channel,
           "clone launch failure",
           (failureEntry) => {
+            pendingThreadChannelAttachments.delete(attachment);
+            if (this.#terminalProcessTeardown
+              || this.activeChannelRequests.get(channel) !== cloneRequest
+              || !this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, failureEntry)) {
+              return undefined;
+            }
             try {
               this.#rollbackCloneWithinKernelEntry(
                 channel,
@@ -24307,7 +24678,9 @@ export class CentralizedKernelWorker {
           (completionEntry) => {
             pendingThreadChannelAttachments.delete(attachment);
             if (
-              !this.#isAsyncChannelProcessActiveWithinKernelEntry(
+              this.#terminalProcessTeardown
+              || this.activeChannelRequests.get(channel) !== cloneRequest
+              || !this.#isAsyncChannelProcessActiveWithinKernelEntry(
                 channel,
                 completionEntry,
               )
@@ -24377,10 +24750,17 @@ export class CentralizedKernelWorker {
           },
         );
       }, (cause) => {
+        pendingThreadChannelAttachments.delete(attachment);
         this.#runOrDeferChannelKernelEntry(
           channel,
           "clone launch rejection",
           (failureEntry) => {
+            pendingThreadChannelAttachments.delete(attachment);
+            if (this.#terminalProcessTeardown
+              || this.activeChannelRequests.get(channel) !== cloneRequest
+              || !this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, failureEntry)) {
+              return undefined;
+            }
             try {
               // The callback can reject after partial transport teardown.
               // ESRCH proves no exact globally non-reused task remains.
@@ -24610,6 +24990,7 @@ export class CentralizedKernelWorker {
     // Without this, the worker stays blocked and Node.js aborts when
     // trying to terminate worker threads during process.exit().
     this.completeProcessExitHandshake(channel, syscallNr, entry);
+    this.#retireExitedProcessChannels(exitingPid, entry, channel);
 
     // Wake any processes blocked on pipe reads/polls — the exiting process's
     // FDs were closed by the kernel (sys_exit), so pipes with no remaining
@@ -24681,6 +25062,8 @@ export class CentralizedKernelWorker {
     // kernel wake before a parent waiter or host exit callback can run.
     this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
     this.notifyParentOfExitedProcess(exitingPid, entry);
+    this.#retireExitedProcessChannels(exitingPid, entry,
+      canQuiesceBorrowedWorker ? channel : undefined);
 
     if (canQuiesceBorrowedWorker) {
       // WHY: forced Worker termination cannot prove that a vfork child has
@@ -24806,6 +25189,7 @@ export class CentralizedKernelWorker {
     // an incidental kernel event drain.
     this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
     this.notifyParentOfExitedProcess(pid, entry);
+    this.#retireExitedProcessChannels(pid, entry);
   }
 
   /**
@@ -25923,6 +26307,10 @@ export class CentralizedKernelWorker {
             channel,
             "futex completion",
             (completionEntry) => {
+              if (this.#terminalProcessTeardown
+                || !this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, completionEntry)) {
+                return undefined;
+              }
               this.completeChannelRawAndRelisten(
                 channel,
                 retVal,
@@ -29278,7 +29666,7 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     origArgs: number[],
     entry?: KernelWorkerEntryContext,
-  ): boolean {
+  ): number {
     // msync/munmap/MAP_FIXED are explicit publication points for anonymous
     // mappings too, including the single-observer-before-fork case.
     try {
@@ -29286,7 +29674,7 @@ export class CentralizedKernelWorker {
       this.syncFileSharedMappingsFromProcess(channel, { force: true }, entry);
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
-      return false;
+      return -EIO;
     }
 
     const syncAddr = origArgs[0];
@@ -29297,8 +29685,8 @@ export class CentralizedKernelWorker {
       || !Number.isSafeInteger(syncLen)
       || syncLen < 0
       || !Number.isSafeInteger(syncAddr + syncLen)
-    ) return false;
-    let success = true;
+    ) return -EINVAL;
+    let failure = 0;
     // Mappings of files the kernel owns are published and persisted by the
     // kernel, at the same point as the host's own.
     if (this.#processOwnsKernelSharedMappings(channel.pid)) {
@@ -29308,10 +29696,10 @@ export class CentralizedKernelWorker {
         BigInt(syncLen),
         entry,
       );
-      if (this.#kernelSharedMappingResult("flush", result) < 0) success = false;
+      failure = this.#kernelSharedMappingResult("flush", result);
     }
     const pidMap = this.sharedMappings.get(channel.pid);
-    if (!pidMap || pidMap.size === 0) return success;
+    if (!pidMap || pidMap.size === 0) return failure;
 
     const syncEnd = syncAddr + syncLen;
 
@@ -29336,7 +29724,7 @@ export class CentralizedKernelWorker {
           fileOffsetBase,
           flushLen,
           entry,
-        )) success = false;
+        )) failure ||= -EIO;
         continue;
       }
       if (!mapping.writable) continue;
@@ -29350,9 +29738,9 @@ export class CentralizedKernelWorker {
         flushLen,
         fileOffsetBase,
         entry,
-      )) success = false;
+      )) failure ||= -EIO;
     }
-    return success;
+    return failure;
   }
 
   /**
@@ -31551,12 +31939,41 @@ export class CentralizedKernelWorker {
     request: HttpRequest,
     opts: SendHttpRequestOptions = {},
   ): Promise<HttpResponse> {
+    const started = Date.now();
+    const timeoutMs = opts.timeoutMs ?? 60_000;
+    const ordinaryIoBytes = Math.max(0, selectRootfsIoBytes(this.config.kernelMaxPages) - 2 * 1024 * 1024);
+    const concurrent = Math.max(1, Math.min(16, Math.floor(ordinaryIoBytes / (1024 * 1024))));
+    const release = await this.#httpAdmission.acquire(concurrent, timeoutMs);
+    if (release === null) return { status: 504, headers: {}, body: new Uint8Array(0) };
+    let response: HttpResponse;
+    try {
+      const remaining = timeoutMs - (Date.now() - started);
+      if (remaining <= 0) return { status: 504, headers: {}, body: new Uint8Array(0) };
+      response = await this.#sendAdmittedHttpRequest(port, request, { ...opts, timeoutMs: remaining });
+    } finally {
+      release();
+    }
+    const retryBudget = opts.emptyResponseRetries ?? 1;
+    if (retryBudget > 0 && (request.method === "GET" || request.method === "HEAD")
+      && response.status === 200 && Object.keys(response.headers).length === 0 && response.body.length === 0) {
+      return this.sendHttpRequest(port, request, { ...opts, emptyResponseRetries: retryBudget - 1,
+        timeoutMs: Math.max(0, timeoutMs - (Date.now() - started)) });
+    }
+    return response;
+  }
+
+  async #sendAdmittedHttpRequest(
+    port: number,
+    request: HttpRequest,
+    opts: SendHttpRequestOptions,
+  ): Promise<HttpResponse> {
     const timeoutMs = opts.timeoutMs ?? 60_000;
     const maxResponseBytes = opts.maxResponseBytes ?? Number.MAX_SAFE_INTEGER;
     if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1) {
       throw new Error("in-kernel HTTP response bound must be a positive safe integer");
     }
     const label = opts.debugLabel ?? `${request.method} ${request.url}`;
+    const rawRequest = buildRawHttpRequest(request);
 
     const target = this.pickListenerTarget(port);
     if (!target) {
@@ -31566,37 +31983,9 @@ export class CentralizedKernelWorker {
     // Synthetic remote — picked from the ephemeral range so the kernel
     // doesn't think two simultaneous external calls share a 4-tuple.
     const remotePort = 1024 + Math.floor(Math.random() * 60_000);
-    const recvPipeIdx = this.injectConnection(
-      target.pid,
-      target.fd,
-      [127, 0, 0, 1],
-      remotePort,
-    );
-    if (recvPipeIdx < 0) {
-      throw new Error(
-        `[in-kernel-http ${label}] kernel_inject_connection failed (${recvPipeIdx})`,
-      );
-    }
+    const { recvPipeIdx, connectionId } = this.#injectHttpConnection(target, remotePort, label);
     const sendPipeIdx = recvPipeIdx + 1;
     const globalPipePid = 0;
-
-    // Write the request bytes through the TCP scratch buffer.
-    const rawRequest = buildRawHttpRequest(request);
-    const written = this.writePipeData(
-      globalPipePid,
-      recvPipeIdx,
-      rawRequest,
-    );
-    if (written < rawRequest.length) {
-      // Partial write here would mean the recv pipe filled up before the
-      // server even started reading. Treat as a hard error for the prototype.
-      this.closePipeWrite(globalPipePid, recvPipeIdx);
-      this.closePipeRead(globalPipePid, sendPipeIdx);
-      throw new Error(
-        `[in-kernel-http ${label}] partial write ${written}/${rawRequest.length}`,
-      );
-    }
-    this.notifyPipeReadable(recvPipeIdx);
 
     // Pump the response.
     const response = await this.pumpHttpResponse(
@@ -31607,21 +31996,74 @@ export class CentralizedKernelWorker {
       maxResponseBytes,
       request.method,
       label,
+      rawRequest,
+      connectionId,
     );
-    const retryBudget = opts.emptyResponseRetries ?? 1;
-    if (
-      retryBudget > 0 &&
-      (request.method === "GET" || request.method === "HEAD") &&
-      response.status === 200 &&
-      Object.keys(response.headers).length === 0 &&
-      response.body.length === 0
-    ) {
-      return await this.sendHttpRequest(port, request, {
-        ...opts,
-        emptyResponseRetries: retryBudget - 1,
-      });
-    }
     return response;
+  }
+
+  #injectHttpConnection(target: { pid: number; fd: number }, remotePort: number, label: string): {
+    recvPipeIdx: number; connectionId: number;
+  } {
+    let connection: { recvPipeIdx: number; connectionId: number } | undefined;
+    this.#runImmediateKernelEntry(`host HTTP connection injection ${label}`, entry => {
+      const recvPipeIdx = this.#injectIncomingVirtualTcpConnection(target,
+        [127, 0, 0, 1], remotePort, [127, 0, 0, 1], entry);
+      if (recvPipeIdx < 0) {
+        connection = { recvPipeIdx, connectionId: 0 };
+        return undefined;
+      }
+      const identify = entry.instance.exports.kernel_tcp_connection_id as (recv: number, send: number) => number;
+      const connectionId = identify(recvPipeIdx, recvPipeIdx + 1);
+      if (!Number.isSafeInteger(connectionId) || connectionId <= 0) {
+        const failure = new Error("HTTP injection did not mint its backing identity");
+        this.#failKernelInstance(failure);
+        throw failure;
+      }
+      connection = { recvPipeIdx, connectionId };
+      entry.deferProtocolEffect(() => { this.scheduleWakeBlockedRetries(); return undefined; });
+      return undefined;
+    });
+    if (connection === undefined) throw new Error("HTTP injection did not return owned backing");
+    if (connection.recvPipeIdx < 0) {
+      throw new Error(`[in-kernel-http ${label}] kernel_inject_connection failed (${connection.recvPipeIdx})`);
+    }
+    return connection;
+  }
+
+  #retireHttpConnection(
+    recvPipeIdx: number, sendPipeIdx: number, connectionId: number, abort: boolean,
+    complete: () => void,
+  ): void {
+    const refuse = (error: unknown) => {
+      this.#failKernelInstance(error instanceof Error ? error : new Error(String(error)));
+      this.#rethrowKernelEntryFatal(error);
+    };
+    if (this.#kernelFatalError !== null) return;
+    try {
+      this.#runOrDeferKernelEntry("retire injected HTTP connection", entry => {
+        try {
+          const identify = entry.instance.exports.kernel_tcp_connection_id as (recv: number, send: number) => number;
+          if (identify(recvPipeIdx, sendPipeIdx) !== connectionId) {
+            throw new Error("HTTP connection no longer owns its pipe backing");
+          }
+          if (abort) {
+            const reset = entry.instance.exports.kernel_reset_tcp_connection as (recv: number, send: number, token: number) => number;
+            const status = reset(recvPipeIdx, sendPipeIdx, connectionId);
+            if (status !== 0) throw new Error(`HTTP connection reset failed (${status})`);
+          }
+          this.#closeTcpPipeReadWithinKernelEntry(sendPipeIdx, entry);
+          this.#closeTcpPipeWriteWithinKernelEntry(recvPipeIdx, entry);
+          entry.deferProtocolEffect(() => {
+            this.notifyPipeReadable(recvPipeIdx);
+            this.scheduleWakeBlockedRetries();
+            complete();
+            return undefined;
+          });
+        } catch (error) { this.#rethrowKernelEntryFatal(error); refuse(error); }
+        return undefined;
+      });
+    } catch (error) { this.#rethrowKernelEntryFatal(error); refuse(error); }
   }
 
   /**
@@ -31942,34 +32384,53 @@ export class CentralizedKernelWorker {
     maxResponseBytes: number,
     requestMethod: string,
     label: string,
+    rawRequest: Uint8Array,
+    connectionId: number,
   ): Promise<HttpResponse> {
     return new this.#promiseReceiver<HttpResponse>((resolve, reject) => {
-      const chunks: Uint8Array[] = [];
+      const chunks = new BoundedHttpResponseChunks(maxResponseBytes);
       const start = Date.now();
-      let sawWriteOpen = false;
       let settled = false;
+      let settling = false;
       let timer: ReturnType<typeof setTimeout> | null = null;
-
-      const finish = (response: HttpResponse) => {
+      let requestOffset = 0;
+      let operationFailure: { cause: unknown } | undefined;
+      const refuse = (cause: unknown) => reject(new Error(`[in-kernel-http ${label}] response pump failed`, { cause }));
+      const failedKernel = (error: Error) => {
         if (settled) return;
         settled = true;
+        settling = true;
         if (timer !== null) this.#cancelRegisteredTimeout(timer);
-        this.closePipeRead(pid, sendPipeIdx);
-        this.closePipeWrite(pid, recvPipeIdx);
-        this.notifyPipeReadable(recvPipeIdx);
-        this.scheduleWakeBlockedRetries();
-        resolve(response);
+        this.#httpRequests.delete(failedKernel);
+        const cause = operationFailure === undefined ? error
+          : new AggregateError([operationFailure.cause, error], "HTTP request and connection cleanup failed");
+        this.#scheduleMicrotaskListenerRoot("HTTP request fatal rejection", () => refuse(cause), true);
+      };
+      this.#httpRequests.add(failedKernel);
+      if (this.#kernelFatalError !== null) { failedKernel(this.#kernelFatalError); return; }
+      const finish = (response: HttpResponse | undefined, failure: { cause: unknown } | undefined, abort: boolean) => {
+        if (settled || settling) return;
+        settling = true;
+        operationFailure = failure;
+        if (timer !== null) this.#cancelRegisteredTimeout(timer);
+        this.#retireHttpConnection(recvPipeIdx, sendPipeIdx, connectionId, abort,
+          () => {
+            if (settled) return;
+            settled = true;
+            this.#httpRequests.delete(failedKernel);
+            if (failure !== undefined) refuse(failure.cause);
+            else if (response !== undefined) resolve(response);
+          });
       };
 
       const tick = () => {
-        if (settled) return;
-        if (Date.now() - start > timeoutMs) {
-          finish({ status: 504, headers: {}, body: new Uint8Array(0) });
-          return;
-        }
-
+        if (settled || settling) return;
         // Drain whatever is currently in the pipe.
         try {
+          if (Date.now() - start > timeoutMs) {
+            finish({ status: 504, headers: {}, body: new Uint8Array(0) }, undefined, true);
+            return;
+          }
           const chunk = this.readPipeAvailable(pid, sendPipeIdx);
           const gotData = chunk !== null;
           if (chunk) {
@@ -31978,13 +32439,20 @@ export class CentralizedKernelWorker {
           }
 
           const writeOpen = this.isPipeWriteOpen(pid, sendPipeIdx);
-          if (writeOpen && !sawWriteOpen) sawWriteOpen = true;
 
-          if (sawWriteOpen && !writeOpen && !gotData) {
+          if (!writeOpen && !gotData) {
             // Server closed its end and we drained all bytes.
-            const raw = concatChunksLocal(chunks);
-            finish(parseRawHttpResponse(raw));
+            const raw = chunks.concat();
+            finish(parseRawHttpResponse(raw, requestMethod), undefined, false);
             return;
+          }
+
+          let wroteData = false;
+          if (writeOpen && requestOffset < rawRequest.byteLength) {
+            const count = this.writePipeData(pid, recvPipeIdx, rawRequest.subarray(requestOffset));
+            requestOffset += count;
+            wroteData = count > 0;
+            if (wroteData) this.notifyPipeReadable(recvPipeIdx);
           }
 
           // Re-arm. Tight when bytes were flowing, slower poll otherwise.
@@ -31992,23 +32460,11 @@ export class CentralizedKernelWorker {
             if (timer !== nextTimer) return;
             timer = null;
             tick();
-          }, gotData ? 0 : 2);
+          }, gotData || wroteData ? 0 : 2);
           timer = nextTimer;
         } catch (cause) {
           this.#rethrowKernelEntryFatal(cause);
-          settled = true;
-          if (timer !== null) this.#cancelRegisteredTimeout(timer);
-          try {
-            this.closePipeRead(pid, sendPipeIdx);
-            this.closePipeWrite(pid, recvPipeIdx);
-          } catch (error) {
-            this.#rethrowKernelEntryFatal(error);
-            // The kernel fatal latch, if any, remains authoritative.
-          }
-          reject(new Error(
-            `[in-kernel-http ${label}] response pump failed`,
-            { cause },
-          ));
+          finish(undefined, { cause }, true);
         }
       };
 

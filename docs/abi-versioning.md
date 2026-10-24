@@ -1674,20 +1674,35 @@ added before anything shipped under the number:
   address, and a null `ifa_addr` for an interface without an address. It
   reports no `AF_PACKET` or IPv6 entries, because the kernel models neither
   on these interfaces.
-### ABI 53 persistent overlay compaction storage
+### ABI 53 persistent image storage and bounded admission
 
-The kernel now requires `env.host_overlay_compaction_len`,
-`env.host_overlay_compaction_read`, `env.host_overlay_compaction_write`,
-`env.host_overlay_compaction_flush`, and
-`env.host_overlay_compaction_truncate`. These positioned byte operations
-provide a third simultaneous host storage handle. An indexed journal needs
+The kernel now requires three positioned storage import families:
+`env.host_overlay_*`, `env.host_overlay_target_*`, and
+`env.host_overlay_compaction_*`. Each provides `len`, `read`, `write`,
+`flush`, and `truncate`, with signed-length and negative-errno conventions.
+These fifteen required imports are new relative to ABI 52. They provide
+simultaneous handles for the active journal, checkpoint, and compaction target.
+An indexed journal needs
 the first two handles for its active journal and checkpoint, so it cannot
 copy live blocks to another journal without the third. The imports use the
-same signed-length and negative-errno conventions as the existing overlay
+same signed-length and negative-errno conventions across all three overlay
 storage families. Adding required Wasm imports is incompatible with older
 host adapters, so this is a new ABI epoch even though guest syscall numbers
 and marshalling are unchanged. Programs, packages, and ABI-bound VFS images
 must be rebuilt for ABI 53.
+
+`kernel_push_argv(ptr, len)` now returns an `i32` status instead of `()` so
+bounded argument admission can report allocation failure to the host. Hosts
+must check the result rather than launching with a silently incomplete argument
+list. Existing ABI 52 epoll, KMS cursor, network-readiness and heap-safepoint
+contracts remain present in the ABI 53 snapshot.
+
+`kernel_rootfs_export_container_cancel() -> ()` releases an unfinished native
+container-export plan. This additive control export is also batched into the
+unreleased ABI 53 snapshot; it does not alter guest syscall marshalling.
+New hosts require it before starting an export and return `ENOSYS` when an
+older kernel lacks it, rather than retaining a failed export plan or inventing
+an EOF read to discard one. Existing hosts can still use the new kernel.
 
 Within ABI 53, `sync()` and `syncfs(fd)` no longer acknowledge a persistent
 rootfs journal without flushing it. `syncfs` also validates its descriptor and
@@ -1733,6 +1748,55 @@ Structural changes (recorded in the snapshot):
 Semantic changes: none visible to programs. A timed-out wait keeps waiting on
 the same request, so syscall results, blocking behaviour, signals and errno
 values are unchanged.
+
+`kernel_rootfs_persistence_recovery_is_pristine() -> u32` is also included
+in this epoch. After an enable-persistence call returns `ENOMEM`, the host
+reads it immediately within the same kernel entry: `1` means that attempt
+did not publish namespace, allocation-statistic or FIFO changes. Only that
+qualified refusal may trigger a one-time bounded journal conversion and
+retry in the same kernel. Rust clears the marker before publication, on
+reset and when refusing an already active mount. It is not a general
+rollback guarantee or a durable recovery token; a post-publication resource
+failure requires a fresh machine boot. Guest syscall marshalling and the
+serialized journal/index formats are unchanged by this export.
+
+Journal-state admission adds
+`kernel_rootfs_set_journal_state_budget_bytes(u32) -> i32`,
+`kernel_rootfs_journal_state_used_bytes() -> u32`, and
+`kernel_rootfs_journal_state_memory_pressure() -> u32` in this epoch too.
+Both hosts configure the smaller of 32 MiB and one eighth of the kernel
+ceiling before loading the root image. The declared state allowance includes
+a 256 KiB writeback reserve; limits that cannot contain that reserve are
+rejected. Usage includes both ordinary and reserve-funded nodes. Rust owns
+the pressure decision used by boot and live compaction, not the host's byte
+transport. The journal/index formats and guest syscall marshalling remain
+unchanged. Cache/scratch accounting and measured whole-process bounds are
+separate acceptance requirements, not implied by these scalars.
+
+Shared I/O admission adds `kernel_rootfs_set_io_budget_bytes(u32) -> i32`,
+`kernel_rootfs_io_used_bytes() -> u32` and
+`kernel_rootfs_io_limit_bytes() -> u32` under the same unreleased ABI 51.
+
+The demand-verified base loader is another additive export in this epoch:
+`kernel_rootfs_load_persistent_image(length_lo, length_hi, digest0, digest1,
+digest2, digest3, digest4, digest5, digest6, digest7, data_pages, index_pages)`.
+All arguments are 32-bit scalars; the digest words encode the expected
+32-byte header identity in little-endian order. No host-staged pointer or
+additional kernel host import is required. The image header, not the host,
+selects CRC32C or SHA-256 checking. For this mounted mode, existing journal
+enable exports take the physical envelope length and bind the journal to the
+validated envelope identity without a whole-base hash pass. Their plain-VFSI
+behavior is unchanged. Hosts explicitly requesting checked images must refuse
+a kernel lacking this export rather than retrying through plain-image load.
+Both host peers configure min(32 MiB, kernel ceiling/8) before image loading,
+independently from namespace and journal-state quotas. This allowance includes
+a fixed 2 MiB writeback-scratch slice; a limit that cannot contain that slice
+is rejected, as is a reduction below currently owned ordinary credit. Usage
+and limit include both slices. These scalars describe the covered Rust cache
+and transaction/verification-buffer allocations, not all kernel memory, host
+memory or process RSS. Remaining compaction/recovery/snapshot/FIFO/transport
+admission and measured memory acceptance are still required. Guest syscall
+marshalling and serialized storage formats are unchanged.
 
 ## The snapshot
 

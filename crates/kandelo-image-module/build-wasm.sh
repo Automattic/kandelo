@@ -14,8 +14,8 @@
 # from a recipe to bytes, so this module owns its memory and the builder hands
 # it bytes rather than pointers into somebody else's address space.
 #
-# The positioned variant deliberately imports one synchronous image-byte
-# reader so it can compose from an OPFS image larger than its Wasm memory.
+# The positioned variant imports a synchronous image-byte reader and five
+# token-bound target byte operations for checked streaming image construction.
 # Its separate artifact keeps the default writer's zero-import contract.
 #
 # Usage:
@@ -119,12 +119,19 @@ verify_positioned_import() {
 const fs = require("node:fs");
 const module = new WebAssembly.Module(fs.readFileSync(process.argv[2]));
 const imports = WebAssembly.Module.imports(module);
-if (imports.length !== 1 || imports[0].module !== "env" ||
-    imports[0].name !== "host_image_read" || imports[0].kind !== "function") {
+const expected = ["host_image_read", "host_image_target_size", "host_image_target_read",
+  "host_image_target_write", "host_image_target_truncate", "host_image_target_flush"].sort();
+if (imports.length !== expected.length || imports.some((item) => item.module !== "env" || item.kind !== "function") ||
+    imports.map((item) => item.name).sort().some((name, index) => name !== expected[index])) {
   throw new Error(`positioned image module has unexpected imports: ${JSON.stringify(imports)}`);
 }
 if (!WebAssembly.Module.exports(module).some((item) => item.name === "sm_load_image_positioned")) {
   throw new Error("positioned image module lacks sm_load_image_positioned");
+}
+for (const name of ["sm_load_persistent_image", "sm_persistent_image_begin", "sm_persistent_image_push",
+  "sm_persistent_image_finish", "sm_persistent_image_check_step", "sm_persistent_image_identity_word",
+  "sm_persistent_image_cancel", "sm_persistent_image_inspect", "sm_export_image_length"]) {
+  if (!WebAssembly.Module.exports(module).some((item) => item.name === name)) throw new Error(`positioned image module lacks ${name}`);
 }
 NODE
 }

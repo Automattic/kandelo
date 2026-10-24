@@ -3,6 +3,7 @@ import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-s
 import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
 import { assertVfsFileRange } from "./vfs/file-range";
+import { validateStorageMemoryUsage, type StorageMemoryUsage } from "./vfs/storage-memory-budget";
 import type { VfsChangeEvent } from "./vfs/types";
 import { isStagedRootfsImageIntegrity } from "./vfs/staged-rootfs-image";
 import type { OwnedJobRead } from "./owned-jobs";
@@ -19,6 +20,7 @@ import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 import type { WasmModuleCacheStats } from "./wasm-module-cache";
 import { FramebufferRegistry } from "./framebuffer/registry";
 import { createDestroyProgressFanout } from "./destroy-progress-fanout";
+import type { StagedRootfsImageProgress } from "./vfs/staged-rootfs-image";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type {
   HostDiagnostic,
@@ -46,24 +48,28 @@ import {
   clampProcessMaxPages,
   DESKTOP_MEMORY_PROFILE,
   detectRuntimeMemoryProfile,
+  selectKernelMaxPages,
+  selectRootfsMetadataBytes,
+  selectVfsFileReadBytes,
   type RuntimeMemoryProfile,
 } from "./runtime-memory-profile";
 import {
   snapshotClosedLazyAssets,
   type ClosedLazyAsset,
 } from "./vfs/closed-lazy-assets";
-import { awaitGracefulKernelRealmDestroyOutcome } from "./kernel-realm-destroy";
+import { awaitGracefulKernelRealmDestroyOutcome, PERSISTENT_KERNEL_REALM_DESTROY_TIMEOUT_MS } from "./kernel-realm-destroy";
 import {
   acquireBrowserPersistenceComputerLease,
   claimBrowserPersistenceComputerLease,
   type BrowserPersistenceComputerLease,
 } from "./browser-persistence-computer-lease";
-import { browserPersistenceJournalLockName } from "./browser-persistence-journal-lease";
+import { acquireBrowserPersistenceJournalLease, type BrowserPersistenceJournalLease } from "./browser-persistence-journal-lease";
 import type { MountSpec } from "./vfs/default-mounts";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { FILE_MODES } from "./generated/abi";
 import { maybeDecompressImage } from "./vfs/vfs-image-transport";
 import type { OpfsImageIntegrity } from "./vfs/opfs-image-reader";
+import { snapshotPersistentImageReadBinding, type PersistentImageReadBinding } from "./vfs/image-integrity";
 import { NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
 import {
   encodeClipboardText,
@@ -71,6 +77,7 @@ import {
   type GuestClipboardResult,
 } from "./clipboard";
 import { BrowserPcmDriver } from "./audio/browser-pcm-driver";
+import { formatHostErrorDiagnostic } from "./host-diagnostic";
 import type { PcmOutputState } from "./audio/pcm-driver";
 
 // Allow the worker to drain exec retirement (5s), blocked guests (1.5s),
@@ -109,6 +116,9 @@ export interface BrowserKernelOptions {
    * default desktop budget.
    */
   memoryProfile?: string;
+  kernelMaxPages?: number;
+  rootfsMetadataBytes?: number;
+  maxVfsFileReadBytes?: number;
   /**
    * Allocation-admission budget sampled from simultaneously live process
    * address spaces before each new allocation.
@@ -259,6 +269,7 @@ export interface BrowserKernelOpfsImageInitOptions extends Omit<
 > {
   vfsImageFile: FileSystemFileHandle;
   integrity?: OpfsImageIntegrity;
+  persistentImageBinding?: PersistentImageReadBinding;
   lazyUrlMap?: Readonly<Record<string, string>>;
 }
 
@@ -323,46 +334,16 @@ function decodeVfsImage(image: Uint8Array): Uint8Array {
   return whole;
 }
 
-async function acquirePersistentJournalLease(name: string): Promise<() => Promise<void>> {
-  if (typeof navigator === "undefined" || !navigator.locks) {
-    throw new Error("browser rootfs persistence requires Web Locks");
-  }
-  let signalRelease!: () => void;
-  const released = new Promise<void>((resolve) => { signalRelease = resolve; });
-  let signalAcquired!: () => void;
-  let signalFailed!: (error: unknown) => void;
-  const acquired = new Promise<void>((resolve, reject) => {
-    signalAcquired = resolve;
-    signalFailed = reject;
-  });
-  const holding = navigator.locks.request(
-    browserPersistenceJournalLockName(name),
-    { mode: "exclusive", ifAvailable: true },
-    async (lock) => {
-      if (lock === null) throw new Error("browser rootfs persistence journal is already open");
-      signalAcquired();
-      await released;
-    },
-  );
-  void holding.catch(signalFailed);
-  await acquired;
-  let didRelease = false;
-  return async () => {
-    if (!didRelease) {
-      didRelease = true;
-      signalRelease();
-    }
-    await holding;
-  };
-}
-
 export class BrowserKernel {
   private kernelWorkerHandle!: Worker;
   private workerStarted = false;
+  private shuttingDown = false;
   private workerStarting = false;
+  private rejectedPersistentInitializationWorker: Worker | null = null;
   private persistentJournalQuiescenceUnproven = false;
   private persistenceShutdownFailure: string | null = null;
-  private releasePersistentJournalLease: (() => Promise<void>) | null = null;
+  private releasePersistentJournalLease: BrowserPersistenceJournalLease | null = null;
+  private retainPersistentJournalLeaseForHandoff = false;
   private releasePersistentComputerLease: (() => Promise<void>) | null = null;
   private initialized = false;
   private maxPages: number;
@@ -408,17 +389,19 @@ export class BrowserKernel {
   private pendingPtyOutputFailure: Error | undefined;
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
   private destroyProgress = createDestroyProgressFanout();
+  private rootfsExportProgress = new Map<number, (progress: StagedRootfsImageProgress) => void>();
   private vfsChangeListeners = new Map<string, Set<(event: VfsChangeEvent) => void>>();
   private pcmPort: MessagePort | null = null;
   private pcmDriver: BrowserPcmDriver | null = null;
   private audioActivity = false;
+  private audioClosing = false;
   private audioActivityListeners = new Set<(active: boolean) => void>();
 
   constructor(options: BrowserKernelOptions = {}) {
     // Resolve the reservation budget before anything sizes an address space.
     // On WebKit a declared ceiling is charged whether or not it is used, so
     // this is a real allocation decision, not presentation.
-    this.memoryProfile = detectRuntimeMemoryProfile(
+    const profile = detectRuntimeMemoryProfile(
       typeof navigator === "undefined"
         ? {}
         : {
@@ -427,6 +410,10 @@ export class BrowserKernel {
         },
       options.memoryProfile,
     );
+    this.memoryProfile = options.kernelMaxPages === undefined ? profile : {
+      ...profile,
+      kernelMaxPages: selectKernelMaxPages(options.kernelMaxPages, profile.kernelMaxPages),
+    };
     const clampedPages = clampProcessMaxPages(
       options.maxMemoryPages,
       this.memoryProfile,
@@ -605,6 +592,11 @@ export class BrowserKernel {
   }
 
   async initFromOpfsImage(options: BrowserKernelOpfsImageInitOptions): Promise<void> {
+    const persistentImageBinding = options.persistentImageBinding === undefined
+      ? undefined : snapshotPersistentImageReadBinding(options.persistentImageBinding);
+    if (persistentImageBinding !== undefined && options.integrity !== undefined) {
+      throw new Error("persistent image binding cannot be combined with whole-image integrity metadata");
+    }
     const wasmBytes = options.kernelWasm
       ? options.kernelWasm
       : await fetchDefaultBrowserKernelArtifact("kernelWasm");
@@ -613,6 +605,7 @@ export class BrowserKernel {
       vfsImage: new Uint8Array(),
       opfsImage: options.vfsImageFile,
       opfsImageIntegrity: options.integrity,
+      rootfsPersistentImageBinding: persistentImageBinding,
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
       lazyUrlMap: options.lazyUrlMap,
       closedLazyAssets: options.closedLazyAssets,
@@ -640,6 +633,7 @@ export class BrowserKernel {
     vfsImage: Uint8Array;
     opfsImage?: FileSystemFileHandle;
     opfsImageIntegrity?: OpfsImageIntegrity;
+    rootfsPersistentImageBinding?: PersistentImageReadBinding;
     lazyUrlBase?: string;
     lazyUrlMap?: Readonly<Record<string, string>>;
     closedLazyAssets?: readonly ClosedLazyAsset[];
@@ -662,6 +656,7 @@ export class BrowserKernel {
       );
     }
     this.kernelFatalError = null;
+    this.shuttingDown = false;
     const closedLazyAssets = opts.closedLazyAssets === undefined
       ? undefined
       : snapshotClosedLazyAssets(opts.closedLazyAssets);
@@ -670,7 +665,7 @@ export class BrowserKernel {
       throw new Error("browser rootfs persistence modes are mutually exclusive");
     }
     const journalName = opts.experimentalFixedPersistenceName ?? opts.experimentalResizablePersistenceName;
-    let releaseJournalLease: (() => Promise<void>) | null = null;
+    let releaseJournalLease: BrowserPersistenceJournalLease | null = null;
     let releaseComputerLease: (() => Promise<void>) | null = null;
     this.workerStarting = true;
     try {
@@ -691,7 +686,7 @@ export class BrowserKernel {
       }
       releaseJournalLease = journalName === undefined
         ? null
-        : await acquirePersistentJournalLease(journalName);
+        : await acquireBrowserPersistenceJournalLease(journalName);
       this.kernelWorkerHandle = new Worker(kernelWorkerEntryUrl, { type: "module" });
     } catch (error) {
       this.workerStarting = false;
@@ -707,14 +702,19 @@ export class BrowserKernel {
     this.releasePersistentComputerLease = releaseComputerLease;
     this.persistenceShutdownFailure = null;
     this.workerStarted = true;
+    this.persistentJournalQuiescenceUnproven = journalName !== undefined;
+    this.rejectedPersistentInitializationWorker = null;
+    const worker = this.kernelWorkerHandle;
 
-    this.kernelWorkerHandle.onmessage = (e: MessageEvent) => {
+    worker.onmessage = (e: MessageEvent) => {
+      if (!this.workerStarted || this.kernelWorkerHandle !== worker) return;
       this.handleWorkerMessage(e.data as KernelToMainMessage);
     };
-    this.kernelWorkerHandle.onerror = (e: ErrorEvent) => {
+    worker.onerror = (e: ErrorEvent) => {
+      if (!this.workerStarted || this.kernelWorkerHandle !== worker) return;
       const err = new Error(`Kernel worker error: ${e.message}`);
       this.failKernelHost(err);
-      this.kernelWorkerHandle.terminate();
+      worker.terminate();
       this.options.onHttpBridgePendingRequests?.(0);
       const diagnostic: HostDiagnostic = {
         pid: 0,
@@ -737,9 +737,9 @@ export class BrowserKernel {
       await new Promise<void>((resolve, reject) => {
         let settled = false;
         const cleanup = () => {
-          this.kernelWorkerHandle.removeEventListener("message", readyHandler);
-          this.kernelWorkerHandle.removeEventListener("error", errorHandler);
-          this.kernelWorkerHandle.removeEventListener("messageerror", messageErrorHandler);
+          worker.removeEventListener("message", readyHandler);
+          worker.removeEventListener("error", errorHandler);
+          worker.removeEventListener("messageerror", messageErrorHandler);
         };
         const settleResolve = () => {
           if (settled) return;
@@ -754,9 +754,17 @@ export class BrowserKernel {
           reject(err);
         };
         const readyHandler = (e: MessageEvent) => {
+          if (settled) return;
+          if (!this.workerStarted || this.kernelWorkerHandle !== worker) {
+            settleReject(new Error("Kernel initialization lost its worker"));
+            return;
+          }
           if (e.data?.type === "ready") {
             settleResolve();
           } else if (e.data?.type === "init_error") {
+            if (this.releasePersistentJournalLease !== null) {
+              this.rejectedPersistentInitializationWorker = worker;
+            }
             settleReject(e.data.recovery === "no-valid-overlay-generation"
               ? new NoValidOverlayGenerationError()
               : new Error(`Kernel worker init failed: ${e.data.error}`));
@@ -770,9 +778,9 @@ export class BrowserKernel {
         const messageErrorHandler = () => {
           settleReject(new Error("Kernel worker failed to deserialize an init message"));
         };
-        this.kernelWorkerHandle.addEventListener("message", readyHandler);
-        this.kernelWorkerHandle.addEventListener("error", errorHandler);
-        this.kernelWorkerHandle.addEventListener("messageerror", messageErrorHandler);
+        worker.addEventListener("message", readyHandler);
+        worker.addEventListener("error", errorHandler);
+        worker.addEventListener("messageerror", messageErrorHandler);
 
         // Slice so the caller's ArrayBuffer isn't detached (allows restart)
         const transferBuf = opts.kernelWasmBytes.slice(0);
@@ -783,6 +791,7 @@ export class BrowserKernel {
           vfsImage: opts.vfsImage,
           opfsImage: opts.opfsImage,
           opfsImageIntegrity: opts.opfsImageIntegrity,
+          rootfsPersistentImageBinding: opts.rootfsPersistentImageBinding,
           lazyUrlBase: opts.lazyUrlBase,
           lazyUrlMap: opts.lazyUrlMap === undefined
             ? undefined
@@ -799,6 +808,8 @@ export class BrowserKernel {
             maxWorkers: this.options.maxWorkers,
             maxMemoryPages: this.maxPages,
             kernelMaxPages: this.memoryProfile.kernelMaxPages,
+            rootfsMetadataBytes: selectRootfsMetadataBytes(this.options.rootfsMetadataBytes, this.memoryProfile.kernelMaxPages),
+            maxVfsFileReadBytes: selectVfsFileReadBytes(this.options.maxVfsFileReadBytes, this.memoryProfile.kernelMaxPages),
             memoryProfileId: this.memoryProfile.id,
             maxProcessMemoryBytes:
               this.options.maxProcessMemoryBytes
@@ -827,7 +838,7 @@ export class BrowserKernel {
         if (this.options.remoteNetwork?.role === "joiner") {
           transfer.push(this.options.remoteNetwork.peer.port as MessagePort);
         }
-        this.kernelWorkerHandle.postMessage(initMsg, transfer);
+        worker.postMessage(initMsg, transfer);
       });
     } catch (error) {
       // WHY: an init_error leaves no usable kernel, but the browser worker
@@ -837,7 +848,6 @@ export class BrowserKernel {
       throw error;
     }
     this.initialized = true;
-    this.persistentJournalQuiescenceUnproven = journalName !== undefined;
   }
 
   /**
@@ -1047,6 +1057,13 @@ export class BrowserKernel {
       throw new Error(`kernel worker returned an invalid memory-page count: ${String(result)}`);
     }
     return result;
+  }
+
+  async getStorageMetadataMemoryUsage(): Promise<StorageMemoryUsage> {
+    const requestId = this.nextRequestId++;
+    return validateStorageMemoryUsage(await this.request(requestId, {
+      type: "get_storage_metadata_memory_usage", requestId,
+    }));
   }
 
   /**
@@ -1511,6 +1528,7 @@ export class BrowserKernel {
 
   /** Preload the machine-level PCM sink without attempting user activation. */
   async prepareAudio(): Promise<void> {
+    if (this.audioClosing) throw new Error("PCM output is closed");
     const port = this.pcmPort;
     if (!port) throw new Error("PCM transport is not available");
     const driver = this.pcmDriver ??= new BrowserPcmDriver({
@@ -1523,9 +1541,23 @@ export class BrowserKernel {
   }
 
   /** Resume audible PCM output. Call directly from a trusted user gesture. */
-  async resumeAudio(): Promise<void> {
-    await this.prepareAudio();
-    await this.pcmDriver!.resume();
+  resumeAudio(): Promise<void> {
+    try {
+      if (this.audioClosing) throw new Error("PCM output is closed");
+      const port = this.pcmPort;
+      if (!port) throw new Error("PCM transport is not available");
+      const driver = this.pcmDriver ??= new BrowserPcmDriver({
+        workletUrl: this.options.audioWorkletUrl ?? defaultPcmWorkletUrl,
+        onFatalError: () => {
+          if (this.workerStarted) this.sendToKernel({ type: "pcm_output_failed" });
+        },
+      });
+      driver.prepareContext();
+      if (!this.getAudioActivity()) return driver.resume();
+      const preparation = driver.prepareRemote(port);
+      const resumed = driver.resume();
+      return Promise.all([preparation, resumed]).then(() => {});
+    } catch (error) { return Promise.reject(error); }
   }
 
   /** Suspend the browser audio clock without discarding queued PCM. */
@@ -1539,7 +1571,7 @@ export class BrowserKernel {
   }
 
   onAudioStateChange(listener: (state: PcmOutputState) => void): () => void {
-    if (!this.pcmDriver && this.pcmPort) {
+    if (!this.pcmDriver && this.pcmPort && !this.audioClosing) {
       this.pcmDriver = new BrowserPcmDriver({
         workletUrl: this.options.audioWorkletUrl ?? defaultPcmWorkletUrl,
         onFatalError: () => {
@@ -1834,20 +1866,29 @@ export class BrowserKernel {
   }
 
   /** Write a quiescent snapshot to an empty OPFS staging file without buffering it in JS. */
-  async exportRootfsImageToFile(file: FileSystemFileHandle): Promise<OpfsImageIntegrity> {
+  async exportRootfsImageToFile(
+    file: FileSystemFileHandle,
+    onProgress?: (progress: StagedRootfsImageProgress) => void,
+  ): Promise<OpfsImageIntegrity> {
     if (!this.initialized) {
       throw new Error("rootfs export requires an initialized kernel");
     }
     const requestId = this.nextRequestId++;
-    const result = await this.request(requestId, {
-      type: "export_rootfs_image_to_file",
-      requestId,
-      file,
-    });
-    if (!isStagedRootfsImageIntegrity(result)) {
-      throw new Error("kernel worker returned invalid rootfs image integrity");
+    if (onProgress) this.rootfsExportProgress.set(requestId, onProgress);
+    try {
+      const result = await this.request(requestId, {
+        type: "export_rootfs_image_to_file",
+        requestId,
+        file,
+        reportProgress: onProgress !== undefined,
+      });
+      if (!isStagedRootfsImageIntegrity(result)) {
+        throw new Error("kernel worker returned invalid rootfs image integrity");
+      }
+      return result;
+    } finally {
+      this.rootfsExportProgress.delete(requestId);
     }
-    return result;
   }
 
   /** Transfer a connected peer's byte bridge to the forwarding kernel worker. */
@@ -1900,14 +1941,39 @@ export class BrowserKernel {
     return this.persistenceShutdownFailure;
   }
 
+  reservePersistentJournalLeaseForHandoff(): void {
+    if (!this.workerStarted || !this.initialized || this.releasePersistentJournalLease === null ||
+      this.retainPersistentJournalLeaseForHandoff) {
+      throw new Error("browser rootfs persistence journal is not available for handoff");
+    }
+    this.retainPersistentJournalLeaseForHandoff = true;
+  }
+
+  takePersistentJournalLeaseAfterDestroy(): BrowserPersistenceJournalLease {
+    if (!this.retainPersistentJournalLeaseForHandoff || this.workerStarted ||
+      this.persistentJournalQuiescenceUnproven || this.persistenceShutdownFailure !== null ||
+      this.releasePersistentJournalLease === null) {
+      throw new Error("browser rootfs persistence journal handoff is not quiescent");
+    }
+    const lease = this.releasePersistentJournalLease;
+    this.releasePersistentJournalLease = null;
+    this.retainPersistentJournalLeaseForHandoff = false;
+    return lease;
+  }
+
   /** Destroy the kernel and release all resources. */
   async destroy(): Promise<void> {
+    this.audioClosing = true;
     // Remove input-source DOM listeners regardless of worker state.
     this.attachedInputSource?.stop();
     this.attachedInputSource = null;
     if (!this.workerStarted) return;
+    this.shuttingDown = true;
+    const rejectedPersistentInitialization =
+      this.rejectedPersistentInitializationWorker === this.kernelWorkerHandle;
+    this.rejectedPersistentInitializationWorker = null;
     let gracefulDetachFailure: string | undefined;
-    if (this.initialized && this.kernelFatalError === null) {
+    if ((this.initialized || rejectedPersistentInitialization) && this.kernelFatalError === null) {
       const requestId = this.nextRequestId++;
       const outcome = await awaitGracefulKernelRealmDestroyOutcome(
         () =>
@@ -1915,7 +1981,8 @@ export class BrowserKernel {
             type: "destroy",
             requestId,
           }),
-        DESTROY_REQUEST_TIMEOUT_MS,
+        this.releasePersistentJournalLease !== null
+          ? PERSISTENT_KERNEL_REALM_DESTROY_TIMEOUT_MS : DESTROY_REQUEST_TIMEOUT_MS,
       );
       gracefulDetachFailure = outcome.failure;
       if (outcome.result !== null) {
@@ -1924,8 +1991,11 @@ export class BrowserKernel {
       }
     }
     this.initialized = false;
-    await this.pcmDriver?.settleOutputPipeline().catch(() => {});
-    await this.pcmDriver?.close().catch(() => {});
+    await this.pcmDriver?.close().catch(error => {
+      const audioFailure = `PCM output shutdown failed: ${formatHostErrorDiagnostic(error)}`;
+      gracefulDetachFailure = gracefulDetachFailure === undefined
+        ? audioFailure : `${gracefulDetachFailure}; ${audioFailure}`;
+    });
     this.pcmDriver = null;
     this.pcmPort?.close();
     this.pcmPort = null;
@@ -1943,24 +2013,27 @@ export class BrowserKernel {
         (error instanceof Error ? error.message : String(error));
     }
     this.workerStarted = realmTerminationFailure !== undefined;
+    const destroyedError = new Error("kernel host destroyed");
+    for (const { reject } of this.pendingRequests.values()) reject(destroyedError);
+    this.pendingRequests.clear();
     if (!this.workerStarted && !this.persistentJournalQuiescenceUnproven) {
       const releaseJournalLease = this.releasePersistentJournalLease;
       const releaseComputerLease = this.releasePersistentComputerLease;
-      this.releasePersistentJournalLease = null;
+      if (!this.retainPersistentJournalLeaseForHandoff) this.releasePersistentJournalLease = null;
       this.releasePersistentComputerLease = null;
       try {
-        await releaseJournalLease?.();
+        if (!this.retainPersistentJournalLeaseForHandoff) await releaseJournalLease?.();
       } finally {
         await releaseComputerLease?.();
       }
     }
     this.exitResolvers.clear();
     this.unclaimedExitStatuses.clear();
-    this.pendingRequests.clear();
     this.ptyOutputCallbacks.clear();
     this.options.onHttpBridgePendingRequests?.(0);
     this.lazyDownloadListeners.clear();
     this.destroyProgress.clear();
+    this.rootfsExportProgress.clear();
     this.vfsChangeListeners.clear();
     // Release display storage even if callers retain the destroyed host.
     this.fbBindingGenerationByPid.clear();
@@ -1982,7 +2055,7 @@ export class BrowserKernel {
           }` +
           (realmTerminationFailure
             ? ""
-            : "; terminated the worker realm as the final release fallback"),
+            : "; terminated the kernel worker realm"),
       };
       console.warn(diagnostic.message);
       try {
@@ -2054,6 +2127,10 @@ export class BrowserKernel {
         reject(this.kernelFatalError);
         return;
       }
+      if (!this.workerStarted || (this.shuttingDown && msg.type !== "destroy")) {
+        reject(new Error("kernel host is not accepting requests"));
+        return;
+      }
       this.pendingRequests.set(requestId, { resolve, reject });
       this.sendToKernel(msg, transfer);
     });
@@ -2065,6 +2142,7 @@ export class BrowserKernel {
     for (const { reject } of this.pendingRequests.values()) reject(error);
     this.pendingRequests.clear();
     for (const { reject } of this.exitResolvers.values()) reject(error);
+    this.rootfsExportProgress.clear();
     this.exitResolvers.clear();
   }
 
@@ -2088,25 +2166,20 @@ export class BrowserKernel {
     switch (msg.type) {
       case "ready": {
         if (msg.pcmPort) {
+          this.audioClosing = false;
           this.pcmPort = msg.pcmPort;
-          if (
-            typeof globalThis.AudioContext === "function" ||
-            "webkitAudioContext" in globalThis
-          ) {
-            void this.prepareAudio().catch((error) => {
-              this.options.onHostDiagnostic?.({
-                pid: 0,
-                source: "browser PCM output",
-                message: error instanceof Error ? error.message : String(error),
-              });
-            });
-          }
         }
         break;
       }
       case "audio_activity":
         this.audioActivity = true;
         this.emitAudioActivity();
+        if (!this.audioClosing && (typeof globalThis.AudioContext === "function" || "webkitAudioContext" in globalThis)) {
+          void this.prepareAudio().catch(error => {
+            this.options.onHostDiagnostic?.({ pid: 0, source: "browser PCM output",
+              message: error instanceof Error ? error.message : String(error) });
+          });
+        }
         break;
       case "init_error":
         // The temporary boot listener resolves or rejects initialization. The
@@ -2304,6 +2377,9 @@ export class BrowserKernel {
         break;
       case "destroy_progress":
         this.destroyProgress.emit(msg.event);
+        break;
+      case "rootfs_image_export_progress":
+        try { this.rootfsExportProgress.get(msg.requestId)?.(msg.progress); } catch {}
         break;
       case "vfs_change":
         this.emitVfsChange(msg.event);

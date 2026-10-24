@@ -50,6 +50,11 @@ export interface GetKernelMemoryPagesRequestMessage {
   requestId: number;
 }
 
+export interface GetStorageMetadataMemoryUsageRequestMessage {
+  type: "get_storage_metadata_memory_usage";
+  requestId: number;
+}
+
 /** Read the kernel worker's compiled-module cache counters. */
 export interface GetWasmModuleCacheStatsRequestMessage {
   type: "get_wasm_module_cache_stats";

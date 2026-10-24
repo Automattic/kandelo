@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { HostFileSystem } from "../src/vfs/host-fs";
 import { OpfsOverlayStorageFile, OverlayStorageFile, OverlayStorageUnexpectedEofError } from "../src/vfs/overlay-storage";
 import type { FileSystemBackend } from "../src/vfs/types";
+import { StorageCloseLedger } from "../src/storage-close-ledger";
 
 describe("OverlayStorageFile", () => {
   it("reopens a flushed journal through the Node backend", () => {
@@ -104,6 +105,67 @@ describe("OverlayStorageFile", () => {
 });
 
 describe("OpfsOverlayStorageFile", () => {
+  it("opens an already-selected OPFS image without resolving a namespace or taking publication ownership", async () => {
+    const ledger = new StorageCloseLedger();
+    const close = vi.fn();
+    const file = { createSyncAccessHandle: vi.fn(async () => ({ getSize: () => 17, close })) };
+    const storage = await OpfsOverlayStorageFile.openHandle(file as unknown as FileSystemFileHandle, ledger);
+    expect(storage.len()).toBe(17);
+    expect(file.createSyncAccessHandle).toHaveBeenCalledOnce();
+    ledger.closeAll();
+    storage.close();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("does not close a refused image registration twice when the ledger already owns cleanup", async () => {
+    const ledger = new StorageCloseLedger();
+    await ledger.beginRetirement();
+    const close = vi.fn();
+    const file = { createSyncAccessHandle: async () => ({ getSize: () => 0, close }) };
+    await expect(OpfsOverlayStorageFile.openHandle(file as unknown as FileSystemFileHandle, ledger)).rejects.toThrow(/retiring/);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it.each(["journal", "index", "seal"] as const)("retains provisional %s handles before generation publication", async (suffix) => {
+    const ledger = new StorageCloseLedger();
+    const close = vi.fn();
+    const file = { createSyncAccessHandle: async () => ({ getSize: () => 0, close }) };
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => ({
+      getDirectoryHandle: async () => ({ getFileHandle: async () => file }),
+    }) } });
+    try {
+      const storage = await OpfsOverlayStorageFile.openFile("provisional", "g0", suffix, true, ledger);
+      expect(storage).not.toBeNull();
+      ledger.closeAll();
+      storage!.close();
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([false, true])("retains native close failures even if a provisional wrapper is forgotten (retiring=%s)", async (retiring) => {
+    const ledger = new StorageCloseLedger();
+    if (retiring) await ledger.beginRetirement();
+    const close = vi.fn(() => { throw new Error("native journal close refused"); });
+    const file = { createSyncAccessHandle: async () => ({ getSize: () => 0, close }) };
+    vi.stubGlobal("navigator", { storage: { getDirectory: async () => ({
+      getDirectoryHandle: async () => ({ getFileHandle: async () => file }),
+    }) } });
+    try {
+      if (retiring) {
+        await expect(OpfsOverlayStorageFile.openFile("provisional", "g0", "journal", true, ledger)).rejects.toThrow();
+      } else {
+        const storage = await OpfsOverlayStorageFile.openFile("provisional", "g0", "journal", true, ledger);
+        expect(() => storage!.close()).toThrow("native journal close refused");
+      }
+      expect(() => ledger.closeAll()).toThrow(AggregateError);
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it.each(["root", "directory", "file", "access handle"] as const)(
     "preserves ENOSPC when OPFS %s opening exhausts quota",
     async (stage) => {

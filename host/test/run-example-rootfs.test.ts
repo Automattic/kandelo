@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { zstdCompressSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { tryResolveBinaries } from "../src/binary-resolver";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
-import { preparePersistentRunExampleRootfs, prepareRunExampleRootfs } from "../../examples/run-example-rootfs";
+import { prepareCheckedPersistentRunExampleRootfs, preparePersistentRunExampleRootfs, prepareRunExampleRootfs } from "../../examples/run-example-rootfs";
+import { NodeImageReader } from "../src/vfs/node-image-reader";
 
 vi.mock("../src/binary-resolver", () => ({ tryResolveBinaries: vi.fn() }));
 const directories: string[] = [];
@@ -30,6 +32,29 @@ async function imageWithSources(sources: Array<{ url: string; size: number }>) {
 }
 
 describe("isolated runner rootfs transport", () => {
+  it.each(["crc32c", "sha256"] as const)("builds a %s checked conformance base with the real Rust writer", async policy => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-runner-checked-image-"));
+    directories.push(directory);
+    const fixture = join(directory, "fixture");
+    mkdirSync(fixture);
+    writeFileSync(join(fixture, "state"), "fixture state");
+    const modulePath = new URL("../../local-binaries/kandelo_image_module_positioned32.wasm", import.meta.url);
+    vi.mocked(tryResolveBinaries).mockReturnValue([fileURLToPath(modulePath)]);
+    const base = await imageWithSources([]);
+    const saved = await prepareCheckedPersistentRunExampleRootfs(base, fixture, join(directory, "base.img"), policy);
+    const reader = NodeImageReader.open(saved.rootfsImageFile, undefined, true);
+    const filesystem = KandeloImageFs.createFromPositionedImage(new Uint8Array(readFileSync(modulePath)), reader.length,
+      (offset, destination) => reader.readAt(offset, destination), saved.rootfsPersistentImageBinding);
+    try {
+      expect(new TextDecoder().decode(filesystem.readFile("/run/kandelo-run/state"))).toBe("fixture state");
+      expect(saved.rootfsPersistentImageBinding.dataCachePages).toBe(2);
+      expect(saved.rootfsPersistentImageBinding.indexCachePages).toBe(2);
+      const logicalLength = KandeloImageFs.inspectPersistentImage(new Uint8Array(readFileSync(modulePath)), reader.length,
+        (offset, destination) => reader.readAt(offset, destination), saved.rootfsPersistentImageBinding.identitySha256, policy);
+      expect(logicalLength).toBeLessThan(reader.length);
+    } finally { filesystem.reset(); reader.close(); }
+  });
+
   it("seeds a persistent fixture into the image and rejects host symlinks", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-runner-persistent-image-"));
     directories.push(directory);

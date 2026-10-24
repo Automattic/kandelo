@@ -550,7 +550,8 @@ const InternalsPopup: React.FC<{
         </button>
       ))}
       {onCheckpoint && (
-        <button type="button" className="kinternals-checkpoint" onClick={onCheckpoint}>
+        <button type="button" className="kinternals-checkpoint" onClick={onCheckpoint}
+          title="Optional full-image snapshot and reboot. Normal filesystem persistence does not require this.">
           Checkpoint image
         </button>
       )}

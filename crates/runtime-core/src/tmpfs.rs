@@ -643,6 +643,11 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
         }
         state.get_mut(inode_idx).ok_or(Errno::ENOENT)?.open_count += 1;
         Ok(inode_to_file_handle(inode_idx))
+    }).map(|handle| {
+        if flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY {
+            crate::kernel_file_mapping::notify_truncated(crate::ofd::FileType::Regular, handle, 0);
+        }
+        handle
     })
 }
 
@@ -774,6 +779,12 @@ fn grow_file_bytes(data: &mut Vec<u8>, new_len: usize, err: Errno) -> Result<(),
 /// Truncate an open tmpfs regular file to `length`, zero-filling any growth.
 /// The caller enforces access mode and RLIMIT_FSIZE.
 pub fn truncate_handle(handle: i64, length: i64) -> Result<(), Errno> {
+    truncate_handle_inner(handle, length)?;
+    crate::kernel_file_mapping::notify_truncated(crate::ofd::FileType::Regular, handle, length as u64);
+    Ok(())
+}
+
+fn truncate_handle_inner(handle: i64, length: i64) -> Result<(), Errno> {
     let idx = file_handle_to_inode(handle)?;
     let new_len = usize::try_from(length).map_err(|_| Errno::EINVAL)?;
     TMPFS.with(|state| {

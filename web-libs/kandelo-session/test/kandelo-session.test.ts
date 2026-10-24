@@ -28,6 +28,7 @@ import {
   SHELL_DERIVED_VFS_MIN_FREE_INODES,
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
   assertVfsImageFitsProfile,
+  assertVfsImageCapacityMetadata,
 } from "../src/vfs-capacity";
 import {
   decodeBootDescriptor,
@@ -2818,6 +2819,23 @@ describe("experimental terminal session image configuration", () => {
 });
 
 describe("Kandelo VFS consumer capacity contract", () => {
+  it("distinguishes container overhead from the filesystem ceiling", () => {
+    const capacity = { byteLength: 286740, maxByteLength: 286720 };
+    expect(() => assertVfsImageCapacityMetadata(capacity, 286720, "full.vfs")).not.toThrow();
+    expect(() => assertVfsImageFitsProfile(capacity, 512 * 1024, 286720, "full.vfs")).not.toThrow();
+    expect(() => assertVfsImageFitsProfile(capacity, 286720, 286720, "full.vfs"))
+      .toThrow("decoded image bytes");
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid container and filesystem sizes %s independently", (size) => {
+      expect(() => assertVfsImageCapacityMetadata({ byteLength: size, maxByteLength: 4096 }, undefined, "bad.vfs"))
+        .toThrow("invalid filesystem capacity");
+      expect(() => assertVfsImageCapacityMetadata({ byteLength: 4096, maxByteLength: size }, undefined, "bad.vfs"))
+        .toThrow("invalid filesystem capacity");
+    },
+  );
+
   it("gives shell-derived products independent runtime capacity", () => {
     expect(MAIN_SHELL_VFS_PROFILE_MAX_BYTES).toBe(512 * 1024 * 1024);
     expect(SHELL_DERIVED_VFS_PROFILE_MAX_BYTES).toBe(768 * 1024 * 1024);

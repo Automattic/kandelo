@@ -38,10 +38,11 @@
 //! (`rootfs::export_image_read`) layers on top of this without redesigning the
 //! layout pass, and without a new host import.
 
-use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
+use crate::io_buffer::{IoBuffer, IO_MEMORY};
+use crate::prepared_map::{MapMemory, PreparedEntry, PreparedMap};
 
 use crate::kandelo_image_fs::{
     BlockSource, DIRECT_BLOCKS, DIRENT_HEADER, INLINE_SYMLINK_SIZE, INO_ATIME, INO_CTIME,
@@ -52,6 +53,7 @@ use crate::kandelo_image_fs::{
 };
 
 const BLOCK_SIZE: usize = 4096;
+const DEFERRED_FINISH_HEADROOM: usize = 256 * 1024;
 
 // Superblock field offsets. The reader needs only two of these; the writer
 // fills every one the vendor's `mkfs` fills, so the images agree field for
@@ -105,6 +107,80 @@ const INO_DATA_SEQUENCE: usize = 120;
 /// size the TypeScript writer switches to an in-process index whose free-slot
 /// policy differs from the linear scan (see [`KandeloImageWriter::dir_add_entry`]).
 const DIR_INDEX_MIN_SIZE: u64 = 64 * 1024;
+
+#[derive(Clone, Copy, Default)]
+struct DirectorySpace {
+    remaining: u16,
+    unoccupied: bool,
+}
+
+pub(crate) struct DirectorySizeCounter {
+    size: u64,
+    spaces: [DirectorySpace; DIR_INDEX_MIN_SIZE as usize / BLOCK_SIZE],
+    space_count: usize,
+    indexed: bool,
+}
+
+impl DirectorySizeCounter {
+    pub(crate) fn new() -> Self {
+        Self {
+            size: (align4(DIRENT_HEADER + 1) + align4(DIRENT_HEADER + 2)) as u64,
+            spaces: [DirectorySpace::default(); DIR_INDEX_MIN_SIZE as usize / BLOCK_SIZE],
+            space_count: 0,
+            indexed: false,
+        }
+    }
+
+    pub(crate) fn push(&mut self, name_len: usize) -> Result<(), Errno> {
+        if name_len == 0 || name_len > 255 {
+            return Err(Errno::ENAMETOOLONG);
+        }
+        let needed = align4(DIRENT_HEADER + name_len) as u16;
+        if !self.indexed && self.size >= DIR_INDEX_MIN_SIZE {
+            let mut retained = 0;
+            for index in 0..self.space_count {
+                if self.spaces[index].unoccupied {
+                    self.spaces[retained] = self.spaces[index];
+                    retained += 1;
+                }
+            }
+            self.space_count = retained;
+            self.indexed = true;
+        }
+        let available = &self.spaces[..self.space_count];
+        let chosen = if self.indexed {
+            available.iter().rposition(|space| space.remaining >= needed)
+        } else {
+            available.iter().position(|space| space.remaining >= needed)
+        };
+        if let Some(index) = chosen {
+            if self.indexed {
+                self.spaces.copy_within(index + 1..self.space_count, index);
+                self.space_count -= 1;
+            } else {
+                self.spaces[index].remaining -= needed;
+                self.spaces[index].unoccupied = false;
+            }
+            return Ok(());
+        }
+        let offset = (self.size % BLOCK_SIZE as u64) as usize;
+        if offset != 0 && offset + usize::from(needed) > BLOCK_SIZE {
+            let gap = BLOCK_SIZE - offset;
+            if !self.indexed && gap >= DIRENT_HEADER {
+                let space = self.spaces.get_mut(self.space_count).ok_or(Errno::EIO)?;
+                *space = DirectorySpace { remaining: gap as u16, unoccupied: true };
+                self.space_count += 1;
+            }
+            self.size = self.size.checked_add(gap as u64).ok_or(Errno::EFBIG)?;
+        }
+        self.size = self.size.checked_add(u64::from(needed)).ok_or(Errno::EFBIG)?;
+        Ok(())
+    }
+
+    pub(crate) fn size(&self) -> u64 {
+        self.size
+    }
+}
 
 const GROW_CHUNK_BLOCKS: u32 = 256;
 
@@ -176,8 +252,114 @@ struct ContentExtent {
     last_len: u32,
 }
 
-fn content_block(extents: &BTreeMap<u32, ContentExtent>, phys: u32) -> Option<(u64, u64, u32)> {
-    let (&start, extent) = extents.range(..=phys).next_back()?;
+#[derive(Clone)]
+struct PointerRun {
+    start: u16,
+    len: u16,
+    first: u32,
+    stride: u32,
+}
+
+enum PointerPage {
+    Runs(IoBuffer<PointerRun>),
+    Bytes(IoBuffer<u8>),
+}
+
+impl Default for PointerPage {
+    fn default() -> Self { Self::Runs(IoBuffer::new()) }
+}
+
+impl MapMemory for PointerPage {
+    fn heap_bytes(&self) -> Result<usize, Errno> { Ok(0) }
+}
+
+impl MapMemory for ContentExtent {
+    fn heap_bytes(&self) -> Result<usize, Errno> { Ok(0) }
+}
+
+fn prepare_image_entry<Value: MapMemory>(key: u32, value: Value) -> Result<PreparedEntry<u32, Value>, Errno> {
+    let reservation = PreparedEntry::<u32, Value>::reserve_in(&IO_MEMORY, 0)?;
+    PreparedEntry::new_reserved_in(&IO_MEMORY, key, value, reservation)
+}
+
+impl PointerPage {
+    fn get(&self, slot: u16) -> u32 {
+        match self {
+            Self::Bytes(bytes) => r32(bytes, usize::from(slot) * 4),
+            Self::Runs(runs) => {
+                let Some(index) = runs.partition_point(|run| run.start <= slot).checked_sub(1)
+                    else { return 0 };
+                let run = &runs[index];
+                if slot - run.start >= run.len { return 0; }
+                run.first + u32::from(slot - run.start) * run.stride
+            }
+        }
+    }
+
+    fn set(&mut self, slot: u16, value: u32) -> Result<(), Errno> {
+        if u32::from(slot) >= PTRS_PER_BLOCK || value == 0 || self.get(slot) != 0 {
+            return Err(Errno::EIO);
+        }
+        if let Self::Runs(runs) = self {
+            if let Some(last) = runs.last_mut() {
+                if slot == last.start + last.len {
+                    let stride = if last.len == 1 { value.checked_sub(last.first) }
+                        else { Some(last.stride) };
+                    if let Some(stride) = stride {
+                        if stride.checked_mul(u32::from(last.len))
+                            .and_then(|offset| last.first.checked_add(offset)) == Some(value)
+                        {
+                            last.stride = stride;
+                            last.len += 1;
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            if runs.len() < 64 && runs.last().is_none_or(|last| slot >= last.start + last.len) {
+                runs.try_push(PointerRun { start: slot, len: 1, first: value, stride: 0 })?;
+                return Ok(());
+            }
+            let mut bytes = allocate_image_bytes(BLOCK_SIZE)?;
+            for run in runs.iter() {
+                for index in 0..run.len {
+                    w32(&mut bytes, usize::from(run.start + index) * 4,
+                        run.first + u32::from(index) * run.stride);
+                }
+            }
+            *self = Self::Bytes(bytes);
+        }
+        let Self::Bytes(bytes) = self else { return Err(Errno::EIO) };
+        w32(bytes, usize::from(slot) * 4, value);
+        Ok(())
+    }
+
+    fn read_at(&self, offset: usize, destination: &mut [u8]) {
+        if let Self::Bytes(bytes) = self {
+            destination.copy_from_slice(&bytes[offset..offset + destination.len()]);
+            return;
+        }
+        let mut done = 0;
+        while done < destination.len() {
+            let position = offset + done;
+            let word = self.get((position / 4) as u16).to_le_bytes();
+            let within = position % 4;
+            let count = core::cmp::min(4 - within, destination.len() - done);
+            destination[done..done + count].copy_from_slice(&word[within..within + count]);
+            done += count;
+        }
+    }
+
+    fn resident_bytes(&self) -> usize {
+        match self {
+            Self::Runs(runs) => runs.capacity() * core::mem::size_of::<PointerRun>(),
+            Self::Bytes(bytes) => bytes.capacity(),
+        }
+    }
+}
+
+fn content_block(extents: &PreparedMap<u32, ContentExtent>, phys: u32) -> Option<(u64, u64, u32)> {
+    let (&start, extent) = extents.at_or_before(&phys)?;
     let block = phys - start;
     if block >= extent.blocks {
         return None;
@@ -251,30 +433,65 @@ pub struct KandeloImageWriter {
     free_blocks: u32,
     free_inodes: u32,
     generation: u32,
-    block_alloc_hint: u32,
-    inode_alloc_hint: u32,
     growable_to_blocks: u32,
     now_ms: u64,
 
-    inode_bitmap: Vec<u8>,
-    block_bitmap: Vec<u8>,
-    inode_table: Vec<u8>,
-    blocks: BTreeMap<u32, Vec<u8>>,
-    content_extents: BTreeMap<u32, ContentExtent>,
-    dir_indexes: BTreeMap<u32, Vec<FreeSlot>>,
+    inode_table: crate::io_buffer::IoBuffer<u8>,
+    blocks: PreparedMap<u32, IoBuffer<u8>>,
+    pointer_blocks: PreparedMap<u32, PointerPage>,
+    content_extents: PreparedMap<u32, ContentExtent>,
+    dir_indexes: PreparedMap<u32, IoBuffer<FreeSlot>>,
     /// Whether this writer states its deferred files in-body even when there
     /// are none. Set by [`Self::declare_deferred_section`]; see
     /// [`Self::emit_deferred_section`] for why it is not the default.
     declares_deferred: bool,
-    deferred: Vec<crate::sdef::DeferredRecord>,
+    deferred: PreparedMap<u32, crate::sdef::DeferredRecord>,
+    deferred_field_bytes: usize,
+    deferred_finish_credit: Option<crate::metadata_budget::MetadataReservation<'static>>,
     /// Archives the deferred records may point at. Declared separately from the
     /// records because an archive's LENGTH is per-archive, not per-member, and
     /// because a record naming an undeclared archive must be refusable.
-    deferred_archives: Vec<crate::sdef::DeferredArchive>,
+    deferred_archives: PreparedMap<u32, crate::sdef::DeferredArchive>,
+}
+
+impl MapMemory for crate::sdef::DeferredRecord {
+    fn heap_bytes(&self) -> Result<usize, Errno> {
+        self.source_path.capacity().checked_add(self.uri.capacity())
+            .and_then(|bytes| bytes.checked_add(self.payload.capacity())).ok_or(Errno::ENOMEM)
+    }
+}
+
+impl MapMemory for crate::sdef::DeferredArchive {
+    fn heap_bytes(&self) -> Result<usize, Errno> {
+        self.uri.capacity().checked_add(self.payload.capacity()).ok_or(Errno::ENOMEM)
+    }
+}
+
+fn copy_deferred_fields<const COUNT: usize>(
+    sources: [&[u8]; COUNT],
+    reservation: &crate::metadata_budget::MetadataReservation<'static>,
+) -> Result<[Vec<u8>; COUNT], Errno> {
+    let length = sources.iter().try_fold(0usize, |length, source|
+        length.checked_add(<[u8]>::len(source)).ok_or(Errno::ENOMEM))?;
+    if !core::ptr::eq(reservation.budget(), &IO_MEMORY)
+        || reservation.bytes() < length.checked_mul(2).ok_or(Errno::ENOMEM)? { return Err(Errno::EIO); }
+    let mut copies = core::array::from_fn(|_| Vec::new());
+    for (source, copy) in sources.iter().zip(copies.iter_mut()) {
+        *copy = crate::sdef::copy_metadata_bytes(source)?;
+    }
+    Ok(copies)
 }
 
 fn w32(buf: &mut [u8], off: usize, value: u32) {
     buf[off..off + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn allocate_image_bytes(length: usize) -> Result<crate::io_buffer::IoBuffer<u8>, Errno> {
+    crate::io_buffer::IoBuffer::allocate(length, false, |bytes| {
+        bytes.try_reserve_exact(length).map_err(|_| Errno::ENOMEM)?;
+        bytes.resize(length, 0);
+        Ok(())
+    })
 }
 
 fn w64(buf: &mut [u8], off: usize, value: u64) {
@@ -303,6 +520,13 @@ impl KandeloImageWriter {
     /// Format an empty filesystem. Mirrors the vendor's `SharedFS.mkfs`,
     /// including its "grow the buffer if the metadata does not fit" step.
     pub fn mkfs(config: KandeloImageConfig) -> Result<KandeloImageWriter, Errno> {
+        Self::mkfs_with_inode_capacity(config, None)
+    }
+
+    pub fn mkfs_with_inode_capacity(
+        config: KandeloImageConfig,
+        inode_capacity: Option<u32>,
+    ) -> Result<KandeloImageWriter, Errno> {
         let size_bytes = config.size_bytes;
         if size_bytes % BLOCK_SIZE as u64 != 0 {
             // The vendor tolerates a ragged tail because a SharedArrayBuffer
@@ -320,11 +544,11 @@ impl KandeloImageWriter {
             Some(max) => u32::try_from(max / BLOCK_SIZE as u64).map_err(|_| Errno::EINVAL)?,
             None => total_blocks.checked_mul(4).ok_or(Errno::EINVAL)?,
         };
-        let mut total_inodes = max_blocks / 4;
-        if total_inodes < 32 {
-            total_inodes = 32;
-        }
-        total_inodes = total_inodes.div_ceil(INODES_PER_BLOCK) * INODES_PER_BLOCK;
+        let total_inodes = match inode_capacity {
+            Some(capacity) if capacity <= ROOT_INO => return Err(Errno::EINVAL),
+            Some(capacity) => capacity,
+            None => core::cmp::max(32, max_blocks / 4).div_ceil(INODES_PER_BLOCK) * INODES_PER_BLOCK,
+        };
 
         let inode_bitmap_blocks = total_inodes.div_ceil(BLOCK_SIZE as u32 * 8);
         let block_bitmap_blocks = max_blocks.div_ceil(BLOCK_SIZE as u32 * 8);
@@ -368,26 +592,19 @@ impl KandeloImageWriter {
             free_blocks: total_blocks - data_start,
             free_inodes: total_inodes - 2,
             generation: 0,
-            block_alloc_hint: data_start,
-            inode_alloc_hint: 2,
             growable_to_blocks: growable_to_blocks.max(total_blocks),
             now_ms: config.now_ms,
-            inode_bitmap: vec![0u8; BLOCK_SIZE],
-            block_bitmap: vec![0u8; BLOCK_SIZE],
-            inode_table: vec![0u8; BLOCK_SIZE],
-            blocks: BTreeMap::new(),
-            content_extents: BTreeMap::new(),
-            dir_indexes: BTreeMap::new(),
+            inode_table: allocate_image_bytes(BLOCK_SIZE)?,
+            blocks: PreparedMap::default(),
+            pointer_blocks: PreparedMap::default(),
+            content_extents: PreparedMap::default(),
+            dir_indexes: PreparedMap::default(),
             declares_deferred: false,
-            deferred: Vec::new(),
-            deferred_archives: Vec::new(),
+            deferred: PreparedMap::default(),
+            deferred_field_bytes: 0,
+            deferred_finish_credit: None,
+            deferred_archives: PreparedMap::default(),
         };
-
-        for b in 0..data_start {
-            set_bit(&mut writer.block_bitmap, b);
-        }
-        set_bit(&mut writer.inode_bitmap, 0);
-        set_bit(&mut writer.inode_bitmap, 1);
 
         // Root inode: an empty directory holding only "." and "..".
         let root_off = writer.inode_offset(ROOT_INO);
@@ -397,7 +614,7 @@ impl KandeloImageWriter {
 
         let root_block = writer.block_alloc()?;
         w32(&mut writer.inode_table, root_off + INO_DIRECT, root_block);
-        writer.write_dot_entries(root_block, ROOT_INO, ROOT_INO);
+        writer.write_dot_entries(root_block, ROOT_INO, ROOT_INO)?;
         let dot_size = (align4(DIRENT_HEADER + 1) + align4(DIRENT_HEADER + 2)) as u64;
         w64(&mut writer.inode_table, root_off + INO_SIZE, dot_size);
 
@@ -439,60 +656,68 @@ impl KandeloImageWriter {
 
     /// Materialize `phys` so metadata can be written into it. A block that is
     /// already a content reference is a writer bug, not a runtime condition.
-    fn block_mut(&mut self, phys: u32) -> Result<&mut Vec<u8>, Errno> {
-        if phys < self.data_start || phys >= self.total_blocks {
+    fn block_mut(&mut self, phys: u32, required: usize) -> Result<&mut IoBuffer<u8>, Errno> {
+        if phys < self.data_start || phys >= self.total_blocks || required == 0 || required > BLOCK_SIZE {
             return Err(Errno::EIO);
         }
-        if content_block(&self.content_extents, phys).is_some() {
+        if content_block(&self.content_extents, phys).is_some() || self.pointer_blocks.contains_key(&phys) {
             return Err(Errno::EIO);
         }
-        Ok(self
-            .blocks
-            .entry(phys)
-            .or_insert_with(|| vec![0u8; BLOCK_SIZE]))
+        if !self.blocks.contains_key(&phys) {
+            let block = allocate_image_bytes(required)?;
+            let entry = prepare_image_entry(phys, block)?;
+            self.blocks.insert_prepared(entry);
+        }
+        let block = self.blocks.get_mut(&phys).ok_or(Errno::EIO)?;
+        if required > block.capacity() {
+            let capacity = block.capacity().saturating_mul(2).max(required).min(BLOCK_SIZE);
+            block.reserve_with(capacity, |bytes| bytes.try_reserve_exact(capacity).map_err(|_| Errno::ENOMEM))?;
+        }
+        if required > block.len() { block.resize(required, 0); }
+        Ok(block)
     }
 
     fn block_r16(&self, phys: u32, off: usize) -> u16 {
-        self.blocks.get(&phys).map_or(0, |block| r16(block, off))
+        self.blocks.get(&phys).filter(|block| off + 2 <= block.len()).map_or(0, |block| r16(block, off))
     }
 
     fn block_r32(&self, phys: u32, off: usize) -> u32 {
-        self.blocks.get(&phys).map_or(0, |block| r32(block, off))
+        self.blocks.get(&phys).filter(|block| off + 4 <= block.len()).map_or(0, |block| r32(block, off))
+    }
+
+    fn pointer_r32(&self, phys: u32, off: usize) -> u32 {
+        self.pointer_blocks.get(&phys).map_or(0, |page| page.get((off / 4) as u16))
+    }
+
+    fn pointer_w32(&mut self, phys: u32, off: usize, value: u32) -> Result<(), Errno> {
+        if phys < self.data_start || phys >= self.total_blocks || off % 4 != 0 || off >= BLOCK_SIZE
+            || self.blocks.contains_key(&phys) || content_block(&self.content_extents, phys).is_some()
+        {
+            return Err(Errno::EIO);
+        }
+        if let Some(page) = self.pointer_blocks.get_mut(&phys) {
+            return page.set((off / 4) as u16, value);
+        }
+        let mut page = PointerPage::default();
+        page.set((off / 4) as u16, value)?;
+        let entry = prepare_image_entry(phys, page)?;
+        self.pointer_blocks.insert_prepared(entry);
+        Ok(())
     }
 
     // ── Allocators ───────────────────────────────────────────────────
 
-    /// First-fit from a rotating hint, exactly as the vendor allocates. The
-    /// writer never frees, so in practice the hint always names the answer —
-    /// but the scan is kept because the hint is the vendor's and a divergence
-    /// here would be invisible until an image compared byte-for-byte.
+    /// The writer never frees: the vendor's first-fit rotating hint always
+    /// allocates the next block in a contiguous prefix. Its end is exactly
+    /// total minus free blocks, so bitmap bytes can be generated on export
+    /// without retaining a bit for every allocation.
     fn block_alloc_no_grow(&mut self) -> Option<u32> {
-        let allocatable = self.total_blocks - self.data_start;
-        if allocatable == 0 {
+        if self.free_blocks == 0 {
             return None;
         }
-        let start = if self.block_alloc_hint >= self.data_start
-            && self.block_alloc_hint < self.total_blocks
-        {
-            self.block_alloc_hint
-        } else {
-            self.data_start
-        };
-        for checked in 0..allocatable {
-            let block_no = self.data_start + ((start - self.data_start + checked) % allocatable);
-            if get_bit(&self.block_bitmap, block_no) {
-                continue;
-            }
-            set_bit(&mut self.block_bitmap, block_no);
-            self.free_blocks -= 1;
-            self.block_alloc_hint = if block_no + 1 < self.total_blocks {
-                block_no + 1
-            } else {
-                self.data_start
-            };
-            return Some(block_no);
-        }
-        None
+        let block = self.total_blocks - self.free_blocks;
+        self.free_blocks -= 1;
+        Some(block)
     }
 
     /// The vendor's `grow()`: one chunk at a time up to `max_blocks`, bumping
@@ -518,7 +743,6 @@ impl KandeloImageWriter {
         self.total_blocks = new_total;
         self.free_blocks += grow_by;
         self.generation += 1;
-        self.block_alloc_hint = current;
         Ok(())
     }
 
@@ -530,35 +754,41 @@ impl KandeloImageWriter {
         self.block_alloc_no_grow().ok_or(Errno::ENOSPC)
     }
 
-    fn inode_alloc(&mut self) -> Result<u32, Errno> {
-        let allocatable = self.total_inodes - 2;
-        let start = if self.inode_alloc_hint >= 2 && self.inode_alloc_hint < self.total_inodes {
-            self.inode_alloc_hint
-        } else {
-            2
-        };
-        for checked in 0..allocatable {
-            let ino = 2 + ((start - 2 + checked) % allocatable);
-            if get_bit(&self.inode_bitmap, ino) {
-                continue;
-            }
-            set_bit(&mut self.inode_bitmap, ino);
-            self.free_inodes -= 1;
-            self.inode_alloc_hint = if ino + 1 < self.total_inodes { ino + 1 } else { 2 };
-            let off = self.inode_offset(ino);
-            if off + INODE_SIZE > self.inode_table.len() {
-                self.inode_table
-                    .resize((off / BLOCK_SIZE + 1) * BLOCK_SIZE, 0);
-            }
-            self.inode_table[off..off + INODE_SIZE].fill(0);
-            // The vendor's `nextInodeGeneration` is `Atomics.add(gen, 1) + 1`:
-            // the counter and the new inode's generation end up equal.
-            self.generation += 1;
-            let generation = self.generation;
-            w64(&mut self.inode_table, off + INO_GENERATION, generation as u64);
-            return Ok(ino);
+    fn prepare_inode_slot(&mut self, reserve_section: bool) -> Result<(), Errno> {
+        let trailing = u32::from(reserve_section);
+        if self.free_inodes <= trailing {
+            return Err(Errno::ENOSPC);
         }
-        Err(Errno::ENOSPC)
+        let ino = (self.total_inodes - self.free_inodes).checked_add(trailing).ok_or(Errno::ENOMEM)?;
+        let length = (self.inode_offset(ino) / BLOCK_SIZE + 1) * BLOCK_SIZE;
+        if length > self.inode_table.capacity() {
+            let capacity = self.inode_table.capacity().checked_mul(2)
+                .ok_or(Errno::ENOMEM)?.max(length);
+            let reserve = |table: &mut IoBuffer<u8>, capacity| table.reserve_with(capacity, |bytes| {
+                bytes.try_reserve_exact(capacity).map_err(|_| Errno::ENOMEM)
+            });
+            match reserve(&mut self.inode_table, capacity) {
+                Err(Errno::ENOMEM) if capacity > length => reserve(&mut self.inode_table, length)?,
+                result => result?,
+            }
+        }
+        Ok(())
+    }
+
+    fn inode_alloc(&mut self) -> Result<u32, Errno> {
+        self.prepare_inode_slot(self.declares_deferred || !self.deferred.is_empty())?;
+        let ino = self.total_inodes - self.free_inodes;
+        let off = self.inode_offset(ino);
+        let length = (off / BLOCK_SIZE + 1) * BLOCK_SIZE;
+        if length > self.inode_table.len() { self.inode_table.resize(length, 0); }
+        self.free_inodes -= 1;
+        self.inode_table[off..off + INODE_SIZE].fill(0);
+        // The vendor's `nextInodeGeneration` is `Atomics.add(gen, 1) + 1`:
+        // the counter and the new inode's generation end up equal.
+        self.generation += 1;
+        let generation = self.generation;
+        w64(&mut self.inode_table, off + INO_GENERATION, generation as u64);
+        Ok(ino)
     }
 
     // ── Block map ────────────────────────────────────────────────────
@@ -590,7 +820,7 @@ impl KandeloImageWriter {
                 w32(&mut self.inode_table, ino_off + INO_INDIRECT, ind);
             }
             let ptr_off = file_block as usize * 4;
-            let ptr = self.block_r32(ind, ptr_off);
+            let ptr = self.pointer_r32(ind, ptr_off);
             if ptr != 0 {
                 return Ok(ptr);
             }
@@ -598,7 +828,7 @@ impl KandeloImageWriter {
                 return Ok(0);
             }
             let blk = self.block_alloc()?;
-            w32(self.block_mut(ind)?, ptr_off, blk);
+            self.pointer_w32(ind, ptr_off, blk)?;
             return Ok(blk);
         }
 
@@ -616,16 +846,16 @@ impl KandeloImageWriter {
                 w32(&mut self.inode_table, ino_off + INO_DOUBLE_INDIRECT, dind);
             }
             let l1_off = idx1 as usize * 4;
-            let mut l1 = self.block_r32(dind, l1_off);
+            let mut l1 = self.pointer_r32(dind, l1_off);
             if l1 == 0 {
                 if !allocate {
                     return Ok(0);
                 }
                 l1 = self.block_alloc()?;
-                w32(self.block_mut(dind)?, l1_off, l1);
+                self.pointer_w32(dind, l1_off, l1)?;
             }
             let l2_off = idx2 as usize * 4;
-            let ptr = self.block_r32(l1, l2_off);
+            let ptr = self.pointer_r32(l1, l2_off);
             if ptr != 0 {
                 return Ok(ptr);
             }
@@ -633,7 +863,7 @@ impl KandeloImageWriter {
                 return Ok(0);
             }
             let blk = self.block_alloc()?;
-            w32(self.block_mut(l1)?, l2_off, blk);
+            self.pointer_w32(l1, l2_off, blk)?;
             return Ok(blk);
         }
 
@@ -653,43 +883,37 @@ impl KandeloImageWriter {
             triple = self.block_alloc()?;
             w32(&mut self.inode_table, ino_off + INO_TRIPLE_INDIRECT, triple);
         }
-        let mut middle = self.block_r32(triple, top_index);
+        let mut middle = self.pointer_r32(triple, top_index);
         if middle == 0 {
             if !allocate {
                 return Ok(0);
             }
             middle = self.block_alloc()?;
-            w32(self.block_mut(triple)?, top_index, middle);
+            self.pointer_w32(triple, top_index, middle)?;
         }
-        let mut leaf = self.block_r32(middle, middle_index);
+        let mut leaf = self.pointer_r32(middle, middle_index);
         if leaf == 0 {
             if !allocate {
                 return Ok(0);
             }
             leaf = self.block_alloc()?;
-            w32(self.block_mut(middle)?, middle_index, leaf);
+            self.pointer_w32(middle, middle_index, leaf)?;
         }
-        let pointer = self.block_r32(leaf, leaf_index);
+        let pointer = self.pointer_r32(leaf, leaf_index);
         if pointer != 0 || !allocate {
             return Ok(pointer);
         }
         let block = self.block_alloc()?;
-        w32(self.block_mut(leaf)?, leaf_index, block);
+        self.pointer_w32(leaf, leaf_index, block)?;
         Ok(block)
     }
 
     // ── Directory records ────────────────────────────────────────────
 
-    fn write_dot_entries(&mut self, phys: u32, self_ino: u32, parent_ino: u32) {
-        if content_block(&self.content_extents, phys).is_some() {
-            return;
-        }
+    fn write_dot_entries(&mut self, phys: u32, self_ino: u32, parent_ino: u32) -> Result<(), Errno> {
         let dot = align4(DIRENT_HEADER + 1);
         let dotdot = align4(DIRENT_HEADER + 2);
-        let block = self
-            .blocks
-            .entry(phys)
-            .or_insert_with(|| vec![0u8; BLOCK_SIZE]);
+        let block = self.block_mut(phys, dot + dotdot)?;
         w32(block, 0, self_ino);
         w16(block, 4, dot as u16);
         w16(block, 6, 1);
@@ -699,6 +923,7 @@ impl KandeloImageWriter {
         w16(block, dot + 6, 2);
         block[dot + DIRENT_HEADER] = b'.';
         block[dot + DIRENT_HEADER + 1] = b'.';
+        Ok(())
     }
 
     fn touch_directory_mutation(&mut self, dir_ino: u32) {
@@ -717,7 +942,7 @@ impl KandeloImageWriter {
         rec_len: Option<u16>,
         name: &[u8],
     ) -> Result<(), Errno> {
-        let block = self.block_mut(phys)?;
+        let block = self.block_mut(phys, off + DIRENT_HEADER + name.len())?;
         w32(block, off, child_ino);
         if let Some(rec_len) = rec_len {
             w16(block, off + 4, rec_len);
@@ -793,16 +1018,17 @@ impl KandeloImageWriter {
             // Reserve the destination block BEFORE editing the old tail, so a
             // failed allocation leaves the directory byte-for-byte unchanged.
             reserved_phys = self.inode_block_map(dir_ino, file_block + 1, true)?;
+            self.block_mut(reserved_phys, DIRENT_HEADER + name.len())?;
 
             if gap >= DIRENT_HEADER {
-                let block = self.block_mut(pad_phys)?;
+                let block = self.block_mut(pad_phys, block_off + DIRENT_HEADER)?;
                 w32(block, block_off, 0);
                 w16(block, block_off + 4, gap as u16);
                 w16(block, block_off + 6, 0);
             } else {
                 let (phys, off) = last_ent.ok_or(Errno::EIO)?;
                 let new_rec_len = self.block_r16(phys, off + 4) + gap as u16;
-                w16(self.block_mut(phys)?, off + 4, new_rec_len);
+                w16(self.block_mut(phys, off + 6)?, off + 4, new_rec_len);
             }
             append_pos = (file_block as u64 + 1) * BLOCK_SIZE as u64;
             file_block += 1;
@@ -845,7 +1071,7 @@ impl KandeloImageWriter {
         if dir_size < DIR_INDEX_MIN_SIZE {
             return Ok(false);
         }
-        let mut free = Vec::new();
+        let mut free = IoBuffer::new();
         let mut pos = 0u64;
         while pos < dir_size {
             let file_block = (pos / BLOCK_SIZE as u64) as u32;
@@ -871,17 +1097,18 @@ impl KandeloImageWriter {
                     return Err(Errno::EIO);
                 }
                 if ent_ino == 0 && rec_len >= DIRENT_HEADER {
-                    free.push(FreeSlot {
+                    free.try_push(FreeSlot {
                         phys,
                         off: off as u16,
                         rec_len: rec_len as u16,
-                    });
+                    })?;
                 }
                 off += rec_len;
             }
             pos += remain as u64;
         }
-        self.dir_indexes.insert(dir_ino, free);
+        let entry = prepare_image_entry(dir_ino, free)?;
+        self.dir_indexes.insert_prepared(entry);
         Ok(true)
     }
 
@@ -897,25 +1124,22 @@ impl KandeloImageWriter {
         let needed = align4(DIRENT_HEADER + name.len());
         loop {
             let candidate = {
-                let free = self.dir_indexes.get_mut(&dir_ino).ok_or(Errno::EIO)?;
-                let mut found = None;
-                for i in (0..free.len()).rev() {
-                    if (free[i].rec_len as usize) < needed {
-                        continue;
-                    }
-                    found = Some(free.remove(i));
-                    break;
-                }
-                found
+                let free = self.dir_indexes.get(&dir_ino).ok_or(Errno::EIO)?;
+                free.iter().enumerate().rev()
+                    .find(|(_, slot)| usize::from(slot.rec_len) >= needed)
+                    .map(|(index, slot)| (index, *slot))
             };
-            let Some(slot) = candidate else {
+            let Some((index, slot)) = candidate else {
                 return Ok(false);
             };
             if self.block_r32(slot.phys, slot.off as usize) != 0
                 || self.block_r16(slot.phys, slot.off as usize + 4) != slot.rec_len
             {
+                self.dir_indexes.get_mut(&dir_ino).ok_or(Errno::EIO)?.remove(index);
                 continue;
             }
+            self.block_mut(slot.phys, usize::from(slot.off) + DIRENT_HEADER + name.len())?;
+            self.dir_indexes.get_mut(&dir_ino).ok_or(Errno::EIO)?.remove(index);
             self.write_dir_record(slot.phys, slot.off as usize, child_ino, None, name)?;
             self.touch_directory_mutation(dir_ino);
             return Ok(true);
@@ -969,8 +1193,9 @@ impl KandeloImageWriter {
                 let actual_len = align4(DIRENT_HEADER + ent_name_len);
                 let slack = rec_len - actual_len;
                 if ent_ino != 0 && slack >= needed {
-                    w16(self.block_mut(phys)?, off + 4, actual_len as u16);
                     let new_off = off + actual_len;
+                    self.block_mut(phys, new_off + DIRENT_HEADER + name.len())?;
+                    w16(self.block_mut(phys, off + 6)?, off + 4, actual_len as u16);
                     self.write_dir_record(phys, new_off, child_ino, Some(slack as u16), name)?;
                     self.touch_directory_mutation(dir_ino);
                     return Ok(());
@@ -1036,7 +1261,7 @@ impl KandeloImageWriter {
     }
 
     fn require_inode(&self, ino: u32) -> Result<(), Errno> {
-        if ino == 0 || ino >= self.total_inodes || !get_bit(&self.inode_bitmap, ino) {
+        if ino == 0 || ino >= self.total_inodes - self.free_inodes {
             return Err(Errno::ENOENT);
         }
         Ok(())
@@ -1072,7 +1297,7 @@ impl KandeloImageWriter {
 
         let blk = self.block_alloc()?;
         self.ino_w32(ino, INO_DIRECT, blk);
-        self.write_dot_entries(blk, ino, parent);
+        self.write_dot_entries(blk, ino, parent)?;
         let dot_size = (align4(DIRENT_HEADER + 1) + align4(DIRENT_HEADER + 2)) as u64;
         self.ino_w64(ino, INO_SIZE, dot_size);
 
@@ -1115,6 +1340,52 @@ impl KandeloImageWriter {
         self.dir_add_entry(parent, name, ino)?;
         self.truncate_to_zero(ino);
         self.write_content(ino, content)?;
+        Ok(ino)
+    }
+
+    pub fn create_sparse_file_from(
+        &mut self,
+        parent: u32,
+        name: &[u8],
+        mode: u32,
+        id: u64,
+        len: u64,
+        mut allocations: impl FnMut(&mut dyn FnMut(u32) -> Result<(), Errno>) -> Result<(), Errno>,
+    ) -> Result<u32, Errno> {
+        if len > MAX_FILE_BYTES {
+            return Err(Errno::EFBIG);
+        }
+        let mut previous = None;
+        allocations(&mut |block| {
+            if u64::from(block) >= len.div_ceil(BLOCK_SIZE as u64)
+                || previous.is_some_and(|previous| previous >= block)
+            {
+                return Err(Errno::EINVAL);
+            }
+            previous = Some(block);
+            Ok(())
+        })?;
+        let ino = self.create_file(parent, name, mode, Content::Bytes(&[]))?;
+        if len == 0 {
+            return Ok(ino);
+        }
+        if len > V1_MAX_FILE_BYTES {
+            self.version = KANDELO_IMAGE_EXTENDED_VERSION;
+        }
+        previous = None;
+        allocations(&mut |block| {
+            if u64::from(block) >= len.div_ceil(BLOCK_SIZE as u64)
+                || previous.is_some_and(|previous| previous >= block)
+            {
+                return Err(Errno::EINVAL);
+            }
+            previous = Some(block);
+            let pos = u64::from(block) * BLOCK_SIZE as u64;
+            let chunk = core::cmp::min(BLOCK_SIZE as u64, len - pos) as usize;
+            let phys = self.inode_block_map(ino, block, true)?;
+            self.defer_content_block(phys, id, pos, chunk)
+        })?;
+        self.finish_content(ino, len);
         Ok(ino)
     }
 
@@ -1211,21 +1482,24 @@ impl KandeloImageWriter {
             return Err(Errno::EINVAL);
         }
         let digest = crate::sdef::digest_from(digest)?;
-        if self
-            .deferred_archives
-            .iter()
-            .any(|a| a.archive_id == archive_id)
-        {
+        if self.deferred_archives.contains_key(&archive_id) {
             return Err(Errno::EINVAL);
         }
-        self.deferred_archives
-            .push(crate::sdef::DeferredArchive {
+        let fields = uri.len().checked_add(payload.len()).ok_or(Errno::ENOMEM)?;
+        let total_fields = self.reserve_deferred_metadata(false, fields)?;
+        let progress = self.prepare_deferred_finish(self.deferred.len(), self.deferred_archives.len() + 1, total_fields)?;
+        let credit = PreparedEntry::<u32, crate::sdef::DeferredArchive>::reserve_in(&IO_MEMORY, fields)?;
+        let [uri, payload] = copy_deferred_fields([uri, payload], &credit)?;
+        let entry = PreparedEntry::new_reserved_in(&IO_MEMORY, archive_id, crate::sdef::DeferredArchive {
                 archive_id,
                 bytes,
-                uri: uri.to_vec(),
+                uri,
                 digest,
-                payload: payload.to_vec(),
-            });
+                payload,
+            }, credit)?;
+        self.deferred_archives.insert_prepared(entry);
+        self.retain_deferred_finish(progress);
+        self.deferred_field_bytes = total_fields;
         Ok(())
     }
 
@@ -1272,17 +1546,68 @@ impl KandeloImageWriter {
         if (archive_id == 0) != source_path.is_empty() {
             return Err(Errno::EINVAL);
         }
+        let fields = uri.len().checked_add(payload.len())
+            .and_then(|bytes| bytes.checked_add(source_path.len())).ok_or(Errno::ENOMEM)?;
+        let total_fields = self.reserve_deferred_metadata(true, fields)?;
+        let progress = self.prepare_deferred_finish(self.deferred.len() + 1, self.deferred_archives.len(), total_fields)?;
+        let credit = PreparedEntry::<u32, crate::sdef::DeferredRecord>::reserve_in(&IO_MEMORY, fields)?;
+        let [source_path, uri, payload] = copy_deferred_fields([source_path, uri, payload], &credit)?;
+        let mut entry = PreparedEntry::new_reserved_in(&IO_MEMORY, self.deferred.len() as u32,
+            crate::sdef::DeferredRecord {
+                ino: 0,
+                size,
+                archive_id,
+                source_path,
+                uri,
+                digest,
+                payload,
+            }, credit)?;
+        self.prepare_inode_slot(true)?;
         let ino = self.create_file(parent, name, mode, Content::Bytes(b""))?;
-        self.deferred.push(crate::sdef::DeferredRecord {
-            ino,
-            size,
-            archive_id,
-            source_path: source_path.to_vec(),
-            uri: uri.to_vec(),
-            digest,
-            payload: payload.to_vec(),
-        });
+        entry.value_mut().ino = ino;
+        self.deferred.insert_prepared(entry);
+        self.retain_deferred_finish(progress);
+        self.deferred_field_bytes = total_fields;
         Ok(ino)
+    }
+
+    fn prepare_deferred_finish(&self, records: usize, archives: usize, fields: usize)
+        -> Result<crate::metadata_budget::MetadataReservation<'static>, Errno>
+    {
+        let encoded = records.checked_mul(crate::sdef::RECORD_HEADER_SIZE as usize + 3)
+            .and_then(|bytes| archives.checked_mul(crate::sdef::ARCHIVE_ENTRY_SIZE as usize + 3)
+                .and_then(|archive_bytes| bytes.checked_add(archive_bytes)))
+            .and_then(|bytes| bytes.checked_add(fields))
+            .and_then(|bytes| bytes.checked_add(crate::sdef::HEADER_SIZE as usize)).ok_or(Errno::ENOMEM)?;
+        let node_bytes = PreparedEntry::<u32, IoBuffer<u8>>::memory_bytes(0)?;
+        let required = encoded.div_ceil(BLOCK_SIZE).checked_mul(node_bytes)
+            .and_then(|bytes| bytes.checked_add(DEFERRED_FINISH_HEADROOM)).ok_or(Errno::ENOMEM)?;
+        let held = self.deferred_finish_credit.as_ref().map_or(0, |credit| credit.bytes());
+        IO_MEMORY.reserve(required.checked_sub(held).ok_or(Errno::EIO)?)
+    }
+
+    fn retain_deferred_finish(&mut self, credit: crate::metadata_budget::MetadataReservation<'static>) {
+        match &mut self.deferred_finish_credit {
+            Some(held) => held.merge(credit),
+            None => self.deferred_finish_credit = Some(credit),
+        }
+    }
+
+    fn reserve_deferred_metadata(&self, record: bool, fields: usize) -> Result<usize, Errno> {
+        if (record && self.deferred.len() >= crate::sdef::MAX_RECORDS as usize)
+            || (!record && self.deferred_archives.len() >= crate::sdef::MAX_ARCHIVES as usize)
+        {
+            return Err(Errno::EINVAL);
+        }
+        let record_count = self.deferred.len() + usize::from(record);
+        let archive_count = self.deferred_archives.len() + usize::from(!record);
+        let total_fields = self.deferred_field_bytes.checked_add(fields).ok_or(Errno::ENOMEM)?;
+        let charge = record_count.checked_mul(crate::sdef::RECORD_RESIDENT_BYTES)
+            .and_then(|bytes| archive_count.checked_mul(crate::sdef::ARCHIVE_RESIDENT_BYTES)
+                .and_then(|archives| bytes.checked_add(archives)))
+            .and_then(|bytes| bytes.checked_add(total_fields)).ok_or(Errno::ENOMEM)?;
+        if charge > crate::sdef::METADATA_BUDGET_BYTES { return Err(Errno::ENOMEM); }
+        Ok(total_fields)
     }
 
     /// Write the deferred section into an unlinked inode and name it in the
@@ -1315,23 +1640,32 @@ impl KandeloImageWriter {
     /// this. The kernel's own export may; a writer driven by a host that keeps
     /// its lazy manifest in JSON beside the image may not, because for that
     /// image "no section" is the truth and the loader is right to refuse it.
-    pub fn declare_deferred_section(&mut self) {
+    pub fn declare_deferred_section(&mut self) -> Result<(), Errno> {
+        if self.declares_deferred { return Ok(()); }
+        let progress = self.prepare_deferred_finish(self.deferred.len(), self.deferred_archives.len(),
+            self.deferred_field_bytes)?;
+        self.prepare_inode_slot(false)?;
+        self.retain_deferred_finish(progress);
         self.declares_deferred = true;
+        Ok(())
     }
 
     fn emit_deferred_section(&mut self) -> Result<u32, Errno> {
         if self.deferred.is_empty() && !self.declares_deferred {
+            self.deferred_archives.clear();
+            drop(self.deferred_finish_credit.take());
             return Ok(0);
         }
-        // `encode` requires ascending inodes. Allocation already produces them
-        // in that order, so this sort is a belt on braces rather than a fix —
-        // but it means a future caller that creates deferred files out of
-        // order gets a correct image instead of a rejected one.
+        let length = crate::sdef::encoded_len(
+            self.deferred_archives.values(),
+            self.deferred.values(),
+            |id| self.deferred_archives.contains_key(&id),
+        )?;
         let mut records = core::mem::take(&mut self.deferred);
-        records.sort_by_key(|record| record.ino);
         let mut archives = core::mem::take(&mut self.deferred_archives);
-        archives.sort_by_key(|archive| archive.archive_id);
-        let section = crate::sdef::encode(&archives, &records)?;
+        drop(self.deferred_finish_credit.take());
+        let mut buffer = allocate_image_bytes(BLOCK_SIZE)?;
+        self.declares_deferred = false;
 
         let ino = self.inode_alloc()?;
         let now = self.now_ms;
@@ -1347,8 +1681,46 @@ impl KandeloImageWriter {
         self.ino_w64(ino, INO_ATIME, now);
         self.ino_w64(ino, INO_MTIME, now);
         self.ino_w64(ino, INO_CTIME, now);
-        self.write_content(ino, Content::Bytes(&section))?;
+        let mut used = 0;
+        let mut position = 0;
+        let mut emit = |mut bytes: &[u8]| -> Result<(), Errno> {
+            while !bytes.is_empty() {
+                let count = core::cmp::min(bytes.len(), BLOCK_SIZE - used);
+                buffer[used..used + count].copy_from_slice(&bytes[..count]);
+                used += count;
+                bytes = &bytes[count..];
+                if used == BLOCK_SIZE {
+                    self.write_section_block(ino, position, &buffer)?;
+                    position += BLOCK_SIZE as u64;
+                    used = 0;
+                }
+            }
+            Ok(())
+        };
+        crate::sdef::encode_header(archives.len(), records.len(), &mut emit)?;
+        while let Some(key) = archives.iter().next().map(|(&key, _)| key) {
+            let (archive, credit) = archives.remove_entry(&key).ok_or(Errno::EIO)?.into_reserved_value();
+            crate::sdef::encode_archive(&archive, &mut emit)?;
+            drop(archive);
+            drop(credit);
+        }
+        while let Some(key) = records.iter().next().map(|(&key, _)| key) {
+            let (record, credit) = records.remove_entry(&key).ok_or(Errno::EIO)?.into_reserved_value();
+            crate::sdef::encode_record(&record, &mut emit)?;
+            drop(record);
+            drop(credit);
+        }
+        drop(emit);
+        if used != 0 { self.write_section_block(ino, position, &buffer[..used])?; }
+        if position + used as u64 != length as u64 { return Err(Errno::EIO); }
+        self.finish_content(ino, length as u64);
         Ok(ino)
+    }
+
+    fn write_section_block(&mut self, ino: u32, position: u64, bytes: &[u8]) -> Result<(), Errno> {
+        let phys = self.inode_block_map(ino, (position / BLOCK_SIZE as u64) as u32, true)?;
+        self.block_mut(phys, bytes.len())?[..bytes.len()].copy_from_slice(bytes);
+        Ok(())
     }
 
     pub fn symlink(&mut self, parent: u32, name: &[u8], target: &[u8]) -> Result<u32, Errno> {
@@ -1460,7 +1832,7 @@ impl KandeloImageWriter {
                     let phys = self.inode_block_map(ino, file_block, true)?;
                     match &content {
                         Content::Bytes(bytes) => {
-                            let block = self.block_mut(phys)?;
+                            let block = self.block_mut(phys, chunk)?;
                             block[..chunk]
                                 .copy_from_slice(&bytes[pos as usize..pos as usize + chunk]);
                         }
@@ -1473,13 +1845,17 @@ impl KandeloImageWriter {
                 }
             }
         }
+        self.finish_content(ino, len);
+        Ok(())
+    }
+
+    fn finish_content(&mut self, ino: u32, len: u64) {
         self.ino_w64(ino, INO_SIZE, len);
         let now = self.now_ms;
         self.ino_w64(ino, INO_MTIME, now);
         self.ino_w64(ino, INO_CTIME, now);
         let seq = self.ino_r32(ino, INO_DATA_SEQUENCE).wrapping_add(1);
         self.ino_w32(ino, INO_DATA_SEQUENCE, seq);
-        Ok(())
     }
 
     fn defer_content_block(
@@ -1501,7 +1877,7 @@ impl KandeloImageWriter {
             extent.blocks += 1;
             extent.last_len = chunk as u32;
         } else {
-            self.content_extents.insert(
+            let entry = prepare_image_entry(
                 phys,
                 ContentExtent {
                     blocks: 1,
@@ -1509,7 +1885,8 @@ impl KandeloImageWriter {
                     offset: pos,
                     last_len: chunk as u32,
                 },
-            );
+            )?;
+            self.content_extents.insert_prepared(entry);
         }
         Ok(())
     }
@@ -1519,8 +1896,9 @@ impl KandeloImageWriter {
     /// Fallible now, because sealing writes the deferred section. An image
     /// with no deferred files cannot fail here and allocates nothing extra.
     pub fn finish(mut self) -> Result<KandeloImage, Errno> {
+        self.dir_indexes.clear();
         let deferred_inode = self.emit_deferred_section()?;
-        let mut superblock = vec![0u8; BLOCK_SIZE];
+        let mut superblock = allocate_image_bytes(BLOCK_SIZE)?;
         w32(&mut superblock, SB_MAGIC, KANDELO_IMAGE_MAGIC);
         w32(&mut superblock, SB_VERSION, self.version);
         w32(&mut superblock, SB_BLOCK_SIZE, BLOCK_SIZE as u32);
@@ -1564,10 +1942,11 @@ impl KandeloImageWriter {
 
         Ok(KandeloImage {
             superblock,
-            inode_bitmap: self.inode_bitmap,
-            block_bitmap: self.block_bitmap,
+            allocated_inodes: self.total_inodes - self.free_inodes,
+            allocated_blocks: self.total_blocks - self.free_blocks,
             inode_table: self.inode_table,
             blocks: self.blocks,
+            pointer_blocks: self.pointer_blocks,
             content_extents: self.content_extents,
             total_blocks: self.total_blocks,
             inode_bitmap_start: self.inode_bitmap_start,
@@ -1580,12 +1959,13 @@ impl KandeloImageWriter {
 
 /// A finished image, addressable by byte offset without being resident.
 pub struct KandeloImage {
-    superblock: Vec<u8>,
-    inode_bitmap: Vec<u8>,
-    block_bitmap: Vec<u8>,
-    inode_table: Vec<u8>,
-    blocks: BTreeMap<u32, Vec<u8>>,
-    content_extents: BTreeMap<u32, ContentExtent>,
+    superblock: crate::io_buffer::IoBuffer<u8>,
+    allocated_inodes: u32,
+    allocated_blocks: u32,
+    inode_table: crate::io_buffer::IoBuffer<u8>,
+    blocks: PreparedMap<u32, IoBuffer<u8>>,
+    pointer_blocks: PreparedMap<u32, PointerPage>,
+    content_extents: PreparedMap<u32, ContentExtent>,
     total_blocks: u32,
     inode_bitmap_start: u32,
     block_bitmap_start: u32,
@@ -1596,6 +1976,8 @@ pub struct KandeloImage {
 enum BlockView<'a> {
     Zeros,
     Bytes(&'a [u8]),
+    Pointers(&'a PointerPage),
+    BitmapPrefix { allocated_bits: u32, byte_offset: u64 },
     Content { id: u64, offset: u64, len: u32 },
 }
 
@@ -1614,15 +1996,14 @@ impl KandeloImage {
     /// The whole point of the deferred path is that emitting a 249 MiB image
     /// does not cost 249 MiB of kernel memory, and "the design says so" is not
     /// evidence. This makes the claim measurable: it counts the materialized
-    /// metadata — superblock, both bitmaps, the inode table, directory data,
-    /// indirect blocks, and extent records — but not referenced file content
-    /// or the map allocator's node overhead.
+    /// metadata — superblock, the allocated inode-table pages, directory data,
+    /// indirect blocks, and extent records — but not referenced file content,
+    /// the implicit allocation bitmaps, or the map allocator's node overhead.
     pub fn resident_bytes(&self) -> u64 {
         let owned: u64 = self.blocks.values().map(|block| block.len() as u64).sum();
         owned
+            + self.pointer_blocks.values().map(|page| page.resident_bytes() as u64).sum::<u64>()
             + self.superblock.len() as u64
-            + self.inode_bitmap.len() as u64
-            + self.block_bitmap.len() as u64
             + self.inode_table.len() as u64
             + (self.content_extents.len() * core::mem::size_of::<(u32, ContentExtent)>()) as u64
     }
@@ -1632,19 +2013,15 @@ impl KandeloImage {
             return BlockView::Bytes(&self.superblock);
         }
         if n >= self.inode_bitmap_start && n < self.block_bitmap_start {
-            let off = (n - self.inode_bitmap_start) as usize * BLOCK_SIZE;
-            return if off < self.inode_bitmap.len() {
-                BlockView::Bytes(&self.inode_bitmap[off..off + BLOCK_SIZE])
-            } else {
-                BlockView::Zeros
+            return BlockView::BitmapPrefix {
+                allocated_bits: self.allocated_inodes,
+                byte_offset: u64::from(n - self.inode_bitmap_start) * BLOCK_SIZE as u64,
             };
         }
         if n >= self.block_bitmap_start && n < self.inode_table_start {
-            let off = (n - self.block_bitmap_start) as usize * BLOCK_SIZE;
-            return if off < self.block_bitmap.len() {
-                BlockView::Bytes(&self.block_bitmap[off..off + BLOCK_SIZE])
-            } else {
-                BlockView::Zeros
+            return BlockView::BitmapPrefix {
+                allocated_bits: self.allocated_blocks,
+                byte_offset: u64::from(n - self.block_bitmap_start) * BLOCK_SIZE as u64,
             };
         }
         if n >= self.inode_table_start && n < self.data_start {
@@ -1657,6 +2034,9 @@ impl KandeloImage {
         }
         if let Some(block) = self.blocks.get(&n) {
             return BlockView::Bytes(block);
+        }
+        if let Some(page) = self.pointer_blocks.get(&n) {
+            return BlockView::Pointers(page);
         }
         match content_block(&self.content_extents, n) {
             Some((id, offset, len)) => BlockView::Content { id, offset, len },
@@ -1691,7 +2071,13 @@ impl KandeloImage {
             match self.block_view(n) {
                 BlockView::Zeros => target.fill(0),
                 BlockView::Bytes(bytes) => {
-                    target.copy_from_slice(&bytes[block_off..block_off + chunk])
+                    let count = core::cmp::min(chunk, bytes.len().saturating_sub(block_off));
+                    if count > 0 { target[..count].copy_from_slice(&bytes[block_off..block_off + count]); }
+                    target[count..].fill(0);
+                }
+                BlockView::Pointers(page) => page.read_at(block_off, target),
+                BlockView::BitmapPrefix { allocated_bits, byte_offset } => {
+                    read_bitmap_prefix(allocated_bits, byte_offset + block_off as u64, target);
                 }
                 BlockView::Content {
                     id,
@@ -1748,25 +2134,49 @@ impl<S: ContentSource + ?Sized> BlockSource for KandeloImageSource<'_, S> {
     }
 }
 
-fn set_bit(bitmap: &mut Vec<u8>, index: u32) {
-    // The vendor sets bit `index & 31` of the little-endian 32-bit word at
-    // `index >> 5`, which is the same byte and bit this computes.
-    let byte = (index >> 3) as usize;
-    if byte >= bitmap.len() {
-        bitmap.resize((byte / BLOCK_SIZE + 1) * BLOCK_SIZE, 0);
+fn read_bitmap_prefix(allocated_bits: u32, byte_offset: u64, destination: &mut [u8]) {
+    let whole_bytes = u64::from(allocated_bits / 8);
+    let filled = whole_bytes.saturating_sub(byte_offset).min(destination.len() as u64) as usize;
+    destination[..filled].fill(255);
+    destination[filled..].fill(0);
+    if let Some(boundary) = whole_bytes.checked_sub(byte_offset)
+        .and_then(|offset| usize::try_from(offset).ok())
+        .and_then(|offset| destination.get_mut(offset))
+    {
+        *boundary = ((1u16 << (allocated_bits % 8)) - 1) as u8;
     }
-    bitmap[byte] |= 1 << (index & 7);
-}
-
-fn get_bit(bitmap: &[u8], index: u32) -> bool {
-    bitmap
-        .get((index >> 3) as usize)
-        .is_some_and(|byte| *byte & (1 << (index & 7)) != 0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_directory_size_matches_writer_padding_and_index_policy() {
+        assert!(core::mem::size_of::<DirectorySizeCounter>() <= 128);
+        for seed in [1u32, 37, 9127] {
+            let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig {
+                size_bytes: 4 * 1024 * 1024,
+                max_size_bytes: Some(128 * 1024 * 1024),
+                growable_to_bytes: 128 * 1024 * 1024,
+                now_ms: 0,
+            }).unwrap();
+            let mut counter = DirectorySizeCounter::new();
+            let mut random = seed;
+            for index in 0..6000 {
+                random = random.wrapping_mul(1664525).wrapping_add(1013904223);
+                let name_len = 8 + random as usize % 248;
+                let mut name = alloc::format!("{index:08}").into_bytes();
+                name.resize(name_len, b'x');
+                writer.create_file(writer.root(), &name, 0o644, Content::Bytes(b"")).unwrap();
+                counter.push(name.len()).unwrap();
+                assert_eq!(counter.size(), writer.ino_r64(writer.root(), INO_SIZE),
+                    "seed {seed}, entry {index}, length {name_len}");
+            }
+            assert!(counter.indexed);
+            assert!(counter.size() > DIR_INDEX_MIN_SIZE);
+        }
+    }
     use crate::kandelo_image_fs::KandeloImageFs;
     use alloc::format;
     use alloc::string::{String, ToString};
@@ -2386,7 +2796,7 @@ mod tests {
         let len = 2 * 1024 * 1024u64;
         w.create_file(root, b"f", 0o644, Content::Deferred { id: 0, len })
             .expect("create");
-        let materialized = w.blocks.len();
+        let materialized = w.blocks.len() + w.pointer_blocks.len();
         let referenced: u32 = w.content_extents.values().map(|extent| extent.blocks).sum();
         assert_eq!(referenced, (len / BLOCK_SIZE as u64) as u32);
         assert_eq!(w.content_extents.len(), 2);
@@ -2449,6 +2859,846 @@ mod tests {
             }
             assert!(bytes[content_len..].iter().all(|&byte| byte == 0));
         }
+    }
+
+    #[test]
+    fn deferred_record_budget_refuses_before_allocating_an_inode_and_still_exports() {
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024 * 1024)).unwrap();
+        let payload = vec![7; crate::sdef::MAX_PAYLOAD_LEN as usize];
+        let mut accepted = 0;
+        loop {
+            let before = (writer.free_inodes, writer.free_blocks, writer.generation,
+                writer.deferred.len(), writer.deferred_field_bytes);
+            let name = alloc::format!("deferred-{accepted}");
+            match writer.create_deferred_file(writer.root(), name.as_bytes(), 0o644,
+                42, 0, b"", b"", b"", &payload) {
+                Ok(_) => accepted += 1,
+                Err(error) => {
+                    assert_eq!(error, Errno::ENOMEM);
+                    assert_eq!((writer.free_inodes, writer.free_blocks, writer.generation,
+                        writer.deferred.len(), writer.deferred_field_bytes), before);
+                    assert_eq!(writer.lookup(writer.root(), name.as_bytes()), Ok(None));
+                    break;
+                }
+            }
+        }
+        assert_eq!(accepted, 127);
+        writer.create_file(writer.root(), b"ordinary", 0o600, Content::Bytes(b"ok")).unwrap();
+        let image = writer.finish().unwrap();
+        let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+        let section = filesystem.deferred_section().unwrap().unwrap();
+        assert_eq!(section.records.len(), accepted);
+        assert!(section.records.iter().all(|record| record.payload == payload));
+    }
+
+    #[test]
+    fn deferred_fields_and_nodes_are_admitted_before_namespace_publication() {
+        let baseline = IO_MEMORY.usage().0;
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(1024 * 1024)).unwrap();
+        let retained = IO_MEMORY.usage().0;
+        let before = (writer.free_inodes, writer.free_blocks, writer.generation,
+            writer.inode_table.as_slice().to_vec());
+        for allowance in [0, 64] {
+            let _limit = crate::io_buffer::test_budget(retained + allowance);
+            assert_eq!(writer.create_deferred_file(writer.root(), b"refused", 0o600,
+                42, 0, b"", b"address", b"", &[7; 25]), Err(Errno::ENOMEM));
+            assert!(writer.deferred.is_empty());
+            assert_eq!(IO_MEMORY.usage().0, retained);
+        }
+        crate::prepared_map::fail_after_allocations(0);
+        assert_eq!(writer.create_deferred_file(writer.root(), b"refused", 0o600,
+            42, 0, b"", b"address", b"", &[7; 25]), Err(Errno::ENOMEM));
+        assert_eq!(IO_MEMORY.usage().0, retained);
+        assert_eq!((writer.free_inodes, writer.free_blocks, writer.generation,
+            writer.inode_table.as_slice().to_vec()), before);
+        assert_eq!(writer.lookup(writer.root(), b"refused"), Ok(None));
+        let ino = writer.create_deferred_file(writer.root(), b"retry", 0o600,
+            42, 0, b"", b"address", b"", &[7; 25]).unwrap();
+        assert_eq!(writer.deferred.values().next().unwrap().ino, ino);
+        let image = writer.finish().unwrap();
+        let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+        assert_eq!(filesystem.deferred_section().unwrap().unwrap().get(ino).unwrap().uri, b"address");
+        drop(filesystem);
+        drop(image);
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn deferred_hidden_inode_backing_is_prepared_before_namespace_publication() {
+        let baseline = IO_MEMORY.usage().0;
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(1024 * 1024)).unwrap();
+        while writer.total_inodes - writer.free_inodes < INODES_PER_BLOCK - 1 {
+            let next = writer.total_inodes - writer.free_inodes;
+            writer.create_file(writer.root(), alloc::format!("ordinary-{next}").as_bytes(),
+                0o600, Content::Bytes(b"")).unwrap();
+        }
+        let retained = IO_MEMORY.usage().0;
+        let node = PreparedEntry::<u32, crate::sdef::DeferredRecord>::reserve_in(&IO_MEMORY, 0).unwrap();
+        let node_bytes = node.bytes();
+        drop(node);
+        let before = (writer.free_inodes, writer.free_blocks, writer.generation,
+            writer.inode_table.as_slice().to_vec());
+        {
+            let output_node = PreparedEntry::<u32, IoBuffer<u8>>::memory_bytes(0).unwrap();
+            let _limit = crate::io_buffer::test_budget(retained + node_bytes + DEFERRED_FINISH_HEADROOM + output_node);
+            assert_eq!(writer.create_deferred_file(writer.root(), b"denied", 0o600,
+                42, 0, b"", b"", b"", b""), Err(Errno::ENOMEM));
+        }
+        assert_eq!(IO_MEMORY.usage().0, retained);
+        assert_eq!((writer.free_inodes, writer.free_blocks, writer.generation,
+            writer.inode_table.as_slice().to_vec()), before);
+        assert_eq!(writer.lookup(writer.root(), b"denied"), Ok(None));
+        let ino = writer.create_deferred_file(writer.root(), b"retry", 0o600,
+            42, 0, b"", b"", b"", b"").unwrap();
+        assert_eq!(ino, INODES_PER_BLOCK - 1);
+        assert_eq!(writer.inode_table.len(), BLOCK_SIZE);
+        assert!(writer.inode_table.capacity() >= 2 * BLOCK_SIZE);
+        let image = writer.finish().unwrap();
+        assert_eq!(r32(&image.superblock, SB_DEFERRED_INODE), INODES_PER_BLOCK);
+        drop(image);
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn late_section_declaration_prepares_backing_before_publishing_its_flag() {
+        let baseline = IO_MEMORY.usage().0;
+        for archive in [false, true] {
+            let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(1024 * 1024)).unwrap();
+            while writer.total_inodes - writer.free_inodes < INODES_PER_BLOCK {
+                let next = writer.total_inodes - writer.free_inodes;
+                writer.create_file(writer.root(), alloc::format!("ordinary-{next}").as_bytes(),
+                    0o600, Content::Bytes(b"")).unwrap();
+            }
+            if archive { writer.declare_lazy_archive(3, 42, b"uri", b"", b"payload").unwrap(); }
+            let retained = IO_MEMORY.usage().0;
+            let before = (writer.free_inodes, writer.free_blocks, writer.generation, writer.inode_table.len());
+            let finalization = if archive { 0 } else {
+                DEFERRED_FINISH_HEADROOM + PreparedEntry::<u32, IoBuffer<u8>>::memory_bytes(0).unwrap()
+            };
+            {
+                let _limit = crate::io_buffer::test_budget(retained + finalization);
+                assert_eq!(writer.declare_deferred_section(), Err(Errno::ENOMEM));
+            }
+            assert!(!writer.declares_deferred);
+            assert_eq!(IO_MEMORY.usage().0, retained);
+            assert_eq!((writer.free_inodes, writer.free_blocks, writer.generation, writer.inode_table.len()), before);
+            writer.declare_deferred_section().unwrap();
+            assert_eq!(writer.inode_table.len(), BLOCK_SIZE);
+            let image = writer.finish().unwrap();
+            assert_eq!(r32(&image.superblock, SB_DEFERRED_INODE), INODES_PER_BLOCK);
+            let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+            assert_eq!(filesystem.deferred_section().unwrap().unwrap().archives.len(), usize::from(archive));
+            drop(filesystem);
+            drop(image);
+            assert_eq!(IO_MEMORY.usage().0, baseline);
+        }
+    }
+
+    #[test]
+    fn deferred_stream_failure_releases_every_unpublished_input_and_output_owner() {
+        let baseline = IO_MEMORY.usage().0;
+        let build = || {
+            let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(1024 * 1024)).unwrap();
+            writer.create_deferred_file(writer.root(), b"file", 0o600, 42, 0,
+                b"", b"address", b"", &vec![7; crate::sdef::MAX_PAYLOAD_LEN as usize]).unwrap();
+            writer
+        };
+        for successful_allocations in [0, 1, 17] {
+            let writer = build();
+            let retained = IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(retained);
+            crate::prepared_map::fail_after_allocations(successful_allocations);
+            assert_eq!(writer.finish().err(), Some(Errno::ENOMEM));
+            assert_eq!(IO_MEMORY.usage().0, baseline);
+        }
+        let image = build().finish().unwrap();
+        let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+        assert_eq!(filesystem.deferred_section().unwrap().unwrap().records[0].payload,
+            vec![7; crate::sdef::MAX_PAYLOAD_LEN as usize]);
+        drop(filesystem);
+        drop(image);
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn many_small_deferred_records_release_input_backing_while_encoding() {
+        let baseline = IO_MEMORY.usage().0;
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024 * 1024)).unwrap();
+        for index in 0..4096 {
+            writer.create_deferred_file(writer.root(), alloc::format!("record-{index:04}").as_bytes(),
+                0o600, index, 0, b"", b"uri", b"", b"small").unwrap();
+        }
+        let retained = IO_MEMORY.usage().0;
+        let _limit = crate::io_buffer::test_budget(retained + 4 * BLOCK_SIZE);
+        let image = writer.finish().unwrap();
+        assert!(IO_MEMORY.usage().0 < retained);
+        let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+        let section = filesystem.deferred_section().unwrap().unwrap();
+        assert_eq!(section.records.len(), 4096);
+        assert!(section.records.iter().all(|record| record.uri == b"uri" && record.payload == b"small"));
+        drop(section);
+        drop(filesystem);
+        drop(image);
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn deferred_archive_admission_exhaustion_still_exports_its_accepted_prefix() {
+        let baseline = IO_MEMORY.usage().0;
+        let _limit = crate::io_buffer::test_budget(baseline + 2 * 1024 * 1024);
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(8 * 1024 * 1024)).unwrap();
+        writer.declare_deferred_section().unwrap();
+        let mut accepted = 0;
+        loop {
+            let retained = IO_MEMORY.usage().0;
+            match writer.declare_lazy_archive(accepted + 1, 42, b"uri", b"", &[7; 64]) {
+                Ok(()) => accepted += 1,
+                Err(error) => {
+                    assert_eq!(error, Errno::ENOMEM);
+                    assert_eq!(IO_MEMORY.usage().0, retained);
+                    assert_eq!(writer.deferred_archives.len(), accepted as usize);
+                    break;
+                }
+            }
+        }
+        assert!(accepted > 1024);
+        let image = writer.finish().unwrap();
+        let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+        let section = filesystem.deferred_section().unwrap().unwrap();
+        assert_eq!(section.archives.len(), accepted as usize);
+        assert!(section.archives.iter().all(|archive| archive.payload == [7; 64]));
+        drop(section);
+        drop(filesystem);
+        drop(image);
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn deferred_finalization_headroom_handles_maximum_fields_without_extra_credit() {
+        let baseline = IO_MEMORY.usage().0;
+        let node = PreparedEntry::<u32, IoBuffer<u8>>::reserve_in(&IO_MEMORY, 0).unwrap();
+        let node_bytes = node.bytes();
+        drop(node);
+        let maximum_record = crate::sdef::RECORD_HEADER_SIZE as usize + crate::sdef::MAX_PAYLOAD_LEN as usize
+            + crate::sdef::MAX_SOURCE_PATH_LEN as usize + crate::sdef::MAX_URI_LEN as usize;
+        let burst = (maximum_record.div_ceil(BLOCK_SIZE) + 1 + 4) * (BLOCK_SIZE * 2 + node_bytes)
+            + 4 * BLOCK_SIZE;
+        assert!(burst <= DEFERRED_FINISH_HEADROOM);
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(16 * 1024 * 1024)).unwrap();
+        let payload = vec![7; crate::sdef::MAX_PAYLOAD_LEN as usize];
+        let uri = vec![b'u'; crate::sdef::MAX_URI_LEN as usize];
+        let source_path = vec![b'p'; crate::sdef::MAX_SOURCE_PATH_LEN as usize];
+        for archive_id in 1..=32 {
+            writer.declare_lazy_archive(archive_id, 123, &uri, &[3; 32], &payload).unwrap();
+        }
+        for index in 0..64 {
+            writer.create_deferred_file(writer.root(), alloc::format!("member-{index}").as_bytes(), 0o600,
+                42, 1 + index % 32, &source_path, b"", &[5; 32], &payload).unwrap();
+        }
+        let retained = IO_MEMORY.usage().0;
+        let _limit = crate::io_buffer::test_budget(retained);
+        let image = writer.finish().unwrap();
+        assert!(IO_MEMORY.usage().0 < retained);
+        let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+        let section = filesystem.deferred_section().unwrap().unwrap();
+        assert_eq!((section.archives.len(), section.records.len()), (32, 64));
+        assert!(section.records.iter().all(|record| record.payload == payload && record.source_path == source_path));
+        assert!(section.archives.iter().all(|archive| archive.payload == payload && archive.uri == uri));
+        drop(section);
+        drop(filesystem);
+        drop(image);
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn deferred_streaming_preserves_buffered_image_layout_and_padding() {
+        for payload_len in [0, 1, 4095, 4096, 65536] {
+            let build = || {
+                let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(1024 * 1024)).unwrap();
+                writer.declare_deferred_section().unwrap();
+                writer.declare_lazy_archive(9, 456, b"archive-nine", &[9; 32], b"opaque-nine").unwrap();
+                writer.declare_lazy_archive(3, 123, b"archive-three", &[3; 32], b"opaque-three").unwrap();
+                writer.create_deferred_file(writer.root(), b"standalone", 0o640, 42, 0,
+                    b"", b"address", &[7; 32], &vec![11; payload_len]).unwrap();
+                writer.create_deferred_file(writer.root(), b"member", 0o600, 17, 3,
+                    b"member/path", b"", &[5; 32], b"member-data").unwrap();
+                writer
+            };
+            let streamed = build().finish().unwrap();
+            let mut buffered = build();
+            let archives: Vec<_> = buffered.deferred_archives.values().cloned().collect();
+            let records: Vec<_> = buffered.deferred.values().cloned().collect();
+            let encoded = crate::sdef::encode(&archives, &records).unwrap();
+            buffered.deferred.clear();
+            buffered.deferred_archives.clear();
+            buffered.declares_deferred = false;
+            let ino = buffered.inode_alloc().unwrap();
+            let now = buffered.now_ms;
+            buffered.ino_w32(ino, INO_MODE, S_IFREG);
+            buffered.ino_w32(ino, INO_LINK_COUNT, 1);
+            buffered.ino_w64(ino, INO_ATIME, now);
+            buffered.ino_w64(ino, INO_MTIME, now);
+            buffered.ino_w64(ino, INO_CTIME, now);
+            buffered.write_content(ino, Content::Bytes(&encoded)).unwrap();
+            let mut buffered = buffered.finish().unwrap();
+            w32(&mut buffered.superblock, SB_DEFERRED_INODE, ino);
+            assert_eq!(streamed.to_vec(&NoContent).unwrap(), buffered.to_vec(&NoContent).unwrap());
+        }
+    }
+
+    #[test]
+    fn deferred_archive_nodes_use_actual_counts_for_the_semantic_cap() {
+        let baseline = IO_MEMORY.usage().0;
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(8 * 1024 * 1024)).unwrap();
+        writer.declare_deferred_section().unwrap();
+        for archive_id in 1..=32769 {
+            writer.declare_lazy_archive(archive_id, 42, b"", b"", &[7; 64]).unwrap();
+        }
+        let image = writer.finish().unwrap();
+        let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+        let section = filesystem.deferred_section().unwrap().unwrap();
+        assert_eq!(section.archives.len(), 32769);
+        assert!(section.archives.iter().all(|archive| archive.payload == [7; 64]));
+        drop(section);
+        drop(filesystem);
+        drop(image);
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn deferred_hidden_inode_crosses_the_large_table_boundary_under_the_default_budget() {
+        let baseline = IO_MEMORY.usage().0;
+        for count in [32765, 32766, 32767] {
+            let mut writer = KandeloImageWriter::mkfs_with_inode_capacity(
+                KandeloImageConfig::fixed(64 * 1024 * 1024), Some(65536)).unwrap();
+            let mut directory = writer.root();
+            let mut records = 0;
+            for index in 0..count {
+                if index % 512 == 0 {
+                    directory = writer.mkdir(writer.root(), alloc::format!("directory-{index}").as_bytes(), 0o755).unwrap();
+                } else {
+                    writer.create_deferred_file(directory, alloc::format!("record-{index:05}").as_bytes(),
+                        0o600, index, 0, b"", b"", b"", b"").unwrap();
+                    records += 1;
+                }
+            }
+            let image = writer.finish().unwrap();
+            let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+            assert_eq!(filesystem.deferred_section().unwrap().unwrap().records.len(), records);
+            drop(filesystem);
+            drop(image);
+            assert_eq!(IO_MEMORY.usage().0, baseline);
+        }
+    }
+
+    #[test]
+    fn deferred_archives_and_records_share_admission_before_namespace_mutation() {
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024 * 1024)).unwrap();
+        writer.declare_deferred_section().unwrap();
+        let payload = vec![7; crate::sdef::MAX_PAYLOAD_LEN as usize];
+        for archive_id in 1..128 {
+            writer.declare_lazy_archive(archive_id, 42, b"", b"", &payload).unwrap();
+        }
+        let before = (writer.free_inodes, writer.free_blocks, writer.generation,
+            writer.deferred_archives.len(), writer.deferred_field_bytes);
+        assert_eq!(writer.declare_lazy_archive(128, 42, b"", b"", &payload), Err(Errno::ENOMEM));
+        assert_eq!(writer.create_deferred_file(writer.root(), b"refused", 0o600,
+            42, 0, b"", b"", b"", &payload), Err(Errno::ENOMEM));
+        assert_eq!((writer.free_inodes, writer.free_blocks, writer.generation,
+            writer.deferred_archives.len(), writer.deferred_field_bytes), before);
+        assert_eq!(writer.lookup(writer.root(), b"refused"), Ok(None));
+        let image = writer.finish().unwrap();
+        let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+        assert_eq!(filesystem.deferred_section().unwrap().unwrap().archives.len(), 127);
+    }
+
+    #[test]
+    fn deferred_metadata_reader_rejects_a_large_sparse_section_before_allocating_its_body() {
+        struct ExtendedSource<'a> {
+            image: &'a KandeloImage,
+            largest: &'a core::cell::Cell<usize>,
+        }
+        impl BlockSource for ExtendedSource<'_> {
+            fn len(&self) -> u64 { 32 * 1024 * 1024 * 1024 }
+            fn read_exact_at(&self, offset: u64, destination: &mut [u8]) -> Result<(), Errno> {
+                self.largest.set(self.largest.get().max(destination.len()));
+                assert!(destination.len() <= BLOCK_SIZE);
+                if self.image.read_at(&NoContent, offset, destination)? != destination.len() { return Err(Errno::EIO); }
+                Ok(())
+            }
+        }
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024)).unwrap();
+        writer.declare_deferred_section().unwrap();
+        let mut image = writer.finish().unwrap();
+        w32(&mut image.superblock, SB_VERSION, KANDELO_IMAGE_EXTENDED_VERSION);
+        let metadata_inode = r32(&image.superblock, SB_DEFERRED_INODE);
+        let offset = metadata_inode as usize * INODE_SIZE;
+        w64(&mut image.inode_table, offset + INO_SIZE, 32 * 1024 * 1024 * 1024);
+        let largest = core::cell::Cell::new(0);
+        let source = ExtendedSource { image: &image, largest: &largest };
+        let filesystem = KandeloImageFs::mount(source).unwrap();
+        assert_eq!(filesystem.deferred_section(), Err(Errno::EINVAL));
+        assert!(largest.get() <= BLOCK_SIZE);
+    }
+
+    #[test]
+    fn pointer_runs_emit_exact_little_endian_bytes_for_arbitrary_windows() {
+        let mut page = PointerPage::default();
+        let mut expected = [0; BLOCK_SIZE];
+        for (start, length, first, stride) in [(0u16, 10, 17, 1), (17, 87, 99, 1025), (1000, 24, 800_000, 2)] {
+            for index in 0..length {
+                let value = first + u32::from(index) * stride;
+                page.set(start + index, value).unwrap();
+                w32(&mut expected, usize::from(start + index) * 4, value);
+            }
+        }
+        assert!(page.resident_bytes() < 1024);
+        for offset in (0..BLOCK_SIZE).step_by(13) {
+            for requested in [1, 3, 4, 7, 97, BLOCK_SIZE] {
+                let count = core::cmp::min(requested, BLOCK_SIZE - offset);
+                let mut actual = vec![0; count];
+                page.read_at(offset, &mut actual);
+                assert_eq!(actual, expected[offset..offset + count]);
+            }
+        }
+    }
+
+    #[test]
+    fn fragmented_pointer_runs_fall_back_to_one_page_without_losing_holes() {
+        let mut page = PointerPage::default();
+        let mut expected = [0; BLOCK_SIZE];
+        for index in 0..65u16 {
+            page.set(index * 2, 100 + u32::from(index)).unwrap();
+            w32(&mut expected, usize::from(index * 2) * 4, 100 + u32::from(index));
+        }
+        assert!(matches!(page, PointerPage::Bytes(_)));
+        assert_eq!(page.resident_bytes(), BLOCK_SIZE);
+        for index in 0..65u16 {
+            page.set(index * 2 + 1, 900 + u32::from(index)).unwrap();
+            w32(&mut expected, usize::from(index * 2 + 1) * 4, 900 + u32::from(index));
+        }
+        let mut actual = [0; BLOCK_SIZE];
+        page.read_at(0, &mut actual);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn pointer_pages_preserve_out_of_order_values_and_reject_invalid_changes() {
+        let mut page = PointerPage::default();
+        page.set(1023, u32::MAX).unwrap();
+        page.set(0, 7).unwrap();
+        page.set(512, 11).unwrap();
+        assert!(matches!(page, PointerPage::Bytes(_)));
+        assert_eq!(page.get(1023), u32::MAX);
+        assert_eq!(page.get(0), 7);
+        assert_eq!(page.get(512), 11);
+        assert_eq!(page.get(513), 0);
+        let mut before = [0; BLOCK_SIZE];
+        page.read_at(0, &mut before);
+        for (slot, value) in [(1024, 9), (512, 13), (513, 0)] {
+            assert_eq!(page.set(slot, value), Err(Errno::EIO));
+        }
+        let mut after = [0; BLOCK_SIZE];
+        page.read_at(0, &mut after);
+        assert_eq!(before, after);
+        let mut overflow = PointerPage::default();
+        overflow.set(0, 7).unwrap();
+        overflow.set(1, u32::MAX - 1).unwrap();
+        overflow.set(2, u32::MAX).unwrap();
+        assert_eq!(overflow.get(2), u32::MAX);
+    }
+
+    #[test]
+    fn streamed_sparse_allocations_match_the_slice_writer_byte_for_byte() {
+        let file_len = 9 * 1024 * 1024 * 1024u64 + 17;
+        for blocks in [
+            &[][..],
+            &[0, 9, 10, 11, 1033, 1034, 1035, 2057, 2058][..],
+            &[V1_MAX_FILE_BLOCKS as u32 - 1, V1_MAX_FILE_BLOCKS as u32,
+                V1_MAX_FILE_BLOCKS as u32 + 1024, (file_len / BLOCK_SIZE as u64) as u32][..],
+        ] {
+            let config = || KandeloImageConfig::fixed(256 * 1024);
+            let mut slice_writer = KandeloImageWriter::mkfs(config()).unwrap();
+            slice_writer.create_file(slice_writer.root(), b"file", 0o640,
+                Content::SparseDeferred { id: 7, len: file_len, blocks }).unwrap();
+            let mut stream_writer = KandeloImageWriter::mkfs(config()).unwrap();
+            let mut passes = 0;
+            stream_writer.create_sparse_file_from(stream_writer.root(), b"file", 0o640,
+                7, file_len, |visit| {
+                    passes += 1;
+                    for &block in blocks { visit(block)?; }
+                    Ok(())
+                }).unwrap();
+            assert_eq!(passes, 2);
+            let slice_image = slice_writer.finish().unwrap();
+            let stream_image = stream_writer.finish().unwrap();
+            let offsets = (0..slice_image.len()).step_by(BLOCK_SIZE);
+            for offset in offsets {
+                match (slice_image.block_view((offset / BLOCK_SIZE as u64) as u32),
+                    stream_image.block_view((offset / BLOCK_SIZE as u64) as u32)) {
+                    (BlockView::Content { id: first_id, offset: first_offset, len: first_len },
+                        BlockView::Content { id, offset, len }) => {
+                        assert_eq!((id, offset, len), (first_id, first_offset, first_len));
+                    }
+                    _ => {
+                        let mut first = [0; BLOCK_SIZE];
+                        let mut second = [0; BLOCK_SIZE];
+                        assert_eq!(slice_image.read_at(&NoContent, offset, &mut first), Ok(BLOCK_SIZE));
+                        assert_eq!(stream_image.read_at(&NoContent, offset, &mut second), Ok(BLOCK_SIZE));
+                        assert_eq!(first, second);
+                    }
+                }
+            }
+        }
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024)).unwrap();
+        let inode = writer.create_sparse_file_from(writer.root(), b"empty", 0o600, 0, 0,
+            |_| Ok(())).unwrap();
+        assert_eq!(writer.ino_r32(inode, INO_DATA_SEQUENCE), 1);
+    }
+
+    #[test]
+    fn streamed_sparse_preflight_errors_preserve_existing_writer_state() {
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024)).unwrap();
+        let snapshot = (writer.free_blocks, writer.free_inodes, writer.generation,
+            writer.inode_table.as_slice().to_vec(), writer.blocks.iter().map(|(key, block)| (*key, block.as_slice().to_vec())).collect::<Vec<_>>());
+        for blocks in [&[0, 0][..], &[2, 1], &[3]] {
+            assert_eq!(writer.create_sparse_file_from(writer.root(), b"invalid", 0o600,
+                0, 3 * BLOCK_SIZE as u64, |visit| {
+                    for &block in blocks { visit(block)?; }
+                    Ok(())
+                }), Err(Errno::EINVAL));
+        }
+        for error in [Errno::EAGAIN, Errno::ENOMEM, Errno::EIO, Errno::ENOSPC] {
+            assert_eq!(writer.create_sparse_file_from(writer.root(), b"error", 0o600,
+                0, 8192, |visit| { visit(0)?; Err(error) }), Err(error));
+        }
+        assert_eq!(writer.create_sparse_file_from(writer.root(), b"too-large", 0o600,
+            0, MAX_FILE_BYTES + 1, |_| panic!("oversized input must not be traversed")), Err(Errno::EFBIG));
+        assert_eq!((writer.free_blocks, writer.free_inodes, writer.generation,
+            writer.inode_table.as_slice().to_vec(), writer.blocks.iter().map(|(key, block)| (*key, block.as_slice().to_vec())).collect::<Vec<_>>()), snapshot);
+    }
+
+    #[test]
+    fn inode_table_growth_refusal_preserves_allocator_state_and_retries() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(1024 * 1024)).unwrap();
+        while writer.total_inodes - writer.free_inodes < INODES_PER_BLOCK {
+            writer.inode_alloc().unwrap();
+        }
+        let retained = crate::io_buffer::IO_MEMORY.usage().0;
+        let state = (writer.free_inodes, writer.generation, writer.inode_table.as_slice().to_vec());
+        {
+            let _limit = crate::io_buffer::test_budget(retained);
+            assert_eq!(writer.inode_alloc(), Err(Errno::ENOMEM));
+            assert_eq!((writer.free_inodes, writer.generation, writer.inode_table.as_slice().to_vec()), state);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, retained);
+        }
+        assert_eq!(writer.inode_alloc().unwrap(), INODES_PER_BLOCK);
+        assert!(crate::io_buffer::IO_MEMORY.usage().0 > retained);
+        drop(writer);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn materialized_block_admission_and_node_refusal_leave_no_unpublished_owner() {
+        let baseline = IO_MEMORY.usage().0;
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024)).unwrap();
+        let physical = writer.block_alloc().unwrap();
+        let retained = IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(retained + BLOCK_SIZE * 2);
+            assert!(matches!(writer.block_mut(physical, BLOCK_SIZE), Err(Errno::ENOMEM)));
+            assert!(!writer.blocks.contains_key(&physical));
+            assert_eq!(IO_MEMORY.usage().0, retained);
+        }
+        crate::prepared_map::fail_after_allocations(0);
+        assert!(matches!(writer.block_mut(physical, BLOCK_SIZE), Err(Errno::ENOMEM)));
+        assert!(!writer.blocks.contains_key(&physical));
+        assert_eq!(IO_MEMORY.usage().0, retained);
+        writer.block_mut(physical, BLOCK_SIZE).unwrap()[0] = 91;
+        assert_eq!(writer.blocks.get(&physical).unwrap()[0], 91);
+        let retained = IO_MEMORY.usage().0;
+        let image = writer.finish().unwrap();
+        assert_eq!(IO_MEMORY.usage().0, retained + BLOCK_SIZE * 2);
+        drop(image);
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn small_directory_blocks_admit_only_their_prefix_and_emit_zero_tails() {
+        let baseline = IO_MEMORY.usage().0;
+        let _limit = crate::io_buffer::test_budget(baseline + 1024 * 1024);
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(8 * 1024 * 1024)).unwrap();
+        let mut first = 0;
+        for index in 0..512 {
+            let inode = writer.mkdir(ROOT_INO, &name4(index), 0o700).unwrap();
+            if index == 0 { first = writer.ino_r32(inode, INO_DIRECT); }
+        }
+        assert_eq!(writer.blocks.values().filter(|block| block.len() == 24).count(), 512);
+        assert!(IO_MEMORY.usage().0 - baseline < 1024 * 1024);
+        let image = writer.finish().unwrap();
+        let mut bytes = [0xcc; BLOCK_SIZE];
+        assert_eq!(image.read_at(&NoContent, u64::from(first) * BLOCK_SIZE as u64, &mut bytes), Ok(BLOCK_SIZE));
+        assert!(bytes[24..].iter().all(|byte| *byte == 0));
+        let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+        assert_eq!(filesystem.read_dir(ROOT_INO).unwrap().len(), 514);
+        drop(filesystem);
+        drop(image);
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn directory_record_split_admits_prefix_growth_before_shortening_old_record() {
+        let baseline = IO_MEMORY.usage().0;
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024)).unwrap();
+        let target = writer.create_file(ROOT_INO, b"seed", 0o600, Content::Bytes(b"")).unwrap();
+        let physical = writer.ino_r32(ROOT_INO, INO_DIRECT);
+        w16(writer.block_mut(physical, 30).unwrap(), 28, (BLOCK_SIZE - 24) as u16);
+        writer.ino_w64(ROOT_INO, INO_SIZE, BLOCK_SIZE as u64);
+        let before = writer.blocks.get(&physical).unwrap().as_slice().to_vec();
+        let retained = IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(retained);
+            assert_eq!(writer.link(ROOT_INO, b"new-target", target), Err(Errno::ENOMEM));
+            assert!(writer.blocks.get(&physical).unwrap().as_slice() == before.as_slice());
+            assert_eq!(writer.lookup(ROOT_INO, b"seed"), Ok(Some(target)));
+            assert_eq!(writer.lookup(ROOT_INO, b"new-target"), Ok(None));
+            assert_eq!(IO_MEMORY.usage().0, retained);
+        }
+        writer.link(ROOT_INO, b"new-target", target).unwrap();
+        let image = writer.finish().unwrap();
+        let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+        assert_eq!(filesystem.lookup(ROOT_INO, b"new-target"), Ok(target));
+        assert_eq!(filesystem.read_dir(ROOT_INO).unwrap().len(), 4);
+        drop(filesystem);
+        drop(image);
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn indexed_free_slot_survives_denied_prefix_growth_for_retry() {
+        let baseline = IO_MEMORY.usage().0;
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024)).unwrap();
+        let target = writer.create_file(ROOT_INO, b"seed", 0o600, Content::Bytes(b"")).unwrap();
+        let physical = writer.ino_r32(ROOT_INO, INO_DIRECT);
+        writer.write_dir_record(physical, 36, 0, Some((BLOCK_SIZE - 36) as u16), b"").unwrap();
+        writer.ino_w64(ROOT_INO, INO_SIZE, BLOCK_SIZE as u64);
+        let mut slots = IoBuffer::new();
+        slots.try_push(FreeSlot { phys: physical, off: 36, rec_len: (BLOCK_SIZE - 36) as u16 }).unwrap();
+        writer.dir_indexes.insert_prepared(prepare_image_entry(ROOT_INO, slots).unwrap());
+        let name = vec![b'n'; 200];
+        let before = writer.blocks.get(&physical).unwrap().as_slice().to_vec();
+        let retained = IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(retained);
+            assert_eq!(writer.link(ROOT_INO, &name, target), Err(Errno::ENOMEM));
+            assert_eq!(writer.dir_indexes.get(&ROOT_INO).unwrap().len(), 1);
+            assert!(writer.blocks.get(&physical).unwrap().as_slice() == before.as_slice());
+            assert_eq!(writer.lookup(ROOT_INO, &name), Ok(None));
+            assert_eq!(IO_MEMORY.usage().0, retained);
+        }
+        writer.link(ROOT_INO, &name, target).unwrap();
+        assert!(writer.dir_indexes.get(&ROOT_INO).unwrap().is_empty());
+        let image = writer.finish().unwrap();
+        let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+        assert_eq!(filesystem.lookup(ROOT_INO, &name), Ok(target));
+        assert_eq!(filesystem.read_dir(ROOT_INO).unwrap().len(), 4);
+        drop(filesystem);
+        drop(image);
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn pointer_run_expansion_admits_old_and_new_backing_before_replacement() {
+        let baseline = IO_MEMORY.usage().0;
+        let mut page = PointerPage::default();
+        for index in 0..64u16 { page.set(index * 2, u32::from(index) + 100).unwrap(); }
+        let retained = IO_MEMORY.usage().0;
+        let mut before = [0; BLOCK_SIZE];
+        page.read_at(0, &mut before);
+        {
+            let _limit = crate::io_buffer::test_budget(retained + BLOCK_SIZE * 2 - 1);
+            assert_eq!(page.set(128, 164), Err(Errno::ENOMEM));
+            let mut after = [0; BLOCK_SIZE];
+            page.read_at(0, &mut after);
+            assert_eq!(before, after);
+            assert_eq!(IO_MEMORY.usage().0, retained);
+        }
+        page.set(128, 164).unwrap();
+        assert_eq!(page.get(128), 164);
+        for index in 0..64u16 { assert_eq!(page.get(index * 2), u32::from(index) + 100); }
+        drop(page);
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn directory_tail_refusal_preserves_existing_records_and_retry() {
+        for name_length in [4, 5] {
+            for allowance in [Some(0), Some((DIRENT_HEADER + name_length) * 2), None] {
+                let baseline = IO_MEMORY.usage().0;
+                let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024)).unwrap();
+                let name = |index| {
+                    let mut bytes = name4(index);
+                    if name_length == 5 { bytes.push(b'x'); }
+                    bytes
+                };
+                let target = writer.create_file(ROOT_INO, &name(0), 0o600, Content::Bytes(b"")).unwrap();
+                let needed = align4(DIRENT_HEADER + name_length);
+                let mut index = 1;
+                while writer.ino_r64(ROOT_INO, INO_SIZE) as usize % BLOCK_SIZE + needed <= BLOCK_SIZE {
+                    writer.link(ROOT_INO, &name(index), target).unwrap();
+                    index += 1;
+                }
+                assert_eq!(writer.ino_r64(ROOT_INO, INO_SIZE) as usize, BLOCK_SIZE - if name_length == 4 { 4 } else { 8 });
+                let physical = writer.ino_r32(ROOT_INO, INO_DIRECT);
+                let before = writer.blocks.get(&physical).unwrap().as_slice().to_vec();
+                let retained = IO_MEMORY.usage().0;
+                {
+                    let _limit = allowance.map(|bytes| crate::io_buffer::test_budget(retained + bytes));
+                    if allowance.is_none() { crate::prepared_map::fail_after_allocations(0); }
+                    assert_eq!(writer.link(ROOT_INO, &name(index), target), Err(Errno::ENOMEM));
+                    assert!(writer.blocks.get(&physical).unwrap().as_slice() == before.as_slice(), "directory tail changed before destination admission");
+                    assert_eq!(writer.lookup(ROOT_INO, &name(0)), Ok(Some(target)));
+                    assert_eq!(writer.lookup(ROOT_INO, &name(index)), Ok(None));
+                    assert_eq!(IO_MEMORY.usage().0, retained);
+                }
+                writer.link(ROOT_INO, &name(index), target).unwrap();
+                let image = writer.finish().unwrap();
+                let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+                assert_eq!(filesystem.lookup(ROOT_INO, &name(index)), Ok(target));
+                assert_eq!(filesystem.read_dir(ROOT_INO).unwrap().len(), index + 3);
+                drop(filesystem);
+                drop(image);
+                assert_eq!(IO_MEMORY.usage().0, baseline);
+            }
+        }
+    }
+
+    #[test]
+    fn pointer_and_content_map_refusal_does_not_publish_entries_and_allows_retry() {
+        let baseline = IO_MEMORY.usage().0;
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024)).unwrap();
+        let pointer = writer.block_alloc().unwrap();
+        let content = writer.block_alloc().unwrap();
+        let retained = IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(retained);
+            assert_eq!(writer.pointer_w32(pointer, 0, content), Err(Errno::ENOMEM));
+            assert!(!writer.pointer_blocks.contains_key(&pointer));
+            assert_eq!(writer.defer_content_block(content, 7, 0, BLOCK_SIZE), Err(Errno::ENOMEM));
+            assert!(!writer.content_extents.contains_key(&content));
+            assert_eq!(IO_MEMORY.usage().0, retained);
+        }
+        writer.pointer_w32(pointer, 0, content).unwrap();
+        writer.defer_content_block(content, 7, 0, BLOCK_SIZE).unwrap();
+        let retained = IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(retained);
+            writer.defer_content_block(content + 1, 7, BLOCK_SIZE as u64, BLOCK_SIZE).unwrap();
+            assert_eq!(content_block(&writer.content_extents, content + 1), Some((7, BLOCK_SIZE as u64, BLOCK_SIZE as u32)));
+            assert_eq!(writer.defer_content_block(content + 2, 8, 0, BLOCK_SIZE), Err(Errno::ENOMEM));
+            assert_eq!(writer.content_extents.len(), 1);
+            assert_eq!(IO_MEMORY.usage().0, retained);
+        }
+        drop(writer);
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn directory_index_admission_is_unpublished_on_refusal_and_released_at_finish() {
+        let baseline = IO_MEMORY.usage().0;
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(4 * 1024 * 1024)).unwrap();
+        let mut index = 0;
+        while writer.ino_r64(ROOT_INO, INO_SIZE) < DIR_INDEX_MIN_SIZE {
+            let name = alloc::format!("{index:04}-{}", "x".repeat(250));
+            writer.create_file(ROOT_INO, name.as_bytes(), 0o600, Content::Bytes(b"")).unwrap();
+            index += 1;
+        }
+        assert!(writer.dir_indexes.is_empty());
+        let retained = IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(retained);
+            assert_eq!(writer.ensure_dir_index(ROOT_INO), Err(Errno::ENOMEM));
+            assert!(writer.dir_indexes.is_empty());
+            assert_eq!(IO_MEMORY.usage().0, retained);
+        }
+        assert_eq!(writer.ensure_dir_index(ROOT_INO), Ok(true));
+        let index_credit = IO_MEMORY.usage().0 - retained;
+        assert!(index_credit > 0);
+        let image = writer.finish().unwrap();
+        assert_eq!(IO_MEMORY.usage().0, retained + BLOCK_SIZE * 2);
+        let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+        assert_eq!(filesystem.read_dir(ROOT_INO).unwrap().len(), index + 2);
+        drop(filesystem);
+        drop(image);
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn finished_image_retains_header_and_inode_credit_until_drop() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024)).unwrap();
+        let retained = crate::io_buffer::IO_MEMORY.usage().0;
+        assert!(retained > baseline);
+        let image = writer.finish().unwrap();
+        assert!(crate::io_buffer::IO_MEMORY.usage().0 > retained);
+        drop(image);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        let writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024)).unwrap();
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert!(matches!(writer.finish(), Err(Errno::ENOMEM)));
+        }
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn streamed_sparse_construction_rejects_changed_order_and_propagates_source_errors() {
+        for error in [Errno::EAGAIN, Errno::ENOMEM, Errno::EIO, Errno::ENOSPC, Errno::EINVAL] {
+            let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024)).unwrap();
+            let mut passes = 0;
+            assert_eq!(writer.create_sparse_file_from(writer.root(), b"error", 0o600,
+                0, 8192, |visit| {
+                    passes += 1;
+                    visit(0)?;
+                    if passes == 2 {
+                        if error == Errno::EINVAL { visit(0)?; }
+                        return Err(error);
+                    }
+                    Ok(())
+                }), Err(error));
+            assert_eq!(passes, 2);
+        }
+    }
+
+    #[test]
+    fn streamed_near_dense_32_gib_file_needs_no_input_allocation_list() {
+        let len = 32 * 1024 * 1024 * 1024u64 + 8192;
+        let maximum = len + 80 * 1024 * 1024;
+        let mut writer = KandeloImageWriter::mkfs_with_inode_capacity(KandeloImageConfig {
+            size_bytes: maximum, max_size_bytes: Some(maximum),
+            growable_to_bytes: maximum, now_ms: 0,
+        }, Some(32)).unwrap();
+        let mut passes = 0;
+        writer.create_sparse_file_from(writer.root(), b"large", 0o600, 0, len, |visit| {
+            passes += 1;
+            for block in 1..(len / BLOCK_SIZE as u64) as u32 { visit(block)?; }
+            Ok(())
+        }).unwrap();
+        assert_eq!(passes, 2);
+        let image = writer.finish().unwrap();
+        assert!(image.resident_bytes() < 1024 * 1024);
+        let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+        let inode = filesystem.resolve(b"/large", true).unwrap();
+        assert_eq!(filesystem.stat_ino(inode).unwrap().size, len);
+        let mut zero = [1; 16];
+        assert_eq!(filesystem.read_at(inode, 0, &mut zero), Ok(16));
+        assert_eq!(zero, [0; 16]);
+        let mut cursor = filesystem.file_allocations(inode,
+            len / BLOCK_SIZE as u64 - 2..len / BLOCK_SIZE as u64).unwrap();
+        assert_eq!(cursor.next_block(), Ok(Some((len / BLOCK_SIZE as u64 - 2) as u32)));
+        assert_eq!(cursor.next_block(), Ok(Some((len / BLOCK_SIZE as u64 - 1) as u32)));
+        assert_eq!(cursor.next_block(), Ok(None));
     }
 
     #[test]
@@ -2653,6 +3903,144 @@ mod tests {
     // ── Geometry and failure modes ───────────────────────────────────
 
     #[test]
+    fn bitmap_prefix_windows_match_little_endian_bits_at_all_boundaries() {
+        for allocated in (0..=260u32).chain([32_767, 32_768, 32_769, 65_535, u32::MAX - 1, u32::MAX]) {
+            let boundary = u64::from(allocated / 8);
+            for offset in [0, 1, 31, 4094, 4095, 4096, boundary.saturating_sub(1), boundary,
+                boundary + 1, u64::MAX - 8, u64::MAX]
+            {
+                let mut bytes = [0xa5; 17];
+                read_bitmap_prefix(allocated, offset, &mut bytes);
+                for (index, byte) in bytes.into_iter().enumerate() {
+                    let start_bit = (u128::from(offset) + index as u128) * 8;
+                    let mut expected = 0;
+                    for bit in 0..8u32 {
+                        if start_bit + u128::from(bit) < u128::from(allocated) {
+                            expected |= 1 << bit;
+                        }
+                    }
+                    assert_eq!(byte, expected, "allocated={allocated} offset={offset} index={index}");
+                }
+                read_bitmap_prefix(allocated, offset, &mut []);
+            }
+        }
+    }
+
+    #[test]
+    fn bitmap_prefix_allocators_preserve_growth_generations_and_exhaustion() {
+        let mut writer = KandeloImageWriter::mkfs_with_inode_capacity(KandeloImageConfig {
+            size_bytes: 16 * BLOCK_SIZE as u64, max_size_bytes: Some(33 * BLOCK_SIZE as u64),
+            growable_to_bytes: 33 * BLOCK_SIZE as u64, now_ms: 0,
+        }, Some(67)).unwrap();
+        let first = writer.total_blocks - writer.free_blocks;
+        for block in first..16 {
+            assert_eq!(writer.block_alloc_no_grow(), Some(block));
+        }
+        assert_eq!(writer.block_alloc_no_grow(), None);
+        let generation = writer.generation;
+        assert_eq!(writer.block_alloc(), Ok(16));
+        assert_eq!(writer.total_blocks, 33);
+        assert_eq!(writer.generation, generation + 1);
+        for block in 17..33 { assert_eq!(writer.block_alloc(), Ok(block)); }
+        assert_eq!(writer.block_alloc(), Err(Errno::ENOSPC));
+        assert_eq!(writer.generation, generation + 1);
+        assert_eq!(writer.free_blocks, 0);
+        assert_eq!(writer.require_inode(0), Err(Errno::ENOENT));
+        assert_eq!(writer.require_inode(ROOT_INO), Ok(()));
+        for inode in 2..67 {
+            assert_eq!(writer.require_inode(inode), Err(Errno::ENOENT));
+            assert_eq!(writer.inode_alloc(), Ok(inode));
+            assert_eq!(writer.require_inode(inode), Ok(()));
+        }
+        assert_eq!(writer.inode_alloc(), Err(Errno::ENOSPC));
+        assert_eq!(writer.free_inodes, 0);
+        assert_eq!(writer.generation, generation + 66);
+        let bitmap_start = writer.inode_bitmap_start;
+        let image = writer.finish().unwrap();
+        let mut bytes = [0; 16];
+        image.read_at(&NoContent, u64::from(bitmap_start) * BLOCK_SIZE as u64, &mut bytes).unwrap();
+        assert_eq!(&bytes[..8], &[255; 8]);
+        assert_eq!(bytes[8], 7);
+        assert_eq!(&bytes[9..], &[0; 7]);
+    }
+
+    #[test]
+    fn bitmap_prefix_maximum_format_capacity_needs_no_resident_bitmap_pages() {
+        let maximum = u64::from(u32::MAX) * BLOCK_SIZE as u64;
+        let writer = KandeloImageWriter::mkfs_with_inode_capacity(KandeloImageConfig {
+            size_bytes: 64 * 1024, max_size_bytes: Some(maximum),
+            growable_to_bytes: maximum, now_ms: 0,
+        }, Some(32)).unwrap();
+        let bitmap_start = writer.block_bitmap_start;
+        let bitmap_blocks = writer.block_bitmap_blocks;
+        let allocated = writer.total_blocks - writer.free_blocks;
+        let image = writer.finish().unwrap();
+        assert!(image.len() > 512 * 1024 * 1024);
+        assert!(image.resident_bytes() < 16 * 1024);
+        let mut bytes = [0; BLOCK_SIZE];
+        image.read_at(&NoContent, u64::from(bitmap_start) * BLOCK_SIZE as u64, &mut bytes).unwrap();
+        assert_eq!(bytes, [255; BLOCK_SIZE]);
+        let boundary = u64::from(bitmap_start) * BLOCK_SIZE as u64 + u64::from(allocated / 8);
+        image.read_at(&NoContent, boundary, &mut bytes).unwrap();
+        assert_eq!(bytes[0], ((1u16 << (allocated % 8)) - 1) as u8);
+        assert!(bytes[1..].iter().all(|byte| *byte == 0));
+        let last = u64::from(bitmap_start + bitmap_blocks - 1) * BLOCK_SIZE as u64;
+        image.read_at(&NoContent, last, &mut bytes).unwrap();
+        assert_eq!(bytes, [0; BLOCK_SIZE]);
+        let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+        assert_eq!(filesystem.growth_ceiling_bytes(), Ok(maximum));
+        assert_eq!(filesystem.statfs().unwrap().f_bfree, 0);
+    }
+
+    #[test]
+    fn bitmap_prefix_survives_a_failed_creation_without_freeing_allocations() {
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(64 * 1024)).unwrap();
+        writer.create_file(writer.root(), b"kept", 0o644, Content::Bytes(b"kept")).unwrap();
+        assert_eq!(writer.create_file(writer.root(), b"huge", 0o644,
+            Content::Deferred { id: 7, len: 256 * 1024 }), Err(Errno::ENOSPC));
+        let allocated = writer.total_blocks - writer.free_blocks;
+        let bitmap_start = writer.block_bitmap_start;
+        let image = writer.finish().unwrap();
+        let mut bytes = [0; 32];
+        image.read_at(&NoContent, u64::from(bitmap_start) * BLOCK_SIZE as u64, &mut bytes).unwrap();
+        for block in 0..bytes.len() * 8 {
+            assert_eq!(bytes[block / 8] & (1 << (block % 8)) != 0, block < allocated as usize);
+        }
+        let filesystem = KandeloImageFs::mount(KandeloImageSource { image: &image, content: &NoContent }).unwrap();
+        let inode = filesystem.resolve(b"/kept", true).unwrap();
+        let mut kept = [0; 4];
+        assert_eq!(filesystem.read_at(inode, 0, &mut kept), Ok(4));
+        assert_eq!(&kept, b"kept");
+    }
+
+    #[test]
+    fn allocated_bitmap_prefix_stays_constant_memory_for_a_32_gib_working_set() {
+        let maximum = 34 * 1024 * 1024 * 1024u64;
+        let mut writer = KandeloImageWriter::mkfs_with_inode_capacity(KandeloImageConfig {
+            size_bytes: maximum, max_size_bytes: Some(maximum),
+            growable_to_bytes: maximum, now_ms: 0,
+        }, Some(32)).unwrap();
+        let first = writer.total_blocks - writer.free_blocks;
+        for index in 0..(1u32 << 23) {
+            assert_eq!(writer.block_alloc_no_grow(), Some(first + index));
+        }
+        let bitmap_start = writer.block_bitmap_start;
+        let allocated = writer.total_blocks - writer.free_blocks;
+        let image = writer.finish().unwrap();
+        assert!(image.resident_bytes() < 64 * 1024);
+        let mut bytes = [0u8; 32];
+        let offset = u64::from(bitmap_start) * BLOCK_SIZE as u64 + u64::from(allocated / 8) - 16;
+        assert_eq!(image.read_at(&NoContent, offset, &mut bytes), Ok(bytes.len()));
+        for (index, byte) in bytes.into_iter().enumerate() {
+            let byte_index = u64::from(allocated / 8) - 16 + index as u64;
+            let expected = if byte_index < u64::from(allocated / 8) { 255 }
+                else if byte_index == u64::from(allocated / 8) { ((1u16 << (allocated % 8)) - 1) as u8 }
+                else { 0 };
+            assert_eq!(byte, expected);
+        }
+    }
+
+    #[test]
     fn large_possible_capacity_keeps_unallocated_inode_pages_out_of_memory() {
         let maximum = 8 * 1024 * 1024 * 1024u64;
         let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig {
@@ -2673,8 +4061,7 @@ mod tests {
                 )
                 .expect("create");
         }
-        assert_eq!(writer.inode_bitmap.len(), BLOCK_SIZE);
-        assert_eq!(writer.block_bitmap.len(), BLOCK_SIZE);
+        assert_eq!(writer.total_inodes - writer.free_inodes, 42);
         assert_eq!(writer.inode_table.len(), 2 * BLOCK_SIZE);
         let missing = writer.total_inodes - 1;
         assert_eq!(writer.mkdir(missing, b"child", 0o755), Err(Errno::ENOENT));
@@ -2707,7 +4094,7 @@ mod tests {
     }
 
     #[test]
-    fn bitmap_grows_when_deferred_content_crosses_a_bitmap_page() {
+    fn bitmap_prefix_emits_allocations_across_a_bitmap_page() {
         let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig::fixed(256 * 1024 * 1024))
             .expect("mkfs");
         writer
@@ -2721,8 +4108,7 @@ mod tests {
                 },
             )
             .expect("create");
-        assert_eq!(writer.block_bitmap.len(), 2 * BLOCK_SIZE);
-        assert!(get_bit(&writer.block_bitmap, 32_768));
+        assert!(writer.total_blocks - writer.free_blocks > 32_768);
         let second_bitmap_block = writer.block_bitmap_start + 1;
         let image = writer.finish().expect("finish");
         let mut bytes = [0u8; BLOCK_SIZE];
@@ -2839,7 +4225,7 @@ mod tests {
         let root = w.root();
         w.create_file(root, b"plain", 0o644, Content::Bytes(b"no deferred files here"))
             .expect("create");
-        w.declare_deferred_section();
+        w.declare_deferred_section().unwrap();
 
         let image = w.finish().expect("finish");
         let content = NoContent;

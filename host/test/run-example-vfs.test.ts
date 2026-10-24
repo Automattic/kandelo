@@ -92,6 +92,7 @@ describe("run-example isolated filesystem", () => {
         isolated: true,
         rootfsImage: "default",
         persistentFixtureRoot: realpathSync(sourceRoot),
+        persistentImageIntegrityPolicy: "crc32c",
         experimentalResizablePersistencePath: journalPath,
       });
       expect(resolveRunExampleFilesystem({
@@ -102,12 +103,27 @@ describe("run-example isolated filesystem", () => {
         KANDELO_RUNNER_FIXTURE_CWD: "work",
         KANDELO_RUNNER_GUEST_PROGRAM: "work/test.wasm",
       }, "/ignored").verifyPersistenceReopen).toBe(true);
+      expect(resolveRunExampleFilesystem({
+        KANDELO_RUNNER_VFS: "persistent",
+        KANDELO_RUNNER_PERSISTENCE_PATH: journalPath,
+        KANDELO_RUNNER_PERSISTENCE_CHECKING: "sha256",
+        KANDELO_RUNNER_FIXTURE_ROOT: sourceRoot,
+        KANDELO_RUNNER_FIXTURE_CWD: "work",
+      }, "/ignored").persistentImageIntegrityPolicy).toBe("sha256");
     } finally {
       rmSync(sourceRoot, { recursive: true, force: true });
     }
   });
 
   it("rejects ambiguous modes and guest programs outside the owned snapshot", () => {
+    for (const value of ["", "sha512", "none"]) {
+      expect(() => resolveRunExampleFilesystem({ KANDELO_RUNNER_VFS: "persistent",
+        KANDELO_RUNNER_PERSISTENCE_CHECKING: value,
+      }, "/ignored")).toThrow();
+    }
+    expect(() => resolveRunExampleFilesystem({ KANDELO_RUNNER_VFS: "isolated",
+      KANDELO_RUNNER_PERSISTENCE_CHECKING: "crc32c",
+    }, "/ignored")).toThrow(/PERSISTENCE_CHECKING/);
     expect(() =>
       resolveRunExampleFilesystem({
         KANDELO_RUNNER_VFS: "sometimes",

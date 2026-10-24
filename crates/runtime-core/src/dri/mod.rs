@@ -25,7 +25,7 @@ pub fn vblank_tick() -> u32 {
 /// time. Shared between the per-process drain and any future caller
 /// that wants to synthesize a flip-complete event in tests.
 fn write_flip_complete_event(
-    event_ring: &mut alloc::collections::VecDeque<u8>,
+    event_ring: &mut crate::IoDeque<u8>,
     flip: &crate::ofd::PendingFlip,
     seq: u32,
     tv_sec: u32,
@@ -39,7 +39,7 @@ fn write_flip_complete_event(
     record[20..24].copy_from_slice(&tv_usec.to_le_bytes());
     record[24..28].copy_from_slice(&seq.to_le_bytes());
     record[28..32].copy_from_slice(&flip.crtc_id.to_le_bytes());
-    event_ring.extend(record.iter());
+    event_ring.extend_from_slice(&record);
 }
 
 /// Drain every queued page flip on one process's open card0 fds into
@@ -60,13 +60,11 @@ pub fn drain_pending_flips_for_process(
         if kms.pending_flips.is_empty() {
             continue;
         }
-        // `pending_flips` and `event_ring` share the same `&mut kms`
-        // borrow; take the flips first so iterating them doesn't hold
-        // a live borrow on the queue while we write the ring.
-        let flips = core::mem::take(&mut kms.pending_flips);
-        for flip in &flips {
-            write_flip_complete_event(&mut kms.event_ring, flip, seq, tv_sec, tv_usec);
+        for index in 0..kms.pending_flips.len() {
+            let flip = kms.pending_flips[index];
+            write_flip_complete_event(&mut kms.event_ring, &flip, seq, tv_sec, tv_usec);
         }
+        kms.pending_flips.clear();
         crate::epoll::notify(crate::epoll::Source::Description(id), 0x41);
     }
 }
@@ -77,10 +75,8 @@ pub fn drain_pending_flips_for_process(
 /// means `drmModePageFlip → poll → drmHandleEvent` returns at real
 /// monitor-refresh rate, not at ioctl rate.
 pub fn drain_pending_flips(seq: u32, tv_sec: u32, tv_usec: u32) {
-    crate::process_table::with_processes(|procs| {
-        for proc in procs {
-            drain_pending_flips_for_process(proc, seq, tv_sec, tv_usec);
-        }
+    crate::process_table::with_processes(|proc| {
+        drain_pending_flips_for_process(proc, seq, tv_sec, tv_usec);
     });
 }
 

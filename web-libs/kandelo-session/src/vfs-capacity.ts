@@ -20,9 +20,9 @@ export interface KandeloVfsImageCapacity {
 }
 
 /**
- * Validate an image's authoritative SharedFS capacity before allocating its
- * live SharedArrayBuffer. A metadata declaration, when present, must match the
- * superblock; profile policy remains the upper bound for untrusted images.
+ * Validate the decoded container size and Rust-parsed filesystem ceiling
+ * against the resident-image profile budget. Container framing is outside the
+ * filesystem; metadata must match its authoritative superblock ceiling.
  */
 export function assertVfsImageFitsProfile(
   capacity: KandeloVfsImageCapacity,
@@ -34,12 +34,15 @@ export function assertVfsImageFitsProfile(
   if (!Number.isSafeInteger(profileMaxBytes) || profileMaxBytes <= 0) {
     throw new Error(`${label} profile has an invalid filesystem capacity limit`);
   }
-  if (
-    capacity.byteLength > profileMaxBytes ||
-    capacity.maxByteLength > profileMaxBytes
-  ) {
+  if (capacity.maxByteLength > profileMaxBytes) {
     throw new Error(
       `${label} requires ${capacity.maxByteLength} VFS bytes, ` +
+        `but its profile permits ${profileMaxBytes}`,
+    );
+  }
+  if (capacity.byteLength > profileMaxBytes) {
+    throw new Error(
+      `${label} requires ${capacity.byteLength} decoded image bytes, ` +
         `but its profile permits ${profileMaxBytes}`,
     );
   }
@@ -54,7 +57,7 @@ export function assertVfsImageCapacityMetadata(
     !Number.isSafeInteger(capacity.byteLength) ||
     !Number.isSafeInteger(capacity.maxByteLength) ||
     capacity.byteLength <= 0 ||
-    capacity.maxByteLength < capacity.byteLength
+    capacity.maxByteLength <= 0
   ) {
     throw new Error(`${label} has an invalid filesystem capacity`);
   }

@@ -67,7 +67,7 @@ describe("process generation detach host parity", () => {
         /processMemoryCreators\.closeAndRunAfterDrain\(\s*performDestroy\s*,?\s*\)/,
       );
       expect(destroy).toContain("processGenerationDetaches.retryPending()");
-      expect(destroy).toContain("processMemoryAllocator.clear()");
+      expect(destroy).toMatch(/processMemoryAllocator(?:\?)?\.clear\(\)/);
       expect(destroy).not.toContain("processes.clear()");
       // The outer kernel Worker can be a safe final containment boundary only
       // after it has explicitly terminated every process Worker and the

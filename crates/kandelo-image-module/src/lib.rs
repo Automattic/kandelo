@@ -1,8 +1,8 @@
 //! The VFS image builder module: `runtime-core`'s in-kernel filesystem and
 //! image writer, compiled by default as a standalone Wasm module with zero host
 //! imports so TypeScript image builders can use the same Rust code the kernel
-//! runs. The optional positioned-image variant reads an external image through
-//! one synchronous host import instead of adopting an image-sized buffer.
+//! runs. The optional positioned-image variant uses synchronous byte-storage
+//! imports for bounded external-image reads and checked streaming output.
 #![cfg_attr(any(target_arch = "wasm32", target_arch = "wasm64"), no_std)]
 extern crate alloc;
 
@@ -68,6 +68,9 @@ use runtime_core::seal;
 use runtime_core::rootfs;
 use wasm_posix_shared::Errno;
 
+#[cfg(feature = "positioned-image")]
+mod persistent_writer;
+
 /// Hand the caller a buffer in this module's memory to write into.
 ///
 /// The builder owns the allocation until it passes the pointer to an entry
@@ -114,6 +117,11 @@ pub extern "C" fn sm_alloc(len: usize) -> usize {
     // SAFETY: size is non-zero, so this is a valid allocation request.
     let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
     ptr as usize
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn sm_overlay_activation_codec(operation: u32, input: *const u8, input_length: u32, output: *mut u8, output_capacity: u32) -> i32 {
+    unsafe { runtime_core::overlay_activation::codec_ffi(operation, input, input_length, output, output_capacity) }
 }
 
 /// Return a buffer obtained from [`sm_alloc`].
@@ -299,6 +307,19 @@ pub unsafe extern "C" fn sm_load_image(ptr: usize, len: usize) -> i32 {
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn sm_set_metadata_budget_bytes(limit: u32) -> i32 {
+    match rootfs::set_metadata_budget_bytes(limit as usize) {
+        Ok(()) => 0,
+        Err(error) => err(error),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn sm_metadata_used_bytes() -> u32 {
+    rootfs::metadata_budget_usage().0 as u32
+}
+
 #[cfg(feature = "positioned-image")]
 #[unsafe(no_mangle)]
 pub extern "C" fn sm_load_image_positioned(len_lo: u32, len_hi: u32) -> i32 {
@@ -315,6 +336,45 @@ pub extern "C" fn sm_load_image_positioned(len_lo: u32, len_hi: u32) -> i32 {
             unsafe { *IMAGE.0.get() = None };
             err(error)
         }
+    }
+}
+
+#[cfg(feature = "positioned-image")]
+fn persistent_physical_read(offset: u64, destination: &mut [u8]) -> Result<usize, Errno> {
+    let offset = i64::try_from(offset).map_err(|_| Errno::EOVERFLOW)?;
+    let count = destination.len().min(runtime_core::persistent_image::DATA_BYTES);
+    let result = unsafe { host_image_read(offset, destination.as_mut_ptr(), count as u32) };
+    if result < 0 {
+        return Err(Errno::from_u32(result.unsigned_abs()).unwrap_or(Errno::EIO));
+    }
+    let read = result as usize;
+    if read > count { return Err(Errno::EIO) }
+    Ok(read)
+}
+
+#[cfg(feature = "positioned-image")]
+#[unsafe(no_mangle)]
+pub extern "C" fn sm_load_persistent_image(
+    len_lo: u32, len_hi: u32,
+    digest0: u32, digest1: u32, digest2: u32, digest3: u32,
+    digest4: u32, digest5: u32, digest6: u32, digest7: u32,
+    data_pages: u32, index_pages: u32,
+) -> i32 {
+    let len = (u64::from(len_hi) << 32) | u64::from(len_lo);
+    let config = match runtime_core::persistent_image::CacheConfig::from_host_limits(data_pages as usize, index_pages as usize) {
+        Ok(config) => config,
+        Err(error) => return err(error),
+    };
+    let mut digest = [0u8; 32];
+    for (index, word) in [digest0, digest1, digest2, digest3, digest4, digest5, digest6, digest7].into_iter().enumerate() {
+        digest[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    release_image();
+    use_reference_clock();
+    unsafe { *IMAGE.0.get() = None };
+    match rootfs::load_persistent_image(len, digest, config, persistent_physical_read, image_source) {
+        Ok(entries) => i32::try_from(entries).unwrap_or(i32::MAX),
+        Err(error) => err(error),
     }
 }
 
@@ -522,6 +582,30 @@ pub unsafe extern "C" fn sm_write_file(
         Ok(_) => err(Errno::EIO),
         Err(e) => err(e),
     }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_write_file_chunk(
+    path_ptr: usize,
+    path_len: usize,
+    offset: i64,
+    mode: u32,
+    truncate: i32,
+    content_ptr: usize,
+    content_len: usize,
+) -> i32 {
+    if content_len > 64 * 1024 { return err(Errno::EINVAL); }
+    let path = unsafe { slice(path_ptr, path_len) };
+    let content = unsafe { slice(content_ptr, content_len) };
+    match rootfs::write_file_at(path, offset, content, mode, truncate != 0, image_source) {
+        Ok(written) => written as i32,
+        Err(error) => err(error),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn sm_export_image_cancel() {
+    rootfs::reset_image_export();
 }
 
 /// Field order of the [`sm_lstat`] record. Eight `u64`s, little-endian:
@@ -801,74 +885,18 @@ pub unsafe extern "C" fn sm_read_dir(
 /// `out_ptr`/`out_len` must describe a writable range when `out_len` is not 0.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sm_lazy_entries(out_ptr: usize, out_len: usize) -> i32 {
-    fn put_u32(out: &mut alloc::vec::Vec<u8>, value: u32) {
-        out.extend_from_slice(&value.to_le_bytes());
-    }
-    fn put_u64(out: &mut alloc::vec::Vec<u8>, value: u64) {
-        out.extend_from_slice(&value.to_le_bytes());
-    }
-    fn put_bytes(out: &mut alloc::vec::Vec<u8>, bytes: &[u8]) -> Result<(), Errno> {
-        put_u32(out, u32::try_from(bytes.len()).map_err(|_| Errno::EINVAL)?);
-        out.extend_from_slice(bytes);
-        Ok(())
-    }
-
-    let files = rootfs::lazy_entries();
-    // The whole description, not just the opaque half. Reading the URL and the
-    // digest out of the payload was the consumer's job until v5 gave them a
-    // typed home, and that consumer had to PARSE a blob the format promises
-    // nobody parses. Emitting them here is what lets it stop.
-    let archives = rootfs::archive_descriptions();
-    let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-    let Ok(file_count) = u32::try_from(files.len()) else {
-        return err(Errno::EINVAL);
+    let required = match rootfs::serialize_lazy_entries(None) {
+        Ok(length) => length,
+        Err(error) => return err(error),
     };
-    let Ok(archive_count) = u32::try_from(archives.len()) else {
-        return err(Errno::EINVAL);
-    };
-    put_u32(&mut buf, file_count);
-    put_u32(&mut buf, archive_count);
-    for entry in &files {
-        if put_bytes(&mut buf, &entry.path).is_err() {
-            return err(Errno::EINVAL);
-        }
-        put_u64(&mut buf, entry.ino);
-        put_u64(&mut buf, entry.size);
-        put_u32(&mut buf, entry.archive_id);
-        if put_bytes(&mut buf, &entry.source_path).is_err()
-            || put_bytes(&mut buf, &entry.payload).is_err()
-            || put_bytes(&mut buf, &entry.uri).is_err()
-            || put_bytes(&mut buf, &entry.digest).is_err()
-        {
-            return err(Errno::EINVAL);
-        }
+    if out_len == 0 { return required as i32; }
+    if out_len < required { return err(Errno::ERANGE); }
+    if out_ptr == 0 || out_ptr.checked_add(required).is_none() { return err(Errno::EINVAL); }
+    let output = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, required) };
+    match rootfs::serialize_lazy_entries(Some(output)) {
+        Ok(length) => length as i32,
+        Err(error) => err(error),
     }
-    for (archive_id, bytes, uri, digest, payload) in &archives {
-        put_u32(&mut buf, *archive_id);
-        put_u64(&mut buf, *bytes);
-        if put_bytes(&mut buf, payload).is_err()
-            || put_bytes(&mut buf, uri).is_err()
-            || put_bytes(&mut buf, digest).is_err()
-        {
-            return err(Errno::EINVAL);
-        }
-    }
-
-    let Ok(required) = i32::try_from(buf.len()) else {
-        return err(Errno::ERANGE);
-    };
-    if out_len == 0 {
-        return required;
-    }
-    if out_len < buf.len() {
-        return err(Errno::ERANGE);
-    }
-    if out_ptr == 0 {
-        return err(Errno::EINVAL);
-    }
-    let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
-    out[..buf.len()].copy_from_slice(&buf);
-    required
 }
 
 /// Stream the built image's bytes at `offset` into `out`. Returns the byte
@@ -911,7 +939,10 @@ pub unsafe extern "C" fn sm_export_image_read(offset: i64, out_ptr: usize, out_l
     // Only at offset 0, which is where the export plan is built. A later chunk
     // is reading a plan whose payloads are already sealed.
     if offset == 0 {
-        let declared = rootfs::archive_payloads();
+        let declared = match rootfs::archive_payloads() {
+            Ok(declared) => declared,
+            Err(error) => return err(error),
+        };
         match seal::seal_cohorts(&declared) {
             Ok(sealed) => {
                 for (archive_id, payload) in sealed {
@@ -932,6 +963,18 @@ pub unsafe extern "C" fn sm_export_image_read(offset: i64, out_ptr: usize, out_l
     match rootfs::export_container_read(offset, out, &mut source) {
         Ok(n) => n as i32,
         Err(e) => err(e),
+    }
+}
+
+#[cfg(feature = "positioned-image")]
+#[unsafe(no_mangle)]
+pub extern "C" fn sm_export_image_length() -> i64 {
+    let mut output = [0u8; 1];
+    let result = unsafe { sm_export_image_read(0, output.as_mut_ptr() as usize, 0) };
+    if result < 0 { return i64::from(result) }
+    match rootfs::prepared_export_container_length().and_then(|length| i64::try_from(length).map_err(|_| Errno::EOVERFLOW)) {
+        Ok(length) => length,
+        Err(error) => i64::from(err(error)),
     }
 }
 
@@ -1001,20 +1044,24 @@ pub unsafe extern "C" fn sm_image_read(offset: i64, out_ptr: usize, out_len: usi
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn sm_loaded_image_capacity() -> u64 {
+    rootfs::loaded_image_capacity_bytes().unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn sm_image_metadata(out_ptr: usize, out_len: usize) -> i32 {
-    let metadata = rootfs::image_metadata();
-    let len = metadata.as_ref().map_or(0, |bytes| bytes.len());
-    if out_len == 0 {
-        return i32::try_from(len).unwrap_or(i32::MAX);
-    }
-    if out_ptr == 0 || out_len < len {
+    if out_len != 0 && out_ptr == 0 {
         return err(Errno::EINVAL);
     }
-    if let Some(bytes) = metadata {
-        let out = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
-        out[..bytes.len()].copy_from_slice(&bytes);
+    let output = if out_len == 0 {
+        None
+    } else {
+        Some(unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) })
+    };
+    match rootfs::copy_image_metadata(output) {
+        Ok(len) => i32::try_from(len).unwrap_or(i32::MAX),
+        Err(error) => err(error),
     }
-    i32::try_from(len).unwrap_or(i32::MAX)
 }
 
 /// Set what the exported image should be: its declared capacity, and the
@@ -1044,9 +1091,6 @@ pub unsafe extern "C" fn sm_set_image_options(
     // image you will produce" rather than one per setting — the same reasoning
     // that folded capacity into the headroom record instead of adding a second
     // query.
-    if let Err(e) = rootfs::set_image_capacity(capacity_bytes) {
-        return err(e);
-    }
     // A timestamp to stamp on every exported inode, or NEGATIVE for "use each
     // inode's own". It rides here rather than through an entry point of its own
     // for the same reason capacity and metadata do: it is a statement about the
@@ -1060,9 +1104,6 @@ pub unsafe extern "C" fn sm_set_image_options(
     } else {
         Some(normalize_timestamps_ms as u64)
     };
-    if let Err(e) = rootfs::set_export_timestamp(normalized) {
-        return err(e);
-    }
 
     let bytes: &[u8] = if len == 0 {
         b""
@@ -1072,7 +1113,7 @@ pub unsafe extern "C" fn sm_set_image_options(
         }
         unsafe { slice(ptr, len) }
     };
-    ok_or_errno(rootfs::set_image_metadata(bytes))
+    ok_or_errno(rootfs::set_image_options(capacity_bytes, normalized, bytes))
 }
 
 /// Register a file whose bytes live in a lazy archive rather than the image.
@@ -1194,8 +1235,11 @@ pub unsafe extern "C" fn sm_register_lazy_file(
         // saw as a second, different description of one archive and refused.
         let cohort_id = unsafe { slice(cohort_id_ptr, cohort_id_len) };
         let cohort_member = unsafe { slice(cohort_member_ptr, cohort_member_len) };
-        let existing = rootfs::archive_payload(archive_id).unwrap_or_default();
-        let mut payload = match seal::decode(&existing) {
+        let existing = match rootfs::archive_payload(archive_id) {
+            Ok(existing) => existing.unwrap_or_default(),
+            Err(error) => return err(error),
+        };
+        let mut payload = match seal::decode_ref(&existing) {
             Ok(payload) => payload,
             Err(e) => return err(e),
         };
@@ -1203,7 +1247,7 @@ pub unsafe extern "C" fn sm_register_lazy_file(
             if !payload.descriptor.is_empty() && payload.descriptor != archive_payload {
                 return err(Errno::EINVAL);
             }
-            payload.descriptor = archive_payload.to_vec();
+            payload.descriptor = archive_payload;
         }
         // The cohort declaration rides here for the same reason the length and
         // the description do: a cohort MEMBER is an archive, and this is where
@@ -1225,9 +1269,9 @@ pub unsafe extern "C" fn sm_register_lazy_file(
                 Some(existing) if existing != declared => return err(Errno::EINVAL),
                 Some(_) => {}
                 None => {
-                    payload.seal = seal::SealState::Pending {
-                        id: cohort_id.to_vec(),
-                        member: cohort_member.to_vec(),
+                    payload.seal = seal::SealStateRef::Pending {
+                        id: cohort_id,
+                        member: cohort_member,
                         expected_count: cohort_expected_count,
                     }
                 }
@@ -1239,10 +1283,10 @@ pub unsafe extern "C" fn sm_register_lazy_file(
         // what `decode` accepts early -- and encoding that same absence as
         // nine bytes would put a deferred section into images that have no
         // deferred anything to describe.
-        let wrapped = if payload.descriptor.is_empty() && payload.seal == seal::SealState::None {
-            alloc::vec::Vec::new()
+        let wrapped = if payload.descriptor.is_empty() && payload.seal == seal::SealStateRef::None {
+            runtime_core::IoBuffer::new()
         } else {
-            match seal::encode(&payload) {
+            match seal::encode_ref(&payload) {
                 Ok(bytes) => bytes,
                 Err(e) => return err(e),
             }
@@ -1334,11 +1378,11 @@ pub unsafe extern "C" fn sm_check_headroom(
         minimum_free_bytes,
         minimum_free_inodes,
     };
-    let outcome = match rootfs::check_export_headroom(&headroom) {
+    let outcome = match rootfs::check_export_headroom(&headroom, &mut image_source) {
         Ok(outcome) => outcome,
         Err(e) => return err(e),
     };
-    let capacity = match rootfs::export_capacity_bytes() {
+    let capacity = match rootfs::export_capacity_bytes(&mut image_source) {
         Ok(bytes) => bytes,
         Err(e) => return err(e),
     };
@@ -1439,6 +1483,42 @@ mod tests {
         let st = rootfs::lstat(b"/usr/bin/sh").expect("symlink exists");
         assert_eq!(st.st_mode & 0o7777, 0o777);
         assert_eq!((st.st_uid, st.st_gid), (7, 8));
+    }
+
+    #[test]
+    fn bounded_file_chunks_append_and_patch_without_replacing_the_prefix() {
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        for (offset, content, truncate) in [(0, b"abc".as_slice(), 1), (3, b"de".as_slice(), 0), (1, b"x".as_slice(), 0)] {
+            assert_eq!(with_two(b"/stream", content, |path_pointer, path_length, data_pointer, data_length| unsafe {
+                sm_write_file_chunk(path_pointer, path_length, offset, 0o640, truncate, data_pointer, data_length)
+            }), content.len() as i32);
+        }
+        let output = sm_alloc(5);
+        assert_eq!(with_path(b"/stream", |pointer, length| unsafe { sm_read_file(pointer, length, 0, output, 5) }), 5);
+        assert_eq!(unsafe { core::slice::from_raw_parts(output as *const u8, 5) }, b"axcde");
+        assert_eq!(with_path(b"/stream", |pointer, length| unsafe {
+            sm_write_file_chunk(pointer, length, 0, 0o600, 1, 0, 65537)
+        }), err(Errno::EINVAL));
+        assert_eq!(rootfs::lstat(b"/stream").unwrap().st_size, 5);
+        unsafe { sm_free(output, 5) };
+    }
+
+    #[test]
+    fn export_cancellation_releases_native_plan_credit_without_resetting_files() {
+        assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(with_two(b"/value", b"kept", |path_pointer, path_length, data_pointer, data_length| unsafe {
+            sm_write_file(path_pointer, path_length, 0o644, data_pointer, data_length)
+        }), 0);
+        let baseline = rootfs::io_budget_usage().0;
+        let output = sm_alloc(4096);
+        assert!(unsafe { sm_export_image_read(0, output, 4096) } > 0);
+        assert!(rootfs::io_budget_usage().0 > baseline);
+        sm_export_image_cancel();
+        sm_export_image_cancel();
+        assert_eq!(rootfs::io_budget_usage().0, baseline);
+        assert_eq!(rootfs::lstat(b"/value").unwrap().st_size, 4);
+        unsafe { sm_free(output, 4096) };
+        assert!(!drain_export().is_empty());
     }
 
     #[test]
@@ -2680,6 +2760,7 @@ mod tests {
         // only by the export, so an image loaded and re-exported came back
         // having forgotten its own declarations.
         assert_eq!(sm_reset(0o755, 0, 0), 0);
+        assert_eq!(sm_loaded_image_capacity(), 0);
         assert_eq!(with_two(b"/f", b"hello", |pp, pl, cp, cl| unsafe {
             sm_write_file(pp, pl, 0o644, cp, cl)
         }), 0);
@@ -2698,6 +2779,7 @@ mod tests {
         // A DIFFERENT filesystem, with nothing declared on it.
         sm_reset(0o755, 0, 0);
         assert!(load_image_bytes(&original) > 0);
+        assert_eq!(sm_loaded_image_capacity(), 64 * 1024 * 1024);
         let rewritten = drain_export();
 
         let body = runtime_core::kandelo_image_fs::unwrap_vfsi(&rewritten).expect("a container");
@@ -3129,6 +3211,29 @@ mod tests {
     }
 
     #[test]
+    fn lazy_enumeration_refuses_unadmitted_scratch_without_touching_output() {
+        fresh_tree();
+        assert_eq!(register_member(b"/opt/solo", 0, b"", b"{\"url\":\"https://x/solo\"}"), 0);
+        struct Restore(usize);
+        impl Drop for Restore {
+            fn drop(&mut self) { rootfs::set_io_budget_bytes(self.0).unwrap(); }
+        }
+        let restore = Restore(rootfs::io_budget_usage().1);
+        let required = unsafe { sm_lazy_entries(0, 0) };
+        assert!(required > 8);
+        let pointer = sm_alloc(required as usize);
+        unsafe { core::ptr::write_bytes(pointer as *mut u8, 0xCC, required as usize) };
+        rootfs::set_io_budget_bytes(2 * 1024 * 1024 + 16).unwrap();
+        assert_eq!(unsafe { sm_lazy_entries(0, 0) }, -(Errno::ENOMEM as i32));
+        assert_eq!(unsafe { sm_lazy_entries(pointer, required as usize) }, -(Errno::ENOMEM as i32));
+        let output = unsafe { core::slice::from_raw_parts(pointer as *const u8, required as usize) };
+        assert!(output.iter().all(|byte| *byte == 0xCC));
+        drop(restore);
+        assert_eq!(unsafe { sm_lazy_entries(pointer, required as usize) }, required);
+        unsafe { sm_free(pointer, required as usize) };
+    }
+
+    #[test]
     fn enumerating_into_a_buffer_too_small_for_the_set_fails_loudly() {
         // The size probe exists so a caller can allocate; a caller that
         // allocated from a STALE probe must not get a truncated record set
@@ -3143,6 +3248,29 @@ mod tests {
             -(Errno::ERANGE as i32),
         );
         unsafe { sm_free(small, required - 1) };
+    }
+
+    #[test]
+    fn cohort_resource_refusal_preserves_registration_and_export_output_then_retries() {
+        fresh_tree();
+        assert_eq!(register_cohort_member(b"/opt/a", 1, b"a", b"descriptor", b"group", b"member", 1), 0);
+        let before = rootfs::archive_payload(1).unwrap().unwrap().to_vec();
+        let baseline = rootfs::io_budget_usage().0;
+        struct Restore(usize);
+        impl Drop for Restore {
+            fn drop(&mut self) { rootfs::set_io_budget_bytes(self.0).unwrap(); }
+        }
+        let restore = Restore(rootfs::io_budget_usage().1);
+        rootfs::set_io_budget_bytes(2 * 1024 * 1024 + baseline + 1).unwrap();
+        assert_eq!(register_cohort_member(b"/opt/b", 1, b"b", b"", b"group", b"member", 1), -(Errno::ENOMEM as i32));
+        let mut output = [0xCC; 16];
+        assert_eq!(unsafe { sm_export_image_read(0, output.as_mut_ptr() as usize, output.len()) }, -(Errno::ENOMEM as i32));
+        assert_eq!(output, [0xCC; 16]);
+        assert_eq!(rootfs::io_budget_usage().0, baseline);
+        drop(restore);
+        assert_eq!(rootfs::archive_payload(1).unwrap().unwrap(), before);
+        let image = drain_export();
+        assert!(load_image_bytes(&image) > 0);
     }
 
     #[test]
@@ -3337,7 +3465,7 @@ mod tests {
         );
 
         // And the description SURVIVED the member that did not carry it.
-        let payloads = rootfs::archive_payloads();
+        let payloads = rootfs::archive_payloads().unwrap();
         let (_, stored) = payloads.iter().find(|(id, _)| *id == 1).expect("the archive");
         assert_eq!(seal::decode(stored).expect("decode").descriptor, descriptor);
     }
@@ -3357,7 +3485,7 @@ mod tests {
             sm_mkdir(pp, pl, 0o755, 0, 0)
         }), 0);
         assert_eq!(register_member(b"/opt/one", 1, b"one", b""), 0);
-        let payloads = rootfs::archive_payloads();
+        let payloads = rootfs::archive_payloads().unwrap();
         let (_, stored) = payloads.iter().find(|(id, _)| *id == 1).expect("the archive");
         assert!(stored.is_empty(), "an undescribed archive carries no payload");
     }

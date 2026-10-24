@@ -1,4 +1,5 @@
 use crate::persistent_overlay::{OverlayKey, OverlayStorage};
+use crate::IoBuffer;
 use sha2::{Digest, Sha256};
 use wasm_posix_shared::Errno;
 
@@ -17,6 +18,112 @@ const METADATA_RECORDS_PER_PAGE: usize = 14;
 const HASHED_METADATA_RECORD_BYTES: usize = 312;
 const HASHED_METADATA_RECORDS_PER_PAGE: usize = 13;
 const METADATA_PAGE_BYTES: usize = HASHED_METADATA_RECORD_BYTES * HASHED_METADATA_RECORDS_PER_PAGE;
+const READ_CACHE_PAGE_BYTES: usize = 4096;
+const READ_CACHE_MAX_PAGES: usize = 32;
+
+struct CachedIndexPage {
+    offset: u64,
+    length: usize,
+    bytes: IoBuffer<u8>,
+}
+
+struct IndexReadCache {
+    pages: IoBuffer<CachedIndexPage>,
+    limit: usize,
+}
+
+impl IndexReadCache {
+    fn new() -> Self {
+        let limit = (crate::io_buffer::IO_MEMORY.usage().1 / 64 / READ_CACHE_PAGE_BYTES)
+            .min(READ_CACHE_MAX_PAGES);
+        Self { pages: IoBuffer::new(), limit }
+    }
+
+    fn discard(&mut self) -> bool {
+        let owned = self.pages.capacity() != 0;
+        self.pages = IoBuffer::new();
+        owned
+    }
+
+    fn remember(&mut self, offset: u64, source: &[u8]) -> Result<(), Errno> {
+        if source.len() > READ_CACHE_PAGE_BYTES { return Err(Errno::EIO); }
+        if self.pages.len() < self.limit {
+            let prepared = (|| {
+                let mut bytes = IoBuffer::try_filled(READ_CACHE_PAGE_BYTES, 0)?;
+                self.pages.try_reserve(1)?;
+                bytes[..source.len()].copy_from_slice(source);
+                Ok(CachedIndexPage { offset, length: source.len(), bytes })
+            })();
+            match prepared {
+                Ok(page) => { self.pages.push(page); return Ok(()); }
+                Err(Errno::ENOMEM) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        if let Some(page) = self.pages.first_mut() {
+            page.bytes[..source.len()].copy_from_slice(source);
+            page.offset = offset;
+            page.length = source.len();
+            self.pages.rotate_left(1);
+        }
+        Ok(())
+    }
+
+    fn read_exact_at<S: OverlayStorage>(&mut self, storage: &mut S, offset: u64, destination: &mut [u8], admit: bool) -> Result<(), Errno> {
+        if destination.len() > READ_CACHE_PAGE_BYTES { return Err(Errno::EIO); }
+        if let Some(position) = self.pages.iter().position(|page| page.offset == offset && page.length == destination.len()) {
+            destination.copy_from_slice(&self.pages[position].bytes[..destination.len()]);
+            self.pages[position..].rotate_left(1);
+            return Ok(());
+        }
+        storage.read_exact_at(offset, destination)?;
+        if admit { self.remember(offset, destination) } else { Ok(()) }
+    }
+}
+
+pub(crate) struct CheckpointHeader {
+    version: u32,
+    base_digest: [u8; 32],
+    journal_digest: [u8; 32],
+    journal_end: u64,
+    count: u64,
+    next_sequence: u64,
+}
+
+impl CheckpointHeader {
+    pub(crate) const BYTES: usize = HEADER_BYTES;
+
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, Errno> {
+        if bytes.len() != HEADER_BYTES || &bytes[..4] != MAGIC
+            || bytes[128..] != Sha256::digest(&bytes[..128])[..]
+        {
+            return Err(Errno::EIO);
+        }
+        let version = u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| Errno::EIO)?);
+        if !matches!(version, VERSION | TOMBSTONE_VERSION | METADATA_VERSION
+            | HASHED_METADATA_VERSION | CANONICAL_BLOCK_VERSION)
+        {
+            return Err(Errno::EIO);
+        }
+        let header = Self {
+            version,
+            base_digest: bytes[8..40].try_into().map_err(|_| Errno::EIO)?,
+            journal_digest: bytes[40..72].try_into().map_err(|_| Errno::EIO)?,
+            journal_end: u64::from_le_bytes(bytes[72..80].try_into().map_err(|_| Errno::EIO)?),
+            count: u64::from_le_bytes(bytes[80..88].try_into().map_err(|_| Errno::EIO)?),
+            next_sequence: u64::from_le_bytes(bytes[88..96].try_into().map_err(|_| Errno::EIO)?),
+        };
+        if header.journal_end < 72 || header.next_sequence == 0 {
+            return Err(Errno::EIO);
+        }
+        record_offset(header.count).map_err(|_| Errno::EIO)?;
+        Ok(header)
+    }
+
+    pub(crate) fn requires_conversion(&self) -> bool {
+        matches!(self.version, VERSION | TOMBSTONE_VERSION)
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MetadataCheckpointEntry {
@@ -66,9 +173,11 @@ impl MetadataCheckpointEntry {
             (1, 0) => OverlayKey::Inode(inode),
             (2, 0) => OverlayKey::FileSize(inode),
             (3, 0) => OverlayKey::FileZeroFrom(inode),
-            (4, 1..=255) => OverlayKey::Dirent {
-                parent: inode,
-                name: bytes[10..10 + name_length].to_vec(),
+            (4, 1..=255) => {
+                let mut name = alloc::vec::Vec::new();
+                name.try_reserve_exact(name_length).map_err(|_| Errno::ENOMEM)?;
+                name.extend_from_slice(&bytes[10..10 + name_length]);
+                OverlayKey::Dirent { parent: inode, name }
             },
             _ => return Err(Errno::EIO),
         };
@@ -187,6 +296,7 @@ impl BlockCheckpointEntry {
 
 pub struct BlockCheckpoint<S: OverlayStorage> {
     storage: S,
+    read_cache: IndexReadCache,
     count: u64,
     journal_end: u64,
     next_sequence: u64,
@@ -203,18 +313,8 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
     pub fn indexed_journal_digest(storage: &mut S) -> Result<Option<[u8; 32]>, Errno> {
         let mut header = [0; HEADER_BYTES];
         storage.read_exact_at(0, &mut header)?;
-        let version = u32::from_le_bytes(header[4..8].try_into().map_err(|_| Errno::EIO)?);
-        if version != METADATA_VERSION && version != HASHED_METADATA_VERSION
-            && version != CANONICAL_BLOCK_VERSION
-        {
-            return Ok(None);
-        }
-        if &header[..4] != MAGIC || header[128..] != Sha256::digest(&header[..128])[..] {
-            return Err(Errno::EIO);
-        }
-        let mut digest = [0; 32];
-        digest.copy_from_slice(&header[40..72]);
-        Ok(Some(digest))
+        let decoded = CheckpointHeader::decode(&header)?;
+        Ok((!decoded.requires_conversion()).then_some(decoded.journal_digest))
     }
 
     pub fn create(
@@ -330,6 +430,7 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         storage.flush()?;
         Ok(Self {
             storage,
+            read_cache: IndexReadCache::new(),
             count,
             journal_end,
             next_sequence,
@@ -368,6 +469,7 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         {
             return Err(Errno::EIO);
         }
+        self.discard_read_caches();
         let block_digest = &header[96..128];
         let mut metadata_digest = Sha256::new();
         let mut previous = None;
@@ -429,25 +531,15 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         }
         let mut header = [0; HEADER_BYTES];
         storage.read_exact_at(0, &mut header)?;
-        let version = u32::from_le_bytes(header[4..8].try_into().map_err(|_| Errno::EIO)?);
-        if &header[..4] != MAGIC
-            || (version != VERSION
-                && version != TOMBSTONE_VERSION
-                && version != METADATA_VERSION
-                && version != HASHED_METADATA_VERSION
-                && version != CANONICAL_BLOCK_VERSION)
-            || header[8..40] != base_digest
-            || header[40..72] != journal_digest
-            || u64::from_le_bytes(header[72..80].try_into().map_err(|_| Errno::EIO)?) != journal_end
-            || header[128..] != Sha256::digest(&header[..128])[..]
+        let decoded = CheckpointHeader::decode(&header)?;
+        let version = decoded.version;
+        if decoded.base_digest != base_digest || decoded.journal_digest != journal_digest
+            || decoded.journal_end != journal_end
         {
             return Err(Errno::EIO);
         }
-        let count = u64::from_le_bytes(header[80..88].try_into().map_err(|_| Errno::EIO)?);
-        let next_sequence = u64::from_le_bytes(header[88..96].try_into().map_err(|_| Errno::EIO)?);
-        if next_sequence == 0 {
-            return Err(Errno::EIO);
-        }
+        let count = decoded.count;
+        let next_sequence = decoded.next_sequence;
         let block_end = record_offset(count).map_err(|_| Errno::EIO)?;
         let storage_length = storage.len()?;
         let has_metadata = version == METADATA_VERSION || version == HASHED_METADATA_VERSION;
@@ -524,6 +616,7 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         }
         Ok(Self {
             storage,
+            read_cache: IndexReadCache::new(),
             count,
             journal_end,
             next_sequence,
@@ -559,6 +652,10 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         &mut self,
         index: u64,
     ) -> Result<Option<MetadataCheckpointEntry>, Errno> {
+        self.read_metadata_entry(index, false)
+    }
+
+    fn read_metadata_entry(&mut self, index: u64, cache_lookup: bool) -> Result<Option<MetadataCheckpointEntry>, Errno> {
         if index >= self.metadata_count {
             return Ok(None);
         }
@@ -568,9 +665,11 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         if self.metadata_page_index != Some(page_index) {
             let first = page_index * records_per_page as u64;
             let entries = (self.metadata_count - first).min(records_per_page as u64) as usize;
-            self.storage.read_exact_at(
+            self.metadata_page_index = None;
+            self.read_cache.read_exact_at(&mut self.storage,
                 metadata_offset(self.count, first, self.metadata_version)?,
                 &mut self.metadata_page[..entries * record_bytes],
+                cache_lookup,
             )?;
             self.metadata_page_index = Some(page_index);
         }
@@ -591,7 +690,7 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         let mut high = self.metadata_count;
         while low < high {
             let middle = low + (high - low) / 2;
-            let entry = self.metadata_entry_at(middle)?.ok_or(Errno::EIO)?;
+            let entry = self.read_metadata_entry(middle, true)?.ok_or(Errno::EIO)?;
             match entry.key.cmp(key) {
                 core::cmp::Ordering::Less => low = middle + 1,
                 core::cmp::Ordering::Greater => high = middle,
@@ -610,7 +709,7 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         let mut high = self.count;
         while low < high {
             let middle = low + (high - low) / 2;
-            let entry = self.read_entry(middle)?;
+            let entry = self.read_entry(middle, true)?;
             match (entry.inode, entry.block).cmp(&(inode, block)) {
                 core::cmp::Ordering::Less => low = middle + 1,
                 core::cmp::Ordering::Greater => high = middle,
@@ -636,21 +735,34 @@ impl<S: OverlayStorage> BlockCheckpoint<S> {
         if index >= self.count {
             return Ok(None);
         }
-        self.read_entry(index).map(Some)
+        self.read_entry(index, false).map(Some)
     }
 
     pub fn into_storage(self) -> S {
         self.storage
     }
 
-    fn read_entry(&mut self, index: u64) -> Result<BlockCheckpointEntry, Errno> {
+    pub(crate) fn discard_read_caches(&mut self) -> bool {
+        let released = self.reclaim_supplemental_read_cache();
+        self.cached_page_index = None;
+        self.metadata_page_index = None;
+        released
+    }
+
+    pub(crate) fn reclaim_supplemental_read_cache(&mut self) -> bool {
+        self.read_cache.discard()
+    }
+
+    fn read_entry(&mut self, index: u64, cache_lookup: bool) -> Result<BlockCheckpointEntry, Errno> {
         let page_index = index / RECORDS_PER_PAGE as u64;
         if self.cached_page_index != Some(page_index) {
             let first = page_index * RECORDS_PER_PAGE as u64;
             let entries = (self.count - first).min(RECORDS_PER_PAGE as u64) as usize;
-            self.storage.read_exact_at(
+            self.cached_page_index = None;
+            self.read_cache.read_exact_at(&mut self.storage,
                 record_offset(first)?,
                 &mut self.cached_page[..entries * RECORD_BYTES],
+                cache_lookup,
             )?;
             self.cached_page_index = Some(page_index);
         }
@@ -703,6 +815,11 @@ mod tests {
     struct MemoryStorage {
         bytes: Vec<u8>,
         fail_flush: bool,
+        read_bytes: usize,
+        fail_read: Option<(u64, Errno)>,
+        fail_write: Option<u64>,
+        flushes: usize,
+        fail_flush_at: Option<usize>,
     }
 
     impl OverlayStorage for MemoryStorage {
@@ -711,9 +828,18 @@ mod tests {
         }
 
         fn read_exact_at(&mut self, offset: u64, destination: &mut [u8]) -> Result<(), Errno> {
+            self.read_bytes += destination.len();
             let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
             let end = start.checked_add(destination.len()).ok_or(Errno::EIO)?;
-            destination.copy_from_slice(self.bytes.get(start..end).ok_or(Errno::EIO)?);
+            let source = self.bytes.get(start..end).ok_or(Errno::EIO)?;
+            if let Some((failure_offset, error)) = self.fail_read {
+                if failure_offset == offset {
+                    let prefix = destination.len().min(16);
+                    destination[..prefix].copy_from_slice(&source[..prefix]);
+                    return Err(error);
+                }
+            }
+            destination.copy_from_slice(source);
             Ok(())
         }
 
@@ -723,12 +849,18 @@ mod tests {
             if end > self.bytes.len() {
                 self.bytes.resize(end, 0);
             }
+            if self.fail_write == Some(offset) {
+                let prefix = source.len().min(16);
+                self.bytes[start..start + prefix].copy_from_slice(&source[..prefix]);
+                return Err(Errno::EIO);
+            }
             self.bytes[start..end].copy_from_slice(source);
             Ok(())
         }
 
         fn flush(&mut self) -> Result<(), Errno> {
-            if self.fail_flush {
+            self.flushes += 1;
+            if self.fail_flush || self.fail_flush_at == Some(self.flushes) {
                 Err(Errno::EIO)
             } else {
                 Ok(())
@@ -751,6 +883,190 @@ mod tests {
                 digest: [block as u8; 32],
             })
             .collect()
+    }
+
+    #[test]
+    fn failed_page_replacement_never_exposes_a_partially_overwritten_cached_record() {
+        for error in [Errno::EIO, Errno::ENOMEM, Errno::ENOSPC, Errno::EINTR, Errno::EAGAIN] {
+            let records = entries();
+            let mut checkpoint = BlockCheckpoint::create(MemoryStorage::default(), [1; 32], [2; 32],
+                72 + 200 * 4096, 201, records.clone()).unwrap();
+            assert_eq!(checkpoint.entry_at(0), Ok(Some(records[0])));
+            checkpoint.storage.fail_read = Some((record_offset(RECORDS_PER_PAGE as u64).unwrap(), error));
+            for _ in 0..2 {
+                assert_eq!(checkpoint.entry_at(RECORDS_PER_PAGE as u64), Err(error));
+            }
+            checkpoint.storage.fail_read = None;
+            assert_eq!(checkpoint.entry_at(0), Ok(Some(records[0])));
+            assert_eq!(checkpoint.entry_at(RECORDS_PER_PAGE as u64), Ok(Some(records[RECORDS_PER_PAGE])));
+
+            let metadata: Vec<_> = (1..=40).map(|inode| MetadataCheckpointEntry {
+                key: OverlayKey::Inode(inode), value: Some((72, 12)), value_digest: Some([1; 32]),
+            }).collect();
+            checkpoint.append_metadata_checked(metadata.iter().cloned().map(Ok)).unwrap();
+            assert_eq!(checkpoint.metadata_entry_at(0), Ok(Some(metadata[0].clone())));
+            let next = HASHED_METADATA_RECORDS_PER_PAGE as u64;
+            checkpoint.storage.fail_read = Some((metadata_offset(checkpoint.count, next, HASHED_METADATA_VERSION).unwrap(), error));
+            for _ in 0..2 { assert_eq!(checkpoint.metadata_entry_at(next), Err(error)); }
+            checkpoint.storage.fail_read = None;
+            assert_eq!(checkpoint.metadata_entry_at(0), Ok(Some(metadata[0].clone())));
+            assert_eq!(checkpoint.metadata_entry_at(next), Ok(Some(metadata[next as usize].clone())));
+        }
+    }
+
+    #[test]
+    fn repeated_binary_searches_reuse_bounded_block_and_metadata_page_working_sets() {
+        let count = 4096;
+        let records: Vec<_> = (0..count).map(|block| BlockCheckpointEntry {
+            inode: 7, block, offset: 72 + block * 4096, digest: [block as u8; 32],
+        }).collect();
+        let metadata: Vec<_> = (1..=1024).map(|inode| MetadataCheckpointEntry {
+            key: OverlayKey::Inode(inode), value: Some((72, 12)), value_digest: Some([1; 32]),
+        }).collect();
+        let mut checkpoint = BlockCheckpoint::create(MemoryStorage::default(), [1; 32], [2; 32],
+            72 + count * 4096, count + 1, records.clone()).unwrap();
+        checkpoint.append_metadata_checked(metadata.iter().cloned().map(Ok)).unwrap();
+        for block in 1000..1008 {
+            assert_eq!(checkpoint.lookup(7, block), Ok(Some(records[block as usize])));
+            assert_eq!(checkpoint.lookup_metadata(&OverlayKey::Inode(block - 500)),
+                Ok(Some(metadata[(block - 501) as usize].clone())));
+        }
+        let primed = checkpoint.storage.read_bytes;
+        for _ in 0..16 {
+            for block in 1000..1008 {
+                assert_eq!(checkpoint.lookup(7, block), Ok(Some(records[block as usize])));
+                assert_eq!(checkpoint.lookup_metadata(&OverlayKey::Inode(block - 500)),
+                    Ok(Some(metadata[(block - 501) as usize].clone())));
+            }
+        }
+        assert_eq!(checkpoint.storage.read_bytes, primed);
+    }
+
+    #[test]
+    fn supplemental_cache_is_optional_bounded_and_reclaims_payload_and_slot_credits() {
+        use crate::io_buffer::{IO_MEMORY, WRITEBACK_MEMORY, test_budget};
+        let baseline = IO_MEMORY.usage().0;
+        let writeback = WRITEBACK_MEMORY.usage().0;
+        let records: Vec<_> = (0..4096).map(|block| BlockCheckpointEntry {
+            inode: 7, block, offset: 72 + block * 4096, digest: [block as u8; 32],
+        }).collect();
+        let mut checkpoint = BlockCheckpoint::create(MemoryStorage::default(), [1; 32], [2; 32],
+            72 + 4096 * 4096, 4097, records.clone()).unwrap();
+        assert!(checkpoint.read_cache.pages.is_empty());
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+        for page in 0..40 {
+            let index = page * RECORDS_PER_PAGE;
+            assert_eq!(checkpoint.lookup(7, index as u64), Ok(Some(records[index])));
+        }
+        assert_eq!(checkpoint.read_cache.pages.len(), READ_CACHE_MAX_PAGES);
+        let charged = IO_MEMORY.usage().0;
+        assert!(charged > baseline);
+        assert!(charged <= baseline + 2 * READ_CACHE_MAX_PAGES * (READ_CACHE_PAGE_BYTES + core::mem::size_of::<CachedIndexPage>()));
+        {
+            let _pressure = test_budget(charged);
+            assert_eq!(checkpoint.lookup(7, 4000), Ok(Some(records[4000])));
+            assert_eq!(IO_MEMORY.usage().0, charged);
+        }
+        checkpoint.discard_read_caches();
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+        assert_eq!(checkpoint.read_cache.pages.capacity(), 0);
+        {
+            let _pressure = test_budget(baseline);
+            for index in [0, 100, 200, 0] {
+                assert_eq!(checkpoint.lookup(7, index), Ok(Some(records[index as usize])));
+            }
+            assert!(checkpoint.read_cache.pages.is_empty());
+            assert_eq!(IO_MEMORY.usage().0, baseline);
+        }
+        assert_eq!(WRITEBACK_MEMORY.usage().0, writeback);
+        assert_eq!(checkpoint.lookup(7, 4000), Ok(Some(records[4000])));
+        assert!(IO_MEMORY.usage().0 > baseline);
+        let storage = checkpoint.into_storage();
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+        {
+            let mut reopened = BlockCheckpoint::open(storage, [1; 32], [2; 32], 72 + 4096 * 4096).unwrap();
+            assert_eq!(reopened.lookup(7, 4000), Ok(Some(records[4000])));
+            assert!(IO_MEMORY.usage().0 > baseline);
+        }
+        assert_eq!(IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn supplemental_eviction_never_publishes_a_failed_read_or_confuses_short_pages() {
+        let mut storage = MemoryStorage { bytes: vec![0; 3 * READ_CACHE_PAGE_BYTES], ..MemoryStorage::default() };
+        storage.bytes[READ_CACHE_PAGE_BYTES..2 * READ_CACHE_PAGE_BYTES].fill(1);
+        storage.bytes[2 * READ_CACHE_PAGE_BYTES..].fill(2);
+        let mut cache = IndexReadCache::new();
+        cache.limit = 2;
+        let mut actual = [0; READ_CACHE_PAGE_BYTES];
+        cache.read_exact_at(&mut storage, 0, &mut actual, true).unwrap();
+        cache.read_exact_at(&mut storage, READ_CACHE_PAGE_BYTES as u64, &mut actual, true).unwrap();
+        storage.fail_read = Some(((2 * READ_CACHE_PAGE_BYTES) as u64, Errno::EAGAIN));
+        assert_eq!(cache.read_exact_at(&mut storage, (2 * READ_CACHE_PAGE_BYTES) as u64, &mut actual, true), Err(Errno::EAGAIN));
+        let after_failure = storage.read_bytes;
+        cache.read_exact_at(&mut storage, 0, &mut actual, true).unwrap();
+        assert_eq!(actual, [0; READ_CACHE_PAGE_BYTES]);
+        cache.read_exact_at(&mut storage, READ_CACHE_PAGE_BYTES as u64, &mut actual, true).unwrap();
+        assert_eq!(actual, [1; READ_CACHE_PAGE_BYTES]);
+        assert_eq!(storage.read_bytes, after_failure);
+        storage.fail_read = None;
+        cache.read_exact_at(&mut storage, (2 * READ_CACHE_PAGE_BYTES) as u64, &mut actual[..56], true).unwrap();
+        assert_eq!(&actual[..56], &[2; 56]);
+        let before_full = storage.read_bytes;
+        cache.read_exact_at(&mut storage, (2 * READ_CACHE_PAGE_BYTES) as u64, &mut actual, true).unwrap();
+        assert_eq!(actual, [2; READ_CACHE_PAGE_BYTES]);
+        assert_eq!(storage.read_bytes, before_full + READ_CACHE_PAGE_BYTES);
+        assert_eq!(cache.pages.len(), 2);
+    }
+
+    #[test]
+    fn metadata_append_discards_warmed_pages_on_success_and_storage_failure() {
+        use crate::io_buffer::IO_MEMORY;
+        let baseline = IO_MEMORY.usage().0;
+        for cut in 0..4 {
+            let records = entries();
+            let mut checkpoint = BlockCheckpoint::create(MemoryStorage::default(), [1; 32], [2; 32],
+                72 + 200 * 4096, 201, records.clone()).unwrap();
+            assert_eq!(checkpoint.lookup(7, 0), Ok(Some(records[0])));
+            assert!(IO_MEMORY.usage().0 > baseline);
+            checkpoint.storage.flushes = 0;
+            if cut == 1 { checkpoint.storage.fail_write = Some(record_offset(200).unwrap()); }
+            if cut >= 2 { checkpoint.storage.fail_flush_at = Some(cut - 1); }
+            let metadata = MetadataCheckpointEntry {
+                key: OverlayKey::Inode(7), value: Some((72, 12)), value_digest: Some([1; 32]),
+            };
+            let result = checkpoint.append_metadata_checked([Ok(metadata.clone())]);
+            assert_eq!(result, if cut == 0 { Ok(()) } else { Err(Errno::EIO) });
+            assert_eq!(IO_MEMORY.usage().0, baseline);
+            assert_eq!(checkpoint.metadata_count(), if cut == 0 { 1 } else { 0 });
+            checkpoint.storage.fail_write = None;
+            checkpoint.storage.fail_flush_at = None;
+            assert_eq!(checkpoint.entry_at(0), Ok(Some(records[0])));
+            if cut == 0 { assert_eq!(checkpoint.metadata_entry_at(0), Ok(Some(metadata))); }
+            drop(checkpoint);
+            assert_eq!(IO_MEMORY.usage().0, baseline);
+        }
+    }
+
+    #[test]
+    fn supplemented_metadata_pages_preserve_version_geometry_and_short_final_pages() {
+        for version in [METADATA_VERSION, HASHED_METADATA_VERSION] {
+            let mut checkpoint = BlockCheckpoint::create(MemoryStorage::default(), [1; 32], [2; 32],
+                72 + 200 * 4096, 201, entries()).unwrap();
+            let records: Vec<_> = (1..=40).map(|inode| MetadataCheckpointEntry {
+                key: OverlayKey::Inode(inode),
+                value: if inode % 2 == 0 { None } else { Some((72, 12)) },
+                value_digest: if version == HASHED_METADATA_VERSION && inode % 2 != 0 { Some([1; 32]) } else { None },
+            }).collect();
+            checkpoint.append_metadata_checked_version(records.iter().cloned().map(Ok), version).unwrap();
+            let mut reopened = BlockCheckpoint::open(checkpoint.into_storage(), [1; 32], [2; 32], 72 + 200 * 4096).unwrap();
+            for record in &records { assert_eq!(reopened.lookup_metadata(&record.key), Ok(Some(record.clone()))); }
+            let primed = reopened.storage.read_bytes;
+            for record in records.iter().rev() { assert_eq!(reopened.lookup_metadata(&record.key), Ok(Some(record.clone()))); }
+            assert_eq!(reopened.metadata_entry_at(40), Ok(None));
+            assert_eq!(reopened.lookup_metadata(&OverlayKey::Inode(41)), Ok(None));
+            assert_eq!(reopened.storage.read_bytes, primed);
+        }
     }
 
     #[test]

@@ -21,8 +21,12 @@
  * as plain data on {@link ComposeImageJob}.
  */
 
-import { KandeloImageFs } from "../../../../../images/vfs/lib/kandelo-image-fs";
+import { KandeloImageFs, type PersistentImageIntegrityPolicy } from "../../../../../images/vfs/lib/kandelo-image-fs";
+import type { StorageMemoryUsage } from "../../../../../host/src/vfs/storage-memory-budget";
+import { readComposerFile } from "./composer-file";
 import { OpfsImageReader, type OpfsImageIntegrity } from "../../../../../host/src/vfs/opfs-image-reader";
+import { isOpfsImageIntegrity } from "../../../../../host/src/vfs/image-integrity";
+import { StorageCloseLedger } from "../../../../../host/src/storage-close-ledger";
 import type { ImageOwnedRuntimeLazyAssets } from "../../../lib/init/image-owned-runtime-urls";
 import type { FixedPersistenceImageHandle } from "./fixed-persistence-image";
 import { ensureImageWriterInstalled, loadPositionedImageWriterModuleBytes } from "../../../lib/kernel-owned-boot";
@@ -80,7 +84,7 @@ import {
   assertVfsImageFitsProfile,
   declaredVfsMaxByteLength,
 } from "../../../../../web-libs/kandelo-session/src/vfs-capacity";
-import { VFS_IMAGE_MAX_DECOMPRESSED_BYTES } from "../../../../../host/src/vfs/vfs-image-transport";
+import { MAX_STAGED_VFS_IMAGE_BYTES } from "./opfs-source-image";
 import { ABI_VERSION, ERRNO } from "../../../../../host/src/generated/abi";
 import { stageConfiguredAssets } from "./configured-assets";
 
@@ -147,6 +151,7 @@ export interface ComposeImageJob {
     identity: string;
     journalName?: string;
     lazyAssets?: ImageOwnedRuntimeLazyAssets;
+    integrityPolicy: PersistentImageIntegrityPolicy;
   };
   /** Host filesystem budget; the image's own capacity still governs. */
   maxVfsByteLength: number;
@@ -172,6 +177,7 @@ export interface ComposeImageJob {
 }
 
 export interface ComposeImageResult {
+  memoryUsage?: { wasmPages: number; sourceBytes: number; frozenSourceBytes: number; returnedBytes: number; manifest?: StorageMemoryUsage };
   /** Serialized image for nonpersistent boots; persistent boots return no bytes. */
   imageBytes: Uint8Array;
   imageFile?: FixedPersistenceImageHandle;
@@ -232,6 +238,7 @@ export async function composeKandeloImage(
   persistImage?: (
     chunks: Iterable<Uint8Array>,
     composition: Pick<ComposeImageResult, "imageConfig" | "profileId" | "terminalSession" | "requiredServices">,
+    payloadLength: number,
   ) => Promise<void>,
 ): Promise<ComposeImageResult> {
   const sourceImage = job.frozenImageBytes ?? job.imageBytes;
@@ -247,19 +254,33 @@ export async function composeKandeloImage(
   let buildFs: KandeloImageFs;
   let sourceLength: number;
   let positionedReader: OpfsImageReader | null = null;
+  const sourceStorage = new StorageCloseLedger();
+  let sourceFailure: { error: unknown } | undefined;
+  try {
   try {
     if (positionedSource !== undefined) {
-      positionedReader = await OpfsImageReader.open(positionedSource.file, positionedSource.integrity);
+      if (!isOpfsImageIntegrity(positionedSource.integrity)) throw new Error("Positioned source integrity is invalid");
+      const sourceSha256 = positionedSource.integrity.imageSha256;
+      positionedReader = sourceSha256 === undefined
+        ? await sourceStorage.run(() => OpfsImageReader.open(positionedSource.file, positionedSource.integrity, sourceStorage))
+        : await sourceStorage.run(() => OpfsImageReader.open(positionedSource.file, undefined, sourceStorage, true));
+      if (positionedReader.length !== positionedSource.integrity.length) throw new Error("Positioned source length differs from its integrity");
       const moduleBytes = await loadPositionedImageWriterModuleBytes();
       buildFs = KandeloImageFs.createFromPositionedImage(
         moduleBytes,
         positionedReader.length,
         (offset, destination) => positionedReader!.readAt(offset, destination),
+        undefined,
+        sourceSha256,
       );
       sourceLength = positionedReader.length;
     } else {
-      await ensureImageWriterInstalled();
-      buildFs = KandeloImageFs.create();
+      if (job.persistentImage !== undefined) {
+        buildFs = KandeloImageFs.createPositioned(await loadPositionedImageWriterModuleBytes());
+      } else {
+        await ensureImageWriterInstalled();
+        buildFs = KandeloImageFs.create();
+      }
       buildFs.loadImage(sourceImage);
       sourceLength = sourceImage.byteLength;
     }
@@ -273,11 +294,11 @@ export async function composeKandeloImage(
     }
     throw error;
   }
-  const capacity = { byteLength: sourceLength, maxByteLength: buildFs.exportCapacityBytes() };
+  const capacity = { byteLength: sourceLength, maxByteLength: buildFs.loadedImageCapacityBytes() };
   if (positionedSource !== undefined) {
     assertVfsImageCapacityMetadata(capacity, declaredVfsMaxByteLength(vfsMetadata), job.imageLabel);
-    if (sourceLength > VFS_IMAGE_MAX_DECOMPRESSED_BYTES) {
-      throw new Error(`${job.imageLabel} exceeds the VFS image format byte limit`);
+    if (sourceLength > MAX_STAGED_VFS_IMAGE_BYTES) {
+      throw new Error(`${job.imageLabel} exceeds the staged VFS image byte limit`);
     }
   } else {
     assertVfsImageFitsProfile(
@@ -300,7 +321,7 @@ export async function composeKandeloImage(
   if (job.frozenImageBytes === undefined) {
     buildFs.setImageCapacity(positionedSource === undefined
       ? job.maxVfsByteLength
-      : Math.max(job.maxVfsByteLength, buildFs.exportCapacityBytes()));
+      : Math.max(job.maxVfsByteLength, buildFs.loadedImageCapacityBytes()));
   }
   const terminalSession = readImageExperimentalTerminalSession(buildFs);
   if (!job.hasCandidateEvidence && job.frozenImageBytes === undefined) {
@@ -389,22 +410,37 @@ export async function composeKandeloImage(
   // buildFs and its module memory die with this realm.
   if (job.persistentImage !== undefined) {
     if (persistImage === undefined) throw new Error("persistent image stream has no writer");
+    const payloadLength = buildFs.exportImageLength();
     await persistImage(
-      buildFs.exportImageChunks(),
+      buildFs.exportImageChunks(65536),
       { imageConfig, profileId, terminalSession, requiredServices },
+      payloadLength,
     );
   }
   const imageBytes = job.frozenImageBytes
     ?? (job.persistentImage === undefined ? await buildFs.saveImage() : new Uint8Array());
-  positionedReader?.close();
   return {
     imageBytes,
+    memoryUsage: { wasmPages: buildFs.getMemoryPages(), sourceBytes: job.imageBytes.byteLength,
+      frozenSourceBytes: job.frozenImageBytes?.byteLength ?? 0, returnedBytes: imageBytes.byteLength },
     imageConfig,
     profileId,
     terminalSession,
     requiredServices,
     bootInputManifest,
   };
+  } catch (error) {
+    sourceFailure = { error };
+    throw error;
+  } finally {
+    try {
+      await sourceStorage.beginRetirement();
+      sourceStorage.closeAll();
+    } catch (error) {
+      throw Object.assign(new AggregateError(sourceFailure === undefined ? [error] : [sourceFailure.error, error],
+        "Image source handle cleanup is unproven; retain its staged source"), { retainSource: true });
+    }
+  }
 }
 
 const TOP_LEVEL_PROFILE_ID = "";
@@ -748,20 +784,7 @@ function isMissingVfsPath(err: unknown): boolean {
 }
 
 function readVfsFile(fs: KandeloImageFs, path: string): ArrayBuffer {
-  const st = fs.stat(path);
-  const fd = fs.open(path, 0, 0);
-  try {
-    const out = new Uint8Array(st.size);
-    let off = 0;
-    while (off < out.byteLength) {
-      const n = fs.read(fd, out.subarray(off), null, out.byteLength - off);
-      if (n <= 0) break;
-      off += n;
-    }
-    return out.buffer.slice(out.byteOffset, out.byteOffset + off);
-  } finally {
-    fs.close(fd);
-  }
+  return readComposerFile(fs, path);
 }
 
 function dirname(path: string): string {

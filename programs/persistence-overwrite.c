@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
@@ -15,6 +16,216 @@ static unsigned char large_write[2 * 1024 * 1024];
 static unsigned char verify_buffer[4096];
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && (strcmp(argv[1], "inode-history") == 0 || strcmp(argv[1], "verify-inode-history") == 0)) {
+        int creating = strcmp(argv[1], "inode-history") == 0;
+        if (creating) {
+            for (unsigned int index = 0; index < 128; index++) {
+                unsigned int kind = index % 5;
+                if (kind == 1 && mkdir("/history", 0700) != 0) return 1;
+                if (kind <= 1) {
+                    const char *path = kind == 0 ? "/history" : "/history/child";
+                    int fd = open(path, O_CREAT | O_EXCL | O_RDWR, 0600);
+                    if (fd < 0 || write(fd, "orphan", 6) != 6 || fsync(fd) != 0 || close(fd) != 0 || unlink(path) != 0) return 2;
+                    if (kind == 1 && rmdir("/history") != 0) return 3;
+                } else {
+                    if (kind == 2 && symlink("state", "/history") != 0) return 4;
+                    if (kind == 3 && mkfifo("/history", 0600) != 0) return 5;
+                    if (kind == 4) {
+                        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+                        struct sockaddr_un address = { .sun_family = AF_UNIX };
+                        strcpy(address.sun_path, "/history");
+                        if (fd < 0 || bind(fd, (struct sockaddr *)&address, sizeof(address)) != 0 || close(fd) != 0) return 6;
+                    }
+                    if (unlink("/history") != 0) return 7;
+                }
+            }
+            int fd = open("/history-live", O_CREAT | O_EXCL | O_RDWR, 0600);
+            if (fd < 0 || write(fd, "kept", 4) != 4 || fsync(fd) != 0 || close(fd) != 0) return 8;
+        }
+        struct stat metadata;
+        if (lstat("/history", &metadata) != -1 || errno != ENOENT) return 11;
+        int fd = open("/history-live", O_RDONLY);
+        char content[4];
+        if (fd < 0 || read(fd, content, sizeof(content)) != sizeof(content) || memcmp(content, "kept", 4) != 0 || close(fd) != 0) return 12;
+        for (unsigned int index = 0; index < 7; index++) {
+            char path[40];
+            if (snprintf(path, sizeof(path), "/history-kept-%02u", index) < 0) return 13;
+            int flags = creating ? O_CREAT | O_EXCL | O_RDWR : O_RDONLY;
+            fd = open(path, flags, 0600);
+            if (fd < 0) return 14;
+            if (creating) {
+                if (write(fd, "kept", 4) != 4 || fsync(fd) != 0) return 15;
+            } else if (read(fd, content, sizeof(content)) != sizeof(content) || memcmp(content, "kept", 4) != 0) return 16;
+            if (close(fd) != 0) return 17;
+        }
+        if (creating) {
+            if (symlink("state", "/history") != 0 || unlink("/history") != 0) return 9;
+            int directory = open("/", O_RDONLY | O_DIRECTORY);
+            if (directory < 0 || fsync(directory) != 0 || close(directory) != 0) return 10;
+        }
+        puts(creating ? "INODE_HISTORY_SYNCED" : "INODE_HISTORY_VERIFIED");
+        return 0;
+    }
+    if (argc >= 2 && (strcmp(argv[1], "rename-metadata") == 0 || strcmp(argv[1], "verify-rename-metadata") == 0)) {
+        int creating = strcmp(argv[1], "rename-metadata") == 0;
+        for (unsigned int index = 0; index < 32; index++) {
+            char original[40];
+            char renamed[40];
+            struct stat metadata;
+            if (snprintf(original, sizeof(original), "/base-rename-%03u", index) < 0 ||
+                snprintf(renamed, sizeof(renamed), "/next-rename-%03u", index) < 0) return 1;
+            if (creating && rename(original, renamed) != 0) {
+                fprintf(stderr, "rename metadata admission errno=%d index=%u\n", errno, index);
+                return 2;
+            }
+            if (lstat(original, &metadata) != -1 || errno != ENOENT ||
+                lstat(renamed, &metadata) != 0 || !S_ISREG(metadata.st_mode) || metadata.st_nlink != 1 || metadata.st_size != 0) return 3;
+        }
+        if (creating) {
+            int directory = open("/", O_RDONLY | O_DIRECTORY);
+            if (directory < 0 || fsync(directory) != 0 || close(directory) != 0) return 4;
+        }
+        puts(creating ? "RENAME_METADATA_SYNCED" : "RENAME_METADATA_VERIFIED");
+        return 0;
+    }
+    if (argc >= 2 && (strcmp(argv[1], "many-fifos") == 0 || strcmp(argv[1], "verify-many-fifos") == 0)) {
+        int creating = strcmp(argv[1], "many-fifos") == 0;
+        for (unsigned int index = 0; index < 1024; index++) {
+            char path[40];
+            struct stat metadata;
+            if (snprintf(path, sizeof(path), "/cold-fifo-%04u", index) < 0) return 1;
+            if (creating && mkfifo(path, 0600) != 0) return 2;
+            if (lstat(path, &metadata) != 0 || !S_ISFIFO(metadata.st_mode) || metadata.st_nlink != 1 || metadata.st_size != 0) return 3;
+            if (!creating) {
+                int fd = open(path, O_RDWR | O_NONBLOCK);
+                unsigned char byte = (unsigned char)index;
+                unsigned char actual = 0;
+                if (fd < 0 || write(fd, &byte, 1) != 1 || read(fd, &actual, 1) != 1 || actual != byte || close(fd) != 0) return 4;
+            }
+        }
+        if (!creating) {
+            puts("INACTIVE_FIFOS_VERIFIED");
+            return 0;
+        }
+        int directory = open("/", O_RDONLY | O_DIRECTORY);
+        if (directory < 0 || fsync(directory) != 0 || close(directory) != 0) return 5;
+        struct statvfs before;
+        if (statvfs("/", &before) != 0) return 14;
+        int descriptors[512];
+        unsigned int count = 0;
+        for (; count < 512; count++) {
+            char path[40];
+            if (snprintf(path, sizeof(path), "/cold-fifo-%04u", count) < 0) return 6;
+            int fd = open(path, O_RDWR | O_NONBLOCK);
+            if (fd < 0) {
+                if (errno != ENOMEM) { fprintf(stderr, "FIFO buffer admission errno=%d\n", errno); return 7; }
+                break;
+            }
+            descriptors[count] = fd;
+        }
+        if (count < 2 || count == 512) return 8;
+        int path_only = open("/cold-fifo-0000", O_PATH);
+        if (path_only < 0 || write(descriptors[0], "volatile", 8) != 8 || close(descriptors[0]) != 0) return 9;
+        int replacement = open("/cold-fifo-0511", O_RDWR | O_NONBLOCK);
+        if (replacement < 0) return 10;
+        for (unsigned int index = 1; index < count; index++) if (close(descriptors[index]) != 0) return 11;
+        if (close(replacement) != 0) return 12;
+        int reopened = open("/cold-fifo-0000", O_RDWR | O_NONBLOCK);
+        unsigned char byte = 0;
+        if (reopened < 0 || read(reopened, &byte, 1) != -1 || errno != EAGAIN || close(reopened) != 0 || close(path_only) != 0) return 13;
+        struct statvfs after;
+        if (statvfs("/", &after) != 0 || after.f_bfree != before.f_bfree || after.f_ffree != before.f_ffree) return 15;
+        printf("FIFO_BUFFER_QUOTA_RECOVERED count=%u\n", count);
+        return 0;
+    }
+    if (argc >= 2 && strcmp(argv[1], "metadata-quota") == 0) {
+        unsigned int count = 0;
+        for (; count < 128; count++) {
+            char path[40];
+            if (snprintf(path, sizeof(path), "/metadata-quota-%03u", count) < 0) return 1;
+            int created = open(path, O_CREAT | O_EXCL | O_RDWR, 0600);
+            if (created < 0) {
+                if (errno != ENOMEM) { fprintf(stderr, "metadata admission errno=%d\n", errno); return 2; }
+                break;
+            }
+            if (close(created) != 0) return 3;
+        }
+        if (count < 2 || count == 128) return 4;
+        char last[40];
+        if (snprintf(last, sizeof(last), "/metadata-quota-%03u", count - 1) < 0 || unlink(last) != 0) return 5;
+        int marker = open("/q", O_CREAT | O_EXCL | O_RDWR, 0600);
+        if (marker < 0 || write(marker, &count, sizeof(count)) != sizeof(count) || fsync(marker) != 0 || close(marker) != 0) return 6;
+        puts("METADATA_QUOTA_RECOVERED");
+        return 0;
+    }
+    if (argc >= 2 && strcmp(argv[1], "verify-metadata-quota") == 0) {
+        unsigned int count = 0;
+        int marker = open("/q", O_RDONLY);
+        if (marker < 0 || read(marker, &count, sizeof(count)) != sizeof(count) || close(marker) != 0 || count < 2 || count >= 128) return 7;
+        for (unsigned int index = 0; index < count; index++) {
+            char path[40];
+            struct stat metadata;
+            if (snprintf(path, sizeof(path), "/metadata-quota-%03u", index) < 0) return 8;
+            int status = lstat(path, &metadata);
+            if (index + 1 == count) {
+                if (status != -1 || errno != ENOENT) return 9;
+            } else if (status != 0 || !S_ISREG(metadata.st_mode) || metadata.st_size != 0) return 10;
+        }
+        puts("METADATA_QUOTA_VERIFIED");
+        return 0;
+    }
+    if (argc >= 2 && strcmp(argv[1], "logical-mmap-capacity") == 0) {
+        const off_t offset = 9LL * 1024 * 1024 * 1024;
+        int filler = open("/mapped-capacity-filler", O_CREAT | O_TRUNC | O_RDWR, 0600);
+        if (filler < 0) return 226;
+        memset(verify_buffer, 0, sizeof(verify_buffer));
+        for (int index = 0; index < 3; index++) {
+            char path[40];
+            if (snprintf(path, sizeof(path), "/mapped-capacity-%d", index) < 0) return 227;
+            int mapped_fd = open(path, O_CREAT | O_TRUNC | O_RDWR, 0600);
+            if (mapped_fd < 0 || ftruncate(mapped_fd, offset + 8192) != 0) return 228;
+            if (ftruncate(filler, 0) != 0 || lseek(filler, 0, SEEK_SET) != 0) return 229;
+            int full = 0;
+            for (int blocks = 0; blocks < 16384; blocks++) {
+                ssize_t written = write(filler, verify_buffer, sizeof(verify_buffer));
+                if (written == -1 && errno == ENOSPC) { full = 1; break; }
+                if (written != (ssize_t)sizeof(verify_buffer)) return 230;
+            }
+            if (!full) return 231;
+            char *mapped = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, mapped_fd, offset);
+            if (mapped == MAP_FAILED) return 232;
+            mapped[0] = (char)('M' + index);
+            int result = index == 0 ? msync(mapped, 4096, MS_SYNC)
+                : index == 1 ? fsync(mapped_fd) : fdatasync(mapped_fd);
+            if (result != -1 || errno != ENOSPC) {
+                fprintf(stderr, "mapped capacity operation %d: result=%d errno=%d\n", index, result, errno);
+                return 233;
+            }
+            if (mapped[0] != (char)('M' + index)) return 234;
+            if (ftruncate(filler, 0) != 0) return 235;
+            result = index == 0 ? msync(mapped, 4096, MS_SYNC)
+                : index == 1 ? fsync(mapped_fd) : fdatasync(mapped_fd);
+            if (result != 0) return 236;
+            if (munmap(mapped, 4096) != 0 || close(mapped_fd) != 0) return 237;
+        }
+        if (close(filler) != 0 || unlink("/mapped-capacity-filler") != 0) return 238;
+        puts("MAPPED_CAPACITY_RECOVERED");
+        return 0;
+    }
+    if (argc >= 2 && strcmp(argv[1], "verify-logical-mmap-capacity") == 0) {
+        for (int index = 0; index < 3; index++) {
+            char path[40];
+            if (snprintf(path, sizeof(path), "/mapped-capacity-%d", index) < 0) return 239;
+            int mapped_fd = open(path, O_RDONLY);
+            char bytes[8];
+            if (mapped_fd < 0 || pread(mapped_fd, bytes, sizeof(bytes), 9LL * 1024 * 1024 * 1024) != sizeof(bytes)) return 240;
+            if (bytes[0] != (char)('M' + index)) return 241;
+            for (int byte = 1; byte < 8; byte++) if (bytes[byte] != 0) return 242;
+            if (close(mapped_fd) != 0) return 243;
+        }
+        puts("MAPPED_CAPACITY_VERIFIED");
+        return 0;
+    }
     if (argc >= 2 && (strcmp(argv[1], "many-timestamps") == 0
         || strcmp(argv[1], "verify-many-timestamps") == 0)) {
         int verify = strcmp(argv[1], "verify-many-timestamps") == 0;
@@ -45,6 +256,40 @@ int main(int argc, char **argv) {
         if (read(fd, bytes, sizeof(bytes)) != (ssize_t)sizeof(bytes)
             || memcmp(bytes, "abcdefgh", sizeof(bytes)) != 0) return 206;
         return close(fd) == 0 ? 0 : 207;
+    }
+    if (argc >= 2 && (strcmp(argv[1], "quota-link") == 0
+        || strcmp(argv[1], "quota-unlink") == 0)) {
+        int linking = strcmp(argv[1], "quota-link") == 0;
+        if ((linking ? link("/state", "/quota-linked") : unlink("/state")) != -1
+            || errno != ENOSPC) return 214;
+        struct stat metadata;
+        if (lstat("/state", &metadata) != 0 || metadata.st_nlink != 1) return 215;
+        if (linking && (lstat("/quota-linked", &metadata) != -1 || errno != ENOENT)) return 216;
+        int fd = open("/state", O_RDONLY);
+        if (fd < 0) return 217;
+        char bytes[8];
+        if (read(fd, bytes, sizeof(bytes)) != (ssize_t)sizeof(bytes)
+            || memcmp(bytes, "abcdefgh", sizeof(bytes)) != 0) return 218;
+        return close(fd) == 0 ? 0 : 219;
+    }
+    if (argc >= 2 && (strcmp(argv[1], "verify-quota-link") == 0
+        || strcmp(argv[1], "verify-quota-unlink") == 0)) {
+        int linking = strcmp(argv[1], "verify-quota-link") == 0;
+        struct stat state_metadata;
+        int state_exists = lstat("/state", &state_metadata) == 0;
+        if (!state_exists && errno != ENOENT) return 220;
+        struct stat linked_metadata;
+        int linked_exists = lstat("/quota-linked", &linked_metadata) == 0;
+        if (!linked_exists && errno != ENOENT) return 221;
+        if (linking) {
+            if (!state_exists) return 222;
+            if (state_metadata.st_nlink != (linked_exists ? 2 : 1)) return 223;
+            if (linked_exists && (linked_metadata.st_ino != state_metadata.st_ino
+                || linked_metadata.st_nlink != 2)) return 224;
+        } else if (linked_exists || (state_exists && state_metadata.st_nlink != 1)) {
+            return 225;
+        }
+        return 0;
     }
     if (argc >= 2 && (strcmp(argv[1], "snapshot-dense-reextend") == 0
         || strcmp(argv[1], "verify-snapshot-dense-reextend") == 0)) {
@@ -531,9 +776,13 @@ int main(int argc, char **argv) {
     }
     int verify_tail = argc >= 2 && strcmp(argv[1], "verify-large-tail") == 0;
     int write_tail = argc >= 2 && strcmp(argv[1], "large-tail") == 0;
-    if (verify_tail || write_tail || (argc >= 2 && strcmp(argv[1], "large") == 0)) {
+    int near_dense = argc >= 2 && strcmp(argv[1], "near-dense") == 0;
+    int verify_near_dense = argc >= 2 && strcmp(argv[1], "verify-near-dense") == 0;
+    if (verify_tail || write_tail || near_dense || verify_near_dense || (argc >= 2 && strcmp(argv[1], "large") == 0)) {
         int large_fd = open("/large", O_RDWR);
         if (large_fd < 0) return 5;
+        struct statvfs before;
+        if ((near_dense || verify_near_dense) && statvfs("/", &before) != 0) return 12;
         off_t offset = 13;
         if (verify_tail || write_tail) {
             struct stat metadata;
@@ -543,7 +792,7 @@ int main(int argc, char **argv) {
         for (size_t index = 0; index < sizeof(large_write); index++) {
             large_write[index] = (unsigned char)((index / 4096) ^ index);
         }
-        if (verify_tail) {
+        if (verify_tail || verify_near_dense) {
             for (size_t index = 0; index < sizeof(large_write); index += sizeof(verify_buffer)) {
                 if (pread(large_fd, verify_buffer, sizeof(verify_buffer), offset + (off_t)index) != (ssize_t)sizeof(verify_buffer)) return 10;
                 if (memcmp(verify_buffer, large_write + index, sizeof(verify_buffer)) != 0) return 11;
@@ -551,6 +800,13 @@ int main(int argc, char **argv) {
         } else {
             if (pwrite(large_fd, large_write, sizeof(large_write), offset) != (ssize_t)sizeof(large_write)) return 6;
             if (fsync(large_fd) != 0) return 7;
+        }
+        if (near_dense || verify_near_dense) {
+            struct statvfs after;
+            if (statvfs("/", &after) != 0 || after.f_blocks != before.f_blocks) return 13;
+            if (near_dense && (before.f_bfree == 0 || after.f_bfree != before.f_bfree - 1)) return 14;
+            if (verify_near_dense && after.f_bfree != before.f_bfree) return 15;
+            puts("NEAR_DENSE_LEDGER_OK");
         }
         return close(large_fd) == 0 ? 0 : 8;
     }

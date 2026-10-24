@@ -21,11 +21,18 @@ smaller ceilings. V8 and SpiderMonkey reserve address space lazily, so a
 ceiling that is invisible on Chrome, Firefox, and Node can still make Safari
 fail. Before adding or raising any ceiling, ask what it costs on the engine
 that charges it, and check whether the ceiling can even be reached. The
-machine's filesystem lives in the kernel's linear memory (the in-kernel rootfs
-and tmpfs; see `docs/architecture.md`, "Filesystem"), so the kernel's ceiling
-is also the ceiling on everything guests write and every lazy file they pull
-in (1 GiB under the desktop profile, 768 MiB under the constrained one). A
-write past it fails with `ENOSPC` rather than aborting the kernel. Host
+machine's filesystem metadata and caches live in the kernel's linear memory
+(see `docs/architecture.md`, "Filesystem"). Ephemeral rootfs/tmpfs content
+also remains resident, but experimental persistent image data uses positioned
+host storage and bounded Rust caches; its logical capacity and file lengths
+can exceed the kernel's address-space ceiling. Do not equate image capacity
+with resident memory or grow a host buffer to the image's logical size. The
+kernel ceiling remains 1 GiB under the desktop profile and 768 MiB under the
+constrained one. Logical disk exhaustion and host storage quota are `ENOSPC`;
+explicit memory-admission refusal is `ENOMEM`. Preserve the actual failure
+instead of reporting quota, corruption or stale-generation fallback for every
+resource error. Aggregate storage-memory acceptance is still tracked in
+`docs/persistence-plan.md`; individual cache limits do not establish it. Host
 budgets live in
 `host/src/runtime-memory-profile.ts`; when a budget forces a smaller address
 space than a caller asked for, report the reduction rather than applying it

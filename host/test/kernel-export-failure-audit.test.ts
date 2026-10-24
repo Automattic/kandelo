@@ -8,6 +8,12 @@ import {
 
 const reservationSettlementAllowances = [
   {
+    owner: "CentralizedKernelWorker.#rootfsExportContainerVisit",
+    why: "The catch records a branded native export trap before rethrowing it "
+      + "unchanged. Its finally must not re-enter the damaged kernel to cancel "
+      + "an export whose native settlement is unknown.",
+  },
+  {
     owner:
       "CentralizedKernelWorker.#executeReservedChannelDispatch",
     why:

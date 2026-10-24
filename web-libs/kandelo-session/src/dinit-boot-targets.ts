@@ -1,7 +1,7 @@
 const S_IFMT = 0xf000;
 const S_IFREG = 0x8000;
 const O_RDONLY = 0;
-const MAX_DINIT_SERVICE_FILE_BYTES = 65_536;
+export const MAX_DINIT_SERVICE_FILE_BYTES = 65_536;
 export const MAX_DINIT_SERVICE_CLOSURE = 256;
 
 export interface DinitBootTargetsFileSystem {

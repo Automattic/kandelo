@@ -30,6 +30,350 @@ const largeImageFixture = process.env.KANDELO_LARGE_VFSI_FIXTURE;
 test.skip(kernelPath === null || imageModulePath === null, "kernel and standalone image module artifacts are required");
 test.skip(guestProgramPath === null, "persistence guest fixture is required");
 
+for (const mode of ["fixed", "resizable"] as const) {
+  for (const fault of ["provisional-read", "provisional-read-close", "early-image", "early-image-close"] as const) {
+    test(`browser ${mode} ${fault} accounts for every failed-init storage owner`, async ({ playwright, browserName, baseURL }, testInfo) => {
+      test.setTimeout(120_000);
+      const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+      filesystem.writeFile("/state", new TextEncoder().encode("intact"), 0o644);
+      const image = await filesystem.saveImage();
+      const kernelUrl = new URL("/failed-init-storage-kernel.wasm", baseURL).href;
+      const imageUrl = new URL("/failed-init-storage-image.vfs", baseURL).href;
+      const workerPath = resolve(testDirectory, "fixtures/opfs-overlay-provisional-close-worker.ts");
+      const projectUse = testInfo.project.use as {
+        channel?: string;
+        launchOptions?: Record<string, unknown>;
+        proxy?: Record<string, string>;
+        extraHTTPHeaders?: Record<string, string>;
+      };
+      const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-failed-init-storage-"));
+      try {
+        const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+          channel: projectUse.channel,
+          proxy: projectUse.proxy as never,
+          extraHTTPHeaders: projectUse.extraHTTPHeaders,
+          ...(projectUse.launchOptions ?? {}),
+        });
+        try {
+          const page = context.pages()[0] ?? await context.newPage();
+          await page.route(kernelUrl, route => route.fulfill({ body: readFileSync(kernelPath!) }));
+          await page.route(imageUrl, route => route.fulfill({ body: Buffer.from(image) }));
+          await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+          const result = await page.evaluate(async ({ moduleUrl, workerUrl, kernelUrl, imageUrl, mode, fault }) => {
+            const { BrowserKernel } = await import(moduleUrl);
+            const bytes = await (await fetch(imageUrl)).arrayBuffer();
+            const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
+            const directory = await (await navigator.storage.getDirectory())
+              .getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+            const name = `failed-init-${crypto.randomUUID()}`;
+            const file = await directory.getFileHandle(`${name}.base`, { create: true });
+            const emptyImage = fault.startsWith("early-image");
+            const failClose = fault.endsWith("-close");
+            const writer = await file.createWritable();
+            if (!emptyImage) await writer.write(bytes);
+            await writer.close();
+            const diagnostics: Array<{ source?: string; message: string }> = [];
+            const first = new BrowserKernel({ kernelOwnedFs: true, kernelMaxPages: 1024,
+              onHostDiagnostic: diagnostic => diagnostics.push(diagnostic) });
+            const options = {
+              kernelWasm, vfsImageFile: file, persistentComputerName: name,
+              ...(mode === "fixed" ? { experimentalFixedPersistenceName: name } : { experimentalResizablePersistenceName: name }),
+            };
+            const faultUrl = new URL(workerUrl);
+            faultUrl.searchParams.set("name", name);
+            faultUrl.searchParams.set("fault", fault);
+            const OriginalWorker = Worker;
+            globalThis.Worker = class extends OriginalWorker {
+              constructor(url: string | URL, options?: WorkerOptions) {
+                super(String(url).includes("browser-kernel-worker-entry") ? faultUrl : url, options);
+              }
+            };
+            let initializationFailure = "";
+            try {
+              await first.initFromOpfsImage(options);
+            } catch (error) {
+              initializationFailure = String(error);
+            } finally {
+              globalThis.Worker = OriginalWorker;
+              await first.destroy();
+            }
+            if (initializationFailure === "") throw new Error("faulted initialization unexpectedly succeeded");
+            const events = diagnostics.filter(diagnostic => diagnostic.source === "provisional storage fault fixture")
+              .map(diagnostic => JSON.parse(diagnostic.message) as { event: string; file: string });
+            const unconfirmed = first.hasUnconfirmedKernelQuiescence();
+            let journalExists = false;
+            try {
+              await directory.getFileHandle(`${name}.journal`);
+              journalExists = true;
+            } catch (error) {
+              if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error;
+            }
+            let retryState = "";
+            let retryFailure = "";
+            const retry = new BrowserKernel({ kernelOwnedFs: true, kernelMaxPages: 1024 });
+            try {
+              if (emptyImage && !failClose) {
+                const replacement = await file.createWritable();
+                await replacement.write(bytes);
+                await replacement.close();
+              }
+              await retry.initFromOpfsImage({ ...options, requireExistingRootfsPersistence: !emptyImage });
+              retryState = new TextDecoder().decode(await retry.readFileFromVfs("/state"));
+            } catch (error) {
+              retryFailure = String(error);
+            } finally {
+              await retry.destroy();
+            }
+            return { initializationFailure, unconfirmed, journalExists, retryState, retryFailure,
+              openedBase: events.filter(event => event.event === "opened" && event.file === `${name}.base`).length,
+              closedBase: events.filter(event => event.event === "closed" && event.file === `${name}.base`).length,
+              closedJournal: events.filter(event => event.event === "closed" && event.file === `${name}.journal`).length,
+              refusedClose: events.filter(event => event.event === "close-refused").length,
+              injectedRead: events.some(event => event.event === "provisional-read-refused") };
+          }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+            workerUrl: new URL(`/@fs/${workerPath}`, baseURL).href, kernelUrl, imageUrl, mode, fault });
+          const emptyImage = fault.startsWith("early-image");
+          const failClose = fault.endsWith("-close");
+          expect(result.initializationFailure).not.toBe("");
+          expect(result.openedBase).toBe(1);
+          expect(result.injectedRead).toBe(!emptyImage);
+          expect(result.journalExists).toBe(!emptyImage);
+          expect(result.unconfirmed).toBe(failClose);
+          expect(result.refusedClose).toBe(failClose ? 1 : 0);
+          expect(result.closedBase).toBe(emptyImage && failClose ? 0 : 1);
+          expect(result.closedJournal).toBe(!emptyImage && !failClose ? 1 : 0);
+          if (failClose) {
+            expect(result.retryState).toBe("");
+            expect(result.retryFailure).toContain("already running");
+          } else {
+            expect(result.retryFailure).toBe("");
+            expect(result.retryState).toBe("intact");
+          }
+        } finally {
+          await context.close();
+        }
+      } finally {
+        rmSync(userDataDir, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+for (const mode of ["fixed", "resizable"] as const) {
+  for (const failClose of [false, true]) {
+    test(`browser ${mode} drains pending snapshot acquisition before shutdown (close failure=${failClose})`, async ({ playwright, browserName, baseURL }, testInfo) => {
+      test.setTimeout(120_000);
+      const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+      filesystem.writeFile("/state", new TextEncoder().encode("intact"), 0o644);
+      const image = await filesystem.saveImage();
+      const kernelUrl = new URL("/snapshot-retirement-kernel.wasm", baseURL).href;
+      const imageUrl = new URL("/snapshot-retirement-image.vfs", baseURL).href;
+      const workerPath = resolve(testDirectory, "fixtures/opfs-overlay-provisional-close-worker.ts");
+      const projectUse = testInfo.project.use as {
+        channel?: string;
+        launchOptions?: Record<string, unknown>;
+        proxy?: Record<string, string>;
+        extraHTTPHeaders?: Record<string, string>;
+      };
+      const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-snapshot-retirement-"));
+      try {
+        const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+          channel: projectUse.channel, proxy: projectUse.proxy as never,
+          extraHTTPHeaders: projectUse.extraHTTPHeaders, ...(projectUse.launchOptions ?? {}),
+        });
+        try {
+          const page = context.pages()[0] ?? await context.newPage();
+          await page.route(kernelUrl, route => route.fulfill({ body: readFileSync(kernelPath!) }));
+          await page.route(imageUrl, route => route.fulfill({ body: Buffer.from(image) }));
+          await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+          const result = await page.evaluate(async ({ moduleUrl, workerUrl, kernelUrl, imageUrl, mode, failClose }) => {
+            const { BrowserKernel } = await import(moduleUrl);
+            const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
+            const directory = await (await navigator.storage.getDirectory())
+              .getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+            const name = `snapshot-retirement-${crypto.randomUUID()}`;
+            const base = await directory.getFileHandle(`${name}.base`, { create: true });
+            const writer = await base.createWritable();
+            await writer.write(await (await fetch(imageUrl)).arrayBuffer());
+            await writer.close();
+            const target = await directory.getFileHandle(`${name}.snapshot`, { create: true });
+            let signalAcquired!: () => void;
+            const acquired = new Promise<void>(resolve => { signalAcquired = resolve; });
+            const events: Array<{ event: string; file: string }> = [];
+            const kernel = new BrowserKernel({ kernelOwnedFs: true, kernelMaxPages: 1024,
+              onHostDiagnostic: diagnostic => {
+                if (diagnostic.source !== "provisional storage fault fixture") return;
+                const event = JSON.parse(diagnostic.message) as { event: string; file: string };
+                events.push(event);
+                if (event.event === "snapshot-acquisition-held") signalAcquired();
+              } });
+            const options = { kernelWasm, vfsImageFile: base, persistentComputerName: name,
+              ...(mode === "fixed" ? { experimentalFixedPersistenceName: name } : { experimentalResizablePersistenceName: name }) };
+            const faultUrl = new URL(workerUrl);
+            faultUrl.searchParams.set("name", name);
+            faultUrl.searchParams.set("fault", failClose ? "snapshot-acquire-close" : "snapshot-acquire");
+            const OriginalWorker = Worker;
+            globalThis.Worker = class extends OriginalWorker {
+              constructor(url: string | URL, options?: WorkerOptions) {
+                super(String(url).includes("browser-kernel-worker-entry") ? faultUrl : url, options);
+              }
+            };
+            try { await kernel.initFromOpfsImage(options); }
+            finally { globalThis.Worker = OriginalWorker; }
+            const exporting = kernel.exportRootfsImageToFile(target).then(() => "", error => String(error));
+            await acquired;
+            await kernel.destroy();
+            const exportFailure = await exporting;
+            const unconfirmed = kernel.hasUnconfirmedKernelQuiescence();
+            const stagedBytes = (await target.getFile()).size;
+            let retryState = "";
+            let retryFailure = "";
+            const retry = new BrowserKernel({ kernelOwnedFs: true, kernelMaxPages: 1024 });
+            try {
+              await retry.initFromOpfsImage({ ...options, requireExistingRootfsPersistence: true });
+              retryState = new TextDecoder().decode(await retry.readFileFromVfs("/state"));
+            } catch (error) { retryFailure = String(error); }
+            finally { await retry.destroy(); }
+            return { exportFailure, unconfirmed, stagedBytes, retryState, retryFailure,
+              closedBase: events.filter(event => event.event === "closed" && event.file === `${name}.base`).length,
+              closedJournal: events.filter(event => event.event === "closed" && event.file === `${name}.journal`).length,
+              closedSnapshot: events.filter(event => event.event === "closed" && event.file === `${name}.snapshot`).length,
+              refusedClose: events.filter(event => event.event === "close-refused").length };
+          }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
+            workerUrl: new URL(`/@fs/${workerPath}`, baseURL).href, kernelUrl, imageUrl, mode, failClose });
+          expect(result.exportFailure).not.toBe("");
+          expect(result.stagedBytes).toBe(0);
+          expect(result.unconfirmed).toBe(failClose);
+          expect(result.closedBase).toBe(1);
+          expect(result.closedJournal).toBe(1);
+          expect(result.closedSnapshot).toBe(failClose ? 0 : 1);
+          expect(result.refusedClose).toBe(failClose ? 1 : 0);
+          expect(result.retryState).toBe(failClose ? "" : "intact");
+          if (failClose) expect(result.retryFailure).toContain("already running");
+          else expect(result.retryFailure).toBe("");
+        } finally { await context.close(); }
+      } finally { rmSync(userDataDir, { recursive: true, force: true }); }
+    });
+  }
+}
+
+async function verifyMetadataQuotaRecovery(page: Page, baseURL: string, scenario: { budget: number; createMode: string; verifyMode: string }): Promise<void> {
+  const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+  filesystem.setImageCapacity(512 * 1024 * 1024);
+  filesystem.mkdir("/bin", 0o755);
+  filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
+  filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
+  if (scenario.createMode === "rename-metadata") {
+    for (let index = 0; index < 32; index++) {
+      filesystem.writeFile(`/base-rename-${String(index).padStart(3, "0")}`, new Uint8Array(), 0o644);
+    }
+  }
+  const image = await filesystem.saveImage();
+  const kernelUrl = new URL("/metadata-quota-kernel.wasm", baseURL).href;
+  const imageUrl = new URL("/metadata-quota-image.vfs", baseURL).href;
+  await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+  await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
+  await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+  const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, scenario }) => {
+    const { BrowserKernel } = await import(moduleUrl);
+    const kernelWasm = await (await fetch(kernelUrl)).arrayBuffer();
+    const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+    const name = `metadata-quota-${crypto.randomUUID()}`;
+    const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
+    const writer = await imageFile.createWritable();
+    await writer.write(await (await fetch(imageUrl)).arrayBuffer());
+    await writer.close();
+    const diagnostics: string[] = [];
+    const boot = async (rootfsMetadataBytes: number, requireExisting = false) => {
+      const kernel = new BrowserKernel({ kernelOwnedFs: true, kernelMaxPages: 1024, rootfsMetadataBytes,
+        onStderr: bytes => diagnostics.push(new TextDecoder().decode(bytes)) });
+      try {
+        await kernel.initFromOpfsImage({ kernelWasm, vfsImageFile: imageFile,
+          experimentalResizablePersistenceName: name, persistentComputerName: name,
+          requireExistingRootfsPersistence: requireExisting });
+        return kernel;
+      } catch (error) { await kernel.destroy(); throw error; }
+    };
+    const first = await boot(scenario.budget);
+    try {
+      const { exit } = await first.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", scenario.createMode]);
+      const status = await exit;
+      if (status !== 0) throw new Error(`guest ${scenario.createMode} failed with exit ${status}: ${diagnostics.join("")}`);
+    } finally { await first.destroy(); }
+    const journalFile = await directory.getFileHandle(`${name}.journal`);
+    const committed = new Uint8Array(await (await journalFile.getFile()).arrayBuffer());
+    let refused = "";
+    try {
+      const unexpected = await boot(8192, true);
+      await unexpected.destroy();
+      throw new Error("metadata recovery unexpectedly fit the smaller budget");
+    } catch (error) { refused = String(error); }
+    const retained = new Uint8Array(await (await journalFile.getFile()).arrayBuffer());
+    const recovered = await boot(scenario.budget, true);
+    const snapshotFile = await directory.getFileHandle(`${name}.snapshot`, { create: true });
+    let state: string;
+    let integrity: OpfsImageIntegrity;
+    try {
+      const { exit } = await recovered.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", scenario.verifyMode]);
+      const status = await exit;
+      if (status !== 0) throw new Error(`guest ${scenario.verifyMode} recovery failed with exit ${status}`);
+      state = new TextDecoder().decode(await recovered.readFileFromVfs("/state"));
+      if (await recovered.getKernelMemoryPages() > 1024) throw new Error("metadata recovery exceeded its kernel ceiling");
+    } finally { await recovered.destroy(); }
+    const exporter = await boot(scenario.budget, true);
+    try { integrity = await exporter.exportRootfsImageToFile(snapshotFile); }
+    finally { await exporter.destroy(); }
+    const checkpoint = new BrowserKernel({ kernelOwnedFs: true, kernelMaxPages: 1024, rootfsMetadataBytes: scenario.budget });
+    try {
+      await checkpoint.initFromOpfsImage({ kernelWasm, vfsImageFile: snapshotFile, integrity });
+      const { exit } = await checkpoint.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", scenario.verifyMode]);
+      const status = await exit;
+      if (status !== 0) throw new Error(`guest ${scenario.verifyMode} checkpoint failed with exit ${status}`);
+    } finally { await checkpoint.destroy(); }
+    return { refused, journalBytes: committed.length,
+      unchanged: committed.length === retained.length && committed.every((byte, index) => byte === retained[index]), state };
+  }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl, scenario });
+  expect(result.refused).toContain("errno 12");
+  expect(result.refused).not.toContain("must be rebuilt");
+  expect(result.journalBytes).toBeGreaterThan(72);
+  expect(result.unchanged).toBe(true);
+  expect(result.state).toBe("abcdefgh");
+}
+
+for (const scenario of [
+  { label: "browser enforces metadata quota and preserves OPFS recovery after exhaustion",
+    budget: 65536, createMode: "metadata-quota", verifyMode: "verify-metadata-quota" },
+  { label: "browser reuses directory-name credits for same-budget rename recovery and checkpoint",
+    budget: 80 * 1024, createMode: "rename-metadata", verifyMode: "verify-rename-metadata" },
+  { label: "browser bounds unlinked inode-history recovery by the live tree at the same metadata budget",
+    budget: 65536, createMode: "inode-history", verifyMode: "verify-inode-history" },
+  { label: "browser bounds inactive FIFO memory and reclaims buffer quota through OPFS recovery and checkpoint",
+    budget: 8 * 1024 * 1024, createMode: "many-fifos", verifyMode: "verify-many-fifos" },
+]) {
+  test(scenario.label, async ({ playwright, browserName, baseURL }, testInfo) => {
+    test.setTimeout(180_000);
+    const projectUse = testInfo.project.use as {
+      channel?: string;
+      launchOptions?: Record<string, unknown>;
+      proxy?: Record<string, string>;
+      extraHTTPHeaders?: Record<string, string>;
+    };
+    const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-metadata-quota-browser-"));
+    try {
+      const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+        channel: projectUse.channel,
+        proxy: projectUse.proxy as never,
+        extraHTTPHeaders: projectUse.extraHTTPHeaders,
+        ...(projectUse.launchOptions ?? {}),
+      });
+      try {
+        const page = context.pages()[0] ?? await context.newPage();
+        await verifyMetadataQuotaRecovery(page, baseURL!, scenario);
+      } finally { await context.close(); }
+    } finally { rmSync(userDataDir, { recursive: true, force: true }); }
+  });
+}
+
 async function withChromiumOriginQuota<T>(context: BrowserContext, page: Page, headroom: number, action: () => Promise<T>): Promise<T> {
   const session = await context.newCDPSession(page);
   const origin = new URL(page.url()).origin;
@@ -614,6 +958,8 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
         } finally {
           await repeated.destroy();
         }
+        const snapshotHeader = new DataView(await (await snapshotFile.getFile()).slice(0, 88).arrayBuffer());
+        const capacity = { inodes: snapshotHeader.getUint32(32, true), blocks: snapshotHeader.getUint32(84, true) };
         const corrupter = await snapshotFile.createWritable({ keepExistingData: true });
         await corrupter.write({ type: "write", position: 0, data: Uint8Array.of(0) });
         await corrupter.close();
@@ -626,9 +972,11 @@ test("browser streams a composed resizable snapshot to OPFS and reboots without 
         } finally {
           await damaged.destroy();
         }
-        return { state, created, fifoExit, socketExit, sparseExit, snapshotBytes: snapshotIntegrity.length, damageRejected };
+        return { state, created, fifoExit, socketExit, sparseExit, snapshotBytes: snapshotIntegrity.length, damageRejected, capacity };
       }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, imageUrl });
-      expect(result).toEqual({ state: "SNAP", created: "created", fifoExit: 0, socketExit: 0, sparseExit: 0, snapshotBytes: expect.any(Number), damageRejected: true });
+      const sourceHeader = new DataView(image.buffer, image.byteOffset, image.byteLength);
+      expect(result).toEqual({ state: "SNAP", created: "created", fifoExit: 0, socketExit: 0, sparseExit: 0, snapshotBytes: expect.any(Number), damageRejected: true,
+        capacity: { inodes: sourceHeader.getUint32(32, true), blocks: sourceHeader.getUint32(84, true) } });
       expect(result.snapshotBytes).toBeGreaterThan(0);
     } finally {
       await context.close();
@@ -721,6 +1069,7 @@ test("browser reopens sparse image and created files after namespace changes", a
 test("browser bounds resizable timestamp writeback across guest-created files", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(90_000);
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+  filesystem.setImageCapacity(2 * 1024 * 1024);
   filesystem.mkdir("/bin", 0o755);
   filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
   filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
@@ -1010,7 +1359,7 @@ test("browser kernel mounts a named OPFS journal and reopens it after destroy", 
       expect(compacted.state).toBe("XYcdefgh");
       expect(compacted.sealed).toBe(true);
       expect(compacted.indexBytes).toBeGreaterThan(160);
-      expect(compacted.sealVersion).toBe(2);
+      expect(compacted.sealVersion).toBe(4);
       expect(compacted.compactBytes).toBeLessThan(original.byteLength + repeated.byteLength / 2);
       const recovery = await page.evaluate(async ({ moduleUrl, overlaySelectionUrl, kernelUrl, name }) => {
         const { BrowserKernel } = await import(moduleUrl);
@@ -1840,11 +2189,12 @@ for (const cut of ["journal", "index", "seal"] as const) {
   });
 }
 
+for (const torn of [false, true]) {
 for (const [persistenceMode, cut] of [
   ["fixed", "journal"], ["fixed", "index"], ["fixed", "seal"],
   ["resizable", "journal"], ["resizable", "index"], ["resizable", "seal"],
 ] as const) {
-  test(`browser recovers ${persistenceMode} live compaction after ${cut} flush crash cut`, async ({ playwright, browserName, baseURL }, testInfo) => {
+  test(`browser recovers ${persistenceMode} live compaction after ${cut} ${torn ? "torn write" : "flush"} crash cut`, async ({ playwright, browserName, baseURL }, testInfo) => {
     test.setTimeout(180_000);
     const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
     filesystem.mkdir("/bin", 0o755);
@@ -1885,11 +2235,12 @@ for (const [persistenceMode, cut] of [
         return name;
       }, { imageUrl });
       await page.reload();
-      const reached = await page.evaluate(async ({ moduleUrl, kernelUrl, name, crashWorkerUrl, cut, persistenceMode }) => {
+      const reached = await page.evaluate(async ({ moduleUrl, kernelUrl, name, crashWorkerUrl, cut, persistenceMode, torn }) => {
         const { BrowserKernel } = await import(moduleUrl);
         const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
         const OriginalWorker = Worker;
         let redirected = 0;
+        let tornWrite: { written: number; attempted: number; ordinal: number } | null = null;
         const cutReached = new Promise<string>((resolve, reject) => {
           const timeout = window.setTimeout(() => reject(new Error("live compaction crash cut was not reached")), 60_000);
           globalThis.Worker = class extends OriginalWorker {
@@ -1898,6 +2249,7 @@ for (const [persistenceMode, cut] of [
                 const faultUrl = new URL(crashWorkerUrl);
                 faultUrl.searchParams.set("name", name);
                 faultUrl.searchParams.set("cut", cut);
+                if (torn) faultUrl.searchParams.set("torn", "1");
                 redirected++;
                 super(faultUrl, options);
               } else {
@@ -1905,6 +2257,7 @@ for (const [persistenceMode, cut] of [
               }
               this.addEventListener("message", (event) => {
                 if (event.data?.type === "overlay_crash_cut") {
+                  tornWrite = event.data.tornWrite ?? null;
                   window.clearTimeout(timeout);
                   resolve(event.data.cut);
                 }
@@ -1936,9 +2289,16 @@ for (const [persistenceMode, cut] of [
             if (await exit !== 0) throw new Error(`guest ${mode} write failed before live compaction`);
           }
         })().catch((error) => { (window as unknown as { crashCutError: string }).crashCutError = String(error); });
-        return { cut: await cutReached, redirected };
-      }, { moduleUrl, kernelUrl, name, crashWorkerUrl, cut, persistenceMode });
-      expect(reached).toEqual({ cut, redirected: 1 });
+        return { cut: await cutReached, redirected, tornWrite };
+      }, { moduleUrl, kernelUrl, name, crashWorkerUrl, cut, persistenceMode, torn });
+      expect(reached).toMatchObject({ cut, redirected: 1 });
+      if (torn) {
+        expect(reached.tornWrite).not.toBeNull();
+        expect(reached.tornWrite!.written).toBeGreaterThan(0);
+        expect(reached.tornWrite!.written).toBeLessThan(reached.tornWrite!.attempted);
+        expect(reached.tornWrite!.ordinal).toBe(cut === "index" ? 1 : 2);
+        await testInfo.attach("torn-compaction-write", { body: JSON.stringify(reached), contentType: "application/json" });
+      } else expect(reached.tornWrite).toBeNull();
       if (browserName === "chromium") {
         const session = await context.newCDPSession(page);
         const closed = context.waitForEvent("close", { timeout: 15_000 });
@@ -2023,6 +2383,7 @@ for (const [persistenceMode, cut] of [
       rmSync(userDataDir, { recursive: true, force: true });
     }
   });
+}
 }
 
 test("browser converts an oversized unindexed resizable journal before mounting", async ({ playwright, browserName, baseURL }, testInfo) => {
@@ -2567,6 +2928,162 @@ for (const mode of ["fixed-v1", "fixed-v1-two-slots", "fixed-v1-three-slots", "f
   }
 });
 
+for (const { mode, tombstones, label } of [
+  { label: "injected refusal", mode: "fixed", tombstones: 0 },
+  { label: "injected refusal", mode: "resizable", tombstones: 0 },
+  { label: "admitted replay", mode: "resizable", tombstones: 65_000 },
+  { label: "proactive pressure", mode: "resizable", tombstones: 30_000 },
+] as const) {
+  test(`browser ${mode} converts a memory-limited small OPFS journal and recovers later writes (${label})`, async ({ playwright, browserName, baseURL }, testInfo) => {
+    test.setTimeout(240_000);
+    const projectUse = testInfo.project.use as {
+      channel?: string;
+      launchOptions?: Record<string, unknown>;
+      proxy?: Record<string, unknown>;
+      extraHTTPHeaders?: Record<string, string>;
+    };
+    const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-memory-recovery-browser-"));
+    try {
+      const context = await playwright[browserName].launchPersistentContext(userDataDir, {
+        channel: projectUse.channel,
+        proxy: projectUse.proxy as never,
+        extraHTTPHeaders: projectUse.extraHTTPHeaders,
+        ...(projectUse.launchOptions ?? {}),
+      });
+      try {
+        const page = context.pages()[0] ?? (await context.newPage());
+        const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+        filesystem.mkdir("/bin", 0o755);
+        filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
+        filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
+        const image = await filesystem.saveImage();
+        const kernelUrl = new URL("/memory-recovery-kernel.wasm", baseURL).href;
+        const imageUrl = new URL("/memory-recovery-image.vfs", baseURL).href;
+        await page.route(kernelUrl, (route) => route.fulfill({ body: readFileSync(kernelPath!) }));
+        await page.route(imageUrl, (route) => route.fulfill({ body: Buffer.from(image) }));
+        await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+        const moduleUrl = new URL(`/@fs/${browserKernelPath}`, baseURL).href;
+        const prepared = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, mode, tombstones, historyUrl }) => {
+          const { BrowserKernel } = await import(moduleUrl);
+          const name = `memory-recovery-${crypto.randomUUID()}`;
+          const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
+          const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
+          const writer = await imageFile.createWritable();
+          await writer.write(await (await fetch(imageUrl)).arrayBuffer());
+          await writer.close();
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          try {
+            await kernel.initFromOpfsImage({
+              kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(), vfsImageFile: imageFile,
+              ...(mode === "fixed" ? { experimentalFixedPersistenceName: name } : { experimentalResizablePersistenceName: name }),
+              persistentComputerName: name,
+            });
+            const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite"]);
+            if (await exit !== 0) throw new Error("initial persistent write failed");
+          } finally {
+            await kernel.destroy();
+          }
+          const sourceFile = await directory.getFileHandle(`${name}.journal`);
+          if (tombstones !== 0) {
+            const { appendUnusedBlockTombstones } = await import(historyUrl);
+            const history = await appendUnusedBlockTombstones(new Uint8Array(await (await sourceFile.getFile()).arrayBuffer()), tombstones);
+            const writer = await sourceFile.createWritable();
+            await writer.write(history);
+            await writer.close();
+          }
+          const source = await sourceFile.getFile();
+          return { name, sourceLength: source.size,
+            sourceDigest: [...new Uint8Array(await crypto.subtle.digest("SHA-256", await source.arrayBuffer()))] };
+        }, { moduleUrl, kernelUrl, imageUrl, mode, tombstones,
+          historyUrl: new URL(`/@fs/${resolve(repoRoot, "host/test/fixtures/journal-block-tombstones.ts")}`, baseURL).href });
+        expect(prepared.sourceLength).toBeGreaterThan(72);
+        expect(prepared.sourceLength).toBeLessThan(32 * 1024 * 1024);
+        await page.reload();
+        const converted = await page.evaluate(async ({ moduleUrl, kernelUrl, workerUrl, name, mode, tombstones }) => {
+          const { BrowserKernel } = await import(moduleUrl);
+          const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+          const worker = new Worker(workerUrl, { type: "module" });
+          let result: { visible: string; attempts: number; conversions: number; slot: string;
+            initialMemory?: { used: number; pressure: boolean }; finalMemory?: { used: number; pressure: boolean }; compactions?: number;
+            ioMemory?: { used: number; limit: number } };
+          try {
+            result = await new Promise((resolve, reject) => {
+              worker.onmessage = (event) => event.data.error === undefined ? resolve(event.data) : reject(new Error(event.data.error));
+              worker.onerror = (event) => reject(new Error(event.message));
+              void fetch(kernelUrl).then(response => response.arrayBuffer()).then(kernelWasm => {
+                worker.postMessage({ name, mode, kernelWasm, injectMemoryRefusal: tombstones === 0, reportMemory: tombstones !== 0 }, [kernelWasm]);
+              }).catch(reject);
+            });
+          } finally {
+            worker.terminate();
+          }
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          try {
+            await kernel.initFromOpfsImage({
+              kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+              vfsImageFile: await directory.getFileHandle(`${name}.base`),
+              ...(mode === "fixed" ? { experimentalFixedPersistenceName: name } : { experimentalResizablePersistenceName: name }),
+              persistentComputerName: name, requireExistingRootfsPersistence: true,
+            });
+            if (new TextDecoder().decode(await kernel.readFileFromVfs("/state")) !== result.visible) {
+              throw new Error("normal worker boot disagrees with converted rootfs");
+            }
+            const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", ["persistence-overwrite", "mmap-fsync"]);
+            if (await exit !== 0) throw new Error("post-conversion mmap/fsync failed");
+          } finally {
+            await kernel.destroy();
+          }
+          const source = await (await directory.getFileHandle(`${name}.journal`)).getFile();
+          return { ...result,
+            sealLength: (await (await directory.getFileHandle(`${name}.g0.seal`)).getFile()).size,
+            sourceLength: source.size,
+            sourceDigest: [...new Uint8Array(await crypto.subtle.digest("SHA-256", await source.arrayBuffer()))] };
+        }, { moduleUrl, kernelUrl, name: prepared.name, mode, tombstones,
+          workerUrl: new URL(`/@fs/${resolve(testDirectory, "fixtures/opfs-overlay-memory-recovery-worker.ts")}`, baseURL).href });
+        expect(converted.visible).toBe("XYcdefgh");
+        expect(converted.attempts).toBe(tombstones === 30_000 ? 1 : 2);
+        expect(converted.conversions).toBe(tombstones === 30_000 ? 0 : 1);
+        if (tombstones !== 0) {
+          expect(converted.initialMemory?.used).toBeLessThanOrEqual(8 * 1024 * 1024);
+          expect(converted.initialMemory?.pressure).toBe(tombstones === 30_000);
+          expect(converted.compactions).toBe(tombstones === 30_000 ? 1 : 0);
+          expect(converted.finalMemory).toEqual({ used: 0, pressure: false });
+          const ioMemory = (converted as { ioMemory: { used: number; limit: number } }).ioMemory;
+          expect(ioMemory.limit).toBe(8 * 1024 * 1024);
+          expect(ioMemory.used).toBeGreaterThan(0);
+          expect(ioMemory.used).toBeLessThanOrEqual(ioMemory.limit);
+        }
+        expect(converted.slot).toBe("g0");
+        expect(converted.sealLength).toBeGreaterThan(96);
+        expect(converted.sourceLength).toBe(prepared.sourceLength);
+        expect(converted.sourceDigest).toEqual(prepared.sourceDigest);
+        await page.reload();
+        const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name, mode }) => {
+          const { BrowserKernel } = await import(moduleUrl);
+          const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
+          const kernel = new BrowserKernel({ kernelOwnedFs: true });
+          try {
+            await kernel.initFromOpfsImage({
+              kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
+              vfsImageFile: await directory.getFileHandle(`${name}.base`),
+              ...(mode === "fixed" ? { experimentalFixedPersistenceName: name } : { experimentalResizablePersistenceName: name }),
+              persistentComputerName: name, requireExistingRootfsPersistence: true,
+            });
+            return new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
+          } finally {
+            await kernel.destroy();
+          }
+        }, { moduleUrl, kernelUrl, name: prepared.name, mode });
+        expect(recovered).toBe("MScdefgh");
+      } finally {
+        await context.close();
+      }
+    } finally {
+      rmSync(userDataDir, { recursive: true, force: true });
+    }
+  });
+}
+
 test("browser retires a legacy OPFS journal after two sealed generations", async ({ playwright, browserName, baseURL }, testInfo) => {
   test.setTimeout(120_000);
   const projectUse = testInfo.project.use as {
@@ -2881,12 +3398,17 @@ for (const keepOpen of [false, true]) {
           const { BrowserKernel } = await import(moduleUrl);
           const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay", { create: true });
           const name = `resizable-orphan-${crypto.randomUUID()}`;
+          const diagnostics: string[] = [];
           const imageFile = await directory.getFileHandle(`${name}.base`, { create: true });
           const writer = await imageFile.createWritable();
           await writer.write(await (await fetch(imageUrl)).arrayBuffer());
           await writer.close();
           const launch = async () => {
-            const kernel = new BrowserKernel({ kernelOwnedFs: true });
+            const kernel = new BrowserKernel({ kernelOwnedFs: true,
+              onHostDiagnostic: (diagnostic) => diagnostics.push(`${diagnostic.source}: ${diagnostic.message}`),
+              onStderr: (bytes) => diagnostics.push(new TextDecoder().decode(bytes)),
+            });
+            kernel.subscribeDestroyProgress((event) => diagnostics.push(`destroy progress: ${JSON.stringify(event)}`));
             await kernel.initFromOpfsImage({
               kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
               vfsImageFile: imageFile,
@@ -2940,6 +3462,9 @@ for (const keepOpen of [false, true]) {
             }
           } finally {
             await first.destroy();
+          }
+          if (first.hasUnconfirmedKernelQuiescence() || first.getPersistenceShutdownFailure() !== null) {
+            throw new Error(`orphan shutdown failed: ${first.getPersistenceShutdownFailure()}; ${diagnostics.join("\n")}`);
           }
           const reopened = await launch();
           try {
@@ -3070,6 +3595,7 @@ test(`browser ${persistenceMode} termination recovers ${writeMode} writes`, asyn
 
 const quotaScenarios = (["fixed", "resizable"] as const).flatMap((mode) => [
   ...(["write", "flush", "evict"] as const).map((fault) => ({ mode, fault, cut: undefined, guestMode: fault === "evict" ? "quota-evict" : "quota-write" })),
+  ...(["partial", "flush"] as const).map((fault) => ({ mode, fault, cut: fault === "partial" ? -1 : undefined, guestMode: "quota-evict" })),
   ...([1, 23, 24, 128, 4096, -1] as const).map((cut) => ({ mode, fault: "partial" as const, cut, guestMode: "quota-write" })),
   ...([128, -1] as const).map((cut) => ({ mode, fault: "short" as const, cut, guestMode: "quota-write" })),
   ...(["quota-mmap-fsync", "quota-mmap-fdatasync"] as const).flatMap((guestMode) =>
@@ -3080,16 +3606,34 @@ const quotaScenarios = (["fixed", "resizable"] as const).flatMap((mode) => [
     cut: fault === "partial" ? -1 : undefined,
     guestMode: "quota-rename",
   })) : []),
+  ...(mode === "resizable" ? (["quota-link", "quota-unlink"] as const).flatMap((guestMode) =>
+    (["write", "flush", "partial"] as const).map((fault) => ({
+      mode,
+      fault,
+      cut: fault === "partial" ? -1 : undefined,
+      guestMode,
+    }))) : []),
+  ...(mode === "resizable" ? (["write", "flush", "partial"] as const).map((fault) => ({
+    mode,
+    fault,
+    cut: fault === "partial" ? -1 : undefined,
+    guestMode: "snapshot-dense-reextend",
+  })) : []),
 ]);
 for (const { mode, fault, cut, guestMode } of quotaScenarios) {
-  const outcome = guestMode === "quota-rename" ? "keeps namespace atomic" : "rejects durability sync, preserves dirty reads";
+  const outcome = ["quota-rename", "quota-link", "quota-unlink"].includes(guestMode) ? "keeps namespace atomic"
+    : guestMode === "snapshot-dense-reextend" ? "keeps truncate atomic"
+      : "rejects durability sync, preserves dirty reads";
   test(`browser ${mode} ${guestMode} ${fault}${cut === undefined ? "" : cut === -1 ? " cut before transaction end" : ` cut ${cut}`} quota failure ${outcome} and recovers`, async ({ playwright, browserName, baseURL }, testInfo) => {
     test.setTimeout(90_000);
     const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
     filesystem.mkdir("/bin", 0o755);
     filesystem.writeFile("/bin/persistence-overwrite", new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
     filesystem.writeFile("/state", new TextEncoder().encode("abcdefgh"), 0o644);
-    if (fault === "evict") filesystem.writeFile("/large", new Uint8Array(65 * 4096), 0o644);
+    if (guestMode === "quota-evict") filesystem.writeFile("/large", new Uint8Array(65 * 4096), 0o644);
+    if (guestMode === "snapshot-dense-reextend") {
+      filesystem.writeFile("/snapshot-dense-base", new TextEncoder().encode("original"), 0o644);
+    }
     const image = await filesystem.saveImage();
     const kernelUrl = new URL(`/quota-${mode}-kernel.wasm`, baseURL).href;
     const imageUrl = new URL(`/quota-${mode}-image.vfs`, baseURL).href;
@@ -3159,16 +3703,22 @@ for (const { mode, fault, cut, guestMode } of quotaScenarios) {
           const status = await exit;
           const visible = new TextDecoder().decode(await kernel.readFileFromVfs("/state"));
           const renamedMissing = await kernel.readFileFromVfs("/quota-renamed") === null;
-          const large = fault === "evict" ? await kernel.readFileFromVfs("/large") : null;
+          const linkedMissing = await kernel.readFileFromVfs("/quota-linked") === null;
+          const large = guestMode === "quota-evict" ? await kernel.readFileFromVfs("/large") : null;
+          const dense = guestMode === "snapshot-dense-reextend"
+            ? await kernel.readFileFromVfs("/snapshot-dense-base") : null;
           (window as unknown as { crashKernel: unknown }).crashKernel = kernel;
           return {
             name,
             status,
             visible,
             renamedMissing,
+            linkedMissing,
             redirected,
+            largePresent: large !== null,
             dirtyPrefix: large === null || large.subarray(0, 64 * 4096).every((byte) => byte === 88),
             unwrittenTail: large === null || large.subarray(64 * 4096).every((byte) => byte === 0),
+            dense: dense === null ? null : new TextDecoder().decode(dense),
           };
         }, {
           moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href,
@@ -3181,14 +3731,18 @@ for (const { mode, fault, cut, guestMode } of quotaScenarios) {
           guestMode,
         });
         expect(before).toMatchObject({
-          status: 0,
-          visible: fault === "evict" || guestMode === "quota-rename" ? "abcdefgh" : "XYcdefgh",
+          status: guestMode === "snapshot-dense-reextend" ? 193 : 0,
+          visible: guestMode === "quota-evict" || ["quota-rename", "quota-link", "quota-unlink", "snapshot-dense-reextend"].includes(guestMode)
+            ? "abcdefgh" : "XYcdefgh",
           renamedMissing: true,
+          linkedMissing: true,
           redirected: 1,
           dirtyPrefix: true,
           unwrittenTail: true,
+          dense: guestMode === "snapshot-dense-reextend" ? "original" : null,
         });
-        if (fault === "evict") {
+        if (guestMode === "quota-evict") expect(before.largePresent).toBe(true);
+        if (guestMode === "quota-evict") {
           const shutdownFailure = await page.evaluate(async () => {
             const kernel = (window as unknown as {
               crashKernel: { destroy(): Promise<void>; getPersistenceShutdownFailure(): string | null };
@@ -3199,7 +3753,7 @@ for (const { mode, fault, cut, guestMode } of quotaScenarios) {
           expect(shutdownFailure).toContain("rootfs persistence shutdown sync failed");
         }
         await page.reload();
-        const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name, mode, fault }) => {
+        const recovered = await page.evaluate(async ({ moduleUrl, kernelUrl, name, mode, fault, guestMode }) => {
           const { BrowserKernel } = await import(moduleUrl);
           const kernelBytes = await (await fetch(kernelUrl)).arrayBuffer();
           const directory = await (await navigator.storage.getDirectory()).getDirectoryHandle("kandelo-persistent-overlay");
@@ -3215,24 +3769,67 @@ for (const { mode, fault, cut, guestMode } of quotaScenarios) {
             });
             const stateBytes = await kernel.readFileFromVfs("/state");
             const renamedBytes = await kernel.readFileFromVfs("/quota-renamed");
+            const linkedBytes = await kernel.readFileFromVfs("/quota-linked");
             const state = stateBytes === null ? null : new TextDecoder().decode(stateBytes);
             const renamed = renamedBytes === null ? null : new TextDecoder().decode(renamedBytes);
-            const large = fault === "evict" ? await kernel.readFileFromVfs("/large") : null;
-            return { state, renamed, largeIsZero: large === null || large.every((byte) => byte === 0) };
+            const linked = linkedBytes === null ? null : new TextDecoder().decode(linkedBytes);
+            let namespaceStatus: number | null = null;
+            if (guestMode === "quota-link" || guestMode === "quota-unlink") {
+              const { exit } = await kernel.spawnFromVfs("/bin/persistence-overwrite", [
+                "persistence-overwrite", guestMode === "quota-link" ? "verify-quota-link" : "verify-quota-unlink",
+              ]);
+              namespaceStatus = await exit;
+            }
+            const large = guestMode === "quota-evict" ? await kernel.readFileFromVfs("/large") : null;
+            const dense = guestMode === "snapshot-dense-reextend"
+              ? await kernel.readFileFromVfs("/snapshot-dense-base") : null;
+            return {
+              state,
+              renamed,
+              linked,
+              namespaceStatus,
+              largePresent: large !== null,
+              largeIsZero: large === null || large.every((byte) => byte === 0),
+              largeHasCompleteEviction: large !== null
+                && large.subarray(0, 16 * 4096).every((byte) => byte === 88)
+                && large.subarray(16 * 4096).every((byte) => byte === 0),
+              dense: dense === null ? null : new TextDecoder().decode(dense),
+            };
           } finally {
             await kernel.destroy();
           }
-        }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, name: before.name, mode, fault });
+        }, { moduleUrl: new URL(`/@fs/${browserKernelPath}`, baseURL).href, kernelUrl, name: before.name, mode, fault, guestMode });
         if (guestMode === "quota-rename" && fault === "flush") {
           expect([{ state: "abcdefgh", renamed: null }, { state: null, renamed: "abcdefgh" }])
             .toContainEqual({ state: recovered.state, renamed: recovered.renamed });
+        } else if (guestMode === "quota-unlink" && fault === "flush") {
+          expect(["abcdefgh", null]).toContain(recovered.state);
         } else if (fault === "flush") {
           expect(["abcdefgh", "XYcdefgh"]).toContain(recovered.state);
         } else {
           expect(recovered.state).toBe("abcdefgh");
         }
         if (guestMode === "quota-rename" && fault !== "flush") expect(recovered.renamed).toBeNull();
-        expect(recovered.largeIsZero).toBe(true);
+        if (guestMode === "quota-link") {
+          expect(recovered.state).toBe("abcdefgh");
+          expect(fault === "flush" ? [null, "abcdefgh"] : [null]).toContain(recovered.linked);
+          expect(recovered.namespaceStatus).toBe(0);
+        } else if (guestMode === "quota-unlink") {
+          expect(recovered.linked).toBeNull();
+          expect(recovered.namespaceStatus).toBe(0);
+        } else {
+          expect(recovered.linked).toBeNull();
+          expect(recovered.namespaceStatus).toBeNull();
+        }
+        if (guestMode === "snapshot-dense-reextend") {
+          expect(fault === "flush" ? ["original", ""] : ["original"]).toContain(recovered.dense);
+        }
+        if (guestMode === "quota-evict") expect(recovered.largePresent).toBe(true);
+        if (guestMode === "quota-evict" && fault === "flush") {
+          expect(recovered.largeIsZero || recovered.largeHasCompleteEviction).toBe(true);
+        } else {
+          expect(recovered.largeIsZero).toBe(true);
+        }
       } finally {
         await context.close();
       }

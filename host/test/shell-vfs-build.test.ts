@@ -26,6 +26,7 @@ import {
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../web-libs/kandelo-session/src/vfs-capacity";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
+import { populateShellRuntimeLayout } from "../src/shell-runtime-layout";
 
 const MiB = 1024 * 1024;
 const O_RDONLY = 0x0000;
@@ -178,6 +179,14 @@ function expectContentsPreserved(fs: KandeloImageFs): void {
 }
 
 describe("shell VFS base composition", () => {
+  it("provides an image-backed writable projects directory for maker", () => {
+    const filesystem = productFs(64 * MiB);
+    populateShellRuntimeLayout(filesystem);
+    const projects = filesystem.stat("/home/projects");
+    expect({ uid: projects.uid, gid: projects.gid, mode: projects.mode & 0o777 })
+      .toEqual({ uid: 1000, gid: 1000, mode: 0o755 });
+  });
+
   it("refuses an image the loader rejects, before any shell build side effect", async () => {
     // This used to forge a legacy atomic seal and assert the refusal. The
     // refusal moved layers: verification now happens inside the module's

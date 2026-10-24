@@ -24,9 +24,13 @@ function readFile(fs: VfsImageFilesystem, path: string): Uint8Array {
   const bytes = new Uint8Array(size);
   const fd = fs.open(path, O_RDONLY, 0);
   try {
-    const read = fs.read(fd, bytes, null, bytes.length);
-    if (read !== bytes.length) {
-      throw new Error(`short test read: ${read} of ${bytes.length}`);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const read = fs.read(fd, bytes.subarray(offset), null, bytes.length - offset);
+      if (read <= 0 || read > bytes.length - offset) {
+        throw new Error(`invalid test read: ${read} after ${offset} of ${bytes.length}`);
+      }
+      offset += read;
     }
   } finally {
     fs.close(fd);

@@ -6,7 +6,7 @@
 //! The reader is a positioned cursor over a [`BlockSource`], not a resident
 //! buffer. A `/` image can be larger than runtime memory, but a tree build
 //! reads its superblock, inode and directory metadata, and regular-file
-//! pointer blocks to retain sparse maps; it does not read file contents.
+//! pointer blocks to count allocations; it does not read file contents.
 //! Holding the whole image resident in kernel memory would duplicate a
 //! decompressed copy the host already owns.
 //!
@@ -351,6 +351,72 @@ pub(crate) const MAX_FILE_BLOCKS: u64 = V1_MAX_FILE_BLOCKS
 /// one per 4 KiB chunk.
 type RawInode = [u8; INODE_SIZE];
 
+#[derive(Clone, Copy)]
+pub struct DirectoryPosition {
+    inode: RawInode,
+    size: u64,
+    offset: u64,
+}
+
+pub struct DirectoryCursor<'a, S: BlockSource> {
+    filesystem: &'a KandeloImageFs<S>,
+    position: DirectoryPosition,
+    block_start: Option<u64>,
+    block: [u8; BLOCK_SIZE],
+}
+
+pub struct KandeloImageDirentRef<'a> {
+    pub ino: u32,
+    pub name: &'a [u8],
+}
+
+impl<S: BlockSource> DirectoryCursor<'_, S> {
+    pub fn position(&self) -> DirectoryPosition {
+        self.position
+    }
+
+    pub fn next_entry(&mut self) -> Result<Option<KandeloImageDirentRef<'_>>, Errno> {
+        while self.position.offset < self.position.size {
+            let block_start = self.position.offset / BLOCK_SIZE as u64 * BLOCK_SIZE as u64;
+            let length = (self.position.size - block_start).min(BLOCK_SIZE as u64) as usize;
+            if self.block_start != Some(block_start) {
+                let read = self.filesystem.read_at_in(
+                    &self.position.inode, block_start, &mut self.block[..length],
+                )?;
+                if read != length {
+                    return Err(Errno::EIO);
+                }
+                self.block_start = Some(block_start);
+            }
+            let offset = (self.position.offset - block_start) as usize;
+            if length - offset < DIRENT_HEADER {
+                return Err(Errno::EIO);
+            }
+            let ino = r32(&self.block, offset).ok_or(Errno::EIO)?;
+            let record_length = u16::from_le_bytes(
+                self.block[offset + 4..offset + 6].try_into().map_err(|_| Errno::EIO)?,
+            ) as usize;
+            let name_length = u16::from_le_bytes(
+                self.block[offset + 6..offset + 8].try_into().map_err(|_| Errno::EIO)?,
+            ) as usize;
+            if record_length < DIRENT_HEADER || record_length % 4 != 0
+                || record_length > length - offset
+                || name_length > record_length - DIRENT_HEADER
+            {
+                return Err(Errno::EIO);
+            }
+            self.position.offset += record_length as u64;
+            if ino != 0 {
+                return Ok(Some(KandeloImageDirentRef {
+                    ino,
+                    name: &self.block[offset + DIRENT_HEADER..offset + DIRENT_HEADER + name_length],
+                }));
+            }
+        }
+        Ok(None)
+    }
+}
+
 pub struct KandeloImageStat {
     pub ino: u32,
     pub mode: u32,
@@ -366,6 +432,76 @@ pub struct KandeloImageStat {
 
 pub fn file_type(mode: u32) -> u32 {
     mode & 0xf000
+}
+
+pub struct FileAllocationCursor<'a, S: BlockSource> {
+    filesystem: &'a KandeloImageFs<S>,
+    blocks: FileReadPosition,
+    position: u64,
+    limit: u64,
+}
+
+pub(crate) struct FileReadPosition {
+    inode: RawInode,
+    pages: [(u32, [u8; BLOCK_SIZE]); 3],
+}
+
+impl FileReadPosition {
+    fn pointer_at<S: BlockSource>(&mut self, filesystem: &KandeloImageFs<S>, block: u32, index: u64, level: usize) -> Result<u32, Errno> {
+        if self.pages[level].0 != block {
+            let bytes = filesystem.pointer_block(block)?;
+            self.pages[level] = (block, bytes);
+        }
+        r32(&self.pages[level].1, index as usize * 4).ok_or(Errno::EIO)
+    }
+
+    fn mapped_block<S: BlockSource>(&mut self, filesystem: &KandeloImageFs<S>, logical: u64) -> Result<(u32, u64), Errno> {
+        let direct = DIRECT_BLOCKS as u64;
+        let pointers = PTRS_PER_BLOCK as u64;
+        let double_start = direct + pointers;
+        if logical < direct {
+            return Ok((r32(&self.inode, INO_DIRECT + logical as usize * 4).ok_or(Errno::EIO)?, logical + 1));
+        }
+        if logical < double_start {
+            let root = r32(&self.inode, INO_INDIRECT).ok_or(Errno::EIO)?;
+            if root == 0 { return Ok((0, double_start)); }
+            return Ok((self.pointer_at(filesystem, root, logical - direct, 0)?, logical + 1));
+        }
+        if logical < V1_MAX_FILE_BLOCKS {
+            let root = r32(&self.inode, INO_DOUBLE_INDIRECT).ok_or(Errno::EIO)?;
+            if root == 0 { return Ok((0, V1_MAX_FILE_BLOCKS)); }
+            let relative = logical - double_start;
+            let group = relative / pointers;
+            let leaf = self.pointer_at(filesystem, root, group, 0)?;
+            if leaf == 0 { return Ok((0, double_start + (group + 1) * pointers)); }
+            return Ok((self.pointer_at(filesystem, leaf, relative % pointers, 1)?, logical + 1));
+        }
+        let root = r32(&self.inode, INO_TRIPLE_INDIRECT).ok_or(Errno::EIO)?;
+        if root == 0 { return Ok((0, MAX_FILE_BLOCKS)); }
+        let relative = logical - V1_MAX_FILE_BLOCKS;
+        let top = relative / (pointers * pointers);
+        let middle = self.pointer_at(filesystem, root, top, 0)?;
+        if middle == 0 { return Ok((0, V1_MAX_FILE_BLOCKS + (top + 1) * pointers * pointers)); }
+        let group = relative / pointers;
+        let leaf = self.pointer_at(filesystem, middle, group % pointers, 1)?;
+        if leaf == 0 { return Ok((0, V1_MAX_FILE_BLOCKS + (group + 1) * pointers)); }
+        Ok((self.pointer_at(filesystem, leaf, relative % pointers, 2)?, logical + 1))
+    }
+}
+
+impl<S: BlockSource> FileAllocationCursor<'_, S> {
+    pub fn next_block(&mut self) -> Result<Option<u32>, Errno> {
+        while self.position < self.limit {
+            let logical = self.position;
+            let (physical, next) = self.blocks.mapped_block(self.filesystem, logical)?;
+            self.filesystem.validate_block_ptr(physical)?;
+            self.position = next.min(self.limit);
+            if physical != 0 {
+                return u32::try_from(logical).map(Some).map_err(|_| Errno::EFBIG);
+            }
+        }
+        Ok(None)
+    }
 }
 
 pub struct KandeloImageFs<S: BlockSource> {
@@ -690,7 +826,8 @@ impl<S: BlockSource> KandeloImageFs<S> {
 
     /// Return the logical block numbers backed by data in a regular file.
     /// Missing indirect branches cost no reads or output memory.
-    pub fn allocated_file_blocks(&self, ino: u32) -> Result<Vec<u32>, Errno> {
+    pub fn file_allocations(&self, ino: u32, range: core::ops::Range<u64>) -> Result<FileAllocationCursor<'_, S>, Errno> {
+        if range.start > range.end { return Err(Errno::EINVAL); }
         let raw = self.read_inode(ino)?;
         if r32(&raw, INO_LINK_COUNT).ok_or(Errno::EIO)? == 0 {
             return Err(Errno::ENOENT);
@@ -709,97 +846,83 @@ impl<S: BlockSource> KandeloImageFs<S> {
         if count > maximum {
             return Err(Errno::EFBIG);
         }
+        let limit = range.end.min(count);
+        Ok(FileAllocationCursor {
+            filesystem: self, blocks: FileReadPosition { inode: raw, pages: [(0, [0; BLOCK_SIZE]); 3] },
+            position: range.start.min(limit), limit,
+        })
+    }
+
+    pub(crate) fn file_read_position(&self, ino: u32) -> Result<FileReadPosition, Errno> {
+        Ok(self.file_allocations(ino, 0..0)?.blocks)
+    }
+
+    pub(crate) fn read_at_position(&self, position: &mut FileReadPosition, offset: u64, destination: &mut [u8]) -> Result<usize, Errno> {
+        let size = r64(&position.inode, INO_SIZE).ok_or(Errno::EIO)?;
+        if offset >= size { return Ok(0); }
+        let length = destination.len().min(usize::try_from(size - offset).unwrap_or(usize::MAX));
+        let mut done = 0;
+        while done < length {
+            let at = offset + done as u64;
+            let logical = at / BLOCK_SIZE as u64;
+            let within = (at % BLOCK_SIZE as u64) as usize;
+            let (physical, next) = position.mapped_block(self, logical)?;
+            self.validate_block_ptr(physical)?;
+            let count = if physical == 0 {
+                (length - done).min(usize::try_from(next * BLOCK_SIZE as u64 - at).unwrap_or(usize::MAX))
+            } else {
+                (length - done).min(BLOCK_SIZE - within)
+            };
+            let target = &mut destination[done..done + count];
+            if physical == 0 {
+                target.fill(0);
+            } else {
+                self.source.read_exact_at(u64::from(physical) * BLOCK_SIZE as u64 + within as u64, target)?;
+            }
+            done += count;
+        }
+        Ok(done)
+    }
+
+    pub fn allocated_file_block_count(&self, ino: u32) -> Result<u64, Errno> {
+        let mut cursor = self.file_allocations(ino, 0..u64::MAX)?;
+        let mut count = 0;
+        while cursor.next_block()?.is_some() { count += 1; }
+        Ok(count)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sparse_file_blocks(&self, ino: u32) -> Result<Option<Vec<u32>>, Errno> {
+        let mut cursor = self.file_allocations(ino, 0..u64::MAX)?;
+        let mut next_dense = 0u64;
+        let mut sparse: Option<Vec<u32>> = None;
+        let prefix = |limit: u64| -> Result<Vec<u32>, Errno> {
+            let mut blocks = Vec::new();
+            blocks.try_reserve_exact(usize::try_from(limit).map_err(|_| Errno::ENOMEM)?)
+                .map_err(|_| Errno::ENOMEM)?;
+            for block in 0..limit { blocks.push(block as u32); }
+            Ok(blocks)
+        };
+        while let Some(block) = cursor.next_block()? {
+            if sparse.is_none() && u64::from(block) != next_dense {
+                sparse = Some(prefix(next_dense)?);
+            }
+            if let Some(blocks) = &mut sparse {
+                blocks.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+                blocks.push(block);
+            }
+            next_dense = u64::from(block) + 1;
+        }
+        if sparse.is_none() && next_dense != cursor.limit { sparse = Some(prefix(next_dense)?); }
+        Ok(sparse)
+    }
+
+    pub fn allocated_file_blocks(&self, ino: u32) -> Result<Vec<u32>, Errno> {
+        let mut cursor = self.file_allocations(ino, 0..u64::MAX)?;
         let mut blocks = Vec::new();
-        for index in 0..count.min(u64::from(DIRECT_BLOCKS)) {
-            if self.validate_block_ptr(
-                r32(&raw, INO_DIRECT + index as usize * 4).ok_or(Errno::EIO)?,
-            )? != 0 {
-                blocks.push(index as u32);
-            }
-        }
-        if count > u64::from(DIRECT_BLOCKS) {
-            let indirect = r32(&raw, INO_INDIRECT).ok_or(Errno::EIO)?;
-            if indirect != 0 {
-                let pointers = self.pointer_block(indirect)?;
-                let entries = (count - u64::from(DIRECT_BLOCKS)).min(u64::from(PTRS_PER_BLOCK));
-                for index in 0..entries {
-                    if self.validate_block_ptr(
-                        r32(&pointers, index as usize * 4).ok_or(Errno::EIO)?,
-                    )? != 0 {
-                        blocks.push(DIRECT_BLOCKS + index as u32);
-                    }
-                }
-            }
-        }
-        let double_start = u64::from(DIRECT_BLOCKS) + u64::from(PTRS_PER_BLOCK);
-        if count > double_start {
-            let double_indirect = r32(&raw, INO_DOUBLE_INDIRECT).ok_or(Errno::EIO)?;
-            if double_indirect != 0 {
-                let first_level = self.pointer_block(double_indirect)?;
-                let groups = (count.min(V1_MAX_FILE_BLOCKS) - double_start)
-                    .div_ceil(u64::from(PTRS_PER_BLOCK));
-                for group in 0..groups {
-                    let pointer = self.validate_block_ptr(
-                        r32(&first_level, group as usize * 4).ok_or(Errno::EIO)?,
-                    )?;
-                    if pointer == 0 {
-                        continue;
-                    }
-                    let second_level = self.pointer_block(pointer)?;
-                    let entries = (count - double_start - group * u64::from(PTRS_PER_BLOCK))
-                        .min(u64::from(PTRS_PER_BLOCK));
-                    for index in 0..entries {
-                        if self.validate_block_ptr(
-                            r32(&second_level, index as usize * 4).ok_or(Errno::EIO)?,
-                        )? != 0 {
-                            blocks.push(
-                                (double_start + group * u64::from(PTRS_PER_BLOCK) + index) as u32,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        if count > V1_MAX_FILE_BLOCKS {
-            let triple_indirect = r32(&raw, INO_TRIPLE_INDIRECT).ok_or(Errno::EIO)?;
-            if triple_indirect != 0 {
-                let first_level = self.pointer_block(triple_indirect)?;
-                let remaining = count - V1_MAX_FILE_BLOCKS;
-                let pointers = PTRS_PER_BLOCK as u64;
-                for top in 0..remaining.div_ceil(pointers * pointers) {
-                    let middle = self.validate_block_ptr(
-                        r32(&first_level, top as usize * 4).ok_or(Errno::EIO)?,
-                    )?;
-                    if middle == 0 {
-                        continue;
-                    }
-                    let second_level = self.pointer_block(middle)?;
-                    let middle_remaining =
-                        (remaining - top * pointers * pointers).min(pointers * pointers);
-                    for group in 0..middle_remaining.div_ceil(pointers) {
-                        let leaf = self.validate_block_ptr(
-                            r32(&second_level, group as usize * 4).ok_or(Errno::EIO)?,
-                        )?;
-                        if leaf == 0 {
-                            continue;
-                        }
-                        let third_level = self.pointer_block(leaf)?;
-                        let entries = (middle_remaining - group * pointers).min(pointers);
-                        for index in 0..entries {
-                            if self.validate_block_ptr(
-                                r32(&third_level, index as usize * 4).ok_or(Errno::EIO)?,
-                            )? != 0 {
-                                blocks.push(
-                                    (V1_MAX_FILE_BLOCKS
-                                        + top * pointers * pointers
-                                        + group * pointers
-                                        + index) as u32,
-                                );
-                            }
-                        }
-                    }
-                }
-            }
+        while let Some(block) = cursor.next_block()? {
+            blocks.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+            blocks.push(block);
         }
         Ok(blocks)
     }
@@ -818,8 +941,12 @@ impl<S: BlockSource> KandeloImageFs<S> {
     /// zeros. Returns the number of bytes read (0 at or after EOF).
     pub fn read_at(&self, ino: u32, offset: u64, dst: &mut [u8]) -> Result<usize, Errno> {
         let raw = self.read_inode(ino)?;
-        if r32(&raw, INO_LINK_COUNT).ok_or(Errno::EIO)? == 0 { return Err(Errno::ENOENT); }
-        let size = r64(&raw, INO_SIZE).ok_or(Errno::EIO)?;
+        self.read_at_in(&raw, offset, dst)
+    }
+
+    fn read_at_in(&self, raw: &RawInode, offset: u64, dst: &mut [u8]) -> Result<usize, Errno> {
+        if r32(raw, INO_LINK_COUNT).ok_or(Errno::EIO)? == 0 { return Err(Errno::ENOENT); }
+        let size = r64(raw, INO_SIZE).ok_or(Errno::EIO)?;
         if offset >= size { return Ok(0); }
         let mut remaining = core::cmp::min(dst.len() as u64, size - offset) as usize;
         let mut pos = offset;
@@ -828,7 +955,7 @@ impl<S: BlockSource> KandeloImageFs<S> {
             let file_block = u32::try_from(pos / BLOCK_SIZE as u64).map_err(|_| Errno::EFBIG)?;
             let block_off = (pos % BLOCK_SIZE as u64) as usize;
             let chunk = core::cmp::min(BLOCK_SIZE - block_off, remaining);
-            let phys = self.block_map_in(&raw, file_block)?;
+            let phys = self.block_map_in(raw, file_block)?;
             if phys == 0 {
                 for b in &mut dst[out..out + chunk] { *b = 0; } // sparse hole
             } else {
@@ -847,53 +974,55 @@ impl<S: BlockSource> KandeloImageFs<S> {
     /// but still advances by `rec_len`; includes `.`/`..` (callers filter).
     /// A malformed record fails the whole listing instead of hiding later
     /// names.
+    pub fn directory_entries(&self, dir_ino: u32) -> Result<DirectoryCursor<'_, S>, Errno> {
+        let inode = self.read_inode(dir_ino)?;
+        if r32(&inode, INO_LINK_COUNT).ok_or(Errno::EIO)? == 0 {
+            return Err(Errno::ENOENT);
+        }
+        if file_type(r32(&inode, INO_MODE).ok_or(Errno::EIO)?) != 0x4000 {
+            return Err(Errno::ENOTDIR);
+        }
+        let size = r64(&inode, INO_SIZE).ok_or(Errno::EIO)?;
+        let maximum = if self.version == KANDELO_IMAGE_EXTENDED_VERSION {
+            MAX_FILE_BLOCKS
+        } else {
+            V1_MAX_FILE_BLOCKS
+        };
+        if size.div_ceil(BLOCK_SIZE as u64) > maximum {
+            return Err(Errno::EFBIG);
+        }
+        Ok(self.resume_directory(DirectoryPosition { inode, size, offset: 0 }))
+    }
+
+    pub fn resume_directory(&self, position: DirectoryPosition) -> DirectoryCursor<'_, S> {
+        DirectoryCursor { filesystem: self, position, block_start: None, block: [0; BLOCK_SIZE] }
+    }
+
     pub fn read_dir(&self, dir_ino: u32) -> Result<Vec<KandeloImageDirent>, Errno> {
-        let st = self.stat_ino(dir_ino)?;
-        if file_type(st.mode) != 0x4000 { return Err(Errno::ENOTDIR); }
-        let size = st.size;
+        let mut cursor = self.directory_entries(dir_ino)?;
         let mut out = Vec::new();
-        let mut block_start = 0u64;
-        let mut block = [0u8; BLOCK_SIZE];
-        while block_start < size {
-            let this = core::cmp::min(BLOCK_SIZE as u64, size - block_start) as usize;
-            let n = self.read_at(dir_ino, block_start, &mut block[..this])?;
-            if n != this {
-                return Err(Errno::EIO);
-            }
-            let mut off = 0usize;
-            while off < n {
-                if n - off < DIRENT_HEADER {
-                    return Err(Errno::EIO);
-                }
-                let ino = u32::from_le_bytes([block[off], block[off + 1], block[off + 2], block[off + 3]]);
-                let rec_len = u16::from_le_bytes([block[off + 4], block[off + 5]]) as usize;
-                let name_len = u16::from_le_bytes([block[off + 6], block[off + 7]]) as usize;
-                // isValidDirEntry: rec_len>=8 && %4==0 && off+rec_len<=blockEnd && name_len<=rec_len-8
-                if rec_len < DIRENT_HEADER || rec_len % 4 != 0
-                    || off + rec_len > n || name_len > rec_len - DIRENT_HEADER {
-                    return Err(Errno::EIO);
-                }
-                if ino != 0 {
-                    out.push(KandeloImageDirent {
-                        ino,
-                        name: block[off + DIRENT_HEADER..off + DIRENT_HEADER + name_len].to_vec(),
-                    });
-                }
-                off += rec_len;
-            }
-            block_start += BLOCK_SIZE as u64;
+        while let Some(entry) = cursor.next_entry()? {
+            out.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+            let mut name = Vec::new();
+            name.try_reserve_exact(entry.name.len()).map_err(|_| Errno::ENOMEM)?;
+            name.extend_from_slice(entry.name);
+            out.push(KandeloImageDirent { ino: entry.ino, name });
         }
         Ok(out)
     }
 
     /// Resolves `name` to a child ino within `dir_ino` via a linear scan of
-    /// `read_dir`. The writer's directory index is an in-process optimization
+    /// directory records. The writer's directory index is an in-process optimization
     /// with no on-disk form, so a linear scan is correct here.
     pub fn lookup(&self, dir_ino: u32, name: &[u8]) -> Result<u32, Errno> {
-        for e in self.read_dir(dir_ino)? {
-            if e.name == name { return Ok(e.ino); }
+        let mut cursor = self.directory_entries(dir_ino)?;
+        let mut found = None;
+        while let Some(entry) = cursor.next_entry()? {
+            if found.is_none() && entry.name == name {
+                found = Some(entry.ino);
+            }
         }
-        Err(Errno::ENOENT)
+        found.ok_or(Errno::ENOENT)
     }
 
     /// The image's deferred-file section, or `None` when it declares none.
@@ -905,6 +1034,13 @@ impl<S: BlockSource> KandeloImageFs<S> {
     /// An image written before this section existed carries 0 in the
     /// superblock field and reads as `None`, not as corrupt.
     pub fn deferred_section(&self) -> Result<Option<crate::sdef::DeferredSection>, Errno> {
+        self.deferred_section_with_admission(|_| Ok(()))
+    }
+
+    pub fn deferred_section_with_admission(
+        &self,
+        admit: impl FnMut(usize) -> Result<(), Errno>,
+    ) -> Result<Option<crate::sdef::DeferredSection>, Errno> {
         if self.deferred_inode == 0 {
             return Ok(None);
         }
@@ -915,12 +1051,8 @@ impl<S: BlockSource> KandeloImageFs<S> {
         if stat.size > self.source.len() {
             return Err(Errno::EINVAL);
         }
-        let mut buf = alloc::vec![0u8; stat.size as usize];
-        let read = self.read_at(self.deferred_inode, 0, &mut buf)?;
-        if read as u64 != stat.size {
-            return Err(Errno::EINVAL);
-        }
-        crate::sdef::decode(&buf).map(Some)
+        crate::sdef::decode_from_with_admission(stat.size, crate::sdef::METADATA_BUDGET_BYTES,
+            |offset, destination| self.read_at(self.deferred_inode, offset, destination), admit).map(Some)
     }
 
     /// Reads a symlink's target. Short targets (`size <= 40`) are stored
@@ -940,10 +1072,25 @@ impl<S: BlockSource> KandeloImageFs<S> {
         // A symlink target cannot exceed the whole image; caps `size` before
         // it drives an allocation.
         if size > self.source.len() { return Err(Errno::EIO); }
-        let mut buf = alloc::vec![0u8; size as usize];
-        let n = self.read_at(ino, 0, &mut buf)?;
-        buf.truncate(n);
+        let length = usize::try_from(size).map_err(|_| Errno::ENOMEM)?;
+        let mut buf = Vec::new();
+        buf.try_reserve_exact(length).map_err(|_| Errno::ENOMEM)?;
+        buf.resize(length, 0);
+        if self.read_link_into(ino, &mut buf)? != length { return Err(Errno::EIO); }
         Ok(buf)
+    }
+
+    pub fn read_link_into(&self, ino: u32, destination: &mut [u8]) -> Result<usize, Errno> {
+        let stat = self.stat_ino(ino)?;
+        if file_type(stat.mode) != 0xa000 { return Err(Errno::EINVAL); }
+        if stat.size > self.source.len() { return Err(Errno::EIO); }
+        let length = stat.size.min(destination.len() as u64) as usize;
+        if stat.size <= INLINE_SYMLINK_SIZE {
+            let raw = self.read_inode(ino)?;
+            destination[..length].copy_from_slice(&raw[INO_DIRECT..INO_DIRECT + length]);
+            return Ok(length);
+        }
+        self.read_at(ino, 0, &mut destination[..length])
     }
 
     /// Resolves an absolute path to an inode number, starting from
@@ -1010,6 +1157,251 @@ pub struct KandeloImageDirent {
 mod tests {
     use super::*;
     const TINY_VFS: &[u8] = include_bytes!("testdata/tiny.vfs");
+
+    struct VirtualAllocationSource {
+        blocks: u64,
+        present: Option<&'static [u64]>,
+        reads: core::cell::Cell<u64>,
+        fail_pages: core::cell::Cell<Option<Errno>>,
+        corrupt: Option<u64>,
+    }
+
+    impl VirtualAllocationSource {
+        const SINGLE: u32 = 100;
+        const DOUBLE: u32 = 101;
+        const DOUBLE_LEAVES: u32 = 102;
+        const TRIPLE: u32 = Self::DOUBLE_LEAVES + PTRS_PER_BLOCK;
+        const TRIPLE_MIDDLES: u32 = Self::TRIPLE + 1;
+        const TRIPLE_LEAVES: u32 = Self::TRIPLE_MIDDLES + PTRS_PER_BLOCK;
+        const DATA: u32 = 2_000_000;
+
+        fn dense(blocks: u64) -> Self {
+            Self { blocks, present: None, reads: core::cell::Cell::new(0),
+                fail_pages: core::cell::Cell::new(None), corrupt: None }
+        }
+
+        fn has_data(&self, start: u64, end: u64) -> bool {
+            start < self.blocks && self.present.is_none_or(|blocks| {
+                blocks.iter().any(|&block| block >= start && block < end.min(self.blocks))
+            })
+        }
+
+        fn data_pointer(&self, logical: u64) -> u32 {
+            if !self.has_data(logical, logical + 1) { return 0; }
+            if self.corrupt == Some(logical) { return u32::MAX; }
+            Self::DATA + logical as u32
+        }
+
+        fn geometry(&self) -> KandeloImageGeometry {
+            KandeloImageGeometry { version: KANDELO_IMAGE_EXTENDED_VERSION,
+                total_blocks: Self::DATA + self.blocks as u32 + 1, data_start: 100,
+                inode_table_start: 1, total_inodes: INODES_PER_BLOCK, deferred_inode: 0 }
+        }
+    }
+
+    impl BlockSource for VirtualAllocationSource {
+        fn len(&self) -> u64 { self.geometry().total_blocks as u64 * BLOCK_SIZE as u64 }
+
+        fn read_exact_at(&self, offset: u64, target: &mut [u8]) -> Result<(), Errno> {
+            self.reads.set(self.reads.get() + 1);
+            target.fill(0);
+            let pointers = PTRS_PER_BLOCK as u64;
+            let double_start = DIRECT_BLOCKS as u64 + pointers;
+            if offset == BLOCK_SIZE as u64 + 2 * INODE_SIZE as u64 && target.len() == INODE_SIZE {
+                target[INO_MODE..INO_MODE + 4].copy_from_slice(&0o100644u32.to_le_bytes());
+                target[INO_LINK_COUNT..INO_LINK_COUNT + 4].copy_from_slice(&1u32.to_le_bytes());
+                target[INO_SIZE..INO_SIZE + 8].copy_from_slice(&self.blocks.saturating_mul(BLOCK_SIZE as u64).saturating_sub(1).to_le_bytes());
+                for logical in 0..DIRECT_BLOCKS {
+                    let field = INO_DIRECT + logical as usize * 4;
+                    target[field..field + 4].copy_from_slice(&self.data_pointer(logical as u64).to_le_bytes());
+                }
+                for (field, pointer, start, end) in [
+                    (INO_INDIRECT, Self::SINGLE, DIRECT_BLOCKS as u64, double_start),
+                    (INO_DOUBLE_INDIRECT, Self::DOUBLE, double_start, V1_MAX_FILE_BLOCKS),
+                    (INO_TRIPLE_INDIRECT, Self::TRIPLE, V1_MAX_FILE_BLOCKS, MAX_FILE_BLOCKS),
+                ] {
+                    let pointer = if self.has_data(start, end) { pointer } else { 0 };
+                    target[field..field + 4].copy_from_slice(&pointer.to_le_bytes());
+                }
+                return Ok(());
+            }
+            let data_block = offset / BLOCK_SIZE as u64;
+            if data_block >= u64::from(Self::DATA) && data_block - u64::from(Self::DATA) < self.blocks {
+                let logical = data_block - u64::from(Self::DATA);
+                let within = offset % BLOCK_SIZE as u64;
+                for (index, byte) in target.iter_mut().enumerate() {
+                    *byte = ((logical + within + index as u64) % 251) as u8;
+                }
+                return Ok(());
+            }
+            if target.len() != BLOCK_SIZE || !offset.is_multiple_of(BLOCK_SIZE as u64) { return Err(Errno::EIO); }
+            if let Some(error) = self.fail_pages.get() { return Err(error); }
+            let block = u32::try_from(offset / BLOCK_SIZE as u64).map_err(|_| Errno::EIO)?;
+            for index in 0..PTRS_PER_BLOCK {
+                let pointer = if block == Self::SINGLE {
+                    self.data_pointer(DIRECT_BLOCKS as u64 + index as u64)
+                } else if block == Self::DOUBLE {
+                    let start = double_start + index as u64 * pointers;
+                    if self.has_data(start, start + pointers) { Self::DOUBLE_LEAVES + index } else { 0 }
+                } else if (Self::DOUBLE_LEAVES..Self::TRIPLE).contains(&block) {
+                    self.data_pointer(double_start + (block - Self::DOUBLE_LEAVES) as u64 * pointers + index as u64)
+                } else if block == Self::TRIPLE {
+                    let start = V1_MAX_FILE_BLOCKS + index as u64 * pointers * pointers;
+                    if self.has_data(start, start + pointers * pointers) { Self::TRIPLE_MIDDLES + index } else { 0 }
+                } else if (Self::TRIPLE_MIDDLES..Self::TRIPLE_LEAVES).contains(&block) {
+                    let group = (block - Self::TRIPLE_MIDDLES) * PTRS_PER_BLOCK + index;
+                    let start = V1_MAX_FILE_BLOCKS + group as u64 * pointers;
+                    if self.has_data(start, start + pointers) { Self::TRIPLE_LEAVES + group } else { 0 }
+                } else if (Self::TRIPLE_LEAVES..Self::TRIPLE_LEAVES + PTRS_PER_BLOCK * PTRS_PER_BLOCK).contains(&block) {
+                    self.data_pointer(V1_MAX_FILE_BLOCKS + (block - Self::TRIPLE_LEAVES) as u64 * pointers + index as u64)
+                } else {
+                    return Err(Errno::EIO);
+                };
+                let field = index as usize * 4;
+                target[field..field + 4].copy_from_slice(&pointer.to_le_bytes());
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn file_read_position_reuses_bounded_traversal_pages_across_small_reads() {
+        let source = VirtualAllocationSource::dense(V1_MAX_FILE_BLOCKS + 2);
+        let filesystem = KandeloImageFs::from_geometry(&source, source.geometry());
+        let mut position = filesystem.file_read_position(2).unwrap();
+        assert!(core::mem::size_of::<FileReadPosition>() < 16 * 1024);
+        for start in [0, DIRECT_BLOCKS as u64, DIRECT_BLOCKS as u64 + PTRS_PER_BLOCK as u64,
+            V1_MAX_FILE_BLOCKS] {
+            source.reads.set(0);
+            for logical in start..start + 2 {
+                let mut actual = [0; 97];
+                assert_eq!(filesystem.read_at_position(&mut position, logical * BLOCK_SIZE as u64 + 123, &mut actual), Ok(actual.len()));
+                for (index, byte) in actual.into_iter().enumerate() {
+                    assert_eq!(byte, ((logical + 123 + index as u64) % 251) as u8);
+                }
+            }
+            assert!(source.reads.get() <= 5, "indirect depth must not be paid for each read");
+        }
+        let mut tail = [0xCC; 11];
+        let size = source.blocks * BLOCK_SIZE as u64 - 1;
+        assert_eq!(filesystem.read_at_position(&mut position, size - 3, &mut tail), Ok(3));
+        assert_eq!(&tail[3..], &[0xCC; 8]);
+        assert_eq!(filesystem.read_at_position(&mut position, size, &mut tail), Ok(0));
+    }
+
+    #[test]
+    fn file_read_position_skips_holes_and_retries_failed_pointer_refills() {
+        const PRESENT: &[u64] = &[0, V1_MAX_FILE_BLOCKS + 1024];
+        let mut source = VirtualAllocationSource::dense(V1_MAX_FILE_BLOCKS + 1025);
+        source.present = Some(PRESENT);
+        let filesystem = KandeloImageFs::from_geometry(&source, source.geometry());
+        let mut position = filesystem.file_read_position(2).unwrap();
+        let mut hole = [0xCC; 8192];
+        assert_eq!(filesystem.read_at_position(&mut position, 1034 * BLOCK_SIZE as u64, &mut hole), Ok(hole.len()));
+        assert_eq!(hole, [0; 8192]);
+        let at = PRESENT[1] * BLOCK_SIZE as u64;
+        for error in [Errno::EAGAIN, Errno::ENOMEM, Errno::EIO] {
+            source.fail_pages.set(Some(error));
+            let mut untouched = [0xCC; 31];
+            assert_eq!(filesystem.read_at_position(&mut position, at, &mut untouched), Err(error));
+            assert_eq!(untouched, [0xCC; 31]);
+        }
+        source.fail_pages.set(None);
+        let mut actual = [0; 31];
+        assert_eq!(filesystem.read_at_position(&mut position, at, &mut actual), Ok(actual.len()));
+        assert_ne!(actual, [0; 31]);
+    }
+
+    #[test]
+    fn file_allocation_cursor_counts_dense_file_without_a_block_list() {
+        let source = VirtualAllocationSource::dense((1 << 23) + 1);
+        let filesystem = KandeloImageFs::from_geometry(&source, source.geometry());
+        assert_eq!(filesystem.allocated_file_block_count(2), Ok(source.blocks));
+        assert!(source.reads.get() <= source.blocks.div_ceil(PTRS_PER_BLOCK as u64)
+            + source.blocks.div_ceil(PTRS_PER_BLOCK as u64 * PTRS_PER_BLOCK as u64) + 8);
+        assert!(core::mem::size_of::<FileAllocationCursor<'_, &VirtualAllocationSource>>() < 16 * 1024);
+        source.reads.set(0);
+        assert_eq!(filesystem.sparse_file_blocks(2), Ok(None));
+        assert!(source.reads.get() <= source.blocks.div_ceil(PTRS_PER_BLOCK as u64)
+            + source.blocks.div_ceil(PTRS_PER_BLOCK as u64 * PTRS_PER_BLOCK as u64) + 8);
+    }
+
+    #[test]
+    fn file_allocation_cursor_keeps_leading_trailing_and_empty_sparse_maps_distinct() {
+        for (blocks, present, expected) in [
+            (12, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9][..], (0..10).collect::<Vec<u32>>()),
+            (12, &[10, 11][..], alloc::vec![10, 11]),
+            (12, &[][..], Vec::new()),
+        ] {
+            let mut source = VirtualAllocationSource::dense(blocks);
+            source.present = Some(present);
+            let filesystem = KandeloImageFs::from_geometry(&source, source.geometry());
+            assert_eq!(filesystem.sparse_file_blocks(2), Ok(Some(expected)));
+            assert!(source.reads.get() <= 2);
+        }
+        let source = VirtualAllocationSource::dense(0);
+        assert_eq!(KandeloImageFs::from_geometry(&source, source.geometry()).sparse_file_blocks(2), Ok(None));
+    }
+
+    #[test]
+    fn file_allocation_cursor_skips_empty_branches_across_the_full_v2_range() {
+        const PRESENT: &[u64] = &[0, 9, 10, 1033, 1034, V1_MAX_FILE_BLOCKS - 1,
+            V1_MAX_FILE_BLOCKS, V1_MAX_FILE_BLOCKS + 1024, MAX_FILE_BLOCKS - 1];
+        let mut source = VirtualAllocationSource::dense(MAX_FILE_BLOCKS);
+        source.present = Some(PRESENT);
+        let filesystem = KandeloImageFs::from_geometry(&source, source.geometry());
+        let mut cursor = filesystem.file_allocations(2, 0..u64::MAX).unwrap();
+        for &expected in PRESENT { assert_eq!(cursor.next_block(), Ok(Some(expected as u32))); }
+        assert_eq!(cursor.next_block(), Ok(None));
+        assert_eq!(cursor.next_block(), Ok(None));
+        assert!(source.reads.get() < 32);
+    }
+
+    #[test]
+    fn file_allocation_cursor_clamps_ranges_and_checks_only_the_requested_branches() {
+        let source = VirtualAllocationSource::dense(MAX_FILE_BLOCKS);
+        let filesystem = KandeloImageFs::from_geometry(&source, source.geometry());
+        for start in [8, 1032, V1_MAX_FILE_BLOCKS - 1, MAX_FILE_BLOCKS - 1] {
+            let before = source.reads.get();
+            let mut cursor = filesystem.file_allocations(2, start..start + 3).unwrap();
+            for block in start..(start + 3).min(MAX_FILE_BLOCKS) {
+                assert_eq!(cursor.next_block(), Ok(Some(block as u32)));
+            }
+            assert_eq!(cursor.next_block(), Ok(None));
+            assert!(source.reads.get() - before <= 6);
+        }
+        assert!(matches!(filesystem.file_allocations(2, 8..7), Err(Errno::EINVAL)));
+        assert_eq!(filesystem.file_allocations(2, MAX_FILE_BLOCKS..u64::MAX).unwrap().next_block(), Ok(None));
+    }
+
+    #[test]
+    fn file_allocation_cursor_preserves_source_errors_and_can_retry_a_failed_page() {
+        let source = VirtualAllocationSource::dense(32);
+        let filesystem = KandeloImageFs::from_geometry(&source, source.geometry());
+        let mut cursor = filesystem.file_allocations(2, 10..32).unwrap();
+        for error in [Errno::EAGAIN, Errno::ENOMEM, Errno::EIO] {
+            source.fail_pages.set(Some(error));
+            assert_eq!(cursor.next_block(), Err(error));
+        }
+        source.fail_pages.set(None);
+        assert_eq!(cursor.next_block(), Ok(Some(10)));
+    }
+
+    #[test]
+    fn file_allocation_cursor_does_not_hide_corrupt_pointers_after_sparse_holes() {
+        let mut source = VirtualAllocationSource::dense(MAX_FILE_BLOCKS);
+        source.present = Some(&[10, 1034, MAX_FILE_BLOCKS - 1]);
+        source.corrupt = Some(MAX_FILE_BLOCKS - 1);
+        let filesystem = KandeloImageFs::from_geometry(&source, source.geometry());
+        let mut cursor = filesystem.file_allocations(2, 0..u64::MAX).unwrap();
+        assert_eq!(cursor.next_block(), Ok(Some(10)));
+        assert_eq!(cursor.next_block(), Ok(Some(1034)));
+        assert_eq!(cursor.next_block(), Err(Errno::EIO));
+        assert_eq!(filesystem.allocated_file_block_count(2), Err(Errno::EIO));
+        let mut geometry = source.geometry();
+        geometry.version = KANDELO_IMAGE_VERSION;
+        assert!(matches!(KandeloImageFs::from_geometry(&source, geometry).file_allocations(2, 0..u64::MAX), Err(Errno::EFBIG)));
+    }
 
     /// The metadata section round-trips through the container writer, at every
     /// combination of the OPTIONAL sections that precede it.
@@ -1426,6 +1818,119 @@ mod tests {
         assert!(fs.read_dir(file_ino).is_err());
     }
 
+    fn wide_directory_image() -> Vec<u8> {
+        use crate::kandelo_image_write::{Content, KandeloImageConfig, KandeloImageWriter, NoContent};
+        let mut writer = KandeloImageWriter::mkfs(KandeloImageConfig {
+            size_bytes: 2 * 1024 * 1024,
+            max_size_bytes: None,
+            growable_to_bytes: 2 * 1024 * 1024,
+            now_ms: 0,
+        }).unwrap();
+        for index in 0..300 {
+            let name = alloc::format!("{index:04}-{}", "n".repeat(200));
+            writer.create_file(writer.root(), name.as_bytes(), 0o644, Content::Bytes(b"")).unwrap();
+        }
+        writer.finish().unwrap().to_vec(&NoContent).unwrap()
+    }
+
+    #[test]
+    fn directory_cursor_streams_direct_and_indirect_blocks_and_resumes() {
+        use core::cell::Cell;
+        struct Observed<'a> {
+            bytes: &'a [u8],
+            calls: Cell<usize>,
+        }
+        impl BlockSource for Observed<'_> {
+            fn len(&self) -> u64 { self.bytes.len() as u64 }
+            fn read_exact_at(&self, offset: u64, destination: &mut [u8]) -> Result<(), Errno> {
+                assert!(destination.len() <= BLOCK_SIZE);
+                self.calls.set(self.calls.get() + 1);
+                self.bytes.read_exact_at(offset, destination)
+            }
+        }
+        let bytes = wide_directory_image();
+        let source = Observed { bytes: &bytes, calls: Cell::new(0) };
+        let filesystem = KandeloImageFs::mount(&source).unwrap();
+        let mut cursor = filesystem.directory_entries(ROOT_INO).unwrap();
+        let initial_calls = source.calls.get();
+        assert_eq!(cursor.next_entry().unwrap().unwrap().name, b".");
+        assert_eq!(cursor.next_entry().unwrap().unwrap().name, b"..");
+        for index in 0..300 {
+            if index == 137 {
+                cursor = filesystem.resume_directory(cursor.position());
+            }
+            let entry = cursor.next_entry().unwrap().unwrap();
+            assert_eq!(entry.name, alloc::format!("{index:04}-{}", "n".repeat(200)).as_bytes());
+        }
+        assert!(cursor.next_entry().unwrap().is_none());
+        assert!(source.calls.get() - initial_calls < 35);
+        assert!(core::mem::size_of::<DirectoryCursor<'_, &[u8]>>() <= BLOCK_SIZE + 192);
+        assert!(core::mem::size_of::<DirectoryPosition>() <= 144);
+    }
+
+    #[test]
+    fn directory_cursor_retries_typed_source_failures_without_advancing() {
+        use core::cell::Cell;
+        struct Failing<'a> {
+            bytes: &'a [u8],
+            failure: Cell<Option<Errno>>,
+        }
+        impl BlockSource for Failing<'_> {
+            fn len(&self) -> u64 { self.bytes.len() as u64 }
+            fn read_exact_at(&self, offset: u64, destination: &mut [u8]) -> Result<(), Errno> {
+                if let Some(error) = self.failure.take() { return Err(error); }
+                self.bytes.read_exact_at(offset, destination)
+            }
+        }
+        let bytes = wide_directory_image();
+        let source = Failing { bytes: &bytes, failure: Cell::new(None) };
+        let filesystem = KandeloImageFs::mount(&source).unwrap();
+        let mut cursor = filesystem.directory_entries(ROOT_INO).unwrap();
+        for _ in 0..131 { cursor.next_entry().unwrap().unwrap(); }
+        let position = cursor.position();
+        let expected = cursor.next_entry().unwrap().unwrap().name.to_vec();
+        for error in [Errno::EAGAIN, Errno::ENOMEM, Errno::EIO, Errno::ENOSPC] {
+            let mut resumed = filesystem.resume_directory(position);
+            source.failure.set(Some(error));
+            assert!(matches!(resumed.next_entry(), Err(actual) if actual == error));
+            assert_eq!(resumed.position().offset, position.offset);
+            assert_eq!(resumed.next_entry().unwrap().unwrap().name, expected);
+        }
+    }
+
+    #[test]
+    fn directory_cursor_does_not_materialize_a_declared_large_directory() {
+        use core::cell::Cell;
+        struct PrefixOnly<'a> {
+            bytes: &'a [u8],
+            allowed_block: Cell<Option<u64>>,
+            data_reads: Cell<usize>,
+        }
+        impl BlockSource for PrefixOnly<'_> {
+            fn len(&self) -> u64 { self.bytes.len() as u64 }
+            fn read_exact_at(&self, offset: u64, destination: &mut [u8]) -> Result<(), Errno> {
+                if let Some(allowed) = self.allowed_block.get() {
+                    assert_eq!(offset, allowed);
+                    self.data_reads.set(self.data_reads.get() + 1);
+                }
+                self.bytes.read_exact_at(offset, destination)
+            }
+        }
+        let mut bytes = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
+        let filesystem = KandeloImageFs::mount(bytes.as_slice()).unwrap();
+        let root_offset = filesystem.inode_offset(ROOT_INO) as usize;
+        let physical = u64::from(filesystem.block_map(ROOT_INO, 0).unwrap()) * BLOCK_SIZE as u64;
+        bytes[root_offset + INO_SIZE..root_offset + INO_SIZE + 8]
+            .copy_from_slice(&(1024u64 * 1024 * 1024).to_le_bytes());
+        let source = PrefixOnly { bytes: &bytes, allowed_block: Cell::new(None), data_reads: Cell::new(0) };
+        let filesystem = KandeloImageFs::mount(&source).unwrap();
+        let mut cursor = filesystem.directory_entries(ROOT_INO).unwrap();
+        source.allowed_block.set(Some(physical));
+        assert_eq!(cursor.next_entry().unwrap().unwrap().name, b".");
+        assert_eq!(cursor.next_entry().unwrap().unwrap().name, b"..");
+        assert_eq!(source.data_reads.get(), 1);
+    }
+
     #[test]
     fn read_dir_rejects_a_malformed_record_after_valid_entries() {
         let mut image = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
@@ -1441,6 +1946,7 @@ mod tests {
 
         let damaged = KandeloImageFs::mount(image.as_slice()).unwrap();
         assert!(matches!(damaged.read_dir(ROOT_INO), Err(Errno::EIO)));
+        assert_eq!(damaged.lookup(ROOT_INO, b"."), Err(Errno::EIO));
     }
 
     #[test]
@@ -1466,6 +1972,34 @@ mod tests {
         // A component that is not a directory is ENOTDIR, not ENOENT: the
         // name exists, it just cannot be descended into.
         assert_eq!(fs.lookup(fs.lookup(ROOT_INO, b"hello.txt").unwrap(), b"x").unwrap_err(), Errno::ENOTDIR);
+    }
+
+    #[test]
+    fn read_link_into_bounds_inline_and_block_backed_targets() {
+        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let link = fs.lookup(ROOT_INO, b"link").unwrap();
+        let mut short = [0xcc; 4];
+        assert_eq!(fs.read_link_into(link, &mut short).unwrap(), 4);
+        assert_eq!(&short, b"hell");
+        let mut long = [0xcc; 64];
+        assert_eq!(fs.read_link_into(link, &mut long).unwrap(), 9);
+        assert_eq!(&long[..9], b"hello.txt");
+        assert!(long[9..].iter().all(|byte| *byte == 0xcc));
+        assert_eq!(fs.read_link_into(link, &mut []), Ok(0));
+        let file = fs.lookup(ROOT_INO, b"hello.txt").unwrap();
+        assert_eq!(fs.read_link_into(file, &mut short), Err(Errno::EINVAL));
+        let raw = fs.read_inode(file).unwrap();
+        let inode_offset = VFSI_HEADER + fs.inode_offset(link) as usize;
+        drop(fs);
+        let mut image = TINY_VFS.to_vec();
+        image[inode_offset + INO_SIZE..inode_offset + INO_SIZE + 8].copy_from_slice(&64u64.to_le_bytes());
+        image[inode_offset + INO_DIRECT..inode_offset + INO_DIRECT + 4]
+            .copy_from_slice(&raw[INO_DIRECT..INO_DIRECT + 4]);
+        let fs = KandeloImageFs::mount(unwrap_vfsi(&image).unwrap()).unwrap();
+        let mut expected = [0; 4];
+        assert_eq!(fs.read_at(file, 0, &mut expected), Ok(4));
+        assert_eq!(fs.read_link_into(link, &mut short), Ok(4));
+        assert_eq!(short, expected);
     }
 
     #[test]
@@ -1537,6 +2071,7 @@ mod tests {
         img[abs..abs + 8].copy_from_slice(&u64::MAX.to_le_bytes());
         let fs2 = KandeloImageFs::mount(unwrap_vfsi(&img).unwrap()).unwrap();
         assert!(fs2.read_link(link).is_err());
+        assert_eq!(fs2.read_link_into(link, &mut [0; 4]), Err(Errno::EIO));
     }
 
     #[test]

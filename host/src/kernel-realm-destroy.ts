@@ -1,3 +1,20 @@
+export const PERSISTENT_KERNEL_REALM_DESTROY_TIMEOUT_MS = 30_000;
+
+export function closeKernelRealmStorage(resources: readonly (() => void)[]): void {
+  const failures: unknown[] = [];
+  for (const close of resources) {
+    try {
+      close();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    const details = failures.map(error => error instanceof Error ? error.message : String(error));
+    throw new AggregateError(failures, `kernel storage close failed: ${details.join("; ")}`);
+  }
+}
+
 /**
  * Result of the kernel worker's best-effort graceful ownership teardown.
  *

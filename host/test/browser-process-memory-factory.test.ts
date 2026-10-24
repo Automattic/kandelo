@@ -83,45 +83,38 @@ describe("browser process memory allocation realm", () => {
     factory.dispose();
   });
 
-  it("retries native constructor exhaustion in its owner after terminating the worker", async () => {
+  it("preserves constructor exhaustion without retrying in the kernel realm", async () => {
     setup();
     const factory = new BrowserProcessMemoryFactory();
     const allocated = factory.allocate(request);
     const worker = AllocationWorker.instances[0];
-    const NativeMemory = WebAssembly.Memory;
-    const construct = vi.spyOn(WebAssembly, "Memory").mockImplementation(function (descriptor) {
-      expect(worker.terminate).toHaveBeenCalledOnce();
-      return new NativeMemory(descriptor);
-    });
+    const rejected = expect(allocated).rejects.toBeInstanceOf(RangeError);
+    const construct = vi.spyOn(WebAssembly, "Memory");
     worker.onmessage!({ data: {
       error: "RangeError: Out of memory", constructorErrorName: "RangeError",
     } } as MessageEvent);
-    const memory = await allocated;
-    expect(construct).toHaveBeenCalledExactlyOnceWith({
-      initial: 1, maximum: 4, shared: true,
-    });
-    expect(memory.buffer).toBeInstanceOf(SharedArrayBuffer);
-    expect(memory.grow(3)).toBe(1);
-    expect(() => memory.grow(1)).toThrow(RangeError);
+    await rejected;
+    expect(construct).not.toHaveBeenCalled();
+    expect(worker.terminate).toHaveBeenCalledOnce();
     expect(AllocationWorker.instances).toHaveLength(1);
     factory.dispose();
   });
 
-  it("propagates failure of the single owner attempt", async () => {
+  it("can allocate again after native construction fails", async () => {
     setup();
     const factory = new BrowserProcessMemoryFactory();
-    const exhausted = new RangeError("owner memory exhausted");
-    const construct = vi.spyOn(WebAssembly, "Memory").mockImplementation(function () {
-      throw exhausted;
-    });
     const allocated = factory.allocate(request);
-    const rejected = expect(allocated).rejects.toBe(exhausted);
+    const rejected = expect(allocated).rejects.toThrow("Out of memory");
     AllocationWorker.instances[0].onmessage!({ data: {
       error: "RangeError: Out of memory", constructorErrorName: "RangeError",
     } } as MessageEvent);
     await rejected;
-    expect(construct).toHaveBeenCalledOnce();
     expect(AllocationWorker.instances[0].terminate).toHaveBeenCalledOnce();
+    const next = factory.allocate(request);
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 4, shared: true });
+    AllocationWorker.instances[1].onmessage!({ data: { memory } } as MessageEvent);
+    expect(await next).toBe(memory);
+    expect(AllocationWorker.instances[1].terminate).toHaveBeenCalledOnce();
     factory.dispose();
   });
 

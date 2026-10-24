@@ -1,23 +1,24 @@
 import { saveFixedPersistenceImageStream } from "../../pages/kandelo/kernel-host/fixed-persistence-image";
 import { OpfsImageReader } from "../../../../host/src/vfs/opfs-image-reader";
+import type { PersistentImageIntegrityPolicy } from "../../../../images/vfs/lib/kandelo-image-fs";
+import { inspectPersistentImageFile } from "../../pages/kandelo/kernel-host/persistent-image-codec";
+import { loadPositionedImageWriterModuleBytes } from "../../lib/kernel-owned-boot";
 
 self.onmessage = (event: MessageEvent<
   | { name: string; identity: string; journalName?: string }
-  | { file: FileSystemFileHandle; length: number; chunkSha256: string[] }
+  | { file: FileSystemFileHandle; length: number; imageIdentitySha256: string; integrityPolicy: PersistentImageIntegrityPolicy }
 >) => {
   void (async () => {
     try {
       if ("file" in event.data) {
-        const reader = await OpfsImageReader.open(event.data.file, {
-          length: event.data.length,
-          chunkBytes: 1024 * 1024,
-          chunkSha256: event.data.chunkSha256,
-        });
+        const geometry = await inspectPersistentImageFile(event.data.file, await loadPositionedImageWriterModuleBytes(),
+          event.data.length, event.data.imageIdentitySha256, event.data.integrityPolicy);
+        const reader = await OpfsImageReader.open(event.data.file, undefined, undefined, true);
         try {
           const first = new Uint8Array(3);
           const last = new Uint8Array(3);
-          const firstRead = reader.readAt(0, first);
-          const lastRead = reader.readAt(reader.length - 3, last);
+          const firstRead = reader.readAt(128, first);
+          const lastRead = reader.readAt(128 + geometry.payloadLength - 3, last);
           self.postMessage({ type: "read", first: [...first], last: [...last], firstRead, lastRead });
         } finally {
           reader.close();
@@ -28,7 +29,7 @@ self.onmessage = (event: MessageEvent<
       const saved = await saveFixedPersistenceImageStream(
         event.data.name,
         event.data.identity,
-        [first, Uint8Array.of(1, 2, 3)],
+        { chunks: [first, Uint8Array.of(1, 2, 3)], payloadLength: first.length + 3, integrityPolicy: "crc32c" },
         undefined,
         {
           imageConfig: { version: 1, defaultProfile: "probe", profiles: { probe: {} } },

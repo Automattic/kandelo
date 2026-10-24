@@ -1,12 +1,16 @@
 import { zstdCompressSync } from "node:zlib";
-import { readFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { KandeloImageFs, KandeloImageError } from "../../images/vfs/lib/kandelo-image-fs";
 import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
-import { ABI_VERSION, OPEN_FLAGS } from "../src/generated/abi";
+import { ABI_VERSION, ERRNO, OPEN_FLAGS } from "../src/generated/abi";
 import type { ZipEntry } from "../src/vfs/zip";
+import { oversizedDeferredMetadataImage } from "./fixtures/oversized-metadata-image";
+import { wideDirectoryImage } from "./fixtures/wide-directory-image";
+import { sparseComposerFileImage } from "./fixtures/sparse-composer-file-image";
+import { imageJsonOperationMemory } from "../src/vfs/image-manifest-memory";
 
 const O_WRONLY_CREAT_TRUNC =
   OPEN_FLAGS.O_WRONLY | OPEN_FLAGS.O_CREAT | OPEN_FLAGS.O_TRUNC;
@@ -39,6 +43,358 @@ function zipEntry(over: Partial<ZipEntry> & { fileName: string }): ZipEntry {
  * points, reached through real wasm, from the language that will call them.
  */
 describe("KandeloImageFs", () => {
+  it("copies large image metadata without a second native allocation", () => {
+    const filesystem = KandeloImageFs.create();
+    const metadata = { version: 1, kernelAbi: ABI_VERSION, createdBy: "metadata-copy", note: "x".repeat(1024 * 1024) };
+    filesystem.setImageMetadata(metadata);
+    filesystem.setMetadataBudgetBytes(filesystem.metadataUsedBytes());
+    const before = filesystem.transientBuffer.byteLength;
+    try {
+      expect(filesystem.getImageMetadata()).toEqual(metadata);
+      expect(filesystem.transientBuffer.byteLength).toBe(before);
+      expect(imageJsonOperationMemory.used).toBe(0);
+    } finally { filesystem.reset(); }
+  });
+
+  it("refuses metadata decoding before allocating and allows retry after shared credits return", () => {
+    const filesystem = KandeloImageFs.create();
+    const metadata = { version: 1, kernelAbi: ABI_VERSION, note: "x".repeat(1024 * 1024) };
+    filesystem.setImageMetadata(metadata);
+    const held = imageJsonOperationMemory.reserve(imageJsonOperationMemory.limit);
+    const before = filesystem.transientBuffer.byteLength;
+    try {
+      expect(() => filesystem.getImageMetadata()).toThrow(expect.objectContaining({ errno: ERRNO.ENOMEM }));
+      expect(filesystem.transientBuffer.byteLength).toBe(before);
+    } finally { held.release(); }
+    try { expect(filesystem.getImageMetadata()).toEqual(metadata); }
+    finally { filesystem.reset(); }
+  });
+
+  it("does not free an adopted image when metadata decoding is refused", async () => {
+    const source = KandeloImageFs.create();
+    const target = KandeloImageFs.create();
+    const metadata = { version: 1, kernelAbi: ABI_VERSION, note: "x".repeat(1024 * 1024) };
+    const content = new Uint8Array(256 * 1024).fill(37);
+    try {
+      source.setImageMetadata(metadata);
+      source.writeFile("/source", content);
+      const image = await source.saveImage();
+      const held = imageJsonOperationMemory.reserve(imageJsonOperationMemory.limit);
+      try {
+        expect(() => target.loadImage(image)).toThrow(expect.objectContaining({ errno: ERRNO.ENOMEM }));
+      } finally { held.release(); }
+      target.writeFile("/pressure", new Uint8Array(image.length).fill(53));
+      expect(target.getImageMetadata()).toEqual(metadata);
+      expect(target.readFile("/source")).toEqual(content);
+    } finally { target.reset(); source.reset(); }
+  });
+
+  it("does not publish capacity changes when native metadata admission refuses them", async () => {
+    const filesystem = KandeloImageFs.create();
+    const reopened = KandeloImageFs.create();
+    try {
+      filesystem.setImageCapacity(64 * 1024 * 1024);
+      const metadata = { version: 1, kernelAbi: ABI_VERSION };
+      filesystem.setImageMetadata(metadata);
+      filesystem.setMetadataBudgetBytes(filesystem.metadataUsedBytes());
+      expect(() => filesystem.setImageCapacity(128 * 1024 * 1024))
+        .toThrow(expect.objectContaining({ errno: ERRNO.ENOMEM }));
+      filesystem.setMetadataBudgetBytes(64 * 1024 * 1024);
+      reopened.loadImage(await filesystem.saveImage());
+      expect(reopened.loadedImageCapacityBytes()).toBe(64 * 1024 * 1024);
+      expect(reopened.getImageMetadata()).toEqual(metadata);
+    } finally { reopened.reset(); filesystem.reset(); }
+  });
+
+  it("refreshes image options after metadata decoding refuses a replacement image", async () => {
+    const source = KandeloImageFs.create();
+    const target = KandeloImageFs.create();
+    const reopened = KandeloImageFs.create();
+    const metadata = { version: 1, kernelAbi: ABI_VERSION, note: "source metadata" };
+    try {
+      source.setImageCapacity(64 * 1024 * 1024);
+      source.setImageMetadata(metadata);
+      const originalArchive = source.registerLazyArchive({
+        url: "https://example.invalid/original.zip", mountPrefix: "/original",
+        entries: [zipEntry({ fileName: "source", uncompressedSize: 17 })],
+        integrity: { sha256: "a".repeat(64), bytes: 4096 },
+      });
+      target.setImageCapacity(32 * 1024 * 1024);
+      target.setImageMetadata({ version: 1, kernelAbi: ABI_VERSION, note: "old target" });
+      const image = await source.saveImage();
+      const held = imageJsonOperationMemory.reserve(imageJsonOperationMemory.limit);
+      try {
+        expect(() => target.loadImage(image)).toThrow(expect.objectContaining({ errno: ERRNO.ENOMEM }));
+      } finally { held.release(); }
+      const appendedArchive = target.registerLazyArchive({
+        url: "https://example.invalid/appended.zip", mountPrefix: "/appended",
+        entries: [zipEntry({ fileName: "next", uncompressedSize: 23 })],
+        integrity: { sha256: "b".repeat(64), bytes: 8192 },
+      });
+      expect(appendedArchive).toBeGreaterThan(originalArchive);
+      expect(target.lstat("/original/source").archiveId).toBe(originalArchive);
+      expect(target.lstat("/appended/next").archiveId).toBe(appendedArchive);
+      target.setExportTimestamp(123);
+      reopened.loadImage(await target.saveImage());
+      expect(reopened.loadedImageCapacityBytes()).toBe(64 * 1024 * 1024);
+      expect(reopened.getImageMetadata()).toEqual(metadata);
+      target.setImageCapacity(128 * 1024 * 1024);
+      reopened.loadImage(await target.saveImage());
+      expect(reopened.loadedImageCapacityBytes()).toBe(128 * 1024 * 1024);
+      expect(reopened.getImageMetadata()).toEqual(metadata);
+    } finally { reopened.reset(); target.reset(); source.reset(); }
+  });
+
+  it("uses bounded Rust writes without copying existing file contents", () => {
+    const filesystem = KandeloImageFs.create();
+    const content = new Uint8Array(3 * 64 * 1024 + 13).fill(71);
+    const descriptor = filesystem.open("/stream-write", O_WRONLY_CREAT_TRUNC, 0o640);
+    const readFile = filesystem.readFile.bind(filesystem);
+    filesystem.readFile = () => { throw new Error("whole-file read during positioned write"); };
+    try {
+      let offset = 0;
+      while (offset < content.length) {
+        const written = filesystem.write(descriptor, content.subarray(offset), null);
+        expect(written).toBe(Math.min(64 * 1024, content.length - offset));
+        offset += written;
+      }
+      expect(filesystem.write(descriptor, new Uint8Array([31, 37]), 5)).toBe(2);
+      content.set([31, 37], 5);
+      expect(filesystem.write(descriptor, new Uint8Array([41]), null)).toBe(1);
+      expect(readFile("/stream-write")).toEqual(Uint8Array.from([...content, 41]));
+      expect(filesystem.stat("/stream-write").mode & 0o777).toBe(0o640);
+    } finally {
+      filesystem.close(descriptor);
+    }
+  });
+
+  it("refuses unrepresentable resident copy-on-write without changing a large borrowed file", () => {
+    const filesystem = KandeloImageFs.create();
+    const size = 2 ** 32 + 4096;
+    filesystem.loadImage(sparseComposerFileImage(size));
+    const descriptor = filesystem.open("/etc/php.ini", OPEN_FLAGS.O_WRONLY);
+    try {
+      const offset = 2 ** 32 + 37;
+      expect(() => filesystem.write(descriptor, new Uint8Array([23, 29]), offset)).toThrow(expect.objectContaining({ errno: ERRNO.EFBIG }));
+      expect(() => filesystem.write(descriptor, new Uint8Array([23, 29]), 37)).toThrow(expect.objectContaining({ errno: ERRNO.ENOMEM }));
+      const actual = new Uint8Array(4);
+      expect(filesystem.read(descriptor, actual, offset - 1, 4)).toBe(4);
+      expect([...actual]).toEqual([0, 0, 0, 0]);
+      expect(filesystem.read(descriptor, actual, 36, 4)).toBe(4);
+      expect([...actual]).toEqual([0, 0, 0, 0]);
+      expect(filesystem.stat("/etc/php.ini").size).toBe(size);
+      expect(filesystem.transientBuffer.byteLength).toBeLessThan(16 * 1024 * 1024);
+    } finally {
+      filesystem.close(descriptor);
+    }
+  });
+
+  it("does not alias high-word positions onto low bytes in a resident file", () => {
+    const filesystem = KandeloImageFs.create();
+    filesystem.writeFile("/resident", new Uint8Array([11, 17, 23]));
+    const descriptor = filesystem.open("/resident", OPEN_FLAGS.O_RDWR);
+    try {
+      const output = new Uint8Array(3).fill(31);
+      expect(filesystem.read(descriptor, output, 2 ** 32, output.length)).toBe(0);
+      expect([...output]).toEqual([31, 31, 31]);
+      expect(() => filesystem.write(descriptor, new Uint8Array([37]), 2 ** 32)).toThrow(expect.objectContaining({ errno: ERRNO.EFBIG }));
+      expect(filesystem.readFile("/resident")).toEqual(new Uint8Array([11, 17, 23]));
+    } finally {
+      filesystem.close(descriptor);
+    }
+  });
+
+  it("rejects invalid writes before mutation and does not extend a file for an empty write", () => {
+    const filesystem = KandeloImageFs.create();
+    filesystem.writeFile("/unchanged", new Uint8Array([11, 17]));
+    const descriptor = filesystem.open("/unchanged", OPEN_FLAGS.O_WRONLY);
+    try {
+      for (const invalid of [-1, 1.5, Infinity, Number.NaN]) {
+        expect(() => filesystem.write(descriptor, new Uint8Array([31]), invalid)).toThrow(expect.objectContaining({ errno: ERRNO.EINVAL }));
+        expect(() => filesystem.write(descriptor, new Uint8Array([31]), null, invalid)).toThrow(expect.objectContaining({ errno: ERRNO.EINVAL }));
+      }
+      expect(() => filesystem.write(descriptor, new Uint8Array([31]), Number.MAX_SAFE_INTEGER)).toThrow(expect.objectContaining({ errno: ERRNO.EOVERFLOW }));
+      expect(filesystem.write(descriptor, new Uint8Array(0), 2 ** 32)).toBe(0);
+      expect(filesystem.stat("/unchanged").size).toBe(2);
+      expect(filesystem.readFile("/unchanged")).toEqual(new Uint8Array([11, 17]));
+      expect(filesystem.write(descriptor, new Uint8Array([23]), null)).toBe(1);
+      expect(filesystem.readFile("/unchanged")).toEqual(new Uint8Array([23, 17]));
+    } finally {
+      filesystem.close(descriptor);
+    }
+  });
+
+  it.each([2 ** 32, 2 ** 32 + 3])("rejects whole-file reads of %i bytes without truncating the Wasm length", size => {
+    const filesystem = KandeloImageFs.create();
+    filesystem.loadImage(sparseComposerFileImage(size));
+    filesystem.symlink("/etc/php.ini", "/alias");
+    expect(filesystem.stat("/alias").size).toBe(size);
+    expect(() => filesystem.readFile("/etc/php.ini")).toThrow(expect.objectContaining({ errno: ERRNO.EOVERFLOW }));
+    expect(() => filesystem.readFile("/alias")).toThrow(expect.objectContaining({ errno: ERRNO.EOVERFLOW }));
+    const descriptor = filesystem.open("/alias");
+    try {
+      const bytes = new Uint8Array(16).fill(17);
+      expect(filesystem.read(descriptor, bytes, size - 2, bytes.length)).toBe(2);
+      expect([...bytes.subarray(0, 2)]).toEqual([0, 0]);
+    } finally {
+      filesystem.close(descriptor);
+    }
+  });
+
+  it("writes bounded native chunks and reads large destinations without file-sized Wasm scratch", () => {
+    const filesystem = KandeloImageFs.create();
+    const chunk = new Uint8Array(64 * 1024).fill(73);
+    expect(filesystem.writeFileChunk("/stream", 0, chunk, 0o640, true)).toBe(chunk.length);
+    expect(filesystem.writeFileChunk("/stream", chunk.length, new Uint8Array([17, 19]))).toBe(2);
+    expect(filesystem.stat("/stream").size).toBe(chunk.length + 2);
+    expect(filesystem.stat("/stream").mode & 0o777).toBe(0o640);
+    const descriptor = filesystem.open("/stream");
+    const output = new Uint8Array(1024 * 1024);
+    expect(filesystem.read(descriptor, output, null, output.length)).toBe(chunk.length);
+    expect(output.subarray(0, chunk.length)).toEqual(chunk);
+    expect(filesystem.read(descriptor, output, null, output.length)).toBe(2);
+    expect([...output.subarray(0, 2)]).toEqual([17, 19]);
+    expect(() => filesystem.read(descriptor, output, null, -1)).toThrow(expect.objectContaining({ errno: ERRNO.EINVAL }));
+    filesystem.close(descriptor);
+    expect(() => filesystem.writeFileChunk("/stream", 0, new Uint8Array(chunk.length + 1))).toThrow(expect.objectContaining({ errno: ERRNO.EINVAL }));
+    expect(filesystem.stat("/stream").size).toBe(chunk.length + 2);
+  });
+
+  it("cancels only its own native export plan when iterators are abandoned or superseded", () => {
+    const filesystem = KandeloImageFs.create();
+    filesystem.writeFile("/value", new Uint8Array([1, 2, 3]));
+    const original = filesystem.exportImageChunks(4096);
+    expect(original.next().done).toBe(false);
+    const replacement = filesystem.exportImageChunks(4096);
+    expect(replacement.next().done).toBe(false);
+    expect(original.return?.().done).toBe(true);
+    expect(replacement.next().done).toBe(false);
+    replacement.return?.();
+    const stale = filesystem.exportImageChunks(4096);
+    stale.next();
+    const current = filesystem.exportImageChunks(4096);
+    current.next();
+    expect(() => stale.next()).toThrow(/superseded/);
+    expect(current.next().done).toBe(false);
+    current.return?.();
+    expect(filesystem.exportImage().length).toBeGreaterThan(0);
+  });
+
+  it("enforces owned metadata admission through real Wasm and releases removed names", () => {
+    const filesystem = KandeloImageFs.create();
+    filesystem.mkdir("/existing", 0o755);
+    const before = filesystem.metadataUsedBytes();
+    expect(before).toBeGreaterThan(0);
+    filesystem.setMetadataBudgetBytes(before);
+    expect(() => filesystem.mkdir("/denied", 0o755)).toThrow(expect.objectContaining({ errno: ERRNO.ENOMEM }));
+    expect(filesystem.metadataUsedBytes()).toBe(before);
+    expect(filesystem.readDirNames("/")).toEqual(["existing"]);
+    expect(() => filesystem.setMetadataBudgetBytes(before - 1)).toThrow(expect.objectContaining({ errno: ERRNO.ENOMEM }));
+    filesystem.setMetadataBudgetBytes(65536);
+    filesystem.symlink("existing", "/link");
+    expect(filesystem.metadataUsedBytes()).toBeGreaterThan(before);
+    filesystem.unlink("/link");
+    expect(filesystem.metadataUsedBytes()).toBe(before);
+    filesystem.reset();
+    expect(filesystem.metadataUsedBytes()).toBeLessThan(before);
+  });
+  it("streams a many-file namespace without staging sibling directory names and paths", () => {
+    const fixture = wideDirectoryImage();
+    let observedModuleBytes = 0;
+    let firstChildModuleBytes: number | undefined;
+    let largestRead = 0;
+    const filesystem = KandeloImageFs.createFromPositionedImage(new Uint8Array(readFileSync(join(import.meta.dirname,
+      "../../local-binaries/kandelo_image_module_positioned32.wasm"))), fixture.image.byteLength,
+    (offset, destination) => {
+      observedModuleBytes = Math.max(observedModuleBytes, destination.buffer.byteLength);
+      largestRead = Math.max(largestRead, destination.byteLength);
+      if (offset === fixture.firstChildBlockOffset && firstChildModuleBytes === undefined) {
+        firstChildModuleBytes = destination.buffer.byteLength;
+      }
+      const source = fixture.image.subarray(offset, offset + destination.byteLength);
+      destination.set(source);
+      return source.byteLength;
+    });
+    expect(filesystem.readDirNames("/")).toHaveLength(fixture.rootEntries);
+    expect(new TextDecoder().decode(filesystem.readFile(fixture.samplePath))).toBe("payload");
+    expect(filesystem.stat(fixture.samplePath).mode & 0o777).toBe(0o640);
+    console.info("Many-file module bytes observed:", { firstChildModuleBytes, observedModuleBytes, imageSha256: fixture.sha256 });
+    expect(firstChildModuleBytes).toBeTypeOf("number");
+    expect(firstChildModuleBytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+    expect(observedModuleBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
+    expect(largestRead).toBeLessThanOrEqual(4096);
+  }, 60_000);
+
+  it("rejects oversized deferred metadata without allocating its declared body", () => {
+    const { prefix, length } = oversizedDeferredMetadataImage();
+    let observedModuleBytes = 0;
+    let largestRead = 0;
+    let failure: unknown;
+    try {
+      KandeloImageFs.createFromPositionedImage(new Uint8Array(readFileSync(join(import.meta.dirname,
+        "../../local-binaries/kandelo_image_module_positioned32.wasm"))), length,
+      (offset, destination) => {
+        observedModuleBytes = Math.max(observedModuleBytes, destination.buffer.byteLength);
+        largestRead = Math.max(largestRead, destination.byteLength);
+        const count = Math.min(destination.byteLength, length - offset);
+        destination.fill(0);
+        if (offset < prefix.byteLength) destination.set(prefix.subarray(offset, offset + count));
+        return count;
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(KandeloImageError);
+    expect((failure as KandeloImageError).errno).toBe(22);
+    console.info("Rejected deferred-metadata module bytes observed:", observedModuleBytes);
+    expect(observedModuleBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
+    expect(largestRead).toBeLessThanOrEqual(4096);
+  });
+
+  it.skipIf(process.env.KANDELO_SPARSE_VFSI_FIXTURE === undefined)("plans a near-dense 32 GiB snapshot without a file-sized allocation list or pointer buffer", () => {
+    const fixture = process.env.KANDELO_SPARSE_VFSI_FIXTURE!;
+    const descriptor = openSync(fixture, "r");
+    let moduleBytesObserved = 0;
+    let largestRead = 0;
+    try {
+      const derived = KandeloImageFs.createFromPositionedImage(
+        new Uint8Array(readFileSync(join(import.meta.dirname,
+          "../../local-binaries/kandelo_image_module_positioned32.wasm"))),
+        statSync(fixture).size,
+        (offset, destination) => {
+          moduleBytesObserved = Math.max(moduleBytesObserved, destination.buffer.byteLength);
+          largestRead = Math.max(largestRead, destination.byteLength);
+          return readSync(descriptor, destination, 0, destination.byteLength, offset);
+        },
+      );
+      expect(derived.stat("/large").size).toBe(2 ** 35 + 8192);
+      const chunks = derived.exportImageChunks(64 * 1024);
+      try {
+        const first = chunks.next();
+        expect(first.done).toBe(false);
+        expect(first.value?.byteLength).toBeGreaterThan(0);
+        const body = chunks.next();
+        expect(body.done).toBe(false);
+        expect(body.value?.byteLength).toBe(64 * 1024);
+        const handle = derived.open("/large");
+        try {
+          const sample = new Uint8Array(32);
+          expect(derived.read(handle, sample, 2 ** 35, sample.length)).toBe(sample.length);
+          expect(sample.every(byte => byte === 0)).toBe(true);
+        } finally {
+          derived.close(handle);
+        }
+        console.info("Near-dense 32 GiB snapshot module bytes observed:", moduleBytesObserved);
+        expect(moduleBytesObserved).toBeLessThanOrEqual(64 * 1024 * 1024);
+        expect(largestRead).toBeLessThanOrEqual(64 * 1024);
+      } finally {
+        chunks.return?.(undefined);
+      }
+    } finally {
+      closeSync(descriptor);
+    }
+  }, 120_000);
+
   it("derives an image through bounded positioned source reads", () => {
     const source = KandeloImageFs.create();
     const metadata = { version: 1, kernelAbi: ABI_VERSION, createdBy: "positioned test" };
@@ -62,13 +418,13 @@ describe("KandeloImageFs", () => {
         return destination.byteLength;
       },
     );
-    expect(derived.readFile("/source")).toEqual(content);
+    expect(Buffer.compare(derived.readFile("/source"), content)).toBe(0);
     expect(maxRead).toBeLessThanOrEqual(64 * 1024);
     derived.setImageCapacity(8 * 1024 * 1024);
     derived.writeFile("/added", new TextEncoder().encode("new"));
     const reopened = KandeloImageFs.create();
     reopened.loadImage(derived.exportImage());
-    expect(reopened.readFile("/source")).toEqual(content);
+    expect(Buffer.compare(reopened.readFile("/source"), content)).toBe(0);
     expect(reopened.getImageMetadata()).toEqual(metadata);
     expect(reopened.exportCapacityBytes()).toBe(8 * 1024 * 1024);
     expect(new TextDecoder().decode(reopened.readFile("/added"))).toBe("new");

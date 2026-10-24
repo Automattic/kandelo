@@ -11,6 +11,7 @@ import {
 import { posix as guestPath } from "node:path";
 
 import type { NodeSessionSeedTree } from "../host/src/vfs/default-mounts-node";
+import type { PersistentImageIntegrityPolicy } from "../images/vfs/lib/kandelo-image-fs";
 import {
   DEFAULT_MOUNT_SPEC,
   type MountSpec,
@@ -53,6 +54,7 @@ export interface RunExampleFilesystem {
   guestProgram?: string;
   rootfsImage?: "default";
   persistentFixtureRoot?: string;
+  persistentImageIntegrityPolicy?: PersistentImageIntegrityPolicy;
   experimentalResizablePersistencePath?: string;
   verifyPersistenceReopen?: true;
   /** Overrides `DEFAULT_MOUNT_SPEC` when the boot needs an extra fixture mount. */
@@ -141,6 +143,10 @@ export function resolveRunExampleFilesystem(
 
   const isolated = requestedMode === "isolated" || requestedMode === "persistent";
   const persistent = requestedMode === "persistent";
+  const checking = nonEmptyControl(env, "KANDELO_RUNNER_PERSISTENCE_CHECKING");
+  if (checking !== undefined && (!persistent || (checking !== "crc32c" && checking !== "sha256"))) {
+    throw new Error("KANDELO_RUNNER_PERSISTENCE_CHECKING requires persistent mode and crc32c or sha256");
+  }
   const persistencePath = nonEmptyControl(env, "KANDELO_RUNNER_PERSISTENCE_PATH");
   if (persistent ? persistencePath === undefined || !isAbsolute(persistencePath) : persistencePath !== undefined) {
     throw new Error("KANDELO_RUNNER_PERSISTENCE_PATH requires persistent mode and an absolute path");
@@ -235,6 +241,7 @@ export function resolveRunExampleFilesystem(
     ...(persistent
       ? {
         persistentFixtureRoot: sourceRoot,
+        persistentImageIntegrityPolicy: checking ?? "crc32c",
         experimentalResizablePersistencePath: persistencePath,
         ...(reopenControl === undefined ? {} : { verifyPersistenceReopen: true as const }),
       }

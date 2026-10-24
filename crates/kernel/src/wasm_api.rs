@@ -1279,37 +1279,26 @@ impl HostIO for WasmHostIO {
 struct WasmSharedMappingIo {
     /// pid → committed linear-memory length, for the pids an entry point was
     /// handed a length for. See [`Self::process_memory_len`] for the rest.
-    memory_lens: alloc::collections::BTreeMap<u32, u64>,
+    memory_len: Option<(u32, u64)>,
 }
 
 impl WasmSharedMappingIo {
     fn new() -> Self {
         Self {
-            memory_lens: alloc::collections::BTreeMap::new(),
+            memory_len: None,
         }
     }
 
-    /// An environment that knows a lower bound on every live process the
-    /// table can reach: the larger of its committed floor and the end of its
-    /// highest mapping here (`SharedMappingTable::mapped_extents`).
-    ///
-    /// The table's own extent is what keeps a publication at `munmap` working:
-    /// by the time the host drives it, the kernel's address-space record has
-    /// already dropped the region, so the floor alone could fall below the
-    /// very mapping being published and the table would skip it as gone.
-    fn for_table(table: &crate::memory::SharedMappingTable) -> Self {
-        let mut io = Self::new();
-        let processes = unsafe { &*PROCESS_TABLE.0.get() };
-        for (pid, extent) in table.mapped_extents() {
-            if let Some(proc) = processes.get(pid) {
-                io.set_process_memory_len(pid, extent.max(committed_memory_floor(proc)));
-            }
-        }
-        io
+    /// Mapping calls supply their committed extent directly, without an
+    /// adapter-owned process/extent collection. The extent remains valid
+    /// after munmap removes the process VM record because linear memory
+    /// cannot shrink.
+    fn for_table(_table: &crate::memory::SharedMappingTable) -> Self {
+        Self::new()
     }
 
     fn set_process_memory_len(&mut self, pid: u32, len: u64) {
-        self.memory_lens.insert(pid, len);
+        self.memory_len = Some((pid, len));
     }
 }
 
@@ -1354,6 +1343,10 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
     }
 
     fn process_memory_len(&mut self, pid: u32) -> Option<u64> {
+        self.process_memory_len_with_extent(pid, 0)
+    }
+
+    fn process_memory_len_with_extent(&mut self, pid: u32, mapped_extent: u64) -> Option<u64> {
         // A length the caller supplied is exact. Otherwise a live process
         // answers its committed floor (see `committed_memory_floor`), and a
         // process that is gone answers `None`, which the table reads as "skip
@@ -1366,9 +1359,9 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
         // hold a `&mut Process` across a `SharedMappingIo` call. Every export
         // below touches only `global_shared_mapping_table()` while the table
         // runs.
-        let seeded = self.memory_lens.get(&pid).copied().or_else(|| {
+        let seeded = self.memory_len.filter(|(owner, _)| *owner == pid).map(|(_, length)| length).or_else(|| {
             let table = unsafe { &*PROCESS_TABLE.0.get() };
-            table.get(pid).map(committed_memory_floor)
+            table.get(pid).map(|process| committed_memory_floor(process).max(mapped_extent))
         });
         let process_is_live = {
             let table = unsafe { &*PROCESS_TABLE.0.get() };
@@ -2098,6 +2091,74 @@ pub extern "C" fn kernel_rootfs_load_manifest(ptr: *const u8, len: u32) -> i32 {
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_overlay_activation_codec(
+    operation: u32,
+    input_ptr: *const u8,
+    input_len: u32,
+    output_ptr: *mut u8,
+    output_capacity: u32,
+) -> i32 {
+    unsafe {
+        crate::overlay_activation::codec_ffi(
+            operation,
+            input_ptr,
+            input_len,
+            output_ptr,
+            output_capacity,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_set_metadata_budget_bytes(limit: u32) -> i32 {
+    match crate::rootfs::set_metadata_budget_bytes(limit as usize) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_metadata_used_bytes() -> u32 {
+    crate::rootfs::metadata_budget_usage().0 as u32
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_set_journal_state_budget_bytes(limit: u32) -> i32 {
+    match crate::rootfs::set_journal_state_budget_bytes(limit as usize) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_journal_state_used_bytes() -> u32 {
+    crate::rootfs::journal_state_budget_usage().0 as u32
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_journal_state_memory_pressure() -> u32 {
+    u32::from(crate::rootfs::journal_state_memory_pressure())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_set_io_budget_bytes(limit: u32) -> i32 {
+    match crate::rootfs::set_io_budget_bytes(limit as usize) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_io_used_bytes() -> u32 {
+    crate::rootfs::io_budget_usage().0 as u32
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_io_limit_bytes() -> u32 {
+    crate::rootfs::io_budget_usage().1 as u32
+}
+
 /// Load the in-kernel rootfs overlay's base tree by parsing the `/` VFS image
 /// itself, instead of consuming a tree the host walked and re-encoded.
 ///
@@ -2130,6 +2191,54 @@ pub extern "C" fn kernel_rootfs_load_image(image_len_lo: u32, image_len_hi: u32)
 }
 
 struct HostOverlayStorage;
+
+fn read_physical_persistent_image(offset: u64, destination: &mut [u8]) -> Result<usize, Errno> {
+    WasmHostIO.image_read(destination, offset)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_load_persistent_image(
+    image_len_lo: u32,
+    image_len_hi: u32,
+    digest0: u32,
+    digest1: u32,
+    digest2: u32,
+    digest3: u32,
+    digest4: u32,
+    digest5: u32,
+    digest6: u32,
+    digest7: u32,
+    data_pages: u32,
+    index_pages: u32,
+) -> i32 {
+    let mut expected = [0; 32];
+    for (index, word) in [digest0, digest1, digest2, digest3, digest4, digest5, digest6, digest7].into_iter().enumerate() {
+        expected[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    let cache = match crate::persistent_image::CacheConfig::from_host_limits(data_pages as usize, index_pages as usize) {
+        Ok(cache) => cache,
+        Err(error) => return -(error as i32),
+    };
+    let physical_length = (u64::from(image_len_hi) << 32) | u64::from(image_len_lo);
+    let mut host = WasmHostIO;
+    match crate::rootfs::load_persistent_image(
+        physical_length,
+        expected,
+        cache,
+        read_physical_persistent_image,
+        |request, bytes| match request {
+            crate::rootfs::ByteReq::Deferred { uri, offset } => host.fetch_deferred(&uri, bytes, offset),
+            crate::rootfs::ByteReq::DiscardDeferred { uri } => {
+                host.discard_deferred(&uri);
+                Ok(0)
+            }
+            crate::rootfs::ByteReq::Image { offset } => host.image_read(bytes, offset),
+        },
+    ) {
+        Ok(count) => i32::try_from(count).unwrap_or(i32::MAX),
+        Err(error) => -(error as i32),
+    }
+}
 
 struct HostOverlayTargetStorage;
 
@@ -2220,6 +2329,11 @@ impl crate::persistent_overlay::OverlayStorage for HostOverlayCompactionStorage 
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_persistence_recovery_is_pristine() -> u32 {
+    u32::from(crate::rootfs::persistence_recovery_is_pristine())
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_enable_fixed_persistence(
     image_len_lo: u32,
     image_len_hi: u32,
@@ -2241,12 +2355,10 @@ pub extern "C" fn kernel_rootfs_enable_fixed_persistence_indexed(
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_convert_unindexed_fixed_persistence() -> i32 {
     let mut source = HostOverlayStorage;
-    let mut header = [0; 72];
-    if let Err(error) = crate::persistent_overlay::OverlayStorage::read_exact_at(&mut source, 0, &mut header) {
-        return -(error as i32);
-    }
-    let mut base_digest = [0; 32];
-    base_digest.copy_from_slice(&header[8..40]);
+    let base_digest = match runtime_core::persistent_overlay::read_overlay_base_digest(&mut source) {
+        Ok(digest) => digest,
+        Err(error) => return -(error as i32),
+    };
     match runtime_core::persistent_overlay::convert_unindexed_fixed_journal(
         &mut source,
         HostOverlayTargetStorage,
@@ -2261,12 +2373,10 @@ pub extern "C" fn kernel_rootfs_convert_unindexed_fixed_persistence() -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_convert_unindexed_resizable_persistence() -> i32 {
     let mut source = HostOverlayStorage;
-    let mut header = [0; 72];
-    if let Err(error) = crate::persistent_overlay::OverlayStorage::read_exact_at(&mut source, 0, &mut header) {
-        return -(error as i32);
-    }
-    let mut base_digest = [0; 32];
-    base_digest.copy_from_slice(&header[8..40]);
+    let base_digest = match runtime_core::persistent_overlay::read_overlay_base_digest(&mut source) {
+        Ok(digest) => digest,
+        Err(error) => return -(error as i32),
+    };
     match runtime_core::persistent_overlay::convert_unindexed_resizable_journal(
         &mut source,
         HostOverlayTargetStorage,
@@ -2304,42 +2414,51 @@ fn enable_rootfs_persistence(
     resizable: bool,
 ) -> i32 {
     let image_len = (u64::from(image_len_hi) << 32) | u64::from(image_len_lo);
-    if crate::rootfs::image_length() != Some(image_len) {
-        return -(Errno::EINVAL as i32);
-    }
-    let mut digest = Sha256::new();
     let mut host = WasmHostIO;
-    let mut bytes = [0u8; 64 * 1024];
-    let mut offset = 0u64;
-    while offset < image_len {
-        let length = usize::try_from((image_len - offset).min(bytes.len() as u64))
-            .unwrap_or(bytes.len());
-        let read = match host.image_read(&mut bytes[..length], offset) {
-            Ok(read) if read > 0 && read <= length => read,
-            _ => return -(Errno::EIO as i32),
-        };
-        digest.update(&bytes[..read]);
-        offset += read as u64;
-    }
-    let base_digest: [u8; 32] = digest.finalize().into();
+    let base_digest = if let Some(binding) = crate::rootfs::persistent_image_binding() {
+        if binding.physical_length != image_len { return -(Errno::EINVAL as i32); }
+        binding.digest
+    } else {
+        if crate::rootfs::image_length() != Some(image_len) { return -(Errno::EINVAL as i32); }
+        let mut digest = Sha256::new();
+        let mut bytes = [0u8; 64 * 1024];
+        let mut offset = 0u64;
+        while offset < image_len {
+            let length = usize::try_from((image_len - offset).min(bytes.len() as u64))
+                .unwrap_or(bytes.len());
+            let read = match host.image_read(&mut bytes[..length], offset) {
+                Ok(read) if read > 0 && read <= length => read,
+                _ => return -(Errno::EIO as i32),
+            };
+            digest.update(&bytes[..read]);
+            offset += read as u64;
+        }
+        digest.finalize().into()
+    };
+    let mut image_source = |request, bytes: &mut [u8]| match request {
+        crate::rootfs::ByteReq::Image { offset } => host.image_read(bytes, offset),
+        _ => Err(Errno::ENOSYS),
+    };
     let result = match (checkpoint_end, resizable) {
         (Some(end), true) => crate::rootfs::enable_resizable_persistence_indexed(
             Box::new(HostOverlayStorage),
             Box::new(HostOverlayTargetStorage),
             base_digest,
             end,
+            &mut image_source,
         ),
         (None, true) => {
-            crate::rootfs::enable_resizable_persistence(Box::new(HostOverlayStorage), base_digest)
+            crate::rootfs::enable_resizable_persistence(Box::new(HostOverlayStorage), base_digest, &mut image_source)
         }
         (Some(end), false) => crate::rootfs::enable_fixed_persistence_indexed(
             Box::new(HostOverlayStorage),
             Box::new(HostOverlayTargetStorage),
             base_digest,
             end,
+            &mut image_source,
         ),
         (None, false) => {
-            crate::rootfs::enable_fixed_persistence(Box::new(HostOverlayStorage), base_digest)
+            crate::rootfs::enable_fixed_persistence(Box::new(HostOverlayStorage), base_digest, &mut image_source)
         }
     };
     match result {
@@ -2532,11 +2651,11 @@ pub extern "C" fn kernel_rootfs_set_foreign_mount_roots(
 /// `rootfs::mkdir_parents`.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_mkdir_parents(path_ptr: *const u8, path_len: u32, mode: u32) -> i32 {
-    if crate::rootfs::fixed_persistence_enabled() {
-        return -(Errno::EROFS as i32);
-    }
     let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len as usize) };
-    i32::try_from(crate::rootfs::mkdir_parents(path, mode & 0o7777, 0, 0)).unwrap_or(i32::MAX)
+    match crate::rootfs::mkdir_parents_checked(path, mode & 0o7777, 0, 0) {
+        Ok(created) => i32::try_from(created).unwrap_or(i32::MAX),
+        Err(error) => -(error as i32),
+    }
 }
 
 /// Publish the wall-clock time the rootfs overlay stamps onto metadata
@@ -2748,19 +2867,18 @@ pub extern "C" fn kernel_rootfs_stat_mode(path_ptr: *const u8, path_len: u32) ->
 // Each worker reads a snapshot synchronously inside one kernel entry. The
 // caches own only copied metadata, never inode/guest references. Locks cover
 // cache replacement/copy alone; namespace walks and host callbacks run outside.
-static INSPECTION_DIRECTORY: spin::Mutex<Vec<u8>> = spin::Mutex::new(Vec::new());
-static INSPECTION_URLS: spin::Mutex<Vec<u8>> = spin::Mutex::new(Vec::new());
+static INSPECTION_DIRECTORY: spin::Mutex<crate::IoBuffer<u8>> = spin::Mutex::new(crate::IoBuffer::new());
+static INSPECTION_URLS: spin::Mutex<crate::IoBuffer<u8>> = spin::Mutex::new(crate::IoBuffer::new());
 
-fn inspection_init() -> &'static Process {
+fn inspection_init() -> Result<&'static Process, Errno> {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table.ensure_init();
-    table
-        .get(crate::process_table::SYNTHETIC_INIT_PID)
-        .expect("reserved init")
+    table.ensure_init()?;
+    table.get(crate::process_table::SYNTHETIC_INIT_PID).ok_or(Errno::ESRCH)
 }
 
-fn append_inspection_blob(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Errno> {
+fn append_inspection_blob(out: &mut crate::IoBuffer<u8>, bytes: &[u8]) -> Result<(), Errno> {
     let len = u32::try_from(bytes.len()).map_err(|_| Errno::EOVERFLOW)?;
+    out.try_reserve(bytes.len().checked_add(4).ok_or(Errno::ENOMEM)?)?;
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(bytes);
     Ok(())
@@ -2768,9 +2886,10 @@ fn append_inspection_blob(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), Errno> 
 
 // repr(C) includes padding. Never read it as bytes: initialize the wire record
 // and copy each declared field using the authoritative Rust layout instead.
-fn append_inspection_stat(out: &mut Vec<u8>, stat: &WasmStat) {
+fn append_inspection_stat(out: &mut crate::IoBuffer<u8>, stat: &WasmStat) -> Result<(), Errno> {
     let start = out.len();
-    out.resize(start + size_of::<WasmStat>(), 0);
+    out.try_reserve(size_of::<WasmStat>())?;
+    out.extend_from_slice(&[0u8; size_of::<WasmStat>()]);
     macro_rules! field {
         ($field:ident) => {{
             let at = start + core::mem::offset_of!(WasmStat, $field);
@@ -2793,13 +2912,14 @@ fn append_inspection_stat(out: &mut Vec<u8>, stat: &WasmStat) {
     field!(st_ctime_nsec);
     field!(_pad);
     field!(st_rdev);
+    Ok(())
 }
 
-fn read_inspection_chunk(cache: &spin::Mutex<Vec<u8>>, offset: u32, out: &mut [u8]) -> i32 {
+fn read_inspection_chunk(cache: &spin::Mutex<crate::IoBuffer<u8>>, offset: u32, out: &mut [u8]) -> i32 {
     let mut bytes = cache.lock();
     let offset = offset as usize;
     if offset >= bytes.len() {
-        *bytes = Vec::new();
+        *bytes = crate::IoBuffer::new();
         return 0;
     }
     let count = out.len().min(bytes.len() - offset);
@@ -2824,7 +2944,7 @@ pub extern "C" fn kernel_rootfs_inspect_stat(
         return -(Errno::EINVAL as i32);
     }
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
-    match syscalls::inspect_namespace_stat(inspection_init(), &mut WasmHostIO, path, true) {
+    match inspection_init().and_then(|process| syscalls::inspect_namespace_stat(process, &mut WasmHostIO, path, true)) {
         Ok(stat) => {
             unsafe {
                 out_ptr.write_unaligned(stat);
@@ -2855,13 +2975,7 @@ pub extern "C" fn kernel_rootfs_inspect_read_file(
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
     let buf = unsafe { slice::from_raw_parts_mut(buf_ptr, buf_len as usize) };
     let offset = ((offset_hi as i64) << 32) | i64::from(offset_lo);
-    match syscalls::inspect_namespace_read_file(
-        inspection_init(),
-        &mut WasmHostIO,
-        path,
-        offset,
-        buf,
-    ) {
+    match inspection_init().and_then(|process| syscalls::inspect_namespace_read_file(process, &mut WasmHostIO, path, offset, buf)) {
         Ok(read) => read as i32,
         Err(error) => -(error as i32),
     }
@@ -2882,15 +2996,15 @@ pub extern "C" fn kernel_rootfs_inspect_directory(
         return -(Errno::EINVAL as i32);
     }
     if offset == 0 {
-        *INSPECTION_DIRECTORY.lock() = Vec::new();
+        *INSPECTION_DIRECTORY.lock() = crate::IoBuffer::new();
         let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
-        let snapshot = (|| -> Result<Vec<u8>, Errno> {
-            let mut bytes = Vec::new();
+        let snapshot = (|| -> Result<crate::IoBuffer<u8>, Errno> {
+            let mut bytes = crate::IoBuffer::new();
             for (name, stat, target) in
-                syscalls::inspect_namespace_directory(inspection_init(), &mut WasmHostIO, path)?
+                syscalls::inspect_namespace_directory(inspection_init()?, &mut WasmHostIO, path)?
             {
                 append_inspection_blob(&mut bytes, &name)?;
-                append_inspection_stat(&mut bytes, &stat);
+                append_inspection_stat(&mut bytes, &stat)?;
                 append_inspection_blob(&mut bytes, target.as_deref().unwrap_or(b""))?;
             }
             Ok(bytes)
@@ -2916,12 +3030,17 @@ pub extern "C" fn kernel_rootfs_lazy_resource_limits(
         return -(Errno::EINVAL as i32);
     }
     if offset == 0 {
-        *INSPECTION_URLS.lock() = Vec::new();
-        let mut bytes = Vec::new();
-        for (url, size) in crate::rootfs::lazy_resource_limits() {
+        *INSPECTION_URLS.lock() = crate::IoBuffer::new();
+        let mut bytes = crate::IoBuffer::new();
+        let resources = match crate::rootfs::lazy_resource_limits() {
+            Ok(resources) => resources,
+            Err(error) => return -(error as i32),
+        };
+        for (url, size) in resources {
             if let Err(error) = append_inspection_blob(&mut bytes, &url) {
                 return -(error as i32);
             }
+            if let Err(error) = bytes.try_reserve(size_of::<u64>()) { return -(error as i32); }
             bytes.extend_from_slice(&size.to_le_bytes());
         }
         *INSPECTION_URLS.lock() = bytes;
@@ -2936,8 +3055,8 @@ pub extern "C" fn kernel_rootfs_lazy_resource_limits(
 /// negative errno. A metadata-only view of the authoritative overlay tree; its
 /// caller is the host test suite (the image a host saves comes from
 /// `kernel_rootfs_export_container_read`). The caller reads the buffer in scratch-region-sized chunks; the kernel
-/// serializes once on the `offset == 0` chunk (the overlay is quiescent during
-/// export) and serves the rest from a cache.
+/// starts a quiescent stream on the `offset == 0` chunk and serializes each
+/// range with admitted traversal scratch, without caching the whole namespace.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_export_tree(
     offset_lo: u32,
@@ -3026,6 +3145,11 @@ pub extern "C" fn kernel_rootfs_export_container_read(
         Ok(read) => read as i32,
         Err(error) => -(error as i32),
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_rootfs_export_container_cancel() {
+    crate::rootfs::reset_image_export();
 }
 
 /// `brk(0)` returns a value above the program's data section and stack
@@ -3270,74 +3394,18 @@ pub extern "C" fn kernel_process_metadata_cancel(pid: u32, token: u32) -> i32 {
     }
 }
 
-fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessResult) {
-    use core::sync::atomic::Ordering;
-
-    syscalls::apply_dri_release_effects(pid as i32, result.dri_effects, &mut WasmHostIO);
-
-    // A process removed without reaching sys_exit (worker crash or explicit
-    // host termination) can still own host-side VFS handles. Close directory
-    // iterators before their backing file handles, matching
-    // sys_close/process-exit ordering. Normal exited zombies already have empty
-    // OFD and directory-stream tables, so reaping is a no-op here.
-    //
-    // A directory handle is an ordinary host handle under the handle-only
-    // contract — `host_openat(..., O_DIRECTORY)` issues it and `host_close`
-    // releases it — so both loops call the same import. The ordering still
-    // matters, and the two lists stay separate to preserve it.
-    for dir_handle in result.host_dir_closes {
-        unsafe { host_close(dir_handle) };
-    }
-    for handle in result.host_closes {
-        unsafe { host_close(handle) };
-    }
-    // /dev/fb0 backstop: exit cleanup already unbinds the framebuffer and
-    // releases ownership, so an exited zombie arrives here with neither.
-    // A process removed without reaching sys_exit can still hold a live
-    // mmap; tell the host to drop the canvas binding before the process
-    // Memory disappears, then release the owner claim (idempotent CAS).
-    if result.had_framebuffer_binding {
-        unsafe { host_unbind_framebuffer(pid as i32) };
-    }
-    let _ = crate::process_table::FB0_OWNER.compare_exchange(
-        pid as i32,
-        -1,
-        Ordering::SeqCst,
-        Ordering::SeqCst,
-    );
-    // Tear down host-side AF_INET handles whose cross-process refcount hit zero
-    // during teardown. process_table.rs can't call host externs directly; we
-    // drain its close-list here.
-    for net_handle in result.host_net_closes {
-        unsafe { host_net_close(net_handle) };
-    }
-    // /dev/input/mice cleanup: drop ownership and any pending packets so a
-    // successor open starts clean. No host-side unbind — the device is
-    // host→kernel only.
-    crate::syscalls::maybe_release_mice(pid);
-    // /dev/kandelo/clipboard: drop ownership and any text the agent had not
-    // read, so it does not outlive its reader.
-    crate::clipboard::release(pid);
-}
-
 fn remove_process_and_cleanup(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.remove_process(pid) {
-        Some(result) => {
-            finish_removed_process(pid, result);
-            0
-        }
+    match table.remove_process_with_io(pid, &mut WasmHostIO) {
+        Some(_) => 0,
         None => -(Errno::ESRCH as i32),
     }
 }
 
 fn reap_process_and_cleanup(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.reap_process(pid) {
-        Some(result) => {
-            finish_removed_process(pid, result);
-            0
-        }
+    match table.reap_process_with_io(pid, &mut WasmHostIO) {
+        Some(_) => 0,
         None => -(Errno::ESRCH as i32),
     }
 }
@@ -3601,13 +3669,14 @@ pub extern "C" fn kernel_pick_tcp_listener_target(
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.pick_tcp_listener_target(port as u16, exclude_pid) {
-        Some((pid, fd)) => {
+        Ok(Some((pid, fd))) => {
             let out = unsafe { core::slice::from_raw_parts_mut(out_ptr, 8) };
             out[0..4].copy_from_slice(&pid.to_le_bytes());
             out[4..8].copy_from_slice(&fd.to_le_bytes());
             1
         }
-        None => 0,
+        Ok(None) => 0,
+        Err(error) => -(error as i32),
     }
 }
 
@@ -4073,26 +4142,24 @@ pub extern "C" fn kernel_fd_supports_mmap_writeback(pid: u32, fd: i32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
     let table = unsafe { &*PROCESS_TABLE.0.get() };
-    let pids = table.all_pids();
 
     // First pass: compute total bytes we need to write so we can fail fast
     // on a too-small buffer rather than partial-writing. Skip zombies on
     // the count too so the size estimate matches what we actually emit.
     let mut need: usize = process_snapshot_wire::RECORDS_OFFSET;
-    for pid in &pids {
-        let proc = match table.get(*pid) {
-            Some(p) => p,
-            None => continue,
-        };
+    for proc in table.iter() {
         if matches!(
             proc.state,
             crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
         ) {
             continue;
         }
-        let cmdline = crate::procfs::generate_cmdline(proc);
+        let cmdline_len = match crate::procfs::cmdline_len(proc) {
+            Ok(length) => length,
+            Err(error) => return -(error as i32),
+        };
         let comm = process_name_bytes(proc);
-        let record_bytes = match process_snapshot_record_bytes(comm.len(), cmdline.len()) {
+        let record_bytes = match process_snapshot_record_bytes(comm.len(), cmdline_len) {
             Ok(bytes) => bytes,
             Err(errno) => return -(errno as i32),
         };
@@ -4120,11 +4187,7 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
         .copy_from_slice(&0_u32.to_le_bytes());
     let mut written: u32 = 0;
 
-    for pid in &pids {
-        let proc = match table.get(*pid) {
-            Some(p) => p,
-            None => continue,
-        };
+    for proc in table.iter() {
         // Drop zombies and reaped limbo identities, but retain stopped
         // processes in the live-process view.
         if matches!(
@@ -4133,7 +4196,10 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
         ) {
             continue;
         }
-        let cmdline = crate::procfs::generate_cmdline(proc);
+        let cmdline = match crate::procfs::generate_cmdline(proc) {
+            Ok(cmdline) => cmdline,
+            Err(error) => return -(error as i32),
+        };
         let comm = process_name_bytes(proc);
         let state: u32 = match proc.state {
             crate::process::ProcessState::Running => b'R' as u32,
@@ -4165,7 +4231,7 @@ pub extern "C" fn kernel_enum_procs(out_ptr: *mut u8, out_len: u32) -> i32 {
                 comm_len,
                 cmdline_len,
             },
-            &comm,
+            comm,
             &cmdline,
         )
         .is_err()
@@ -4192,10 +4258,15 @@ pub extern "C" fn kernel_read_proc_maps(pid: u32, out_ptr: *mut u8, out_len: u32
         Some(p) => p,
         None => return -(Errno::ESRCH as i32),
     };
-    let maps = crate::procfs::generate_maps(proc);
+    let maps = match crate::procfs::generate_maps(proc) {
+        Ok(maps) => maps,
+        Err(error) => return -(error as i32),
+    };
     if maps.len() > out_len as usize {
         return -(Errno::ENOSPC as i32);
     }
+    if maps.is_empty() { return 0; }
+    if out_ptr.is_null() { return -(Errno::EFAULT as i32); }
     let buf = unsafe { core::slice::from_raw_parts_mut(out_ptr, maps.len()) };
     buf.copy_from_slice(&maps);
     maps.len() as i32
@@ -4208,15 +4279,15 @@ pub extern "C" fn kernel_read_proc_maps(pid: u32, out_ptr: *mut u8, out_len: u32
 /// Process name (basename of argv[0], or "[kernel]" for an empty argv).
 /// Mirrors `process_name(proc)` from procfs.rs but returns bytes directly so
 /// we don't bounce through `&str` formatting.
-fn process_name_bytes(proc: &crate::process::Process) -> Vec<u8> {
+fn process_name_bytes(proc: &crate::process::Process) -> &[u8] {
     if let Some(arg0) = proc.argv.first() {
         // Strip directory prefix to match `comm` semantics.
         match arg0.iter().rposition(|&b| b == b'/') {
-            Some(i) => arg0[i + 1..].to_vec(),
-            None => arg0.clone(),
+            Some(index) => &arg0[index + 1..],
+            None => arg0,
         }
     } else {
-        b"[kernel]".to_vec()
+        b"[kernel]"
     }
 }
 
@@ -4799,7 +4870,7 @@ fn handle_owned_channel_allocation(
     let (syscall_nr, args, record_copy_back, scratch_region): (
         u32,
         [i64; ARGS_COUNT],
-        Option<Vec<crate::channel_scratch::ChannelRecordCopyBack>>,
+        Option<crate::channel_scratch::ChannelRecordCopyBackPlan>,
         ChannelScratchRegion,
     ) = match prepared {
             Some(Ok(prep)) => (
@@ -4914,20 +4985,8 @@ fn handle_owned_channel_allocation(
     // result from the contiguous scratch layout back to the span's original
     // record offset. Read every result first, then write, so overlapping
     // scratch/record ranges cannot clobber a not-yet-copied source.
-    if let Some(spans) = record_copy_back {
-        let staged: Vec<(usize, Vec<u8>)> = spans
-            .iter()
-            .map(|cb| {
-                let bytes =
-                    unsafe { core::slice::from_raw_parts(cb.scratch_src as *const u8, cb.len) }
-                        .to_vec();
-                (cb.channel_dest, bytes)
-            })
-            .collect();
-        for (dest, bytes) in staged {
-            unsafe { core::slice::from_raw_parts_mut(dest as *mut u8, bytes.len()) }
-                .copy_from_slice(&bytes);
-        }
+    if let Some(plan) = record_copy_back {
+        unsafe { plan.apply(); }
     }
 
     outcome.export_result
@@ -5077,6 +5136,37 @@ fn dispatch_channel_mmap(
     let address = checked_channel_process_address(46, args, 0)?;
     let length = checked_channel_process_size(46, args, 1)?;
     let protection = args[2] as u32;
+    let flags = args[3] as u32;
+    let descriptor = args[4] as i32;
+    {
+        let _gkl = GklGuard::acquire();
+        let source = {
+            let processes = unsafe { &*PROCESS_TABLE.0.get() };
+            let pid = processes.current_pid();
+            let process = processes.get(pid).ok_or(Errno::ESRCH)?;
+            if flags & wasm_posix_shared::mmap::MAP_SHARED != 0 && flags & wasm_posix_shared::mmap::MAP_ANONYMOUS == 0 {
+                let entry = process.fd_table.get(descriptor)?;
+                let description = process.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+                if description.is_path_only() { return Err(Errno::EBADF); }
+                if let Some(handle) = runtime_core::kernel_file_mapping::mapping_handle_for(description.file_type, description.host_handle) {
+                    let access = description.status_flags() & wasm_posix_shared::flags::O_ACCMODE;
+                    if access == wasm_posix_shared::flags::O_WRONLY || (protection & 2 != 0 && access != wasm_posix_shared::flags::O_RDWR) {
+                        return Err(Errno::EACCES);
+                    }
+                    Some((pid, handle, access == wasm_posix_shared::flags::O_RDWR))
+                } else {
+                    None
+                }
+            } else { None }
+        };
+        if let Some((pid, handle, write_allowed)) = source {
+            if let Some(key) = runtime_core::kernel_file_mapping::identity_key(handle) {
+                let mappings = unsafe { crate::memory::global_shared_mapping_table() };
+                let mut io = WasmSharedMappingIo::for_table(mappings);
+                mappings.prepare_kernel_file_mapping(pid, descriptor, &key, handle, byte_offset as u64, length, protection & 2 != 0, write_allowed, &mut io)?;
+            }
+        }
+    }
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = syscalls::sys_mmap(
@@ -5085,16 +5175,23 @@ fn dispatch_channel_mmap(
         address,
         length,
         protection,
-        args[3] as u32,
-        args[4] as i32,
+        flags,
+        descriptor,
         byte_offset,
     );
     if let Ok(mapped_address) = result {
+        unsafe { crate::memory::global_shared_mapping_table() }
+            .bind_kernel_file_mapping(proc.pid, mapped_address as u64).expect("mmap preparation changed before address binding");
         if protection != 0 {
             ensure_memory_covers(mapped_address.saturating_add(length));
         }
     }
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    if result.is_err() {
+        let mappings = unsafe { crate::memory::global_shared_mapping_table() };
+        let mut io = WasmSharedMappingIo::for_table(mappings);
+        mappings.cancel_kernel_file_mapping(&mut io);
+    }
     result
 }
 
@@ -5111,15 +5208,27 @@ fn dispatch_channel_mremap(
         )
     }?;
     let old_address = checked_channel_process_address(126, args, 0)?;
+    let old_length = checked_channel_process_size(126, args, 1)?;
+    let new_length = checked_channel_process_size(126, args, 2)?;
+    {
+        let _gkl = GklGuard::acquire();
+        let pid = unsafe { &*PROCESS_TABLE.0.get() }.current_pid();
+        let mappings = unsafe { crate::memory::global_shared_mapping_table() };
+        let mut io = WasmSharedMappingIo::for_table(mappings);
+        mappings.prepare_remap_mapping(pid, old_address as u64, new_length, &mut io)?;
+    }
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = syscalls::sys_mremap(
         proc,
         old_address,
-        checked_channel_process_size(126, args, 1)?,
-        checked_channel_process_size(126, args, 2)?,
+        old_length,
+        new_length,
         args[3] as u32,
     );
+    if result.is_err() {
+        unsafe { crate::memory::global_shared_mapping_table() }.cancel_remap_mapping();
+    }
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
@@ -6464,13 +6573,13 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                         // retry sends. IPC_NOWAIT (04000) forbids a retry, so
                         // it needs no binding.
                         if let Some(proc) = task.get_mut(pid) {
-                            let _ = syscalls::ensure_blocking_retry_sysv_message_binding(
+                            if let Err(error) = syscalls::ensure_blocking_retry_sysv_message_binding(
                                 proc,
                                 tid,
                                 339,
                                 a1,
                                 Some(crate::blocked_retry::PendingSysvMessage { mtype, data }),
-                            );
+                            ) { return -(error as i32); }
                         }
                     }
                     result
@@ -6555,7 +6664,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 None => return -(Errno::EINVAL as i32),
             };
             let bytes = channel_const_slice!(1, bytes_len);
-            let mut sops = alloc::vec::Vec::with_capacity(nsops);
+            let mut sops = match crate::IoBuffer::try_with_capacity(nsops) {
+                Ok(sops) => sops,
+                Err(error) => return -(error as i32),
+            };
             for i in 0..nsops {
                 let base = i * 6;
                 let num = u16::from_le_bytes([bytes[base], bytes[base + 1]]);
@@ -8344,20 +8456,21 @@ pub extern "C" fn kernel_shared_mapping_sync_process(pid: u32, force: i32) -> i3
         return 0;
     }
     let mut io = WasmSharedMappingIo::for_table(table);
-    let mut ok = true;
-    if has_files {
+    let files = if has_files {
         if force != 0 {
-            ok &= table.flush_mappings(pid, 0, u64::MAX, &mut io);
+            table.flush_mappings(pid, 0, u64::MAX, &mut io)
         } else {
-            ok &= table.sync_file_from_process(pid, false, &mut io).is_ok();
+            table.sync_file_from_process(pid, false, &mut io)
         }
-    }
-    ok &= table.sync_sysv_from_process(pid, force != 0, &mut io);
-    if ok {
-        0
     } else {
-        -(Errno::EIO as i32)
-    }
+        Ok(())
+    };
+    let sysv = if table.sync_sysv_from_process(pid, force != 0, &mut io) {
+        Ok(())
+    } else {
+        Err(Errno::EIO)
+    };
+    shared_mapping_errno(files.and(sysv))
 }
 
 /// Start keeping a fresh `MAP_SHARED` mapping of a kernel-owned regular file
@@ -8421,23 +8534,16 @@ pub extern "C" fn kernel_shared_mapping_file_track(
     if table.mapping(pid, addr).is_some() {
         return -(Errno::EEXIST as i32);
     }
-    let Some(key) = runtime_core::kernel_file_mapping::identity_key(handle) else {
-        return -(Errno::ENOTSUP as i32);
+    let Some((prepared, prepared_handle)) = table.prepared_kernel_file_mapping(pid, addr) else {
+        return -(Errno::EINVAL as i32);
     };
+    if prepared_handle != handle || prepared.fd != fd || prepared.file_offset != file_offset
+        || prepared.len != len || prepared.writable != (writable != 0) || prepared.write_allowed != write_allowed {
+        return -(Errno::EINVAL as i32);
+    }
     let mut io = WasmSharedMappingIo::for_table(table);
     io.set_process_memory_len(pid, memory_len);
-    shared_mapping_errno(table.track_kernel_file_mapping(
-        pid,
-        addr,
-        fd,
-        &key,
-        handle,
-        file_offset,
-        len,
-        writable != 0,
-        write_allowed,
-        &mut io,
-    ))
+    shared_mapping_errno(table.commit_kernel_file_mapping(pid, addr, &mut io))
 }
 
 /// Publish the calling process's kernel-file mappings and persist the bytes
@@ -8451,11 +8557,7 @@ pub extern "C" fn kernel_shared_mapping_flush(pid: u32, addr: u64, len: u64) -> 
         return 0;
     }
     let mut io = WasmSharedMappingIo::for_table(table);
-    if table.flush_mappings(pid, addr, len, &mut io) {
-        0
-    } else {
-        -(Errno::EIO as i32)
-    }
+    shared_mapping_errno(table.flush_mappings(pid, addr, len, &mut io))
 }
 
 /// Stop tracking (or trim) every kernel-file mapping overlapping an unmapped
@@ -8469,8 +8571,7 @@ pub extern "C" fn kernel_shared_mapping_unmap(pid: u32, addr: u64, len: u64) -> 
         return 0;
     }
     let mut io = WasmSharedMappingIo::for_table(table);
-    table.cleanup_mappings(pid, addr, len, &mut io);
-    0
+    shared_mapping_errno(table.cleanup_mappings(pid, addr, len, &mut io))
 }
 
 /// Move a kernel-file mapping for a successful `mremap`, re-seeding the new
@@ -9982,7 +10083,7 @@ fn kernel_kill_with_metadata(pid: i32, sig: u32, si_value_bits: u64, si_code: i3
             deliver_caller(table, &mut host);
             return -(Errno::EINVAL as i32);
         }
-        table.ensure_init();
+        if let Err(error) = table.ensure_init() { return -(error as i32); }
         let target_pid = pid as u32;
         let result = match table.get(target_pid) {
             Some(target)
@@ -10085,8 +10186,8 @@ fn kernel_kill_with_metadata(pid: i32, sig: u32, si_value_bits: u64, si_code: i3
             return -(Errno::EINVAL as i32);
         }
         let target_pgid = if pid == 0 { caller_pgid } else { (-pid) as u32 };
-        let pids = table.pids_in_group(target_pgid);
-        if pids.is_empty() {
+        let mut next_target = table.next_pid_in_group(target_pgid, 0);
+        if next_target.is_none() {
             deliver_caller(table, &mut host);
             return -(Errno::ESRCH as i32);
         }
@@ -10094,7 +10195,8 @@ fn kernel_kill_with_metadata(pid: i32, sig: u32, si_value_bits: u64, si_code: i3
         // the signal, EPERM only if *none* could be signalled due to permission.
         let mut delivered = false;
         let mut any_perm_denied = false;
-        for &target_pid in &pids {
+        while let Some(target_pid) = next_target {
+            next_target = table.next_pid_in_group(target_pgid, target_pid);
             if let Some(target) = table.get(target_pid) {
                 if !syscalls::can_signal(
                     sender_uid,
@@ -10245,7 +10347,7 @@ fn kernel_sched_validate_pid(pid: i32) -> i32 {
     let (_gkl, caller) = unsafe { get_process() };
     let sender_euid = caller.effective_uid();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    table.ensure_init();
+    if let Err(error) = table.ensure_init() { return -(error as i32); }
     match table.get(pid as u32) {
         None => -(Errno::ESRCH as i32),
         Some(target) => {
@@ -10952,10 +11054,10 @@ fn deliver_pending_signals_for_known_tid(
 fn extract_scm_rights(
     proc: &crate::process::Process,
     records: &[crate::msghdr::NativeCmsg],
-) -> Result<Vec<crate::pipe::InFlightFd>, Errno> {
+) -> Result<crate::pipe::AncillaryFds, Errno> {
     use wasm_posix_shared::socket::{SCM_RIGHTS, SCM_RIGHTS_FD_BYTES, SOL_SOCKET};
 
-    let mut result = Vec::new();
+    let mut result = crate::pipe::AncillaryFds::new();
     for record in records {
         if record.level != SOL_SOCKET || record.cmsg_type != SCM_RIGHTS {
             continue;
@@ -10969,8 +11071,7 @@ fn extract_scm_rights(
                     .try_into()
                     .expect("validated SCM_RIGHTS descriptor width"),
             );
-            result.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
-            result.push(crate::syscalls::snapshot_scm_rights_fd(proc, fd)?);
+            result.try_push(crate::syscalls::snapshot_scm_rights_fd(proc, fd)?)?;
         }
     }
     Ok(result)
@@ -11049,7 +11150,7 @@ pub fn kernel_sendmsg(
     };
     // POSIX ignores `msg_name` when `msg_namelen` is zero.
     let addr_bytes = if header.name_addr != 0 && header.name_len > 0 {
-        match crate::guest_ptr::read_guest_bytes(
+        match crate::guest_ptr::read_guest_buffer(
             &mut host,
             pid,
             header.name_addr,
@@ -11105,24 +11206,15 @@ pub fn kernel_sendmsg(
                 return -(err as i32);
             }
         };
-        let mut template = Vec::new();
-        if template.try_reserve_exact(ancillary.len()).is_err() {
-            finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
-            deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
-            return -(Errno::ENOMEM as i32);
-        }
-        for entry in &ancillary {
-            match entry.try_clone_retained() {
-                Ok(entry) => template.push(entry),
-                Err(error) => {
-                    finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
-                    drop(template);
-                    syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
-                    deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
-                    return -(error as i32);
-                }
+        let template = match ancillary.try_clone_retained() {
+            Ok(template) => template,
+            Err(error) => {
+                finish_direct_blocking_retry_dispatch(proc, owns_active, owns_dispatch);
+                syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
+                deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
+                return -(error as i32);
             }
-        }
+        };
         (ancillary, Some(template))
     };
 
@@ -11228,7 +11320,7 @@ pub fn kernel_recvmsg(
         Ok(capacity) => capacity,
         Err(error) => bail!(error),
     };
-    let mut payload = match crate::guest_ptr::zeroed_staging(
+    let mut payload = match crate::guest_ptr::zeroed_io_staging(
         capacity,
         wasm_posix_shared::platform_limits::MAX_REPORTABLE_TRANSFER_BYTES,
     ) {
@@ -11242,7 +11334,7 @@ pub fn kernel_recvmsg(
         wasm_posix_shared::kernel_scratch_wire::SOCKADDR_STORAGE_BYTES as usize,
     );
     let mut addr_staging =
-        match crate::guest_ptr::zeroed_staging(addr_capacity, addr_capacity.max(1)) {
+        match crate::guest_ptr::zeroed_io_staging(addr_capacity, addr_capacity.max(1)) {
             Ok(staging) => staging,
             Err(error) => bail!(error),
         };
@@ -11276,6 +11368,7 @@ pub fn kernel_recvmsg(
     // Publish all result metadata even for a zero-byte datagram: a zero-length
     // message can still carry descriptors and output flags.
     let mut published_control_len = 0u32;
+    let mut installed_scm_rights = runtime_core::IoBuffer::new();
     let mut published_name_len: Option<u32> = None;
     let delivered_a_message = received.is_some();
     let mut output_msg_flags = received
@@ -11312,52 +11405,26 @@ pub fn kernel_recvmsg(
         }
 
         if !received.ancillary_fds.is_empty() {
-            let mut in_flight = core::mem::take(&mut received.ancillary_fds);
-            // Capacity is derived from the CALLER's cmsghdr size, so a wasm64
-            // receiver is not credited with the extra room a wasm32 header
-            // would have left. Installing a descriptor that cannot be
-            // reported would leak it: the receiver could never close it.
-            let control_fd_capacity = if header.control_addr != 0 {
-                crate::msghdr::control_fd_capacity(width, header.control_len).unwrap_or(0)
-            } else {
-                0
-            };
-            let install_count = control_fd_capacity.min(in_flight.len());
-            let excess = in_flight.split_off(install_count);
-            let had_excess = !excess.is_empty();
-            // Dropped entries enqueue allocation-free cleanup. The queue is
-            // drained only after the fitting prefix has become receiver OFDs.
-            drop(excess);
-
-            let attempted = in_flight.len();
-            let new_fds = if attempted == 0 {
-                Vec::new()
+            let in_flight = core::mem::take(&mut received.ancillary_fds);
+            if result < 0 {
+                drop(in_flight);
+                unsafe { crate::pipe::global_pipe_table().finish_ancillary_transition(); }
             } else {
                 let fd_flags = if flags & MSG_CMSG_CLOEXEC != 0 {
                     FD_CLOEXEC
                 } else {
                     0
                 };
-                syscalls::install_scm_rights_fds_with_flags(proc, in_flight, fd_flags)
-            };
-            unsafe {
-                crate::pipe::global_pipe_table().finish_ancillary_transition();
-            }
-
-            if had_excess || new_fds.len() < attempted {
-                output_msg_flags |= MSG_CTRUNC;
-            }
-
-            if !new_fds.is_empty() {
-                match crate::msghdr::write_scm_rights(
-                    &mut host,
-                    pid,
-                    header.control_addr,
-                    header.control_len,
-                    width,
-                    &new_fds,
+                match syscalls::publish_scm_rights(
+                    proc, advisory_locks, &mut host, in_flight,
+                    crate::msghdr::ScmRightsOutput { addr: header.control_addr,
+                        capacity: header.control_len, pointer_width: width, fd_flags },
                 ) {
-                    Ok(span) => published_control_len = span,
+                    Ok(publication) => {
+                        published_control_len = publication.control_len;
+                        if publication.truncated { output_msg_flags |= MSG_CTRUNC; }
+                        installed_scm_rights = publication.descriptors;
+                    }
                     Err(error) => result = -(error as i32),
                 }
             }
@@ -11388,6 +11455,9 @@ pub fn kernel_recvmsg(
         }
     }
 
+    if result < 0 {
+        syscalls::rollback_scm_rights_fds(proc, advisory_locks, &mut host, installed_scm_rights);
+    }
     syscalls::drain_deferred_scm_rights_releases(advisory_locks, &mut host);
 
     deliver_pending_signals_for_known_tid(proc, advisory_locks, &mut host, tid);
@@ -11514,10 +11584,13 @@ pub extern "C" fn kernel_environ_get(index: u32, buf_ptr: *mut u8, buf_len: u32)
 
 /// Push an argument string. Called by host before _start.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_push_argv(ptr: *const u8, len: u32) {
+pub extern "C" fn kernel_push_argv(ptr: *const u8, len: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let data = unsafe { slice::from_raw_parts(ptr, len as usize) };
-    proc.argv.push(data.to_vec());
+    match proc.argv.try_push(data) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
 }
 
 /// Return the number of arguments.
@@ -11559,12 +11632,19 @@ pub fn kernel_getrandom(buf_ptr: *mut u8, buf_len: u32, _flags: u32) -> i32 {
 /// munmap. Returns 0 on success, or negative errno on error.
 pub fn kernel_munmap(addr: usize, len: usize) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let pid = proc.pid;
     let mut host = WasmHostIO;
     let result = match syscalls::sys_munmap(proc, &mut host, addr, len) {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    if result == 0 {
+        let mappings = unsafe { crate::memory::global_shared_mapping_table() };
+        let mut io = WasmSharedMappingIo::for_table(mappings);
+        let aligned = len.saturating_add(0xFFFF) & !0xFFFF;
+        mappings.cancel_kernel_file_mapping_in_range(pid, addr as u64, aligned as u64, &mut io);
+    }
     result
 }
 
@@ -11962,13 +12042,17 @@ fn cross_process_loopback_connect(
 
     let listener_pid = listener_pid.ok_or(Errno::ECONNREFUSED)?;
     let listener_sock_idx = listener_sock_idx.ok_or(Errno::ECONNREFUSED)?;
+    let shared_idx = table.get(listener_pid).and_then(|proc| proc.sockets.get(listener_sock_idx))
+        .and_then(|socket| socket.shared_backlog_idx).ok_or(Errno::ECONNREFUSED)?;
+    unsafe { crate::socket::shared_listener_backlog_table().prepare_push(shared_idx)?; }
 
     // Allocate two pipe buffers in the GLOBAL pipe table for bidirectional data:
     //   pipe_a: client writes → server reads
     //   pipe_b: server writes → client reads
     let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-    let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
-    let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
+    let (pipe_a_idx, pipe_b_idx) = pipe_table.try_alloc_pair(
+        PipeBuffer::try_new(65536)?, PipeBuffer::try_new(65536)?,
+    )?;
 
     // Get the current process again (table borrow was released)
     let proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
@@ -12025,8 +12109,9 @@ fn cross_process_loopback_connect(
         peer_cred: None,
         recv_pipe_idx: pipe_a_idx, // server reads client's writes
         send_pipe_idx: pipe_b_idx, // server writes to client's reads
+        host_connection_id: 0,
     };
-    if !unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pc) } {
+    if !unsafe { crate::socket::shared_listener_backlog_table().publish_prepared(shared_idx, pc) } {
         return Err(Errno::ECONNREFUSED);
     }
 
@@ -12099,10 +12184,14 @@ fn cross_process_loopback_connect6(
         }
     }
     let (listener_pid, listener_sock_idx) = listener.ok_or(Errno::ECONNREFUSED)?;
+    let shared_idx = table.get(listener_pid).and_then(|proc| proc.sockets.get(listener_sock_idx))
+        .and_then(|socket| socket.shared_backlog_idx).ok_or(Errno::ECONNREFUSED)?;
+    unsafe { crate::socket::shared_listener_backlog_table().prepare_push(shared_idx)?; }
 
     let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-    let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
-    let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
+    let (pipe_a_idx, pipe_b_idx) = pipe_table.try_alloc_pair(
+        PipeBuffer::try_new(65536)?, PipeBuffer::try_new(65536)?,
+    )?;
 
     let client_proc = table.get_mut(my_pid).ok_or(Errno::ESRCH)?;
     let client_sock = client_proc.sockets.get(sock_idx).ok_or(Errno::EBADF)?;
@@ -12151,8 +12240,9 @@ fn cross_process_loopback_connect6(
         peer_cred: None,
         recv_pipe_idx: pipe_a_idx,
         send_pipe_idx: pipe_b_idx,
+        host_connection_id: 0,
     };
-    if !unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pending) } {
+    if !unsafe { crate::socket::shared_listener_backlog_table().publish_prepared(shared_idx, pending) } {
         return Err(Errno::ECONNREFUSED);
     }
     if let Some(idx) = accept_wake_idx {
@@ -12242,12 +12332,14 @@ fn cross_process_unix_connect(
     // listen(); the accepted socket will report this connecting process.
     let listener_cred = listener.peer_cred;
     let client_cred = syscalls::socket_peer_cred(table.get(my_pid).ok_or(Errno::ESRCH)?);
+    unsafe { crate::socket::shared_listener_backlog_table().prepare_push(shared_idx)?; }
 
     // Allocate pipes only after both endpoints have been validated, so a
     // stale or wrong-type registry entry cannot leak global pipe slots.
     let pipe_table = unsafe { crate::pipe::global_pipe_table() };
-    let pipe_a_idx = pipe_table.alloc(PipeBuffer::new(65536));
-    let pipe_b_idx = pipe_table.alloc(PipeBuffer::new(65536));
+    let (pipe_a_idx, pipe_b_idx) = pipe_table.try_alloc_pair(
+        PipeBuffer::try_new(65536)?, PipeBuffer::try_new(65536)?,
+    )?;
 
     let pending = crate::socket::PendingConnection {
         local_addr: [0;4],
@@ -12260,8 +12352,9 @@ fn cross_process_unix_connect(
         peer_cred: Some(client_cred),
         recv_pipe_idx: pipe_a_idx,
         send_pipe_idx: pipe_b_idx,
+        host_connection_id: 0,
     };
-    if !unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pending) } {
+    if !unsafe { crate::socket::shared_listener_backlog_table().publish_prepared(shared_idx, pending) } {
         pipe_table.discard_unclaimed(pipe_a_idx);
         pipe_table.discard_unclaimed(pipe_b_idx);
         return Err(Errno::ECONNREFUSED);
@@ -12318,16 +12411,10 @@ mod socket_wrapper_tests {
         let pid = table.create_process().unwrap();
         let fd = {
             let proc = table.get_mut(pid).unwrap();
-            let sock_idx =
-                proc.sockets
-                    .alloc(SocketInfo::new(SocketDomain::Unix, SocketType::Dgram, 0));
-            let ofd_idx = proc.ofd_table.create(
-                FileType::Socket,
-                O_RDWR,
-                -((sock_idx as i64) + 1),
-                b"/dev/socket".to_vec(),
-            );
-            proc.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap()
+            proc.open_descriptor(FileType::Socket, O_RDWR, b"/dev/socket", 0, |proc, _| {
+                let index = proc.sockets.try_alloc(SocketInfo::try_new(SocketDomain::Unix, SocketType::Dgram, 0)?)?;
+                Ok(-((index as i64) + 1))
+            }).unwrap()
         };
         // Abstract names do not touch HostIO, which keeps this wrapper test
         // focused on the retry's socket-type guard.
@@ -12548,18 +12635,18 @@ pub extern "C" fn kernel_getsockopt(
     // Handle string-valued SO_BINDTODEVICE.
     if level == SOL_SOCKET && optname == SO_BINDTODEVICE {
         let result = match syscalls::sys_getsockopt_bindtodevice(proc, fd) {
-            Ok(name) => {
-                let mut value = name;
-                if !value.is_empty() {
-                    value.push(0);
-                }
-                match write_getsockopt_bytes(
+            Ok(mut value) => {
+                let written = (|| {
+                    if !value.is_empty() { value.try_push(0)?; }
+                    write_getsockopt_bytes(
                     optval_ptr,
                     optval_capacity,
                     optlen_ptr,
                     optlen_capacity,
                     &value,
-                ) {
+                    )
+                })();
+                match written {
                     Ok(()) => 0,
                     Err(e) => -(e as i32),
                 }
@@ -12575,14 +12662,17 @@ pub extern "C" fn kernel_getsockopt(
     if level == IPPROTO_TCP && optname == TCP_CONGESTION {
         let result = match syscalls::sys_getsockopt_tcp_congestion(proc, fd) {
             Ok(mut name) => {
-                name.push(0);
-                match write_getsockopt_bytes(
+                let written = (|| {
+                    name.try_push(0)?;
+                    write_getsockopt_bytes(
                     optval_ptr,
                     optval_capacity,
                     optlen_ptr,
                     optlen_capacity,
                     &name,
-                ) {
+                    )
+                })();
+                match written {
                     Ok(()) => 0,
                     Err(e) => -(e as i32),
                 }
@@ -14014,7 +14104,7 @@ pub extern "C" fn kernel_get_fork_exec_argc() -> i32 {
 pub extern "C" fn kernel_apply_fork_fd_actions() -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let actions: alloc::vec::Vec<_> = proc.fork_fd_actions.drain(..).collect();
+    let actions = core::mem::take(&mut proc.fork_fd_actions);
     for action in actions {
         match action {
             crate::process::FdAction::Dup2 { old_fd, new_fd } => {
@@ -14074,7 +14164,7 @@ pub extern "C" fn kernel_clear_fork_exec() -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     proc.fork_exec_path = None;
     proc.fork_exec_argv = None;
-    proc.fork_fd_actions.clear();
+    proc.fork_fd_actions.truncate(0);
     proc.fork_child = false;
     0
 }
@@ -14267,8 +14357,8 @@ mod posix_timer_tests {
     fn directed_timer_fire_targets_main_and_worker_queues_exactly() {
         let mut proc = Process::new(41);
         proc.add_thread(crate::process::ThreadInfo::new(42, 0, 0, 0));
-        proc.posix_timers.push(Some(directed_timer(41)));
-        proc.posix_timers.push(Some(directed_timer(42)));
+        proc.posix_timers.try_push(Some(directed_timer(41))).unwrap();
+        proc.posix_timers.try_push(Some(directed_timer(42))).unwrap();
 
         assert_eq!(queue_posix_timer_fire(&mut proc, 0), 41);
         assert!(proc.main_thread_signals.is_pending(10));
@@ -14282,7 +14372,7 @@ mod posix_timer_tests {
     fn directed_timer_fire_rejects_a_target_that_died_after_create() {
         let mut proc = Process::new(41);
         proc.add_thread(crate::process::ThreadInfo::new(42, 0, 0, 0));
-        proc.posix_timers.push(Some(directed_timer(42)));
+        proc.posix_timers.try_push(Some(directed_timer(42))).unwrap();
         proc.remove_thread(42);
 
         assert_eq!(queue_posix_timer_fire(&mut proc, 0), -(Errno::ESRCH as i32));
@@ -14335,26 +14425,7 @@ pub fn kernel_timer_create(
         return -(Errno::EINVAL as i32);
     }
 
-    // Allocate timer slot
-    let timer_id = {
-        let mut slot = None;
-        for (i, s) in proc.posix_timers.iter().enumerate() {
-            if s.is_none() {
-                slot = Some(i);
-                break;
-            }
-        }
-        match slot {
-            Some(i) => i,
-            None => {
-                let i = proc.posix_timers.len();
-                proc.posix_timers.push(None);
-                i
-            }
-        }
-    };
-
-    proc.posix_timers[timer_id] = Some(PosixTimerState {
+    let timer_id = match proc.alloc_posix_timer(PosixTimerState {
         clock_id: host_clock_id,
         sigev_signo,
         sigev_value_bits,
@@ -14367,7 +14438,10 @@ pub fn kernel_timer_create(
         notification_pending: false,
         overrun_current: 0,
         overrun_last: 0,
-    });
+    }) {
+        Ok(timer_id) => timer_id,
+        Err(error) => return -(error as i32),
+    };
 
     if !timerid_ptr.is_null() {
         unsafe {
@@ -15020,6 +15094,10 @@ pub extern "C" fn kernel_inject_connection(
     };
     let accept_wake_idx = sock.accept_wake_idx;
 
+    if let Err(error) = unsafe { crate::socket::shared_listener_backlog_table().prepare_push(shared_idx) } {
+        return -(error as i32);
+    }
+
     // Allocate the recv/send pipes in the GLOBAL pipe table so any process
     // sharing this listener can read/write them after accept(). The host
     // TCP bridge assumes the indices are consecutive (it derives
@@ -15047,8 +15125,9 @@ pub extern "C" fn kernel_inject_connection(
         peer_cred: None,
         recv_pipe_idx,
         send_pipe_idx,
+        host_connection_id: pipe_table.get(recv_pipe_idx).unwrap().tcp_connection_id(),
     };
-    let pushed = unsafe { crate::socket::shared_listener_backlog_table().push(shared_idx, pc) };
+    let pushed = unsafe { crate::socket::shared_listener_backlog_table().publish_prepared(shared_idx, pc) };
     if !pushed {
         // Slot was freed (last listener closed concurrently) — release pipes
         pipe_table.discard_unclaimed(recv_pipe_idx);
@@ -15088,14 +15167,17 @@ pub extern "C" fn kernel_tcp_connection_id(recv: u32, send: u32) -> u32 {
 /// may have released one pipe; its index must not authorize its replacement.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_reset_tcp_connection(recv: u32, send: u32, token: u32) -> i32 {
-    match unsafe { crate::pipe::global_pipe_table() }.reset_tcp_connection(
-        recv as usize,
-        send as usize,
-        token,
-    ) {
-        Ok(()) => 0,
+    let pipes = unsafe { crate::pipe::global_pipe_table() };
+    let result = match pipes.reset_tcp_connection(recv as usize, send as usize, token) {
+        Ok(()) => {
+            unsafe { crate::socket::shared_listener_backlog_table() }
+                .cancel_injected_connection(pipes, recv as usize, send as usize, token);
+            0
+        }
         Err(error) => -(error as i32),
-    }
+    };
+    finish_machine_scm_rights_cleanup_if_pending();
+    result
 }
 
 /// Inject a UDP datagram into the kernel's AF_INET SOCK_DGRAM receive path.
@@ -15465,34 +15547,39 @@ pub extern "C" fn kernel_epoll_wake_indices(
         }
     };
 
-    let mut values: alloc::vec::Vec<i32> = alloc::vec::Vec::new();
-    for (fd, interest) in &interests {
-        let idx = if kind == KIND_PIPE {
-            kernel_get_socket_recv_pipe(pid, *fd)
-        } else if interest.events & EPOLLIN != 0 {
-            kernel_get_fd_accept_wake_idx(pid, *fd)
+    let index_for = |fd: i32, events: u32| {
+        if kind == KIND_PIPE {
+            kernel_get_socket_recv_pipe(pid, fd)
+        } else if events & EPOLLIN != 0 {
+            kernel_get_fd_accept_wake_idx(pid, fd)
         } else {
             -1
-        };
-        if idx >= 0 {
-            values.push(idx);
         }
-    }
+    };
+    let count = interests.iter().filter(|(fd, interest)| index_for(*fd, interest.events) >= 0).count();
 
-    let needed = values.len() * core::mem::size_of::<i32>();
+    let needed = match count.checked_mul(core::mem::size_of::<i32>()) {
+        Some(needed) => needed,
+        None => return -(Errno::EOVERFLOW as i32),
+    };
     if needed > out_len as usize {
         return -(Errno::E2BIG as i32);
     }
-    if !values.is_empty() {
+    if count != 0 {
         if out_ptr.is_null() {
             return -(Errno::EFAULT as i32);
         }
-        let bytes: alloc::vec::Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
-        unsafe {
-            core::ptr::copy_nonoverlapping(bytes.as_ptr(), out_ptr, bytes.len());
+        let mut offset = 0;
+        for (fd, interest) in &interests {
+            let index = index_for(*fd, interest.events);
+            if index >= 0 {
+                let bytes = index.to_le_bytes();
+                unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), out_ptr.add(offset), bytes.len()); }
+                offset += bytes.len();
+            }
         }
     }
-    values.len() as i32
+    count as i32
 }
 
 /// Find the lowest live listener fd carrying `wake_idx` in `pid`.
@@ -15682,9 +15769,14 @@ pub extern "C" fn kernel_pty_create(pid: u32) -> i32 {
         use alloc::format;
         format!("/dev/pts/{}", pty_idx).into_bytes()
     };
-    let ofd_idx = proc
-        .ofd_table
-        .create(FileType::PtySlave, O_RDWR, pty_idx as i64, path);
+    let prepared = match proc.ofd_table.prepare(FileType::PtySlave, O_RDWR, &path) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            crate::pty::free_pty(pty_idx);
+            return -(error as i32);
+        }
+    };
+    let ofd_idx = proc.ofd_table.publish(prepared, pty_idx as i64);
 
     // Close the existing stdio descriptors through the normal machine path.
     // Directly replacing fd-table entries would bypass POSIX close-any-fd
@@ -15769,8 +15861,9 @@ pub extern "C" fn kernel_pty_master_write(pty_idx: u32, buf_ptr: *const u8, buf_
         for i in 0..signal_count {
             let (signum, fg_pgid) = pending_signals[i];
             if fg_pgid > 0 {
-                let pids = table.pids_in_group(fg_pgid as u32);
-                for pid in pids {
+                let mut after = 0;
+                while let Some(pid) = table.next_pid_in_group(fg_pgid as u32, after) {
+                    after = pid;
                     if let Some(proc) = table.get_mut(pid) {
                         proc.raise_signal(signum);
                     }
@@ -15831,8 +15924,9 @@ pub extern "C" fn kernel_pty_set_winsize(pty_idx: u32, rows: u32, cols: u32) -> 
     let fg_pgid = pty.terminal.foreground_pgid;
     if fg_pgid > 0 {
         let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-        let pids = table.pids_in_group(fg_pgid as u32);
-        for pid in pids {
+        let mut after = 0;
+        while let Some(pid) = table.next_pid_in_group(fg_pgid as u32, after) {
+            after = pid;
             if let Some(proc) = table.get_mut(pid) {
                 proc.signals.raise(wasm_posix_shared::signal::SIGWINCH);
             }

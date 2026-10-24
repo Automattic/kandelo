@@ -195,6 +195,63 @@ pub const ARCHIVE_ENTRY_SIZE: u32 = 56;
 /// Far past any real image; the largest today declares a handful.
 pub const MAX_ARCHIVES: u32 = 1 << 16;
 
+pub const METADATA_BUDGET_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const RECORD_RESIDENT_BYTES: usize = 128;
+pub(crate) const ARCHIVE_RESIDENT_BYTES: usize = 96;
+
+pub(crate) fn copy_metadata_bytes(bytes: &[u8]) -> Result<Vec<u8>, Errno> {
+    let mut copied = Vec::new();
+    copied.try_reserve_exact(bytes.len()).map_err(|_| Errno::ENOMEM)?;
+    copied.extend_from_slice(bytes);
+    Ok(copied)
+}
+
+struct MetadataBudget<'a> {
+    remaining: usize,
+    admit: Option<&'a mut dyn FnMut(usize) -> Result<(), Errno>>,
+}
+
+impl MetadataBudget<'_> {
+    fn take(&mut self, bytes: usize) -> Result<(), Errno> {
+        let remaining = self.remaining.checked_sub(bytes).ok_or(Errno::ENOMEM)?;
+        if let Some(admit) = self.admit.as_mut() { admit(bytes)?; }
+        self.remaining = remaining;
+        Ok(())
+    }
+}
+
+struct MetadataReader<'a, F> {
+    read: F,
+    length: u64,
+    budget: MetadataBudget<'a>,
+}
+
+impl<F: FnMut(u64, &mut [u8]) -> Result<usize, Errno>> MetadataReader<'_, F> {
+    fn exact(&mut self, offset: u64, destination: &mut [u8]) -> Result<(), Errno> {
+        if offset.checked_add(destination.len() as u64).ok_or(Errno::EINVAL)? > self.length {
+            return Err(Errno::EINVAL);
+        }
+        let mut done = 0;
+        while done < destination.len() {
+            let length = core::cmp::min(4096, destination.len() - done);
+            let count = (self.read)(offset + done as u64, &mut destination[done..done + length])?;
+            if count == 0 { return Err(Errno::EINVAL); }
+            if count > length { return Err(Errno::EIO); }
+            done += count;
+        }
+        Ok(())
+    }
+
+    fn bytes(&mut self, offset: u64, length: u32) -> Result<Vec<u8>, Errno> {
+        self.budget.take(length as usize)?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(length as usize).map_err(|_| Errno::ENOMEM)?;
+        bytes.resize(length as usize, 0);
+        self.exact(offset, &mut bytes)?;
+        Ok(bytes)
+    }
+}
+
 /// One deferred file, as the section describes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeferredRecord {
@@ -369,11 +426,28 @@ pub fn digest_from(digest: &[u8]) -> Result<[u8; DIGEST_LEN], Errno> {
 /// writer's job and a violation is a writer bug, so it is reported rather than
 /// silently repaired.
 pub fn encode(archives: &[DeferredArchive], records: &[DeferredRecord]) -> Result<Vec<u8>, Errno> {
+    let encoded_bytes = encoded_len(archives.iter(), records.iter(), |id|
+        archives.binary_search_by_key(&id, |archive| archive.archive_id).is_ok())?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(encoded_bytes).map_err(|_| Errno::ENOMEM)?;
+    let mut emit = |bytes: &[u8]| { out.extend_from_slice(bytes); Ok(()) };
+    encode_header(archives.len(), records.len(), &mut emit)?;
+    for archive in archives { encode_archive(archive, &mut emit)?; }
+    for record in records { encode_record(record, &mut emit)?; }
+    if out.len() != encoded_bytes { return Err(Errno::EIO); }
+    Ok(out)
+}
+
+pub(crate) fn encoded_len<'a>(
+    archives: impl ExactSizeIterator<Item = &'a DeferredArchive> + Clone,
+    records: impl ExactSizeIterator<Item = &'a DeferredRecord> + Clone,
+    declared: impl Fn(u32) -> bool,
+) -> Result<usize, Errno> {
     if records.len() > MAX_RECORDS as usize || archives.len() > MAX_ARCHIVES as usize {
         return Err(Errno::EINVAL);
     }
     let mut previous_archive: Option<u32> = None;
-    for archive in archives {
+    for archive in archives.clone() {
         if archive.archive_id == 0 {
             return Err(Errno::EINVAL);
         }
@@ -390,9 +464,8 @@ pub fn encode(archives: &[DeferredArchive], records: &[DeferredRecord]) -> Resul
             return Err(Errno::EINVAL);
         }
     }
-    let declared = |id: u32| archives.iter().any(|a| a.archive_id == id);
     let mut previous: Option<u32> = None;
-    for record in records {
+    for record in records.clone() {
         if record.ino == 0 {
             return Err(Errno::EINVAL);
         }
@@ -431,277 +504,203 @@ pub fn encode(archives: &[DeferredArchive], records: &[DeferredRecord]) -> Resul
         }
     }
 
-    let mut out = Vec::new();
-    out.extend_from_slice(&MAGIC);
-    out.extend_from_slice(&VERSION.to_le_bytes());
-    out.extend_from_slice(&HEADER_SIZE.to_le_bytes());
-    out.extend_from_slice(&(records.len() as u32).to_le_bytes());
-    out.extend_from_slice(&(archives.len() as u32).to_le_bytes());
-
+    let mut budget = MetadataBudget { remaining: METADATA_BUDGET_BYTES, admit: None };
+    budget.take(archives.len().checked_mul(ARCHIVE_RESIDENT_BYTES).ok_or(Errno::ENOMEM)?)?;
+    budget.take(records.len().checked_mul(RECORD_RESIDENT_BYTES).ok_or(Errno::ENOMEM)?)?;
+    let mut encoded_bytes = HEADER_SIZE as usize;
     for archive in archives {
-        let payload_len = archive.payload.len() as u32;
-        let uri_len = archive.uri.len() as u32;
-        // 4-aligned for the same reason records are: one section, one byte
-        // representation, and no unaligned read.
-        let unpadded = ARCHIVE_ENTRY_SIZE
-            .checked_add(payload_len)
-            .and_then(|n| n.checked_add(uri_len))
-            .ok_or(Errno::EINVAL)?;
-        let entry_size = unpadded.next_multiple_of(4);
-        out.extend_from_slice(&entry_size.to_le_bytes());
-        out.extend_from_slice(&archive.archive_id.to_le_bytes());
-        out.extend_from_slice(&archive.bytes.to_le_bytes());
-        out.extend_from_slice(&payload_len.to_le_bytes());
-        out.extend_from_slice(&uri_len.to_le_bytes());
-        out.extend_from_slice(&archive.digest);
-        out.extend_from_slice(&archive.payload);
-        out.extend_from_slice(&archive.uri);
-        for _ in unpadded..entry_size {
-            out.push(0);
-        }
+        let fields = archive.uri.len().checked_add(archive.payload.len()).ok_or(Errno::ENOMEM)?;
+        budget.take(fields)?;
+        encoded_bytes = encoded_bytes.checked_add((ARCHIVE_ENTRY_SIZE as usize + fields).next_multiple_of(4))
+            .ok_or(Errno::ENOMEM)?;
     }
-
     for record in records {
-        let payload_len = record.payload.len() as u32;
-        let source_path_len = record.source_path.len() as u32;
-        // Records stay 4-aligned so a reader never makes an unaligned access
-        // and so `record_size` can be validated without knowing the padding
-        // rule separately.
-        let uri_len = record.uri.len() as u32;
-        let unpadded = RECORD_HEADER_SIZE
-            .checked_add(source_path_len)
-            .and_then(|n| n.checked_add(payload_len))
-            .and_then(|n| n.checked_add(uri_len))
-            .ok_or(Errno::EINVAL)?;
-        let record_size = unpadded.next_multiple_of(4);
-        out.extend_from_slice(&record_size.to_le_bytes());
-        out.extend_from_slice(&record.ino.to_le_bytes());
-        out.extend_from_slice(&record.size.to_le_bytes());
-        out.extend_from_slice(&record.archive_id.to_le_bytes());
-        out.extend_from_slice(&source_path_len.to_le_bytes());
-        out.extend_from_slice(&payload_len.to_le_bytes());
-        out.extend_from_slice(&uri_len.to_le_bytes());
-        out.extend_from_slice(&record.digest);
-        out.extend_from_slice(&record.source_path);
-        out.extend_from_slice(&record.payload);
-        out.extend_from_slice(&record.uri);
-        for _ in unpadded..record_size {
-            out.push(0);
-        }
+        let fields = record.uri.len().checked_add(record.payload.len())
+            .and_then(|bytes| bytes.checked_add(record.source_path.len())).ok_or(Errno::ENOMEM)?;
+        budget.take(fields)?;
+        encoded_bytes = encoded_bytes.checked_add((RECORD_HEADER_SIZE as usize + fields).next_multiple_of(4))
+            .ok_or(Errno::ENOMEM)?;
     }
-    Ok(out)
+    Ok(encoded_bytes)
 }
 
-/// Parse a section. Every malformed input is [`Errno::EINVAL`]; none panics.
-pub fn decode(bytes: &[u8]) -> Result<DeferredSection, Errno> {
-    if bytes.len() < HEADER_SIZE as usize {
-        return Err(Errno::EINVAL);
-    }
-    if bytes[0..4] != MAGIC {
-        return Err(Errno::EINVAL);
-    }
-    if r_u16(bytes, 4)? != VERSION {
-        return Err(Errno::EINVAL);
-    }
-    if r_u16(bytes, 6)? != HEADER_SIZE {
-        return Err(Errno::EINVAL);
-    }
-    let record_count = r_u32(bytes, 8)?;
-    if record_count > MAX_RECORDS {
-        return Err(Errno::EINVAL);
-    }
-    let archive_count = r_u32(bytes, 12)?;
-    if archive_count > MAX_ARCHIVES {
-        return Err(Errno::EINVAL);
-    }
+pub(crate) fn encode_header(
+    archive_count: usize,
+    record_count: usize,
+    emit: &mut impl FnMut(&[u8]) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    emit(&MAGIC)?;
+    emit(&VERSION.to_le_bytes())?;
+    emit(&HEADER_SIZE.to_le_bytes())?;
+    emit(&(record_count as u32).to_le_bytes())?;
+    emit(&(archive_count as u32).to_le_bytes())
+}
 
-    // The archive table sits between the header and the records. Entries carry
-    // a payload, so it is walked rather than indexed — but the count is capped
-    // first and the smallest possible table must fit, so a large count in a
-    // short section cannot make this allocate.
-    if (archive_count as usize).saturating_mul(ARCHIVE_ENTRY_SIZE as usize)
-        > bytes.len() - HEADER_SIZE as usize
-    {
+pub(crate) fn encode_archive(
+    archive: &DeferredArchive,
+    emit: &mut impl FnMut(&[u8]) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    let payload_len = archive.payload.len() as u32;
+    let uri_len = archive.uri.len() as u32;
+    let unpadded = ARCHIVE_ENTRY_SIZE
+        .checked_add(payload_len)
+        .and_then(|length| length.checked_add(uri_len))
+        .ok_or(Errno::EINVAL)?;
+    let entry_size = unpadded.next_multiple_of(4);
+    emit(&entry_size.to_le_bytes())?;
+    emit(&archive.archive_id.to_le_bytes())?;
+    emit(&archive.bytes.to_le_bytes())?;
+    emit(&payload_len.to_le_bytes())?;
+    emit(&uri_len.to_le_bytes())?;
+    emit(&archive.digest)?;
+    emit(&archive.payload)?;
+    emit(&archive.uri)?;
+    emit(&[0; 3][..(entry_size - unpadded) as usize])
+}
+
+pub(crate) fn encode_record(
+    record: &DeferredRecord,
+    emit: &mut impl FnMut(&[u8]) -> Result<(), Errno>,
+) -> Result<(), Errno> {
+    let payload_len = record.payload.len() as u32;
+    let source_path_len = record.source_path.len() as u32;
+    let uri_len = record.uri.len() as u32;
+    let unpadded = RECORD_HEADER_SIZE
+        .checked_add(source_path_len)
+        .and_then(|length| length.checked_add(payload_len))
+        .and_then(|length| length.checked_add(uri_len))
+        .ok_or(Errno::EINVAL)?;
+    let record_size = unpadded.next_multiple_of(4);
+    emit(&record_size.to_le_bytes())?;
+    emit(&record.ino.to_le_bytes())?;
+    emit(&record.size.to_le_bytes())?;
+    emit(&record.archive_id.to_le_bytes())?;
+    emit(&source_path_len.to_le_bytes())?;
+    emit(&payload_len.to_le_bytes())?;
+    emit(&uri_len.to_le_bytes())?;
+    emit(&record.digest)?;
+    emit(&record.source_path)?;
+    emit(&record.payload)?;
+    emit(&record.uri)?;
+    emit(&[0; 3][..(record_size - unpadded) as usize])
+}
+
+/// Parse within the default metadata budget; framing errors are `EINVAL`
+/// and exhausted metadata admission is `ENOMEM`.
+pub fn decode(bytes: &[u8]) -> Result<DeferredSection, Errno> {
+    decode_from(bytes.len() as u64, METADATA_BUDGET_BYTES, |offset, destination| {
+        let start = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
+        let end = start.checked_add(destination.len()).ok_or(Errno::EINVAL)?;
+        destination.copy_from_slice(bytes.get(start..end).ok_or(Errno::EINVAL)?);
+        Ok(destination.len())
+    })
+}
+
+pub fn decode_from(
+    length: u64,
+    budget_bytes: usize,
+    read: impl FnMut(u64, &mut [u8]) -> Result<usize, Errno>,
+) -> Result<DeferredSection, Errno> {
+    decode_from_with_admission(length, budget_bytes, read, |_| Ok(()))
+}
+
+pub fn decode_from_with_admission(
+    length: u64,
+    budget_bytes: usize,
+    read: impl FnMut(u64, &mut [u8]) -> Result<usize, Errno>,
+    mut admit: impl FnMut(usize) -> Result<(), Errno>,
+) -> Result<DeferredSection, Errno> {
+    if length < u64::from(HEADER_SIZE) { return Err(Errno::EINVAL); }
+    let mut input = MetadataReader { read, length, budget: MetadataBudget { remaining: budget_bytes, admit: Some(&mut admit) } };
+    let mut header = [0; HEADER_SIZE as usize];
+    input.exact(0, &mut header)?;
+    if header[..4] != MAGIC || r_u16(&header, 4)? != VERSION || r_u16(&header, 6)? != HEADER_SIZE {
         return Err(Errno::EINVAL);
     }
-    let mut archives = Vec::new();
-    archives.reserve(archive_count as usize);
-    let mut previous_archive: Option<u32> = None;
-    let mut at = HEADER_SIZE as usize;
+    let record_count = r_u32(&header, 8)?;
+    let archive_count = r_u32(&header, 12)?;
+    if record_count > MAX_RECORDS || archive_count > MAX_ARCHIVES {
+        return Err(Errno::EINVAL);
+    }
+    let minimum = u64::from(HEADER_SIZE) + u64::from(archive_count) * u64::from(ARCHIVE_ENTRY_SIZE)
+        + u64::from(record_count) * u64::from(RECORD_HEADER_SIZE);
+    if minimum > length { return Err(Errno::EINVAL); }
+    input.budget.take((archive_count as usize).checked_mul(ARCHIVE_RESIDENT_BYTES).ok_or(Errno::ENOMEM)?)?;
+    input.budget.take((record_count as usize).checked_mul(RECORD_RESIDENT_BYTES).ok_or(Errno::ENOMEM)?)?;
+    let mut archives: Vec<DeferredArchive> = Vec::new();
+    archives.try_reserve_exact(archive_count as usize).map_err(|_| Errno::ENOMEM)?;
+    let mut at = u64::from(HEADER_SIZE);
+    let mut previous_archive = None;
     for _ in 0..archive_count {
-        let entry_size = r_u32(bytes, at)?;
-        if entry_size < ARCHIVE_ENTRY_SIZE || entry_size % 4 != 0 {
+        let mut entry = [0; ARCHIVE_ENTRY_SIZE as usize];
+        input.exact(at, &mut entry)?;
+        let entry_size = r_u32(&entry, 0)?;
+        let end = at.checked_add(u64::from(entry_size)).ok_or(Errno::EINVAL)?;
+        if entry_size < ARCHIVE_ENTRY_SIZE || entry_size % 4 != 0 || end > length {
             return Err(Errno::EINVAL);
         }
-        let end = at.checked_add(entry_size as usize).ok_or(Errno::EINVAL)?;
-        if end > bytes.len() {
+        let archive_id = r_u32(&entry, 4)?;
+        if archive_id == 0 || previous_archive.is_some_and(|previous| archive_id <= previous) {
             return Err(Errno::EINVAL);
-        }
-        let archive_id = r_u32(bytes, at + 4)?;
-        if archive_id == 0 {
-            return Err(Errno::EINVAL);
-        }
-        // Strictly ascending, so `archive_bytes` can binary-search and a
-        // duplicate declaration cannot give one id two lengths.
-        if let Some(previous) = previous_archive {
-            if archive_id <= previous {
-                return Err(Errno::EINVAL);
-            }
         }
         previous_archive = Some(archive_id);
-        let archive_bytes = r_u64(bytes, at + 8)?;
-        let payload_len = r_u32(bytes, at + 16)?;
-        if payload_len > MAX_PAYLOAD_LEN {
-            return Err(Errno::EINVAL);
-        }
-        let uri_len = r_u32(bytes, at + 20)?;
-        if uri_len > MAX_URI_LEN {
-            return Err(Errno::EINVAL);
-        }
-        let digest = r_digest(bytes, at + 24)?;
-        let unpadded = ARCHIVE_ENTRY_SIZE
-            .checked_add(payload_len)
-            .and_then(|n| n.checked_add(uri_len))
-            .ok_or(Errno::EINVAL)?;
-        if entry_size < unpadded || entry_size - unpadded >= 4 {
-            // Padding must be exactly what `encode` would write.
-            return Err(Errno::EINVAL);
-        }
-        let payload_start = at + ARCHIVE_ENTRY_SIZE as usize;
-        let payload = bytes
-            .get(payload_start..payload_start + payload_len as usize)
-            .ok_or(Errno::EINVAL)?
-            .to_vec();
-        let uri_start = payload_start + payload_len as usize;
-        let uri = bytes
-            .get(uri_start..uri_start + uri_len as usize)
-            .ok_or(Errno::EINVAL)?
-            .to_vec();
-        archives.push(DeferredArchive {
-            archive_id,
-            bytes: archive_bytes,
-            uri,
-            digest,
-            payload,
-        });
+        let archive_bytes = r_u64(&entry, 8)?;
+        let payload_len = r_u32(&entry, 16)?;
+        let uri_len = r_u32(&entry, 20)?;
+        if payload_len > MAX_PAYLOAD_LEN || uri_len > MAX_URI_LEN { return Err(Errno::EINVAL); }
+        let digest = r_digest(&entry, 24)?;
+        let unpadded = ARCHIVE_ENTRY_SIZE.checked_add(payload_len)
+            .and_then(|bytes| bytes.checked_add(uri_len)).ok_or(Errno::EINVAL)?;
+        if entry_size < unpadded || entry_size - unpadded >= 4 { return Err(Errno::EINVAL); }
+        let payload_start = at + u64::from(ARCHIVE_ENTRY_SIZE);
+        let payload = input.bytes(payload_start, payload_len)?;
+        let uri = input.bytes(payload_start + u64::from(payload_len), uri_len)?;
+        archives.push(DeferredArchive { archive_id, bytes: archive_bytes, uri, digest, payload });
         at = end;
     }
-    let records_start = at;
-
-    let mut records = Vec::new();
-    // Capacity is taken from the count only after the count is capped AND
-    // bounded by what the section could possibly hold, so a large count in a
-    // short section cannot make this allocate.
-    let smallest_record = RECORD_HEADER_SIZE as usize;
-    let remaining = bytes.len() - records_start;
-    if (record_count as usize).saturating_mul(smallest_record) > remaining {
+    if u64::from(record_count) * u64::from(RECORD_HEADER_SIZE) > length - at {
         return Err(Errno::EINVAL);
     }
-    records.reserve(record_count as usize);
-
-    let mut offset = records_start;
-    let mut previous: Option<u32> = None;
+    let mut records = Vec::new();
+    records.try_reserve_exact(record_count as usize).map_err(|_| Errno::ENOMEM)?;
+    let mut previous = None;
     for _ in 0..record_count {
-        let record_size = r_u32(bytes, offset)?;
-        if record_size < RECORD_HEADER_SIZE || record_size % 4 != 0 {
+        let mut entry = [0; RECORD_HEADER_SIZE as usize];
+        input.exact(at, &mut entry)?;
+        let record_size = r_u32(&entry, 0)?;
+        let end = at.checked_add(u64::from(record_size)).ok_or(Errno::EINVAL)?;
+        if record_size < RECORD_HEADER_SIZE || record_size % 4 != 0 || end > length {
             return Err(Errno::EINVAL);
         }
-        let end = offset
-            .checked_add(record_size as usize)
-            .ok_or(Errno::EINVAL)?;
-        if end > bytes.len() {
-            return Err(Errno::EINVAL);
-        }
-        let ino = r_u32(bytes, offset + 4)?;
-        if ino == 0 {
-            return Err(Errno::EINVAL);
-        }
-        // Strictly ascending: rejects duplicates, and lets `get` binary-search.
-        if let Some(previous) = previous {
-            if ino <= previous {
-                return Err(Errno::EINVAL);
-            }
-        }
+        let ino = r_u32(&entry, 4)?;
+        if ino == 0 || previous.is_some_and(|previous| ino <= previous) { return Err(Errno::EINVAL); }
         previous = Some(ino);
-        let size = r_u64(bytes, offset + 8)?;
-        let archive_id = r_u32(bytes, offset + 16)?;
-        let source_path_len = r_u32(bytes, offset + 20)?;
-        if source_path_len > MAX_SOURCE_PATH_LEN {
-            return Err(Errno::EINVAL);
-        }
-        // The same rule `encode` enforces, checked independently rather than
-        // trusted: this section can arrive from a shared link.
-        if (archive_id == 0) != (source_path_len == 0) {
-            return Err(Errno::EINVAL);
-        }
-        // Checked independently of the encoder: a dangling archive reference
-        // in a section that arrived from a shared link is exactly the shape
-        // that would otherwise reach the fetch path with no length bound.
-        if archive_id != 0
-            && archives
-                .binary_search_by_key(&archive_id, |a| a.archive_id)
-                .is_err()
+        let size = r_u64(&entry, 8)?;
+        let archive_id = r_u32(&entry, 16)?;
+        let source_path_len = r_u32(&entry, 20)?;
+        let payload_len = r_u32(&entry, 24)?;
+        let uri_len = r_u32(&entry, 28)?;
+        if source_path_len > MAX_SOURCE_PATH_LEN || payload_len > MAX_PAYLOAD_LEN || uri_len > MAX_URI_LEN
+            || (archive_id == 0) != (source_path_len == 0)
+            || (archive_id != 0 && (uri_len != 0
+                || archives.binary_search_by_key(&archive_id, |archive| archive.archive_id).is_err()))
         {
             return Err(Errno::EINVAL);
         }
-        let payload_len = r_u32(bytes, offset + 24)?;
-        if payload_len > MAX_PAYLOAD_LEN {
-            return Err(Errno::EINVAL);
-        }
-        let uri_len = r_u32(bytes, offset + 28)?;
-        if uri_len > MAX_URI_LEN {
-            return Err(Errno::EINVAL);
-        }
-        // An archive member is addressed by its archive. Refused here as well
-        // as in `encode`, because a section that arrived from a shared link
-        // carrying both would have two answers to "where are these bytes".
-        if archive_id != 0 && uri_len != 0 {
-            return Err(Errno::EINVAL);
-        }
-        let digest = r_digest(bytes, offset + 32)?;
-        let unpadded = RECORD_HEADER_SIZE
-            .checked_add(source_path_len)
-            .and_then(|n| n.checked_add(payload_len))
-            .and_then(|n| n.checked_add(uri_len))
-            .ok_or(Errno::EINVAL)?;
-        if record_size < unpadded || record_size - unpadded >= 4 {
-            // The padding must be exactly what `encode` would have written, so
-            // one section has one byte representation.
-            return Err(Errno::EINVAL);
-        }
-        let source_path_start = offset + RECORD_HEADER_SIZE as usize;
-        let source_path_end = source_path_start + source_path_len as usize;
-        let source_path = bytes
-            .get(source_path_start..source_path_end)
-            .ok_or(Errno::EINVAL)?
-            .to_vec();
-        let payload_start = source_path_end;
-        let payload_end = payload_start + payload_len as usize;
-        let payload = bytes
-            .get(payload_start..payload_end)
-            .ok_or(Errno::EINVAL)?
-            .to_vec();
-        let uri_end = payload_end + uri_len as usize;
-        let uri = bytes
-            .get(payload_end..uri_end)
-            .ok_or(Errno::EINVAL)?
-            .to_vec();
-        records.push(DeferredRecord {
-            ino,
-            size,
-            archive_id,
-            source_path,
-            uri,
-            digest,
-            payload,
-        });
-        offset = end;
+        let digest = r_digest(&entry, 32)?;
+        let unpadded = RECORD_HEADER_SIZE.checked_add(source_path_len)
+            .and_then(|bytes| bytes.checked_add(payload_len))
+            .and_then(|bytes| bytes.checked_add(uri_len)).ok_or(Errno::EINVAL)?;
+        if record_size < unpadded || record_size - unpadded >= 4 { return Err(Errno::EINVAL); }
+        let source_path_start = at + u64::from(RECORD_HEADER_SIZE);
+        let payload_start = source_path_start + u64::from(source_path_len);
+        let source_path = input.bytes(source_path_start, source_path_len)?;
+        let payload = input.bytes(payload_start, payload_len)?;
+        let uri = input.bytes(payload_start + u64::from(payload_len), uri_len)?;
+        records.push(DeferredRecord { ino, size, archive_id, source_path, uri, digest, payload });
+        at = end;
     }
-
-    // Trailing bytes mean the section and its record count disagree.
-    if offset != bytes.len() {
-        return Err(Errno::EINVAL);
-    }
+    if at != length { return Err(Errno::EINVAL); }
     Ok(DeferredSection { archives, records })
 }
 
@@ -810,6 +809,164 @@ mod tests {
     }
 
     #[test]
+    fn positioned_decode_bounds_requests_and_handles_short_reads() {
+        let archives = vec![DeferredArchive { archive_id: 7, bytes: 123,
+            uri: b"https://example.invalid/archive".to_vec(), digest: [3; DIGEST_LEN],
+            payload: vec![9; 8193] }];
+        let mut linked = record(5, 42, &[7; MAX_PAYLOAD_LEN as usize]);
+        linked.archive_id = 7;
+        linked.source_path = vec![b'p'; MAX_SOURCE_PATH_LEN as usize];
+        let records = vec![record(2, u64::MAX, b"opaque"), linked];
+        let bytes = encode(&archives, &records).unwrap();
+        for short in [1, 3, 17, 4096] {
+            let mut largest = 0;
+            let decoded = decode_from(bytes.len() as u64, METADATA_BUDGET_BYTES, |offset, destination| {
+                largest = largest.max(destination.len());
+                let count = core::cmp::min(short, destination.len());
+                destination[..count].copy_from_slice(&bytes[offset as usize..offset as usize + count]);
+                Ok(count)
+            }).unwrap();
+            assert_eq!(decoded, DeferredSection { archives: archives.clone(), records: records.clone() });
+            assert!(largest <= 4096);
+        }
+    }
+
+    #[test]
+    fn positioned_decode_preserves_source_errors_and_allows_a_clean_retry() {
+        let bytes = enc(&[record(2, 17, &[8; 8193])]).unwrap();
+        let mut requests = 0;
+        let expected = decode_from(bytes.len() as u64, METADATA_BUDGET_BYTES, |offset, destination| {
+            requests += 1;
+            destination.copy_from_slice(&bytes[offset as usize..offset as usize + destination.len()]);
+            Ok(destination.len())
+        }).unwrap();
+        for error in [Errno::EAGAIN, Errno::ENOMEM, Errno::EIO, Errno::ENOSPC] {
+            for fail_at in 0..requests {
+                let mut calls = 0;
+                assert_eq!(decode_from(bytes.len() as u64, METADATA_BUDGET_BYTES, |offset, destination| {
+                    if calls == fail_at { return Err(error); }
+                    calls += 1;
+                    destination.copy_from_slice(&bytes[offset as usize..offset as usize + destination.len()]);
+                    Ok(destination.len())
+                }), Err(error));
+            }
+        }
+        assert_eq!(decode(&bytes), Ok(expected));
+    }
+
+    #[test]
+    fn positioned_decode_rejects_terabyte_framing_from_its_header_without_a_body_buffer() {
+        let header = encode(&[], &[]).unwrap();
+        let mut calls = 0;
+        assert_eq!(decode_from(1u64 << 40, METADATA_BUDGET_BYTES, |offset, destination| {
+            calls += 1;
+            assert_eq!(offset, 0);
+            assert_eq!(destination.len(), HEADER_SIZE as usize);
+            destination.copy_from_slice(&header);
+            Ok(destination.len())
+        }), Err(Errno::EINVAL));
+        assert_eq!(calls, 1);
+        assert_eq!(decode_from(u64::from(HEADER_SIZE) - 1, 0,
+            |_, _| panic!("a short section must not be read")), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn shared_admission_failure_precedes_field_reads_and_preserves_typed_errors() {
+        let bytes = enc(&[record(2, 9, b"payload")]).unwrap();
+        for error in [Errno::ENOMEM, Errno::EAGAIN, Errno::EIO] {
+            for denied_charge in [1, 2] {
+                let mut charged = 0;
+                let mut read_end = 0;
+                let decoded = decode_from_with_admission(bytes.len() as u64, METADATA_BUDGET_BYTES,
+                    |offset, destination| {
+                        read_end = read_end.max(offset + destination.len() as u64);
+                        destination.copy_from_slice(&bytes[offset as usize..offset as usize + destination.len()]);
+                        Ok(destination.len())
+                    }, |count| {
+                        if count != 0 { charged += 1; }
+                        if count != 0 && charged == denied_charge { Err(error) } else { Ok(()) }
+                    });
+                assert_eq!(decoded, Err(error));
+                assert_eq!(charged, denied_charge);
+                assert!(read_end <= u64::from(HEADER_SIZE) + u64::from(RECORD_HEADER_SIZE));
+                if denied_charge == 1 { assert_eq!(read_end, u64::from(HEADER_SIZE)); }
+            }
+        }
+        let mut charged_bytes = 0;
+        let decoded = decode_from_with_admission(bytes.len() as u64, METADATA_BUDGET_BYTES,
+            |offset, destination| {
+                destination.copy_from_slice(&bytes[offset as usize..offset as usize + destination.len()]);
+                Ok(destination.len())
+            }, |count| { charged_bytes += count; Ok(()) });
+        assert_eq!(decoded, decode(&bytes));
+        assert_eq!(charged_bytes, RECORD_RESIDENT_BYTES + b"payload".len());
+    }
+
+    #[test]
+    fn positioned_metadata_admission_charges_models_and_fields_before_allocation() {
+        assert!(core::mem::size_of::<DeferredRecord>() <= RECORD_RESIDENT_BYTES);
+        assert!(core::mem::size_of::<DeferredArchive>() <= ARCHIVE_RESIDENT_BYTES);
+        let bytes = enc(&[record(2, 9, b"payload")]).unwrap();
+        let budget = RECORD_RESIDENT_BYTES + b"payload".len();
+        for limit in [0, budget - 1, budget] {
+            let actual = decode_from(bytes.len() as u64, limit, |offset, destination| {
+                destination.copy_from_slice(&bytes[offset as usize..offset as usize + destination.len()]);
+                Ok(destination.len())
+            });
+            if limit < budget { assert_eq!(actual, Err(Errno::ENOMEM)); }
+            else { assert_eq!(actual, decode(&bytes)); }
+        }
+        let mut header = encode(&[], &[]).unwrap();
+        header[8..12].copy_from_slice(&MAX_RECORDS.to_le_bytes());
+        assert_eq!(decode_from(header.len() as u64, 0, |_, destination| {
+            destination.copy_from_slice(&header);
+            Ok(destination.len())
+        }), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn positioned_decode_refuses_generated_overbudget_records_without_a_section_buffer() {
+        let count = 128u32;
+        let record_bytes = u64::from(RECORD_HEADER_SIZE + MAX_PAYLOAD_LEN);
+        let length = u64::from(HEADER_SIZE) + u64::from(count) * record_bytes;
+        let mut transferred = 0;
+        assert_eq!(decode_from(length, METADATA_BUDGET_BYTES, |offset, destination| {
+            assert!(destination.len() <= 4096);
+            transferred += destination.len();
+            destination.fill(7);
+            if offset == 0 {
+                let mut header = encode(&[], &[]).unwrap();
+                header[8..12].copy_from_slice(&count.to_le_bytes());
+                destination.copy_from_slice(&header);
+            } else if (offset - u64::from(HEADER_SIZE)) % record_bytes == 0 {
+                let index = ((offset - u64::from(HEADER_SIZE)) / record_bytes) as u32;
+                assert_eq!(destination.len(), RECORD_HEADER_SIZE as usize);
+                destination.fill(0);
+                destination[0..4].copy_from_slice(&(RECORD_HEADER_SIZE + MAX_PAYLOAD_LEN).to_le_bytes());
+                destination[4..8].copy_from_slice(&(index + 1).to_le_bytes());
+                destination[24..28].copy_from_slice(&MAX_PAYLOAD_LEN.to_le_bytes());
+            }
+            Ok(destination.len())
+        }), Err(Errno::ENOMEM));
+        assert!(transferred < METADATA_BUDGET_BYTES);
+        let records: Vec<_> = (0..count).map(|index| record(index + 1, 0, &[7; MAX_PAYLOAD_LEN as usize])).collect();
+        assert_eq!(enc(&records), Err(Errno::ENOMEM));
+    }
+
+    #[test]
+    fn positioned_decode_distinguishes_truncation_and_invalid_transport_counts() {
+        let bytes = enc(&[record(2, 1, b"payload")]).unwrap();
+        assert_eq!(decode_from(bytes.len() as u64, METADATA_BUDGET_BYTES, |_, _| Ok(0)), Err(Errno::EINVAL));
+        assert_eq!(decode_from(bytes.len() as u64, METADATA_BUDGET_BYTES,
+            |_, destination| Ok(destination.len() + 1)), Err(Errno::EIO));
+        assert_eq!(decode_from(bytes.len() as u64, METADATA_BUDGET_BYTES, |offset, destination| {
+            if offset >= u64::from(HEADER_SIZE) { return Ok(0); }
+            destination.copy_from_slice(&bytes[..destination.len()]);
+            Ok(destination.len())
+        }), Err(Errno::EINVAL));
+    }
+
+    #[test]
     fn round_trips_records_including_an_empty_payload() {
         let records = vec![
             record(2, 4242, b"https://example.invalid/a"),
@@ -829,6 +986,35 @@ mod tests {
         let encoded = enc(&[]).expect("encode");
         assert_eq!(encoded.len(), HEADER_SIZE as usize);
         assert!(decode(&encoded).expect("decode").is_empty());
+    }
+
+    #[test]
+    fn fallible_encoding_sinks_preserve_exact_bytes_and_stop_on_error() {
+        let archives = vec![DeferredArchive { archive_id: 3, bytes: 123, uri: b"archive".to_vec(),
+            digest: [9; DIGEST_LEN], payload: vec![11; 4097] }];
+        let records = vec![record(2, 42, b"standalone"), member(7, 88, 3, b"member/path")];
+        let expected = encode(&archives, &records).unwrap();
+        let length = encoded_len(archives.iter(), records.iter(), |id| id == 3).unwrap();
+        assert_eq!(length, expected.len());
+        for limit in [0, 4, 15, 16, 56, 4096, expected.len() - 1, expected.len()] {
+            let mut actual = Vec::new();
+            let mut stopped = false;
+            let mut emit = |bytes: &[u8]| {
+                assert!(!stopped);
+                if bytes.len() > limit - actual.len() { stopped = true; return Err(Errno::ENOSPC); }
+                actual.extend_from_slice(bytes);
+                Ok(())
+            };
+            let result = (|| {
+                encode_header(archives.len(), records.len(), &mut emit)?;
+                for archive in &archives { encode_archive(archive, &mut emit)?; }
+                for record in &records { encode_record(record, &mut emit)?; }
+                Ok(())
+            })();
+            assert_eq!(actual, expected[..actual.len()]);
+            if limit == expected.len() { assert_eq!(result, Ok(())); assert_eq!(actual, expected); }
+            else { assert_eq!(result, Err(Errno::ENOSPC)); }
+        }
     }
 
     #[test]

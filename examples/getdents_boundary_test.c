@@ -323,15 +323,18 @@ static const char *next_real_entry(DIR *directory)
     }
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    if (argc > 2 || (argc == 2 && strcmp(argv[1], "rootfs") != 0))
+        fail("unexpected argument");
+    const char *parent = argc == 2 ? "" : "/tmp";
     char directory[96];
     int written = -1;
     bool created_directory = false;
     for (int attempt = 0; attempt < 1024; attempt++) {
         written = snprintf(directory, sizeof(directory),
-                           "/tmp/getdents-boundary-%ld-%d",
-                           (long)getpid(), attempt);
+                           "%s/getdents-boundary-%ld-%d",
+                           parent, (long)getpid(), attempt);
         if (written < 0 || (size_t)written >= sizeof(directory))
             fail("directory path overflow");
         if (mkdir(directory, 0700) == 0) {

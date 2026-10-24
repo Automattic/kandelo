@@ -24,6 +24,8 @@ const bootQuery = readKandeloBootQuery(location.search);
 // debugging the host, not to the machine.
 const fbDemo = qs.get("fb"); // "test" | null
 const experimentalPersistenceName = qs.get("experimentalPersistence");
+const requestedPersistenceMode = qs.get("experimentalPersistenceMode");
+const requestedPersistenceIntegrity = qs.get("experimentalPersistenceIntegrity");
 
 const mount = (host: KernelHost) => {
   ReactDOM.createRoot(container).render(
@@ -37,10 +39,27 @@ const mount = (host: KernelHost) => {
 
 void (async () => {
   try {
+    if (requestedPersistenceIntegrity !== null && requestedPersistenceIntegrity !== "crc32c" && requestedPersistenceIntegrity !== "sha256") {
+      throw new Error("experimental persistence checking must be crc32c or sha256");
+    }
+    if (requestedPersistenceIntegrity !== null && experimentalPersistenceName === null) {
+      throw new Error("experimental persistence checking requires a computer name");
+    }
+    const experimentalPersistenceIntegrity = requestedPersistenceIntegrity ?? undefined;
+    if (requestedPersistenceMode !== null &&
+      requestedPersistenceMode !== "fixed" && requestedPersistenceMode !== "resizable") {
+      throw new Error("experimental persistence mode must be fixed or resizable");
+    }
+    if (requestedPersistenceMode !== null && experimentalPersistenceName === null) {
+      throw new Error("experimental persistence mode requires a computer name");
+    }
+    const experimentalPersistenceMode = requestedPersistenceMode === "resizable" ? "resizable" : "fixed";
     if (experimentalPersistenceName !== null && !window.confirm(
       `Experimental persistence for computer "${experimentalPersistenceName}"?\n\n` +
-      "Only overwrites within existing files persist. Creating files, appending, " +
-      "truncating, and renaming will fail. Data stays in this browser profile " +
+      (experimentalPersistenceMode === "resizable"
+        ? "File creation, appends, and metadata changes use an experimental journal. "
+        : "Only overwrites within existing files persist. Creating files, appending, truncating, and renaming will fail. ") +
+      "Data stays in this browser profile " +
       "and can be lost if site storage is cleared. Do not use valuable data.",
     )) {
       throw new Error("experimental persistent computer boot was not approved");
@@ -83,6 +102,8 @@ void (async () => {
         parameters: linkDescriptor?.boot.parameters ?? null,
         legacyScriptIgnored,
         experimentalPersistenceName,
+        experimentalPersistenceMode,
+        experimentalPersistenceIntegrity,
       }));
     mount(host);
   } catch (err) {

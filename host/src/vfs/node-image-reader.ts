@@ -15,9 +15,11 @@ export class NodeImageReader {
   private constructor(
     private readonly fd: number,
     readonly length: number,
+    private readonly raw = false,
   ) {}
 
-  static open(path: string, integrity?: OpfsImageIntegrity): NodeImageReader {
+  static open(path: string, integrity?: OpfsImageIntegrity, raw = false): NodeImageReader {
+    if (raw && integrity !== undefined) throw new Error("raw image transport cannot perform host integrity checks");
     if (!isAbsolute(path)) throw new Error("rootfs image file path must be absolute");
     if (constants.O_NOFOLLOW === undefined) {
       throw new Error("rootfs image file requires no-follow opens");
@@ -29,7 +31,7 @@ export class NodeImageReader {
       if (!metadata.isFile() || !Number.isSafeInteger(length) || length <= 0) {
         throw new Error("rootfs image file must be a nonempty regular file with a safe length");
       }
-      const reader = new NodeImageReader(fd, length);
+      const reader = new NodeImageReader(fd, length, raw);
       if (integrity !== undefined) reader.verify(integrity);
       return reader;
     } catch (error) {
@@ -43,6 +45,10 @@ export class NodeImageReader {
     if (offset >= this.length) return 0;
     if (this.closed) return -5;
     try {
+      if (this.raw) {
+        const limit = Math.min(destination.byteLength, PAGE_BYTES, this.length - offset);
+        return readSync(this.fd, destination, 0, limit, offset);
+      }
       const limit = Math.min(destination.byteLength, this.length - offset);
       let done = 0;
       while (done < limit) {
@@ -96,6 +102,20 @@ export class NodeImageReader {
       throw new Error("rootfs image file integrity metadata is invalid");
     }
     const buffer = new Uint8Array(integrity.chunkBytes);
+    if (integrity.imageSha256 !== undefined) {
+      const hash = createHash("sha256");
+      for (let offset = 0; offset < this.length; offset += integrity.chunkBytes) {
+        const chunk = buffer.subarray(0, Math.min(buffer.length, this.length - offset));
+        if (this.readAt(offset, chunk) !== chunk.byteLength) {
+          throw new Error("rootfs image file could not be verified");
+        }
+        hash.update(chunk);
+      }
+      if (hash.digest("hex") !== integrity.imageSha256) {
+        throw new Error("rootfs image file is damaged; refusing to boot");
+      }
+      return;
+    }
     for (let index = 0; index < integrity.chunkSha256.length; index++) {
       const offset = index * integrity.chunkBytes;
       const chunk = buffer.subarray(0, Math.min(buffer.length, this.length - offset));

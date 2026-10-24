@@ -3,6 +3,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
 import { describe, expect, it, vi } from "vitest";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { tryResolveBinary } from "../src/binary-resolver";
@@ -16,8 +18,10 @@ import { NodePlatformIO } from "../src/platform/node";
 import { configureRootfsOverlayFromImage } from "../src/process-lifecycle";
 import { HostFileSystem } from "../src/vfs/host-fs";
 import { OverlayStorageFile, type PersistentOverlayStorage } from "../src/vfs/overlay-storage";
-import { verifyOverlayGenerationSeal, writeOverlayGenerationSeal } from "../src/vfs/overlay-generation-seal";
+import { verifyOverlayGenerationSeal, writeOverlayGenerationSeal } from "./fixtures/native-overlay-activation";
 import { NoValidOverlayGenerationError } from "../src/vfs/overlay-generation-selection";
+import { decodeOverlayActivation, encodeOverlayActivation } from "./fixtures/native-overlay-activation";
+import { appendUnusedBlockTombstones } from "./fixtures/journal-block-tombstones";
 
 const directKernelPath = join(import.meta.dirname, "../../target/wasm32-unknown-unknown/release/kandelo_kernel.wasm");
 const directImageModulePath = join(import.meta.dirname, "../../target/wasm32-unknown-unknown/release/kandelo_image_module.wasm");
@@ -34,6 +38,46 @@ const tsxLoaderPath = join(import.meta.dirname, "../node_modules/tsx/dist/loader
 const encoder = new TextEncoder();
 
 const largeWriteBytes = 2 * 1024 * 1024;
+
+it("reclaims a native export plan after a real destination-write failure without destroying the kernel", async () => {
+  if (kernelPath === null) throw new Error("Current ABI-matched kernel is required");
+  const directory = mkdtempSync(join(tmpdir(), "kandelo-export-cancel-"));
+  let worker: Worker | undefined;
+  try {
+    const fixtureUrl = pathToFileURL(join(import.meta.dirname, "fixtures/export-cancellation-worker.ts")).href;
+    const tsxApiUrl = pathToFileURL(join(import.meta.dirname, "../node_modules/tsx/dist/esm/api/index.mjs")).href;
+    const kernelBytes = readFileSync(kernelPath);
+    worker = new Worker(`import { register } from ${JSON.stringify(tsxApiUrl)}; register(); await import(${JSON.stringify(fixtureUrl)});`, {
+      eval: true, workerData: { image: await makeImage("abcdefgh"),
+        kernelWasm: kernelBytes.buffer.slice(kernelBytes.byteOffset, kernelBytes.byteOffset + kernelBytes.byteLength),
+        destination: join(directory, "readonly-output") },
+    });
+    const result = await new Promise<Record<string, any>>((resolve, reject) => {
+      worker!.once("message", resolve);
+      worker!.once("error", reject);
+      worker!.once("exit", code => reject(new Error(`export-cancellation worker exited before reporting (${code})`)));
+    });
+    expect(result.unexpected).toBeUndefined();
+    expect(result.code).toBe("EBADF");
+    expect(result.afterFailure).toBe(result.baseline);
+    expect(result.afterSuccess).toBe(result.beforeSuccess);
+    expect(result.length).toBeGreaterThan(1024 * 1024);
+    expect(result.visible).toBe("usable");
+  } finally { await worker?.terminate(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+function removeFixtureActivationControls(path: string): void {
+  for (const replica of [0, 1]) rmSync(`${path}.activation${replica}`, { force: true });
+}
+
+function refreshFixtureControlSeal(path: string, slot: `g${number}`): void {
+  const current = decodeOverlayActivation(readFileSync(`${path}.activation0`));
+  expect(current.slot).toBe(slot);
+  const bytes = encodeOverlayActivation({ ...current,
+    sealDigest: new Uint8Array(createHash("sha256").update(readFileSync(`${path}.${slot}.seal`)).digest()),
+  });
+  for (const replica of [0, 1]) writeFileSync(`${path}.activation${replica}`, bytes);
+}
 
 async function makeImage(state: string, includeLargeFile = false, largeFileBytes = largeWriteBytes + 4096, includeDenseSnapshotFile = false): Promise<Uint8Array> {
   const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
@@ -122,7 +166,7 @@ function expandLargestJournalTransactionToCompactionThreshold(path: string, requ
 
 class FaultingMemoryOverlayStorage implements PersistentOverlayStorage {
   bytes = new Uint8Array();
-  fault: "write" | "flush" | null = null;
+  fault: "write" | "partial" | "flush" | null = null;
 
   len(): number { return this.bytes.byteLength; }
 
@@ -135,13 +179,15 @@ class FaultingMemoryOverlayStorage implements PersistentOverlayStorage {
   writeAllAt(offset: number | bigint, source: Uint8Array): void {
     if (this.fault === "write") throw Object.assign(new Error("journal quota exceeded"), { code: "ENOSPC" });
     const start = Number(offset);
-    const end = start + source.byteLength;
+    const length = this.fault === "partial" ? Math.min(128, source.byteLength) : source.byteLength;
+    const end = start + length;
     if (end > this.bytes.byteLength) {
       const grown = new Uint8Array(end);
       grown.set(this.bytes);
       this.bytes = grown;
     }
-    this.bytes.set(source, start);
+    this.bytes.set(source.subarray(0, length), start);
+    if (this.fault === "partial") throw Object.assign(new Error("journal quota exceeded"), { code: "ENOSPC" });
   }
 
   flush(): void {
@@ -178,6 +224,105 @@ class FaultingNodeFileSystem extends HostFileSystem {
 }
 
 describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs persistence", () => {
+  for (const scenario of [
+    { label: "enforces metadata quota without losing the journal and recovers at the same budget",
+      budget: 65536, createMode: "metadata-quota", verifyMode: "verify-metadata-quota" },
+    { label: "reuses base directory-name credits for same-budget rename recovery and checkpoint",
+      budget: 80 * 1024, createMode: "rename-metadata", verifyMode: "verify-rename-metadata" },
+    { label: "bounds unlinked inode-history recovery by the live tree at the same metadata budget",
+      budget: 65536, createMode: "inode-history", verifyMode: "verify-inode-history" },
+    { label: "bounds inactive FIFO memory and recovers reclaimed buffer quota through strict reboot and checkpoint",
+      budget: 8 * 1024 * 1024, createMode: "many-fifos", verifyMode: "verify-many-fifos" },
+  ]) {
+    it.skipIf(guestProgramPath === null)(scenario.label, async () => {
+      const started = performance.now();
+      const mark = (stage: string) => {
+        if (process.env.KANDELO_PERSISTENCE_TEST_TIMING === "1") console.info("metadata-quota-phase", scenario.createMode, stage, Math.round(performance.now() - started));
+      };
+      const directory = mkdtempSync(join(tmpdir(), "kandelo-metadata-quota-"));
+      const imagePath = join(directory, "base.vfs");
+      const journalPath = join(directory, "machine.journal");
+      const snapshotPath = join(directory, "snapshot.vfs");
+      const kernel = new Uint8Array(readFileSync(kernelPath!)).buffer as ArrayBuffer;
+      const stderr: string[] = [];
+      const createHost = (budget: number, requireExisting = false) => new NodeKernelHost({
+        rootfsImageFile: imagePath,
+        experimentalResizablePersistencePath: journalPath,
+        requireExistingRootfsPersistence: requireExisting,
+        kernelMaxPages: 1024,
+        rootfsMetadataBytes: budget,
+        onStderr: (_pid, bytes) => stderr.push(new TextDecoder().decode(bytes)),
+      });
+      try {
+        const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+        filesystem.setImageCapacity(512 * 1024 * 1024);
+        filesystem.mkdir("/bin", 0o755);
+        filesystem.writeFile(guestProgramName, new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
+        filesystem.writeFile("/state", encoder.encode("abcdefgh"), 0o644);
+        if (scenario.createMode === "rename-metadata") {
+          for (let index = 0; index < 32; index++) {
+            filesystem.writeFile(`/base-rename-${String(index).padStart(3, "0")}`, new Uint8Array(), 0o644);
+          }
+        }
+        writeFileSync(imagePath, await filesystem.saveImage());
+        mark("image-ready");
+        const first = createHost(scenario.budget);
+        try {
+          await expect(first.init(kernel), "initial base-image boot").resolves.toBeUndefined();
+          mark("first-boot");
+          const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", scenario.createMode]);
+          expect(await exit, stderr.join("")).toBe(0);
+          expect(new TextDecoder().decode((await first.readFileFromVfs("/state"))!)).toBe("abcdefgh");
+        } finally { await first.destroy(); }
+        mark("first-closed");
+        const committed = readFileSync(journalPath);
+        expect(committed.byteLength).toBeGreaterThan(72);
+        const denied = createHost(8192, true);
+        try {
+          await expect(denied.init(kernel)).rejects.toThrow("errno 12");
+        } finally { await denied.destroy(); }
+        mark("denied-closed");
+        expect(readFileSync(journalPath)).toEqual(committed);
+        const recovered = createHost(scenario.budget, true);
+        try {
+          await expect(recovered.init(kernel), "same-budget journal recovery").resolves.toBeUndefined();
+          const { exit } = await recovered.spawnFromVfs(guestProgramName, ["persistence-overwrite", scenario.verifyMode]);
+          expect(await exit).toBe(0);
+          expect(await recovered.getKernelMemoryPages()).toBeLessThanOrEqual(1024);
+        } finally { await recovered.destroy(); }
+        mark("recovered-closed");
+        const exporter = createHost(scenario.budget, true);
+        try {
+          await exporter.init(kernel);
+          await exporter.exportRootfsImageToFile(snapshotPath);
+        } finally { await exporter.destroy(); }
+        mark("snapshot-closed");
+        const checkpoint = new NodeKernelHost({ rootfsImageFile: snapshotPath, kernelMaxPages: 1024, rootfsMetadataBytes: scenario.budget });
+        try {
+          await checkpoint.init(kernel);
+          const { exit } = await checkpoint.spawnFromVfs(guestProgramName, ["persistence-overwrite", scenario.verifyMode]);
+          expect(await exit).toBe(0);
+        } finally { await checkpoint.destroy(); }
+        mark("checkpoint-closed");
+      } finally { rmSync(directory, { recursive: true, force: true }); }
+    }, scenario.createMode === "metadata-quota" ? 5_000 : 180_000);
+  }
+
+  it("reports image metadata exhaustion without an unrelated format-rebuild hint", async () => {
+    const diagnostics: string[] = [];
+    const host = new NodeKernelHost({ rootfsImage: await makeImage("abcdefgh"), rootfsMetadataBytes: 4096,
+      onHostDiagnostic: (diagnostic) => diagnostics.push(diagnostic.message) });
+    try {
+      const failure = await host.init(new Uint8Array(readFileSync(kernelPath!)).buffer as ArrayBuffer)
+        .then(() => null, (error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toContain("errno 12");
+      expect((failure as Error).message).toContain("metadata budget");
+      expect((failure as Error).message).not.toContain("must be rebuilt");
+      expect(diagnostics.some((message) => message.includes("fatal kernel instance failure"))).toBe(false);
+    } finally { await host.destroy(); }
+  });
+
   it("recovers a resizable journal against a positioned Node image file", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-positioned-persistence-"));
     const imagePath = join(directory, "base.vfs");
@@ -250,7 +395,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     header.setBigUint64(16, BigInt(bodyLength), true);
     extended.set(original.subarray(16), 24);
     const host = new NodeKernelHost({ rootfsImage: extended });
-    const kernelBytes = new Uint8Array(readFileSync(directKernelPath));
+    const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
     try {
       await host.init(kernelBytes.buffer.slice(
         kernelBytes.byteOffset,
@@ -461,6 +606,81 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     }
   }, 90_000);
 
+  it.skipIf(guestProgramPath === null).each([
+    { label: "fixed injected refusal", mode: "fixed", tombstones: 0 },
+    { label: "resizable injected refusal", mode: "resizable", tombstones: 0 },
+    { label: "resizable admitted replay", mode: "resizable", tombstones: 65_000 },
+    { label: "resizable proactive pressure", mode: "resizable", tombstones: 30_000 },
+  ] as const)("converts a memory-limited small journal ($label) through Rust and reopens later guest writes", async ({ mode, tombstones }) => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-memory-recovery-"));
+    const path = join(directory, "overlay.journal");
+    try {
+      const image = await makeImage("abcdefgh");
+      const first = await boot(image, path, mode === "resizable");
+      try {
+        const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await first.destroy();
+      }
+      if (tombstones !== 0) writeFileSync(path, await appendUnusedBlockTombstones(readFileSync(path), tombstones));
+      const before = readFileSync(path);
+      expect(before.byteLength).toBeGreaterThan(72);
+      expect(before.byteLength).toBeLessThan(32 * 1024 * 1024);
+      const fixtureUrl = pathToFileURL(join(import.meta.dirname, "fixtures/persistent-memory-recovery-worker.ts")).href;
+      const tsxApiUrl = pathToFileURL(join(import.meta.dirname, "../node_modules/tsx/dist/esm/api/index.mjs")).href;
+      const kernelBytes = readFileSync(kernelPath!);
+      const worker = new Worker(`import { register } from ${JSON.stringify(tsxApiUrl)}; register(); await import(${JSON.stringify(fixtureUrl)});`, {
+        eval: true,
+        workerData: { image, path, mode, injectMemoryRefusal: tombstones === 0, reportMemory: tombstones !== 0,
+          kernelWasm: kernelBytes.buffer.slice(kernelBytes.byteOffset, kernelBytes.byteOffset + kernelBytes.byteLength) },
+      });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const result = await new Promise((resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error("memory-recovery worker timed out")), 120_000);
+          worker.once("message", message => message.error === undefined ? resolve(message) : reject(new Error(message.error)));
+          worker.once("error", reject);
+          worker.once("exit", code => reject(new Error(`memory-recovery worker exited before its result (${code})`)));
+        });
+        expect(result).toMatchObject({ visible: "XYcdefgh", attempts: tombstones === 30_000 ? 1 : 2,
+          conversions: tombstones === 30_000 ? 0 : 1, slot: "g0" });
+        if (tombstones !== 0) {
+          const memory = result as { initialMemory: { used: number; pressure: boolean }; finalMemory: { used: number; pressure: boolean }; compactions: number };
+          expect(memory.initialMemory.used).toBeLessThanOrEqual(8 * 1024 * 1024);
+          expect(memory.initialMemory.pressure).toBe(tombstones === 30_000);
+          expect(memory.compactions).toBe(tombstones === 30_000 ? 1 : 0);
+          expect(memory.finalMemory).toEqual({ used: 0, pressure: false });
+          const ioMemory = (result as { ioMemory: { used: number; limit: number } }).ioMemory;
+          expect(ioMemory.limit).toBe(8 * 1024 * 1024);
+          expect(ioMemory.used).toBeGreaterThan(0);
+          expect(ioMemory.used).toBeLessThanOrEqual(ioMemory.limit);
+        }
+      } finally {
+        clearTimeout(timeout);
+        await worker.terminate();
+      }
+      expect(readFileSync(path)).toEqual(before);
+      expect(readFileSync(`${path}.g0.seal`).byteLength).toBeGreaterThan(96);
+      const continued = await boot(image, path, mode === "resizable", true);
+      try {
+        expect(new TextDecoder().decode((await continued.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+        const { exit } = await continued.spawnFromVfs(guestProgramName, ["persistence-overwrite", "mmap-fsync"]);
+        expect(await exit).toBe(0);
+      } finally {
+        await continued.destroy();
+      }
+      const recovered = await boot(image, path, mode === "resizable", true);
+      try {
+        expect(new TextDecoder().decode((await recovered.readFileFromVfs("/state"))!)).toBe("MScdefgh");
+      } finally {
+        await recovered.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 180_000);
+
   it.each(["fixed", "resizable"] as const)("preserves %s host storage failures instead of reporting a corrupt generation", async (mode) => {
     const image = await makeImage("abcdefgh");
     const worker = new CentralizedKernelWorker(
@@ -599,7 +819,87 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     }
   });
 
-  it.each(["write", "flush"] as const)("does not publish a failed persistent rename through %s fault on the Node channel", async (fault) => {
+  it.each((["fixed", "resizable"] as const).flatMap((mode) =>
+    (["write", "partial", "flush"] as const).map((fault) => [mode, fault] as const)))
+  ("keeps %s cache eviction atomic through %s fault on the Node channel", async (mode, fault) => {
+    const blockBytes = 4096;
+    const cachedBytes = 64 * blockBytes;
+    const image = await makeImage("abcdefgh", true, cachedBytes + blockBytes);
+    const worker = createCentralizedKernelWorkerTestDouble({
+      config: { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
+      io: new NodePlatformIO(),
+    });
+    configureRootfsOverlayFromImage(worker, {
+      imageLength: image.byteLength,
+      imageRead: (offset, destination) => {
+        const bytes = image.subarray(offset, offset + destination.byteLength);
+        destination.set(bytes);
+        return bytes.byteLength;
+      },
+      foreignPrefixes: [],
+      nosuid: false,
+    });
+    const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
+    await worker.init(kernelBytes.buffer.slice(kernelBytes.byteOffset, kernelBytes.byteOffset + kernelBytes.byteLength));
+    const storage = new FaultingMemoryOverlayStorage();
+    if (mode === "fixed") worker.enableFixedRootfsPersistence(storage);
+    else worker.enableResizableRootfsPersistence(storage);
+    const memory = new WebAssembly.Memory({ initial: 32, maximum: 32, shared: true });
+    const pid = worker.createProcess(CAPTURED_STDIO);
+    expect(worker.setBrkBase(pid, 0x10000)).toBe(true);
+    const [channel] = worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
+      pid,
+      memory,
+      channelOffsets: [0x1e0000],
+      pointerWidth: 4,
+    });
+    const processBytes = new Uint8Array(memory.buffer);
+    processBytes.set(encoder.encode("/large\0"), 1024);
+    processBytes.fill(88, 4096, 4096 + cachedBytes + blockBytes);
+    const issue = (syscall: number, args: readonly number[]) => {
+      const view = new DataView(memory.buffer, channel.channelOffset);
+      view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+      view.setUint32(CH_SYSCALL, syscall, true);
+      for (let index = 0; index < CH_ARGS_COUNT; index++) {
+        view.setBigInt64(CH_ARGS + index * CH_ARG_SIZE, BigInt(args[index] ?? 0), true);
+      }
+      worker.testAuthority.dispatchScratchBoundarySyscallForTest(channel);
+      expect(view.getUint32(CH_STATUS, true)).toBe(CHANNEL_STATUS_COMPLETE);
+      return { value: Number(view.getBigInt64(CH_RETURN, true)), errno: view.getUint32(CH_ERRNO, true) };
+    };
+    const opened = issue(ABI_SYSCALLS.Open, [1024, 2, 0]);
+    expect(opened.errno).toBe(0);
+    storage.fault = fault;
+    expect(issue(ABI_SYSCALLS.Pwrite, [opened.value, 4096, cachedBytes + blockBytes, 0]))
+      .toEqual({ value: cachedBytes, errno: 0 });
+    expect(issue(ABI_SYSCALLS.Fdatasync, [opened.value])).toEqual({ value: -1, errno: ERRNO.ENOSPC });
+    const live = worker.rootfsInspectFile("/large");
+    expect(live.subarray(0, cachedBytes).every((byte) => byte === 88)).toBe(true);
+    expect(live.subarray(cachedBytes).every((byte) => byte === 0)).toBe(true);
+
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-eviction-fault-"));
+    const path = join(directory, "machine.journal");
+    try {
+      writeFileSync(path, storage.bytes);
+      const reopened = await boot(image, path, mode === "resizable", true);
+      try {
+        const recovered = (await reopened.readFileFromVfs("/large"))!;
+        expect(recovered).not.toBeNull();
+        const oldState = recovered.every((byte) => byte === 0);
+        const completeEviction = recovered.subarray(0, 16 * blockBytes).every((byte) => byte === 88)
+          && recovered.subarray(16 * blockBytes).every((byte) => byte === 0);
+        expect(fault === "flush" ? oldState || completeEviction : oldState).toBe(true);
+      } finally {
+        await reopened.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each((["rename", "link", "unlink"] as const).flatMap((operation) =>
+    (["write", "flush"] as const).map((fault) => [operation, fault] as const)))
+  ("does not publish a failed persistent %s through %s fault on the Node channel", async (operation, fault) => {
     const image = await makeImage("abcdefgh");
     const worker = createCentralizedKernelWorkerTestDouble({
       config: { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
@@ -630,11 +930,13 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     });
     const processBytes = new Uint8Array(memory.buffer);
     processBytes.set(encoder.encode("/state\0"), 1024);
-    processBytes.set(encoder.encode("/renamed\0"), 2048);
+    const target = operation === "rename" ? "/renamed" : "/quota-linked";
+    processBytes.set(encoder.encode(`${target}\0`), 2048);
     storage.fault = fault;
     const view = new DataView(memory.buffer, channel.channelOffset);
     view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
-    view.setUint32(CH_SYSCALL, ABI_SYSCALLS.Rename, true);
+    view.setUint32(CH_SYSCALL, operation === "rename" ? ABI_SYSCALLS.Rename
+      : operation === "link" ? ABI_SYSCALLS.Link : ABI_SYSCALLS.Unlink, true);
     view.setBigInt64(CH_ARGS, 1024n, true);
     view.setBigInt64(CH_ARGS + CH_ARG_SIZE, 2048n, true);
     worker.testAuthority.dispatchScratchBoundarySyscallForTest(channel);
@@ -642,19 +944,93 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     expect(Number(view.getBigInt64(CH_RETURN, true))).toBe(-1);
     expect(view.getUint32(CH_ERRNO, true)).toBe(ERRNO.ENOSPC);
     expect(new TextDecoder().decode(worker.rootfsInspectFile("/state"))).toBe("abcdefgh");
-    expect(() => worker.rootfsInspectFile("/renamed")).toThrow();
+    if (operation !== "unlink") expect(() => worker.rootfsInspectFile(target)).toThrow();
 
-    const directory = mkdtempSync(join(tmpdir(), "kandelo-rename-fault-"));
+    const directory = mkdtempSync(join(tmpdir(), `kandelo-${operation}-fault-`));
     const path = join(directory, "machine.journal");
     try {
       writeFileSync(path, storage.bytes);
       const reopened = await boot(image, path, true, true);
       try {
         const state = await reopened.readFileFromVfs("/state");
-        const renamed = await reopened.readFileFromVfs("/renamed");
-        expect([state, renamed].filter((bytes) => bytes !== null)).toHaveLength(1);
-        expect(new TextDecoder().decode(state ?? renamed!)).toBe("abcdefgh");
-        if (fault === "write") expect(state).not.toBeNull();
+        const targetBytes = operation === "unlink" ? null : await reopened.readFileFromVfs(target);
+        if (operation === "rename") {
+          expect([state, targetBytes].filter((bytes) => bytes !== null)).toHaveLength(1);
+          expect(new TextDecoder().decode(state ?? targetBytes!)).toBe("abcdefgh");
+        } else if (operation === "link") {
+          expect(new TextDecoder().decode(state!)).toBe("abcdefgh");
+          if (targetBytes !== null) expect(new TextDecoder().decode(targetBytes)).toBe("abcdefgh");
+        } else if (state !== null) {
+          expect(new TextDecoder().decode(state)).toBe("abcdefgh");
+        }
+        if (fault === "write") {
+          expect(state).not.toBeNull();
+          expect(targetBytes).toBeNull();
+        }
+        if (operation === "link" || operation === "unlink") {
+          const { exit } = await reopened.spawnFromVfs(guestProgramName, [
+            "persistence-overwrite", `verify-quota-${operation}`,
+          ]);
+          expect(await exit, `operation=${operation} fault=${fault} state=${state !== null} target=${targetBytes !== null}`).toBe(0);
+        }
+      } finally {
+        await reopened.destroy();
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["write", "flush"] as const)("keeps a failed persistent truncate invisible through %s fault on the Node channel", async (fault) => {
+    const image = await makeImage("abcdefgh");
+    const worker = createCentralizedKernelWorkerTestDouble({
+      config: { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
+      io: new NodePlatformIO(),
+    });
+    configureRootfsOverlayFromImage(worker, {
+      imageLength: image.byteLength,
+      imageRead: (offset, destination) => {
+        const bytes = image.subarray(offset, offset + destination.byteLength);
+        destination.set(bytes);
+        return bytes.byteLength;
+      },
+      foreignPrefixes: [],
+      nosuid: false,
+    });
+    const kernelBytes = new Uint8Array(readFileSync(kernelPath!));
+    await worker.init(kernelBytes.buffer.slice(kernelBytes.byteOffset, kernelBytes.byteOffset + kernelBytes.byteLength));
+    const storage = new FaultingMemoryOverlayStorage();
+    worker.enableResizableRootfsPersistence(storage);
+    const memory = new WebAssembly.Memory({ initial: 32, maximum: 32, shared: true });
+    const pid = worker.createProcess(CAPTURED_STDIO);
+    expect(worker.setBrkBase(pid, 0x10000)).toBe(true);
+    const [channel] = worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
+      pid,
+      memory,
+      channelOffsets: [0x1e0000],
+      pointerWidth: 4,
+    });
+    new Uint8Array(memory.buffer).set(encoder.encode("/state\0"), 1024);
+    storage.fault = fault;
+    const view = new DataView(memory.buffer, channel.channelOffset);
+    view.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+    view.setUint32(CH_SYSCALL, ABI_SYSCALLS.Truncate, true);
+    view.setBigInt64(CH_ARGS, 1024n, true);
+    view.setBigInt64(CH_ARGS + CH_ARG_SIZE, 3n, true);
+    worker.testAuthority.dispatchScratchBoundarySyscallForTest(channel);
+    expect(view.getUint32(CH_STATUS, true)).toBe(CHANNEL_STATUS_COMPLETE);
+    expect(Number(view.getBigInt64(CH_RETURN, true))).toBe(-1);
+    expect(view.getUint32(CH_ERRNO, true)).toBe(ERRNO.ENOSPC);
+    expect(new TextDecoder().decode(worker.rootfsInspectFile("/state"))).toBe("abcdefgh");
+
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-truncate-fault-"));
+    const path = join(directory, "machine.journal");
+    try {
+      writeFileSync(path, storage.bytes);
+      const reopened = await boot(image, path, true, true);
+      try {
+        const state = new TextDecoder().decode((await reopened.readFileFromVfs("/state"))!);
+        expect(fault === "write" ? ["abcdefgh"] : ["abcdefgh", "abc"]).toContain(state);
       } finally {
         await reopened.destroy();
       }
@@ -716,8 +1092,14 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         const snapshot = readFileSync(snapshotPath);
         expect(integrity.length).toBe(snapshot.byteLength);
         expect(snapshot.readUInt32LE(20)).toBe(2);
+        expect(KandeloImageFs.readImageCapacity(new Uint8Array(snapshot)))
+          .toEqual(KandeloImageFs.readImageCapacity(image));
+        expect(snapshot.readUInt32LE(32)).toBe(new DataView(
+          image.buffer, image.byteOffset, image.byteLength,
+        ).getUint32(32, true));
         expect(integrity.chunkBytes).toBe(1024 * 1024);
-        expect(integrity.chunkSha256).toEqual([createHash("sha256").update(snapshot).digest("hex")]);
+        expect(integrity.imageSha256).toBe(createHash("sha256").update(snapshot).digest("hex"));
+        expect(integrity.chunkSha256).toBeUndefined();
         await expect(reopened.exportRootfsImageToFile(snapshotPath)).rejects.toThrow();
         expect(readFileSync(snapshotPath).byteLength).toBe(integrity.length);
       } finally {
@@ -812,7 +1194,12 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     const directory = mkdtempSync(join(tmpdir(), "kandelo-timestamp-writeback-"));
     const path = join(directory, "machine.journal");
     try {
-      const image = await makeImage("abcdefgh");
+      const filesystem = KandeloImageFs.create(new Uint8Array(readFileSync(imageModulePath!)));
+      filesystem.setImageCapacity(2 * 1024 * 1024);
+      filesystem.mkdir("/bin", 0o755);
+      filesystem.writeFile(guestProgramName, new Uint8Array(readFileSync(guestProgramPath!)), 0o755);
+      filesystem.writeFile("/state", encoder.encode("abcdefgh"), 0o644);
+      const image = await filesystem.saveImage();
       const first = await boot(image, path, true);
       try {
         const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite", "many-timestamps"]);
@@ -832,7 +1219,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     }
   }, 90_000);
 
-  it.skipIf(guestProgramPath === null)("rejects an authenticated but invalid index and falls back from a torn slot", async () => {
+  it.skipIf(guestProgramPath === null)("refuses older sealed snapshots when the controlled legacy source is damaged", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-slot-"));
     const path = join(directory, "machine.journal");
     try {
@@ -866,30 +1253,15 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       }
       const legacy = readFileSync(path);
       writeFileSync(path, Buffer.from("damaged legacy"));
-      const latest = await boot(image, path);
-      try {
-        expect(new TextDecoder().decode((await latest.readFileFromVfs("/state"))!)).toBe("abcdefgh");
-      } finally {
-        await latest.destroy();
-      }
+      await expect(boot(image, path)).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
       const goodIndex = readFileSync(`${path}.g1.index`);
       const damagedIndex = Buffer.from(goodIndex);
       damagedIndex[0] ^= 1;
       writeFileSync(`${path}.g1.index`, damagedIndex);
-      const priorIndex = await boot(image, path);
-      try {
-        expect(new TextDecoder().decode((await priorIndex.readFileFromVfs("/state"))!)).toBe("abcdefgh");
-      } finally {
-        await priorIndex.destroy();
-      }
+      await expect(boot(image, path)).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
       writeFileSync(`${path}.g1.index`, goodIndex);
       writeFileSync(`${path}.g1.seal`, Buffer.from("torn"));
-      const prior = await boot(image, path);
-      try {
-        expect(new TextDecoder().decode((await prior.readFileFromVfs("/state"))!)).toBe("abcdefgh");
-      } finally {
-        await prior.destroy();
-      }
+      await expect(boot(image, path)).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
       writeFileSync(`${path}.g0.seal`, Buffer.from("torn"));
       await expect(boot(image, path)).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
       writeFileSync(path, new Uint8Array());
@@ -897,13 +1269,14 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       expect(readFileSync(path).byteLength).toBe(0);
       writeFileSync(path, legacy);
       const fallback = await boot(image, path);
+      expect(new TextDecoder().decode((await fallback.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
       await fallback.destroy();
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
   }, 90_000);
 
-  it.skipIf(guestProgramPath === null)("falls back from a sealed but semantically invalid resizable generation", async () => {
+  it.skipIf(guestProgramPath === null)("does not replace a damaged current resizable journal with an older staged snapshot", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-resizable-fallback-"));
     const path = join(directory, "machine.journal");
     try {
@@ -936,18 +1309,70 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         }
       }
       writeFileSync(path, Buffer.from("damaged legacy"));
-      const recovered = await boot(image, path, true);
-      try {
-        expect(new TextDecoder().decode((await recovered.readFileFromVfs("/state"))!)).toBe("abcdefgh");
-      } finally {
-        await recovered.destroy();
-      }
+      await expect(boot(image, path, true)).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
       writeFileSync(`${path}.g0.seal`, Buffer.from("torn"));
       await expect(boot(image, path, true)).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
   }, 90_000);
+
+  it.skipIf(guestProgramPath === null).each(["fixed", "resizable"].flatMap(mode =>
+    ["seal", "index", "journal", "committed-record"].map(damage => ({ mode, damage }))))(
+    "refuses stale fallback after acknowledged $mode post-compaction writes and active $damage corruption", async ({ mode, damage }) => {
+      const directory = mkdtempSync(join(tmpdir(), "kandelo-active-generation-corruption-"));
+      const path = join(directory, "machine.journal");
+      const image = await makeImage("abcdefgh");
+      try {
+        const first = await boot(image, path, mode === "resizable");
+        try {
+          const { exit } = await first.spawnFromVfs(guestProgramName, ["persistence-overwrite"]);
+          expect(await exit).toBe(0);
+        } finally { await first.destroy(); }
+        expandLargestJournalTransactionToCompactionThreshold(path);
+        const second = await boot(image, path, mode === "resizable");
+        try {
+          expect(new TextDecoder().decode((await second.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
+          const { exit } = await second.spawnFromVfs(guestProgramName, ["persistence-overwrite", "mmap-fsync"]);
+          expect(await exit).toBe(0);
+          expect(new TextDecoder().decode((await second.readFileFromVfs("/state"))!)).toBe("MScdefgh");
+        } finally { await second.destroy(); }
+        const activePath = `${path}.g0.${damage === "committed-record" ? "journal" : damage}`;
+        let bytes = readFileSync(activePath);
+        if (damage === "committed-record") {
+          let position = 72;
+          let sequence = 0n;
+          while (position < bytes.length) {
+            const length = bytes.readUInt32LE(position + 4);
+            expect(length).toBeGreaterThanOrEqual(60);
+            expect(position + length).toBeLessThanOrEqual(bytes.length);
+            sequence = bytes.readBigUInt64LE(position + 8);
+            position += length;
+          }
+          const record = Buffer.alloc(83);
+          record.set([75, 84, 88, 78]);
+          record.writeUInt32LE(record.length, 4);
+          record.writeBigUInt64LE(sequence + 1n, 8);
+          record.writeUInt32LE(1, 16);
+          record.writeUInt32LE((~record.length) >>> 0, 20);
+          record.set([1, 255], 24);
+          createHash("sha256").update(record.subarray(0, -36)).digest().copy(record, record.length - 36);
+          record.set([68, 79, 78, 69], record.length - 4);
+          bytes = Buffer.concat([bytes, record]);
+        } else bytes[0] ^= 1;
+        writeFileSync(activePath, bytes);
+        const before = readFileSync(path);
+        let failure: unknown;
+        try {
+          const unexpected = await boot(image, path, mode === "resizable", true);
+          await unexpected.destroy();
+        } catch (error) { failure = error; }
+        expect(failure instanceof Error ? failure.message : undefined).toContain("no valid journal generation");
+        expect(readFileSync(path).equals(before)).toBe(true);
+        expect(readFileSync(activePath).equals(bytes)).toBe(true);
+      } finally { rmSync(directory, { recursive: true, force: true }); }
+    }, 120_000,
+  );
 
   it.skipIf(guestProgramPath === null)("compacts an oversized journal before serving the computer", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-rootfs-compact-"));
@@ -1072,6 +1497,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         journal.close();
       }
       const oldJournalLength = expandJournalToCompactionThreshold(`${path}.g0.journal`);
+      removeFixtureActivationControls(path);
       const upgraded = await boot(image, path);
       try {
         expect(new TextDecoder().decode((await upgraded.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
@@ -1131,6 +1557,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         journal.close();
       }
       const g1Length = expandJournalToCompactionThreshold(`${path}.g1.journal`);
+      removeFixtureActivationControls(path);
       const upgraded = await boot(image, path);
       try {
         expect(new TextDecoder().decode((await upgraded.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
@@ -1199,6 +1626,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
           copyFileSync(`${path}.${slot}.${suffix}`, `${path}.backup-${slot}.${suffix}`);
         }
       }
+      removeFixtureActivationControls(path);
       const upgraded = await boot(image, path);
       try {
         expect(new TextDecoder().decode((await upgraded.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
@@ -1249,6 +1677,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         g3Journal.close();
       }
       expandJournalToCompactionThreshold(`${path}.g3.journal`);
+      removeFixtureActivationControls(path);
       const migrated = await boot(image, path);
       try {
         expect(new TextDecoder().decode((await migrated.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
@@ -1280,12 +1709,10 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       const damagedIndex = Buffer.from(readFileSync(`${path}.g0.index`));
       damagedIndex[160] ^= 1;
       writeFileSync(`${path}.g0.index`, damagedIndex);
-      const fallback = await boot(image, path);
-      try {
-        expect(new TextDecoder().decode((await fallback.readFileFromVfs("/state"))!)).toBe("XYcdefgh");
-      } finally {
-        await fallback.destroy();
-      }
+      const sourceBytes = readFileSync(`${path}.g4.journal`);
+      await expect(boot(image, path)).rejects.toBeInstanceOf(NoValidOverlayGenerationError);
+      expect(readFileSync(`${path}.g0.index`).equals(damagedIndex)).toBe(true);
+      expect(readFileSync(`${path}.g4.journal`).equals(sourceBytes)).toBe(true);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -1331,6 +1758,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         journal.close();
       }
       const sourceLength = expandLargestJournalTransactionToCompactionThreshold(`${path}.g0.journal`);
+      removeFixtureActivationControls(path);
       const upgraded = await boot(image, path, true);
       try {
         const tail = await upgraded.readFileRangeFromVfs("/created", 8 * 1024 * 1024 * 1024 + 7, 4);
@@ -1392,6 +1820,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         journal.close();
       }
       const g1Length = expandLargestJournalTransactionToCompactionThreshold(`${path}.g1.journal`);
+      removeFixtureActivationControls(path);
       const upgraded = await boot(image, path, true);
       try {
         const tail = await upgraded.readFileRangeFromVfs("/created", 8 * 1024 * 1024 * 1024 + 7, 4);
@@ -1469,6 +1898,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
         }
       };
       await reseal();
+      removeFixtureActivationControls(path);
       const legacyV3 = await boot(image, path, true);
       try {
         const tail = await legacyV3.readFileRangeFromVfs("/created", 8 * 1024 * 1024 * 1024 + 7, 4);
@@ -1480,21 +1910,23 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       v3[160 + 24] ^= 1;
       rehashIndex();
       await reseal();
-      const recovered = await boot(image, path, true);
+      refreshFixtureControlSeal(path, "g0");
+      let recovered: NodeKernelHost | undefined;
+      let failure: unknown;
       try {
-        const tail = await recovered.readFileRangeFromVfs("/created", 8 * 1024 * 1024 * 1024 + 7, 4);
-        expect(new TextDecoder().decode(tail!)).toBe("NEWW");
-      } finally {
-        await recovered.destroy();
-      }
+        recovered = await boot(image, path, true);
+        await recovered.readFileRangeFromVfs("/large", 0, 4096);
+      } catch (error) { failure = error; }
+      finally { await recovered?.destroy(); }
+      expect(failure).toBeInstanceOf(Error);
       expect(readFileSync(path).byteLength).toBe(sourceLength);
-      expect(readFileSync(indexPath).readUInt32LE(4)).toBe(4);
+      expect(readFileSync(indexPath).readUInt32LE(4)).toBe(3);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
   }, 120_000);
 
-  it.skipIf(guestProgramPath === null)("falls back from a sealed v5 index with a false block digest", async () => {
+  it.skipIf(guestProgramPath === null)("keeps the controlled active generation instead of a forged unpublished v5 index", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-fixed-index-fallback-"));
     const path = join(directory, "machine.journal");
     try {
@@ -1547,7 +1979,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
     }
   }, 90_000);
 
-  it.skipIf(guestProgramPath === null)("recovers a committed source write instead of a stale sealed target", async () => {
+  it.skipIf(guestProgramPath === null)("migrates an uncontrolled legacy source with later committed writes instead of its stale target", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-stale-overlay-slot-"));
     const path = join(directory, "machine.journal");
     try {
@@ -1570,6 +2002,7 @@ describe.skipIf(kernelPath === null || imageModulePath === null)("fixed rootfs p
       newer.writeBigUInt64LE(BigInt((sourceLength - 72) / transaction.length + 1), 8);
       newer.write("ZZcdefgh", valueOffset, "ascii");
       createHash("sha256").update(newer.subarray(0, newer.length - 36)).digest().copy(newer, newer.length - 36);
+      removeFixtureActivationControls(path);
       appendFileSync(path, newer);
       const recovered = await boot(image, path, false, true);
       try {

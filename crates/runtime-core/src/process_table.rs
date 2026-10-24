@@ -12,7 +12,7 @@
 
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
+use crate::prepared_map::{PreparedMap, PreparedMapSlot};
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::sync::atomic::AtomicI32;
@@ -73,11 +73,11 @@ pub static FB0_OWNER: AtomicI32 = AtomicI32::new(-1);
 /// ```
 pub struct ProcessTable {
     #[cfg(not(test))]
-    processes: BTreeMap<u32, Process>,
+    processes: PreparedMap<u32, Process>,
     // Cross-module unit tests build Process fixtures directly. Production
     // code cannot bypass the guarded accessors below.
     #[cfg(test)]
-    pub processes: BTreeMap<u32, Process>,
+    pub processes: PreparedMap<u32, Process>,
     /// Sole machine-wide authority for POSIX, OFD, and flock advisory locks.
     advisory_locks: AdvisoryLockManager,
     current_pid: u32,
@@ -104,33 +104,122 @@ pub struct ProcessTable {
     /// applying one process's valid TID to another process.
     current_tid_pid: u32,
     /// Round-robin cursor for host-bridged TCP listener target selection.
-    tcp_listener_rr: BTreeMap<u16, usize>,
+    tcp_listener_rr: PreparedMap<u16, usize>,
 }
 
-/// Outcome of `ProcessTable::remove_process`. Bundles the side effects the
-/// caller must drain after the removed process has been consumed here. The
-/// caller is `kernel_remove_process`, which has access to the raw host-close
-/// externs; this layer doesn't.
+/// Native fixture recording of process-removal effects. Production streams
+/// these effects through ProcessRemovalIo without collecting vectors.
+#[cfg(test)]
 pub struct RemoveProcessResult {
     /// Whether the removed process had a live framebuffer mapping that the
     /// host must unbind. The owned `Process` deliberately does not escape the
     /// table: otherwise it could replace a different table entry wholesale
     /// and smuggle its immutable PID under the wrong map key.
     pub had_framebuffer_binding: bool,
-    /// Host file handles whose cross-process refcount reached 0 during
-    /// teardown. The caller must invoke `host_close(h)` on each.
+    /// Host file handles whose final-reference close was observed.
     pub host_closes: Vec<i64>,
-    /// Per-process directory-iteration handles that were still open during
-    /// teardown. These are never inherited across fork, so every retained
-    /// handle must be closed by the caller.
+    /// Per-process directory-iteration closes observed before file closes.
     pub host_dir_closes: Vec<i64>,
-    /// Host net handles whose cross-process refcount reached 0 during
-    /// teardown. The caller must invoke `host_net_close(h)` on each —
-    /// this kernel-side bookkeeping intentionally doesn't touch the
-    /// host trait so `process_table.rs` stays host-agnostic.
+    /// Host network handles whose final-reference close was observed.
     pub host_net_closes: Vec<i32>,
     /// DRI reference retirement effects, including final BO destruction.
     pub dri_effects: Vec<crate::syscalls::DriReleaseEffect>,
+}
+
+impl crate::prepared_map::MapMemory for Process {
+    fn heap_bytes(&self) -> Result<usize, Errno> { Ok(0) }
+}
+
+pub struct ProcessRemovalState {
+    pub had_framebuffer_binding: bool,
+}
+
+pub trait ProcessRemovalIo {
+    fn close_directory(&mut self, handle: i64);
+    fn close_file(&mut self, handle: i64);
+    fn close_network(&mut self, handle: i32);
+    fn destroy_bo(&mut self, bo_id: u32);
+    fn release_dri_effect(&mut self, pid: u32, effect: crate::syscalls::DriReleaseEffect);
+    fn unbind_framebuffer(&mut self, pid: u32);
+}
+
+impl<Host: crate::process::HostIO + ?Sized> ProcessRemovalIo for Host {
+    fn close_directory(&mut self, handle: i64) { let _ = self.host_close(handle); }
+    fn close_file(&mut self, handle: i64) { let _ = self.host_close(handle); }
+    fn close_network(&mut self, handle: i32) { let _ = self.host_net_close(handle); }
+    fn destroy_bo(&mut self, bo_id: u32) { self.gbm_bo_destroy(0, bo_id); }
+    fn release_dri_effect(&mut self, pid: u32, effect: crate::syscalls::DriReleaseEffect) {
+        crate::syscalls::apply_dri_release_effect(pid as i32, effect, self);
+    }
+    fn unbind_framebuffer(&mut self, pid: u32) { crate::process::HostIO::unbind_framebuffer(self, pid as i32); }
+}
+
+struct ProcessRemovalResources {
+    ofds: crate::ofd::OfdTable,
+    directories: crate::IoBuffer<Option<crate::process::DirStream>>,
+    sockets: crate::socket::SocketTable,
+}
+
+impl ProcessRemovalResources {
+    fn finish(mut self, pid: u32, had_framebuffer_binding: bool, locks: &mut AdvisoryLockManager, io: &mut (impl ProcessRemovalIo + ?Sized)) {
+        for (index, ofd) in self.ofds.iter_mut() {
+            crate::syscalls::visit_dri_release_effects(pid as i32, index, ofd.dri_state.take(),
+                |effect| io.release_dri_effect(pid, effect));
+        }
+        for (_, ofd) in self.ofds.iter() {
+            if ofd.dir_host_handle >= 0 { io.close_directory(ofd.dir_host_handle); }
+        }
+        for directory in self.directories.iter().flatten() { io.close_directory(directory.host_handle); }
+        for (_, ofd) in self.ofds.iter() {
+            if ofd.host_handle >= 0 && matches!(ofd.file_type,
+                FileType::Regular | FileType::Directory | FileType::CharDevice | FileType::Pipe)
+                && crate::ofd::host_handle_close_ref(ofd.host_handle) {
+                io.close_file(ofd.host_handle);
+            }
+        }
+        let mut lock_state_changed = false;
+        while let Some(release) = crate::pipe::pop_deferred_in_flight_release() {
+            let released = crate::pipe::release_deferred_in_flight_resource(release);
+            if released.final_ofd_reference { lock_state_changed |= locks.remove_ofd(released.ofd_id).changed; }
+            if let Some(handle) = released.host_close { io.close_file(handle); }
+            if let Some(bo_id) = released.prime_bo_id {
+                if crate::dri::with_registry(|registry| registry.decref(bo_id)) == Some(0) { io.destroy_bo(bo_id); }
+            }
+        }
+        if lock_state_changed { crate::wakeup::push_advisory_lock(); }
+        if had_framebuffer_binding { io.unbind_framebuffer(pid); }
+        let _ = FB0_OWNER.compare_exchange(pid as i32, -1,
+            core::sync::atomic::Ordering::SeqCst, core::sync::atomic::Ordering::SeqCst);
+        for socket_index in 0..self.sockets.len() {
+            let named = self.ofds.iter().any(|(_, ofd)| ofd.file_type == FileType::Socket
+                && ofd.host_handle < 0 && (-(ofd.host_handle + 1)) as usize == socket_index);
+            if !named { continue; }
+            if let Some(handle) = self.sockets.get(socket_index).and_then(|socket| socket.host_net_handle) {
+                if crate::socket::host_net_handle_close_ref(handle) { io.close_network(handle); }
+            }
+        }
+        crate::syscalls::maybe_release_mice(pid);
+        crate::clipboard::release(pid);
+    }
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct CollectedRemovalIo {
+    files: Vec<i64>,
+    directories: Vec<i64>,
+    network: Vec<i32>,
+    dri_effects: Vec<crate::syscalls::DriReleaseEffect>,
+}
+
+#[cfg(test)]
+impl ProcessRemovalIo for CollectedRemovalIo {
+    fn close_directory(&mut self, handle: i64) { self.directories.push(handle); }
+    fn close_file(&mut self, handle: i64) { self.files.push(handle); }
+    fn close_network(&mut self, handle: i32) { self.network.push(handle); }
+    fn destroy_bo(&mut self, _bo_id: u32) {}
+    fn release_dri_effect(&mut self, _pid: u32, effect: crate::syscalls::DriReleaseEffect) { self.dri_effects.push(effect); }
+    fn unbind_framebuffer(&mut self, _pid: u32) {}
 }
 
 /// Subset of parent state inherited by a `posix_spawn` child. Captured up
@@ -143,7 +232,7 @@ struct SpawnInheritFromParent {
     umask: u32,
     nice: i32,
     rlimits: [[u64; 2]; 16],
-    cwd: Vec<u8>,
+    cwd: crate::ofd::OfdPath,
     blocked_signals: u64,
     /// Bitmask of signals (1..=64) where the parent's disposition is
     /// `SIG_IGN`. POSIX exec preserves SIG_IGN across the boundary while
@@ -160,16 +249,15 @@ struct SpawnInheritFromParent {
 ///
 /// `peer_idx` is not authority to retain another slot. Only a socket OFD
 /// inherited through the child's descriptor table is an owning root.
-fn socket_indices_named_by_live_ofds(process: &Process) -> Result<Vec<usize>, Errno> {
+fn socket_indices_named_by_live_ofds(process: &Process) -> Result<crate::io_buffer::IoBuffer<usize>, Errno> {
     let socket_ofd_count = process
         .ofd_table
         .iter()
         .filter(|(_, ofd)| ofd.file_type == FileType::Socket)
         .count();
-    let mut indices = Vec::new();
-    indices
-        .try_reserve_exact(socket_ofd_count)
-        .map_err(|_| Errno::ENOMEM)?;
+    let mut indices = crate::io_buffer::IoBuffer::allocate(socket_ofd_count, false, |indices| {
+        indices.try_reserve_exact(socket_ofd_count).map_err(|_| Errno::ENOMEM)
+    })?;
     for (_, ofd) in process.ofd_table.iter() {
         if ofd.file_type != FileType::Socket {
             continue;
@@ -213,20 +301,23 @@ pub fn bump_inherited_resource_refcounts(
     // machine-wide refcount mutation. An allocation or malformed handle must
     // fail without requiring rollback of unrelated inherited resources.
     let owned_socket_indices = socket_indices_named_by_live_ofds(child)?;
+    let host_handle_refs = crate::ofd::PreparedHostHandleRefs::prepare(&child.ofd_table)?;
+    let host_net_refs = crate::socket::PreparedNetHandleRefs::prepare(&child.sockets, &owned_socket_indices)?;
+    for &sock_idx in &owned_socket_indices {
+        crate::socket::prepare_inet_binding_owners(parent_pid, child.pid, sock_idx)?;
+    }
 
     // Backings for eventfd/timerfd/signalfd/memfd/epoll/procfs are indexed by the
     // inherited OFD's stable negative handle. Add these fallible references
     // first, rolling them back if a stale handle is encountered, before
     // touching the older infallible global-resource refcounts below.
     let inherited_ofd_count = child.ofd_table.iter().count();
-    let mut shared_backings_bumped: Vec<(FileType, i64)> = Vec::new();
-    shared_backings_bumped
-        .try_reserve_exact(inherited_ofd_count)
-        .map_err(|_| Errno::ENOMEM)?;
-    let mut unix_registry_owners_added = Vec::new();
-    unix_registry_owners_added
-        .try_reserve_exact(owned_socket_indices.len())
-        .map_err(|_| Errno::ENOMEM)?;
+    let mut shared_backings_bumped = crate::io_buffer::IoBuffer::allocate(inherited_ofd_count, false, |backings| {
+        backings.try_reserve_exact(inherited_ofd_count).map_err(|_| Errno::ENOMEM)
+    })?;
+    let mut unix_registry_owners_added = crate::io_buffer::IoBuffer::allocate(owned_socket_indices.len(), false, |owners| {
+        owners.try_reserve_exact(owned_socket_indices.len()).map_err(|_| Errno::ENOMEM)
+    })?;
     for (_idx, ofd) in child.ofd_table.iter() {
         match crate::descriptor_backing::add_ref_for_ofd(ofd.file_type, ofd.host_handle) {
             Ok(true) => shared_backings_bumped.push((ofd.file_type, ofd.host_handle)),
@@ -286,16 +377,7 @@ pub fn bump_inherited_resource_refcounts(
     }
 
     // Host file handles (regular files / dirs / chardevs / pipe-via-host).
-    for (_idx, ofd) in child.ofd_table.iter() {
-        if ofd.host_handle >= 0 {
-            match ofd.file_type {
-                FileType::Regular | FileType::Directory | FileType::CharDevice | FileType::Pipe => {
-                    crate::ofd::host_handle_fork_ref(ofd.host_handle);
-                }
-                _ => {}
-            }
-        }
-    }
+    host_handle_refs.publish();
 
     // PTYs.
     for (_idx, ofd) in child.ofd_table.iter() {
@@ -348,38 +430,20 @@ pub fn bump_inherited_resource_refcounts(
             .sockets
             .get(sock_idx)
             .expect("validated socket OFD lost its table slot");
-        crate::socket::inherit_inet_binding_owners(parent_pid, child.pid, sock_idx);
+        crate::socket::publish_inet_binding_owners(parent_pid, child.pid, sock_idx);
         if let Some(shared_idx) = sock.shared_backlog_idx {
             backlog_table.add_ref(shared_idx);
         }
-        if let Some(net_handle) = sock.host_net_handle {
-            crate::socket::host_net_handle_fork_ref(net_handle);
-        }
     }
+    host_net_refs.publish();
 
+    bump_inherited_dri_bos(child);
     Ok(())
 }
 
-/// Incref every DRI bo referenced by the child's inherited card0 / renderD128
-/// / prime-fd OFDs — GEM-handle maps, KMS framebuffers, and prime-bo bindings.
-///
-/// **Spawn-only**, deliberately NOT folded into
-/// [`bump_inherited_resource_refcounts`]: unlike pipes/sockets/PTYs (whose
-/// refcount bumps live solely in that shared helper), DRI bos are increfed on
-/// the *fork* path inside deserialize (`fork::read_dri_fd_state` /
-/// `read_kms_fd_state` / the PrimeBo arm). `spawn_child`, however, builds the
-/// child by value-cloning the parent's `ofd_table` and never deserializes, so
-/// its inherited DRI OFDs carry no registry ref. Calling this from
-/// `bump_inherited_resource_refcounts` would double-incref on `fork_process`
-/// (deserialize + bump). Keeping it spawn-local balances the child's
-/// eventual close-path decref (`dri_release_ofd_state`) exactly once.
-///
-/// Without this, a `posix_spawn`'d client that inherits the compositor's
-/// `O_CLOEXEC` card0 fd (carrying the scanout bo's GEM handle + KMS
-/// framebuffer) decrefs those bos on exec with no matching incref, tombstoning
-/// the compositor's still-live scanout bo in the global `BoRegistry` and
-/// freezing the desktop under a `gbm_bo_map` EINVAL flood.
-fn bump_inherited_dri_bos(child: &Process) {
+/// Acquire graphics-buffer references only after fallible inheritance
+/// preparation succeeds. Deserialization itself acquires no backing owners.
+pub(crate) fn bump_inherited_dri_bos(child: &Process) {
     for (_idx, ofd) in child.ofd_table.iter() {
         let Some(dri_state) = ofd.dri_state.as_deref() else {
             continue;
@@ -412,47 +476,86 @@ fn bump_inherited_dri_bos(child: &Process) {
 /// write_fd) pairs so that when the child resumes through fork rewind,
 /// `sys_pipe` returns the same fd numbers the parent saw.
 /// Spawn doesn't replay code, so this stays fork-local.
-fn build_fork_pipe_replay(child: &Process) -> Vec<(i32, i32)> {
-    use alloc::collections::BTreeMap;
-    let mut pipe_fd_pairs: BTreeMap<usize, (i32, i32)> = BTreeMap::new();
-    for (fd, entry) in child.fd_table.iter() {
-        if let Some(ofd) = child.ofd_table.get(entry.ofd_ref.0) {
-            if ofd.file_type == FileType::Pipe && ofd.host_handle < 0 {
-                let pipe_idx = (-(ofd.host_handle + 1)) as usize;
-                if unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }
-                    .is_some_and(crate::pipe::PipeBuffer::is_fifo)
-                {
-                    continue;
-                }
-                let access_mode = ofd.status_flags() & O_ACCMODE;
-                let pair = pipe_fd_pairs.entry(pipe_idx).or_insert((-1, -1));
-                if access_mode == wasm_posix_shared::flags::O_RDONLY {
-                    pair.0 = fd;
-                } else {
-                    pair.1 = fd;
-                }
-            }
+fn build_fork_pipe_replay(child: &Process) -> Result<crate::io_buffer::IoBuffer<(i32, i32)>, Errno> {
+    let endpoints = || child.fd_table.iter().filter_map(|(fd, entry)| {
+        let ofd = child.ofd_table.get(entry.ofd_ref.0)?;
+        if ofd.file_type != FileType::Pipe || ofd.host_handle >= 0 { return None; }
+        let pipe_idx = (-(ofd.host_handle + 1)) as usize;
+        if unsafe { crate::pipe::global_pipe_table().get(pipe_idx) }
+            .is_some_and(crate::pipe::PipeBuffer::is_fifo) { return None; }
+        Some((pipe_idx, fd, ofd.status_flags() & O_ACCMODE == wasm_posix_shared::flags::O_RDONLY))
+    });
+    let count = endpoints().count();
+    let mut plan = crate::io_buffer::IoBuffer::allocate(count, false, |entries| {
+        #[cfg(test)]
+        test_fork_replay_allocation()?;
+        entries.try_reserve_exact(count).map_err(|_| Errno::ENOMEM)
+    })?;
+    for endpoint in endpoints() { plan.push(endpoint); }
+    plan.sort_unstable_by_key(|(pipe_idx, fd, _)| (*pipe_idx, *fd));
+    let unique = plan.iter().enumerate().filter(|(index, endpoint)| {
+        *index == 0 || plan[*index - 1].0 != endpoint.0
+    }).count();
+    let mut replay = crate::io_buffer::IoBuffer::allocate(unique, false, |pairs| {
+        #[cfg(test)]
+        test_fork_replay_allocation()?;
+        pairs.try_reserve_exact(unique).map_err(|_| Errno::ENOMEM)
+    })?;
+    let mut previous = None;
+    for &(pipe_idx, fd, read_end) in plan.iter() {
+        if previous != Some(pipe_idx) {
+            replay.push((-1, -1));
+            previous = Some(pipe_idx);
         }
+        let pair = replay.last_mut().unwrap();
+        if read_end { pair.0 = fd; } else { pair.1 = fd; }
     }
-    pipe_fd_pairs.into_values().collect()
+    Ok(replay)
 }
 
-fn serialize_fork_state_with_growing_buffer(parent: &Process) -> Result<Vec<u8>, Errno> {
+#[cfg(test)]
+std::thread_local! {
+    static FAIL_FORK_REPLAY_ALLOCATION: core::cell::Cell<Option<usize>> = const { core::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn test_fork_replay_allocation() -> Result<(), Errno> {
+    FAIL_FORK_REPLAY_ALLOCATION.with(|remaining| {
+        if let Some(count) = remaining.get() {
+            remaining.set(Some(count.saturating_sub(1)));
+            if count == 1 { return Err(Errno::ENOMEM); }
+        }
+        Ok(())
+    })
+}
+
+fn serialize_fork_state_with_growing_buffer(parent: &Process) -> Result<crate::io_buffer::IoBuffer<u8>, Errno> {
+    serialize_fork_state_with_allocator(parent, |length| {
+        crate::io_buffer::IoBuffer::allocate(length, false, |bytes| {
+            bytes.try_reserve_exact(length).map_err(|_| Errno::ENOMEM)
+        })
+    })
+}
+
+fn serialize_fork_state_with_allocator(
+    parent: &Process,
+    mut allocate: impl FnMut(usize) -> Result<crate::io_buffer::IoBuffer<u8>, Errno>,
+) -> Result<crate::io_buffer::IoBuffer<u8>, Errno> {
     let mut len = INITIAL_FORK_STATE_BUFFER_LEN;
 
     loop {
-        let mut buf = Vec::new();
+        let mut buf = allocate(len)?;
         buf.resize(len, 0u8);
 
-        match crate::fork::serialize_fork_state(parent, &mut buf) {
+        match crate::fork::serialize_fork_state_for_retry(parent, &mut buf) {
             Ok(written) => {
                 buf.truncate(written);
                 return Ok(buf);
             }
-            Err(Errno::ENOMEM) if len < MAX_FORK_STATE_BUFFER_LEN => {
+            Err(crate::fork::SerializationFailure::OutputFull) if len < MAX_FORK_STATE_BUFFER_LEN => {
                 len = len.saturating_mul(2).min(MAX_FORK_STATE_BUFFER_LEN);
             }
-            Err(err) => return Err(err),
+            Err(error) => return Err(error.errno()),
         }
     }
 }
@@ -460,13 +563,13 @@ fn serialize_fork_state_with_growing_buffer(parent: &Process) -> Result<Vec<u8>,
 impl ProcessTable {
     const fn new_inner() -> Self {
         ProcessTable {
-            processes: BTreeMap::new(),
+            processes: PreparedMap::new(),
             advisory_locks: AdvisoryLockManager::new(),
             current_pid: 0,
             next_task_id: FIRST_TASK_ID,
             current_tid: 0,
             current_tid_pid: 0,
-            tcp_listener_rr: BTreeMap::new(),
+            tcp_listener_rr: PreparedMap::new(),
         }
     }
 
@@ -513,20 +616,20 @@ impl ProcessTable {
     ) -> Result<usize, Errno> {
         use wasm_posix_shared::flags::O_RDONLY;
         let proc = self.get_mut(pid).ok_or(Errno::ESRCH)?;
+        if proc.fd_table.max_fds() == 0 { return Err(Errno::EMFILE); }
+        let prepared = proc.ofd_table.prepare(FileType::Pipe, O_RDONLY, b"/dev/stdin")?;
+        let resources = crate::pipe::PipeBuffer::try_new(crate::pipe::DEFAULT_PIPE_CAPACITY)
+            .and_then(|pipe| unsafe { crate::pipe::global_pipe_table() }.prepare_slot().map(|index| (pipe, index)));
+        let (pipe, pipe_idx) = match resources {
+            Ok(resources) => resources,
+            Err(error) => { proc.ofd_table.cancel(prepared); return Err(error); }
+        };
         match crate::syscalls::sys_close(proc, host, 0) {
             Ok(()) | Err(Errno::EBADF) => {}
-            Err(error) => return Err(error),
+            Err(error) => { proc.ofd_table.cancel(prepared); return Err(error); }
         }
-        let pipe_idx = unsafe {
-            crate::pipe::global_pipe_table()
-                .alloc(crate::pipe::PipeBuffer::new(crate::pipe::DEFAULT_PIPE_CAPACITY))
-        };
-        let ofd_idx = proc.ofd_table.create(
-            FileType::Pipe,
-            O_RDONLY,
-            -((pipe_idx as i64) + 1),
-            b"/dev/stdin".to_vec(),
-        );
+        unsafe { crate::pipe::global_pipe_table() }.publish_prepared(pipe_idx, pipe);
+        let ofd_idx = proc.ofd_table.publish(prepared, -((pipe_idx as i64) + 1));
         match proc.fd_table.alloc(crate::fd::OpenFileDescRef(ofd_idx), 0) {
             Ok(0) => Ok(pipe_idx),
             Ok(fd) => {
@@ -534,10 +637,12 @@ impl ProcessTable {
                 // 0; anything else means the table is inconsistent.
                 let _ = proc.fd_table.free(fd);
                 proc.ofd_table.dec_ref(ofd_idx);
+                unsafe { crate::pipe::global_pipe_table() }.discard_unclaimed(pipe_idx);
                 Err(Errno::EIO)
             }
             Err(error) => {
                 proc.ofd_table.dec_ref(ofd_idx);
+                unsafe { crate::pipe::global_pipe_table() }.discard_unclaimed(pipe_idx);
                 Err(error)
             }
         }
@@ -545,84 +650,84 @@ impl ProcessTable {
 
     /// Create a new process with explicit stdio wiring and add it to the table.
     pub fn create_process_with_stdio(&mut self, stdio: StdioConfig) -> Result<u32, Errno> {
-        self.ensure_init();
+        self.ensure_init()?;
+        let slot = PreparedMapSlot::new_in(&crate::io_buffer::IO_MEMORY, 0)?;
         let task_id = self.allocate_task_id()?;
         let pid = task_id.as_raw();
+        let entry = slot.finish(pid, Process::new_allocated_with_stdio(task_id, stdio)?)?;
         crate::image_build_determinism::process_created(pid);
-        self.processes
-            .insert(pid, Process::new_allocated_with_stdio(task_id, stdio));
+        self.processes.publish_io(entry);
         Ok(pid)
     }
 
     /// Ensure the virtual init process (pid 1) is present. Idempotent.
-    pub fn ensure_init(&mut self) {
+    pub fn ensure_init(&mut self) -> Result<(), Errno> {
         if !self.processes.contains_key(&SYNTHETIC_INIT_PID) {
+            let slot = PreparedMapSlot::new_in(&crate::io_buffer::IO_MEMORY, 0)?;
             // PID 1 is a reserved kernel identity rather than an allocation
             // from the user task sequence, so mint its capability here at the
             // sole identity-authority boundary.
-            let mut init = Process::new_allocated(AllocatedTaskId(SYNTHETIC_INIT_PID));
+            let mut init = Process::new_allocated_empty(AllocatedTaskId(SYNTHETIC_INIT_PID));
             init.ppid = 0;
-            init.argv.push(alloc::vec::Vec::from(b"init".as_slice()));
+            init.argv.try_push(b"init")?;
             // PID 1 is an addressable kernel identity, not a schedulable
             // process. It must not own normal-process descriptors or terminal
             // state that could later be mutated or cleaned up by a host path.
             init.fd_table = crate::fd::FdTable::new();
             init.ofd_table = crate::ofd::OfdTable::new();
             init.terminal.foreground_pgid = 0;
-            self.processes.insert(SYNTHETIC_INIT_PID, init);
+            self.processes.publish_io(slot.finish(SYNTHETIC_INIT_PID, init)?);
         }
+        Ok(())
     }
 
     /// Remove a process from the table.
     /// Cleans up all cross-process resources: pipe ref counts, socket pipes,
     /// and listening socket backlogs in the global pipe table.
-    pub fn remove_process(&mut self, pid: u32) -> Option<RemoveProcessResult> {
-        let result = self.remove_process_inner(pid, false)?;
-        self.prune_empty_limbo_groups();
-        Some(result)
+    pub fn remove_process_with_io(&mut self, pid: u32, io: &mut (impl ProcessRemovalIo + ?Sized)) -> Option<ProcessRemovalState> {
+        self.remove_process_inner(pid, false, io)
     }
 
-    /// Reap a wait-consumed process from the table. If it is still the
-    /// process-group leader for remaining members, keep a resource-free limbo
-    /// record so getpgid/setpgid can still address the leader until the group
-    /// empties.
+    pub fn reap_process_with_io(&mut self, pid: u32, io: &mut (impl ProcessRemovalIo + ?Sized)) -> Option<ProcessRemovalState> {
+        self.remove_process_inner(pid, true, io)
+    }
+
+    #[cfg(test)]
+    pub fn remove_process(&mut self, pid: u32) -> Option<RemoveProcessResult> {
+        let mut io = CollectedRemovalIo::default();
+        let state = self.remove_process_with_io(pid, &mut io)?;
+        Some(RemoveProcessResult { had_framebuffer_binding: state.had_framebuffer_binding,
+            host_closes: io.files, host_dir_closes: io.directories, host_net_closes: io.network, dri_effects: io.dri_effects })
+    }
+
+    #[cfg(test)]
     pub fn reap_process(&mut self, pid: u32) -> Option<RemoveProcessResult> {
-        let result = self.remove_process_inner(pid, true)?;
-        self.prune_empty_limbo_groups();
-        Some(result)
+        let mut io = CollectedRemovalIo::default();
+        let state = self.reap_process_with_io(pid, &mut io)?;
+        Some(RemoveProcessResult { had_framebuffer_binding: state.had_framebuffer_binding,
+            host_closes: io.files, host_dir_closes: io.directories, host_net_closes: io.network, dri_effects: io.dri_effects })
     }
 
     fn remove_process_inner(
         &mut self,
         pid: u32,
         retain_limbo_leader: bool,
-    ) -> Option<RemoveProcessResult> {
+        io: &mut (impl ProcessRemovalIo + ?Sized),
+    ) -> Option<ProcessRemovalState> {
         // PID 1 is the kernel-reserved synthetic init identity. It is outside
         // the allocatable task sequence and must remain present for the entire
         // kernel instance rather than being removed and lazily recreated.
         if pid == SYNTHETIC_INIT_PID {
             return None;
         }
-        let mut proc = self.processes.remove(&pid)?;
+        let mut removed = self.processes.remove_entry(&pid)?;
+        let mut proc = removed.value_mut();
         // Whole-process teardown consumes the OFD table itself, but retry
         // bindings can also own machine-global MQ/IPC pins and SCM_RIGHTS
         // references. Drop those before the ordinary backing walk and its
         // deferred ancillary cleanup boundary.
         crate::syscalls::discard_blocking_retry_bindings_for_process_removal(&mut proc);
-        let _ = unsafe { crate::pipe::global_pipe_table().cancel_fifo_opens_for_process(pid) };
-        let mut host_closes: Vec<i64> = Vec::new();
-        let mut host_dir_closes: Vec<i64> = Vec::new();
-        let mut host_net_closes: Vec<i32> = Vec::new();
-        // A trapped process or failed launch may never execute close().
-        // Retire the same kernel references as close, before discarding OFDs.
-        let mut dri_effects = Vec::new();
-        let dri_ofds: Vec<_> = proc.ofd_table.iter()
-            .filter_map(|(idx, ofd)| ofd.dri_state.as_ref().map(|_| idx)).collect();
-        for idx in dri_ofds {
-            let state = proc.ofd_table.get_mut(idx).unwrap().dri_state.take();
-            dri_effects.extend(crate::syscalls::collect_dri_release_effects(pid as i32, idx, state));
-        }
-
+        unsafe { crate::pipe::global_pipe_table() }.cancel_fifo_opens_for_process(pid, |_| {});
 
         // Keep the global pipe-table borrow in a strict lexical scope. Closing
         // a final read end can drop queued SCM_RIGHTS entries, whose Drop impl
@@ -698,31 +803,6 @@ impl ProcessTable {
             crate::descriptor_backing::release_for_ofd(ofd.file_type, ofd.host_handle);
         }
 
-        // Drop host-backed file and directory handles that a process still
-        // owned when it was removed without reaching sys_exit (worker crash,
-        // explicit host termination, or failed fork/spawn launch). Normal
-        // exit closes every fd first, so these lists are empty on the zombie
-        // reaping path. Fork/spawn share positive host handles by refcount;
-        // only the last process queues the underlying host_close.
-        for (_ofd_idx, ofd) in proc.ofd_table.iter() {
-            if ofd.dir_host_handle >= 0 {
-                host_dir_closes.push(ofd.dir_host_handle);
-            }
-            if ofd.host_handle < 0 {
-                continue;
-            }
-            if matches!(
-                ofd.file_type,
-                FileType::Regular | FileType::Directory | FileType::CharDevice | FileType::Pipe
-            ) && crate::ofd::host_handle_close_ref(ofd.host_handle)
-            {
-                host_closes.push(ofd.host_handle);
-            }
-        }
-        for stream in proc.dir_streams.iter().flatten() {
-            host_dir_closes.push(stream.host_handle);
-        }
-
         // Clean up socket OFDs. Active TCP streams use the same orderly FIN
         // and orphaned receive state as close(2); other socket kinds close
         // their pipe endpoints directly.
@@ -791,8 +871,10 @@ impl ProcessTable {
             }
         }
 
-        // Drop cross-process refcounts for socket-side resources, once per
-        // deduplicated OFD-named socket root. Mirrors the root-only bump in
+        // Drop shared-backlog refcounts for socket roots, once per
+        // deduplicated OFD-named socket root. Network handles remain owned
+        // until the removal finisher can close them through the I/O capability.
+        // Mirrors the root-only bump in
         // `bump_inherited_resource_refcounts` so a fork/spawn parent and
         // child each contribute exactly one ref on inheritance and one
         // drop on exit. Sockets that the process closed via sys_close are
@@ -810,11 +892,6 @@ impl ProcessTable {
             if let Some(sock) = proc.sockets.get(sock_idx) {
                 if let Some(shared_idx) = sock.shared_backlog_idx {
                     shared_backlog_table.dec_ref(shared_idx);
-                }
-                if let Some(net_handle) = sock.host_net_handle {
-                    if crate::socket::host_net_handle_close_ref(net_handle) {
-                        host_net_closes.push(net_handle);
-                    }
                 }
             }
         }
@@ -849,27 +926,12 @@ impl ProcessTable {
         let pshared = unsafe { crate::pshared::global_pshared_table() };
         pshared.cleanup_process(pid);
 
-        // A final read-end close above may have discarded queued SCM_RIGHTS
-        // entries. Release their real resource references only after all
-        // PipeTable borrows have ended, and collect host closes for the caller.
-        let mut deferred_lock_state_changed = false;
-        while let Some(release) = crate::pipe::pop_deferred_in_flight_release() {
-            let released = crate::pipe::release_deferred_in_flight_resource(release);
-            if let Some(handle) = released.host_close {
-                host_closes.push(handle);
-            }
-            if released.final_ofd_reference {
-                deferred_lock_state_changed |=
-                    self.advisory_locks.remove_ofd(released.ofd_id).changed;
-            }
-        }
-
         // POSIX locks are process-owned and disappear on every exit/removal.
         // OFD/flock locks disappear only when no other machine process still
         // references that stable open-file-description identity, including a
         // descriptor currently queued in SCM_RIGHTS ancillary data.
         let mut lock_state_changed =
-            deferred_lock_state_changed | self.advisory_locks.remove_process(pid).changed;
+            self.advisory_locks.remove_process(pid).changed;
         for (_, ofd) in proc.ofd_table.iter() {
             let still_referenced = self.processes.values().any(|other| {
                 other
@@ -892,17 +954,21 @@ impl ProcessTable {
             let _ = ipc.shmdt(mapping.shmid, pid);
         }
 
+        let had_framebuffer_binding = proc.fb_binding.is_some();
+        let resources = ProcessRemovalResources {
+            ofds: core::mem::replace(&mut proc.ofd_table, crate::ofd::OfdTable::new()),
+            directories: core::mem::take(&mut proc.dir_streams),
+            sockets: core::mem::replace(&mut proc.sockets, crate::socket::SocketTable::new()),
+        };
         if retain_limbo_leader && proc.pgid == pid && self.group_has_member(pid) {
-            self.processes.insert(pid, Self::limbo_process_from(&proc));
+            *proc = Self::limbo_process_from(&mut proc);
+            self.processes.publish_io(removed);
+        } else {
+            drop(removed);
         }
-
-        Some(RemoveProcessResult {
-            had_framebuffer_binding: proc.fb_binding.is_some(),
-            host_closes,
-            host_dir_closes,
-            host_net_closes,
-            dri_effects,
-        })
+        self.prune_empty_limbo_groups();
+        resources.finish(pid, had_framebuffer_binding, &mut self.advisory_locks, io);
+        Some(ProcessRemovalState { had_framebuffer_binding })
     }
 
     fn group_has_member(&self, pgid: u32) -> bool {
@@ -911,8 +977,8 @@ impl ProcessTable {
         })
     }
 
-    fn limbo_process_from(proc: &Process) -> Process {
-        let mut limbo = Process::new_allocated(AllocatedTaskId(proc.pid));
+    fn limbo_process_from(proc: &mut Process) -> Process {
+        let mut limbo = Process::new_allocated_empty(AllocatedTaskId(proc.pid));
         limbo.ppid = proc.ppid;
         limbo.install_credentials(proc.credentials().clone());
         limbo.secure_exec = proc.secure_exec;
@@ -924,8 +990,8 @@ impl ProcessTable {
         limbo.exit_status = proc.exit_status;
         limbo.exit_signal = proc.exit_signal;
         limbo.cwd = proc.cwd.clone();
-        limbo.environ = proc.environ.clone();
-        limbo.argv = proc.argv.clone();
+        limbo.environ = core::mem::take(&mut proc.environ);
+        limbo.argv = core::mem::take(&mut proc.argv);
         limbo.umask = proc.umask;
         limbo.nice = proc.nice;
         limbo.rlimits = proc.rlimits;
@@ -940,7 +1006,7 @@ impl ProcessTable {
     }
 
     pub fn prune_empty_limbo_groups(&mut self) {
-        let limbo_pids: Vec<u32> = self
+        while let Some(pid) = self
             .processes
             .iter()
             .filter(|(pid, proc)| {
@@ -948,9 +1014,7 @@ impl ProcessTable {
                 proc.state == ProcessState::Limbo && proc.pgid == pid && !self.group_has_member(pid)
             })
             .map(|(pid, _)| *pid)
-            .collect();
-
-        for pid in limbo_pids {
+            .next() {
             self.processes.remove(&pid);
         }
     }
@@ -1102,13 +1166,13 @@ impl ProcessTable {
         }
         let mut caller = None;
         let mut peers = Vec::new();
-        for (id, proc) in &mut self.processes {
-            if *id == pid {
+        self.processes.for_each_mut(|proc| {
+            if proc.pid == pid {
                 caller = Some(proc);
             } else {
                 peers.push(proc);
             }
-        }
+        });
         Some((caller?, peers, &mut self.advisory_locks))
     }
 
@@ -1219,6 +1283,7 @@ impl ProcessTable {
             )
         };
 
+        let slot = PreparedMapSlot::new_in(&crate::io_buffer::IO_MEMORY, 0)?;
         let child_task_id = self.allocate_task_id()?;
         let child_pid = child_task_id.as_raw();
 
@@ -1242,17 +1307,17 @@ impl ProcessTable {
         child.signals.blocked = caller_blocked;
         child.vfork_child = mode == wasm_posix_shared::fork_contract::Mode::Vfork;
 
-        // Bump cross-process refcounts on inherited fd state (host handles,
-        // global pipes, PTYs, socket-pipes). Identical to spawn's needs —
-        // factored out into a free helper.
-        bump_inherited_resource_refcounts(parent_pid, &child)?;
-
         // Build fork-only `fork_pipe_replay` (fork replay needs it to
         // return the same fds as the parent did when re-running
         // pre-fork code). Spawn doesn't replay, so this stays fork-local.
-        child.fork_pipe_replay = build_fork_pipe_replay(&child);
+        child.fork_pipe_replay = build_fork_pipe_replay(&child)?;
+        // Bump cross-process refcounts on inherited fd state (host handles,
+        // global pipes, PTYs, socket-pipes). Identical to spawn's needs —
+        // factored out into a free helper.
+        let entry = slot.finish(child_pid, child)?;
+        bump_inherited_resource_refcounts(parent_pid, entry.value())?;
 
-        self.processes.insert(child_pid, child);
+        self.processes.publish_io(entry);
 
         // Parent's fork-counter regression guardrail. The non-forking spawn
         // tests assert this stays put across a SYS_SPAWN, proving the new
@@ -1306,16 +1371,19 @@ impl ProcessTable {
                 cwd: parent.cwd.clone(),
                 blocked_signals: parent.blocked_for(caller_tid),
                 ignored_signals,
-                fd_table: parent.fd_table.clone(),
-                ofd_table: parent.ofd_table.clone(),
-                sockets: parent.sockets.clone(),
+                fd_table: parent.fd_table.try_clone()?,
+                ofd_table: parent.ofd_table.try_clone()?,
+                sockets: parent.sockets.try_clone()?,
             }
         };
 
+        let child_argv = crate::process::ProcessStrings::copy_from(argv)?;
+        let child_environment = crate::process::ProcessStrings::copy_from(envp)?;
+        let slot = PreparedMapSlot::new_in(&crate::io_buffer::IO_MEMORY, 0)?;
         let child_task_id = self.allocate_task_id()?;
         let child_pid = child_task_id.as_raw();
         crate::image_build_determinism::process_created(child_pid);
-        let mut child = Process::new_allocated(child_task_id);
+        let mut child = Process::new_allocated_empty(child_task_id);
 
         // ── POSIX-required inheritance ─────────────────────────────────
         child.ppid = parent_pid;
@@ -1328,8 +1396,8 @@ impl ProcessTable {
         child.cwd = inherit.cwd;
 
         // The new program's argv/envp come from the spawn caller.
-        child.argv = argv.iter().map(|s| s.to_vec()).collect();
-        child.environ = envp.iter().map(|s| s.to_vec()).collect();
+        child.argv = child_argv;
+        child.environ = child_environment;
 
         // Parent's fd state replaces the fresh process fd table; spawn
         // inherits the parent's open fds instead of creating new stdio.
@@ -1421,37 +1489,21 @@ impl ProcessTable {
 
         // Bump cross-process refcounts on the inherited fd state. The same
         // helper fork uses — this is the genuinely-shared concern.
-        bump_inherited_resource_refcounts(parent_pid, &child)?;
-        // DRI bos are the one inherited resource fork increfs during
-        // deserialize rather than in the shared helper, so spawn (which
-        // value-clones the fd tables and never deserializes) must incref them
-        // here — see `bump_inherited_dri_bos`.
-        bump_inherited_dri_bos(&child);
-
         // The child is a real kernel process and signal target, but the
         // parent has not received a successful posix_spawn result yet. Wait
         // selection must not consume it until the host completes the exact
         // target launch transaction and publishes that result.
         child.spawn_publication_pending = true;
-        self.processes.insert(child_pid, child);
+        let entry = slot.finish(child_pid, child)?;
+        bump_inherited_resource_refcounts(parent_pid, entry.value())?;
+        self.processes.publish_io(entry);
 
         // Apply file actions in forward order against the child. Any failure
         // rolls back the partial child via remove_process — which runs the
         // proper exit cleanup (decrements every refcount we bumped, drops
         // any newly-opened fds, queues last-ref host net handles for close).
         if let Err(e) = self.apply_spawn_file_actions(child_pid, file_actions, host) {
-            if let Some(removed) = self.remove_process(child_pid) {
-                crate::syscalls::apply_dri_release_effects(child_pid as i32, removed.dri_effects, host);
-                for dir_handle in removed.host_dir_closes {
-                    let _ = host.host_close(dir_handle);
-                }
-                for handle in removed.host_closes {
-                    let _ = host.host_close(handle);
-                }
-                for net_handle in removed.host_net_closes {
-                    let _ = host.host_net_close(net_handle);
-                }
-            }
+            self.remove_process_with_io(child_pid, host);
             return Err(e);
         }
 
@@ -1580,6 +1632,7 @@ impl ProcessTable {
             }
             process.blocked_for(caller_tid)
         };
+        self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?.prepare_thread()?;
         let task_id = self.allocate_task_id()?;
         let tid = task_id.as_raw();
         crate::image_build_determinism::thread_created(pid, tid);
@@ -1600,7 +1653,15 @@ impl ProcessTable {
     /// treating the immutable synthetic init record or retained exited records
     /// as runnable processes while scanning machine-wide state.
     pub fn live_processes_descending(&self) -> impl Iterator<Item = (u32, &Process)> {
-        self.processes.iter().rev().filter_map(|(&pid, process)| {
+        let mut upper: Option<u32> = None;
+        core::iter::from_fn(move || {
+            let (pid, process) = match upper {
+                Some(bound) => self.processes.at_or_before(&bound.checked_sub(1)?),
+                None => self.processes.last_key_value(),
+            }?;
+            upper = Some(*pid);
+            Some((*pid, process))
+        }).filter_map(|(pid, process)| {
             if pid == SYNTHETIC_INIT_PID
                 || matches!(process.state, ProcessState::Exited | ProcessState::Limbo)
             {
@@ -1642,8 +1703,13 @@ impl ProcessTable {
     }
 
     /// Collect every retained PID, including internal limbo identities.
+    #[cfg(test)]
     pub fn all_pids(&self) -> Vec<u32> {
         self.processes.keys().copied().collect()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Process> {
+        self.processes.values()
     }
 
     /// Collect PIDs that should be visible through procfs.
@@ -1652,21 +1718,22 @@ impl ProcessTable {
     /// them. Limbo entries are already reaped and retained only as internal
     /// process-group/session identities, so exposing them as `/proc/<pid>`
     /// would resurrect a process that no longer exists.
-    pub fn procfs_pids(&self) -> Vec<u32> {
-        self.processes
-            .iter()
-            .filter(|(_, proc)| proc.state != ProcessState::Limbo)
-            .map(|(&pid, _)| pid)
-            .collect()
+    pub fn procfs_pids(&self) -> Result<crate::IoBuffer<u32>, Errno> {
+        let count = self.processes.values().filter(|proc| proc.state != ProcessState::Limbo).count();
+        let mut pids = crate::IoBuffer::try_with_capacity(count)?;
+        for (&pid, proc) in &self.processes {
+            if proc.state != ProcessState::Limbo { pids.push(pid); }
+        }
+        Ok(pids)
     }
 
-    /// Collect PIDs of all processes in a given process group.
-    pub fn pids_in_group(&self, pgid: u32) -> Vec<u32> {
-        self.processes
-            .iter()
-            .filter(|(_, p)| p.pgid == pgid && p.state != ProcessState::Limbo)
-            .map(|(&pid, _)| pid)
-            .collect()
+    pub fn next_pid_in_group(&self, pgid: u32, after: u32) -> Option<u32> {
+        let mut cursor = after;
+        loop {
+            let (&pid, process) = self.processes.next_after(&cursor)?;
+            cursor = pid;
+            if process.pgid == pgid && process.state != ProcessState::Limbo { return Some(pid); }
+        }
     }
 
     /// Return the host-visible parent pid for a process. An unpublished spawn
@@ -1733,56 +1800,44 @@ impl ProcessTable {
         &mut self,
         port: u16,
         exclude_pid: u32,
-    ) -> Option<(u32, i32)> {
-        let mut targets = self.tcp_listener_targets(port, exclude_pid);
-        if targets.len() > 1 {
-            let children: Vec<(u32, i32)> = targets
-                .iter()
-                .copied()
-                .filter(|(pid, _fd)| {
-                    self.processes
-                        .get(pid)
-                        .is_some_and(|proc| proc.ppid > 0)
-                })
-                .collect();
-            if !children.is_empty() {
-                targets = children;
+    ) -> Result<Option<(u32, i32)>, Errno> {
+        let mut all_count = 0;
+        let mut child_count = 0;
+        for (pid, _) in self.tcp_listener_targets(port, exclude_pid) {
+            all_count += 1;
+            if self.processes.get(&pid).is_some_and(|process| process.ppid > 0) {
+                child_count += 1;
             }
         }
-
-        if targets.is_empty() {
+        let count = if child_count != 0 { child_count } else { all_count };
+        if count == 0 {
             self.tcp_listener_rr.remove(&port);
-            return None;
+            return Ok(None);
         }
-
-        let idx = self.tcp_listener_rr.get(&port).copied().unwrap_or(0) % targets.len();
-        self.tcp_listener_rr.insert(port, idx + 1);
-        Some(targets[idx])
+        let index = self.tcp_listener_rr.get(&port).copied().unwrap_or(0) % count;
+        let target = self.tcp_listener_targets(port, exclude_pid)
+            .filter(|(pid, _)| child_count == 0 || self.processes.get(pid).is_some_and(|process| process.ppid > 0))
+            .nth(index).expect("counted listener target disappeared");
+        if let Some(cursor) = self.tcp_listener_rr.get_mut(&port) {
+            *cursor = index + 1;
+        } else {
+            self.tcp_listener_rr.try_insert_io(port, index + 1)?;
+        }
+        Ok(Some(target))
     }
 
-    fn tcp_listener_targets(&self, port: u16, exclude_pid: u32) -> Vec<(u32, i32)> {
-        let mut targets = Vec::new();
-        for (&pid, proc) in &self.processes {
-            if pid == exclude_pid || proc.state != ProcessState::Running {
-                continue;
-            }
-            for (fd, entry) in proc.fd_table.iter() {
-                let Some(ofd) = proc.ofd_table.get(entry.ofd_ref.0) else {
-                    continue;
-                };
-                if ofd.file_type != FileType::Socket || ofd.host_handle >= 0 {
-                    continue;
-                }
-                let sock_idx = (-(ofd.host_handle + 1)) as usize;
-                let Some(sock) = proc.sockets.get(sock_idx) else {
-                    continue;
-                };
-                if sock.state == SocketState::Listening && sock.bind_port == port {
-                    targets.push((pid, fd));
-                }
-            }
-        }
-        targets
+    fn tcp_listener_targets(&self, port: u16, exclude_pid: u32) -> impl Iterator<Item = (u32, i32)> + '_ {
+        self.processes.iter().filter_map(move |(&pid, process)| {
+            (pid != exclude_pid && process.state == ProcessState::Running).then_some((pid, process))
+        }).flat_map(move |(pid, process)| {
+            process.fd_table.iter().filter_map(move |(fd, entry)| {
+                let ofd = process.ofd_table.get(entry.ofd_ref.0)?;
+                if ofd.file_type != FileType::Socket || ofd.host_handle >= 0 { return None; }
+                let socket_index = (-(ofd.host_handle + 1)) as usize;
+                let socket = process.sockets.get(socket_index)?;
+                (socket.state == SocketState::Listening && socket.bind_port == port).then_some((pid, fd))
+            })
+        })
     }
 
     /// Select the latest status-information record for a direct child.
@@ -1803,8 +1858,9 @@ impl ProcessTable {
 
         let parent_pgid = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?.pgid;
         let mut saw_matching_child = false;
+        let mut selected = None;
 
-        for (&child_pid, child) in &mut self.processes {
+        for (&child_pid, child) in &self.processes {
             if child_pid == SYNTHETIC_INIT_PID
                 || child.ppid != parent_pid
                 || child.state == ProcessState::Limbo
@@ -1829,8 +1885,12 @@ impl ProcessTable {
             if event.event_mask & event_mask == 0 {
                 continue;
             }
+            selected = Some((child_pid, event));
+            break;
+        }
+        if let Some((child_pid, event)) = selected {
             if flags & WNOWAIT == 0 {
-                child.wait_event = None;
+                self.processes.get_mut(&child_pid).expect("selected wait child disappeared").wait_event = None;
             }
             return Ok(Some((child_pid, event)));
         }
@@ -1881,10 +1941,10 @@ impl ProcessTable {
 /// syscall, where no `&mut Process` is in scope.
 pub fn with_processes<F>(f: F)
 where
-    F: FnOnce(alloc::collections::btree_map::ValuesMut<'_, u32, Process>),
+    F: FnMut(&mut Process),
 {
     let table = unsafe { &mut *GLOBAL_PROCESS_TABLE.0.get() };
-    f(table.processes.values_mut());
+    table.processes.for_each_mut(f);
 }
 
 #[cfg(test)]
@@ -1906,7 +1966,7 @@ mod wait_tests {
             rgid: 4000,
             egid: 5000,
             sgid: 6000,
-            supplementary_groups: vec![7000, 8000],
+            supplementary_groups: crate::credentials::SupplementaryGroups::copy_from(&[7000, 8000]).unwrap(),
         };
         table
             .get_mut(parent_pid)
@@ -1982,7 +2042,7 @@ mod wait_tests {
             rgid: 4000,
             egid: 5000,
             sgid: 6000,
-            supplementary_groups: vec![7000, 8000],
+            supplementary_groups: crate::credentials::SupplementaryGroups::copy_from(&[7000, 8000]).unwrap(),
         };
         table
             .get_mut(parent_pid)
@@ -2088,6 +2148,46 @@ mod wait_tests {
     }
 
     #[test]
+    fn host_stdin_refusal_preserves_old_fd_and_reclaims_unclaimed_pipe_payloads() {
+        let mut table = ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        let mut host = crate::process::test_host::NoopHost;
+        let old_ofd = table.get(pid).unwrap().fd_table.get(0).unwrap().ofd_ref.0;
+        let old_id = table.get(pid).unwrap().ofd_table.get(old_ofd).unwrap().ofd_id;
+        let active = unsafe { crate::pipe::global_pipe_table() }.count_active();
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        table.get_mut(pid).unwrap().fd_table.set_max_fds(0);
+        for _ in 0..4 {
+            assert_eq!(table.install_host_stdin_pipe(pid, &mut host), Err(Errno::EMFILE));
+            assert_eq!(unsafe { crate::pipe::global_pipe_table() }.count_active(), active);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        table.get_mut(pid).unwrap().fd_table.set_max_fds(1024);
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(table.install_host_stdin_pipe(pid, &mut host), Err(Errno::ENOMEM));
+        }
+        assert_eq!(table.get(pid).unwrap().ofd_table.get(old_ofd).unwrap().ofd_id, old_id);
+        assert_eq!(table.get(pid).unwrap().fd_table.get(0).unwrap().ofd_ref.0, old_ofd);
+        crate::syscalls::sys_close(table.get_mut(pid).unwrap(), &mut host, 0).unwrap();
+        assert_eq!(table.get_mut(pid).unwrap().fd_table.reserve(), Ok(0));
+        unsafe { crate::pipe::global_pipe_table() }.prepare_slot().unwrap();
+        let retained = crate::io_buffer::IO_MEMORY.usage().0;
+        for _ in 0..4 {
+            assert_eq!(table.install_host_stdin_pipe(pid, &mut host), Err(Errno::EIO));
+            assert_eq!(unsafe { crate::pipe::global_pipe_table() }.count_active(), active);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, retained);
+        }
+        assert!(table.get_mut(pid).unwrap().fd_table.release_reserved(0));
+        let index = table.install_host_stdin_pipe(pid, &mut host).unwrap();
+        crate::syscalls::sys_close(table.get_mut(pid).unwrap(), &mut host, 0).unwrap();
+        let pipe = unsafe { crate::pipe::global_pipe_table() }.get_mut(index).unwrap();
+        pipe.close_write_end();
+        unsafe { crate::pipe::global_pipe_table() }.free_if_closed(index);
+        assert_eq!(unsafe { crate::pipe::global_pipe_table() }.count_active(), active);
+    }
+
+    #[test]
     fn host_stdin_pipe_replaces_fd0_with_fifo_read_end() {
         use crate::ofd::FileType;
         let (mut table, pid, pipe_idx) = host_stdin_pipe_fixture();
@@ -2171,7 +2271,7 @@ mod wait_tests {
                 b"/dev/input/event0".to_vec(),
             );
             parent.ofd_table.get_mut(idx).unwrap().input_state =
-                Some(alloc::boxed::Box::new(InputFdState {
+                Some(crate::IoBox::new(InputFdState {
                     device: 0,
                     ring: SharedInputRing::default(),
                 }));
@@ -2544,6 +2644,105 @@ mod wait_tests {
     }
 
     #[test]
+    fn process_node_refusal_precedes_identity_and_publishes_only_after_preparation() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut table = ProcessTable::new();
+        table.ensure_init().unwrap();
+        let next = table.next_task_id;
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(table.create_process(), Err(Errno::ENOMEM));
+            assert_eq!(table.next_task_id, next);
+            assert_eq!(table.processes.len(), 1);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        }
+        crate::prepared_map::fail_after_allocations(0);
+        assert_eq!(table.create_process(), Err(Errno::ENOMEM));
+        assert_eq!(table.next_task_id, next);
+        assert_eq!(table.processes.len(), 1);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        let pid = table.create_process().unwrap();
+        assert_eq!(pid, next);
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            table.remove_process_with_io(pid, &mut crate::process::test_host::NoopHost).unwrap();
+        }
+        drop(table);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn init_metadata_refusal_does_not_publish_reserved_or_user_identity() {
+        let mut table = ProcessTable::new();
+        let next = table.next_task_id;
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert_eq!(table.ensure_init(), Err(Errno::ENOMEM));
+            assert!(table.processes.is_empty());
+            assert_eq!(table.create_process(), Err(Errno::ENOMEM));
+            assert!(table.processes.is_empty());
+            assert_eq!(table.next_task_id, next);
+        }
+        table.ensure_init().unwrap();
+        assert_eq!(table.get(SYNTHETIC_INIT_PID).unwrap().argv[0], b"init");
+        assert_eq!(table.create_process().unwrap(), next);
+    }
+
+    #[test]
+    fn spawn_metadata_refusal_precedes_identity_and_file_actions() {
+        let mut table = ProcessTable::new();
+        let parent = table.create_process().unwrap();
+        let process = table.get_mut(parent).unwrap();
+        process.fd_table = crate::fd::FdTable::new();
+        process.ofd_table = crate::ofd::OfdTable::new();
+        let next = table.next_task_id;
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        let slots = 2 * core::mem::size_of::<crate::IoBuffer<u8>>();
+        let mut host = crate::process::test_host::NoopHost;
+        let attrs = crate::spawn::SpawnAttrs::empty();
+        for extra in [0, slots, slots + 6] {
+            let _limit = crate::io_buffer::test_budget(held + extra);
+            assert_eq!(table.spawn_child_for_caller(parent, parent, &[b"new"], &[b"KEY=value"],
+                &[crate::spawn::FileAction::Close { fd: 7 }], &attrs, &mut host), Err(Errno::ENOMEM));
+            assert_eq!(table.next_task_id, next);
+            assert_eq!(table.processes.len(), 2);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        }
+        let child = table.spawn_child_for_caller(parent, parent, &[b"new"], &[b"KEY=value"], &[], &attrs, &mut host).unwrap();
+        assert_eq!(child, next);
+        assert_eq!(table.get(child).unwrap().argv[0], b"new");
+        assert_eq!(table.get(child).unwrap().environ[0], b"KEY=value");
+        table.remove_process(child).unwrap();
+    }
+
+    #[test]
+    fn thread_admission_precedes_task_id_allocation_and_preserves_retry() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut table = ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        let next = table.next_task_id;
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert_eq!(table.create_thread(pid, pid, 0, 0, 0), Err(Errno::ENOMEM));
+            assert_eq!(table.next_task_id, next);
+            assert!(table.get(pid).unwrap().threads.is_empty());
+            assert_eq!(table.create_thread(pid, pid + 100, 0, 0, 0), Err(Errno::ESRCH));
+        }
+        let tid = table.create_thread(pid, pid, 0x10000, 0x20000, 0x30000).unwrap();
+        assert_eq!(tid, next);
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            let thread = table.get_mut(pid).unwrap().remove_thread(tid).unwrap();
+            assert_eq!(thread.stack_ptr, 0x10000);
+            assert_eq!(thread.tls_ptr, 0x20000);
+            assert_eq!(thread.ctid_ptr, 0x30000);
+        }
+        drop(table);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
     fn thread_creation_accepts_only_a_live_caller_owned_by_the_process() {
         let mut table = ProcessTable::new();
         let pid = table.create_process().unwrap();
@@ -2574,6 +2773,42 @@ mod wait_tests {
     }
 
     #[test]
+    fn limbo_retains_admitted_metadata_without_copying_after_teardown() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut table = ProcessTable::new();
+        let leader = table.create_process().unwrap();
+        let member = table.create_process().unwrap();
+        table.get_mut(member).unwrap().pgid = leader;
+        let process = table.get_mut(leader).unwrap();
+        process.argv = crate::process::ProcessStrings::copy_from(&[b"leader".as_slice()]).unwrap();
+        process.environ = crate::process::ProcessStrings::copy_from(&[b"KEY=value".as_slice()]).unwrap();
+        process.cwd = crate::ofd::OfdPath::copy_from(b"/tmp").unwrap();
+        let argv_pointer = process.argv[0].as_ptr();
+        let environment_pointer = process.environ[0].as_ptr();
+        let cwd_pointer = process.cwd.as_ptr();
+        let node_pointer = process as *const Process;
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            crate::prepared_map::fail_after_allocations(0);
+            table.reap_process(leader).unwrap();
+            crate::prepared_map::fail_after_allocations(usize::MAX);
+            let limbo = table.get(leader).unwrap();
+            assert_eq!(limbo as *const Process, node_pointer);
+            assert_eq!(limbo.state, ProcessState::Limbo);
+            assert_eq!(limbo.argv[0].as_ptr(), argv_pointer);
+            assert_eq!(limbo.environ[0].as_ptr(), environment_pointer);
+            assert_eq!(limbo.cwd.as_ptr(), cwd_pointer);
+            assert_eq!(limbo.argv[0], b"leader");
+            assert_eq!(limbo.environ[0], b"KEY=value");
+            table.remove_process(member).unwrap();
+            table.prune_empty_limbo_groups();
+            assert!(table.get(leader).is_none());
+        }
+        drop(table);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
     fn reap_retains_group_leader_as_limbo_until_group_empties() {
         let mut table = ProcessTable::new();
         assert_eq!(table.create_process().unwrap(), 100);
@@ -2584,7 +2819,7 @@ mod wait_tests {
         table.processes.get_mut(&101).unwrap().state = ProcessState::Exited;
 
         assert!(
-            table.procfs_pids().contains(&101),
+            table.procfs_pids().unwrap().contains(&101),
             "an unreaped zombie remains visible through procfs"
         );
 
@@ -2596,7 +2831,7 @@ mod wait_tests {
         assert_eq!(limbo.ppid, 100);
         assert!(table.all_pids().contains(&101));
         assert!(
-            !table.procfs_pids().contains(&101),
+            !table.procfs_pids().unwrap().contains(&101),
             "a reaped limbo identity must not remain visible through procfs"
         );
 
@@ -2651,6 +2886,37 @@ pub fn current_pid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fork_plan_admission_failure_does_not_retry_output_or_publish_a_child() {
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let next_task = table.next_task_id;
+        let process_count = table.processes.len();
+        let mut allocations = 0;
+        {
+            let _limit = crate::io_buffer::test_budget(baseline + INITIAL_FORK_STATE_BUFFER_LEN * 2);
+            let result = serialize_fork_state_with_allocator(table.get(parent_pid).unwrap(), |length| {
+                allocations += 1;
+                assert_eq!(length, INITIAL_FORK_STATE_BUFFER_LEN);
+                crate::io_buffer::IoBuffer::allocate(length, false, |bytes| {
+                    bytes.try_reserve_exact(length).map_err(|_| Errno::ENOMEM)
+                })
+            });
+            assert!(matches!(result, Err(Errno::ENOMEM)));
+            assert_eq!(allocations, 1);
+            assert_eq!(table.fork_process_for_caller(parent_pid, parent_pid), Err(Errno::ENOMEM));
+        }
+        assert_eq!(table.next_task_id, next_task);
+        assert_eq!(table.processes.len(), process_count);
+        assert_eq!(table.get(parent_pid).unwrap().fork_count(), 0);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        let child = table.fork_process_for_caller(parent_pid, parent_pid).unwrap();
+        assert!(table.get(child).is_some());
+        table.remove_process(child).unwrap();
+        table.remove_process(parent_pid).unwrap();
+    }
 
     #[test]
     fn exec_target_kernel_table_removal_fallback_closes_each_lease_once() {
@@ -2749,7 +3015,7 @@ mod tests {
             rgid: 4000,
             egid: 5000,
             sgid: 6000,
-            supplementary_groups: vec![7000, 8000],
+            supplementary_groups: crate::credentials::SupplementaryGroups::copy_from(&[7000, 8000]).unwrap(),
         };
         {
             let parent = table.get_mut(parent_pid).unwrap();
@@ -2804,7 +3070,113 @@ mod tests {
             .alloc_at_min(OpenFileDescRef(write_ofd), 0, 2049)
             .unwrap();
 
-        assert_eq!(build_fork_pipe_replay(&child), vec![(read_fd, write_fd)]);
+        assert_eq!(build_fork_pipe_replay(&child).unwrap().as_slice(), &[(read_fd, write_fd)]);
+    }
+
+    #[test]
+    fn fork_pipe_replay_refusal_releases_scratch_and_last_consumption_reclaims_credit() {
+        use crate::process::test_host::NoopHost;
+        let mut child = Process::new(108);
+        let mut host = NoopHost;
+        let (read_fd, write_fd) = crate::syscalls::sys_pipe(&mut child).unwrap();
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert!(matches!(build_fork_pipe_replay(&child), Err(Errno::ENOMEM)));
+        }
+        {
+            let scratch = 4 * core::mem::size_of::<(usize, i32, bool)>();
+            let _limit = crate::io_buffer::test_budget(baseline + scratch);
+            assert!(matches!(build_fork_pipe_replay(&child), Err(Errno::ENOMEM)));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        child.fork_pipe_replay = build_fork_pipe_replay(&child).unwrap();
+        assert_eq!(child.fork_pipe_replay.as_slice(), &[(read_fd, write_fd)]);
+        assert!(crate::io_buffer::IO_MEMORY.usage().0 > baseline);
+        child.fork_child = true;
+        assert_eq!(crate::syscalls::sys_pipe(&mut child), Ok((read_fd, write_fd)));
+        assert_eq!(child.fork_pipe_replay.capacity(), 0);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        for fd in [read_fd, write_fd] { crate::syscalls::sys_close(&mut child, &mut host, fd).unwrap(); }
+    }
+
+    #[test]
+    fn fork_pipe_replay_preserves_pipe_order_and_highest_alias_for_each_endpoint() {
+        use crate::process::test_host::NoopHost;
+        let mut child = Process::new(109);
+        let mut host = NoopHost;
+        let mut expected = Vec::new();
+        let mut descriptors = Vec::new();
+        for _ in 0..2 {
+            let (read_fd, write_fd) = crate::syscalls::sys_pipe(&mut child).unwrap();
+            let alias_read = crate::syscalls::sys_dup(&mut child, read_fd).unwrap();
+            let alias_write = crate::syscalls::sys_dup(&mut child, write_fd).unwrap();
+            let ofd = child.ofd_table.get(child.fd_table.get(read_fd).unwrap().ofd_ref.0).unwrap();
+            expected.push((-(ofd.host_handle + 1), (alias_read, alias_write)));
+            descriptors.extend([read_fd, write_fd, alias_read, alias_write]);
+        }
+        expected.sort_unstable_by_key(|(index, _)| *index);
+        let expected: Vec<_> = expected.into_iter().map(|(_, pair)| pair).collect();
+        let replay = build_fork_pipe_replay(&child).unwrap();
+        assert_eq!(replay.as_slice(), expected.as_slice());
+        for fd in descriptors { crate::syscalls::sys_close(&mut child, &mut host, fd).unwrap(); }
+    }
+
+    #[test]
+    fn failed_fork_replay_preparation_never_acquires_graphics_buffer_references() {
+        use crate::ofd::{DriFdState, DriOfdState, KmsFb, KmsFdState, PrimeBoState};
+        use crate::fd::OpenFileDescRef;
+        let _registry = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::dri::bo::reset_registry();
+        let bos = core::array::from_fn::<_, 4, _>(|_| crate::dri::with_registry(|registry| registry.alloc(32, 32, 32).id));
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let parent = table.get_mut(parent_pid).unwrap();
+        crate::syscalls::sys_pipe(parent).unwrap();
+        let mut render = DriFdState::default();
+        render.handles.insert(1, bos[0]);
+        render.handles.insert(2, bos[1]);
+        render.next_handle = 3;
+        let mut kms = KmsFdState::default();
+        kms.fbs.insert(1, KmsFb { bo_id: bos[2], width: 32, height: 32, pixel_format: 0, stride: 128 });
+        kms.next_fb_id = 1;
+        for state in [
+            DriOfdState::RenderNode(render),
+            DriOfdState::Card { dri: DriFdState::default(), kms },
+            DriOfdState::PrimeBo(PrimeBoState { bo_id: bos[3], cookie: 71 }),
+        ] {
+            let index = parent.ofd_table.create(FileType::CharDevice, 0,
+                crate::ofd::PRIME_FD_HOST_HANDLE, b"/dev/dri/test-inheritance".to_vec());
+            parent.ofd_table.get_mut(index).unwrap().dri_state = Some(crate::IoBox::new(state));
+            parent.fd_table.alloc(OpenFileDescRef(index), 0).unwrap();
+        }
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let process_count = table.processes.len();
+        for allocation in [1, 2] {
+            FAIL_FORK_REPLAY_ALLOCATION.with(|remaining| remaining.set(Some(allocation)));
+            let result = table.fork_process_for_caller(parent_pid, parent_pid);
+            assert_eq!(FAIL_FORK_REPLAY_ALLOCATION.with(|remaining| remaining.replace(None)), Some(0));
+            assert_eq!(result, Err(Errno::ENOMEM));
+            assert_eq!(table.processes.len(), process_count);
+            assert_eq!(table.get(parent_pid).unwrap().fork_count(), 0);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+            for bo in bos { assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).map(|buffer| buffer.refcount)), Some(1)); }
+        }
+        let child_pid = table.fork_process_for_caller(parent_pid, parent_pid).unwrap();
+        for bo in bos { assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).map(|buffer| buffer.refcount)), Some(2)); }
+        let mut host = crate::process::test_host::NoopHost;
+        {
+            let (child, locks) = table.process_and_advisory_locks(child_pid).unwrap();
+            crate::syscalls::sys_exit_with_locks(child, locks, &mut host, 0);
+        }
+        table.remove_process(child_pid).unwrap();
+        for bo in bos { assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).map(|buffer| buffer.refcount)), Some(1)); }
+        {
+            let (parent, locks) = table.process_and_advisory_locks(parent_pid).unwrap();
+            crate::syscalls::sys_exit_with_locks(parent, locks, &mut host, 0);
+        }
+        table.remove_process(parent_pid).unwrap();
+        for bo in bos { assert!(crate::dri::with_registry(|registry| registry.get(bo).is_none())); }
     }
 
     #[test]
@@ -3432,7 +3804,7 @@ mod tests {
             let parent = table.get_mut(parent_pid).unwrap();
             let mut renamed_socket =
                 SocketInfo::new(SocketDomain::Unix, SocketType::Dgram, 0);
-            renamed_socket.bind_path = Some(OLD_NAME.to_vec());
+            renamed_socket.bind_path = Some(crate::IoBuffer::copy_from(OLD_NAME).unwrap());
             renamed_socket.state = SocketState::Bound;
             let renamed_index = parent.sockets.alloc(renamed_socket);
             let renamed_ofd = parent.ofd_table.create(
@@ -3460,7 +3832,7 @@ mod tests {
 
             let mut reused_socket =
                 SocketInfo::new(SocketDomain::Unix, SocketType::Dgram, 0);
-            reused_socket.bind_path = Some(OLD_NAME.to_vec());
+            reused_socket.bind_path = Some(crate::IoBuffer::copy_from(OLD_NAME).unwrap());
             reused_socket.state = SocketState::Bound;
             let reused_index = parent.sockets.alloc(reused_socket);
             let reused_ofd = parent.ofd_table.create(
@@ -3561,7 +3933,7 @@ mod tests {
         ));
         assert_eq!(socket_index, 0);
         child.sockets.get_mut(socket_index).unwrap().bind_path =
-            Some(ABSTRACT_PATH.to_vec());
+            Some(crate::IoBuffer::copy_from(ABSTRACT_PATH).unwrap());
         child.ofd_table.create(
             FileType::Regular,
             O_RDONLY,
@@ -3628,11 +4000,7 @@ mod tests {
             ofd.dir_host_handle = ITERATOR_HANDLE;
             ofd.dir_synth_state = 2;
             ofd.dir_entry_offset = 4;
-            ofd.dir_pending_entry = Some(PendingDirEntry {
-                ino: 77,
-                d_type: 8,
-                name: b"pending".to_vec(),
-            });
+            ofd.dir_pending_entry = Some(PendingDirEntry::new(77, 8, b"pending").unwrap());
             parent.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap()
         };
 
@@ -3681,7 +4049,7 @@ mod tests {
             .unwrap();
         assert_eq!(parent_ofd.dir_host_handle, ITERATOR_HANDLE);
         assert_eq!(
-            parent_ofd.dir_pending_entry.as_ref().unwrap().name,
+            parent_ofd.dir_pending_entry.as_ref().unwrap().name(),
             b"pending"
         );
 
@@ -3724,11 +4092,7 @@ mod tests {
             ofd.dir_host_handle = ITERATOR_HANDLE;
             ofd.dir_synth_state = 2;
             ofd.dir_entry_offset = 3;
-            ofd.dir_pending_entry = Some(PendingDirEntry {
-                ino: 88,
-                d_type: 8,
-                name: b"next".to_vec(),
-            });
+            ofd.dir_pending_entry = Some(PendingDirEntry::new(88, 8, b"next").unwrap());
             parent.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap()
         };
 
@@ -4443,6 +4807,150 @@ mod tests {
     }
 
     #[test]
+    fn process_removal_streams_existing_owners_at_full_allowance_in_close_order() {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum RemovalEvent { Directory(i64), File(i64), Network(i32), Framebuffer(u32), Bo(u32) }
+        struct RemovalLog { events: [Option<RemovalEvent>; 16], length: usize }
+        impl RemovalLog {
+            fn record(&mut self, event: RemovalEvent) { self.events[self.length] = Some(event); self.length += 1; }
+        }
+        impl ProcessRemovalIo for RemovalLog {
+            fn close_directory(&mut self, handle: i64) { self.record(RemovalEvent::Directory(handle)); }
+            fn close_file(&mut self, handle: i64) { self.record(RemovalEvent::File(handle)); }
+            fn close_network(&mut self, handle: i32) { self.record(RemovalEvent::Network(handle)); }
+            fn destroy_bo(&mut self, bo_id: u32) { self.record(RemovalEvent::Bo(bo_id)); }
+            fn release_dri_effect(&mut self, _pid: u32, effect: crate::syscalls::DriReleaseEffect) {
+                match effect { crate::syscalls::DriReleaseEffect::DestroyBo(bo_id) => self.destroy_bo(bo_id),
+                    _ => panic!("unexpected DRI effect") }
+            }
+            fn unbind_framebuffer(&mut self, pid: u32) { self.record(RemovalEvent::Framebuffer(pid)); }
+        }
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut table = ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        let process = table.get_mut(pid).unwrap();
+        process.fd_table = crate::fd::FdTable::new();
+        process.ofd_table = crate::ofd::OfdTable::new();
+        let directory = process.ofd_table.create(FileType::Directory, 0, 9_900_001, b"/directory".to_vec());
+        process.ofd_table.get_mut(directory).unwrap().dir_host_handle = 9_900_002;
+        process.fd_table.alloc(crate::fd::OpenFileDescRef(directory), 0).unwrap();
+        let file = process.ofd_table.create(FileType::Regular, 0, 9_900_003, b"/file".to_vec());
+        process.fd_table.alloc(crate::fd::OpenFileDescRef(file), 0).unwrap();
+        process.fb_binding = Some(crate::process::FbBinding {
+            addr: 0x04000000, len: 0x10000, w: 1, h: 1, stride: 4, fmt: 0,
+        });
+        let previous_owner = FB0_OWNER.swap(pid as i32, core::sync::atomic::Ordering::SeqCst);
+        add_listening_socket(&mut table, pid, 8080, 10);
+        table.get_mut(pid).unwrap().sockets.get_mut(0).unwrap().host_net_handle = Some(9_999_971);
+        let mut log = RemovalLog { events: [None; 16], length: 0 };
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            crate::prepared_map::fail_after_allocations(0);
+            let state = table.remove_process_with_io(pid, &mut log).unwrap();
+            crate::prepared_map::fail_after_allocations(usize::MAX);
+            assert!(state.had_framebuffer_binding);
+            assert!(table.get(pid).is_none());
+            assert_eq!(&log.events[..log.length], &[
+                Some(RemovalEvent::Directory(9_900_002)), Some(RemovalEvent::File(9_900_001)),
+                Some(RemovalEvent::File(9_900_003)), Some(RemovalEvent::Framebuffer(pid)),
+                Some(RemovalEvent::Network(9_999_971)),
+            ]);
+            assert_eq!(FB0_OWNER.load(core::sync::atomic::Ordering::SeqCst), -1);
+        }
+        FB0_OWNER.store(previous_owner, core::sync::atomic::Ordering::SeqCst);
+        drop(table);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn process_removal_destroys_last_deferred_prime_owner_without_new_admission() {
+        struct DestroyRecorder { destroyed: Option<u32> }
+        impl ProcessRemovalIo for DestroyRecorder {
+            fn close_directory(&mut self, _handle: i64) {}
+            fn close_file(&mut self, _handle: i64) {}
+            fn close_network(&mut self, _handle: i32) {}
+            fn unbind_framebuffer(&mut self, _pid: u32) {}
+            fn destroy_bo(&mut self, bo_id: u32) { assert!(self.destroyed.replace(bo_id).is_none()); }
+            fn release_dri_effect(&mut self, _pid: u32, effect: crate::syscalls::DriReleaseEffect) {
+                match effect { crate::syscalls::DriReleaseEffect::DestroyBo(bo_id) => self.destroy_bo(bo_id),
+                    _ => panic!("unexpected DRI effect") }
+            }
+        }
+        let _registry = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut table = ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        let bo_id = crate::dri::with_registry(|registry| registry.alloc(32, 32, 32).id);
+        let cookie = crate::dri::with_registry(|registry| registry.ensure_prime_cookie(bo_id).unwrap());
+        let mut queued = crate::pipe::InFlightFd::new(crate::lock::OfdId(9_900_071), None,
+            FileType::CharDevice, 0, crate::ofd::PRIME_FD_HOST_HANDLE, 0, b"/prime");
+        queued.prime_bo = Some(crate::ofd::PrimeBoState { bo_id, cookie });
+        queued.retain_reference().unwrap();
+        assert_eq!(crate::dri::with_registry(|registry| registry.decref(bo_id)), Some(1));
+        let mut recorder = DestroyRecorder { destroyed: None };
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            crate::prepared_map::fail_after_allocations(0);
+            drop(queued);
+            table.remove_process_with_io(pid, &mut recorder).unwrap();
+            crate::prepared_map::fail_after_allocations(usize::MAX);
+        }
+        assert_eq!(recorder.destroyed, Some(bo_id));
+        assert!(crate::dri::with_registry(|registry| registry.get(bo_id).is_none()));
+        assert!(!crate::pipe::has_deferred_in_flight_releases());
+    }
+
+    #[test]
+    fn listener_cursor_refusal_preserves_selection_and_reuses_admitted_node() {
+        let mut table = ProcessTable::new();
+        let parent = table.create_process().unwrap();
+        let first = table.create_process().unwrap();
+        let second = table.create_process().unwrap();
+        table.get_mut(first).unwrap().ppid = parent;
+        table.get_mut(second).unwrap().ppid = parent;
+        add_listening_socket(&mut table, parent, 8080, 3);
+        add_listening_socket(&mut table, first, 8080, 3);
+        add_listening_socket(&mut table, second, 8080, 3);
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert_eq!(table.pick_tcp_listener_target(8080, 0), Err(Errno::ENOMEM));
+            assert!(table.tcp_listener_rr.is_empty());
+        }
+        crate::prepared_map::fail_after_allocations(0);
+        assert_eq!(table.pick_tcp_listener_target(8080, 0), Err(Errno::ENOMEM));
+        assert!(table.tcp_listener_rr.is_empty());
+        assert_eq!(table.pick_tcp_listener_target(8080, 0).unwrap(), Some((first, 3)));
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            crate::prepared_map::fail_after_allocations(0);
+            assert_eq!(table.pick_tcp_listener_target(8080, 0).unwrap(), Some((second, 3)));
+            assert_eq!(table.pick_tcp_listener_target(8080, 0).unwrap(), Some((first, 3)));
+            table.get_mut(first).unwrap().state = ProcessState::Exited;
+            table.get_mut(second).unwrap().state = ProcessState::Exited;
+            assert_eq!(table.pick_tcp_listener_target(8080, parent).unwrap(), None);
+            assert!(table.tcp_listener_rr.is_empty());
+            crate::prepared_map::fail_after_allocations(usize::MAX);
+        }
+    }
+
+    #[test]
+    fn group_pid_cursor_preserves_membership_without_allocating_a_cohort() {
+        let mut table = ProcessTable::new();
+        let leader = table.create_process().unwrap();
+        let member = table.create_process().unwrap();
+        let other = table.create_process().unwrap();
+        table.get_mut(member).unwrap().pgid = leader;
+        table.get_mut(member).unwrap().state = ProcessState::Exited;
+        let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+        assert_eq!(table.next_pid_in_group(leader, 0), Some(leader));
+        assert_eq!(table.next_pid_in_group(leader, leader), Some(member));
+        assert_eq!(table.next_pid_in_group(leader, member), None);
+        assert_eq!(table.next_pid_in_group(other, 0), Some(other));
+        table.get_mut(member).unwrap().state = ProcessState::Limbo;
+        assert_eq!(table.next_pid_in_group(leader, leader), None);
+    }
+
+    #[test]
     fn tcp_listener_target_policy_prefers_fork_children() {
         let mut table = ProcessTable::new();
         let parent = table.create_process().unwrap();
@@ -4456,15 +4964,15 @@ mod tests {
         add_listening_socket(&mut table, second_child, 8080, 3);
 
         assert_eq!(
-            table.pick_tcp_listener_target(8080, 0),
+            table.pick_tcp_listener_target(8080, 0).unwrap(),
             Some((first_child, 3))
         );
         assert_eq!(
-            table.pick_tcp_listener_target(8080, 0),
+            table.pick_tcp_listener_target(8080, 0).unwrap(),
             Some((second_child, 3))
         );
         assert_eq!(
-            table.pick_tcp_listener_target(8080, 0),
+            table.pick_tcp_listener_target(8080, 0).unwrap(),
             Some((first_child, 3))
         );
     }
@@ -4480,14 +4988,14 @@ mod tests {
         add_listening_socket(&mut table, child, 8080, 3);
 
         assert_eq!(
-            table.pick_tcp_listener_target(8080, parent),
+            table.pick_tcp_listener_target(8080, parent).unwrap(),
             Some((child, 3))
         );
         assert_eq!(
-            table.pick_tcp_listener_target(8080, child),
+            table.pick_tcp_listener_target(8080, child).unwrap(),
             Some((parent, 3))
         );
-        assert_eq!(table.pick_tcp_listener_target(9999, 0), None);
+        assert_eq!(table.pick_tcp_listener_target(9999, 0).unwrap(), None);
     }
 
     fn add_listening_socket(table: &mut ProcessTable, pid: u32, port: u16, fd: i32) {

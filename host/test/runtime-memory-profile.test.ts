@@ -7,12 +7,65 @@ import {
   detectRuntimeMemoryProfile,
   runtimeMemoryProfileById,
   runtimeMemoryProfileSignals,
+  selectKernelMaxPages,
+  selectRootfsJournalStateBytes,
+  selectRootfsIoBytes,
+  selectRootfsMetadataBytes,
 } from "../src/runtime-memory-profile";
 import { DEFAULT_KERNEL_MAX_PAGES, DEFAULT_MAX_PAGES } from "../src/constants";
+
+describe("rootfs I/O budget", () => {
+  it("shares bounded cache/scratch capacity independently of namespace and journal state", () => {
+    expect(selectRootfsIoBytes(undefined)).toBe(32 * 1024 * 1024);
+    expect(selectRootfsIoBytes(1024)).toBe(8 * 1024 * 1024);
+    expect(() => selectRootfsIoBytes(DEFAULT_KERNEL_MAX_PAGES + 1)).toThrow(RangeError);
+  });
+});
 
 const SAFARI_MAC =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 " +
   "(KHTML, like Gecko) Version/26.0 Safari/605.1.15";
+
+describe("rootfs metadata admission budget", () => {
+  it("budgets journal state independently from a smaller live-namespace quota", () => {
+    expect(selectRootfsJournalStateBytes()).toBe(32 * 1024 * 1024);
+    expect(selectRootfsJournalStateBytes(1024)).toBe(8 * 1024 * 1024);
+    expect(selectRootfsJournalStateBytes(1)).toBe(8192);
+    expect(() => selectRootfsJournalStateBytes(0)).toThrow();
+    expect(selectRootfsMetadataBytes(65536, 1024)).toBe(65536);
+  });
+  it("bounds retained metadata independently from logical disk capacity", () => {
+    expect(selectRootfsMetadataBytes(undefined)).toBe(64 * 1024 * 1024);
+    expect(selectRootfsMetadataBytes(undefined, 1024)).toBe(8 * 1024 * 1024);
+    expect(selectRootfsMetadataBytes(undefined, 1)).toBe(8192);
+    expect(selectRootfsMetadataBytes(65536, 1024)).toBe(65536);
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity, 8 * 1024 * 1024 + 1])("rejects an invalid or excessive budget %s", (bytes) => {
+    expect(() => selectRootfsMetadataBytes(bytes, 1024)).toThrow(RangeError);
+  });
+
+  it("cannot raise the kernel memory ceiling while selecting metadata headroom", () => {
+    expect(() => selectRootfsMetadataBytes(undefined, DEFAULT_KERNEL_MAX_PAGES + 1)).toThrow(RangeError);
+    expect(selectRootfsMetadataBytes(undefined, CONSTRAINED_MEMORY_PROFILE.kernelMaxPages)).toBe(64 * 1024 * 1024);
+  });
+});
+
+describe("kernel memory budget override", () => {
+  it("preserves defaults and admits a smaller real kernel ceiling", () => {
+    expect(selectKernelMaxPages(undefined)).toBe(DEFAULT_KERNEL_MAX_PAGES);
+    expect(selectKernelMaxPages(undefined, CONSTRAINED_MEMORY_PROFILE.kernelMaxPages))
+      .toBe(CONSTRAINED_MEMORY_PROFILE.kernelMaxPages);
+    expect(selectKernelMaxPages(1024, CONSTRAINED_MEMORY_PROFILE.kernelMaxPages)).toBe(1024);
+  });
+  it.each([0, -1, 1.5, NaN, Infinity, DEFAULT_KERNEL_MAX_PAGES + 1])("rejects an invalid ceiling %s", (pages) => {
+    expect(() => selectKernelMaxPages(pages)).toThrow(RangeError);
+  });
+  it("cannot raise a constrained profile's reservation", () => {
+    expect(() => selectKernelMaxPages(DEFAULT_KERNEL_MAX_PAGES, CONSTRAINED_MEMORY_PROFILE.kernelMaxPages))
+      .toThrow(RangeError);
+  });
+});
 const SAFARI_IOS =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) " +
   "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Mobile/15E148 " +

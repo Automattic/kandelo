@@ -1225,6 +1225,18 @@ async function registerScope(
   }, scopePath);
 }
 
+test("the guest bridge forwards the browser User-Agent when native request headers omit it", async ({ page }) => {
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const machine = await installBridge(page, SESSION_A, "browser-identity");
+  const observed = await page.evaluate(async prefix => {
+    const response = await fetch(`${prefix}identity`, { cache: "no-store" });
+    return { status: response.status, forwarded: response.headers.get("x-forwarded-user-agent"), expected: navigator.userAgent };
+  }, machine.appPrefix);
+  expect(observed.status).toBe(200);
+  expect(observed.forwarded).toBe(observed.expected);
+});
+
 async function installBridge(
   page: Page,
   sessionId: string,
@@ -1258,6 +1270,7 @@ async function installBridge(
         status: 200,
         headers: {
           "Content-Type": "text/plain; charset=utf-8",
+          "x-forwarded-user-agent": event.data.headers["user-agent"] ?? "",
           "Set-Cookie": `${responseLabel}=${keepAlive.__bridgeCookieValues[responseLabel] ?? "1"}; Path=/`,
         },
         body: new TextEncoder().encode(`bridge:${responseLabel}`),

@@ -17,6 +17,7 @@ import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/r
 import { parentPort } from "node:worker_threads";
 import {
   closeSync,
+  createReadStream,
   existsSync,
   ftruncateSync,
   fstatSync,
@@ -25,14 +26,18 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  opendirSync,
   readSync,
   readFileSync,
-  readdirSync,
   rmSync,
+  statSync,
   unlinkSync,
   writeSync,
 } from "node:fs";
+import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
+import { DeferredByteSpool } from "./vfs/deferred-byte-spool";
+import { openNodeDeferredByteStorage } from "./vfs/node-deferred-byte-storage";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -58,6 +63,8 @@ import { parseSealedGenerationSlot } from "./vfs/overlay-generation-seal";
 import { writeAndVerifyRootfsImage } from "./vfs/staged-rootfs-image";
 import type { PersistentOverlayStorage } from "./vfs/overlay-storage";
 import { collectBootOverlayGenerations, compactOverlayGenerationForBoot, enableBestOverlayGeneration, LiveOverlayCompactor, NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
+import { UnconfirmedOverlayActivationError } from "./vfs/overlay-generation-activation";
+import { OverlayGenerationMetadata } from "./vfs/overlay-generation-metadata";
 import {
   VirtualPlatformIO,
   NodeTimeProvider,
@@ -173,7 +180,8 @@ import type {
   HttpRequestMessage,
 } from "./node-kernel-protocol";
 import { OwnedJobs } from "./owned-jobs";
-import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
+import { formatHostErrorDiagnostic } from "./host-diagnostic";
+import { closeKernelRealmStorage, kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import { createDestroyProgressReporter } from "./destroy-progress-reporter";
 import {
   configureRootfsOverlayFromImage,
@@ -203,6 +211,7 @@ let kernelWorker: CentralizedKernelWorker;
 let persistentOverlay: PersistentOverlayStorage | null = null;
 let persistentOverlayIndex: PersistentOverlayStorage | null = null;
 let liveOverlayCompactor: LiveOverlayCompactor | null = null;
+let overlayGenerationMetadata: OverlayGenerationMetadata | null = null;
 let persistentOverlayLock: import("node:sqlite").DatabaseSync | null = null;
 let pcmDriver: NodePcmDriver | null = null;
 let workerAdapter: NodeWorkerAdapter;
@@ -244,6 +253,7 @@ let vfsExecIO: PlatformIO | null = null;
  *  in `buildVirtualPlatformIO`. Handed to the kernel's rootfs in `handleInit`
  *  as the fetcher behind `host_fetch_deferred`. */
 let rootfsLazyFetcher: LazyFetch | undefined;
+let deferredByteSpool: DeferredByteSpool | undefined;
 /** Canonical mount points of the host filesystems mounted beneath the
  *  kernel-owned `/` (session-seed trees, extra host mounts). Handed to the
  *  kernel's rootfs so it does not claim their paths. */
@@ -708,9 +718,7 @@ function post(msg: KernelToMainMessage) {
 function terminatePoisonedKernelWorker(error: Error): void {
   if (kernelFatalReported) return;
   kernelFatalReported = true;
-  const detail = error.stack
-    ? `${error.message}\n${error.stack}`
-    : error.message;
+  const detail = formatHostErrorDiagnostic(error);
   try {
     try {
       reportHostDiagnostic({
@@ -921,17 +929,18 @@ async function resolveExecutableForLaunch(
  * a lazy read awaits its pinned path before reading bytes.
  * A failed URL rethrows only when fetched, so latent bad assets do not abort boot.
  */
-function createRepoLazyAssetFetcher(): (url: string) => Promise<Response> {
-  return async (url: string) => {
-    if (/^https?:\/\//.test(url)) return globalThis.fetch(url);
+function createRepoLazyAssetFetcher(): LazyFetch {
+  return async (url, init) => {
+    if (/^https?:\/\//.test(url)) return globalThis.fetch(url, init);
     const path = url.startsWith("file://")
       ? fileURLToPath(url)
       : await repoLazyAssetResolver!.resolve(url);
     if (!existsSync(path)) return new Response(null, { status: 404 });
-    const bytes = new Uint8Array(readFileSync(path));
-    return new Response(bytes, {
+    const size = statSync(path).size;
+    const body = Readable.toWeb(createReadStream(path, { signal: init?.signal ?? undefined }));
+    return new Response(body as ReadableStream<Uint8Array>, {
       status: 200,
-      headers: { "content-length": String(bytes.byteLength) },
+      headers: { "content-length": String(size) },
     });
   };
 }
@@ -1010,6 +1019,13 @@ async function buildVirtualPlatformIO(
 let repoLazyAssetResolver: NodeLazyAssetResolver | undefined;
 
 function cleanupSessionDir(): void {
+  overlayGenerationMetadata?.dispose();
+  overlayGenerationMetadata = null;
+  kernelWorker?.disposeRootfsDeferredTransport();
+  void deferredByteSpool?.close().catch(error => {
+    console.warn("[node-kernel-worker] deferred byte storage close failed", error);
+  });
+  deferredByteSpool = undefined;
   void repoLazyAssetResolver?.close();
   repoLazyAssetResolver = undefined;
   try {
@@ -1044,9 +1060,14 @@ async function handleInit(msg: InitMessage) {
     if (msg.rootfsImage !== undefined) {
       throw new Error("rootfs image cannot have both file and in-memory sources");
     }
-    nodeImageReader = NodeImageReader.open(msg.rootfsImageFile, msg.rootfsImageIntegrity);
+    if (msg.rootfsPersistentImageBinding !== undefined && msg.rootfsImageIntegrity !== undefined) {
+      throw new Error("persistent image binding cannot be combined with whole-image integrity metadata");
+    }
+    nodeImageReader = NodeImageReader.open(msg.rootfsImageFile, msg.rootfsImageIntegrity, msg.rootfsPersistentImageBinding !== undefined);
   } else if (msg.rootfsImageIntegrity !== undefined) {
     throw new Error("rootfs image file integrity requires a file source");
+  } else if (msg.rootfsPersistentImageBinding !== undefined) {
+    throw new Error("persistent image binding requires a file source");
   }
   const hasRootfsImage = msg.rootfsImage !== undefined || nodeImageReader !== null;
   maxPages = msg.config.maxPages ?? DEFAULT_MAX_PAGES;
@@ -1095,6 +1116,9 @@ async function handleInit(msg: InitMessage) {
       maxWorkers: msg.config.maxWorkers,
       dataBufferSize: msg.config.dataBufferSize ?? 65536,
       useSharedMemory: msg.config.useSharedMemory ?? true,
+      kernelMaxPages: msg.config.kernelMaxPages,
+      rootfsMetadataBytes: msg.config.rootfsMetadataBytes,
+      maxVfsFileReadBytes: msg.config.maxVfsFileReadBytes,
       defaultThreadSlots,
       enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG,
       imageBuildDeterminism: msg.config.imageBuildDeterminism,
@@ -1259,32 +1283,38 @@ async function handleInit(msg: InitMessage) {
 
   // The kernel owns `/`: hand it the boot image and the byte pipe for what the
   // image does not carry before `init` loads them.
-  let finalizeRootfsTransport: (() => void) | undefined;
+  let finalizeRootfsTransport: (() => Map<string, number>) | undefined;
   if (rootImage.has()) {
     const reader = nodeImageReader;
     const rootfsContainer = msg.rootfsImage === undefined
       ? null
       : new Uint8Array(msg.rootfsImage);
+    if (msg.experimentalFixedPersistencePath !== undefined || msg.experimentalResizablePersistencePath !== undefined) {
+      if (sessionDir === null) throw new Error("Persistent rootfs byte storage requires a session directory");
+      deferredByteSpool = await DeferredByteSpool.open(() => openNodeDeferredByteStorage(sessionDir!), kernelWorker.rootfsTransportMetadataBudget());
+    }
     finalizeRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
       imageRead: reader === null
         ? imageReadFromContainer(rootfsContainer!)
         : (at, destination) => reader.readAt(at, destination),
       imageLength: reader?.length ?? rootfsContainer!.byteLength,
+      persistentImageBinding: msg.rootfsPersistentImageBinding,
       onLazyProgress: (event) => post({ type: "lazy_download", event }),
       foreignPrefixes: rootfsForeignPrefixes,
       nosuid: rootImage.nosuid(),
       lazyFetcher: rootfsLazyFetcher,
+      deferredByteSpool,
       lazyUrlBase: msg.rootfsLazyUrlBase,
     });
   }
 
   await kernelWorker.init(msg.kernelWasmBytes);
-  finalizeRootfsTransport?.();
+  const rootfsResourceLimits = finalizeRootfsTransport?.();
   if (rootImage.has() && msg.rootfsLazyAssets === undefined && msg.rootfsLazyAssetSources === undefined) {
     // Read metadata after native validation, outside a Wasm import callback.
     // Freshness checking still starts only on the first lazy read, off-thread.
     repoLazyAssetResolver = new NodeLazyAssetResolver(
-      [...kernelWorker.rootfsLazyResourceLimits().keys()].filter(
+      [...(rootfsResourceLimits?.keys() ?? [])].filter(
         (url) => !/^[a-z][a-z0-9+.-]*:/i.test(url),
       ),
     );
@@ -1323,30 +1353,37 @@ async function handleInit(msg: InitMessage) {
     try {
       lock.exec("BEGIN EXCLUSIVE");
       const backend = new HostFileSystem(dirname(path));
+      overlayGenerationMetadata = new OverlayGenerationMetadata(kernelWorker.rootfsTransportMetadataBudget());
       const files = {
-        listSlots: async () => {
+        metadata: overlayGenerationMetadata,
+        activationCodec: kernelWorker.overlayActivationCodec(),
+        sealCodec: kernelWorker.overlaySealCodec(),
+        *listSlots() {
           const prefix = `${basename(path)}.`;
-          const slots = new Set<string>();
-          for (const name of readdirSync(dirname(path))) {
-            if (!name.startsWith(prefix)) continue;
-            const match = /^(g[0-9]+)\.(?:journal|index|seal)$/.exec(name.slice(prefix.length));
-            if (match !== null) {
-              if (parseSealedGenerationSlot(match[1]!) === null) {
-                throw new Error("persistent overlay generation slot is invalid");
+          const directory = opendirSync(dirname(path));
+          try {
+            for (let entry = directory.readSync(); entry !== null; entry = directory.readSync()) {
+              const name = entry.name;
+              if (!name.startsWith(prefix)) continue;
+              const match = /^(g[0-9]+)\.(?:journal|index|seal)$/.exec(name.slice(prefix.length));
+              if (match !== null) {
+                if (parseSealedGenerationSlot(match[1]!) === null) {
+                  throw new Error("persistent overlay generation slot is invalid");
+                }
+                yield match[1]!;
               }
-              slots.add(match[1]!);
             }
-          }
-          return [...slots];
+          } finally { directory.closeSync(); }
         },
         open: async (slot, file, create) => {
-          const name = slot === "legacy" ? basename(path) : `${basename(path)}.${slot}.${file}`;
+          const name = slot === "legacy" ? file === "journal" ? basename(path) : `${basename(path)}.${file}`
+            : `${basename(path)}.${slot}.${file}`;
           if (!create && !existsSync(join(dirname(path), name))) return null;
           return OverlayStorageFile.open(backend, `/${name}`, create, true);
         },
         remove: async (slot, file) => {
           try {
-            unlinkSync(slot === "legacy" ? path : `${path}.${slot}.${file}`);
+            unlinkSync(slot === "legacy" ? file === "journal" ? path : `${path}.${file}` : `${path}.${slot}.${file}`);
           } catch (error) {
             if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
           }
@@ -1365,10 +1402,12 @@ async function handleInit(msg: InitMessage) {
         },
       );
       const handoff = {
+        memoryPressure: () => kernelWorker.rootfsJournalStateMemory().pressure,
         prepare: (storage: PersistentOverlayStorage) => kernelWorker.prepareRootfsPersistenceCompaction(storage),
         checkpoint: (index: PersistentOverlayStorage) => kernelWorker.checkpointPreparedRootfsPersistence(index),
         activate: () => kernelWorker.activateRootfsPersistenceCompaction(),
         cancel: () => kernelWorker.cancelRootfsPersistenceCompaction(),
+        fail: (error: UnconfirmedOverlayActivationError) => kernelWorker.failPersistenceWriter(error),
       };
       const recovered = await collectBootOverlayGenerations(selected, files, (error) => {
         post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `generation retirement failed: ${error}` });
@@ -1383,6 +1422,7 @@ async function handleInit(msg: InitMessage) {
         persistentOverlay = next.journal;
         persistentOverlayIndex = next.index ?? null;
       }, (error) => {
+        if (error instanceof UnconfirmedOverlayActivationError) kernelWorker.failPersistenceWriter(error);
         post({ type: "host_diagnostic", pid: 0, source: "Persistent rootfs", message: `live compaction failed: ${error}` });
       });
     } catch (error) {
@@ -3587,7 +3627,7 @@ async function handleTerminate(msg: TerminateProcessMessage) {
 // --- Destroy ---
 
 async function performDestroy() {
-  liveOverlayCompactor?.stop();
+  await liveOverlayCompactor?.stop();
   liveOverlayCompactor = null;
   await repoLazyAssetResolver?.close();
   // [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
@@ -3608,27 +3648,24 @@ async function performDestroy() {
   const destroyProgress = createDestroyProgressReporter((event) =>
     post({ type: "destroy_progress", event }),
   );
-  let woken = new Set<number>();
-  try { woken = await kernelWorker.killAllBlockedForTeardown(); } catch (e) {
-    console.error(`[node-kernel-worker] killAllBlockedForTeardown failed: ${e}`);
+  let retiringPids = new Set<number>();
+  try { retiringPids = await kernelWorker.beginKernelTeardown(); } catch (e) {
+    console.error(`[node-kernel-worker] beginKernelTeardown failed: ${e}`);
   }
-  destroyProgress.startDraining(woken.size);
-  // Drain only for the pids we woke — a process we did not wake (e.g. one
-  // already exited via a sibling thread) never posts {exit} and is
-  // force-terminated below instead of waited on.
+  destroyProgress.startDraining(retiringPids.size);
   const drainDeadline = Date.now() + DESTROY_KILL_DRAIN_TIMEOUT_MS;
   const liveWokenCount = () => {
     let live = 0;
-    for (const pid of woken) if (processes.has(pid)) live++;
+    for (const pid of retiringPids) if (processes.has(pid)) live++;
     return live;
   };
   let liveWoken = liveWokenCount();
   while (liveWoken > 0 && Date.now() < drainDeadline) {
-    destroyProgress.drained(woken.size - liveWoken);
+    destroyProgress.drained(retiringPids.size - liveWoken);
     await new Promise((r) => setTimeout(r, DESTROY_KILL_DRAIN_POLL_MS));
     liveWoken = liveWokenCount();
   }
-  destroyProgress.drained(woken.size - liveWoken);
+  destroyProgress.drained(retiringPids.size - liveWoken);
   if (liveWoken > 0) {
     console.warn(`[node-kernel-worker] destroy drain timed out with woken process(es) still live; force-terminating`);
   }
@@ -3729,14 +3766,11 @@ async function performDestroy() {
       console.error(persistenceSyncFailure);
     }
   }
-  persistentOverlay?.close();
-  persistentOverlay = null;
-  persistentOverlayIndex?.close();
-  persistentOverlayIndex = null;
-  if (persistentOverlayLock !== null) {
-    persistentOverlayLock.close();
-    persistentOverlayLock = null;
-  }
+  closeKernelRealmStorage([
+    () => { persistentOverlay?.close(); persistentOverlay = null; },
+    () => { persistentOverlayIndex?.close(); persistentOverlayIndex = null; },
+    () => { persistentOverlayLock?.close(); persistentOverlayLock = null; },
+  ]);
   if (gracefulDetachComplete) {
     try {
       processMemoryAllocator.clear();
@@ -3755,24 +3789,33 @@ async function performDestroy() {
       "fallback",
     );
   }
+  let deferredCloseError: unknown;
+  try { await deferredByteSpool?.close(); }
+  catch (error) { deferredCloseError = error; }
   cleanupSessionDir();
+  if (deferredCloseError !== undefined) throw deferredCloseError;
   return kernelRealmDestroyResult(gracefulDetachComplete, persistenceSyncFailure);
 }
 
 async function handleDestroy(msg: { requestId: number }) {
-  // WHY: message and syscall callbacks overlap across awaits. The shared gate
-  // closes admission synchronously, drains every creator that entered first,
-  // and runs this terminal sweep only once. The outer worker-realm termination
-  // remains the bounded fallback if an admitted creator does not finish.
-  const destroy = processMemoryCreators.closeAndRunAfterDrain(
-    performDestroy,
-  );
-  // Pending lazy exec reads may hold a creator token. Cancel their resolver
-  // after closing admission, before waiting for that token to drain.
-  const resolverClosed = repoLazyAssetResolver?.close();
-  const result = await destroy;
-  await resolverClosed;
-  respond(msg.requestId, result);
+  try {
+    // WHY: message and syscall callbacks overlap across awaits. The shared gate
+    // closes admission synchronously, drains every creator that entered first,
+    // and runs this terminal sweep only once. The outer worker-realm termination
+    // remains the bounded fallback if an admitted creator does not finish.
+    const destroy = processMemoryCreators.closeAndRunAfterDrain(
+      performDestroy,
+    );
+    deferredByteSpool?.cancelTransfers();
+    // Pending lazy exec reads may hold a creator token. Cancel their resolver
+    // after closing admission, before waiting for that token to drain.
+    const resolverClosed = repoLazyAssetResolver?.close();
+    const result = await destroy;
+    await resolverClosed;
+    respond(msg.requestId, result);
+  } catch (error) {
+    respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  }
 }
 
 // --- PTY ---
@@ -3933,7 +3976,7 @@ async function handleExportRootfsImageToFile(
       const file = openSync(msg.path, "wx+", 0o600);
       try {
         const integrity = writeAndVerifyRootfsImage(
-          (visit) => kernelWorker.rootfsExportContainerVisit(visit),
+          (visit) => kernelWorker.rootfsExportContainerVisitBorrowed(visit),
           {
             writeAllAt(offset, bytes) {
               let written = 0;
@@ -4121,6 +4164,7 @@ port.on("message", (msg: MainToKernelMessage) => {
   switch (msg.type) {
     case "init":
       void handleInit(msg).catch((error) => {
+        if (error instanceof UnconfirmedOverlayActivationError) kernelWorker.failPersistenceWriter(error);
         cleanupSessionDir();
         remoteSegmentRuntime.close();
         initReady = false;
@@ -4287,6 +4331,17 @@ port.on("message", (msg: MainToKernelMessage) => {
           result: undefined,
           error: (err as Error)?.message ?? String(err),
         });
+      }
+      break;
+    }
+    case "get_storage_metadata_memory_usage": {
+      try {
+        post({ type: "response", requestId: msg.requestId,
+          result: kernelWorker.rootfsTransportMetadataBudget().snapshot() });
+      } catch (err) {
+        post({ type: "response", requestId: msg.requestId,
+          result: undefined,
+          error: (err as Error)?.message ?? String(err) });
       }
       break;
     }

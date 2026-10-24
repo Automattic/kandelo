@@ -2,6 +2,7 @@ import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-s
 import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
 import { assertVfsFileRange } from "./vfs/file-range";
+import { validateStorageMemoryUsage, type StorageMemoryUsage } from "./vfs/storage-memory-budget";
 import type { VfsChangeEvent } from "./vfs/types";
 import { isStagedRootfsImageIntegrity } from "./vfs/staged-rootfs-image";
 import type { OpfsImageIntegrity } from "./vfs/opfs-image-reader";
@@ -20,6 +21,7 @@ import type { OpfsImageIntegrity } from "./vfs/opfs-image-reader";
  *   await host.destroy();
  */
 import type { ImageBuildDeterminism } from "./types";
+import { snapshotPersistentImageReadBinding, type PersistentImageReadBinding } from "./vfs/image-integrity";
 import type { WasmModuleCacheStats } from "./wasm-module-cache";
 import { readFileSync } from "node:fs";
 import { join, dirname, isAbsolute } from "node:path";
@@ -30,7 +32,7 @@ import {
   Worker as NodeThreadWorker,
   type Transferable,
 } from "node:worker_threads";
-import { resolveBinary } from "./binary-resolver";
+import { BinaryNotFoundError, resolveBinary } from "./binary-resolver";
 import { maybeDecompressImage } from "./vfs/vfs-image-transport";
 import { NoValidOverlayGenerationError } from "./vfs/overlay-generation-selection";
 import type {
@@ -59,7 +61,7 @@ import {
 } from "./constants";
 import type { MountSpec } from "./vfs/default-mounts";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
-import { awaitGracefulKernelRealmDestroyOutcome } from "./kernel-realm-destroy";
+import { awaitGracefulKernelRealmDestroyOutcome, PERSISTENT_KERNEL_REALM_DESTROY_TIMEOUT_MS } from "./kernel-realm-destroy";
 import { FILE_MODES } from "./generated/abi";
 import {
   encodeClipboardText,
@@ -69,6 +71,7 @@ import {
 import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
 import type { InputEvent, InputSource } from "./input/input-source";
 import { batchBySynReport } from "./input/input-batch";
+import { selectKernelMaxPages, selectRootfsMetadataBytes, selectVfsFileReadBytes } from "./runtime-memory-profile";
 
 export type { HttpRequest, HttpResponse };
 
@@ -99,6 +102,9 @@ export interface NodeKernelHostOptions {
   /** Maximum wasm memory pages per process (default: 16384 = 1GB). Initial
    *  memory is smaller and grows on demand up to this cap. */
   maxPages?: number;
+  kernelMaxPages?: number;
+  rootfsMetadataBytes?: number;
+  maxVfsFileReadBytes?: number;
   /**
    * Allocation-admission budget sampled from simultaneously live process
    * address spaces before each new allocation.
@@ -189,6 +195,7 @@ export interface NodeKernelHostOptions {
   rootfsImageFile?: string;
   /** Optional chunk hashes from a verified staged image. */
   rootfsImageIntegrity?: OpfsImageIntegrity;
+  rootfsPersistentImageBinding?: PersistentImageReadBinding;
   /** Exact image/scratch mount contract. Requires an image byte or file source. */
   rootfsMountSpec?: readonly MountSpec[];
   /**
@@ -259,6 +266,7 @@ export interface SpawnOptions {
 export class NodeKernelHost {
   private worker!: NodeThreadWorker;
   private workerStarted = false;
+  private shuttingDown = false;
   private persistenceShutdownFailure: string | null = null;
   private initialized = false;
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
@@ -284,6 +292,12 @@ export class NodeKernelHost {
   /** Initialize the kernel by spawning a dedicated worker_thread */
   async init(kernelWasmBytes?: ArrayBuffer): Promise<void> {
     if (this.kernelFatalError !== null) throw this.kernelFatalError;
+    const persistentImageBinding = this.options.rootfsPersistentImageBinding === undefined
+      ? undefined : snapshotPersistentImageReadBinding(this.options.rootfsPersistentImageBinding);
+    if (persistentImageBinding !== undefined
+      && (this.options.rootfsImageFile === undefined || this.options.rootfsImageIntegrity !== undefined)) {
+      throw new Error("persistent image binding requires an uncached file source without whole-image integrity metadata");
+    }
     if (this.options.rootfsImageFile !== undefined && this.options.rootfsImage !== undefined) {
       throw new Error("rootfs image cannot have both file and in-memory sources");
     }
@@ -367,6 +381,7 @@ export class NodeKernelHost {
     this.worker = spawnKernelWorkerThread();
     this.persistenceShutdownFailure = null;
     this.workerStarted = true;
+    this.shuttingDown = false;
     this.kernelWorkerExitExpected = false;
     this.workerTermination = null;
 
@@ -482,6 +497,11 @@ export class NodeKernelHost {
           config: {
             maxWorkers,
             maxPages,
+            rootfsMetadataBytes: selectRootfsMetadataBytes(this.options.rootfsMetadataBytes, this.options.kernelMaxPages),
+            maxVfsFileReadBytes: selectVfsFileReadBytes(this.options.maxVfsFileReadBytes, this.options.kernelMaxPages),
+            ...(this.options.kernelMaxPages === undefined ? {} : {
+              kernelMaxPages: selectKernelMaxPages(this.options.kernelMaxPages),
+            }),
             maxProcessMemoryBytes,
             defaultThreadSlots: this.options.defaultThreadSlots,
             dataBufferSize: this.options.dataBufferSize ?? 65536,
@@ -495,6 +515,7 @@ export class NodeKernelHost {
           rootfsImage: rootfsImage ?? undefined,
           rootfsImageFile: this.options.rootfsImageFile,
           rootfsImageIntegrity: this.options.rootfsImageIntegrity,
+          rootfsPersistentImageBinding: persistentImageBinding,
           rootfsMountSpec: this.options.rootfsMountSpec === undefined
             ? undefined
             : this.options.rootfsMountSpec.map((mount) => ({ ...mount })),
@@ -896,6 +917,13 @@ export class NodeKernelHost {
       throw new Error(`kernel worker returned an invalid memory-page count: ${String(result)}`);
     }
     return result;
+  }
+
+  async getStorageMetadataMemoryUsage(): Promise<StorageMemoryUsage> {
+    const requestId = this._nextRequestId++;
+    return validateStorageMemoryUsage(await this.request(requestId, {
+      type: "get_storage_metadata_memory_usage", requestId,
+    }));
   }
 
   /**
@@ -1342,13 +1370,15 @@ export class NodeKernelHost {
     this.attachedInputSource?.stop();
     this.attachedInputSource = null;
     if (!this.workerStarted) return;
+    this.shuttingDown = true;
     let gracefulDetachFailure: string | undefined;
     this.kernelWorkerExitExpected = true;
     if (this.initialized && this.kernelFatalError === null) {
       const requestId = this._nextRequestId++;
       const outcome = await awaitGracefulKernelRealmDestroyOutcome(
         () => this.request(requestId, { type: "destroy", requestId }),
-        DESTROY_REQUEST_TIMEOUT_MS,
+        this.options.experimentalFixedPersistencePath !== undefined || this.options.experimentalResizablePersistencePath !== undefined
+          ? PERSISTENT_KERNEL_REALM_DESTROY_TIMEOUT_MS : DESTROY_REQUEST_TIMEOUT_MS,
       );
       gracefulDetachFailure = outcome.failure;
       if (outcome.result !== null) {
@@ -1369,6 +1399,8 @@ export class NodeKernelHost {
     }
     this.exitResolvers.clear();
     this.unclaimedExitStatuses.clear();
+    const destroyedError = new Error("kernel host destroyed");
+    for (const { reject } of this.pendingRequests.values()) reject(destroyedError);
     this.pendingRequests.clear();
     this.lazyDownloadListeners.clear();
     this.destroyProgress.clear();
@@ -1417,6 +1449,10 @@ export class NodeKernelHost {
     return new Promise((resolve, reject) => {
       if (this.kernelFatalError !== null) {
         reject(this.kernelFatalError);
+        return;
+      }
+      if (!this.workerStarted || (this.shuttingDown && msg.type !== "destroy")) {
+        reject(new Error("kernel host is not accepting requests"));
         return;
       }
       this.pendingRequests.set(requestId, { resolve, reject });
@@ -1670,31 +1706,25 @@ export interface ResolvedRootfsArtifact {
   selectedPath: string;
 }
 
+export const ROOTFS_ARTIFACT_REQUESTS = ["programs/rootfs.vfs.zst", "rootfs.vfs.zst"] as const;
+
 export function resolveRootfsArtifact(
   resolver: (request: string) => string = resolveBinary,
 ): ResolvedRootfsArtifact {
-  try {
-    return {
-      resolverRequest: "rootfs.vfs.zst",
-      selectedPath: resolver("rootfs.vfs.zst"),
-    };
-  } catch (rootfsError) {
+  const failures: string[] = [];
+  for (const resolverRequest of ROOTFS_ARTIFACT_REQUESTS) {
     try {
-      return {
-        resolverRequest: "programs/rootfs.vfs.zst",
-        selectedPath: resolver("programs/rootfs.vfs.zst"),
-      };
-    } catch (programsError) {
-      const rootfsMessage = rootfsError instanceof Error ? rootfsError.message : String(rootfsError);
-      const programsMessage = programsError instanceof Error ? programsError.message : String(programsError);
-      throw new Error(
-        `rootfsImage:"default" requested but no rootfs image was available.\n` +
-          `Tried rootfs.vfs.zst:\n${rootfsMessage}\n` +
-          `Tried programs/rootfs.vfs.zst:\n${programsMessage}\n` +
-          `Run scripts/build-rootfs.sh, fetch/build the rootfs package, or pass explicit bytes.`,
-      );
+      return { resolverRequest, selectedPath: resolver(resolverRequest) };
+    } catch (error) {
+      if (!(error instanceof BinaryNotFoundError)) throw error;
+      failures.push(`Tried ${resolverRequest}:\n${error.message}`);
     }
   }
+  throw new Error(
+    `rootfsImage:"default" requested but no rootfs image was available.\n` +
+      `${failures.join("\n")}\n` +
+      `Run scripts/build-rootfs.sh, fetch/build the rootfs package, or pass explicit bytes.`,
+  );
 }
 
 /** Spawn a worker_thread running node-kernel-worker-entry.ts */

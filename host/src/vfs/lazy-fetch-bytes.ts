@@ -9,6 +9,53 @@ function progress(listener: DeferredByteProgress | undefined, loaded: number, to
 const MAX_ATTEMPTS = 3;
 const BASE_DELAY_MS = 250;
 const MAX_DELAY_MS = 5_000;
+
+function abortable<Result>(
+  operation: Promise<Result>,
+  signal?: AbortSignal,
+  discard?: (value: Result) => void,
+): Promise<Result> {
+  if (signal === undefined) return operation;
+  return new Promise<Result>((resolve, reject) => {
+    let abandoned = false;
+    const abort = () => {
+      abandoned = true;
+      signal.removeEventListener("abort", abort);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    operation.then(value => {
+      signal.removeEventListener("abort", abort);
+      if (abandoned) {
+        try { discard?.(value); } catch {}
+      } else resolve(value);
+    }, error => {
+      signal.removeEventListener("abort", abort);
+      if (!abandoned) reject(error);
+    });
+    if (signal.aborted) abort();
+  });
+}
+
+function discardResponse(response: Response, reason: unknown): void {
+  void Promise.resolve().then(() => response.body?.cancel(reason)).catch(() => {});
+}
+
+function waitForDeferredTimer(duration: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const abort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, duration);
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+  });
+}
 const TRANSIENT_CODES = new Set([
   "ECONNABORTED", "ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH",
   "ENETDOWN", "ENETRESET", "ENETUNREACH", "EPIPE", "ETIMEDOUT",
@@ -102,24 +149,97 @@ async function boundedResponseBytes(response: Response, maxBytes?: number, onPro
  * Only transient transport errors retry. The kernel verifies the returned
  * bytes' length/digest and never asks this transport to retry integrity errors.
  */
-export async function fetchLazyResourceBytes(fetcher: LazyFetch, url: string, maxBytes?: number, onProgress?: DeferredByteProgress): Promise<Uint8Array> {
+async function withLazyResponse<Result>(
+  fetcher: LazyFetch,
+  url: string,
+  maxBytes: number | undefined,
+  consume: (response: Response) => Promise<Result>,
+  signal?: AbortSignal,
+): Promise<Result> {
   if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 0)) {
     throw new Error("Invalid native lazy resource byte bound");
   }
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     let response: Response | undefined;
     try {
-      response = await fetcher(url);
+      if (signal?.aborted) throw signal.reason;
+      response = await abortable(
+        signal === undefined ? fetcher(url) : fetcher(url, { signal }),
+        signal,
+        value => discardResponse(value, signal?.reason),
+      );
       if (!response.ok) throw new HttpFailure(response.status, response.headers.get("retry-after"), url);
-      return await boundedResponseBytes(response, maxBytes, onProgress);
+      return await consume(response);
     } catch (error) {
       // Discard each failed response before retrying. Cleanup cannot change
       // whether the original failure is transient or turn abort into retry.
-      try { await response?.body?.cancel(error); } catch { /* already consumed */ }
+      try {
+        await abortable(Promise.resolve().then(() => response?.body?.cancel(error)), signal);
+      } catch { /* already consumed or aborted */ }
+      if (signal?.aborted) throw signal.reason;
       const delay = attempt + 1 < MAX_ATTEMPTS ? retryDelay(error, attempt) : null;
       if (delay === null) throw error;
-      await new Promise<void>((resolve) => setTimeout(resolve, delay));
+      await waitForDeferredTimer(delay, signal);
     }
   }
   throw new Error("Lazy transport retry state became unreachable");
+}
+
+export async function fetchLazyResourceBytes(fetcher: LazyFetch, url: string, maxBytes?: number, onProgress?: DeferredByteProgress): Promise<Uint8Array> {
+  return withLazyResponse(fetcher, url, maxBytes,
+    response => boundedResponseBytes(response, maxBytes, onProgress));
+}
+
+export async function streamLazyResourceBytes(
+  fetcher: LazyFetch,
+  url: string,
+  maxBytes: number,
+  sink: { reset(): void; write(bytes: Uint8Array): void },
+  onProgress?: DeferredByteProgress,
+  signal?: AbortSignal,
+): Promise<number> {
+  return withLazyResponse(fetcher, url, maxBytes, async (response) => {
+    sink.reset();
+    const header = response.headers.get("content-length");
+    const advertised = header !== null && /^\d+$/.test(header.trim()) ? Number(header) : undefined;
+    if (advertised !== undefined && advertised > maxBytes) {
+      throw new Error(`Lazy response exceeds native byte bound ${maxBytes}`);
+    }
+    const total = advertised !== undefined && Number.isSafeInteger(advertised) ? advertised : maxBytes;
+    let length = 0;
+    if (response.body === null) {
+      progress(onProgress, length, total);
+      return length;
+    }
+    const reader = response.body.getReader();
+    const abort = () => { void reader.cancel(signal?.reason).catch(() => {}); };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      for (;;) {
+        if (signal?.aborted) throw signal.reason;
+        const { value, done } = await abortable(reader.read(), signal);
+        if (signal?.aborted) throw signal.reason;
+        if (done) break;
+        if (value.byteLength === 0) {
+          await waitForDeferredTimer(0, signal);
+          continue;
+        }
+        length += value.byteLength;
+        if (!Number.isSafeInteger(length) || length > maxBytes) {
+          throw new Error(`Lazy response exceeds native byte bound ${maxBytes}`);
+        }
+        sink.write(value);
+        progress(onProgress, length, total);
+      }
+      return length;
+    } catch (error) {
+      try { await abortable(reader.cancel(error), signal); } catch {}
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", abort);
+      try { reader.releaseLock(); } catch (error) {
+        if (!signal?.aborted) throw error;
+      }
+    }
+  }, signal);
 }

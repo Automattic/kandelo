@@ -14,8 +14,8 @@ export type MainToComposerMessage =
 
 export type ComposerToMainMessage =
   | { type: "tick"; message: string }
-  | { type: "persistent-start"; composition: Pick<ComposeImageResult, "imageConfig" | "profileId" | "terminalSession" | "requiredServices"> }
+  | { type: "persistent-start"; payloadLength: number; composition: Pick<ComposeImageResult, "imageConfig" | "profileId" | "terminalSession" | "requiredServices"> }
   | { type: "persistent-chunk"; bytes: Uint8Array }
   | { type: "persistent-end" }
-  | ({ type: "done" } & ComposeImageResult)
-  | { type: "error"; message: string; stack?: string };
+  | ({ type: "done"; sourceClosed?: boolean } & ComposeImageResult)
+  | { type: "error"; message: string; stack?: string; sourceClosed?: boolean; errno?: number };

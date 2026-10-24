@@ -24,7 +24,7 @@ import {
     type ResolvedBuiltinPrograms,
 } from "./run-example-builtins";
 import { isWithinRealDirectory } from "./run-example-paths";
-import { preparePersistentRunExampleRootfs, prepareRunExampleRootfs } from "./run-example-rootfs";
+import { prepareCheckedPersistentRunExampleRootfs, prepareRunExampleRootfs } from "./run-example-rootfs";
 import {
     buildRunExampleGuestEnvironment,
     resolveRunExampleFilesystem,
@@ -516,15 +516,17 @@ async function main() {
             : undefined;
         const persistentImage = runnerFilesystem.persistentFixtureRoot === undefined
             ? undefined
-            : await preparePersistentRunExampleRootfs(
+            : await prepareCheckedPersistentRunExampleRootfs(
                 rootfs!.rootfsImage,
                 runnerFilesystem.persistentFixtureRoot,
+                runnerFilesystem.experimentalResizablePersistencePath! + ".base",
+                runnerFilesystem.persistentImageIntegrityPolicy!,
             );
         host = new NodeKernelHost({
             maxWorkers: 4,
             // Exec authority stays in the image; local bytes only supply
             // its declared lazy transport.
-            rootfsImage: persistentImage ?? runnerFilesystem.rootfsImage,
+            ...(persistentImage ?? { rootfsImage: runnerFilesystem.rootfsImage }),
             experimentalResizablePersistencePath: runnerFilesystem.experimentalResizablePersistencePath,
             rootfsLazyUrlBase: persistentImage === undefined ? undefined : rootfs?.rootfsLazyUrlBase,
             rootfsLazyAssets: persistentImage === undefined ? undefined : rootfs?.rootfsLazyAssets,
@@ -620,7 +622,7 @@ async function main() {
                 }
                 const reopened = new NodeKernelHost({
                     maxWorkers: 4,
-                    rootfsImage: persistentImage,
+                    ...persistentImage,
                     rootfsLazyUrlBase: rootfs?.rootfsLazyUrlBase,
                     rootfsLazyAssets: rootfs?.rootfsLazyAssets,
                     experimentalResizablePersistencePath: runnerFilesystem.experimentalResizablePersistencePath,

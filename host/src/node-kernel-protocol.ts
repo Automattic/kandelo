@@ -6,6 +6,7 @@ export type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
   GetSpawnScratchCapacityRequestMessage,
   EnumProcsRequestMessage,
@@ -51,6 +52,7 @@ import type {
   SignalProcessMessage,
   GetForkCountRequestMessage,
   GetKernelMemoryPagesRequestMessage,
+  GetStorageMetadataMemoryUsageRequestMessage,
   GetWasmModuleCacheStatsRequestMessage,
   GetSpawnScratchCapacityRequestMessage,
   EnumProcsRequestMessage,
@@ -131,6 +133,9 @@ export interface InitMessage {
   config: {
     maxWorkers: number;
     maxPages?: number;
+    kernelMaxPages?: number;
+    rootfsMetadataBytes?: number;
+    maxVfsFileReadBytes?: number;
     /**
      * Sampled live-allocation admission budget. Unmediated memory.grow can
      * cross it until the next allocation observes current byte lengths.
@@ -161,6 +166,7 @@ export interface InitMessage {
   rootfsImage?: ArrayBuffer;
   rootfsImageFile?: string;
   rootfsImageIntegrity?: import("./vfs/opfs-image-reader").OpfsImageIntegrity;
+  rootfsPersistentImageBinding?: import("./vfs/image-integrity").PersistentImageReadBinding;
   experimentalFixedPersistencePath?: string;
   experimentalResizablePersistencePath?: string;
   requireExistingRootfsPersistence?: boolean;
@@ -370,6 +376,7 @@ export type MainToKernelMessage =
   | OwnedJobMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetStorageMetadataMemoryUsageRequestMessage
   | GetWasmModuleCacheStatsRequestMessage
   | GetSpawnScratchCapacityRequestMessage
   | SignalProcessMessage

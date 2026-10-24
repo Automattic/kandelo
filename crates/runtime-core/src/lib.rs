@@ -6,6 +6,7 @@
 //! will depend on it directly.
 #![cfg_attr(any(target_arch = "wasm32", target_arch = "wasm64"), no_std)]
 #![cfg_attr(target_arch = "wasm64", feature(simd_wasm64))]
+#![feature(allocator_api)]
 
 extern crate alloc;
 extern crate wasm_posix_shared;
@@ -19,6 +20,15 @@ pub mod clipboard;
 pub mod credentials;
 pub mod descriptor_backing;
 pub mod devfs;
+mod directory_entries;
+mod metadata_budget;
+mod io_buffer;
+pub use io_buffer::{IoBuffer, IoDeque};
+mod io_owner;
+pub use io_owner::IoBox;
+mod prepared_map;
+pub use prepared_map::PreparedMap;
+mod retained_dirents;
 pub mod dri;
 pub mod epoll;
 pub mod exec_target;
@@ -30,6 +40,7 @@ pub mod guest_ptr;
 pub mod hostdir;
 pub mod image_build_determinism;
 pub mod image_policy;
+mod image_binding;
 pub mod input;
 pub mod ipc;
 pub mod ipc_wire;
@@ -45,7 +56,13 @@ pub mod msghdr;
 pub mod net_readiness;
 pub mod netif;
 pub mod ofd;
+pub mod overlay_activation;
+mod overlay_seal;
+mod overlay_recovery;
+mod overlay_generation_policy;
+mod storage_digest;
 pub mod persistent_overlay;
+pub mod persistent_image;
 pub mod persistent_overlay_index;
 pub mod path;
 pub mod complete_copy;
@@ -58,6 +75,8 @@ pub mod procfs;
 pub mod pshared;
 pub mod pty;
 pub mod rootfs;
+mod rootfs_image;
+mod verified_read_cache;
 pub mod scratch_alloc;
 pub mod sdef;
 pub mod seal;
@@ -75,6 +94,7 @@ pub mod wait_shadow;
 pub mod wakeup;
 pub mod writeback_loss;
 pub mod zip;
+mod zip_stream;
 
 // The engine-agnostic capability contract. `HostCapabilities` is the forward
 // name for the Rust-first design; `HostIO` is kept as the primary name to

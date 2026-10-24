@@ -26,6 +26,29 @@ function expectAllZero(memory: WebAssembly.Memory): void {
 }
 
 describe("ProcessMemoryAllocator", () => {
+  it("reports native constructor exhaustion as ENOMEM without consuming admission", () => {
+    const exhausted = new RangeError("native reservation exhausted");
+    const construction = vi.spyOn(WebAssembly, "Memory").mockImplementationOnce(function () {
+      throw exhausted;
+    });
+    const allocator = new ProcessMemoryAllocator({
+      maxMemories: 1,
+      maxTotalBytes: 4 * WASM_PAGE_SIZE,
+    });
+    try {
+      expect(() => allocator.acquire(request(1))).toThrow(ProcessMemoryCapacityError);
+      expect(allocator.getRetirementStats()).toMatchObject({
+        liveMemories: 0, chargedMemories: 0, chargedBytes: 0,
+      });
+      construction.mockRestore();
+      const healthy = allocator.acquire(request(1));
+      healthy.release();
+      allocator.clear();
+    } finally {
+      construction.mockRestore();
+    }
+  });
+
   it("allocates isolated fresh zeroed address spaces", () => {
     const allocator = new ProcessMemoryAllocator({
       maxMemories: 2,

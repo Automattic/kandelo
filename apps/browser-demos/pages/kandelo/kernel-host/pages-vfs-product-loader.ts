@@ -9,6 +9,7 @@ import {
   type SizedDownloadProgress,
 } from "../../../../../web-libs/kandelo-session/src/sized-download";
 import { stageRawVfsSourceImage, type StagedSourceImage } from "./opfs-source-image";
+import type { ImageDecompressionProgress } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 export interface PagesVfsAssetGroupIdentity {
   bytes: number;
@@ -58,6 +59,8 @@ export interface PagesVfsProductProgress {
   totalBytes: number;
   status: "loading" | "complete" | "error";
   error?: string;
+  operation?: "download";
+  decompression?: ImageDecompressionProgress;
 }
 export interface PagesVfsProductLoader {
   activate(id: string): Promise<ActivatedPagesVfsProduct>;
@@ -252,11 +255,19 @@ export function createPagesVfsProductLoaderForBase(
         if (!response.ok) throw new Error(`Pages VFS product ${id} returned HTTP ${response.status}`);
         const source = await stageRawVfsSourceImage(
           response,
-          (loadedBytes) => imageProgress(id)(loadedBytes, entry.bytes),
+          (loadedBytes) => publishProgress({
+            ...progressById.get(id), id, loadedBytes, totalBytes: entry.bytes,
+            status: "loading", operation: "download",
+          }),
           directory,
           { bytes: entry.bytes, sha256: entry.sha256 },
+          (decompression) => publishProgress({
+            ...progressById.get(id), id,
+            loadedBytes: progressById.get(id)?.loadedBytes ?? 0,
+            totalBytes: entry.bytes, status: "loading", operation: "download", decompression,
+          }),
         );
-        publishProgress({ id, loadedBytes: entry.bytes, totalBytes: entry.bytes, status: "complete" });
+        publishProgress({ ...progressById.get(id), id, loadedBytes: entry.bytes, totalBytes: entry.bytes, status: "complete", operation: "download" });
         return { id, imageUrl: resolved.imageUrl, lazyAssets: resolved.lazyAssets, source };
       } catch (error) {
         publishProgress({

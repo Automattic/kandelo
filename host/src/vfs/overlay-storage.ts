@@ -3,6 +3,7 @@ import { OPEN_FLAGS } from "../generated/abi";
 import type { HostFileOffset } from "../types";
 import type { FileSystemBackend } from "./types";
 import { parseSealedGenerationSlot } from "./overlay-generation-seal";
+import type { StorageCloseLedger } from "../storage-close-ledger";
 
 type OverlayStorageBackend = Pick<
   FileSystemBackend,
@@ -134,14 +135,22 @@ export class OverlayStorageFile implements PersistentOverlayStorage {
 }
 
 export class OpfsOverlayStorageFile implements PersistentOverlayStorage {
-  private constructor(private handle: FileSystemSyncAccessHandle | null) {}
+  private constructor(
+    private handle: FileSystemSyncAccessHandle | null,
+    private readonly closeHandle: () => void,
+  ) {}
 
-  static async listSlots(name: string): Promise<string[]> {
+  static async openHandle(file: FileSystemFileHandle, closeLedger?: StorageCloseLedger): Promise<OpfsOverlayStorageFile> {
+    const handle = await file.createSyncAccessHandle();
+    const close = closeLedger?.retain(() => { handle.close(); }) ?? (() => handle.close());
+    return new OpfsOverlayStorageFile(handle, close);
+  }
+
+  static async *listSlots(name: string): AsyncGenerator<string> {
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(name)) throw storageError("EIO");
     const root = await navigator.storage.getDirectory();
     const directory = await root.getDirectoryHandle("kandelo-persistent-overlay", { create: true });
     const prefix = `${name}.`;
-    const slots = new Set<string>();
     for await (const filename of directory.keys()) {
       if (!filename.startsWith(prefix)) continue;
       const match = /^(g[0-9]+)\.(?:journal|index|seal)$/.exec(filename.slice(prefix.length));
@@ -149,25 +158,25 @@ export class OpfsOverlayStorageFile implements PersistentOverlayStorage {
         if (parseSealedGenerationSlot(match[1]!) === null) {
           throw new Error("persistent overlay generation slot is invalid");
         }
-        slots.add(match[1]!);
+        yield match[1]!;
       }
     }
-    return [...slots];
   }
 
   static async removeFile(
     name: string,
     slot: "legacy" | `g${number}`,
-    suffix: "journal" | "seal" | "index",
+    suffix: "journal" | "seal" | "index" | "activation0" | "activation1",
   ): Promise<void> {
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(name)
-      || (slot === "legacy" ? suffix !== "journal" : parseSealedGenerationSlot(slot) === null)) {
+      || (slot === "legacy" ? !["journal", "activation0", "activation1"].includes(suffix)
+        : parseSealedGenerationSlot(slot) === null || suffix === "activation0" || suffix === "activation1")) {
       throw storageError("EIO");
     }
     const root = await navigator.storage.getDirectory();
     const directory = await root.getDirectoryHandle("kandelo-persistent-overlay", { create: true });
     try {
-      await directory.removeEntry(slot === "legacy" ? `${name}.journal` : `${name}.${slot}.${suffix}`);
+      await directory.removeEntry(slot === "legacy" ? `${name}.${suffix}` : `${name}.${slot}.${suffix}`);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "NotFoundError")) throw error;
     }
@@ -182,11 +191,14 @@ export class OpfsOverlayStorageFile implements PersistentOverlayStorage {
   static async openFile(
     name: string,
     slot: "legacy" | `g${number}`,
-    suffix: "journal" | "seal" | "index",
+    suffix: "journal" | "seal" | "index" | "activation0" | "activation1",
     create: boolean,
+    closeLedger?: StorageCloseLedger,
   ): Promise<OpfsOverlayStorageFile | null> {
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(name)) throw storageError("EIO");
     if (slot !== "legacy" && parseSealedGenerationSlot(slot) === null) throw storageError("EIO");
+    if (slot === "legacy" ? !["journal", "activation0", "activation1"].includes(suffix)
+      : suffix === "activation0" || suffix === "activation1") throw storageError("EIO");
     let stage = "root";
     try {
       const root = await navigator.storage.getDirectory();
@@ -198,7 +210,7 @@ export class OpfsOverlayStorageFile implements PersistentOverlayStorage {
         { create },
       );
       stage = "access handle";
-      return new OpfsOverlayStorageFile(await file.createSyncAccessHandle());
+      return await OpfsOverlayStorageFile.openHandle(file, closeLedger);
     } catch (error) {
       if (!create && stage === "file" && error instanceof DOMException && error.name === "NotFoundError") return null;
       if (error instanceof DOMException && error.name === "QuotaExceededError") {
@@ -264,8 +276,8 @@ export class OpfsOverlayStorageFile implements PersistentOverlayStorage {
     }
   }
   close(): void {
-    const handle = this.liveHandle();
-    handle.close();
+    this.liveHandle();
+    this.closeHandle();
     this.handle = null;
   }
 }

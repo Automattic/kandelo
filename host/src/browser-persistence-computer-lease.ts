@@ -57,3 +57,17 @@ export function claimBrowserPersistenceComputerLease(
     }
   };
 }
+
+export async function withHeldBrowserPersistenceComputerLease<T>(
+  lease: BrowserPersistenceComputerLease,
+  name: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (lease.computerName !== name) throw new Error("persistent computer lease belongs to another computer");
+  const releaseClaim = claimBrowserPersistenceComputerLease(lease);
+  try {
+    return await operation();
+  } finally {
+    releaseClaim();
+  }
+}

@@ -20,3 +20,41 @@ for (const ptrWidth of [4, 8] as const) {
     expect(result).toEqual({ captured: true, oldPages: 1, bytes: 2 * 65536 });
   });
 }
+
+test("constructor refusal leaves the allocation owner responsive", async ({ page }) => {
+  await page.goto("/trap-signal-test.html");
+  const result = await page.evaluate(async () => {
+    const worker = new Worker(new URL(
+      "/test/fixtures/browser-process-memory-worker.ts", location.href,
+    ), { type: "module" });
+    try {
+      return await new Promise((resolve, reject) => {
+        worker.onmessage = event => resolve(event.data);
+        worker.onerror = event => reject(new Error(event.message));
+        worker.postMessage("refusal");
+      });
+    } finally {
+      worker.terminate();
+    }
+  });
+  expect(result).toEqual({ errorName: "RangeError", healthyBytes: 65536 });
+});
+
+test("native constructor rejection retains ENOMEM through asynchronous admission", async ({ page }) => {
+  await page.goto("/trap-signal-test.html");
+  const result = await page.evaluate(async () => {
+    const worker = new Worker(new URL(
+      "/test/fixtures/browser-process-memory-worker.ts", location.href,
+    ), { type: "module" });
+    try {
+      return await new Promise((resolve, reject) => {
+        worker.onmessage = event => resolve(event.data);
+        worker.onerror = event => reject(new Error(event.message));
+        worker.postMessage("allocator-refusal");
+      });
+    } finally {
+      worker.terminate();
+    }
+  });
+  expect(result).toEqual({ name: "ProcessMemoryCapacityError", errno: 12, chargedBytes: 0 });
+});

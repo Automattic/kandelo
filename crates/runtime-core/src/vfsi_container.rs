@@ -93,6 +93,10 @@ pub struct ContainerSections<'a> {
 }
 
 impl ContainerSections<'_> {
+    fn parts(&self) -> [Option<&[u8]>; 4] {
+        [Some(self.lazy_json), self.archive_json, self.metadata_json, self.kernel_lazy]
+    }
+
     /// The flag word these sections imply.
     ///
     /// `HAS_TYPED_LAZY_ARCHIVES` tracks `HAS_LAZY_ARCHIVES` exactly, because
@@ -155,6 +159,8 @@ pub fn header_for_body(body_len: u64, flags: u32) -> Result<Vec<u8>, Errno> {
 /// Every section after the body, in container order.
 pub fn trailer(sections: &ContainerSections<'_>) -> Result<Vec<u8>, Errno> {
     let mut out = Vec::new();
+    let length = usize::try_from(trailer_len(sections)?).map_err(|_| Errno::ENOMEM)?;
+    out.try_reserve_exact(length).map_err(|_| Errno::ENOMEM)?;
     let mut push = |bytes: &[u8], what: &'static str| -> Result<(), Errno> {
         out.extend_from_slice(&len_u32(bytes.len(), what)?.to_le_bytes());
         out.extend_from_slice(bytes);
@@ -171,6 +177,35 @@ pub fn trailer(sections: &ContainerSections<'_>) -> Result<Vec<u8>, Errno> {
         push(kernel_lazy, "kernel lazy")?;
     }
     Ok(out)
+}
+
+pub fn trailer_len(sections: &ContainerSections<'_>) -> Result<u64, Errno> {
+    sections.parts().into_iter().flatten().try_fold(0u64, |length, part| {
+        length.checked_add(4 + u64::from(len_u32(part.len(), "section")?))
+            .ok_or(Errno::EINVAL)
+    })
+}
+
+pub fn trailer_read(sections: &ContainerSections<'_>, offset: u64, out: &mut [u8]) -> Result<usize, Errno> {
+    if offset >= trailer_len(sections)? || out.is_empty() {
+        return Ok(0);
+    }
+    let mut cursor = 0u64;
+    let mut copied = 0;
+    for section in sections.parts().into_iter().flatten() {
+        let length = len_u32(section.len(), "section")?.to_le_bytes();
+        for part in [&length[..], section] {
+            let start = offset.saturating_sub(cursor).min(part.len() as u64) as usize;
+            let count = (part.len() - start).min(out.len() - copied);
+            out[copied..copied + count].copy_from_slice(&part[start..start + count]);
+            copied += count;
+            cursor += part.len() as u64;
+            if copied == out.len() {
+                return Ok(copied);
+            }
+        }
+    }
+    Ok(copied)
 }
 
 /// Whole container, for callers that can hold the image.
@@ -310,6 +345,30 @@ mod tests {
             expected,
             "sections must be written lazy, archive, metadata, kernel-lazy",
         );
+    }
+
+    #[test]
+    fn positioned_trailer_reads_preserve_every_section_and_boundary() {
+        for archive in [None, Some(&b""[..]), Some(&b"ARCH"[..])] {
+            for metadata in [None, Some(&b""[..]), Some(&b"METADATA"[..])] {
+                for kernel_lazy in [None, Some(&b"KLZY"[..])] {
+                    let sections = sections(b"LAZY", archive, metadata, kernel_lazy);
+                    let expected = trailer(&sections).unwrap();
+                    assert_eq!(trailer_len(&sections), Ok(expected.len() as u64));
+                    for offset in 0..=expected.len() + 1 {
+                        for capacity in [0, 1, 3, 4, 7, 64] {
+                            let mut out = [0xa5; 64];
+                            let count = trailer_read(&sections, offset as u64, &mut out[..capacity]).unwrap();
+                            let start = offset.min(expected.len());
+                            let end = (start + capacity).min(expected.len());
+                            assert_eq!(&out[..count], &expected[start..end]);
+                            assert!(out[count..].iter().all(|byte| *byte == 0xa5));
+                        }
+                    }
+                    assert_eq!(trailer_read(&sections, u64::MAX, &mut [0; 16]), Ok(0));
+                }
+            }
+        }
     }
 
     #[test]

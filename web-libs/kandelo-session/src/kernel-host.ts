@@ -116,6 +116,13 @@ export interface LazyDownloadEvent {
 /** Stage of a machine switch that can report progress. */
 export type MachinePhase = "destroying" | "image";
 
+export interface ImageDecompressionProgress {
+  completed: number;
+  total?: number;
+  status: "loading" | "complete" | "error";
+  error?: string;
+}
+
 /**
  * Progress of a machine switch: tearing the outgoing machine down, then
  * loading the incoming machine's VFS image.
@@ -123,8 +130,8 @@ export type MachinePhase = "destroying" | "image";
  * Deliberately separate from {@link LazyDownloadEvent}: both halves run while
  * no kernel is attached, and `attachKernel` clears the lazy-download ledger.
  *
- * Every field is a scalar. This record must never retain image bytes or
- * process memory — the main thread is not an owner of machine memory.
+ * Progress counters contain only scalars. This record must never retain image
+ * bytes or process memory — the main thread is not an owner of machine memory.
  *
  * `total` is absent when no total is known, which callers render as
  * indeterminate rather than inventing a denominator. `totalProvisional` marks
@@ -140,6 +147,8 @@ export interface MachineProgress {
   unit: "processes" | "bytes";
   status: "loading" | "complete" | "error";
   error?: string;
+  operation?: "download" | "mount" | "checkpoint";
+  decompression?: ImageDecompressionProgress;
 }
 
 /**
@@ -1742,12 +1751,18 @@ export class LiveKernelHost implements KernelHost {
    * lazy-download ledger.
    */
   setMachineProgress(progress: MachineProgress | null): void {
-    this.machineProgress = progress === null ? null : { ...progress };
+    this.machineProgress = progress === null ? null : {
+      ...progress,
+      ...(progress.decompression === undefined ? {} : { decompression: { ...progress.decompression } }),
+    };
     this.machineProgressListeners.emit(this.machineProgress);
   }
 
   getMachineProgress(): MachineProgress | null {
-    return this.machineProgress === null ? null : { ...this.machineProgress };
+    return this.machineProgress === null ? null : {
+      ...this.machineProgress,
+      ...(this.machineProgress.decompression === undefined ? {} : { decompression: { ...this.machineProgress.decompression } }),
+    };
   }
 
   subscribeMachineProgress(

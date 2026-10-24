@@ -616,6 +616,7 @@ dependencies = [
  "dlmalloc",
  "runtime-core",
  "sha2",
+ "spin",
  "wasm-posix-shared",
 ]
 

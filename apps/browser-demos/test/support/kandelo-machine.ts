@@ -125,15 +125,30 @@ export async function machineUrl(
   profileId: string,
   options: MachineUrlOptions = {},
 ): Promise<string> {
-  const productId = galleryProductForProfile(profileId);
-  const url = new URL(appUrl("/"), "https://kandelo.invalid/");
-  url.searchParams.set("vfs", await vfsImageUrlForProduct(page, productId));
-  url.searchParams.set("profile", profileId);
+  const preparedUrls = process.env.KANDELO_TEST_MACHINE_URLS;
+  let url: URL;
+  if (preparedUrls !== undefined) {
+    const prepared: unknown = JSON.parse(readFileSync(preparedUrls, "utf8"));
+    if (typeof prepared !== "object" || prepared === null || Array.isArray(prepared)
+      || !(profileId in prepared) || typeof (prepared as Record<string, unknown>)[profileId] !== "string") {
+      throw new Error(`prepared machine URLs lack profile ${profileId}`);
+    }
+    url = new URL((prepared as Record<string, string>)[profileId]!);
+    if (!/^https?:$/.test(url.protocol) || !url.searchParams.get("vfs")
+      || url.searchParams.get("profile") !== profileId) {
+      throw new Error(`invalid prepared machine URL for ${profileId}`);
+    }
+  } else {
+    const productId = galleryProductForProfile(profileId);
+    url = new URL(appUrl("/"), "https://kandelo.invalid/");
+    url.searchParams.set("vfs", await vfsImageUrlForProduct(page, productId));
+    url.searchParams.set("profile", profileId);
+  }
   for (const [key, value] of Object.entries(options.search ?? {})) {
     url.searchParams.set(key, value);
   }
   if (options.hash !== undefined) url.hash = options.hash;
-  return process.env.KANDELO_TEST_BASE_URL === undefined
+  return process.env.KANDELO_TEST_BASE_URL === undefined && preparedUrls === undefined
     ? `${url.pathname}${url.search}${url.hash}`
     : url.href;
 }
@@ -226,7 +241,15 @@ export async function gotoInPreview(
   appPrefix: string,
   path: string,
 ): Promise<void> {
-  await frame.locator("body").evaluate((_body, href) => {
-    window.location.href = href;
-  }, `${appPrefix}${path}`);
+  const ownerLocator = frame.owner();
+  const owner = await ownerLocator.elementHandle();
+  if (owner === null) throw new Error("web preview iframe is unavailable");
+  try {
+    const destination = new URL(`${appPrefix}${path}`, ownerLocator.page().url());
+    const content = await owner.contentFrame();
+    if (content === null) throw new Error("web preview content frame is unavailable");
+    await content.goto(destination.href, { waitUntil: "commit" });
+  } finally {
+    await owner.dispose();
+  }
 }

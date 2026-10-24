@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { closeSync, fstatSync, lstatSync, openSync, readFileSync, readdirSync, readSync } from "node:fs";
-import { join, posix } from "node:path";
+import { basename, dirname, join, posix } from "node:path";
 
 import { tryResolveBinaries } from "../host/src/binary-resolver";
 import {
@@ -9,6 +9,10 @@ import {
   type ClosedLazyAsset,
 } from "../host/src/vfs/closed-lazy-assets";
 import { KandeloImageFs } from "../images/vfs/lib/kandelo-image-fs";
+import type { PersistentImageIntegrityPolicy } from "../images/vfs/lib/kandelo-image-fs";
+import type { PersistentImageReadBinding } from "../host/src/vfs/image-integrity";
+import { HostFileSystem } from "../host/src/vfs/host-fs";
+import { OverlayStorageFile } from "../host/src/vfs/overlay-storage";
 
 const ROOTFS_LAZY_URL_BASE = "https://kandelo-runner.invalid/";
 
@@ -95,6 +99,30 @@ export async function preparePersistentRunExampleRootfs(
   fixtureRoot: string,
 ): Promise<Uint8Array> {
   const filesystem = KandeloImageFs.create();
+  populatePersistentRunExampleRootfs(filesystem, image, fixtureRoot);
+  return filesystem.saveImage();
+}
+
+export async function prepareCheckedPersistentRunExampleRootfs(
+  image: Uint8Array,
+  fixtureRoot: string,
+  imagePath: string,
+  policy: PersistentImageIntegrityPolicy,
+): Promise<{ rootfsImageFile: string; rootfsPersistentImageBinding: PersistentImageReadBinding }> {
+  const [modulePath] = tryResolveBinaries(["kandelo_image_module_positioned32.wasm"]);
+  if (modulePath === null || modulePath === undefined) throw new Error("persistent runner requires the positioned image module");
+  const filesystem = KandeloImageFs.createPositioned(new Uint8Array(readFileSync(modulePath)));
+  populatePersistentRunExampleRootfs(filesystem, image, fixtureRoot);
+  const target = OverlayStorageFile.open(new HostFileSystem(dirname(imagePath)), "/" + basename(imagePath));
+  try {
+    const receipt = await filesystem.exportPersistentImageTo(target, policy);
+    return { rootfsImageFile: imagePath, rootfsPersistentImageBinding: {
+      identitySha256: receipt.identitySha256, dataCachePages: 2, indexCachePages: 2,
+    } };
+  } finally { target.close(); }
+}
+
+function populatePersistentRunExampleRootfs(filesystem: KandeloImageFs, image: Uint8Array, fixtureRoot: string): void {
   filesystem.loadImage(image);
   filesystem.mkdir("/run", 0o755);
   filesystem.mkdir("/run/kandelo-run", 0o755);
@@ -114,5 +142,4 @@ export async function preparePersistentRunExampleRootfs(
     }
   };
   copyTree(fixtureRoot, "/run/kandelo-run");
-  return filesystem.saveImage();
 }

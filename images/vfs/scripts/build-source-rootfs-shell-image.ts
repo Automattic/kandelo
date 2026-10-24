@@ -1136,6 +1136,7 @@ function requireCompleteProductShellContract(fs: KandeloImageFs): void {
   for (const path of [
     "/etc/gitconfig",
     "/etc/profile",
+    "/home/projects",
     `${NETHACK_PLAYGROUND}/perm`,
     `${NETHACK_PLAYGROUND}/record`,
   ]) {
@@ -1146,6 +1147,14 @@ function requireCompleteProductShellContract(fs: KandeloImageFs): void {
   const nethack = fs.stat("/usr/bin/nethack");
   const playground = fs.stat(NETHACK_PLAYGROUND);
   const save = fs.stat(`${NETHACK_PLAYGROUND}/save`);
+  const projects = fs.stat("/home/projects");
+  if (
+    projects.uid !== 1000 ||
+    projects.gid !== 1000 ||
+    (projects.mode & 0o777) !== 0o755
+  ) {
+    throw new Error("source-rootfs shell lost the persistent projects directory contract");
+  }
   if (
     nethack.uid !== 0 ||
     (nethack.mode & 0o7777) !== 0o2755 ||

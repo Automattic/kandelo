@@ -640,7 +640,7 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.clearReadinessWait::kernel-export-direct-use::finish?.(channel.pid, this.guestTidForChannel(channel), token)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.retireExactChannelAsyncState::kernel-export-direct-use::finish?.(channel.pid, this.guestTidForChannel(channel), token)",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.retireChannelHostWaits::kernel-export-direct-use::finish?.(channel.pid, this.guestTidForChannel(channel), token)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleEpollPwait::kernel-export-direct-use::queryToken(channel.pid, this.guestTidForChannel(channel))",
@@ -722,10 +722,43 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.installHostStdinPipe::kernel-export-direct-use::install(pid)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.enableFixedRootfsPersistence::kernel-export-direct-use::enable(lengthLo, lengthHi)",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#enableRootfsPersistence::kernel-pointer-export-bypass::enable(lengthLo, lengthHi)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.enableFixedRootfsPersistence::kernel-export-direct-use::enable(lengthLo, lengthHi, checkpointEnd! >>> 0, Math.floor(checkpointEnd! / 0x1_0000_0000))",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#enableRootfsPersistence::kernel-pointer-export-bypass::enable(lengthLo, lengthHi, checkpointEnd! >>> 0, Math.floor(checkpointEnd! / 0x1_0000_0000))",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#enableRootfsPersistence::kernel-export-direct-use::pristine()",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.convertUnindexedRootfsPersistence::kernel-pointer-export-bypass::convert()",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::setMetadataBudget(metadataBudgetBytes)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::setJournalBudget(journalBudgetBytes)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::setIoBudget(ioBudgetBytes)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.rootfsJournalStateMemory::kernel-export-direct-use::used()",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.rootfsJournalStateMemory::kernel-export-direct-use::pressure()",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.rootfsIoMemory::kernel-export-direct-use::used()",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.rootfsIoMemory::kernel-export-direct-use::limit()",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#rootfsExportContainerVisit::kernel-export-direct-use::cancel()",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#handleSyscallInner::kernel-export-direct-use::sync()",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.prepareRootfsPersistenceCompaction::kernel-export-direct-use::prepare(targetSlot)",
@@ -1059,6 +1092,9 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::loadImage(imageLenLo, imageLenHi)",
   ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#maybeLoadKernelRootfs::kernel-export-direct-use::loadPersistentImage(imageLenLo, imageLenHi, digest0, digest1, digest2, digest3, digest4, digest5, digest6, digest7, dataCachePages, indexCachePages)",
+  ),
   // Reviewed: `kernel_set_image_build_determinism` takes the image-build
   // seed and epoch as four 32-bit scalar words, once at boot before any
   // process exists; it borrows no kernel memory.
@@ -1241,10 +1277,10 @@ const auditAllowances: AuditAllowance[] = [
     why: "The image-builder bridge instantiates `kandelo_image_module32.wasm`, a no_std module whose import object is ABSENT -- the second argument is not passed at all, so it declares no imports and receives none. It owns its own linear memory, holds the image tree being BUILT, and is addressed only through its `sm_*` exports; it runs in whatever context builds an image (a build script, a test, or a browser page) and reaches neither kernel memory nor any guest's. The bytes it instantiates come from `installModuleBytes`, which exists because the browser cannot read the module off disk the way Node can.",
   },
   {
-    key: 'images/vfs/lib/kandelo-image-fs.ts::KandeloImageFs.createFromPositionedImage::wasm-instance-authority::new WebAssembly.Instance(module, { env: { host_image_read: (offset: bigint, ptr: number, len: number): number => { if ( memory === undefined || !Number.isSafeInteger(ptr) || ptr < 0 || !Number.isSafeInteger(len) || len < 0 || ptr + len > memory.buffer.byteLength ) return -ERRNO.EFAULT; const position = Number(offset); if (!Number.isSafeInteger(position) || position < 0) return -ERRNO.EOVERFLOW; try { const count = readAt(position, new Uint8Array(memory.buffer, ptr, len)); if (!Number.isInteger(count) || count > len || count < -4095) return -ERRNO.EIO; return count; } catch { return -ERRNO.EIO; } }, }, })',
+    key: 'images/vfs/lib/kandelo-image-fs.ts::KandeloImageFs.instantiatePositioned::wasm-instance-authority::new WebAssembly.Instance(module, { env })',
     disposition: "non-kernel",
     authorityOwner: "process-memory",
-    why: "The positioned image composer accepts a module with exactly one checked image-read import and keeps its private memory; it cannot access a running kernel instance.",
+    why: "The positioned image composer checks exactly six byte-transport imports, owns its private nonshared module memory, and lends bounded windows to a token-bound target. It cannot access a running kernel instance; Rust owns format construction and verification.",
   },
   {
     key: "host/src/dylink.ts::instantiateSharedLibrarySteps::wasm-instance-authority::new WebAssembly.Instance(module, instanceImports)",

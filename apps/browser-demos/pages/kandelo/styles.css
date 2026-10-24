@@ -4585,6 +4585,10 @@
   margin-bottom: 10px;
 }
 
+.kmprogress-row + .kmprogress-row {
+  margin-top: 18px;
+}
+
 .kmprogress-bar {
   position: relative;
   overflow: hidden;
