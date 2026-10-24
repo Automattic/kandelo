@@ -66,6 +66,66 @@ for (const kind of ["client", "fixed", "max-byte", "max-short", "bound-byte", "b
   });
 }
 
+test("actual C display generations keep their command streams and rendered targets independent", async ({ page }) => {
+  const root = fileURLToPath(new URL("../../../",import.meta.url));
+  const temporary = mkdtempSync(join(root,".context/graphics-generation-trace-"));
+  let trace: number[];
+  try {
+    const path = join(temporary,"sessions.bin");
+    execFileSync("bash",[join(root,"tests/graphics/run-libc-unit.sh")],{
+      cwd:root,env:{...process.env,KANDELO_GRAPHICS_LIBC_CASES:"display-generation-render",KANDELO_GRAPHICS_SESSION_TRACE:path},
+      timeout:60000,stdio:"pipe",
+    });
+    trace = [...readFileSync(path)];
+  } finally { rmSync(temporary,{recursive:true,force:true}); }
+  await installBrowserMemoryBoundaryProbe(page);
+  await page.goto("/trap-signal-test.html");
+  const result = await page.evaluate(async ({sourceRoot,trace}) => {
+    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const { GlContextRegistry } = await import(base+"registry.ts");
+    const { GlMuxer } = await import(base+"muxer.ts");
+    const { decodeAndDispatch } = await import(base+"bridge.ts");
+    const { ensurePresentTarget } = await import(base+"present-target.ts");
+    const { applyCurrentDrawable } = await import(base+"current.ts");
+    const { runGlQuery } = await import(base+"query.ts");
+    const O = await import(base+"ops.ts");
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+    const gl = canvas.getContext("webgl2"); if (!gl) throw new Error("WebGL2 required");
+    const reg = new GlContextRegistry(), mux = new GlMuxer(gl);
+    const bindings = [10,11].map(sessionId => {
+      reg.bind({pid:98,sessionId,cmdbufAddr:0,cmdbufLen:1<<20});
+      const b = reg.get(98,sessionId)!;
+      b.gl = gl; b.canvas = canvas; b.contextId = sessionId; b.cmdbufView = new Uint8Array(1<<20);
+      if (!ensurePresentTarget(b) || !applyCurrentDrawable(b,{drawSurfaceId:1,readSurfaceId:1,width:1,height:1})) throw new Error("target allocation failed");
+      return b;
+    });
+    const targets = bindings.map(b => b.presentTarget!);
+    const frames = new Uint8Array(trace), view = new DataView(frames.buffer), pixels: number[][] = [], retired: number[] = [];
+    for (let offset=0; offset<frames.length;) {
+      const session = view.getUint32(offset,true), size = view.getUint32(offset+4,true); offset += 8;
+      const b = bindings[session-10]; if (!b || offset+size>frames.length) throw new Error("invalid session trace");
+      if (!size) {
+        mux.invalidateCurrent(); reg.destroyContext(98,session); retired.push(session);
+        if (gl.isFramebuffer(targets[session-10].fbo)) throw new Error("generation target retained");
+        if (session === 10 && !gl.isFramebuffer(targets[1].fbo)) throw new Error("old retirement destroyed new target");
+        continue;
+      }
+      mux.switchTo(b); b.cmdbufView!.set(frames.subarray(offset,offset+size)); offset += size;
+      if (decodeAndDispatch(b,0,size)) throw new Error("C generation command failed");
+      const input = new Uint8Array(24), output = new Uint8Array(4);
+      [0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE].forEach((n,i) => new DataView(input.buffer).setUint32(i*4,n,true));
+      if (runGlQuery(b,O.QOP_READ_PIXELS,input,output) !== 4) throw new Error("pixel query failed");
+      pixels.push([...output]);
+      const error = new Uint8Array(4); runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),error);
+      if (new DataView(error.buffer).getUint32(0,true)) throw new Error("native GL error");
+    }
+    for (const b of bindings) reg.unbind(98,b.sessionId);
+    return {pixels,retired,remaining:reg.list().length};
+  },{sourceRoot:process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? root,trace});
+  expect(result).toEqual({pixels:[[255,0,0,255],[0,0,255,255]],retired:[10,11],remaining:0});
+  expect(await memoryBoundaryFailures(page)).toEqual([]);
+});
+
 test("op-table v3 queries preserve logical state, sparse indices and single GL errors", async ({ page }) => {
   await page.goto("/trap-signal-test.html");
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));

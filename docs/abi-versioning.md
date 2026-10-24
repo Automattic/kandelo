@@ -1852,8 +1852,10 @@ unbind because the root never allocated a renderer.
 
 The EGL library now opens separate display and object descriptions,
 rolls both back on failed initialization, and revokes the root when
-terminated. Public multiple contexts, independent surfaces and overlapping
-display generations remain incomplete. This is their authority foundation.
+terminated. Subsequent C generation records permit reinitialization while
+old current resources remain retained, using this existing wire contract.
+Public multiple contexts within one generation and independent surfaces
+remain incomplete. Normal guest-artifact validation is still pending.
 
 The snapshot, ioctl marshalling, generated constants and standalone
 resolver are regenerated for ABI 56; graphics operation version stays 5.

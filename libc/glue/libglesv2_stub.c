@@ -2406,22 +2406,27 @@ void glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image) {
     }
     if (name == 0) {
         raise_client_error(GL_INVALID_OPERATION);
+        _wpk_egl_image_release(img);
         return;
     }
     if (!img->pixels) {
         GLuint host = _wpk_egl_image_texture(img);
         if (host == 0 || !alias_set(&g_texture_aliases, name, host, img)) {
             raise_client_error(GL_INVALID_OPERATION);
+            _wpk_egl_image_release(img);
             return;
         }
         refresh_image_attachments(GL_TEXTURE_2D, name, host, img);
         rebind_image_texture_name(name, host);
+        _wpk_egl_image_release(img);
         return;
     }
     alias_drop(&g_texture_aliases, name);
     emit_bind_texture(GL_TEXTURE_2D, name);
     int bgra = img->fourcc == 0x34325241u || img->fourcc == 0x34325258u;
-    EMIT_BEGIN(OP_TEX_IMAGE_2D, 36u)
+    uint8_t *_c = reserve(40u);
+    if (!_c) { _wpk_egl_image_release(img); return; }
+    w_u16(&_c, OP_TEX_IMAGE_2D); w_u16(&_c, 36u);
     w_u32(&_c, GL_TEXTURE_2D);
     w_i32(&_c, 0);
     w_i32(&_c, GL_RGBA);
@@ -2436,6 +2441,7 @@ void glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image) {
                   (GLsizei)img->width, (GLsizei)img->height,
                   bgra ? GL_BGRA_EXT : GL_RGBA, GL_UNSIGNED_BYTE,
                   img->pixels, img->pitch);
+    _wpk_egl_image_release(img);
 }
 
 /* Rendering into an image needs storage the GPU writes, so only a
@@ -2454,14 +2460,17 @@ void glEGLImageTargetRenderbufferStorageOES(GLenum target, GLeglImageOES image) 
     }
     if (g_bound_renderbuffer == 0 || img->pixels) {
         raise_client_error(GL_INVALID_OPERATION);
+        _wpk_egl_image_release(img);
         return;
     }
     GLuint host = _wpk_egl_image_texture(img);
     if (host == 0 || !alias_set(&g_renderbuffer_aliases, g_bound_renderbuffer, host, img)) {
         raise_client_error(GL_INVALID_OPERATION);
+        _wpk_egl_image_release(img);
         return;
     }
     refresh_image_attachments(GL_RENDERBUFFER, g_bound_renderbuffer, host, img);
+    _wpk_egl_image_release(img);
 }
 
 void glDrawBuffer(GLenum buf) {

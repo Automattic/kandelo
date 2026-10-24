@@ -8,8 +8,8 @@
  *
  * A display root authorizes a separate object session; errors, API selection
  * and current bindings belong to threads. This facade still admits one
- * context and surface;
- * multi-context/share-group routing is tracked in the compatibility ledger.
+ * context and surface per generation. Overlapping generations retain their
+ * own current resources; multi-context/share-group routing is tracked in the compatibility ledger.
  * libGLESv2 uses the accessor functions in gl_abi.h at link time.
  */
 
@@ -36,19 +36,35 @@ void glReadBuffer(GLenum src);
 void glEGLImageTargetTexture2DOES(GLenum target, void *image);
 void glEGLImageTargetRenderbufferStorageOES(GLenum target, void *image);
 
-static void retire_imported_images(void);
+struct egl_generation;
+static void retire_imported_images(struct egl_generation *generation);
+static void invalidate_generation_images(struct egl_generation *generation);
 
-static int      g_fd            = -1;
-static int      g_display_fd    = -1;
-static uint32_t g_display_generation;
-static uint8_t *g_cmdbuf_base   = NULL;
-/* EGL error and bound client API are thread state, independently of the
- * display and its shared context/surface objects (EGL 1.5 sections 3.7/3.12). */
 static _Thread_local EGLint g_last_error = EGL_SUCCESS;
 static _Thread_local EGLenum g_bound_api = EGL_OPENGL_ES_API;
-static int      g_initialized   = 0;
-static int      g_context_made  = 0;
-static int      g_surface_made  = 0;
+struct imported_bo_reference;
+struct egl_thread_binding;
+/* Generation ownership outlives public display initialization when a current
+ * context still retains it. Never route old current GL through the new root. */
+struct egl_generation {
+    int fd, display_fd;
+    uint32_t id;
+    uint8_t *cmdbuf_base;
+    int initialized, context_made, surface_made;
+    struct egl_thread_binding *context_owner;
+    int surface_current, context_delete_pending, surface_delete_pending;
+    int terminate_pending;
+    EGLContext context_handle;
+    uint32_t backend_context_id;
+    struct wpk_gles_context *encoder_state;
+    EGLSurface surface_handle;
+    EGLint client_version;
+    uint32_t pending_surface_target_bo;
+    void *current_egl_window;
+    struct imported_bo_reference *imported_bos;
+    struct egl_generation *next;
+};
+static struct egl_generation *g_active_generation, *g_generations;
 /* Client thread records retain handles for queries and deferred destruction.
  * The kernel owns current-thread authority, including thread-exit cleanup.
  * Every bind reaches it, including surfaceless binding and release. */
@@ -57,6 +73,7 @@ struct egl_thread_binding {
     EGLContext context;
     EGLSurface surface;
     struct wpk_gles_context *encoder;
+    struct egl_generation *generation;
 };
 static _Thread_local struct egl_thread_binding g_empty_binding;
 static _Thread_local struct egl_thread_binding *g_destructor_binding;
@@ -65,18 +82,16 @@ static struct egl_thread_binding *thread_binding(void);
 #define g_current (g_thread_binding.current)
 #define g_current_surfaceless (g_thread_binding.surfaceless)
 static pthread_mutex_t g_context_mutex = PTHREAD_MUTEX_INITIALIZER;
-static struct egl_thread_binding *g_context_owner;
-static int g_surface_current, g_context_delete_pending, g_surface_delete_pending;
-static int g_terminate_pending;
-static EGLContext g_context_handle;
-static uint32_t g_backend_context_id;
-static struct wpk_gles_context *g_encoder_state;
-static EGLSurface g_surface_handle;
+/* GL siblings can retire while another thread terminates/reinitializes EGL.
+ * Keep image references and per-generation GEM owners under one lock. The
+ * context lock precedes this lock; image operations never acquire it. */
+static pthread_mutex_t g_image_mutex = PTHREAD_MUTEX_INITIALIZER;
 static uintptr_t g_next_context_handle = 1, g_next_surface_handle = 1;
+static uintptr_t g_next_image_handle = 1;
 static pthread_key_t g_binding_key;
 static pthread_once_t g_binding_key_once = PTHREAD_ONCE_INIT;
 static int g_binding_key_status = EAGAIN;
-static void retire_pending_resources_locked(void);
+static void retire_pending_resources_locked(struct egl_generation *generation);
 static void binding_thread_destructor(void *binding) {
     /* POSIX clears the key before invoking its destructor. Borrow the heap
      * record for the duration of cleanup, without allocating another key
@@ -105,17 +120,6 @@ static int register_binding_thread(void) {
     if (pthread_setspecific(g_binding_key, binding) != 0) { free(binding); return 0; }
     return 1;
 }
-static EGLint   g_client_version = 2;
-/* GPU-tier producer target: the bo handle (from PRIME_FD_TO_HANDLE /
- * gbm_bo) whose FBO the NEXT eglCreateWindowSurface renders into. Set by
- * wpkEglSetWindowSurfaceTarget, consumed once and cleared. 0 = an
- * ordinary canvas/scanout window surface (the default). */
-static uint32_t g_pending_surface_target_bo = 0;
-/* The native window (a struct wl_egl_window *) of the most recently created
- * window surface, remembered so eglSwapBuffers can drive its wl_surface
- * attach+commit. NULL for canvas/scanout surfaces (KMS compositor). */
-static void    *g_current_egl_window = NULL;
-
 /* libwayland-egl hooks (libc/glue/libwayland-egl.c). Weak so a program that
  * links libEGL WITHOUT libwayland-egl — a KMS/canvas GL client — still links;
  * the symbols resolve to NULL and the wayland-egl path is simply skipped. */
@@ -128,11 +132,17 @@ __attribute__((weak)) int _wpk_gbm_surface_dimensions(const void *window,
 
 #define EGL_DPY_HANDLE      ((EGLDisplay)(uintptr_t)1)
 #define EGL_CONFIG_HANDLE   ((EGLConfig) (uintptr_t)1)
-#define EGL_CONTEXT_HANDLE  g_context_handle
-#define EGL_SURFACE_HANDLE  g_surface_handle
+#define EGL_CONTEXT_HANDLE  generation->context_handle
+#define EGL_SURFACE_HANDLE  generation->surface_handle
 
-int      _wpk_gl_fd(void)           { return g_fd; }
-uint8_t *_wpk_gl_cmdbuf_base(void)  { return g_current ? g_cmdbuf_base : NULL; }
+int _wpk_gl_fd(void) {
+    struct egl_generation *generation = g_thread_binding.generation;
+    return generation ? generation->fd : -1;
+}
+uint8_t *_wpk_gl_cmdbuf_base(void) {
+    struct egl_generation *generation = g_thread_binding.generation;
+    return generation ? generation->cmdbuf_base : NULL;
+}
 struct wpk_gles_context *_wpk_gl_current_encoder(void) {
     return g_thread_binding.encoder;
 }
@@ -193,20 +203,16 @@ EGLBoolean eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor) {
     return result;
 }
 static EGLBoolean initialize_locked(EGLDisplay dpy, EGLint *major, EGLint *minor) {
+    struct egl_generation *generation = g_active_generation;
     if (dpy != EGL_DPY_HANDLE) {
         g_last_error = EGL_BAD_DISPLAY;
         return EGL_FALSE;
     }
-    if (g_initialized) {
+    if (generation && generation->initialized) {
         if (major) *major = 1;
         if (minor) *minor = 5;
         return EGL_TRUE;
     }
-    /* A new display generation needs a separate backend session while an
-     * old terminated generation retains current references. The backend
-     * session expansion is tracked with multi-context support in E02. */
-    if (g_terminate_pending) { g_last_error = EGL_NOT_INITIALIZED; return EGL_FALSE; }
-
     int display_fd = open(WPK_GL_DEVICE, O_RDWR | O_CLOEXEC);
     if (display_fd < 0) {
         fprintf(stderr, "eglInitialize: open(%s) failed: errno=%d\n",
@@ -248,12 +254,22 @@ static EGLBoolean initialize_locked(EGLDisplay dpy, EGLint *major, EGLint *minor
         g_last_error = EGL_NOT_INITIALIZED;
         return EGL_FALSE;
     }
-    g_cmdbuf_base = (uint8_t *)p;
+    generation = calloc(1, sizeof *generation);
+    if (!generation) {
+        munmap(p, WPK_GL_CMDBUF_LEN);
+        close(fd); close(display_fd);
+        g_last_error = EGL_BAD_ALLOC;
+        return EGL_FALSE;
+    }
+    generation->cmdbuf_base = (uint8_t *)p;
 
-    g_fd = fd;
-    g_display_fd = display_fd;
-    g_display_generation = root.display_id;
-    g_initialized = 1;
+    generation->fd = fd;
+    generation->display_fd = display_fd;
+    generation->id = root.display_id;
+    generation->initialized = 1;
+    generation->client_version = 2;
+    generation->next = g_generations;
+    g_generations = g_active_generation = generation;
     if (major) *major = 1;
     if (minor) *minor = 5;
     return EGL_TRUE;
@@ -314,7 +330,10 @@ static int config_attribute_index(EGLint name) {
 
 static EGLBoolean config_display_ready(EGLDisplay dpy) {
     if (dpy != EGL_DPY_HANDLE) { g_last_error = EGL_BAD_DISPLAY; return EGL_FALSE; }
-    if (!g_initialized) { g_last_error = EGL_NOT_INITIALIZED; return EGL_FALSE; }
+    pthread_mutex_lock(&g_context_mutex);
+    int ready = g_active_generation && g_active_generation->initialized;
+    pthread_mutex_unlock(&g_context_mutex);
+    if (!ready) { g_last_error = EGL_NOT_INITIALIZED; return EGL_FALSE; }
     return EGL_TRUE;
 }
 
@@ -416,8 +435,10 @@ EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config,
 static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config,
                             EGLContext share_context,
                             const EGLint *attrib_list) {
+    struct egl_generation *generation = g_active_generation;
     (void)config; (void)share_context;
-    if (dpy != EGL_DPY_HANDLE || !g_initialized || g_fd < 0) {
+    if (dpy != EGL_DPY_HANDLE) { g_last_error = EGL_BAD_DISPLAY; return EGL_NO_CONTEXT; }
+    if (!generation || !generation->initialized || generation->fd < 0) {
         g_last_error = EGL_NOT_INITIALIZED;
         return EGL_NO_CONTEXT;
     }
@@ -435,17 +456,17 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config,
 
     struct wpk_gles_context *encoder = _wpk_gl_create_encoder();
     if (!encoder) { g_last_error = EGL_BAD_ALLOC; return EGL_NO_CONTEXT; }
-    if (ioctl(g_fd, GLIO_CREATE_CONTEXT, &attrs) != 0) {
+    if (ioctl(generation->fd, GLIO_CREATE_CONTEXT, &attrs) != 0) {
         _wpk_gl_destroy_encoder(encoder);
         g_last_error = EGL_BAD_ALLOC;
         return EGL_NO_CONTEXT;
     }
-    g_encoder_state = encoder;
-    g_backend_context_id = attrs.context_id;
-    g_context_made = 1;
-    g_context_handle = (EGLContext)g_next_context_handle++;
-    g_context_delete_pending = 0;
-    g_client_version = (EGLint)attrs.client_version;
+    generation->encoder_state = encoder;
+    generation->backend_context_id = attrs.context_id;
+    generation->context_made = 1;
+    generation->context_handle = (EGLContext)g_next_context_handle++;
+    generation->context_delete_pending = 0;
+    generation->client_version = (EGLint)attrs.client_version;
     return EGL_CONTEXT_HANDLE;
 }
 
@@ -460,8 +481,10 @@ EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config,
 static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
                                   EGLNativeWindowType win,
                                   const EGLint *attrib_list) {
+    struct egl_generation *generation = g_active_generation;
     (void)config;
-    if (dpy != EGL_DPY_HANDLE || !g_initialized || g_fd < 0) {
+    if (dpy != EGL_DPY_HANDLE) { g_last_error = EGL_BAD_DISPLAY; return EGL_NO_SURFACE; }
+    if (!generation || !generation->initialized || generation->fd < 0) {
         g_last_error = EGL_NOT_INITIALIZED;
         return EGL_NO_SURFACE;
     }
@@ -492,19 +515,19 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
      * native window is a libwayland-egl wl_egl_window (SDL2's Wayland GL
      * backend), take the bo it allocated. Remember that window so
      * eglSwapBuffers can attach+commit it. */
-    uint32_t target = g_pending_surface_target_bo;
+    uint32_t target = generation->pending_surface_target_bo;
     if (!target && !is_gbm && win && _wpk_wlegl_bo_handle)
         target = _wpk_wlegl_bo_handle((void *)win);
     surf.reserved[0] = target;
-    if (ioctl(g_fd, GLIO_CREATE_SURFACE, &surf) != 0) {
+    if (ioctl(generation->fd, GLIO_CREATE_SURFACE, &surf) != 0) {
         g_last_error = EGL_BAD_ALLOC;
         return EGL_NO_SURFACE;
     }
-    g_surface_made = 1;
-    g_surface_handle = (EGLSurface)g_next_surface_handle++;
-    g_surface_delete_pending = 0;
-    g_pending_surface_target_bo = 0;
-    g_current_egl_window = is_gbm ? NULL : (void *)win;
+    generation->surface_made = 1;
+    generation->surface_handle = (EGLSurface)g_next_surface_handle++;
+    generation->surface_delete_pending = 0;
+    generation->pending_surface_target_bo = 0;
+    generation->current_egl_window = is_gbm ? NULL : (void *)win;
     return EGL_SURFACE_HANDLE;
 }
 
@@ -513,9 +536,13 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
  * the old buffer alive until its successor is committed, or rolls back. */
 int _wpk_egl_window_retarget(void *egl_window) {
     pthread_mutex_lock(&g_context_mutex);
+    struct egl_generation *generation;
     int accepted = 1;
-    if (!egl_window || egl_window != g_current_egl_window || !g_surface_made
-        || g_fd < 0 || !_wpk_wlegl_bo_handle)
+    for (generation = g_generations; generation; generation = generation->next)
+        if (generation->current_egl_window == egl_window && generation->surface_made) break;
+    if (!generation) goto done;
+    if (!egl_window || egl_window != generation->current_egl_window || !generation->surface_made
+        || generation->fd < 0 || !_wpk_wlegl_bo_handle)
         goto done;
     uint32_t target = _wpk_wlegl_bo_handle(egl_window);
     if (!target) { accepted = 0; goto done; }
@@ -525,7 +552,7 @@ int _wpk_egl_window_retarget(void *egl_window) {
         .width = 0, .height = 0, .config_id = 1,
         .reserved = {target, 0, 0, 0},
     };
-    accepted = ioctl(g_fd, GLIO_UPDATE_SURFACE, &surf) == 0;
+    accepted = ioctl(generation->fd, GLIO_UPDATE_SURFACE, &surf) == 0;
 done:
     pthread_mutex_unlock(&g_context_mutex);
     return accepted;
@@ -540,18 +567,19 @@ static EGLint current_binding_error(void) {
 }
 
 static EGLBoolean release_current_locked(void) {
-    if (g_context_owner == &g_thread_binding) {
+    struct egl_generation *generation = g_thread_binding.generation;
+    if (generation && generation->context_owner == &g_thread_binding) {
         _wpk_gl_flush();
         const struct gl_make_current release = {0, 0, 0};
-        if (ioctl(g_fd, GLIO_MAKE_CURRENT, &release) != 0) {
+        if (ioctl(generation->fd, GLIO_MAKE_CURRENT, &release) != 0) {
             g_last_error = current_binding_error();
             return EGL_FALSE;
         }
-        g_context_owner = NULL;
-        g_surface_current = 0;
+        generation->context_owner = NULL;
+        generation->surface_current = 0;
     }
     g_thread_binding = (struct egl_thread_binding){0};
-    retire_pending_resources_locked();
+    if (generation) retire_pending_resources_locked(generation);
     return EGL_TRUE;
 }
 
@@ -559,6 +587,7 @@ EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
                           EGLSurface read, EGLContext ctx) {
     EGLBoolean result = EGL_FALSE;
     pthread_mutex_lock(&g_context_mutex);
+    struct egl_generation *generation = g_active_generation;
     if (ctx == EGL_NO_CONTEXT) {
         if (dpy != EGL_NO_DISPLAY && dpy != EGL_DPY_HANDLE) {
             g_last_error = EGL_BAD_DISPLAY;
@@ -570,14 +599,14 @@ EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
         goto done;
     }
     if (dpy != EGL_DPY_HANDLE) { g_last_error = EGL_BAD_DISPLAY; goto done; }
-    if (!g_initialized) { g_last_error = EGL_NOT_INITIALIZED; goto done; }
-    if (!g_context_made || ctx != EGL_CONTEXT_HANDLE) { g_last_error = EGL_BAD_CONTEXT; goto done; }
+    if (!generation || !generation->initialized) { g_last_error = EGL_NOT_INITIALIZED; goto done; }
+    if (!generation->context_made || ctx != EGL_CONTEXT_HANDLE) { g_last_error = EGL_BAD_CONTEXT; goto done; }
     if ((draw == EGL_NO_SURFACE) != (read == EGL_NO_SURFACE)) {
         g_last_error = EGL_BAD_MATCH;
         goto done;
     }
     const int surfaceless = draw == EGL_NO_SURFACE;
-    if (!surfaceless && (!g_surface_made || draw != EGL_SURFACE_HANDLE || read != EGL_SURFACE_HANDLE)) {
+    if (!surfaceless && (!generation->surface_made || draw != EGL_SURFACE_HANDLE || read != EGL_SURFACE_HANDLE)) {
         g_last_error = EGL_BAD_SURFACE;
         goto done;
     }
@@ -587,16 +616,22 @@ EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw,
     if (!register_binding_thread()) { g_last_error = EGL_BAD_ALLOC; goto done; }
     if (g_current) _wpk_gl_flush();
     const struct gl_make_current binding = {
-        g_backend_context_id, surfaceless ? 0 : 1, surfaceless ? 0 : 1,
+        generation->backend_context_id, surfaceless ? 0 : 1, surfaceless ? 0 : 1,
     };
-    if (ioctl(g_fd, GLIO_MAKE_CURRENT, &binding) != 0) {
+    if (ioctl(generation->fd, GLIO_MAKE_CURRENT, &binding) != 0) {
         g_last_error = current_binding_error();
         goto done;
     }
-    g_context_owner = &g_thread_binding;
-    g_thread_binding = (struct egl_thread_binding){ 1, surfaceless, ctx, draw, g_encoder_state };
-    g_surface_current = !surfaceless;
-    retire_pending_resources_locked();
+    struct egl_generation *previous = g_thread_binding.generation;
+    if (previous && previous != generation) {
+        previous->context_owner = NULL;
+        previous->surface_current = 0;
+    }
+    generation->context_owner = &g_thread_binding;
+    g_thread_binding = (struct egl_thread_binding){ 1, surfaceless, ctx, draw, generation->encoder_state, generation };
+    if (previous && previous != generation) retire_pending_resources_locked(previous);
+    generation->surface_current = !surfaceless;
+    retire_pending_resources_locked(generation);
     result = EGL_TRUE;
 done:
     pthread_mutex_unlock(&g_context_mutex);
@@ -629,8 +664,10 @@ EGLBoolean eglQueryContext(EGLDisplay dpy, EGLContext ctx, EGLint attribute, EGL
 }
 static EGLBoolean query_context_locked(EGLDisplay dpy, EGLContext ctx,
                                        EGLint attribute, EGLint *value) {
+    struct egl_generation *generation = g_active_generation;
     if (dpy != EGL_DPY_HANDLE) { g_last_error = EGL_BAD_DISPLAY; return EGL_FALSE; }
-    if (ctx != EGL_CONTEXT_HANDLE || !g_context_made) {
+    if (!generation) { g_last_error = EGL_NOT_INITIALIZED; return EGL_FALSE; }
+    if (ctx != EGL_CONTEXT_HANDLE || !generation->context_made) {
         g_last_error = EGL_BAD_CONTEXT;
         return EGL_FALSE;
     }
@@ -638,9 +675,9 @@ static EGLBoolean query_context_locked(EGLDisplay dpy, EGLContext ctx,
     switch (attribute) {
         case EGL_CONFIG_ID:              *value = 1; break;
         case EGL_CONTEXT_CLIENT_TYPE:    *value = EGL_OPENGL_ES_API; break;
-        case EGL_CONTEXT_CLIENT_VERSION: *value = g_client_version; break;
+        case EGL_CONTEXT_CLIENT_VERSION: *value = generation->client_version; break;
         case EGL_RENDER_BUFFER:
-            *value = g_surface_current ? EGL_BACK_BUFFER
+            *value = generation->surface_current ? EGL_BACK_BUFFER
                                                          : EGL_NONE;
             break;
         default:
@@ -650,33 +687,44 @@ static EGLBoolean query_context_locked(EGLDisplay dpy, EGLContext ctx,
     return EGL_TRUE;
 }
 
+static EGLBoolean swap_buffers_locked(EGLDisplay, EGLSurface);
 EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
-    if (dpy != EGL_DPY_HANDLE || surface != EGL_SURFACE_HANDLE
-        || !g_surface_made) {
+    pthread_mutex_lock(&g_context_mutex);
+    EGLBoolean result = swap_buffers_locked(dpy, surface);
+    pthread_mutex_unlock(&g_context_mutex);
+    return result;
+}
+static EGLBoolean swap_buffers_locked(EGLDisplay dpy, EGLSurface surface) {
+    struct egl_generation *generation = g_active_generation;
+    if (dpy != EGL_DPY_HANDLE) { g_last_error = EGL_BAD_DISPLAY; return EGL_FALSE; }
+    if (!generation) { g_last_error = EGL_NOT_INITIALIZED; return EGL_FALSE; }
+    if (surface != EGL_SURFACE_HANDLE || !generation->surface_made) {
         g_last_error = EGL_BAD_SURFACE;
         return EGL_FALSE;
     }
     _wpk_gl_flush();
-    if (ioctl(g_fd, GLIO_PRESENT, NULL) != 0) {
+    if (ioctl(generation->fd, GLIO_PRESENT, NULL) != 0) {
         g_last_error = EGL_BAD_SURFACE;
         return EGL_FALSE;
     }
     /* For a libwayland-egl window the flush + GLIO_PRESENT above is the
      * buffer-ready fence; now attach+commit the dmabuf buffer to the
      * wl_surface. No-op (skipped) for canvas/scanout surfaces. */
-    if (g_current_egl_window && _wpk_wlegl_present)
-        _wpk_wlegl_present(g_current_egl_window);
+    if (generation->current_egl_window && _wpk_wlegl_present)
+        _wpk_wlegl_present(generation->current_egl_window);
     return EGL_TRUE;
 }
 
 EGLBoolean eglDestroySurface(EGLDisplay dpy, EGLSurface surface) {
     pthread_mutex_lock(&g_context_mutex);
+    struct egl_generation *generation = g_active_generation;
     EGLBoolean result = EGL_FALSE;
     if (dpy != EGL_DPY_HANDLE) g_last_error = EGL_BAD_DISPLAY;
-    else if (!g_surface_made || surface != EGL_SURFACE_HANDLE) g_last_error = EGL_BAD_SURFACE;
+    else if (!generation) g_last_error = EGL_NOT_INITIALIZED;
+    else if (!generation->surface_made || surface != EGL_SURFACE_HANDLE) g_last_error = EGL_BAD_SURFACE;
     else {
-        g_surface_delete_pending = 1;
-        retire_pending_resources_locked();
+        generation->surface_delete_pending = 1;
+        if (generation) retire_pending_resources_locked(generation);
         result = EGL_TRUE;
     }
     pthread_mutex_unlock(&g_context_mutex);
@@ -685,63 +733,72 @@ EGLBoolean eglDestroySurface(EGLDisplay dpy, EGLSurface surface) {
 
 EGLBoolean eglDestroyContext(EGLDisplay dpy, EGLContext ctx) {
     pthread_mutex_lock(&g_context_mutex);
+    struct egl_generation *generation = g_active_generation;
     EGLBoolean result = EGL_FALSE;
     if (dpy != EGL_DPY_HANDLE) g_last_error = EGL_BAD_DISPLAY;
-    else if (!g_context_made || ctx != EGL_CONTEXT_HANDLE) g_last_error = EGL_BAD_CONTEXT;
+    else if (!generation) g_last_error = EGL_NOT_INITIALIZED;
+    else if (!generation->context_made || ctx != EGL_CONTEXT_HANDLE) g_last_error = EGL_BAD_CONTEXT;
     else {
-        g_context_delete_pending = 1;
-        retire_pending_resources_locked();
+        generation->context_delete_pending = 1;
+        if (generation) retire_pending_resources_locked(generation);
         result = EGL_TRUE;
     }
     pthread_mutex_unlock(&g_context_mutex);
     return result;
 }
 
-static void retire_pending_resources_locked(void) {
-    if (g_surface_delete_pending && !g_surface_current) {
-        ioctl(g_fd, GLIO_DESTROY_SURFACE, NULL);
-        g_surface_made = g_surface_delete_pending = 0;
-        g_surface_handle = EGL_NO_SURFACE;
-        g_current_egl_window = NULL;
+static void retire_pending_resources_locked(struct egl_generation *generation) {
+    if (generation->surface_delete_pending && !generation->surface_current) {
+        ioctl(generation->fd, GLIO_DESTROY_SURFACE, NULL);
+        generation->surface_made = generation->surface_delete_pending = 0;
+        generation->surface_handle = EGL_NO_SURFACE;
+        generation->current_egl_window = NULL;
     }
-    if (g_context_delete_pending && !g_context_owner) {
-        _wpk_gl_destroy_encoder(g_encoder_state);
-        g_encoder_state = NULL;
-        ioctl(g_fd, GLIO_DESTROY_CONTEXT, NULL);
-        g_context_made = g_context_delete_pending = 0;
-        g_context_handle = EGL_NO_CONTEXT;
-        g_backend_context_id = 0;
+    if (generation->context_delete_pending && !generation->context_owner) {
+        _wpk_gl_destroy_encoder(generation->encoder_state);
+        generation->encoder_state = NULL;
+        ioctl(generation->fd, GLIO_DESTROY_CONTEXT, NULL);
+        generation->context_made = generation->context_delete_pending = 0;
+        generation->context_handle = EGL_NO_CONTEXT;
+        generation->backend_context_id = 0;
     }
-    if (g_terminate_pending && !g_context_owner) {
-        retire_imported_images();
-        ioctl(g_fd, GLIO_TERMINATE, NULL);
-        if (g_cmdbuf_base) {
-            munmap(g_cmdbuf_base, WPK_GL_CMDBUF_LEN);
-            g_cmdbuf_base = NULL;
+    if (generation->terminate_pending && !generation->context_owner) {
+        retire_imported_images(generation);
+        ioctl(generation->fd, GLIO_TERMINATE, NULL);
+        if (generation->cmdbuf_base) {
+            munmap(generation->cmdbuf_base, WPK_GL_CMDBUF_LEN);
+            generation->cmdbuf_base = NULL;
         }
-        close(g_fd);
-        g_fd = -1;
-        if (g_display_fd >= 0) close(g_display_fd);
-        g_display_fd = -1; g_display_generation = 0;
-        g_terminate_pending = 0;
+        close(generation->fd);
+        generation->fd = -1;
+        if (generation->display_fd >= 0) close(generation->display_fd);
+        generation->display_fd = -1; generation->id = 0;
+        struct egl_generation **slot = &g_generations;
+        while (*slot && *slot != generation) slot = &(*slot)->next;
+        if (*slot) *slot = generation->next;
+        free(generation);
     }
 }
 
 EGLBoolean eglTerminate(EGLDisplay dpy) {
     pthread_mutex_lock(&g_context_mutex);
+    struct egl_generation *generation = g_active_generation;
     EGLBoolean result = EGL_FALSE;
     if (dpy != EGL_DPY_HANDLE) g_last_error = EGL_BAD_DISPLAY;
+    else if (!generation) result = EGL_TRUE;
     else {
-        if (g_initialized && g_display_fd >= 0 && ioctl(g_display_fd,GLIO_TERMINATE,NULL) != 0) {
+        if (generation->initialized && generation->display_fd >= 0 && ioctl(generation->display_fd,GLIO_TERMINATE,NULL) != 0) {
             g_last_error = EGL_BAD_ACCESS;
             pthread_mutex_unlock(&g_context_mutex); return EGL_FALSE;
         }
-        g_initialized = 0;
-        if (g_fd >= 0) {
-            g_terminate_pending = 1;
-            g_context_delete_pending = g_context_made;
-            g_surface_delete_pending = g_surface_made;
-            retire_pending_resources_locked();
+        generation->initialized = 0;
+        g_active_generation = NULL;
+        invalidate_generation_images(generation);
+        if (generation->fd >= 0) {
+            generation->terminate_pending = 1;
+            generation->context_delete_pending = generation->context_made;
+            generation->surface_delete_pending = generation->surface_made;
+            if (generation) retire_pending_resources_locked(generation);
         }
         result = EGL_TRUE;
     }
@@ -1085,34 +1142,44 @@ struct imported_bo_reference {
     unsigned references;
     struct imported_bo_reference *next;
 };
-static struct imported_bo_reference *g_imported_bos;
 static struct wpk_egl_image *g_images;
 
 /* Import `prime_fd`'s bo as a GEM handle on the EGL device fd. Returns
  * the handle, or 0 on failure. The caller owns the handle and releases
  * it with wpkEglCloseBoHandle. */
-unsigned wpkEglImportDmabufHandle(EGLDisplay dpy, int prime_fd) {
-    if (dpy != EGL_DPY_HANDLE || g_fd < 0 || prime_fd < 0) return 0;
+static unsigned import_dmabuf_handle(struct egl_generation *generation, int prime_fd) {
+    if (!generation || generation->fd < 0 || prime_fd < 0) return 0;
     struct imported_bo_reference *owner = calloc(1, sizeof *owner);
     if (!owner) return 0;
     struct wpk_drm_prime_handle req = { .handle = 0, .flags = 0, .fd = prime_fd };
-    if (ioctl(g_fd, WPK_DRM_IOCTL_PRIME_FD_TO_HANDLE, &req) != 0) {
+    if (ioctl(generation->fd, WPK_DRM_IOCTL_PRIME_FD_TO_HANDLE, &req) != 0) {
         free(owner);
         return 0;
     }
-    for (struct imported_bo_reference *existing = g_imported_bos; existing;
+    pthread_mutex_lock(&g_image_mutex);
+    for (struct imported_bo_reference *existing = generation->imported_bos; existing;
          existing = existing->next) {
         if (existing->handle == req.handle) {
             existing->references++;
             free(owner);
+            pthread_mutex_unlock(&g_image_mutex);
             return req.handle;
         }
     }
     owner->handle = req.handle;
     owner->references = 1;
-    owner->next = g_imported_bos;
-    g_imported_bos = owner;
+    owner->next = generation->imported_bos;
+    generation->imported_bos = owner;
+    pthread_mutex_unlock(&g_image_mutex);
     return req.handle;
+}
+
+unsigned wpkEglImportDmabufHandle(EGLDisplay dpy, int prime_fd) {
+    pthread_mutex_lock(&g_context_mutex);
+    unsigned handle = dpy == EGL_DPY_HANDLE
+        ? import_dmabuf_handle(g_active_generation, prime_fd) : 0;
+    pthread_mutex_unlock(&g_context_mutex);
+    return handle;
 }
 
 /* (Re)bind an imported bo as a GL_TEXTURE_2D texture in the current
@@ -1122,17 +1189,18 @@ unsigned wpkEglImportDmabufHandle(EGLDisplay dpy, int prime_fd) {
  * this host, unknown handle) — callers degrade to their CPU path. */
 unsigned wpkEglBindBoTexture(EGLDisplay dpy, unsigned bo_handle,
                              unsigned gl_target) {
-    if (dpy != EGL_DPY_HANDLE || g_fd < 0 || !g_context_made) return 0;
+    struct egl_generation *generation = g_thread_binding.generation;
+    if (dpy != EGL_DPY_HANDLE || !generation || generation->fd < 0 || !generation->context_made) return 0;
     /* Flush queued GL ops first so host-side texture uploads and cmdbuf
      * draws execute in program order. */
     _wpk_gl_flush();
     struct wpk_drm_bind_foreign_texture req = {
         .bo_handle = bo_handle,
         .gl_target = gl_target,
-        .ctx_id = g_backend_context_id, /* kernel-issued identity on this EGL fd */
+        .ctx_id = generation->backend_context_id, /* kernel-issued identity on this EGL fd */
         .gl_texture_id = 0,
     };
-    if (ioctl(g_fd, WPK_DRM_IOCTL_BIND_FOREIGN_TEXTURE, &req) != 0) return 0;
+    if (ioctl(generation->fd, WPK_DRM_IOCTL_BIND_FOREIGN_TEXTURE, &req) != 0) return 0;
     return req.gl_texture_id;
 }
 
@@ -1145,13 +1213,15 @@ unsigned wpkEglBindBoTexture(EGLDisplay dpy, unsigned bo_handle,
  * ordinary window surface. No-op if the display isn't initialized. */
 void wpkEglSetWindowSurfaceTarget(EGLDisplay dpy, unsigned bo_handle) {
     if (dpy != EGL_DPY_HANDLE) return;
-    g_pending_surface_target_bo = bo_handle;
+    pthread_mutex_lock(&g_context_mutex);
+    if (g_active_generation) g_active_generation->pending_surface_target_bo = bo_handle;
+    pthread_mutex_unlock(&g_context_mutex);
 }
 
 /* Release a handle from wpkEglImportDmabufHandle. */
-void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle) {
-    if (dpy != EGL_DPY_HANDLE || g_fd < 0) return;
-    struct imported_bo_reference **owner = &g_imported_bos;
+static void close_bo_handle(struct egl_generation *generation, unsigned bo_handle) {
+    if (!generation || generation->fd < 0) return;
+    struct imported_bo_reference **owner = &generation->imported_bos;
     while (*owner && (*owner)->handle != bo_handle) owner = &(*owner)->next;
     if (!*owner) return;
     if (--(*owner)->references) return;
@@ -1159,7 +1229,16 @@ void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle) {
     *owner = retired->next;
     free(retired);
     struct wpk_drm_gem_close req = { .handle = bo_handle, .pad = 0 };
-    ioctl(g_fd, WPK_DRM_IOCTL_GEM_CLOSE, &req);
+    ioctl(generation->fd, WPK_DRM_IOCTL_GEM_CLOSE, &req);
+}
+
+void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle) {
+    if (dpy != EGL_DPY_HANDLE) return;
+    pthread_mutex_lock(&g_context_mutex);
+    pthread_mutex_lock(&g_image_mutex);
+    close_bo_handle(g_active_generation, bo_handle);
+    pthread_mutex_unlock(&g_image_mutex);
+    pthread_mutex_unlock(&g_context_mutex);
 }
 
 /* ----- EGL_EXT_image_dma_buf_import ------------------------------- */
@@ -1194,13 +1273,27 @@ static int dmabuf_format_supported(EGLint fourcc) {
  * EINVAL, and its pixels live only in the host texture the bo owns; a
  * CPU-tier bo stays mapped for the image's lifetime, so a texture bound to
  * it can be refreshed from memory. */
+static EGLImageKHR create_image_locked(EGLDisplay, EGLContext, EGLenum,
+                                        EGLClientBuffer, const EGLint *);
 EGLImageKHR eglCreateImageKHR(EGLDisplay dpy, EGLContext ctx, EGLenum target,
-                              EGLClientBuffer buffer,
-                              const EGLint *attrib_list) {
-    if (dpy != EGL_DPY_HANDLE || !g_initialized) {
+                              EGLClientBuffer buffer, const EGLint *attrib_list) {
+    pthread_mutex_lock(&g_context_mutex);
+    EGLImageKHR result = create_image_locked(dpy, ctx, target, buffer, attrib_list);
+    pthread_mutex_unlock(&g_context_mutex);
+    return result;
+}
+static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum target,
+                                      EGLClientBuffer buffer, const EGLint *attrib_list) {
+    struct egl_generation *generation = g_active_generation;
+    if (dpy != EGL_DPY_HANDLE) {
         g_last_error = EGL_BAD_DISPLAY;
         return EGL_NO_IMAGE_KHR;
     }
+    if (!generation || !generation->initialized) {
+        g_last_error = EGL_NOT_INITIALIZED;
+        return EGL_NO_IMAGE_KHR;
+    }
+    if (!g_next_image_handle) { g_last_error = EGL_BAD_ALLOC; return EGL_NO_IMAGE_KHR; }
     if (target != EGL_LINUX_DMA_BUF_EXT || ctx != EGL_NO_CONTEXT
         || buffer != NULL) {
         g_last_error = EGL_BAD_PARAMETER;
@@ -1280,7 +1373,9 @@ EGLImageKHR eglCreateImageKHR(EGLDisplay dpy, EGLContext ctx, EGLenum target,
         g_last_error = EGL_BAD_ALLOC;
         return EGL_NO_IMAGE_KHR;
     }
-    image->handle = wpkEglImportDmabufHandle(dpy, fd);
+    image->generation = generation;
+    image->public_handle = g_next_image_handle;
+    image->handle = import_dmabuf_handle(generation, fd);
     if (image->handle == 0) {
         free(image);
         g_last_error = EGL_BAD_ACCESS;
@@ -1301,11 +1396,16 @@ EGLImageKHR eglCreateImageKHR(EGLDisplay dpy, EGLContext ctx, EGLenum target,
         if (error == EGL_SUCCESS) {
             image->references = 1;
             image->public_live = 1;
+            pthread_mutex_lock(&g_image_mutex);
             image->next = g_images;
             g_images = image;
-            return (EGLImageKHR)image;
+            pthread_mutex_unlock(&g_image_mutex);
+            g_next_image_handle++;
+            return (EGLImageKHR)image->public_handle;
         }
-        wpkEglCloseBoHandle(dpy, image->handle);
+        pthread_mutex_lock(&g_image_mutex);
+        close_bo_handle(generation, image->handle);
+        pthread_mutex_unlock(&g_image_mutex);
         free(image);
         g_last_error = error;
         return EGL_NO_IMAGE_KHR;
@@ -1315,61 +1415,104 @@ EGLImageKHR eglCreateImageKHR(EGLDisplay dpy, EGLContext ctx, EGLenum target,
     image->pixels = (const uint8_t *)map + offset;
     image->references = 1;
     image->public_live = 1;
+    pthread_mutex_lock(&g_image_mutex);
     image->next = g_images;
     g_images = image;
-    return (EGLImageKHR)image;
+    pthread_mutex_unlock(&g_image_mutex);
+    g_next_image_handle++;
+    return (EGLImageKHR)image->public_handle;
 }
 
+/* Returns a retained reference so termination cannot retire the image
+ * between public-handle validation and installation into a GL sibling. */
 struct wpk_egl_image *_wpk_egl_image_lookup(const void *image) {
-    for (struct wpk_egl_image *candidate = g_images; candidate; candidate = candidate->next)
-        if (candidate == image && candidate->public_live) return candidate;
-    return NULL;
+    struct wpk_egl_image *found = NULL;
+    pthread_mutex_lock(&g_image_mutex);
+    for (struct wpk_egl_image *candidate = g_images; candidate; candidate = candidate->next) {
+        if (candidate->public_handle == (uintptr_t)image && candidate->public_live
+            && candidate->generation == g_thread_binding.generation) {
+            candidate->references++;
+            found = candidate;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_image_mutex);
+    return found;
 }
 
 void _wpk_egl_image_retain(struct wpk_egl_image *image) {
+    pthread_mutex_lock(&g_image_mutex);
     image->references++;
+    pthread_mutex_unlock(&g_image_mutex);
 }
 
-void _wpk_egl_image_release(struct wpk_egl_image *image) {
+static void image_release_locked(struct wpk_egl_image *image) {
     if (--image->references) return;
     struct wpk_egl_image **slot = &g_images;
     while (*slot && *slot != image) slot = &(*slot)->next;
     if (*slot) *slot = image->next;
     if (image->map) munmap(image->map, image->map_len);
-    wpkEglCloseBoHandle(EGL_DPY_HANDLE, image->handle);
+    close_bo_handle(image->generation, image->handle);
     free(image);
+}
+void _wpk_egl_image_release(struct wpk_egl_image *image) {
+    pthread_mutex_lock(&g_image_mutex);
+    image_release_locked(image);
+    pthread_mutex_unlock(&g_image_mutex);
 }
 
 EGLBoolean eglDestroyImageKHR(EGLDisplay dpy, EGLImageKHR image) {
-    if (dpy != EGL_DPY_HANDLE) {
-        g_last_error = EGL_BAD_DISPLAY;
+    if (dpy != EGL_DPY_HANDLE) { g_last_error = EGL_BAD_DISPLAY; return EGL_FALSE; }
+    pthread_mutex_lock(&g_context_mutex);
+    if (!g_active_generation) {
+        g_last_error = EGL_NOT_INITIALIZED;
+        pthread_mutex_unlock(&g_context_mutex);
         return EGL_FALSE;
     }
-    struct wpk_egl_image *img = _wpk_egl_image_lookup(image);
-    if (!img) {
-        g_last_error = EGL_BAD_PARAMETER;
-        return EGL_FALSE;
+    pthread_mutex_lock(&g_image_mutex);
+    struct wpk_egl_image *img = g_images;
+    while (img && (img->public_handle != (uintptr_t)image || !img->public_live
+                  || img->generation != g_active_generation)) img = img->next;
+    EGLBoolean result = EGL_FALSE;
+    if (!img) g_last_error = EGL_BAD_PARAMETER;
+    else {
+        img->public_live = 0;
+        image_release_locked(img);
+        result = EGL_TRUE;
     }
-    img->public_live = 0;
-    _wpk_egl_image_release(img);
-    return EGL_TRUE;
+    pthread_mutex_unlock(&g_image_mutex);
+    pthread_mutex_unlock(&g_context_mutex);
+    return result;
 }
 
-static void retire_imported_images(void) {
-    while (g_images) {
-        struct wpk_egl_image *image = g_images;
-        /* Context siblings have already retired. */
-        _wpk_egl_image_release(image);
+static void invalidate_generation_images(struct egl_generation *generation) {
+    pthread_mutex_lock(&g_image_mutex);
+    struct wpk_egl_image *image = g_images;
+    while (image) {
+        struct wpk_egl_image *next = image->next;
+        if (image->generation == generation && image->public_live) {
+            image->public_live = 0;
+            image_release_locked(image);
+        }
+        image = next;
     }
-    while (g_imported_bos) {
-        struct imported_bo_reference *owner = g_imported_bos;
-        g_imported_bos = owner->next;
+    pthread_mutex_unlock(&g_image_mutex);
+}
+
+static void retire_imported_images(struct egl_generation *generation) {
+    /* Public references ended at termination; encoder destruction released
+     * sibling references. Final fd close ends any remaining raw imports. */
+    pthread_mutex_lock(&g_image_mutex);
+    while (generation->imported_bos) {
+        struct imported_bo_reference *owner = generation->imported_bos;
+        generation->imported_bos = owner->next;
         free(owner);
     }
+    pthread_mutex_unlock(&g_image_mutex);
 }
 
 uint32_t _wpk_egl_image_texture(const struct wpk_egl_image *image) {
-    if (!image || image->pixels) return 0;
+    if (!image || image->pixels || image->generation != g_thread_binding.generation) return 0;
     return wpkEglBindBoTexture(EGL_DPY_HANDLE, image->handle, GL_TEXTURE_2D);
 }
 

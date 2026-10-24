@@ -69,7 +69,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
 | G10 | Every core function resolves; ES2 API | Handwritten eglGetProcAddress list incomplete; old branch generates declarations | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | open |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
-| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. ABI 56 separates revocable display-generation roots from object sessions. Creation/bind failure preserves prior state. Multiple public EGL contexts, sharing, overlapping display generations and the full error/lifecycle audit remain open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
+| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. ABI 56 separates revocable display-generation roots from object sessions. C generation records retain old current descriptors, mappings, encoders and imported images while a new generation initializes. Creation/bind failure preserves prior state. Multiple public contexts within one generation, sharing, independent surfaces and the full error/lifecycle audit remain open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
 | E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Pbuffer always fails; several core symbols absent; GBM sizing exists | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | open |
 | E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context / OES_surfaceless_context | Explicit kernel/host bind, initial zero viewport/scissor, undefined framebuffer-zero status and native operation errors implemented; user FBOs remain usable. Real source-browser checks pass; guest CTS/current artifacts remain pending | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | partial |
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/alias/FBO references now retain GEM storage; CPU coherence and complete object semantics remain open | EGL, GLES alias model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | open |
@@ -1600,3 +1600,75 @@ Device/context-loss propagation after indeterminate replies, fixed C
 attribute/texture-unit mirrors, EGLImage sibling sampler/storage identity,
 remaining EGL 1.5 APIs and the other inventory rows remain open. This
 authority foundation does not close an API family.
+
+### Retained C display generations and image identities
+
+The EGL library now keeps a heap record per initialized generation instead
+of process-global descriptors, command mappings and object state. The
+public display selects its active generation; a current thread retains
+its original generation, mapping and encoder. Termination revokes that
+generation and its public image handles immediately. A new initialization
+can complete before old current resources are released, including when
+another thread owns them. Successful replacement retires the former
+generation only after backend acceptance. Failed initialization or binding
+preserves the old current resources and query outputs.
+
+This implements the reinitialization/lifetime rule in
+[EGL 1.5 section 3.2](https://registry.khronos.org/EGL/specs/eglspec.1.5.pdf).
+It does not make terminated context/surface handles usable through public
+lookups; current-context queries retain their existing identities until
+release. The touched context, surface and image operations reject an
+uninitialized display before dereferencing its generation record. A full
+EGL error audit remains open.
+
+Each imported image retains its importing generation. Final sibling
+cleanup therefore closes its GEM handle on the original open description,
+even when a new generation uses the same numeric handle. Public image
+identities now use monotonic tokens rather than heap addresses; allocation
+reuse cannot revive a deleted handle. Image lookup obtains a temporary
+reference under the image/owner lock before a GL sibling is installed.
+Termination cannot free a validated image in that interval. Every failed
+installation releases the temporary reference. The context lock precedes
+the image lock; sibling reference operations never acquire the context
+lock, including encoder destruction during generation retirement.
+
+The native device double now models independent descriptors, mappings,
+current owners and command streams. Seven added cases cover generation
+overlap, allocation rollback, failed replacement binding, release before
+new binding, two-thread ownership, paused image acquisition during
+termination, rendered command routing, and stale image identities. All
+seven fail against the exact prior library/header at `7507e19cf0`; its
+60 older cases pass. The initial new test incorrectly expected the native
+query double to supply unpack alignment. It now checks the actual C-owned
+row-length mirror; the double does not claim native state-query evidence.
+
+Focused source validation (2026-10-23):
+
+| Check | Result | Evidence |
+|---|---|---|
+| Native actual EGL/GLES with device double and UBSan | 67 passed | `.context/graphics-generation-authoritative-native.log` |
+| Exact prior-library comparison | 60 passed; all 7 added cases failed | `.context/graphics-generation-authoritative-baseline-native.log` |
+| Host graphics source gate and Node/browser declarations | 359 cases in 18 files; declarations passed | `.context/graphics-generation-host.log` |
+| Real Chromium/Firefox/WebKit source WebGL | 90 passed, no skips | `.context/graphics-generation-authoritative-browser.log` |
+| Browser protocol/memory-boundary negative checks | 10 passed | `.context/graphics-generation-abi-memory.log` |
+| Private wasm32 EGL/GLES objects, paired relocatable link and source audit | Passed; 150 public definitions guarded and 142/142 core symbols defined/resolved | `.context/graphics-generation-authoritative-wasm-audit.log` |
+| ABI snapshot/source consistency | Passed; global ABI 56 and graphics operation version 5 unchanged | `.context/graphics-generation-abi-memory.log` |
+
+The new browser case captures actual C submissions and retirement records
+for the old and new device descriptions. It replays those streams into
+independent host targets, reads red then blue pixels, and verifies that
+old-target destruction preserves the new target before final retirement.
+It uses the source renderer, not guest initialization or kernel ioctl
+marshalling. The inherited kernel root-authority tests are recorded in
+the ABI 56 section above; no Rust source changed in this C ownership batch.
+Main was fetched again and remains `f3cb7041f6`, already integrated.
+
+Public EGL still admits one context and surface within each generation.
+Multiple contexts/share groups, independently owned draw/read surfaces,
+image sampler/storage identity and the other inventory gaps remain open.
+The private C ownership changes use the existing ABI 56 wire. Normal SDK
+archives, programs, packages and images still need rebuilding together;
+no stale artifact was restamped. Guest CTS, cage/sway, full browser-memory
+and required POSIX/conformance validation remain deferred until the
+combined implementation is ready. This source evidence closes the C
+generation-overlap restriction, not the full E02 lifecycle inventory.

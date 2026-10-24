@@ -219,7 +219,10 @@ void _wpk_gl_destroy_encoder(struct wpk_gles_context *state);
  * GPU-tier bo (its PRIME fd has no CPU mapping) is sampled and rendered
  * through the host texture the bo owns; a CPU-tier bo is read from
  * `pixels`, the caller's mapping of the dma-buf. */
+struct egl_generation;
 struct wpk_egl_image {
+    struct egl_generation *generation; /* owns the imported GEM handle */
+    uintptr_t public_handle; /* never reuse an invalidated public identity */
     unsigned references;    /* public image plus every live GL sibling */
     int public_live;
     struct wpk_egl_image *next;
@@ -235,6 +238,7 @@ struct wpk_egl_image {
 /* The host texture name, in the current context's texture namespace,
  * that holds a GPU-tier image's bo. 0 when there is none: a CPU-tier
  * image, no GL context created yet, or no GL backing on this host. */
+/* Lookup retains a temporary reference; the caller must release it. */
 struct wpk_egl_image *_wpk_egl_image_lookup(const void *image);
 void _wpk_egl_image_retain(struct wpk_egl_image *image);
 void _wpk_egl_image_release(struct wpk_egl_image *image);

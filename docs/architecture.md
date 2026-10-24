@@ -3854,6 +3854,17 @@ final close prevents new contexts, surfaces and positive binds, while
 already-current children retain submit/query/release/destruction paths.
 Descriptor reuse cannot revive an old generation. Roots have no command
 mapping or renderer and therefore send no renderer unbind on cleanup.
+The EGL library retains one heap record per display generation. Public
+lookups use the active generation; thread bindings retain their actual
+generation's descriptor, mapping and encoder after termination. A new
+initialization can therefore overlap old current resources. Successful
+replacement releases the old generation after backend acceptance; a failed
+bind preserves it. Images retain their importing generation so cleanup
+cannot close a reused numeric GEM handle on a newer description. Image
+lookup acquires a temporary reference before a GL sibling is installed,
+and termination revokes public image handles under the same reference lock.
+Public image tokens are monotonic, independent of heap addresses, so a
+recycled allocation cannot revive a deleted or prior-generation handle.
 Command buffers, native object maps, shadow state, queries, forwarding and
 retirement are selected by process plus session. Process-only registry
 lookups refuse ambiguity. Closing or unmapping one session leaves sibling
@@ -3876,8 +3887,10 @@ without destroying its current EGL surface. Failed updates preserve the old
 target and attached size. This path currently requires an existing GPU
 window target on the same native renderer; forwarded GPU and mixed canvas
 targets still need the full surface model. The public EGL facade remains
-single-context. Share groups, separate surface objects and the full
-lifecycle model remain incomplete.
+single-context per generation. Multiple contexts within one generation,
+share groups, separate surface objects and the full lifecycle model remain
+incomplete. Generation overlap has focused native/source-browser evidence;
+normal guest-artifact and conformance validation remain pending.
 
 Surfaceless bindings use a context-owned native framebuffer with no
 attachments to represent the absent default framebuffer. It has no guest
