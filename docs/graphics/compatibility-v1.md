@@ -4413,6 +4413,7 @@ All commands below use `scripts/dev-shell.sh`:
 | Check | Exact evidence |
 |---|---|
 | Native C | All 185 fatal-UBSan cases pass; `graphics-core-image-final-native.log` |
+| Strengthened final lifetime assertions | Both core image lifetime/generation cases pass again with exact context-destruction outcomes; `graphics-core-image-strict-lifetime.log` |
 | Private wasm32 | Paired EGL/GLES and actual-GBM links pass; both new symbols are defined; same log |
 | Existing GLES authority/core inventory | 150 authority guards and 142/142 core definitions/resolvers pass; same log |
 | EGL core definition inventory | 39/44 definitions and all corresponding resolvers; only five sync definitions absent; `graphics-core-image-api-inventory.log`; symbols are not semantic conformance |
