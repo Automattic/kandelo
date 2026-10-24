@@ -1,4 +1,13 @@
-# Guarded native Codex transform attempts
+# Guarded native Codex transform results
+
+The complete native transform succeeded on the original 284.6 MB input in
+**1,073.45 seconds (17 minutes 53 seconds)**, including serial Wasm validation
+and atomic publication. Its OS lifetime peak physical footprint was
+**451.38 MiB**, and its requested Rust allocation peak was **430.94 MiB**.
+The 16 GiB guard and 30-minute deadline did not fire. Compiler-fact analysis
+completed without falling back to the built-in analysis. See the eighth run
+below for exact output provenance and limitations; earlier failures remain
+documented as diagnostic history.
 
 The original diagnostic input is 284,605,220 bytes, SHA-256
 `17b829246d2396cf73f60d3dee8fea1b64dbbae8b96b0825d7228ce288ef7e42`.
@@ -336,3 +345,42 @@ Executable SHA-256:
 ```
 7f9dd77356b566a1a78182b867a7f8ecc2899bf1cec0e0d7003fa13b038ab291
 ```
+
+## Eighth run: complete native transform succeeds
+
+The shared-target executable above completed with normal options on the exact
+original input under the unchanged 16 GiB physical guard and 1,800-second
+deadline. No other heavyweight workspace job ran concurrently. Both guard
+status and process exit report success. The final stderr reports
+`native analysis: facts`, with no analysis retry.
+
+| Observation | Native result |
+|---|---:|
+| Complete transform wall time | 1,073.45 seconds |
+| OS lifetime peak physical footprint | 451.38 MiB |
+| Peak requested Rust allocations | 430.94 MiB |
+| Maximum sampled RSS | 827.13 MiB |
+| Input bytes | 284,605,220 |
+| Validated output bytes | 246,465,075 |
+
+The transform includes immutable input/output snapshots, analysis, frozen
+planning, serial emission, feature declarations, serial structural validation,
+atomic publication and checksums. Binaryen and Node/browser/guest execution
+are excluded. A one-second external stack sample was taken during exception
+analysis; this is not a throughput benchmark. The unchanged Walrus run failed
+at about 16.02 GiB during analysis. It produced no artifact, so this is not a
+completed-transform speed comparison or a same-endpoint memory ratio.
+
+Output SHA-256:
+
+```
+4f2cf5e87a3a435e214ddee2506d22d25db1bfbb55d3fa1b07c6beda63030de3
+```
+
+Evidence is preserved in `.context/native-codex-target-groups-20261024/`,
+including exact input, validated output, guard status, sampled traces,
+stdout/stderr, run script and source/binary references. The
+[machine-readable summary](2026-10-24-native-codex-transform-summary.json)
+records exact values and provenance. The output remains a diagnostic artifact:
+it was not executed or admitted into the normal program tree. This proves
+completed transform capacity for these bytes, not Codex runtime correctness.

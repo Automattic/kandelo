@@ -52,10 +52,12 @@ transform timings, not guest application execution timings.
 | Tiny caught child | 0.013 (0.011–0.013) | 0.016 (0.016–0.017) |
 | Tiny exiting child | 0.013 (0.013–0.013) | 0.017 (0.016–0.017) |
 
-No successful complete original-Codex timing or memory pair exists. The
-[guarded attempts](2026-10-24-native-codex-transform.md) remain separate failed
-transform observations. These controlled examples do not establish Codex
-capacity, broad process correctness or application performance.
+No successful complete original-Codex Walrus/native pair exists. A separate
+[guarded native run](2026-10-24-native-codex-transform.md#eighth-run-complete-native-transform-succeeds)
+completed in 1,073.45 seconds at 451.38 MiB peak physical footprint; Walrus
+previously exceeded its guard without publishing output. Those different
+endpoints do not establish a speedup ratio. These controlled examples do not
+establish broad process correctness or application performance.
 
 ## Reproduction and provenance
 
