@@ -2351,6 +2351,9 @@ function createWorker(overrides: Record<string, unknown>): any {
   if (!("kernel_publish_spawn_child" in exports)) {
     exports.kernel_publish_spawn_child = vi.fn(() => -1);
   }
+  if (!("kernel_set_main_channel_addr" in exports)) {
+    exports.kernel_set_main_channel_addr = vi.fn(() => 0);
+  }
   const requestedPointerWidth = (
     overrides.kernel as { getKernelPtrWidth?: () => unknown } | undefined
   )?.getKernelPtrWidth?.();

@@ -409,6 +409,7 @@ host/test/thread-worker-disposition.test.ts	source-only
 host/test/time-provider.test.ts	source-only
 host/test/timerfd-signalfd-scratch.test.ts	prepared-product
 host/test/tls-network-backend-real-client.test.ts	prepared-product
+host/test/transfer-kernel-wait.test.ts	prepared-product
 host/test/trap-signals.test.ts	source-only
 host/test/unix-listener-exec.test.ts	prepared-product
 host/test/utf8proc-smoke.test.ts	prepared-product

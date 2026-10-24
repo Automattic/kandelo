@@ -1067,6 +1067,19 @@ pub struct Process {
     /// recorded once here: at process creation, inherited across `fork`, and
     /// replaced by [`crate::exec_target`] at the instant a new image commits.
     pub pointer_width: u8,
+    /// Byte address of the main thread's syscall channel in this process's
+    /// memory, or 0 while no host has registered one.
+    ///
+    /// WHY THE KERNEL NEEDS IT. A blocking transfer the kernel parks
+    /// (`crate::wait_retry`) re-executes long after the host's per-call
+    /// staging is gone, so it works on the caller's own buffer. The one
+    /// authoritative record of that buffer is the guest's request itself, in
+    /// its channel. A pthread's channel sits in the slot the kernel placed
+    /// ([`ThreadState::slot_addr`]); the main thread's channel is placed by
+    /// the host with the rest of the process layout, so the host registers
+    /// it (`kernel_set_main_channel_addr`), at every registration of an
+    /// address space, including the one after an exec.
+    pub main_channel_addr: u64,
     /// Successful image replacements advance this generation exactly once.
     /// Prepared exec targets bind to its current value and cannot survive a
     /// competing commit for the same persistent PID.
@@ -1424,6 +1437,7 @@ impl Process {
             credentials: Credentials::root(),
             secure_exec: false,
             pointer_width: 4,
+            main_channel_addr: 0,
             exec_generation: 0,
             prepared_exec_targets: PreparedExecLedger::new(),
             exe: None,
@@ -1813,10 +1827,27 @@ impl Process {
     pub fn remove_thread(&mut self, tid: u32) -> Option<ThreadState> {
         crate::epoll::finish_wait(self, tid);
         if let Some(idx) = self.identity.threads.iter().position(|t| t.tid == tid) {
+            // The thread may have been the target of a pending
+            // process-directed signal, which now falls to another, possibly
+            // parked, thread: treat the removal as a generation.
+            if self.signals.pending != 0 {
+                crate::wait_park::note_signal_generated();
+            }
             Some(self.identity.threads.swap_remove(idx).into_state())
         } else {
             None
         }
+    }
+
+    /// Byte address of task `tid`'s syscall channel, if the kernel knows it:
+    /// the main thread's registered channel (`kernel_set_main_channel_addr`).
+    ///
+    /// A pthread's channel is placed by the host, which does not tell the
+    /// kernel where, so this is `None` for any other task and a caller that
+    /// needs the channel (a parked transfer) leaves that task on the host's
+    /// path.
+    pub fn task_channel_addr(&self, tid: u32) -> Option<u64> {
+        (tid == self.pid && self.main_channel_addr != 0).then_some(self.main_channel_addr)
     }
 
     /// Find a thread by TID.
@@ -1976,15 +2007,21 @@ impl Process {
     /// Replace the blocked mask for an exact retained TID.
     /// Returns false without mutation when the task is unknown.
     pub fn set_blocked_for(&mut self, tid: u32, new_blocked: u64) -> bool {
-        if self.is_main_thread(tid) {
-            self.signals.blocked = new_blocked;
-            true
+        let old_blocked = if self.is_main_thread(tid) {
+            core::mem::replace(&mut self.signals.blocked, new_blocked)
         } else if let Some(t) = self.get_thread_mut(tid) {
-            t.signals.blocked = new_blocked;
-            true
+            core::mem::replace(&mut t.signals.blocked, new_blocked)
         } else {
-            false
+            return false;
+        };
+        // A mask change can move a pending process-directed signal onto a
+        // parked thread (`pick_thread_for_shared_signal` reads the masks)
+        // without generating anything, so it counts as a generation for
+        // kernel-owned parks. Blocking a directed signal changes no target.
+        if (old_blocked ^ new_blocked) & self.signals.pending != 0 {
+            crate::wait_park::note_signal_generated();
         }
+        true
     }
 
     pub fn signal_readiness_generations(&self, tid: u32) -> [Option<u64>; 2] {

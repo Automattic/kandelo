@@ -292,6 +292,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_reset_tcp_connection
     kernel_set_current_tid
     kernel_set_cwd
+    kernel_set_main_channel_addr
     kernel_spawn_exec_commit
     kernel_spawn_exec_target_prepare
     kernel_spawn_process

@@ -3718,6 +3718,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_reset_tcp_connection"),
         HostAdapterKernelExport::required("kernel_set_current_tid"),
         HostAdapterKernelExport::required("kernel_set_cwd"),
+        HostAdapterKernelExport::required("kernel_set_main_channel_addr"),
         HostAdapterKernelExport::optional("kernel_set_max_addr"),
         HostAdapterKernelExport::optional("kernel_set_mmap_base"),
         HostAdapterKernelExport::required("kernel_spawn_exec_commit"),

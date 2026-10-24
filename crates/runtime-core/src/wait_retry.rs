@@ -26,6 +26,8 @@
 //! ([`crate::wait_park::Parks::take_released_retry_bindings`]); thread exit,
 //! exec and process teardown release it through their own lifecycle cleanup.
 
+extern crate alloc;
+
 use wasm_posix_shared::{Errno, WasmFlock};
 
 use crate::blocked_retry::BlockingRetryOperation;
@@ -41,6 +43,44 @@ pub enum RetryOp {
     FcntlLock { fd: i32, cmd: u32, flock: WasmFlock, token: i64 },
     /// Blocking `flock(LOCK_SH / LOCK_EX)`.
     Flock { fd: i32, operation: u32, token: i64 },
+    /// A blocking `read`, `write`, `recv`/`send` (or `recvfrom`/`sendto`
+    /// with no address) on a pipe or a socket whose buffer is a kernel pipe
+    /// (`pipe` is the index whose readiness can change the answer). `buf` is
+    /// the caller's own address and `count` its length, both read from the
+    /// caller's channel when the call parked. `restartable` is false for a
+    /// socket with a receive/send timeout: Linux answers EINTR there whatever
+    /// `SA_RESTART` says.
+    Transfer {
+        syscall: u32,
+        fd: i32,
+        buf: u64,
+        count: u64,
+        flags: u32,
+        pipe: u32,
+        token: i64,
+        restartable: bool,
+    },
+}
+
+/// The syscalls a transfer park re-executes.
+pub const SYS_READ: u32 = 3;
+pub const SYS_WRITE: u32 = 4;
+pub const SYS_SEND: u32 = 55;
+pub const SYS_RECV: u32 = 56;
+/// `sendto`/`recvfrom` park only with no address argument, which is how musl
+/// spells `send`/`recv` and how a connected stream socket is used; they then
+/// mean exactly `send`/`recv`.
+pub const SYS_SENDTO: u32 = 62;
+pub const SYS_RECVFROM: u32 = 63;
+
+/// The most one re-executed transfer moves. A parked call came through the
+/// fixed channel, so its count never exceeds the channel's data area.
+pub const MAX_PARKED_TRANSFER: u64 = wasm_posix_shared::channel::DATA_SIZE as u64;
+
+/// Whether `syscall` reads into the caller's buffer (otherwise it writes
+/// from it).
+pub fn transfer_reads(syscall: u32) -> bool {
+    syscall == SYS_READ || syscall == SYS_RECV || syscall == SYS_RECVFROM
 }
 
 impl RetryOp {
@@ -50,13 +90,24 @@ impl RetryOp {
             RetryOp::FcntlLock { .. } | RetryOp::Flock { .. } => {
                 crate::wait_queue::WakeSource::AdvisoryLock
             }
+            RetryOp::Transfer { pipe, .. } => crate::wait_queue::WakeSource::Pipe(*pipe),
+        }
+    }
+
+    /// Whether a caught signal's `SA_RESTART` may restart the call.
+    pub fn restartable(&self) -> bool {
+        match *self {
+            RetryOp::Transfer { restartable, .. } => restartable,
+            RetryOp::FcntlLock { .. } | RetryOp::Flock { .. } => true,
         }
     }
 
     /// The blocked-retry binding that pins this call's target.
     pub fn token(&self) -> i64 {
         match *self {
-            RetryOp::FcntlLock { token, .. } | RetryOp::Flock { token, .. } => token,
+            RetryOp::FcntlLock { token, .. }
+            | RetryOp::Flock { token, .. }
+            | RetryOp::Transfer { token, .. } => token,
         }
     }
 
@@ -64,6 +115,8 @@ impl RetryOp {
         match self {
             RetryOp::FcntlLock { .. } => BlockingRetryOperation::Fcntl,
             RetryOp::Flock { .. } => BlockingRetryOperation::Flock,
+            RetryOp::Transfer { syscall, .. } => BlockingRetryOperation::from_syscall(*syscall)
+                .unwrap_or(BlockingRetryOperation::Read),
         }
     }
 
@@ -84,9 +137,54 @@ impl RetryOp {
             RetryOp::Flock { fd, operation, .. } => {
                 crate::syscalls::sys_flock(proc, locks, fd, operation, host).map(|()| 0)
             }
+            RetryOp::Transfer { syscall, fd, buf, count, flags, .. } => {
+                transfer_once(proc, host, syscall, fd, buf, count, flags)
+            }
         };
         proc.blocked_retries.clear_active();
         result
+    }
+}
+
+/// Re-run one parked transfer against the caller's own buffer.
+///
+/// A read lands in a kernel buffer no larger than the call asked for and is
+/// copied to the caller only once it succeeded; a write copies the caller's
+/// bytes as they are now, which is what the call would have read had it not
+/// blocked first. A buffer the caller can no longer address answers EFAULT.
+fn transfer_once(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    syscall: u32,
+    fd: i32,
+    buf: u64,
+    count: u64,
+    flags: u32,
+) -> Result<i32, Errno> {
+    let len = count.min(MAX_PARKED_TRANSFER) as usize;
+    let mut bytes = alloc::vec![0u8; len];
+    if transfer_reads(syscall) {
+        let n = if syscall == SYS_READ {
+            crate::syscalls::sys_read(proc, host, fd, &mut bytes)?
+        } else {
+            // recv, or recvfrom with no address: the same call.
+            crate::syscalls::sys_recv(proc, host, fd, &mut bytes, flags)?
+        };
+        if n > 0 && host.proc_write_bytes(proc.pid as i32, buf, &bytes[..n]) < 0 {
+            return Err(Errno::EFAULT);
+        }
+        Ok(n as i32)
+    } else {
+        if len > 0 && host.proc_read_bytes(proc.pid as i32, buf, &mut bytes) < 0 {
+            return Err(Errno::EFAULT);
+        }
+        let n = if syscall == SYS_WRITE {
+            crate::syscalls::sys_write(proc, host, fd, &bytes)?
+        } else {
+            // send, or sendto with no address: the same call.
+            crate::syscalls::sys_send(proc, host, fd, &bytes, flags)?
+        };
+        Ok(n as i32)
     }
 }
 
@@ -145,6 +243,46 @@ mod tests {
         let done = parks.take_completions();
         assert_eq!((done[0].generation, done[0].value, done[0].flags), (generation, 0, 0));
         assert_eq!(parks.take_released_retry_bindings(), vec![(4, 4, 9)]);
+    }
+
+    fn transfer(restartable: bool, pipe: u32) -> RetryOp {
+        RetryOp::Transfer {
+            syscall: SYS_RECV,
+            fd: 3,
+            buf: 0x1000,
+            count: 16,
+            flags: 0,
+            pipe,
+            token: 5,
+            restartable,
+        }
+    }
+
+    #[test]
+    fn a_parked_transfer_is_offered_only_when_its_own_pipe_changes() {
+        let mut parks = Parks::new();
+        let op = transfer(true, 7);
+        parks
+            .park(4, 4, WaitKind::AdvisoryLock, vec![op.source()], None, Resume::Retry(op))
+            .unwrap();
+        parks.note_source_ready(WakeSource::Pipe(8));
+        assert!(parks.take_dirty_retry_waiters().is_empty(), "another pipe");
+        parks.note_source_ready(WakeSource::Pipe(7));
+        assert_eq!(parks.take_dirty_retry_waiters().len(), 1);
+    }
+
+    #[test]
+    fn a_socket_timeout_answers_eagain_and_a_timed_transfer_is_never_restarted() {
+        let mut parks = Parks::new();
+        let timed = transfer(false, 7);
+        parks
+            .park(4, 4, WaitKind::AdvisoryLock, vec![timed.source()], Some(100), Resume::Retry(timed))
+            .unwrap();
+        parks.expire(100);
+        let done = parks.take_completions();
+        assert_eq!(done[0].value, -(Errno::EAGAIN as i32), "SO_RCVTIMEO is EAGAIN");
+        assert!(!timed.restartable());
+        assert!(transfer(true, 7).restartable());
     }
 
     #[test]
