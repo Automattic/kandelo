@@ -1542,9 +1542,12 @@ unsafe fn get_process() -> (GklGuard, &'static mut Process) {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.current_process() {
         Some(p) => (guard, p),
-        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-        None => core::hint::unreachable_unchecked(),
-        #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+        // A defined trap (with `panic=immediate-abort`, a Wasm `unreachable`
+        // instruction), never `unreachable_unchecked()`. Reaching this without
+        // a bound task is a host protocol defect, not guest input (the
+        // channel dispatcher refuses an unbound request with ESRCH before any
+        // arm runs), but if it is ever reached it must trap, not be undefined
+        // behaviour the optimiser may assume away.
         None => panic!("no current process in table"),
     }
 }
@@ -1563,9 +1566,12 @@ unsafe fn get_process_and_advisory_locks() -> (
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.current_process_and_advisory_locks() {
         Some((process, locks)) => (guard, process, locks),
-        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-        None => unsafe { core::hint::unreachable_unchecked() },
-        #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+        // A defined trap (with `panic=immediate-abort`, a Wasm `unreachable`
+        // instruction), never `unreachable_unchecked()`. Reaching this without
+        // a bound task is a host protocol defect, not guest input (the
+        // channel dispatcher refuses an unbound request with ESRCH before any
+        // arm runs), but if it is ever reached it must trap, not be undefined
+        // behaviour the optimiser may assume away.
         None => panic!("no current process in table"),
     }
 }
@@ -1602,9 +1608,12 @@ unsafe fn get_process_tid_and_advisory_locks() -> (
     let tid = table.current_tid();
     match table.current_process_and_advisory_locks() {
         Some((process, locks)) => (guard, tid, process, locks),
-        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-        None => unsafe { core::hint::unreachable_unchecked() },
-        #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+        // A defined trap (with `panic=immediate-abort`, a Wasm `unreachable`
+        // instruction), never `unreachable_unchecked()`. Reaching this without
+        // a bound task is a host protocol defect, not guest input (the
+        // channel dispatcher refuses an unbound request with ESRCH before any
+        // arm runs), but if it is ever reached it must trap, not be undefined
+        // behaviour the optimiser may assume away.
         None => panic!("no current process in table"),
     }
 }
@@ -5433,14 +5442,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         122 => kernel_getdents64(a1, channel_mut_ptr!(1, u8), process_size_u32!(2)), // SYS_GETDENTS64
 
         // Process control
-        34 => {
-            kernel_exit(a1);
-            0
-        } // SYS_EXIT (thread exit)
-        387 => {
-            kernel_exit(a1);
-            0
-        } // SYS_EXIT_GROUP (process exit)
+        // Both RETURN once the exit is committed: a channel request is never
+        // allowed to end in a trap. See `dispatch_channel_exit`.
+        34 => dispatch_channel_exit(a1), // SYS_EXIT (thread exit)
+        387 => dispatch_channel_exit(a1), // SYS_EXIT_GROUP (process exit)
         35 => kernel_kill(a1, a2 as u32), // SYS_KILL
         38 => kernel_raise(a1 as u32),    // SYS_RAISE
 
@@ -11495,6 +11500,24 @@ fn commit_current_task_exit(status: i32) -> i32 {
     committed_status
 }
 
+/// `SYS_EXIT`/`SYS_EXIT_GROUP` arriving through `kernel_handle_channel`.
+///
+/// Commits the exit and RETURNS 0. The channel dispatcher must answer every
+/// request; it used to call `kernel_exit`, a `-> !` wrapper ending in
+/// `unreachable_unchecked()`, so an exit forwarded to the channel trapped the
+/// kernel mid-dispatch, skipping the dispatcher's own retry-state and
+/// SCM_RIGHTS cleanup. The JavaScript hosts intercept both syscalls before
+/// the channel and call `kernel_commit_process_exit`, which shares this
+/// transition.
+///
+/// The exited thread must not run on: that is the host's to enforce (it
+/// unwinds the thread rather than completing the channel), exactly as it is
+/// after the returning `kernel_commit_process_exit` export.
+fn dispatch_channel_exit(status: i32) -> i32 {
+    let _ = commit_current_task_exit(status);
+    0
+}
+
 /// Host-adapter exit boundary that returns after committing process state.
 ///
 /// The caller must compare the returned low-eight-bit status and independently
@@ -11510,13 +11533,13 @@ pub extern "C" fn kernel_commit_process_exit(status: i32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_exit(status: i32) -> ! {
     let _ = commit_current_task_exit(status);
-    // Halt execution — musl's _exit loops forever if we just return.
-    #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-    unsafe {
-        core::hint::unreachable_unchecked();
-    }
-    #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-    unreachable!("kernel_exit should not return");
+    // Halt execution — musl's _exit loops forever if we just return. The trap
+    // is this guest-facing `_Noreturn` export's contract, so it is a defined
+    // `panic!` (with `panic=immediate-abort`, a Wasm `unreachable`
+    // instruction), never `unreachable_unchecked()`, whose reachability would
+    // be undefined behaviour. Channel requests never come here; see
+    // [`dispatch_channel_exit`].
+    panic!("kernel_exit should not return");
 }
 
 // ---------------------------------------------------------------------------
