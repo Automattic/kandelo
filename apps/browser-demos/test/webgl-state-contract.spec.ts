@@ -2028,3 +2028,26 @@ for(const mode of ["native","forwarded"] as const) {
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
+
+// Native source registration and logical image views; public C sharing and
+// normal guest ioctl marshalling are separate validation phases.
+test("logical image views preserve sibling parameters, pixels and retained identity",async({page})=>{
+  await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
+  const root=fileURLToPath(new URL("../../../",import.meta.url));
+  const result=await page.evaluate(async(root)=>{
+    const canvas=document.createElement("canvas");canvas.width=canvas.height=4;document.body.replaceChildren(canvas);
+    const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/image-storage-worker.ts`,location.href),{type:"module"});
+    try{return await new Promise<any>((resolve,reject)=>{
+      const timeout=setTimeout(()=>reject(new Error("image view replay timed out")),35000);
+      worker.addEventListener("error",event=>{clearTimeout(timeout);reject(new Error(event.message));});
+      worker.addEventListener("message",({data})=>{if(data.type==="image_storage_failed"){clearTimeout(timeout);reject(new Error(data.error));}
+        if(data.type==="image_storage_result"){clearTimeout(timeout);resolve(data);}});
+      const offscreen=canvas.transferControlToOffscreen();worker.postMessage({canvas:offscreen},[offscreen]);
+    });}finally{worker.terminate();}
+  },root);
+  expect(result).toEqual({type:"image_storage_result",namespace:[0,0,255,255],firstParam:0x2600,secondParam:0x2601,
+    red:[[255,0,0,255],[255,0,0,255]],rboName:2,green:[[0,255,0,255],[0,255,0,255]],sampledGreen:[0,255,0,255],
+    orphan:[[0,0,255,255],[0,255,0,255]],aSource:0,bSource:0,mipOrphan:[0,255,0,255],reimport:[255,0,0,255],rboSource:0,rboOrphan:[[0,0,255,255],[255,0,0,255]],
+    rejected:[0,0,255,255],retargetRejected:[0,0,255,255],reused:[255,255,0,255],retained:[0,0,255,255],afterSourceRetirement:[0,0,255,255],errors:[0,0],clean:true,error:0});
+  expect(await memoryBoundaryFailures(page)).toEqual([]);
+});

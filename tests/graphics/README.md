@@ -55,7 +55,7 @@ scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh ce8cd9dbcf
 scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh
 ```
 
-The 99 current cases cover image siblings and retained framebuffer storage,
+The 103 current cases cover image siblings and retained framebuffer storage,
 redefinition, cleanup, invalid handles, repeated contexts, the shared
 shader/program namespace, boolean numeric conversion, vectors longer than
 four elements, unchanged query output after device failure and EGL config
@@ -254,3 +254,18 @@ retries that name as a cube and uploads blue through the surviving red 2D
 texture. Both renderer routes and all three engines check pixels and final
 native cleanup. These do not prove storage replacement or indeterminate
 transport recovery.
+
+
+GPU image-storage checks now cover independent logical objects and canonical
+pixel storage. Four C cases check definite texture/RBO replacement rollback,
+checked import rejection and ambiguous completion retaining the input image.
+Row-upload counts have a positive retry control. Seven host cases cover the
+private source namespace, allocator, query bounds, logical native-view
+queries and real host-import source registration. The three-engine native
+GPU driver checks independent parameters, canonical writes and sampling,
+texture/mipmap/RBO orphaning, reimport, allocation/retarget failure, retained
+peer identity and final native cleanup. It uses actual renderer paths with
+synthetic kernel scratch plumbing, not guest marshalling or public C sharing.
+Forwarded BO registration, CPU canonical views and full shared C storage
+holds remain open. The standalone Chromium copy/respecification reproduction
+lives in `tests/runtime-workarounds/CHROMIUM-COPY-TEX-RESPEC/`.

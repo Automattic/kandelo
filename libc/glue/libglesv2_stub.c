@@ -207,7 +207,15 @@ struct wpk_vertex_array {
     struct wpk_client_attrib attribs[WPK_GL_MAX_ATTRIBS];
     struct wpk_vertex_array *next;
 };
-struct wpk_gl_alias { GLuint name; GLuint host; struct wpk_egl_image *image; };
+struct wpk_gl_alias {
+    GLuint name;
+    GLuint source;
+    struct wpk_egl_image *image;
+};
+struct wpk_pending_image {
+    struct wpk_egl_image *image;
+    struct wpk_pending_image *next;
+};
 struct wpk_gl_alias_table { struct wpk_gl_alias *v; size_t len, cap; };
 struct wpk_image_attachment {
     GLuint framebuffer, point, kind, name, query_kind, query_name, query_host;
@@ -246,6 +254,7 @@ struct wpk_gles_context {
     struct wpk_object_name *array_object;
     struct wpk_vertex_array default_vertex_array, *current_vertex_array, *vertex_arrays;
     uint32_t next_framebuffer;
+    struct wpk_pending_image *pending_images;
     struct wpk_gl_alias_table texture_aliases;
     struct wpk_gl_alias_table renderbuffer_aliases;
     GLuint active_unit;
@@ -1152,18 +1161,18 @@ void glGenTextures(GLsizei n, GLuint *out) {
         emit_name_array(OP_GEN_TEXTURES, n, out);
 }
 
-/* ----- EGLImage aliases ---------------------------------------------
+/* ----- EGLImage backing holds ---------------------------------------
  *
- * glEGLImageTarget*OES makes a texture or renderbuffer name stand for an
- * EGLImage's storage. A GPU-tier image's storage is the host texture its
- * bo owns, which has a name of its own in this context. The alias tables
- * map the client's name to that host name; every call that passes the
- * client's name to the host passes the host name instead. Deleting the
- * client's name drops the alias and never deletes the bo's texture. */
+ * Each entry retains the image behind a logical texture/renderbuffer name.
+ * Its source token belongs to a separate host registry, never the public
+ * GLES name namespace. Host views own sampling parameters and native FBO
+ * retargeting. These C holds remain encoder-local until shared ownership is
+ * completed; moving the vector alone would not preserve retained identity. */
 
 static GLuint alias_lookup(const struct wpk_gl_alias_table *t, GLuint name) {
     for (size_t i = 0; i < t->len; i++) {
-        if (t->v[i].name == name) return t->v[i].host;
+        if (t->v[i].name == name)
+            return t->v[i].source;
     }
     return 0;
 }
@@ -1179,7 +1188,23 @@ static void alias_drop(struct wpk_gl_alias_table *t, GLuint name) {
     }
 }
 
-static int alias_set(struct wpk_gl_alias_table *t, GLuint name, GLuint host,
+static int alias_prepare(struct wpk_gl_alias_table *t, GLuint name) {
+    for (size_t i = 0; i < t->len; i++)
+        if (t->v[i].name == name)
+            return 1;
+    if (t->len < t->cap)
+        return 1;
+    size_t cap = t->cap ? t->cap * 2 : 16;
+    if (cap < t->cap || cap > SIZE_MAX / sizeof *t->v)
+        return 0;
+    struct wpk_gl_alias *v = realloc(t->v, cap * sizeof *v);
+    if (!v)
+        return 0;
+    t->v = v;
+    t->cap = cap;
+    return 1;
+}
+static int alias_set(struct wpk_gl_alias_table *t, GLuint name, GLuint source,
                      struct wpk_egl_image *image) {
     size_t index = 0;
     while (index < t->len && t->v[index].name != name) index++;
@@ -1198,13 +1223,8 @@ static int alias_set(struct wpk_gl_alias_table *t, GLuint name, GLuint host,
     } else {
         t->len++;
     }
-    t->v[index] = (struct wpk_gl_alias){ name, host, image };
+    t->v[index] = (struct wpk_gl_alias){name, source, image};
     return 1;
-}
-
-static GLuint host_texture_name(GLuint name) {
-    GLuint host = name ? alias_lookup(&g_texture_aliases, name) : 0;
-    return host ? host : name;
 }
 
 static void raise_client_error(GLenum error) {
@@ -1270,8 +1290,7 @@ static int track_image_attachment(GLuint point, GLuint kind, GLuint name,
     entry->name = name;
     entry->query_kind = kind;
     entry->query_name = name;
-    entry->query_host = kind == GL_RENDERBUFFER ? alias_lookup(&g_renderbuffer_aliases, name)
-                                                : host_texture_name(name);
+    entry->query_host = name;
     *slot = entry;
     if (!name) {
         *slot = entry->next;
@@ -1279,23 +1298,21 @@ static int track_image_attachment(GLuint point, GLuint kind, GLuint name,
     }
     return 1;
 }
+/* Host logical storage retargets every native FBO transactionally. These
+ * independent C image holds follow only an acknowledged replacement. */
 static void refresh_image_attachments(GLuint kind, struct wpk_object_name *object, GLuint host,
                                       struct wpk_egl_image *image) {
+    (void)kind;
     for (struct wpk_image_attachment *entry = g_image_attachments; entry; entry = entry->next) {
         if (entry->object != object)
             continue;
-        if (image) _wpk_egl_image_retain(image);
-        emit_bind_framebuffer(entry->framebuffer);
-        if (kind == GL_TEXTURE_2D || image)
-            emit_framebuffer_texture_2d(GL_FRAMEBUFFER, entry->point, GL_TEXTURE_2D, host, 0);
-        else
-            emit_framebuffer_renderbuffer(GL_FRAMEBUFFER, entry->point, object ? object->name : 0);
-        _wpk_gl_flush();
-        if (entry->image) _wpk_egl_image_release(entry->image);
+        if (image)
+            _wpk_egl_image_retain(image);
+        if (entry->image)
+            _wpk_egl_image_release(entry->image);
         entry->image = image;
         entry->query_host = host;
     }
-    emit_bind_framebuffer(g_bound_framebuffer);
 }
 static void retire_image_attachments(GLuint framebuffer) {
     struct wpk_image_attachment **slot = &g_image_attachments;
@@ -1351,6 +1368,12 @@ static void release_vertex_array_objects(struct wpk_gles_context *state,
  * current reference ended; host destruction retires native object maps. */
 void _wpk_gl_destroy_encoder(struct wpk_gles_context *state) {
     if (!state) return;
+    while (state->pending_images) {
+        struct wpk_pending_image *entry = state->pending_images;
+        state->pending_images = entry->next;
+        _wpk_egl_image_release(entry->image);
+        free(entry);
+    }
     while (state->image_attachments) {
         struct wpk_image_attachment *entry = state->image_attachments;
         state->image_attachments = entry->next;
@@ -1459,6 +1482,63 @@ static int bind_image_object(uint32_t kind, GLenum target, GLuint name) {
         }
     }
     return accepted;
+}
+/* Positive reply transfers a reference into the alias owner. An unknown
+ * completion keeps the input image until acknowledged context retirement. */
+static int import_image_object(uint32_t kind, GLuint name, GLuint source,
+                               struct wpk_egl_image *image) {
+    struct wpk_pending_image *pending = calloc(1, sizeof *pending);
+    uint32_t *input = malloc(12);
+    if (!pending || !input) {
+        free(pending);
+        free(input);
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return 0;
+    }
+    input[0] = kind;
+    input[1] = name;
+    input[2] = source;
+    uint32_t reply[3] = {0};
+    int rc = _wpk_gl_query_into(QOP_IMAGE_TARGET, input, 12, reply, 12);
+    free(input);
+    if (!rc && reply[2] == WPK_GL_QUERY_REPLY_MAGIC && reply[0] == 0 && reply[1] == source) {
+        free(pending);
+        return 1;
+    }
+    if (!rc && reply[2] == WPK_GL_QUERY_REPLY_MAGIC && reply[0] == 1) {
+        free(pending);
+        return 0;
+    }
+    _wpk_egl_image_retain(image);
+    pending->image = image;
+    pending->next = _wpk_gl_current_encoder()->pending_images;
+    _wpk_gl_current_encoder()->pending_images = pending;
+    raise_client_error(GL_INVALID_OPERATION);
+    return 0;
+}
+/* Release old imported backing only after the host confirms orphaning. */
+static int sync_image_alias(uint32_t kind, GLuint name, struct wpk_object_name *object) {
+    struct wpk_gl_alias_table *table = kind == 1 ? &g_texture_aliases : &g_renderbuffer_aliases;
+    if (!alias_lookup(table, name))
+        return 1;
+    uint32_t *input = malloc(8);
+    uint8_t reply[12];
+    if (!input) {
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return 0;
+    }
+    input[0] = kind;
+    input[1] = name;
+    int accepted = checked_query_reply(QOP_IMAGE_SOURCE_STATE, input, 8, reply, 4);
+    free(input);
+    uint32_t source = 1;
+    if (accepted)
+        memcpy(&source, reply + 4, 4);
+    if (accepted && !source) {
+        alias_drop(table, name);
+        refresh_image_attachments(kind == 1 ? GL_TEXTURE_2D : GL_RENDERBUFFER, object, name, NULL);
+    }
+    return accepted && !source;
 }
 static GLenum image_target_error(struct wpk_object_group *group, struct wpk_object_name *object,
                                  GLenum target) {
@@ -1574,7 +1654,7 @@ void glBindTexture(GLenum target, GLuint tex) {
         raise_client_error(error);
         return;
     }
-    if (!bind_image_object(1, target, host_texture_name(tex))) {
+    if (!bind_image_object(1, target, tex)) {
         object_release(state->objects, object);
         return;
     }
@@ -1758,25 +1838,8 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                   GLsizei width, GLsizei height, GLint border,
                   GLenum format, GLenum type, const void *data) {
     if (!_wpk_gl_current_encoder()) return;
-    if (internalFormat == GL_BGRA_EXT) internalFormat = GL_RGBA;
-    if (target == GL_TEXTURE_2D &&
-        alias_lookup(&g_texture_aliases, g_texture_units[g_active_unit].texture)) {
-        if (width < 0 || height < 0 || level < 0 || border != 0) {
-            raise_client_error(GL_INVALID_VALUE);
-            return;
-        }
-        if (!bytes_per_pixel(format, type) || internalFormat != host_pixel_format(format)) {
-            raise_client_error(GL_INVALID_OPERATION);
-            return;
-        }
-        // Respecification replaces this texture's storage, independently of
-        // the image and its other texture/renderbuffer siblings.
-        GLuint name = g_texture_units[g_active_unit].texture;
-        alias_drop(&g_texture_aliases, name);
-        refresh_image_attachments(GL_TEXTURE_2D, g_texture_units[g_active_unit].texture_object,
-                                  name, NULL);
-        rebind_image_texture_object(g_texture_units[g_active_unit].texture_object, name);
-    }
+    if (internalFormat == GL_BGRA_EXT)
+        internalFormat = GL_RGBA;
     EMIT_BEGIN(OP_TEX_IMAGE_2D, 36u)
     w_u32(&_c, (uint32_t)target);
     w_i32(&_c, level);
@@ -1788,8 +1851,12 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
     w_u32(&_c, (uint32_t)type);
     w_u32(&_c, 0u);
     EMIT_END()
-    emit_tex_sub_image_2d(target, level, 0, 0, width, height,
-                          format, type, data);
+    // A rejected imported allocation must not turn row uploads into writes
+    // to the old shared image. Establish orphaning before publishing pixels.
+    if (target == GL_TEXTURE_2D && !sync_image_alias(1, g_texture_units[g_active_unit].texture,
+                                                     g_texture_units[g_active_unit].texture_object))
+        return;
+    emit_tex_sub_image_2d(target, level, 0, 0, width, height, format, type, data);
 }
 
 void glTexSubImage2D(GLenum target, GLint level, GLint xoff, GLint yoff,
@@ -1805,6 +1872,9 @@ void glGenerateMipmap(GLenum target) {
     EMIT_BEGIN(OP_GENERATE_MIPMAP, 4)
     w_u32(&_c, (uint32_t)target);
     EMIT_END()
+    if (target == GL_TEXTURE_2D)
+        sync_image_alias(1, g_texture_units[g_active_unit].texture,
+                         g_texture_units[g_active_unit].texture_object);
 }
 
 void glTexParameteri(GLenum target, GLenum pname, GLint param) {
@@ -2029,8 +2099,7 @@ void glFramebufferTexture2D(GLenum target, GLenum attachment,
     if (target == GL_FRAMEBUFFER &&
         !track_image_attachment(attachment, GL_TEXTURE_2D, texture, image, object))
         return;
-    emit_framebuffer_texture_2d(target, attachment, textarget,
-                                host_texture_name(texture), level);
+    emit_framebuffer_texture_2d(target, attachment, textarget, texture, level);
 }
 
 /* ----- blend -------------------------------------------------------- */
@@ -2353,7 +2422,8 @@ const GLubyte *glGetString(GLenum name) {
 }
 
 /* Scalar and vector pnames use the same query with their complete width. */
-/* Client names differ from private BO carrier names after EGLImage binding. */
+/* Retain logical binding answers while C image holds remain encoder-local.
+ * The host also canonicalizes native sampling views for numeric queries. */
 static int client_image_binding(GLenum pname, GLuint *value) {
     if (pname == GL_TEXTURE_BINDING_2D) {
         GLuint name = g_texture_units[g_active_unit].texture;
@@ -2699,6 +2769,9 @@ void glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat,
     w_u32(&_c, dlen);
     if (dlen > 0) { memcpy(_c, data, dlen); _c += dlen; }
     EMIT_END()
+    if (target == GL_TEXTURE_2D)
+        sync_image_alias(1, g_texture_units[g_active_unit].texture,
+                         g_texture_units[g_active_unit].texture_object);
 }
 
 void glCompressedTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
@@ -2730,6 +2803,9 @@ void glCopyTexImage2D(GLenum target, GLint level, GLenum internalformat,
     w_u32(&_c, (uint32_t)internalformat);
     w_i32(&_c, x); w_i32(&_c, y); w_i32(&_c, width); w_i32(&_c, height); w_i32(&_c, border);
     EMIT_END()
+    if (target == GL_TEXTURE_2D)
+        sync_image_alias(1, g_texture_units[g_active_unit].texture,
+                         g_texture_units[g_active_unit].texture_object);
 }
 
 void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
@@ -2945,26 +3021,20 @@ void glBindRenderbuffer(GLenum target, GLuint rb) {
 }
 
 void glRenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, GLsizei height) {
-    if (!_wpk_gl_current_encoder()) return;
-    if (target == GL_RENDERBUFFER) {
-        if (width < 0 || height < 0) {
-            raise_client_error(GL_INVALID_VALUE);
-            return;
-        }
-        alias_drop(&g_renderbuffer_aliases, g_bound_renderbuffer);
-        refresh_image_attachments(GL_RENDERBUFFER, _wpk_gl_current_encoder()->renderbuffer_object,
-                                  g_bound_renderbuffer, NULL);
-    }
+    if (!_wpk_gl_current_encoder())
+        return;
     EMIT_BEGIN(OP_RENDERBUFFER_STORAGE, 16)
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, (uint32_t)internalformat);
     w_i32(&_c, width);
     w_i32(&_c, height);
     EMIT_END()
+    if (target == GL_RENDERBUFFER)
+        sync_image_alias(2, g_bound_renderbuffer, _wpk_gl_current_encoder()->renderbuffer_object);
 }
 
-/* A renderbuffer whose storage is an EGLImage is the image bo's texture,
- * so attaching it attaches that texture. */
+/* The host resolves a logical renderbuffer attachment to its current native
+ * storage; imported backing does not change its public object type/name. */
 void glFramebufferRenderbuffer(GLenum target, GLenum attachment,
                                GLenum renderbuffertarget, GLuint renderbuffer) {
     if (!_wpk_gl_current_encoder()) return;
@@ -2990,12 +3060,6 @@ void glFramebufferRenderbuffer(GLenum target, GLenum attachment,
     if (target == GL_FRAMEBUFFER &&
         !track_image_attachment(attachment, GL_RENDERBUFFER, renderbuffer, image, object))
         return;
-    GLuint host = renderbuffer
-        ? alias_lookup(&g_renderbuffer_aliases, renderbuffer) : 0;
-    if (host) {
-        emit_framebuffer_texture_2d(target, attachment, GL_TEXTURE_2D, host, 0);
-        return;
-    }
     EMIT_BEGIN(OP_FRAMEBUFFER_RENDERBUFFER, 16)
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, (uint32_t)attachment);
@@ -3006,11 +3070,9 @@ void glFramebufferRenderbuffer(GLenum target, GLenum attachment,
 
 /* ----- GL_OES_EGL_image --------------------------------------------- */
 
-/* A GPU-tier image aliases the bound texture to the bo's host texture. A
- * CPU-tier image is copied into the bound texture from the dma-buf
- * mapping; binding the image again after the producer writes the buffer
- * copies the new pixels, as wlroots does on every commit. The [AX]RGB8888
- * byte order is B,G,R,A, so those rows travel as BGRA. */
+/* GPU images attach a private canonical source to a logical GL object.
+ * CPU images still copy rows from their mapping; full CPU sibling coherence
+ * remains separate work. [AX]RGB8888 rows use BGRA byte order. */
 void glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image) {
     if (!_wpk_gl_current_encoder()) return;
     if (target != GL_TEXTURE_2D) {
@@ -3029,19 +3091,25 @@ void glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image) {
         return;
     }
     if (!img->pixels) {
-        GLuint host = _wpk_egl_image_texture(img);
-        if (host == 0 || !alias_set(&g_texture_aliases, name, host, img)) {
+        if (!alias_prepare(&g_texture_aliases, name)) {
+            raise_client_error(GL_OUT_OF_MEMORY);
+            _wpk_egl_image_release(img);
+            return;
+        }
+        GLuint source = _wpk_egl_image_texture(img);
+        if (!source) {
             raise_client_error(GL_INVALID_OPERATION);
             _wpk_egl_image_release(img);
             return;
         }
-        refresh_image_attachments(GL_TEXTURE_2D, g_texture_units[g_active_unit].texture_object,
-                                  host, img);
-        rebind_image_texture_object(g_texture_units[g_active_unit].texture_object, host);
+        if (import_image_object(1, name, source, img)) {
+            (void)alias_set(&g_texture_aliases, name, source, img);
+            refresh_image_attachments(GL_TEXTURE_2D, g_texture_units[g_active_unit].texture_object,
+                                      name, img);
+        }
         _wpk_egl_image_release(img);
         return;
     }
-    alias_drop(&g_texture_aliases, name);
     emit_bind_texture(GL_TEXTURE_2D, name);
     int bgra = img->fourcc == 0x34325241u || img->fourcc == 0x34325258u;
     uint8_t *_c = reserve(40u);
@@ -3057,6 +3125,10 @@ void glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image) {
     w_u32(&_c, GL_UNSIGNED_BYTE);
     w_u32(&_c, 0u);
     EMIT_END()
+    if (!sync_image_alias(1, name, g_texture_units[g_active_unit].texture_object)) {
+        _wpk_egl_image_release(img);
+        return;
+    }
     emit_tex_rows(GL_TEXTURE_2D, 0, 0, 0,
                   (GLsizei)img->width, (GLsizei)img->height,
                   bgra ? GL_BGRA_EXT : GL_RGBA, GL_UNSIGNED_BYTE,
@@ -3083,14 +3155,22 @@ void glEGLImageTargetRenderbufferStorageOES(GLenum target, GLeglImageOES image) 
         _wpk_egl_image_release(img);
         return;
     }
-    GLuint host = _wpk_egl_image_texture(img);
-    if (host == 0 || !alias_set(&g_renderbuffer_aliases, g_bound_renderbuffer, host, img)) {
+    if (!alias_prepare(&g_renderbuffer_aliases, g_bound_renderbuffer)) {
+        raise_client_error(GL_OUT_OF_MEMORY);
+        _wpk_egl_image_release(img);
+        return;
+    }
+    GLuint source = _wpk_egl_image_texture(img);
+    if (!source) {
         raise_client_error(GL_INVALID_OPERATION);
         _wpk_egl_image_release(img);
         return;
     }
-    refresh_image_attachments(GL_RENDERBUFFER, _wpk_gl_current_encoder()->renderbuffer_object, host,
-                              img);
+    if (import_image_object(2, g_bound_renderbuffer, source, img)) {
+        (void)alias_set(&g_renderbuffer_aliases, g_bound_renderbuffer, source, img);
+        refresh_image_attachments(GL_RENDERBUFFER, _wpk_gl_current_encoder()->renderbuffer_object,
+                                  g_bound_renderbuffer, img);
+    }
     _wpk_egl_image_release(img);
 }
 
@@ -3385,7 +3465,11 @@ static GLboolean client_is_object(uint32_t kind, GLuint name) {
     return value ? GL_TRUE : GL_FALSE;
 }
 GLboolean glIsBuffer(GLuint name) { if (!_wpk_gl_current_encoder()) return GL_FALSE; return client_is_object(0,name); }
-GLboolean glIsTexture(GLuint name) { if (!_wpk_gl_current_encoder()) return GL_FALSE; return client_is_object(1,host_texture_name(name)); }
+GLboolean glIsTexture(GLuint name) {
+    if (!_wpk_gl_current_encoder())
+        return GL_FALSE;
+    return client_is_object(1, name);
+}
 GLboolean glIsRenderbuffer(GLuint name) {
     if (!_wpk_gl_current_encoder()) return GL_FALSE;
     if (alias_lookup(&g_renderbuffer_aliases,name)) return GL_TRUE;

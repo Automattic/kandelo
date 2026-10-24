@@ -91,6 +91,11 @@ export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out:
       case O.QOP_GET_RENDERBUFFER_PARAMETER: {
         if (name !== 0x8d41 || ![0x8d42,0x8d43,0x8d44,0x8d50,0x8d51,0x8d52,0x8d53,0x8d54,0x8d55].includes(arg)) return fail(b,0x500);
         if (!b.shadow.renderbuffer) return fail(b,0x502);
+        const image=b.renderbufferViews.get(b.shadow.renderbuffer)?.source;
+        if(image){
+          const value=arg===0x8d42?image.width:arg===0x8d43?image.height:arg===0x8d44?0x8058:arg===0x8d54||arg===0x8d55?0:8;
+          result.setInt32(0,value,true);return 4;
+        }
         let value = 0;
         if (!checkedGlCall(b, () => { value = Number(gl.getRenderbufferParameter(name,arg)); })) return -5;
         result.setInt32(0,value,true); return 4;

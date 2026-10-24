@@ -13,7 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define WPK_GL_OP_VERSION 9u
+#define WPK_GL_OP_VERSION 10u
 #define WPK_GL_CMDBUF_LEN (1u << 20)
 #define WPK_GL_DEVICE     "/dev/dri/renderD128"
 
@@ -185,6 +185,10 @@
 #define QOP_LOOKUP_UNIFORM 0x0021u
 /* V9: kind (texture=1/RBO=2), target, name; checked accepted=1 reply. */
 #define QOP_BIND_IMAGE_OBJECT 0x0022
+#define QOP_IMAGE_TARGET 0x0023u
+#define QOP_IMAGE_SOURCE_STATE 0x0024u
+/* Private mode of the existing BO bind ioctl, returning a source token. */
+#define WPK_GL_IMAGE_SOURCE_TARGET 0x57504b49u
 
 /* V3+ query replies: u32 status (0 success, 1 recorded GL error),
  * payload, u32 completion magic. Index usage payload: u32 maximum index
@@ -255,9 +259,8 @@ struct wpk_egl_image {
     size_t map_len;
 };
 
-/* The host texture name, in the current context's texture namespace,
- * that holds a GPU-tier image's bo. 0 when there is none: a CPU-tier
- * image, no GL context created yet, or no GL backing on this host. */
+/* A private source token, separate from public GL names, for a GPU image.
+ * Zero for CPU images, no current context or unavailable native storage. */
 /* Lookup retains a temporary reference; the caller must release it. */
 struct wpk_egl_image *_wpk_egl_image_lookup(const void *image);
 void _wpk_egl_image_retain(struct wpk_egl_image *image);

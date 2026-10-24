@@ -61,6 +61,7 @@ import {
   WASM_POLL_FD_FD_OFFSET,
   WASM_POLL_FD_REVENTS_OFFSET,
 } from "./generated/abi";
+import { registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
 import { bindForeignTexture } from "./webgl/foreign-texture";
 import {
   blitGpuScanout,
@@ -2896,7 +2897,7 @@ export class WasmPosixKernel {
           ctxId >>>= 0;
           const b = this.gl.getContext(pid, ctxId);
           if (!b || !b.gl || b.contextId !== ctxId) return -5;  // EIO
-          if (glTarget !== 0x0de1) return -22;                  // EINVAL: TEXTURE_2D only
+          if (glTarget !== 0x0de1 && glTarget !== WPK_IMAGE_SOURCE_TARGET) return -22;                  // EINVAL: TEXTURE_2D only
           // GPU-tier bo: the texture already lives on the shared context,
           // so binding it degenerates to "return the texture id" — zero
           // copies, no upload. The caller must be on that same context
@@ -2904,10 +2905,12 @@ export class WasmPosixKernel {
           const gpu = this.gl.gpuBo(boId);
           if (gpu) {
             if (b.gl !== gpu.gl) return -5;                     // EIO
+            if(glTarget===WPK_IMAGE_SOURCE_TARGET)return registerImageSource(b,boId,gpu.tex,gpu.w,gpu.h);
             b.textures.set(gpu.texId, gpu.tex);
             b.externallyOwnedTextures.add(gpu.tex);
             return gpu.texId;
           }
+          if(glTarget===WPK_IMAGE_SOURCE_TARGET)return -22;
           const dims = this.bos.dims(boId);
           const bytes = this.bos.pixelView(boId);
           if (!dims || !bytes) return -2;                       // ENOENT

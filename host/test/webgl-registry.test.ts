@@ -148,7 +148,7 @@ describe("GlContextRegistry", () => {
 
   it("retires a destroyed context without replaying its program or losing its surface", () => {
     const deleted: unknown[] = [];
-    const gl = new Proxy({}, { get: () => (object: unknown) => deleted.push(object) }) as WebGL2RenderingContext;
+    const gl = new Proxy({}, { get: (_target, name) => name === "getError" ? () => 0 : (object: unknown) => deleted.push(object) }) as WebGL2RenderingContext;
     const reg = new GlContextRegistry();
     reg.bind({ pid: 7, cmdbufAddr: 128, cmdbufLen: 1024 });
     const b = reg.get(7)!;

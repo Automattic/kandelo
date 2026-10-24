@@ -3205,6 +3205,16 @@ Other host code still constructs decoders per call. A recurrence elsewhere
 would be evidence for the hypothesis and a reason to build the standalone
 reduction, not a reason to avoid `TextDecoder` as a rule.
 
+### Chromium texture respecification after a copy
+
+On Playwright Chromium 153.0.8010.12 on macOS, using the `chromium` channel,
+a WebGL2 texture populated by CopyTexSubImage2D can retain those pixels
+after TexImage2D replaces that image. A standalone, self-judging reproduction
+is recorded as [the runtime workaround entry](../tests/runtime-workarounds/CHROMIUM-COPY-TEX-RESPEC/entry.md).
+The image-view path avoids copying a base image that the next command
+replaces. Stable Chrome and other backends have not been established as
+affected; the default Playwright headless shell did not reproduce it.
+
 ### Compiler engine limits
 
 The base shell lazily loads its C/C++ SDK on first use. Compiler acceptance

@@ -1581,6 +1581,10 @@ static unsigned bind_bo_texture(EGLDisplay dpy, unsigned bo_handle, unsigned gl_
     return accepted ? req.gl_texture_id : 0;
 }
 unsigned wpkEglBindBoTexture(EGLDisplay dpy, unsigned bo_handle, unsigned gl_target) {
+    if (gl_target != GL_TEXTURE_2D) {
+        g_last_error = EGL_BAD_PARAMETER;
+        return 0;
+    }
     return bind_bo_texture(dpy, bo_handle, gl_target, 1);
 }
 
@@ -1896,7 +1900,7 @@ static void retire_imported_images(struct egl_generation *generation) {
 
 uint32_t _wpk_egl_image_texture(const struct wpk_egl_image *image) {
     if (!image || image->pixels || image->generation != g_thread_binding.generation) return 0;
-    return bind_bo_texture(EGL_DPY_HANDLE, image->handle, GL_TEXTURE_2D, 0);
+    return bind_bo_texture(EGL_DPY_HANDLE, image->handle, WPK_GL_IMAGE_SOURCE_TARGET, 0);
 }
 
 EGLBoolean eglQueryDmaBufFormatsEXT(EGLDisplay dpy, EGLint max_formats,

@@ -1,3 +1,4 @@
+import type { GlImageSource, GlTextureView, GlRenderbufferView } from "./image-storage.js";
 import type { GlBufferStore } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 
@@ -10,6 +11,12 @@ export type GlSharedObjects = {
   bufferStores: Map<WebGLBuffer, GlBufferStore>;
   bufferViewOwners: Map<WebGLBuffer, WebGLBuffer>;
   textures: Map<number, WebGLTexture>;
+  imageSources: Map<number, GlImageSource>;
+  nextImageSource: number;
+  textureViews: Map<WebGLTexture, GlTextureView>;
+  textureViewOwners: Map<WebGLTexture, WebGLTexture>;
+  renderbufferViews: Map<WebGLRenderbuffer, GlRenderbufferView>;
+  renderbufferViewOwners: Map<WebGLRenderbuffer, WebGLRenderbuffer>;
   shaders: Map<number, WebGLShader>;
   /** Original submitted bytes; native decoding must not change source queries. */
   shaderSources: Map<WebGLShader, Uint8Array>;
@@ -53,6 +60,7 @@ export type GlObjectGroup = GlSharedObjects & { members: Set<GlBinding> };
 
 export function createGlObjectGroup(): GlObjectGroup {
   return {
+    imageSources:new Map(),nextImageSource:1,textureViews:new Map(),textureViewOwners:new Map(),renderbufferViews:new Map(),renderbufferViewOwners:new Map(),
     members: new Set(), buffers: new Map(), bufferStores: new Map(), bufferViewOwners: new Map(), textures: new Map(), shaders: new Map(), programs: new Map(),
     rbos: new Map(), shaderSources: new Map(), shaderDeletePending: new Set(), programDeletePending: new Set(),
     programShaders: new Map(), programAttributeBindings: new Map(),

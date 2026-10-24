@@ -1,3 +1,4 @@
+import type { GlTextureView } from "./image-storage.js";
 import type { GlBinding } from "./registry.js";
 import type { GlShadowState } from "./shadow.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
@@ -9,9 +10,10 @@ export function validGlesTextureParameter(pname: number): boolean {
 
 /** Null in the logical binding table means GLES's context-owned texture
  * zero. Its native stand-in must never enter the shared name namespace. */
-export function nativeTextureBinding(s: GlShadowState, target: number, unit: number): WebGLTexture | null {
+export function nativeTextureBinding(s: GlShadowState, target: number, unit: number, views?:Map<WebGLTexture,GlTextureView>): WebGLTexture | null {
   const units = target === 0x0de1 ? s.textureUnits : s.cubeTextureUnits;
-  return units[unit] ?? s.defaultTextures.get(target) ?? null;
+  const object=units[unit] ?? s.defaultTextures.get(target) ?? null;
+  return object ? views?.get(object)?.native ?? object : null;
 }
 
 /** Materialize a default object only when its storage/parameters are used.

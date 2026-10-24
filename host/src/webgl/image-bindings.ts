@@ -1,3 +1,4 @@
+import { textureNative, renderbufferNative } from "./image-storage.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 
@@ -20,7 +21,7 @@ export function bindImageObject(b: GlBinding, kind: number, target: number, name
       try { b.textures.set(name,texture); }
       catch { gl.deleteTexture(texture); recordGlError(b,0x505); return false; }
     }
-    if (!checkedGlCall(b, () => gl.bindTexture(target,texture))) {
+    if (!checkedGlCall(b, () => gl.bindTexture(target,texture ? textureNative(b,texture) : null))) {
       if (allocate && texture) { b.textures.delete(name); gl.deleteTexture(texture); }
       return false;
     }
@@ -41,7 +42,7 @@ export function bindImageObject(b: GlBinding, kind: number, target: number, name
       try { b.rbos.set(name,renderbuffer); }
       catch { gl.deleteRenderbuffer(renderbuffer); recordGlError(b,0x505); return false; }
     }
-    if (!checkedGlCall(b, () => gl.bindRenderbuffer(target,renderbuffer))) {
+    if (!checkedGlCall(b, () => gl.bindRenderbuffer(target,renderbuffer ? renderbufferNative(b,renderbuffer) : null))) {
       if (allocate && renderbuffer) { b.rbos.delete(name); gl.deleteRenderbuffer(renderbuffer); }
       return false;
     }

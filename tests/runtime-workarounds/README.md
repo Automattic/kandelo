@@ -225,7 +225,8 @@ line: `{"verdict": ..., "version": ..., "os": ..., "details": ...}`.
   `Cross-Origin-Opener-Policy: same-origin` and
   `Cross-Origin-Embedder-Policy: require-corp` (so `SharedArrayBuffer` and
   shared `WebAssembly.Memory` work), opens `entry` in headless Playwright
-  `chromium`, `firefox` or `webkit`, and polls until the page sets
+  `chromium`, `firefox` or `webkit` (Chromium uses the `chromium` channel,
+  matching the product gate rather than the legacy headless shell), and polls until the page sets
   `window.__reproVerdict = { verdict, details }`. A page crash counts as
   `reproduced` only with `crash_is_reproduced = true`. No verdict before
   `timeout_seconds` is `inconclusive`.

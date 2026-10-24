@@ -5182,7 +5182,10 @@ pub mod gl {
     /// Version of the GLES op-table. Bumped independently of `ABI_VERSION`
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
     /// at compile time; GLIO_INIT accepts compatible versions 1..=OP_VERSION.
-    pub const OP_VERSION: u32 = 9;
+    pub const OP_VERSION: u32 = 10;
+    /// Private mode of the existing foreign-BO bind ioctl. Its result is a
+    /// source token for QOP_IMAGE_TARGET, never a public GLES texture name.
+    pub const IMAGE_SOURCE_TARGET: u32 = 0x5750_4b49;
 
     // --- ioctl request numbers (DRM 'D' magic, starting at 0x40) -----------
 
@@ -5411,6 +5414,11 @@ pub mod gl {
     /// target, name. Out: checked status, accepted=1 on success, magic.
     /// Failure preserves native binding and publishes no new object name.
     pub const QOP_BIND_IMAGE_OBJECT: u32 = 0x0022;
+    /// V10: logical image target: kind/name/private-source-token (12 bytes).
+    /// Checked reply contains current source token (4-byte payload).
+    pub const QOP_IMAGE_TARGET: u32 = 0x0023;
+    /// V10: kind/name (8 bytes), checked current source token (0=orphaned).
+    pub const QOP_IMAGE_SOURCE_STATE: u32 = 0x0024;
 
     // --- marshalled ioctl argument structs ---------------------------------
 
@@ -7117,6 +7125,8 @@ mod gl_tests {
             QOP_GET_ACTIVE_UNIFORM_INFO,
             QOP_LOOKUP_UNIFORM,
             QOP_BIND_IMAGE_OBJECT,
+            QOP_IMAGE_TARGET,
+            QOP_IMAGE_SOURCE_STATE,
         ];
         for (i, &a) in qops.iter().enumerate() {
             for &b in &qops[i + 1..] {

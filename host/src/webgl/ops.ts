@@ -108,7 +108,7 @@ export const QOP_FINISH                = 0x0E;
 
 /** Bumped in lockstep with `shared::gl::OP_VERSION`. The kernel's
  *  `GLIO_INIT` accepts versions 1 through this value. */
-export const OP_VERSION = 9;
+export const OP_VERSION = 10;
 
 // Additive GLES entry points used by native renderers; existing tags stay stable.
 export const OP_BLEND_EQUATION = 0x000F;
@@ -177,3 +177,7 @@ export const QOP_LOOKUP_UNIFORM = 0x0021;
 
 // V9: checked texture/renderbuffer binds before C reference publication.
 export const QOP_BIND_IMAGE_OBJECT = 0x0022;
+
+// V10: logical image target/storage state; checked source token replies.
+export const QOP_IMAGE_TARGET = 0x0023;
+export const QOP_IMAGE_SOURCE_STATE = 0x0024;

@@ -35,6 +35,7 @@ function makeFakeGl() {
   };
   let texN = 0;
   const gl = {
+    getError: () => 0,
     TEXTURE0: 0x84c0,
     ACTIVE_TEXTURE: 0x84e0,
     TEXTURE_BINDING_2D: 0x8069,

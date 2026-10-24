@@ -3800,11 +3800,13 @@ Texture 2D/cube units, the renderbuffer binding and framebuffer attachments
 also retain explicit C records. First bind fixes texture dimensionality;
 wrong-target binds and unrealized/wrong-type attachments preserve old
 client references. Inactive FBOs keep an unnamed old record through name
-reuse. Binding queries translate private EGLImage BO carriers back to their
-logical 2D names; ordinary/raw WPK queries retain native authority. Public
+reuse. Binding queries retain logical names; the host canonicalizes native
+image views to their logical objects. Ordinary/raw WPK queries retain native
+authority. Public
 WPK BO texture names are registered after acknowledged creation, and checked
 liveness reconciles owner-revoked names before C bind/attachment validation.
-Hidden image carriers bypass public registration. The inline 32-unit
+Private EGLImage source tokens use a separate registry and never enter the
+public GLuint namespace. The inline 32-unit
 capacity grows to the queried renderer limit,
 with failed growth preserving selection and final teardown releasing it.
 Public C texture/renderbuffer binds now wait for a checked renderer reply
@@ -3814,7 +3816,16 @@ namespace bookkeeping is reserved before native binding and a rejected
 candidate is removed. Accepted query binds also collect retired images.
 This establishes definite bind acceptance, while an indeterminate transport
 failure still needs lifecycle reconciliation or context-loss handling.
-Image/storage aliases remain a separate incomplete ownership layer.
+GPU image targets now retain distinct logical texture/RBO identities while
+sharing canonical source pixels. Texture views preserve independent sampling
+parameters; FBO attachments target canonical storage and retain their logical
+query identity. Sampling views copy current source pixels before drawing.
+Respecification stages an owned view and retargets all referencing group
+FBOs before replacement. C image holds release old backing only after checked
+orphaning, and ambiguous image-import replies retain the candidate until
+encoder retirement. C holds are still encoder-local; CPU coherence, fully
+shared C storage ownership and indeterminate multi-failure recovery remain
+open. This is not yet public C sharing or complete image conformance.
 
 Client staging retains a separate buffer-record reference, restores its
 pointer/name/serial directly and keeps any pending capture encoder-owned.

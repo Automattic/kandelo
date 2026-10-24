@@ -1,4 +1,5 @@
 // Replay each GLES2 texture target independently on the shared context.
+import { renderbufferNative } from "./image-storage.js";
 import { knownTextureUnitLimit } from "./limits.js";
 import { nativeTextureBinding } from "./texture-bindings.js";
 import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
@@ -52,7 +53,7 @@ export class GlMuxer {
     if (s.sampleCoverageEnabled) gl.enable(0x80a0); else gl.disable(0x80a0);
     if (s.sampleAlphaToCoverageEnabled) gl.enable(0x809e); else gl.disable(0x809e);
     gl.bindBuffer(0x8892, s.arrayBuffer);
-    gl.bindRenderbuffer(0x8d41, s.renderbuffer);
+    gl.bindRenderbuffer(0x8d41, s.renderbuffer ? renderbufferNative(target,s.renderbuffer) : null);
     gl.colorMask(...s.colorMask);
 
     if (s.ditherEnabled) gl.enable(0x0bd0); else gl.disable(0x0bd0);
@@ -104,8 +105,8 @@ export class GlMuxer {
       this.current?.shadow.cubeTextureUnits.length ?? 0);
     for (let i = 0; i < units; i++) {
       gl.activeTexture(GL_TEXTURE0 + i);
-      gl.bindTexture(GL_TEXTURE_2D, nativeTextureBinding(s,GL_TEXTURE_2D,i));
-      gl.bindTexture(0x8513, nativeTextureBinding(s,0x8513,i));
+      gl.bindTexture(GL_TEXTURE_2D, nativeTextureBinding(s,GL_TEXTURE_2D,i,target.textureViews));
+      gl.bindTexture(0x8513, nativeTextureBinding(s,0x8513,i,target.textureViews));
     }
     gl.activeTexture(GL_TEXTURE0 + s.activeTexture);
 

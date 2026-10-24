@@ -1,3 +1,4 @@
+import { textureNative, renderbufferNative } from "./image-storage.js";
 import type { GlBinding } from "./registry.js";
 import { activeVertexArray, vertexAttribute } from "./buffer-references.js";
 import { canonicalBuffer, BUFFER_TRANSFER_BYTES, withBufferTransfer } from "./buffer-storage.js";
@@ -105,8 +106,8 @@ function runStatePayload(b: GlBinding, op: number, input: Uint8Array, out: Uint8
       if (!checkedGlCall(b, () => {
         switch (kind) {
           case 0: { const o = b.buffers.get(name); value = !!o && b.bufferStores.has(o); break; }
-          case 1: { const o = b.textures.get(name); value = !!o && gl.isTexture(o); break; }
-          case 2: { const o = b.rbos.get(name); value = !!o && gl.isRenderbuffer(o); break; }
+          case 1: { const o = b.textures.get(name); value = !!o && gl.isTexture(textureNative(b,o)); break; }
+          case 2: { const o = b.rbos.get(name); value = !!o && gl.isRenderbuffer(renderbufferNative(b,o)); break; }
           case 3: { const o = b.fbos.get(name); value = !!o && gl.isFramebuffer(o); break; }
           case 4: { const o = b.shaders.get(name); value = !!o && gl.isShader(o); break; }
           case 5: { const o = b.programs.get(name); value = !!o && gl.isProgram(o); break; }

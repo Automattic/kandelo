@@ -1,3 +1,4 @@
+import { destroyTextureView, destroyRenderbufferView } from "./image-storage.js";
 import type { GlUniformLookup } from "./uniform-queries.js";
 import type { GlSurfaceCreation } from "./surface-create.js";
 /**
@@ -261,13 +262,14 @@ export class GlContextRegistry {
       const textures = new Set([
         ...b.textures.values(), ...[...b.foreignTextures.values()].map(entry => entry.tex),
       ]);
-      for (const texture of textures) if (!boTextures.has(texture)) gl?.deleteTexture(texture);
+      for (const texture of textures) if (gl && (!boTextures.has(texture)||b.textureViews.has(texture))) destroyTextureView(b,texture);
       for (const object of b.buffers.values()) if (gl) destroyBufferStorage(b,object);
       for (const object of b.shaders.values()) gl?.deleteShader(object);
       for (const object of programs) gl?.deleteProgram(object);
-      for (const object of b.rbos.values()) gl?.deleteRenderbuffer(object);
+      for (const object of b.rbos.values()) if(gl)destroyRenderbufferView(b,object);
       for (const map of [b.buffers,b.textures,b.shaders,b.programs,b.rbos,b.uniformLocations,
         b.uniformLocationPrograms,b.uniformLocationNames,b.programShaders,b.programAttributeBindings,b.foreignTextures,b.shaderSources]) map.clear();
+      b.imageSources.clear();
       b.shaderDeletePending.clear(); b.programDeletePending.clear();
     } else {
       if (installedName) finalizeProgram(b, installedName);
@@ -283,6 +285,7 @@ export class GlContextRegistry {
     b.objects = createGlObjectGroup();
     b.objects.nextUniformLoc = objects.nextUniformLoc;
     b.objects.nextForeignTexId = objects.nextForeignTexId;
+    b.objects.nextImageSource = objects.nextImageSource;
     b.objects.members.add(b);
     b.errors.length = 0;
     if (b.undefinedDefaultFbo) gl?.deleteFramebuffer(b.undefinedDefaultFbo);
@@ -346,7 +349,7 @@ export class GlContextRegistry {
         || target.uniformLookup !== null || target.objects.members.size !== 1) return false;
     const names = target.objects;
     if (names.buffers.size || names.bufferStores.size || names.textures.size || names.shaders.size || names.programs.size
-        || names.rbos.size || names.uniformLocationNames.size || names.uniformLocations.size || names.foreignTextures.size
+        || names.rbos.size || names.imageSources.size || names.textureViews.size || names.renderbufferViews.size || names.uniformLocationNames.size || names.uniformLocations.size || names.foreignTextures.size
         || names.retiredTextures.size || names.retiredBuffers.size || names.retiredRenderbuffers.size
         || names.shaderDeletePending.size || names.programDeletePending.size) return false;
     // Reserve membership before removing the old owner; allocation failure
@@ -423,6 +426,7 @@ export class GlContextRegistry {
    *  is released only via `destroyGpuBo` on bo destroy. */
   dropForeignTexturesForBo(bo_id: number): void {
     for (const b of this.bindings.values()) {
+      for(const [token,source]of b.imageSources)if(source.bo===bo_id)b.imageSources.delete(token);
       const entry = b.foreignTextures.get(bo_id);
       if (!entry) continue;
       b.foreignTextures.delete(bo_id);

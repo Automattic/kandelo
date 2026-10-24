@@ -1,3 +1,4 @@
+import { destroyTextureView, destroyRenderbufferView } from "./image-storage.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall } from "./program-objects.js";
 
@@ -91,11 +92,11 @@ export function collectRetiredImages(b: GlBinding): void {
   if (!b.gl) return;
   for (const [texture] of b.retiredTextures) {
     if (imageReferenced(b,"texture",texture)) continue;
-    if (!b.externallyOwnedTextures.has(texture) && !checkedGlCall(b, () => b.gl!.deleteTexture(texture))) continue;
+    if (!destroyTextureView(b,texture)) continue;
     b.retiredTextures.delete(texture);
   }
   for (const [renderbuffer] of b.retiredRenderbuffers) {
     if (imageReferenced(b,"renderbuffer",renderbuffer)) continue;
-    if (checkedGlCall(b, () => b.gl!.deleteRenderbuffer(renderbuffer))) b.retiredRenderbuffers.delete(renderbuffer);
+    if (destroyRenderbufferView(b,renderbuffer)) b.retiredRenderbuffers.delete(renderbuffer);
   }
 }

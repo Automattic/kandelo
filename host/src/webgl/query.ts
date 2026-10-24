@@ -16,6 +16,7 @@
  * delete and would collide). Indices are number-keyed for clean u32
  * round-tripping.
  */
+import { canonicalTexture, canonicalRenderbuffer, imageSourceToken, importImageStorage } from "./image-storage.js";
 import { collectRetiredImages } from "./image-references.js";
 import { bindImageObject } from "./image-bindings.js";
 import { runUniformLookup, uniformLocation } from "./uniform-queries.js";
@@ -118,6 +119,17 @@ export function runGlQuery(
   const inDv = new DataView(input.buffer, input.byteOffset, input.byteLength);
   const outDv = new DataView(out.buffer, out.byteOffset, out.byteLength);
 
+  if(op===O.QOP_IMAGE_TARGET||op===O.QOP_IMAGE_SOURCE_STATE){
+    if(input.byteLength!==(op===O.QOP_IMAGE_TARGET?12:8)||out.byteLength!==12)return -22;
+    return checkedQueryReply(b,out,4,payload=>{
+      const result=new DataView(payload.buffer);
+      const kind=inDv.getUint32(0,true),name=inDv.getUint32(4,true);
+      if(op===O.QOP_IMAGE_TARGET&&!importImageStorage(b,kind,name,inDv.getUint32(8,true)))return -5;
+      const source=imageSourceToken(b,kind,name);
+      if(source===null){recordGlError(b,0x502);return -5;}
+      result.setUint32(0,source,true);return 4;
+    });
+  }
   if (op === O.QOP_BIND_IMAGE_OBJECT) {
     if (input.byteLength !== 12 || out.byteLength !== 12) return -22;
     return checkedQueryReply(b,out,4,payload => {
@@ -441,14 +453,14 @@ function queryParameter(b: GlBinding, pname: number): unknown {
         || b.retiredBuffers.get(canonicalBuffer(b,value as WebGLBuffer)) || 0 : 0;
     case 0x8069: // TEXTURE_BINDING_2D
     case 0x8514: // TEXTURE_BINDING_CUBE_MAP
-      return nameForObject(b.textures, value as WebGLTexture | null)
-        || b.retiredTextures.get(value as WebGLTexture) || 0;
+      return nameForObject(b.textures, value ? canonicalTexture(b,value as WebGLTexture) : null)
+        || (value ? b.retiredTextures.get(canonicalTexture(b,value as WebGLTexture)) : 0) || 0;
     case 0x8ca6: // FRAMEBUFFER_BINDING
     case 0x8caa: // READ_FRAMEBUFFER_BINDING
       return nameForObject(b.fbos, value as WebGLFramebuffer | null);
     case 0x8ca7: // RENDERBUFFER_BINDING
-      return nameForObject(b.rbos, value as WebGLRenderbuffer | null)
-        || b.retiredRenderbuffers.get(value as WebGLRenderbuffer) || 0;
+      return nameForObject(b.rbos, value ? canonicalRenderbuffer(b,value as WebGLRenderbuffer) : null)
+        || (value ? b.retiredRenderbuffers.get(canonicalRenderbuffer(b,value as WebGLRenderbuffer)) : 0) || 0;
     default: return value;
   }
 }

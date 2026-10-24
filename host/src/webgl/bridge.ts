@@ -18,6 +18,7 @@
  * returns a negative errno so `GLIO_SUBMIT` can fail like any other
  * ioctl-style device operation instead of hiding the failure in host code.
  */
+import { attachImage, imageTextureOperation, imageRenderbufferStorage, prepareImageDraw } from "./image-storage.js";
 import { bindImageObject } from "./image-bindings.js";
 import { beginClientArray, endClientArray } from "./buffer-references.js";
 import { capabilityEnabled } from "./state-query.js";
@@ -753,10 +754,10 @@ function dispatch(
       const data = dataLen === 0
         ? null
         : copyPixels(v, p + 36, dataLen, type);
-      gl.texImage2D(
+      imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.texImage2D(
         target, level, normalizeTextureInternalFormat(internalFormat, format, type), width, height, border,
         format, type, data,
-      );
+      ),v.getInt32(p+4,true)!==0);
       return;
     }
     // Payload: u32 target, i32 level, i32 xoff, i32 yoff, i32 width,
@@ -773,9 +774,9 @@ function dispatch(
       const type = normalizeTextureType(v.getUint32(p + 28, true));
       const dataLen = v.getUint32(p + 32, true);
       const data = copyPixels(v, p + 36, dataLen, type);
-      gl.texSubImage2D(
+      imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.texSubImage2D(
         target, level, xoff, yoff, width, height, format, type, data,
-      );
+      ));
       return;
     }
     case O.OP_TEX_PARAMETERI:
@@ -806,12 +807,12 @@ function dispatch(
       return;
     }
     case O.OP_GENERATE_MIPMAP:
-      gl.generateMipmap(v.getUint32(p, true));
+      imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.generateMipmap(v.getUint32(p,true)));
       return;
     case O.OP_COMPRESSED_TEX_IMAGE_2D: {
       const dataLen = v.getUint32(p + 24, true);
       const data = copyBytes(v, p + 28, dataLen);
-      gl.compressedTexImage2D(
+      imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.compressedTexImage2D(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
         v.getUint32(p + 8, true),
@@ -819,13 +820,13 @@ function dispatch(
         v.getInt32(p + 16, true),
         v.getInt32(p + 20, true),
         data,
-      );
+      ),v.getInt32(p+4,true)!==0);
       return;
     }
     case O.OP_COMPRESSED_TEX_SUB_IMAGE_2D: {
       const dataLen = v.getUint32(p + 28, true);
       const data = copyBytes(v, p + 32, dataLen);
-      gl.compressedTexSubImage2D(
+      imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.compressedTexSubImage2D(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
         v.getInt32(p + 8, true),
@@ -834,11 +835,11 @@ function dispatch(
         v.getInt32(p + 20, true),
         v.getUint32(p + 24, true),
         data,
-      );
+      ));
       return;
     }
     case O.OP_COPY_TEX_IMAGE_2D:
-      gl.copyTexImage2D(
+      imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.copyTexImage2D(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
         v.getUint32(p + 8, true),
@@ -847,10 +848,10 @@ function dispatch(
         v.getInt32(p + 20, true),
         v.getInt32(p + 24, true),
         v.getInt32(p + 28, true),
-      );
+      ),v.getInt32(p+4,true)!==0);
       return;
     case O.OP_COPY_TEX_SUB_IMAGE_2D:
-      gl.copyTexSubImage2D(
+      imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.copyTexSubImage2D(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
         v.getInt32(p + 8, true),
@@ -859,7 +860,7 @@ function dispatch(
         v.getInt32(p + 20, true),
         v.getInt32(p + 24, true),
         v.getInt32(p + 28, true),
-      );
+      ));
       return;
 
     // ----- shaders / programs --------------------------------------------
@@ -1130,7 +1131,7 @@ function dispatch(
       if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }
       if (v.getUint32(p,true) > 6) { recordGlError(b,0x500); return; }
       if (v.getInt32(p+4,true) < 0 || v.getInt32(p+8,true) < 0) { recordGlError(b,0x501); return; }
-      if (!prepareBufferDraw(b,false)) return;
+      if (!prepareBufferDraw(b,false)||!prepareImageDraw(b)) return;
       gl.drawArrays(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
@@ -1139,6 +1140,7 @@ function dispatch(
       return;
     case O.OP_DRAW_ELEMENTS:
       if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }
+      if(!prepareImageDraw(b))return;
       drawGlesElements(b,v.getUint32(p,true),v.getInt32(p+4,true),v.getUint32(p+8,true),v.getUint32(p+12,true));
       return;
     // Payload: u32 index, f32 x, f32 y, f32 z, f32 w
@@ -1271,7 +1273,7 @@ function dispatch(
       const tex = b.textures.get(v.getUint32(p + 12, true)) ?? null;
       if (!tex && v.getUint32(p+12,true) !== 0) { recordGlError(b,0x502); return; }
       const level = v.getInt32(p + 16, true);
-      if (!checkedGlCall(b, () => gl.framebufferTexture2D(target,attachment,textarget,tex,level))) return;
+      if (!checkedGlCall(b, () => tex ? attachImage(b,target,attachment,{kind:"texture",object:tex,target:textarget,level}) : gl.framebufferTexture2D(target,attachment,textarget,null,level))) return;
       setImageAttachment(b,boundFramebuffer(b,target)!,attachment,
         tex ? {kind:"texture",object:tex,target:textarget,level} : null);
       return;
@@ -1292,12 +1294,12 @@ function dispatch(
     }
     // Payload: u32 target, u32 internalformat, i32 width, i32 height
     case O.OP_RENDERBUFFER_STORAGE:
-      gl.renderbufferStorage(
+      imageRenderbufferStorage(b,()=>gl.renderbufferStorage(
         v.getUint32(p, true),
         v.getUint32(p + 4, true),
         v.getInt32(p + 8, true),
         v.getInt32(p + 12, true),
-      );
+      ));
       return;
     // Payload: u32 target, u32 attachment, u32 rbtarget, u32 rboName
     case O.OP_FRAMEBUFFER_RENDERBUFFER: {
@@ -1308,7 +1310,8 @@ function dispatch(
       const rbtarget = v.getUint32(p + 8, true);
       const rbo = b.rbos.get(v.getUint32(p + 12, true)) ?? null;
       if (!rbo && v.getUint32(p+12,true) !== 0) { recordGlError(b,0x502); return; }
-      if (!checkedGlCall(b, () => gl.framebufferRenderbuffer(target,attachment,rbtarget,rbo))) return;
+      if(rbtarget!==0x8d41){recordGlError(b,0x500);return;}
+      if (!checkedGlCall(b, () => attachImage(b,target,attachment,rbo?{kind:"renderbuffer",object:rbo}:null))) return;
       setImageAttachment(b,boundFramebuffer(b,target)!,attachment,
         rbo ? {kind:"renderbuffer",object:rbo} : null);
       return;
