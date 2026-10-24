@@ -112,8 +112,9 @@ These records do not execute guest initialization or ioctl marshalling.
 The source host/browser surface cases also check retained presentation
 storage across context replacement, failed resize preserving pixels,
 independent native draw/read selectors and framebuffer-zero rebinding,
-and final retirement after owner/selector release. Native selector tests
-do not establish public cross-session EGL surface routing or guest CTS.
+and final retirement after owner/selector release. The public-C records replay now checks same-generation multi-context
+draw/read routing through native worker imports and main forwarding.
+These source replays still do not establish normal guest integration or CTS.
 
 The native index-usage query double supplies a controlled maximum/presence
 reply; it does not dereference the guest's u32 input pointer on a 64-bit
@@ -139,3 +140,23 @@ and through main-thread forwarding, then checks compiled shader source and
 rendered pixels. The native allocation registry resolves only recorded
 live heap ranges; other stack-input query doubles retain their documented
 limitations. These traces do not replace guest/kernel marshalling tests.
+
+`KANDELO_GRAPHICS_EGL_TRACE` records accepted public-C session creation,
+context/surface IDs, current selection, command bytes and retirement. The
+browser records case replays these calls through native host imports in a
+worker and through main forwarding, probes actual draw/read pixels after
+C clear batches, and checks native resource deletion. Its adapter supplies
+the kernel dispatch role and uses a synthetic scratch module; it does not
+execute Rust guest ioctl marshalling.
+
+Native Wayland window descriptor ownership, resize rollback and final
+buffer cleanup have a separate device/protocol-double regression:
+
+```bash
+scripts/dev-shell.sh bash tests/graphics/run-wayland-window-unit.sh /path/to/installed/wayland-protocols/stable/linux-dmabuf/linux-dmabuf-v1.xml
+```
+
+This check uses the provisioned SDK headers and dev-shell wayland-scanner.
+The optional XML argument defaults to its installed path under sysroot.
+It executes the actual native-window C source with UBSan; it does not run
+Wayland peers, normal guest artifacts or a compositor.

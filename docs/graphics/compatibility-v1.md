@@ -59,7 +59,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | ID | Required behavior / source | Current implementation and known failure | Owner / dependencies | Executable validation | Status / boundary |
 |---|---|---|---|---|---|
 | G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reserved guest buffer names and host shared-object maps; core object predicates implemented, full query/error coverage still open | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
-| G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Full rollback, hints and multiple public contexts remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
+| G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Multiple public contexts have focused native/source-browser coverage; full rollback, hints and CTS remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
 | G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffers plus client attributes use a bounded presence query; core buffer/vertex queries preserve logical state. Full size/limit/negative coverage remains open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core attribute/source/attachment reflection, acknowledged large-source uploads and validation entrypoints are implemented; complete executable/attribute/uniform validation still needs work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
@@ -69,8 +69,8 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
 | G10 | Every core function resolves; ES2 API | All 142 GLES2 core symbols are defined and resolved; native/private-Wasm audit passes. Full semantic and guest conformance remain pending | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | partial |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
-| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. ABI 56 separates revocable display-generation roots from object sessions. C generation records retain old current descriptors, mappings, encoders and imported images while a new generation initializes. Host surface records retain native draw/read targets across context destruction and owner retirement. ABI 57 returns fresh surface IDs and acknowledged dimensions. Kernel/host cross-session draw/read selection validates process, live generation and TID, with canonical surface storage retained after owner retirement. Creation/bind failure preserves prior state. Multiple public contexts within one generation, sharing, public independent surface routing and the full error/lifecycle audit remain open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
-| E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Public pbuffer creation still fails and several core symbols are absent; ABI 57 returns accepted surface dimensions and fresh identities | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | open |
+| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. ABI 56 separates revocable display-generation roots from object sessions. C generation records retain old current descriptors, mappings, encoders and imported images while a new generation initializes. Host surface records retain native draw/read targets across context destruction and owner retirement. ABI 57 returns fresh surface IDs and acknowledged dimensions. Kernel/host cross-session draw/read selection validates process, live generation and TID, with canonical surface storage retained after owner retirement. Creation/bind failure preserves prior state. Public independent context/surface records now route separate draw/read selectors through per-object sessions. Sharing and the full error/lifecycle audit remain open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
+| E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Public window queries expose accepted dimensions and fixed attributes; pbuffer creation still fails and several core symbols are absent | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | open |
 | E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context / OES_surfaceless_context | Explicit kernel/host bind, initial zero viewport/scissor, undefined framebuffer-zero status and native operation errors implemented; user FBOs remain usable. Real source-browser checks pass; guest CTS/current artifacts remain pending | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | partial |
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/alias/FBO references now retain GEM storage; CPU coherence and complete object semantics remain open | EGL, GLES alias model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | open |
 | E06 | Respecification orphans sibling without altering others; OES_EGL_image | Texture redefinition now detaches storage and updates retained FBO references; sampler independence and complete negative API coverage remain open | GLES storage model, host object/attachment tracking | Redefine imported texture, sample both siblings, retained FBO | open |
@@ -1995,3 +1995,93 @@ program/package/image rebuilds, guest CTS, cage/sway, full browser-memory
 and POSIX/conformance remain required and deferred until implementation is
 ready. Main remains fetched `f3cb7041f6`, already integrated. Draft PR #1574
 tracks this progress; the full goal remains active.
+
+
+## Public independent EGL records and descriptor ownership (2026-10-24)
+
+The public C facade now owns separate context and surface records within
+each initialized generation. Each context retains its own encoder and
+command mapping. Additional records join the live root through additional
+object sessions; sessions may carry a context, a surface, or both. A surface
+is independent of the context which happened to share its descriptor.
+Make-current names the actual draw/read identities, which may differ and
+belong to other sessions in the same generation. Swap validates the current
+draw surface and presents through the current context's descriptor.
+
+One monotonic public identity space keeps contexts, surfaces and images
+distinct across kinds and generations. Destruction invalidates a handle
+immediately, while current bindings retain the record and storage until
+kernel-authoritative destruction succeeds. Busy destruction is retried
+without displacing another thread. A native window cannot acquire a second
+surface while its prior deleted/current surface still owns the window.
+Failed allocation, creation or current replacement leaves the previous
+binding and encoder intact. Default context version is 1, so the ES2-only
+configuration requires an explicit version 2 request. Valid sharing is
+currently rejected rather than silently ignored; implementing actual guest
+share groups remains ordinary required work.
+
+GEM names are open-description local. Surface creation/retarget and foreign
+texture binding now export/import through PRIME when crossing descriptors.
+Export capabilities and temporary local names close on success or failure;
+idempotent imports preserve an existing image-owned base-descriptor name.
+Images retain their importing generation's owner independently of temporary
+context-local names. Native Wayland buffers own separate render descriptors
+and close them after their BOs retire, including failed allocation/resize.
+They can be created before any context is current. Resizing updates queried
+surface dimensions only after the target is accepted.
+
+`eglQuerySurface` is defined and resolved. Window queries expose accepted
+width/height, config, render buffer, colorspace, swap/multisample behavior
+and unknown pixel-resolution values. Pbuffer-only queries on a window
+succeed without modifying the output. Invalid or deleted handles, unknown
+attributes and failed queries preserve caller output. These semantics follow
+[EGL 1.5 sections 3.5.5–3.5.6 and 3.7](https://registry.khronos.org/EGL/specs/eglspec.1.5.pdf).
+The prior native test which swapped a deleted/current public surface now
+expects BAD_SURFACE while retained current GL remains usable.
+
+Focused evidence for this C batch:
+
+| Check | Result | Evidence |
+|---|---|---|
+| Actual EGL/GLES C with device double and UBSan | 75 cases passed, including 7 added records/ownership cases | `.context/graphics-egl-record-final-native.log` |
+| Actual native-window C with device/protocol doubles and UBSan | Descriptor ownership, resize rejection, four allocation failure paths and final cleanup passed | `.context/graphics-egl-record-wayland-native.log` |
+| Host graphics source and Node/browser declarations | 375 cases in 19 files and declarations passed | `.context/graphics-egl-record-stable-host.log` |
+| Actual source WebGL in Chromium/Firefox/WebKit | 117 passed, no skips | `.context/graphics-egl-record-stable-browser.log` |
+| Source protocol/memory-boundary negatives | 12 passed | `.context/graphics-egl-record-memory-boundary.log` |
+| Private wasm32 EGL/GLES objects, paired relocatable link and native-window object | Passed; 150 guarded GL definitions, all 142 GLES2 core symbols/resolver entries | `.context/graphics-egl-record-final-c-wasm.log` |
+
+The independent-records native case fails meaningfully on unchanged C
+production at `8c1a6d1e72` (second context creation), with the expanded device
+double: `.context/graphics-egl-record-baseline-c.log`. The 68 prior cases
+passed against unchanged production with that expanded double before the
+C refactor: `.context/graphics-egl-record-double-existing.log`.
+
+Six new browser executions replay actual accepted C control calls and
+encoder bytes in all three engines, through both native host imports in a
+dedicated OffscreenCanvas worker and real worker-to-main forwarding. Two
+contexts and three surfaces retain independent red/green/blue pixels, draw
+blue while reading green, preserve green storage after its context retires,
+and retire all native framebuffer/texture/renderbuffer objects. Pixel
+queries are explicit renderer probes after actual C clear batches; they do
+not invent guest query pointers. The adapter supplies kernel dispatch and
+identity translation, with a synthetic kernel scratch module. It does not
+execute normal Rust guest ioctl marshalling, CTS or a compositor. Initial
+replay errors read the context ID from the wrong field and expected the
+wrong explicit surface retirement order; the adapter/expectation were fixed
+before the complete 117-case pass. No runtime defect is claimed.
+
+The native-window check uses provisioned SDK headers and pinned installed
+wayland-protocols 1.47 XML with dev-shell wayland-scanner. These private
+compilations do not rebuild or restamp SDK archives or normal programs.
+There is no incompatible wire change: ABI 57 / graphics operation version
+5 and the prior Rust lifecycle evidence remain unchanged. Final private
+compilation includes all three EGL/GLES/native-window objects and their
+combined relocatable link, after the final C/native regression changes.
+
+Guest share groups, pbuffers/platform surface entry points, sync/core images,
+the remaining GLES API/error/limit/storage audit, context-loss propagation,
+forked GEM authority and the rest of the inventory remain ordinary gaps.
+Normal SDK/program/package/image rebuilds, guest CTS, cage/sway, full
+browser-memory and POSIX/conformance remain required and deferred until
+implementation is ready. The full goal remains active; draft PR #1574
+continues to carry incremental progress.

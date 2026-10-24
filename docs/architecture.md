@@ -3793,10 +3793,13 @@ to another thread; final destruction retires its image references and
 frees it without selecting it or emitting into another command stream.
 Allocation failure precedes backend creation and leaves no published
 context. User-visible context/surface handles are monotonic. Each backend
-session still admits one context and surface; the public EGL facade is
-limited to one context per display generation. A retained current old
-generation can overlap a newly initialized generation. Sharing, multiple
-contexts within one generation and independent public surfaces remain open.
+session admits one context and surface. The public EGL facade allocates
+additional sessions for independent context/surface records within a
+generation. Each context has its own encoder and command mapping; current
+bindings can select separate draw/read surfaces from other sessions in the
+same generation. A surface can survive its session's context destruction.
+A retained current old generation can overlap a newly initialized one.
+Guest share-group creation and the full API/error audit remain open.
 
 ABI 57 surface creation uses a 36-byte input/output GlSurfaceCreateInfo:
 32 attribute bytes followed by a zero-on-input surface identity. The
@@ -3953,11 +3956,17 @@ Native Wayland window resizing updates an existing GPU target atomically
 without destroying its current EGL surface. Failed updates preserve the old
 target and attached size. This path currently requires an existing GPU
 window target on the same native renderer; forwarded GPU and mixed canvas
-targets still need the full surface model. The public EGL facade remains
-single-context per generation. Multiple contexts within one generation,
-share groups, separate surface objects and the full lifecycle model remain
-incomplete. Generation overlap has focused native/source-browser evidence;
-normal guest-artifact and conformance validation remain pending.
+targets still need the full surface model. Native Wayland buffers own
+independent render descriptors rather than borrowing a current context's
+fd. EGL transfers BO names into context/surface sessions through PRIME,
+closes export capabilities and temporary imported names after the operation,
+and preserves names already owned by images on the generation descriptor.
+Resize queries update only after accepted retargeting. Public surface
+queries report stored accepted dimensions and attributes; deleted handles
+remain invalid while current bindings retain storage. Native/source-browser
+checks cover multiple public contexts, independent surfaces and generation
+overlap. Share groups, the full lifecycle/error audit, normal guest-artifact
+and conformance validation remain pending.
 
 Surfaceless bindings use a context-owned native framebuffer with no
 attachments to represent the absent default framebuffer. It has no guest

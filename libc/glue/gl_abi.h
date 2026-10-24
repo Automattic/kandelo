@@ -203,9 +203,8 @@ struct gl_query_info {
     uint32_t reserved;
 };
 
-/* Cross-archive accessors. The fd belongs to the initialized display and
- * is also used by native-window setup. The command base and encoder are
- * available only through the calling thread's current context binding. */
+/* Cross-archive accessors require a current context on the calling thread.
+ * Native windows own independent device descriptors and transfer BO names. */
 int      _wpk_gl_fd(void);
 uint8_t *_wpk_gl_cmdbuf_base(void);
 void     _wpk_gl_flush(void);

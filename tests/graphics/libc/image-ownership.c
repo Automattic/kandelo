@@ -61,16 +61,42 @@ void graphics_free(void *ptr) {
 }
 
 /* A small native-window identity exercises the real EGL resize hook. */
-static int native_window;
+static int native_window, record_windows[3];
 static uint32_t native_window_bo;
+static int native_window_fd = 10;
+static uint32_t native_window_width = 64, native_window_height = 32;
 extern int _wpk_egl_window_retarget(void *);
 uint32_t _wpk_wlegl_bo_handle(void *window) { return window == &native_window ? native_window_bo : 0; }
+int _wpk_wlegl_device_fd(void *window) {
+    assert(window == &native_window);
+    return native_window_fd;
+}
+int _wpk_wlegl_dimensions(void *window, uint32_t *width, uint32_t *height) {
+    assert(window == &native_window);
+    *width = native_window_width;
+    *height = native_window_height;
+    return 1;
+}
 void _wpk_wlegl_present(void *window) { (void)window; }
 int _wpk_gbm_surface_dimensions(const void *window, uint32_t *w, uint32_t *h) {
-    (void)window; (void)w; (void)h; return 0;
+    for (unsigned i = 0; i < 3; i++)
+        if (window == &record_windows[i]) {
+            *w = 32 + i;
+            *h = 24 + i;
+            return 1;
+        }
+    return 0;
 }
 
 static unsigned closes, imports;
+static struct {
+    uint32_t handle;
+    int source_fd;
+} prime_exports[8];
+static uint32_t transferred_handles[8];
+static int imported_owners[8];
+static unsigned transfers, transfer_closes, export_closes;
+static int fail_prime_export, fail_prime_import, fail_foreign_texture;
 static unsigned display_opens, display_closes, object_closes;
 static uint32_t display_generation = 91;
 static int display_live, fail_display_join;
@@ -82,10 +108,14 @@ struct device_slot {
     unsigned char *commands;
     int has_current;
     pthread_t current_thread;
-    uint32_t current_surface;
+    uint32_t current_surface, current_read_surface;
     unsigned clears, closes;
 };
 static struct device_slot device_slots[8];
+static struct {
+    int open, live;
+    uint32_t generation;
+} root_slots[8];
 static unsigned pending_device;
 static unsigned char *commands;
 static unsigned mappings;
@@ -137,34 +167,66 @@ static unsigned char captured_bytes[524288];
 static uint32_t captured_size, captured_type, captured_stride;
 static unsigned captured_chunks;
 
+/* Accepted C control operations plus actual encoder bytes. The source-browser
+ * replay supplies kernel dispatch/identity translation, not guest marshalling. */
+static void egl_trace(uint32_t kind, int fd, const void *bytes, uint32_t length) {
+    const char *path = getenv("KANDELO_GRAPHICS_EGL_TRACE");
+    if (!path)
+        return;
+    FILE *file = fopen(path, "ab");
+    assert(file);
+    const uint32_t header[3] = {kind, (uint32_t)fd, length};
+    assert(fwrite(header, 1, 12, file) == 12);
+    if (length)
+        assert(fwrite(bytes, 1, length, file) == length);
+    assert(!fclose(file));
+}
+
 int graphics_open(const char *path, int flags, ...) {
     (void)flags;
     assert(!strcmp(path, WPK_GL_DEVICE));
 #ifdef WPK_GL_SESSION_DISPLAY
-    if (display_opens++ % 2 == 0) {
-        pending_device = 0;
-        while (pending_device < 8 && (device_slots[pending_device].root_open || device_slots[pending_device].object_open)) pending_device++;
-        assert(pending_device < 8);
-        struct device_slot *slot = &device_slots[pending_device];
-        memset(slot,0,sizeof *slot); slot->root_open = 1;
-        return 20 + pending_device;
+    display_opens++;
+    if (!display_live) {
+        unsigned i = 0;
+        while (i < 8 && root_slots[i].open)
+            i++;
+        assert(i < 8);
+        root_slots[i].open = 1;
+        return 20 + (int)i;
     }
-    device_slots[pending_device].object_open = 1;
-    return 10 + pending_device;
+    unsigned i = 0;
+    while (i < 8 && device_slots[i].object_open)
+        i++;
+    assert(i < 8);
+    memset(&device_slots[i], 0, sizeof device_slots[i]);
+    device_slots[i].object_open = 1;
+    return 10 + (int)i;
 #else
     return 10;
 #endif
 }
 int graphics_close(int fd) {
+    if (fd >= 200 && fd < 208) {
+        assert(prime_exports[fd - 200].handle);
+        prime_exports[fd - 200].handle = 0;
+        export_closes++;
+        return 0;
+    }
 #ifdef WPK_GL_SESSION_DISPLAY
     if (fd >= 20 && fd < 28) {
-        struct device_slot *slot = &device_slots[fd-20]; assert(slot->root_open);
-        slot->root_open = slot->root_live = 0; display_closes++;
+        assert(root_slots[fd - 20].open);
+        root_slots[fd - 20].open = root_slots[fd - 20].live = 0;
+        display_closes++;
         display_live = 0;
-        for (unsigned i=0; i<8; i++) display_live |= device_slots[i].root_live;
+        for (unsigned i = 0; i < 8; i++)
+            display_live |= root_slots[i].live;
         return 0;
     }
     assert(fd >= 10 && fd < 18 && device_slots[fd-10].object_open);
+    assert(!transferred_handles[fd - 10]);
+    imported_owners[fd - 10] = 0;
+    egl_trace(9, fd, NULL, 0);
     device_slots[fd-10].object_open = 0; object_closes++;
     return 0;
 #endif
@@ -180,8 +242,10 @@ void *graphics_mmap(void *a, size_t len, int prot, int flags, int fd, off_t offs
     (void)a; (void)prot; (void)flags; (void)offset;
     if (fd >= 10 && fd < 18) {
         assert(len == WPK_GL_CMDBUF_LEN);
-        commands = command_storage[mappings++ % 8];
+        mappings++;
+        commands = command_storage[fd - 10];
         device_slots[fd-10].commands = commands;
+        egl_trace(1, fd, NULL, 0);
         return commands;
     }
     assert(fd == 100);
@@ -203,49 +267,103 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         assert(info->op_version == WPK_GL_OP_VERSION);
         if (fd >= 20 && fd < 28) {
             assert(info->role == WPK_GL_SESSION_DISPLAY && info->display_fd == -1 && !info->display_id);
-            struct device_slot *slot = &device_slots[fd-20];
-            assert(slot->root_open); slot->root_live = display_live = 1;
-            info->display_id = slot->generation = ++display_generation;
+            assert(root_slots[fd - 20].open);
+            root_slots[fd - 20].live = display_live = 1;
+            info->display_id = root_slots[fd - 20].generation = ++display_generation;
         } else {
-            assert(fd >= 10 && fd < 18 && info->role == WPK_GL_SESSION_OBJECTS && info->display_fd == fd+10 && info->display_id == device_slots[fd-10].generation && device_slots[fd-10].root_live);
+            assert(fd >= 10 && fd < 18 && info->role == WPK_GL_SESSION_OBJECTS &&
+                   info->display_fd >= 20 && info->display_fd < 28);
+            assert(root_slots[info->display_fd - 20].live &&
+                   info->display_id == root_slots[info->display_fd - 20].generation);
+            device_slots[fd - 10].generation = info->display_id;
             if (fail_display_join) { errno = ENOMEM; return -1; }
         }
         return 0;
     }
     if (fd >= 20 && fd < 28) {
-        assert(request == GLIO_TERMINATE && device_slots[fd-20].root_live);
-        device_slots[fd-20].root_live = 0; display_live = 0;
-        for (unsigned i=0; i<8; i++) display_live |= device_slots[i].root_live;
+        assert(request == GLIO_TERMINATE && root_slots[fd - 20].live);
+        root_slots[fd - 20].live = 0;
+        display_live = 0;
+        for (unsigned i = 0; i < 8; i++)
+            display_live |= root_slots[i].live;
         return 0;
     }
 #endif
     assert(fd >= 10 && fd < 18);
     struct device_slot *slot = &device_slots[fd-10];
     commands = slot->commands;
-    if (request == 0xc00c642eu) {
+    if (request == 0xc00c642du) {
+        if (fail_prime_export) {
+            errno = ENOMEM;
+            return -1;
+        }
         uint32_t *words = arg;
-        assert(words[2] == 100);
-        words[0] = 77; // Repeated PRIME imports share one GEM handle.
-        imports++;
+        assert(words[0] == 77 || words[0] == 88 || words[0] == 99);
+        unsigned i = 0;
+        while (i < 8 && prime_exports[i].handle)
+            i++;
+        assert(i < 8);
+        prime_exports[i].handle = words[0];
+        prime_exports[i].source_fd = fd;
+        words[2] = 200 + i;
+    } else if (request == 0xc00c642eu) {
+        uint32_t *words = arg;
+        if (words[2] == 100) {
+            words[0] = 77; // Repeated PRIME imports share one GEM handle.
+            imported_owners[fd - 10] = 1;
+            imports++;
+        } else {
+            assert(words[2] >= 200 && words[2] < 208 && prime_exports[words[2] - 200].handle);
+            assert(prime_exports[words[2] - 200].source_fd != fd);
+            if (fail_prime_import) {
+                errno = ENOMEM;
+                return -1;
+            }
+            if (imported_owners[fd - 10] && prime_exports[words[2] - 200].handle == 77) {
+                words[0] = 77;
+                return 0;
+            }
+            assert(!transferred_handles[fd - 10]);
+            words[0] = transferred_handles[fd - 10] = 1000 + fd;
+            transfers++;
+        }
     } else if (request == 0x40086409u) {
-        assert(*(uint32_t *)arg == 77);
-        closes++; slot->closes++;
+        uint32_t handle = *(uint32_t *)arg;
+        if (handle >= 1000) {
+            assert(handle == transferred_handles[fd - 10]);
+            transferred_handles[fd - 10] = 0;
+            transfer_closes++;
+        } else {
+            assert(handle == 77 && imported_owners[fd - 10]);
+            imported_owners[fd - 10] = 0;
+            closes++;
+            slot->closes++;
+        }
     } else if (request == 0xc01064e1u) {
         uint32_t *words = arg;
-        assert(words[0] == 77);
+        assert(words[0] == 77 || words[0] == transferred_handles[fd - 10]);
         assert(words[2] == slot->context);
         if (pause_foreign_bind) {
             overlap_reach(1); overlap_wait(2);
+        }
+        if (fail_foreign_texture) {
+            errno = ENOMEM;
+            return -1;
         }
         words[3] = 0x60000000u;
     } else if (request == GLIO_CREATE_CONTEXT && fail_create_context) {
         errno = ENOMEM;
         return -1;
     } else if (request == GLIO_CREATE_CONTEXT) {
+        if (slot->context) {
+            errno = EBUSY;
+            return -1;
+        }
         context_create_calls++;
         struct gl_context_attrs *attrs = arg;
         assert(attrs->context_id == 0);
         attrs->context_id = slot->context = next_backend_context++;
+        egl_trace(2, fd, attrs, sizeof *attrs);
     } else if (request == GLIO_SUBMIT) {
         submit_batches++;
         const char *session_trace = getenv("KANDELO_GRAPHICS_SESSION_TRACE");
@@ -259,6 +377,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         if (fail_submit) { errno = EIO; return -1; }
         struct gl_submit_info *submit = arg;
         protocol_trace(1,0,commands+submit->offset,submit->length,0);
+        egl_trace(5, fd, commands + submit->offset, submit->length);
         const char *trace_path = getenv("KANDELO_GRAPHICS_COMMAND_TRACE");
         if (trace_path) {
             FILE *trace = fopen(trace_path,"ab"); assert(trace);
@@ -304,10 +423,15 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         if (fail_surface_create) { errno = ENOMEM; return -1; }
         struct gl_surface_create *request = arg;
         assert(request->surface_id == 0);
+        if (slot->surface) {
+            errno = EBUSY;
+            return -1;
+        }
         surface_target = request->attrs.reserved[0];
         request->surface_id = slot->surface = next_backend_surface++;
         if (!request->attrs.width) request->attrs.width = 64;
         if (!request->attrs.height) request->attrs.height = 32;
+        egl_trace(3, fd, request, sizeof *request);
     } else if (request == GLIO_UPDATE_SURFACE) {
         if (fail_surface_update) { errno = ENOMEM; return -1; }
         surface_target = ((struct gl_surface_attrs *)arg)->reserved[0];
@@ -320,8 +444,25 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             if (slot->has_current && pthread_equal(slot->current_thread, pthread_self())) { slot->has_current = 0; slot->current_surface = 0; }
         } else {
             assert(binding->context_id == slot->context);
-            assert(binding->draw_surface_id == binding->read_surface_id);
-            assert(!binding->draw_surface_id || binding->draw_surface_id == slot->surface);
+            assert((binding->draw_surface_id == 0) == (binding->read_surface_id == 0));
+            for (unsigned select = 0; select < 2; select++) {
+                uint32_t id = select ? binding->read_surface_id : binding->draw_surface_id;
+                if (!id)
+                    continue;
+                unsigned owner = 0;
+                while (owner < 8 &&
+                       (!device_slots[owner].object_open || device_slots[owner].surface != id))
+                    owner++;
+                assert(owner < 8 && device_slots[owner].generation == slot->generation);
+                for (unsigned i = 0; i < 8; i++)
+                    if (device_slots[i].has_current &&
+                        !pthread_equal(device_slots[i].current_thread, pthread_self()) &&
+                        (device_slots[i].current_surface == id ||
+                         device_slots[i].current_read_surface == id)) {
+                        errno = EACCES;
+                        return -1;
+                    }
+            }
             if (slot->has_current && !pthread_equal(slot->current_thread, pthread_self())) { errno = EACCES; return -1; }
             for (unsigned i=0; i<8; i++) {
                 struct device_slot *previous = &device_slots[i];
@@ -332,9 +473,16 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             slot->current_thread = pthread_self();
             slot->has_current = 1;
             slot->current_surface = binding->draw_surface_id;
+            slot->current_read_surface = binding->read_surface_id;
         }
+        egl_trace(4, fd, binding, sizeof *binding);
     } else if (request == GLIO_DESTROY_CONTEXT) {
-        assert(!slot->has_current);
+        if (slot->has_current) {
+            errno = EBUSY;
+            return -1;
+        }
+        egl_trace(6, fd, &slot->context, 4);
+        slot->context = 0;
         destroyed_contexts++;
         const char *session_trace = getenv("KANDELO_GRAPHICS_SESSION_TRACE");
         if (session_trace) {
@@ -344,8 +492,18 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         }
         free(upload_pending); upload_pending = NULL;
     } else if (request == GLIO_DESTROY_SURFACE) {
-        assert(slot->current_surface == 0);
+        for (unsigned i = 0; i < 8; i++)
+            if (device_slots[i].has_current &&
+                (device_slots[i].current_surface == slot->surface ||
+                 device_slots[i].current_read_surface == slot->surface)) {
+                errno = EBUSY;
+                return -1;
+            }
+        egl_trace(7, fd, &slot->surface, 4);
+        slot->surface = 0;
         destroyed_surfaces++;
+    } else if (request == GLIO_PRESENT) {
+        egl_trace(8, fd, NULL, 0);
     } else if (request == GLIO_QUERY) {
         struct gl_query_info *q = arg;
         if (q->op == 0x1e) {
@@ -542,6 +700,32 @@ static void *take_context_then_exit(void *arg) {
     assert(eglMakeCurrent(input->display, EGL_NO_SURFACE, EGL_NO_SURFACE, input->context));
     glClear(GL_COLOR_BUFFER_BIT);
     /* Thread destruction must flush and release this current reference. */
+    return NULL;
+}
+
+struct record_thread {
+    EGLDisplay display;
+    EGLContext context;
+    EGLSurface busy, own;
+};
+static void *hold_independent_records(void *data) {
+    struct record_thread *input = data;
+    assert(!eglMakeCurrent(input->display, input->busy, input->own, input->context));
+    assert(eglGetError() == EGL_BAD_ACCESS && eglGetCurrentContext() == EGL_NO_CONTEXT);
+    assert(eglMakeCurrent(input->display, input->own, input->own, input->context));
+    GLint row = -1;
+    glGetIntegerv(GL_UNPACK_ROW_LENGTH_EXT, &row);
+    assert(row == 0);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, 23);
+    overlap_reach(1);
+    overlap_wait(2);
+    assert(eglGetCurrentContext() == input->context &&
+           eglGetCurrentSurface(EGL_READ) == input->own);
+    glGetIntegerv(GL_UNPACK_ROW_LENGTH_EXT, &row);
+    assert(row == 23);
+    assert(!eglSwapBuffers(input->display, input->own) && eglGetError() == EGL_BAD_SURFACE);
+    glClear(GL_COLOR_BUFFER_BIT);
+    assert(eglReleaseThread());
     return NULL;
 }
 
@@ -1124,6 +1308,256 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-transfer"); return 0;
     }
+    if (!strcmp(argv[1], "records-transfer-existing")) {
+        EGLContext second = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attrs);
+        assert(second);
+        EGLSurface other = eglCreateWindowSurface(dpy, (EGLConfig)1, &record_windows[0], NULL);
+        assert(other);
+        EGLImageKHR img = image(dpy);
+        assert(imports == 1);
+        native_window_bo = 77;
+        native_window_fd = 11;
+        EGLSurface surface = eglCreateWindowSurface(dpy, (EGLConfig)1, &native_window, NULL);
+        assert(surface && surface_target == 77 && export_closes == 1 && closes == 0 &&
+               transfer_closes == 0);
+        assert(eglDestroySurface(dpy, surface) && eglDestroySurface(dpy, other) && closes == 0);
+        assert(eglDestroyImageKHR(dpy, img) && closes == 1);
+        assert(eglDestroyContext(dpy, second) && eglDestroyContext(dpy, ctx));
+        assert(eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS records-transfer-existing");
+        return 0;
+    }
+    if (!strcmp(argv[1], "records-query")) {
+        EGLSurface surface = eglCreateWindowSurface(dpy, (EGLConfig)1, &record_windows[1], NULL);
+        assert(surface && eglGetProcAddress("eglQuerySurface"));
+        EGLint value = -7;
+        assert(eglQuerySurface(dpy, surface, EGL_WIDTH, &value) && value == 33);
+        assert(eglQuerySurface(dpy, surface, EGL_HEIGHT, &value) && value == 25);
+        assert(eglQuerySurface(dpy, surface, EGL_CONFIG_ID, &value) && value == 1);
+        assert(eglQuerySurface(dpy, surface, EGL_GL_COLORSPACE, &value) &&
+               value == EGL_GL_COLORSPACE_LINEAR);
+        assert(eglQuerySurface(dpy, surface, EGL_RENDER_BUFFER, &value) &&
+               value == EGL_BACK_BUFFER);
+        assert(eglQuerySurface(dpy, surface, EGL_SWAP_BEHAVIOR, &value) &&
+               value == EGL_BUFFER_DESTROYED);
+        assert(eglQuerySurface(dpy, surface, EGL_HORIZONTAL_RESOLUTION, &value) &&
+               value == EGL_UNKNOWN);
+        const EGLint ignored[] = {EGL_LARGEST_PBUFFER, EGL_TEXTURE_FORMAT, EGL_TEXTURE_TARGET,
+                                  EGL_MIPMAP_TEXTURE, EGL_MIPMAP_LEVEL};
+        for (unsigned i = 0; i < sizeof ignored / sizeof ignored[0]; i++) {
+            value = 91;
+            assert(eglQuerySurface(dpy, surface, ignored[i], &value) && value == 91);
+        }
+        assert(!eglQuerySurface(dpy, surface, 0x7fffffff, &value) &&
+               eglGetError() == EGL_BAD_ATTRIBUTE && value == 91);
+        assert(!eglQuerySurface(dpy, (EGLSurface)ctx, EGL_WIDTH, &value) &&
+               eglGetError() == EGL_BAD_SURFACE && value == 91);
+        assert(!eglQuerySurface(dpy, surface, EGL_WIDTH, NULL) &&
+               eglGetError() == EGL_BAD_PARAMETER);
+        assert(eglMakeCurrent(dpy, surface, surface, ctx) && eglDestroySurface(dpy, surface));
+        assert(!eglQuerySurface(dpy, surface, EGL_WIDTH, &value) &&
+               eglGetError() == EGL_BAD_SURFACE && value == 91);
+        assert(eglGetCurrentSurface(EGL_READ) == surface);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(!eglQuerySurface(dpy, surface, EGL_WIDTH, &value) &&
+               eglGetError() == EGL_NOT_INITIALIZED && value == 91);
+        puts("PASS records-query");
+        return 0;
+    }
+    if (!strcmp(argv[1], "records-rollback")) {
+        EGLSurface first = eglCreateWindowSurface(dpy, (EGLConfig)1, &record_windows[0], NULL);
+        assert(first && eglMakeCurrent(dpy, first, first, ctx));
+        fail_create_context = 1;
+        assert(!eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attrs) &&
+               eglGetError() == EGL_BAD_ALLOC);
+        assert(eglGetCurrentContext() == ctx && eglGetCurrentSurface(EGL_DRAW) == first);
+        fail_create_context = 0;
+        EGLContext second = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attrs);
+        assert(second);
+        fail_surface_create = 1;
+        assert(!eglCreateWindowSurface(dpy, (EGLConfig)1, &record_windows[1], NULL) &&
+               eglGetError() == EGL_BAD_ALLOC);
+        fail_surface_create = 0;
+        EGLSurface other = eglCreateWindowSurface(dpy, (EGLConfig)1, &record_windows[1], NULL);
+        assert(other);
+        fail_make_current = 1;
+        assert(!eglMakeCurrent(dpy, other, first, second) && eglGetError() == EGL_BAD_ACCESS);
+        assert(eglGetCurrentContext() == ctx && eglGetCurrentSurface(EGL_DRAW) == first &&
+               eglGetCurrentSurface(EGL_READ) == first);
+        fail_make_current = 0;
+        assert(!eglSwapBuffers(dpy, other) && eglGetError() == EGL_BAD_SURFACE);
+        assert(eglMakeCurrent(dpy, other, first, second));
+        assert(eglDestroyContext(dpy, ctx)); // first remains a usable read surface.
+        assert(eglGetCurrentContext() == second && eglGetCurrentSurface(EGL_READ) == first);
+        assert(eglDestroySurface(dpy, first) && eglDestroySurface(dpy, other) &&
+               eglDestroyContext(dpy, second));
+        assert(eglReleaseThread() && eglTerminate(dpy) && destroyed_contexts == 2 &&
+               destroyed_surfaces == 2);
+        puts("PASS records-rollback");
+        return 0;
+    }
+    if (!strcmp(argv[1], "records-transfer")) {
+        EGLSurface first = eglCreateWindowSurface(dpy, (EGLConfig)1, &record_windows[0], NULL);
+        assert(first);
+        EGLContext second = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attrs);
+        assert(second);
+        EGLImageKHR img = image(dpy);
+        GLuint texture;
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, second));
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        fail_prime_export = 1;
+        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+        fail_prime_export = 0;
+        assert(glGetError() == GL_INVALID_OPERATION && transfers == 0 && export_closes == 0);
+        fail_prime_import = 1;
+        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+        fail_prime_import = 0;
+        assert(glGetError() == GL_INVALID_OPERATION && transfers == 0 && export_closes == 1);
+        fail_foreign_texture = 1;
+        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+        fail_foreign_texture = 0;
+        assert(glGetError() == GL_INVALID_OPERATION && transfers == 1 && transfer_closes == 1 &&
+               export_closes == 2);
+        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+        assert(glGetError() == GL_NO_ERROR && transfers == 2 && transfer_closes == 2 &&
+               export_closes == 3);
+        assert(eglDestroyImageKHR(dpy, img) && closes == 0);
+        native_window_bo = 88;
+        native_window_fd = 10;
+        fail_surface_create = 1;
+        assert(!eglCreateWindowSurface(dpy, (EGLConfig)1, &native_window, NULL) &&
+               eglGetError() == EGL_BAD_ALLOC);
+        assert(transfers == 3 && transfer_closes == 3 && export_closes == 4);
+        fail_surface_create = 0;
+        EGLSurface other = eglCreateWindowSurface(dpy, (EGLConfig)1, &native_window, NULL);
+        assert(other);
+        assert(surface_target == 1011 && transfers == 4 && transfer_closes == 4 &&
+               export_closes == 5);
+        assert(eglMakeCurrent(dpy, other, first, second));
+        native_window_bo = 99;
+        native_window_width = 80;
+        native_window_height = 48;
+        fail_surface_update = 1;
+        assert(!_wpk_egl_window_retarget(&native_window));
+        fail_surface_update = 0;
+        EGLint width;
+        assert(eglQuerySurface(dpy, other, EGL_WIDTH, &width) && width == 64);
+        assert(_wpk_egl_window_retarget(&native_window));
+        assert(eglQuerySurface(dpy, other, EGL_WIDTH, &width) && width == 80);
+        assert(transfers == 6 && transfer_closes == 6 && export_closes == 7);
+        glDeleteTextures(1, &texture);
+        assert(closes == 1 && device_slots[0].closes == 1);
+        assert(eglDestroySurface(dpy, first) && eglDestroySurface(dpy, other));
+        assert(eglDestroyContext(dpy, ctx) && eglDestroyContext(dpy, second));
+        assert(eglReleaseThread() && eglTerminate(dpy));
+        for (unsigned i = 0; i < 8; i++)
+            assert(!prime_exports[i].handle && !transferred_handles[i]);
+        puts("PASS records-transfer");
+        return 0;
+    }
+    if (!strcmp(argv[1], "records-attributes")) {
+        assert(!eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, NULL) &&
+               eglGetError() == EGL_BAD_MATCH);
+        const EGLint bad[] = {0x7fffffff, 1, EGL_NONE};
+        assert(!eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, bad) &&
+               eglGetError() == EGL_BAD_ATTRIBUTE);
+        assert(!eglCreateContext(dpy, (EGLConfig)1, (EGLContext)0x7fffffff, attrs) &&
+               eglGetError() == EGL_BAD_CONTEXT);
+        // Sharing is still an ordinary implementation gap; never silently ignore it.
+        assert(!eglCreateContext(dpy, (EGLConfig)1, ctx, attrs) && eglGetError() == EGL_BAD_MATCH);
+        EGLContext no_config = eglCreateContext(dpy, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, attrs);
+        assert(no_config);
+        EGLint value = -1;
+        assert(eglQueryContext(dpy, no_config, EGL_CONFIG_ID, &value) && value == 0);
+        assert(eglDestroyContext(dpy, no_config) && eglDestroyContext(dpy, ctx));
+        assert(eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS records-attributes");
+        return 0;
+    }
+    if (!strcmp(argv[1], "records-thread")) {
+        EGLContext second = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attrs);
+        assert(second);
+        EGLSurface first = eglCreateWindowSurface(dpy, (EGLConfig)1, &record_windows[0], NULL);
+        EGLSurface other = eglCreateWindowSurface(dpy, (EGLConfig)1, &record_windows[1], NULL);
+        assert(first && other && eglMakeCurrent(dpy, first, first, ctx));
+        glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, 13);
+        struct record_thread input = {dpy, second, first, other};
+        pthread_t thread;
+        assert(!pthread_create(&thread, NULL, hold_independent_records, &input));
+        overlap_wait(1);
+        assert(eglDestroyContext(dpy, second) && eglDestroySurface(dpy, other));
+        assert(destroyed_contexts == 0 && destroyed_surfaces == 0);
+        assert(eglGetCurrentContext() == ctx && eglGetCurrentSurface(EGL_DRAW) == first);
+        GLint row;
+        glGetIntegerv(GL_UNPACK_ROW_LENGTH_EXT, &row);
+        assert(row == 13);
+        overlap_reach(2);
+        assert(!pthread_join(thread, NULL));
+        assert(destroyed_contexts == 1 && destroyed_surfaces == 1);
+        assert(eglDestroySurface(dpy, first) && eglDestroyContext(dpy, ctx));
+        assert(eglReleaseThread() && eglTerminate(dpy) && destroyed_contexts == 2 &&
+               destroyed_surfaces == 2);
+        puts("PASS records-thread");
+        return 0;
+    }
+    if (!strcmp(argv[1], "records-basic")) {
+        EGLContext second = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, attrs);
+        assert(second != EGL_NO_CONTEXT && second != ctx);
+        EGLSurface first = eglCreateWindowSurface(dpy, (EGLConfig)1, &record_windows[0], NULL);
+        EGLSurface other = eglCreateWindowSurface(dpy, (EGLConfig)1, &record_windows[1], NULL);
+        EGLSurface third = eglCreateWindowSurface(dpy, (EGLConfig)1, &record_windows[2], NULL);
+        assert(first && other && third && first != other && other != third);
+        GLuint a, b, next;
+        assert(eglMakeCurrent(dpy, first, first, ctx));
+        glGenBuffers(1, &a);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, 11);
+        glClearColor(1, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFlush();
+        assert(eglMakeCurrent(dpy, other, other, second));
+        GLint row = 99;
+        glGetIntegerv(GL_UNPACK_ROW_LENGTH_EXT, &row);
+        assert(row == 0);
+        glGenBuffers(1, &b);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, 7);
+        assert(a == 1 && b == 1);
+        glClearColor(0, 1, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFlush();
+        assert(eglMakeCurrent(dpy, first, other, ctx));
+        assert(eglGetCurrentSurface(EGL_DRAW) == first && eglGetCurrentSurface(EGL_READ) == other);
+        glGetIntegerv(GL_UNPACK_ROW_LENGTH_EXT, &row);
+        assert(row == 11);
+        glGenBuffers(1, &next);
+        assert(next == 2);
+        glClearColor(0, 0, 1, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFlush();
+        assert(eglMakeCurrent(dpy, first, first, ctx));
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFlush();
+        assert(eglMakeCurrent(dpy, first, other, ctx));
+        assert(eglDestroyContext(dpy, second));
+        glClearColor(1, 1, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFlush();
+        assert(eglDestroySurface(dpy, other));
+        assert(eglGetCurrentSurface(EGL_READ) == other);
+        assert(!eglCreateWindowSurface(dpy, (EGLConfig)1, &record_windows[1], NULL));
+        assert(eglGetError() == EGL_BAD_ALLOC);
+        assert(!eglMakeCurrent(dpy, first, other, ctx) && eglGetError() == EGL_BAD_SURFACE);
+        glClearColor(0, 0, 1, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFlush();
+        assert(eglSwapBuffers(dpy, first));
+        assert(eglDestroyContext(dpy, ctx));
+        assert(eglReleaseThread());
+        assert(eglDestroySurface(dpy, first) && eglDestroySurface(dpy, third));
+        assert(eglTerminate(dpy) && destroyed_contexts == 2 && destroyed_surfaces == 3);
+        puts("PASS records-basic");
+        return 0;
+    }
     if (!strcmp(argv[1], "surface-create-ack")) {
         fail_surface_create = 1;
         assert(eglCreateWindowSurface(dpy,(EGLConfig)1,NULL,NULL) == EGL_NO_SURFACE);
@@ -1283,7 +1717,7 @@ int main(int argc, char **argv) {
         assert(eglDestroySurface(dpy, surface));
         assert(eglGetCurrentSurface(EGL_DRAW) == surface);
         assert(destroyed_surfaces == 0);
-        assert(eglSwapBuffers(dpy, surface));
+        assert(!eglSwapBuffers(dpy, surface) && eglGetError() == EGL_BAD_SURFACE);
         assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
         assert(destroyed_surfaces == 1);
         assert(eglGetCurrentSurface(EGL_DRAW) == EGL_NO_SURFACE);
