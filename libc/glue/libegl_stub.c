@@ -563,11 +563,10 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
         g_last_error = EGL_BAD_CONFIG;
         return EGL_NO_CONTEXT;
     }
-    if (share != EGL_NO_CONTEXT) {
-        /* Shared names and retained buffer bindings do not yet preserve
-         * image/storage aliases or program/link metadata. Complete those
-         * object identities before granting public group membership. */
-        g_last_error = find_context(generation, share) ? EGL_BAD_MATCH : EGL_BAD_CONTEXT;
+    struct egl_context_record *shared =
+        share == EGL_NO_CONTEXT ? NULL : find_context(generation, share);
+    if (share != EGL_NO_CONTEXT && !shared) {
+        g_last_error = EGL_BAD_CONTEXT;
         return EGL_NO_CONTEXT;
     }
     EGLint version = 1;
@@ -593,7 +592,8 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
         g_last_error = EGL_BAD_ALLOC;
         return EGL_NO_CONTEXT;
     }
-    context->encoder = _wpk_gl_create_encoder();
+    context->encoder =
+        shared ? _wpk_gl_create_shared_encoder(shared->encoder) : _wpk_gl_create_encoder();
     if (!context->encoder) {
         free(context);
         g_last_error = EGL_BAD_ALLOC;
@@ -602,7 +602,8 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
     struct egl_session *session = object_session(generation, 1);
     if (!session)
         goto fail;
-    struct gl_context_attrs attrs = {.client_version = (uint32_t)version};
+    struct gl_context_attrs attrs = {.client_version = (uint32_t)version,
+                                     .share_context_id = shared ? shared->backend_id : 0};
     if (ioctl(session->fd, GLIO_CREATE_CONTEXT, &attrs) != 0 || !attrs.context_id)
         goto fail;
     context->handle = (EGLContext)g_next_object_handle++;

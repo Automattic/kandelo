@@ -8,6 +8,9 @@
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <stdlib.h>
+#include <pthread.h>
+int graphics_pthread_mutex_lock(pthread_mutex_t *);
+#define pthread_mutex_lock graphics_pthread_mutex_lock
 int graphics_open(const char *, int, ...);
 int graphics_close(int);
 int graphics_fstat(int, struct stat *);

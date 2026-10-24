@@ -1866,9 +1866,9 @@ for (const mode of ["native","forwarded","retarget"] as const) {
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
-for(const scenario of ["records-basic","names-render","image-target-render","image-bind-render","encoder-array-render","encoder-array-index-render"] as const) {
+for(const scenario of ["shared-records-render","records-basic","names-render","image-target-render","image-bind-render","encoder-array-render","encoder-array-index-render"] as const) {
 for (const mode of ["native", "forwarded"] as const) {
-  test(`actual C ${scenario === "records-basic" ? "independent EGL records preserve draw/read pixels" : scenario === "names-render" ? "implicit and generated texture names retain independent storage" : scenario === "image-bind-render" ? "native binding allocation failure preserves binding and dimensionality" : scenario === "image-target-render" ? "a rejected texture target preserves binding and storage" : `client staging restores the retained buffer across a renderer peer deletion${scenario.includes("index") ? " with separate index/vertex views" : ""}`} through ${mode} dispatch`, async ({page}) => {
+  test(`actual C ${scenario === "shared-records-render" ? "public shared contexts retain texture storage after source retirement" : scenario === "records-basic" ? "independent EGL records preserve draw/read pixels" : scenario === "names-render" ? "implicit and generated texture names retain independent storage" : scenario === "image-bind-render" ? "native binding allocation failure preserves binding and dimensionality" : scenario === "image-target-render" ? "a rejected texture target preserves binding and storage" : `client staging restores the retained buffer across a renderer peer deletion${scenario.includes("index") ? " with separate index/vertex views" : ""}`} through ${mode} dispatch`, async ({page}) => {
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const temporary=mkdtempSync(join(root,".context/graphics-egl-record-trace-"));
     let trace:number[];
@@ -1920,7 +1920,8 @@ for (const mode of ["native", "forwarded"] as const) {
         return result;
       } finally {worker.terminate();dispose();}
     },{root,mode,trace,scenario});
-    expect(result).toEqual(scenario === "records-basic" ? {type:"egl_record_result",observed:[
+    expect(result).toEqual(scenario === "shared-records-render" ? {type:"egl_record_result",observed:[[255,0,0,255],[0,255,0,255],[0,0,255,255],[255,255,0,255]],retiredContexts:[31,32],retiredSurfaces:[],clean:true,error:0}
+    :scenario === "records-basic" ? {type:"egl_record_result",observed:[
       [255,0,0,255],[0,255,0,255],[0,255,0,255],[0,0,255,255],[0,255,0,255],[0,255,0,255],
     ],retiredContexts:[32,31],retiredSurfaces:[132,131,133],clean:true,error:0}
     :scenario.startsWith("image-")?{type:"egl_record_result",observed:[[255,0,0,255],[0,0,255,255]],retiredContexts:[31],retiredSurfaces:[],clean:true,error:0}

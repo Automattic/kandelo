@@ -58,7 +58,7 @@ struct wpk_pending_image {
     struct wpk_pending_image *next;
 };
 struct wpk_object_group {
-    pthread_mutex_t mutex;
+    pthread_mutex_t mutex, dispatch_mutex;
     unsigned references;
     GLuint next_name[WPK_NAMES_COUNT];
     uint64_t next_serial;
@@ -67,6 +67,28 @@ struct wpk_object_group {
      * Retain candidate inputs until the last acknowledged encoder retires. */
     struct wpk_pending_image *pending_images;
 };
+/* Name lookup, native mutation and C publication form one group operation.
+ * The metadata mutex remains free across device IO and image cleanup. */
+struct wpk_name_scope {
+    struct wpk_object_group *group;
+    int cancel_state;
+};
+static struct wpk_name_scope begin_name_scope(struct wpk_object_group *group) {
+    struct wpk_name_scope scope = {.group = group};
+    // A deferred cancellation must not abandon a cross-device transaction.
+    // Restore the caller's state only after the dispatch owner is released.
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &scope.cancel_state);
+    pthread_mutex_lock(&group->dispatch_mutex);
+    return scope;
+}
+static void end_name_scope(struct wpk_name_scope *scope) {
+    pthread_mutex_unlock(&scope->group->dispatch_mutex);
+    pthread_setcancelstate(scope->cancel_state, NULL);
+}
+#define WPK_NAME_SCOPE(state)                                                                      \
+    struct wpk_name_scope name_scope __attribute__((cleanup(end_name_scope))) =                    \
+        begin_name_scope((state)->objects)
+
 static void object_release(struct wpk_object_group *, struct wpk_object_name *);
 /* Final image release can issue device IO. Never do it under the group
  * metadata mutex; the dead record itself carries the deferred work. */
@@ -84,6 +106,11 @@ static struct wpk_object_group *object_group_create(void) {
     if (!group)
         return NULL;
     if (pthread_mutex_init(&group->mutex, NULL) != 0) {
+        free(group);
+        return NULL;
+    }
+    if (pthread_mutex_init(&group->dispatch_mutex, NULL) != 0) {
+        pthread_mutex_destroy(&group->mutex);
         free(group);
         return NULL;
     }
@@ -117,6 +144,7 @@ static void object_group_release(struct wpk_object_group *group) {
     }
     destroy_object_records(group->names);
     destroy_object_records(group->retired_objects);
+    pthread_mutex_destroy(&group->dispatch_mutex);
     pthread_mutex_destroy(&group->mutex);
     free(group);
 }
@@ -546,6 +574,7 @@ void glBindBuffer(GLenum target, GLuint buf) {
         return;
     }
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    WPK_NAME_SCOPE(state);
     struct wpk_object_name *object =
         buf ? object_acquire(state->objects, WPK_NAMES_BUFFER, buf) : NULL;
     if (buf && !object) {
@@ -1538,6 +1567,7 @@ void glDeleteTextures(GLsizei n, const GLuint *names) {
     if (!n || !names)
         return;
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    WPK_NAME_SCOPE(state);
     struct wpk_object_group *group = state->objects;
     for (GLsizei i = 0; i < n; i++) {
         pthread_mutex_lock(&group->mutex);
@@ -1595,6 +1625,7 @@ void glBindTexture(GLenum target, GLuint tex) {
         return;
     }
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    WPK_NAME_SCOPE(state);
     struct wpk_object_name *object = object_acquire(state->objects, WPK_NAMES_TEXTURE, tex);
     if (tex && !object) {
         raise_client_error(GL_OUT_OF_MEMORY);
@@ -1884,6 +1915,7 @@ void glDeleteBuffers(GLsizei n, const GLuint *names) {
     if (!n || !names)
         return;
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    WPK_NAME_SCOPE(state);
     struct wpk_object_group *group = state->objects;
     for (GLsizei i = 0; i < n; i++) {
         pthread_mutex_lock(&group->mutex);
@@ -2052,6 +2084,7 @@ void glFramebufferTexture2D(GLenum target, GLenum attachment,
         raise_client_error(GL_INVALID_OPERATION);
         return;
     }
+    WPK_NAME_SCOPE(_wpk_gl_current_encoder());
     GLenum error;
     struct wpk_object_name *object =
         attachment_object(_wpk_gl_current_encoder()->objects, WPK_NAMES_TEXTURE, texture,
@@ -2909,6 +2942,7 @@ void glDeleteRenderbuffers(GLsizei n, const GLuint *names) {
     if (!n || !names)
         return;
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    WPK_NAME_SCOPE(state);
     struct wpk_object_group *group = state->objects;
     for (GLsizei i = 0; i < n; i++) {
         pthread_mutex_lock(&group->mutex);
@@ -2950,6 +2984,7 @@ void glBindRenderbuffer(GLenum target, GLuint rb) {
         return;
     }
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    WPK_NAME_SCOPE(state);
     struct wpk_object_name *object = object_acquire(state->objects, WPK_NAMES_RENDERBUFFER, rb);
     if (rb && !object) {
         raise_client_error(GL_OUT_OF_MEMORY);
@@ -2989,6 +3024,7 @@ void glFramebufferRenderbuffer(GLenum target, GLenum attachment,
         raise_client_error(GL_INVALID_OPERATION);
         return;
     }
+    WPK_NAME_SCOPE(_wpk_gl_current_encoder());
     GLenum error;
     struct wpk_object_name *object =
         attachment_object(_wpk_gl_current_encoder()->objects, WPK_NAMES_RENDERBUFFER, renderbuffer,

@@ -25,6 +25,7 @@ void glBindVertexArray(GLuint);
 /* Native pointers exceed the guest's u32 query fields. Resolve the query's
  * recorded allocation explicitly instead of dereferencing a truncated host
  * pointer. The library still allocates, queries and copies the actual reply. */
+#undef pthread_mutex_lock
 #undef malloc
 #undef calloc
 #undef free
@@ -142,7 +143,7 @@ static unsigned binding_model, advertised_texture_units;
 static unsigned char command_storage[8][WPK_GL_CMDBUF_LEN];
 struct device_slot {
     int root_open, object_open, root_live;
-    uint32_t generation, context, surface;
+    uint32_t generation, context, surface, image_group;
     unsigned char *commands;
     int has_current;
     pthread_t current_thread;
@@ -151,15 +152,20 @@ struct device_slot {
     uint32_t array_binding, element_binding, saved_array_binding;
     int array_saved;
     uint32_t texture_active, texture_2d[128], texture_cube[128], renderbuffer_binding;
-    struct {
-        uint32_t kind, name, source, revision;
-    } image_sources[128];
+
     struct {
         GLuint name;
         GLenum target;
     } texture_targets[128];
 };
 static struct device_slot device_slots[8];
+static struct {
+    struct {
+        uint32_t kind, name, source, revision;
+    } image_sources[128];
+} image_groups[64];
+static unsigned next_image_group;
+
 static struct {
     int open, live;
     uint32_t generation;
@@ -223,6 +229,22 @@ static void protocol_trace(uint32_t kind, uint32_t op, const void *bytes, uint32
     const uint32_t header[4] = {kind,op,length,out_len};
     assert(fwrite(header,1,16,file) == 16 && fwrite(bytes,1,length,file) == length && !fclose(file));
 }
+static _Thread_local int record_dispatch_lock, observe_dispatch_lock;
+static pthread_mutex_t *dispatch_lock;
+static int pause_buffer_query;
+int graphics_pthread_mutex_lock(pthread_mutex_t *mutex) {
+    if (record_dispatch_lock) {
+        record_dispatch_lock = 0;
+        dispatch_lock = mutex;
+    }
+    if (observe_dispatch_lock) {
+        observe_dispatch_lock = 0;
+        assert(mutex == dispatch_lock);
+        assert(pthread_mutex_trylock(mutex) == EBUSY);
+        overlap_reach(2); // The peer is demonstrably blocked before lookup.
+    }
+    return pthread_mutex_lock(mutex);
+}
 static int capture_array_upload;
 static unsigned char captured_bytes[524288];
 static uint32_t captured_size, captured_type, captured_stride;
@@ -245,13 +267,14 @@ static void egl_trace(uint32_t kind, int fd, const void *bytes, uint32_t length)
 
 static uint32_t *object_image_source(struct device_slot *slot, uint32_t kind, uint32_t name) {
     for (unsigned i = 0; i < 128; i++)
-        if (slot->image_sources[i].kind == kind && slot->image_sources[i].name == name)
-            return &slot->image_sources[i].source;
+        if (image_groups[slot->image_group].image_sources[i].kind == kind &&
+            image_groups[slot->image_group].image_sources[i].name == name)
+            return &image_groups[slot->image_group].image_sources[i].source;
     for (unsigned i = 0; i < 128; i++)
-        if (!slot->image_sources[i].kind) {
-            slot->image_sources[i].kind = kind;
-            slot->image_sources[i].name = name;
-            return &slot->image_sources[i].source;
+        if (!image_groups[slot->image_group].image_sources[i].kind) {
+            image_groups[slot->image_group].image_sources[i].kind = kind;
+            image_groups[slot->image_group].image_sources[i].name = name;
+            return &image_groups[slot->image_group].image_sources[i].source;
         }
     assert(!"image source fixture exhausted");
     return NULL;
@@ -285,8 +308,9 @@ static int native_buffer_delete(struct device_slot *slot, uint32_t name) {
 static uint32_t *object_image_revision(struct device_slot *slot, uint32_t kind, uint32_t name) {
     (void)object_image_source(slot, kind, name);
     for (unsigned i = 0; i < 128; i++)
-        if (slot->image_sources[i].kind == kind && slot->image_sources[i].name == name)
-            return &slot->image_sources[i].revision;
+        if (image_groups[slot->image_group].image_sources[i].kind == kind &&
+            image_groups[slot->image_group].image_sources[i].name == name)
+            return &image_groups[slot->image_group].image_sources[i].revision;
     assert(0);
     return NULL;
 }
@@ -517,6 +541,19 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         context_create_calls++;
         struct gl_context_attrs *attrs = arg;
         assert(attrs->context_id == 0);
+        if (attrs->share_context_id) {
+            int found = 0;
+            for (unsigned i = 0; i < sizeof device_slots / sizeof device_slots[0]; i++)
+                if (device_slots[i].context == attrs->share_context_id) {
+                    found = 1;
+                    slot->image_group = device_slots[i].image_group;
+                    break;
+                }
+            assert(found);
+        } else {
+            assert(next_image_group + 1 < sizeof image_groups / sizeof image_groups[0]);
+            slot->image_group = ++next_image_group;
+        }
         attrs->context_id = slot->context = next_backend_context++;
         egl_trace(2, fd, attrs, sizeof *attrs);
     } else if (request == GLIO_SUBMIT) {
@@ -802,6 +839,11 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             return 0;
         }
         if (q->op == 0x2b) {
+            if (pause_buffer_query) {
+                pause_buffer_query = 0;
+                overlap_reach(1);
+                overlap_wait(3);
+            }
             assert(q->in_buf_len == 8 && q->out_buf_len == 12);
             const uint32_t *input = allocation_for(q->in_buf_ptr, 8);
             uint32_t *reply = allocation_for(q->out_buf_ptr, 12);
@@ -1263,6 +1305,43 @@ static void *reserve_group_names(void *data) {
 }
 #endif
 
+struct sharing_thread {
+    EGLDisplay display;
+    EGLContext context;
+    int cancel;
+};
+static void *shared_name_binder(void *data) {
+    struct sharing_thread *input = data;
+    assert(eglMakeCurrent(input->display, EGL_NO_SURFACE, EGL_NO_SURFACE, input->context));
+    record_dispatch_lock = 1;
+    glBindBuffer(GL_ARRAY_BUFFER, 17);
+    if (input->cancel)
+        pthread_testcancel();
+    overlap_wait(5);
+    // The peer replaced public name 17. Deleting that replacement must not
+    // clear this context's still-retained old binding with the same number.
+    const GLuint name = 17;
+    glDeleteBuffers(1, &name);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+    GLint bound = -1;
+    glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &bound);
+    assert(bound == 17 && glGetError() == GL_NO_ERROR);
+    assert(eglReleaseThread());
+    return NULL;
+}
+static void *shared_name_peer(void *data) {
+    struct sharing_thread *input = data;
+    assert(eglMakeCurrent(input->display, EGL_NO_SURFACE, EGL_NO_SURFACE, input->context));
+    overlap_wait(1);
+    observe_dispatch_lock = 1;
+    const GLuint name = 17;
+    glDeleteBuffers(1, &name);
+    glBindBuffer(GL_ARRAY_BUFFER, 17);
+    assert(glGetError() == GL_NO_ERROR && eglReleaseThread());
+    overlap_reach(5);
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     assert(argc == 2);
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -1308,6 +1387,121 @@ int main(int argc, char **argv) {
         fail_make_current = 0;
     }
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1], "shared-create-rollback")) {
+        GLuint name = 17;
+        EGLImageKHR img = image(dpy);
+        glBindTexture(GL_TEXTURE_2D, name);
+        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+        assert(eglDestroyImageKHR(dpy, img));
+        fail_create_context = 1;
+        assert(!eglCreateContext(dpy, (EGLConfig)1, ctx, attrs) && eglGetError() == EGL_BAD_ALLOC);
+        assert(eglGetCurrentContext() == ctx && closes == 0);
+        fail_create_context = 0;
+        EGLContext peer = eglCreateContext(dpy, (EGLConfig)1, ctx, attrs);
+        assert(peer);
+        assert(eglDestroyContext(dpy, ctx));
+        assert(!eglCreateContext(dpy, (EGLConfig)1, ctx, attrs) &&
+               eglGetError() == EGL_BAD_CONTEXT);
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, peer) && closes == 0);
+        glDeleteTextures(1, &name);
+        assert(closes == 1 && glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy, peer) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS shared-create-rollback");
+        return 0;
+    }
+    if (!strcmp(argv[1], "shared-records-render")) {
+        EGLContext peer = eglCreateContext(dpy, (EGLConfig)1, ctx, attrs);
+        assert(peer);
+        GLuint texture = 17, source_fbo, peer_fbo;
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glGenFramebuffers(1, &source_fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, source_fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+        glClearColor(1, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFlush();
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, peer));
+        glGenFramebuffers(1, &peer_fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, peer_fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+        glClearColor(0, 1, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFlush();
+        assert(eglDestroyContext(dpy, ctx));
+        glClearColor(0, 0, 1, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFlush();
+        glDeleteTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+        glClearColor(1, 1, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFlush();
+        assert(glGetError() == GL_NO_ERROR && eglDestroyContext(dpy, peer) && eglReleaseThread() &&
+               eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS shared-records-render");
+        return 0;
+    }
+    if (!strcmp(argv[1], "shared-name-order") || !strcmp(argv[1], "shared-name-cancel")) {
+        EGLContext peer = eglCreateContext(dpy, (EGLConfig)1, ctx, attrs);
+        assert(peer);
+        glBindBuffer(GL_ARRAY_BUFFER, 17);
+        assert(eglReleaseThread());
+        struct sharing_thread binder = {dpy, ctx, !strcmp(argv[1], "shared-name-cancel")},
+                              other = {dpy, peer, 0};
+        pthread_t first, second;
+        pause_buffer_query = 1;
+        assert(!pthread_create(&first, NULL, shared_name_binder, &binder));
+        overlap_wait(1);
+        assert(!pthread_create(&second, NULL, shared_name_peer, &other));
+        overlap_wait(2);
+        if (binder.cancel)
+            assert(!pthread_cancel(first));
+        overlap_reach(3);
+        void *result;
+        assert(!pthread_join(first, &result));
+        assert(result == (binder.cancel ? PTHREAD_CANCELED : NULL));
+        assert(!pthread_join(second, NULL));
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, peer));
+        glBindBuffer(GL_ARRAY_BUFFER, 18);
+        assert(glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy, ctx) && eglDestroyContext(dpy, peer) && eglReleaseThread() &&
+               eglTerminate(dpy) && allocation_count() == 0);
+        printf("PASS %s\n", argv[1]);
+        return 0;
+    }
+    if (!strcmp(argv[1], "shared-image-texture") || !strcmp(argv[1], "shared-image-rbo")) {
+        int texture = !strcmp(argv[1], "shared-image-texture");
+        EGLContext peer = eglCreateContext(dpy, (EGLConfig)1, ctx, attrs);
+        assert(peer);
+        EGLImageKHR img = image(dpy);
+        GLuint name = 17;
+        if (texture) {
+            glBindTexture(GL_TEXTURE_2D, name);
+            glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+        } else {
+            glBindRenderbuffer(GL_RENDERBUFFER, name);
+            glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, img);
+        }
+        assert(eglDestroyImageKHR(dpy, img) && closes == 0);
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, peer));
+        assert(eglDestroyContext(dpy, ctx) && closes == 0);
+        if (texture) {
+            glBindTexture(GL_TEXTURE_2D, name);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        } else {
+            glBindRenderbuffer(GL_RENDERBUFFER, name);
+            glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA4, 1, 1);
+        }
+        assert(glGetError() == GL_NO_ERROR && closes == 1);
+        assert(eglDestroyContext(dpy, peer) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        printf("PASS %s\n", argv[1]);
+        return 0;
+    }
     if (!strcmp(argv[1], "image-stale-handles")) {
         EGLImageKHR stale[32];
         for (unsigned i=0; i<32; i++) {
@@ -3266,8 +3460,8 @@ int main(int argc, char **argv) {
                eglGetError() == EGL_BAD_ATTRIBUTE);
         assert(!eglCreateContext(dpy, (EGLConfig)1, (EGLContext)0x7fffffff, attrs) &&
                eglGetError() == EGL_BAD_CONTEXT);
-        // Sharing is still an ordinary implementation gap; never silently ignore it.
-        assert(!eglCreateContext(dpy, (EGLConfig)1, ctx, attrs) && eglGetError() == EGL_BAD_MATCH);
+        EGLContext shared = eglCreateContext(dpy, (EGLConfig)1, ctx, attrs);
+        assert(shared && eglDestroyContext(dpy, shared));
         EGLContext no_config = eglCreateContext(dpy, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, attrs);
         assert(no_config);
         EGLint value = -1;

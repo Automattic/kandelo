@@ -61,6 +61,7 @@ self.onmessage = ({data}) => {
       words.forEach((word,i)=>v.setUint32(4+i*4,word,true));bytes.set(tail,4+words.length*4);submit(fd,bytes);
     };
     let sourceContext=0,sourceDraw=0,sourceRead=0,captured=false,injected=false;
+    const contextSessions=new Map<number,number>();
     const peer=90;
     const make=(fd:number,id:number,draw:number,read:number)=>{
       const size=sizes.get(draw)??{width:0,height:0};
@@ -99,7 +100,15 @@ self.onmessage = ({data}) => {
         else imports!.host_gl_bind(7,4096,65536,fd);
       } else if(kind===2) {
         const id=words.getUint32(12,true);
-        requireZero(forwarded?channel(fd).onCreateContext():imports!.host_gl_create_context(7,id,0,0,fd),"create context");
+        const sharedId=words.getUint32(4,true);
+        const sourceSession=sharedId?contextSessions.get(sharedId):undefined;
+        if(sharedId && sourceSession===undefined)throw new Error("unknown C share context");
+        if(forwarded)requireZero(channel(fd).onCreateContext(fd,sourceSession),"create context");
+        else {
+          words.setUint32(12,0,true);new Uint8Array(memory!.buffer,64,16).set(bytes);
+          requireZero(imports!.host_gl_create_context(7,id,64,16,fd),"create context");
+        }
+        contextSessions.set(id,fd);
         if(data.peerDelete) {
           sourceContext=id;
           if(forwarded){channels.set(peer,createMainForwardChannel({postMessage:message=>postMessage(message)},7,peer));requireZero(channel(peer).onCreateContext(peer,fd),"create peer");}

@@ -3827,8 +3827,8 @@ ambiguous imports retain candidate object/image references until final group
 retirement. Association revisions prevent older completions from replacing
 newer holds. Final reference and replacement cleanup release images outside
 the metadata mutex. CPU coherence, concurrent C/native namespace ordering
-and indeterminate multi-failure recovery remain open. Public C sharing is
-still rejected; this is not complete image conformance.
+and indeterminate multi-failure recovery remain open. Public C contexts
+now join these object groups; this is not complete image conformance.
 
 Client staging retains a separate buffer-record reference, restores its
 pointer/name/serial directly and keeps any pending capture encoder-owned.
@@ -3845,8 +3845,10 @@ maps; the first accepted Bind publishes the native object. Delayed shared
 reservations cannot replace a peer's realized storage or revive a deleted
 name. The C owner still reserves complete batches before returning names.
 Local reference cleanup precedes releasing the common owner. The private
-shared-owner constructor is tested; public C sharing still rejects until
-concurrent name ordering and failure reconciliation are complete.
+shared-owner constructor supplies public C shared-context creation. A
+separate group dispatch mutex spans standard buffer/texture/RBO name lookup,
+native binding/deletion/attachment and C publication. Metadata locks stay
+outside device IO; general indeterminate failure recovery remains open.
 User-visible context/surface handles are monotonic. Each backend
 session admits one context and surface. The public EGL facade allocates
 additional sessions for independent context/surface records within a
@@ -3854,7 +3856,8 @@ generation. Each context has its own encoder and command mapping; current
 bindings can select separate draw/read surfaces from other sessions in the
 same generation. A surface can survive its session's context destruction.
 A retained current old generation can overlap a newly initialized one.
-Public C share-group ownership and the full API/error audit remain open.
+Public C shared contexts join the retained C owner and native/kernel group;
+the full API/error and lifecycle audit remains open.
 
 ABI 57 surface creation uses a 36-byte input/output GlSurfaceCreateInfo:
 32 attribute bytes followed by a zero-on-input surface identity. The
@@ -3935,8 +3938,9 @@ owner close, unmap or termination retires its ownership while existing
 current selectors retain storage. One canonical surface record owns its BO
 hold, independent of the number of owner/draw/read references. The public C
 facade now owns separate context/surface records and exposes independent
-draw/read selection; shared C image/program ownership remains open. Kernel surfaces hold their target BO independently of
-GEM handles. An acknowledged update transfers that hold only after acceptance;
+draw/read selection and shared object-group creation. C image holds belong
+to retained group records and program metadata belongs to the host group.
+Kernel surfaces hold their target BO independently of GEM handles. An acknowledged update transfers that hold only after acceptance;
 rejection releases its candidate and preserves the previous hold. Native
 surface destruction/unbind precedes the final host BO destruction effect.
 
@@ -4171,8 +4175,9 @@ reads use the implicit-bound queries. Shared retained C records own confirmed
 image/source/revision state; bindings and containers retain those records
 instead of separate image/query mirrors. Publication accepts newer revisions
 and discards stale candidates. Older owned-state replies cannot clear a
-newer import or authorize dependent texture rows. Public EGL sharing still
-requires concurrent C/native name ordering and failure reconciliation.
+newer import or authorize dependent texture rows. Standard C name-based
+transactions now serialize lookup through publication across peers; raw WPK
+namespace effects and general failure reconciliation remain open.
 Indeterminate import candidates already belong to the group: submitting
 encoder retirement cannot release backing a peer might retain. Final group
 retirement releases these candidates outside the metadata mutex.
@@ -4202,9 +4207,8 @@ name and serial only after acceptance, preserving pointer interpretation on
 definite rejection. Queued and checked host binds share native realization,
 view synchronization and rollback. Namespace/store/view metadata is reserved
 before binding; failed candidates and their metadata are removed and prior
-native selection restored. Concurrent C/native name ordering remains an
-unfinished transaction. Indeterminate completion
-still requires general reconciliation; public C sharing remains rejected.
+native selection restored. Standard name transactions use group dispatch
+serialization. Indeterminate completion still requires general reconciliation.
 
 Operation-table v15 adds checked single-name buffer deletion (four-byte
 input, 12-byte acceptance reply). C pins the selected record through native
@@ -4217,7 +4221,22 @@ vertex views and the separate native index view. Metadata publishes after
 all native changes accept; final storage collection follows logical retirement.
 Inactive containers, other contexts and saved client-array identities keep
 retired storage. Multiple restoration failures and indeterminate completion
-still require general context recovery, and public C sharing remains rejected.
+still require general context recovery.
+
+Public `eglCreateContext` sharing validates a live source handle in the active
+display generation, joins its retained C object owner, and sends the source
+backend identity through the existing ABI-58 creation request. Native failure
+unwinds the unpublished encoder/session without disturbing the source. Source
+retirement does not retire objects retained by peers. Standard name-based C
+operations hold a separate group dispatch mutex across lookup, checked native
+mutation and client publication. Scoped cleanup releases it on every return;
+cancellation is disabled during the transaction and the caller's state restored
+after unlocking. Metadata reservation remains independent, allowing final image
+cleanup to reenter the allocator without holding its mutex. This establishes
+ordinary shared creation and tested name ordering, not complete sharing
+conformance: raw WPK publication/revocation, indeterminate transport, multiple
+native restoration failures and worker/process crash recovery still need their
+full audit and normal guest lifecycle validation.
 
 The user-space libraries are sysroot libraries, not kernel build outputs:
 `scripts/build-musl.sh` installs the headers, resolves the `libdrm` package

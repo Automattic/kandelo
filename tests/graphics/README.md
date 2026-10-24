@@ -55,7 +55,7 @@ scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh ce8cd9dbcf
 scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh
 ```
 
-The 124 current cases cover image siblings and retained framebuffer storage,
+The 130 current cases cover image siblings and retained framebuffer storage,
 redefinition, cleanup, invalid handles, repeated contexts, the shared
 shader/program namespace, boolean numeric conversion, vectors longer than
 four elements, unchanged query output after device failure and EGL config
@@ -355,3 +355,18 @@ all active native references cleared on acceptance, then reuse the number
 with fresh data and render again. Generic C query replay validates the checked
 deletions on native and forwarded routes. These checks do not prove concurrent
 public C sharing or general recovery after multiple native failures.
+
+
+Public shared-context cases validate creation failure/retry, source-handle
+retirement, texture/RBO image lifetime through peer orphaning, standard name
+transaction ordering and deferred cancellation. The fixture interposes native
+mutex lock attempts and requires the peer to encounter a busy dispatch lock
+while a real binder query is paused, then observes release and progress.
+The adapted baseline keeps `cfdd9a9c9f` GLES unchanged and uses the current
+EGL construction adapter solely to admit the public group; both ordering
+cases fail. Source rendering traces check shared texture/FBO pixels through
+source retirement and numeric reuse via native and forwarded routes. The
+fixture tracks image revisions per native share group. Sanitizer recovery
+is disabled so diagnostics fail the runner. Abrupt worker death, general
+indeterminate recovery, raw WPK namespace mutation and full guest/CTS
+sharing validation remain open.
