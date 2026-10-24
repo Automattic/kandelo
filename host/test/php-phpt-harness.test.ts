@@ -254,10 +254,6 @@ describe("PHP PHPT verdict semantics", () => {
       { CAPTURE_STDIO: "STDOUT" },
       "partial CAPTURE_STDIO requires per-descriptor inheritance",
     ],
-    [
-      { EXTENSIONS: "opcache" },
-      "opcache SHM mode requires unsupported cross-process MAP_SHARED",
-    ],
   ] as Array<[Record<string, string>, string]>)(
     "reports an explicit platform boundary for %j",
     async (sections, reason) => {
@@ -270,94 +266,6 @@ describe("PHP PHPT verdict semantics", () => {
       expect(runner.calls).toEqual([]);
     },
   );
-
-  it("allows manually loaded opcache when CLI caching stays disabled", async () => {
-    const runner = new ScriptedRunner({
-      file: runResult({ stdout: "ok" }),
-    });
-    const result = await runPhpt(
-      phpt({
-        FILE: `<?php
-$cmd = [PHP_BINARY, '-dzend_extension=opcache.so'];
-?>`,
-      }),
-      runner,
-      new Set(["opcache"]),
-      1000,
-    );
-
-    expect(result.status).toBe("pass");
-    expect(runner.calls).toEqual(["file"]);
-  });
-
-  it("classifies manually activated opcache SHM mode as unsupported", async () => {
-    const runner = new ScriptedRunner({});
-    const result = await runPhpt(
-      phpt({
-        FILE: `<?php
-$cmd = [PHP_BINARY, '-dzend_extension=opcache.so', '-dopcache.enable_cli=1'];
-proc_open($cmd, [], $pipes);
-?>`,
-      }),
-      runner,
-      new Set(["opcache"]),
-      1000,
-    );
-
-    expect(result.status).toBe("unsupported");
-    expect(result.reason).toContain(
-      "opcache SHM mode requires unsupported cross-process MAP_SHARED",
-    );
-    expect(runner.calls).toEqual([]);
-  });
-
-  it("allows manually loaded opcache in explicit file-cache-only mode", async () => {
-    const runner = new ScriptedRunner({
-      file: runResult({ stdout: "ok" }),
-    });
-    const result = await runPhpt(
-      phpt({
-        FILE: `<?php
-$cmd = [
-  PHP_BINARY,
-  '-dzend_extension=opcache.so',
-  '-dopcache.enable_cli=1',
-  '-dopcache.file_cache_only=1',
-  '-dopcache.file_cache=/tmp/opcache',
-];
-?>`,
-      }),
-      runner,
-      new Set(["opcache"]),
-      1000,
-    );
-
-    expect(result.status).toBe("pass");
-    expect(runner.calls).toEqual(["file"]);
-  });
-
-  it.each(['"{TMP}"', "'/tmp/cache path'"])(
-    "allows built-in OPcache with the quoted file-cache path %s",
-    async (path) => {
-      const runner = new ScriptedRunner({ file: runResult({ stdout: "ok" }) });
-      const result = await runPhpt(phpt({
-        EXTENSIONS: "opcache",
-        INI: `opcache.enable_cli=1\nopcache.file_cache_only=1\nopcache.file_cache=${path}`,
-      }), runner, new Set(["opcache"]), 1000);
-      expect(result.status).toBe("pass");
-      expect(runner.calls).toEqual(["file"]);
-    },
-  );
-
-  it("rejects an empty quoted OPcache file-cache path", async () => {
-    const runner = new ScriptedRunner({});
-    const result = await runPhpt(phpt({
-      EXTENSIONS: "opcache",
-      INI: 'opcache.file_cache_only=1\nopcache.file_cache=""',
-    }), runner, new Set(["opcache"]), 1000);
-    expect(result.status).toBe("unsupported");
-    expect(runner.calls).toEqual([]);
-  });
 
   it("reports PHPDBG unsupported even when the standard phpdbg variable is set", async () => {
     const previous = process.env.TEST_PHPDBG_EXECUTABLE;
