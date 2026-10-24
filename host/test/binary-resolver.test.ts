@@ -2926,6 +2926,7 @@ exit 2
       "examples/gencat.wasm",
       "examples/pthread_channel_reuse_test.wasm",
       "examples/wait_lifecycle_test.wasm",
+      "examples/orphan_reparent_test.wasm",
       ...memory64ExampleOutputs,
       "benchmarks/wasm/pipe-throughput.wasm",
       "benchmarks/wasm/file-throughput.wasm",

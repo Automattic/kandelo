@@ -903,6 +903,7 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_clipboard_guest_read",
   "kernel_clipboard_offer",
   "kernel_clipboard_stage",
+  "kernel_publish_process_exit",
   "kernel_reserve_host_region",
   "kernel_reserve_host_region_at",
   "kernel_set_max_addr",
@@ -919,6 +920,11 @@ export const HOST_ADAPTER_KERNEL_EXPORT_LIFECYCLES = [
     "name": "kernel_kms_cursor_read",
     "optional_since_abi": 50,
     "required_from_abi": 51
+  },
+  {
+    "name": "kernel_publish_process_exit",
+    "optional_since_abi": 53,
+    "required_from_abi": 54
   }
 ] as const;
 

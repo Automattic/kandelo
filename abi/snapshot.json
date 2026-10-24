@@ -1260,6 +1260,11 @@
         "name": "kernel_kms_cursor_read",
         "optional_since_abi": 50,
         "required_from_abi": 51
+      },
+      {
+        "name": "kernel_publish_process_exit",
+        "optional_since_abi": 53,
+        "required_from_abi": 54
       }
     ],
     "manifest": {
@@ -1338,6 +1343,7 @@
       "kernel_clipboard_guest_read",
       "kernel_clipboard_offer",
       "kernel_clipboard_stage",
+      "kernel_publish_process_exit",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_max_addr",
@@ -3170,6 +3176,11 @@
       "kind": "func",
       "name": "kernel_pty_set_winsize",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_publish_process_exit",
+      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",

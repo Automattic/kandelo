@@ -1482,12 +1482,60 @@ use crate::process_table::GLOBAL_PROCESS_TABLE as PROCESS_TABLE;
 // 3a. Compatibility guard
 // ---------------------------------------------------------------------------
 
-/// Legacy direct exports still use a guard-shaped value so older wrapper code
-/// can keep the same control flow. Kernel execution is serialized by the host,
-/// so acquiring or dropping the guard does not take a secondary lock.
-fn gkl_acquire() {}
+/// Kernel execution is serialized by the host, so acquiring or dropping the
+/// guard takes no lock. The guard instead marks the outermost kernel scope:
+/// process exits queued inside it are applied to the rest of the process
+/// table when that scope is entered and again before it returns.
+///
+/// WHY: a process becomes Exited wherever a syscall or a default signal
+/// action ends it, and those paths hold only that one `Process`. Reparenting
+/// its children and hanging up newly orphaned groups need the whole table, so
+/// they run here, once no `&mut Process` from the scope is still in use. An
+/// exit queued by an export that holds no guard is applied when the next
+/// guarded scope begins, before any guest can observe the parent change.
+struct KernelCounter(core::cell::UnsafeCell<u32>);
 
-fn gkl_release() {}
+unsafe impl Sync for KernelCounter {}
+
+static GKL_DEPTH: KernelCounter = KernelCounter(core::cell::UnsafeCell::new(0));
+
+/// Count of processes sent SIGHUP/SIGCONT by applied exits that the host has
+/// not yet been told about. `kernel_publish_process_exit` reports and clears
+/// it so the host can apply its group-`kill()` follow-up.
+static ORPHANED_GROUP_SIGNALS: KernelCounter = KernelCounter(core::cell::UnsafeCell::new(0));
+
+fn gkl_acquire() {
+    let depth = unsafe { &mut *GKL_DEPTH.0.get() };
+    *depth += 1;
+    if *depth == 1 {
+        apply_pending_process_exits();
+    }
+}
+
+fn gkl_release() {
+    if unsafe { *GKL_DEPTH.0.get() } == 1 {
+        apply_pending_process_exits();
+    }
+    let depth = unsafe { &mut *GKL_DEPTH.0.get() };
+    *depth -= 1;
+}
+
+/// Apply queued Exited transitions to the process table. Runs only inside the
+/// outermost guard, so nested guards in the cleanup it performs cannot
+/// re-enter it.
+fn apply_pending_process_exits() {
+    if !crate::process_table::has_pending_exits() {
+        return;
+    }
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mut host = WasmHostIO;
+    let application = table.apply_pending_exits(&mut host);
+    for reap in application.reaped {
+        finish_init_reap(reap);
+    }
+    let signaled = unsafe { &mut *ORPHANED_GROUP_SIGNALS.0.get() };
+    *signaled = signaled.saturating_add(application.signaled.len() as u32);
+}
 
 /// RAII guard retained for direct-export compatibility.
 struct GklGuard;
@@ -3023,6 +3071,34 @@ fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessR
     // /dev/kandelo/clipboard: drop ownership and any text the agent had not
     // read, so it does not outlive its reader.
     crate::clipboard::release(pid);
+    // Synthetic init adopted this process's children. It reaps the zombies
+    // among them whose exits the host already published.
+    for zombie in result.adopted_zombies {
+        let _ = reap_for_init_and_cleanup(zombie);
+    }
+}
+
+/// Finish a reap that synthetic init performed.
+///
+/// Init has no wait loop, so the kernel acts as its `wait()`. Every reap on
+/// init's behalf comes through here, so a kernel-started init child (the
+/// exchange agent) learns how it ended however init came to reap it.
+fn finish_init_reap(reap: crate::process_table::InitReap) {
+    finish_removed_process(reap.pid, reap.removal);
+    crate::exchange::activation::on_reaped(reap.pid, reap.exit_status, reap.exit_signal);
+}
+
+/// Reap an exited child of synthetic init. Returns 0, or `-ECHILD` when `pid`
+/// is not an exited child of init.
+fn reap_for_init_and_cleanup(pid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.reap_for_init(pid) {
+        Some(reap) => {
+            finish_init_reap(reap);
+            0
+        }
+        None => -(Errno::ECHILD as i32),
+    }
 }
 
 fn remove_process_and_cleanup(pid: u32) -> i32 {
@@ -3045,6 +3121,35 @@ fn reap_process_and_cleanup(pid: u32) -> i32 {
         }
         None => -(Errno::ESRCH as i32),
     }
+}
+
+/// Acknowledge that the host has observed `pid`'s exit and begun retiring
+/// its workers.
+///
+/// The kernel already reparented `pid`'s children and hung up any newly
+/// orphaned stopped group when `pid` became Exited. What waits for the host
+/// is reaping: until this call the host still needs the zombie record to
+/// discover the death. If synthetic init is `pid`'s parent, init reaps `pid`
+/// now, and `kernel_get_parent_pid` then reports `ESRCH`, so no parent is
+/// notified.
+///
+/// Returns how many processes applied exits have sent SIGHUP and SIGCONT
+/// since the previous call; when positive, the host applies the same
+/// follow-up as a group `kill()`. Returns `-EINVAL` when `pid` has not exited
+/// and `-ESRCH` when it is absent.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_publish_process_exit(pid: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let publication = match table.publish_process_exit(pid) {
+        Ok(publication) => publication,
+        Err(error) => return -(error as i32),
+    };
+    if let Some(reap) = publication.reaped_by_init {
+        finish_init_reap(reap);
+    }
+    let signaled = unsafe { core::mem::take(&mut *ORPHANED_GROUP_SIGNALS.0.get()) };
+    signaled.min(i32::MAX as u32) as i32
 }
 
 /// Remove a process from the process table.
@@ -3369,6 +3474,7 @@ pub extern "C" fn kernel_take_process_timer_cleanup(
 /// The process remains as an Exited zombie until a parent wait consumes it.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.process_and_advisory_locks(pid) {
         Some((proc, advisory_locks)) => {
@@ -3448,14 +3554,10 @@ pub extern "C" fn kernel_reap_exited_child(parent_pid: u32, child_pid: u32) -> i
     }
     // Init reaps its children at once; the exchange agent is one of them,
     // and how it ended decides activation's next step.
-    let status = (parent_pid == crate::process_table::SYNTHETIC_INIT_PID)
-        .then(|| table.get(child_pid).map(|child| (child.exit_status, child.exit_signal)))
-        .flatten();
-    let result = reap_process_and_cleanup(child_pid);
-    if let (0, Some((exit_status, exit_signal))) = (result, status) {
-        crate::exchange::activation::on_reaped(child_pid, exit_status, exit_signal);
+    if parent_pid == crate::process_table::SYNTHETIC_INIT_PID {
+        return reap_for_init_and_cleanup(child_pid);
     }
-    result
+    reap_process_and_cleanup(child_pid)
 }
 
 /// Check if a process has SA_NOCLDWAIT set for SIGCHLD.
@@ -3952,6 +4054,9 @@ pub extern "C" fn kernel_dequeue_signal(
     {
         return -(error as i32);
     }
+    // A default action applied here can end the process; the guard applies
+    // that exit to the rest of the table before returning.
+    let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let (proc, advisory_locks) = match table.task_and_advisory_locks(pid, tid) {
         Some(pair) => pair,

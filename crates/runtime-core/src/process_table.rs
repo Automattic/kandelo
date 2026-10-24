@@ -131,6 +131,103 @@ pub struct RemoveProcessResult {
     pub host_net_closes: Vec<i32>,
     /// DRI reference retirement effects, including final BO destruction.
     pub dri_effects: Vec<crate::syscalls::DriReleaseEffect>,
+    /// Zombie children adopted by synthetic init during this removal whose
+    /// exits the host has already published. Init reaps them, so the caller
+    /// must reap each through the same cleanup path as this removal.
+    pub adopted_zombies: Vec<u32>,
+}
+
+/// Effects of applying queued process exits to the rest of the process
+/// table. See `ProcessTable::apply_pending_exits`.
+pub struct ExitApplication {
+    /// Adopted zombies that synthetic init reaped because the host had
+    /// already published their exits. The caller must finish each removal
+    /// exactly as it finishes a `reap_process` result.
+    pub reaped: Vec<InitReap>,
+    /// Members of newly orphaned process groups that received SIGHUP and
+    /// SIGCONT. When nonempty, the host must apply the same follow-up as a
+    /// group `kill()` before it next relies on those processes' state.
+    pub signaled: Vec<u32>,
+}
+
+/// Result of the host acknowledging one exit. See
+/// `ProcessTable::publish_process_exit`.
+pub struct ProcessExitPublication {
+    /// Present when synthetic init was the exiting process's parent and has
+    /// now reaped it, so no parent remains to notify. The caller must finish
+    /// the removal exactly as it finishes a `reap_process` result.
+    pub reaped_by_init: Option<InitReap>,
+}
+
+/// One process synthetic init reaped. Init has no wait loop, so the kernel
+/// acts as its `wait()`: the status is what a waiting parent would have
+/// consumed, and kernel-started init children (the exchange agent) learn
+/// how they ended from it.
+pub struct InitReap {
+    pub pid: u32,
+    /// Low eight bits of a normal exit status; 0 for a signal death.
+    pub exit_status: i32,
+    /// Terminating signal, or 0 for a normal exit.
+    pub exit_signal: u32,
+    /// Cleanup the caller must finish exactly as for a `reap_process` result.
+    pub removal: RemoveProcessResult,
+}
+
+/// Processes that reached the Exited state and whose consequences for the
+/// rest of the table have not been applied yet.
+///
+/// WHY: a process exits wherever a syscall or a default signal action ends
+/// it, and those paths hold only that one `Process`. They queue the PID
+/// here; the kernel applies the queue through the whole table before the
+/// kernel call returns (`ProcessTable::apply_pending_exits`).
+struct PendingExits(core::cell::UnsafeCell<Vec<u32>>);
+
+unsafe impl Sync for PendingExits {}
+
+#[cfg(not(test))]
+static PENDING_EXITS: PendingExits = PendingExits(core::cell::UnsafeCell::new(Vec::new()));
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_PENDING_EXITS: core::cell::RefCell<Vec<u32>> =
+        const { core::cell::RefCell::new(Vec::new()) };
+}
+
+/// Queue one Exited transition. Called only by `Process`'s exit records.
+pub(crate) fn queue_process_exit(pid: u32) {
+    #[cfg(test)]
+    TEST_PENDING_EXITS.with(|exits| exits.borrow_mut().push(pid));
+    #[cfg(not(test))]
+    unsafe {
+        (*PENDING_EXITS.0.get()).push(pid);
+    }
+}
+
+/// Whether any Exited transition still awaits `apply_pending_exits`.
+pub fn has_pending_exits() -> bool {
+    #[cfg(test)]
+    return TEST_PENDING_EXITS.with(|exits| !exits.borrow().is_empty());
+    #[cfg(not(test))]
+    unsafe {
+        !(*PENDING_EXITS.0.get()).is_empty()
+    }
+}
+
+fn take_pending_exits() -> Vec<u32> {
+    #[cfg(test)]
+    return TEST_PENDING_EXITS.with(|exits| core::mem::take(&mut *exits.borrow_mut()));
+    #[cfg(not(test))]
+    unsafe {
+        core::mem::take(&mut *PENDING_EXITS.0.get())
+    }
+}
+
+/// Children moved to synthetic init by one reparenting pass.
+struct Reparenting {
+    /// Adopted zombies whose exits the host has already published.
+    published_zombies: Vec<u32>,
+    /// `(pgid, sid)` of each adopted live or zombie child.
+    child_groups: Vec<(u32, u32)>,
 }
 
 /// Subset of parent state inherited by a `posix_spawn` child. Captured up
@@ -927,12 +1024,18 @@ impl ProcessTable {
             self.processes.insert(pid, Self::limbo_process_from(&proc));
         }
 
+        // A removed process can no longer be anyone's parent. Exit
+        // publication normally moved its children already; this covers
+        // forced removal and any exit the host never published.
+        let adopted_zombies = self.reparent_children_to_init(pid).published_zombies;
+
         Some(RemoveProcessResult {
             had_framebuffer_binding: proc.fb_binding.is_some(),
             host_closes,
             host_dir_closes,
             host_net_closes,
             dri_effects,
+            adopted_zombies,
         })
     }
 
@@ -1702,11 +1805,13 @@ impl ProcessTable {
 
     /// Return the host-visible parent pid for a process. An unpublished spawn
     /// child is hidden so an early signal-exit finalizer cannot emit SIGCHLD
-    /// before the parent receives the successful spawn result.
+    /// before the parent receives the successful spawn result. A Limbo
+    /// record is an already-reaped group identity, not a process, so it has
+    /// no parent to notify.
     pub fn parent_pid(&self, pid: u32) -> Option<u32> {
         self.processes
             .get(&pid)
-            .filter(|proc| !proc.spawn_publication_pending)
+            .filter(|proc| !proc.spawn_publication_pending && proc.state != ProcessState::Limbo)
             .map(|proc| proc.ppid)
     }
 
@@ -1883,6 +1988,250 @@ impl ProcessTable {
                     && child.state == ProcessState::Exited
             })
             .unwrap_or(false)
+    }
+
+    /// Apply every queued exit to the rest of the process table.
+    ///
+    /// POSIX gives every child of a terminated process a new parent, the
+    /// implementation-defined system process. Kandelo uses synthetic init
+    /// (PID 1), so this happens at the Exited transition, not when the host
+    /// later notices the exit. Init runs no wait loop, so the kernel reaps
+    /// on its behalf. An adopted zombie whose exit the host has already
+    /// published is reaped here. Any other adopted child is reaped when its
+    /// own exit is published (`publish_process_exit`).
+    ///
+    /// When an exit leaves a process group newly orphaned and that group has
+    /// a stopped member, every member receives SIGHUP and then SIGCONT. This
+    /// follows Linux's `exit_notify()` order: each reparented child's group
+    /// is checked first, then the exiting process's own group. A member that
+    /// the default SIGHUP action terminates queues its own exit, which this
+    /// same call applies.
+    pub fn apply_pending_exits(
+        &mut self,
+        host: &mut dyn crate::process::HostIO,
+    ) -> ExitApplication {
+        let mut application = ExitApplication {
+            reaped: Vec::new(),
+            signaled: Vec::new(),
+        };
+        loop {
+            let exits = take_pending_exits();
+            if exits.is_empty() {
+                return application;
+            }
+            for pid in exits {
+                self.apply_exit(pid, host, &mut application);
+            }
+        }
+    }
+
+    fn apply_exit(
+        &mut self,
+        pid: u32,
+        host: &mut dyn crate::process::HostIO,
+        application: &mut ExitApplication,
+    ) {
+        // A record removed before its exit was applied already gave its
+        // children to init in `remove_process_inner`.
+        let Some(process) = self.processes.get(&pid) else {
+            return;
+        };
+        if pid == SYNTHETIC_INIT_PID || process.state != ProcessState::Exited {
+            return;
+        }
+        let (pgid, sid, ppid) = (process.pgid, process.sid, process.ppid);
+
+        let adoption = self.reparent_children_to_init(pid);
+
+        let mut orphaned_groups: Vec<u32> = Vec::new();
+        // A reparented child's group loses its link if this process was its
+        // only member's parent outside the group within the same session.
+        for &(child_pgid, child_sid) in &adoption.child_groups {
+            if child_pgid != pgid
+                && child_sid == sid
+                && !orphaned_groups.contains(&child_pgid)
+                && self.is_orphaned_group_with_stopped_member(child_pgid)
+            {
+                orphaned_groups.push(child_pgid);
+            }
+        }
+        // This process's own group loses its link if this process was it.
+        let parent_was_link = self
+            .live_parent(ppid)
+            .is_some_and(|parent| parent.pgid != pgid && parent.sid == sid);
+        if parent_was_link
+            && !orphaned_groups.contains(&pgid)
+            && self.is_orphaned_group_with_stopped_member(pgid)
+        {
+            orphaned_groups.push(pgid);
+        }
+        for &group in &orphaned_groups {
+            application
+                .signaled
+                .extend(self.signal_orphaned_group(group, host));
+        }
+
+        for zombie in adoption.published_zombies {
+            if let Some(reap) = self.reap_for_init(zombie) {
+                application.reaped.push(reap);
+            }
+        }
+    }
+
+    /// Record that the host has observed `pid`'s exit and begun retiring its
+    /// workers.
+    ///
+    /// Until then the host still needs the zombie record to discover the
+    /// death, so synthetic init reaps a child only after this point. If init
+    /// is already `pid`'s parent, it reaps `pid` now. Only the first
+    /// publication has effects. A live process has no exit to publish, so
+    /// it fails with `EINVAL`; an absent or reaped one fails with `ESRCH`.
+    pub fn publish_process_exit(&mut self, pid: u32) -> Result<ProcessExitPublication, Errno> {
+        if pid == SYNTHETIC_INIT_PID {
+            return Err(Errno::EINVAL);
+        }
+        let process = self.processes.get_mut(&pid).ok_or(Errno::ESRCH)?;
+        match process.state {
+            ProcessState::Exited => {}
+            ProcessState::Limbo => return Err(Errno::ESRCH),
+            ProcessState::Running | ProcessState::Stopped => return Err(Errno::EINVAL),
+        }
+        if process.exit_published {
+            return Ok(ProcessExitPublication { reaped_by_init: None });
+        }
+        process.exit_published = true;
+        let reaped_by_init = if process.ppid == SYNTHETIC_INIT_PID {
+            self.reap_for_init(pid)
+        } else {
+            None
+        };
+        Ok(ProcessExitPublication { reaped_by_init })
+    }
+
+    /// Reap an exited child of synthetic init, keeping how it ended.
+    pub fn reap_for_init(&mut self, pid: u32) -> Option<InitReap> {
+        let process = self.processes.get(&pid)?;
+        if process.ppid != SYNTHETIC_INIT_PID || process.state != ProcessState::Exited {
+            return None;
+        }
+        let (exit_status, exit_signal) = (process.exit_status, process.exit_signal);
+        let removal = self.reap_process(pid)?;
+        Some(InitReap {
+            pid,
+            exit_status,
+            exit_signal,
+            removal,
+        })
+    }
+
+    /// Give every child of `parent_pid` to synthetic init.
+    ///
+    /// A `posix_spawn` child whose publication is still pending is skipped:
+    /// it is not yet part of any waitable child set, and the host's spawn
+    /// rollback must still find it under its exact parent.
+    fn reparent_children_to_init(&mut self, parent_pid: u32) -> Reparenting {
+        let mut reparenting = Reparenting {
+            published_zombies: Vec::new(),
+            child_groups: Vec::new(),
+        };
+        if parent_pid == SYNTHETIC_INIT_PID {
+            return reparenting;
+        }
+        for (&child_pid, child) in self.processes.iter_mut() {
+            if child_pid == SYNTHETIC_INIT_PID
+                || child.ppid != parent_pid
+                || child.spawn_publication_pending
+            {
+                continue;
+            }
+            child.ppid = SYNTHETIC_INIT_PID;
+            match child.state {
+                ProcessState::Running | ProcessState::Stopped => {
+                    reparenting.child_groups.push((child.pgid, child.sid));
+                }
+                ProcessState::Exited => {
+                    reparenting.child_groups.push((child.pgid, child.sid));
+                    if child.exit_published {
+                        reparenting.published_zombies.push(child_pid);
+                    }
+                }
+                ProcessState::Limbo => {}
+            }
+        }
+        reparenting
+    }
+
+    /// The parent process that can link a group to its session: a live
+    /// ordinary process. Synthetic init and the host-parent sentinel
+    /// (`ppid == 0`) never count, matching Linux's exclusion of init.
+    fn live_parent(&self, ppid: u32) -> Option<&Process> {
+        if ppid == 0 || ppid == SYNTHETIC_INIT_PID {
+            return None;
+        }
+        self.processes
+            .get(&ppid)
+            .filter(|parent| matches!(parent.state, ProcessState::Running | ProcessState::Stopped))
+    }
+
+    /// POSIX orphaned process group: no live member has a parent in a
+    /// different group of the same session. Only such a group with a stopped
+    /// member must be sent SIGHUP and SIGCONT.
+    fn is_orphaned_group_with_stopped_member(&self, pgid: u32) -> bool {
+        let mut has_stopped_member = false;
+        for (&pid, member) in &self.processes {
+            if pid == SYNTHETIC_INIT_PID
+                || member.pgid != pgid
+                || !matches!(member.state, ProcessState::Running | ProcessState::Stopped)
+            {
+                continue;
+            }
+            has_stopped_member |= member.state == ProcessState::Stopped;
+            let linked = self
+                .live_parent(member.ppid)
+                .is_some_and(|parent| parent.pgid != pgid && parent.sid == member.sid);
+            if linked {
+                return false;
+            }
+        }
+        has_stopped_member
+    }
+
+    /// Send SIGHUP and then SIGCONT to every live member of `pgid`, as a
+    /// kernel-originated group signal. SIGCONT resumes stopped members at
+    /// generation; a member whose SIGHUP disposition is the default then
+    /// terminates. Returns the members that received SIGHUP.
+    fn signal_orphaned_group(
+        &mut self,
+        pgid: u32,
+        host: &mut dyn crate::process::HostIO,
+    ) -> Vec<u32> {
+        use wasm_posix_shared::signal::{SIGCONT, SIGHUP};
+
+        let members = self.pids_in_group(pgid);
+        let mut signaled = Vec::new();
+        for signum in [SIGHUP, SIGCONT] {
+            for &member in &members {
+                if member == SYNTHETIC_INIT_PID {
+                    continue;
+                }
+                let Some((process, locks)) = self.process_and_advisory_locks(member) else {
+                    continue;
+                };
+                if !process.is_live_explicit_tid(process.pid) {
+                    continue;
+                }
+                if signum == SIGHUP {
+                    signaled.push(member);
+                }
+                process.raise_signal(signum);
+                if let Some(tid) = process.pick_thread_for_shared_signal(signum) {
+                    let _ = crate::signal::deliver_pending_signals_for_tid_with_locks(
+                        process, locks, host, tid,
+                    );
+                }
+            }
+        }
+        signaled
     }
 
     fn child_matches_wait_target(
@@ -4540,5 +4889,383 @@ mod tests {
         proc.fd_table
             .alloc_at_min(OpenFileDescRef(ofd_idx), 0, fd)
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod orphan_tests {
+    use super::*;
+    use crate::process::test_host::NoopHost;
+    use crate::signal::SignalHandler;
+    use wasm_posix_shared::signal::{SIGCONT, SIGHUP, SIGTSTP};
+    use wasm_posix_shared::wait::EVENT_EXITED;
+
+    /// Create a live process with explicit lineage, group and session.
+    fn process(table: &mut ProcessTable, ppid: u32, pgid: u32, sid: u32) -> u32 {
+        let pid = table.create_process().unwrap();
+        let proc = table.get_mut(pid).unwrap();
+        proc.ppid = ppid;
+        proc.pgid = pgid;
+        proc.sid = sid;
+        pid
+    }
+
+    /// Exit `pid` and let the kernel apply every queued exit, as it does
+    /// before any kernel call returns. No host acknowledgement happens here.
+    fn exit(table: &mut ProcessTable, pid: u32) -> ExitApplication {
+        assert!(table.get_mut(pid).unwrap().record_normal_exit(0));
+        table.apply_pending_exits(&mut NoopHost)
+    }
+
+    /// The host acknowledges an exit it has observed.
+    fn publish(table: &mut ProcessTable, pid: u32) -> ProcessExitPublication {
+        table.publish_process_exit(pid).unwrap()
+    }
+
+    fn reaped(results: &[InitReap]) -> Vec<u32> {
+        results.iter().map(|reap| reap.pid).collect()
+    }
+
+    #[test]
+    fn exit_reparents_children_before_the_host_publishes_it() {
+        let mut table = ProcessTable::new();
+        let parent = process(&mut table, 0, 0, 0);
+        let first = process(&mut table, parent, parent, 0);
+        let second = process(&mut table, parent, parent, 0);
+
+        let application = exit(&mut table, parent);
+
+        assert_eq!(table.get(first).unwrap().ppid, SYNTHETIC_INIT_PID);
+        assert_eq!(table.get(second).unwrap().ppid, SYNTHETIC_INIT_PID);
+        assert!(reaped(&application.reaped).is_empty());
+        assert!(application.signaled.is_empty());
+        assert!(!table.get(parent).unwrap().exit_published);
+        // The host-parent sentinel still owns the exited parent's status.
+        assert_eq!(table.get(parent).unwrap().state, ProcessState::Exited);
+        // The dead parent no longer has a waitable child set.
+        assert_eq!(
+            table.poll_wait_event(parent, -1, EVENT_EXITED, 0),
+            Err(Errno::ECHILD)
+        );
+    }
+
+    #[test]
+    fn pending_exits_are_applied_once() {
+        let mut table = ProcessTable::new();
+        let parent = process(&mut table, 0, 0, 0);
+        let child = process(&mut table, parent, parent, 0);
+        assert!(table.get_mut(parent).unwrap().record_normal_exit(0));
+        assert_eq!(table.get(child).unwrap().ppid, parent, "queued, not yet applied");
+
+        table.apply_pending_exits(&mut NoopHost);
+        let again = table.apply_pending_exits(&mut NoopHost);
+
+        assert_eq!(table.get(child).unwrap().ppid, SYNTHETIC_INIT_PID);
+        assert!(again.reaped.is_empty() && again.signaled.is_empty());
+    }
+
+    #[test]
+    fn init_reaps_an_adopted_child_when_its_exit_is_published() {
+        let mut table = ProcessTable::new();
+        let parent = process(&mut table, 0, 0, 0);
+        let child = process(&mut table, parent, parent, 0);
+        exit(&mut table, parent);
+        exit(&mut table, child);
+        assert_eq!(
+            table.get(child).unwrap().state,
+            ProcessState::Exited,
+            "the host still needs the zombie until it has seen the exit",
+        );
+
+        let publication = publish(&mut table, child);
+
+        assert!(publication.reaped_by_init.is_some());
+        assert!(table.get(child).is_none(), "init consumed the zombie");
+        assert_eq!(table.parent_pid(child), None);
+    }
+
+    #[test]
+    fn init_reaps_report_how_each_process_ended() {
+        use wasm_posix_shared::signal::SIGTERM;
+
+        // Init has no wait loop, so the kernel acts as its wait(). Kernel
+        // started init children (the exchange agent) learn how they ended
+        // from what init reaped, exactly as a waiting parent would.
+        let mut table = ProcessTable::new();
+        let parent = process(&mut table, 0, 0, 0);
+        let zombie = process(&mut table, parent, parent, 0);
+        let live = process(&mut table, parent, parent, 0);
+        assert!(table.get_mut(zombie).unwrap().record_normal_exit(7));
+        table.apply_pending_exits(&mut NoopHost);
+        publish(&mut table, zombie);
+
+        let application = exit(&mut table, parent);
+        let adopted = &application.reaped[0];
+        assert_eq!((adopted.pid, adopted.exit_status, adopted.exit_signal), (zombie, 7, 0));
+
+        assert!(table.get_mut(live).unwrap().record_signal_exit(SIGTERM));
+        table.apply_pending_exits(&mut NoopHost);
+        let reaped = publish(&mut table, live).reaped_by_init.unwrap();
+        assert_eq!((reaped.pid, reaped.exit_status, reaped.exit_signal), (live, 0, SIGTERM));
+    }
+
+    #[test]
+    fn init_reaps_a_published_zombie_child_at_adoption() {
+        let mut table = ProcessTable::new();
+        let parent = process(&mut table, 0, 0, 0);
+        let child = process(&mut table, parent, parent, 0);
+        // The child's exit is published to its still-live parent first.
+        exit(&mut table, child);
+        assert!(publish(&mut table, child).reaped_by_init.is_none());
+        assert_eq!(table.get(child).unwrap().ppid, parent);
+
+        let application = exit(&mut table, parent);
+
+        assert_eq!(reaped(&application.reaped), vec![child]);
+        assert!(table.get(child).is_none());
+    }
+
+    #[test]
+    fn unpublished_zombie_child_is_reaped_only_when_its_exit_is_published() {
+        let mut table = ProcessTable::new();
+        let parent = process(&mut table, 0, 0, 0);
+        let child = process(&mut table, parent, parent, 0);
+        // One kernel operation can terminate both before the host has
+        // retired either worker. The host still needs the child's zombie
+        // record to observe that death.
+        assert!(table.get_mut(child).unwrap().record_normal_exit(4));
+        let application = exit(&mut table, parent);
+
+        assert!(reaped(&application.reaped).is_empty());
+        assert_eq!(table.get(child).unwrap().ppid, SYNTHETIC_INIT_PID);
+        assert_eq!(table.get(child).unwrap().state, ProcessState::Exited);
+
+        assert!(publish(&mut table, child).reaped_by_init.is_some());
+        assert!(table.get(child).is_none());
+    }
+
+    #[test]
+    fn exit_publication_is_idempotent_and_requires_an_exited_process() {
+        let mut table = ProcessTable::new();
+        let parent = process(&mut table, 0, 0, 0);
+        let child = process(&mut table, 0, 0, 0);
+        table.get_mut(child).unwrap().ppid = SYNTHETIC_INIT_PID;
+
+        assert_eq!(
+            table.publish_process_exit(parent).err(),
+            Some(Errno::EINVAL),
+            "a live process has no exit to publish",
+        );
+        assert_eq!(
+            table.publish_process_exit(SYNTHETIC_INIT_PID).err(),
+            Some(Errno::EINVAL),
+        );
+        assert_eq!(table.publish_process_exit(9999).err(), Some(Errno::ESRCH));
+
+        exit(&mut table, parent);
+        assert!(publish(&mut table, parent).reaped_by_init.is_none());
+        assert!(publish(&mut table, parent).reaped_by_init.is_none());
+        assert_eq!(table.get(parent).unwrap().state, ProcessState::Exited);
+    }
+
+    #[test]
+    fn pending_spawn_child_stays_with_its_parent_for_rollback() {
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        let parent = table.create_process().unwrap();
+        let child = table
+            .spawn_child_for_caller(
+                parent,
+                parent,
+                &[],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut NoopHost,
+            )
+            .unwrap();
+
+        exit(&mut table, parent);
+
+        assert_eq!(table.get(child).unwrap().ppid, parent);
+        assert_eq!(
+            table.publish_spawn_child(parent, child),
+            Err(Errno::ECHILD),
+            "rollback still owns the exact unpublished child",
+        );
+    }
+
+    #[test]
+    fn removing_a_process_reparents_its_children() {
+        let mut table = ProcessTable::new();
+        let parent = process(&mut table, 0, 0, 0);
+        let child = process(&mut table, parent, parent, 0);
+
+        assert!(table.remove_process(parent).is_some());
+
+        assert_eq!(table.get(child).unwrap().ppid, SYNTHETIC_INIT_PID);
+    }
+
+    #[test]
+    fn removal_reports_published_zombie_children_for_init_to_reap() {
+        let mut table = ProcessTable::new();
+        let parent = process(&mut table, 0, 0, 0);
+        let published = process(&mut table, parent, parent, 0);
+        let unpublished = process(&mut table, parent, parent, 0);
+        exit(&mut table, published);
+        publish(&mut table, published);
+        assert!(table.get_mut(unpublished).unwrap().record_normal_exit(0));
+
+        let result = table.remove_process(parent).unwrap();
+
+        assert_eq!(result.adopted_zombies, vec![published]);
+        assert_eq!(table.get(unpublished).unwrap().ppid, SYNTHETIC_INIT_PID);
+    }
+
+    #[test]
+    fn init_reaped_group_leader_keeps_no_visible_parent() {
+        let mut table = ProcessTable::new();
+        let parent = process(&mut table, 0, 0, 0);
+        let leader = process(&mut table, parent, 0, 0);
+        table.get_mut(leader).unwrap().pgid = leader;
+        let member = process(&mut table, leader, leader, 0);
+        exit(&mut table, parent);
+        exit(&mut table, leader);
+
+        assert!(publish(&mut table, leader).reaped_by_init.is_some());
+
+        // The group still has a member, so the leader's identity survives
+        // as a resource-free Limbo record. It is not a process, and the host
+        // must not find a parent to notify for it.
+        assert_eq!(table.get(leader).unwrap().state, ProcessState::Limbo);
+        assert_eq!(table.parent_pid(leader), None);
+        assert_eq!(table.get(member).unwrap().ppid, SYNTHETIC_INIT_PID);
+    }
+
+    /// Session 5 with a parent in group 10 whose child leads group 20.
+    fn job_control_session(table: &mut ProcessTable) -> (u32, u32, u32) {
+        let shell = process(table, 0, 0, 5);
+        table.get_mut(shell).unwrap().pgid = shell;
+        let leader = process(table, shell, 0, 5);
+        table.get_mut(leader).unwrap().pgid = leader;
+        let member = process(table, leader, leader, 5);
+        (shell, leader, member)
+    }
+
+    #[test]
+    fn newly_orphaned_stopped_group_receives_sighup_then_sigcont() {
+        let mut table = ProcessTable::new();
+        let (shell, leader, member) = job_control_session(&mut table);
+        for pid in [leader, member] {
+            let proc = table.get_mut(pid).unwrap();
+            // Caught handlers keep both signals pending so the test can
+            // observe generation rather than a default action.
+            proc.signals.set_handler(SIGHUP, SignalHandler::Handler(42)).unwrap();
+            proc.signals.set_handler(SIGCONT, SignalHandler::Handler(43)).unwrap();
+        }
+        assert!(table.get_mut(leader).unwrap().record_stop(SIGTSTP));
+
+        let application = exit(&mut table, shell);
+
+        assert_eq!(application.signaled, vec![leader, member]);
+        for pid in [leader, member] {
+            let proc = table.get(pid).unwrap();
+            assert!(proc.signals.is_pending(SIGHUP), "pid {pid} got SIGHUP");
+            assert!(proc.signals.is_pending(SIGCONT), "pid {pid} got SIGCONT");
+            assert_eq!(proc.state, ProcessState::Running);
+        }
+        assert_eq!(table.get(leader).unwrap().ppid, SYNTHETIC_INIT_PID);
+    }
+
+    #[test]
+    fn default_sighup_deaths_are_applied_in_the_same_pass() {
+        let mut table = ProcessTable::new();
+        let (shell, leader, member) = job_control_session(&mut table);
+        // A child of the member, in its own group, survives the hang-up and
+        // must be adopted when the member dies of it.
+        let outsider = process(&mut table, member, 0, 5);
+        table.get_mut(outsider).unwrap().pgid = outsider;
+        assert!(table.get_mut(leader).unwrap().record_stop(SIGTSTP));
+
+        let application = exit(&mut table, shell);
+
+        assert_eq!(application.signaled, vec![leader, member]);
+        for pid in [leader, member] {
+            let proc = table.get(pid).unwrap();
+            assert_eq!(proc.state, ProcessState::Exited);
+            assert_eq!(proc.exit_signal, SIGHUP);
+        }
+        assert_eq!(table.get(outsider).unwrap().ppid, SYNTHETIC_INIT_PID);
+        assert_eq!(table.get(outsider).unwrap().state, ProcessState::Running);
+    }
+
+    #[test]
+    fn newly_orphaned_group_without_a_stopped_member_is_not_signaled() {
+        let mut table = ProcessTable::new();
+        let (shell, leader, member) = job_control_session(&mut table);
+
+        let application = exit(&mut table, shell);
+
+        assert!(application.signaled.is_empty());
+        for pid in [leader, member] {
+            let proc = table.get(pid).unwrap();
+            assert_eq!(proc.state, ProcessState::Running);
+            assert!(!proc.signals.is_pending(SIGHUP));
+        }
+    }
+
+    #[test]
+    fn group_still_linked_by_another_member_is_not_orphaned() {
+        let mut table = ProcessTable::new();
+        let (shell, leader, _member) = job_control_session(&mut table);
+        // A second parent in the same session but another group keeps the
+        // job's group attached to job control.
+        let other_parent = process(&mut table, 0, 0, 5);
+        table.get_mut(other_parent).unwrap().pgid = other_parent;
+        let linked = process(&mut table, other_parent, leader, 5);
+        assert!(table.get_mut(linked).unwrap().record_stop(SIGTSTP));
+
+        let application = exit(&mut table, shell);
+
+        assert!(application.signaled.is_empty());
+        assert_eq!(table.get(linked).unwrap().state, ProcessState::Stopped);
+        assert!(!table.get(leader).unwrap().signals.is_pending(SIGHUP));
+    }
+
+    #[test]
+    fn parent_in_another_session_was_never_a_link() {
+        let mut table = ProcessTable::new();
+        let (shell, leader, _member) = job_control_session(&mut table);
+        table.get_mut(shell).unwrap().sid = 6;
+        assert!(table.get_mut(leader).unwrap().record_stop(SIGTSTP));
+
+        let application = exit(&mut table, shell);
+
+        assert!(application.signaled.is_empty());
+        assert_eq!(table.get(leader).unwrap().state, ProcessState::Stopped);
+    }
+
+    #[test]
+    fn exiting_link_orphans_its_own_stopped_group() {
+        let mut table = ProcessTable::new();
+        // shell (group 10) -> job leader (group 20) -> stopped member (group 20)
+        let (_shell, leader, member) = job_control_session(&mut table);
+        assert!(table.get_mut(member).unwrap().record_stop(SIGTSTP));
+        table
+            .get_mut(member)
+            .unwrap()
+            .signals
+            .set_handler(SIGHUP, SignalHandler::Handler(42))
+            .unwrap();
+
+        // The leader was the group's only connection to its session's shell.
+        let application = exit(&mut table, leader);
+
+        assert_eq!(application.signaled, vec![member]);
+        let member = table.get(member).unwrap();
+        assert_eq!(member.state, ProcessState::Running);
+        assert!(member.signals.is_pending(SIGHUP));
+        assert_eq!(member.ppid, SYNTHETIC_INIT_PID);
     }
 }

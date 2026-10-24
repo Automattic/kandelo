@@ -154,6 +154,18 @@ capability disabled. No cursor host import is required. See
 [the cursor transport contract](architecture.md) for the record layout and
 ownership rules.
 
+Exit acknowledgement uses it too. `kernel_publish_process_exit` is
+optional in ABI 53 and required from ABI 54. Orphan adoption itself
+happens inside the kernel; the export only lets init reap once the host
+has seen an exit. A new host that loads an ABI-53 kernel built without
+the export keeps that kernel's old behavior, with no adoption.
+Reparenting changes what `getppid()` and `wait()` observe for orphans,
+but no existing program depends on the old observations: they were the
+unreapable-zombie gap, not a contract. The syscall numbers, marshalling,
+and status encodings are unchanged, so existing binaries remain valid
+and no `ABI_VERSION` bump is needed. See [orphan
+adoption](architecture.md#orphan-adoption).
+
 Host compatibility and local artifact admission are separate checks. The
 local build stamps kernels and programs with a digest of the complete ABI
 snapshot; runtime admission rejects differently stamped programs even when
