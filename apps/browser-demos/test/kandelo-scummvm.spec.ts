@@ -13,11 +13,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
+import { gotoApp } from "./support/kandelo-machine";
 
 /** The [[runtime_files]] packages/registry/scummvm/package.toml declares. */
 const RUNTIME_FILE_NAMES = [
@@ -79,11 +75,7 @@ const canvasLocator = (page: Page) =>
  * execs the engine once SDL's environment and the user's config are set.
  */
 async function bootScummvm(page: Page) {
-  await page.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
+  await gotoApp(page, "/");
   await page
     .getByRole("button", { name: /^(New|Launch new computer)$/ })
     .first()

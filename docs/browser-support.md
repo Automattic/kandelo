@@ -1795,11 +1795,36 @@ Browser demos use pre-built **VFS images** — binary snapshots of a filesystem 
    rewriting the image.
 
 Static browser asset tables stay within the package closure they represent.
-The canonical rootfs table follows `images/rootfs/PACKAGES.toml`; optional
-utilities belong to their owning image's table. An unrelated static import
-can prevent a SourceOnly deployment from loading its browser modules before
-the selected image even boots, regardless of whether that image executes
-the optional program.
+They are generated, not written by hand:
+`scripts/generate-browser-lazy-asset-urls.ts` writes one module per image
+table under `apps/browser-demos/lib/init/generated/`. The rootfs table comes
+from the lazy outputs in `images/rootfs/PACKAGES.toml`, the shell table from
+`SHELL_LAZY_BINARY_SPECS`, and the shell archive table from the shell lazy
+archive specs. Adding a package to an image therefore needs only the image
+metadata and the package's entry in the supported set; regenerate with
+`node node_modules/tsx/dist/cli.mjs scripts/generate-browser-lazy-asset-urls.ts`,
+and `tests/package-system/browser-lazy-asset-urls.test.ts` fails until the
+committed tables match. Optional utilities belong to their owning image's
+table. An unrelated static import can prevent a SourceOnly deployment from
+loading its browser modules before the selected image even boots, regardless
+of whether that image executes the optional program.
+
+Every binary these tables or any other browser `@binaries` import name must
+be an output of a package in `packages/sets/local-supported.toml`, because
+that set is exactly what `./run.sh setup` and `./run.sh local-build` build.
+`scripts/check-browser-binary-supply.ts` enforces this:
+`tests/package-system/browser-binary-supply.test.ts` runs it against the
+package graph, and the local-build engine runs it before every whole-tree
+build starts and again against the published projection afterwards, so setup
+fails, naming each missing path and its consumers, instead of leaving a spec
+to skip or a fetch to 404.
+Optional gallery globs are outside this rule; their artifacts are optional by
+design.
+
+Machine-booting Playwright specs treat a missing image the same way.
+`gotoMachineOrSkip` fails when the machine's product is one the supported set
+declares, and any Vite error overlay fails the spec with its message. Only a
+product outside the supported set is skipped as optional content.
 
 The canonical package shell has a 512 MiB filesystem ceiling. Products that
 copy that shell and add their own application tree use a separate 768 MiB
@@ -2404,7 +2429,7 @@ Node, WordPress, and LAMP are optional demo profiles. Their VFS asset imports
 are resolved only after that profile is requested; loading the main shell does
 not require or fetch those image bytes. If the selected profile's local or
 resolver-managed artifact is absent, the browser reports that exact missing
-image and asks the user to run `./run.sh fetch`.
+image and asks the user to run `./run.sh local-build`.
 
 Normal Vite development resolves exact optional binary URL globs through
 the verified binary resolver, including the implicit SourceOnly tree.

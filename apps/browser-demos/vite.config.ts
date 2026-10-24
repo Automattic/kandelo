@@ -652,7 +652,9 @@ function resolveBinariesAlias(
       this.error(
         `Browser binary ${request.relPath} not found, or every candidate is stale. ` +
           `Looked at:\n  ${local}\n  ${fetched}\n` +
-          `Run \`./run.sh fetch\` to install release archives, or build the artifact locally.`,
+          `./run.sh local-build publishes every output of the packages in ` +
+          `packages/sets/local-supported.toml; local test fixtures come from ` +
+          `scripts/build-programs.sh.`,
       );
     },
     transform(code, id) {

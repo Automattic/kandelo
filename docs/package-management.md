@@ -90,6 +90,26 @@ package builds (rootfs, shell, coreutils-docs, and others) execute
 the caller provisions the locked tree. A tree that already matches, such as
 one CI installed, is left untouched.
 
+`./run.sh setup` builds this same graph: bootstrap's engine step passes the
+same supported set, output root, and `all` selection to the same engine, so
+setup publishes every node `./run.sh local-build` would for the same
+checkout. `run_local_build_script_builds_the_bootstrap_engine_tree` in
+`tools/xtask/src/local_build.rs` fails if the two front doors drift apart.
+Neither one notices a later checkout change: after switching branches or
+pulling, the published projection still reflects the tree it was built from,
+so run `./run.sh local-build` (or `./run.sh local-build --plan` to see what
+is stale) again.
+
+A whole-tree build also checks the binaries its consumers name
+(`scripts/check-browser-binary-supply.ts`). Right after planning, before any
+node builds, every binary the browser app imports and every lazy entry the
+rootfs and shell images record must be an output of a package the supported
+set builds. After publication, each of those, plus the kernel, rootfs and
+image-writer artifacts the browser loads through virtual modules, must be a
+regular file in `local-binaries/source-only-v1`. Either failure ends the run,
+naming the path and what needs it. Narrower selections and custom output
+roots skip both checks.
+
 The default output ends with a concise node, cache, build, and product
 summary. Pass `--json` to print the canonical machine-readable result instead:
 

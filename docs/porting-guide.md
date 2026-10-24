@@ -304,7 +304,13 @@ The call resolves `vim-browser-bundle`'s declared `vim.zip`, reads those bytes
 once for central-directory indexing and hashing, and creates `/usr/bin/vim`
 and `/usr/share/vim/vim91/...` as stubs inside the shell VFS. The Kandelo UI
 does **not** need a matching `registerLazyFiles` entry for the binary - the
-stub from the archive is enough.
+stub from the archive is enough. The browser's URL for the archive is
+generated from the spec: run
+`node node_modules/tsx/dist/cli.mjs scripts/generate-browser-lazy-asset-urls.ts`
+after adding or changing a lazy archive or lazy file spec, and keep the
+producing package in `packages/sets/local-supported.toml`.
+[browser-support.md](browser-support.md) describes the generated tables and
+the supply check that enforces this.
 
 ### When you also want `/bin/<program>` symlinks
 

@@ -48,6 +48,13 @@ run. For a lazy artifact size mismatch, check the selected image and
 executable identities and repair stale inputs. Do not relax size checks
 or substitute unrelated executable bytes.
 
+A spec must not skip because a binary or image the supported build produces
+is missing. Missing supported output is a build defect: fail with the reason,
+as `gotoMachineOrSkip` and `gotoApp` in
+`apps/browser-demos/test/support/kandelo-machine.ts` do. Keep skips for
+documented optional content, such as network-fetched data or a product
+outside `packages/sets/local-supported.toml`.
+
 Keep authored-source audits separate from generated reports and private
 worktrees. Exclude those evidence directories explicitly while retaining
 production source. Report authorized deferred tests and unsupported cases

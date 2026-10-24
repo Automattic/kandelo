@@ -14,7 +14,7 @@ import { resolveGroupedAssetUrl } from "../../../../web-libs/kandelo-session/src
 import { normalizeImageOwnedLazyReference } from "../../../../web-libs/kandelo-session/src/vfs-asset-group-reference";
 import { normalizeDeploymentBase } from "../../../../web-libs/kandelo-session/src/deployment-scope";
 import { resolveShellLazyArchiveUrl, SHELL_LAZY_ARCHIVES } from "./lazy-archives";
-import { ROOTFS_LAZY_ASSET_URLS } from "./rootfs-lazy-files";
+import { ROOTFS_LAZY_ASSET_URLS } from "./generated/rootfs-lazy-asset-urls";
 import { SHELL_LAZY_PLACEHOLDER_URLS } from "./shell-lazy-files";
 export { normalizeImageOwnedLazyReference } from "../../../../web-libs/kandelo-session/src/vfs-asset-group-reference";
 
