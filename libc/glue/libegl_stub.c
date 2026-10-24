@@ -1560,6 +1560,10 @@ static unsigned bind_bo_texture(EGLDisplay dpy, unsigned bo_handle, unsigned gl_
         return 0;
     struct wpk_gl_name_scope name_scope __attribute__((cleanup(_wpk_gl_end_name_scope))) =
         publish ? _wpk_gl_begin_name_scope(context->encoder) : (struct wpk_gl_name_scope){0};
+    if (publish && !name_scope.group) {
+        g_last_error = EGL_BAD_ACCESS;
+        return 0;
+    }
     /* Flush queued GL ops first so host-side texture uploads and cmdbuf
      * draws execute in program order. */
     if (_wpk_gl_flush_checked() != 0)
@@ -1590,8 +1594,10 @@ static unsigned bind_bo_texture(EGLDisplay dpy, unsigned bo_handle, unsigned gl_
         }
         // Only the unpublished native candidate is removed. A reserved C
         // name remains available for its caller's later ordinary first bind.
-        if (!_wpk_gl_discard_external_candidate(req.gl_texture_id))
+        if (!_wpk_gl_discard_external_candidate(req.gl_texture_id)) {
+            g_last_error = error == 0x505 ? EGL_BAD_ALLOC : EGL_BAD_ACCESS;
             break;
+        }
         if (error != WPK_GL_EXTERNAL_NAME_COLLISION) {
             g_last_error = error == 0x505 ? EGL_BAD_ALLOC : EGL_BAD_MATCH;
             break;

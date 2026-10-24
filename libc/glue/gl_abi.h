@@ -237,7 +237,8 @@ void     _wpk_gl_flush(void);
  * thread. Only libGLESv2 knows its layout; EGL owns creation and retirement. */
 struct wpk_gles_context;
 struct wpk_object_group;
-/* Private cross-archive guard; no device/wire layout is changed. */
+/* Private cross-archive guard; no device/wire layout is changed. A null group
+ * means admission failed and begin already unlocked/restored cancellation. */
 struct wpk_gl_name_scope {
     struct wpk_object_group *group;
     int cancel_state;
@@ -246,7 +247,8 @@ struct wpk_gl_name_scope _wpk_gl_begin_name_scope(struct wpk_gles_context *state
 void _wpk_gl_end_name_scope(struct wpk_gl_name_scope *scope);
 #define WPK_GL_NAME_SCOPE(state)                                                                   \
     struct wpk_gl_name_scope name_scope __attribute__((cleanup(_wpk_gl_end_name_scope))) =         \
-        _wpk_gl_begin_name_scope(state)
+        _wpk_gl_begin_name_scope(state);                                                        \
+    if (!name_scope.group) return
 int _wpk_gl_flush_checked(void);
 #define WPK_GL_EXTERNAL_NAME_COLLISION 0x0502u
 int _wpk_gl_discard_external_candidate(uint32_t name);

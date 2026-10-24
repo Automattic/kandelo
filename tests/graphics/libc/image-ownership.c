@@ -164,6 +164,7 @@ static struct {
         uint32_t kind, name, source, revision;
     } image_sources[128];
     uint32_t raw_name;
+    int raw_live;
 } image_groups[64];
 static unsigned next_image_group;
 
@@ -187,6 +188,8 @@ static pthread_mutex_t overlap_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t overlap_cond = PTHREAD_COND_INITIALIZER;
 static int overlap_phase, pause_foreign_bind;
 static unsigned foreign_bind_calls;
+static unsigned raw_discard_failure, raw_discard_queries;
+static int raw_reply_fail_malloc, raw_reply_fail_calloc;
 static void overlap_reach(int phase) {
     pthread_mutex_lock(&overlap_mutex); overlap_phase = phase;
     pthread_cond_broadcast(&overlap_cond); pthread_mutex_unlock(&overlap_mutex);
@@ -333,6 +336,13 @@ static int native_image_bind(struct device_slot *slot, unsigned kind, GLenum tar
     if (kind == 2) {
         slot->renderbuffer_binding = name;
         return 1;
+    }
+    // A confirmed raw candidate is already a realized 2D native object,
+    // even when the C name reservation has not accepted publication.
+    if (image_groups[slot->image_group].raw_live &&
+        name == image_groups[slot->image_group].raw_name && target != GL_TEXTURE_2D) {
+        query_gl_error = GL_INVALID_OPERATION;
+        return 0;
     }
     if (binding_model && name) {
         unsigned index = 0;
@@ -538,6 +548,10 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             if (!image_groups[slot->image_group].raw_name)
                 image_groups[slot->image_group].raw_name = 0x60000000u;
             words[3] = image_groups[slot->image_group].raw_name;
+            image_groups[slot->image_group].raw_live = 1;
+            if (raw_reply_fail_malloc) fail_malloc = 1;
+            if (raw_reply_fail_calloc) fail_calloc = 1;
+            egl_trace(13,fd,words,16);
         }
     } else if (request == GLIO_CREATE_CONTEXT && fail_create_context) {
         errno = ENOMEM;
@@ -760,6 +774,10 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         }
         egl_trace(6, fd, &slot->context, 4);
         slot->context = 0;
+        int group_live = 0;
+        for (unsigned i = 0; i < 8; i++)
+            group_live |= device_slots[i].context && device_slots[i].image_group == slot->image_group;
+        if (!group_live) image_groups[slot->image_group].raw_live = 0;
         destroyed_contexts++;
         const char *session_trace = getenv("KANDELO_GRAPHICS_SESSION_TRACE");
         if (session_trace) {
@@ -792,6 +810,10 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             unsigned failure = image_mutation_failure;
             image_mutation_failure = 0;
             image_mutation_queries++;
+            if (q->op == 0x27 && input[0] == 1 && input[1] == 0x60000000u) {
+                raw_discard_queries++;
+                if (raw_discard_failure) failure = raw_discard_failure;
+            }
             int storage_error = q->op == 0x29 && fail_image_storage;
             if (storage_error && !failure)
                 failure = 2;
@@ -803,10 +825,12 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 query_gl_error = storage_error ? GL_INVALID_VALUE : GL_OUT_OF_MEMORY;
             reply[0] = failure == 2 ? 1u : failure == 5 ? 2u : 0u;
             reply[1] = failure == 2 ? 0u : failure == 4 ? 9u : 1u;
-            reply[2] = failure == 3 ? 0u : 0x47514c33u;
-            if (q->op == 0x27 && !failure && input[1]) {
-                if (input[0] == 1 && image_groups[slot->image_group].raw_name == input[1])
+            reply[2] = failure == 3 || failure == 6 ? 0u : 0x47514c33u;
+            if (q->op == 0x27 && (!failure || failure == 6) && input[1]) {
+                if (input[0] == 1 && image_groups[slot->image_group].raw_name == input[1]) {
                     image_groups[slot->image_group].raw_name++;
+                    image_groups[slot->image_group].raw_live = 0;
+                }
                 if (input[0] == 1) {
                     for (unsigned u = 0; u < 128; u++) {
                         if (slot->texture_2d[u] == input[1])
@@ -1407,6 +1431,84 @@ int main(int argc, char **argv) {
         fail_make_current = 0;
     }
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strncmp(argv[1], "raw-discard-",12)) {
+        binding_model = 1;
+        EGLImageKHR img = image(dpy);
+        const GLuint reserved = 0x60000000u;
+        const unsigned group = device_slots[0].image_group;
+        const int record_failure = !strcmp(argv[1],"raw-discard-record");
+        const int malloc_failure = !strcmp(argv[1],"raw-discard-malloc");
+        const int unknown_before = !strcmp(argv[1],"raw-discard-unknown-before");
+        const int unknown_after = !strcmp(argv[1],"raw-discard-unknown-after");
+        EGLContext peer = EGL_NO_CONTEXT;
+        if (!strcmp(argv[1],"raw-discard-peer")) {
+            peer = eglCreateContext(dpy,(EGLConfig)1,ctx,attrs); assert(peer);
+        }
+        if (!record_failure) {
+            bind_failure = 2; glBindTexture(GL_TEXTURE_2D,reserved);
+            assert(glGetError() == GL_OUT_OF_MEMORY);
+        }
+        raw_reply_fail_malloc = malloc_failure; raw_reply_fail_calloc = record_failure;
+        raw_discard_failure = unknown_before || record_failure ? 1 : unknown_after ? 6 : 2;
+        assert(!wpkEglBindBoTexture(dpy,77,GL_TEXTURE_2D) && foreign_bind_calls == 1);
+        fail_malloc = fail_calloc = raw_reply_fail_malloc = raw_reply_fail_calloc = 0;
+        const EGLint bind_error = eglGetError();
+        assert(glGetError() == (unknown_before || unknown_after ? GL_INVALID_OPERATION : GL_OUT_OF_MEMORY));
+        assert(image_groups[group].raw_live == !unknown_after);
+        if (!strcmp(argv[1],"raw-discard-block")) {
+            const unsigned before = bind_queries;
+            glBindTexture(GL_TEXTURE_CUBE_MAP,reserved);
+            assert(bind_queries == before && glGetError() == GL_OUT_OF_MEMORY);
+            glDeleteTextures(1,&reserved);
+            assert(glGetError() == GL_OUT_OF_MEMORY);
+            assert(!wpkEglBindBoTexture(dpy,77,GL_TEXTURE_2D) && foreign_bind_calls == 1);
+            assert(eglGetError() == EGL_BAD_ACCESS && glGetError() == GL_OUT_OF_MEMORY);
+        }
+        if (!strcmp(argv[1],"raw-discard-query")) {
+            unsigned before = scalar_queries;
+            assert(!glIsTexture(reserved) && scalar_queries == before && glGetError() == GL_OUT_OF_MEMORY);
+        }
+        if (peer) {
+            assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,peer));
+            assert(eglDestroyContext(dpy,ctx)); ctx = peer;
+            assert(destroyed_contexts == 1 && image_groups[group].raw_live);
+        }
+        if (!strcmp(argv[1],"raw-discard-last")) {
+            assert(eglDestroyContext(dpy,ctx) && eglReleaseThread());
+            assert(destroyed_contexts == 1 && !image_groups[group].raw_live);
+            assert(eglDestroyImageKHR(dpy,img) && eglTerminate(dpy) && allocation_count() == 0);
+            puts("PASS raw-discard-last"); return 0;
+        }
+        raw_discard_failure = 0;
+        if (!strcmp(argv[1],"raw-discard-query")) {
+            const unsigned before = raw_discard_queries;
+            assert(!glIsTexture(reserved) && glGetError() == GL_NO_ERROR && raw_discard_queries == before+1);
+        }
+        const unsigned before = raw_discard_queries;
+        glBindTexture(GL_TEXTURE_CUBE_MAP,reserved);
+        assert(glGetError() == GL_NO_ERROR);
+        assert(!image_groups[group].raw_live);
+        assert(raw_discard_queries == before + (strcmp(argv[1],"raw-discard-query") ? 1u : 0u));
+        assert(foreign_bind_calls == 1);
+        const unsigned reconciled = raw_discard_queries;
+        glBindTexture(GL_TEXTURE_CUBE_MAP,reserved);
+        assert(glGetError() == GL_NO_ERROR && raw_discard_queries == reconciled);
+        assert(bind_error == (record_failure ? EGL_BAD_ALLOC : EGL_BAD_ACCESS));
+        if (!strcmp(argv[1],"raw-discard-render")) {
+            for (unsigned face = 0; face < 6; face++)
+                glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X+face,0,GL_RGBA,1,1,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+            GLuint framebuffer;
+            glGenFramebuffers(1,&framebuffer); glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);
+            glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_CUBE_MAP_POSITIVE_X,reserved,0);
+            glClearColor(1,0,0,1); glClear(GL_COLOR_BUFFER_BIT); glFlush();
+            glClearColor(0,1,0,1); glClear(GL_COLOR_BUFFER_BIT); glFlush();
+            glDeleteFramebuffers(1,&framebuffer);
+        }
+        glDeleteTextures(1,&reserved);
+        assert(eglDestroyImageKHR(dpy,img));
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        printf("PASS %s\n",argv[1]); return 0;
+    }
     if (!strcmp(argv[1], "raw-reserved-name")) {
         EGLImageKHR img = image(dpy);
         const GLuint reserved = 0x60000000u;
@@ -3126,6 +3228,7 @@ int main(int argc, char **argv) {
         assert((GLuint)value == texture);
         // Model the host's BO-owner revocation independently of C bindings.
         query_scalar = 0;
+        image_groups[device_slots[0].image_group].raw_live = 0;
         device_slots[0].texture_2d[0] = 0;
         for (unsigned i = 0; i < 128; i++)
             if (device_slots[0].texture_targets[i].name == texture)

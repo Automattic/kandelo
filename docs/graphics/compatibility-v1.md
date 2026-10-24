@@ -58,7 +58,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 
 | ID | Required behavior / source | Current implementation and known failure | Owner / dependencies | Executable validation | Status / boundary |
 |---|---|---|---|---|---|
-| G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reference-counted C name owner reserves buffer/texture/renderbuffer names, including implicit binds; shared shader/program allocation is serialized. Checked buffer/texture/RBO binding and buffer/texture/RBO/FBO deletion preserve C ownership on definite rejection. Public C groups join the native owner; dispatch serialization spans standard name lookup/mutation/publication. Raw WPK publication shares that scope, skips native names and retries C reservations. GPU raw views retain independent object identities; BO revocation retries definite failures. Indeterminate reconciliation and full query/error coverage remain open | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
+| G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reference-counted C name owner reserves buffer/texture/renderbuffer names, including implicit binds; shared shader/program allocation is serialized. Checked buffer/texture/RBO binding and buffer/texture/RBO/FBO deletion preserve C ownership on definite rejection. Public C groups join the native owner; dispatch serialization spans standard name lookup/mutation/publication. Raw WPK publication shares that scope, skips native names and retries C reservations. GPU raw views retain independent object identities; BO revocation retries definite failures. Known unpublished C candidates retain one group cleanup slot and gate name/object queries until checked retirement; general indeterminate reconciliation and full query/error coverage remain open | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
 | G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Multiple public contexts have focused native/source-browser coverage; full rollback, hints and CTS remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
 | G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Native buffer realization now occurs on first bind; delayed reservations cannot reject or replace a peer object. Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffers plus client attributes use a bounded presence query; core buffer/vertex queries preserve logical state. Client staging now retains/restores actual ARRAY identity across peer deletion/reuse (operation table 6). Checked buffer binds preserve C pointer interpretation on definite rejection. Buffer deletion also waits for native acceptance; standard name-based buffer transactions serialize across peers; native binding/copy-view restoration retains failed inverses and candidate cleanup. Vertex pointer metadata/native inverses and query/muxer-driven client-array completion now have focused failure evidence. Full size/limit/negative/guest coverage remains open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core attribute/source/attachment reflection, acknowledged large-source uploads and validation entrypoints are implemented; complete executable/attribute/uniform validation still needs work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
@@ -66,7 +66,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | Texture reservations now remain separate from native realization, including delayed shared declarations. C bindings/attachments retain typed object records, acknowledged binds publish references/dimensionality after renderer acceptance, logical image views separate per-object sampling state from canonical GPU pixels, and texture-unit storage follows the reported limit. WebGL2 normalization, core parameter queries and context-owned default texture objects are implemented in host source; complete target/state/error and guest CTS audit remain open | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
 | G07 | Raster/depth/stencil/blend/clear/readback; ES2 §§3,4 | Main provides offscreen color/depth/stencil; no broad CTS evidence | bridge, query, present-target | CTS functional render families; real pixels all three engines | partial |
 | G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | Default/user identities and read/draw state remain distinct; C and host attachment records retain deleted texture/RBO identities, including unbound containers; host records also retain native storage and separate packed depth/stencil points. Core attachment/renderbuffer queries, acknowledged C attachment/deletion and texture/RBO allocation are implemented. Metadata capacity precedes native effects; definite failures preserve ownership. Failed deletion/selector inverses are retained per physical context and block dependent work until restored. Image utility/retarget/orphan rollback now retains native inverse plans across peer ownership and pending candidate/retired-view cleanup. Other rollback sites, full negative coverage and CTS remain open | encoder, registry, image references, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
-| G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Definite C buffer/texture/RBO bind rejection preserves prior references. Native buffer/image deletion and FBO selector/container rollback now retain failed inverses, block dependent queries/batches and repair before muxer switching. Buffer binding/copy-view, vertex pointer and image utility/retarget recovery retain failed inverses and cleanup receipts; private ARRAY completion reconciles before query/muxer use. Raw upload and BO revocation retain failed utility/attachment/unit inverses through owner retirement. Indeterminate transport and other recovery sites remain open. Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
+| G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Definite C buffer/texture/RBO bind rejection preserves prior references. Native buffer/image deletion and FBO selector/container rollback now retain failed inverses, block dependent queries/batches and repair before muxer switching. Buffer binding/copy-view, vertex pointer and image utility/retarget recovery retain failed inverses and cleanup receipts; private ARRAY completion reconciles before query/muxer use. Raw upload and BO revocation retain failed utility/attachment/unit inverses through owner retirement. Indeterminate transport and other recovery sites remain open. C/native error coalescing remains open; some guest paths silently return and missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
 | G10 | Every core function resolves; ES2 API | All 142 GLES2 core symbols are defined and resolved; native/private-Wasm audit passes. Full semantic and guest conformance remain pending | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | partial |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
 | E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. ABI 56 separates revocable display-generation roots from object sessions. C generation records retain old current descriptors, mappings, encoders and imported images while a new generation initializes. Host surface records retain native draw/read targets across context destruction and owner retirement. ABI 57 returns fresh surface IDs and acknowledged dimensions. Kernel/host cross-session draw/read selection validates process, live generation and TID, with canonical surface storage retained after owner retirement. Creation/bind failure preserves prior state. Public independent context/surface records route separate draw/read selectors. ABI 58 kernel/renderer construction joins live same-generation object groups; public C construction joins the same retained owner and native group; the full error/lifecycle audit remains open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
@@ -3848,3 +3848,87 @@ remain unfinished. Current-main integration, coherent normal artifacts,
 upstream CTS, cage/sway, full browser-memory and required POSIX conformance
 remain deferred until the build/test phase. No artifacts were restamped and
 no new hard platform boundary is claimed.
+
+## Unpublished C raw texture candidates retain cleanup ownership (2026-10-24)
+
+A production-source reproduction demonstrated that C could forget a confirmed
+raw candidate when reservation collision was followed by rejected deletion.
+The native object remained a realized 2D texture, so an ordinary cube first bind
+of the reserved C number still failed after the driver recovered. The native
+device double previously omitted raw target realization; it now tracks group
+raw liveness and rejects incompatible binds. Its existing simulated BO-owner
+revocation also clears that native liveness. The initial unchanged production
+run fails at the subsequent cube bind (`graphics-candidate-repro-native.log`).
+
+The retained C object group now reserves one pending unpublished GLuint slot
+at group construction, before raw allocation. Group dispatch permits at most
+one such candidate. Candidate deletion stores its name before allocating query
+input and clears the slot only on checked acceptance. Native rejection,
+allocation failure and unknown reply therefore preserve cleanup ownership.
+The next standard name transaction or object-existence query reconciles the
+slot under the same dispatch guard; failure stops admission without ordinary
+name mutation or another raw allocation. The EGL helper reports BAD_ACCESS
+for unresolved cleanup, or BAD_ALLOC for failed C object-record allocation.
+Cancellation remains deferred through unlock, and metadata locks stay outside
+device I/O. The private guard structure's binary layout is unchanged.
+
+Repeated deletion is safe for this known unpublished name because group
+dispatch prevents reuse until reconciliation accepts. The tests cover a reply
+lost before deletion and a malformed reply after accepted deletion, then bind
+and rebind a fresh cube without another cleanup. This is not a protocol for
+general unknown mutations or raw allocation whose returned name was lost.
+The pending slot follows the shared group after source-context destruction;
+final acknowledged native group teardown already owns candidate cleanup.
+
+Ten C cases cover recovery, persistent bind/delete/raw admission rejection,
+blocked existence queries, peer and final-member retirement, query input and C
+record allocation, both unknown-completion orders, and rendered cube commands.
+Nine fail unchanged `82817f89e9` C production sources; the final-group teardown
+case also passes the old implementation. Baseline failures reach mutation,
+query admission or missing reconciliation assertions before the new EGL error
+assertion. Full focused native C validation passes 143 cases with fatal UBSan,
+and private wasm32 EGL/GLES objects pass paired linking, all 150 public encoder
+authority guards and 142 core definitions/resolvers.
+
+The source-browser driver now consumes the actual C raw-allocation event by
+creating private GPU canonical storage and calling the ordinary host raw import.
+It rejects retired-map capacity before logical candidate deletion, checks the
+C encoder's later cleanup acceptance, and executes a fresh cube's six face
+allocations, attachment and red/green clears. Each engine requires both pixel
+results and final native cleanup. This scenario uses native dispatch only;
+forwarded BO-source registration remains an ordinary gap. All preceding
+native/forwarded source cases remain enabled.
+
+Current focused evidence:
+
+| Check | Result | Evidence |
+|---|---|---|
+| Native EGL/GLES C | 143 cases passed, fatal UBSan | `.context/graphics-candidate-final-native.log` |
+| Private wasm32 link / entrypoint audit | Paired link; 150 authority guards / 142 core definitions and resolvers | same log |
+| Host source and Node/browser JS/declarations | 556 cases in 23 files and builds passed | `.context/graphics-candidate-final-host.log` |
+| Real source WebGL | 189 passed across Chromium/Firefox/WebKit, no skips | `.context/graphics-candidate-final-browser.log` |
+| Source protocol/memory-boundary negatives | 12 passed | `.context/graphics-candidate-final-memory-boundary.log` |
+| Unchanged C baseline | 9 selected failures, 1 existing teardown pass | `.context/graphics-candidate-baseline-native.log` |
+
+Native commands run `tests/graphics/run-libc-unit.sh`, the private
+`.context/graphics-core-compile.sh` and AST audit under `scripts/dev-shell.sh`;
+the baseline runner uses revision argument `82817f89e9` with the ten new cases.
+Host/browser/memory commands are the preceding source gates. The native
+raw-candidate browser scenario also passes all three engines in isolation.
+Initial probe corrections stopped attempting to decode stack query input
+through the native heap-pointer shim and distinguished C record allocation
+from simultaneous native GL error production. A separate compound-failure
+diagnostic (`graphics-candidate-error-probe.log`) confirms that C and native
+OUT_OF_MEMORY can still be reported twice; error-flag coalescing remains G09
+implementation work, not a boundary or a fixed behavior claim.
+
+ABI 58, operation table 15, Rust/wire layouts and generated outputs remain
+unchanged. Rust 47/4/13/ABI evidence at `cfdd9a9c9f` remains historical; no
+Rust rerun, normal SDK/archive/kernel/program/package/image refresh or restamp
+is claimed. General unknown transport completion, C/native error coalescing,
+context loss/recreation, other resource/staging failures, worker/crash and KMS
+errors remain open, alongside CPU coherence/layout/formats, forwarded BO
+sources, image-zero and the remaining GLES/EGL1.5/GBM/KMS inventory. Current-main
+integration, fresh coherent normal artifacts, upstream CTS, cage/sway, full
+browser-memory and required POSIX conformance remain in the deferred build/test
+phase. No ordinary gap has been declared a hard platform boundary.

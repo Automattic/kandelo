@@ -451,3 +451,19 @@ rebound. A subsequent successful BO retirement removes logical references and
 canonical/native views, then final teardown requires one deletion per created
 native resource and zero native liveness. Guest ioctl marshalling, full memory
 reclamation and compositor conformance remain separate gates.
+
+Ten raw-candidate C cases cover rejected/unknown deletion, repeated admission,
+blocked object queries, shared-peer and final-group retirement, input/record
+allocation failure, accepted deletion with a lost reply, and cube rendering
+after reconciliation. The device double now models a confirmed raw candidate's
+realized 2D target independently of C reservation; its existing BO-revocation
+probe clears that native liveness explicitly. Nine cases fail unchanged
+`82817f89e9`; final-group cleanup already passes that baseline.
+
+The native source-browser C replay now registers a real GPU BO for the raw
+allocation event, executes the ordinary host raw import, rejects retired-map
+capacity before logical deletion, then consumes the C encoder's checked cleanup
+and fresh cube commands. Each engine must render red/green and finish native
+cleanup. Forwarded BO-source registration remains open; this new scenario
+enables only native dispatch while retaining all earlier native/forwarded cases.
+Normal guest marshalling and conformance remain separate gates.

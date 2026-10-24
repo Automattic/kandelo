@@ -90,6 +90,7 @@ self.onmessage = ({data}) => {
     };
     const frames=new Uint8Array(data.trace),view=new DataView(frames.buffer),observed:number[][]=[];
     const retiredContexts:number[]=[],retiredSurfaces:number[]=[];
+    const rawBos=new Set<number>();
     for(let offset=0;offset<frames.length;) {
       if(offset+12>frames.length)throw new Error("truncated trace header");
       const kind=view.getUint32(offset,true),fd=view.getUint32(offset+4,true),length=view.getUint32(offset+8,true);
@@ -168,6 +169,14 @@ self.onmessage = ({data}) => {
           }
           if(clear)observed.push(pixels(fd));
         }
+      } else if(kind===13) {
+        if(forwarded || !data.rawCandidate)throw new Error("raw BO replay requires native source registration");
+        const bo=words.getUint32(0,true),target=words.getUint32(4,true),context=words.getUint32(8,true),expected=words.getUint32(12,true);
+        if(!rawBos.has(bo)) {
+          if(native!.gl.createGpuBo(bo,gl!,1,1)===null)throw new Error("raw candidate canonical storage");
+          rawBos.add(bo);
+        }
+        if(imports!.host_gl_bind_foreign_texture(7,context,bo,target)!==expected)throw new Error("C raw candidate name mismatch");
       } else if(kind===12) {
         const op=words.getUint32(0,true),expected=[words.getUint32(4,true),words.getUint32(8,true),words.getUint32(12,true),0x47514c33],input=bytes.slice(16);
         let reply:Uint8Array,rc:number;
@@ -181,16 +190,28 @@ self.onmessage = ({data}) => {
         if(rc!==16||expected.some((value,index)=>output.getUint32(index*4,true)!==value))throw new Error("C bound image source/revision mismatch");
       } else if(kind===11) {
         const op=words.getUint32(0,true),size=words.getUint32(4,true),expected=words.getUint32(8,true),input=bytes.slice(12);
-        let reply:Uint8Array,rc:number;
-        if(forwarded){const result=channel(fd).onQuery!(op,input,size);reply=result.bytes;rc=result.rc;}
-        else{
-          new Uint8Array(memory!.buffer,64,input.length).set(input);
-          rc=imports!.host_gl_query(7,op,64,input.length,128,size,fd);
-          reply=new Uint8Array(memory!.buffer,128,size).slice();
+        let restore:(()=>void)|null=null;
+        if(data.rawCandidate && expected && op===O.QOP_IMAGE_OBJECT_DELETE) {
+          const owner=native!.gl.get(7,fd)!,set=owner.retiredTextures.set;
+          owner.retiredTextures.set=()=>{throw new RangeError("candidate retirement metadata rejected");};
+          restore=()=>{owner.retiredTextures.set=set;};
         }
+        let reply:Uint8Array,rc:number;
+        try {
+          if(forwarded){const result=channel(fd).onQuery!(op,input,size);reply=result.bytes;rc=result.rc;}
+          else{
+            new Uint8Array(memory!.buffer,64,input.length).set(input);
+            rc=imports!.host_gl_query(7,op,64,input.length,128,size,fd);
+            reply=new Uint8Array(memory!.buffer,128,size).slice();
+          }
+        } finally {restore?.();}
         const output=new DataView(reply.buffer,reply.byteOffset,reply.byteLength);
         if(rc!==size||output.getUint32(0,true)!==expected||output.getUint32(4,true)!==(expected?0:1)
             ||output.getUint32(8,true)!==0x47514c33)throw new Error("C image mutation acceptance mismatch");
+        if(restore) {
+          if(imports!.host_gl_query(7,O.QOP_GET_ERROR,64,0,128,4,fd)!==4 || new DataView(memory!.buffer).getUint32(128,true)!==0x505)
+            throw new Error("missing rejected raw cleanup error");
+        }
         if(data.peerDelete && captured && !injected && op===O.QOP_BIND_BUFFER && new DataView(input.buffer).getUint32(0,true)===0x8892)
           injectPeer(fd);
       } else if(kind===10) {
@@ -237,6 +258,7 @@ self.onmessage = ({data}) => {
       if(forwarded){channel(peer).onUnbind!(peer);if(channel(peer).onPresent!()!==-5)throw new Error("peer revived");}
       else imports!.host_gl_unbind(7,peer);
     }
+    for(const bo of rawBos) {native!.gl.retireForeignBo(bo);if(native!.gl.hasForeignRetirements())throw new Error("raw candidate BO cleanup pending");}
     const clean=forwarded?null:created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
     postMessage({type:"egl_record_result",observed,retiredContexts,retiredSurfaces,clean,...(data.peerDelete?{injected}:{}),error:forwarded?0:gl!.getError()});
   } catch(error) {postMessage({type:"egl_record_failed",error:String(error)});}

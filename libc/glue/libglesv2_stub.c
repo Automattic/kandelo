@@ -63,6 +63,9 @@ struct wpk_object_group {
     GLuint next_name[WPK_NAMES_COUNT];
     uint64_t next_serial;
     struct wpk_object_name *names, *retired_objects;
+    /* Dispatch serialization admits at most one unpublished raw candidate.
+     * Reserve its cleanup slot with the group, before any native allocation. */
+    GLuint pending_external_texture;
     /* Unknown native completion can leave storage reachable by any peer.
      * Retain candidate inputs until the last acknowledged encoder retires. */
     struct wpk_pending_image *pending_images;
@@ -317,11 +320,17 @@ struct wpk_gles_context {
 #define g_bound_framebuffer (_wpk_gl_current_encoder()->bound_framebuffer)
 #define g_next_vertex_array (_wpk_gl_current_encoder()->next_vertex_array)
 
+static int checked_mutation_query(uint32_t op, const uint32_t *words, uint32_t count);
 struct wpk_gl_name_scope _wpk_gl_begin_name_scope(struct wpk_gles_context *state) {
     struct wpk_gl_name_scope scope = {.group = state->objects};
     // Do not abandon native publication on cancellation; restore after unlock.
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &scope.cancel_state);
     pthread_mutex_lock(&scope.group->dispatch_mutex);
+    if (scope.group->pending_external_texture &&
+        !_wpk_gl_discard_external_candidate(scope.group->pending_external_texture)) {
+        _wpk_gl_end_name_scope(&scope);
+        scope.group = NULL;
+    }
     return scope;
 }
 void _wpk_gl_end_name_scope(struct wpk_gl_name_scope *scope) {
@@ -555,8 +564,6 @@ void glGenBuffers(GLsizei n, GLuint *out) {
     if (n > 0 && out)
         emit_name_array(OP_GEN_BUFFERS, n, out);
 }
-
-static int checked_mutation_query(uint32_t op, const uint32_t *words, uint32_t count);
 
 /* The GL_ARRAY_BUFFER binding, mirrored so glVertexAttribPointer can tell a
  * buffer offset from a client-memory pointer (see the client arrays below). */
@@ -1400,8 +1407,20 @@ void _wpk_gl_destroy_encoder(struct wpk_gles_context *state) {
 
 static int checked_query_reply(uint32_t, const void *, uint32_t, uint8_t *, uint32_t);
 int _wpk_gl_discard_external_candidate(uint32_t name) {
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    struct wpk_object_group *group = state->objects;
+    if (!name || (group->pending_external_texture && group->pending_external_texture != name)) {
+        raise_client_error(GL_INVALID_OPERATION);
+        return 0;
+    }
+    // Keep this name unavailable for reuse even when the reply is unknown.
+    // The dispatch guard must reconcile it before a peer can realize a name.
+    group->pending_external_texture = name;
     const uint32_t words[2] = {1, name};
-    return checked_mutation_query(QOP_IMAGE_OBJECT_DELETE, words, 2) == 1;
+    if (checked_mutation_query(QOP_IMAGE_OBJECT_DELETE, words, 2) != 1)
+        return 0;
+    group->pending_external_texture = 0;
+    return 1;
 }
 uint32_t _wpk_gl_register_external_texture(struct wpk_gles_context *state, uint32_t name) {
     if (!state || !name)
@@ -3416,6 +3435,10 @@ void glGetVertexAttribPointerv(GLuint index, GLenum pname, void **pointer) {
     *pointer = (void *)g_attribs[index].pointer;
 }
 static GLboolean client_is_object(uint32_t kind, GLuint name) {
+    struct wpk_gl_name_scope name_scope __attribute__((cleanup(_wpk_gl_end_name_scope))) =
+        _wpk_gl_begin_name_scope(_wpk_gl_current_encoder());
+    if (!name_scope.group)
+        return GL_FALSE;
     uint32_t input[2] = {kind,name}, value = 0;
     if (!checked_client_query(QOP_IS_OBJECT,input,sizeof input,&value,sizeof value)) return GL_FALSE;
     return value ? GL_TRUE : GL_FALSE;

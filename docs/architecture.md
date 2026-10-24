@@ -4177,8 +4177,16 @@ instead of separate image/query mirrors. Publication accepts newer revisions
 and discards stale candidates. Older owned-state replies cannot clear a
 newer import or authorize dependent texture rows. Standard C name-based
 transactions now serialize lookup through publication across peers. Raw WPK
-publication uses the same group scope; general failure reconciliation remains
-open.
+publication uses the same group scope. Its retained group also reserves one
+pending unpublished texture name before native allocation can occur. Rejected
+or unknown candidate deletion keeps that slot; subsequent name transactions
+and object-existence queries must reconcile it before proceeding. No new raw
+allocation or ordinary realization can reuse the name while cleanup is pending.
+Deletion is safely repeatable here because the candidate was never published
+and group dispatch prevents reuse; general opaque mutations are not retried.
+The slot survives submitting-encoder retirement, and final acknowledged native
+group teardown owns remaining candidate destruction. General failure
+reconciliation and C/native error-flag coalescing remain open.
 Indeterminate import candidates already belong to the group: submitting
 encoder retirement cannot release backing a peer might retain. Final group
 retirement releases these candidates outside the metadata mutex.
