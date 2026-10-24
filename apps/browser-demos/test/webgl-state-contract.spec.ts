@@ -1,10 +1,72 @@
 import { expect, test } from "@playwright/test";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./support/browser-memory-boundary";
 
 // Actual WebGL rendering through the shared decoder and muxer. This checks
 // host execution pixels; guest ABI/compositor integration has separate tests.
-for (const first of ["vertex", "index"] as const) {
+for (const kind of ["client", "fixed"] as const) {
+  test(`actual C encoder renders a large ${kind === "fixed" ? "fixed-point" : "float"} client array through WebGL`, async ({ page }) => {
+    const root = fileURLToPath(new URL("../../../",import.meta.url));
+    mkdirSync(join(root,".context"),{recursive:true});
+    const temporary = mkdtempSync(join(root,".context/graphics-client-trace-"));
+    let trace: number[];
+    try {
+      const path = join(temporary,"commands.bin");
+      execFileSync("bash",[join(root,"tests/graphics/run-libc-unit.sh")],{
+        cwd:root, env:{...process.env,KANDELO_GRAPHICS_LIBC_CASES:`encoder-large-${kind}`,KANDELO_GRAPHICS_COMMAND_TRACE:path},
+        timeout:60000,stdio:"pipe",
+      });
+      trace = [...readFileSync(path)];
+    } finally { rmSync(temporary,{recursive:true,force:true}); }
+    await page.goto("/trap-signal-test.html");
+    const result = await page.evaluate(async ({sourceRoot,trace}) => {
+      const base = `/@fs/${sourceRoot}host/src/webgl/`;
+      const { GlContextRegistry } = await import(base+"registry.ts");
+      const { GlMuxer } = await import(base+"muxer.ts");
+      const { decodeAndDispatch } = await import(base+"bridge.ts");
+      const { runGlQuery } = await import(base+"query.ts");
+      const O = await import(base+"ops.ts");
+      const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+      document.body.replaceChildren(canvas);
+      const gl = canvas.getContext("webgl2",{antialias:false,preserveDrawingBuffer:true});
+      if (!gl) throw new Error("WebGL2 required");
+      const reg = new GlContextRegistry(), mux = new GlMuxer(gl);
+      reg.bind({pid:95,sessionId:101,cmdbufAddr:0,cmdbufLen:1<<20});
+      const b = reg.get(95,101)!; b.gl = gl; b.contextId = 101; b.cmdbufView = new Uint8Array(1<<20);
+      const send = (op: number, words: number[], tail = new Uint8Array()) => {
+        mux.switchTo(b); const view = new DataView(b.cmdbufView!.buffer);
+        view.setUint16(0,op,true); view.setUint16(2,words.length*4+tail.length,true);
+        words.forEach((word,i) => view.setUint32(4+i*4,word,true)); b.cmdbufView!.set(tail,4+words.length*4);
+        if (decodeAndDispatch(b,0,4+words.length*4+tail.length)) throw new Error("setup command failed");
+      };
+      for (const [name,type,text] of [
+        [11,gl.VERTEX_SHADER,"attribute vec4 color; varying vec4 c; void main(){c=color;gl_Position=vec4(0.,0.,0.,1.);gl_PointSize=1.;}"],
+        [12,gl.FRAGMENT_SHADER,"precision mediump float; varying vec4 c; void main(){gl_FragColor=vec4(c.r+.5,c.g-.5,1.,c.a);}"]
+      ] as [number,number,string][]) {
+        send(O.OP_CREATE_SHADER,[type,name]); const textBytes = new TextEncoder().encode(text);
+        send(O.OP_SHADER_SOURCE,[name,textBytes.length],textBytes); send(O.OP_COMPILE_SHADER,[name]);
+      }
+      send(O.OP_CREATE_PROGRAM,[13]); send(O.OP_ATTACH_SHADER,[13,11]); send(O.OP_ATTACH_SHADER,[13,12]);
+      send(O.OP_BIND_ATTRIB_LOCATION,[13,0,5],new TextEncoder().encode("color")); send(O.OP_LINK_PROGRAM,[13]);
+      send(O.OP_USE_PROGRAM,[13]); send(O.OP_VIEWPORT,[0,0,1,1]);
+      b.cmdbufView!.set(trace);
+      if (decodeAndDispatch(b,0,trace.length)) throw new Error("C trace command failed");
+      const input = new Uint8Array(24), pixels = new Uint8Array(4);
+      [0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE].forEach((n,i) => new DataView(input.buffer).setUint32(i*4,n,true));
+      if (runGlQuery(b,O.QOP_READ_PIXELS,input,pixels) !== 4) throw new Error("pixel query failed");
+      const error = new Uint8Array(4); runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),error);
+      const buffersRetired = b.bufferStores.size === 0 && b.bufferViewOwners.size === 0 && b.retiredBuffers.size === 0;
+      mux.invalidateCurrent(); reg.destroyContext(95,101);
+      return {pixels:[...pixels],error:new DataView(error.buffer).getUint32(0,true),buffersRetired};
+    },{sourceRoot:process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? root,trace});
+    expect(result).toEqual({pixels:[0,255,255,255],error:0,buffersRetired:true});
+  });
+}
+
+for (const first of ["vertex", "index", "fixed"] as const) {
   test(`one GLES buffer shares vertex and index storage starting as ${first} data`, async ({ page }) => {
     await page.goto("/trap-signal-test.html");
     const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../", import.meta.url));
@@ -58,15 +120,23 @@ for (const first of ["vertex", "index"] as const) {
       send(a,O.OP_CREATE_PROGRAM,[13]); send(a,O.OP_ATTACH_SHADER,[13,11]); send(a,O.OP_ATTACH_SHADER,[13,12]);
       send(a,O.OP_BIND_ATTRIB_LOCATION,[13,0,5],new TextEncoder().encode("color")); send(a,O.OP_LINK_PROGRAM,[13]);
       if (number(a,O.QOP_GET_PROGRAMIV,[13,gl.LINK_STATUS]) !== 1) throw new Error("link failed");
+      const fixed = first === "fixed", colorSize = fixed ? 16 : 4, colorStride = fixed ? 1024 : 4, length = 131072+colorStride+colorSize;
+      const colors = (values: number[]) => {
+        if (!fixed) return values;
+        const bytes = new Uint8Array(values.length*4), view = new DataView(bytes.buffer);
+        values.forEach((v,i) => view.setInt32(i*4,Math.round(v/255*65536),true)); return [...bytes];
+      };
+      const pointer = [0,4,fixed ? 0x140c : gl.UNSIGNED_BYTE,1,colorStride,131072];
       const firstTarget = first === "vertex" ? gl.ARRAY_BUFFER : gl.ELEMENT_ARRAY_BUFFER;
       send(a,O.OP_GEN_BUFFERS,[1,71]); send(a,O.OP_BIND_BUFFER,[firstTarget,71]);
-      send(a,O.OP_BUFFER_DATA,[firstTarget,131080,gl.DYNAMIC_DRAW]);
-      update(firstTarget,0,[0,1]); update(firstTarget,131072,[0,255,0,255,0,0,255,255]);
+      send(a,O.OP_BUFFER_DATA,[firstTarget,length,gl.DYNAMIC_DRAW]);
+      update(firstTarget,0,[0,1]); update(firstTarget,131072,colors([0,255,0,255]));
+      update(firstTarget,131072+colorStride,colors([0,0,255,255]));
       for (const owner of [a,b]) {
         send(owner,O.OP_USE_PROGRAM,[13]); send(owner,O.OP_VIEWPORT,[0,0,1,1]);
         send(owner,O.OP_GEN_VERTEX_ARRAYS,[1,31]); send(owner,O.OP_BIND_VERTEX_ARRAY,[31]);
         send(owner,O.OP_BIND_BUFFER,[gl.ARRAY_BUFFER,71]);
-        send(owner,O.OP_VERTEX_ATTRIB_POINTER,[0,4,gl.UNSIGNED_BYTE,1,4,131072]); send(owner,O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);
+        send(owner,O.OP_VERTEX_ATTRIB_POINTER,pointer); send(owner,O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);
         send(owner,O.OP_BIND_BUFFER,[gl.ELEMENT_ARRAY_BUFFER,71]);
       }
       const pixels: number[][] = [];
@@ -78,34 +148,36 @@ for (const first of ["vertex", "index"] as const) {
       const names = [number(a,O.QOP_GET_INTEGERV,[gl.ARRAY_BUFFER_BINDING]),number(a,O.QOP_GET_INTEGERV,[gl.ELEMENT_ARRAY_BUFFER_BINDING])];
       const vertexView = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer;
       const indexView = gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING) as WebGLBuffer;
+      const packedView = gl.getVertexAttrib(0,gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING) as WebGLBuffer;
       update(gl.ARRAY_BUFFER,0,[1]); draw(b);
-      update(gl.ELEMENT_ARRAY_BUFFER,131076,[255,0,0,255]); draw(b);
-      send(a,O.OP_BUFFER_DATA,[gl.ELEMENT_ARRAY_BUFFER,131084,gl.STATIC_DRAW]);
-      update(gl.ELEMENT_ARRAY_BUFFER,131072,[255,255,0,255]); draw(b);
+      update(gl.ELEMENT_ARRAY_BUFFER,131072+colorStride,colors([255,0,0,255])); draw(b);
+      send(a,O.OP_BUFFER_DATA,[gl.ELEMENT_ARRAY_BUFFER,length+4,gl.STATIC_DRAW]);
+      update(gl.ELEMENT_ARRAY_BUFFER,131072,colors([255,255,0,255])); draw(b);
       send(b,O.OP_BIND_BUFFER,[gl.ARRAY_BUFFER,0]);
       // The original default VAO may retain an index binding too.
       send(a,O.OP_BIND_VERTEX_ARRAY,[0]); send(a,O.OP_BIND_BUFFER,[gl.ELEMENT_ARRAY_BUFFER,0]); send(a,O.OP_BIND_VERTEX_ARRAY,[31]);
       send(a,O.OP_DELETE_BUFFERS,[1,71]);
-      const bothRetained = gl.isBuffer(vertexView) && gl.isBuffer(indexView);
-      send(a,O.OP_BIND_BUFFER,[gl.ARRAY_BUFFER,71]); send(a,O.OP_BUFFER_DATA,[gl.ARRAY_BUFFER,131080,gl.STATIC_DRAW]);
-      update(gl.ARRAY_BUFFER,131072,[255,0,255,255]);
-      send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,4,gl.UNSIGNED_BYTE,1,4,131072]); send(a,O.OP_BIND_BUFFER,[gl.ELEMENT_ARRAY_BUFFER,71]);
+      const viewsRetained = [vertexView,indexView,packedView].every(view => gl.isBuffer(view));
+      send(a,O.OP_BIND_BUFFER,[gl.ARRAY_BUFFER,71]); send(a,O.OP_BUFFER_DATA,[gl.ARRAY_BUFFER,length,gl.STATIC_DRAW]);
+      update(gl.ARRAY_BUFFER,131072,colors([255,0,255,255]));
+      send(a,O.OP_VERTEX_ATTRIB_POINTER,pointer); send(a,O.OP_BIND_BUFFER,[gl.ELEMENT_ARRAY_BUFFER,71]);
       draw(a);
       const replacementVertex = gl.getParameter(gl.ARRAY_BUFFER_BINDING) as WebGLBuffer;
       const replacementIndex = gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING) as WebGLBuffer;
+      const replacementPacked = gl.getVertexAttrib(0,gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING) as WebGLBuffer;
       draw(b);
       send(b,O.OP_DELETE_VERTEX_ARRAYS,[1,31]);
-      const bothRetired = !gl.isBuffer(vertexView) && !gl.isBuffer(indexView);
+      const viewsRetired = [vertexView,indexView,packedView].every(view => !gl.isBuffer(view));
       const copyBindingsPreserved = gl.getParameter(gl.COPY_READ_BUFFER_BINDING) === savedRead && gl.getParameter(gl.COPY_WRITE_BUFFER_BINDING) === savedWrite;
       const errors = [number(a,O.QOP_GET_ERROR),number(b,O.QOP_GET_ERROR)];
       mux.invalidateCurrent(); reg.destroyContext(94,101); reg.destroyContext(94,102);
-      const replacementRetired = !gl.isBuffer(replacementVertex) && !gl.isBuffer(replacementIndex);
+      const replacementRetired = [replacementVertex,replacementIndex,replacementPacked].every(view => !gl.isBuffer(view));
       gl.deleteBuffer(savedRead); gl.deleteBuffer(savedWrite);
-      return {names,pixels,distinct:vertexView !== indexView,bothRetained,bothRetired,replacementRetired,copyBindingsPreserved,errors,
+      return {names,pixels,distinct:vertexView !== indexView,viewsRetained,viewsRetired,replacementRetired,copyBindingsPreserved,errors,
         copiesBounded:copies.length > 0 && Math.max(...copies) <= 65536 && copies.includes(65536)};
     },{sourceRoot:root,first});
     expect(result).toEqual({names:[71,71],pixels:[[0,255,0,255],[0,0,255,255],[255,0,0,255],[255,255,0,255],[255,0,255,255],[255,255,0,255]],
-      distinct:true,bothRetained:true,bothRetired:true,replacementRetired:true,copyBindingsPreserved:true,errors:[0,0],copiesBounded:true});
+      distinct:true,viewsRetained:true,viewsRetired:true,replacementRetired:true,copyBindingsPreserved:true,errors:[0,0],copiesBounded:true});
   });
 }
 

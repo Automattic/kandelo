@@ -401,6 +401,65 @@ describe("shared buffer deletion", () => {
     return {gl,reg,a,b,send};
   }
 
+  it("converts signed fixed-point values and keeps the logical normalized format", () => {
+    const {gl,a,send} = setup();
+    const values = new Int32Array([-32768,98304,16384,65536]);
+    const bytes = new Uint8Array(values.buffer), payload = new Uint8Array(bytes.length+4);
+    payload.set(bytes); new DataView(payload.buffer).setUint32(bytes.length,0x88e4,true);
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); send(a,O.OP_BUFFER_DATA,[0x8892,bytes.length],payload);
+    send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,4,0x140c,1,0,0]); send(a,O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);
+    const attribute = a.vertexArrays.get(0)!.attributes.get(0)!;
+    send(a,O.OP_DRAW_ARRAYS,[0,0,1]);
+    expect([...new Float32Array(gl.bufferContents.get(attribute.view!)!.buffer)]).toEqual([-0.5,1.5,0.25,1]);
+    expect(attribute).toMatchObject({type:0x140c,normalized:true,stride:0,offset:0});
+    expect(gl.log).toContainEqual(["vertexAttribPointer",[0,4,0x1406,false,0,0]]);
+    expect(gl.bufferContents.get(a.buffers.get(71)!)).toEqual(bytes);
+    expect(a.errors).toEqual([]);
+  });
+
+  it("packs a valid wide float stride without copying padding into the attribute", () => {
+    const {gl,a,send} = setup();
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); send(a,O.OP_BUFFER_DATA,[0x8892,608,0x88e4]);
+    for (const [offset,value] of [[4,1.5],[304,-2.5],[604,3.5]]) {
+      send(a,O.OP_BUFFER_SUB_DATA,[0x8892,offset,4],new Uint8Array(new Float32Array([value]).buffer));
+    }
+    send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,1,0x1406,0,300,4]); send(a,O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);
+    send(a,O.OP_DRAW_ARRAYS,[0,0,3]);
+    const attribute = a.vertexArrays.get(0)!.attributes.get(0)!;
+    expect([...new Float32Array(gl.bufferContents.get(attribute.view!)!.buffer)]).toEqual([1.5,-2.5,3.5]);
+    expect(attribute).toMatchObject({stride:300,offset:4}); expect(a.errors).toEqual([]);
+  });
+
+  it("retains converted storage in a disabled unbound peer VAO and releases it after layout replacement", () => {
+    const {gl,a,b,send} = setup();
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,4,0x140c,0,0,0]);
+    const native = a.vertexArrays.get(0)!.attributes.get(0)!.view!;
+    send(b,O.OP_BIND_BUFFER,[0x8892,71]); send(b,O.OP_GEN_VERTEX_ARRAYS,[1,31]); send(b,O.OP_BIND_VERTEX_ARRAY,[31]);
+    send(b,O.OP_VERTEX_ATTRIB_POINTER,[0,4,0x140c,1,0,0]); send(b,O.OP_BIND_VERTEX_ARRAY,[0]);
+    send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,4,0x1406,0,0,0]);
+    expect(gl.log.filter(([name,args]) => name === "deleteBuffer" && args[0] === native)).toEqual([]);
+    expect(a.bufferStores.get(a.buffers.get(71)!)!.converted.size).toBe(1);
+    send(b,O.OP_DELETE_VERTEX_ARRAYS,[1,31]);
+    expect(gl.log.filter(([name,args]) => name === "deleteBuffer" && args[0] === native)).toHaveLength(1);
+    expect(a.bufferStores.get(a.buffers.get(71)!)!.converted.size).toBe(0);
+  });
+
+  it("suppresses a draw after converted-data readback fails and retries without changing raw storage", () => {
+    const {gl,a,send} = setup();
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); send(a,O.OP_BUFFER_DATA,[0x8892,16,0x88e4]);
+    send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,4,0x140c,0,0,0]); send(a,O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);
+    const errors: number[] = []; gl.getError = () => errors.shift() ?? 0;
+    const read = gl.getBufferSubData.bind(gl); gl.getBufferSubData = () => { errors.push(0x505); };
+    send(a,O.OP_DRAW_ARRAYS,[0,0,1]);
+    expect(gl.log.some(([name]) => name === "drawArrays")).toBe(false);
+    expect(gl.getParameter(0x8f36)).toBeNull(); expect(gl.getParameter(0x8f37)).toBeNull();
+    const store = a.bufferStores.get(a.buffers.get(71)!)!;
+    expect([...store.converted.values()][0].valid).toBe(false); expect(store.source).toBe(a.buffers.get(71));
+    gl.getBufferSubData = read; send(a,O.OP_DRAW_ARRAYS,[0,0,1]);
+    expect(gl.log.filter(([name]) => name === "drawArrays")).toHaveLength(1);
+    expect([...store.converted.values()][0].valid).toBe(true);
+  });
+
   it("retains both views through a peer's secondary array binding alone", () => {
     const {gl,a,b,send} = setup();
     send(a,O.OP_BIND_BUFFER,[0x8893,71]); send(a,O.OP_BUFFER_DATA,[0x8893,4,0x88e4]);

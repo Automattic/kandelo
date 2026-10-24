@@ -28,15 +28,17 @@ void glBindVertexArray(GLuint);
 #undef malloc
 #undef calloc
 #undef free
+#undef mmap
+#undef munmap
 static void *latest_allocation;
-static int fail_calloc;
+static int fail_calloc, fail_malloc;
 static int calloc_before_failure = -1;
 void *graphics_calloc(size_t count, size_t size) {
     if (fail_calloc || calloc_before_failure == 0) { errno = ENOMEM; return NULL; }
     if (calloc_before_failure > 0) calloc_before_failure--;
     return calloc(count, size);
 }
-void *graphics_malloc(size_t size) { return latest_allocation = malloc(size); }
+void *graphics_malloc(size_t size) { if (fail_malloc) return NULL; return latest_allocation = malloc(size); }
 void graphics_free(void *ptr) {
     if (latest_allocation == ptr) latest_allocation = NULL;
     free(ptr);
@@ -72,6 +74,11 @@ static int string_generation;
 static unsigned context_create_calls;
 static unsigned buffer_uploads;
 static unsigned draw_commands;
+static int capture_array_upload;
+static unsigned char captured_bytes[524288];
+static uint32_t captured_size, captured_type, captured_stride;
+static unsigned captured_chunks;
+
 int graphics_open(const char *path, int flags, ...) {
     (void)flags;
     assert(!strcmp(path, WPK_GL_DEVICE));
@@ -127,6 +134,12 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
     } else if (request == GLIO_SUBMIT) {
         submit_batches++;
         struct gl_submit_info *submit = arg;
+        const char *trace_path = getenv("KANDELO_GRAPHICS_COMMAND_TRACE");
+        if (trace_path) {
+            FILE *trace = fopen(trace_path,"ab"); assert(trace);
+            assert(fwrite(commands+submit->offset,1,submit->length,trace) == submit->length);
+            assert(!fclose(trace));
+        }
         size_t at = submit->offset, end = at + submit->length;
         while (at < end) {
             uint16_t op, len;
@@ -137,7 +150,22 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             memcpy(words, commands + at + 4, len < 8 ? len : 8);
             if (op == OP_BIND_TEXTURE) bound_texture = words[1];
             if (op == OP_CLEAR) clear_commands++;
-            if (op == OP_BUFFER_DATA) buffer_uploads++;
+            if (op == OP_BUFFER_DATA) {
+                buffer_uploads++;
+                if (capture_array_upload && words[0] == GL_ARRAY_BUFFER) {
+                    captured_size = words[1]; assert(captured_size <= sizeof captured_bytes);
+                    memset(captured_bytes,0,captured_size);
+                    if (len > 12) memcpy(captured_bytes,commands+at+12,captured_size);
+                }
+            }
+            if (capture_array_upload && op == OP_BUFFER_SUB_DATA && words[0] == GL_ARRAY_BUFFER) {
+                uint32_t data_len; memcpy(&data_len,commands+at+12,4);
+                assert(data_len <= 65523 && words[1]+data_len <= captured_size);
+                memcpy(captured_bytes+words[1],commands+at+16,data_len); captured_chunks++;
+            }
+            if (capture_array_upload && op == OP_VERTEX_ATTRIB_POINTER) {
+                memcpy(&captured_type,commands+at+12,4); memcpy(&captured_stride,commands+at+20,4);
+            }
             if (op == OP_DRAW_ARRAYS || op == OP_DRAW_ELEMENTS) draw_commands++;
             if (op == OP_TEX_IMAGE_2D) redefined_texture = bound_texture;
             if (op == OP_CREATE_SHADER && shaders_created < 2)
@@ -308,6 +336,68 @@ int main(int argc, char **argv) {
         fail_make_current = 0;
     }
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1], "encoder-client-scratch")) {
+        const GLfloat vertices[6] = {1.5f,0,0,-2.5f,0,0};
+        capture_array_upload = 1;
+        glVertexAttribPointer(0,1,GL_FLOAT,GL_FALSE,12,vertices); glEnableVertexAttribArray(0);
+        fail_malloc = 1; glDrawArrays(GL_POINTS,0,2); fail_malloc = 0; glFlush();
+        assert(draw_commands == 0 && buffer_uploads == 0 && glGetError() == GL_OUT_OF_MEMORY);
+        glDrawArrays(GL_POINTS,0,2); glFlush();
+        assert(draw_commands == 1 && glGetError() == GL_NO_ERROR && captured_size == 8);
+        assert(!memcmp(captured_bytes,(const GLfloat[]){1.5f,-2.5f},8));
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-client-scratch"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-client-guard") || !strcmp(argv[1], "encoder-index-guard") || !strcmp(argv[1], "encoder-client-prefix")) {
+        const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+        unsigned char *memory = mmap(NULL,page*5,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0); assert(memory != MAP_FAILED);
+        assert(!mprotect(memory+page*2,page,PROT_READ|PROT_WRITE));
+        assert(!mprotect(memory+page*4,page,PROT_READ|PROT_WRITE));
+        const GLfloat values[2] = {1.5f,-2.5f};
+        memcpy(memory+page*2,values,4); memcpy(memory+page*4,values+1,4);
+        const int gaps = !strcmp(argv[1], "encoder-client-guard");
+        capture_array_upload = 1;
+        glVertexAttribPointer(0,1,GL_FLOAT,GL_FALSE,(GLsizei)(page*2),gaps ? memory+page*2 : memory); glEnableVertexAttribArray(0);
+        if (!strcmp(argv[1], "encoder-index-guard")) {
+            const GLushort indices[2] = {1,1}; glDrawElements(GL_POINTS,2,GL_UNSIGNED_SHORT,indices);
+        } else glDrawArrays(GL_POINTS,gaps ? 0 : 1,gaps ? 2 : 1);
+        glFlush();
+        assert(draw_commands == 1 && glGetError() == GL_NO_ERROR && captured_size == 8 && captured_stride == 0);
+        assert(!memcmp(captured_bytes,gaps ? values : (const GLfloat[]){0,1.5f},8));
+        assert(!munmap(memory,page*5));
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-client-overflow")) {
+        glVertexAttribPointer(0,4,GL_FLOAT,GL_FALSE,0,(const void *)1); glEnableVertexAttribArray(0);
+        glDrawArrays(GL_POINTS,INT32_MAX,1); glFlush();
+        assert(draw_commands == 0 && buffer_uploads == 0 && glGetError() == GL_OUT_OF_MEMORY);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-client-overflow"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-large-client") || !strcmp(argv[1], "encoder-large-fixed")) {
+        const int fixed = !strcmp(argv[1], "encoder-large-fixed");
+        const unsigned count = 17000, stride = fixed ? 1024 : 8;
+        const unsigned size = (count-1)*stride+(fixed ? 16 : 8);
+        unsigned char *vertices = malloc(size); assert(vertices); memset(vertices,0xaa,size);
+        for (unsigned i=0; i<count; i++) {
+            const int32_t f[4] = {-32768,98304,16384,65536};
+            const GLfloat v[2] = {-0.5f,1.5f};
+            memcpy(vertices+i*stride,fixed ? (const void *)f : (const void *)v,fixed ? sizeof f : sizeof v);
+        }
+        const GLenum type = fixed ? GL_FIXED : GL_FLOAT;
+        capture_array_upload = 1;
+        glVertexAttribPointer(0,fixed ? 4 : 2,type,fixed ? GL_TRUE : GL_FALSE,fixed ? stride : 0,vertices); glEnableVertexAttribArray(0);
+        glDrawArrays(GL_POINTS,0,count); glFlush();
+        assert(draw_commands == 1 && glGetError() == GL_NO_ERROR);
+        const unsigned element = fixed ? 16 : 8, packed_size = count*element;
+        assert(captured_size == packed_size);
+        for (unsigned i=0; i<count; i++) assert(!memcmp(captured_bytes+i*element,vertices+i*stride,element));
+        assert(captured_chunks == (packed_size+65519)/65520 && captured_type == type && captured_stride == 0);
+        free(vertices);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        printf("PASS %s\n",argv[1]); return 0;
+    }
     if (!strcmp(argv[1], "encoder-buffer-names")) {
         glBindBuffer(GL_ARRAY_BUFFER,1);
         GLuint names[2] = {99,99}; glGenBuffers(2,names);

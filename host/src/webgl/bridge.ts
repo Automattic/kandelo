@@ -18,6 +18,7 @@
  * returns a negative errno so `GLIO_SUBMIT` can fail like any other
  * ioctl-style device operation instead of hiding the failure in host code.
  */
+import { setConvertedVertexAttribute } from "./vertex-data.js";
 import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, currentProgramName, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted } from "./program-objects.js";
@@ -1113,6 +1114,8 @@ function dispatch(
       if (!attribute.buffer) {
         if (off !== 0) { recordGlError(b,0x502); return; }
         if (!clearNativeAttributeBuffers(b,[[index,attribute]],null)) return;
+      } else if (type === 0x140c || stride > 255) {
+        if (!setConvertedVertexAttribute(b,index,attribute)) return;
       } else if (!checkedGlCall(b, () => gl.vertexAttribPointer(index,size,type,normalized,stride,off))) return;
       activeVertexArray(b).attributes.set(index,attribute);
       return;

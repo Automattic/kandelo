@@ -20,7 +20,8 @@ clang -g -O1 -pthread -fsanitize="${KANDELO_GRAPHICS_SANITIZERS:-undefined}" -fn
     "$output_dir/glue/libegl_stub.c" "$output_dir/glue/libglesv2_stub.c" \
     "$repo_root/tests/graphics/libc/image-ownership.c" -o "$output_dir/image-ownership"
 status=0
-for case_name in lifetime redefine context invalid framebuffer cycle namespace boolean query-vector query-error config-selection config-validation config-list thread-error api-error thread-current destroy-current surface-current terminate-current bind-rollback create-rollback surfaceless-bind release-rollback bind-errors surface-retarget encoder-allocation encoder-unbound encoder-transfer encoder-strings encoder-delete-array encoder-delete-element encoder-vao-elements encoder-vao-attribs encoder-stage-allocation encoder-vao-name-reuse encoder-buffer-names; do
+default_cases="lifetime redefine context invalid framebuffer cycle namespace boolean query-vector query-error config-selection config-validation config-list thread-error api-error thread-current destroy-current surface-current terminate-current bind-rollback create-rollback surfaceless-bind release-rollback bind-errors surface-retarget encoder-allocation encoder-unbound encoder-transfer encoder-strings encoder-delete-array encoder-delete-element encoder-vao-elements encoder-vao-attribs encoder-stage-allocation encoder-vao-name-reuse encoder-buffer-names encoder-large-client encoder-large-fixed encoder-client-overflow encoder-client-guard encoder-index-guard encoder-client-prefix encoder-client-scratch"
+for case_name in ${KANDELO_GRAPHICS_LIBC_CASES:-$default_cases}; do
     python3 - "$output_dir/image-ownership" "$case_name" <<'PYTHON' || status=1
 import subprocess, sys
 try:
@@ -28,6 +29,8 @@ try:
 except subprocess.TimeoutExpired:
     print("FAIL: native graphics case timed out: " + sys.argv[2], flush=True)
     sys.exit(1)
+if result.returncode < 0:
+    print("FAIL: native graphics case " + sys.argv[2] + " terminated by signal " + str(-result.returncode), flush=True)
 sys.exit(result.returncode if result.returncode >= 0 else 1)
 PYTHON
 done

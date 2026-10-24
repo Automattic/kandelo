@@ -55,7 +55,7 @@ scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh ce8cd9dbcf
 scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh
 ```
 
-The thirty-six current cases cover image siblings and retained framebuffer storage,
+The forty-three current cases cover image siblings and retained framebuffer storage,
 redefinition, cleanup, invalid handles, repeated contexts, the shared
 shader/program namespace, boolean numeric conversion, vectors longer than
 four elements, unchanged query output after device failure and EGL config
@@ -67,8 +67,20 @@ rollback, backend bind errors and atomic native-window retargeting,
 encoder allocation rollback, unbound-thread isolation, state transfer
 between threads and context-owned string caching, deleted array/index binding
 reset, per-VAO client attributes and indices, reused-name generation isolation,
-reserved name allocation and draw-staging allocation failure/retry.
+reserved name allocation and draw-staging allocation failure/retry, large
+client uploads, sparse-index/prefix/stride guard pages, packed byte output,
+scratch allocation rollback and signed-size overflow rejection.
 Native query
 tests resolve the library's recorded heap allocation explicitly because the
 guest wire format uses u32 pointers. They do not execute guest marshalling or
 substitute for WebAssembly/browser tests.
+
+
+The source WebGL contract suite also compiles selected current native C
+cases through this harness, captures actual submitted bytes and replays them
+through the browser decoder. Its float/fixed client-array cases are cross-layer
+source evidence, not guest execution or unmodified CTS. Selection uses
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation still runs all 43 cases.
+`KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
+file for those test-only replays. Each browser test owns and removes its
+private trace directory.

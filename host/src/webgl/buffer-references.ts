@@ -1,9 +1,10 @@
+import { collectConvertedVertexData } from "./vertex-data.js";
 import { canonicalBuffer, destroyBufferStorage } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 
 export type GlVertexAttribute = {
-  buffer: WebGLBuffer | null; enabled: boolean;
+  buffer: WebGLBuffer | null; enabled: boolean; view?: WebGLBuffer;
   size: number; type: number; normalized: boolean; stride: number; offset: number;
 };
 export type GlVertexArray = { element: WebGLBuffer | null; attributes: Map<number, GlVertexAttribute> };
@@ -32,7 +33,9 @@ export function clearNativeAttributeBuffers(b: GlBinding, attributes: [number,Gl
     try {
       gl.bindBuffer(0x8892,temporary); gl.bufferData(0x8892,0,0x88e4);
       for (const [index,a] of attributes) {
-        gl.vertexAttribPointer(index,a.size,a.type === 0x140c ? 0x1406 : a.type,a.normalized,a.stride,a.offset);
+        const packed = a.type === 0x140c || a.stride > 255 || a.view !== undefined;
+        gl.vertexAttribPointer(index,a.size,a.type === 0x140c ? 0x1406 : a.type,
+          a.type === 0x140c ? false : a.normalized,packed ? 0 : a.stride,packed ? 0 : a.offset);
       }
     } finally {
       gl.deleteBuffer(temporary);
@@ -58,12 +61,13 @@ export function deleteBufferNames(b: GlBinding, names: number[]): void {
   })) return;
   b.shadow.arrayBuffer = array;
   if (vao.element && objects.has(vao.element)) vao.element = null;
-  for (const [,a] of attributes) a.buffer = null;
+  for (const [,a] of attributes) { a.buffer = null; delete a.view; }
   for (const [object,name] of objects) { b.buffers.delete(name); b.retiredBuffers.set(object,name); }
 }
 
 export function collectRetiredBuffers(b: GlBinding): void {
   if (!b.gl) return;
+  collectConvertedVertexData(b);
   for (const [object] of b.retiredBuffers) {
     let referenced = false;
     for (const owner of b.objects.members) {

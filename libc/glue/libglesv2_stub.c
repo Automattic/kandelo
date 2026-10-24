@@ -599,13 +599,14 @@ static uint32_t attrib_type_size(GLenum type) {
     }
 }
 
-/* Upload every enabled client-memory attribute for vertices
- * [0, first + count) into its own temporary buffer. Returns the number of
- * buffers made (their names are in `names`), or -1 when the draw cannot be
- * made (the error is latched for glGetError). */
-static int stage_client_attribs(GLint first, GLsizei count, GLuint *names) {
+/* Stage only referenced elements, packed at their original vertex indices.
+ * A bounded scratch buffer avoids reading client stride gaps or unused
+ * prefixes. Indexed client draws supply a presence mask for sparse indices. */
+static int stage_client_attribs(GLint first, GLsizei count, GLuint *names,
+                                const uint8_t *used) {
     int made = 0;
     GLuint original_array = g_array_buffer;
+    uint8_t *scratch = NULL;
     if (count <= 0) return 0;
     for (uint32_t i = 0; i < WPK_GL_MAX_ATTRIBS; i++) {
         struct wpk_client_attrib *a = &g_attribs[i];
@@ -617,10 +618,15 @@ static int stage_client_attribs(GLint first, GLsizei count, GLuint *names) {
         }
         uint32_t elem = tsize * (uint32_t)a->size;
         uint32_t stride = a->stride ? (uint32_t)a->stride : elem;
-        uint64_t len = ((uint64_t)(uint32_t)first + (uint32_t)count - 1) * stride + elem;
-        /* One glBufferData record carries at most 65523 bytes (see
-         * glBufferData); a larger client array cannot be staged. */
-        if (len > 0xFFFFu - 12u) {
+        uint64_t end = (uint64_t)(uint32_t)first + (uint32_t)count;
+        uint64_t len = end * elem;
+        if (len > INT32_MAX) {
+            if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+            goto failed;
+        }
+        /* Every chunk contains whole elements and fits one TLV payload. */
+        uint32_t per_chunk = 65520u / elem;
+        if (stride != elem && !scratch && !(scratch = malloc(65520u))) {
             if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
             goto failed;
         }
@@ -629,13 +635,34 @@ static int stage_client_attribs(GLint first, GLsizei count, GLuint *names) {
         if (!name) goto failed;
         glBindBuffer(GL_ARRAY_BUFFER, name);
         if (g_array_buffer != name) { glDeleteBuffers(1,&name); goto failed; }
-        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)len, a->pointer, GL_STREAM_DRAW);
-        emit_vertex_attrib_pointer(i, a->size, a->type, a->normalized,
-                                   a->stride, 0);
         names[made++] = name;
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)len, NULL, GL_STREAM_DRAW);
+        uint32_t vertex = (uint32_t)first;
+        while (vertex < end) {
+            if (used && !used[vertex]) { vertex++; continue; }
+            uint32_t run = 1;
+            while (run < per_chunk && vertex+run < end && (!used || used[vertex+run])) run++;
+            uint64_t source_offset = (uint64_t)vertex*stride;
+            uint64_t source_end = source_offset+(uint64_t)(run-1)*stride+elem;
+            if (source_end > UINTPTR_MAX || (uintptr_t)a->pointer > UINTPTR_MAX-(uintptr_t)source_end) {
+                if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+                goto failed;
+            }
+            const uint8_t *source = (const uint8_t *)((uintptr_t)a->pointer+(uintptr_t)source_offset);
+            const uint8_t *bytes = source;
+            if (stride != elem) {
+                for (uint32_t j=0; j<run; j++) memcpy(scratch+j*elem,source+(size_t)j*stride,elem);
+                bytes = scratch;
+            }
+            glBufferSubData(GL_ARRAY_BUFFER,(GLintptr)((uint64_t)vertex*elem),(GLsizeiptr)(run*elem),bytes);
+            vertex += run;
+        }
+        emit_vertex_attrib_pointer(i, a->size, a->type, a->normalized,0,0);
     }
+    free(scratch);
     return made;
 failed:
+    free(scratch);
     glBindBuffer(GL_ARRAY_BUFFER,original_array);
     if (made) glDeleteBuffers(made,names);
     return -1;
@@ -649,7 +676,7 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     }
     GLuint staged[WPK_GL_MAX_ATTRIBS];
     GLuint app_buffer = g_array_buffer;
-    int n = stage_client_attribs(first, count, staged);
+    int n = stage_client_attribs(first, count, staged,NULL);
     if (n < 0) return;
     if (n > 0) glBindBuffer(GL_ARRAY_BUFFER, app_buffer);
     {
@@ -2486,24 +2513,42 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices
         return;
     }
     uint32_t max_index = 0;
+    uint8_t *used = NULL;
     if (app_element_buffer == 0) {
         if (!indices) { _wpk_gl_client_error = GL_INVALID_VALUE; return; }
         uint32_t index_size = type == GL_UNSIGNED_BYTE ? 1u : type == GL_UNSIGNED_SHORT ? 2u : 0u;
         if (!index_size) { _wpk_gl_client_error = GL_INVALID_ENUM; return; }
+        if ((uint64_t)(uint32_t)count*index_size > INT32_MAX) {
+            if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+            return;
+        }
         for (GLsizei i = 0; i < count; i++) {
             uint16_t value = 0;
             if (index_size == 1) value = ((const uint8_t *)indices)[i];
             else memcpy(&value, (const uint8_t *)indices + (size_t)i * 2, 2);
             if (value > max_index) max_index = value;
         }
+        if (has_client) {
+            used = calloc((size_t)max_index+1,1);
+            if (!used) {
+                if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+                return;
+            }
+            for (GLsizei i=0; i<count; i++) {
+                uint16_t value = 0;
+                if (index_size == 1) value = ((const uint8_t *)indices)[i];
+                else memcpy(&value,(const uint8_t *)indices+(size_t)i*2,2);
+                used[value] = 1;
+            }
+        }
         glGenBuffers(1, &element);
-        if (!element) return;
+        if (!element) goto done;
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, element);
-        if (g_element_buffer != element) { glDeleteBuffers(1,&element); return; }
+        if (g_element_buffer != element) goto done;
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)((size_t)count * index_size), indices, GL_STREAM_DRAW);
         offset = 0;
     }
-    int n = has_client ? stage_client_attribs(0, (GLsizei)(max_index + 1), staged) : 0;
+    int n = has_client ? stage_client_attribs(0, (GLsizei)(max_index + 1), staged,used) : 0;
     if (n >= 0) {
         if (n > 0) glBindBuffer(GL_ARRAY_BUFFER, app_array_buffer);
         {
@@ -2514,6 +2559,8 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices
         }
         if (n > 0) glDeleteBuffers(n, staged);
     }
+done:
+    free(used);
     if (element) {
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, app_element_buffer);
         glDeleteBuffers(1, &element);

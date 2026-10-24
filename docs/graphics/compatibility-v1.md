@@ -60,7 +60,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 |---|---|---|---|---|---|
 | G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reserved guest buffer names and host shared-object maps; incomplete is/query functions | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
 | G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Full rollback, hints and multiple public contexts remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
-| G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Bound index buffer plus client attributes rejected; GL_FIXED, larger client staging and full size/limit/query coverage remain open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
+| G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Bound index buffer plus client attributes, fixed-index restart translation and full size/limit/query coverage remain open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core reflection and complete executable/attribute/uniform validation still need work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization exists; complete target/state/error audit missing | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
@@ -976,9 +976,9 @@ This does not close G01–G03. Unlike GLES2,
 classifies native buffers as element data or other data. The storage stage
 below implements separate native views over one logical buffer; this
 difference is not a hard platform boundary.
-GL_FIXED conversion, larger client staging, combined bound indices and client
-attributes, complete negative/limit/query behavior and C shared-group routing
-also remain open. No wire change occurred; ABI remains 55. Full SDK/archive,
+The conversion/staging stage below addresses fixed-point and client size
+gaps. Combined bound indices/client attributes, complete negative/limit/query
+behavior and C shared-group routing remain open. No wire change occurred; ABI remains 55. Full SDK/archive,
 kernel, package and image rebuilds, guest CTS/compositor, browser-memory and
 POSIX validation remain deferred until the implementation is ready for the
 combined build/test phase. Performance was not measured.
@@ -1035,9 +1035,86 @@ These are host-internal group checks; public EGL sharing and guest execution
 remain unvalidated.
 
 This stage changes no wire layout, C source or installed artifacts. ABI stays
-55. The full G03 audit still includes GL_FIXED, client staging sizes, combined
-bound indices/client attributes, complete buffer/vertex queries and negative
-API/limit behavior. Public sharing also needs C/kernel/EGL group routing.
+55. The following stage addresses fixed-point and client staging. The full
+G03 audit still includes combined bound indices/client attributes, complete
+buffer/vertex queries and negative API/limit behavior. Public sharing also needs C/kernel/EGL group routing.
 The authorized deferral of normal SDK/kernel/package/image rebuilds and full
 CTS/compositor, browser-memory and POSIX runs remains in effect until the
 implementation reaches the combined build/test phase.
+
+
+### Packed client arrays and fixed-point vertex views
+
+Client staging now packs referenced elements into their original vertex
+indices, using command-safe chunks and at most 65520 bytes of scratch space.
+It leaves unused prefixes, stride gaps and unreferenced client indices
+unread. DrawArrays preserves its first vertex; DrawElements builds a bounded
+presence mask for byte/short client indices. The previous single-record
+65523-byte client-array limit is removed. Signed wasm32 buffer-size and
+pointer-arithmetic checks remain explicit. Allocation failure frees the
+scratch/mask and temporary names, restores bindings and suppresses the draw.
+
+The host uses derived vertex views for GL_FIXED or strides greater than
+WebGL's 255-byte limit. Fixed components use signed 16.16 conversion to
+floating point; normalization is ignored for that type, following
+[GLES2 sections 2.1 and 2.8](https://registry.khronos.org/OpenGL/specs/es/2.0/es_full_spec_2.0.pdf).
+Derived views pack only the attribute elements, retain the logical format,
+offset and stride in the VAO and refresh after raw storage updates. Source
+and output scratch spans are independently bounded to 64 KiB. Raw source
+bytes remain unchanged. Disabled attributes and unbound VAOs retain derived
+views; layout replacement and final-reference/container teardown release
+unused views. Failed conversion leaves the view invalid for retry and
+suppresses drawing. Native copy and array bindings are restored.
+
+Against `2863d10661`, the expanded native suite passes 37 cases and fails six:
+`.context/graphics-client-packed-verified-baseline-native.log`. Both large
+uploads hit the old limit, three guard-page cases fault in the old bulk
+copy, and the scratch-allocation case fails its assertions. These are
+Kandelo client-staging defects. The earlier baseline guard fixtures could
+hit the size limit first on a 16 KiB-page host; the verified cases keep the
+source span below that cap to expose the invalid reads directly.
+
+The new actual-C fixed-point stream also fails in all three browsers when
+replayed against the exact archived `2863d10661` WebGL source tree (three
+failures, three float cases pass):
+`.context/graphics-client-fixed-baseline-browser.log`. The new fixed-point
+shared-VBO case fails in all three engines:
+`.context/graphics-fixed-vbo-baseline-browser.log`. The archive is
+`.context/graphics-fixed-before/`.
+
+Current focused evidence, ABI 55:
+
+| Gate | Result | Evidence |
+|---|---|---|
+| Native actual EGL/GLES sources with device double and UBSan | 43 cases passed | `.context/graphics-client-packed-verified-native.log` |
+| Host graphics source gate and Node/browser declarations | 324 cases in 16 files; declarations passed | `.context/graphics-fixed-final-host.log` |
+| Real Chromium/Firefox/WebKit source WebGL | 51 cases passed, no skips | `.context/graphics-fixed-final-browser.log` |
+| Browser protocol/memory-boundary negative checks | 10 passed, no skips | `.context/graphics-fixed-memory-boundary.log` |
+| Private wasm32 EGL/GLES objects and relocatable paired link | Passed | `.context/graphics-fixed-wasm.log` |
+
+Two new browser cases compile the actual current C sources with the native
+device double, record their submitted commands and replay those exact bytes
+through the real host decoder. They render 17000-element float and fixed
+client arrays, including a 1024-byte fixed source stride, negative values,
+fractional values and normalization enabled. The bytes render cyan and all
+temporary buffer views retire. This proves native C encoding through actual
+browser rendering; it does not execute Wasm guest marshalling or installed
+SDK archives. The expanded shared-buffer case checks a fixed-point VBO with
+a wide stride, updates/redefinition through both targets, peer visibility,
+name reuse and retirement of raw and converted native views.
+
+An initial parallel Playwright invocation shared its artifact directory
+with the baseline run and lost a trace during cleanup. Its failure is not
+runtime evidence. The final 51-case run owns its output directory under
+`.context/graphics-fixed-browser-artifacts/` and completes serially.
+
+G03 remains partial. Combined bound indices/client attributes, full vertex
+and buffer queries, all negative/limit conditions and guest integration are
+still open. WebGL2 also
+[always enables fixed-index primitive restart](https://registry.khronos.org/webgl/specs/2.0/#PRIMITIVE_RESTART_FIXED_INDEX);
+GLES2 index values 255/65535 therefore need translation before native draws.
+This is ordinary implementation work, not a hard boundary. No wire layout
+changed; ABI remains 55. Normal SDK/kernel/package/image provisioning and
+full CTS/compositor, browser-memory and POSIX runs remain deferred until the
+combined implementation reaches its build/test phase. Performance was not
+measured.

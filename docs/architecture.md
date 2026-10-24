@@ -3918,8 +3918,17 @@ independent 64 KiB readback chunks, preserve native copy bindings and avoid a
 full CPU mirror. Queries and retirement resolve each view to the logical
 identity, including old references after name reuse. Failed synchronization
 keeps the view invalid and suppresses drawing until a successful retry.
-GL_FIXED/client staging coverage, image sibling sampler identity and kernel
-display-generation authority plus C group routing remain open.
+Fixed-point and wide-stride attributes use stable packed derived views.
+Raw source updates invalidate them; conversion uses bounded independent
+source/output chunks and preserves native copy bindings. Logical VAOs retain
+GLES formats, strides and offsets while native pointers use packed data.
+Disabled/unbound attributes retain views; replacement and container teardown
+release unused views. Client staging likewise packs only referenced elements,
+avoiding unreadable prefixes, stride gaps and sparse-index holes, with bounded
+scratch/masks and signed size checks. Combined bound indices/client arrays,
+fixed-index restart translation, complete query/negative/limit coverage,
+image sibling sampler identity and kernel display-generation authority plus
+C group routing remain open.
 Shader/program attachment records retain deleted shaders and current
 programs until their last logical reference releases. Native program deletion
 is deferred while the program is current in its owner, allowing muxer replay
