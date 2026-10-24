@@ -846,6 +846,14 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
     WPK_MAP_GL(glGenRenderbuffers);
     WPK_MAP_GL(glGenTextures);
 
+    WPK_MAP_GL(glGetActiveAttrib);
+    WPK_MAP_GL(glGetAttachedShaders);
+    WPK_MAP_GL(glGetFramebufferAttachmentParameteriv);
+    WPK_MAP_GL(glGetRenderbufferParameteriv);
+    WPK_MAP_GL(glGetShaderSource);
+    WPK_MAP_GL(glGetTexParameterfv);
+    WPK_MAP_GL(glGetTexParameteriv);
+    WPK_MAP_GL(glValidateProgram);
     WPK_MAP_GL(glGetBufferParameteriv);
     WPK_MAP_GL(glGetVertexAttribiv);
     WPK_MAP_GL(glGetVertexAttribfv);

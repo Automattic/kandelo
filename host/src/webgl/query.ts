@@ -17,6 +17,7 @@
  * round-tripping.
  */
 import { runStateQuery } from "./state-query.js";
+import { runObjectQuery } from "./object-query.js";
 import { canonicalBuffer } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
@@ -113,6 +114,8 @@ export function runGlQuery(
 
   const state = runStateQuery(b,op,input,out);
   if (state !== undefined) return state;
+  const object = runObjectQuery(b,op,input,out);
+  if (object !== undefined) return object;
 
   switch (op) {
     case O.QOP_GET_ERROR:
@@ -211,7 +214,9 @@ export function runGlQuery(
         return 4;
       }
       const pname = inDv.getUint32(4, true);
+      const sourceLength = b.shaderSources.get(sh)?.length ?? 0;
       const v = pname === 0x8b80 ? b.shaderDeletePending.has(inDv.getUint32(0, true))
+        : pname === 0x8b88 ? (sourceLength ? sourceLength+1 : 0)
         : pname === GL_INFO_LOG_LENGTH
         ? ((gl.getShaderInfoLog(sh) ?? "").length + 1)
         : gl.getShaderParameter(sh, pname);
@@ -249,11 +254,12 @@ export function runGlQuery(
         v = b.programDeletePending.has(inDv.getUint32(0, true));
       } else if (pname === GL_INFO_LOG_LENGTH) {
         v = (gl.getProgramInfoLog(prog) ?? "").length + 1;
-      } else if (pname === GL_ACTIVE_UNIFORM_MAX_LENGTH) {
-        const n = Number(gl.getProgramParameter(prog, GL_ACTIVE_UNIFORMS) ?? 0);
+      } else if (pname === GL_ACTIVE_UNIFORM_MAX_LENGTH || pname === 0x8b8a) {
+        const attributes = pname === 0x8b8a;
+        const n = Number(gl.getProgramParameter(prog, attributes ? 0x8b89 : GL_ACTIVE_UNIFORMS) ?? 0);
         let max = 0;
         for (let i = 0; i < n; i++) {
-          const info = gl.getActiveUniform(prog, i);
+          const info = attributes ? gl.getActiveAttrib(prog, i) : gl.getActiveUniform(prog, i);
           if (info) max = Math.max(max, info.name.length + 1);
         }
         v = max;

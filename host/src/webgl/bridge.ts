@@ -304,6 +304,7 @@ function validPayload(op: number, v: DataView): boolean {
     case O.OP_DELETE_SHADER:
     case O.OP_CREATE_PROGRAM:
     case O.OP_LINK_PROGRAM:
+    case O.OP_VALIDATE_PROGRAM:
     case O.OP_USE_PROGRAM:
     case O.OP_DELETE_PROGRAM:
     case O.OP_ENABLE_VERTEX_ATTRIB_ARRAY:
@@ -890,12 +891,19 @@ function dispatch(
       srcBytes.set(new Uint8Array(v.buffer, v.byteOffset + p + 8, srcLen));
       const src = new TextDecoder().decode(srcBytes);
       const sh = b.shaders.get(name);
-      if (sh) gl.shaderSource(sh, src);
+      if (!sh) { recordGlError(b,b.programs.has(name) ? 0x502 : 0x501); return; }
+      if (checkedGlCall(b, () => gl.shaderSource(sh, src))) b.shaderSources.set(sh,srcBytes);
       return;
     }
     case O.OP_COMPILE_SHADER: {
       const sh = b.shaders.get(v.getUint32(p, true));
       if (sh) gl.compileShader(sh);
+      return;
+    }
+    case O.OP_VALIDATE_PROGRAM: {
+      const name = v.getUint32(p,true), program = b.programs.get(name);
+      if (!program) { recordGlError(b,b.shaders.has(name) ? 0x502 : 0x501); return; }
+      checkedGlCall(b, () => gl.validateProgram(program));
       return;
     }
     case O.OP_DELETE_SHADER: {

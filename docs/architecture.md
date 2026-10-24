@@ -3940,8 +3940,15 @@ the global ABI stays 55. Buffer queries read logical size/usage rather than
 stale native views. Vertex queries preserve original client pointers,
 formats and strides despite private draw staging. Object and enable
 predicates use the appropriate logical namespace and context state.
-Complete query/negative/limit coverage,
-image sibling sampler identity and kernel display-generation authority plus
+Operation-table v4 adds core attribute/source/attached-shader and image
+parameter queries plus program validation. Original source bytes belong to
+the shared shader object; attachment queries retain old names through
+namespace reuse. String/list replies use bounded chunks, with private C
+accumulation before caller outputs change. EGLImage attachment queries
+translate matching native storage back to its public sibling type/name.
+All 142 GLES2 core symbols are defined and resolved; full conformance,
+default texture-zero objects, source upload limits and complete
+query/negative/limit coverage remain open, alongside image sibling sampler identity and kernel display-generation authority plus
 C group routing remain open.
 Shader/program attachment records retain deleted shaders and current
 programs until their last logical reference releases. Native program deletion

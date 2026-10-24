@@ -1504,3 +1504,96 @@ describe("GLES texture upload marshalling", () => {
     }
   });
 });
+
+describe("GLES2 core object queries", () => {
+  function setup() {
+    const gl = new RecordingGl(), {reg,b} = setupBinding(gl,65540);
+    const send = (op: number, words: number[], bytes = new Uint8Array()) => {
+      const v = new DataView(b.cmdbufView!.buffer);
+      v.setUint16(0,op,true); v.setUint16(2,words.length*4+bytes.length,true);
+      words.forEach((word,i) => v.setUint32(4+4*i,word,true)); b.cmdbufView!.set(bytes,4+4*words.length);
+      expect(decodeAndDispatch(b,0,4+4*words.length+bytes.length)).toBe(0);
+    };
+    const query = (op: number, words: number[], size: number) => {
+      const input = new Uint8Array(words.length*4), out = new Uint8Array(size+8).fill(0xaa);
+      words.forEach((word,i) => new DataView(input.buffer).setUint32(4*i,word,true));
+      const rc = runGlQuery(b,op,input,out), view = new DataView(out.buffer);
+      if (rc >= 0) expect(view.getUint32(size+4,true)).toBe(0x47514c33);
+      return {rc,status:view.getUint32(0,true),bytes:out.subarray(4,size+4)};
+    };
+    return {gl,reg,b,send,query};
+  }
+  it("preserves original shader bytes, empty source and deferred deletion", () => {
+    const {b,send,query} = setup();
+    send(O.OP_CREATE_SHADER,[0x8b31,11]); send(O.OP_CREATE_PROGRAM,[12]); send(O.OP_ATTACH_SHADER,[12,11]);
+    const original = new Uint8Array([97,0,98,0xff]); send(O.OP_SHADER_SOURCE,[11,original.length],original);
+    const first = query(O.QOP_GET_SHADER_SOURCE,[11,0,4],8);
+    expect(first.status).toBe(0); expect([...first.bytes]).toEqual([4,0,0,0,97,0,98,255]);
+    send(O.OP_DELETE_SHADER,[11]); expect(b.shaderSources.size).toBe(1);
+    expect([...query(O.QOP_GET_SHADER_SOURCE,[11,2,2],6).bytes]).toEqual([4,0,0,0,98,255]);
+    send(O.OP_SHADER_SOURCE,[11,0]); expect([...query(O.QOP_GET_SHADER_SOURCE,[11,0,0],4).bytes]).toEqual([0,0,0,0]);
+    send(O.OP_DETACH_SHADER,[12,11]); expect(b.shaderSources.size).toBe(0);
+    expect(query(O.QOP_GET_SHADER_SOURCE,[11,0,0],4).status).toBe(1); expect(b.errors).toContain(0x501);
+  });
+  it("returns source chunks larger than a TLV without growing reply capacity", () => {
+    const {b,send,query} = setup(); send(O.OP_CREATE_SHADER,[0x8b31,11]);
+    const source = Uint8Array.from({length:70000},(_,i) => i%256); b.shaderSources.set(b.shaders.get(11)!,source);
+    const first = query(O.QOP_GET_SHADER_SOURCE,[11,0,65524],65528);
+    const last = query(O.QOP_GET_SHADER_SOURCE,[11,65524,4476],4480);
+    expect(first.rc).toBe(65536); expect(first.bytes.subarray(4)).toEqual(source.subarray(0,65524));
+    expect(last.bytes.subarray(4)).toEqual(source.subarray(65524));
+    expect(query(O.QOP_GET_SHADER_SOURCE,[11,0,65525],65529).rc).toBe(-22);
+  });
+  it("queries active attribute metadata and maximum name length without exposing native objects", () => {
+    const {gl,b,send,query} = setup(); send(O.OP_CREATE_PROGRAM,[12]);
+    Object.assign(gl,{getActiveAttrib: () => ({name:"position",size:1,type:0x8b50})});
+    const result = query(O.QOP_GET_ACTIVE_ATTRIB,[12,0,2,3],15);
+    expect(result.status).toBe(0); expect([...new Uint32Array(result.bytes.slice(0,12).buffer)]).toEqual([8,1,0x8b50]);
+    expect(new TextDecoder().decode(result.bytes.subarray(12))).toBe("sit");
+    expect(query(O.QOP_GET_ACTIVE_ATTRIB,[12,1,0,0],12).status).toBe(1); expect(b.errors).toContain(0x501);
+    const input = new Uint8Array(new Uint32Array([12,0x8b8a]).buffer), out = new Uint8Array(4);
+    expect(runGlQuery(b,O.QOP_GET_PROGRAMIV,input,out)).toBe(4); expect(new DataView(out.buffer).getUint32(0,true)).toBe(9);
+  });
+  it("retains attached pending-delete shader names until detach", () => {
+    const {b,send,query} = setup(); send(O.OP_CREATE_PROGRAM,[12]);
+    send(O.OP_CREATE_SHADER,[0x8b31,11]); send(O.OP_CREATE_SHADER,[0x8b30,13]);
+    send(O.OP_ATTACH_SHADER,[12,11]); send(O.OP_ATTACH_SHADER,[12,13]); send(O.OP_DELETE_SHADER,[11]);
+    expect([...new Uint32Array(query(O.QOP_GET_ATTACHED_SHADERS,[12,1,1],8).bytes.slice().buffer)]).toEqual([2,13]);
+    expect(query(O.QOP_GET_ATTACHED_SHADERS,[11,0,0],4).status).toBe(1); expect(b.errors).toContain(0x502);
+    send(O.OP_DETACH_SHADER,[12,11]); expect(b.shaders.has(11)).toBe(false);
+  });
+  it("reports original attachment identities after deletion and name reuse", () => {
+    const {b,send,query} = setup();
+    send(O.OP_BIND_FRAMEBUFFER,[0x8d40,5]); send(O.OP_BIND_TEXTURE,[0x8513,7]);
+    send(O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x8516,7,0]);
+    const expected = [0x1702,7,0,0x8516];
+    expect([...new Uint32Array(query(O.QOP_GET_FB_ATTACHMENT,[0x8d40,0x8ce0],16).bytes.slice().buffer)]).toEqual(expected);
+    send(O.OP_BIND_FRAMEBUFFER,[0x8d40,6]); send(O.OP_DELETE_TEXTURES,[1,7]); send(O.OP_BIND_TEXTURE,[0x0de1,7]);
+    send(O.OP_BIND_FRAMEBUFFER,[0x8d40,5]);
+    expect([...new Uint32Array(query(O.QOP_GET_FB_ATTACHMENT,[0x8d40,0x8ce0],16).bytes.slice().buffer)]).toEqual(expected);
+    send(O.OP_BIND_FRAMEBUFFER,[0x8d40,0]); expect(query(O.QOP_GET_FB_ATTACHMENT,[0x8d40,0x8ce0],16).status).toBe(1);
+    expect(b.errors).toContain(0x502);
+  });
+  it("queries renderbuffer/texture parameters and rejects ES3 enums and missing bindings", () => {
+    const {gl,b,send,query} = setup();
+    Object.assign(gl,{getRenderbufferParameter: () => 32,getTexParameter: () => 0x2601});
+    expect(query(O.QOP_GET_RENDERBUFFER_PARAMETER,[0x8d41,0x8d42],4).status).toBe(1);
+    send(O.OP_BIND_RENDERBUFFER,[0x8d41,9]);
+    expect(new DataView(query(O.QOP_GET_RENDERBUFFER_PARAMETER,[0x8d41,0x8d42],4).bytes.buffer,4,4).getInt32(0,true)).toBe(32);
+    expect(query(O.QOP_GET_TEX_PARAMETER,[0x0de1,0x813c],4).status).toBe(1);
+    expect(query(O.QOP_GET_RENDERBUFFER_PARAMETER,[0x8d41,0x8cab],4).status).toBe(1); expect(b.errors).toContain(0x500);
+  });
+  it("validates only logical programs and preserves native rejection errors", () => {
+    const {gl,b,send} = setup(); Object.assign(gl,{validateProgram: (program: unknown) => gl.log.push(["validateProgram",[program]])});
+    send(O.OP_CREATE_PROGRAM,[12]); send(O.OP_CREATE_SHADER,[0x8b31,11]);
+    send(O.OP_VALIDATE_PROGRAM,[12]); expect(gl.log.filter(([name]) => name === "validateProgram")).toHaveLength(1);
+    send(O.OP_VALIDATE_PROGRAM,[11]); send(O.OP_VALIDATE_PROGRAM,[99]); expect(b.errors).toEqual([0x502,0x501]);
+  });
+  it("does not publish partial data after a native query failure", () => {
+    const {gl,b,send,query} = setup(); send(O.OP_CREATE_PROGRAM,[12]);
+    const errors: number[] = []; gl.getError = () => errors.shift() ?? 0;
+    Object.assign(gl,{getActiveAttrib: () => { errors.push(0x505); return {name:"partial",size:1,type:0x1406}; }});
+    const failed = query(O.QOP_GET_ACTIVE_ATTRIB,[12,0,0,8],20);
+    expect(failed.status).toBe(1); expect(failed.bytes.every(v => v === 0)).toBe(true); expect(b.errors).toEqual([0x505]);
+  });
+});

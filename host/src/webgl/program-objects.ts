@@ -33,6 +33,7 @@ export function finalizeShader(b: GlBinding, name: number): void {
   const shader = b.shaders.get(name);
   if (shader && !checkedGlCall(b, () => b.gl!.deleteShader(shader))) return;
   b.shaderDeletePending.delete(name);
+  if (shader) b.shaderSources.delete(shader);
   b.shaders.delete(name);
 }
 

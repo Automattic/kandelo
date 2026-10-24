@@ -143,6 +143,71 @@ test("op-table v3 queries preserve logical state, sparse indices and single GL e
     enabled:1,foreignCap:[0x500,0,false],failedQuery:[1,0x502,0],kinds:[1,1,1,1,1],errors:[0,0]});
 });
 
+test("remaining GLES2 core object queries retain source and attachment identities", async ({ page }) => {
+  await page.goto("/trap-signal-test.html");
+  const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
+  const result = await page.evaluate(async sourceRoot => {
+    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const { GlContextRegistry } = await import(base+"registry.ts"), { decodeAndDispatch } = await import(base+"bridge.ts");
+    const { runGlQuery } = await import(base+"query.ts"), O = await import(base+"ops.ts");
+    const canvas = document.createElement("canvas"), gl = canvas.getContext("webgl2");
+    if (!gl) throw new Error("WebGL2 required");
+    const reg = new GlContextRegistry(); reg.bind({pid:96,sessionId:1,cmdbufAddr:0,cmdbufLen:4096});
+    const b = reg.get(96,1)!; b.gl = gl; b.contextId = 1; b.cmdbufView = new Uint8Array(4096);
+    const send = (op: number, words: number[], tail = new Uint8Array()) => {
+      const v = new DataView(b.cmdbufView!.buffer); v.setUint16(0,op,true); v.setUint16(2,words.length*4+tail.length,true);
+      words.forEach((word,i) => v.setUint32(4+4*i,word,true)); b.cmdbufView!.set(tail,4+4*words.length);
+      if (decodeAndDispatch(b,0,4+4*words.length+tail.length)) throw new Error("core command failed");
+    };
+    const query = (op: number, words: number[], size: number, allowError = false) => {
+      const input = new Uint8Array(words.length*4), out = new Uint8Array(size+8);
+      words.forEach((word,i) => new DataView(input.buffer).setUint32(4*i,word,true));
+      if (runGlQuery(b,op,input,out) !== size+8) throw new Error("core query failed");
+      const v = new DataView(out.buffer);
+      if (v.getUint32(size+4,true) !== 0x47514c33 || (!allowError && v.getUint32(0,true))) throw new Error("bad core reply");
+      return {status:v.getUint32(0,true),bytes:out.slice(4,size+4)};
+    };
+    const scalar = (op: number, words: number[]) => new DataView(query(op,words,4).bytes.buffer).getInt32(0,true);
+    const error = () => { const out = new Uint8Array(4); if (runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out) !== 4) throw new Error("error failed"); return new DataView(out.buffer).getUint32(0,true); };
+    const source = "attribute vec2 position; void main(){gl_Position=vec4(position,0.,1.);}";
+    for (const [name,type,text] of [[11,gl.VERTEX_SHADER,source],[12,gl.FRAGMENT_SHADER,"precision mediump float; void main(){gl_FragColor=vec4(1.);}"]] as const) {
+      send(O.OP_CREATE_SHADER,[type,name]); const bytes = new TextEncoder().encode(text); send(O.OP_SHADER_SOURCE,[name,bytes.length],bytes); send(O.OP_COMPILE_SHADER,[name]);
+    }
+    send(O.OP_CREATE_PROGRAM,[13]); send(O.OP_ATTACH_SHADER,[13,11]); send(O.OP_ATTACH_SHADER,[13,12]); send(O.OP_LINK_PROGRAM,[13]);
+    send(O.OP_VALIDATE_PROGRAM,[13]); const validated = gl.getProgramParameter(b.programs.get(13)!,gl.VALIDATE_STATUS);
+    const attribute = query(O.QOP_GET_ACTIVE_ATTRIB,[13,0,0,8],20).bytes;
+    const attributeMeta = [...new Uint32Array(attribute.slice(0,12).buffer)], attributeName = new TextDecoder().decode(attribute.subarray(12));
+    const activeLength = new Uint8Array(4); runGlQuery(b,O.QOP_GET_PROGRAMIV,new Uint8Array(new Uint32Array([13,0x8b8a]).buffer),activeLength);
+    const maxName = new DataView(activeLength.buffer).getUint32(0,true);
+    send(O.OP_DELETE_SHADER,[11]);
+    const attached = [...new Uint32Array(query(O.QOP_GET_ATTACHED_SHADERS,[13,0,2],12).bytes.buffer)];
+    const original = new TextDecoder().decode(query(O.QOP_GET_SHADER_SOURCE,[11,0,source.length],4+source.length).bytes.subarray(4));
+    send(O.OP_CREATE_SHADER,[gl.VERTEX_SHADER,14]); const raw = new Uint8Array([97,0,98,255]); send(O.OP_SHADER_SOURCE,[14,4],raw);
+    const rawSource = [...query(O.QOP_GET_SHADER_SOURCE,[14,0,4],8).bytes.subarray(4)];
+    const lengthReply = new Uint8Array(4); runGlQuery(b,O.QOP_GET_SHADERIV,new Uint8Array(new Uint32Array([14,0x8b88]).buffer),lengthReply);
+    const sourceLength = new DataView(lengthReply.buffer).getUint32(0,true);
+    send(O.OP_BIND_RENDERBUFFER,[gl.RENDERBUFFER,7]); send(O.OP_RENDERBUFFER_STORAGE,[gl.RENDERBUFFER,gl.RGBA4,4,5]);
+    const renderbuffer = [gl.RENDERBUFFER_WIDTH,gl.RENDERBUFFER_HEIGHT,gl.RENDERBUFFER_INTERNAL_FORMAT,gl.RENDERBUFFER_RED_SIZE]
+      .map(pname => [scalar(O.QOP_GET_RENDERBUFFER_PARAMETER,[gl.RENDERBUFFER,pname]),gl.getRenderbufferParameter(gl.RENDERBUFFER,pname)]);
+    send(O.OP_BIND_TEXTURE,[gl.TEXTURE_2D,8]); send(O.OP_TEX_PARAMETERI,[gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST]);
+    const texture = scalar(O.QOP_GET_TEX_PARAMETER,[gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER]);
+    send(O.OP_BIND_TEXTURE,[gl.TEXTURE_CUBE_MAP,10]);
+    send(O.OP_TEX_IMAGE_2D,[gl.TEXTURE_CUBE_MAP_NEGATIVE_X,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,0]);
+    send(O.OP_BIND_FRAMEBUFFER,[gl.FRAMEBUFFER,9]); send(O.OP_FRAMEBUFFER_TEXTURE_2D,[gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_CUBE_MAP_NEGATIVE_X,10,0]);
+    const before = [...new Uint32Array(query(O.QOP_GET_FB_ATTACHMENT,[gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0],16).bytes.buffer)];
+    send(O.OP_BIND_FRAMEBUFFER,[gl.FRAMEBUFFER,15]); send(O.OP_DELETE_TEXTURES,[1,10]); send(O.OP_BIND_TEXTURE,[gl.TEXTURE_2D,10]); send(O.OP_BIND_FRAMEBUFFER,[gl.FRAMEBUFFER,9]);
+    const after = [...new Uint32Array(query(O.QOP_GET_FB_ATTACHMENT,[gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0],16).bytes.buffer)];
+    const pending = error(); const wrongKind = query(O.QOP_GET_ACTIVE_ATTRIB,[12,0,0,0],12,true);
+    const errors = [pending,wrongKind.status,error(),error()];
+    reg.destroyContext(96,1); return {validated,attributeMeta,attributeName,maxName,attached,original,source,rawSource,sourceLength,renderbuffer,texture,before,after,errors};
+  },root);
+  expect(result.validated).toBe(true); expect(result.attributeMeta).toEqual([8,1,0x8b50]); expect(result.attributeName).toBe("position"); expect(result.maxName).toBe(9);
+  expect(result.attached).toEqual([2,11,12]); expect(result.original).toBe(result.source); expect(result.rawSource).toEqual([97,0,98,255]); expect(result.sourceLength).toBe(5);
+  for (const [logical,native] of result.renderbuffer) expect(logical).toBe(native);
+  expect(result.renderbuffer[0][0]).toBe(4); expect(result.renderbuffer[1][0]).toBe(5); expect(result.texture).toBe(0x2600);
+  expect(result.before).toEqual([0x1702,10,0,0x8516]); expect(result.after).toEqual(result.before); expect(result.errors).toEqual([0,1,0x502,0]);
+});
+
 for (const width of [1,2]) {
   test(`maximum ${width*8}-bit VBO indices preserve strip topology and shared storage`, async ({ page }) => {
     await page.goto("/trap-signal-test.html");

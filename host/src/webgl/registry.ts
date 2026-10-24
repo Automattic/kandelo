@@ -277,7 +277,7 @@ export class GlContextRegistry {
       for (const object of programs) gl?.deleteProgram(object);
       for (const object of b.rbos.values()) gl?.deleteRenderbuffer(object);
       for (const map of [b.buffers,b.textures,b.shaders,b.programs,b.rbos,b.uniformLocations,
-        b.uniformLocationPrograms,b.programShaders,b.programAttributeBindings,b.foreignTextures]) map.clear();
+        b.uniformLocationPrograms,b.programShaders,b.programAttributeBindings,b.foreignTextures,b.shaderSources]) map.clear();
       b.shaderDeletePending.clear(); b.programDeletePending.clear();
     } else {
       if (installedName) finalizeProgram(b, installedName);

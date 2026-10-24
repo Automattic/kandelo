@@ -61,11 +61,11 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reserved guest buffer names and host shared-object maps; core object predicates implemented, full query/error coverage still open | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
 | G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Full rollback, hints and multiple public contexts remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
 | G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffers plus client attributes use a bounded presence query; core buffer/vertex queries preserve logical state. Full size/limit/negative coverage remains open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
-| G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core reflection and complete executable/attribute/uniform validation still need work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
+| G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core attribute/source/attachment reflection and validation entrypoints are implemented; complete executable/attribute/uniform validation still needs work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
-| G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization exists; complete target/state/error audit missing | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
+| G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization and core parameter queries exist; default texture-zero objects and complete target/state/error audit remain open | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
 | G07 | Raster/depth/stencil/blend/clear/readback; ES2 §§3,4 | Main provides offscreen color/depth/stencil; no broad CTS evidence | bridge, query, present-target | CTS functional render families; real pixels all three engines | partial |
-| G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | Default/user identities and read/draw state remain distinct; attachment records retain deleted texture/RBO storage, including unbound containers and separate packed depth/stencil points. Full query/storage/CTS coverage remains open | encoder, registry, image references, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
+| G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | Default/user identities and read/draw state remain distinct; attachment records retain deleted texture/RBO storage, including unbound containers and separate packed depth/stencil points. Core attachment/renderbuffer queries implemented; full storage/negative/CTS coverage remains open | encoder, registry, image references, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
 | G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
 | G10 | Every core function resolves; ES2 API | Handwritten eglGetProcAddress list incomplete; old branch generates declarations | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | open |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
@@ -1253,3 +1253,106 @@ Snapshot verification compiled the focused kernel component. Normal full
 SDK/archive/program/package/image provisioning, guest CTS, cage/sway,
 full browser-memory and POSIX validation remain deferred to the combined
 build/test phase. Performance was not measured.
+
+
+### GLES2 core object entrypoints and program validation
+
+The final eight missing GLES2 core symbols now have implementations and
+`eglGetProcAddress` mappings: active attributes, attached shaders, shader
+source, framebuffer attachments, renderbuffer parameters, integer/float
+texture parameters and program validation. The source/resolver inventory
+now contains all 142 GLES2 core entrypoints; there are 150 public GL
+functions including the existing extra entrypoints. This is symbol and
+focused behavior coverage, not a GLES2 conformance claim.
+
+Original shader bytes belong to the shared shader object, survive pending
+deletion while attached and retire with the final shader reference. Source
+length queries count those bytes rather than the driver's decoded string.
+Zero-string source replacement now clears the source; negative counts
+report an error. Active attribute queries report their full name length,
+size/type and requested name range; program queries calculate the maximum
+attribute name length. Attached-shader queries return logical names even
+while deletion is pending. Program validation invokes the native driver
+against the logical program and records wrong-kind/missing-name errors.
+
+Operation-table v4 adds six checked query tags and one validation command.
+String/list queries first fetch metadata, then bounded result chunks; each
+reply stays within the existing 65536-byte query ceiling. The C library
+accumulates results privately and publishes outputs only after every
+chunk succeeds. Zero-sized output buffers still validate the object and
+return the appropriate metadata/count. API failures preserve output and
+retain single host ownership of GL errors. Existing operation layouts
+remain unchanged; global ABI stays 55. Snapshot regeneration/checking
+produced no generated-file changes, and focused kernel negotiation tests
+accept versions 1–4 and reject 0 and 5.
+
+Attachment queries use the actual retained attachment record, including
+old deleted names after public name reuse, texture level and cube face.
+The C EGLImage mapping translates a matching host texture back to its
+public texture/renderbuffer identity. Separate query identity fields
+survive deletion of an unbound sibling's public name. Image-backed
+renderbuffer dimensions and component sizes reflect the known host RGBA8
+BO storage. Core framebuffer attachment enums are checked before changing
+C image bookkeeping. Native renderbuffer parameters report actual driver
+storage, and texture parameters accept the four core GLES2 query names.
+
+The reference contracts are the Khronos
+[active attribute](https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glGetActiveAttrib.xml),
+[attached shader](https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glGetAttachedShaders.xml),
+[shader source](https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glGetShaderSource.xml),
+[framebuffer attachment](https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glGetFramebufferAttachmentParameteriv.xml),
+[renderbuffer](https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glGetRenderbufferParameteriv.xml),
+[texture parameter](https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glGetTexParameter.xml)
+and [program validation](https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glValidateProgram.xml)
+reference pages. Inspected source copies are under
+`.context/graphics-core-spec/`.
+
+Exact `e2b20591ff` baseline: the native suite passes 51 prior cases and
+fails all four additions at their missing resolver checks:
+`.context/graphics-core-baseline-native.log`. The new direct WebGL case
+fails on all three engines against that exact archived host source under
+`.context/graphics-core-before/`:
+`.context/graphics-core-baseline-browser.log`.
+
+Focused evidence on the v4 source tree:
+
+| Gate | Result | Evidence |
+|---|---|---|
+| Native actual EGL/GLES with device double and UBSan | 55 passed | `.context/graphics-core-final-native.log` |
+| Host graphics-only source gate and Node/browser declarations | 344 cases in 16 files; declarations passed | `.context/graphics-core-verified-host.log` |
+| Real Chromium/Firefox/WebKit source WebGL | 75 passed, no skips | `.context/graphics-core-browser.log` |
+| Kernel graphics negotiation/lifecycle and shared GL contracts | 16 GLIO cases; 5 shared cases passed | `.context/graphics-core-rust.log`, `.context/graphics-core-final-shared-rust.log` |
+| Browser protocol/memory-boundary negative checks | 10 passed | `.context/graphics-core-memory-boundary.log` |
+| Private wasm32 EGL/GLES objects and paired relocatable link | Passed | `.context/graphics-core-final-wasm.log` |
+| Public GL current-context and core resolver inventory | All 150 definitions guarded; 142/142 core names defined/resolved | `.context/graphics-core-audit.log` |
+| ABI snapshot/source consistency | Passed; global ABI 55, generated files unchanged | `.context/graphics-core-abi-check.log` |
+
+Native tests exercise 70000-byte controlled query replies, truncation,
+zero-capacity queries, second-chunk failure with unchanged caller storage,
+allocation failure, single backend errors, and image-backed renderbuffer
+identity after deletion while unbound. The native device double still
+supplies query data rather than executing guest u32 input marshalling.
+The host's large-source query case seeds logical storage directly; the C
+source-upload path still has its separate single-TLV size limit. Browser
+checks exercise real compiled attribute reflection, validation status,
+pending-delete shader source and names, raw original bytes, actual native
+renderbuffer values, texture parameters and retained cube attachments.
+They do not execute the guest libraries through the kernel.
+
+The first two host invocations accidentally used the default configuration
+and entered fixture provisioning before being terminated. Their exact
+sessions ended with status 137; they do not supply passing host evidence.
+They generated the program index and compiled some ordinary guest test
+fixtures, but did not complete the integration suite. The verified gate
+above uses `vitest.graphics.config.ts` without fixture provisioning.
+Snapshot verification compiled the focused kernel component. Normal full
+SDK/archive/program/package/image provisioning and guest CTS, cage/sway,
+full browser-memory and POSIX validation remain deferred.
+
+GLES2 remains partial: default texture-zero object translation, the C
+single-TLV shader upload size limit, fixed 16-slot attribute mirrors,
+uniform/reflection edge cases and full negative/limit/error coverage are
+ordinary implementation gaps. Public EGL sharing, independent surfaces,
+display generations, sibling sampler/storage identity and the other
+inventory families remain open. No new platform boundary is claimed.
+Performance was not measured.

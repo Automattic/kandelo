@@ -106,7 +106,7 @@ export const QOP_FINISH                = 0x0E;
 
 /** Bumped in lockstep with `shared::gl::OP_VERSION`. The kernel's
  *  `GLIO_INIT` accepts versions 1 through this value. */
-export const OP_VERSION = 3;
+export const OP_VERSION = 4;
 
 // Additive GLES entry points used by native renderers; existing tags stay stable.
 export const OP_BLEND_EQUATION = 0x000F;
@@ -153,3 +153,12 @@ export const QOP_GET_VERTEX_ATTRIBFV = 0x0014;
 export const QOP_IS_OBJECT = 0x0015;
 export const QOP_IS_ENABLED = 0x0016;
 export const QOP_GET_INDEX_USAGE = 0x0017;
+
+// Op-table v4: remaining GLES2 core object queries.
+export const QOP_GET_ACTIVE_ATTRIB = 0x0018;
+export const QOP_GET_ATTACHED_SHADERS = 0x0019;
+export const QOP_GET_SHADER_SOURCE = 0x001A;
+export const QOP_GET_FB_ATTACHMENT = 0x001B;
+export const QOP_GET_RENDERBUFFER_PARAMETER = 0x001C;
+export const QOP_GET_TEX_PARAMETER = 0x001D;
+export const OP_VALIDATE_PROGRAM = 0x030B;

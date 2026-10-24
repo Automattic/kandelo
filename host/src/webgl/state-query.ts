@@ -39,13 +39,20 @@ export function runStateQuery(b: GlBinding, op: number, input: Uint8Array, out: 
     default: return undefined;
   }
   if (input.length !== inputSize || out.length < size+8) return -22;
+  return checkedQueryReply(b,out,size,payload => runStatePayload(b,op,input,payload)!);
+}
+
+/** Build replies privately so a failed native read cannot publish partial data. */
+export function checkedQueryReply(b: GlBinding, out: Uint8Array, size: number,
+    write: (payload: Uint8Array<ArrayBuffer>) => number): number {
   const view = new DataView(out.buffer,out.byteOffset,out.byteLength);
   let payload: Uint8Array<ArrayBuffer>, rc: number;
   try { payload = new Uint8Array(size); }
   catch {
     recordGlError(b,0x505); out.fill(0,4,size+4); view.setUint32(0,1,true); view.setUint32(size+4,0x47514c33,true); return size+8;
   }
-  rc = runStatePayload(b,op,input,payload)!;
+  try { rc = write(payload); }
+  catch { recordGlError(b,0x505); rc = -12; }
   view.setUint32(0,rc < 0 ? 1 : 0,true);
   if (rc < 0) out.fill(0,4,size+4); else out.set(payload,4);
   view.setUint32(size+4,0x47514c33,true);

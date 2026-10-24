@@ -16,6 +16,7 @@
  * preserving the v1 command layouts.
  * Version 3 adds checked logical state queries and bounded index usage
  * replies for draws combining client attributes with an index buffer.
+ * Version 4 adds the remaining core object queries and program validation.
  */
 
 #include <GLES2/gl2.h>
@@ -59,7 +60,7 @@ struct wpk_buffer_name {
 struct wpk_gl_alias { GLuint name; GLuint host; struct wpk_egl_image *image; };
 struct wpk_gl_alias_table { struct wpk_gl_alias *v; size_t len, cap; };
 struct wpk_image_attachment {
-    GLuint framebuffer, point, kind, name;
+    GLuint framebuffer, point, kind, name, query_kind, query_name, query_host;
     struct wpk_egl_image *image;
     struct wpk_image_attachment *next;
 };
@@ -441,7 +442,8 @@ GLuint glCreateShader(GLenum type) {
 void glShaderSource(GLuint shader, GLsizei count,
                     const GLchar *const *string, const GLint *length) {
     if (!_wpk_gl_current_encoder()) return;
-    if (count <= 0 || !string) return;
+    if (count < 0) { if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE; return; }
+    if (count && !string) return;
     /* Concatenate all source strings (length[i] < 0 → strlen) and emit
      * one OP_SHADER_SOURCE with the combined UTF-8 blob. */
     size_t total = 0;
@@ -921,6 +923,8 @@ static int track_image_attachment(GLuint point, GLuint kind, GLuint name,
     entry->image = image;
     entry->kind = kind;
     entry->name = name;
+    entry->query_kind = kind; entry->query_name = name;
+    entry->query_host = kind == GL_RENDERBUFFER ? alias_lookup(&g_renderbuffer_aliases,name) : host_texture_name(name);
     if (!name) { *slot = entry->next; free(entry); }
     return 1;
 }
@@ -936,6 +940,7 @@ static void refresh_image_attachments(GLuint kind, GLuint name, GLuint host,
         _wpk_gl_flush();
         if (entry->image) _wpk_egl_image_release(entry->image);
         entry->image = image;
+        entry->query_host = host;
     }
     emit_bind_framebuffer(g_bound_framebuffer);
 }
@@ -1376,6 +1381,11 @@ static void emit_framebuffer_texture_2d(GLenum target, GLenum attachment,
 void glFramebufferTexture2D(GLenum target, GLenum attachment,
                             GLenum textarget, GLuint texture, GLint level) {
     if (!_wpk_gl_current_encoder()) return;
+    if (target != GL_FRAMEBUFFER || (attachment != GL_COLOR_ATTACHMENT0 && attachment != GL_DEPTH_ATTACHMENT && attachment != GL_STENCIL_ATTACHMENT)
+        || (textarget != GL_TEXTURE_2D && (textarget < GL_TEXTURE_CUBE_MAP_POSITIVE_X || textarget > GL_TEXTURE_CUBE_MAP_NEGATIVE_Z))) {
+        raise_client_error(GL_INVALID_ENUM); return;
+    }
+    if (level != 0) { raise_client_error(GL_INVALID_VALUE); return; }
     struct wpk_egl_image *image = NULL;
     for (size_t i = 0; i < g_texture_aliases.len; i++)
         if (g_texture_aliases.v[i].name == texture) image = g_texture_aliases.v[i].image;
@@ -2282,6 +2292,10 @@ void glRenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, 
 void glFramebufferRenderbuffer(GLenum target, GLenum attachment,
                                GLenum renderbuffertarget, GLuint renderbuffer) {
     if (!_wpk_gl_current_encoder()) return;
+    if (target != GL_FRAMEBUFFER || renderbuffertarget != GL_RENDERBUFFER
+        || (attachment != GL_COLOR_ATTACHMENT0 && attachment != GL_DEPTH_ATTACHMENT && attachment != GL_STENCIL_ATTACHMENT)) {
+        raise_client_error(GL_INVALID_ENUM); return;
+    }
     struct wpk_egl_image *image = NULL;
     for (size_t i = 0; i < g_renderbuffer_aliases.len; i++)
         if (g_renderbuffer_aliases.v[i].name == renderbuffer) image = g_renderbuffer_aliases.v[i].image;
@@ -2630,16 +2644,21 @@ done:
 
 /* Op-table v3 queries preserve outputs on failure. Public client array
  * queries use the original VAO definition, never private staging buffers. */
+static int checked_query_reply(uint32_t op, const void *input, uint32_t input_len,
+                               uint8_t *reply, uint32_t payload) {
+    if (_wpk_gl_query_into(op,input,input_len,reply,payload+8) != 0) goto invalid;
+    uint32_t status, footer;
+    memcpy(&status,reply,4); memcpy(&footer,reply+payload+4,4);
+    if (status > 1 || footer != WPK_GL_QUERY_REPLY_MAGIC) goto invalid;
+    return status == 0;
+invalid:
+    raise_client_error(GL_INVALID_OPERATION); return 0;
+}
 static int checked_client_query(uint32_t op, const void *in, uint32_t len, void *out, uint32_t cap) {
     uint8_t reply[24];
-    if (cap > 16 || _wpk_gl_query_into(op,in,len,reply,cap+8) != 0) goto bad_reply;
-    uint32_t status, footer; memcpy(&status,reply,4); memcpy(&footer,reply+cap+4,4);
-    if (footer != WPK_GL_QUERY_REPLY_MAGIC || status > 1) goto bad_reply;
-    if (status) return 0; /* The host owns the already-recorded GL error. */
+    if (cap > 16) { raise_client_error(GL_INVALID_OPERATION); return 0; }
+    if (!checked_query_reply(op,in,len,reply,cap)) return 0;
     memcpy(out,reply+4,cap); return 1;
-bad_reply:
-    if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_OPERATION;
-    return 0;
 }
 void glGetBufferParameteriv(GLenum target, GLenum pname, GLint *params) {
     if (!_wpk_gl_current_encoder()) return;
@@ -2717,4 +2736,132 @@ GLboolean glIsEnabled(GLenum cap) {
     uint32_t value = 0, input = cap;
     if (!checked_client_query(QOP_IS_ENABLED,&input,sizeof input,&value,sizeof value)) return GL_FALSE;
     return value ? GL_TRUE : GL_FALSE;
+}
+
+/* The v4 string/list queries fetch metadata first, then bounded chunks.
+ * Accumulate privately so later allocation/device failure leaves every
+ * public output unchanged instead of exposing a partial successful query. */
+static int query_object_blob(uint32_t op, uint32_t *input, uint32_t words,
+                             uint32_t header_size, uint32_t unit, uint32_t limit,
+                             uint8_t **bytes, uint32_t *count, uint32_t header[3]) {
+    uint8_t meta[20];
+    input[words-2] = input[words-1] = 0;
+    if (!checked_query_reply(op,input,words*4,meta,header_size)) return 0;
+    memcpy(header,meta+4,header_size);
+    uint32_t total = header[0], wanted = total < limit ? total : limit;
+    if (wanted > (SIZE_MAX-1)/unit) { raise_client_error(GL_OUT_OF_MEMORY); return 0; }
+    *bytes = NULL; *count = 0;
+    if (!wanted) return 1;
+    uint32_t per_chunk = (65536u-8-header_size)/unit;
+    uint32_t chunk = wanted < per_chunk ? wanted : per_chunk;
+    uint8_t *result = malloc((size_t)wanted*unit), *reply = malloc(header_size+chunk*unit+8);
+    if (!result || !reply) { free(result); free(reply); raise_client_error(GL_OUT_OF_MEMORY); return 0; }
+    for (uint32_t offset=0; offset<wanted;) {
+        uint32_t n = wanted-offset < chunk ? wanted-offset : chunk;
+        input[words-2] = offset; input[words-1] = n;
+        if (!checked_query_reply(op,input,words*4,reply,header_size+n*unit)) goto failed;
+        if (memcmp(reply+4,header,header_size)) { raise_client_error(GL_INVALID_OPERATION); goto failed; }
+        memcpy(result+(size_t)offset*unit,reply+4+header_size,(size_t)n*unit);
+        offset += n;
+    }
+    free(reply); *bytes = result; *count = wanted; return 1;
+failed:
+    free(reply); free(result); return 0;
+}
+void glGetShaderSource(GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *source) {
+    if (!_wpk_gl_current_encoder()) return;
+    if (bufSize < 0) { raise_client_error(GL_INVALID_VALUE); return; }
+    uint32_t input[3] = {shader,0,0}, count, header[3]; uint8_t *bytes;
+    uint32_t limit = source && bufSize > 0 ? (uint32_t)bufSize-1 : 0;
+    if (!query_object_blob(QOP_GET_SHADER_SOURCE,input,3,4,1,limit,&bytes,&count,header)) return;
+    if (source && bufSize > 0) { if (count) memcpy(source,bytes,count); source[count] = '\0'; }
+    if (length) *length = (GLsizei)count;
+    free(bytes);
+}
+void glGetActiveAttrib(GLuint program, GLuint index, GLsizei bufSize,
+                       GLsizei *length, GLint *size, GLenum *type, GLchar *name) {
+    if (!_wpk_gl_current_encoder()) return;
+    if (bufSize < 0) { raise_client_error(GL_INVALID_VALUE); return; }
+    uint32_t input[4] = {program,index,0,0}, count, header[3]; uint8_t *bytes;
+    uint32_t limit = name && bufSize > 0 ? (uint32_t)bufSize-1 : 0;
+    if (!query_object_blob(QOP_GET_ACTIVE_ATTRIB,input,4,12,1,limit,&bytes,&count,header)) return;
+    if (name && bufSize > 0) { if (count) memcpy(name,bytes,count); name[count] = '\0'; }
+    if (length) *length = (GLsizei)count;
+    if (size) *size = (GLint)header[1];
+    if (type) *type = (GLenum)header[2];
+    free(bytes);
+}
+void glGetAttachedShaders(GLuint program, GLsizei maxCount, GLsizei *count, GLuint *shaders) {
+    if (!_wpk_gl_current_encoder()) return;
+    if (maxCount < 0) { raise_client_error(GL_INVALID_VALUE); return; }
+    uint32_t input[3] = {program,0,0}, written, header[3]; uint8_t *bytes;
+    if (!query_object_blob(QOP_GET_ATTACHED_SHADERS,input,3,4,4,shaders ? (uint32_t)maxCount : 0,&bytes,&written,header)) return;
+    if (written) memcpy(shaders,bytes,(size_t)written*4);
+    if (count) *count = (GLsizei)written;
+    free(bytes);
+}
+void glValidateProgram(GLuint program) {
+    if (!_wpk_gl_current_encoder()) return;
+    EMIT_BEGIN(OP_VALIDATE_PROGRAM,4) w_u32(&_c,program); EMIT_END()
+}
+void glGetTexParameteriv(GLenum target, GLenum pname, GLint *params) {
+    if (!_wpk_gl_current_encoder()) return;
+    if (!params) return;
+    uint32_t input[2] = {target,pname}; GLint value;
+    if (checked_client_query(QOP_GET_TEX_PARAMETER,input,sizeof input,&value,4)) *params = value;
+}
+void glGetTexParameterfv(GLenum target, GLenum pname, GLfloat *params) {
+    if (!_wpk_gl_current_encoder()) return;
+    if (!params) return;
+    uint32_t input[2] = {target,pname}; GLint value;
+    if (checked_client_query(QOP_GET_TEX_PARAMETER,input,sizeof input,&value,4)) *params = (GLfloat)value;
+}
+void glGetRenderbufferParameteriv(GLenum target, GLenum pname, GLint *params) {
+    if (!_wpk_gl_current_encoder()) return;
+    if (!params) return;
+    if (target != GL_RENDERBUFFER) { raise_client_error(GL_INVALID_ENUM); return; }
+    struct wpk_egl_image *image = NULL;
+    for (size_t i=0; i<g_renderbuffer_aliases.len; i++)
+        if (g_renderbuffer_aliases.v[i].name == g_bound_renderbuffer) image = g_renderbuffer_aliases.v[i].image;
+    if (image) {
+        /* GPU BO storage is allocated as RGBA8 by the host, even when its
+         * public dma-buf format ignores alpha. It has no depth/stencil. */
+        switch (pname) {
+            case GL_RENDERBUFFER_WIDTH: *params = (GLint)image->width; return;
+            case GL_RENDERBUFFER_HEIGHT: *params = (GLint)image->height; return;
+            case GL_RENDERBUFFER_INTERNAL_FORMAT: *params = 0x8058; return;
+            case GL_RENDERBUFFER_RED_SIZE: case GL_RENDERBUFFER_GREEN_SIZE:
+            case GL_RENDERBUFFER_BLUE_SIZE: case GL_RENDERBUFFER_ALPHA_SIZE: *params = 8; return;
+            case GL_RENDERBUFFER_DEPTH_SIZE: case GL_RENDERBUFFER_STENCIL_SIZE: *params = 0; return;
+            default: raise_client_error(GL_INVALID_ENUM); return;
+        }
+    }
+    uint32_t input[2] = {target,pname}; GLint value;
+    if (checked_client_query(QOP_GET_RENDERBUFFER_PARAMETER,input,sizeof input,&value,4)) *params = value;
+}
+void glGetFramebufferAttachmentParameteriv(GLenum target, GLenum attachment, GLenum pname, GLint *params) {
+    if (!_wpk_gl_current_encoder()) return;
+    if (!params) return;
+    uint32_t input[2] = {target,attachment}, info[4];
+    if (!checked_client_query(QOP_GET_FB_ATTACHMENT,input,sizeof input,info,sizeof info)) return;
+    /* An EGLImage renderbuffer is represented by a host texture. Keep the
+     * public attachment type/name while the retained native object lives. */
+    for (struct wpk_image_attachment *entry=g_image_attachments; entry; entry=entry->next) {
+        if (entry->framebuffer == g_bound_framebuffer && entry->point == attachment && entry->image
+            && info[0] == GL_TEXTURE && info[1] == entry->query_host) {
+            info[0] = entry->query_kind == GL_RENDERBUFFER ? GL_RENDERBUFFER : GL_TEXTURE;
+            info[1] = entry->query_name;
+            break;
+        }
+    }
+    switch (pname) {
+        case GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE: *params = (GLint)info[0]; return;
+        case GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME:
+            if (info[0] != GL_NONE) { *params = (GLint)info[1]; return; } break;
+        case GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL:
+            if (info[0] == GL_TEXTURE) { *params = (GLint)info[2]; return; } break;
+        case GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE:
+            if (info[0] == GL_TEXTURE) { *params = (GLint)info[3]; return; } break;
+    }
+    raise_client_error(GL_INVALID_ENUM);
 }

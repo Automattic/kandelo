@@ -76,6 +76,8 @@ static unsigned buffer_uploads;
 static unsigned draw_commands;
 static int indexed_queries;
 static uint32_t indexed_max, query_scalar, query_gl_error, query_status;
+static uint32_t core_total, core_offset, core_info[4];
+static unsigned core_calls, core_fail_at, validate_commands;
 static int capture_array_upload;
 static unsigned char captured_bytes[524288];
 static uint32_t captured_size, captured_type, captured_stride;
@@ -152,6 +154,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             memcpy(words, commands + at + 4, len < 8 ? len : 8);
             if (op == OP_BIND_TEXTURE) bound_texture = words[1];
             if (op == OP_CLEAR) clear_commands++;
+            if (op == 0x030b) validate_commands++;
             if (op == OP_BUFFER_DATA) {
                 buffer_uploads++;
                 if (capture_array_upload && words[0] == GL_ARRAY_BUFFER) {
@@ -215,6 +218,30 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         if (numeric_queries == 3) { errno = EINVAL; return -1; }
         if (q->op == QOP_GET_ERROR && query_gl_error) {
             memcpy(latest_allocation,&query_gl_error,4); query_gl_error = 0; return 0;
+        }
+        if (q->op >= 0x18 && q->op <= 0x1d) {
+            core_calls++;
+            if (core_fail_at && core_calls == core_fail_at) { errno = EIO; return -1; }
+            assert(latest_allocation && q->out_buf_len <= 65536);
+            uint8_t *reply = latest_allocation;
+            memset(reply,0,q->out_buf_len); memcpy(reply,&query_status,4);
+            if (q->op <= 0x1a) {
+                const unsigned header = q->op == 0x18 ? 12 : 4, unit = q->op == 0x19 ? 4 : 1;
+                assert(q->in_buf_len == (q->op == 0x18 ? 16u : 12u));
+                const unsigned cap = (q->out_buf_len-header-8)/unit;
+                if (!cap) core_offset = 0;
+                memcpy(reply+4,&core_total,4);
+                if (header == 12) { const uint32_t meta[2] = {1,GL_FLOAT_VEC4}; memcpy(reply+8,meta,8); }
+                for (unsigned i=0; i<cap; i++) {
+                    if (unit == 4) { const uint32_t shader = 11+core_offset+i; memcpy(reply+8+4*i,&shader,4); }
+                    else reply[4+header+i] = (uint8_t)('a'+(core_offset+i)%26);
+                }
+                core_offset += cap;
+            } else if (q->op == 0x1b) {
+                assert(q->out_buf_len == 24); memcpy(reply+4,core_info,16);
+            } else { assert(q->out_buf_len == 12); memcpy(reply+4,&query_scalar,4); }
+            const uint32_t magic = 0x47514c33u;
+            memcpy(reply+q->out_buf_len-4,&magic,4); return 0;
         }
         if (q->op == 0x17 && indexed_queries) {
             assert(q->in_buf_len == 12 && q->out_buf_len == 8204 && latest_allocation);
@@ -362,6 +389,76 @@ int main(int argc, char **argv) {
         fail_make_current = 0;
     }
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1], "encoder-core-source")) {
+        void (*get)(GLuint,GLsizei,GLsizei *,GLchar *) = (void (*)(GLuint,GLsizei,GLsizei *,GLchar *))eglGetProcAddress("glGetShaderSource"); assert(get);
+        char *text = malloc(70001); assert(text); memset(text,'!',70001);
+        core_total = 70000; GLsizei length = -1; get(9,70001,&length,text);
+        assert(length == 70000 && text[70000] == '\0' && core_calls == 3);
+        for (unsigned i=0; i<70000; i++) assert(text[i] == 'a'+i%26);
+        char small[4] = "!!!"; get(9,4,&length,small); assert(length == 3 && !strcmp(small,"abc"));
+        get(9,0,&length,NULL); assert(length == 0);
+        length = -1; get(9,-1,&length,small); assert(length == -1 && glGetError() == GL_INVALID_VALUE);
+        memset(text,'!',70001); length = -1; core_calls = 0; core_fail_at = 3;
+        get(9,70001,&length,text); assert(length == -1 && text[0] == '!' && text[70000] == '!' && glGetError() == GL_INVALID_OPERATION);
+        core_fail_at = 0; query_status = 1; query_gl_error = GL_INVALID_VALUE;
+        get(9,4,&length,small); query_status = 0; assert(length == -1 && !strcmp(small,"abc") && glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+        fail_malloc = 1; get(9,4,&length,small); fail_malloc = 0; assert(length == -1 && glGetError() == GL_OUT_OF_MEMORY);
+        glShaderSource(9,-1,NULL,NULL); assert(glGetError() == GL_INVALID_VALUE);
+        free(text); assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-core-source"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-core-reflection")) {
+        void (*active)(GLuint,GLuint,GLsizei,GLsizei *,GLint *,GLenum *,GLchar *) = (void (*)(GLuint,GLuint,GLsizei,GLsizei *,GLint *,GLenum *,GLchar *))eglGetProcAddress("glGetActiveAttrib");
+        void (*attached)(GLuint,GLsizei,GLsizei *,GLuint *) = (void (*)(GLuint,GLsizei,GLsizei *,GLuint *))eglGetProcAddress("glGetAttachedShaders");
+        void (*validate)(GLuint) = (void (*)(GLuint))eglGetProcAddress("glValidateProgram"); assert(active && attached && validate);
+        char name[5] = "!!!!"; GLsizei length = -1; GLint size = -1; GLenum type = 0;
+        core_total = 10; active(9,0,5,&length,&size,&type,name);
+        assert(!strcmp(name,"abcd") && length == 4 && size == 1 && type == GL_FLOAT_VEC4);
+        active(9,0,0,&length,&size,&type,NULL); assert(length == 0 && size == 1 && type == GL_FLOAT_VEC4);
+        active(9,0,-1,&length,&size,&type,name); assert(glGetError() == GL_INVALID_VALUE);
+        core_total = 2; GLuint names[3] = {87,87,87}; attached(9,1,&length,names);
+        assert(length == 1 && names[0] == 11 && names[1] == 87);
+        attached(9,3,&length,names); assert(length == 2 && names[0] == 11 && names[1] == 12 && names[2] == 87);
+        attached(9,0,&length,NULL); assert(length == 0);
+        attached(9,-1,&length,names); assert(glGetError() == GL_INVALID_VALUE);
+        validate(9); glFlush(); assert(validate_commands == 1);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy)); puts("PASS encoder-core-reflection"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-core-params") || !strcmp(argv[1], "encoder-core-image")) {
+        void (*texiv)(GLenum,GLenum,GLint *) = (void (*)(GLenum,GLenum,GLint *))eglGetProcAddress("glGetTexParameteriv");
+        void (*texfv)(GLenum,GLenum,GLfloat *) = (void (*)(GLenum,GLenum,GLfloat *))eglGetProcAddress("glGetTexParameterfv");
+        void (*rbo)(GLenum,GLenum,GLint *) = (void (*)(GLenum,GLenum,GLint *))eglGetProcAddress("glGetRenderbufferParameteriv");
+        void (*fbo)(GLenum,GLenum,GLenum,GLint *) = (void (*)(GLenum,GLenum,GLenum,GLint *))eglGetProcAddress("glGetFramebufferAttachmentParameteriv"); assert(texiv && texfv && rbo && fbo);
+        GLint value = -1; GLfloat floating = -1;
+        if (!strcmp(argv[1], "encoder-core-image")) {
+            EGLImageKHR img = image(dpy); GLuint renderbuffer, framebuffers[2];
+            glGenRenderbuffers(1,&renderbuffer); glBindRenderbuffer(GL_RENDERBUFFER,renderbuffer);
+            glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER,img); assert(eglDestroyImageKHR(dpy,img));
+            rbo(GL_RENDERBUFFER,GL_RENDERBUFFER_WIDTH,&value); assert(value == 64);
+            rbo(GL_RENDERBUFFER,GL_RENDERBUFFER_INTERNAL_FORMAT,&value); assert(value == 0x8058);
+            rbo(GL_RENDERBUFFER,GL_RENDERBUFFER_ALPHA_SIZE,&value); assert(value == 8);
+            glGenFramebuffers(2,framebuffers); glBindFramebuffer(GL_FRAMEBUFFER,framebuffers[0]);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,renderbuffer);
+            core_info[0] = GL_TEXTURE; core_info[1] = 0x60000000u;
+            fbo(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE,&value); assert(value == GL_RENDERBUFFER);
+            fbo(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,&value); assert((GLuint)value == renderbuffer);
+            value = 87; fbo(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL,&value); assert(value == 87 && glGetError() == GL_INVALID_ENUM);
+            glBindFramebuffer(GL_FRAMEBUFFER,framebuffers[1]); glDeleteRenderbuffers(1,&renderbuffer);
+            glBindFramebuffer(GL_FRAMEBUFFER,framebuffers[0]); fbo(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,&value); assert((GLuint)value == renderbuffer && closes == 0);
+            glDeleteFramebuffers(2,framebuffers); assert(closes == 1);
+        } else {
+            query_scalar = GL_NEAREST; texiv(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,&value); texfv(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,&floating);
+            assert(value == GL_NEAREST && floating == (GLfloat)GL_NEAREST);
+            query_scalar = 32; rbo(GL_RENDERBUFFER,GL_RENDERBUFFER_WIDTH,&value); assert(value == 32);
+            core_info[0] = GL_TEXTURE; core_info[1] = 7; core_info[2] = 0; core_info[3] = GL_TEXTURE_CUBE_MAP_NEGATIVE_X;
+            fbo(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,&value); assert(value == 7);
+            fbo(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE,&value); assert(value == GL_TEXTURE_CUBE_MAP_NEGATIVE_X);
+            core_info[0] = GL_RENDERBUFFER; value = 87; fbo(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL,&value); assert(value == 87 && glGetError() == GL_INVALID_ENUM);
+            core_info[0] = GL_NONE; fbo(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,&value); assert(value == 87 && glGetError() == GL_INVALID_ENUM);
+            numeric_queries = 3; texiv(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,&value); numeric_queries = 0; assert(value == 87 && glGetError() == GL_INVALID_OPERATION);
+        }
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy)); printf("PASS %s\n",argv[1]); return 0;
+    }
     if (!strcmp(argv[1], "encoder-buffer-query")) {
         void (*get)(GLenum,GLenum,GLint *) = (void (*)(GLenum,GLenum,GLint *))eglGetProcAddress("glGetBufferParameteriv");
         GLboolean (*is)(GLuint) = (GLboolean (*)(GLuint))eglGetProcAddress("glIsBuffer"); assert(get && is);

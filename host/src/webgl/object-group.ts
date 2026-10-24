@@ -11,6 +11,8 @@ export type GlSharedObjects = {
   bufferViewOwners: Map<WebGLBuffer, WebGLBuffer>;
   textures: Map<number, WebGLTexture>;
   shaders: Map<number, WebGLShader>;
+  /** Original submitted bytes; native decoding must not change source queries. */
+  shaderSources: Map<WebGLShader, Uint8Array>;
   programs: Map<number, WebGLProgram>;
   shaderDeletePending: Set<number>;
   programDeletePending: Set<number>;
@@ -51,7 +53,7 @@ export type GlObjectGroup = GlSharedObjects & { members: Set<GlBinding> };
 export function createGlObjectGroup(): GlObjectGroup {
   return {
     members: new Set(), buffers: new Map(), bufferStores: new Map(), bufferViewOwners: new Map(), textures: new Map(), shaders: new Map(), programs: new Map(),
-    rbos: new Map(), shaderDeletePending: new Set(), programDeletePending: new Set(),
+    rbos: new Map(), shaderSources: new Map(), shaderDeletePending: new Set(), programDeletePending: new Set(),
     programShaders: new Map(), programAttributeBindings: new Map(),
     uniformLocations: new Map(), uniformLocationPrograms: new Map(), nextUniformLoc: 0,
     foreignTextures: new Map(), nextForeignTexId: 0x4000_0000,

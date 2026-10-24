@@ -5175,7 +5175,7 @@ pub mod gl {
     /// Version of the GLES op-table. Bumped independently of `ABI_VERSION`
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
     /// at compile time; GLIO_INIT accepts compatible versions 1..=OP_VERSION.
-    pub const OP_VERSION: u32 = 3;
+    pub const OP_VERSION: u32 = 4;
 
     // --- ioctl request numbers (DRM 'D' magic, starting at 0x40) -----------
 
@@ -5264,6 +5264,7 @@ pub mod gl {
     pub const OP_BIND_ATTRIB_LOCATION: u16 = 0x0308;
     pub const OP_DELETE_PROGRAM: u16 = 0x0309;
     pub const OP_DETACH_SHADER: u16 = 0x030A;
+    pub const OP_VALIDATE_PROGRAM: u16 = 0x030B;
 
     pub const OP_UNIFORM1I: u16 = 0x0400;
     pub const OP_UNIFORM1F: u16 = 0x0401;
@@ -5365,6 +5366,20 @@ pub mod gl {
     pub const QOP_IS_OBJECT: u32 = 0x0015;
     pub const QOP_IS_ENABLED: u32 = 0x0016;
     pub const QOP_GET_INDEX_USAGE: u32 = 0x0017;
+
+    // Op-table v4 uses the checked v3 envelope for core object queries.
+    // ACTIVE_ATTRIB in: program,index,offset,capacity; payload: total bytes,
+    // size,type,name[capacity]. ATTACHED_SHADERS / SHADER_SOURCE in:
+    // object,offset,capacity; payload: total count,data[capacity]. Offsets
+    // count names for attached shaders, bytes for strings. FB_ATTACHMENT
+    // in: target,point; payload: kind,name,level,cube face. Other parameter
+    // queries in: target,pname; payload: i32. Words are little-endian.
+    pub const QOP_GET_ACTIVE_ATTRIB: u32 = 0x0018;
+    pub const QOP_GET_ATTACHED_SHADERS: u32 = 0x0019;
+    pub const QOP_GET_SHADER_SOURCE: u32 = 0x001A;
+    pub const QOP_GET_FB_ATTACHMENT: u32 = 0x001B;
+    pub const QOP_GET_RENDERBUFFER_PARAMETER: u32 = 0x001C;
+    pub const QOP_GET_TEX_PARAMETER: u32 = 0x001D;
 
     // --- marshalled ioctl argument structs ---------------------------------
 
@@ -6974,6 +6989,7 @@ mod gl_tests {
             OP_BIND_ATTRIB_LOCATION,
             OP_DELETE_PROGRAM,
             OP_DETACH_SHADER,
+            OP_VALIDATE_PROGRAM,
             OP_UNIFORM1I,
             OP_UNIFORM1F,
             OP_UNIFORM2F,
@@ -7023,6 +7039,21 @@ mod gl_tests {
             QOP_CHECK_FB_STATUS,
             QOP_GET_SHADER_PRECISION_FORMAT,
             QOP_FINISH,
+            QOP_GET_ACTIVE_UNIFORM,
+            QOP_GET_UNIFORMFV,
+            QOP_GET_UNIFORMIV,
+            QOP_GET_BUFFER_PARAMETER,
+            QOP_GET_VERTEX_ATTRIBIV,
+            QOP_GET_VERTEX_ATTRIBFV,
+            QOP_IS_OBJECT,
+            QOP_IS_ENABLED,
+            QOP_GET_INDEX_USAGE,
+            QOP_GET_ACTIVE_ATTRIB,
+            QOP_GET_ATTACHED_SHADERS,
+            QOP_GET_SHADER_SOURCE,
+            QOP_GET_FB_ATTACHMENT,
+            QOP_GET_RENDERBUFFER_PARAMETER,
+            QOP_GET_TEX_PARAMETER,
         ];
         for (i, &a) in qops.iter().enumerate() {
             for &b in &qops[i + 1..] {

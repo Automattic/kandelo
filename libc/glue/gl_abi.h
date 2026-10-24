@@ -13,7 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define WPK_GL_OP_VERSION 3u
+#define WPK_GL_OP_VERSION 4u
 #define WPK_GL_CMDBUF_LEN (1u << 20)
 #define WPK_GL_DEVICE     "/dev/dri/renderD128"
 
@@ -165,7 +165,15 @@
 #define QOP_IS_ENABLED 0x0016u
 #define QOP_GET_INDEX_USAGE 0x0017u
 
-/* New v3 query replies: u32 status (0 success, 1 recorded GL error),
+#define QOP_GET_ACTIVE_ATTRIB 0x0018u
+#define QOP_GET_ATTACHED_SHADERS 0x0019u
+#define QOP_GET_SHADER_SOURCE 0x001Au
+#define QOP_GET_FB_ATTACHMENT 0x001Bu
+#define QOP_GET_RENDERBUFFER_PARAMETER 0x001Cu
+#define QOP_GET_TEX_PARAMETER 0x001Du
+#define OP_VALIDATE_PROGRAM 0x030Bu
+
+/* V3/v4 query replies: u32 status (0 success, 1 recorded GL error),
  * payload, u32 completion magic. Index usage payload: u32 maximum index
  * followed by 8192 bytes of index-presence bits (byte/short indices).
  * Old query layouts are unchanged. All words are little-endian. */
