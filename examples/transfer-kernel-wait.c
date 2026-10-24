@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/wait.h>
@@ -420,17 +421,24 @@ static void case_ping_pong(void) {
     if (child < 0)
         fail(name, "fork");
     if (child == 0) {
-        char c;
+        unsigned char c;
         for (int i = 0; i < 2000; i++) {
-            if (read(ab[0], &c, 1) != 1 || write(ba[1], &c, 1) != 1)
+            if (read(ab[0], &c, 1) != 1 || c != (unsigned char)i)
                 _exit(2);
+            c = (unsigned char)(i * 7);
+            if (write(ba[1], &c, 1) != 1)
+                _exit(3);
         }
         _exit(0);
     }
-    char c = 'p';
+    /* Every byte is checked: a result published into the wrong request, or
+     * published twice, shows up as a wrong value or a short count. */
     for (int i = 0; i < 2000; i++) {
+        unsigned char c = (unsigned char)i;
         if (write(ab[1], &c, 1) != 1 || read(ba[0], &c, 1) != 1)
             fail(name, "round trip");
+        if (c != (unsigned char)(i * 7))
+            fail(name, "a round trip returned the wrong byte");
     }
     int status;
     if (waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
@@ -542,19 +550,329 @@ static void case_signal_retargeted_to_parked_thread(void) {
     ok(name);
 }
 
-int main(void) {
-    case_read_waits();
-    case_eof_wakes();
-    case_write_waits_for_room();
-    case_socket();
-    case_signal(0);
-    case_signal(1);
+/* Threads trading bytes over two pipes: the same parked-transfer path with
+ * no fork (the native host runs this one). Every value is checked. */
+struct pp_thread { int in, out; int ok; };
+static void *pp_echo(void *arg) {
+    struct pp_thread *t = arg;
+    for (int i = 0; i < 2000; i++) {
+        unsigned char c;
+        if (read(t->in, &c, 1) != 1 || c != (unsigned char)i)
+            return NULL;
+        c = (unsigned char)(i * 3);
+        if (write(t->out, &c, 1) != 1)
+            return NULL;
+    }
+    t->ok = 1;
+    return NULL;
+}
+
+static void case_thread_ping_pong(void) {
+    const char *name = "thread-ping-pong";
+    int ab[2], ba[2];
+    if (pipe(ab) != 0 || pipe(ba) != 0)
+        fail(name, "pipe");
+    struct pp_thread t = {.in = ab[0], .out = ba[1]};
+    pthread_t th;
+    if (pthread_create(&th, NULL, pp_echo, &t) != 0)
+        fail(name, "pthread_create");
+    for (int i = 0; i < 2000; i++) {
+        unsigned char c = (unsigned char)i;
+        if (write(ab[1], &c, 1) != 1 || read(ba[0], &c, 1) != 1)
+            fail(name, "round trip");
+        if (c != (unsigned char)(i * 3))
+            fail(name, "a round trip returned the wrong byte");
+    }
+    pthread_join(th, NULL);
+    if (!t.ok)
+        fail(name, "the echo thread failed");
+    close(ab[0]); close(ab[1]); close(ba[0]); close(ba[1]);
+    ok(name);
+}
+
+/* A writer thread fills the pipe and parks; main frees room one chunk at a
+ * time from another thread's point of view. Each wake completes exactly one
+ * parked write with its full count (no fork). */
+struct filler { int fd; size_t total; int ok; };
+static void *fill_pipe(void *arg) {
+    struct filler *f = arg;
+    char block[4096];
+    memset(block, 'f', sizeof block);
+    while (f->total < 256 * 1024) {
+        ssize_t n = write(f->fd, block, sizeof block);
+        if (n != (ssize_t)sizeof block)
+            return NULL;
+        f->total += (size_t)n;
+    }
+    f->ok = 1;
+    return NULL;
+}
+
+static void case_thread_write_waits(void) {
+    const char *name = "thread-write";
+    int p[2];
+    if (pipe(p) != 0)
+        fail(name, "pipe");
+    struct filler f = {.fd = p[1]};
+    pthread_t th;
+    if (pthread_create(&th, NULL, fill_pipe, &f) != 0)
+        fail(name, "pthread_create");
+    char sink[4096];
+    size_t got = 0;
+    while (got < 256 * 1024) {
+        ssize_t n = read(p[0], sink, sizeof sink);
+        if (n <= 0)
+            fail(name, "read");
+        for (ssize_t i = 0; i < n; i++)
+            if (sink[i] != 'f')
+                fail(name, "wrong byte");
+        got += (size_t)n;
+    }
+    pthread_join(th, NULL);
+    if (!f.ok || f.total != got)
+        fail(name, "the writer's counts disagree with what was read");
+    close(p[0]); close(p[1]);
+    ok(name);
+}
+
+/* Gap 2: a pending cancel wins. A writer thread is parked in write() (a
+ * cancellation point) on a full pipe; pthread_cancel arrives, then main
+ * frees room. The cancel was applied to the park first, so the thread must
+ * end cancelled -- its write must not instead complete and the cancel be
+ * lost. Repeated, since the race is the point. */
+static atomic_int cancel_cleanup;
+static void on_cancel_cleanup(void *arg) { (void)arg; atomic_fetch_add(&cancel_cleanup, 1); }
+struct blocked_writer { int fd; atomic_int started; };
+static void *write_until_cancelled(void *arg) {
+    struct blocked_writer *w = arg;
+    char block[4096];
+    memset(block, 'c', sizeof block);
+    pthread_cleanup_push(on_cancel_cleanup, NULL);
+    atomic_store(&w->started, 1);
+    for (;;) {
+        if (write(w->fd, block, sizeof block) < 0)
+            break;
+    }
+    pthread_cleanup_pop(0);
+    return NULL;
+}
+
+static void case_cancel_at_completion(void) {
+    const char *name = "cancel-at-completion";
+    atomic_store(&cancel_cleanup, 0);
+    for (int round = 0; round < 20; round++) {
+        int p[2];
+        if (pipe(p) != 0)
+            fail(name, "pipe");
+        struct blocked_writer w = {.fd = p[1]};
+        pthread_t th;
+        if (pthread_create(&th, NULL, write_until_cancelled, &w) != 0)
+            fail(name, "pthread_create");
+        while (!atomic_load(&w.started))
+            usleep(1000);
+        usleep(20000); /* the pipe is full and the writer is parked */
+        pthread_cancel(th);
+        char sink[8192];
+        if (read(p[0], sink, sizeof sink) <= 0)
+            fail(name, "read");
+        void *result;
+        pthread_join(th, &result);
+        if (result != PTHREAD_CANCELED)
+            fail(name, "the writer was not cancelled");
+        close(p[0]);
+        close(p[1]);
+    }
+    if (atomic_load(&cancel_cleanup) != 20)
+        fail(name, "a cancellation cleanup handler did not run");
+    ok(name);
+}
+
+/* Gap 3: shared memory. A child parks reading into a MAP_SHARED region,
+ * then makes no further syscall at all: it spins until killed. The parent
+ * must still see the bytes in its own view of the region, so the read's own
+ * completion -- the only syscall boundary the child reaches -- must run the
+ * host's shared-memory coherence step. A result published without it would
+ * leave the bytes in the child's private linear memory. */
+static void case_shared_mapping_transfer(void) {
+    const char *name = "shared-mapping";
+    char *shared = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (shared == MAP_FAILED)
+        fail(name, "mmap");
+    memset(shared, 0, 4096);
+    int p[2];
+    if (pipe(p) != 0)
+        fail(name, "pipe");
+    pid_t child = fork();
+    if (child < 0)
+        fail(name, "fork");
+    if (child == 0) {
+        close(p[1]);
+        (void)read(p[0], shared, 64); /* parks: nothing written yet */
+        for (volatile unsigned long spin = 0;; spin++) {
+        }
+    }
+    close(p[0]);
+    usleep(100000);
+    char msg[32];
+    memset(msg, 'S', sizeof msg);
+    if (write(p[1], msg, sizeof msg) != (ssize_t)sizeof msg)
+        fail(name, "write");
+    int seen = 0;
+    for (int tries = 0; tries < 200 && !seen; tries++) {
+        usleep(10000); /* each boundary imports the shared backing */
+        seen = 1;
+        for (int i = 0; i < 32; i++)
+            if (shared[i] != 'S')
+                seen = 0;
+    }
+    kill(child, SIGKILL);
+    int status;
+    waitpid(child, &status, 0);
+    if (!seen)
+        fail(name, "the child's read into shared memory is not visible to the parent");
+    close(p[1]);
+    munmap(shared, 4096);
+    ok(name);
+}
+
+/* Gap 1: a signal generated around a kernel-published completion is not
+ * lost. A writer thread streams into a pipe a reader thread drains, while
+ * another process queues realtime signals at the process (only the writer
+ * accepts them). Realtime signals queue, so every one must reach the
+ * handler; the writer makes one more syscall at the end so a signal that
+ * arrived just after its last write is delivered there. */
+static atomic_int rt_handled;
+static void on_rt(int sig) { (void)sig; atomic_fetch_add(&rt_handled, 1); }
+static void *drain_pipe(void *arg) {
+    int fd = *(int *)arg;
+    char sink[4096];
+    while (read(fd, sink, sizeof sink) > 0) {
+    }
+    return NULL;
+}
+static atomic_int rt_sender_done;
+struct rt_writer { int fd; };
+static void *rt_write_stream(void *arg) {
+    struct rt_writer *w = arg;
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGRTMIN);
+    pthread_sigmask(SIG_UNBLOCK, &set, NULL);
+    char block[4096];
+    memset(block, 'r', sizeof block);
+    for (int i = 0; i < 2000; i++) {
+        while (write(w->fd, block, sizeof block) < 0 && errno == EINTR) {
+        }
+    }
+    /* Stay the only thread that accepts the signal until every one has been
+     * sent, then keep making syscalls (each delivers one pending signal)
+     * until all have run, with a bound so a lost signal fails rather than
+     * hangs. */
+    while (!atomic_load(&rt_sender_done))
+        usleep(1000);
+    for (int i = 0; i < 10000 && atomic_load(&rt_handled) < 200; i++)
+        (void)getpid();
+    return NULL;
+}
+
+static void case_late_signal(void) {
+    const char *name = "late-signal";
+    enum { SENT = 200 };
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_rt;
+    sa.sa_flags = SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGRTMIN, &sa, NULL);
+    atomic_store(&rt_handled, 0);
+    atomic_store(&rt_sender_done, 0);
+    sigset_t block, old;
+    sigemptyset(&block);
+    sigaddset(&block, SIGRTMIN);
+    pthread_sigmask(SIG_BLOCK, &block, &old); /* only the writer takes it */
+    int p[2];
+    if (pipe(p) != 0)
+        fail(name, "pipe");
+    pid_t me = getpid();
+    pid_t pinger = fork();
+    if (pinger < 0)
+        fail(name, "fork");
+    if (pinger == 0) {
+        union sigval v = {0};
+        for (int i = 0; i < SENT; i++) {
+            if (sigqueue(me, SIGRTMIN, v) != 0)
+                _exit(2);
+            usleep(500);
+        }
+        _exit(0);
+    }
+    pthread_t reader, writer;
+    struct rt_writer w = {.fd = p[1]};
+    if (pthread_create(&reader, NULL, drain_pipe, &p[0]) != 0 ||
+        pthread_create(&writer, NULL, rt_write_stream, &w) != 0)
+        fail(name, "pthread_create");
+    int status;
+    if (waitpid(pinger, &status, 0) != pinger || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+        fail(name, "the signal sender failed");
+    atomic_store(&rt_sender_done, 1);
+    pthread_join(writer, NULL);
+    close(p[1]);
+    pthread_join(reader, NULL);
+    close(p[0]);
+    if (atomic_load(&rt_handled) != SENT) {
+        printf("detail handled=%d sent=%d\n", atomic_load(&rt_handled), SENT);
+        fail(name, "a queued signal was lost or not delivered");
+    }
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    sa.sa_handler = SIG_DFL;
+    sigaction(SIGRTMIN, &sa, NULL);
+    ok(name);
+}
+
+int main(int argc, char **argv) {
+    /* "nosignal": skip the cases that need a caught signal handler, for a
+     * host that does not deliver them (the native host). "nofork": skip the
+     * cases that fork, for a fixture built without fork instrumentation.
+     * "nosocket": skip the socket timeout case, for a host whose pump cannot
+     * yet marshal recvfrom's address-length pointer (the native host). */
+    int with_signals = 1, with_fork = 1, with_socket = 1;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "nosignal") == 0)
+            with_signals = 0;
+        if (strcmp(argv[i], "nofork") == 0)
+            with_fork = 0;
+        if (strcmp(argv[i], "nosocket") == 0)
+            with_socket = 0;
+    }
+    if (with_fork) {
+        case_read_waits();
+        case_eof_wakes();
+        case_write_waits_for_room();
+        case_socket();
+        if (with_signals) {
+            case_signal(0);
+            case_signal(1);
+        }
+    }
     case_pinned_descriptor();
     case_cancel();
-    case_signal_pending_at_park();
-    case_expired_timeout();
-    case_ping_pong();
-    case_signal_retargeted_to_parked_thread();
+    if (with_signals) {
+        case_signal_pending_at_park();
+    }
+    if (with_socket)
+        case_expired_timeout();
+    if (with_fork)
+        case_ping_pong();
+    if (with_signals)
+        case_signal_retargeted_to_parked_thread();
+    case_thread_ping_pong();
+    case_thread_write_waits();
+    case_cancel_at_completion();
+    if (with_fork) {
+        case_shared_mapping_transfer();
+        if (with_signals)
+            case_late_signal();
+    }
     puts("PASS");
     return 0;
 }

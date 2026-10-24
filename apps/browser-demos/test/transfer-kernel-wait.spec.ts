@@ -30,6 +30,11 @@ const CASES = [
   "expired-timeout",
   "ping-pong",
   "signal-retargeted",
+  "thread-ping-pong",
+  "thread-write",
+  "cancel-at-completion",
+  "shared-mapping",
+  "late-signal",
 ];
 
 test("blocking transfers park in the kernel and end promptly in the browser", async ({

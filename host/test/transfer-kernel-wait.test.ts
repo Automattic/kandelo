@@ -17,7 +17,7 @@ describe.skipIf(!existsSync(binary))("kernel-owned transfer waits", () => {
     const { exitCode, stdout, stderr } = await runCentralizedProgram({
       programPath: binary,
       argv: ["transfer-kernel-wait"],
-      timeout: 30_000,
+      timeout: 90_000,
     });
     for (const name of [
       "read",
@@ -32,10 +32,15 @@ describe.skipIf(!existsSync(binary))("kernel-owned transfer waits", () => {
       "expired-timeout",
       "ping-pong",
       "signal-retargeted",
+      "thread-ping-pong",
+      "thread-write",
+      "cancel-at-completion",
+      "shared-mapping",
+      "late-signal",
     ]) {
       expect(stdout, stderr).toContain(`ok ${name}\n`);
     }
     expect(stdout).toContain("PASS");
     expect(exitCode).toBe(0);
-  }, 40_000);
+  }, 120_000);
 });

@@ -465,6 +465,11 @@ pub mod wait_completion_wire {
     /// `pthread_cancel` ended the wait. The host's pre-enqueue cancellation
     /// marker for this channel is consumed.
     pub const FLAG_CANCELLED: u32 = 2;
+    /// The kernel already published this result into the task's channel,
+    /// through `host_publish_wait_completion`, inside the kernel entry that
+    /// decided it. The host must not publish it again: it only retires its
+    /// own bookkeeping for the request (and re-listens on the channel).
+    pub const FLAG_PUBLISHED: u32 = 4;
 }
 
 /// Cross-layer layout values and defensive limits for the non-forking spawn

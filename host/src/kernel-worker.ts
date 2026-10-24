@@ -15910,6 +15910,21 @@ export class CentralizedKernelWorker {
       );
       if (!channel || !this.isRegisteredChannel(channel)) continue;
       channel.kernelWaitGeneration = undefined;
+      // The kernel already published this result into the channel and woke
+      // the task (host_publish_wait_completion). Retire what
+      // completeChannelRaw would, without publishing a second time.
+      if ((flags & WAIT_COMPLETION_FLAGS.published) !== 0) {
+        this.#releaseBlockingRetrySnapshot(channel, entry);
+        this.#finishChannelRequest(channel);
+        this.clearSocketTimeout(channel);
+        this.clearReadinessWait(channel, entry);
+        entry.deferProtocolEffect(() => {
+          channel.handling = false;
+          this.resumePreparedSignals?.delete(channel);
+          if (this.isRegisteredChannel(channel)) this.relistenChannel(channel);
+        });
+        continue;
+      }
       if ((flags & WAIT_COMPLETION_FLAGS.cancelled) !== 0) {
         this.pendingCancels.delete(channel);
       }

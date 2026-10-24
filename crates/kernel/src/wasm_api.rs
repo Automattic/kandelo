@@ -337,6 +337,15 @@ unsafe extern "C" {
     fn host_kms_set_master(pid: i32);
     fn host_kms_drop_master(pid: i32);
     fn host_proc_write_bytes(pid: i32, addr: u64, src_ptr: *const u8, len: u32) -> i32;
+    /// Publish a parked request's decided result into the channel at
+    /// `channel_addr` of process `pid`: write `ret` and `errno`, store
+    /// COMPLETE, and wake the waiting task -- what a host does when it
+    /// publishes a drained completion. 0 on success, a negated errno when the
+    /// process or channel cannot be reached, or the host declines (a cancel
+    /// pending for that channel, or a channel it does not hold as parked);
+    /// the kernel then queues the result for the host as usual. See
+    /// `publish_transfer_directly`.
+    fn host_publish_wait_completion(pid: i32, channel_addr: u64, ret: i64, errno: u32) -> i32;
     fn host_proc_read_bytes(pid: i32, addr: u64, dst_ptr: *mut u8, len: u32) -> i32;
     fn host_kms_mode_info(connector_id: u32, out_ptr: *mut u8);
     /// Writes the connector's physical size, two u32s (width, height) in
@@ -15272,6 +15281,73 @@ fn settle_retry_waits() {
 }
 
 /// One re-execution pass; returns whether anything was dirty.
+/// Publish a parked transfer's successful result straight into the task's
+/// channel, from inside the kernel entry that made it ready, and return the
+/// completion flags to queue (`FLAG_PUBLISHED`, or 0 when the host must
+/// publish it as for any other park).
+///
+/// WHY: a blocked reader or writer used to resume only after the host's
+/// completion drain ran and its deferred publication happened at the end of
+/// the entry -- two extra hops on every wake of a pipe that keeps filling
+/// and emptying. Measured on the pipe benchmark that is most of the cost a
+/// kernel park adds over a running transfer (docs/plans/
+/// 2026-09-27-guest-waits-into-rust.md, step 5b).
+///
+/// The result is published only when nothing later can change it or needs
+/// the host's publication path; otherwise this returns 0 and the queued path
+/// runs unchanged:
+/// - Final outcome. The transfer has happened: the bytes moved and the
+///   value is the count. Nothing later in this entry can undo that. A signal
+///   already pending for the task must ride with this completion (the host
+///   attaches it at publication), so one targeting it forces the queued
+///   path. A signal generated later in the entry is generated after the call
+///   completed and is delivered at the task's next syscall, exactly as one
+///   generated just after a host publication; and the task's next park sees
+///   it at once (its process is swept when it parks). A task has one park at
+///   a time and `finish` removes it, so no second completion can exist.
+/// - Cancellation, decided here without asking the host. A `pthread_cancel`
+///   of a request that came through `__syscall_cp` with cancellation wake
+///   allowed is applied to this park by the kernel's exact-task cleanup
+///   (SYS_THREAD_CANCEL on the target's channel), in the cancel's own entry,
+///   so the park is gone (`FLAG_CANCELLED`) before any completion can exist.
+///   Any other cancel -- a plain syscall, or cancellation disabled -- stays
+///   pending in the host for the thread's next cancellation point, and the
+///   queued path does nothing with it at completion either: the host acts
+///   on a pending cancel only before a request parks
+///   (`interruptPendingCancellationBeforeRegistration`) and in that cleanup.
+///   Publishing here therefore gives the same result and leaves the cancel
+///   armed exactly as the queued path does.
+/// - The park is the authority. The completion being decided belongs to
+///   the task's one live park; a channel the host retired (exit, exec,
+///   teardown) has no park, because those paths retire it here first.
+///   Stopped is the kernel's own process state, which the host mirrors.
+/// - Shared memory. A process with any `MAP_SHARED` mapping or SysV
+///   attachment needs the host's coherence step at the syscall boundary, so
+///   it takes the queued path.
+/// - A stopped process, a dead or unknown task, or an unregistered channel
+///   address takes the queued path.
+fn publish_transfer_directly(pid: u32, tid: u32, op: &crate::wait_retry::RetryOp, value: i32) -> u32 {
+    if !matches!(op, crate::wait_retry::RetryOp::Transfer { .. }) || value < 0 {
+        return 0;
+    }
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(pid) else { return 0 };
+    if proc.state != crate::process::ProcessState::Running
+        || !proc.is_live_explicit_tid(tid)
+        || crate::wait_park::signal_targets_task(proc, tid)
+        || proc.memory.has_shared_mapping()
+        || unsafe { crate::memory::global_shared_mapping_table() }.sysv_mapping_count_for(pid) != 0
+    {
+        return 0;
+    }
+    let Some(channel) = proc.task_channel_addr(tid) else { return 0 };
+    if unsafe { host_publish_wait_completion(pid as i32, channel, value as i64, 0) } == 0 {
+        wasm_posix_shared::wait_completion_wire::FLAG_PUBLISHED
+    } else {
+        0
+    }
+}
+
 fn settle_retry_waits_once() -> bool {
     let waiters = crate::wait_park::with(|p| p.take_dirty_retry_waiters());
     if waiters.is_empty() {
@@ -15294,7 +15370,11 @@ fn settle_retry_waits_once() -> bool {
             Ok(value) => value,
             Err(error) => -(error as i32),
         };
-        crate::wait_park::with(|p| p.finish_retry_waiter(id, op, value));
+        let flags = match op {
+            crate::wait_retry::RetryOp::Transfer { .. } => publish_transfer_directly(pid, tid, &op, value),
+            _ => 0,
+        };
+        crate::wait_park::with(|p| p.finish_retry_waiter_with_flags(id, op, value, flags));
     }
     true
 }

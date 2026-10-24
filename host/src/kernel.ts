@@ -57,6 +57,7 @@ import {
   WASM_POLL_FD_EVENTS_OFFSET,
   WASM_POLL_FD_FD_OFFSET,
   WASM_POLL_FD_REVENTS_OFFSET,
+  CH_ERRNO, CH_RETURN, CH_STATUS, CHANNEL_STATUS_COMPLETE,
 } from "./generated/abi";
 import { bindForeignTexture } from "./webgl/foreign-texture";
 import { blitPresentTarget, ensurePresentTarget } from "./webgl/present-target";
@@ -180,6 +181,7 @@ const intrinsicAtomicsCompareExchange = Atomics.compareExchange;
 const intrinsicAtomicsLoad = Atomics.load;
 const intrinsicAtomicsStore = Atomics.store;
 const intrinsicAtomicsWait = Atomics.wait;
+const intrinsicAtomicsNotify = Atomics.notify;
 const intrinsicReflectConstruct = Reflect.construct;
 const intrinsicObjectCreate = Object.create;
 const intrinsicObjectDefineProperty = Object.defineProperty;
@@ -2931,6 +2933,23 @@ export class WasmPosixKernel {
               [src, destination.pointer],
             );
             return 0;
+          } catch {
+            return -14;
+          }
+        },
+        // Kernel-published wait result (crates/kernel `publish_transfer_directly`):
+        // the same writes and wake as the worker's own publication.
+        host_publish_wait_completion: (pid: number, channel: bigint, ret: bigint, errno: number): number => {
+          const procMem = this.callbacks.getProcessMemory?.(pid);
+          if (!procMem) return -3; // ESRCH: the kernel queues it for the worker instead
+          try {
+            const base = checkedWasmImportMemoryRange(procMem, channel, CH_ERRNO + 4, 8, "host_publish_wait_completion channel", true).pointer;
+            const buffer = wasmMemoryBuffer(procMem), view = new IntrinsicDataView(buffer);
+            intrinsicApply(intrinsicDataViewSetBigInt64, view, [base + CH_RETURN, ret, true]);
+            intrinsicApply(intrinsicDataViewSetUint32, view, [base + CH_ERRNO, errno, true]);
+            const status = new IntrinsicInt32Array(buffer, base + CH_STATUS, 1);
+            intrinsicApply(intrinsicAtomicsStore, Atomics, [status, 0, CHANNEL_STATUS_COMPLETE]);
+            return intrinsicApply(intrinsicAtomicsNotify, Atomics, [status, 0, 1]) >= 0 ? 0 : -14;
           } catch {
             return -14;
           }
