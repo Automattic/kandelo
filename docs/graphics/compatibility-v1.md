@@ -94,7 +94,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | K03 | Shared OFD GEM/FB authority, PRIME and final references | Shared KMS FBs and inherited graphics cleanup/BO holds are implemented; general forked GEM handle-map sharing and full guest validation remain open | OFD, process/fork/spawn/exec/close, BO registry | Rust + real Node lifecycle/dup/fork/spawn tests | open |
 | K04 | Legacy modeset/flip/vblank/master handoff | Main display owner and cleanup; cage changes automatic master and CLOSEFB | KMS, host scanout | Pending flip drop/exit/crash/master replacement, no stale event/scanout | partial |
 | K05 | GPU scanout, CPU fallback and context loss | Main has GPU producer target; cage adds scanout blit | host GPU registry/present target/KMS pump | Render imports to scanout; orientation/pixels three engines | open |
-| H01 | Command framing, complete validation and bounded results | Full structural prevalidation now protects batches; host source regressions pass | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
+| H01 | Command framing, complete validation and bounded results | Full structural prevalidation protects batches. Kernel query dispatch preprobes nonempty guest destinations, rejects nonzero reserved fields/null inputs, and rejects oversized host replies without copying output. Focused Rust/host source evidence is recorded below; complete guest coverage remains open | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Canonical surface BO holds and image-owned renderer cleanup now survive descriptor inheritance/local close; focused native lifecycle checks pass. Raw BO retirement retains failed native cleanup across final member teardown and blocks affected operations until retry. Combined guest/memory-cycle validation remains pending | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
 | A01 | ABI and generated declarations match combined implementation | Current main `5cd771bff8` ABI 53 and graphics development contracts are consolidated under ABI 54. Regenerated snapshot, C/TS declarations and standalone resolver pass focused inspection; operation table stays 16. Normal artifacts and combined consumer/conformance gates remain pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
@@ -4533,3 +4533,48 @@ The resolver integration test refreshed the wasm32 musl core as described
 above. Complete normal graphics SDK/kernel/program/package/image
 validation, CTS, cage/sway, browser-memory and POSIX gates remain deferred;
 this cache tool does not establish graphics compatibility.
+
+### Query destination validation before renderer effects
+
+The common `GLIO_QUERY` path now validates nonempty output capacity before
+calling the renderer, including queries whose reply is empty. The earlier
+surface-capability-only probe did not protect ordinary state queries or
+acknowledged object mutations. A null or out-of-range destination now
+fails with `EFAULT` before the host callback can consume an error or change
+renderer state. Zero-length buffers do not inspect their pointer values.
+
+The kernel also rejects nonzero reserved fields with `EINVAL`, rejects
+nonempty null input itself, and treats a negative/oversized host byte
+count as `EIO` without copying output. Actual process-memory imports allow
+byte zero; a new test explicitly models that host behavior so the mock
+cannot supply the kernel's null check accidentally. Valid overlapping
+input/output is copied before dispatch, and short replies leave the
+remaining destination bytes intact. All C query constructors were checked
+for zero-initialized reserved fields. ABI 54 and operation table 16 remain
+unchanged; the query structure and generated layout are unchanged.
+
+| Check | Exact evidence |
+|---|---|
+| Unchanged production comparison | With the query arm from `08419e1830`, five of eight new cases fail and three controls pass; `graphics-query-preflight-abi54-all-baseline.log` |
+| Focused current Rust query/session/lifecycle tests | All 58 GLIO cases pass, including all eight new cases; `graphics-query-preflight-fixed-rust.log` |
+| Shared GL/query wire checks | All five selected cases pass; `graphics-query-preflight-fixed-layouts.log` |
+| Source host adapter/forwarding controls | All 135 cases in three files pass without skips; `graphics-query-preflight-host.log` |
+| Complete ABI consistency | Passed using a fresh kernel export-inspection build; `graphics-query-preflight-fixed-abi.log` |
+
+The baseline failures cover an empty reply hiding an invalid destination,
+renderer dispatch before a non-null destination fault, a nonempty null
+input when address zero is accessible, oversized replies and reserved
+fields. Existing controls cover inaccessible input ranges, overlap/short
+reply tails and ignored zero-length pointers. The focused host selection
+runs `kernel-public-scratch`, `webgl-context-creation` and
+`webgl-main-forward`; all are registry-classified source-only. Its private
+config omits global product provisioning and retains every assertion in
+those files. It checks existing native/forwarded import behavior, including
+both kernel pointer widths and address-zero process copies; it does not
+run the changed Rust syscall through a normal guest kernel.
+
+This closes the identified common query-validation defects, not H01/H02
+as complete inventory items. Rebuilt guest integration, full CTS, real
+browser rendering, complete browser-memory, cage/sway and POSIX gates
+remain required in the deferred combined-artifact phase. Renderer sync
+objects, GL-source EGLImages and other inventory gaps remain open.

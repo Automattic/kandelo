@@ -5581,27 +5581,27 @@ pub mod gl {
     }
 
     /// Argument to `GLIO_QUERY`. Total: 24 bytes.
-    /// `in_buf_ptr` / `out_buf_ptr` are wasm-process addresses that Phase B
-    /// dereferences via the host's typed-array view of process memory. v1
-    /// kernel forwards `op` + a kernel-scratch buffer sized by `out_buf_len`
-    /// to `HostIO::gl_query` and ignores the pointers.
+    /// Input/output pointers are process addresses copied through HostIO.
+    /// The kernel validates nonempty ranges before renderer dispatch; zero
+    /// lengths do not inspect their pointers. HostIO receives owned kernel
+    /// buffers and must return a byte count within the output capacity.
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct GlQueryInfo {
-        /// Sync-query op tag. The full table (QOP_*) is owned by the host
-        /// bridge in Phase B; the kernel forwards this value unchanged.
+        /// Sync-query op tag. The host bridge owns the full table (QOP_*);
+        /// the kernel forwards this value unchanged.
         pub op: u32,
-        /// Process-relative pointer to the input bytes (Phase B only).
+        /// Process-relative pointer to the input bytes.
         pub in_buf_ptr: u32,
-        /// Length of input in bytes (Phase B only).
+        /// Length of input in bytes.
         pub in_buf_len: u32,
-        /// Process-relative pointer to the output buffer (Phase B only).
+        /// Process-relative pointer to the output buffer.
         pub out_buf_ptr: u32,
         /// Capacity of the output buffer in bytes. The kernel rejects
         /// values above `MAX_QUERY_OUT_LEN` to bound the scratch
-        /// allocation and otherwise forwards.
+        /// allocation. The full capacity is probed before dispatch.
         pub out_buf_len: u32,
-        /// Reserved for a future async-completion handle.
+        /// Must be zero; reserved for a future async-completion handle.
         pub reserved: u32,
     }
 }

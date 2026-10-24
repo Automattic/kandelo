@@ -2358,7 +2358,10 @@ fn handle_dri_ioctl(
             }
             let info: gl::GlQueryInfo =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            if info.in_buf_len > gl::MAX_QUERY_IN_LEN || info.out_buf_len > gl::MAX_QUERY_OUT_LEN {
+            if info.in_buf_len > gl::MAX_QUERY_IN_LEN
+                || info.out_buf_len > gl::MAX_QUERY_OUT_LEN
+                || info.reserved != 0
+            {
                 return Err(Errno::EINVAL);
             }
             {
@@ -2380,12 +2383,20 @@ fn handle_dri_ioctl(
                 {
                     return Err(Errno::EINVAL);
                 }
-                if info.in_buf_len != 0 || info.out_buf_len != 16 || info.reserved != 0 {
+                if info.in_buf_len != 0 || info.out_buf_len != 16 {
                     return Err(Errno::EINVAL);
                 }
-                probe_dri_process_pointer(host, pid, u64::from(info.out_buf_ptr), 16)?;
             } else {
                 require_gl_current(proc, ofd_idx)?;
+            }
+            // A query can consume errors or mutate renderer ownership. Prove
+            // the entire destination capacity before dispatch, even when a
+            // particular reply might contain no bytes. Zero-length buffers
+            // carry no pointer authority and must not inspect their address.
+            if info.out_buf_len != 0 {
+                probe_dri_process_pointer(
+                    host, pid, u64::from(info.out_buf_ptr), info.out_buf_len as usize,
+                )?;
             }
             // Copy input from process memory through the host bridge,
             // forward to host.gl_query, then copy the result back. The
@@ -2393,6 +2404,9 @@ fn handle_dri_ioctl(
             // the host needs to dispatch.
             let mut in_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; info.in_buf_len as usize];
             if info.in_buf_len > 0 {
+                if info.in_buf_ptr == 0 {
+                    return Err(Errno::EFAULT);
+                }
                 let rc = host.proc_read_bytes(pid, u64::from(info.in_buf_ptr), &mut in_buf);
                 if rc < 0 {
                     return Err(Errno::EFAULT);
@@ -2400,16 +2414,13 @@ fn handle_dri_ioctl(
             }
             let mut out_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; info.out_buf_len as usize];
             let written = host.gl_query(pid, info.op, &in_buf, &mut out_buf, gl_session_id(proc, ofd_idx)?);
-            if written < 0 {
+            // A host reply outside the advertised capacity is a failed
+            // protocol completion, not a short successful reply. Keep guest
+            // bytes intact instead of publishing a truncated result.
+            if written < 0 || written as usize > out_buf.len() {
                 return Err(Errno::EIO);
             }
-            let n = (written as usize).min(out_buf.len());
-            if n > 0 && info.out_buf_ptr != 0 {
-                let rc = host.proc_write_bytes(pid, u64::from(info.out_buf_ptr), &out_buf[..n]);
-                if rc < 0 {
-                    return Err(Errno::EFAULT);
-                }
-            }
+            write_dri_bytes(host, pid, u64::from(info.out_buf_ptr), &out_buf[..written as usize])?;
             Ok(())
         }
         _ => Err(Errno::ENOSYS),
@@ -23926,6 +23937,8 @@ mod tests {
         gl_unbind_sessions: Vec<u32>,
         gl_submit_sessions: Vec<u32>,
         gl_query_sessions: Vec<u32>,
+        gl_query_inputs: Vec<(u32, Vec<u8>, usize)>,
+        gl_query_result: Option<i32>,
         gl_create_context_sessions: Vec<u32>,
         gl_create_context_attrs: Vec<Vec<u8>>,
         gl_bind_sessions: Vec<u32>,
@@ -23936,6 +23949,9 @@ mod tests {
         /// the trait's `-ENOSYS` default, which would make a test that means
         /// to prove "this address is REJECTED" pass for the wrong reason.
         proc_memory: Vec<u8>,
+        /// Real process-memory imports allow byte zero; null meaning belongs
+        /// to each kernel operation rather than the memory bridge.
+        proc_read_allows_address_zero: bool,
         /// Override for `gbm_bo_bind`'s return value (0 = success, negative
         /// = errno). Defaults to 0.
         gbm_bo_bind_rc: i32,
@@ -24092,6 +24108,8 @@ mod tests {
                 gl_unbind_sessions: Vec::new(),
                 gl_submit_sessions: Vec::new(),
                 gl_query_sessions: Vec::new(),
+                gl_query_inputs: Vec::new(),
+                gl_query_result: None,
                 gl_create_context_sessions: Vec::new(),
                 gl_create_context_attrs: Vec::new(),
                 gl_bind_sessions: Vec::new(),
@@ -24101,6 +24119,7 @@ mod tests {
                 // tests use and small enough that a deliberately-high
                 // address is out of range.
                 proc_memory: alloc::vec![0u8; 65536],
+                proc_read_allows_address_zero: false,
                 gbm_bo_bind_rc: 0,
                 gl_submit_rc: 0,
                 gl_create_context_rc: 0,
@@ -24980,8 +24999,11 @@ mod tests {
             self.gl_submit_sessions.push(session_id);
             self.gl_submit_rc
         }
-        fn gl_query(&mut self, _pid: i32, _op: u32, _input: &[u8], out: &mut [u8], session_id: u32) -> i32 {
-            self.gl_query_sessions.push(session_id); out.fill(0); out.len() as i32
+        fn gl_query(&mut self, _pid: i32, op: u32, input: &[u8], out: &mut [u8], session_id: u32) -> i32 {
+            self.gl_query_sessions.push(session_id);
+            self.gl_query_inputs.push((op, input.to_vec(), out.len()));
+            out.fill(0);
+            self.gl_query_result.unwrap_or(out.len() as i32)
         }
         fn gl_update_surface(&mut self, _pid: i32, surface: u32, attrs: &[u8], session: u32) -> i32 {
             self.gl_update_surface_calls.push((surface, attrs.to_vec(), session));
@@ -25006,6 +25028,13 @@ mod tests {
         }
 
         fn proc_read_bytes(&mut self, _pid: i32, ptr: u64, dst: &mut [u8]) -> i32 {
+            if ptr == 0 && self.proc_read_allows_address_zero {
+                let Some(source) = self.proc_memory.get(..dst.len()) else {
+                    return -(Errno::EFAULT as i32);
+                };
+                dst.copy_from_slice(source);
+                return 0;
+            }
             let Some(offset) = Self::proc_range(&self.proc_memory, ptr, dst.len()) else {
                 return -(Errno::EFAULT as i32);
             };
@@ -55649,6 +55678,168 @@ impl HostIO for RelSymlinkMock {
             Err(Errno::EACCES)
         );
         assert_eq!(host.gl_query_sessions.len(), 1);
+    }
+
+    fn glio_query_preflight_fixture() -> (Process, MockHostIO, i32) {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+        glio_map_test(&mut proc, &mut host, fd);
+        glio_test_bind(&mut proc, &mut host, fd);
+        host.proc_memory.fill(0xa5);
+        host.proc_write_calls.clear();
+        (proc, host, fd)
+    }
+
+    fn glio_query_bytes(info: wasm_posix_shared::gl::GlQueryInfo)
+        -> [u8; core::mem::size_of::<wasm_posix_shared::gl::GlQueryInfo>()]
+    {
+        let mut bytes = [0u8; core::mem::size_of::<wasm_posix_shared::gl::GlQueryInfo>()];
+        unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr().cast(), info); }
+        bytes
+    }
+
+    #[test]
+    fn glio_query_preflight_destination_precedes_renderer_even_for_empty_reply() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        let valid = gl::GlQueryInfo { op: gl::QOP_BIND_FRAMEBUFFER,
+            in_buf_ptr: 32, in_buf_len: 8, out_buf_ptr: 64, out_buf_len: 12,
+            ..Default::default() };
+        // A real initialized/current session succeeds before testing bad
+        // destinations. Even a renderer returning no bytes may mutate state.
+        host.gl_query_result = Some(0);
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut glio_query_bytes(valid)).unwrap();
+        assert_eq!(host.gl_query_sessions.len(), 1);
+        host.gl_query_sessions.clear(); host.gl_query_inputs.clear();
+        let before = host.proc_memory.clone();
+        for pointer in [0, host.proc_memory.len() as u32 - 4, host.proc_memory.len() as u32, u32::MAX] {
+            let info = gl::GlQueryInfo { out_buf_ptr: pointer, ..valid };
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY,
+                &mut glio_query_bytes(info)), Err(Errno::EFAULT), "destination {pointer}");
+            assert!(host.gl_query_sessions.is_empty());
+            assert!(host.proc_write_calls.is_empty());
+            assert_eq!(host.proc_memory, before);
+        }
+    }
+
+    #[test]
+    fn glio_query_preflight_nonnull_destination_failure_never_dispatches() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        let before = host.proc_memory.clone();
+        let info = gl::GlQueryInfo { op: gl::QOP_BIND_FRAMEBUFFER,
+            in_buf_ptr: 32, in_buf_len: 8,
+            out_buf_ptr: host.proc_memory.len() as u32 - 4, out_buf_len: 12,
+            ..Default::default() };
+        assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY,
+            &mut glio_query_bytes(info)), Err(Errno::EFAULT));
+        // Returning EFAULT after the callback has run is too late: that
+        // callback can already have changed or destroyed renderer objects.
+        assert!(host.gl_query_sessions.is_empty());
+        assert!(host.proc_write_calls.is_empty());
+        assert_eq!(host.proc_memory, before);
+    }
+
+    #[test]
+    fn glio_query_preflight_input_rejects_null_and_full_range_overflow() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        let before = host.proc_memory.clone();
+        for pointer in [0, host.proc_memory.len() as u32 - 4, u32::MAX] {
+            let info = gl::GlQueryInfo { op: gl::QOP_BIND_FRAMEBUFFER,
+                in_buf_ptr: pointer, in_buf_len: 8, out_buf_ptr: 64, out_buf_len: 12,
+                ..Default::default() };
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY,
+                &mut glio_query_bytes(info)), Err(Errno::EFAULT), "source {pointer}");
+            assert!(host.gl_query_sessions.is_empty());
+            assert!(host.proc_write_calls.is_empty());
+            assert_eq!(host.proc_memory, before);
+        }
+    }
+
+    #[test]
+    fn glio_query_preflight_null_input_is_rejected_when_host_maps_address_zero() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        host.proc_read_allows_address_zero = true;
+        let mut accessible = [0u8; 8];
+        assert_eq!(host.proc_read_bytes(proc.pid as i32, 0, &mut accessible), 0);
+        assert_eq!(accessible, [0xa5; 8]);
+        let before = host.proc_memory.clone();
+        let info = gl::GlQueryInfo { op: gl::QOP_BIND_FRAMEBUFFER,
+            in_buf_ptr: 0, in_buf_len: 8, out_buf_ptr: 64, out_buf_len: 12,
+            ..Default::default() };
+        assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY,
+            &mut glio_query_bytes(info)), Err(Errno::EFAULT));
+        assert!(host.gl_query_sessions.is_empty());
+        assert!(host.proc_write_calls.is_empty());
+        assert_eq!(host.proc_memory, before);
+    }
+
+    #[test]
+    fn glio_query_preflight_reserved_bits_never_reach_renderer() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        let before = host.proc_memory.clone();
+        for reserved in [1, u32::MAX] {
+            let info = gl::GlQueryInfo { op: gl::QOP_FINISH, reserved, ..Default::default() };
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY,
+                &mut glio_query_bytes(info)), Err(Errno::EINVAL));
+            assert!(host.gl_query_sessions.is_empty());
+            assert!(host.proc_write_calls.is_empty());
+            assert_eq!(host.proc_memory, before);
+        }
+    }
+
+    #[test]
+    fn glio_query_preflight_rejects_oversized_and_failed_renderer_replies_without_copy() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        let before = host.proc_memory.clone();
+        for (capacity, result) in [(4, 5), (0, 1), (4, i32::MAX), (4, -5)] {
+            host.gl_query_result = Some(result);
+            let info = gl::GlQueryInfo { op: gl::QOP_GET_ERROR,
+                out_buf_ptr: 64, out_buf_len: capacity, ..Default::default() };
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY,
+                &mut glio_query_bytes(info)), Err(Errno::EIO));
+            assert!(host.proc_write_calls.is_empty());
+            assert_eq!(host.proc_memory, before);
+        }
+        assert_eq!(host.gl_query_sessions.len(), 4);
+    }
+
+    #[test]
+    fn glio_query_preflight_preserves_overlapping_input_and_short_reply_tail() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        host.proc_memory[32..40].copy_from_slice(&[1,2,3,4,5,6,7,8]);
+        let before = host.proc_memory.clone();
+        host.gl_query_result = Some(4);
+        let info = gl::GlQueryInfo { op: gl::QOP_GET_STRING, in_buf_ptr: 32,
+            in_buf_len: 8, out_buf_ptr: 32, out_buf_len: 12, ..Default::default() };
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut glio_query_bytes(info)).unwrap();
+        assert_eq!(host.gl_query_inputs, vec![(gl::QOP_GET_STRING, vec![1,2,3,4,5,6,7,8],12)]);
+        assert_eq!(&host.proc_memory[..32], &before[..32]);
+        assert_eq!(&host.proc_memory[32..36], &[0;4]);
+        assert_eq!(&host.proc_memory[36..], &before[36..]);
+        assert_eq!(host.proc_write_calls.len(), 1);
+    }
+
+    #[test]
+    fn glio_query_preflight_zero_lengths_ignore_pointer_values() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        let before = host.proc_memory.clone();
+        let info = gl::GlQueryInfo { op: gl::QOP_FINISH, in_buf_ptr: u32::MAX,
+            out_buf_ptr: u32::MAX, ..Default::default() };
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut glio_query_bytes(info)).unwrap();
+        assert_eq!(host.gl_query_inputs, vec![(gl::QOP_FINISH, vec![], 0)]);
+        assert_eq!(host.gl_query_sessions.len(), 1);
+        assert!(host.proc_write_calls.is_empty());
+        assert_eq!(host.proc_memory, before);
     }
 
     #[test]

@@ -4000,6 +4000,17 @@ TLV commands, the kernel validates the submitted range, and the host decodes
 the commands against a browser `WebGL2RenderingContext` or a test double in
 Node.js. The kernel does not contain GL rendering code.
 
+For `GLIO_QUERY`, the kernel rejects nonzero reserved fields, bounds both
+buffer lengths and validates every nonempty guest range before renderer
+dispatch. It probes the full output capacity even if the renderer might
+return no bytes: queries can consume error flags or mutate object state.
+Nonempty null ranges fail with `EFAULT`; zero-length pointers are ignored.
+Input is copied before dispatch, so overlapping input/output buffers work.
+Failed or oversized host replies return `EIO` without publishing output;
+a successful short reply leaves the unused destination tail untouched.
+The host-memory bridge still permits address zero as an ordinary byte;
+the query ioctl owns its null-pointer semantics.
+
 The combined graphics branch uses ABI 54, one version above current main's
 ABI 53. It joins main's xattr, exchange and current process lifecycle
 contracts with the graphics interfaces from earlier development versions.
