@@ -177,6 +177,31 @@ const PROCESS_ADDRESS_AND_SIZE_ARGUMENTS_1_2: &[ChannelScalarArgument] = &[
         kind: ChannelScalarKind::ProcessSize,
     },
 ];
+/// `nanosleep(req, rem)`: both are caller timespec addresses. The kernel
+/// parks the sleep, so it reads `req` itself and writes `rem` when an
+/// interruption is drained -- long after any per-call staging is gone.
+const PROCESS_ADDRESS_ARGUMENTS_0_1: &[ChannelScalarArgument] = &[
+    ChannelScalarArgument {
+        index: 0,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+    ChannelScalarArgument {
+        index: 1,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+];
+/// `clock_nanosleep(clock, flags, req, rem)`; see
+/// [`PROCESS_ADDRESS_ARGUMENTS_0_1`].
+const PROCESS_ADDRESS_ARGUMENTS_2_3: &[ChannelScalarArgument] = &[
+    ChannelScalarArgument {
+        index: 2,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+    ChannelScalarArgument {
+        index: 3,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+];
 const U32_ARGUMENT_2: &[ChannelScalarArgument] = &[ChannelScalarArgument {
     index: 2,
     kind: ChannelScalarKind::U32,
@@ -399,6 +424,12 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {
+        syscall_number: Syscall::Nanosleep as u32,
+        musl_name: "nanosleep",
+        arguments: PROCESS_ADDRESS_ARGUMENTS_0_1,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
         syscall_number: Syscall::GetEnv as u32,
         musl_name: "getenv",
         arguments: PROCESS_SIZE_ARGUMENT_2,
@@ -552,6 +583,12 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
         syscall_number: Syscall::Getdents64 as u32,
         musl_name: "getdents64",
         arguments: PROCESS_SIZE_ARGUMENT_2,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
+        syscall_number: Syscall::ClockNanosleep as u32,
+        musl_name: "clock_nanosleep",
+        arguments: PROCESS_ADDRESS_ARGUMENTS_2_3,
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {

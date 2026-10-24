@@ -37,6 +37,11 @@ _Static_assert(__NR_getcwd == 23u,
 #endif
 _Static_assert(__NR_readdir == 26u,
 "musl __NR_readdir drifted from the Kandelo channel scalar contract");
+#ifndef __NR_nanosleep
+#error "musl is missing __NR_nanosleep required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_nanosleep == 41u,
+"musl __NR_nanosleep drifted from the Kandelo channel scalar contract");
 #ifndef __NR_getenv
 #error "musl is missing __NR_getenv required by the Kandelo channel scalar contract"
 #endif
@@ -167,6 +172,11 @@ _Static_assert(__NR_getrandom == 120u,
 #endif
 _Static_assert(__NR_getdents64 == 122u,
 "musl __NR_getdents64 drifted from the Kandelo channel scalar contract");
+#ifndef __NR_clock_nanosleep
+#error "musl is missing __NR_clock_nanosleep required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_clock_nanosleep == 124u,
+"musl __NR_clock_nanosleep drifted from the Kandelo channel scalar contract");
 #ifndef __NR_mremap
 #error "musl is missing __NR_mremap required by the Kandelo channel scalar contract"
 #endif

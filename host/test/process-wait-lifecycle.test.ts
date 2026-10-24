@@ -1131,7 +1131,6 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.parkedChannelCompletions = new Map();
     worker.deferredStoppedChannels = new Map();
     worker.deferredProcessWorkerStarts = new Map();
-    worker.pendingSleeps = new Map();
     worker.callbacks = { onExit };
 
     worker.drainAndProcessWakeupEvents();
@@ -1748,7 +1747,6 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.resumePreparedSignals = new WeakSet();
     worker.pendingCancels = new Set([channel]);
     worker.waitingForChild = [];
-    worker.pendingSleeps = new Map();
     worker.pendingPollRetries = new Map();
     worker.pendingSelectRetries = new Map();
     worker.pendingPipeReaders = new Map();
@@ -1935,7 +1933,6 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.parkedChannelCompletions = new Map();
     worker.deferredStoppedChannels = new Map();
     worker.deferredProcessWorkerStarts = new Map();
-    worker.pendingSleeps = new Map();
     worker.pendingPollRetries = new Map();
     worker.pendingSelectRetries = new Map();
     worker.pendingPipeReaders = new Map();
@@ -2014,7 +2011,6 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.parkedChannelCompletions = new Map();
     worker.deferredStoppedChannels = new Map();
     worker.deferredProcessWorkerStarts = new Map();
-    worker.pendingSleeps = new Map();
     worker.pendingPollRetries = new Map();
     worker.pendingSelectRetries = new Map();
     worker.pendingPipeReaders = new Map();
@@ -2681,7 +2677,6 @@ describe("Rust-owned process wait lifecycle", () => {
       [42, { channels: [normalChannel], memory: normalMemory }],
       [43, { channels: [signaledChannel], memory: signaledMemory }],
     ]);
-    worker.pendingSleeps = new Map();
     worker.hostReaped = new Set();
     worker.callbacks = { onExit };
     markPending(normalChannel);

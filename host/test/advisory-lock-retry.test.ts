@@ -415,7 +415,6 @@ describe("Rust-owned advisory-lock retry scheduling", () => {
       ptrWidth: 4,
     }]]);
     state.activeChannels = [channel];
-    state.pendingSleeps = new Map();
     state.pendingPollRetries = new Map();
     state.pendingAdvisoryLockRetries = new Map();
     state.pendingSelectRetries = new Map();
@@ -644,7 +643,6 @@ interface MutableWorkerState {
   channelTids: Map<string, number>;
   hostReaped: Set<number>;
   waitingForChild: unknown[];
-  pendingSleeps: Map<TestChannel, unknown>;
   pendingPollRetries: Map<TestChannel, unknown>;
   pendingAdvisoryLockRetries: Map<TestChannel, {
     cancellationPoint: boolean;

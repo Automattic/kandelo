@@ -837,9 +837,6 @@ describe("exec host-state transition", () => {
       const mainChannel = createChannel(7, memory, 0);
       const threadChannel = createChannel(7, memory, 256);
       const otherChannel = createChannel(8, otherMemory, 0);
-      const sleepTimer = setTimeout(() => {}, 60_000);
-      const threadSleepTimer = setTimeout(() => {}, 60_000);
-      const otherSleepTimer = setTimeout(() => {}, 60_000);
       const worker = createWorker({
         processes: new Map([
           [7, { channels: [mainChannel, threadChannel], memory }],
@@ -850,11 +847,6 @@ describe("exec host-state transition", () => {
           { parentPid: 7, channel: mainChannel },
           { parentPid: 8, channel: otherChannel },
         ],
-        pendingSleeps: new Map([
-          [mainChannel, { timer: sleepTimer, channel: mainChannel }],
-          [threadChannel, { timer: threadSleepTimer, channel: threadChannel }],
-          [otherChannel, { timer: otherSleepTimer, channel: otherChannel }],
-        ]),
         pendingCancels: new Set([threadChannel, otherChannel]),
         stoppedPids: new Set([7, 8]),
         parkedChannelCompletions: new Map([
@@ -901,9 +893,6 @@ describe("exec host-state transition", () => {
       expect(worker.waitingForChild).toEqual([
         { parentPid: 8, channel: otherChannel },
       ]);
-      expect(worker.pendingSleeps.has(mainChannel)).toBe(false);
-      expect(worker.pendingSleeps.has(threadChannel)).toBe(false);
-      expect(worker.pendingSleeps.has(otherChannel)).toBe(true);
       expect(worker.pendingCancels.has(threadChannel)).toBe(false);
       expect(worker.pendingCancels.has(otherChannel)).toBe(true);
       expect(worker.stoppedPids.has(7)).toBe(true);
@@ -916,7 +905,6 @@ describe("exec host-state transition", () => {
       expect(worker.channelTids.get("8:0")).toBe(8);
       expect(worker.threadForkContexts.has("7:256")).toBe(false);
       expect(worker.threadForkContexts.has("8:0")).toBe(true);
-      clearTimeout(otherSleepTimer);
     } finally {
       vi.restoreAllMocks();
       vi.useRealTimers();
@@ -945,81 +933,6 @@ describe("exec host-state transition", () => {
       "changed memory generation",
     );
     expect(worker.processes.get(7).channels).toEqual([]);
-  });
-
-  it("keeps concurrent sleeps independent across one process's threads", async () => {
-    vi.useFakeTimers();
-    try {
-      const memory = new WebAssembly.Memory({ initial: 3, maximum: 3, shared: true });
-      const mainChannel = createChannel(7, memory, 0);
-      const threadChannel = createChannel(7, memory, 0x10000);
-      const mainDetachedOutput = [{
-        ptr: 0x800,
-        bytes: Uint8Array.of(1),
-      }];
-      const threadDetachedOutput = [{
-        ptr: 0x900,
-        bytes: Uint8Array.of(2),
-      }];
-      const worker = createWorker({
-        processes: new Map([[7, {
-          channels: [mainChannel, threadChannel],
-          memory,
-        }]]),
-      });
-      Atomics.store(
-        mainChannel.i32View,
-        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-        CHANNEL_STATUS_PENDING,
-      );
-      Atomics.store(
-        threadChannel.i32View,
-        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-        CHANNEL_STATUS_PENDING,
-      );
-
-      expect(worker.handleSleepDelay(
-        mainChannel,
-        ABI_SYSCALLS.Usleep,
-        [50_000],
-        0,
-        0,
-        undefined,
-        mainDetachedOutput,
-      )).toBe(true);
-      expect(worker.handleSleepDelay(
-        threadChannel,
-        ABI_SYSCALLS.Usleep,
-        [10_000],
-        0,
-        0,
-        undefined,
-        threadDetachedOutput,
-      )).toBe(true);
-      expect(worker.pendingSleeps.size).toBe(2);
-
-      await vi.advanceTimersByTimeAsync(10);
-      expect(Atomics.load(
-        threadChannel.i32View,
-        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-      )).not.toBe(CHANNEL_STATUS_PENDING);
-      expect(new Uint8Array(memory.buffer)[0x900]).toBe(2);
-      expect(Atomics.load(
-        mainChannel.i32View,
-        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-      )).toBe(CHANNEL_STATUS_PENDING);
-      expect(worker.pendingSleeps.has(mainChannel)).toBe(true);
-
-      await vi.advanceTimersByTimeAsync(40);
-      expect(Atomics.load(
-        mainChannel.i32View,
-        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-      )).not.toBe(CHANNEL_STATUS_PENDING);
-      expect(new Uint8Array(memory.buffer)[0x800]).toBe(1);
-      expect(worker.pendingSleeps.size).toBe(0);
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("drops a stale retry before consulting replacement process state", () => {

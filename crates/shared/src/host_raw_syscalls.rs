@@ -138,7 +138,8 @@ pub const HOST_RAW_SYSCALLS: &[u32] = &[
     Syscall::Ftruncate as u32,
     Syscall::Truncate as u32,
     ext::SYS_FALLOCATE,
-    // --- CAP: sleep completion delay (host-simulated) ---
+    // --- CAP: kernel-parked sleep; `rem` is written at drain time, so the
+    // kernel needs the caller's own addresses, not staged copies ---
     Syscall::Nanosleep as u32,
     Syscall::ClockNanosleep as u32,
     // --- CAP: signal generation waking blocked peers / reaping (post-dispatch) ---

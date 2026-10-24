@@ -361,10 +361,6 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(1, Out, fixed!(WASM_TIMESPEC_SIZE), required)]
     ),
     entry!(
-        Syscall::Nanosleep as u32,
-        [desc!(0, In, fixed!(WASM_TIMESPEC_SIZE), required)]
-    ),
-    entry!(
         Syscall::GetEnv as u32,
         [
             desc!(
@@ -625,10 +621,6 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         // POSIX and Linux permit querying clock validity without storing its
         // resolution.
         [desc!(1, Out, fixed!(WASM_TIMESPEC_SIZE), nullable)]
-    ),
-    entry!(
-        Syscall::ClockNanosleep as u32,
-        [desc!(2, In, fixed!(WASM_TIMESPEC_SIZE), required)]
     ),
     entry!(
         Syscall::Utimensat as u32,

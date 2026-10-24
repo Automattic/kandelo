@@ -5613,9 +5613,23 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
 
         // Time
         40 => kernel_clock_gettime(a1 as u32, channel_mut_ptr!(1, u8)), // SYS_CLOCK_GETTIME
-        41 => kernel_nanosleep(channel_const_ptr!(0, u8)),              // SYS_NANOSLEEP
+        // Sleeps park in the kernel (see `channel_sleep`). Both timespecs
+        // are guest addresses the kernel reads and, for `rem`, writes
+        // through the cross-memory primitive when the decision is drained.
+        41 => channel_sleep(|host, task| {
+            syscalls::sys_nanosleep(host, task, guest_address!(0), guest_address!(1))
+        }), // SYS_NANOSLEEP
         123 => kernel_clock_getres(a1 as u32, channel_mut_ptr!(1, u8)), // SYS_CLOCK_GETRES
-        124 => kernel_clock_nanosleep(a1 as u32, a2 as u32, channel_const_ptr!(2, u8)), // SYS_CLOCK_NANOSLEEP
+        124 => channel_sleep(|host, task| {
+            syscalls::sys_clock_nanosleep(
+                host,
+                task,
+                a1 as u32,
+                a2 as u32,
+                guest_address!(2),
+                guest_address!(3),
+            )
+        }), // SYS_CLOCK_NANOSLEEP
         125 => {
             // SYS_UTIMENSAT: (dirfd, path, times, flags)
             // path can be NULL (0) for futimens(fd, times) → utimensat(fd, NULL, times, 0)
@@ -5627,7 +5641,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             };
             kernel_utimensat(a1, p, len, channel_const_ptr!(2, u8), a4 as u32)
         }
-        68 => kernel_usleep(a1 as u32), // SYS_USLEEP
+        68 => channel_sleep(|host, task| syscalls::sys_usleep(host, task, a1 as u32)), // SYS_USLEEP
 
         // Memory
         47 => kernel_munmap(process_address!(0), process_size!(1)), // SYS_MUNMAP
@@ -6143,7 +6157,8 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         // All three pointers are guest addresses the kernel reads through the
         // cross-memory primitive; none is borrowed as kernel memory. Slots 3
         // and 4 are raw bits because their meaning is per-command (slot 3 is
-        // the REQUEUE count, not a pointer).
+        // the REQUEUE count, not a pointer); `channel_futex` narrows them to
+        // the caller's width.
         200 => channel_futex(
             guest_address!(0),
             a2 as u32,
@@ -10568,21 +10583,6 @@ pub fn kernel_clock_gettime(clock_id: u32, ts_ptr: *mut u8) -> i32 {
     result
 }
 
-/// Sleep for a specified duration.
-/// Reads a WasmTimespec struct from req_ptr.
-/// Returns 0 on success, or negative errno on error.
-pub fn kernel_nanosleep(req_ptr: *const u8) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let req = unsafe { &*(req_ptr as *const WasmTimespec) };
-    let result = match syscalls::sys_nanosleep(proc, &mut host, req) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
-
 /// Get clock resolution. Returns 0 or negative errno. Writes WasmTimespec to ts_ptr.
 pub fn kernel_clock_getres(clock_id: u32, ts_ptr: *mut u8) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
@@ -10602,20 +10602,6 @@ pub fn kernel_clock_getres(clock_id: u32, ts_ptr: *mut u8) -> i32 {
             }
             0
         }
-        Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
-
-/// Sleep with clock selection. Returns 0 or negative errno.
-pub fn kernel_clock_nanosleep(clock_id: u32, flags: u32, req_ptr: *const u8) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let req = unsafe { &*(req_ptr as *const WasmTimespec) };
-    let result = match syscalls::sys_clock_nanosleep(proc, &mut host, clock_id, flags, req, req_ptr)
-    {
-        Ok(()) => 0,
         Err(e) => -(e as i32),
     };
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
@@ -12960,19 +12946,6 @@ pub fn kernel_time() -> i64 {
     result
 }
 
-/// usleep() - sleep for usec microseconds.
-/// Returns 0 on success, negative errno on error.
-pub fn kernel_usleep(usec: u32) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let result = match syscalls::sys_usleep(proc, &mut host, usec) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
-
 /// openat() - open relative to directory fd.
 /// Returns fd on success, negative errno on error.
 pub fn kernel_openat(
@@ -14865,20 +14838,65 @@ mod thread_exit_tests {
 /// up by `handle_owned_channel_allocation` for the channel's return slot.
 fn channel_futex(uaddr: u64, op: u32, val: u32, timeout: u64, uaddr2: u64, val3: u32) -> i32 {
     let (_gkl, proc, _locks) = unsafe { get_process_and_advisory_locks() };
+    let task = channel_guest_task(proc);
+    // WHY: slots 3 and 4 carry no generated scalar kind (their meaning is
+    // per-command), so a wasm32 caller's `long` may arrive sign-extended.
+    // Only the low word is the caller's value.
+    let narrow = |raw: u64| if task.pointer_width == 4 { raw as u32 as u64 } else { raw };
+    let mut host = WasmHostIO;
+    report_park(syscalls::sys_futex(
+        &mut host,
+        task,
+        uaddr,
+        op,
+        val,
+        narrow(timeout),
+        narrow(uaddr2),
+        val3,
+    ))
+}
+
+/// The calling task, as the waiting syscalls name it.
+fn channel_guest_task(proc: &Process) -> syscalls::GuestTask {
     let pid = proc.pid;
     let tid = match syscalls::current_tid_for_process(proc) {
         0 => pid,
         tid => tid,
     };
-    let mut host = WasmHostIO;
-    match syscalls::sys_futex(&mut host, pid, tid, uaddr, op, val, timeout, uaddr2, val3) {
-        Ok(syscalls::FutexOutcome::Done(n)) => n,
-        Ok(syscalls::FutexOutcome::Parked(generation)) => {
+    syscalls::GuestTask {
+        pid,
+        tid,
+        pointer_width: proc.pointer_width,
+    }
+}
+
+/// Turn a waiting syscall's outcome into the channel dispatcher's `i32`.
+///
+/// A park is reported as `-PARKED_ERRNO`; the generation it minted is picked
+/// up by `handle_owned_channel_allocation` for the channel's return slot.
+fn report_park(outcome: Result<syscalls::ParkOutcome, Errno>) -> i32 {
+    match outcome {
+        Ok(syscalls::ParkOutcome::Done(n)) => n,
+        Ok(syscalls::ParkOutcome::Parked(generation)) => {
             crate::wait_park::note_parked_result(generation);
             -(wasm_posix_shared::wait_completion_wire::PARKED_ERRNO as i32)
         }
         Err(e) => -(e as i32),
     }
+}
+
+/// nanosleep / clock_nanosleep / usleep from a channel: the kernel owns the
+/// sleep (see `syscalls::sys_nanosleep`). Pending default-action signals are
+/// still applied on the way out, as for every other syscall.
+fn channel_sleep(
+    sleep: impl FnOnce(&mut WasmHostIO, syscalls::GuestTask) -> Result<syscalls::ParkOutcome, Errno>,
+) -> i32 {
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let task = channel_guest_task(proc);
+    let mut host = WasmHostIO;
+    let result = report_park(sleep(&mut host, task));
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -16007,9 +16025,15 @@ pub extern "C" fn kernel_drain_wait_completions(
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
     crate::wait_park::with(|parks| {
-        parks.expire(now);
+        for (pid, tid, ns) in parks.expire(now) {
+            crate::image_build_determinism::credit_task_wait(pid, tid, ns);
+        }
         parks.sweep_signals(table);
-        parks.drain(out, max_records) as i32
+        // An interrupted sleep's `rem` is stored now, before the host can
+        // publish the result the guest will read it beside.
+        parks.drain(out, max_records, now, &mut |pid, addr, bytes| {
+            WasmHostIO.proc_write_bytes(pid as i32, addr, bytes) == 0
+        }) as i32
     })
 }
 
