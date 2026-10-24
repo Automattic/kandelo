@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { stampFixtureAbiContract } from "./support/compile-sdk-fixture";
 import {
   RAW_GC_REFERENCE_STATE_FRESH_WORKER_HEX,
 } from "./fixtures/gc-reference-state-fresh-worker-bytes";
@@ -19,7 +20,7 @@ const instrumenter = resolve(
   "../../tools/bin/wasm-fork-instrument",
 );
 
-describe("Wasm GC reference state in a fresh process Worker", () => {
+describe.each(["walrus", "native"])("Wasm GC state in a fresh process Worker (%s)", (backend) => {
   let workDir = "";
   let programPath = "";
 
@@ -34,7 +35,8 @@ describe("Wasm GC reference state in a fresh process Worker", () => {
       rawPath,
       Buffer.from(RAW_GC_REFERENCE_STATE_FRESH_WORKER_HEX, "hex"),
     );
-    execFileSync(instrumenter, [rawPath, "-o", programPath]);
+    execFileSync(instrumenter, [rawPath, "-o", programPath, "--backend", backend]);
+    stampFixtureAbiContract(programPath);
   });
 
   afterAll(() => {

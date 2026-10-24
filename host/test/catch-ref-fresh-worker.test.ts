@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { stampFixtureAbiContract } from "./support/compile-sdk-fixture";
 
 const testDir = dirname(fileURLToPath(import.meta.url));
 const fixtureSource = resolve(
@@ -20,7 +21,7 @@ const instrumenter = resolve(
   "../../tools/bin/wasm-fork-instrument",
 );
 
-describe("CatchRef fresh process worker replay", () => {
+describe.each(["walrus", "native"])("CatchRef fresh process worker replay (%s)", (backend) => {
   let workDir = "";
   let programPath = "";
   let referencePayloadProgramPath = "";
@@ -36,7 +37,8 @@ describe("CatchRef fresh process worker replay", () => {
       "-o",
       rawPath,
     ]);
-    execFileSync(instrumenter, [rawPath, "-o", programPath]);
+    execFileSync(instrumenter, [rawPath, "-o", programPath, "--backend", backend]);
+    stampFixtureAbiContract(programPath);
 
     const referencePayloadRawPath = join(
       workDir,
@@ -57,7 +59,9 @@ describe("CatchRef fresh process worker replay", () => {
       referencePayloadRawPath,
       "-o",
       referencePayloadProgramPath,
+      "--backend", backend,
     ]);
+    stampFixtureAbiContract(referencePayloadProgramPath);
   });
 
   afterAll(() => {

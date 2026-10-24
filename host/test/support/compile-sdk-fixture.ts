@@ -10,12 +10,24 @@ interface FixtureOptions {
   backend?: "native" | "walrus";
 }
 
+const root = fileURLToPath(new URL("../../../", import.meta.url));
+
+/** Apply the same ABI digest as the normal package and fixture builders. */
+export function stampFixtureAbiContract(programPath: string): void {
+  const configured = process.env.WASM_POSIX_XTASK_BIN;
+  const target = configured ? undefined
+    : execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (.+)$/m)![1];
+  execFileSync(configured ?? "cargo", [
+    ...(configured ? [] : ["run", "-p", "xtask", "--target", target!, "--quiet", "--"]),
+    "stamp-abi-contract", programPath,
+  ], { cwd: root, stdio: "pipe" });
+}
+
 /** Build and stamp a test-owned guest using the current SDK and ABI contract. */
 export function compileSdkFixture(
   source: URL, linkArgs: string[] = [],
   { forkInstrument = false, arch = "wasm32", backend }: FixtureOptions = {},
 ) {
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
   const scratch = makeHostScratchTempRoot("sdk-fixture-");
   const cleanup = () => rmSync(scratch, { recursive: true, force: true });
   const programPath = join(scratch, "probe.wasm");
@@ -28,13 +40,7 @@ export function compileSdkFixture(
       join(root, "scripts/run-wasm-fork-instrument.sh"), linked, "-o", programPath,
       ...(backend ? ["--backend", backend] : []),
     ], { cwd: root, stdio: "pipe" });
-    const configured = process.env.WASM_POSIX_XTASK_BIN;
-    const target = configured ? undefined
-      : execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (.+)$/m)![1];
-    execFileSync(configured ?? "cargo", [
-      ...(configured ? [] : ["run", "-p", "xtask", "--target", target!, "--quiet", "--"]),
-      "stamp-abi-contract", programPath,
-    ], { cwd: root, stdio: "pipe" });
+    stampFixtureAbiContract(programPath);
     return { programPath, cleanup };
   } catch (error) { cleanup(); throw error; }
 }
