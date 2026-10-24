@@ -1162,6 +1162,7 @@ export class WasmPosixKernel {
     // last GL frame. This backstop runs exactly when the guest-side release
     // hooks did not: exec, traps, forced termination.
     this.releaseClaimedKmsCanvas(pid);
+    this.invalidateGlRetirementContexts(pid);
     this.gl.unbind(pid);
     this.framebuffers.unbind(pid);
     if (transition === "exec") {
@@ -1499,6 +1500,17 @@ export class WasmPosixKernel {
       if (!this.gl.list().some(b => b.claimedKmsCrtc === crtc)) {
         this.callbacks.markKmsCanvasGlReleased?.(crtc);
       }
+    }
+  }
+
+  /** A retained fence may use a native context after its EGL creator is gone.
+   * Capture the selected peer's flags before internal fence deletion. */
+  private invalidateGlRetirementContexts(pid: number, sessionId?: number): void {
+    for (const b of this.gl.list()) {
+      if (b.pid !== pid || (sessionId !== undefined && b.sessionId !== sessionId)) continue;
+      const contexts = b.fences.contexts();
+      if (b.gl) contexts.add(b.gl);
+      for (const gl of contexts) this.gl_muxers.get(gl)?.invalidateCurrent();
     }
   }
 
@@ -2557,11 +2569,7 @@ export class WasmPosixKernel {
         host_gl_unbind: (pid: number, sessionId?: number): void => {
           this.releaseClaimedKmsCanvas(pid, sessionId);
           this.gl_submit_queue.removeSession(pid, sessionId);
-          for (const b of this.gl.list()) {
-            if (b.pid === pid && (sessionId === undefined || b.sessionId === sessionId) && b.gl) {
-              this.gl_muxers.get(b.gl)?.invalidateCurrent();
-            }
-          }
+          this.invalidateGlRetirementContexts(pid, sessionId);
           this.gl.unbind(pid, sessionId);
         },
         host_gl_create_context: (

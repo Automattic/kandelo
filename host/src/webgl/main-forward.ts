@@ -322,7 +322,9 @@ export function setupMainForward(
         return;
       }
       case "gl_forward_unbind": {
-        if (b.gl) muxer(b.gl).invalidateCurrent();
+        const contexts = b.fences.contexts();
+        if (b.gl) contexts.add(b.gl);
+        for (const gl of contexts) muxers.get(gl)?.invalidateCurrent();
         reg.unbind(pid, msg.sessionId);
         return;
       }
@@ -332,7 +334,11 @@ export function setupMainForward(
   worker.addEventListener("message", onMessage);
   return () => {
     worker.removeEventListener("message", onMessage);
-    for (const b of reg.list()) if (b.gl) muxer(b.gl).invalidateCurrent();
+    for (const b of reg.list()) {
+      const contexts = b.fences.contexts();
+      if (b.gl) contexts.add(b.gl);
+      for (const gl of contexts) muxers.get(gl)?.invalidateCurrent();
+    }
     reg.unbind(pid);
   };
 }

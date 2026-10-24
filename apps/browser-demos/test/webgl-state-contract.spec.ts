@@ -2198,3 +2198,56 @@ test("logical image views preserve sibling parameters, pixels and retained ident
     rejected:[0,0,255,255],retargetRejected:[0,0,255,255],reused:[255,255,0,255],retained:[0,0,255,255],retainedState:[0,2],retainedImport:[1,3],retainedImported:[255,0,0,255],reusedAfterPeerImport:[255,255,0,255],afterSourceRetirement:[255,0,0,255],mutationRollback:[[255,255,0,255],[255,0,0,255],[0,0,255,255],[0,0,255,255],[255,255,0,255],[255,0,0,255]],storageReject:[[255,255,0,255],[0,0,255,255]],ownedStorageRetry:[0,0,255,255],framebufferBindReject:[[0,0,255,255],[0,0,255,255]],framebufferBindRetry:[0,0,255,255],bufferBindReject:[[100,11,22,33,44],[100,11,22,33,44],[102,11,22,33,44],[102,11,22,33,44]],bufferBindRetry:[101,103],bufferDeleteRollback:[[0,255,0,255],[0,255,0,255],[0,255,0,255],[0,255,0,255]],bufferDeleteCleared:[0,0,0,0],bufferDeleteRetry:[0,0,255,255],captureEnd:-5,captureBlocked:-5,captureOutput:[165,165,165,165],captureState:[200,0],capturePixels:[0,0,255,255],promotionSubmit:-5,promotionBlocked:-5,promotionDraws:1,promotionPixels:[0,0,255,255],pointerSubmit:-5,pointerBlocked:-5,pointerOutput:[165,165,165,165],pointerPixels:[0,0,255,255],convertedRetryPixels:[0,255,0,255],repairBlocked:-5,repairBlockedOutput:[165,165,165,165],repairPeerBlocked:-5,repairBatchBlocked:-5,repairRestored:[255,0,0,255],storageBlocked:-5,storageBlockedOutput:[165,165,165,165],storageRestored:[[255,0,0,255],[255,0,0,255]],storageState:[1,1],storageCommit:[1,0,2],storageCleanupBlocked:-5,storageOwned:[[0,0,255,255],[0,0,255,255]],rawNamespace:[0,0,255,255],rawParams:[0x2600,0x2601],rawGreen:[0,255,0,255],rawOrphan:[[255,0,0,255],[0,255,0,255]],rawRefresh:[0,255,0,255],rawInvalid:-14,rawBlocked:-5,rawBlockedOutput:[165,165,165,165],rawRevoked:[0,0,1],rawReplacement:[0,0,255,255],rawMissing:0x8cd7,errors:[0,0],clean:true,error:0});
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
+
+// Native fence ownership is a source model prerequisite for EGL sync APIs;
+// these checks do not execute the still-unimplemented guest entry points.
+test("native fence waiters retain completion and pixels after creator-context destruction", async ({ page }) => {
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  await installBrowserMemoryBoundaryProbe(page);
+  await page.goto("/trap-signal-test.html");
+  const result = await page.evaluate(async (sourceRoot) => {
+    const { GlContextRegistry } = await import(`/@fs/${sourceRoot}host/src/webgl/registry.ts`);
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+    document.body.replaceChildren(canvas);
+    const gl = canvas.getContext("webgl2", { antialias: false, preserveDrawingBuffer: true });
+    if (!gl) throw new Error("WebGL2 required");
+    const deleted: WebGLSync[] = [];
+    const nativeDelete = gl.deleteSync.bind(gl);
+    gl.deleteSync = (sync) => { if (sync) deleted.push(sync); nativeDelete(sync); };
+    const registry = new GlContextRegistry();
+    registry.bind({ pid: 91, sessionId: 131, cmdbufAddr: 4096, cmdbufLen: 4096 });
+    const binding = registry.get(91, 131)!; binding.gl = gl; binding.contextId = 37;
+    gl.clearColor(1, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+    const candidate = binding.fences.prepare(binding);
+    if (!candidate || !candidate.publish()) throw new Error("Fence creation rejected");
+    const first = binding.fences.acquire(candidate.token)!, second = binding.fences.acquire(candidate.token)!;
+    gl.flush();
+    // WebGL requires returning to the event loop before observing signaling.
+    const immediate = first.poll(binding);
+    registry.destroyContext(91, 131);
+    if (binding.gl !== null || deleted.length !== 0) throw new Error("Creator retained fence incorrectly");
+    if (!binding.fences.destroy(candidate.token)) throw new Error("Public retirement rejected");
+    if (binding.fences.acquire(candidate.token)) throw new Error("Deleted handle remained public");
+    const deadline = performance.now() + 10000;
+    let signaled = false;
+    while (performance.now() < deadline) {
+      await new Promise<void>(resolve => setTimeout(resolve, 1));
+      const status = first.poll(null);
+      if (status === null) throw new Error("Fence observation failed");
+      if (status) { signaled = true; break; }
+    }
+    if (!signaled || second.poll(null) !== true) throw new Error("Waiters did not observe completion");
+    const pixels = new Uint8Array(4);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    first.release(); first.release();
+    const afterFirst = deleted.length;
+    second.release();
+    const afterSecond = deleted.length;
+    registry.unbind(91, 131);
+    return { immediate, pixels: [...pixels], afterFirst, afterSecond,
+      afterUnbind: deleted.length, nativeLive: gl.isSync(deleted[0]), error: gl.getError() };
+  }, process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? root);
+  expect(result).toEqual({ immediate: false, pixels: [255, 0, 0, 255], afterFirst: 0,
+    afterSecond: 1, afterUnbind: 1, nativeLive: false, error: 0 });
+  expect(await memoryBoundaryFailures(page)).toEqual([]);
+});

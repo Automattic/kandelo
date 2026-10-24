@@ -15,7 +15,8 @@ export type NativeCall =
   | ["framebufferRenderbuffer", number, number, number, WebGLRenderbuffer | null]
   | ["vertexAttribPointer", number, number, number, boolean, number, number];
 export type NativeDeletion = ["deleteTexture", WebGLTexture | null] | ["deleteRenderbuffer", WebGLRenderbuffer | null]
-  | ["deleteFramebuffer", WebGLFramebuffer | null] | ["deleteBuffer", WebGLBuffer | null];
+  | ["deleteFramebuffer", WebGLFramebuffer | null] | ["deleteBuffer", WebGLBuffer | null]
+  | ["deleteSync", WebGLSync | null];
 export type NativeRetirement = {owner: CheckedGlOwner; calls: NativeDeletion[]; pending: boolean; complete: boolean; dependencies: readonly NativeRetirement[]};
 const retirements = new WeakMap<WebGL2RenderingContext, Set<NativeRetirement>>();
 export type NativeInverse = { owner: CheckedGlOwner; groups: NativeCall[][] };

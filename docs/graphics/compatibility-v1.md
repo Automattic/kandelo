@@ -85,7 +85,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/FBO holds retain GEM backing; separate private source handles and logical native views preserve object state and storage identity. Confirmed C holds belong to retained shared object records with revision-ordered publication; uncertain import/attachment candidates belong to the shared group. Raw GPU views use the same independent storage model; BO retirement tracks every retained raw generation and retries native cleanup. CPU coherence, forwarded BO registration and complete lifecycle validation remain open | EGL, GLES object/storage model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | partial |
 | E06 | Respecification orphans sibling without altering others; OES_EGL_image | GPU view replacement preserves sibling parameters and canonical pixels, retargets logical FBOs and handles definite rejection before C backing release. C retains backing by object identity and rejects stale association completions. Raw GPU respecification and refresh preserve private canonical storage and independent parameters. CPU coherence, multi-failure recovery and guest CTS remain open | GLES storage model, host object/attachment tracking | Redefine imported texture, sample both siblings, retained FBO | partial |
 | E07 | dma-buf validation, multiple import and format/modifier enumeration; EXT import | Core EGLAttrib and KHR EGLint image creation share retained dma-buf storage and destruction. Parsing rejects wide aliases, missing mandatory fields and malformed modifier pairs before import, validates preservation and hint values, and ignores valid YUV hints for supported RGB formats. Full backing metadata, CPU coherence, format and rollback validation remain open | EGL, PRIME, GBM | CPU/GPU imports, bad fd/stride/offset/modifier; repeated import lifetime | open |
-| E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve and support the existing dma-buf target through the shared retained-image registry. GL texture/cube/renderbuffer image sources and sync objects remain unimplemented. Client/GL waits acknowledge ordered completion and validate swap-interval ownership in source; native waits, full lifecycle/error audit and normal guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
+| E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve for retained dma-buf imports. Native fence candidates, public authority, independent waiter leases and retryable cleanup now have a retained host model with three-engine source evidence. The five public EGL sync definitions and their wire/display authority, timeout and server-wait paths remain unimplemented. GL texture/cube/renderbuffer image sources also remain open. Client/GL waits acknowledge ordered completion in source; full lifecycle/errors and normal guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
 | B01 | GBM allocation/import/export and plane metadata | Dumb/GPU tiers; cage adds modifier allocators | GBM, DRM BOs, host registry | SDK guest fixtures both widths; unsupported format/flags | partial |
 | B02 | GBM map/unmap coherence and authority | Kernel authoritative BO references; changed-run publication on main | GBM, kernel maps, DRI registry | Importer writes, stale readers, unmap/exit/exec; browser pixels | partial |
 | B03 | Surface ring lock/release/destroy ownership | Main two-BO ring; audit lock/destroy/outstanding buffer lifetime | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks | partial |
@@ -4578,3 +4578,68 @@ as complete inventory items. Rebuilt guest integration, full CTS, real
 browser rendering, complete browser-memory, cage/sway and POSIX gates
 remain required in the deferred combined-artifact phase. Renderer sync
 objects, GL-source EGLImages and other inventory gaps remain open.
+
+### Retained native fences before EGL sync entry points
+
+The host now separates a prepared native fence, its published token and
+independent waiter leases. Publication does not require another native
+allocation. Cancelling an unaccepted candidate retires it; cancellation
+cannot retract an already published token. Deleting a public token rejects
+new lookups immediately while existing leases retain polling authority.
+Native deletion waits for the final lease, is idempotent, and preserves
+failed cleanup in the preallocated native-retirement owner. A failed
+candidate deletion blocks further native admission until repair succeeds.
+
+Each session's owner survives logical context destruction and uses
+non-reused tokens across context recreation. Records keep only native
+handles, scalars and private error flags; neither guest bindings nor guest
+memory cross into their persistent cleanup lifetime. Session close revokes
+publication without invalidating retained waiters. Kernel fd/process
+cleanup and forwarded unbind/disposal capture every retained native
+context's selected error owner before internal deletion, including when
+the creator's `gl` field has already been cleared.
+
+This implements the native ownership prerequisite, not the five public
+EGL 1.5 sync functions. No new query opcode, operation-table version,
+C entry point or advertised extension was added. ABI 54 and operation
+table 16 remain unchanged. Display-owned C handles, no-current query
+authority, bounded timeout/flush behavior, multiple guest waiters and
+per-context server-wait ordering are still required implementation work.
+The registry's retained host leases are not yet a guest sync protocol.
+
+The requirements follow [EGL 1.5 section 3.8.1](https://registry.khronos.org/EGL/specs/eglspec.1.5.pdf):
+creation uses the current client context, but sync identity belongs to a
+display; multiple waiters and deferred deletion require distinct lifetime.
+The [WebGL2 sync contract](https://registry.khronos.org/webgl/specs/latest/2.0/)
+requires an event-loop turn before a newly created fence can report
+signaling. That is a scheduling requirement to implement, not evidence
+that EGL waits are impossible or permission to replace them with finish.
+Cross-native-context server ordering remains ordinary work; no hard
+platform boundary is claimed.
+
+| Check | Exact evidence |
+|---|---|
+| Full graphics source suite | All 605 cases in 24 files pass without skips, including 23 new fence cases; `graphics-fences-host-final-complete.log` |
+| Native candidate/cleanup cases | Publication/cancellation, two waiter leases, final release, close, token reuse/exhaustion, metadata/native allocation failure, creation/deletion rejection, malformed status, context loss and retained creatorless contexts; same log |
+| Shared error ownership on cleanup | Kernel fd-close, process-exit and actual main-forward handler cases preserve the selected peer's pending flag while deleting a creatorless fence; same log |
+| Real native fence and pixels | Chromium, Firefox and WebKit all pass the new rendered source case, no skips; `graphics-fences-browser.log` |
+| Host Node/browser builds and declarations | Canonical build and declaration commands pass; `graphics-fences-build-current.log`, `graphics-fences-declarations-current.log` |
+| Merged Vitest evidence registry | All 596 files agree; `graphics-fences-registry-current.log` |
+| Extra raw TypeScript diagnostic comparison | `tsc -p tsconfig.json --noEmit` reports the same 44 diagnostic heads on `69adc58b82` and current source; no added location/code/message; `graphics-fences-types-baseline.log`, `graphics-fences-types-final.log` |
+
+The real renderer test clears red, creates an actual WebGL fence, confirms
+it is initially unsignaled, flushes, destroys the logical creator and
+invalidates the public token while retaining two waiters. After yielding
+to the browser event loop both observe completion and red pixels. Releasing
+one does not delete; releasing the last deletes exactly once. Session
+unbind does not repeat deletion, native isSync becomes false, and no GL
+error or browser memory-boundary failure occurs. This is host source
+execution without guest EGL/GLIO marshalling, not CTS or compositor proof.
+
+The diagnostic comparison used a private tracked-source projection of the
+prior commit with the same declared dependencies. The standalone raw tsc
+command still fails; the passing canonical build/declaration checks do not
+turn that result into a pass. No normal graphics SDK/program/package/image
+rebuild, full browser-memory, guest CTS, cage/sway or POSIX result is
+claimed. Those complete gates remain deferred to the combined-artifact
+phase. The original full graphics objective remains active.

@@ -1,4 +1,5 @@
 import { revokeForeignBo } from "./foreign-retirement.js";
+import { GlFenceOwner } from "./fences.js";
 import type { GlClientArrayFields } from "./client-array.js";
 import { hasNativeRepair, repairNativeState, retireNativeRepair, retireNativeObject } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
@@ -98,6 +99,8 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlC
   /** Live WebGL2 context, lazily constructed at `host_gl_create_context`
    *  time once the embedder has attached a canvas. */
   gl: WebGL2RenderingContext | null;
+  /** Fence lifetime is independent of context-local state. */
+  fences: GlFenceOwner;
   /** The canvas backing this binding's WebGL2 context. Set by
    *  `attachCanvas` before the program calls `eglCreateContext`. */
   canvas: HTMLCanvasElement | OffscreenCanvas | null;
@@ -195,6 +198,7 @@ export class GlContextRegistry {
       undefinedDefaultFbo: null,
       cmdbufView: null,
       gl: null,
+      fences: new GlFenceOwner(),
       canvas,
       contextId: null,
       errors: [],
@@ -229,6 +233,7 @@ export class GlContextRegistry {
       } catch (error) {
         failure ??= error;
       } finally {
+        b.fences.close();
         this.bindings.delete(`${pid}:${b.sessionId}`);
       }
       for (const l of this.listeners) l(pid, "unbind");

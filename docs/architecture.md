@@ -4298,6 +4298,22 @@ The multiplexer restores masks, stencil operations, clear values, dither,
 constant vertex attributes, independent 2D/cube texture bindings and pixel
 storage state when switching guest contexts. Synchronous native-state queries
 select the caller through that same multiplexer after destination preflight.
+
+The host now has a retained native-fence owner as a prerequisite for EGL
+sync support. Creation reserves a private candidate and deletion receipt
+before inserting the native fence; publication is separate from acceptance.
+Public-token destruction prevents new lookups while existing waiter leases
+retain the actual native context and sync object. Context destruction does
+not retire these references. Final session removal revokes public authority;
+the final waiter release permits checked deletion. Failed deletion remains
+in the existing native-retirement queue and blocks dependent admission.
+Records retain native handles and private error flags, with no guest memory
+or binding callback. Kernel and forwarded teardown capture errors from all
+retained native contexts, including fences whose creator is already gone.
+This source model is not yet connected to public EGL sync entry points:
+display-level handles, query authority, timeouts and server ordering remain
+implementation work in the compatibility inventory.
+
 The main-thread fallback supports synchronous queries through one reusable
 65,556-byte device mailbox per channel, matching the kernel's 64 KiB query
 limit. Input and command bytes are copied out of guest memory. A timed-out

@@ -448,6 +448,7 @@ host/test/webgl-bridge.test.ts	source-only
 host/test/webgl-buffer-bindings.test.ts	source-only
 host/test/webgl-capabilities.test.ts	source-only
 host/test/webgl-context-creation.test.ts	source-only
+host/test/webgl-fences.test.ts	source-only
 host/test/webgl-foreign-texture.test.ts	source-only
 host/test/webgl-gpu-bo.test.ts	source-only
 host/test/webgl-image-bindings.test.ts	source-only
