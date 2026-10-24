@@ -4695,6 +4695,7 @@ Completed receipts are pruned without reviving or reusing a token.
 | Complete graphics host source | All 622 in 25 files pass without skips, including 15 new wire cases and the two strengthened retirement cases; `graphics-fence-wire-host.log` |
 | Native C regression controls | All 185 fatal-UBSan cases pass with table 17 headers; `graphics-fence-wire-native.log`; public C sync functions are still absent |
 | Host Node/browser builds and declarations | Passed; `graphics-fence-wire-build.log`, `graphics-fence-wire-declarations.log` |
+| Extra raw tsc audit on `8295a159a3` | Still fails with 44 diagnostics; no added file/code/message relative to the prior owner source (line offsets excluded); `graphics-fence-wire-tsc.log`, `graphics-fence-wire-tsc-comparison.txt` |
 | Complete evidence registry | All 597 files agree; `graphics-fence-wire-registry.log` |
 | ABI metadata and standalone resolver | Regeneration/check and resolver regeneration/test pass; `graphics-fence-wire-abi-update.log`, `graphics-fence-wire-abi-check.log`, `graphics-fence-wire-resolver.log`; the generated metadata remains unchanged because no structural ABI entry changed |
 
