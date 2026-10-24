@@ -130,6 +130,12 @@ pub fn alloc_accept_wake_idx() -> u32 {
 /// Push a wakeup event into the global buffer.
 pub fn push(idx: u32, wake_type: u8) {
     use wasm_posix_shared::epoll::*;
+    // A pipe's readiness changed: a transfer parked on it re-executes on the
+    // next settle (`crate::wait_retry`). The host still receives the event
+    // for the waits it continues to own.
+    if wake_type == WAKE_READABLE || wake_type == WAKE_WRITABLE {
+        crate::wait_park::note_pipe_ready(idx);
+    }
     let (source, events) = match wake_type {
         WAKE_READABLE => (
             crate::epoll::Source::Pipe(idx, wake_type),

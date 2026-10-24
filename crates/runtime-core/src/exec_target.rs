@@ -882,6 +882,10 @@ fn finish_commit(
     // image has stopped being the one that runs, and before the host launches
     // the incoming one. An exec may legitimately change the width.
     proc.pointer_width = image_pointer_width;
+    // The incoming image's channel is placed by the host with its layout and
+    // registered before that image runs; the outgoing one's address means
+    // nothing to it.
+    proc.main_channel_addr = 0;
     proc.exec_generation = next_generation;
 
     let competing: Vec<_> = proc.prepared_exec_targets.drain().collect();

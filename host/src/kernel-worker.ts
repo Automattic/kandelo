@@ -7151,6 +7151,13 @@ export class CentralizedKernelWorker {
             "Kernel export kernel_set_brk_limit is required for legacy low-control layout",
           );
         }
+        // A parked blocking transfer re-executes on the caller's own buffer,
+        // which the kernel finds from the request in the caller's channel.
+        const setMainChannel = this.#kernelInstanceForEntry(entry).exports
+          .kernel_set_main_channel_addr as (pid: number, addr: bigint) => number;
+        if (setMainChannel(pid, BigInt(stableChannelOffsets[0]!)) !== 0) {
+          throw new Error("kernel_set_main_channel_addr refused the registration");
+        }
         // The kernel parses caller-native structures for this process, so it
         // must know the process's data model. The host contributes it when an
         // address space is first created, because the host is what read the
@@ -11726,24 +11733,6 @@ export class CentralizedKernelWorker {
    * nested guest Worker directly. Publishing this pid's `onExit` in that case
    * would fabricate a zombie transition that Rust never accepted.
    */
-  private terminateForKernelProtocolFailure(
-    channel: ChannelInfo,
-    reason: string,
-  ): void {
-    this.#runOrDeferKernelEntry(
-      `kernel protocol failure pid=${channel.pid}`,
-      (entry) => {
-        this.#terminateForKernelProtocolFailureWithinKernelEntry(
-          channel,
-          reason,
-          entry,
-        );
-        return undefined;
-      },
-      channel,
-    );
-  }
-
   #terminateForKernelProtocolFailureWithinKernelEntry(
     channel: ChannelInfo,
     reason: string,
@@ -15788,6 +15777,11 @@ export class CentralizedKernelWorker {
     pidFilter: number | undefined,
     entry: KernelWorkerEntryContext,
   ): void {
+    // 0. Transfers parked in the kernel. A host-side write into the pipe
+    // (host stdin, a TCP or exchange bridge) queued the kernel's readiness
+    // event; settling it lets the kernel re-run those parked calls now
+    // rather than at some unrelated later entry.
+    this.#requestKernelWaitSettle();
     // 1. Blocked readers
     const readers = this.pendingPipeReaders.get(pipeIdx);
     if (readers && readers.length > 0) {
@@ -15825,6 +15819,8 @@ export class CentralizedKernelWorker {
     pipeIdx: number,
     entry: KernelWorkerEntryContext,
   ): void {
+    // Kernel-parked writers too; see #notifyPipeReadableWithinKernelEntry.
+    this.#requestKernelWaitSettle();
     const writers = this.pendingPipeWriters.get(pipeIdx);
     if (writers && writers.length > 0) {
       this.pendingPipeWriters.delete(pipeIdx);
@@ -27656,7 +27652,7 @@ export class CentralizedKernelWorker {
           ]);
         });
         // A stream's writers parked on a full FIFO now get EPIPE.
-        this.scheduleWakeBlockedRetries(entry);
+        this.#wakeExchangeReadersWithinKernelEntry(entry);
         resolve(result);
         return undefined;
       });
@@ -27680,7 +27676,7 @@ export class CentralizedKernelWorker {
             Number(source & 0xffff_ffffn), Number(source >> 32n),
           ]);
         });
-        if (result > 0) this.scheduleWakeBlockedRetries(entry);
+        if (result > 0) this.#wakeExchangeReadersWithinKernelEntry(entry);
         this.#drainExchangeIfPendingWithinKernelEntry(entry);
         resolve(result);
         return undefined;
@@ -27696,7 +27692,7 @@ export class CentralizedKernelWorker {
         const end = entry.instance.exports.kernel_exchange_stream_end as
           (sourceLo: number, sourceHi: number, failed: number) => number;
         const result = end(Number(source & 0xffff_ffffn), Number(source >> 32n), failed ? 1 : 0);
-        this.scheduleWakeBlockedRetries(entry);
+        this.#wakeExchangeReadersWithinKernelEntry(entry);
         this.#drainExchangeIfPendingWithinKernelEntry(entry);
         resolve(result);
         return undefined;
@@ -27715,7 +27711,7 @@ export class CentralizedKernelWorker {
             lease.exportPointer(0, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES,
           ]);
         });
-        this.scheduleWakeBlockedRetries(entry);
+        this.#wakeExchangeReadersWithinKernelEntry(entry);
         resolve(result);
         return undefined;
       });
@@ -27741,7 +27737,7 @@ export class CentralizedKernelWorker {
           ]);
           return count < 0 ? count : lease.copyOut(EXCHANGE_ID_BYTES, count);
         });
-        if (result instanceof Uint8Array && result.byteLength > 0) this.scheduleWakeBlockedRetries(entry);
+        if (result instanceof Uint8Array && result.byteLength > 0) this.#wakeExchangeReadersWithinKernelEntry(entry);
         resolve(result);
         return undefined;
       });
@@ -27764,6 +27760,41 @@ export class CentralizedKernelWorker {
           return count < 0 ? count : lease.copyOut(EXCHANGE_ID_BYTES, count);
         });
         resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  /**
+   * An exchange operation changed a FIFO whose other end is the host. A guest
+   * transfer blocked on it is parked in the kernel, which re-runs it when its
+   * readiness event is drained; drain now, then wake the host-owned waits
+   * (poll, select) as before.
+   */
+  #wakeExchangeReadersWithinKernelEntry(entry: KernelWorkerEntryContext): void {
+    this.#requestKernelWaitSettle();
+    this.scheduleWakeBlockedRetries(entry);
+  }
+
+  #kernelWaitSettleScheduled = false;
+
+  /**
+   * Drain the kernel's wake events in an entry of their own, soon.
+   *
+   * A host operation that writes into or reads from a kernel pipe directly
+   * (host stdin, the TCP, HTTP and exchange bridges) changes readiness that a
+   * transfer parked in the kernel waits on; the kernel re-runs such a park
+   * when its wake events are drained. The drain can complete channels and
+   * retire processes, so it runs as its own entry rather than in the middle
+   * of the caller's, whose detached effects must keep their order.
+   */
+  #requestKernelWaitSettle(): void {
+    if (this.#kernelWaitSettleScheduled) return;
+    this.#kernelWaitSettleScheduled = true;
+    this.#registerImmediate(() => {
+      this.#kernelWaitSettleScheduled = false;
+      this.#runOrDeferKernelEntry("kernel wait settle", (entry) => {
+        this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
         return undefined;
       });
     });

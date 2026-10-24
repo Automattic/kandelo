@@ -757,6 +757,12 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#pickKernelSignalTargetTid::kernel-export-direct-use::pickSignalTarget(pid, signum)",
   ),
+  // A pid and the guest-memory offset of its main channel in, a status out:
+  // the address is guest memory the kernel reads later through
+  // host_proc_read_bytes, never a kernel-memory pointer.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.registerProcess::kernel-export-direct-use::setMainChannel(pid, BigInt(stableChannelOffsets[0]!))",
+  ),
   // Kernel-owned waits (wait_park): no arguments, a relative deadline in
   // nanoseconds (or -1) out.
   reviewedScalarKernelExportCall(

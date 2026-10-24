@@ -38,7 +38,13 @@
 //!   through `Process::prepare_signal_generation`, which calls
 //!   [`note_signal_generated`]. The next drain sweeps the parked set once
 //!   ([`sweep_signals`]). One choke point and one decision function replace
-//!   the per-wait-kind interrupt arms the host used to keep in step.
+//!   the per-wait-kind interrupt arms the host used to keep in step. A new
+//!   park asks for a sweep of its own process only: a signal already
+//!   pending there may target the parking thread or, if that thread blocks
+//!   it, another parked thread of the same process -- never a task of any
+//!   other process, whose targets this park cannot change. Changes that can
+//!   retarget a pending process-directed signal without generating one (a
+//!   mask change, a thread's exit) count as a generation.
 //! * **Cancellation, exit, exec**: the kernel's own task cleanup calls
 //!   [`cancel_task`], [`retire_task`] and [`retire_process`].
 //!
@@ -121,6 +127,9 @@ impl Resume {
             // A sleep that ran its course succeeded.
             Resume::Sleep { .. } => 0,
             // Child waits and suspends carry no deadline.
+            // A transfer's deadline is SO_RCVTIMEO/SO_SNDTIMEO, which POSIX
+            // reports as EAGAIN/EWOULDBLOCK.
+            Resume::Retry(crate::wait_retry::RetryOp::Transfer { .. }) => -(Errno::EAGAIN as i32),
             Resume::Child(_) | Resume::Suspend | Resume::Retry(_) => -(Errno::ETIMEDOUT as i32),
             // POSIX: a sigtimedwait whose timeout passes fails with EAGAIN.
             Resume::SigTimed(_) => -(Errno::EAGAIN as i32),
@@ -136,7 +145,9 @@ impl Resume {
             Resume::Sleep { .. } => wire::FLAG_SUPPRESS_RESTART,
             // wait4/waitid restart under SA_RESTART (signal(7)); the libc
             // glue reissues them.
-            Resume::Child(_) | Resume::Retry(_) => 0,
+            Resume::Child(_) => 0,
+            Resume::Retry(op) if op.restartable() => 0,
+            Resume::Retry(_) => wire::FLAG_SUPPRESS_RESTART,
             // Neither is ever restarted (signal(7)).
             Resume::Suspend | Resume::SigTimed(_) => wire::FLAG_SUPPRESS_RESTART,
         }
@@ -216,6 +227,9 @@ pub struct Parks {
     completions: VecDeque<Completion>,
     /// Set by every signal generation; cleared by the sweep that consumes it.
     signals_dirty: bool,
+    /// Processes a new park asked to have swept (see [`Self::park`]); a
+    /// narrower request than `signals_dirty`, consumed by the same sweep.
+    sweep_pids: Vec<u32>,
     /// See [`note_parked_result`].
     last_park: Option<u64>,
     /// Set whenever a child's waitable state changes; cleared by the kernel
@@ -224,8 +238,10 @@ pub struct Parks {
     /// Processes whose exit is recorded but not yet announced to the parent
     /// (SIGCHLD, or the SA_NOCLDWAIT auto-reap); see [`note_child_exited`].
     exit_notices: Vec<u32>,
-    /// Advisory-lock state changed since the last re-execution pass.
-    advisory_dirty: bool,
+    /// Wake sources that fired since the last re-execution pass: advisory
+    /// lock state, a pipe's readiness. Parked re-executable calls waiting on
+    /// one of them are re-run by the next settle.
+    dirty_sources: Vec<WakeSource>,
     /// `(pid, tid, token)` of re-executable calls whose park completed: the
     /// kernel releases each blocked-retry binding (`crate::wait_retry`)
     /// before the completion can reach the guest.
@@ -245,10 +261,11 @@ impl Parks {
             resume: BTreeMap::new(),
             completions: VecDeque::new(),
             signals_dirty: false,
+            sweep_pids: Vec::new(),
             last_park: None,
             children_dirty: false,
             exit_notices: Vec::new(),
-            advisory_dirty: false,
+            dirty_sources: Vec::new(),
             released_retry_bindings: Vec::new(),
         }
     }
@@ -294,10 +311,14 @@ impl Parks {
             }
         };
         self.resume.insert(id, resume);
-        // A signal may already be waiting for this thread. Let the next sweep
-        // decide it rather than duplicating the targeting rule here: the
-        // caller's host drains immediately after a park.
-        self.signals_dirty = true;
+        // A signal may already be pending in this process, for this thread or
+        // -- when this thread blocks it -- for another of its parked threads.
+        // Let the next sweep decide it rather than duplicating the targeting
+        // rule here (the caller's host drains immediately after a park), but
+        // sweep only this process: no other process's targets changed.
+        if !self.sweep_pids.contains(&pid) {
+            self.sweep_pids.push(pid);
+        }
         Ok(channel.0)
     }
 
@@ -389,6 +410,19 @@ impl Parks {
         credits
     }
 
+    /// Whether a drain needs the clock: some park has a deadline to expire,
+    /// or some queued decision owes a `rem` measured against it. Without
+    /// either, the clock read (a host call) is skipped.
+    pub fn needs_clock(&mut self) -> bool {
+        self.queue.next_deadline_ns().is_some()
+            || self.completions.iter().any(|c| c.remainder.is_some())
+    }
+
+    /// Whether any park has a deadline.
+    pub fn has_deadline(&mut self) -> bool {
+        self.queue.next_deadline_ns().is_some()
+    }
+
     /// Nanoseconds until the earliest park deadline, saturating at zero.
     pub fn next_timeout_ns(&mut self, now_ns: MonotonicNs) -> Option<MonotonicNs> {
         self.queue
@@ -468,17 +502,27 @@ impl Parks {
     /// The parked re-executable calls whose sources fired since the last
     /// pass, oldest first. Today the only source is advisory-lock state.
     pub fn take_dirty_retry_waiters(&mut self) -> Vec<(WaiterId, u32, u32, crate::wait_retry::RetryOp)> {
-        if !core::mem::take(&mut self.advisory_dirty) {
+        if self.dirty_sources.is_empty() {
             return Vec::new();
         }
+        let dirty = core::mem::take(&mut self.dirty_sources);
         let resume = &self.resume;
         self.queue
             .iter()
             .filter_map(|s| match resume.get(&s.id) {
-                Some(Resume::Retry(op)) => Some((s.id, s.pid, s.tid, *op)),
+                Some(Resume::Retry(op)) if dirty.contains(&op.source()) => {
+                    Some((s.id, s.pid, s.tid, *op))
+                }
                 _ => None,
             })
             .collect()
+    }
+
+    /// Record that `source` fired, if anything is parked to care.
+    pub fn note_source_ready(&mut self, source: WakeSource) {
+        if !self.queue.is_empty() && !self.dirty_sources.contains(&source) {
+            self.dirty_sources.push(source);
+        }
     }
 
     /// Decide the re-executed call `id` of `(pid, tid)`.
@@ -501,7 +545,7 @@ impl Parks {
 
     #[cfg(test)]
     pub fn note_advisory_lock_changed_for_test(&mut self) {
-        self.advisory_dirty = true;
+        self.note_source_ready(WakeSource::AdvisoryLock);
     }
 
     pub fn note_signal_generated(&mut self) {
@@ -511,15 +555,20 @@ impl Parks {
     }
 
     /// Interrupt every park a pending signal now targets, and retire every
-    /// park whose task no longer exists. Runs only after a signal generation.
+    /// park whose task no longer exists. Runs only after a signal generation
+    /// (every park), or a new park (that park's process only).
     pub fn sweep_signals(&mut self, table: &ProcessTable) {
-        if !self.signals_dirty {
+        let all = core::mem::take(&mut self.signals_dirty);
+        let pids = core::mem::take(&mut self.sweep_pids);
+        if !all && pids.is_empty() {
             return;
         }
-        self.signals_dirty = false;
         let mut interrupt: Vec<WaiterId> = Vec::new();
         let mut retire: Vec<WaiterId> = Vec::new();
         for sleeper in self.queue.iter() {
+            if !all && !pids.contains(&sleeper.pid) {
+                continue;
+            }
             match table.get(sleeper.pid) {
                 Some(proc) if proc.is_live_explicit_tid(sleeper.tid) => {
                     if signal_targets_task(proc, sleeper.tid) {
@@ -766,11 +815,13 @@ pub fn note_child_exited(pid: u32) {
 /// Advisory-lock state changed (a lock was released or downgraded, an owner
 /// went away): parked lock requests are re-executed by the next settle.
 pub fn note_advisory_lock_changed() {
-    with(|p| {
-        if !p.queue.is_empty() {
-            p.advisory_dirty = true;
-        }
-    });
+    with(|p| p.note_source_ready(WakeSource::AdvisoryLock));
+}
+
+/// A pipe (or the socket buffer backed by it) changed readiness: parked
+/// transfers on it are re-executed by the next settle (`crate::wait_retry`).
+pub fn note_pipe_ready(idx: u32) {
+    with(|p| p.note_source_ready(WakeSource::Pipe(idx)));
 }
 
 /// Take the queued exit notices, oldest first.

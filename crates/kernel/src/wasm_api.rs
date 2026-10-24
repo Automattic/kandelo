@@ -2716,6 +2716,23 @@ pub extern "C" fn kernel_rootfs_export_container_read(
     }
 }
 
+/// Register where the host placed process `pid`'s main-thread syscall
+/// channel (`Process::main_channel_addr`). Hosts call it at every
+/// registration of an address space -- a fresh process, a fork child, the
+/// image after an exec -- before that image issues a syscall. 0 on success,
+/// -ESRCH for an unknown process.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_main_channel_addr(pid: u32, addr: u64) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.get_mut(pid) {
+        Some(proc) => {
+            proc.main_channel_addr = addr;
+            0
+        }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
 /// `brk(0)` returns a value above the program's data section and stack
 /// region. Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]
@@ -4703,6 +4720,26 @@ fn handle_owned_channel_allocation(
             )),
         }
     };
+    // A blocking transfer on a kernel pipe that would block parks here, after
+    // the first attempt ran on the host-staged buffer (the hot path is
+    // unchanged); see `park_blocked_transfer`.
+    if has_task_binding
+        && retry_token == 0
+        && outcome.channel_errno == Errno::EAGAIN as u32
+        && matches!(
+            syscall_nr,
+            crate::wait_retry::SYS_READ
+                | crate::wait_retry::SYS_WRITE
+                | crate::wait_retry::SYS_SEND
+                | crate::wait_retry::SYS_RECV
+                | crate::wait_retry::SYS_SENDTO
+                | crate::wait_retry::SYS_RECVFROM
+        )
+    {
+        if let Some(result) = park_blocked_transfer(syscall_nr, &args) {
+            outcome = ChannelDispatchOutcome::narrow(result);
+        }
+    }
     // A kernel-owned park answers `ret = generation, errno = PARKED_ERRNO`
     // (see `wasm_posix_shared::wait_completion_wire`). Always consume the
     // cell so a generation can never leak into a later entry's result.
@@ -15058,12 +15095,187 @@ fn release_completed_retry_bindings() {
     }
 }
 
+/// The kernel pipe whose readiness decides a blocking receive on `fd`: a
+/// kernel pipe's read end, or a socket's receive buffer.
+fn transfer_recv_pipe(proc: &Process, fd: i32) -> Option<u32> {
+    use crate::ofd::FileType;
+    let entry = proc.fd_table.get(fd).ok()?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
+    match ofd.file_type {
+        FileType::Pipe if ofd.host_handle < 0 => Some((-(ofd.host_handle + 1)) as u32),
+        FileType::Socket => proc
+            .sockets
+            .get((-(ofd.host_handle + 1)) as usize)
+            .and_then(|sock| sock.recv_buf_idx)
+            .map(|idx| idx as u32),
+        _ => None,
+    }
+}
+
+/// The kernel pipe whose readiness decides a blocking send on `fd`.
+fn transfer_send_pipe(proc: &Process, fd: i32) -> Option<u32> {
+    use crate::ofd::FileType;
+    let entry = proc.fd_table.get(fd).ok()?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
+    match ofd.file_type {
+        FileType::Pipe if ofd.host_handle < 0 => Some((-(ofd.host_handle + 1)) as u32),
+        FileType::Socket => proc
+            .sockets
+            .get((-(ofd.host_handle + 1)) as usize)
+            .and_then(|sock| sock.send_buf_idx)
+            .map(|idx| idx as u32),
+        _ => None,
+    }
+}
+
+/// Park a `read`/`write`/`recv`/`send` (or `recvfrom`/`sendto` with no
+/// address) that answered EAGAIN for a blocking caller on a kernel pipe or
+/// pipe-backed socket. Returns the dispatch result to publish instead (the
+/// park, or the error that prevented it), or `None` when the EAGAIN is the
+/// caller's own answer: a non-blocking descriptor, `MSG_DONTWAIT`, or an
+/// endpoint whose readiness the kernel does not see (a host-delegated
+/// socket, a PCM stream, a terminal), which stays on the host's retry path
+/// for now.
+///
+/// The first attempt ran on the host's staged copy of the buffer. The park
+/// keeps the caller's own buffer address instead, read from the caller's
+/// request in its channel (`Process::task_channel_addr`), so nothing staged
+/// outlives this call: the re-execution (`wait_retry::transfer_once`) reads
+/// or writes the caller's memory directly. The open file description is
+/// pinned, as for a parked lock.
+fn park_blocked_transfer(syscall_nr: u32, staged: &[i64; 6]) -> Option<i32> {
+    use crate::wait_retry::{
+        transfer_reads, MAX_PARKED_TRANSFER, SYS_READ, SYS_RECVFROM, SYS_SENDTO, SYS_WRITE,
+    };
+    use wasm_posix_shared::channel::{ARGS_COUNT, ARGS_OFFSET, ARG_SIZE};
+
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let tid = table.current_tid();
+    let (proc, locks) = table.current_process_and_advisory_locks()?;
+    let fd = staged[0] as i32;
+    let flags = if syscall_nr == SYS_READ || syscall_nr == SYS_WRITE {
+        0
+    } else {
+        staged[3] as u32
+    };
+    if flags & wasm_posix_shared::socket::MSG_DONTWAIT != 0 {
+        return None;
+    }
+    // An address argument (a datagram's peer) stays on the host's path; with
+    // none, sendto/recvfrom are send/recv.
+    let has_address = match syscall_nr {
+        SYS_RECVFROM => staged[4] != 0 || staged[5] != 0,
+        SYS_SENDTO => staged[4] != 0,
+        _ => false,
+    };
+    if has_address {
+        return None;
+    }
+    let ofd = proc
+        .fd_table
+        .get(fd)
+        .ok()
+        .and_then(|entry| proc.ofd_table.get(entry.ofd_ref.0))?;
+    if ofd.status_flags() & wasm_posix_shared::flags::O_NONBLOCK != 0 {
+        return None;
+    }
+    let reads = transfer_reads(syscall_nr);
+    // SO_RCVTIMEO / SO_SNDTIMEO, in nanoseconds; 0 when unset or not a socket.
+    let timeout_ns: u64 = if ofd.file_type == crate::ofd::FileType::Socket {
+        proc.sockets
+            .get((-(ofd.host_handle + 1)) as usize)
+            .map(|sock| if reads { sock.recv_timeout_us } else { sock.send_timeout_us })
+            .map(|us| (us as u64).saturating_mul(1_000))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let pipe = if reads {
+        transfer_recv_pipe(proc, fd)
+    } else {
+        transfer_send_pipe(proc, fd)
+    }?;
+    // The park re-reads the caller's request from its channel; a task whose
+    // channel the kernel does not know (a pthread, whose channel the host
+    // places) stays on the host's retry path.
+    let channel = proc.task_channel_addr(tid)?;
+
+    let mut host = WasmHostIO;
+    let task = channel_guest_task(proc);
+    let outcome = (|| -> Result<syscalls::ParkOutcome, Errno> {
+        // The caller's request as it wrote it. Its descriptor and count must
+        // be the ones the host staged; anything else is a broken channel.
+        let mut raw = [0u8; ARGS_COUNT * ARG_SIZE];
+        if host.proc_read_bytes(task.pid as i32, channel + ARGS_OFFSET as u64, &mut raw) < 0 {
+            return Err(Errno::EIO);
+        }
+        let arg = |i: usize| {
+            let v = u64::from_le_bytes(raw[i * ARG_SIZE..(i + 1) * ARG_SIZE].try_into().unwrap());
+            if task.pointer_width == 4 { v as u32 as u64 } else { v }
+        };
+        let (caller_fd, buf, count) = (arg(0) as u32 as i32, arg(1), arg(2));
+        if caller_fd != fd || count != staged[2] as u64 || count > MAX_PARKED_TRANSFER {
+            return Err(Errno::EIO);
+        }
+        let token = syscalls::ensure_blocking_retry_ofd_binding(
+            proc, locks, &mut host, tid, syscall_nr, fd, None,
+        )?;
+        let deadline = if timeout_ns > 0 {
+            Some(crate::wait_park::now_ns(&mut host)?.saturating_add(timeout_ns as i64))
+        } else {
+            None
+        };
+        let op = crate::wait_retry::RetryOp::Transfer {
+            syscall: syscall_nr,
+            fd,
+            buf,
+            count,
+            flags,
+            pipe,
+            token,
+            restartable: timeout_ns == 0,
+        };
+        let operation = crate::blocked_retry::BlockingRetryOperation::from_syscall(syscall_nr)?;
+        let parked = crate::wait_park::with(|parks| {
+            parks.park(
+                task.pid,
+                task.tid,
+                crate::wait_queue::WaitKind::Transfer { operation },
+                alloc::vec![op.source()],
+                deadline,
+                crate::wait_park::Resume::Retry(op),
+            )
+        });
+        match parked {
+            Ok(generation) => Ok(syscalls::ParkOutcome::Parked(generation)),
+            Err(error) => {
+                let _ = syscalls::release_blocking_retry_binding(proc, locks, &mut host, tid, token);
+                Err(error)
+            }
+        }
+    })();
+    Some(report_park(outcome))
+}
+
 /// Re-execute every parked call whose source fired (`wait_retry`). A call
 /// that would still block stays parked; anything else is its answer.
 fn settle_retry_waits() {
+    // A re-executed transfer can itself change a pipe's readiness (a read
+    // frees room a parked writer needs), so loop until a pass decides
+    // nothing new. Every pass that continues consumed a readiness change; a
+    // pass with nothing dirty ends it.
+    for _ in 0..64 {
+        if !settle_retry_waits_once() {
+            return;
+        }
+    }
+}
+
+/// One re-execution pass; returns whether anything was dirty.
+fn settle_retry_waits_once() -> bool {
     let waiters = crate::wait_park::with(|p| p.take_dirty_retry_waiters());
     if waiters.is_empty() {
-        return;
+        return false;
     }
     let mut host = WasmHostIO;
     for (id, pid, tid, op) in waiters {
@@ -15073,7 +15285,9 @@ fn settle_retry_waits() {
             if !proc.is_live_explicit_tid(tid) {
                 continue;
             }
-            op.attempt(proc, locks, &mut host, tid)
+            let outcome = op.attempt(proc, locks, &mut host, tid);
+            syscalls::finish_scm_rights_cleanup(locks, &mut host);
+            outcome
         };
         let value = match outcome {
             Err(Errno::EAGAIN) => continue,
@@ -15082,6 +15296,7 @@ fn settle_retry_waits() {
         };
         crate::wait_park::with(|p| p.finish_retry_waiter(id, op, value));
     }
+    true
 }
 
 /// Offer every parked `rt_sigtimedwait` the signals in its set, after a signal
@@ -16249,9 +16464,16 @@ pub extern "C" fn kernel_drain_wait_completions(
     if out_ptr.is_null() {
         return -(Errno::EFAULT as i32);
     }
-    let now = match crate::wait_park::now_ns(&mut WasmHostIO) {
-        Ok(now) => now,
-        Err(error) => return -(error as i32),
+    // The clock is a host call: read it only when a deadline could expire or
+    // a decision owes a `rem` (`Parks::needs_clock`). An untimed park -- a
+    // pipe transfer, a lock -- is decided without it.
+    let now = if crate::wait_park::with(|parks| parks.needs_clock()) {
+        match crate::wait_park::now_ns(&mut WasmHostIO) {
+            Ok(now) => Some(now),
+            Err(error) => return -(error as i32),
+        }
+    } else {
+        None
     };
     settle_child_waits();
     settle_signal_waits();
@@ -16260,10 +16482,25 @@ pub extern "C" fn kernel_drain_wait_completions(
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
     let drained = crate::wait_park::with(|parks| {
-        for (pid, tid, ns) in parks.expire(now) {
-            crate::image_build_determinism::credit_task_wait(pid, tid, ns);
+        if let Some(now) = now {
+            for (pid, tid, ns) in parks.expire(now) {
+                crate::image_build_determinism::credit_task_wait(pid, tid, ns);
+            }
         }
         parks.sweep_signals(table);
+        // Nothing decided: no record to write and no pin to release.
+        if parks.pending_completions() == 0 {
+            return 0;
+        }
+        // A `rem` is owed only by a sleep, which had a deadline, so `now` was
+        // read above; read it here anyway rather than measure against 0.
+        let now = match now {
+            Some(now) => now,
+            None if parks.needs_clock() => {
+                crate::wait_park::now_ns(&mut WasmHostIO).unwrap_or(0)
+            }
+            None => 0,
+        };
         // An interrupted sleep's `rem` is stored now, before the host can
         // publish the result the guest will read it beside.
         parks.drain(out, max_records, now, &mut |pid, addr, bytes| {
@@ -16285,6 +16522,10 @@ pub extern "C" fn kernel_drain_wait_completions(
 /// without touching any host.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_wait_next_timeout_ns() -> i64 {
+    // No timed park: answer without the clock read (a host call).
+    if !crate::wait_park::with(|parks| parks.has_deadline()) {
+        return -1;
+    }
     let now = match crate::wait_park::now_ns(&mut WasmHostIO) {
         Ok(now) => now,
         Err(error) => return -(error as i64),

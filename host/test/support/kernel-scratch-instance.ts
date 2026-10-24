@@ -528,6 +528,10 @@ function signatures(
       parameters: [i32, pointer],
       result: i32,
     },
+    kernel_set_main_channel_addr: {
+      parameters: [i32, i64],
+      result: i32,
+    },
     kernel_set_process_pointer_width: {
       parameters: [i32, i32],
       result: i32,
