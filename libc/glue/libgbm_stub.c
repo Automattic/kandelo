@@ -108,19 +108,26 @@ struct gbm_surface {
 static pthread_mutex_t surface_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct gbm_surface *live_surfaces;
 
-int _wpk_gbm_surface_dimensions(const void *window, uint32_t *width, uint32_t *height) {
+int _wpk_gbm_surface_metadata(const void *window, uint32_t *width, uint32_t *height,
+                              uint32_t *format, uint32_t *flags) {
     int found = 0;
     pthread_mutex_lock(&surface_mutex);
     for (struct gbm_surface *s = live_surfaces; s; s = s->live_next) {
         if (s == window) {
             *width = s->width;
             *height = s->height;
+            *format = s->format;
+            *flags = s->flags;
             found = 1;
             break;
         }
     }
     pthread_mutex_unlock(&surface_mutex);
     return found;
+}
+int _wpk_gbm_surface_dimensions(const void *window, uint32_t *width, uint32_t *height) {
+    uint32_t format, flags;
+    return _wpk_gbm_surface_metadata(window, width, height, &format, &flags);
 }
 
 static uint32_t format_bpp(uint32_t fourcc) {

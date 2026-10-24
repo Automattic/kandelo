@@ -3809,6 +3809,25 @@ still validate the current draw surface and flush, without posting. Native and
 forwarded raw presentation also recognize the surface kind and avoid blitting
 its private target to the visible canvas.
 
+Core and EXT platform-window constructors validate live GBM dimensions,
+format and rendering usage before allocating a backend surface. GBM lookup
+uses its locked live registry without dereferencing foreign pointers. The
+config's native visual is ABGR8888, matching its RGBA8 storage. The core
+attribute parser checks pointer-width EGLAttrib keys/values before narrowing;
+EXT attributes retain their EGLint layout. Requested render buffer and GL
+colorspace are stored separately from actual rendering: QueryContext reports
+BACK_BUFFER even for a SINGLE_BUFFER request. Public ES2 contexts do not
+support sRGB rendering, so both windows and pbuffers retain the requested
+colorspace but render linearly as permitted by EGL 1.5 section 3.5.1.
+
+Surface setters support default resolve/destroyed behavior and the no-effect
+NO_TEXTURE mipmap level. Unsupported config capabilities return BAD_MATCH.
+Texture bind/release, pixmap creation/copy and OpenVG client-buffer creation
+now expose entry points and the specific errors required by the current
+configuration and GBM platform. They preserve queued GL work and thread
+ownership. Implemented EGL functions resolve through GetProcAddress; core
+sync/image and broader wait/lifecycle semantics remain inventory gaps.
+
 Surface allocation reserves native deletion receipts and every selector update
 before creating texture/renderbuffer/framebuffer objects. Checked storage and
 read/draw/texture/renderbuffer inverses keep failed setup or finalization owned

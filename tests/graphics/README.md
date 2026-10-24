@@ -55,7 +55,7 @@ scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh ce8cd9dbcf
 scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh
 ```
 
-The 133 current cases cover image siblings and retained framebuffer storage,
+The native cases cover image siblings and retained framebuffer storage,
 redefinition, cleanup, invalid handles, repeated contexts, the shared
 shader/program namespace, boolean numeric conversion, vectors longer than
 four elements, unchanged query output after device failure and EGL config
@@ -98,7 +98,7 @@ The source WebGL contract suite also compiles selected current native C
 cases through this harness, captures actual submitted bytes and replays them
 through the browser decoder. Its float/fixed and maximum-index client-array cases are cross-layer
 source evidence, not guest execution or unmodified CTS. Selection uses
-`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 156 cases.
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 167 cases.
 `KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
 file for those test-only replays. Each browser test owns and removes its
 private trace directory.
@@ -513,3 +513,30 @@ zero viewport sizing and canvas preservation without asserting
 out-of-bounds pixel values. All earlier rendered scenarios remain enabled.
 These checks supplement normal guest/CTS and full memory/compositor gates;
 they do not replace them.
+
+
+Eleven surface/platform C cases cover core/EXT GBM windows, rendering/format
+checks, duplicate windows, requested versus actual render buffers, stored
+colorspace, wide EGLAttrib aliases and protected-page attribute parsing.
+Surface operation checks require pending GL work and current ownership to
+survive errors. Pixmap, NO_TEXTURE and client-buffer failures follow the
+current configuration/API instead of pretending to allocate native resources.
+All eleven cases execute and fail unchanged `8152b269f6`: ten at missing API
+resolution and one at valid pbuffer sRGB creation. This is inventory/behavior
+evidence, not eleven independently reproduced ownership defects.
+
+The separate actual-GBM source fixture uses provisioned public DRM headers
+and a DRM allocation double. It verifies live metadata, format/usage,
+foreign/protected-page pointers, unchanged output on rejection, retirement
+and cleanup after partial constructor failure:
+
+```
+scripts/dev-shell.sh bash tests/graphics/run-gbm-unit.sh
+```
+
+The actual-C browser platform-window replay checks red/green and linear
+quarter-intensity gray, native and forwarded dispatch, native cleanup and
+GL errors in Chromium, Firefox and WebKit. The current affected selection
+also reruns pbuffer and independent-surface cases, 24 total with no skips.
+These remain source replays, separate from normal guest CTS, compositor and
+full browser-memory validation.

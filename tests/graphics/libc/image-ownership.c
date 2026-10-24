@@ -6,6 +6,7 @@
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
+#include <gbm.h>
 #include <assert.h>
 #include <errno.h>
 #include <stdarg.h>
@@ -104,6 +105,7 @@ static int native_window, record_windows[3];
 static uint32_t native_window_bo;
 static int native_window_fd = 10;
 static uint32_t native_window_width = 64, native_window_height = 32;
+static uint32_t record_format = GBM_FORMAT_ABGR8888, record_flags = GBM_BO_USE_RENDERING;
 extern int _wpk_egl_window_retarget(void *);
 uint32_t _wpk_wlegl_bo_handle(void *window) { return window == &native_window ? native_window_bo : 0; }
 int _wpk_wlegl_device_fd(void *window) {
@@ -125,6 +127,12 @@ int _wpk_gbm_surface_dimensions(const void *window, uint32_t *w, uint32_t *h) {
             return 1;
         }
     return 0;
+}
+int _wpk_gbm_surface_metadata(const void *window, uint32_t *w, uint32_t *h,
+                              uint32_t *format, uint32_t *flags) {
+    if (!_wpk_gbm_surface_dimensions(window,w,h)) return 0;
+    *format = record_format; *flags = record_flags;
+    return 1;
 }
 
 static unsigned closes, imports;
@@ -1428,6 +1436,157 @@ int main(int argc, char **argv) {
     }
     assert(eglInitialize(dpy, NULL, NULL));
     const EGLint attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    if (!strncmp(argv[1],"egl-surface-",12) || !strncmp(argv[1],"platform-window-",16)) {
+        PFNEGLCREATEPLATFORMWINDOWSURFACEPROC create = (PFNEGLCREATEPLATFORMWINDOWSURFACEPROC)eglGetProcAddress("eglCreatePlatformWindowSurface");
+        PFNEGLCREATEPLATFORMWINDOWSURFACEEXTPROC create_ext = (PFNEGLCREATEPLATFORMWINDOWSURFACEEXTPROC)eglGetProcAddress("eglCreatePlatformWindowSurfaceEXT");
+        PFNEGLSURFACEATTRIBPROC set = (PFNEGLSURFACEATTRIBPROC)eglGetProcAddress("eglSurfaceAttrib");
+        PFNEGLBINDTEXIMAGEPROC bind = (PFNEGLBINDTEXIMAGEPROC)eglGetProcAddress("eglBindTexImage");
+        PFNEGLRELEASETEXIMAGEPROC release = (PFNEGLRELEASETEXIMAGEPROC)eglGetProcAddress("eglReleaseTexImage");
+        PFNEGLCOPYBUFFERSPROC copy = (PFNEGLCOPYBUFFERSPROC)eglGetProcAddress("eglCopyBuffers");
+        if (!strncmp(argv[1],"platform-window-",16)) {
+            assert(create && create_ext);
+            if (!strcmp(argv[1],"platform-window-invalid")) {
+                assert(!create(dpy,(EGLConfig)99,&record_windows[0],NULL) && eglGetError() == EGL_BAD_CONFIG);
+                assert(!create(EGL_NO_DISPLAY,(EGLConfig)1,&record_windows[0],NULL) && eglGetError() == EGL_BAD_DISPLAY);
+                assert(!create(dpy,(EGLConfig)1,NULL,NULL) && eglGetError() == EGL_BAD_NATIVE_WINDOW);
+                assert(!create(dpy,(EGLConfig)1,(void *)(uintptr_t)1,NULL) && eglGetError() == EGL_BAD_NATIVE_WINDOW);
+                assert(!create(dpy,(EGLConfig)1,&native_window,NULL) && eglGetError() == EGL_BAD_NATIVE_WINDOW);
+                record_flags = GBM_BO_USE_SCANOUT;
+                assert(!create(dpy,(EGLConfig)1,&record_windows[0],NULL) && eglGetError() == EGL_BAD_MATCH);
+                record_flags = GBM_BO_USE_RENDERING; record_format = GBM_FORMAT_ARGB8888;
+                assert(!create(dpy,(EGLConfig)1,&record_windows[0],NULL) && eglGetError() == EGL_BAD_MATCH);
+                record_format = GBM_FORMAT_ABGR8888;
+                const EGLAttrib invalid[][3] = {{EGL_WIDTH,5,EGL_NONE},{EGL_RENDER_BUFFER,0,EGL_NONE},
+                    {EGL_GL_COLORSPACE,0,EGL_NONE},{EGL_VG_COLORSPACE,0,EGL_NONE},{EGL_VG_ALPHA_FORMAT,0,EGL_NONE},
+                    {EGL_VG_COLORSPACE,EGL_VG_COLORSPACE_LINEAR,EGL_NONE},{EGL_VG_ALPHA_FORMAT,EGL_VG_ALPHA_FORMAT_PRE,EGL_NONE}};
+                for (unsigned i=0;i<sizeof invalid/sizeof invalid[0];i++) {
+                    assert(!create(dpy,(EGLConfig)1,&record_windows[0],invalid[i]));
+                    assert(eglGetError() == (i<5 ? EGL_BAD_ATTRIBUTE : EGL_BAD_MATCH));
+                }
+                assert(surface_create_attempts == 0 && !eglGetCurrentContext());
+            } else if (!strcmp(argv[1],"platform-window-wide")) {
+                assert(sizeof(EGLAttrib) > sizeof(EGLint));
+                const EGLAttrib high = (EGLAttrib)UINT64_C(0x100000000);
+                const EGLAttrib invalid[][3] = {{high|EGL_RENDER_BUFFER,EGL_BACK_BUFFER,EGL_NONE},
+                    {EGL_RENDER_BUFFER,high|EGL_BACK_BUFFER,EGL_NONE},{EGL_GL_COLORSPACE,high|EGL_GL_COLORSPACE_LINEAR,EGL_NONE},
+                    {high|EGL_NONE,0,EGL_NONE}};
+                for(unsigned i=0;i<sizeof invalid/sizeof invalid[0];i++) {
+                    assert(!create(dpy,(EGLConfig)1,&record_windows[0],invalid[i]) && eglGetError() == EGL_BAD_ATTRIBUTE);
+                }
+                assert(surface_create_attempts == 0);
+            } else if (!strcmp(argv[1],"platform-window-guard")) {
+                const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+                char *memory = mmap(NULL,page*2,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0); assert(memory != MAP_FAILED);
+                assert(!mprotect(memory+page,page,PROT_NONE));
+                EGLAttrib *last = (EGLAttrib *)(memory+page-sizeof(EGLAttrib)); *last = 0xdead;
+                assert(!create(dpy,(EGLConfig)1,&record_windows[0],last) && eglGetError() == EGL_BAD_ATTRIBUTE);
+                EGLint *last_ext = (EGLint *)(memory+page-sizeof(EGLint)); *last_ext = 0xdead;
+                assert(!create_ext(dpy,(EGLConfig)1,&record_windows[0],last_ext) && eglGetError() == EGL_BAD_ATTRIBUTE);
+                *last = EGL_NONE;
+                EGLSurface surface = create(dpy,(EGLConfig)1,&record_windows[0],last); assert(surface);
+                assert(eglDestroySurface(dpy,surface));
+                munmap(memory,page*2);
+            } else {
+                EGLint visual=-1;
+                assert(eglGetConfigAttrib(dpy,(EGLConfig)1,EGL_NATIVE_VISUAL_ID,&visual) && visual == GBM_FORMAT_ABGR8888);
+                const EGLAttrib list[] = {EGL_RENDER_BUFFER,EGL_BACK_BUFFER,EGL_RENDER_BUFFER,EGL_SINGLE_BUFFER,
+                    EGL_GL_COLORSPACE,EGL_GL_COLORSPACE_SRGB,EGL_NONE};
+                const EGLint ext_list[] = {EGL_RENDER_BUFFER,EGL_SINGLE_BUFFER,EGL_GL_COLORSPACE,EGL_GL_COLORSPACE_SRGB,EGL_NONE};
+                EGLSurface surface = !strcmp(argv[1],"platform-window-ext") ?
+                    create_ext(dpy,(EGLConfig)1,&record_windows[0],ext_list) : create(dpy,(EGLConfig)1,&record_windows[0],list);
+                assert(surface);
+                EGLint width=-1,height=-1,value=-1;
+                assert(eglQuerySurface(dpy,surface,EGL_WIDTH,&width) && width == 32);
+                assert(eglQuerySurface(dpy,surface,EGL_HEIGHT,&height) && height == 24);
+                assert(eglQuerySurface(dpy,surface,EGL_RENDER_BUFFER,&value) && value == EGL_SINGLE_BUFFER);
+                assert(eglQuerySurface(dpy,surface,EGL_GL_COLORSPACE,&value) && value == EGL_GL_COLORSPACE_SRGB);
+                assert(!create_ext(dpy,(EGLConfig)1,&record_windows[0],NULL) && eglGetError() == EGL_BAD_ALLOC);
+                EGLContext context = eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs); assert(context);
+                assert(eglMakeCurrent(dpy,surface,surface,context));
+                assert(eglQueryContext(dpy,context,EGL_RENDER_BUFFER,&value) && value == EGL_BACK_BUFFER);
+                glClearColor(1,0,0,1); glClear(GL_COLOR_BUFFER_BIT);
+                unsigned submits=submit_batches;
+                assert(set && bind && release && copy);
+                assert(set(dpy,surface,EGL_MIPMAP_LEVEL,-1));
+                assert(set(dpy,surface,EGL_SWAP_BEHAVIOR,EGL_BUFFER_DESTROYED));
+                assert(!set(dpy,surface,EGL_SWAP_BEHAVIOR,EGL_BUFFER_PRESERVED) && eglGetError() == EGL_BAD_MATCH);
+                assert(!bind(dpy,surface,EGL_BACK_BUFFER) && eglGetError() == EGL_BAD_SURFACE);
+                assert(!release(dpy,surface,EGL_BACK_BUFFER) && eglGetError() == EGL_BAD_SURFACE);
+                assert(!copy(dpy,surface,(EGLNativePixmapType)(uintptr_t)1) && eglGetError() == EGL_BAD_NATIVE_PIXMAP);
+                assert(submit_batches == submits && eglGetCurrentContext() == context);
+                glFlush(); glClearColor(0,1,0,1); glClear(GL_COLOR_BUFFER_BIT); glFlush();
+                glClearColor(0.25f,0.25f,0.25f,1); glClear(GL_COLOR_BUFFER_BIT); glFlush();
+                assert(eglDestroySurface(dpy,surface));
+                assert(!set(dpy,surface,EGL_MIPMAP_LEVEL,0) && eglGetError() == EGL_BAD_SURFACE);
+                assert(eglDestroyContext(dpy,context) && eglReleaseThread());
+                assert(destroyed_contexts == 1 && destroyed_surfaces == 1);
+            }
+        } else if (!strcmp(argv[1],"egl-surface-colorspace")) {
+            const EGLint list[] = {EGL_GL_COLORSPACE,EGL_GL_COLORSPACE_SRGB,EGL_NONE};
+            EGLSurface surface = eglCreatePbufferSurface(dpy,(EGLConfig)1,list); assert(surface);
+            EGLint value = -1;
+            assert(eglQuerySurface(dpy,surface,EGL_GL_COLORSPACE,&value) && value == EGL_GL_COLORSPACE_SRGB);
+            assert(eglDestroySurface(dpy,surface));
+        } else if (!strcmp(argv[1],"egl-surface-resolvers")) {
+            const char *names[] = {"eglGetDisplay","eglGetPlatformDisplay","eglGetPlatformDisplayEXT",
+                "eglInitialize","eglTerminate","eglQueryString","eglGetError","eglBindAPI","eglQueryAPI",
+                "eglCreateContext","eglDestroyContext","eglMakeCurrent","eglCreateWindowSurface","eglCreatePbufferSurface",
+                "eglDestroySurface","eglSurfaceAttrib","eglBindTexImage","eglReleaseTexImage","eglCopyBuffers",
+                "eglCreatePixmapSurface","eglCreatePlatformWindowSurface","eglCreatePlatformWindowSurfaceEXT",
+                "eglCreatePlatformPixmapSurface","eglCreatePlatformPixmapSurfaceEXT","eglCreatePbufferFromClientBuffer",
+                "eglSwapBuffers","eglSwapInterval","eglWaitClient","eglWaitGL","eglWaitNative","eglReleaseThread",
+                "eglGetProcAddress","eglGetCurrentContext","eglGetCurrentDisplay","eglGetCurrentSurface","eglQueryContext","eglQuerySurface"};
+            for(unsigned i=0;i<sizeof names/sizeof names[0];i++) assert(eglGetProcAddress(names[i]));
+            assert(!eglGetProcAddress("eglUnknownFunction"));
+        } else if (!strcmp(argv[1],"egl-surface-operations")) {
+            assert(set && bind && release && copy);
+            const EGLint pbuffer_attributes[] = {EGL_GL_COLORSPACE,EGL_GL_COLORSPACE_SRGB,EGL_NONE};
+            EGLSurface surface = eglCreatePbufferSurface(dpy,(EGLConfig)1,pbuffer_attributes); assert(surface);
+            EGLint colorspace = 0;
+            assert(eglQuerySurface(dpy,surface,EGL_GL_COLORSPACE,&colorspace) && colorspace == EGL_GL_COLORSPACE_SRGB);
+            assert(set(dpy,surface,EGL_MIPMAP_LEVEL,INT32_MIN));
+            assert(set(dpy,surface,EGL_MULTISAMPLE_RESOLVE,EGL_MULTISAMPLE_RESOLVE_DEFAULT));
+            assert(set(dpy,surface,EGL_SWAP_BEHAVIOR,EGL_BUFFER_DESTROYED));
+            const EGLint invalid[][3] = {{EGL_MULTISAMPLE_RESOLVE,EGL_MULTISAMPLE_RESOLVE_BOX,EGL_BAD_MATCH},
+                {EGL_SWAP_BEHAVIOR,EGL_BUFFER_PRESERVED,EGL_BAD_MATCH},{EGL_SWAP_BEHAVIOR,0,EGL_BAD_ATTRIBUTE},
+                {EGL_MULTISAMPLE_RESOLVE,0,EGL_BAD_ATTRIBUTE},{EGL_WIDTH,1,EGL_BAD_ATTRIBUTE}};
+            for(unsigned i=0;i<sizeof invalid/sizeof invalid[0];i++) {
+                assert(!set(dpy,surface,invalid[i][0],invalid[i][1]) && eglGetError() == invalid[i][2]);
+            }
+            for(unsigned i=0;i<2;i++) {
+                PFNEGLBINDTEXIMAGEPROC op = i ? (PFNEGLBINDTEXIMAGEPROC)release : bind;
+                assert(!op(dpy,surface,EGL_BACK_BUFFER) && eglGetError() == EGL_BAD_MATCH);
+                assert(!op(dpy,surface,EGL_SINGLE_BUFFER) && eglGetError() == EGL_BAD_PARAMETER);
+                assert(!op(dpy,EGL_NO_SURFACE,EGL_BACK_BUFFER) && eglGetError() == EGL_BAD_SURFACE);
+            }
+            EGLint value=55;
+            assert(eglQuerySurface(dpy,surface,EGL_MIPMAP_LEVEL,&value) && value == 0);
+            assert(eglQuerySurface(dpy,surface,EGL_SWAP_BEHAVIOR,&value) && value == EGL_BUFFER_DESTROYED);
+            assert(!copy(dpy,surface,(EGLNativePixmapType)(uintptr_t)1) && eglGetError() == EGL_BAD_SURFACE);
+            assert(!set(EGL_NO_DISPLAY,surface,EGL_MIPMAP_LEVEL,0) && eglGetError() == EGL_BAD_DISPLAY);
+            assert(eglDestroySurface(dpy,surface));
+            assert(!set(dpy,surface,EGL_MIPMAP_LEVEL,0) && eglGetError() == EGL_BAD_SURFACE);
+            assert(submit_batches == 0);
+        } else if (!strcmp(argv[1],"egl-surface-pixmap")) {
+            PFNEGLCREATEPIXMAPSURFACEPROC pixmap = (PFNEGLCREATEPIXMAPSURFACEPROC)eglGetProcAddress("eglCreatePixmapSurface");
+            PFNEGLCREATEPLATFORMPIXMAPSURFACEPROC platform = (PFNEGLCREATEPLATFORMPIXMAPSURFACEPROC)eglGetProcAddress("eglCreatePlatformPixmapSurface");
+            PFNEGLCREATEPLATFORMPIXMAPSURFACEEXTPROC platform_ext = (PFNEGLCREATEPLATFORMPIXMAPSURFACEEXTPROC)eglGetProcAddress("eglCreatePlatformPixmapSurfaceEXT");
+            assert(pixmap && platform && platform_ext);
+            assert(!pixmap(dpy,(EGLConfig)1,(EGLNativePixmapType)(uintptr_t)1,(const EGLint *)(uintptr_t)1) && eglGetError() == EGL_BAD_MATCH);
+            assert(!platform(dpy,(EGLConfig)1,(void *)(uintptr_t)1,(const EGLAttrib *)(uintptr_t)1) && eglGetError() == EGL_BAD_PARAMETER);
+            assert(!platform_ext(dpy,(EGLConfig)1,(void *)(uintptr_t)1,(const EGLint *)(uintptr_t)1) && eglGetError() == EGL_BAD_PARAMETER);
+            assert(!pixmap(dpy,(EGLConfig)99,0,NULL) && eglGetError() == EGL_BAD_CONFIG);
+            assert(!platform(EGL_NO_DISPLAY,(EGLConfig)1,NULL,NULL) && eglGetError() == EGL_BAD_DISPLAY);
+        } else if (!strcmp(argv[1],"egl-surface-client-buffer")) {
+            PFNEGLCREATEPBUFFERFROMCLIENTBUFFERPROC create_buffer = (PFNEGLCREATEPBUFFERFROMCLIENTBUFFERPROC)eglGetProcAddress("eglCreatePbufferFromClientBuffer");
+            assert(create_buffer);
+            assert(!create_buffer(dpy,0,(EGLClientBuffer)(uintptr_t)1,(EGLConfig)1,NULL) && eglGetError() == EGL_BAD_PARAMETER);
+            assert(!create_buffer(dpy,EGL_OPENVG_IMAGE,(EGLClientBuffer)(uintptr_t)1,(EGLConfig)1,(const EGLint *)(uintptr_t)1) && eglGetError() == EGL_BAD_ACCESS);
+            assert(!create_buffer(dpy,EGL_OPENVG_IMAGE,0,(EGLConfig)99,NULL) && eglGetError() == EGL_BAD_CONFIG);
+        } else assert(!"unknown surface scenario");
+        assert(eglTerminate(dpy) && !allocation_count());
+        printf("PASS %s\n",argv[1]); return 0;
+    }
     if (!strncmp(argv[1],"pbuffer-",8)) {
         if (!strcmp(argv[1],"pbuffer-grid")) {
             surface_limits[0] = surface_limits[1] = 8; surface_limits[2] = 64;

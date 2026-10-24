@@ -18,6 +18,7 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
+#include <gbm.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -70,6 +71,7 @@ struct egl_surface_record {
     unsigned current_references;
     int delete_pending, gbm_window, pbuffer;
     EGLint largest_pbuffer, mipmap_texture;
+    EGLint render_buffer, gl_colorspace;
     void *native_window;
     struct egl_surface_record *next;
 };
@@ -151,6 +153,8 @@ __attribute__((weak)) void     _wpk_wlegl_present(void *egl_window);
  * Weak: EGL clients using another window backend need not link libgbm. */
 __attribute__((weak)) int _wpk_gbm_surface_dimensions(const void *window,
                                                      uint32_t *width, uint32_t *height);
+__attribute__((weak)) int _wpk_gbm_surface_metadata(const void *window,
+    uint32_t *width, uint32_t *height, uint32_t *format, uint32_t *flags);
 
 #define EGL_DPY_HANDLE      ((EGLDisplay)(uintptr_t)1)
 #define EGL_CONFIG_HANDLE ((EGLConfig)(uintptr_t)1)
@@ -336,7 +340,7 @@ static const struct config_attribute config_attributes[] = {
     { EGL_MAX_SWAP_INTERVAL, 0, EGL_DONT_CARE, CFG_EXACT },
     { EGL_MIN_SWAP_INTERVAL, 0, EGL_DONT_CARE, CFG_EXACT },
     { EGL_NATIVE_RENDERABLE, EGL_FALSE, EGL_DONT_CARE, CFG_BOOLEAN },
-    { EGL_NATIVE_VISUAL_ID, 0, EGL_DONT_CARE, CFG_IGNORED },
+    { EGL_NATIVE_VISUAL_ID, GBM_FORMAT_ABGR8888, EGL_DONT_CARE, CFG_IGNORED },
     { EGL_NATIVE_VISUAL_TYPE, EGL_NONE, EGL_DONT_CARE, CFG_IGNORED },
     { EGL_MAX_PBUFFER_WIDTH, 0, EGL_DONT_CARE, CFG_IGNORED },
     { EGL_MAX_PBUFFER_HEIGHT, 0, EGL_DONT_CARE, CFG_IGNORED },
@@ -656,8 +660,19 @@ EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config, EGLContext share,
     pthread_mutex_unlock(&g_context_mutex);
     return result;
 }
+static int surface_config_locked(EGLDisplay dpy, EGLConfig config) {
+    if (dpy != EGL_DPY_HANDLE) g_last_error = EGL_BAD_DISPLAY;
+    else if (!g_active_generation || !g_active_generation->initialized) g_last_error = EGL_NOT_INITIALIZED;
+    else if (config != EGL_CONFIG_HANDLE) g_last_error = EGL_BAD_CONFIG;
+    else return 1;
+    return 0;
+}
+struct gbm_window_metadata {
+    uint32_t width, height, format, flags;
+};
 static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
-                                               EGLNativeWindowType win, const EGLint *list) {
+                                               EGLNativeWindowType win, const EGLint *list,
+                                               const struct gbm_window_metadata *native) {
     struct egl_generation *generation = g_active_generation;
     if (dpy != EGL_DPY_HANDLE) {
         g_last_error = EGL_BAD_DISPLAY;
@@ -681,16 +696,34 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
             return EGL_NO_SURFACE;
         }
     struct gl_surface_create request = {.attrs = {.kind = WPK_SURFACE_DEFAULT, .config_id = 1}};
-    int is_gbm =
-        win && _wpk_gbm_surface_dimensions &&
-        _wpk_gbm_surface_dimensions((void *)win, &request.attrs.width, &request.attrs.height);
+    int is_gbm = native != NULL;
+    if (native) {
+        request.attrs.width = native->width;
+        request.attrs.height = native->height;
+    } else if (win && _wpk_gbm_surface_dimensions) {
+        is_gbm = _wpk_gbm_surface_dimensions((void *)win, &request.attrs.width, &request.attrs.height);
+    }
+    EGLint render_buffer = EGL_BACK_BUFFER, gl_colorspace = EGL_GL_COLORSPACE_LINEAR;
     for (const EGLint *a = list; a && a[0] != EGL_NONE; a += 2) {
         if (a[0] == EGL_WIDTH && a[1] >= 0)
             request.attrs.width = (uint32_t)a[1];
         else if (a[0] == EGL_HEIGHT && a[1] >= 0)
             request.attrs.height = (uint32_t)a[1];
-        else if (a[0] == EGL_RENDER_BUFFER && a[1] == EGL_BACK_BUFFER) {
-        } else if (a[0] == EGL_GL_COLORSPACE && a[1] == EGL_GL_COLORSPACE_LINEAR) {
+        else if (a[0] == EGL_RENDER_BUFFER &&
+                 (a[1] == EGL_BACK_BUFFER || a[1] == EGL_SINGLE_BUFFER)) {
+            render_buffer = a[1];
+        } else if (a[0] == EGL_GL_COLORSPACE &&
+                   (a[1] == EGL_GL_COLORSPACE_LINEAR || a[1] == EGL_GL_COLORSPACE_SRGB)) {
+            /* EGL 1.5 section 3.5.1 permits ES2 without sRGB support to
+             * ignore this for rendering. Retain the requested attribute. */
+            gl_colorspace = a[1];
+        } else if (a[0] == EGL_VG_COLORSPACE || a[0] == EGL_VG_ALPHA_FORMAT) {
+            int colorspace = a[0] == EGL_VG_COLORSPACE;
+            EGLint supported = colorspace ? EGL_VG_COLORSPACE_sRGB : EGL_VG_ALPHA_FORMAT_NONPRE;
+            EGLint optional = colorspace ? EGL_VG_COLORSPACE_LINEAR : EGL_VG_ALPHA_FORMAT_PRE;
+            if (a[1] == supported) continue;
+            g_last_error = a[1] == optional ? EGL_BAD_MATCH : EGL_BAD_ATTRIBUTE;
+            return EGL_NO_SURFACE;
         } else {
             g_last_error = EGL_BAD_ATTRIBUTE;
             return EGL_NO_SURFACE;
@@ -731,6 +764,8 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
                                            .backend_id = request.surface_id,
                                            .width = request.attrs.width,
                                            .height = request.attrs.height,
+                                           .render_buffer = render_buffer,
+                                           .gl_colorspace = gl_colorspace,
                                            .native_window = (void *)win};
     /* GBM windows have no Wayland attach/commit hook. */
     surface->gbm_window = is_gbm;
@@ -748,9 +783,71 @@ fail:
 EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config, EGLNativeWindowType win,
                                   const EGLint *list) {
     pthread_mutex_lock(&g_context_mutex);
-    EGLSurface result = create_window_surface_locked(dpy, config, win, list);
+    EGLSurface result = create_window_surface_locked(dpy, config, win, list, NULL);
     pthread_mutex_unlock(&g_context_mutex);
     return result;
+}
+static EGLSurface create_platform_window_locked(EGLDisplay dpy, EGLConfig config,
+                                                void *window, const void *list, int wide) {
+    if (!surface_config_locked(dpy,config)) return EGL_NO_SURFACE;
+    /* Do not narrow EGLAttrib keys or read a value for an unknown key.
+     * Besides accepting high-bit aliases, doing so can read past a caller's
+     * final invalid key into an inaccessible page. */
+    EGLint normalized[] = {EGL_RENDER_BUFFER,EGL_BACK_BUFFER,
+        EGL_GL_COLORSPACE,EGL_GL_COLORSPACE_LINEAR,
+        EGL_VG_COLORSPACE,EGL_VG_COLORSPACE_sRGB,
+        EGL_VG_ALPHA_FORMAT,EGL_VG_ALPHA_FORMAT_NONPRE,EGL_NONE};
+    for (size_t i = 0; list; i += 2) {
+        EGLAttrib key = wide ? ((const EGLAttrib *)list)[i] : ((const EGLint *)list)[i];
+        if (key == EGL_NONE) break;
+        unsigned slot;
+        switch (key) {
+        case EGL_RENDER_BUFFER: slot = 1; break;
+        case EGL_GL_COLORSPACE: slot = 3; break;
+        case EGL_VG_COLORSPACE: slot = 5; break;
+        case EGL_VG_ALPHA_FORMAT: slot = 7; break;
+        default: g_last_error = EGL_BAD_ATTRIBUTE; return EGL_NO_SURFACE;
+        }
+        EGLAttrib value = wide ? ((const EGLAttrib *)list)[i+1] : ((const EGLint *)list)[i+1];
+        if (value < INT32_MIN || value > INT32_MAX) {
+            g_last_error = EGL_BAD_ATTRIBUTE; return EGL_NO_SURFACE;
+        }
+        /* Validate every occurrence, including one superseded by a later
+         * duplicate. Valid duplicates use the final value per EGL. */
+        int valid = slot == 1 ? value == EGL_BACK_BUFFER || value == EGL_SINGLE_BUFFER :
+                    slot == 3 ? value == EGL_GL_COLORSPACE_LINEAR || value == EGL_GL_COLORSPACE_SRGB :
+                    slot == 5 ? value == EGL_VG_COLORSPACE_sRGB || value == EGL_VG_COLORSPACE_LINEAR :
+                                value == EGL_VG_ALPHA_FORMAT_NONPRE || value == EGL_VG_ALPHA_FORMAT_PRE;
+        if (!valid) { g_last_error = EGL_BAD_ATTRIBUTE; return EGL_NO_SURFACE; }
+        if ((slot == 5 && value == EGL_VG_COLORSPACE_LINEAR) ||
+            (slot == 7 && value == EGL_VG_ALPHA_FORMAT_PRE)) {
+            g_last_error = EGL_BAD_MATCH; return EGL_NO_SURFACE;
+        }
+        normalized[slot] = (EGLint)value;
+    }
+    struct gbm_window_metadata native;
+    if (!window || !_wpk_gbm_surface_metadata ||
+        !_wpk_gbm_surface_metadata(window,&native.width,&native.height,&native.format,&native.flags)) {
+        g_last_error = EGL_BAD_NATIVE_WINDOW; return EGL_NO_SURFACE;
+    }
+    if (!(native.flags & GBM_BO_USE_RENDERING) || native.format != GBM_FORMAT_ABGR8888) {
+        g_last_error = EGL_BAD_MATCH; return EGL_NO_SURFACE;
+    }
+    return create_window_surface_locked(dpy,config,(EGLNativeWindowType)window,normalized,&native);
+}
+EGLSurface eglCreatePlatformWindowSurface(EGLDisplay dpy, EGLConfig config, void *window,
+                                         const EGLAttrib *list) {
+    pthread_mutex_lock(&g_context_mutex);
+    EGLSurface surface = create_platform_window_locked(dpy,config,window,list,1);
+    pthread_mutex_unlock(&g_context_mutex);
+    return surface;
+}
+EGLSurface eglCreatePlatformWindowSurfaceEXT(EGLDisplay dpy, EGLConfig config, void *window,
+                                            const EGLint *list) {
+    pthread_mutex_lock(&g_context_mutex);
+    EGLSurface surface = create_platform_window_locked(dpy,config,window,list,0);
+    pthread_mutex_unlock(&g_context_mutex);
+    return surface;
 }
 int _wpk_egl_window_retarget(void *window) {
     pthread_mutex_lock(&g_context_mutex);
@@ -956,7 +1053,7 @@ EGLBoolean eglQuerySurface(EGLDisplay dpy, EGLSurface handle, EGLint attribute, 
                 out = (EGLint)surface->height;
                 break;
             case EGL_GL_COLORSPACE:
-                out = EGL_GL_COLORSPACE_LINEAR;
+                out = surface->gl_colorspace;
                 break;
             case EGL_VG_COLORSPACE:
                 out = EGL_VG_COLORSPACE_sRGB;
@@ -965,7 +1062,7 @@ EGLBoolean eglQuerySurface(EGLDisplay dpy, EGLSurface handle, EGLint attribute, 
                 out = EGL_VG_ALPHA_FORMAT_NONPRE;
                 break;
             case EGL_RENDER_BUFFER:
-                out = EGL_BACK_BUFFER;
+                out = surface->render_buffer;
                 break;
             case EGL_SWAP_BEHAVIOR:
                 out = EGL_BUFFER_DESTROYED;
@@ -1001,6 +1098,101 @@ EGLBoolean eglQuerySurface(EGLDisplay dpy, EGLSurface handle, EGLint attribute, 
 done:
     pthread_mutex_unlock(&g_context_mutex);
     return result;
+}
+/* These operations share the same validated generation/surface identity as
+ * queries; failure must not flush or alter the calling thread's GL state. */
+static struct egl_surface_record *surface_operation_locked(EGLDisplay dpy, EGLSurface handle) {
+    if (dpy != EGL_DPY_HANDLE) { g_last_error = EGL_BAD_DISPLAY; return NULL; }
+    if (!g_active_generation || !g_active_generation->initialized) { g_last_error = EGL_NOT_INITIALIZED; return NULL; }
+    struct egl_surface_record *surface = find_surface(g_active_generation,handle);
+    if (!surface) g_last_error = EGL_BAD_SURFACE;
+    return surface;
+}
+EGLBoolean eglSurfaceAttrib(EGLDisplay dpy, EGLSurface handle, EGLint attribute, EGLint value) {
+    pthread_mutex_lock(&g_context_mutex);
+    EGLBoolean accepted = EGL_FALSE;
+    struct egl_surface_record *surface = surface_operation_locked(dpy,handle);
+    if (!surface) goto done;
+    switch (attribute) {
+    case EGL_MIPMAP_LEVEL:
+        /* All supported surfaces are ES2-capable with NO_TEXTURE. The
+         * specification permits this setter, but it has no effect. */
+        accepted = EGL_TRUE; break;
+    case EGL_MULTISAMPLE_RESOLVE:
+        if (value == EGL_MULTISAMPLE_RESOLVE_DEFAULT) accepted = EGL_TRUE;
+        else g_last_error = value == EGL_MULTISAMPLE_RESOLVE_BOX ? EGL_BAD_MATCH : EGL_BAD_ATTRIBUTE;
+        break;
+    case EGL_SWAP_BEHAVIOR:
+        if (value == EGL_BUFFER_DESTROYED) accepted = EGL_TRUE;
+        else g_last_error = value == EGL_BUFFER_PRESERVED ? EGL_BAD_MATCH : EGL_BAD_ATTRIBUTE;
+        break;
+    default: g_last_error = EGL_BAD_ATTRIBUTE; break;
+    }
+done:
+    pthread_mutex_unlock(&g_context_mutex);
+    return accepted;
+}
+static EGLBoolean texture_surface_operation(EGLDisplay dpy, EGLSurface handle, EGLint buffer) {
+    pthread_mutex_lock(&g_context_mutex);
+    struct egl_surface_record *surface = surface_operation_locked(dpy,handle);
+    if (surface) {
+        if (!surface->pbuffer) g_last_error = EGL_BAD_SURFACE;
+        else if (buffer != EGL_BACK_BUFFER) g_last_error = EGL_BAD_PARAMETER;
+        /* Neither BIND_TO_TEXTURE configuration attribute is advertised.
+         * A NO_TEXTURE pbuffer cannot be bound or released as a texture. */
+        else g_last_error = EGL_BAD_MATCH;
+    }
+    pthread_mutex_unlock(&g_context_mutex);
+    return EGL_FALSE;
+}
+EGLBoolean eglBindTexImage(EGLDisplay dpy, EGLSurface surface, EGLint buffer) {
+    return texture_surface_operation(dpy,surface,buffer);
+}
+EGLBoolean eglReleaseTexImage(EGLDisplay dpy, EGLSurface surface, EGLint buffer) {
+    return texture_surface_operation(dpy,surface,buffer);
+}
+EGLBoolean eglCopyBuffers(EGLDisplay dpy, EGLSurface handle, EGLNativePixmapType target) {
+    (void)target;
+    pthread_mutex_lock(&g_context_mutex);
+    struct egl_surface_record *surface = surface_operation_locked(dpy,handle);
+    if (surface) {
+        if (!g_thread_binding.object || g_thread_binding.generation != g_active_generation || g_thread_binding.draw != surface)
+            g_last_error = EGL_BAD_SURFACE;
+        else g_last_error = EGL_BAD_NATIVE_PIXMAP;
+    }
+    pthread_mutex_unlock(&g_context_mutex);
+    return EGL_FALSE;
+}
+EGLSurface eglCreatePixmapSurface(EGLDisplay dpy, EGLConfig config, EGLNativePixmapType pixmap, const EGLint *list) {
+    (void)pixmap; (void)list;
+    pthread_mutex_lock(&g_context_mutex);
+    if (surface_config_locked(dpy,config)) g_last_error = EGL_BAD_MATCH; /* No PIXMAP_BIT config. */
+    pthread_mutex_unlock(&g_context_mutex);
+    return EGL_NO_SURFACE;
+}
+EGLSurface eglCreatePlatformPixmapSurface(EGLDisplay dpy, EGLConfig config, void *pixmap, const EGLAttrib *list) {
+    (void)pixmap; (void)list;
+    pthread_mutex_lock(&g_context_mutex);
+    /* KHR_platform_gbm explicitly forbids platform pixmap surfaces. */
+    if (surface_config_locked(dpy,config)) g_last_error = EGL_BAD_PARAMETER;
+    pthread_mutex_unlock(&g_context_mutex);
+    return EGL_NO_SURFACE;
+}
+EGLSurface eglCreatePlatformPixmapSurfaceEXT(EGLDisplay dpy, EGLConfig config, void *pixmap, const EGLint *list) {
+    (void)list;
+    return eglCreatePlatformPixmapSurface(dpy,config,pixmap,NULL);
+}
+EGLSurface eglCreatePbufferFromClientBuffer(EGLDisplay dpy, EGLenum buftype, EGLClientBuffer buffer,
+                                           EGLConfig config, const EGLint *list) {
+    (void)buffer; (void)list;
+    pthread_mutex_lock(&g_context_mutex);
+    if (surface_config_locked(dpy,config)) {
+        /* EGL 1.5 defines only OpenVG images here. No OpenVG context can
+         * be current on this ES2-only implementation. */
+        g_last_error = buftype == EGL_OPENVG_IMAGE ? EGL_BAD_ACCESS : EGL_BAD_PARAMETER;
+    }
+    pthread_mutex_unlock(&g_context_mutex);
+    return EGL_NO_SURFACE;
 }
 EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface handle) {
     pthread_mutex_lock(&g_context_mutex);
@@ -1163,22 +1355,10 @@ EGLint eglGetError(void) {
     return e;
 }
 
-/* The "1.5" below is the version clients branch on, and this archive
- * does not define the whole 1.5 entry-point set: the sync objects
- * (eglCreateSync/eglDestroySync/eglClientWaitSync/eglWaitSync/
- * eglGetSyncAttrib), the core images (eglCreateImage/eglDestroyImage;
- * EGL_KHR_image_base's eglCreateImageKHR imports dma-bufs),
- * eglCreatePlatformWindowSurface/eglCreatePlatformPixmapSurface, and
- * several 1.0-1.4 entry points (eglSurfaceAttrib, eglBindTexImage,
- * eglReleaseTexImage, eglCopyBuffers, eglCreatePixmapSurface,
- * eglCreatePbufferFromClientBuffer) are all absent. That gap is
- * deliberately left visible rather than papered over with a plausible
- * return value — `wasm_require_approved_reserved_env_imports` in
- * scripts/wasm-artifact-guards.sh refuses any artifact that references
- * one, so a new consumer fails its build here instead of trapping on a
- * throwing host import at run time. Implement the entry point when a
- * consumer needs it. Independent context/surface records now expose
- * accepted sizes and deferred lifetime; the remaining APIs are tracked. */
+/* EGL 1.5 sync and core image entry points still require implementation.
+ * Keep those ordinary gaps visible in docs/graphics/compatibility-v1.md;
+ * the artifact guard rejects unresolved imports rather than emitting a
+ * guest artifact that would trap at run time. */
 const char *eglQueryString(EGLDisplay dpy, EGLint name) {
     /* EGL_EXT_client_extensions: EGL_NO_DISPLAY answers the extensions
      * that exist before a display does. The GBM platform is the one this
@@ -1209,6 +1389,36 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
 
 __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname) {
     if (!procname) return NULL;
+    WPK_MAP_GL(eglGetDisplay);
+    WPK_MAP_GL(eglGetPlatformDisplay);
+    WPK_MAP_GL(eglInitialize);
+    WPK_MAP_GL(eglTerminate);
+    WPK_MAP_GL(eglQueryString);
+    WPK_MAP_GL(eglGetError);
+    WPK_MAP_GL(eglBindAPI);
+    WPK_MAP_GL(eglQueryAPI);
+    WPK_MAP_GL(eglCreateContext);
+    WPK_MAP_GL(eglDestroyContext);
+    WPK_MAP_GL(eglMakeCurrent);
+    WPK_MAP_GL(eglCreateWindowSurface);
+    WPK_MAP_GL(eglCreatePlatformWindowSurface);
+    WPK_MAP_GL(eglCreatePlatformWindowSurfaceEXT);
+    WPK_MAP_GL(eglDestroySurface);
+    WPK_MAP_GL(eglSurfaceAttrib);
+    WPK_MAP_GL(eglBindTexImage);
+    WPK_MAP_GL(eglReleaseTexImage);
+    WPK_MAP_GL(eglCopyBuffers);
+    WPK_MAP_GL(eglCreatePixmapSurface);
+    WPK_MAP_GL(eglCreatePlatformPixmapSurface);
+    WPK_MAP_GL(eglCreatePlatformPixmapSurfaceEXT);
+    WPK_MAP_GL(eglCreatePbufferFromClientBuffer);
+    WPK_MAP_GL(eglSwapBuffers);
+    WPK_MAP_GL(eglSwapInterval);
+    WPK_MAP_GL(eglWaitClient);
+    WPK_MAP_GL(eglWaitGL);
+    WPK_MAP_GL(eglWaitNative);
+    WPK_MAP_GL(eglReleaseThread);
+    WPK_MAP_GL(eglGetProcAddress);
     WPK_MAP_GL(eglGetConfigs);
     WPK_MAP_GL(eglChooseConfig);
     WPK_MAP_GL(eglGetConfigAttrib);
@@ -1485,7 +1695,7 @@ static EGLSurface create_pbuffer_locked(EGLDisplay dpy, EGLConfig config, const 
     if (!generation || !generation->initialized) { g_last_error = EGL_NOT_INITIALIZED; return EGL_NO_SURFACE; }
     if (config != EGL_CONFIG_HANDLE) { g_last_error = EGL_BAD_CONFIG; return EGL_NO_SURFACE; }
     EGLint width = 0, height = 0, largest = EGL_FALSE, mipmap = EGL_FALSE;
-    EGLint format = EGL_NO_TEXTURE, target = EGL_NO_TEXTURE;
+    EGLint format = EGL_NO_TEXTURE, target = EGL_NO_TEXTURE, gl_colorspace = EGL_GL_COLORSPACE_LINEAR;
     for (const EGLint *a = list; a && a[0] != EGL_NONE; a += 2) {
         switch (a[0]) {
         case EGL_WIDTH: case EGL_HEIGHT:
@@ -1502,7 +1712,7 @@ static EGLSurface create_pbuffer_locked(EGLDisplay dpy, EGLConfig config, const 
             target = a[1]; break;
         case EGL_GL_COLORSPACE:
             if (a[1] != EGL_GL_COLORSPACE_LINEAR && a[1] != EGL_GL_COLORSPACE_SRGB) goto bad_attribute;
-            if (a[1] != EGL_GL_COLORSPACE_LINEAR) goto bad_match;
+            gl_colorspace = a[1];
             break;
         case EGL_VG_COLORSPACE:
             if (a[1] != EGL_VG_COLORSPACE_sRGB && a[1] != EGL_VG_COLORSPACE_LINEAR) goto bad_attribute;
@@ -1560,7 +1770,8 @@ static EGLSurface create_pbuffer_locked(EGLDisplay dpy, EGLConfig config, const 
     *surface = (struct egl_surface_record){.handle = (EGLSurface)g_next_object_handle++,
         .session = session, .backend_id = request.surface_id,
         .width = request.attrs.width, .height = request.attrs.height,
-        .pbuffer = 1, .largest_pbuffer = largest, .mipmap_texture = mipmap};
+        .pbuffer = 1, .largest_pbuffer = largest, .mipmap_texture = mipmap,
+        .render_buffer = EGL_BACK_BUFFER, .gl_colorspace = gl_colorspace};
     surface->next = generation->surfaces; generation->surfaces = surface;
     session->surface_used = 1;
     return surface->handle;
