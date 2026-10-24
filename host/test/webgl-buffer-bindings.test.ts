@@ -240,3 +240,65 @@ for (const converted of [false,true]) it(`retains failed attribute restoration a
   preserved();
   expect(remove()).toEqual([0,1]); expect(gl.alive.size).toBe(0);
 });
+
+for (const target of [ARRAY,ELEMENT]) it(`retains failed buffer binding restoration and candidate cleanup (target ${target})`, () => {
+  const {b,gl,query} = setup(); query(target,17); const old = b.buffers.get(17)!;
+  const bind = gl.bindBuffer.bind(gl), destroy = gl.deleteBuffer.bind(gl);
+  let rejected = false, block = true, blockCleanup = true;
+  gl.bindBuffer = (selected,object) => {
+    if (!rejected && selected === target && object !== old) { rejected = true; gl.errors.push(0x502); return; }
+    if (rejected && block && selected === target && object === old) { gl.errors.push(0x502); return; }
+    bind(selected,object);
+  };
+  gl.deleteBuffer = object => { if (blockCleanup && object !== old) { gl.errors.push(0x505); return; } destroy(object); };
+  expect(query(target,18)).toEqual([1,0]);
+  expect(b.buffers.has(18)).toBe(false); expect(b.buffers.get(17)).toBe(old);
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  expect([...out]).toEqual([165,165,165,165]);
+  block = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  expect(gl.bindings.get(target)).toBe(old);
+  expect(gl.alive.size).toBe(2);
+  blockCleanup = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(gl.alive.size).toBe(1); expect(gl.bindings.get(target)).toBe(old);
+  expect(query(target,18)).toEqual([0,1]);
+});
+
+it("retains nested copy-selector restoration before the outer buffer binding can commit", () => {
+  const {b,gl,query} = setup(); query(ARRAY,17); query(ELEMENT,18);
+  const source = b.buffers.get(17)!, previous = b.buffers.get(18)!;
+  b.bufferStores.get(source)!.size = 4; gl.contents.set(source,new Uint8Array([1,2,3,4]));
+  const read = gl.createBuffer(), write = gl.createBuffer();
+  gl.bindBuffer(0x8f36,read); gl.bindBuffer(0x8f37,write);
+  const bind = gl.bindBuffer.bind(gl); let block = true;
+  gl.bindBuffer = (target,object) => {
+    if (block && target === 0x8f37 && object === write) { gl.errors.push(0x502); return; }
+    bind(target,object);
+  };
+  expect(query(ELEMENT,17)).toEqual([1,0]);
+  expect(b.bufferStores.get(source)!.views.has(ELEMENT)).toBe(false);
+  expect(b.vertexArrays.get(0)!.element).toBe(previous);
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  expect([...out]).toEqual([165,165,165,165]);
+  block = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(gl.bindings.get(ELEMENT)).toBe(previous);
+  expect(gl.bindings.get(0x8f36)).toBe(read); expect(gl.bindings.get(0x8f37)).toBe(write);
+  expect(query(ELEMENT,17)).toEqual([0,1]);
+  const view = b.bufferStores.get(source)!.views.get(ELEMENT)!;
+  expect(gl.contents.get(view.native)).toEqual(new Uint8Array([1,2,3,4]));
+});
+
+it("retires an allocated buffer candidate if VAO bookkeeping throws before publication", () => {
+  const {b,gl,query} = setup(); b.vertexArrays.delete(0);
+  const OriginalMap = globalThis.Map;
+  globalThis.Map = class extends OriginalMap { constructor(entries?: any) { super(entries); if (entries === undefined) throw new RangeError("VAO allocation failed"); } } as MapConstructor;
+  try { expect(query(ELEMENT,17)).toEqual([1,0]); }
+  finally { globalThis.Map = OriginalMap; }
+  expect(gl.alive.size).toBe(0); expect(b.buffers.size).toBe(0); expect(b.bufferStores.size).toBe(0);
+  expect(b.errors).toContain(0x505);
+  expect(query(ELEMENT,17)).toEqual([0,1]); expect(gl.alive.size).toBe(1);
+});

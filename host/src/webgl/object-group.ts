@@ -1,3 +1,4 @@
+import type { NativeRetirement } from "./native-recovery.js";
 import type { GlImageSource, GlTextureView, GlRenderbufferView } from "./image-storage.js";
 import type { GlBufferStore } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
@@ -14,6 +15,7 @@ export type GlSharedObjects = {
   imageSources: Map<number, GlImageSource>;
   nextImageSource: number;
   /** Monotonic accepted image-association changes, keyed by retained identity. */
+  imageRetirements: Map<WebGLTexture | WebGLRenderbuffer, NativeRetirement>;
   imageRevisions: Map<WebGLTexture | WebGLRenderbuffer, number>;
   textureViews: Map<WebGLTexture, GlTextureView>;
   textureViewOwners: Map<WebGLTexture, WebGLTexture>;
@@ -46,10 +48,8 @@ export type GlSharedObjects = {
     number,
     { tex: WebGLTexture; texId: number; w: number; h: number; scratch: Uint8Array | null }
   >;
-  /** Id allocator for foreign textures. Starts far above any name the
-   *  guest-side monotonic counters (libglesv2_stub.c, from 1) can
-   *  reach, so host- and guest-assigned ids share `textures` without
-   *  collision. */
+  /** Positive-i32 native result band. Allocation must still skip realized
+   * names; checked C adoption separately protects unrealized reservations. */
   nextForeignTexId: number;
   /** Raw BO view ownership follows identity, including deleted retained names. */
   foreignTextureBos: Map<WebGLTexture, number>;
@@ -64,7 +64,7 @@ export type GlObjectGroup = GlSharedObjects & { members: Set<GlBinding> };
 
 export function createGlObjectGroup(): GlObjectGroup {
   return {
-    imageSources:new Map(),nextImageSource:1,imageRevisions:new Map(),textureViews:new Map(),textureViewOwners:new Map(),renderbufferViews:new Map(),renderbufferViewOwners:new Map(),
+    imageRetirements:new Map(),imageSources:new Map(),nextImageSource:1,imageRevisions:new Map(),textureViews:new Map(),textureViewOwners:new Map(),renderbufferViews:new Map(),renderbufferViewOwners:new Map(),
     members: new Set(), buffers: new Map(), bufferStores: new Map(), bufferViewOwners: new Map(), textures: new Map(), shaders: new Map(), programs: new Map(),
     rbos: new Map(), shaderSources: new Map(), shaderDeletePending: new Set(), programDeletePending: new Set(),
     programShaders: new Map(), programAttributeBindings: new Map(),

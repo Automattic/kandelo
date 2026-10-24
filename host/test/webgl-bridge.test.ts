@@ -801,7 +801,8 @@ describe("shared buffer deletion", () => {
     expect(a.errors).toEqual([]);
     const errors: number[] = [];
     gl.getError = () => errors.shift() ?? 0;
-    gl.bindBuffer = () => { errors.push(0x502); };
+    const bind = gl.bindBuffer.bind(gl);
+    gl.bindBuffer = (target,object) => { if (object !== old) errors.push(0x502); else bind(target,object); };
     send(a,O.OP_BIND_BUFFER,[0x8892,72]);
     expect(a.shadow.arrayBuffer).toBe(old);
     expect(a.vertexArrays.get(0)!.element).toBeNull();

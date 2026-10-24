@@ -1,3 +1,4 @@
+import { foreignTextureGl } from "./support/foreign-texture-gl.js";
 import { expect, it } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { registerImageSource, textureNative, canonicalTexture, WPK_IMAGE_SOURCE_TARGET, imageTextureOperation, imageRenderbufferStorage, destroyTextureView, destroyRenderbufferView } from "../src/webgl/image-storage.js";
@@ -197,3 +198,144 @@ for (const kind of [1, 2]) {
     expect(kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object)).toBe(oldView);
   });
 }
+
+function storageRepairSetup(kind = 1) {
+  const registry = new GlContextRegistry(), native = foreignTextureGl(), {gl} = native;
+  registry.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
+  const b = registry.get(7,11)!; b.gl = gl; b.contextId = 21;
+  const object = (kind === 1 ? gl.createTexture()! : gl.createRenderbuffer()!) as WebGLTexture & WebGLRenderbuffer;
+  if (kind === 1) { b.textures.set(17,object); b.shadow.textureUnits[0] = object; gl.bindTexture(0x0de1,object); }
+  else { b.rbos.set(17,object); b.shadow.renderbuffer = object; gl.bindRenderbuffer(0x8d41,object); }
+  const first = gl.createTexture()!, second = gl.createTexture()!;
+  registerImageSource(b,41,first,2,2); registerImageSource(b,42,second,2,2);
+  const target = kind === 1 ? 0x0de1 : 0x8d41;
+  return {registry,b,object,first,second,target,...native};
+}
+for (const kind of [1,2]) it(`retains peer storage rollback after the submitting context retires (kind ${kind})`, () => {
+  const {registry,b,object,first,second,target,gl,frames,alive,control} = storageRepairSetup(kind);
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[kind,target,1],16)[0]).toBe(0);
+  const oldView = kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object);
+  registry.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0}); const peer = registry.get(7,12)!;
+  peer.gl = gl; peer.contextId = 22; expect(registry.shareObjects(7,12,11)).toBe(true);
+  const sourceFrame = gl.createFramebuffer()!, peerFrame = gl.createFramebuffer()!;
+  for (const [owner,frame] of [[b,sourceFrame],[peer,peerFrame]] as const) {
+    owner.fbos.set(71,frame); owner.shadow.fbo = owner.shadow.readFbo = frame;
+    owner.framebufferAttachments.set(frame,new Map([[0x8ce0,kind === 1 ? {kind:"texture",object,target,level:0} : {kind:"renderbuffer",object}]]));
+    gl.bindFramebuffer(0x8d40,frame); gl.framebufferTexture2D(0x8d40,0x8ce0,0x0de1,first,0);
+  }
+  gl.bindFramebuffer(0x8d40,sourceFrame);
+  const attach = gl.framebufferTexture2D.bind(gl), bindFrame = gl.bindFramebuffer.bind(gl);
+  let rejected = false, block = true, deadBinds = 0, retired = false;
+  gl.framebufferTexture2D = (fbTarget,point,texTarget,texture,level) => {
+    if (!rejected && fbTarget === 0x8ca9 && texture === second && gl.getParameter(0x8ca6) === peerFrame) {
+      rejected = true; control.fault = "framebufferTexture2D";
+    } else if (rejected && block && texture === first) control.fault = "framebufferTexture2D";
+    attach(fbTarget,point,texTarget,texture,level);
+  };
+  gl.bindFramebuffer = (selected,frame) => { if (retired && frame === sourceFrame) deadBinds++; bindFrame(selected,frame); };
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[kind,target,2],16)[0]).toBe(1);
+  expect(rejected).toBe(true); expect(frames.get(sourceFrame)!.get(0x8ce0)).toBe(second);
+  expect(b.imageRevisions.get(object)).toBe(1);
+  expect(kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object)).toBe(oldView);
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  expect([...out]).toEqual([165,165,165,165]);
+  registry.destroyContext(7,11); retired = true;
+  expect(alive.has(sourceFrame)).toBe(false); expect(alive.has(peerFrame)).toBe(true);
+  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  block = false;
+  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(deadBinds).toBe(0); expect(frames.get(peerFrame)!.get(0x8ce0)).toBe(first);
+  expect(peer.imageRevisions.get(object)).toBe(1);
+  expect(checked(peer,O.QOP_IMAGE_TARGET,[kind,17,2])[0]).toBe(0);
+  expect(frames.get(peerFrame)!.get(0x8ce0)).toBe(second);
+  registry.destroyContext(7,12); gl.deleteTexture(first); gl.deleteTexture(second);
+  expect(alive.size).toBe(0);
+});
+
+it("retains image utility restoration and partial candidate cleanup without duplicate deletion", () => {
+  const {b,object,gl,alive,control} = storageRepairSetup();
+  const read = gl.createFramebuffer()!, draw = gl.createFramebuffer()!;
+  gl.bindFramebuffer(0x8ca8,read); gl.bindFramebuffer(0x8ca9,draw);
+  const count = alive.size, create = gl.createTexture.bind(gl), bind = gl.bindFramebuffer.bind(gl);
+  const destroyTexture = gl.deleteTexture.bind(gl), destroyFrame = gl.deleteFramebuffer.bind(gl);
+  const deleted: object[] = []; let allocated = false, block = true, blockCleanup = true;
+  gl.createTexture = () => { allocated = true; return create(); };
+  gl.bindFramebuffer = (target,frame) => { if (allocated && block && target === 0x8ca8 && frame === read) control.fault = "bindFramebuffer"; bind(target,frame); };
+  gl.deleteTexture = value => { deleted.push(value); destroyTexture(value); };
+  gl.deleteFramebuffer = value => { if (blockCleanup && value !== read && value !== draw) control.fault = "deleteFramebuffer"; else deleted.push(value); destroyFrame(value); };
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(1);
+  expect(b.textureViews.has(object)).toBe(false); expect(alive.size).toBe(count+2);
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  block = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  expect(deleted.length).toBe(1);
+  expect(gl.getParameter(0x8069)).toBe(object); expect(gl.getParameter(0x8caa)).toBe(read); expect(gl.getParameter(0x8ca6)).toBe(draw);
+  blockCleanup = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(new Set(deleted).size).toBe(2); expect(deleted.length).toBe(2); expect(alive.size).toBe(count);
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(0);
+});
+
+it("keeps accepted image storage while retired native cleanup rejects and retries", () => {
+  const {b,object,gl,alive,control} = storageRepairSetup();
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(0);
+  const old = b.textureViews.get(object)!;
+  const destroyFrame = gl.deleteFramebuffer.bind(gl), deleted: object[] = [];
+  gl.deleteFramebuffer = value => { deleted.push(value); destroyFrame(value); };
+  control.failDelete = true;
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,2],16)[0]).toBe(0);
+  const accepted = b.textureViews.get(object)!;
+  expect(accepted.source!.token).toBe(2); expect(b.imageRevisions.get(object)).toBe(2);
+  expect(alive.has(old.native)).toBe(true); expect(alive.has(old.read!)).toBe(false);
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  expect([...out]).toEqual([165,165,165,165]);
+  control.failDelete = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(b.textureViews.get(object)).toBe(accepted); expect(alive.has(old.native)).toBe(false);
+  expect(deleted.filter(value => value === old.read).length).toBe(1);
+});
+
+it("reserves candidate native ownership before allocating a texture view", () => {
+  const {b,object,gl,alive} = storageRepairSetup();
+  const create = gl.createTexture.bind(gl), count = alive.size; let allocations = 0;
+  gl.createTexture = () => { allocations++; return create(); };
+  const OriginalSet = globalThis.Set;
+  globalThis.Set = class extends OriginalSet { constructor() { super(); throw new RangeError("native ownership allocation failed"); } } as SetConstructor;
+  try { expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(1); }
+  finally { globalThis.Set = OriginalSet; }
+  expect(allocations).toBe(0); expect(alive.size).toBe(count);
+  expect(b.textureViews.has(object)).toBe(false); expect(b.imageRevisions.has(object)).toBe(false);
+  expect(b.errors).toContain(0x505);
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(0);
+});
+
+it("reserves final image cleanup ownership before deleting any native resource", () => {
+  const {b,object,gl,alive} = storageRepairSetup();
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(0);
+  const view = b.textureViews.get(object)!, set = b.imageRetirements.set;
+  b.imageRetirements.set = () => { throw new RangeError("retirement receipt allocation failed"); };
+  try { expect(destroyTextureView(b,object)).toBe(false); }
+  finally { b.imageRetirements.set = set; }
+  expect(alive.has(view.native)).toBe(true); expect(alive.has(view.read!)).toBe(true);
+  expect(b.textureViews.get(object)).toBe(view); expect(b.imageRetirements.size).toBe(0);
+  expect(destroyTextureView(b,object)).toBe(true);
+  expect(alive.has(view.native)).toBe(false); expect(alive.has(view.read!)).toBe(false);
+});
+
+it("keeps retired native cleanup errors separate from a reused session", () => {
+  const {registry,b,gl,control} = storageRepairSetup();
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(0);
+  const oldErrors = b.errors; control.failDelete = true;
+  registry.destroyContext(7,11);
+  expect(b.errors).not.toBe(oldErrors); expect(b.errors).toEqual([]);
+  b.gl = gl; b.contextId = 23;
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  expect(b.errors).toEqual([]); expect(oldErrors).toContain(0x500);
+  control.failDelete = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect([...out]).toEqual([0,0,0,0]); expect(b.errors).toEqual([]);
+});

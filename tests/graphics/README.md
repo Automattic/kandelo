@@ -122,6 +122,17 @@ preflight, unchanged output while cleanup blocks the group, and accepted retry.
 These checks do not establish CPU canonical coherence, forwarded BO imports or
 general context-loss recovery.
 
+Storage recovery cases also cover shared texture/RBO retarget rollback after
+submitter retirement, nested copy-view/buffer binding restoration, candidate
+allocation failure and cleanup that only partially accepts. Native receipts
+preserve old storage/revisions and prevent duplicate deletion. Reused sessions
+do not inherit retired cleanup errors. The GPU browser case partially retargets
+two peer framebuffers, rejects the inverse and checks unchanged output while
+blocked. Retry restores red pixels and the old source/revision. Accepted owned
+storage remains committed while retired-view deletion blocks subsequent work;
+canonical BO retirement waits, then both peer FBOs render fresh blue storage.
+These remain focused source checks with synthetic kernel identity plumbing.
+
 Eight source host cases cover repeated native rollback failure: texture/RBO
 container deletion, framebuffer selectors, normal/converted vertex attributes,
 same/different cached muxer owners, and retirement of context-local inverses

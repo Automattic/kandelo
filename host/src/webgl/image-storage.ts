@@ -1,4 +1,4 @@
-import { invokeNativeCall, type NativeCall } from "./native-recovery.js";
+import { applyNativeChanges, invokeNativeCall, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement, type NativeChange, type NativeCall } from "./native-recovery.js";
 import type { GlBinding } from "./registry.js";
 import type { GlImageAttachment } from "./image-references.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
@@ -15,6 +15,7 @@ export type GlTextureView = {
   native: WebGLTexture;
   source: GlImageSource | null;
   read: WebGLFramebuffer | null;
+  candidate?: NativeRetirement;
 };
 export type GlRenderbufferView = {
   native: WebGLRenderbuffer;
@@ -54,28 +55,16 @@ export function canonicalRenderbuffer(b: GlBinding, native: WebGLRenderbuffer): 
 function withImageState(b: GlBinding, call: () => boolean): boolean {
   const gl = b.gl!;
   let active = 0, texture: WebGLTexture | null = null, draw: WebGLFramebuffer | null = null, read: WebGLFramebuffer | null = null, renderbuffer: WebGLRenderbuffer | null = null;
-  if (!checkedGlCall(b, () => {
-    active = Number(gl.getParameter(0x84e0));
-    texture = gl.getParameter(0x8069) as WebGLTexture | null;
-    draw = gl.getParameter(0x8ca6) as WebGLFramebuffer | null;
-    read = gl.getParameter(0x8caa) as WebGLFramebuffer | null;
-    renderbuffer = gl.getParameter(0x8ca7) as WebGLRenderbuffer | null;
-  }))
-    return false;
-  let accepted = false, restored = false;
-  try {
-    accepted = call();
-  }
-  finally {
-    restored = checkedGlCall(b, () => {
-      gl.activeTexture(active);
-      gl.bindTexture(TEX, texture);
-      gl.bindRenderbuffer(RBO, renderbuffer);
-      gl.bindFramebuffer(DRAW, draw);
-      gl.bindFramebuffer(READ, read);
-    });
-  }
-  return accepted && restored;
+  for (const capture of [
+    () => { active = Number(gl.getParameter(0x84e0)); },
+    () => { texture = gl.getParameter(0x8069); },
+    () => { draw = gl.getParameter(0x8ca6); },
+    () => { read = gl.getParameter(0x8caa); },
+    () => { renderbuffer = gl.getParameter(0x8ca7); },
+  ]) if (!checkedGlCall(b,capture)) return false;
+  return applyNativeChanges(b,[{apply:call,restore:nativeInverse(b)}],{finalizer:nativeInverse(b,
+    [["activeTexture",active],["bindTexture",TEX,texture]], [["bindRenderbuffer",RBO,renderbuffer]],
+    [["bindFramebuffer",DRAW,draw]], [["bindFramebuffer",READ,read]])});
 }
 function copySource(b: GlBinding, view: GlTextureView): boolean {
   if (!view.source)
@@ -89,51 +78,49 @@ function copySource(b: GlBinding, view: GlTextureView): boolean {
 }
 function allocateTextureView(b: GlBinding, old: WebGLTexture, source: GlImageSource, preserveBase = true): GlTextureView | null {
   const gl = b.gl!;
+  const candidate = reserveNativeRetirement(b,[["deleteTexture",null],["deleteFramebuffer",null]]);
+  if (!candidate) return null;
   let native: WebGLTexture | null = null, read: WebGLFramebuffer | null = null;
-  const accepted = withImageState(b, () => {
-    const params: number[] = [];
-    if (!checkedGlCall(b, () => {
-      gl.bindTexture(TEX, old);
-      for (const pname of [0x2800, 0x2801, 0x2802, 0x2803])
-        params.push(Number(gl.getTexParameter(TEX, pname)));
-      native = gl.createTexture();
-      if (preserveBase)
-        read = gl.createFramebuffer();
-    }))
-      return false;
-    if (!native || (preserveBase && !read)) {
-      recordGlError(b, 0x505);
-      return false;
-    }
-    if (!checkedGlCall(b, () => {
-      gl.bindTexture(TEX, native);
-      [0x2800, 0x2801, 0x2802, 0x2803].forEach((pname, i) => gl.texParameteri(TEX, pname, params[i]));
-      if (preserveBase) {
-        gl.bindFramebuffer(READ, read);
-        gl.framebufferTexture2D(READ, COLOR, TEX, source.texture, 0);
-        gl.texImage2D(TEX, 0, 0x8058, source.width, source.height, 0, 0x1908, 0x1401, null);
+  let published = false;
+  try {
+    const accepted = withImageState(b, () => {
+      const params: number[] = [];
+      if (!checkedGlCall(b, () => {
+        gl.bindTexture(TEX, old);
+        for (const pname of [0x2800, 0x2801, 0x2802, 0x2803])
+          params.push(Number(gl.getTexParameter(TEX, pname)));
+        native = gl.createTexture(); candidate.calls[0][1] = native;
+        if (preserveBase) { read = gl.createFramebuffer(); candidate.calls[1][1] = read; }
+      }))
+        return false;
+      if (!native || (preserveBase && !read)) {
+        recordGlError(b, 0x505);
+        return false;
       }
-    }))
-      return false;
-    if (!preserveBase)
-      return true;
-    let complete = false;
-    if (!checkedGlCall(b, () => { complete = gl.checkFramebufferStatus(READ) === 0x8cd5; }))
-      return false;
-    if (!complete) {
-      recordGlError(b, 0x502);
-      return false;
-    }
-    return checkedGlCall(b, () => gl.copyTexSubImage2D(TEX, 0, 0, 0, 0, 0, source.width, source.height));
-  });
-  if (!accepted) {
-    if (native)
-      gl.deleteTexture(native);
-    if (read)
-      gl.deleteFramebuffer(read);
-    return null;
-  }
-  return { native: native!, source, read };
+      if (!checkedGlCall(b, () => {
+        gl.bindTexture(TEX, native);
+        [0x2800, 0x2801, 0x2802, 0x2803].forEach((pname, i) => gl.texParameteri(TEX, pname, params[i]));
+        if (preserveBase) {
+          gl.bindFramebuffer(READ, read);
+          gl.framebufferTexture2D(READ, COLOR, TEX, source.texture, 0);
+          gl.texImage2D(TEX, 0, 0x8058, source.width, source.height, 0, 0x1908, 0x1401, null);
+        }
+      }))
+        return false;
+      if (!preserveBase)
+        return true;
+      let complete = false;
+      if (!checkedGlCall(b, () => { complete = gl.checkFramebufferStatus(READ) === 0x8cd5; }))
+        return false;
+      if (!complete) {
+        recordGlError(b, 0x502);
+        return false;
+      }
+      return checkedGlCall(b, () => gl.copyTexSubImage2D(TEX, 0, 0, 0, 0, 0, source.width, source.height));
+    });
+    if (!accepted) return null;
+    const view = {native:native!,source,read,candidate}; published = true; return view;
+  } finally { if (!published) retireNativeRetirement(candidate); }
 }
 /** Resolve physical storage while retaining logical attachment query identity. */
 export function attachImage(b: GlBinding, target: number, point: number, image: GlImageAttachment | null, override?: GlTextureView | GlRenderbufferView): void {
@@ -162,198 +149,160 @@ export function imageAttachmentCall(b: GlBinding, target: number, point: number,
 /** Retarget all containers before publishing storage. Other contexts' bindings
  * remain logical and resolve the current view on their next muxer selection. */
 function retarget(b: GlBinding, kind: number, object: WebGLTexture | WebGLRenderbuffer, old: GlTextureView | GlRenderbufferView, next: GlTextureView | GlRenderbufferView): boolean {
-  const gl = b.gl!, attachments: Array<{
-    fbo: WebGLFramebuffer;
-    point: number;
-    image: GlImageAttachment;
-  }> = [];
-  for (const member of b.objects.members)
-    for (const [fbo, points] of member.framebufferAttachments)
-      for (const [point, image] of points)
-        if (image.kind === (kind === 1 ? "texture" : "renderbuffer") && image.object === object)
-          attachments.push({ fbo, point, image });
-  const units: number[] = [];
-  if (kind === 1)
-    for (let i = 0; i < b.shadow.textureUnits.length; i++)
-      if (b.shadow.textureUnits[i] === object)
-        units.push(i);
-  let changed = 0;
-  const accepted = withImageState(b, () => {
-    for (const entry of attachments) {
-      changed++;
-      if (!checkedGlCall(b, () => { gl.bindFramebuffer(DRAW, entry.fbo); attachImage(b, DRAW, entry.point, entry.image, next); }))
-        return false;
+  const gl = b.gl!;
+  let draw: WebGLFramebuffer|null = null, read: WebGLFramebuffer|null = null, active = 0;
+  if (!checkedGlCall(b, () => { draw = gl.getParameter(0x8ca6); }) ||
+      !checkedGlCall(b, () => { read = gl.getParameter(0x8caa); }) ||
+      !checkedGlCall(b, () => { active = Number(gl.getParameter(0x84e0)); })) return false;
+  const changes: NativeChange[] = [];
+  for (const member of b.objects.members) for (const [fbo,points] of member.framebufferAttachments)
+    for (const [point,image] of points) {
+      if (image.kind !== (kind === 1 ? "texture" : "renderbuffer") || image.object !== object) continue;
+      const after = imageAttachmentCall(b,DRAW,point,image,next), before = imageAttachmentCall(b,DRAW,point,image,old);
+      changes.push({apply: () => checkedGlCall(b, () => gl.bindFramebuffer(DRAW,fbo)) && checkedGlCall(b, () => invokeNativeCall(gl,after)),
+        restore:nativeInverse(b, [["bindFramebuffer",DRAW,fbo],before])});
     }
-    return true;
-  });
-  if (!accepted) {
-    withImageState(b, () => {
-      let restored = true;
-      for (let index = 0; index < changed; index++) {
-        const entry = attachments[index];
-        restored = checkedGlCall(b, () => {
-          gl.bindFramebuffer(DRAW, entry.fbo);
-          attachImage(b, DRAW, entry.point, entry.image, old);
-        }) && restored;
-      }
-      return restored;
-    });
-    return false;
-  }
-  // Restore utility state before updating the selected context's physical
-  // bindings; those changes must survive until its next command.
-  let applied = 0;
-  const bound = checkedGlCall(b, () => {
-    if (kind === 1) {
-      try {
-        for (const unit of units) {
-          applied++;
-          gl.activeTexture(0x84c0 + unit);
-          gl.bindTexture(TEX, next.native as WebGLTexture);
-        }
-      }
-      finally {
-        gl.activeTexture(0x84c0 + b.shadow.activeTexture);
-      }
+  if (kind === 1) {
+    for (let unit=0;unit<b.shadow.textureUnits.length;unit++) if (b.shadow.textureUnits[unit] === object) {
+      changes.push({apply: () => checkedGlCall(b, () => gl.activeTexture(0x84c0+unit)) &&
+          checkedGlCall(b, () => gl.bindTexture(TEX,next.native as WebGLTexture)),
+        restore:nativeInverse(b, [["activeTexture",0x84c0+unit],["bindTexture",TEX,old.native as WebGLTexture]])});
     }
-    else if (b.shadow.renderbuffer === object)
-      gl.bindRenderbuffer(RBO, next.native as WebGLRenderbuffer);
-  });
-  if (bound)
-    return true;
-  checkedGlCall(b, () => {
-    if (kind === 1) {
-      try {
-        for (let index = 0; index < applied; index++) {
-          const unit = units[index];
-          gl.activeTexture(0x84c0 + unit);
-          gl.bindTexture(TEX, old.native as WebGLTexture);
-        }
-      }
-      finally {
-        gl.activeTexture(0x84c0 + b.shadow.activeTexture);
-      }
-    }
-    else if (b.shadow.renderbuffer === object)
-      gl.bindRenderbuffer(RBO, old.native as WebGLRenderbuffer);
-  });
-  withImageState(b, () => {
-    let restored = true;
-    for (const entry of attachments)
-      restored = checkedGlCall(b, () => { gl.bindFramebuffer(DRAW, entry.fbo); attachImage(b, DRAW, entry.point, entry.image, old); }) && restored;
-    return restored;
-  });
-  return false;
+  } else if (b.shadow.renderbuffer === object) changes.push({apply: () => checkedGlCall(b, () => gl.bindRenderbuffer(RBO,next.native as WebGLRenderbuffer)),
+    restore:nativeInverse(b, [["bindRenderbuffer",RBO,old.native as WebGLRenderbuffer]])});
+  // Other contexts' containers participate, so retirement of this submitter
+  // cannot discard the inverse. Its native targets are retired separately.
+  return applyNativeChanges(b,changes,{shared:true,finalizer:nativeInverse(b,
+    [["bindFramebuffer",DRAW,draw]],[["bindFramebuffer",READ,read]],[["activeTexture",active]])});
+}
+function transferCandidate(view: GlTextureView): void {
+  const candidate = view.candidate;
+  if (!candidate) return;
+  delete view.candidate;
+  if (view.source || !view.read) { transferNativeRetirement(candidate); return; }
+  // Owned respecification transfers the texture but no longer needs the
+  // private FBO that sampled the former canonical source.
+  candidate.calls[0][1] = null; view.read = null;
+  retireNativeRetirement(candidate);
 }
 function replaceTextureView(b: GlBinding, object: WebGLTexture, next: GlTextureView): boolean {
   const old = b.textureViews.get(object) ?? { native: object, source: null, read: null };
   const had = b.textureViews.has(object);
-  const previousRevision = b.imageRevisions.get(object) ?? 0;
-  if (previousRevision === 0xffffffff) {
-    recordGlError(b, 0x505);
-    return false;
-  }
+  const retired = reserveNativeRetirement(b,[
+    ["deleteTexture",b.externallyOwnedTextures.has(old.native) ? null : old.native], ["deleteFramebuffer",old.read]]);
+  if (!retired) return false;
+  let committed = false;
   try {
-    b.imageRevisions.set(object, previousRevision + 1);
-  }
-  catch {
-    recordGlError(b, 0x505);
-    return false;
-  }
-  const restoreRevision = () => {
-    if (previousRevision) b.imageRevisions.set(object, previousRevision);
-    else b.imageRevisions.delete(object);
-  };
-  try {
-    b.textureViews.set(object, next);
-    b.textureViewOwners.set(next.native, object);
-  }
-  catch {
-    if (had)
-      b.textureViews.set(object, old);
-    else
-      b.textureViews.delete(object);
-    restoreRevision();
-    recordGlError(b, 0x505);
-    return false;
-  }
-  let accepted = false;
-  try {
-    accepted = retarget(b, 1, object, old, next);
-  }
-  catch {
-    recordGlError(b, 0x505);
-  }
-  if (!accepted) {
-    if (had)
-      b.textureViews.set(object, old);
-    else
-      b.textureViews.delete(object);
-    b.textureViewOwners.delete(next.native);
-    restoreRevision();
-    return false;
-  }
-  b.textureViewOwners.delete(old.native);
-  if (!b.externallyOwnedTextures.has(old.native))
-    checkedGlCall(b, () => b.gl!.deleteTexture(old.native));
-  if (old.read)
-    checkedGlCall(b, () => b.gl!.deleteFramebuffer(old.read));
-  return true;
+    const previousRevision = b.imageRevisions.get(object) ?? 0;
+    if (previousRevision === 0xffffffff) {
+      recordGlError(b, 0x505);
+      return false;
+    }
+    try {
+      b.imageRevisions.set(object, previousRevision + 1);
+    }
+    catch {
+      recordGlError(b, 0x505);
+      return false;
+    }
+    const restoreRevision = () => {
+      if (previousRevision) b.imageRevisions.set(object, previousRevision);
+      else b.imageRevisions.delete(object);
+    };
+    try {
+      b.textureViews.set(object, next);
+      b.textureViewOwners.set(next.native, object);
+    }
+    catch {
+      if (had)
+        b.textureViews.set(object, old);
+      else
+        b.textureViews.delete(object);
+      restoreRevision();
+      recordGlError(b, 0x505);
+      return false;
+    }
+    let accepted = false;
+    try {
+      accepted = retarget(b, 1, object, old, next);
+    }
+    catch {
+      recordGlError(b, 0x505);
+    }
+    if (!accepted) {
+      if (had)
+        b.textureViews.set(object, old);
+      else
+        b.textureViews.delete(object);
+      b.textureViewOwners.delete(next.native);
+      restoreRevision();
+      return false;
+    }
+    b.textureViewOwners.delete(old.native);
+    committed = true;
+    retireNativeRetirement(retired);
+    return true;
+  } finally { if (!committed) transferNativeRetirement(retired); }
 }
 function replaceRenderbufferView(b: GlBinding, object: WebGLRenderbuffer, next: GlRenderbufferView): boolean {
   const old = b.renderbufferViews.get(object) ?? { native: object, source: null };
   const had = b.renderbufferViews.has(object);
-  const previousRevision = b.imageRevisions.get(object) ?? 0;
-  if (previousRevision === 0xffffffff) {
-    recordGlError(b, 0x505);
-    return false;
-  }
+  const retired = reserveNativeRetirement(b,[["deleteRenderbuffer",next.native === old.native ? null : old.native]]);
+  if (!retired) return false;
+  let committed = false;
   try {
-    b.imageRevisions.set(object, previousRevision + 1);
-  }
-  catch {
-    recordGlError(b, 0x505);
-    return false;
-  }
-  const restoreRevision = () => {
-    if (previousRevision) b.imageRevisions.set(object, previousRevision);
-    else b.imageRevisions.delete(object);
-  };
-  try {
-    b.renderbufferViews.set(object, next);
-    b.renderbufferViewOwners.set(next.native, object);
-  }
-  catch {
-    if (had)
-      b.renderbufferViews.set(object, old);
-    else
-      b.renderbufferViews.delete(object);
-    restoreRevision();
-    recordGlError(b, 0x505);
-    return false;
-  }
-  let accepted = false;
-  try {
-    accepted = retarget(b, 2, object, old, next);
-  }
-  catch {
-    recordGlError(b, 0x505);
-  }
-  if (!accepted) {
-    if (had)
-      b.renderbufferViews.set(object, old);
-    else
-      b.renderbufferViews.delete(object);
-    if (next.native !== old.native)
-      b.renderbufferViewOwners.delete(next.native);
-    restoreRevision();
-    return false;
-  }
-  if (next.native !== old.native) {
-    b.renderbufferViewOwners.delete(old.native);
-    checkedGlCall(b, () => b.gl!.deleteRenderbuffer(old.native));
-  }
-  return true;
+    const previousRevision = b.imageRevisions.get(object) ?? 0;
+    if (previousRevision === 0xffffffff) {
+      recordGlError(b, 0x505);
+      return false;
+    }
+    try {
+      b.imageRevisions.set(object, previousRevision + 1);
+    }
+    catch {
+      recordGlError(b, 0x505);
+      return false;
+    }
+    const restoreRevision = () => {
+      if (previousRevision) b.imageRevisions.set(object, previousRevision);
+      else b.imageRevisions.delete(object);
+    };
+    try {
+      b.renderbufferViews.set(object, next);
+      b.renderbufferViewOwners.set(next.native, object);
+    }
+    catch {
+      if (had)
+        b.renderbufferViews.set(object, old);
+      else
+        b.renderbufferViews.delete(object);
+      restoreRevision();
+      recordGlError(b, 0x505);
+      return false;
+    }
+    let accepted = false;
+    try {
+      accepted = retarget(b, 2, object, old, next);
+    }
+    catch {
+      recordGlError(b, 0x505);
+    }
+    if (!accepted) {
+      if (had)
+        b.renderbufferViews.set(object, old);
+      else
+        b.renderbufferViews.delete(object);
+      if (next.native !== old.native)
+        b.renderbufferViewOwners.delete(next.native);
+      restoreRevision();
+      return false;
+    }
+    if (next.native !== old.native) {
+      b.renderbufferViewOwners.delete(old.native);
+    }
+    committed = true; retireNativeRetirement(retired);
+    return true;
+  } finally { if (!committed) transferNativeRetirement(retired); }
 }
 export function importImageStorage(b: GlBinding, kind: number, name: number, token: number): boolean {
   if (kind !== 1 && kind !== 2) {
@@ -376,12 +325,11 @@ function importImageObject(b: GlBinding, kind: number, object: WebGLTexture | We
     const view = allocateTextureView(b, textureNative(b, object as WebGLTexture), source);
     if (!view)
       return false;
-    if (replaceTextureView(b, object as WebGLTexture, view))
-      return true;
-    b.gl!.deleteTexture(view.native);
-    if (view.read)
-      b.gl!.deleteFramebuffer(view.read);
-    return false;
+    let installed = false;
+    try {
+      if (replaceTextureView(b, object as WebGLTexture, view)) { transferCandidate(view); installed = true; return true; }
+      return false;
+    } finally { if (!installed && view.candidate) retireNativeRetirement(view.candidate); }
   }
   return replaceRenderbufferView(b, object as WebGLRenderbuffer, { native: renderbufferNative(b, object as WebGLRenderbuffer), source });
 }
@@ -454,46 +402,56 @@ export function imageTextureOperation(b: GlBinding, target: number, respecify: b
   const candidate = allocateTextureView(b, view.native, view.source, preserveBase);
   if (!candidate)
     return false;
-  const accepted = withImageState(b, () => checkedGlCall(b, () => { b.gl!.bindTexture(TEX, candidate.native); call(); }));
-  if (accepted) {
-    if (candidate.read)
-      b.gl!.deleteFramebuffer(candidate.read);
-    candidate.read = null;
-    candidate.source = null;
-    if (replaceTextureView(b, object, candidate))
-      return true;
-  }
-  b.gl!.deleteTexture(candidate.native);
-  if (candidate.read)
-    b.gl!.deleteFramebuffer(candidate.read);
-  return false;
+  let installed = false;
+  try {
+    const accepted = withImageState(b, () => checkedGlCall(b, () => { b.gl!.bindTexture(TEX, candidate.native); call(); }));
+    if (accepted) {
+      candidate.source = null;
+      if (replaceTextureView(b, object, candidate)) { transferCandidate(candidate); installed = true; return true; }
+    }
+    return false;
+  } finally { if (!installed && candidate.candidate) retireNativeRetirement(candidate.candidate); }
 }
 export function imageRenderbufferStorage(b: GlBinding, call: () => void): boolean {
   const object = b.shadow.renderbuffer, view = object && b.renderbufferViews.get(object);
   if (!view?.source)
     return checkedGlCall(b, call);
+  const candidate = reserveNativeRetirement(b,[["deleteRenderbuffer",null]]);
+  if (!candidate) return false;
   let native: WebGLRenderbuffer | null = null;
-  const accepted = withImageState(b, () => {
-    if (!checkedGlCall(b, () => { native = b.gl!.createRenderbuffer(); }))
-      return false;
-    if (!native) {
-      recordGlError(b, 0x505);
-      return false;
+  let installed = false;
+  try {
+    const accepted = withImageState(b, () => {
+      if (!checkedGlCall(b, () => { native = b.gl!.createRenderbuffer(); candidate.calls[0][1] = native; }))
+        return false;
+      if (!native) {
+        recordGlError(b, 0x505);
+        return false;
+      }
+      return checkedGlCall(b, () => { b.gl!.bindRenderbuffer(RBO, native); call(); });
+    });
+    if (accepted && native && replaceRenderbufferView(b, object!, { native, source: null })) {
+      transferNativeRetirement(candidate); installed = true; return true;
     }
-    return checkedGlCall(b, () => { b.gl!.bindRenderbuffer(RBO, native); call(); });
-  });
-  if (accepted && native && replaceRenderbufferView(b, object!, { native, source: null }))
-    return true;
-  if (native)
-    b.gl!.deleteRenderbuffer(native);
-  return false;
+    return false;
+  } finally { if (!installed) retireNativeRetirement(candidate); }
+}
+/** A reserved receipt owns partial cleanup and suppresses duplicate native
+ * deletes when final collection retries after one resource rejected. */
+function imageRetirement(b: GlBinding, object: WebGLTexture|WebGLRenderbuffer, calls: Parameters<typeof reserveNativeRetirement>[1]): boolean {
+  let retirement = b.imageRetirements.get(object);
+  if (!retirement) {
+    retirement = reserveNativeRetirement(b,calls) ?? undefined;
+    if (!retirement) return false;
+    try { b.imageRetirements.set(object,retirement); }
+    catch { transferNativeRetirement(retirement); recordGlError(b,0x505); return false; }
+  }
+  if (!retireNativeRetirement(retirement)) return false;
+  b.imageRetirements.delete(object); return true;
 }
 export function destroyTextureView(b: GlBinding, object: WebGLTexture): boolean {
   const view = b.textureViews.get(object), native = view?.native ?? object;
-  if (!b.externallyOwnedTextures.has(native) && !checkedGlCall(b, () => b.gl!.deleteTexture(native)))
-    return false;
-  if (view?.read)
-    b.gl!.deleteFramebuffer(view.read);
+  if (!imageRetirement(b,object,[["deleteTexture",b.externallyOwnedTextures.has(native) ? null : native],["deleteFramebuffer",view?.read ?? null]])) return false;
   b.textureViewOwners.delete(native);
   b.textureViews.delete(object);
   b.imageRevisions.delete(object);
@@ -502,8 +460,7 @@ export function destroyTextureView(b: GlBinding, object: WebGLTexture): boolean 
 }
 export function destroyRenderbufferView(b: GlBinding, object: WebGLRenderbuffer): boolean {
   const native = renderbufferNative(b, object);
-  if (!checkedGlCall(b, () => b.gl!.deleteRenderbuffer(native)))
-    return false;
+  if (!imageRetirement(b,object,[["deleteRenderbuffer",native]])) return false;
   b.renderbufferViewOwners.delete(native);
   b.renderbufferViews.delete(object);
   b.imageRevisions.delete(object);

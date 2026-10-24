@@ -1,3 +1,4 @@
+import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement } from "./native-recovery.js";
 import type { GlBinding } from "./registry.js";
 import { prepareConvertedVertexData } from "./vertex-data.js";
 import { activeVertexArray } from "./buffer-references.js";
@@ -23,10 +24,10 @@ export function canonicalBuffer(b: GlBinding, native: WebGLBuffer): WebGLBuffer 
   return b.bufferViewOwners.get(native) ?? native;
 }
 
-export function allocateNativeBuffer(b: GlBinding): WebGLBuffer | null {
+export function allocateNativeBuffer(b: GlBinding, retirement?: NativeRetirement): WebGLBuffer | null {
   let native: WebGLBuffer | null = null;
-  if (!checkedGlCall(b, () => { native = b.gl!.createBuffer(); })) {
-    if (native) checkedGlCall(b, () => b.gl!.deleteBuffer(native));
+  if (!checkedGlCall(b, () => { native = b.gl!.createBuffer(); if (retirement) retirement.calls[0][1] = native; })) {
+    if (native && !retirement) checkedGlCall(b, () => b.gl!.deleteBuffer(native));
     return null;
   }
   if (!native) recordGlError(b,0x505);
@@ -52,13 +53,9 @@ export function withBufferTransfer(b: GlBinding, source: WebGLBuffer, destinatio
     read = gl.getParameter(COPY_READ) as WebGLBuffer | null;
     write = gl.getParameter(COPY_WRITE) as WebGLBuffer | null;
   })) return false;
-  let accepted = false, restored = false;
-  try {
-    if (checkedGlCall(b, () => { gl.bindBuffer(COPY_READ,source); gl.bindBuffer(COPY_WRITE,destination); })) accepted = operation();
-  } finally {
-    restored = checkedGlCall(b, () => { gl.bindBuffer(COPY_READ,read); gl.bindBuffer(COPY_WRITE,write); });
-  }
-  return accepted && restored;
+  return applyNativeChanges(b,[{apply: () => checkedGlCall(b, () => gl.bindBuffer(COPY_READ,source)) &&
+    checkedGlCall(b, () => gl.bindBuffer(COPY_WRITE,destination)) && operation(), restore:nativeInverse(b)}],
+    {finalizer:nativeInverse(b,[["bindBuffer",COPY_READ,read]],[["bindBuffer",COPY_WRITE,write]])});
 }
 
 /** WebGL forbids native copying between its two buffer classes. Only
@@ -89,57 +86,60 @@ export function bindBufferObject(b: GlBinding, target: number, name: number): bo
   if (target !== ARRAY && target !== ELEMENT) { recordGlError(b,0x500); return false; }
   let object = name ? b.buffers.get(name) ?? null : null;
   const implicit = name !== 0 && object === null;
-  if (implicit && !(object = allocateNativeBuffer(b))) return false;
-  let store = object ? b.bufferStores.get(object) : undefined;
-  let view = store?.views.get(target);
-  let created: WebGLBuffer | null = implicit ? object : null;
-  let newStore = false, newView = false;
-  let vao: ReturnType<typeof activeVertexArray> | undefined;
-  const previous = target === ARRAY ? b.shadow.arrayBuffer : nativeView(b,boundBuffer(b,target),target);
-  const discard = () => {
-    if (implicit) b.buffers.delete(name);
-    if (newStore && object) b.bufferStores.delete(object);
-    else if (newView) store!.views.delete(target);
-    if (newStore || newView) b.bufferViewOwners.delete(view!.native);
-    if (created) {
-      checkedGlCall(b, () => gl.deleteBuffer(created));
-    }
-  };
+  const candidate = reserveNativeRetirement(b,[["deleteBuffer",null]]);
+  if (!candidate) return false;
+  let committed = false;
+  let discardCandidate: (() => void) | undefined;
   try {
-    if (target === ELEMENT) vao = activeVertexArray(b);
-    if (object && !store) {
-      view = {native:object,valid:true};
-      store = {converted:new Map(),views:new Map([[target,view]]),source:object,size:0,usage:0x88e4};
-      newStore = true;
-    } else if (store && !view) {
-      created = allocateNativeBuffer(b);
-      if (!created) return false;
-      view = {native:created,valid:false}; newView = true;
+    if (implicit && !(object = allocateNativeBuffer(b,candidate))) { retireNativeRetirement(candidate); return false; }
+    let store = object ? b.bufferStores.get(object) : undefined;
+    let view = store?.views.get(target);
+    let created: WebGLBuffer | null = implicit ? object : null;
+    let newStore = false, newView = false;
+    let vao: ReturnType<typeof activeVertexArray> | undefined;
+    const previous = target === ARRAY ? b.shadow.arrayBuffer : nativeView(b,boundBuffer(b,target),target);
+    const discard = discardCandidate = () => {
+      if (implicit) b.buffers.delete(name);
+      if (newStore && object) b.bufferStores.delete(object);
+      else if (newView) store!.views.delete(target);
+      if (newStore || newView) b.bufferViewOwners.delete(view!.native);
+      retireNativeRetirement(candidate);
+    };
+    try {
+      if (target === ELEMENT) vao = activeVertexArray(b);
+      if (object && !store) {
+        view = {native:object,valid:true};
+        store = {converted:new Map(),views:new Map([[target,view]]),source:object,size:0,usage:0x88e4};
+        newStore = true;
+      } else if (store && !view) {
+        created = allocateNativeBuffer(b,candidate);
+        if (!created) { retireNativeRetirement(candidate); return false; }
+        view = {native:created,valid:false}; newView = true;
+      }
+      // These maps are synchronous implementation bookkeeping, unpublished to
+      // the guest until native acceptance; reserve all capacity before effects.
+      if (implicit && object) b.buffers.set(name,object);
+      if (newStore && object) b.bufferStores.set(object,store!);
+      else if (newView) store!.views.set(target,view!);
+      if (newStore || newView) b.bufferViewOwners.set(view!.native,object!);
+    } catch {
+      discard(); recordGlError(b,0x505); return false;
     }
-    // These maps are synchronous implementation bookkeeping, unpublished to
-    // the guest until native acceptance; reserve all capacity before effects.
-    if (implicit && object) b.buffers.set(name,object);
-    if (newStore && object) b.bufferStores.set(object,store!);
-    else if (newView) store!.views.set(target,view!);
-    if (newStore || newView) b.bufferViewOwners.set(view!.native,object!);
-  } catch {
-    discard(); recordGlError(b,0x505); return false;
-  }
-  if (newView && !checkedGlCall(b, () => gl.bindBuffer(target,view!.native))) {
-    checkedGlCall(b, () => gl.bindBuffer(target,previous)); discard(); return false;
-  }
-  // Classify a fresh view before COPY_WRITE; otherwise WebGL classifies it
-  // as vertex data and later rejects index binding.
-  if (store && view && !synchronizeView(b,store,view)) {
-    checkedGlCall(b, () => gl.bindBuffer(target,previous)); discard(); return false;
-  }
-  const native = view?.native ?? object;
-  if (!checkedGlCall(b, () => gl.bindBuffer(target,native))) {
-    checkedGlCall(b, () => gl.bindBuffer(target,previous)); discard(); return false;
-  }
-  if (target === ARRAY) b.shadow.arrayBuffer = native;
-  else vao!.element = object;
-  return true;
+    const accepted = applyNativeChanges(b,[{apply: () => {
+      // Classify before COPY_WRITE; otherwise WebGL classifies index data as
+      // vertex data. Nested utility repair restores copy selectors first.
+      if (newView && !checkedGlCall(b, () => gl.bindBuffer(target,view!.native))) return false;
+      if (store && view && !synchronizeView(b,store,view)) return false;
+      return checkedGlCall(b, () => gl.bindBuffer(target,view?.native ?? object));
+    },restore:nativeInverse(b,[["bindBuffer",target,previous]])}]);
+    if (!accepted) { discard(); return false; }
+    const native = view?.native ?? object;
+    if (target === ARRAY) b.shadow.arrayBuffer = native;
+    else vao!.element = object;
+    transferNativeRetirement(candidate); committed = true;
+    return true;
+  } catch { discardCandidate?.(); recordGlError(b,0x505); return false; }
+  finally { if (!committed) retireNativeRetirement(candidate); }
 }
 
 function updateSource(store: GlBufferStore, target: number): void {

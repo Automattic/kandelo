@@ -1,4 +1,5 @@
 import type { GlBinding } from "./registry.js";
+import { retireNativeObject } from "./native-recovery.js";
 
 export type GlPresentTarget = {
   fbo: WebGLFramebuffer; tex: WebGLTexture; depthStencil: WebGLRenderbuffer;
@@ -60,6 +61,7 @@ function collectSurface(s: GlSurfaceResources): void {
   const target = s.presentTarget;
   // A BO-backed FBO is borrowed. Its kernel BO lifetime is the deletion fence.
   if (target) {
+    if (s.gl) for (const object of [target.fbo,target.tex,target.depthStencil]) retireNativeObject(s.gl,object);
     s.gl?.deleteFramebuffer(target.fbo);
     s.gl?.deleteTexture(target.tex);
     s.gl?.deleteRenderbuffer(target.depthStencil);

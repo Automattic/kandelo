@@ -1,5 +1,5 @@
 import { revokeForeignBo } from "./foreign-retirement.js";
-import { repairNativeState, retireNativeRepair } from "./native-recovery.js";
+import { hasNativeRepair, repairNativeState, retireNativeRepair, retireNativeObject } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { destroyTextureView, destroyRenderbufferView } from "./image-storage.js";
 import type { GlUniformLookup } from "./uniform-queries.js";
@@ -280,7 +280,7 @@ export class GlContextRegistry {
       if (retained) releaseRetainedExecutable(b, installed);
     }
     for (const object of b.vaos.values()) gl?.deleteVertexArray(object);
-    for (const object of b.fbos.values()) gl?.deleteFramebuffer(object);
+    for (const object of b.fbos.values()) if (gl) { retireNativeObject(gl,object); gl.deleteFramebuffer(object); }
     b.vaos.clear(); b.fbos.clear();
     b.framebufferAttachments.clear();
     b.vertexArrays.clear();
@@ -291,8 +291,10 @@ export class GlContextRegistry {
     b.objects.nextForeignTexId = objects.nextForeignTexId;
     b.objects.nextImageSource = objects.nextImageSource;
     b.objects.members.add(b);
-    b.errors.length = 0;
-    if (b.undefinedDefaultFbo) gl?.deleteFramebuffer(b.undefinedDefaultFbo);
+    // Late native cleanup still owns the retired error flags. A reused
+    // session must receive a fresh owner rather than inheriting those errors.
+    b.errors = [];
+    if (gl && b.undefinedDefaultFbo) { retireNativeObject(gl,b.undefinedDefaultFbo); gl.deleteFramebuffer(b.undefinedDefaultFbo); }
     b.undefinedDefaultFbo = null;
     if (b.shadow.defaultVao) {
       b.gl?.deleteVertexArray(b.shadow.defaultVao);
@@ -573,6 +575,7 @@ export class GlContextRegistry {
   destroyGpuBo(bo_id: number): boolean {
     const entry = this.gpuBos.get(bo_id);
     if (!entry) return true;
+    if (hasNativeRepair(entry.gl)) return false;
     const cleanup = {gl:entry.gl,errors:[]} as unknown as GlBinding;
     if (!checkedGlCall(cleanup, () => entry.gl.deleteFramebuffer(entry.fbo)) ||
         !checkedGlCall(cleanup, () => entry.gl.deleteRenderbuffer(entry.depthStencil)) ||

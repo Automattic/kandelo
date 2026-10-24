@@ -4193,8 +4193,7 @@ cannot overwrite existing storage through later rows.
 Queued/checked paths share host ownership transactions and storage dispatch.
 Metadata allocation precedes native effects; definite deletion failure restores
 attempted active attachments and bindings. FBO deletion preserves separate
-read/draw defaults. Concurrent namespace ordering and multi-failure/context-loss
-recovery remain incomplete.
+read/draw defaults. General transport and context-loss recovery remain incomplete.
 
 Operation-table v13 adds an exact checked framebuffer-bind query. C updates
 its attachment-container selection only after native acceptance. Host queued
@@ -4231,12 +4230,26 @@ Only native handles, scalars, error flags and context-local shadow lifetime ente
 the journal. Callbacks and guest bindings are excluded. Queries preserve output
 when restoration remains blocked, command batches stop before dependent records,
 and muxer switching repairs before its cached-owner shortcut. Surface/current/
-GPU allocation and raw BO revocation also respect pending repairs. Owner teardown
-retires its selector/container inverses without reviving deleted containers or
-destroying shared peer objects. These inverses do not cover shared storage
-contents: image retarget/orphaning utilities, buffer view/staging and other
-rollback paths still need migration. Indeterminate transport, native context
-loss/recreation and general failed resource deletion remain open.
+GPU allocation and raw BO revocation also respect pending repairs. Image
+import/orphan/retarget utility work and buffer binding/copy-view synchronization
+use the same journal. Nested plans restore copy selectors before the outer
+binding can complete. Image retargeting stages each affected peer container and
+the selected native bindings, restoring utility selectors on success or failure.
+Its shared inverse survives submitter retirement; retiring a native container
+prunes that target instead of reviving it. Context-local plans retire with their
+owner. Neither path destroys shared peer objects.
+
+Native candidate and retired-view ownership is reserved before allocation or
+publication. Cleanup receipts retain handles across failed deletion, clear each
+accepted delete independently and retry the remainder without repeating accepted
+calls. Image destruction retains its receipt until collection completes. Pending
+cleanup gates native work and delays canonical GPU BO retirement. Native cleanup
+keeps the retired error owner; a reused session receives a fresh error array.
+These native inverse and cleanup records retain no full guest binding or
+address space. Converted
+attribute setup, client-array restoration, other temporary buffers and raw upload
+utilities still need the complete recovery audit. Indeterminate transport,
+context loss/recreation and general failed resource deletion remain open.
 
 Public `eglCreateContext` sharing validates a live source handle in the active
 display generation, joins its retained C object owner, and sends the source

@@ -411,6 +411,66 @@ self.onmessage = ({ data }) => {
     const repairRestored = pixels(94, 12);
     require(new DataView(query(O.QOP_GET_INTEGERV, [0x8069], 4, 12).buffer).getUint32(0, true) === 33, "old texture binding restored");
     mutate(O.QOP_IMAGE_OBJECT_DELETE, [1, 33]);
+    // Storage rollback spans peer containers. Keep its old revision and BO
+    // until inverse reattachment and later retired-view cleanup both accept.
+    require(kernel.gl.createGpuBo(43, gl, 1, 1) !== null, "storage repair BO");
+    const storageBo = kernel.gl.gpuBo(43)!;
+    const storageSource = api.host_gl_bind_foreign_texture(7, 22, 43, WPK_IMAGE_SOURCE_TARGET);
+    require(storageSource > 0, "storage repair source");
+    checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, 34], 0, 12);
+    send(O.OP_TEX_IMAGE_2D, [0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 0], new Uint8Array(), 12);
+    require(new DataView(query(O.QOP_BOUND_IMAGE_TARGET, [1, 0x0de1, storageSource], 16, 12).buffer).getUint32(0,true) === 0, "storage initial import");
+    mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 95]); mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 34, 0]);
+    send(O.OP_CLEAR_COLOR, [0x3f800000, 0, 0, 0x3f800000], new Uint8Array(), 12); send(O.OP_CLEAR, [0x4000], new Uint8Array(), 12);
+    checked(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 96], 0, 11);
+    checked(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 34, 0], 0, 11);
+    checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, 34], 0, 12); mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 95]);
+    const storageOwner = kernel.gl.get(7,12)!, storageObject = storageOwner.textures.get(34)!;
+    const storageAttach = gl.framebufferTexture2D.bind(gl); let storageRejected = false, storageRetargets = 0;
+    let storageChangedFrame: WebGLFramebuffer|null = null;
+    gl.framebufferTexture2D = (target, point, textureTarget, texture, level) => {
+      if (!storageRejected && target === gl.DRAW_FRAMEBUFFER && texture !== storageBo.tex && ++storageRetargets === 2) {
+        storageRejected = true; storageAttach(0xdead,point,textureTarget,texture,level);
+      } else if (storageRejected && texture === storageBo.tex) storageAttach(0xdead,point,textureTarget,texture,level);
+      else {
+        if (!storageRejected && target === gl.DRAW_FRAMEBUFFER && texture !== storageBo.tex) storageChangedFrame = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING);
+        storageAttach(target,point,textureTarget,texture,level);
+      }
+    };
+    let storageBlocked: number, storageBlockedOutput: number[];
+    try {
+      mutate(O.QOP_IMAGE_STORAGE, [O.OP_TEX_IMAGE_2D, 0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 0], 1);
+      require(storageRejected && storageChangedFrame, "storage retarget reached both containers");
+      const storageDraw = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER,storageChangedFrame);
+      const dirtyStorage = gl.getFramebufferAttachmentParameter(gl.DRAW_FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER,storageDraw);
+      require(dirtyStorage !== null && dirtyStorage !== storageBo.tex, "shared storage remains dirty");
+      new Uint8Array(memory.buffer,512,4).fill(0xa5);
+      storageBlocked = api.host_gl_query(7,O.QOP_GET_ERROR,64,0,512,4,11);
+      storageBlockedOutput = [...new Uint8Array(memory.buffer,512,4)];
+      require(storageBlocked === -5, "shared storage inverse fence");
+    } finally { gl.framebufferTexture2D = storageAttach; }
+    require(error(12) === 0x500, "storage inverse error ownership");
+    const storageRestored = [pixels(95,12),pixels(96,11)];
+    const storageReply = new DataView(query(O.QOP_BOUND_IMAGE_STATE,[1,0x0de1],16,12).buffer);
+    require(storageReply.getUint32(0,true) === 0 && storageReply.getUint32(12,true) === 0x47514c33, "storage state reply");
+    const storageState = [storageReply.getUint32(4,true) === storageSource ? 1 : 0,storageReply.getUint32(8,true)];
+    const oldStorage = storageOwner.textureViews.get(storageObject)!;
+    const storageDelete = gl.deleteTexture.bind(gl);
+    gl.deleteTexture = texture => { if (texture === oldStorage.native) gl.bindTexture(0xdead,null); else storageDelete(texture); };
+    let storageCommit: number[], storageCleanupBlocked: number;
+    try {
+      const accepted = mutate(O.QOP_IMAGE_STORAGE,[O.OP_TEX_IMAGE_2D,0x0de1,0,0x1908,1,1,0,0x1908,0x1401,0]);
+      storageCommit = [accepted,storageOwner.textureViews.get(storageObject)!.source === null ? 0 : 1,storageOwner.imageRevisions.get(storageObject)!];
+      kernel.gl.retireForeignBo(43);
+      require(gl.isTexture(storageBo.tex) && kernel.gl.hasForeignRetirements(), "canonical BO waits for retired view cleanup");
+      storageCleanupBlocked = api.host_gl_query(7,O.QOP_GET_ERROR,64,0,512,4,12);
+      require(storageCleanupBlocked === -5 && gl.isTexture(oldStorage.native), "retired view cleanup fence");
+    } finally { gl.deleteTexture = storageDelete; }
+    require(error(12) === 0x500 && !gl.isTexture(storageBo.tex), "view cleanup before canonical BO retirement");
+    send(O.OP_TEX_SUB_IMAGE_2D,[0x0de1,0,0,0,1,1,0x1908,0x1401,4],rgba([0,0,255,255]),12);
+    const storageOwned = [pixels(95,12),pixels(96,11)];
     // Raw WPK publication must preserve every legal public number and give
     // each reimport a retained identity distinct from the BO's native anchor.
     send(O.OP_ACTIVE_TEXTURE, [0x84c0], new Uint8Array(), 12);
@@ -485,7 +545,7 @@ self.onmessage = ({ data }) => {
     api.host_gl_unbind(7, 12);
     kernel.gl.destroyGpuBo(41);
     const clean = made.length === deleted.length && made.every(value => deleted.includes(value)) && live.every(check => !check());
-    postMessage({ type: "image_storage_result", namespace, firstParam, secondParam, red, rboName, green, sampledGreen, orphan, aSource, bSource, mipOrphan, reimport, rboSource, rboOrphan, rejected, retargetRejected, reused, retained, retainedState, retainedImport, retainedImported, reusedAfterPeerImport, afterSourceRetirement, mutationRollback, storageReject, ownedStorageRetry, framebufferBindReject, framebufferBindRetry, bufferBindReject, bufferBindRetry, bufferDeleteRollback, bufferDeleteCleared, bufferDeleteRetry, repairBlocked, repairBlockedOutput, repairPeerBlocked, repairBatchBlocked, repairRestored, rawNamespace, rawParams, rawGreen, rawOrphan, rawRefresh, rawInvalid, rawBlocked, rawBlockedOutput, rawRevoked, rawReplacement, rawMissing, errors, clean, error: gl.getError() });
+    postMessage({ type: "image_storage_result", namespace, firstParam, secondParam, red, rboName, green, sampledGreen, orphan, aSource, bSource, mipOrphan, reimport, rboSource, rboOrphan, rejected, retargetRejected, reused, retained, retainedState, retainedImport, retainedImported, reusedAfterPeerImport, afterSourceRetirement, mutationRollback, storageReject, ownedStorageRetry, framebufferBindReject, framebufferBindRetry, bufferBindReject, bufferBindRetry, bufferDeleteRollback, bufferDeleteCleared, bufferDeleteRetry, repairBlocked, repairBlockedOutput, repairPeerBlocked, repairBatchBlocked, repairRestored, storageBlocked, storageBlockedOutput, storageRestored, storageState, storageCommit, storageCleanupBlocked, storageOwned, rawNamespace, rawParams, rawGreen, rawOrphan, rawRefresh, rawInvalid, rawBlocked, rawBlockedOutput, rawRevoked, rawReplacement, rawMissing, errors, clean, error: gl.getError() });
   }
   catch (error) {
     postMessage({ type: "image_storage_failed", error: String(error) });
