@@ -432,7 +432,7 @@ it("cancels forwarded surface allocation when completion loses its mailbox autho
   const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox,8);
   const disposed: unknown[] = [];
   const gl = new Proxy({
-    isContextLost: () => false, getError: () => 0, getParameter: () => null,
+    isContextLost: () => false, getError: () => 0, getParameter: (p:number) => p === 0x84e0 ? 0x84c0 : null,
     createFramebuffer: () => ({fbo:true}), createTexture: () => ({texture:true}), createRenderbuffer: () => ({rbo:true}),
     FRAMEBUFFER_COMPLETE:0x8cd5,
     checkFramebufferStatus: () => { Atomics.store(new Int32Array(mailbox),0,3); return 0x8cd5; },
@@ -447,7 +447,7 @@ it("cancels forwarded surface allocation when completion loses its mailbox autho
 
 function shareForwardFixture() {
   const worker=new FakeWorker(),live=new Set<object>(),deleted:object[]=[],messages:GlForwardMessage[]=[];
-  const gl=new Proxy({getExtension:()=>null,isContextLost:()=>false,getParameter:()=>null,getError:()=>0,
+  const gl=new Proxy({getExtension:()=>null,isContextLost:()=>false,getParameter:(p:number)=>p === 0x84e0 ? 0x84c0 : null,getError:()=>0,
     createTexture:()=>{const value={};live.add(value);return value;},isTexture:(value:object)=>live.has(value),
     deleteTexture:(value:object)=>{deleted.push(value);live.delete(value);},
   },{get:(object,key)=>Reflect.get(object,key)??(()=>null)}) as unknown as WebGL2RenderingContext;
@@ -505,4 +505,29 @@ it("rejects missing and malformed forwarding share identities without damaging a
   f.worker.fire({type:"gl_forward_create_context",pid:7,sessionId:11,shareSessionId:12,mailbox});
   expect(waitForGlForwardQuery(mailbox).rc).toBe(-5);expect(f.texture(source)).toBe(1);
   expect(f.channel(12).onCreateContext(12,11)).toBe(0);f.dispose();expect(f.deleted).toHaveLength(1);
+});
+
+it("preserves a zero-sized forwarded pbuffer and flushes it without a canvas blit", () => {
+  const worker = new FakeWorker(); let blits = 0;
+  const viewport:unknown[][] = [], storage:unknown[][] = [];
+  const gl = new Proxy({
+    isContextLost:()=>false,getExtension:()=>null,getError:()=>0,
+    getParameter:(p:number)=>p === 0x84e0 ? 0x84c0 : null,
+    createTexture:()=>({}),createFramebuffer:()=>({}),createRenderbuffer:()=>({}),
+    texImage2D:(...args:unknown[])=>storage.push(args),checkFramebufferStatus:()=>0x8cd5,
+    viewport:(...args:unknown[])=>viewport.push(args),blitFramebuffer:()=>{blits++;},
+  },{get:(target,key)=>Reflect.get(target,key)??(()=>null)}) as unknown as WebGL2RenderingContext;
+  const canvas = {width:8,height:6,getContext:()=>gl} as unknown as HTMLCanvasElement;
+  const dispose = setupMainForward(worker,canvas,7);
+  const create = createMessage(7); worker.fire(create); expect(waitForGlForwardQuery(create.mailbox).rc).toBe(0);
+  const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox,8);
+  worker.fire({type:"gl_forward_create_surface",pid:7,sessionId:0,surface:{surfaceId:71,kind:2,width:0,height:0,configId:1,targetBoId:0},mailbox});
+  expect([...waitForGlForwardQuery(mailbox).bytes]).toEqual(Array(8).fill(0));
+  prepareGlForwardQuery(mailbox,0);
+  worker.fire({type:"gl_forward_make_current",pid:7,sessionId:0,drawable:{drawSurfaceId:71,readSurfaceId:71,width:0,height:0},mailbox});
+  expect(waitForGlForwardQuery(mailbox).rc).toBe(0); prepareGlForwardQuery(mailbox,0);
+  worker.fire({type:"gl_forward_present",pid:7,sessionId:0,mailbox});
+  expect(waitForGlForwardQuery(mailbox).rc).toBe(0); expect(blits).toBe(0);
+  expect(viewport.at(-1)).toEqual([0,0,0,0]); expect(storage[0].slice(3,5)).toEqual([1,1]);
+  expect([canvas.width,canvas.height]).toEqual([8,6]); dispose();
 });

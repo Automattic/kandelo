@@ -65,12 +65,12 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Checked renderer replies now supply complete element widths/values without C reflection caches and preserve failed-query outputs. Shared-peer/source-retirement/relink cases have focused evidence. Locations now remain stable across repeated/array-alias lookups, and checked chunked C lookup/reflection removes fixed buffers. Shader-name translation beyond WebGL limits and complete setter/type/array validation remain open | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | Texture reservations now remain separate from native realization, including delayed shared declarations. C bindings/attachments retain typed object records, acknowledged binds publish references/dimensionality after renderer acceptance, logical image views separate per-object sampling state from canonical GPU pixels, and texture-unit storage follows the reported limit. WebGL2 normalization, core parameter queries and context-owned default texture objects are implemented in host source; complete target/state/error and guest CTS audit remain open | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
 | G07 | Raster/depth/stencil/blend/clear/readback; ES2 §§3,4 | Main provides offscreen color/depth/stencil; no broad CTS evidence | bridge, query, present-target | CTS functional render families; real pixels all three engines | partial |
-| G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | Default/user identities and read/draw state remain distinct; C and host attachment records retain deleted texture/RBO identities, including unbound containers; host records also retain native storage and separate packed depth/stencil points. Core attachment/renderbuffer queries, acknowledged C attachment/deletion and texture/RBO allocation are implemented. Metadata capacity precedes native effects; definite failures preserve ownership. Failed deletion/selector inverses are retained per physical context and block dependent work until restored. Image utility/retarget/orphan rollback now retains native inverse plans across peer ownership and pending candidate/retired-view cleanup. Other rollback sites, full negative coverage and CTS remain open | encoder, registry, image references, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
+| G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | Default/user identities and read/draw state remain distinct; C and host attachment records retain deleted texture/RBO identities, including unbound containers; host records also retain native storage and separate packed depth/stencil points. Core attachment/renderbuffer queries, acknowledged C attachment/deletion and texture/RBO allocation are implemented. Metadata capacity precedes native effects; definite failures preserve ownership. Failed deletion/selector inverses are retained per physical context and block dependent work until restored. Image utility/retarget/orphan rollback now retains native inverse plans across peer ownership and pending candidate/retired-view cleanup. Owned surface storage now reserves candidate/retirement receipts and selector inverses before allocation and retains failed cleanup after creator retirement. Other rollback sites, full negative coverage and CTS remain open | encoder, registry, image references, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
 | G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Definite C buffer/texture/RBO bind rejection preserves prior references. Native buffer/image deletion and FBO selector/container rollback now retain failed inverses, block dependent queries/batches and repair before muxer switching. Buffer binding/copy-view, vertex pointer and image utility/retarget recovery retain failed inverses and cleanup receipts; private ARRAY completion reconciles before query/muxer use. Raw upload and BO revocation retain failed utility/attachment/unit inverses through owner retirement. Indeterminate transport and other recovery sites remain open. Full C/native error validation remains open; some guest paths silently return and missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
 | G10 | Every core function resolves; ES2 API | All 142 GLES2 core symbols are defined and resolved; native/private-Wasm audit passes. Full semantic and guest conformance remain pending | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | partial |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
 | E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. ABI 56 separates revocable display-generation roots from object sessions. C generation records retain old current descriptors, mappings, encoders and imported images while a new generation initializes. Host surface records retain native draw/read targets across context destruction and owner retirement. ABI 57 returns fresh surface IDs and acknowledged dimensions. Kernel/host cross-session draw/read selection validates process, live generation and TID, with canonical surface storage retained after owner retirement. Creation/bind failure preserves prior state. Public independent context/surface records route separate draw/read selectors. ABI 58 kernel/renderer construction joins live same-generation object groups; public C construction joins the same retained owner and native group; the full error/lifecycle audit remains open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
-| E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Public window queries expose accepted dimensions and fixed attributes. Operation table 16 adds immutable renderer limits before context creation, cached per display generation without changing current ownership. Pbuffer creation still fails and several core symbols are absent | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | open |
+| E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Public window queries expose accepted dimensions and fixed attributes. Operation table 16 adds immutable renderer limits before context creation, cached per display generation without changing current ownership. Pbuffer creation, zero logical dimensions, stored query attributes and no-post swaps are implemented in source; native/forwarded storage setup and retirement retain failed cleanup. Largest requests honor limits and search definite allocation failures. Platform/pixmap entry points, surface setters, broader negatives and normal guest CTS remain open | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | partial |
 | E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context / OES_surfaceless_context | Explicit kernel/host bind, initial zero viewport/scissor, undefined framebuffer-zero status and native operation errors implemented; user FBOs remain usable. Real source-browser checks pass; guest CTS/current artifacts remain pending | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | partial |
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/FBO holds retain GEM backing; separate private source handles and logical native views preserve object state and storage identity. Confirmed C holds belong to retained shared object records with revision-ordered publication; uncertain import/attachment candidates belong to the shared group. Raw GPU views use the same independent storage model; BO retirement tracks every retained raw generation and retries native cleanup. CPU coherence, forwarded BO registration and complete lifecycle validation remain open | EGL, GLES object/storage model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | partial |
 | E06 | Respecification orphans sibling without altering others; OES_EGL_image | GPU view replacement preserves sibling parameters and canonical pixels, retargets logical FBOs and handles definite rejection before C backing release. C retains backing by object identity and rejects stale association completions. Raw GPU respecification and refresh preserve private canonical storage and independent parameters. CPU coherence, multi-failure recovery and guest CTS remain open | GLES storage model, host object/attachment tracking | Redefine imported texture, sample both siblings, retained FBO | partial |
@@ -4021,3 +4021,126 @@ conformance remain deferred to the combined build/test phase.
 Pbuffers/platform constructors, sync/core images and the remaining
 GLES, storage/error/lifecycle, GBM and KMS inventory remain ordinary
 implementation gaps. No new hard platform boundary is claimed.
+
+
+## Pbuffer surfaces and retained native allocation (2026-10-24)
+
+The EGL source facade now creates pbuffer surfaces through the normal
+acknowledged GLIO surface path; the existing config adds PBUFFER_BIT.
+Creation validates display/config/attributes before allocating, preserves
+the pending native window BO target and publishes one independent
+surface record only after exact accepted dimensions and a fresh backend
+identity. QuerySurface returns stored dimensions and pbuffer attributes.
+Current-reference destruction uses the existing deferred context/surface
+model. Swaps validate the calling thread's current draw surface and
+use the normal host failure channel for no-post flushes. Backend failure
+returns an EGL error while preserving the current binding. Native and main-forwarded raw presentation also
+use the stored surface kind, so an explicit GLIO_PRESENT cannot blit a
+pbuffer into the visible canvas. Creating a context after its pbuffer
+reuses that offscreen renderer, preserving KMS canvas dimensions and
+avoiding a scanout claim. Context-before-surface KMS ordering and native
+pump coexistence still need the full lifecycle audit.
+
+Logical zero dimensions use a minimal private native attachment while
+retaining zero dimensions in the surface and initial viewport/scissor.
+The zero-sized browser test checks the viewport and unchanged visible
+pixels; it does not assert values from reads outside a zero-sized buffer.
+The configuration retains its false texture-binding attributes. A
+texture-bound request fails BAD_MATCH; optional render-to-texture is not
+advertised. The primary [EGL 1.5 specification, sections 3.5.2, 3.5.6,
+3.6.3 and 3.10](https://registry.khronos.org/EGL/specs/eglspec.1.5.pdf)
+defines creation, query, optional texture binding and posting semantics.
+
+Largest-pbuffer creation bounds dimensions and area by the actual cached
+limits. An integer rectangle search chooses the maximum area under a
+pixel budget. After definite ENOMEM, budget bisection probes smaller
+rectangles and retires accepted probes before the next attempt, avoiding
+resource pressure from retaining a second candidate. Final creation
+rechecks the best successful dimensions. Unknown transport completion
+stops without an automatic allocation retry. Resource changes can still
+cause final allocation failure. The native grid test checks all 1,296
+small dimension/capacity combinations against independently enumerated
+maximum areas. This validates the pixel-budget model; general driver
+allocation constraints and full upstream resource-pressure coverage still
+need the deferred conformance phase. No platform boundary is inferred.
+
+Native surface allocation previously used unchecked creation/storage,
+finally restoration and deletion. It now reserves a three-object native
+retirement receipt, replacement metadata and typed selector inverses
+before creating objects. Each native step must accept before dependent
+steps. Failed setup/finalization preserves old logical storage and keeps
+native inverses/candidate cleanup owned across creator retirement. A
+query cannot publish output until exact restoration and deletion accept.
+Accepted replacement storage remains committed while old deletion is
+pending. Surface retirement and late/abandoned forwarded requests use
+the same receipts; borrowed BO FBOs remain owned by their BO lifetime.
+Internal EGL allocation errors are isolated from later GLES error flags.
+Native present selects the current logical owner before flushing/blitting
+and returns failure for failed resize/repair instead of posting it. The
+initial KMS context-creation allocation fallback remains a separate
+ordinary failure-semantics audit item.
+
+Source evidence is based on `6fab3f17af` plus this increment. Commands
+run through `scripts/dev-shell.sh`; logs are under `.context/`:
+
+| Check | Exact evidence |
+|---|---|
+| Native C, fatal UBSan | 156 cases passed, including eight new pbuffer cases; `graphics-pbuffer-settled-native.log` |
+| Private wasm32 paired link and core audit | Paired link, 150 authority guards and 142 core definitions/resolvers passed, same settled-native log |
+| Host source / Node and browser declarations | 573 cases in 23 files, no failures/skips; build/declarations passed, `graphics-pbuffer-settled-host.log` |
+| Settled recovery fixture | All 10 cases passed after adding the native constants required by the baseline; `graphics-pbuffer-final-recovery-host.log` |
+| Actual source WebGL, all three engines | 207 passed with no skips, `graphics-pbuffer-final-browser.log` |
+| Final pbuffer swap/raw-present pixel probe | All 12 affected replays pass after final swap/KMS refinements, `graphics-pbuffer-final-settled-browser.log` |
+| Source memory-boundary negatives | 12 passed, `graphics-pbuffer-final-native-memory.log`; not full browser-memory |
+| Before-fix C | All eight new cases fail unchanged `6fab3f17af`; `graphics-pbuffer-settled-baseline-native.log` |
+| Before-fix native ownership | Three selected regressions fail unchanged `6fab3f17af` production; `graphics-pbuffer-checked-baseline-recovery-host.log` |
+
+The native command runs `tests/graphics/run-libc-unit.sh`, the private
+paired-link script, AST audit and source memory-boundary test. Eight new
+C cases cover ordinary and zero-size creation, invalid attributes, an
+unknown attribute at a protected-page boundary, native limits, definite
+pressure, unknown failure and the allocation grid. Config selection now
+uses PIXMAP_BIT for its unsupported-surface negative: PBUFFER_BIT is
+supported, while the original ES1 default selection remains unchanged.
+The C baseline passes revision `6fab3f17af` to the same runner and
+selects only the eight new cases; no old production source is patched.
+
+The host baseline is a private source projection of `6fab3f17af` with
+current tests and the existing source-only config. It selects only the
+three native ownership regressions. Both failed restore paths incorrectly
+publish success in the old factory; old target deletion also lacks a
+retained cleanup fence. Seven unselected cases are explicitly skipped;
+they are not passing baseline coverage. The first projection lacked the
+old factory's FRAMEBUFFER_COMPLETE constant in its new test double;
+that comparison was discarded. The corrected projection loads and fails
+at the intended acceptance/fence assertions. Current recovery tests also
+verify output sentinels, exact foreign selectors after repair, no repeated
+allocation/storage and one accepted native deletion per created object.
+
+The full rendered suite retains every preceding case and adds twelve
+actual-C pbuffer replays: normal and zero-sized, native and forwarded,
+across Chromium, Firefox and WebKit. Normal surfaces must render red and
+green; both sizes must leave an independently blue visible canvas intact,
+preserve their initial viewport and retire tracked native resources. A
+subsequent test-only probe calls raw presentation after each pbuffer
+submit. The final C refinement routes swaps through the host failure
+channel rather than skipping it; all twelve affected pbuffer cases pass
+again after that change and the pbuffer-first KMS refinement. The other
+195 cases cover unchanged paths.
+These are shared-renderer/source tests with synthetic kernel scratch
+plumbing, not normal rebuilt guest execution or upstream CTS. Node uses
+the same renderer logic with source test doubles; hardware-unavailable
+hosts still return allocation/renderer failure.
+
+ABI 58 and operation table 16 remain unchanged: pbuffer kind already
+exists in the acknowledged wire, and no layout, tag, syscall or import
+changes. Rust 50 GLIO / 4 GL layouts / 13 ioctl contracts, the additional
+10 DRI layouts and ABI inspection from `6fab3f17af` remain unchanged-source
+historical evidence. No Rust rerun, normal SDK/archive/kernel-distribution/
+program/package/image rebuild or restamp is claimed. EGL surface setters,
+texture bind/release entrypoints, platform constructors, sync/core images,
+full GLES semantics/errors/limits, other factories and recovery,
+context-loss/unknown transport, CPU coherence and the remaining GBM/KMS
+inventory stay open. Current-main integration and coherent normal
+artifacts, upstream CTS, cage/sway and other consumers, full browser-memory
+and required POSIX conformance remain deferred. Ordinary gaps remain gaps.

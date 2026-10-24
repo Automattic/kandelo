@@ -162,7 +162,7 @@ export function setupMainForward(
           if (reg.getSurface(pid,msg.surface.surfaceId)) {
             completeGlForwardQuery(msg.mailbox,-16,new Uint8Array()); return;
           }
-          const result = prepareSurfaceCreation(b,msg.surface,undefined,canvas);
+          const result = prepareSurfaceCreation(b,msg.surface,undefined,canvas,gl => muxers.get(gl)?.captureCurrentErrors());
           const prepared = result.prepared;
           if (!prepared) { completeGlForwardQuery(msg.mailbox,result.rc,new Uint8Array()); return; }
           try {
@@ -186,7 +186,7 @@ export function setupMainForward(
           if (glForwardQueryCapacity(msg.mailbox) !== 0) { completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return; }
           if (!b.gl || b.gl.isContextLost()) { completeGlForwardQuery(msg.mailbox,-5,new Uint8Array()); return; }
           muxer(b.gl).switchTo(b);
-          if ((b.drawSurface ?? b.surface).presentTarget) blitPresentTarget(b);
+          if ((b.drawSurface ?? b.surface).kind !== 2 && (b.drawSurface ?? b.surface).presentTarget) blitPresentTarget(b);
           b.gl.flush();
           completeGlForwardQuery(msg.mailbox,0,new Uint8Array());
         } catch { try { completeGlForwardQuery(msg.mailbox,-5,new Uint8Array()); } catch { /* No reply authority. */ } }

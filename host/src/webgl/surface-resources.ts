@@ -1,9 +1,10 @@
 import type { GlBinding } from "./registry.js";
-import { retireNativeObject } from "./native-recovery.js";
+import { retireNativeObject, retireNativeRetirement, type NativeRetirement } from "./native-recovery.js";
 
 export type GlPresentTarget = {
   fbo: WebGLFramebuffer; tex: WebGLTexture; depthStencil: WebGLRenderbuffer;
   w: number; h: number;
+  retirement: NativeRetirement;
 };
 
 export type GlSurfaceFields = {
@@ -27,6 +28,7 @@ export type GlSurfaceResources = GlSurfaceFields & {
   ownerAlive: boolean;
   /** Explicit surface storage keeps its acknowledged dimensions. */
   fixedSize: boolean;
+  kind: number;
   users: Set<GlBinding>;
 };
 
@@ -34,7 +36,7 @@ export function createSurfaceResources(pid: number): GlSurfaceResources {
   return {
     surfaceId: null, surfaceSize: null, renderTargetFbo: null,
     presentTarget: null, pendingRenderTargetBoId: 0,
-    gl: null, pid, ownerAlive: true, fixedSize: false, users: new Set(),
+    gl: null, pid, ownerAlive: true, fixedSize: false, kind: 1, users: new Set(),
   };
 }
 
@@ -62,9 +64,7 @@ function collectSurface(s: GlSurfaceResources): void {
   // A BO-backed FBO is borrowed. Its kernel BO lifetime is the deletion fence.
   if (target) {
     if (s.gl) for (const object of [target.fbo,target.tex,target.depthStencil]) retireNativeObject(s.gl,object);
-    s.gl?.deleteFramebuffer(target.fbo);
-    s.gl?.deleteTexture(target.tex);
-    s.gl?.deleteRenderbuffer(target.depthStencil);
+    retireNativeRetirement(target.retirement);
   }
   s.presentTarget = null; s.renderTargetFbo = null;
   s.surfaceId = null; s.surfaceSize = null; s.pendingRenderTargetBoId = 0;
@@ -99,16 +99,22 @@ export function releaseSurfaceResources(b: GlBinding): void {
 
 /** A resize replaces native allocation, not the logical drawable. Update
  * every selecting context, including one which currently uses a user FBO. */
-export function replaceSurfaceTarget(s: GlSurfaceResources, target: GlPresentTarget, owner: GlBinding): void {
+export function prepareSurfaceTargetReplacement(s: GlSurfaceResources, target: GlPresentTarget, owner: GlBinding): () => void {
   const previous = s.renderTargetFbo;
-  s.presentTarget = target; s.renderTargetFbo = target.fbo;
-  s.surfaceSize = { width: target.w, height: target.h };
-  for (const b of new Set([...s.users, owner])) {
-    if ((b.drawSurface === s || (b === owner && !b.drawSurface)) && b.shadow.fbo === previous)
-      b.shadow.fbo = b.currentDrawable?.drawSurfaceId === 0 ? b.undefinedDefaultFbo : target.fbo;
-    if ((b.readSurface === s || (b === owner && !b.readSurface)) && b.shadow.readFbo === previous)
-      b.shadow.readFbo = b.currentDrawable?.readSurfaceId === 0 ? b.undefinedDefaultFbo : target.fbo;
-  }
+  const size = {width:target.w,height:target.h};
+  const updates = [...new Set([...s.users,owner])].map(b => ({b,
+    draw:(b.drawSurface === s || (b === owner && !b.drawSurface)) && b.shadow.fbo === previous,
+    read:(b.readSurface === s || (b === owner && !b.readSurface)) && b.shadow.readFbo === previous,
+  }));
+  // Reserve every selecting context update before native allocation. Commit
+  // must not fail after replacing the physical default-framebuffer bindings.
+  return () => {
+    s.presentTarget = target; s.renderTargetFbo = target.fbo; s.surfaceSize = size;
+    for (const {b,draw,read} of updates) {
+      if (draw) b.shadow.fbo = b.currentDrawable?.drawSurfaceId === 0 ? b.undefinedDefaultFbo : target.fbo;
+      if (read) b.shadow.readFbo = b.currentDrawable?.readSurfaceId === 0 ? b.undefinedDefaultFbo : target.fbo;
+    }
+  };
 }
 
 /** Prepare every selector's default references before replacing a borrowed

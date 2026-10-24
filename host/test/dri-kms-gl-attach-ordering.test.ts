@@ -54,7 +54,7 @@ function fakeCanvas(width = 300, height = 150): {
     isContextLost: () => false,
     getError: () => 0,
     getExtension: () => null,
-    getParameter: () => null,
+    getParameter: (p:number) => p === 0x84e0 ? 0x84c0 : null,
     createTexture: () => ({}),
     createFramebuffer: () => ({}),
     createRenderbuffer: () => ({}),
@@ -86,7 +86,7 @@ it.each([false, true])("rebuilds a recreated EGL window before drawing (new cont
   const deletedRenderbuffers: unknown[] = [];
   const gl = new Proxy({
     ...fakeCanvas().getContext() as object,
-    getParameter: (p: number) => p === 0x8ca6 ? drawFramebuffer : null,
+    getParameter: (p: number) => p === 0x84e0 ? 0x84c0 : p === 0x8ca6 ? drawFramebuffer : null,
     bindFramebuffer: (target: number, fbo: unknown) => {
       if (target === 0x8d40 || target === 0x8ca9) drawFramebuffer = fbo;
     },

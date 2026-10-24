@@ -120,7 +120,7 @@ describe("context creation acknowledgement", () => {
     const {kernel, create, imports} = harness();
     const deleted: unknown[] = [];
     const renderer = () => new Proxy({
-      getExtension: () => null, isContextLost: () => false, getParameter: () => null, getError: () => 0,
+      getExtension: () => null, isContextLost: () => false, getParameter: (p:number) => p === 0x84e0 ? 0x84c0 : null, getError: () => 0,
       createTexture: () => ({}), createFramebuffer: () => ({}), createRenderbuffer: () => ({}),
       FRAMEBUFFER_COMPLETE: 0x8cd5, checkFramebufferStatus: () => 0x8cd5,
       deleteFramebuffer: (value: unknown) => deleted.push(value),
@@ -177,7 +177,7 @@ describe("context creation acknowledgement", () => {
   it("uses a GPU window's real buffer size when no canvas is attached", () => {
     const { kernel, create, imports, memory } = harness();
     const gl = new Proxy({
-      getExtension: () => null, isContextLost: () => false, getParameter: () => null,
+      getExtension: () => null, isContextLost: () => false, getParameter: (p:number) => p === 0x84e0 ? 0x84c0 : null,
       createTexture: () => ({}), createFramebuffer: () => ({}), createRenderbuffer: () => ({}),
       FRAMEBUFFER_COMPLETE: 0x8cd5, checkFramebufferStatus: () => 0x8cd5,
     }, { get: (target, key) => Reflect.get(target, key) ?? (() => null) });
@@ -263,7 +263,7 @@ describe("context creation acknowledgement", () => {
     let color: number[] = [];
     const rendered: number[][] = [];
     const gl = new Proxy({
-      isContextLost: () => false, getExtension: () => null, getParameter: () => null,
+      isContextLost: () => false, getExtension: () => null, getParameter: (p:number) => p === 0x84e0 ? 0x84c0 : null,
       getError: () => 0, clearColor: (...value: number[]) => { color = value; },
       clear: () => rendered.push([...color]),
     }, { get: (target, key) => Reflect.get(target, key) ?? (() => null) });
@@ -386,7 +386,7 @@ it("publishes accepted dimensions and private storage, preserving state on alloc
   const deleted: unknown[] = [], blits: unknown[][] = [];
   let serial = 0;
   const gl = new Proxy({
-    getExtension: () => null, isContextLost: () => false, getParameter: () => null, getError: () => 0,
+    getExtension: () => null, isContextLost: () => false, getParameter: (p:number) => p === 0x84e0 ? 0x84c0 : null, getError: () => 0,
     createTexture: () => allocate ? {texture:++serial} : null,
     createFramebuffer: () => allocate ? {framebuffer:++serial} : null,
     createRenderbuffer: () => allocate ? {renderbuffer:++serial} : null,
@@ -424,7 +424,7 @@ it("selects independent surfaces across sessions and retains them after their ow
   const deleted: unknown[] = [];
   let serial = 0;
   const gl = new Proxy({
-    getExtension: () => null, isContextLost: () => false, getParameter: () => null, getError: () => 0,
+    getExtension: () => null, isContextLost: () => false, getParameter: (p:number) => p === 0x84e0 ? 0x84c0 : null, getError: () => 0,
     createTexture: () => ({tex:++serial}), createFramebuffer: () => ({fbo:++serial}), createRenderbuffer: () => ({rbo:++serial}),
     FRAMEBUFFER_COMPLETE:0x8cd5, checkFramebufferStatus: () => 0x8cd5,
     deleteFramebuffer: (value:unknown) => deleted.push(value),
@@ -453,7 +453,7 @@ it("selects independent surfaces across sessions and retains them after their ow
 });
 
 function sharingRenderer() {
-  return new Proxy({getExtension:()=>null,isContextLost:()=>false,getParameter:()=>null,getError:()=>0,
+  return new Proxy({getExtension:()=>null,isContextLost:()=>false,getParameter:(p:number)=>p === 0x84e0 ? 0x84c0 : null,getError:()=>0,
     createFramebuffer:()=>({}),createTexture:()=>({}),createRenderbuffer:()=>({}),
     FRAMEBUFFER_COMPLETE:0x8cd5,checkFramebufferStatus:()=>0x8cd5,
   },{get:(object,key)=>Reflect.get(object,key)??(()=>null)}) as unknown as WebGL2RenderingContext;
@@ -519,4 +519,52 @@ it("translates a shared kernel context identity to a reviewed forward session be
   expect(target.contextId).toBeNull();expect(source.contextId).toBe(21);
   rc=0;expect(imports.host_gl_create_context(7,22,64,16,12)).toBe(0);
   expect(target.contextId).toBe(22);expect(calls).toEqual([[11,undefined],[12,11],[12,11]]);
+});
+
+it.each([[0,0],[0,3],[4,0],[4,3]])("keeps pbuffer dimensions %s by %s independent of the canvas and never presents them", (width,height) => {
+  const {kernel,imports,memory} = harness(); let serial = 0, blits = 0;
+  const storage:number[][] = [];
+  const gl = new Proxy({
+    getExtension:()=>null,isContextLost:()=>false,getError:()=>0,
+    getParameter:(p:number)=>p === 0x84e0 ? 0x84c0 : null,
+    createTexture:()=>({id:++serial}),createFramebuffer:()=>({id:++serial}),createRenderbuffer:()=>({id:++serial}),
+    texImage2D:(_t:number,_l:number,_i:number,w:number,h:number)=>storage.push([w,h]),
+    checkFramebufferStatus:()=>0x8cd5,blitFramebuffer:()=>{blits++;},
+  },{get:(target,key)=>Reflect.get(target,key)??(()=>null)}) as unknown as WebGL2RenderingContext;
+  const canvas = {width:8,height:6,getContext:()=>gl} as unknown as OffscreenCanvas;
+  kernel.gl.attachCanvas(7,canvas); imports.host_gl_bind(7,128,0,11);
+  const attrs = new Uint32Array(memory.buffer,64,9); attrs.set([2,width,height,1,0,0,0,0,0]);
+  expect(imports.host_gl_create_surface(7,71,64,36,11)).toBe(0);
+  const b = kernel.gl.get(7,11)!;
+  expect(b.surfaceSize).toEqual({width,height}); expect(b.surface.kind).toBe(2);
+  expect(storage).toEqual([[Math.max(1,width),Math.max(1,height)]]);
+  expect(imports.host_gl_create_context(7,21,0,0,11)).toBe(0);
+  expect(imports.host_gl_make_current(7,21,71,71,11)).toBe(0);
+  expect(b.shadow.viewport).toEqual([0,0,width,height]); expect(b.shadow.scissor.rect).toEqual([0,0,width,height]);
+  expect(imports.host_gl_present(7,11)).toBe(0); expect(blits).toBe(0);
+  expect([canvas.width,canvas.height]).toEqual([8,6]);
+  imports.host_gl_make_current(7,0,0,0,11); imports.host_gl_unbind(7,11);
+});
+
+it("does not turn a previously created master-process pbuffer into a KMS scanout window", () => {
+  const claims:string[] = []; let blits = 0;
+  const gl = new Proxy({isContextLost:()=>false,getError:()=>0,getExtension:()=>null,
+    getParameter:(p:number)=>p === 0x84e0 ? 0x84c0 : null,
+    createTexture:()=>({}),createFramebuffer:()=>({}),createRenderbuffer:()=>({}),
+    checkFramebufferStatus:()=>0x8cd5,blitFramebuffer:()=>{blits++;},
+  },{get:(target,key)=>Reflect.get(target,key)??(()=>null)}) as unknown as WebGL2RenderingContext;
+  const canvas = {width:11,height:7,getContext:()=>gl} as unknown as OffscreenCanvas;
+  const {kernel,imports,memory,setMaster} = harness({getKmsCrtcIds:()=>[1],getKmsCanvas:()=>canvas,
+    markKmsCanvasGlOwned:()=>claims.push("owned"),markKmsCanvasGlReleased:()=>claims.push("released"),
+    onKmsGlPresented:()=>claims.push("presented")});
+  setMaster(7); imports.host_gl_bind(7,128,0,11);
+  new Uint32Array(memory.buffer,64,9).set([2,0,3,1,0,0,0,0,0]);
+  expect(imports.host_gl_create_surface(7,71,64,36,11)).toBe(0);
+  expect(imports.host_gl_create_context(7,21,0,0,11)).toBe(0);
+  const b = kernel.gl.get(7,11)!;
+  expect(b.gl).toBe(gl); expect(b.claimedKmsCrtc).toBeNull(); expect(b.canvas).toBeNull();
+  expect(imports.host_gl_make_current(7,21,71,71,11)).toBe(0);
+  expect(imports.host_gl_present(7,11)).toBe(0);
+  imports.host_gl_make_current(7,0,0,0,11); imports.host_gl_unbind(7,11);
+  expect([canvas.width,canvas.height]).toEqual([11,7]); expect(blits).toBe(0); expect(claims).toEqual([]);
 });

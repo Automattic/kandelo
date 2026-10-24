@@ -3771,14 +3771,15 @@ TLV commands, the kernel validates the submitted range, and the host decodes
 the commands against a browser `WebGL2RenderingContext` or a test double in
 Node.js. The kernel does not contain GL rendering code.
 
-EGL's existing single window config uses one attribute table for enumeration,
+EGL's single ES2 config uses one attribute table for enumeration,
 selection and queries. Selection honors size minima, masks, exact values,
 defaults and explicit config IDs. Config operations require an initialized
 display and publish outputs only after validation. The config's renderable
 mask remains ES2-only; EGL's default ES1 selection filter consequently matches
-none. Tools enumerating all configurations use eglGetConfigs. Pbuffers
-and other EGL core gaps remain tracked in the graphics compatibility
-inventory.
+none. Tools enumerating all configurations use eglGetConfigs. The source
+facade supports independent window and pbuffer surfaces. Other EGL core
+gaps and normal rebuilt-guest validation remain tracked in the graphics
+compatibility inventory.
 
 Operation-table version 16 adds an immutable surface-capability query to
 initialized, mapped object sessions in a live display generation. It requires
@@ -3791,9 +3792,32 @@ display generation; a malformed reply leaves caller output unchanged.
 Native and main-forwarded paths preserve outgoing GLES errors before
 querying, without selecting a logical context, changing drawable bindings,
 resizing a canvas or claiming KMS presentation. A host without an available
-renderer reports failure. This supplies honest limits for the pending
-pbuffer implementation; creation remains unimplemented and PBUFFER_BIT is
-not yet advertised.
+renderer reports failure.
+
+The config now advertises PBUFFER_BIT. Pbuffer creation validates attributes,
+uses generation-owned offscreen storage and preserves the pending native
+window target. It stores accepted dimensions and query attributes. Largest
+requests obey native dimensions/pixel limits and search smaller pixel budgets
+only after definite allocation rejection; unknown completion stops the search.
+A context created after its pbuffer reuses its existing offscreen renderer
+without resizing or claiming KMS scanout. Context-first KMS ordering and
+pump coexistence remain in the lifecycle audit. Texture binding
+capabilities remain false, so texture-bound requests fail
+with BAD_MATCH. Logical zero dimensions use minimal private native storage;
+viewport/scissor initialization honors those logical dimensions. Pbuffer swaps
+still validate the current draw surface and flush, without posting. Native and
+forwarded raw presentation also recognize the surface kind and avoid blitting
+its private target to the visible canvas.
+
+Surface allocation reserves native deletion receipts and every selector update
+before creating texture/renderbuffer/framebuffer objects. Checked storage and
+read/draw/texture/renderbuffer inverses keep failed setup or finalization owned
+after creator retirement. Dependent operations stop until restoration and
+cleanup finish. Accepted replacement storage stays committed if retiring an old
+target fails. Surface destruction and abandoned forwarded requests retire the
+same receipts, preserving the distinction between owned native targets and
+borrowed BO framebuffers. Broader resource factories, context loss and unknown
+transport completion remain in the compatibility inventory.
 
 EGL error status and bound client API are thread-local; an unsupported API
 bind reports BAD_PARAMETER while preserving the calling thread's prior API.

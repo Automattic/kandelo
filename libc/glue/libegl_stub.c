@@ -68,7 +68,8 @@ struct egl_surface_record {
     struct egl_session *session;
     uint32_t backend_id, width, height;
     unsigned current_references;
-    int delete_pending, gbm_window;
+    int delete_pending, gbm_window, pbuffer;
+    EGLint largest_pbuffer, mipmap_texture;
     void *native_window;
     struct egl_surface_record *next;
 };
@@ -311,7 +312,7 @@ struct config_attribute {
     enum config_match match;
 };
 /* One source for enumeration, selection and queries. These are the existing
- * RGBA8/depth24/stencil8, non-multisampled window buffers. Pbuffers, native
+ * RGBA8/depth24/stencil8, non-multisampled window and pbuffer storage. Native
  * rendering and API conformance are not inferred from WebGL2. */
 static const struct config_attribute config_attributes[] = {
     { EGL_BUFFER_SIZE, 32, 0, CFG_MINIMUM },
@@ -341,7 +342,7 @@ static const struct config_attribute config_attributes[] = {
     { EGL_MAX_PBUFFER_HEIGHT, 0, EGL_DONT_CARE, CFG_IGNORED },
     { EGL_MAX_PBUFFER_PIXELS, 0, EGL_DONT_CARE, CFG_IGNORED },
     { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_OPENGL_ES_BIT, CFG_API_MASK },
-    { EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_WINDOW_BIT, CFG_SURFACE_MASK },
+    { EGL_SURFACE_TYPE, EGL_WINDOW_BIT | EGL_PBUFFER_BIT, EGL_WINDOW_BIT, CFG_SURFACE_MASK },
     { EGL_TRANSPARENT_TYPE, EGL_NONE, EGL_NONE, CFG_TRANSPARENT },
     { EGL_TRANSPARENT_RED_VALUE, 0, EGL_DONT_CARE, CFG_TRANSPARENT_COMPONENT },
     { EGL_TRANSPARENT_GREEN_VALUE, 0, EGL_DONT_CARE, CFG_TRANSPARENT_COMPONENT },
@@ -984,8 +985,11 @@ EGLBoolean eglQuerySurface(EGLDisplay dpy, EGLSurface handle, EGLint attribute, 
             case EGL_TEXTURE_TARGET:
             case EGL_MIPMAP_TEXTURE:
             case EGL_MIPMAP_LEVEL:
-                result = EGL_TRUE;
-                goto done;
+                if (!surface->pbuffer) { result = EGL_TRUE; goto done; }
+                out = attribute == EGL_LARGEST_PBUFFER ? surface->largest_pbuffer :
+                    attribute == EGL_MIPMAP_TEXTURE ? surface->mipmap_texture :
+                    attribute == EGL_MIPMAP_LEVEL ? 0 : EGL_NO_TEXTURE;
+                break;
             default:
                 g_last_error = EGL_BAD_ATTRIBUTE;
                 goto done;
@@ -1013,6 +1017,8 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface handle) {
             g_last_error = EGL_BAD_SURFACE;
         else {
             _wpk_gl_flush();
+            /* The host distinguishes offscreen no-post flushes from window
+             * posting. Keep its failure channel for pbuffers as well. */
             if (ioctl(context->session->fd, GLIO_PRESENT, NULL) != 0)
                 g_last_error = current_binding_error();
             else {
@@ -1380,6 +1386,7 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
     WPK_MAP_GL(eglGetCurrentSurface);
     WPK_MAP_GL(eglQueryContext);
     WPK_MAP_GL(eglQuerySurface);
+    WPK_MAP_GL(eglCreatePbufferSurface);
     WPK_MAP_GL(eglQueryDmaBufFormatsEXT);
     WPK_MAP_GL(eglQueryDmaBufModifiersEXT);
     return NULL;
@@ -1445,18 +1452,132 @@ EGLenum eglQueryAPI(void) {
     return g_bound_api;
 }
 
-EGLSurface eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig config,
-                                   const EGLint *attrib_list) {
-    (void) config; (void) attrib_list;
-    if (dpy != EGL_DPY_HANDLE) {
-        g_last_error = EGL_BAD_DISPLAY;
-        return EGL_NO_SURFACE;
+/* Find the maximum rectangle area under a pixel budget without scanning
+ * every width. Equal quotients form intervals; the last width in each
+ * interval maximizes that interval's area. Products and bounds stay u64. */
+static void pbuffer_dimensions(uint32_t width, uint32_t height, uint64_t budget,
+                               uint32_t *out_width, uint32_t *out_height) {
+    uint64_t best = 0;
+    *out_width = *out_height = 0;
+    if (!width || !height) { *out_width = width; *out_height = height; return; }
+    for (uint64_t first = 1; first <= width && first <= budget;) {
+        uint64_t quotient = budget / first;
+        uint64_t h = quotient < height ? quotient : height;
+        uint64_t last = quotient >= height ? budget / height : budget / quotient;
+        if (last > width) last = width;
+        if (last*h >= best) { best = last*h; *out_width = (uint32_t)last; *out_height = (uint32_t)h; }
+        first = last+1;
     }
-    /* SDL2 only requests pbuffers under SDL_VIDEO_OFFSCREEN, which
-     * we don't enable — return EGL_NO_SURFACE so any accidental
-     * caller fails fast. */
-    g_last_error = EGL_BAD_CONFIG;
-    return EGL_NO_SURFACE;
+}
+static int create_pbuffer_candidate(struct egl_session *session, uint32_t width, uint32_t height,
+                                    struct gl_surface_create *request) {
+    *request = (struct gl_surface_create){.attrs = {.kind = WPK_SURFACE_PBUFFER,
+        .config_id = 1, .width = width, .height = height}};
+    if (ioctl(session->fd,GLIO_CREATE_SURFACE,request) != 0) return 0;
+    if (!request->surface_id || request->attrs.width != width || request->attrs.height != height) {
+        ioctl(session->fd,GLIO_DESTROY_SURFACE,NULL); errno = EIO; return 0;
+    }
+    return 1;
+}
+static EGLSurface create_pbuffer_locked(EGLDisplay dpy, EGLConfig config, const EGLint *list) {
+    struct egl_generation *generation = g_active_generation;
+    if (dpy != EGL_DPY_HANDLE) { g_last_error = EGL_BAD_DISPLAY; return EGL_NO_SURFACE; }
+    if (!generation || !generation->initialized) { g_last_error = EGL_NOT_INITIALIZED; return EGL_NO_SURFACE; }
+    if (config != EGL_CONFIG_HANDLE) { g_last_error = EGL_BAD_CONFIG; return EGL_NO_SURFACE; }
+    EGLint width = 0, height = 0, largest = EGL_FALSE, mipmap = EGL_FALSE;
+    EGLint format = EGL_NO_TEXTURE, target = EGL_NO_TEXTURE;
+    for (const EGLint *a = list; a && a[0] != EGL_NONE; a += 2) {
+        switch (a[0]) {
+        case EGL_WIDTH: case EGL_HEIGHT:
+            if (a[1] < 0) { g_last_error = EGL_BAD_PARAMETER; return EGL_NO_SURFACE; }
+            if (a[0] == EGL_WIDTH) width = a[1]; else height = a[1]; break;
+        case EGL_LARGEST_PBUFFER: case EGL_MIPMAP_TEXTURE:
+            if (a[1] != EGL_FALSE && a[1] != EGL_TRUE) goto bad_attribute;
+            if (a[0] == EGL_LARGEST_PBUFFER) largest = a[1]; else mipmap = a[1]; break;
+        case EGL_TEXTURE_FORMAT:
+            if (a[1] != EGL_NO_TEXTURE && a[1] != EGL_TEXTURE_RGB && a[1] != EGL_TEXTURE_RGBA) goto bad_attribute;
+            format = a[1]; break;
+        case EGL_TEXTURE_TARGET:
+            if (a[1] != EGL_NO_TEXTURE && a[1] != EGL_TEXTURE_2D) goto bad_attribute;
+            target = a[1]; break;
+        case EGL_GL_COLORSPACE:
+            if (a[1] != EGL_GL_COLORSPACE_LINEAR && a[1] != EGL_GL_COLORSPACE_SRGB) goto bad_attribute;
+            if (a[1] != EGL_GL_COLORSPACE_LINEAR) goto bad_match;
+            break;
+        case EGL_VG_COLORSPACE:
+            if (a[1] != EGL_VG_COLORSPACE_sRGB && a[1] != EGL_VG_COLORSPACE_LINEAR) goto bad_attribute;
+            if (a[1] != EGL_VG_COLORSPACE_sRGB) goto bad_match;
+            break;
+        case EGL_VG_ALPHA_FORMAT:
+            if (a[1] != EGL_VG_ALPHA_FORMAT_NONPRE && a[1] != EGL_VG_ALPHA_FORMAT_PRE) goto bad_attribute;
+            if (a[1] != EGL_VG_ALPHA_FORMAT_NONPRE) goto bad_match;
+            break;
+        default: goto bad_attribute;
+        }
+    }
+    /* This configuration supports ES2 rendering but advertises neither
+     * BIND_TO_TEXTURE capability. Render-to-texture is optional in EGL. */
+    if (format != EGL_NO_TEXTURE || target != EGL_NO_TEXTURE) goto bad_match;
+    if (!surface_limits_locked(generation)) return EGL_NO_SURFACE;
+    if (!largest && ((uint32_t)width > generation->pbuffer_limits[0] ||
+        (uint32_t)height > generation->pbuffer_limits[1] ||
+        (uint64_t)width*(uint32_t)height > generation->pbuffer_limits[2])) goto bad_alloc;
+    if (!g_next_object_handle) goto bad_alloc;
+    uint32_t max_width = (uint32_t)width, max_height = (uint32_t)height;
+    if (max_width > generation->pbuffer_limits[0]) max_width = generation->pbuffer_limits[0];
+    if (max_height > generation->pbuffer_limits[1]) max_height = generation->pbuffer_limits[1];
+    uint64_t budget = (uint64_t)max_width*max_height;
+    if (budget > generation->pbuffer_limits[2]) budget = generation->pbuffer_limits[2];
+    struct egl_surface_record *surface = calloc(1,sizeof *surface);
+    if (!surface) goto bad_alloc;
+    struct egl_session *session = object_session(generation,0);
+    if (!session) { free(surface); goto bad_alloc; }
+    struct gl_surface_create request;
+    uint32_t allocated_width, allocated_height;
+    pbuffer_dimensions(max_width,max_height,budget,&allocated_width,&allocated_height);
+    if (!create_pbuffer_candidate(session,allocated_width,allocated_height,&request)) {
+        if (!largest || errno != ENOMEM || !budget) goto fail;
+        // Search only after a definite allocation rejection. Unknown transport
+        // completion and pending native repair must never authorize a retry.
+        uint64_t low = 0, high = budget-1;
+        uint32_t best_width = 0, best_height = 0;
+        while (low < high) {
+            uint64_t middle = low+(high-low+1)/2;
+            pbuffer_dimensions(max_width,max_height,middle,&allocated_width,&allocated_height);
+            uint64_t area = (uint64_t)allocated_width*allocated_height;
+            if (area <= low) { low = middle; continue; }
+            if (create_pbuffer_candidate(session,allocated_width,allocated_height,&request)) {
+                best_width = allocated_width; best_height = allocated_height;
+                if (ioctl(session->fd,GLIO_DESTROY_SURFACE,NULL) != 0) goto fail;
+                low = middle;
+            } else {
+                if (errno != ENOMEM) goto fail;
+                high = area-1;
+            }
+        }
+        if (!best_width || !best_height || !create_pbuffer_candidate(session,best_width,best_height,&request)) goto fail;
+    }
+    *surface = (struct egl_surface_record){.handle = (EGLSurface)g_next_object_handle++,
+        .session = session, .backend_id = request.surface_id,
+        .width = request.attrs.width, .height = request.attrs.height,
+        .pbuffer = 1, .largest_pbuffer = largest, .mipmap_texture = mipmap};
+    surface->next = generation->surfaces; generation->surfaces = surface;
+    session->surface_used = 1;
+    return surface->handle;
+fail:
+    free(surface); retire_empty_sessions(generation);
+bad_alloc:
+    g_last_error = EGL_BAD_ALLOC; return EGL_NO_SURFACE;
+bad_attribute:
+    g_last_error = EGL_BAD_ATTRIBUTE; return EGL_NO_SURFACE;
+bad_match:
+    g_last_error = EGL_BAD_MATCH; return EGL_NO_SURFACE;
+}
+EGLSurface eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig config, const EGLint *attrib_list) {
+    pthread_mutex_lock(&g_context_mutex);
+    EGLSurface result = create_pbuffer_locked(dpy,config,attrib_list);
+    pthread_mutex_unlock(&g_context_mutex);
+    return result;
 }
 
 /* ----- WPK dmabuf-import extension ------------------------------- */

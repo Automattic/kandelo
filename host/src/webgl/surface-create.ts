@@ -1,5 +1,5 @@
 import type { GlBinding } from "./registry.js";
-import { repairNativeState } from "./native-recovery.js";
+import { hasNativeRepair, repairNativeState } from "./native-recovery.js";
 import { createSurfaceResources, exposeSurfaceResources, retireSurface } from "./surface-resources.js";
 import { resizeSurfaceTarget } from "./present-target.js";
 
@@ -23,7 +23,7 @@ export function validSurfaceCreation(v: GlSurfaceCreation): boolean {
 /** Allocate privately. Commit/cancel in this synchronous renderer turn;
  * forwarded callers commit only when the reply mailbox accepts completion. */
 export function prepareSurfaceCreation(b: GlBinding, v: GlSurfaceCreation,
-  target?: GlSurfaceTarget, canvas = b.canvas): { rc: number; prepared?: {
+  target?: GlSurfaceTarget, canvas = b.canvas, captureErrors?: (gl: WebGL2RenderingContext) => void): { rc: number; prepared?: {
     width: number; height: number; commit(): void; cancel(): void;
   } } {
   if (!validSurfaceCreation(v)) return { rc: -22 };
@@ -31,7 +31,7 @@ export function prepareSurfaceCreation(b: GlBinding, v: GlSurfaceCreation,
   if (v.targetBoId && !target) return { rc: -2 };
   if ((b.gl && !repairNativeState(b.gl)) || (target && !repairNativeState(target.gl))) return {rc:-5};
   const candidate = createSurfaceResources(b.pid);
-  candidate.surfaceId = v.surfaceId; candidate.fixedSize = true;
+  candidate.surfaceId = v.surfaceId; candidate.fixedSize = true; candidate.kind = v.kind;
   let width = v.width, height = v.height;
   try {
     if (target) {
@@ -45,10 +45,11 @@ export function prepareSurfaceCreation(b: GlBinding, v: GlSurfaceCreation,
         antialias: false, premultipliedAlpha: false, depth: true, stencil: true, preserveDrawingBuffer: true,
       }) as WebGL2RenderingContext | null;
       if (!gl || gl.isContextLost()) return { rc: -19 };
+      captureErrors?.(gl);
       if (v.kind === 1) { width ||= canvas?.width ?? 0; height ||= canvas?.height ?? 0; }
       const staging = exposeSurfaceResources({ ...b, surface: candidate, gl,
         shadow: { ...b.shadow }, drawSurface: null, readSurface: null, currentDrawable: null });
-      if (!resizeSurfaceTarget(staging, width, height)) { retireSurface(candidate); return { rc: -12 }; }
+      if (!resizeSurfaceTarget(staging, width, height)) { retireSurface(candidate); return { rc: hasNativeRepair(gl) ? -5 : -12 }; }
     }
     candidate.surfaceSize = { width, height };
     let pending = true;

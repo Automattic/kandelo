@@ -98,7 +98,7 @@ The source WebGL contract suite also compiles selected current native C
 cases through this harness, captures actual submitted bytes and replays them
 through the browser decoder. Its float/fixed and maximum-index client-array cases are cross-layer
 source evidence, not guest execution or unmodified CTS. Selection uses
-`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 148 cases.
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 156 cases.
 `KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
 file for those test-only replays. Each browser test owns and removes its
 private trace directory.
@@ -487,3 +487,29 @@ error capture, pending outgoing-owner flags, native/main forwarding and KMS
 non-ownership. These source tests do not execute normal guest ioctl
 marshalling or establish pbuffer creation, upstream CTS, full browser-memory
 or compositor compatibility.
+
+
+Eight pbuffer C cases exercise creation/query/current destruction, zero
+size, invalid attributes, a protected-page unknown attribute, native
+limit clamping, definite allocation pressure, unknown failure without an
+automatic retry, and 1,296 small size/budget combinations. The independent
+grid oracle enumerates allowed areas rather than repeating the production
+rectangle algorithm. All eight cases fail unchanged `6fab3f17af` through
+the revision-argument runner. The unsupported config-selection mask is now
+PIXMAP_BIT; PBUFFER_BIT is supported.
+
+Source host coverage adds zero/single-zero/ordinary dimensions and no-post
+presentation in both adapters. Stateful native failure tests retain
+selector inverses and candidate deletion across creator retirement and
+keep accepted resized storage through old deletion failure. The private
+unchanged-production baseline selects three such regressions, with seven
+unselected tests explicitly skipped; each fails at its intended semantic
+assertion. Test doubles report the actual active texture enum so a repair
+can restore the physical texture unit rather than assuming unit zero.
+
+Real browser C replays render private red/green pbuffers while the visible
+canvas stays blue, in native and forwarded modes. Zero-sized replays check
+zero viewport sizing and canvas preservation without asserting
+out-of-bounds pixel values. All earlier rendered scenarios remain enabled.
+These checks supplement normal guest/CTS and full memory/compositor gates;
+they do not replace them.

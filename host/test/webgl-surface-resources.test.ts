@@ -12,7 +12,7 @@ function renderer() {
     RENDERBUFFER: 0x8d41, RENDERBUFFER_BINDING: 0x8ca7,
     DEPTH24_STENCIL8: 0x88f0, DEPTH_STENCIL_ATTACHMENT: 0x821a,
     COLOR_ATTACHMENT0: 0x8ce0, FRAMEBUFFER_COMPLETE: 0x8cd5, isContextLost: () => false,
-    getParameter: vi.fn(() => null), getError: () => 0,
+    getParameter: vi.fn((p:number) => p === 0x84e0 ? 0x84c0 : null), getError: () => 0, activeTexture: vi.fn(),
     createTexture: vi.fn(() => ({id:next++})), createFramebuffer: vi.fn(() => ({id:next++})), createRenderbuffer: vi.fn(() => ({id:next++})),
     bindTexture: vi.fn(), bindFramebuffer: vi.fn(), bindRenderbuffer: vi.fn(),
     texImage2D: vi.fn(), texParameteri: vi.fn(), framebufferTexture2D: vi.fn(),

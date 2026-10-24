@@ -184,6 +184,9 @@ static int make_current_errno = EACCES;
 static uint32_t next_backend_context = 31;
 static uint32_t next_backend_surface = 131;
 static int fail_surface_create;
+static uint64_t max_surface_pixels = UINT64_MAX;
+static unsigned surface_create_attempts, surface_presents;
+static int surface_present_failure;
 static uint32_t surface_target;
 static int fail_surface_update;
 static pthread_mutex_t overlap_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -715,8 +718,9 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             at += 4 + len;
         }
     } else if (request == GLIO_CREATE_SURFACE) {
-        if (fail_surface_create) { errno = ENOMEM; return -1; }
         struct gl_surface_create *request = arg;
+        surface_create_attempts++;
+        if (fail_surface_create || (uint64_t)request->attrs.width*request->attrs.height > max_surface_pixels) { errno = fail_surface_create == 2 ? EIO : ENOMEM; return -1; }
         assert(request->surface_id == 0);
         if (slot->surface) {
             errno = EBUSY;
@@ -724,8 +728,10 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         }
         surface_target = request->attrs.reserved[0];
         request->surface_id = slot->surface = next_backend_surface++;
-        if (!request->attrs.width) request->attrs.width = 64;
-        if (!request->attrs.height) request->attrs.height = 32;
+        if (request->attrs.kind == WPK_SURFACE_DEFAULT) {
+            if (!request->attrs.width) request->attrs.width = 64;
+            if (!request->attrs.height) request->attrs.height = 32;
+        } else assert(request->attrs.kind == WPK_SURFACE_PBUFFER && !surface_target);
         egl_trace(3, fd, request, sizeof *request);
     } else if (request == GLIO_UPDATE_SURFACE) {
         if (fail_surface_update) { errno = ENOMEM; return -1; }
@@ -802,6 +808,8 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         slot->surface = 0;
         destroyed_surfaces++;
     } else if (request == GLIO_PRESENT) {
+        surface_presents++;
+        if (surface_present_failure) { errno = EACCES; return -1; }
         egl_trace(8, fd, NULL, 0);
     } else if (request == GLIO_QUERY) {
         struct gl_query_info *q = arg;
@@ -1420,6 +1428,85 @@ int main(int argc, char **argv) {
     }
     assert(eglInitialize(dpy, NULL, NULL));
     const EGLint attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    if (!strncmp(argv[1],"pbuffer-",8)) {
+        if (!strcmp(argv[1],"pbuffer-grid")) {
+            surface_limits[0] = surface_limits[1] = 8; surface_limits[2] = 64;
+            for (EGLint w=1;w<=8;w++) for (EGLint h=1;h<=8;h++) for (unsigned capacity=1;capacity<=(unsigned)(w*h);capacity++) {
+                max_surface_pixels = capacity;
+                const EGLint list[] = {EGL_WIDTH,w,EGL_HEIGHT,h,EGL_LARGEST_PBUFFER,EGL_TRUE,EGL_NONE};
+                EGLSurface pbuffer = eglCreatePbufferSurface(dpy,(EGLConfig)1,list); assert(pbuffer);
+                EGLint actual_w,actual_h;
+                assert(eglQuerySurface(dpy,pbuffer,EGL_WIDTH,&actual_w) && eglQuerySurface(dpy,pbuffer,EGL_HEIGHT,&actual_h));
+                unsigned maximum=0;
+                for (unsigned x=1;x<=(unsigned)w;x++) for (unsigned y=1;y<=(unsigned)h;y++)
+                    if (x*y<=capacity && x*y>maximum) maximum=x*y;
+                assert(actual_w*actual_h == (EGLint)maximum);
+                assert(eglDestroySurface(dpy,pbuffer));
+            }
+        } else if (!strcmp(argv[1],"pbuffer-invalid")) {
+            const EGLint invalid[][3] = {{EGL_WIDTH,-1,EGL_NONE},{EGL_HEIGHT,-2,EGL_NONE},
+                {EGL_LARGEST_PBUFFER,2,EGL_NONE},{EGL_MIPMAP_TEXTURE,2,EGL_NONE},
+                {EGL_TEXTURE_TARGET,42,EGL_NONE},{EGL_TEXTURE_FORMAT,42,EGL_NONE},
+                {0xdead,0,EGL_NONE}};
+            for (unsigned i=0;i<sizeof invalid/sizeof invalid[0];i++) {
+                assert(!eglCreatePbufferSurface(dpy,(EGLConfig)1,invalid[i]));
+                assert(eglGetError() == (i<2 ? EGL_BAD_PARAMETER : EGL_BAD_ATTRIBUTE));
+            }
+            const EGLint texture[] = {EGL_TEXTURE_FORMAT,EGL_TEXTURE_RGBA,EGL_TEXTURE_TARGET,EGL_TEXTURE_2D,EGL_NONE};
+            assert(!eglCreatePbufferSurface(dpy,(EGLConfig)1,texture) && eglGetError() == EGL_BAD_MATCH);
+            assert(!eglCreatePbufferSurface(dpy,(EGLConfig)99,NULL) && eglGetError() == EGL_BAD_CONFIG);
+            assert(surface_create_attempts == 0);
+        } else if (!strcmp(argv[1],"pbuffer-guard")) {
+            const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+            char *memory = mmap(NULL,page*2,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0); assert(memory != MAP_FAILED);
+            assert(!mprotect(memory+page,page,PROT_NONE));
+            EGLint *last = (EGLint *)(memory+page-sizeof(EGLint)); *last = 0xdead;
+            assert(!eglCreatePbufferSurface(dpy,(EGLConfig)1,last) && eglGetError() == EGL_BAD_ATTRIBUTE);
+            munmap(memory,page*2);
+        } else {
+            EGLint attributes[] = {EGL_WIDTH,4,EGL_HEIGHT,3,EGL_LARGEST_PBUFFER,EGL_FALSE,EGL_MIPMAP_TEXTURE,EGL_TRUE,EGL_NONE};
+            if (!strcmp(argv[1],"pbuffer-zero")) attributes[1] = attributes[3] = 0;
+            if (!strcmp(argv[1],"pbuffer-limits")) {
+                surface_limits[0] = 4; surface_limits[1] = 3; surface_limits[2] = 11;
+                assert(!eglCreatePbufferSurface(dpy,(EGLConfig)1,attributes) && eglGetError() == EGL_BAD_ALLOC);
+                attributes[5] = EGL_TRUE;
+            }
+            if (!strcmp(argv[1],"pbuffer-pressure")) { max_surface_pixels = 9; attributes[5] = EGL_TRUE; }
+            if (!strcmp(argv[1],"pbuffer-unknown")) {
+                fail_surface_create = 2; attributes[5] = EGL_TRUE;
+                assert(!eglCreatePbufferSurface(dpy,(EGLConfig)1,attributes) && eglGetError() == EGL_BAD_ALLOC);
+                assert(surface_create_attempts == 1); fail_surface_create = 0;
+            }
+            EGLSurface surface = eglCreatePbufferSurface(dpy,(EGLConfig)1,attributes); assert(surface);
+            EGLint width=-1,height=-1,value=-1;
+            assert(eglQuerySurface(dpy,surface,EGL_WIDTH,&width) && eglQuerySurface(dpy,surface,EGL_HEIGHT,&height));
+            assert(width >= 0 && width <= attributes[1] && height >= 0 && height <= attributes[3]);
+            if (!strcmp(argv[1],"pbuffer-pressure")) assert(width*height == 9 && surface_create_attempts > 1);
+            if (!strcmp(argv[1],"pbuffer-limits")) assert(width*height == 9);
+            if (!strcmp(argv[1],"pbuffer-zero")) assert(width == 0 && height == 0);
+            assert(eglQuerySurface(dpy,surface,EGL_LARGEST_PBUFFER,&value) && value == attributes[5]);
+            assert(eglQuerySurface(dpy,surface,EGL_TEXTURE_FORMAT,&value) && value == EGL_NO_TEXTURE);
+            assert(eglQuerySurface(dpy,surface,EGL_TEXTURE_TARGET,&value) && value == EGL_NO_TEXTURE);
+            assert(eglQuerySurface(dpy,surface,EGL_MIPMAP_TEXTURE,&value) && value == EGL_TRUE);
+            assert(eglQuerySurface(dpy,surface,EGL_MIPMAP_LEVEL,&value) && value == 0);
+            EGLConfig config=NULL; EGLint count=-1;
+            const EGLint choose[] = {EGL_RENDERABLE_TYPE,EGL_OPENGL_ES2_BIT,EGL_SURFACE_TYPE,EGL_PBUFFER_BIT,EGL_NONE};
+            assert(eglChooseConfig(dpy,choose,&config,1,&count) && count == 1 && config == (EGLConfig)1);
+            assert(!eglSwapBuffers(dpy,surface) && eglGetError() == EGL_BAD_SURFACE);
+            EGLContext context=eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs); assert(context);
+            assert(eglMakeCurrent(dpy,surface,surface,context));
+            surface_present_failure = 1;
+            assert(!eglSwapBuffers(dpy,surface) && eglGetError() == EGL_BAD_ACCESS);
+            assert(eglGetCurrentContext() == context); surface_present_failure = 0;
+            glClearColor(1,0,0,1); glClear(GL_COLOR_BUFFER_BIT); assert(eglSwapBuffers(dpy,surface));
+            glClearColor(0,1,0,1); glClear(GL_COLOR_BUFFER_BIT); glFlush();
+            assert(surface_presents == 2);
+            assert(eglDestroySurface(dpy,surface));
+            assert(!eglQuerySurface(dpy,surface,EGL_WIDTH,&value) && eglGetError() == EGL_BAD_SURFACE);
+            assert(eglDestroyContext(dpy,context) && eglReleaseThread());
+        }
+        assert(eglTerminate(dpy) && allocation_count() == 0); printf("PASS %s\n",argv[1]); return 0;
+    }
     if (!strncmp(argv[1],"surface-limits-",15)) {
         EGLContext current = EGL_NO_CONTEXT;
         if (!strcmp(argv[1],"surface-limits-current")) {
@@ -3999,7 +4086,7 @@ int main(int argc, char **argv) {
         const EGLint requests[][7] = {
             { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_RED_SIZE, 9, EGL_NONE },
             { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_SAMPLE_BUFFERS, 1, EGL_NONE },
-            { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_NONE },
+            { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_SURFACE_TYPE, EGL_PIXMAP_BIT, EGL_NONE },
         };
         for (unsigned i = 0; i < sizeof requests / sizeof requests[0]; i++) {
             EGLConfig selected = (EGLConfig)(uintptr_t)0x1234;

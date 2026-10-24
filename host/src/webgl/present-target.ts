@@ -19,8 +19,9 @@
  * their output is sampled by a compositor, never composited by the browser.
  */
 import type { GlBinding } from "./registry.js";
-import { repairNativeState } from "./native-recovery.js";
-import { replaceSurfaceTarget, type GlSurfaceResources } from "./surface-resources.js";
+import { applyNativeChanges, nativeInverse, repairNativeState, reserveNativeRetirement, retireNativeRetirement } from "./native-recovery.js";
+import { checkedGlCall } from "./program-objects.js";
+import { prepareSurfaceTargetReplacement, type GlPresentTarget, type GlSurfaceResources } from "./surface-resources.js";
 
 const GL_READ_FRAMEBUFFER = 0x8ca8;
 const GL_DRAW_FRAMEBUFFER = 0x8ca9;
@@ -42,59 +43,64 @@ export function ensurePresentTarget(b: GlBinding): boolean {
  * not require another canvas or WebGL context. */
 export function resizeSurfaceTarget(b: GlBinding, w: number, h: number): boolean {
   const gl = b.gl;
-  if (!gl || gl.isContextLost() || !Number.isInteger(w) || !Number.isInteger(h) || w < 1 || h < 1
+  if (!gl || gl.isContextLost() || !Number.isInteger(w) || !Number.isInteger(h) || w < 0 || h < 0
       || w > 0x7fff_ffff || h > 0x7fff_ffff) return false;
   if (b.renderTargetFbo && !b.presentTarget) return false;
   if (b.surface.gl && b.surface.gl !== gl) return false;
   if (!repairNativeState(gl)) return false;
   const existing = b.presentTarget;
   if (existing && existing.w === w && existing.h === h) return true;
-  const prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
-  const prevRead = gl.getParameter(GL_READ_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
-  const prevDraw = gl.getParameter(GL_DRAW_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
-  const prevRbo = gl.getParameter(gl.RENDERBUFFER_BINDING) as WebGLRenderbuffer | null;
-  let depthStencil: WebGLRenderbuffer | null = null;
-  let tex: WebGLTexture | null = null;
-  let fbo: WebGLFramebuffer | null = null;
-  let accepted = false;
+  // EGL-private allocation failures use their own error channel. The caller
+  // captures the outgoing logical owner's errors before entering this utility.
+  const owner = {gl,errors:[] as number[]};
+  let active = 0, prevTex: WebGLTexture|null = null, prevRead: WebGLFramebuffer|null = null;
+  let prevDraw: WebGLFramebuffer|null = null, prevRbo: WebGLRenderbuffer|null = null;
+  if (!checkedGlCall(owner, () => {
+    active = gl.getParameter(0x84e0);
+    prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D);
+    prevRead = gl.getParameter(GL_READ_FRAMEBUFFER_BINDING);
+    prevDraw = gl.getParameter(GL_DRAW_FRAMEBUFFER_BINDING);
+    prevRbo = gl.getParameter(gl.RENDERBUFFER_BINDING);
+  })) return false;
+  if (!Number.isInteger(active) || active < 0x84c0) return false;
+  const retirement = reserveNativeRetirement(owner,[["deleteFramebuffer",null],["deleteTexture",null],["deleteRenderbuffer",null]]);
+  if (!retirement) return false;
+  let published = false;
   try {
-    // Resize into a candidate. Mutating the old texture/renderbuffer would
-    // destroy the last valid drawable before allocation can be acknowledged.
-    depthStencil = gl.createRenderbuffer(); tex = gl.createTexture(); fbo = gl.createFramebuffer();
-    if (!tex || !fbo || !depthStencil) return false;
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
-    gl.framebufferTexture2D(GL_DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-    gl.bindRenderbuffer(gl.RENDERBUFFER, depthStencil);
-    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, w, h);
-    gl.framebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, depthStencil);
-    if (gl.checkFramebufferStatus(GL_DRAW_FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) return false;
-    accepted = true;
+    const target = {w,h,retirement,fbo:null,tex:null,depthStencil:null} as unknown as GlPresentTarget;
+    const commit = prepareSurfaceTargetReplacement(b.surface,target,b);
+    const utility = nativeInverse(owner,[["bindRenderbuffer",0x8d41,prevRbo]],
+      [["activeTexture",active],["bindTexture",0x0de1,prevTex]]);
+    const selectors = nativeInverse(owner,[["bindFramebuffer",GL_READ_FRAMEBUFFER,prevRead]],
+      [["bindFramebuffer",GL_DRAW_FRAMEBUFFER,prevDraw]]);
+    const accepted = applyNativeChanges({...owner,shadow:b.shadow},[
+      {restore:{owner,groups:[...utility.groups,...selectors.groups]},apply:() => {
+        if (!checkedGlCall(owner,()=>{ retirement.calls[2][1] = target.depthStencil = gl.createRenderbuffer()!; }) || !target.depthStencil) return false;
+        if (!checkedGlCall(owner,()=>{ retirement.calls[1][1] = target.tex = gl.createTexture()!; }) || !target.tex) return false;
+        if (!checkedGlCall(owner,()=>{ retirement.calls[0][1] = target.fbo = gl.createFramebuffer()!; }) || !target.fbo) return false;
+        if (!checkedGlCall(owner,()=>gl.bindTexture(0x0de1,target.tex)) ||
+            !checkedGlCall(owner,()=>gl.texImage2D(0x0de1,0,0x1908,Math.max(1,w),Math.max(1,h),0,0x1908,0x1401,null))) return false;
+        for (const [pname,value] of [[0x2801,0x2601],[0x2800,0x2601],[0x2802,0x812f],[0x2803,0x812f]])
+          if (!checkedGlCall(owner,()=>gl.texParameteri(0x0de1,pname,value))) return false;
+        if (!checkedGlCall(owner,()=>gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER,target.fbo)) ||
+            !checkedGlCall(owner,()=>gl.framebufferTexture2D(GL_DRAW_FRAMEBUFFER,0x8ce0,0x0de1,target.tex,0)) ||
+            !checkedGlCall(owner,()=>gl.bindRenderbuffer(0x8d41,target.depthStencil)) ||
+            !checkedGlCall(owner,()=>gl.renderbufferStorage(0x8d41,0x88f0,Math.max(1,w),Math.max(1,h))) ||
+            !checkedGlCall(owner,()=>gl.framebufferRenderbuffer(GL_DRAW_FRAMEBUFFER,0x821a,0x8d41,target.depthStencil))) return false;
+        let status = 0;
+        return checkedGlCall(owner,()=>{status = gl.checkFramebufferStatus(GL_DRAW_FRAMEBUFFER);}) && status === 0x8cd5;
+      }},
+      {restore:nativeInverse(owner,[["bindFramebuffer",GL_READ_FRAMEBUFFER,prevRead]]),
+        apply:()=>checkedGlCall(owner,()=>gl.bindFramebuffer(GL_READ_FRAMEBUFFER,existing && prevRead === existing.fbo ? target.fbo : prevRead))},
+      {restore:nativeInverse(owner,[["bindFramebuffer",GL_DRAW_FRAMEBUFFER,prevDraw]]),
+        apply:()=>checkedGlCall(owner,()=>gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER,existing && prevDraw === existing.fbo ? target.fbo : prevDraw))},
+    ],{shared:true,finalizer:utility});
+    if (!accepted) return false;
+    b.surface.gl = gl; commit(); published = true;
+    if (existing) retireNativeRetirement(existing.retirement);
+    return true;
   } catch { return false; }
-  finally {
-    gl.bindRenderbuffer(gl.RENDERBUFFER, prevRbo);
-    gl.bindTexture(gl.TEXTURE_2D, prevTex);
-    // A successful resize preserves the logical default binding. User FBOs
-    // and independent read/draw selections keep their original bindings.
-    gl.bindFramebuffer(GL_READ_FRAMEBUFFER, accepted && existing && prevRead === existing.fbo ? fbo : prevRead);
-    gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, accepted && existing && prevDraw === existing.fbo ? fbo : prevDraw);
-    if (!accepted) {
-      if (fbo) gl.deleteFramebuffer(fbo);
-      if (tex) gl.deleteTexture(tex);
-      if (depthStencil) gl.deleteRenderbuffer(depthStencil);
-    }
-  }
-  b.surface.gl = gl;
-  replaceSurfaceTarget(b.surface, { fbo: fbo!, tex: tex!, depthStencil: depthStencil!, w, h }, b);
-  if (existing) {
-    gl.deleteFramebuffer(existing.fbo); gl.deleteTexture(existing.tex); gl.deleteRenderbuffer(existing.depthStencil);
-  }
-  return true;
+  finally { if (!published) retireNativeRetirement(retirement); }
 }
 
 /** Blit the present target onto the real default framebuffer. This is the
@@ -103,6 +109,7 @@ export function blitPresentTarget(b: GlBinding, surface: GlSurfaceResources = b.
   const gl = b.gl;
   const target = surface.presentTarget;
   if (!gl || !target) return;
+  if (!repairNativeState(gl)) throw new Error("Native surface cleanup remains pending");
 
   const prevRead = gl.getParameter(GL_READ_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
   const prevDraw = gl.getParameter(GL_DRAW_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;

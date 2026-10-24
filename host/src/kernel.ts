@@ -1037,6 +1037,18 @@ export class WasmPosixKernel {
     if (!b || b.forward) return;
     if (b.contextId == null) return; // GL context not created yet
     if (b.gl) return; // already built
+    if (b.surface.kind === 2 && b.surface.gl) {
+      // A previously created pbuffer already owns compatible offscreen
+      // storage. Attaching it as a scanout window would resize the visible
+      // canvas to the pbuffer's dimensions and unnecessarily claim KMS.
+      const gl = b.surface.gl;
+      this.gl_muxers.get(gl)?.captureCurrentErrors();
+      gl.getExtension("EXT_color_buffer_float");
+      gl.getExtension("OES_texture_float_linear");
+      gl.getExtension("EXT_float_blend");
+      b.gl = gl;
+      return;
+    }
     // The CRTC we attach in this call, if any — used to defer
     // `markKmsCanvasGlOwned` until a WebGL2 context is confirmed.
     let attachedCrtc: number | null = this.gl.list().find(other =>
@@ -1116,6 +1128,7 @@ export class WasmPosixKernel {
       // composites a cleared or half-drawn frame (see present-target.ts).
       // Failure is non-fatal: the session falls back to drawing straight
       // at the canvas.
+      this.gl_muxers.get(ctx)?.captureCurrentErrors();
       ensurePresentTarget(b);
       // A recreated EGL context retains its per-pid binding object. Its
       // new default target must still be replayed on the shared context.
@@ -2605,7 +2618,7 @@ export class WasmPosixKernel {
                 b.forward.onDestroySurface?.(surfaceId, b.sessionId); return -5;
               }
               const candidate = createSurfaceResources(pid);
-              candidate.surfaceId = surfaceId; candidate.fixedSize = true; candidate.surfaceSize = {width:result.width,height:result.height};
+              candidate.surfaceId = surfaceId; candidate.fixedSize = true; candidate.kind = creation.kind; candidate.surfaceSize = {width:result.width,height:result.height};
               view.setUint32(4,result.width,true); view.setUint32(8,result.height,true);
               try { this.#writeKernelBytes(destination, bytes); }
               catch { b.forward.onDestroySurface?.(surfaceId,b.sessionId); return -5; }
@@ -2617,7 +2630,7 @@ export class WasmPosixKernel {
               const crtc = this.kms.masterCrtcForPid(pid) ?? this.callbacks.getKmsCrtcIds?.()[0];
               if (crtc !== undefined && crtc !== null) canvas = this.callbacks.getKmsCanvas?.(crtc) ?? null;
             }
-            const result = prepareSurfaceCreation(b, creation, this.gl.gpuBo(creation.targetBoId) ?? undefined, canvas);
+            const result = prepareSurfaceCreation(b, creation, this.gl.gpuBo(creation.targetBoId) ?? undefined, canvas, gl => this.gl_muxers.get(gl)?.captureCurrentErrors());
             const prepared = result.prepared;
             if (!prepared) return result.rc;
             try {
@@ -2785,45 +2798,50 @@ export class WasmPosixKernel {
               return Number.isInteger(rc) && rc <= 0 ? rc : -5;
             } catch { return -5; }
           }
-          const selected = b.drawSurface ?? b.surface;
-          if (selected.presentTarget && (selected !== b.surface || b.claimedKmsCrtc == null)) {
-            try { blitPresentTarget(b); b.gl?.flush(); return 0; } catch { return -5; }
-          }
-          // A GPU-tier producer renders into an offscreen bo FBO on the
-          // shared context, so `eglSwapBuffers` must fence the queued GL
-          // work: `flush()` guarantees the producer's draws are submitted
-          // before the compositor samples the bo (their command order
-          // through the one shared context then gives render-before-sample
-          // for free — no explicit sync object in v1). Canvas-backed
-          // sessions present via RAF and need no fence here.
-          if (b?.renderTargetFbo) b.gl?.flush();
-          // Canvas-backed session: the frame is complete, so flip the
-          // offscreen target onto the default framebuffer. Re-ensure first
-          // so a mode change that resized the canvas rebuilds the target
-          // instead of blitting a stale size.
-          //
-          // Ensure rather than test for one. `host_gl_destroy_surface`
-          // frees the present target, and only the first canvas claim in
-          // `host_gl_create_context` ever built one, so a guest that
-          // recreates its EGL window surface on the context it already has
-          // never got another. ScummVM does exactly that when it leaves the
-          // launcher for a game. Without a target the bind-0 redirect is
-          // gone too, so every clear and half-drawn frame went straight to
-          // the canvas for the browser to composite, and the picture
-          // blinked for the rest of the session. `ensurePresentTarget`
-          // still declines for a GPU-tier producer and for a canvas-less
-          // session, so this widens nothing else.
-          if (b && b.claimedKmsCrtc != null) {
-            // A target this call had to create is empty, and the frame it
-            // would present has already gone to the canvas directly. Blit
-            // only when one was established before the frame.
-            const established = b.presentTarget !== null;
-            if (ensurePresentTarget(b) && established) blitPresentTarget(b);
-            if (b.gl && b.canvas && (b.presentTarget !== null || b.renderTargetFbo === null)) {
-              this.callbacks.onKmsGlPresented?.(b.claimedKmsCrtc);
+          try {
+            this.glMuxerFor(b.gl!).switchTo(b);
+            const selected = b.drawSurface ?? b.surface;
+            if (selected.kind === 2) { b.gl!.flush(); return 0; }
+            if (selected.presentTarget && (selected !== b.surface || b.claimedKmsCrtc == null)) {
+              try { blitPresentTarget(b); b.gl?.flush(); return 0; } catch { return -5; }
             }
-          }
-          return 0;
+            // A GPU-tier producer renders into an offscreen bo FBO on the
+            // shared context, so `eglSwapBuffers` must fence the queued GL
+            // work: `flush()` guarantees the producer's draws are submitted
+            // before the compositor samples the bo (their command order
+            // through the one shared context then gives render-before-sample
+            // for free — no explicit sync object in v1). Canvas-backed
+            // sessions present via RAF and need no fence here.
+            if (b?.renderTargetFbo) b.gl?.flush();
+            // Canvas-backed session: the frame is complete, so flip the
+            // offscreen target onto the default framebuffer. Re-ensure first
+            // so a mode change that resized the canvas rebuilds the target
+            // instead of blitting a stale size.
+            //
+            // Ensure rather than test for one. `host_gl_destroy_surface`
+            // frees the present target, and only the first canvas claim in
+            // `host_gl_create_context` ever built one, so a guest that
+            // recreates its EGL window surface on the context it already has
+            // never got another. ScummVM does exactly that when it leaves the
+            // launcher for a game. Without a target the bind-0 redirect is
+            // gone too, so every clear and half-drawn frame went straight to
+            // the canvas for the browser to composite, and the picture
+            // blinked for the rest of the session. `ensurePresentTarget`
+            // still declines for a GPU-tier producer and for a canvas-less
+            // session, so this widens nothing else.
+            if (b && b.claimedKmsCrtc != null) {
+              // A target this call had to create is empty, and the frame it
+              // would present has already gone to the canvas directly. Blit
+              // only when one was established before the frame.
+              const established = b.presentTarget !== null;
+              if (!ensurePresentTarget(b) || !repairNativeState(b.gl!)) return -5;
+              if (established) blitPresentTarget(b);
+              if (b.gl && b.canvas && (b.presentTarget !== null || b.renderTargetFbo === null)) {
+                this.callbacks.onKmsGlPresented?.(b.claimedKmsCrtc);
+              }
+            }
+            return 0;
+          } catch { return -5; }
         },
         host_gl_query: (
           pid: number, op: number,

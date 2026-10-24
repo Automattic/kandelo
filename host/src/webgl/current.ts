@@ -69,8 +69,8 @@ export function prepareCurrentDrawable(b: GlBinding, drawable: GlDrawableBinding
       pending = false;
       if (framebuffer) b.undefinedDefaultFbo = framebuffer;
       if (!b.hasBeenCurrent) {
-        const width = next.drawSurfaceId === 0 ? 0 : next.width || b.canvas?.width || 0;
-        const height = next.drawSurfaceId === 0 ? 0 : next.height || b.canvas?.height || 0;
+        const width = next.drawSurfaceId === 0 ? 0 : draw?.fixedSize ? next.width : next.width || b.canvas?.width || 0;
+        const height = next.drawSurfaceId === 0 ? 0 : draw?.fixedSize ? next.height : next.height || b.canvas?.height || 0;
         b.shadow.viewport = [0, 0, width, height]; b.shadow.scissor.rect = [0, 0, width, height];
         b.hasBeenCurrent = true;
       }

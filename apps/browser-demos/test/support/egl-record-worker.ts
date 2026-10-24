@@ -30,6 +30,7 @@ self.onmessage = ({data}) => {
         api[createName]=()=>{const value=create();if(value){created.push(value);live.push(()=>isLive(value));}return value;};
         api[deleteName]=(value:object|null)=>{if(value)deleted.push(value);destroy(value);};
       }
+      if(data.pbuffer) { gl.clearColor(0,0,1,1); gl.clear(gl.COLOR_BUFFER_BIT); }
       memory=new WebAssembly.Memory({initial:2,maximum:2});
       native=createWasmPosixKernelTestHarness({io:{} as any,callbacks:{getProcessMemory:()=>memory!},memory,pointerWidth:4,
         instance:createKernelScratchTestInstance(4,memory,()=>({}),()=>4096)});
@@ -168,7 +169,10 @@ self.onmessage = ({data}) => {
             const op=words.getUint16(at,true),size=words.getUint16(at+2,true);at+=4+size;
             if(op===O.OP_CLEAR || (data.captureUpload && op===O.OP_TEX_SUB_IMAGE_2D))clear=true;
           }
-          if(clear)observed.push(pixels(fd));
+          // Exercise the raw presentation route too: a pbuffer must not post
+          // even when a consumer calls GLIO_PRESENT rather than C's swap.
+          if(data.pbuffer) requireZero(forwarded ? channel(fd).onPresent!(fd) : imports!.host_gl_present(7,fd),"pbuffer present");
+          if(clear && !data.zeroSurface)observed.push(pixels(fd));
         }
       } else if(kind===14) {
         const state=()=>gl ? [gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING),gl.getParameter(gl.READ_FRAMEBUFFER_BINDING),
@@ -279,6 +283,12 @@ self.onmessage = ({data}) => {
     }
     for(const bo of rawBos) {native!.gl.retireForeignBo(bo);if(native!.gl.hasForeignRetirements())throw new Error("raw candidate BO cleanup pending");}
     const clean=forwarded?null:created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
-    postMessage({type:"egl_record_result",observed,retiredContexts,retiredSurfaces,clean,...(data.peerDelete?{injected}:{}),...(data.capabilities?{limits}:{}),error:forwarded?0:gl!.getError()});
+    let pbufferState = {};
+    if(data.pbuffer && gl) {
+      const prior = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING), pixel = new Uint8Array(4);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER,null); gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel); gl.bindFramebuffer(gl.READ_FRAMEBUFFER,prior);
+      pbufferState = {canvasPixel:[...pixel],viewport:[...gl.getParameter(gl.VIEWPORT)]};
+    }
+    postMessage({type:"egl_record_result",...pbufferState,observed,retiredContexts,retiredSurfaces,clean,...(data.peerDelete?{injected}:{}),...(data.capabilities?{limits}:{}),error:forwarded?0:gl!.getError()});
   } catch(error) {postMessage({type:"egl_record_failed",error:String(error)});}
 };
