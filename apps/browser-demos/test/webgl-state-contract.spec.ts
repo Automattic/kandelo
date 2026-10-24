@@ -289,6 +289,135 @@ for (const cube of [false,true]) {
   });
 }
 
+for (const forwarded of [false,true]) {
+test(`actual C shader source upload crosses query chunks and renders after commit${forwarded ? " through main forwarding" : ""}`, async ({ page }) => {
+  const root = fileURLToPath(new URL("../../../",import.meta.url)), temporary = mkdtempSync(join(root,".context/graphics-shader-trace-"));
+  let frames: number[];
+  try {
+    const path = join(temporary,"protocol.bin");
+    execFileSync("bash",[join(root,"tests/graphics/run-libc-unit.sh")],{
+      cwd:root,env:{...process.env,KANDELO_GRAPHICS_LIBC_CASES:"encoder-shader-upload",KANDELO_GRAPHICS_PROTOCOL_TRACE:path},timeout:60000,stdio:"pipe",
+    });
+    frames = [...readFileSync(path)];
+  } finally { rmSync(temporary,{recursive:true,force:true}); }
+  await installBrowserMemoryBoundaryProbe(page);
+  await page.goto("/trap-signal-test.html");
+  const result = await page.evaluate(async ({sourceRoot,frames,forwarded}) => {
+    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`,location.href).href;
+    if (forwarded) {
+      const { setupMainForward } = await import(base+"main-forward.ts");
+      const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+      const expected = "precision mediump float; /*"+"X".repeat(140000)+"*/ void main(){gl_FragColor=vec4(0.,1.,1.,1.);}";
+      const source = `
+        import { createMainForwardChannel } from ${JSON.stringify(base+"main-forward.ts")};
+        import * as O from ${JSON.stringify(base+"ops.ts")};
+        let channel;
+        onmessage = event => {
+          try {
+            if (event.data.retire) { channel.onDestroyContext(); channel.onUnbind(1); postMessage({type:"upload_retired"}); return; }
+            channel = createMainForwardChannel({postMessage: message => postMessage(message)},94,1);
+            if (channel.onCreateContext() || channel.onMakeCurrent({drawSurfaceId:1,readSurfaceId:1,width:1,height:1})) throw new Error("forwarded creation failed");
+            const memory = new WebAssembly.Memory({initial:2,maximum:2,shared:true}), scratch = new Uint8Array(memory.buffer);
+            const data = new Uint8Array(event.data.frames), view = new DataView(data.buffer);
+            let queries = 0, maximum = 0;
+            for (let offset=0; offset<data.length;) {
+              const kind = view.getUint32(offset,true), op = view.getUint32(offset+4,true), size = view.getUint32(offset+8,true), cap = view.getUint32(offset+12,true);
+              offset += 16; scratch.set(data.subarray(offset,offset+size)); offset += size;
+              if (kind === 1) channel.onSubmit(scratch.subarray(0,size));
+              else {
+                maximum = Math.max(maximum,size); queries++;
+                const answer = channel.onQuery(op,scratch.subarray(0,size),cap), reply = new DataView(answer.bytes.buffer);
+                if (answer.rc !== 12 || reply.getUint32(0,true) || reply.getUint32(4,true) !== new DataView(memory.buffer).getUint32(8,true) || reply.getUint32(8,true) !== 0x47514c33) throw new Error("forwarded upload failed");
+              }
+              scratch.fill(0);
+            }
+            const expected = ${JSON.stringify(expected)}, bytes = new Uint8Array(expected.length);
+            for (let offset=0; offset<bytes.length; offset+=64000) {
+              const count = Math.min(64000,bytes.length-offset); new Uint32Array(memory.buffer,0,3).set([2,offset,count]);
+              const answer = channel.onQuery(O.QOP_GET_SHADER_SOURCE,scratch.subarray(0,12),count+12);
+              if (answer.rc !== count+12 || new DataView(answer.bytes.buffer).getUint32(0,true)) throw new Error("forwarded source read failed");
+              bytes.set(answer.bytes.subarray(8,8+count),offset);
+            }
+            new Uint32Array(memory.buffer,0,2).set([2,0x8b81]);
+            const compiled = channel.onQuery(O.QOP_GET_SHADERIV,scratch.subarray(0,8),4);
+            new Uint32Array(memory.buffer,0,6).set([0,0,1,1,0x1908,0x1401]);
+            const pixels = channel.onQuery(O.QOP_READ_PIXELS,scratch.subarray(0,24),4), error = channel.onQuery(O.QOP_GET_ERROR,scratch.subarray(0,0),4);
+            if (compiled.rc !== 4 || pixels.rc !== 4 || error.rc !== 4) throw new Error("forwarded final query failed");
+            postMessage({type:"upload_done",result:{queries,maximum,sourceMatches:new TextDecoder().decode(bytes)===expected,compiled:!!new DataView(compiled.bytes.buffer).getUint32(0,true),pending:null,pixels:[...pixels.bytes],error:new DataView(error.bytes.buffer).getUint32(0,true)}});
+          } catch (error) { postMessage({type:"upload_failed",error:String(error)}); }
+        };
+      `;
+      const url = URL.createObjectURL(new Blob([source],{type:"text/javascript"})), worker = new Worker(url,{type:"module"});
+      let mailboxes = 0, independent = true;
+      worker.addEventListener("message",event => {
+        const message = event.data;
+        if (message?.mailbox) {
+          const bytes = new Uint8Array(message.mailbox); if (bytes[bytes.length-1] !== 123) { mailboxes++; bytes[bytes.length-1] = 123; }
+          independent &&= bytes.length === 65556;
+        }
+        if (message?.input) independent &&= !(message.input.buffer instanceof SharedArrayBuffer);
+        if (message?.bytes) independent &&= !(message.bytes.buffer instanceof SharedArrayBuffer);
+      });
+      const dispose = setupMainForward(worker,canvas,94);
+      const wait = (type: string) => new Promise<any>((resolve,reject) => {
+        const cleanup = () => { clearTimeout(timeout); worker.removeEventListener("message",listener); worker.removeEventListener("error",failed); };
+        const timeout = setTimeout(() => { cleanup(); reject(new Error("forwarded upload timeout; mailboxes="+mailboxes)); },45000);
+        const failed = (event: ErrorEvent) => { cleanup(); reject(new Error(event.message)); };
+        const listener = (event: MessageEvent) => {
+          if (event.data?.type === type || event.data?.type === "upload_failed") {
+            cleanup();
+            if (event.data.type === "upload_failed") reject(new Error(event.data.error)); else resolve(event.data.result);
+          }
+        }; worker.addEventListener("message",listener); worker.addEventListener("error",failed);
+      });
+      try {
+        const done = wait("upload_done"); worker.postMessage({frames}); const result = await done;
+        const gl = canvas.getContext("webgl2")!, program = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram;
+        const fragment = gl.getAttachedShaders(program)!.find(shader => gl.getShaderParameter(shader,gl.SHADER_TYPE) === gl.FRAGMENT_SHADER)!;
+        result.nativeMatches = gl.getShaderSource(fragment) === expected;
+        const retired = wait("upload_retired"); worker.postMessage({retire:true}); await retired;
+        result.retired = !gl.isShader(fragment); result.mailboxes = mailboxes; result.independent = independent; return result;
+      } finally { dispose(); worker.terminate(); URL.revokeObjectURL(url); }
+    }
+    const { GlContextRegistry } = await import(base+"registry.ts"), { GlMuxer } = await import(base+"muxer.ts");
+    const { decodeAndDispatch } = await import(base+"bridge.ts"), { runGlQuery } = await import(base+"query.ts"), O = await import(base+"ops.ts");
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+    const gl = canvas.getContext("webgl2"); if (!gl) throw new Error("WebGL2 required");
+    const reg = new GlContextRegistry(), mux = new GlMuxer(gl); reg.bind({pid:94,sessionId:1,cmdbufAddr:0,cmdbufLen:1<<20});
+    const b = reg.get(94,1)!; b.gl = gl; b.contextId = 1; b.cmdbufView = new Uint8Array(1<<20); mux.switchTo(b);
+    const data = new Uint8Array(frames), view = new DataView(data.buffer);
+    let queries = 0, maximum = 0;
+    for (let offset=0; offset<data.length;) {
+      const kind = view.getUint32(offset,true), op = view.getUint32(offset+4,true), length = view.getUint32(offset+8,true), cap = view.getUint32(offset+12,true);
+      offset += 16; const input = data.slice(offset,offset+length); offset += length;
+      if (kind === 1) { b.cmdbufView!.set(input); if (decodeAndDispatch(b,0,input.length)) throw new Error("C command failed"); }
+      else if (kind === 2) {
+        const out = new Uint8Array(cap); maximum = Math.max(maximum,length); queries++;
+        if (runGlQuery(b,op,input,out) !== 12) throw new Error("C upload query transport failed");
+        const reply = new DataView(out.buffer);
+        if (reply.getUint32(0,true) || reply.getUint32(4,true) !== new DataView(input.buffer).getUint32(8,true) || reply.getUint32(8,true) !== 0x47514c33) throw new Error("C upload rejected");
+      } else throw new Error("unknown C protocol trace frame");
+    }
+    const expected = "precision mediump float; /*"+"X".repeat(140000)+"*/ void main(){gl_FragColor=vec4(0.,1.,1.,1.);}";
+    const bytes = new Uint8Array(expected.length);
+    for (let offset=0; offset<bytes.length; offset+=65524) {
+      const count = Math.min(65524,bytes.length-offset), input = new Uint8Array(new Uint32Array([2,offset,count]).buffer), out = new Uint8Array(count+12);
+      if (runGlQuery(b,O.QOP_GET_SHADER_SOURCE,input,out) !== out.length || new DataView(out.buffer).getUint32(0,true)) throw new Error("source query failed");
+      bytes.set(out.subarray(8,8+count),offset);
+    }
+    const pixels = new Uint8Array(4), read = new Uint8Array(new Uint32Array([0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE]).buffer);
+    if (runGlQuery(b,O.QOP_READ_PIXELS,read,pixels) !== 4) throw new Error("readback failed");
+    const error = new Uint8Array(4); runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),error);
+    const fragment = b.shaders.get(2)!;
+    const result = {queries,maximum,sourceMatches:new TextDecoder().decode(bytes) === expected,nativeMatches:gl.getShaderSource(fragment) === expected,
+      retired:false,mailboxes:0,independent:true,compiled:gl.getShaderParameter(fragment,gl.COMPILE_STATUS),pending:b.shaderUpload !== null,pixels:[...pixels],error:new DataView(error.buffer).getUint32(0,true)};
+    mux.invalidateCurrent(); reg.destroyContext(94,1); result.retired = !gl.isShader(fragment); return result;
+  },{sourceRoot:process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? root,frames,forwarded});
+  expect(result).toEqual({queries:5,maximum:65536,sourceMatches:true,nativeMatches:true,retired:true,mailboxes:forwarded ? 1 : 0,independent:true,compiled:true,pending:forwarded ? null : false,pixels:[0,255,255,255],error:0});
+  expect(await memoryBoundaryFailures(page)).toEqual([]);
+});
+}
+
 for (const width of [1,2]) {
   test(`maximum ${width*8}-bit VBO indices preserve strip topology and shared storage`, async ({ page }) => {
     await page.goto("/trap-signal-test.html");

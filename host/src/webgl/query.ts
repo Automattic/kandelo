@@ -18,6 +18,7 @@
  */
 import { runStateQuery } from "./state-query.js";
 import { runObjectQuery } from "./object-query.js";
+import { runShaderSourceUpload } from "./shader-source.js";
 import { canonicalBuffer } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
@@ -109,6 +110,7 @@ export function runGlQuery(
 ): number {
   if (!b.gl) return -1;
   const gl = b.gl;
+  if (op === O.QOP_SHADER_SOURCE_UPLOAD) return runShaderSourceUpload(b,input,out);
   const inDv = new DataView(input.buffer, input.byteOffset, input.byteLength);
   const outDv = new DataView(out.buffer, out.byteOffset, out.byteLength);
 

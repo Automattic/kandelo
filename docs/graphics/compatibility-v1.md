@@ -61,7 +61,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reserved guest buffer names and host shared-object maps; core object predicates implemented, full query/error coverage still open | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
 | G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Full rollback, hints and multiple public contexts remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
 | G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffers plus client attributes use a bounded presence query; core buffer/vertex queries preserve logical state. Full size/limit/negative coverage remains open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
-| G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core attribute/source/attachment reflection and validation entrypoints are implemented; complete executable/attribute/uniform validation still needs work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
+| G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core attribute/source/attachment reflection, acknowledged large-source uploads and validation entrypoints are implemented; complete executable/attribute/uniform validation still needs work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization, core parameter queries and context-owned default texture objects are implemented in host source; complete target/state/error and guest CTS audit remain open | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
 | G07 | Raster/depth/stencil/blend/clear/readback; ES2 §§3,4 | Main provides offscreen color/depth/stencil; no broad CTS evidence | bridge, query, present-target | CTS functional render families; real pixels all three engines | partial |
@@ -1436,3 +1436,103 @@ new platform boundary is asserted. Normal full SDK/kernel/program/package/
 image provisioning, guest CTS, cage/sway, full browser-memory and POSIX
 validation remain deferred to the combined build/test phase. Performance
 was not measured.
+
+
+### Acknowledged shader source uploads
+
+The C library no longer silently drops shader source longer than 65527
+bytes. Small sources retain their existing inline command layout; large
+calls use operation-table v5's acknowledged upload query. Concatenation
+honors null-terminated and explicitly sized strings, including empty
+strings and lengths that exclude trailing bytes. Checked arithmetic
+rejects unrepresentable totals before reading source bytes. C scratch is
+one 65536-byte request and one 12-byte response, allocated before BEGIN;
+there is no complete C-side concatenation buffer. Each CHUNK carries at
+most 65520 source bytes under the existing 64 KiB query input cap.
+
+The new `QOP_SHADER_SOURCE_UPLOAD` input is four little-endian words:
+action, shader name, context-local monotonic token, and total/offset. BEGIN,
+CHUNK, COMMIT and ABORT are actions 1–4. Only CHUNK has trailing bytes.
+Every success returns the token in the existing checked status/payload/
+completion envelope. The host holds at most one pending source per
+context, validates contiguous offsets and total length, and installs the
+source only after a complete COMMIT. Native rejection preserves the prior
+source and metadata. Shared peers see the completed shader source; their
+in-progress uploads remain independent. Final shader deletion cancels
+uploads retaining that object. Valid inline replacement, a newer BEGIN,
+explicit ABORT and context teardown also release pending ownership.
+
+ABORT consumes its token even if BEGIN was not observed, preventing a
+late BEGIN from recreating cancelled storage. An older abort cannot cancel
+a newer upload. C cancellation reuses its preallocated buffers. If the
+device also rejects cancellation, pending ownership remains with the
+context until replacement or teardown; the client does not report proven
+release. A malformed/lost COMMIT acknowledgement reports a device error
+and is never replayed. Its outcome is indeterminate to the caller: the
+native commit may already have executed. Native tests explicitly exercise
+this case. Coherent context-loss/device-failure propagation remains an
+ordinary G09/E02 audit item, not a claimed conformance result or a new
+hard platform boundary.
+
+Command submission errors now latch a client error. Queries/uploads stop
+when their preceding submission fails, and automatic command-buffer
+flush failure suppresses the dependent record. Consumed failed batches
+are not silently retried. Host-owned source metadata is reserved before
+native installation and restored if the driver rejects the new source.
+
+Fresh main was fetched and remains `f3cb7041f6`, already integrated. The
+additive query advances `OP_VERSION` from 4 to 5; existing tags/layouts
+remain unchanged and global ABI stays 55. Snapshot regeneration/checking
+succeeded without generated-file changes. Focused kernel negotiation
+accepts versions 1–5 and rejects 0 and 6. Normal installed archives remain
+subject to the later combined rebuild.
+
+The exact `8008d1bafb` native baseline passes 55 prior cases and fails all
+four additions: three because no large upload commits and one because
+submission failure still permits a query to modify its output:
+`.context/graphics-shader-upload-baseline-native.log`. All six new browser
+cases (direct and forwarded in three engines) fail against the exact host
+archive `.context/graphics-shader-upload-before/`:
+`.context/graphics-shader-upload-baseline-browser.log`.
+
+Focused current evidence:
+
+| Gate | Result | Evidence |
+|---|---|---|
+| Native actual EGL/GLES with device double and UBSan | 59 passed | `.context/graphics-shader-upload-verified-native.log` |
+| Host graphics-only source gate and Node/browser declarations | 359 cases in 18 files; declarations passed | `.context/graphics-shader-upload-verified-host.log` |
+| Real Chromium/Firefox/WebKit source WebGL | 87 passed, no skips | `.context/graphics-shader-upload-final-browser.log` |
+| Kernel graphics negotiation/lifecycle and shared GL contracts | 16 GLIO and 5 shared cases passed | `.context/graphics-shader-upload-rust.log` |
+| Browser protocol/memory-boundary negative checks | 10 passed | `.context/graphics-shader-upload-memory-boundary.log` |
+| Private wasm32 EGL/GLES objects and paired relocatable link | Passed | `.context/graphics-shader-upload-wasm.log` |
+| Public authority and core resolver inventory | All 150 public definitions guarded; 142/142 core symbols defined/resolved | `.context/graphics-shader-upload-audit.log` |
+| ABI snapshot/source consistency | Passed; global ABI 55 | `.context/graphics-shader-upload-abi-check.log` |
+
+Native cases concatenate a 140000-byte comment with other source strings,
+verify three chunks and one commit, and exercise client allocation/size
+failure, failed submission, host errors, bad completion/echo, abort failure
+followed by replacement, retry and indeterminate commit acknowledgement.
+The fixture resolves heap query pointers through its recorded allocation
+ranges; it does not dereference truncated native addresses. A test-only
+protocol trace captures actual C submitted commands and upload query
+inputs in order. This is stronger than replaying commands without their
+queries, but still does not execute guest/kernel u32 pointer marshalling.
+
+The browser replays those actual C frames, compiles the large shader,
+retrieves matching original bytes and native driver source, and renders
+cyan. The forwarded variants reuse one independent 65556-byte mailbox,
+submit inputs through a disposable worker's shared Wasm memory and verify
+that copied query/command input crosses to main. Explicit teardown
+retires the native shader; the memory boundary probe reports no failures.
+The first forwarding fixture timed out with root-relative imports inside
+a blob worker; corrected absolute module URLs and worker error handling
+pass in all engines (`.context/graphics-shader-upload-checked-browser.log`)
+and in the full gate above. No browser defect is asserted.
+
+G04 and G09 remain partial. C attribute/texture-unit mirrors, complete
+shader/uniform/error/limit coverage, public EGL contexts/sharing/surfaces/
+display generations, sibling sampler identity and the remaining inventory
+families still need implementation and validation. Snapshot verification
+compiled the focused kernel component; normal full SDK/archive/program/
+package/image provisioning, guest CTS, cage/sway, full browser-memory and
+POSIX validation remain deferred. Performance was not measured.

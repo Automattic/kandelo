@@ -3953,8 +3953,14 @@ named-object deletion and explicit zero binding restore those stand-ins;
 queries still return name zero. They do not enter shared name maps and
 retire with their individual context. Failed allocation/binding rolls back
 partial installation and suppresses the dependent texture operation.
+Operation-table v5 removes the single-record shader source upload limit.
+Large source calls concatenate into bounded acknowledged chunks and commit
+only a complete upload. Pending bytes belong to one context; replacement,
+abort, shader deletion and context teardown retire that ownership. Source
+bytes belong to the shared shader only after native installation succeeds.
+Failed submissions are observable and stop dependent queries/uploads.
 All 142 GLES2 core symbols are defined and resolved. Full conformance,
-source upload limits, complete query/negative/limit coverage, image sibling
+complete query/negative/limit coverage, device-failure propagation, image sibling
 sampler identity, kernel display-generation authority and C group routing
 remain open.
 Shader/program attachment records retain deleted shaders and current

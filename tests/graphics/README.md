@@ -55,7 +55,7 @@ scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh ce8cd9dbcf
 scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh
 ```
 
-The fifty-five current cases cover image siblings and retained framebuffer storage,
+The fifty-nine current cases cover image siblings and retained framebuffer storage,
 redefinition, cleanup, invalid handles, repeated contexts, the shared
 shader/program namespace, boolean numeric conversion, vectors longer than
 four elements, unchanged query output after device failure and EGL config
@@ -87,7 +87,7 @@ The source WebGL contract suite also compiles selected current native C
 cases through this harness, captures actual submitted bytes and replays them
 through the browser decoder. Its float/fixed and maximum-index client-array cases are cross-layer
 source evidence, not guest execution or unmodified CTS. Selection uses
-`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation still runs all 55 cases.
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation still runs all 59 cases.
 `KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
 file for those test-only replays. Each browser test owns and removes its
 private trace directory.
@@ -107,3 +107,12 @@ real WebGL state-contract suite also renders context-owned default 2D/cube
 textures, including deletion recovery and subimage/copy operations, in all
 three engines. These checks execute shared host source; they do not imply
 public EGL sharing or guest CTS execution.
+
+
+`KANDELO_GRAPHICS_PROTOCOL_TRACE` records test-only frames containing the
+actual submitted command bytes and heap input bytes of acknowledged shader
+upload queries. The browser suite replays those ordered frames directly
+and through main-thread forwarding, then checks compiled shader source and
+rendered pixels. The native allocation registry resolves only recorded
+live heap ranges; other stack-input query doubles retain their documented
+limitations. These traces do not replace guest/kernel marshalling tests.

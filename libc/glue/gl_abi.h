@@ -13,7 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define WPK_GL_OP_VERSION 4u
+#define WPK_GL_OP_VERSION 5u
 #define WPK_GL_CMDBUF_LEN (1u << 20)
 #define WPK_GL_DEVICE     "/dev/dri/renderD128"
 
@@ -173,7 +173,11 @@
 #define QOP_GET_TEX_PARAMETER 0x001Du
 #define OP_VALIDATE_PROGRAM 0x030Bu
 
-/* V3/v4 query replies: u32 status (0 success, 1 recorded GL error),
+#define QOP_SHADER_SOURCE_UPLOAD 0x001Eu
+/* Upload input: action, shader, token, total/offset, optional CHUNK bytes.
+ * BEGIN=1, CHUNK=2, COMMIT=3, ABORT=4. Checked reply payload echoes token. */
+
+/* V3+ query replies: u32 status (0 success, 1 recorded GL error),
  * payload, u32 completion magic. Index usage payload: u32 maximum index
  * followed by 8192 bytes of index-presence bits (byte/short indices).
  * Old query layouts are unchanged. All words are little-endian. */

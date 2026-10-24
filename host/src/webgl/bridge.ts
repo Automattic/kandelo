@@ -20,6 +20,7 @@
  */
 import { capabilityEnabled } from "./state-query.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
+import { installShaderSource } from "./shader-source.js";
 import { drawGlesElements } from "./index-data.js";
 import { setConvertedVertexAttribute } from "./vertex-data.js";
 import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
@@ -905,10 +906,10 @@ function dispatch(
       // Uint8Array — also detaches from SAB grow races.
       const srcBytes = new Uint8Array(srcLen);
       srcBytes.set(new Uint8Array(v.buffer, v.byteOffset + p + 8, srcLen));
-      const src = new TextDecoder().decode(srcBytes);
       const sh = b.shaders.get(name);
       if (!sh) { recordGlError(b,b.programs.has(name) ? 0x502 : 0x501); return; }
-      if (checkedGlCall(b, () => gl.shaderSource(sh, src))) b.shaderSources.set(sh,srcBytes);
+      b.shaderUpload = null;
+      installShaderSource(b,sh,srcBytes);
       return;
     }
     case O.OP_COMPILE_SHADER: {

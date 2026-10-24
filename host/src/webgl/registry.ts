@@ -28,6 +28,7 @@ import { finalizeProgram, releaseRetainedExecutable } from "./program-objects.js
 import { collectRetiredImages, type GlImageAttachment } from "./image-references.js";
 import { destroyBufferStorage } from "./buffer-storage.js";
 import { collectRetiredBuffers, defaultVertexArray, type GlVertexArray } from "./buffer-references.js";
+import type { GlShaderSourceUpload } from "./shader-source.js";
 
 export type GlContextHandle = number;
 export type GlSurfaceHandle = number;
@@ -61,6 +62,8 @@ export type GlBinding = GlBindingInput & GlSharedObjects & {
   sessionId: number;
   currentDrawable: GlDrawableBinding | null;
   hasBeenCurrent: boolean;
+  shaderUpload: GlShaderSourceUpload | null;
+  shaderUploadSerial: number;
   /** No attachments: native framebuffer operations enforce surfaceless
    * incompleteness. This object never has a guest-visible name. */
   undefinedDefaultFbo: WebGLFramebuffer | null;
@@ -220,6 +223,8 @@ export class GlContextRegistry {
       presentTarget: null,
       pendingRenderTargetBoId: 0,
       shadow: defaultShadow(),
+      shaderUpload: null,
+      shaderUploadSerial: 0,
       forward,
     });
     binding.objects.members.add(binding);
@@ -256,6 +261,8 @@ export class GlContextRegistry {
     const b = this.get(pid, sessionId);
     if (!b) return;
     const gl = b.gl;
+    b.shaderUpload = null;
+    b.shaderUploadSerial = 0;
     const objects = b.objects;
     const installed = b.currentProgram;
     const installedName = b.currentProgramId;

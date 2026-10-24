@@ -106,7 +106,7 @@ export const QOP_FINISH                = 0x0E;
 
 /** Bumped in lockstep with `shared::gl::OP_VERSION`. The kernel's
  *  `GLIO_INIT` accepts versions 1 through this value. */
-export const OP_VERSION = 4;
+export const OP_VERSION = 5;
 
 // Additive GLES entry points used by native renderers; existing tags stay stable.
 export const OP_BLEND_EQUATION = 0x000F;
@@ -162,3 +162,6 @@ export const QOP_GET_FB_ATTACHMENT = 0x001B;
 export const QOP_GET_RENDERBUFFER_PARAMETER = 0x001C;
 export const QOP_GET_TEX_PARAMETER = 0x001D;
 export const OP_VALIDATE_PROGRAM = 0x030B;
+
+// V5: acknowledged, transactional large shader source upload.
+export const QOP_SHADER_SOURCE_UPLOAD = 0x001E;

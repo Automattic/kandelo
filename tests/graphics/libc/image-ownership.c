@@ -33,14 +33,30 @@ void glBindVertexArray(GLuint);
 static void *latest_allocation;
 static int fail_calloc, fail_malloc;
 static int calloc_before_failure = -1;
+static struct { void *pointer; size_t size; } allocations[1024];
+static void *record_allocation(void *pointer, size_t size) {
+    if (!pointer) return pointer;
+    for (unsigned i=0; i<1024; i++) if (!allocations[i].pointer) {
+        allocations[i].pointer = pointer; allocations[i].size = size; return pointer;
+    }
+    assert(!"native allocation registry exhausted"); return NULL;
+}
+static void *allocation_for(uint32_t pointer, size_t size) {
+    void *found = NULL;
+    for (unsigned i=0; i<1024; i++) if (allocations[i].pointer && (uint32_t)(uintptr_t)allocations[i].pointer == pointer) {
+        assert(!found && size <= allocations[i].size); found = allocations[i].pointer;
+    }
+    assert(found); return found;
+}
 void *graphics_calloc(size_t count, size_t size) {
     if (fail_calloc || calloc_before_failure == 0) { errno = ENOMEM; return NULL; }
     if (calloc_before_failure > 0) calloc_before_failure--;
-    return calloc(count, size);
+    return record_allocation(calloc(count, size),count*size);
 }
-void *graphics_malloc(size_t size) { if (fail_malloc) return NULL; return latest_allocation = malloc(size); }
+void *graphics_malloc(size_t size) { if (fail_malloc) return NULL; return latest_allocation = record_allocation(malloc(size),size); }
 void graphics_free(void *ptr) {
     if (latest_allocation == ptr) latest_allocation = NULL;
+    for (unsigned i=0; i<1024; i++) if (allocations[i].pointer == ptr) allocations[i].pointer = NULL;
     free(ptr);
 }
 
@@ -76,8 +92,20 @@ static unsigned buffer_uploads;
 static unsigned draw_commands;
 static int indexed_queries;
 static uint32_t indexed_max, query_scalar, query_gl_error, query_status;
+static unsigned scalar_queries;
 static uint32_t core_total, core_offset, core_info[4];
 static unsigned core_calls, core_fail_at, validate_commands;
+static unsigned upload_queries, upload_chunks, upload_commits, upload_aborts;
+static uint32_t upload_token, upload_total, upload_cursor;
+static uint8_t *upload_pending, *upload_source;
+static uint32_t upload_source_len;
+static int fail_upload_action, upload_failure, fail_submit, fail_upload_abort;
+static void protocol_trace(uint32_t kind, uint32_t op, const void *bytes, uint32_t length, uint32_t out_len) {
+    const char *path = getenv("KANDELO_GRAPHICS_PROTOCOL_TRACE"); if (!path) return;
+    FILE *file = fopen(path,"ab"); assert(file);
+    const uint32_t header[4] = {kind,op,length,out_len};
+    assert(fwrite(header,1,16,file) == 16 && fwrite(bytes,1,length,file) == length && !fclose(file));
+}
 static int capture_array_upload;
 static unsigned char captured_bytes[524288];
 static uint32_t captured_size, captured_type, captured_stride;
@@ -137,7 +165,9 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         attrs->context_id = next_backend_context++;
     } else if (request == GLIO_SUBMIT) {
         submit_batches++;
+        if (fail_submit) { errno = EIO; return -1; }
         struct gl_submit_info *submit = arg;
+        protocol_trace(1,0,commands+submit->offset,submit->length,0);
         const char *trace_path = getenv("KANDELO_GRAPHICS_COMMAND_TRACE");
         if (trace_path) {
             FILE *trace = fopen(trace_path,"ab"); assert(trace);
@@ -202,11 +232,38 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
     } else if (request == GLIO_DESTROY_CONTEXT) {
         assert(!has_current_thread);
         destroyed_contexts++;
+        free(upload_pending); upload_pending = NULL;
     } else if (request == GLIO_DESTROY_SURFACE) {
         assert(current_surface == 0);
         destroyed_surfaces++;
     } else if (request == GLIO_QUERY) {
         struct gl_query_info *q = arg;
+        if (q->op == 0x1e) {
+            assert(q->in_buf_len >= 16 && q->in_buf_len <= 65536 && q->out_buf_len == 12);
+            const uint8_t *input = allocation_for(q->in_buf_ptr,q->in_buf_len);
+            uint8_t *output = allocation_for(q->out_buf_ptr,12);
+            uint32_t header[4]; memcpy(header,input,16); upload_queries++;
+            protocol_trace(2,q->op,input,q->in_buf_len,q->out_buf_len);
+            const unsigned action = header[0]; const uint32_t token = header[2];
+            if (action == 4 && fail_upload_abort) { errno = EIO; return -1; }
+            int failure = action == (unsigned)fail_upload_action ? upload_failure : 0;
+            if (failure) fail_upload_action = 0;
+            if (failure == 1) { errno = EIO; return -1; }
+            if (failure == 2) { free(upload_pending); upload_pending = NULL; query_gl_error = GL_OUT_OF_MEMORY; }
+            else if (action == 1) {
+                free(upload_pending); upload_pending = malloc(header[3]); assert(upload_pending);
+                upload_total = header[3]; upload_cursor = 0; upload_token = token;
+            } else if (action == 2) {
+                assert(upload_pending && token == upload_token && header[3] == upload_cursor);
+                assert(q->in_buf_len-16 <= upload_total-upload_cursor);
+                memcpy(upload_pending+upload_cursor,input+16,q->in_buf_len-16); upload_cursor += q->in_buf_len-16; upload_chunks++;
+            } else if (action == 3) {
+                assert(upload_pending && upload_cursor == upload_total && token == upload_token);
+                free(upload_source); upload_source = upload_pending; upload_source_len = upload_total; upload_pending = NULL; upload_commits++;
+            } else { assert(action == 4); free(upload_pending); upload_pending = NULL; upload_aborts++; }
+            const uint32_t reply[3] = {failure == 2 ? 1u : 0u,failure == 2 ? 0 : failure == 4 ? token+1 : token,failure == 3 ? 0 : 0x47514c33u};
+            memcpy(output,reply,12); return 0;
+        }
         if (q->op == QOP_GET_STRING && string_generation) {
             const char *value = string_generation == 1 ? "renderer A" : "renderer B";
             uint32_t length = (uint32_t)strlen(value);
@@ -254,6 +311,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             memcpy((uint8_t *)latest_allocation+8200,&footer,4); return 0;
         }
         if (q->op == 0x12 || q->op == 0x15 || q->op == 0x16) {
+            scalar_queries++;
             assert(q->out_buf_len == 12 && latest_allocation);
             memset(latest_allocation,0,12); memcpy(latest_allocation,&query_status,4); memcpy((uint8_t *)latest_allocation+4,&query_scalar,4);
             const uint32_t footer = 0x47514c33u; memcpy((uint8_t *)latest_allocation+8,&footer,4); return 0;
@@ -389,6 +447,64 @@ int main(int argc, char **argv) {
         fail_make_current = 0;
     }
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1], "encoder-submit-failure")) {
+        void (*get)(GLenum,GLenum,GLint *) = (void (*)(GLenum,GLenum,GLint *))eglGetProcAddress("glGetBufferParameteriv"); assert(get);
+        GLuint buffer; glGenBuffers(1,&buffer); glBindBuffer(GL_ARRAY_BUFFER,buffer); glBufferData(GL_ARRAY_BUFFER,4,NULL,GL_STATIC_DRAW);
+        GLint value = 87; query_scalar = 4; fail_submit = 1;
+        get(GL_ARRAY_BUFFER,GL_BUFFER_SIZE,&value); fail_submit = 0;
+        assert(value == 87 && scalar_queries == 0 && glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        glBindBuffer(GL_ARRAY_BUFFER,buffer); glBufferData(GL_ARRAY_BUFFER,4,NULL,GL_STATIC_DRAW);
+        get(GL_ARRAY_BUFFER,GL_BUFFER_SIZE,&value); assert(value == 4 && scalar_queries == 1);
+        fail_submit = 1;
+        for (unsigned i=0; i<WPK_GL_CMDBUF_LEN/8+1; i++) glClear(GL_COLOR_BUFFER_BIT);
+        fail_submit = 0; glFlush();
+        assert(clear_commands == 0 && glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        glDeleteBuffers(1,&buffer); assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-submit-failure"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-shader-upload") || !strcmp(argv[1], "encoder-shader-errors") || !strcmp(argv[1], "encoder-shader-ack")) {
+        const char *head = "precision mediump float; /*", *tail = "*/ void main(){gl_FragColor=vec4(0.,1.,1.,1.);}IGNORED";
+        const GLint tail_len = (GLint)strlen(tail)-7;
+        char *padding = malloc(140001); assert(padding); memset(padding,'X',140000); padding[140000] = '\0';
+        const char *parts[4] = {head,"",padding,tail}; const GLint lengths[4] = {-1,0,140000,tail_len};
+        GLuint vertex = glCreateShader(GL_VERTEX_SHADER); const char *vs = "void main(){gl_Position=vec4(0.,0.,0.,1.);gl_PointSize=1.;}";
+        glShaderSource(vertex,1,&vs,NULL); glCompileShader(vertex);
+        GLuint fragment = glCreateShader(GL_FRAGMENT_SHADER); glShaderSource(fragment,4,parts,lengths);
+        assert(upload_commits == 1 && upload_chunks == 3 && !upload_pending);
+        assert(upload_source_len == strlen(head)+140000+(size_t)tail_len);
+        assert(!memcmp(upload_source,head,strlen(head)) && !memcmp(upload_source+strlen(head),padding,140000));
+        assert(!memcmp(upload_source+strlen(head)+140000,tail,(size_t)tail_len) && glGetError() == GL_NO_ERROR);
+        if (!strcmp(argv[1], "encoder-shader-errors")) {
+            uint8_t *previous = upload_source; const unsigned before = upload_queries;
+            fail_malloc = 1; glShaderSource(fragment,4,parts,lengths); fail_malloc = 0;
+            assert(upload_queries == before && glGetError() == GL_OUT_OF_MEMORY);
+            const char *unreadable[3] = {(const char *)1,(const char *)1,(const char *)1};
+            const GLint oversized[3] = {INT32_MAX,INT32_MAX,INT32_MAX};
+            glShaderSource(fragment,3,unreadable,oversized);
+            assert(upload_queries == before && glGetError() == GL_OUT_OF_MEMORY);
+            for (int failure=1; failure<=4; failure++) {
+                fail_upload_action = 2; upload_failure = failure; glShaderSource(fragment,4,parts,lengths);
+                assert(!upload_pending && upload_source == previous && upload_commits == 1);
+                assert(glGetError() == (failure == 2 ? GL_OUT_OF_MEMORY : GL_INVALID_OPERATION)); assert(glGetError() == GL_NO_ERROR);
+            }
+            fail_upload_action = 2; upload_failure = 1; fail_upload_abort = 1;
+            glShaderSource(fragment,4,parts,lengths); fail_upload_abort = 0;
+            assert(upload_pending && upload_source == previous && glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            const unsigned old_queries = upload_queries; glClear(GL_COLOR_BUFFER_BIT); fail_submit = 1;
+            glShaderSource(fragment,4,parts,lengths); fail_submit = 0;
+            assert(upload_queries == old_queries && glGetError() == GL_INVALID_OPERATION);
+            glShaderSource(fragment,4,parts,lengths); assert(upload_commits == 2 && !upload_pending && glGetError() == GL_NO_ERROR);
+        } else if (!strcmp(argv[1], "encoder-shader-ack")) {
+            fail_upload_action = 3; upload_failure = 3; padding[0] = 'Y'; glShaderSource(fragment,4,parts,lengths);
+            assert(upload_commits == 2 && !upload_pending && upload_source[strlen(head)] == 'Y');
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        } else {
+            glCompileShader(fragment); GLuint program = glCreateProgram(); glAttachShader(program,vertex); glAttachShader(program,fragment); glLinkProgram(program);
+            glUseProgram(program); glViewport(0,0,1,1); glDrawArrays(GL_POINTS,0,1); glFlush(); assert(draw_commands == 1);
+        }
+        free(padding); free(upload_source); upload_source = NULL;
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy)); printf("PASS %s\n",argv[1]); return 0;
+    }
     if (!strcmp(argv[1], "encoder-core-source")) {
         void (*get)(GLuint,GLsizei,GLsizei *,GLchar *) = (void (*)(GLuint,GLsizei,GLsizei *,GLchar *))eglGetProcAddress("glGetShaderSource"); assert(get);
         char *text = malloc(70001); assert(text); memset(text,'!',70001);

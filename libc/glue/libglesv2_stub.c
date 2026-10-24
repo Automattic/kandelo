@@ -84,6 +84,7 @@ struct wpk_gles_context {
     GLenum client_error;
     uint32_t next_buffer;
     uint32_t next_shader_program;
+    uint32_t next_shader_upload;
     GLuint array_buffer;
     uint64_t array_serial, next_buffer_serial;
     struct wpk_buffer_name *buffer_names;
@@ -156,16 +157,22 @@ static inline void w_u32(uint8_t **c, uint32_t v) { memcpy(*c, &v, 4); *c += 4; 
 static inline void w_i32(uint8_t **c, int32_t v)  { memcpy(*c, &v, 4); *c += 4; }
 static inline void w_f32(uint8_t **c, float v)    { memcpy(*c, &v, 4); *c += 4; }
 
-void _wpk_gl_flush(void) {
-    if (!_wpk_gl_current_encoder()) return;
+static void raise_client_error(GLenum error);
+static int flush_commands(void) {
+    if (!_wpk_gl_current_encoder()) return 0;
     int fd = _wpk_gl_fd();
     uint8_t *base = _wpk_gl_cmdbuf_base();
-    if (fd < 0 || base == NULL || g_cursor == NULL || g_cursor == base) return;
+    if (fd < 0 || base == NULL || g_cursor == NULL || g_cursor == base) return 0;
 
     struct gl_submit_info si = { .offset = 0,
                                  .length = (uint32_t)(g_cursor - base) };
-    ioctl(fd, GLIO_SUBMIT, &si);
+    int rc = ioctl(fd, GLIO_SUBMIT, &si);
     g_cursor = base;
+    if (rc != 0) raise_client_error(GL_INVALID_OPERATION);
+    return rc;
+}
+void _wpk_gl_flush(void) {
+    (void)flush_commands();
 }
 
 /* Reserve `bytes` of cmdbuf space and return a write cursor for the
@@ -177,7 +184,7 @@ static uint8_t *reserve(size_t bytes) {
     if (base == NULL) return NULL;
     if (g_cursor == NULL) g_cursor = base;
     if ((size_t)(g_cursor - base) + bytes > WPK_GL_CMDBUF_LEN) {
-        _wpk_gl_flush();
+        if (flush_commands() != 0) return NULL;
         if (bytes > WPK_GL_CMDBUF_LEN) return NULL;
     }
     return g_cursor;
@@ -439,6 +446,7 @@ GLuint glCreateShader(GLenum type) {
     return name;
 }
 
+static void upload_shader_source(GLuint, GLsizei, const GLchar *const *, const GLint *, uint32_t);
 void glShaderSource(GLuint shader, GLsizei count,
                     const GLchar *const *string, const GLint *length) {
     if (!_wpk_gl_current_encoder()) return;
@@ -450,9 +458,10 @@ void glShaderSource(GLuint shader, GLsizei count,
     for (GLsizei i = 0; i < count; i++) {
         size_t li = (length && length[i] >= 0)
             ? (size_t)length[i] : strlen(string[i]);
+        if (li > UINT32_MAX-1u-total) { raise_client_error(GL_OUT_OF_MEMORY); return; }
         total += li;
     }
-    if (total > 0xFFFFu - 8u) return;
+    if (total > 0xFFFFu - 8u) { upload_shader_source(shader,count,string,length,(uint32_t)total); return; }
 
     EMIT_BEGIN(OP_SHADER_SOURCE, 8u + (uint32_t)total)
     w_u32(&_c, shader);
@@ -748,7 +757,7 @@ static int _wpk_gl_query_into(uint32_t op,
     if (_wpk_gl_cmdbuf_base() == NULL) return -1;
     int fd = _wpk_gl_fd();
     if (fd < 0) return -1;
-    _wpk_gl_flush();
+    if (flush_commands() != 0) return -1;
     void *heap = malloc(dst_len ? dst_len : 1);
     if (!heap) { if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY; return -1; }
     if (dst_len) memset(heap, 0, dst_len);
@@ -762,6 +771,68 @@ static int _wpk_gl_query_into(uint32_t op,
     if (rc == 0 && dst_len) memcpy(dst, heap, dst_len);
     free(heap);
     return rc;
+}
+
+/* Every upload request and response uses already-allocated bounded buffers.
+ * This permits cancellation after a later transport failure without another
+ * allocation. A failed cancellation leaves one context-owned transaction;
+ * replacement or acknowledged context retirement also releases its bytes. */
+static int shader_upload_query(int fd, uint8_t *request, uint32_t input_len,
+                                uint8_t *reply, uint32_t token, int quiet) {
+    memset(reply,0,12);
+    struct gl_query_info info = {
+        .op = QOP_SHADER_SOURCE_UPLOAD,
+        .in_buf_ptr = (uint32_t)(uintptr_t)request, .in_buf_len = input_len,
+        .out_buf_ptr = (uint32_t)(uintptr_t)reply, .out_buf_len = 12, .reserved = 0,
+    };
+    if (ioctl(fd,GLIO_QUERY,&info) != 0) goto invalid;
+    uint32_t status, echoed, footer;
+    memcpy(&status,reply,4); memcpy(&echoed,reply+4,4); memcpy(&footer,reply+8,4);
+    if (status > 1 || footer != WPK_GL_QUERY_REPLY_MAGIC) goto invalid;
+    if (status) return 0; /* Host GL error already owns the failure. */
+    if (echoed != token) goto invalid;
+    return 1;
+invalid:
+    if (!quiet) raise_client_error(GL_INVALID_OPERATION);
+    return 0;
+}
+static void upload_shader_source(GLuint shader, GLsizei count, const GLchar *const *strings,
+                                  const GLint *lengths, uint32_t total) {
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    if (state->next_shader_upload == UINT32_MAX) { raise_client_error(GL_OUT_OF_MEMORY); return; }
+    uint8_t *request = malloc(65536), *reply = malloc(12);
+    if (!request || !reply) { free(request); free(reply); raise_client_error(GL_OUT_OF_MEMORY); return; }
+    if (flush_commands() != 0) { free(request); free(reply); return; }
+    int fd = _wpk_gl_fd();
+    uint32_t token = ++state->next_shader_upload;
+    uint32_t header[4] = {1,shader,token,total};
+    memcpy(request,header,sizeof header);
+    if (!shader_upload_query(fd,request,16,reply,token,0)) goto abort;
+    uint32_t offset = 0, chunk = 0;
+    for (GLsizei i=0; i<count; i++) {
+        size_t size = lengths && lengths[i] >= 0 ? (size_t)lengths[i] : strlen(strings[i]);
+        const uint8_t *source = (const uint8_t *)strings[i];
+        while (size) {
+            uint32_t n = size < 65520u-chunk ? (uint32_t)size : 65520u-chunk;
+            memcpy(request+16+chunk,source,n); chunk += n; source += n; size -= n;
+            if (chunk == 65520u) {
+                header[0] = 2; header[3] = offset; memcpy(request,header,16);
+                if (!shader_upload_query(fd,request,16+chunk,reply,token,0)) goto abort;
+                offset += chunk; chunk = 0;
+            }
+        }
+    }
+    if (chunk) {
+        header[0] = 2; header[3] = offset; memcpy(request,header,16);
+        if (!shader_upload_query(fd,request,16+chunk,reply,token,0)) goto abort;
+    }
+    header[0] = 3; header[3] = 0; memcpy(request,header,16);
+    if (!shader_upload_query(fd,request,16,reply,token,0)) goto abort;
+    free(request); free(reply); return;
+abort:
+    header[0] = 4; header[3] = 0; memcpy(request,header,16);
+    (void)shader_upload_query(fd,request,16,reply,token,1);
+    free(request); free(reply);
 }
 
 GLenum glGetError(void) {
