@@ -4352,3 +4352,28 @@ required Rust/ABI/POSIX checks. An extraction must preserve mho22's port
 authorship and the complete compatibility branch. No smaller landing PR
 or normal compositor build is created by this audit; expensive gates
 remain deferred while the user's sequencing choice is pending.
+
+
+### Compositor build-plan evidence on the ABI 59 integration
+
+Read-only plans run through `scripts/dev-shell.sh` after integration
+commit `b2478efe3f`, using the shared SourceOnly cache and 16 jobs:
+
+| Selection | Graph/cache status | Planner estimate | Evidence |
+|---|---|---|---|
+| cage, sway, swaybg and kernel | 32 nodes, none currently cached | 16m 42s | `.context/compositor-packages-build-plan.log` |
+| browser-main-shell | 150 nodes, none currently cached; eight source checks | 58m 29s | `.context/compositor-build-plan.log` |
+
+The package plan has four nodes without recorded durations: wlroots,
+cage, swaybg and sway. Each receives a 41-second fallback, so this is
+not a measured compositor build duration or a landing estimate. The
+shell plan has six such nodes. Both omit SDK bootstrap, consumer and
+conformance validation, and any defect repair. Fresh SDK inputs can
+also change cache identities. No normal artifact build was started by
+these plans.
+
+The recommended next milestone is coherent normal compositor builds
+and consumer validation while retaining the shared ownership models and
+complete baseline goal. Missing core EGL sync APIs do not gate the
+pinned wlroots path identified above; ordinary baseline gaps remain
+open. Full-baseline completion still has no validated duration estimate.
