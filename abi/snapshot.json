@@ -555,6 +555,21 @@
       {
         "arguments": [
           {
+            "index": 1,
+            "kind": "process-address"
+          },
+          {
+            "index": 3,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "wait4",
+        "number": 139,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
             "index": 0,
             "kind": "process-address"
           }
@@ -721,6 +736,21 @@
         ],
         "musl_name": "munlock",
         "number": 281,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-address"
+          },
+          {
+            "index": 4,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "waitid",
+        "number": 288,
         "result": "i32"
       },
       {
@@ -1482,7 +1512,6 @@
       "kernel_transfer_scratch_capacity",
       "kernel_transfer_scratch_pointer",
       "kernel_validate_task",
-      "kernel_wait_child_poll",
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
@@ -2924,11 +2953,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_has_sa_nocldwait",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_host_adapter_manifest_len",
       "signature": "() -> (i32)"
     },
@@ -3694,11 +3718,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_wait_child_poll",
-      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_wait_deadline_close",
       "signature": "(i64) -> (i32)"
     },
@@ -4226,12 +4245,6 @@
     {
       "kind": "func",
       "module": "env",
-      "name": "host_waitpid",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "module": "env",
       "name": "host_write",
       "signature": "(i64,i32,i32) -> (i32)"
     },
@@ -4654,36 +4667,6 @@
         }
       ],
       "size": 32
-    },
-    "KernelWaitResult": {
-      "fields": [
-        {
-          "name": "wait_status",
-          "offset": 0,
-          "span": 4
-        },
-        {
-          "name": "si_code",
-          "offset": 4,
-          "span": 4
-        },
-        {
-          "name": "si_status",
-          "offset": 8,
-          "span": 4
-        },
-        {
-          "name": "child_uid",
-          "offset": 12,
-          "span": 4
-        },
-        {
-          "name": "rusage",
-          "offset": 16,
-          "span": 144
-        }
-      ],
-      "size": 160
     },
     "PcmSharedControl": {
       "align": 4,
@@ -8354,26 +8337,6 @@
         }
       }
     ],
-    "139": [
-      {
-        "argIndex": 1,
-        "direction": "out",
-        "nullable": true,
-        "size": {
-          "size": 4,
-          "type": "fixed"
-        }
-      },
-      {
-        "argIndex": 3,
-        "direction": "out",
-        "nullable": true,
-        "size": {
-          "size": 144,
-          "type": "fixed"
-        }
-      }
-    ],
     "14": [
       {
         "argIndex": 0,
@@ -8929,27 +8892,6 @@
           "maxBytes": 4096,
           "tooLongErrno": 36,
           "type": "cstring"
-        }
-      }
-    ],
-    "288": [
-      {
-        "argIndex": 2,
-        "direction": "out",
-        "required": true,
-        "size": {
-          "type": "process-layout",
-          "wasm32Size": 128,
-          "wasm64Size": 128
-        }
-      },
-      {
-        "argIndex": 4,
-        "direction": "out",
-        "nullable": true,
-        "size": {
-          "size": 144,
-          "type": "fixed"
         }
       }
     ],

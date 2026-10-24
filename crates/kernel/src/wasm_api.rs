@@ -24,7 +24,7 @@ use wasm_posix_shared::{
     abi,
     abi::extended_syscalls as syscall_numbers,
     channel_scalar::{self, ChannelResultKind},
-    process_snapshot_wire, Errno, KernelWaitResult, WasmDirent, WasmStat,
+    process_snapshot_wire, Errno, WasmDirent, WasmStat,
     WasmStatfs, WasmTimespec,
 };
 
@@ -222,7 +222,6 @@ unsafe extern "C" {
         mtime_nsec: i64,
         flags: u32,
     ) -> i32;
-    fn host_waitpid(pid: i32, options: u32, status_ptr: *mut i32) -> i32;
     fn host_net_connect(handle: i32, addr_ptr: *const u8, addr_len: u32, port: u32) -> i32;
     fn host_net_connect_from(
         handle: i32,
@@ -855,21 +854,6 @@ impl HostIO for WasmHostIO {
             }
         } else {
             Ok(result as usize)
-        }
-    }
-
-    fn host_waitpid(&mut self, pid: i32, options: u32) -> Result<(i32, i32), Errno> {
-        let mut status: i32 = 0;
-        gkl_release();
-        let result = unsafe { host_waitpid(pid, options, &mut status) };
-        gkl_acquire();
-        if result < 0 {
-            match Errno::from_u32((-result) as u32) {
-                Some(e) => Err(e),
-                None => Err(Errno::EIO),
-            }
-        } else {
-            Ok((result, status))
         }
     }
 
@@ -3102,17 +3086,24 @@ fn reap_process_and_cleanup(pid: u32) -> i32 {
 ///
 /// Returns how many processes applied exits have sent SIGHUP and SIGCONT
 /// since the previous call; when positive, the host applies the same
-/// follow-up as a group `kill()`. Returns `-EINVAL` when `pid` has not exited
-/// and `-ESRCH` when it is absent.
+/// follow-up as a group `kill()`. Returns `-EINVAL` when `pid` has not exited.
+///
+/// An absent `pid` counts as already published and still returns the count.
+/// The kernel decides parked `wait4`/`waitid` calls itself
+/// (`runtime_core::wait_child`), so a waiting parent, or the SA_NOCLDWAIT
+/// auto-reap, can consume a zombie before the host's exit path reaches this
+/// call. Failing then would leave an orphaned group's SIGHUP/SIGCONT
+/// follow-up unreported until some later exit.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_publish_process_exit(pid: u32) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let publication = match table.publish_process_exit(pid) {
-        Ok(publication) => publication,
+        Ok(publication) => Some(publication),
+        Err(Errno::ESRCH) => None,
         Err(error) => return -(error as i32),
     };
-    if let Some(reap) = publication.reaped_by_init {
+    if let Some(reap) = publication.and_then(|publication| publication.reaped_by_init) {
         finish_init_reap(reap);
     }
     let signaled = unsafe { core::mem::take(&mut *ORPHANED_GROUP_SIGNALS.0.get()) };
@@ -3434,62 +3425,6 @@ pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32) -> i32 {
     }
 }
 
-/// Atomically select and optionally consume one child status record. A
-/// consuming exit selection also reaps the child in this serialized kernel
-/// operation; WNOWAIT peeks without consuming or reaping.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_wait_child_poll(
-    parent_pid: u32,
-    caller_tid: u32,
-    target_pid: i32,
-    event_mask: u32,
-    flags: u32,
-    out_ptr: *mut KernelWaitResult,
-    out_capacity: u32,
-) -> i32 {
-    if out_ptr.is_null() {
-        return -(Errno::EFAULT as i32);
-    }
-    if out_capacity != wasm_posix_shared::KERNEL_WAIT_RESULT_SIZE {
-        return -(Errno::EINVAL as i32);
-    }
-
-    let selected = {
-        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-        if table.validate_task(parent_pid, caller_tid).is_err() {
-            return -(Errno::ESRCH as i32);
-        }
-        table.poll_wait_event(parent_pid, target_pid, event_mask, flags)
-    };
-
-    match selected {
-        Ok(Some((child_pid, event))) => {
-            let result = KernelWaitResult {
-                wait_status: event.wait_status,
-                si_code: event.si_code,
-                si_status: event.si_status,
-                child_uid: event.child_uid,
-                rusage: event.rusage,
-            };
-            unsafe {
-                core::ptr::write_unaligned(out_ptr, result);
-            }
-
-            if flags & wasm_posix_shared::wait::WNOWAIT == 0
-                && event.event_mask == wasm_posix_shared::wait::EVENT_EXITED
-            {
-                let reaped = reap_process_and_cleanup(child_pid);
-                if reaped < 0 {
-                    return reaped;
-                }
-            }
-            child_pid as i32
-        }
-        Ok(None) => 0,
-        Err(e) => -(e as i32),
-    }
-}
-
 /// Reap an exited direct child after wait/waitid consumes it.
 ///
 /// This keeps the parent/child/exited invariant in Rust instead of allowing
@@ -3506,28 +3441,6 @@ pub extern "C" fn kernel_reap_exited_child(parent_pid: u32, child_pid: u32) -> i
         return reap_for_init_and_cleanup(child_pid);
     }
     reap_process_and_cleanup(child_pid)
-}
-
-/// Check if a process has SA_NOCLDWAIT set for SIGCHLD.
-/// Returns 1 if SA_NOCLDWAIT is set, 0 if not, -ESRCH if process not found.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_has_sa_nocldwait(pid: u32) -> i32 {
-    let table = unsafe { &*PROCESS_TABLE.0.get() };
-    match table.get(pid) {
-        Some(proc) => {
-            let action = proc.signals.get_action(wasm_posix_shared::signal::SIGCHLD);
-            if action.flags & wasm_posix_shared::signal::SA_NOCLDWAIT != 0 {
-                1
-            } else {
-                // POSIX: setting SIGCHLD to SIG_IGN also implies SA_NOCLDWAIT
-                match action.handler {
-                    crate::signal::SignalHandler::Ignore => 1,
-                    _ => 0,
-                }
-            }
-        }
-        None => -(Errno::ESRCH as i32),
-    }
 }
 
 /// Check whether SIGCHLD stop/continue notifications are suppressed.
@@ -6076,6 +5989,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                         } else {
                             target.pgid = new_pgid;
                             table.prune_empty_limbo_groups();
+                            crate::wait_park::note_children_changed();
                             0
                         }
                     }
@@ -6126,13 +6040,23 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         } // SYS_GETGROUPS
         136 => kernel_setgroups(process_size_u32!(0), channel_const_ptr!(1, u32)), // SYS_SETGROUPS
 
-        // Wait
-        139 => kernel_wait4(
+        // Wait. The kernel owns both (see `wait_child`): the output pointers
+        // are caller addresses written when the wait is decided, which for a
+        // parked caller is after any per-call staging is gone.
+        139 => channel_wait_child(crate::wait_child::ChildWait::wait4(
             a1,
-            channel_mut_ptr!(1, i32),
+            guest_address!(1),
             a3 as u32,
-            channel_mut_ptr!(3, u8),
-        ), // SYS_WAIT4
+            guest_address!(3),
+        )), // SYS_WAIT4
+        288 => channel_wait_child(crate::wait_child::ChildWait::waitid(
+            a1 as u32,
+            // `id_t` is a 32-bit unsigned type on both widths.
+            i64::from(a2 as u32),
+            args[3] as u32,
+            guest_address!(2),
+            guest_address!(4),
+        )), // SYS_WAITID
 
         // Fork/exec/clone
         // Exec launch is a host-orchestrated exact-target transaction. Direct
@@ -11377,31 +11301,6 @@ pub fn kernel_recvmsg(
     result
 }
 
-/// wait4 — wait for child process. Writes status to wstatus_ptr, ignores rusage.
-/// Returns child pid on success, negative errno on error.
-pub fn kernel_wait4(
-    pid: i32,
-    wstatus_ptr: *mut i32,
-    options: u32,
-    _rusage_ptr: *mut u8,
-) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let result = match syscalls::sys_waitpid(proc, &mut host, pid, options) {
-        Ok((child_pid, status)) => {
-            if !wstatus_ptr.is_null() {
-                unsafe {
-                    *wstatus_ptr = status;
-                }
-            }
-            child_pid
-        }
-        Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
-
 /// Check if a file descriptor refers to a terminal.
 /// Returns 1 if terminal, or negative errno on error (ENOTTY if not a terminal).
 pub fn kernel_isatty(fd: i32) -> i32 {
@@ -14885,6 +14784,133 @@ fn report_park(outcome: Result<syscalls::ParkOutcome, Errno>) -> i32 {
     }
 }
 
+/// wait4 / waitid from a channel: the kernel owns the wait (see
+/// `runtime_core::wait_child`). Answers now when a child is ready (or under
+/// `WNOHANG`), otherwise parks the caller until [`settle_child_waits`]
+/// decides it.
+fn channel_wait_child(wait: Result<crate::wait_child::ChildWait, Errno>) -> i32 {
+    // WHY scoped: reaping a child removes a ProcessTable entry, which may move
+    // other entries, so no `&mut Process` may live across the decision.
+    let (task, caller_pgid) = {
+        let (_gkl, proc) = unsafe { get_process() };
+        (channel_guest_task(proc), proc.pgid)
+    };
+    let mut host = WasmHostIO;
+    announce_exits();
+    let outcome = wait.and_then(|wait| {
+        let wait = wait.freeze_caller_group(caller_pgid);
+        wait.probe(&mut host, task)?;
+        if let Some(value) = decide_child_wait(&mut host, task, &wait)? {
+            return Ok(syscalls::ParkOutcome::Done(value));
+        }
+        if wait.nohang {
+            return wait.report_nothing(&mut host, task).map(syscalls::ParkOutcome::Done);
+        }
+        let generation = crate::wait_park::with(|parks| {
+            parks.park(
+                task.pid,
+                task.tid,
+                crate::wait_queue::WaitKind::ChildWait { options: 0 },
+                alloc::vec![crate::wait_queue::WakeSource::ChildEvent { parent: task.pid }],
+                None,
+                crate::wait_park::Resume::Child(wait),
+            )
+        })?;
+        Ok(syscalls::ParkOutcome::Parked(generation))
+    });
+    let result = report_park(outcome);
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
+/// Poll `wait` for `task` once: `Ok(Some(value))` when a child reported
+/// (its answer is already written to the caller, and an exited child that was
+/// consumed is reaped), `Ok(None)` when a matching child has nothing yet.
+fn decide_child_wait(
+    host: &mut WasmHostIO,
+    task: syscalls::GuestTask,
+    wait: &crate::wait_child::ChildWait,
+) -> Result<Option<i32>, Errno> {
+    let selected = {
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        wait.poll(table, task)?
+    };
+    let Some((child, event)) = selected else {
+        return Ok(None);
+    };
+    let value = wait.report(host, task, child, &event);
+    if wait.reaps(&event) {
+        let reaped = reap_process_and_cleanup(child);
+        if reaped < 0 {
+            return Err(Errno::from_u32(reaped.unsigned_abs()).unwrap_or(Errno::EIO));
+        }
+    }
+    value.map(Some)
+}
+
+/// Tell each parent about its children's recorded exits: SIGCHLD, or the
+/// SA_NOCLDWAIT/SIG_IGN auto-reap (`runtime_core::wait_child::announce_exit`).
+///
+/// Runs before any wait is decided -- at the start of every settle and of
+/// every wait4/waitid -- so a wait can never report an exit whose SIGCHLD the
+/// parent has not been sent. A reap here marks the children changed, so a
+/// waiter parked on the reaped child is then decided ECHILD.
+fn announce_exits() {
+    let notices = crate::wait_park::take_exit_notices();
+    if notices.is_empty() {
+        return;
+    }
+    let mut deferred = Vec::new();
+    for child in notices {
+        // A default-ignored SIGCHLD is never queued (the generation discards
+        // it, `SignalState::raise_internal`), so it cannot linger as a
+        // reason to interrupt the parent's parked waits; a caught one stays
+        // pending for the guest glue to run its handler.
+        let notice = {
+            let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+            crate::wait_child::announce_exit(table, child)
+        };
+        match notice {
+            crate::wait_child::ExitNotice::Done => {}
+            crate::wait_child::ExitNotice::AutoReap => {
+                let _ = reap_process_and_cleanup(child);
+            }
+            crate::wait_child::ExitNotice::Defer => deferred.push(child),
+        }
+    }
+    crate::wait_park::requeue_exit_notices(deferred);
+}
+
+/// Re-decide every parked `wait4`/`waitid` once a child's waitable state has
+/// changed (`wait_park::note_children_changed`). Runs at the start of every
+/// wake-event and completion drain; with no change since the last pass it is
+/// one flag read. A pass that reaps a child marks the state changed again,
+/// so the loop ends only when a pass decided nothing new.
+fn settle_child_waits() {
+    announce_exits();
+    while let Some(waiters) = crate::wait_park::with(|p| p.take_dirty_child_waiters()) {
+        let mut host = WasmHostIO;
+        for (id, pid, tid, wait) in waiters {
+            let pointer_width = {
+                let table = unsafe { &*PROCESS_TABLE.0.get() };
+                match table.get(pid) {
+                    Some(proc) => proc.pointer_width,
+                    // The signal sweep retires parks of vanished processes.
+                    None => continue,
+                }
+            };
+            let task = syscalls::GuestTask { pid, tid, pointer_width };
+            let value = match decide_child_wait(&mut host, task, &wait) {
+                Ok(None) => continue,
+                Ok(Some(value)) => value,
+                Err(error) => -(error as i32),
+            };
+            crate::wait_park::with(|p| p.finish_child_waiter(id, pid, value));
+        }
+    }
+}
+
 /// nanosleep / clock_nanosleep / usleep from a channel: the kernel owns the
 /// sleep (see `syscalls::sys_nanosleep`). Pending default-action signals are
 /// still applied on the way out, as for every other syscall.
@@ -15992,6 +16018,7 @@ pub extern "C" fn kernel_drain_wakeup_events(
     out_len: u32,
     max_events: u32,
 ) -> u32 {
+    settle_child_waits();
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     if crate::wait_park::settle(table) {
         crate::wakeup::push(0, wasm_posix_shared::wakeup_event_wire::TYPE_WAIT_COMPLETE);
@@ -16022,6 +16049,7 @@ pub extern "C" fn kernel_drain_wait_completions(
         Ok(now) => now,
         Err(error) => return -(error as i32),
     };
+    settle_child_waits();
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
     crate::wait_park::with(|parks| {

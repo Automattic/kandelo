@@ -4030,51 +4030,6 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
     },
   );
 
-  it.each([
-    [
-      "SYS_TKILL missing deliverable-signal query",
-      ABI_SYSCALLS.Tkill,
-      (harness: RetryHarness) => {
-        harness.kernelExports.kernel_thread_has_deliverable = undefined;
-      },
-      "kernel export kernel_thread_has_deliverable failed",
-    ],
-    [
-      "SYS_TKILL invalid deliverable-signal query",
-      ABI_SYSCALLS.Tkill,
-      (harness: RetryHarness) => {
-        harness.kernelExports.kernel_thread_has_deliverable = vi.fn(
-          () => 2,
-        );
-      },
-      "kernel returned invalid deliverable-signal state 2",
-    ],
-  ] as const)(
-    "fails the kernel generation for guest %s",
-    async (_description, syscall, configure, expectedMessage) => {
-      const harness = createRetryHarness(4);
-      configure(harness);
-      writeRequest(harness, syscall, [
-        BigInt(harness.channel.pid),
-        BigInt(SIGUSR1),
-      ]);
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          publishKernelResult(kernelView(harness, rawPointer), 0, 0);
-          return 0;
-        },
-      );
-
-      expect(() => harness.worker.handleSyscall(harness.channel)).toThrow(
-        expectedMessage,
-      );
-      await Promise.resolve();
-
-      expect(harness.onKernelFatal).toHaveBeenCalledOnce();
-      expect(requestStatus(harness)).toBe(CHANNEL_STATUS_PENDING);
-    },
-  );
-
   it.each(WIDTHS)(
     "%s consumes a pending cancel immediately before every host wait registry",
     (_name, pointerWidth) => {

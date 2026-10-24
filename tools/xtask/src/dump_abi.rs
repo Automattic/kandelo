@@ -3741,30 +3741,8 @@ fn render_ts_module() -> String {
         "export const STRUCT_SIZE_WASM_RUSAGE_WIRE = {} as const;\n",
         size_of::<shared::WasmRusageWire>()
     ));
-    out.push_str(&format!(
-        "export const STRUCT_SIZE_KERNEL_WAIT_RESULT = {} as const;\n",
-        size_of::<shared::KernelWaitResult>()
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelWaitResult, wait_status)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_WAIT_RESULT_SI_CODE_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelWaitResult, si_code)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_WAIT_RESULT_SI_STATUS_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelWaitResult, si_status)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_WAIT_RESULT_CHILD_UID_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelWaitResult, child_uid)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_WAIT_RESULT_RUSAGE_OFFSET = {} as const;\n\n",
-        offset_of!(shared::KernelWaitResult, rusage)
-    ));
+    out.push_str("
+");
 
     out.push_str("export const HOST_INTERCEPTED_SYSCALLS = {\n");
     for syscall in host_intercepted_syscall_metadata() {
@@ -5554,7 +5532,7 @@ fn marshalled_structs() -> Value {
     use shared::oss::{AudioBufInfo, CountInfo};
     use shared::pcm::PcmSharedControl;
     use shared::{
-        KernelWaitResult, WasmDirent,
+        WasmDirent,
         WasmEpollEvent, WasmFlock, WasmPollFd, WasmRusageWire, WasmStat, WasmStatfs,
         WasmSysvMessageHeader, WasmTimespec,
     };
@@ -5719,16 +5697,6 @@ fn marshalled_structs() -> Value {
             ru_nsignals,
             ru_nvcsw,
             ru_nivcsw,
-        }),
-    );
-    structs.insert(
-        "KernelWaitResult".into(),
-        struct_layout!(KernelWaitResult {
-            wait_status,
-            si_code,
-            si_status,
-            child_uid,
-            rusage,
         }),
     );
     structs.insert(
@@ -9409,12 +9377,6 @@ mod tests {
         for expected in [
             "export const STRUCT_SIZE_WPK_DRM_MODE_MODEINFO = 68 as const;",
             "export const STRUCT_SIZE_WASM_RUSAGE_WIRE = 144 as const;",
-            "export const STRUCT_SIZE_KERNEL_WAIT_RESULT = 160 as const;",
-            "export const KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET = 0 as const;",
-            "export const KERNEL_WAIT_RESULT_SI_CODE_OFFSET = 4 as const;",
-            "export const KERNEL_WAIT_RESULT_SI_STATUS_OFFSET = 8 as const;",
-            "export const KERNEL_WAIT_RESULT_CHILD_UID_OFFSET = 12 as const;",
-            "export const KERNEL_WAIT_RESULT_RUSAGE_OFFSET = 16 as const;",
             "export const WAIT_EVENT_EXITED = 1 as const;",
             "export const WAIT_EVENT_STOPPED = 2 as const;",
             "export const WAIT_EVENT_CONTINUED = 4 as const;",
@@ -9426,7 +9388,6 @@ mod tests {
             "\"kernel_get_process_state\"",
             "\"kernel_has_sa_nocldstop\"",
             "\"kernel_process_secure_exec\"",
-            "\"kernel_wait_child_poll\"",
         ] {
             assert!(
                 rendered.contains(expected),
@@ -9439,7 +9400,6 @@ mod tests {
 
         let structs = marshalled_structs();
         assert_eq!(structs["WasmRusageWire"]["size"], json!(144));
-        assert_eq!(structs["KernelWaitResult"]["size"], json!(160));
         assert_eq!(structs["AudioBufInfo"]["size"], json!(16));
         assert_eq!(structs["AudioBufInfo"]["align"], json!(4));
         assert_eq!(
@@ -9449,10 +9409,6 @@ mod tests {
         assert_eq!(structs["CountInfo"]["size"], json!(12));
         assert_eq!(structs["PcmSharedControl"]["size"], json!(128));
         assert_eq!(structs["PcmSharedControl"]["align"], json!(4));
-        assert_eq!(
-            structs["KernelWaitResult"]["fields"][4],
-            json!({"name": "rusage", "offset": 16, "span": 144})
-        );
 
         let contract = wait_contract();
         assert_eq!(contract["WAIT_WNOWAIT"], json!(0x0100_0000));

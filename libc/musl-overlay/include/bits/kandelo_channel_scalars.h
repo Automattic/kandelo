@@ -207,6 +207,11 @@ _Static_assert(__NR_sendmsg == 137u,
 #endif
 _Static_assert(__NR_recvmsg == 138u,
 "musl __NR_recvmsg drifted from the Kandelo channel scalar contract");
+#ifndef __NR_wait4
+#error "musl is missing __NR_wait4 required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_wait4 == 139u,
+"musl __NR_wait4 drifted from the Kandelo channel scalar contract");
 #ifndef __NR_futex
 #error "musl is missing __NR_futex required by the Kandelo channel scalar contract"
 #endif
@@ -272,6 +277,11 @@ _Static_assert(__NR_mlock2 == 280u,
 #endif
 _Static_assert(__NR_munlock == 281u,
 "musl __NR_munlock drifted from the Kandelo channel scalar contract");
+#ifndef __NR_waitid
+#error "musl is missing __NR_waitid required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_waitid == 288u,
+"musl __NR_waitid drifted from the Kandelo channel scalar contract");
 #ifndef __NR_copy_file_range
 #error "musl is missing __NR_copy_file_range required by the Kandelo channel scalar contract"
 #endif

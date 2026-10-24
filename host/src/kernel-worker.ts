@@ -155,11 +155,6 @@ import {
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
   POLL_EVENTS,
-  KERNEL_WAIT_RESULT_CHILD_UID_OFFSET,
-  KERNEL_WAIT_RESULT_RUSAGE_OFFSET,
-  KERNEL_WAIT_RESULT_SI_CODE_OFFSET,
-  KERNEL_WAIT_RESULT_SI_STATUS_OFFSET,
-  KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET,
   KERNEL_SCRATCH_MQUEUE_NOTIFICATION_BYTES,
   KERNEL_SCRATCH_SOCKADDR_STORAGE_BYTES,
   KERNEL_SCRATCH_SOCKET_OPTION_INPUT_MAX_BYTES,
@@ -196,16 +191,6 @@ import {
   PROCESS_SNAPSHOT_UID_OFFSET,
   PROCESS_SNAPSHOT_VSIZE_OFFSET,
   type ProcessForkMode,
-  PROCESS_SIGINFO_CODE_OFFSET,
-  PROCESS_SIGINFO_SIGNO_OFFSET,
-  PROCESS_SIGINFO_WASM32_PID_OFFSET,
-  PROCESS_SIGINFO_WASM32_SIZE,
-  PROCESS_SIGINFO_WASM32_UID_OFFSET,
-  PROCESS_SIGINFO_WASM32_VALUE_OFFSET,
-  PROCESS_SIGINFO_WASM64_PID_OFFSET,
-  PROCESS_SIGINFO_WASM64_SIZE,
-  PROCESS_SIGINFO_WASM64_UID_OFFSET,
-  PROCESS_SIGINFO_WASM64_VALUE_OFFSET,
   PRCTL_NAME_BYTES,
   PR_GET_NAME,
   PR_SET_NAME,
@@ -217,22 +202,11 @@ import {
   SPAWN_WIRE_MAX_BYTES,
   STRUCT_SIZE_WASM_EPOLL_EVENT,
   STRUCT_SIZE_WASM_POLL_FD,
-  STRUCT_SIZE_KERNEL_WAIT_RESULT,
-  STRUCT_SIZE_WASM_RUSAGE_WIRE,
   STRUCT_SIZE_WASM_STAT,
   SYSCALL_ARGS,
   WASM_POLL_FD_EVENTS_OFFSET,
   WASM_POLL_FD_FD_OFFSET,
   WASM_POLL_FD_REVENTS_OFFSET,
-  WAIT_EVENT_CONTINUED,
-  WAIT_EVENT_EXITED,
-  WAIT_EVENT_STOPPED,
-  WAIT_WCONTINUED,
-  WAIT_WEXITED,
-  WAIT_WNOHANG,
-  WAIT_WNOWAIT,
-  WAIT_WSTOPPED,
-  WAIT_WUNTRACED,
   WAKEUP_EVENT_FIELDS,
   WAKEUP_EVENT_RECORD_BYTES,
   WAKEUP_EVENT_TYPES,
@@ -1007,8 +981,6 @@ const SYS_SPAWN = HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN;
 const SYS_CLONE = ABI_SYSCALLS.Clone;
 const SYS_EXIT = ABI_SYSCALLS.Exit;
 const SYS_EXIT_GROUP = ABI_SYSCALLS.ExitGroup;
-const SYS_SETPGID = ABI_SYSCALLS.Setpgid;
-const SYS_SETSID = ABI_SYSCALLS.Setsid;
 const SYS_WAIT4 = ABI_SYSCALLS.Wait4;
 const SYS_WAITID = ABI_SYSCALLS.Waitid;
 /** SYS_THREAD_CANCEL: host-side wake-up for deferred pthread cancellation.
@@ -1016,9 +988,6 @@ const SYS_WAITID = ABI_SYSCALLS.Waitid;
 const SYS_THREAD_CANCEL = ABI_SYSCALLS.ThreadCancel;
 
 /** waitid idtype */
-const P_ALL = 0;
-const P_PID = 1;
-const P_PGID = 2;
 
 /** SIGCHLD */
 const SIGCHLD = 17;
@@ -1863,55 +1832,6 @@ function encodeStdioKind(kind: RegisterProcessStdioKind): number {
   }
 }
 
-type WaitPollResult =
-  | {
-      kind: "event";
-      childPid: number;
-      waitStatus: number;
-      siCode: number;
-      siStatus: number;
-      childUid: number;
-      rusage: Uint8Array;
-    }
-  | { kind: "running" }
-  | { kind: "error"; errno: number };
-
-interface ProcessSiginfoLayout {
-  readonly size: number;
-  readonly pidOffset: number;
-  readonly uidOffset: number;
-  readonly statusOffset: number;
-}
-
-const PROCESS_SIGINFO_WASM32_LAYOUT: ProcessSiginfoLayout = Object.freeze({
-  size: PROCESS_SIGINFO_WASM32_SIZE,
-  pidOffset: PROCESS_SIGINFO_WASM32_PID_OFFSET,
-  uidOffset: PROCESS_SIGINFO_WASM32_UID_OFFSET,
-  statusOffset: PROCESS_SIGINFO_WASM32_VALUE_OFFSET,
-});
-
-const PROCESS_SIGINFO_WASM64_LAYOUT: ProcessSiginfoLayout = Object.freeze({
-  size: PROCESS_SIGINFO_WASM64_SIZE,
-  pidOffset: PROCESS_SIGINFO_WASM64_PID_OFFSET,
-  uidOffset: PROCESS_SIGINFO_WASM64_UID_OFFSET,
-  statusOffset: PROCESS_SIGINFO_WASM64_VALUE_OFFSET,
-});
-
-function processSiginfoLayout(pointerWidth: number): ProcessSiginfoLayout {
-  if (pointerWidth === 4) return PROCESS_SIGINFO_WASM32_LAYOUT;
-  if (pointerWidth === 8) return PROCESS_SIGINFO_WASM64_LAYOUT;
-  throw new Error(`unsupported process pointer width ${pointerWidth}`);
-}
-
-interface WaitingForChild extends FrozenCancellationPointIdentity {
-  parentPid: number;
-  channel: ChannelInfo;
-  origArgs: number[];
-  pid: number;
-  options: number;
-  syscallNr: number;
-}
-
 type ChannelOutputWrite = { ptr: number; bytes: Uint8Array };
 
 interface PreparedChannelCompletion {
@@ -2426,13 +2346,6 @@ interface ScratchBoundaryTestHooks {
   ) => void;
   readonly scheduleWakeBlockedRetries?: () => void;
   readonly retrySyscall?: (channel: ChannelInfo) => void;
-  readonly interruptWaitingChildForDirectedSignal?: (
-    pid: number,
-    tid: number,
-  ) => boolean;
-  readonly interruptWaitingChildrenForGeneratedSignal?: (
-    signum: number,
-  ) => void;
 }
 
 type DetachedCopybackTestOptions =
@@ -2485,13 +2398,6 @@ interface MqueueNotificationCapacityProbeTestOptions {
   readonly capacity: number;
 }
 
-interface WaitableChildCapacityProbeTestOptions {
-  readonly registrationWitness: ChannelInfo;
-  readonly childPid: number;
-  readonly destination: CapacityProbeDestination;
-  readonly capacity: number;
-}
-
 interface ThreadTransportStateTestResult {
   readonly channelTidEntries: number;
   readonly forkContextEntries: number;
@@ -2528,9 +2434,6 @@ interface CentralizedKernelWorkerTestAuthority {
   ): number;
   probeMqueueNotificationCapacityForTest(
     options: MqueueNotificationCapacityProbeTestOptions,
-  ): KernelCapacityProbeResult;
-  probeWaitableChildCapacityForTest(
-    options: WaitableChildCapacityProbeTestOptions,
   ): KernelCapacityProbeResult;
   readKernelOwnedPathForTest(
     registrationWitness: ChannelInfo,
@@ -3201,8 +3104,6 @@ export class CentralizedKernelWorker {
   #tcpScratchRegion: KernelScratchRegion | null = null;
   /** Node.js net module (loaded dynamically for browser compatibility) */
   private netModule: typeof import("net") | null = null;
-  /** Deferred waitpid/waitid completions. Child matching/reap state is Rust-owned. */
-  private waitingForChild: WaitingForChild[] = [];
   /**
    * Exact request identity detached before any host-owned park can occur.
    *
@@ -3928,12 +3829,6 @@ export class CentralizedKernelWorker {
               ?? previous?.scheduleWakeBlockedRetries,
           retrySyscall:
             options.retrySyscall ?? previous?.retrySyscall,
-          interruptWaitingChildForDirectedSignal:
-            options.interruptWaitingChildForDirectedSignal
-              ?? previous?.interruptWaitingChildForDirectedSignal,
-          interruptWaitingChildrenForGeneratedSignal:
-            options.interruptWaitingChildrenForGeneratedSignal
-              ?? previous?.interruptWaitingChildrenForGeneratedSignal,
         });
       },
       completeDetachedCopybackForTest: (options): void => {
@@ -4538,122 +4433,6 @@ export class CentralizedKernelWorker {
         if (outcome.value === undefined) {
           throw new Error(
             "mqueue notification capacity probe returned no result",
-          );
-        }
-        return outcome.value;
-      },
-      probeWaitableChildCapacityForTest: (options) => {
-        const outcome: {
-          inputError?: TypeError;
-          value?: KernelCapacityProbeResult;
-        } = {};
-        // WHY: invalid destinations must be observed before Rust selects or
-        // consumes the sole wait record. Immediate-only entry also ensures a
-        // busy rejection cannot replay a caller-owned child or witness later.
-        this.#runImmediateKernelEntry(
-          "waitable-child capacity probe",
-          (entry) => {
-            let registrationWitness: ChannelInfo;
-            let childPid: number;
-            let destination: CapacityProbeDestination;
-            let capacity: number;
-            try {
-              registrationWitness = options.registrationWitness;
-              childPid = options.childPid;
-              destination = options.destination;
-              capacity = options.capacity;
-            } catch {
-              outcome.inputError = new TypeError(
-                "waitable-child capacity probe options are invalid",
-              );
-              return undefined;
-            }
-            const channelSnapshot =
-              this.#snapshotCapacityProbeMainChannel(
-                registrationWitness,
-                "waitable-child capacity probe",
-              );
-            if (channelSnapshot.inputError !== undefined) {
-              outcome.inputError = channelSnapshot.inputError;
-              return undefined;
-            }
-            const validCapacity = destination === "null"
-              ? capacity === STRUCT_SIZE_KERNEL_WAIT_RESULT
-              : destination === "guarded"
-                && (
-                  capacity === STRUCT_SIZE_KERNEL_WAIT_RESULT - 1
-                  || capacity === STRUCT_SIZE_KERNEL_WAIT_RESULT
-                  || capacity === STRUCT_SIZE_KERNEL_WAIT_RESULT + 1
-                );
-            if (
-              !Number.isSafeInteger(childPid)
-              || childPid <= 0
-              || childPid > MAX_KERNEL_TASK_ID
-              || !Number.isSafeInteger(capacity)
-              || !validCapacity
-            ) {
-              outcome.inputError = new TypeError(
-                "waitable-child capacity probe arguments are invalid",
-              );
-              return undefined;
-            }
-            const { channel } = channelSnapshot;
-            const callerTid = this.guestTidForChannel(channel);
-            const guardedLength = STRUCT_SIZE_KERNEL_WAIT_RESULT + 2;
-            const probe = this.#requireMainScratchRegion().withLease(
-              (lease) => {
-                lease.fill(0xa5, 0, guardedLength);
-                let result: number;
-                if (destination === "null") {
-                  const waitPoll = this.#kernelInstanceForEntry(entry).exports
-                    .kernel_wait_child_poll as (
-                      parentPid: number,
-                      callerTid: number,
-                      targetPid: number,
-                      eventMask: number,
-                      flags: number,
-                      resultPtr: KernelPointer,
-                      resultCapacity: number,
-                    ) => number;
-                  result = waitPoll(
-                    channel.pid,
-                    callerTid,
-                    childPid,
-                    WAIT_EVENT_EXITED,
-                    0,
-                    this.#kernelPointerWidth === 8 ? 0n : 0,
-                    capacity,
-                  );
-                } else {
-                  result = this.#invokeEntryScratchExport(
-                    entry,
-                    lease,
-                    "kernel_wait_child_poll",
-                    [
-                      channel.pid,
-                      callerTid,
-                      childPid,
-                      WAIT_EVENT_EXITED,
-                      0,
-                      lease.exportPointer(1, capacity),
-                      capacity,
-                    ],
-                  );
-                }
-                return {
-                  result,
-                  guardedBytes: lease.copyOut(0, guardedLength),
-                };
-              },
-            );
-            outcome.value = kernelEntryIntrinsicObjectFreeze(probe);
-            return undefined;
-          },
-        );
-        if (outcome.inputError !== undefined) throw outcome.inputError;
-        if (outcome.value === undefined) {
-          throw new Error(
-            "waitable-child capacity probe returned no result",
           );
         }
         return outcome.value;
@@ -8480,9 +8259,6 @@ export class CentralizedKernelWorker {
     this.#retireProcessHostTimersWithinKernelEntry(pid, entry, true);
     this.retireAsyncChannelsForProcess(pid, entry);
     this.discardStoppedChannelStateForProcess(pid);
-    this.waitingForChild = (this.waitingForChild ?? []).filter(
-      (waiter) => waiter.parentPid !== pid && waiter.channel.pid !== pid,
-    );
 
     // Shared backing publication and SysV detach require the process memory and
     // kernel Process to remain available, so do this before either is removed.
@@ -8782,9 +8558,6 @@ export class CentralizedKernelWorker {
     this.#retireProcessHostTimersWithinKernelEntry(pid, entry, true);
     this.retireAsyncChannelsForProcess(pid, entry);
     this.discardStoppedChannelStateForProcess(pid);
-    this.waitingForChild = (this.waitingForChild ?? []).filter(
-      (waiter) => waiter.parentPid !== pid && waiter.channel.pid !== pid,
-    );
     this.releaseAllSharedMemoryForProcess(pid, true, entry);
     this.releaseProcessViews(pid, registration.memory);
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
@@ -10006,11 +9779,6 @@ export class CentralizedKernelWorker {
       this.pendingAdvisoryLockRetries.delete(channel);
     }
 
-    // Deferred wait/sleep completions retain the discarded Memory and
-    // would otherwise be able to run after the same pid is re-registered.
-    this.waitingForChild = (this.waitingForChild ?? []).filter(
-      (waiter) => waiter.parentPid !== pid,
-    );
     for (const channel of this.pendingCancels) {
       if (channel.pid === pid) this.pendingCancels.delete(channel);
     }
@@ -10329,9 +10097,6 @@ export class CentralizedKernelWorker {
     this.resumePreparedSignals?.delete(channel);
     this.activeChannelRequests?.delete(channel);
     this.pendingCancels?.delete(channel);
-    this.waitingForChild = (this.waitingForChild ?? []).filter(
-      (waiter) => waiter.channel !== channel,
-    );
 
     const signalWaitKey = `${channel.pid}:${channel.channelOffset}`;
     const signalWait = this.pendingSignalWaits?.get(signalWaitKey);
@@ -10385,9 +10150,6 @@ export class CentralizedKernelWorker {
     }
     for (const channel of this.activeChannels ?? []) {
       if (channel.pid === pid) channels.add(channel);
-    }
-    for (const waiter of this.waitingForChild ?? []) {
-      if (waiter.channel.pid === pid) channels.add(waiter.channel);
     }
     for (const channel of this.pendingPollRetries?.keys() ?? []) {
       if (channel.pid === pid) channels.add(channel);
@@ -12393,18 +12155,6 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    if (syscallNr === SYS_WAIT4) {
-      if (logging) console.error(logEntry);
-      this.handleWaitpid(channel, origArgs, entry);
-      return;
-    }
-
-    if (syscallNr === SYS_WAITID) {
-      if (logging) console.error(logEntry);
-      this.handleWaitid(channel, origArgs, entry);
-      return;
-    }
-
     // --- pthread_cancel wake-up: handled entirely on host side because
     // the state we must perturb (pipe reader registration, sleep and
     // poll/select retry timers) still lives in TS. Kernel-owned parks are
@@ -14158,16 +13908,6 @@ export class CentralizedKernelWorker {
         return;
       }
 
-      // --- Process group change: re-check deferred waitpid calls ---
-      // When a process changes its pgid (setpgid/setsid), a parent blocked in
-      // waitpid(-pgid) may no longer have any matching children. Wake it with ECHILD.
-      if (
-        errVal === 0 &&
-        (syscallNr === SYS_SETPGID || syscallNr === SYS_SETSID)
-      ) {
-        this.recheckDeferredWaitpids(entry);
-      }
-
       // --- Signal generation: wake blocked peers + reap terminating actions ---
       // kill(), tkill()/pthread_kill(), and rt_sigqueueinfo() can all target a
       // thread parked in a host-owned blocking operation. They can also apply
@@ -14194,21 +13934,13 @@ export class CentralizedKernelWorker {
         this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
         this.scheduleWakeBlockedRetries(entry);
         this.reapKilledProcessesAfterSyscall(entry);
+        // A parked wait4/waitid is interrupted by the kernel's own signal
+        // sweep (wait_park), which the drain above already ran.
         if (syscallNr === SYS_TKILL) {
           this.wakePendingSignalWaits(
             channel.pid,
             origArgs[1] >>> 0,
             origArgs[0] >>> 0,
-          );
-          this.interruptWaitingChildForDirectedSignal(
-            channel.pid,
-            origArgs[0],
-            entry,
-          );
-        } else {
-          this.interruptWaitingChildrenForGeneratedSignal(
-            origArgs[1],
-            entry,
           );
         }
       }
@@ -15052,16 +14784,6 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     entry: KernelWorkerEntryContext,
   ): boolean {
-    const waitIndex = this.waitingForChild.findIndex(
-      (waiter) => waiter.channel === channel,
-    );
-    if (waitIndex >= 0) {
-      const [waiter] = this.waitingForChild.splice(waitIndex, 1);
-      if (this.interruptWaiterWithPendingSignal(waiter, entry)) return true;
-      this.waitingForChild.splice(waitIndex, 0, waiter);
-      return false;
-    }
-
     let blocked =
       this.pendingPollRetries.has(channel) ||
       (this.pendingAdvisoryLockRetries?.has(channel) ?? false) ||
@@ -16643,8 +16365,9 @@ export class CentralizedKernelWorker {
       this.sendSignalToProcess(parentPid, SIGCHLD, true, entry);
     } else {
       // SA_NOCLDSTOP suppresses only SIGCHLD generation. The status record is
-      // still waitable and must wake a matching wait4/waitid caller.
-      this.wakeWaitingParent(parentPid, entry);
+      // still waitable: the kernel re-polls a parked wait4/waitid caller on
+      // the next drain.
+      this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
     }
   }
 
@@ -17368,27 +17091,7 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // 8) wait()/waitpid()/wait4()/waitid() are cancellation points in musl.
-    // Remove the exact host-owned waiter before waking its channel so a later
-    // child transition cannot complete a canceled thread's reused mailbox.
-    const waitIndex = this.waitingForChild.findIndex(
-      (waiter) =>
-        waiter.channel === target
-        && isWakeableCancellationPoint(waiter),
-    );
-    if (waitIndex >= 0) {
-      this.pendingCancels.delete(target);
-      this.waitingForChild.splice(waitIndex, 1);
-      this.completeChannelRawAndRelisten(
-        target,
-        -EINTR_ERRNO,
-        EINTR_ERRNO,
-        entry,
-      );
-      return;
-    }
-
-    // 9) No tracked blocking state — the target either hasn't reached the
+    // 8) No tracked blocking state — the target either hasn't reached the
     //    blocking entry yet, or its handler is synchronous and will pick
     //    up pendingCancels the next time it enters a blocking operation.
     //    Do NOT write the channel here: the in-flight handleSyscall owns
@@ -21760,7 +21463,8 @@ export class CentralizedKernelWorker {
         // If Rust also says the exact child is absent, only host mirrors may
         // remain; issuing a second numeric removal would invent ownership.
         this.#rollbackChildHostRegistrationWithinKernelEntry(childPid, entry);
-        this.wakeWaitingParent(parentPid, entry);
+        // Publish any wait the kernel re-decided after the child vanished.
+        this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
         return;
       }
       // The parent has no live channel on which the spawn PID/result can be
@@ -21801,7 +21505,7 @@ export class CentralizedKernelWorker {
         ESRCH,
         entry,
       );
-      this.wakeWaitingParent(parentPid, entry);
+      this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
       return;
     }
     if (disposition === -ECHILD) {
@@ -21835,12 +21539,11 @@ export class CentralizedKernelWorker {
     // status. Both writes occur within this serialized kernel entry.
     this.#completeSpawnWithinKernelEntry(channel, origArgs, 0, 0, entry);
     if (disposition >= 0) {
-      this.notifyParentOfExitedProcess(childPid, entry);
+      this.notifyParentOfExitedProcess(childPid, entry, parentPid);
     } else {
-      // A waiter may have parked when this pending child was the only match.
-      // Live publication has no status to complete, but re-polling preserves
-      // that queued wait under the now-public child relationship.
-      this.wakeWaitingParent(parentPid, entry);
+      // Publication makes the child's status waitable; the kernel re-polls a
+      // parked wait4/waitid on the next drain.
+      this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
     }
   }
 
@@ -21911,8 +21614,8 @@ export class CentralizedKernelWorker {
       return;
     }
     // A sibling wait may have parked because the unpublished child was a real
-    // matching relationship. Removal makes that wait resolve to ECHILD.
-    this.wakeWaitingParent(parentPid, entry);
+    // matching relationship. Removal makes the kernel resolve it to ECHILD.
+    this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
     if (
       this.#isAsyncChannelProcessActiveWithinKernelEntry(channel, entry)
     ) {
@@ -23370,6 +23073,9 @@ export class CentralizedKernelWorker {
     // Drop the now-dead image's detached plans without issuing a second
     // numeric release against an Exited process.
     this.#forgetBlockingRetrySnapshotsAfterKernelLifecycle(channel.pid);
+    // The next drain announces the exit and may let a parked parent reap the
+    // zombie; learn the parent while the zombie still names it.
+    const exitParentPid = this.getParentPid(channel.pid, entry);
 
     // Closing descriptors during exit can release process, OFD, and flock
     // records. Rust publishes the generic advisory-lock wake while doing so;
@@ -23385,9 +23091,10 @@ export class CentralizedKernelWorker {
     // produce two SIGCHLDs / two parent wake-ups. Cleared by
     // deactivateProcess and registerProcess.
     if (!this.hostReaped.has(exitingPid)) {
-      this.#retireProcessHostTimersWithinKernelEntry(exitingPid, entry);
+      // An already-reaped zombie is normal here (see above).
+      this.#retireProcessHostTimersWithinKernelEntry(exitingPid, entry, true);
       this.hostReaped.add(exitingPid);
-      this.notifyParentOfExitedProcess(exitingPid, entry);
+      this.notifyParentOfExitedProcess(exitingPid, entry, exitParentPid);
     }
 
     // Complete the channel so the worker unblocks from Atomics.wait().
@@ -23456,15 +23163,17 @@ export class CentralizedKernelWorker {
     // Capture the signal before notifying the parent: a synchronous wait can
     // consume and reap the zombie, after which the kernel query returns ESRCH.
     const signal = this.#getProcessExitSignal(exitingPid, entry);
+    // Likewise the parent: the drain below may let it reap the zombie.
+    const parentPid = this.getParentPid(exitingPid, entry);
     this.#forgetBlockingRetrySnapshotsAfterKernelLifecycle(exitingPid);
-    this.#retireProcessHostTimersWithinKernelEntry(exitingPid, entry);
+    this.#retireProcessHostTimersWithinKernelEntry(exitingPid, entry, true);
     this.hostReaped.add(exitingPid);
     this.releaseAllSharedMemoryForProcess(exitingPid, true, entry);
     // Default signal delivery has already transitioned the Rust Process to
     // Exited and released its process/OFD/flock records. Consume that generic
     // kernel wake before a parent waiter or host exit callback can run.
     this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
-    this.notifyParentOfExitedProcess(exitingPid, entry);
+    this.notifyParentOfExitedProcess(exitingPid, entry, parentPid);
 
     if (canQuiesceBorrowedWorker) {
       // WHY: forced Worker termination cannot prove that a vfork child has
@@ -23579,8 +23288,11 @@ export class CentralizedKernelWorker {
         `Kernel rejected signal-death transition for process ${pid}: ${detail}`,
       );
     }
+    // The drain below may let a parked parent reap the zombie; learn the
+    // parent while the zombie still names it.
+    const parentPid = this.getParentPid(pid, entry);
     this.#forgetBlockingRetrySnapshotsAfterKernelLifecycle(pid);
-    this.#retireProcessHostTimersWithinKernelEntry(pid, entry);
+    this.#retireProcessHostTimersWithinKernelEntry(pid, entry, true);
     this.discardStoppedChannelStateForProcess(pid);
     this.hostReaped.add(pid);
     this.releaseAllSharedMemoryForProcess(pid, true, entry);
@@ -23588,7 +23300,7 @@ export class CentralizedKernelWorker {
     // even for a root/no-parent process, where SIGCHLD routing cannot provide
     // an incidental kernel event drain.
     this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
-    this.notifyParentOfExitedProcess(pid, entry);
+    this.notifyParentOfExitedProcess(pid, entry, parentPid);
   }
 
   /**
@@ -23610,7 +23322,14 @@ export class CentralizedKernelWorker {
     // remove entries).
     const pids = Array.from(this.processes.keys());
     for (const pid of pids) {
-      if (this.#getProcessExitSignal(pid, entry) <= 0) continue;
+      const signal = this.#getProcessExitSignal(pid, entry);
+      // -ESRCH: the kernel already reaped this signal-killed zombie (a parent
+      // parked in wait4/waitid consumed it, or SA_NOCLDWAIT auto-reaped it,
+      // in the drain that followed the kill). Its host transport still needs
+      // the same teardown. An exec handoff keeps the kernel process, so a
+      // missing one there is not a death.
+      const reapedByKernel = signal === -ESRCH && !this.execHandoffPids?.has(pid);
+      if (signal <= 0 && !reapedByKernel) continue;
       if (this.hostReaped.has(pid)) continue; // already handled for this task ID
 
       const proc = this.processes.get(pid);
@@ -23692,10 +23411,10 @@ export class CentralizedKernelWorker {
     if (this.hostReaped.has(pid)) return signal;
 
     this.#forgetBlockingRetrySnapshotsAfterKernelLifecycle(pid);
-    this.#retireProcessHostTimersWithinKernelEntry(pid, entry);
+    this.#retireProcessHostTimersWithinKernelEntry(pid, entry, true);
     this.hostReaped.add(pid);
     this.releaseAllSharedMemoryForProcess(pid, true, entry);
-    this.notifyParentOfExitedProcess(pid, entry);
+    this.notifyParentOfExitedProcess(pid, entry, this.getParentPid(pid, entry));
     entry.deferProtocolEffect(() => {
       this.callbacks.onExit?.(pid, 128 + signal);
     });
@@ -23736,184 +23455,6 @@ export class CentralizedKernelWorker {
    *  never reused; entries are cleared only with retired host transport state. */
   private hostReaped = new Set<number>();
 
-  /**
-   * Handle SYS_WAIT4: wait for a child process to exit.
-   * Args: [pid, wstatus_ptr, options, rusage_ptr]
-   */
-  private handleWaitpid(
-    channel: ChannelInfo,
-    origArgs: number[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const targetPid = origArgs[0]; // pid argument
-    const wstatusPtr = origArgs[1];
-    const options = origArgs[2] >>> 0;
-    const rusagePtr = origArgs[3];
-    const parentPid = channel.pid;
-
-    const allowedOptions =
-      WAIT_WNOHANG | WAIT_WUNTRACED | WAIT_WSTOPPED | WAIT_WCONTINUED;
-    if ((options & ~allowedOptions) !== 0) {
-      this.completeWaitpid(channel, origArgs, -1, EINVAL, entry);
-      return;
-    }
-    if (
-      !this.isOptionalGuestOutputRangeValid(channel, wstatusPtr, 4) ||
-      !this.isOptionalGuestOutputRangeValid(
-        channel,
-        rusagePtr,
-        STRUCT_SIZE_WASM_RUSAGE_WIRE,
-      )
-    ) {
-      this.completeWaitpid(channel, origArgs, -1, EFAULT, entry);
-      return;
-    }
-
-    const eventMask = this.wait4EventMask(options);
-    const poll = this.pollWaitableChild(
-      channel,
-      targetPid,
-      eventMask,
-      0,
-      entry,
-    );
-    if (poll.kind === "error") {
-      this.completeWaitpid(channel, origArgs, -1, poll.errno, entry);
-      return;
-    }
-    if (poll.kind === "event") {
-      this.writeWait4Result(channel, wstatusPtr, rusagePtr, poll);
-      this.completeWaitpid(channel, origArgs, poll.childPid, 0, entry);
-      return;
-    }
-
-    if (options & WAIT_WNOHANG) {
-      this.completeWaitpid(channel, origArgs, 0, 0, entry);
-      return;
-    }
-
-    const pendingWaiter: WaitingForChild = {
-      ...this.#cancellationPointIdentity(channel),
-      parentPid,
-      channel,
-      origArgs,
-      pid: targetPid,
-      options,
-      syscallNr: SYS_WAIT4,
-    };
-    if (this.interruptWaiterWithPendingSignal(pendingWaiter, entry)) return;
-    if (
-      this.interruptPendingCancellationBeforeRegistration(
-        channel,
-        SYS_WAIT4,
-        pendingWaiter,
-        entry,
-      )
-    ) return;
-
-    // Blocking wait: defer completion until a child exits
-    this.waitingForChild.push(pendingWaiter);
-  }
-
-  private wait4EventMask(options: number): number {
-    let eventMask = WAIT_EVENT_EXITED;
-    if ((options & (WAIT_WUNTRACED | WAIT_WSTOPPED)) !== 0) {
-      eventMask |= WAIT_EVENT_STOPPED;
-    }
-    if ((options & WAIT_WCONTINUED) !== 0) {
-      eventMask |= WAIT_EVENT_CONTINUED;
-    }
-    return eventMask;
-  }
-
-  private waitidEventMask(options: number): number {
-    let eventMask = 0;
-    if ((options & WAIT_WEXITED) !== 0) eventMask |= WAIT_EVENT_EXITED;
-    if ((options & (WAIT_WSTOPPED | WAIT_WUNTRACED)) !== 0) {
-      eventMask |= WAIT_EVENT_STOPPED;
-    }
-    if ((options & WAIT_WCONTINUED) !== 0) eventMask |= WAIT_EVENT_CONTINUED;
-    return eventMask;
-  }
-
-  private pollWaitableChild(
-    channel: ChannelInfo,
-    targetPid: number,
-    eventMask: number,
-    flags: number,
-    entry: KernelWorkerEntryContext,
-  ): WaitPollResult {
-    const waitPoll = this.#kernelInstanceForEntry(entry).exports.kernel_wait_child_poll as (
-      parentPid: number,
-      callerTid: number,
-      targetPid: number,
-      eventMask: number,
-      flags: number,
-      resultPtr: KernelPointer,
-      resultCapacity: number,
-    ) => number;
-    const output = this.#requireMainScratchRegion().withLease((lease) => {
-      const result = this.#invokeEntryScratchExport(
-        entry,
-        lease,
-        "kernel_wait_child_poll",
-        [
-          channel.pid,
-          this.guestTidForChannel(channel),
-          targetPid,
-          eventMask,
-          flags,
-          lease.exportPointer(0, STRUCT_SIZE_KERNEL_WAIT_RESULT),
-          STRUCT_SIZE_KERNEL_WAIT_RESULT,
-        ],
-      );
-      return {
-        result,
-        bytes: result > 0
-          ? lease.copyOut(0, STRUCT_SIZE_KERNEL_WAIT_RESULT)
-          : new Uint8Array(0),
-      };
-    });
-    const { result } = output;
-    if (result > 0) {
-      const view = new DataView(output.bytes.buffer);
-      const rusage = output.bytes.subarray(
-        KERNEL_WAIT_RESULT_RUSAGE_OFFSET,
-        KERNEL_WAIT_RESULT_RUSAGE_OFFSET + STRUCT_SIZE_WASM_RUSAGE_WIRE,
-      );
-      return {
-        kind: "event",
-        childPid: result,
-        waitStatus: view.getInt32(KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET, true),
-        siCode: view.getInt32(KERNEL_WAIT_RESULT_SI_CODE_OFFSET, true),
-        siStatus: view.getInt32(KERNEL_WAIT_RESULT_SI_STATUS_OFFSET, true),
-        childUid: view.getUint32(KERNEL_WAIT_RESULT_CHILD_UID_OFFSET, true),
-        rusage,
-      };
-    }
-    if (result === 0) return { kind: "running" };
-    return { kind: "error", errno: -result >>> 0 };
-  }
-
-  private isOptionalGuestOutputRangeValid(
-    channel: ChannelInfo,
-    ptr: number,
-    size: number,
-  ): boolean {
-    return (
-      ptr === 0 ||
-      isValidMemoryRange(new Uint8Array(channel.memory.buffer), ptr, size)
-    );
-  }
-
-  private isRequiredGuestOutputRangeValid(
-    channel: ChannelInfo,
-    ptr: number,
-    size: number,
-  ): boolean {
-    return isValidMemoryRange(new Uint8Array(channel.memory.buffer), ptr, size);
-  }
-
   private getParentPid(
     pid: number,
     entry: KernelWorkerEntryContext,
@@ -23950,29 +23491,36 @@ export class CentralizedKernelWorker {
     return result;
   }
 
-  private consumeExitedChild(
-    parentPid: number,
-    childPid: number,
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const reapChild = this.#kernelInstanceForEntry(entry).exports.kernel_reap_exited_child as (
-      parentPid: number,
-      childPid: number,
-    ) => number;
-    reapChild(parentPid, childPid);
-  }
-
+  /**
+   * Route a child's exit to its parent's host-owned waits.
+   *
+   * The kernel announces the exit itself (SIGCHLD, or the SA_NOCLDWAIT /
+   * SIG_IGN auto-reap) when it records it, before any wait is decided
+   * (`wait_child::announce_exit`), so the host never generates exit SIGCHLD.
+   * What remains here is transitional: until every wait is kernel-owned
+   * (step 5 of docs/plans/2026-09-27-guest-waits-into-rust.md), a parent
+   * thread parked in a host-owned wait (poll, select, accept, a blocking
+   * pipe I/O) learns of the pending SIGCHLD only through
+   * `sendSignalToProcess`'s interrupt arms, run here without generating.
+   *
+   * Callers that drain before this learn `parentPid` before that drain:
+   * the drain announces the exit and may let a parked parent (or the
+   * auto-reap) consume the zombie, after which its parent is unknown. No
+   * parent means nothing to route. `sendSignalToProcess` drains first, so
+   * the kernel's announcement always precedes the routing.
+   */
   private notifyParentOfExitedProcess(
     pid: number,
     entry: KernelWorkerEntryContext,
+    parentPid: number | undefined,
   ): void {
     // Rust reparented this process's children to synthetic init when it
     // became Exited. Publishing acknowledges that the host has seen the
     // exit, which is when init may reap: its adopted children were waiting
-    // for this, and so is this process if init is its parent (the parent
-    // lookup below then finds no process). Every exit path publishes through
-    // here; Rust publication is idempotent, so a spawn child that exited
-    // before its spawn result was published may safely arrive twice.
+    // for this, and so is this process if init is its parent. Every exit
+    // path publishes through here; Rust publication is idempotent, so a
+    // spawn child that exited before its spawn result was published may
+    // safely arrive twice.
     if (this.#publishKernelProcessExit(pid, entry) > 0) {
       // An applied exit made the kernel send SIGHUP and SIGCONT to a newly
       // orphaned stopped group. Apply the same follow-up as a guest group
@@ -23982,118 +23530,9 @@ export class CentralizedKernelWorker {
       this.scheduleWakeBlockedRetries(entry);
       this.reapKilledProcessesAfterSyscall(entry);
     }
-
-    const parentPid = this.getParentPid(pid, entry);
-    if (parentPid === undefined) return;
-
-    const hasNoCldWait = this.#kernelInstanceForEntry(entry).exports
-      .kernel_has_sa_nocldwait as ((pid: number) => number) | undefined;
-    const autoReap = hasNoCldWait ? hasNoCldWait(parentPid) === 1 : false;
-    if (autoReap) {
-      this.consumeExitedChild(parentPid, pid, entry);
-      // A parent may already be blocked in a wait for this child. Re-poll it
-      // after auto-reap so it observes ECHILD instead of sleeping forever.
-      this.wakeWaitingParent(parentPid, entry);
-      return;
-    }
-
-    this.sendSignalToProcess(parentPid, SIGCHLD, true, entry);
-  }
-
-  private writeWait4Result(
-    channel: ChannelInfo,
-    wstatusPtr: number,
-    rusagePtr: number,
-    result: Extract<WaitPollResult, { kind: "event" }>,
-  ): void {
-    const processMem = new Uint8Array(channel.memory.buffer);
-    if (wstatusPtr !== 0) {
-      new DataView(channel.memory.buffer).setInt32(
-        wstatusPtr,
-        result.waitStatus,
-        true,
-      );
-    }
-    if (rusagePtr !== 0) processMem.set(result.rusage, rusagePtr);
-  }
-
-  /** Complete a waitpid syscall. */
-  private completeWaitpid(
-    channel: ChannelInfo,
-    origArgs: number[],
-    retVal: number,
-    errVal: number,
-    entry: KernelWorkerEntryContext,
-  ): void {
-    // Waitpid is handled host-side (never goes through kernel_handle_channel),
-    // so we must check for pending signals here. Without this, cross-process
-    // signals (e.g., kill from child to parent) are lost — the signal is queued
-    // in the kernel but never dequeued for the blocked parent.
-    this.#dequeueSignalForDelivery(channel, entry);
-    if (this.#finishSignalTermination(channel, entry)) return;
-    this.completeChannel(
-      channel,
-      SYS_WAIT4,
-      origArgs,
-      undefined,
-      retVal,
-      errVal,
-      [],
-      undefined,
-      entry,
-    );
-  }
-
-  private completeWaitid(
-    channel: ChannelInfo,
-    origArgs: number[],
-    retVal: number,
-    errVal: number,
-    entry: KernelWorkerEntryContext,
-  ): void {
-    this.#dequeueSignalForDelivery(channel, entry);
-    if (this.#finishSignalTermination(channel, entry)) return;
-    this.completeChannel(
-      channel,
-      SYS_WAITID,
-      origArgs,
-      undefined,
-      retVal,
-      errVal,
-      [],
-      undefined,
-      entry,
-    );
-  }
-
-  /**
-   * Interrupt one exact host-deferred wait after copying its caught signal to
-   * that thread's channel. The libc glue runs the handler and transparently
-   * reissues wait4/waitid when the delivered action has SA_RESTART.
-   */
-  private interruptWaiterWithPendingSignal(
-    waiter: WaitingForChild,
-    entry: KernelWorkerEntryContext,
-  ): boolean {
-    const deliveredSignal = this.#dequeueSignalForDelivery(
-      waiter.channel,
-      entry,
-    );
-    if (this.#finishSignalTermination(waiter.channel, entry)) return true;
-    if (deliveredSignal <= 0) return false;
-
-    this.completeChannel(
-      waiter.channel,
-      waiter.syscallNr,
-      waiter.origArgs,
-      undefined,
-      -1,
-      EINTR_ERRNO,
-      [],
-      undefined,
-      entry,
-    );
-    return true;
+    // Synthetic init has no guest thread to interrupt.
+    if (parentPid === undefined || parentPid === SYNTHETIC_INIT_PID) return;
+    this.sendSignalToProcess(parentPid, SIGCHLD, false, entry);
   }
 
   #validateKernelSignalTargetTid(targetTid: number): number {
@@ -24163,397 +23602,6 @@ export class CentralizedKernelWorker {
       );
     }
     return result === 1;
-  }
-
-  /**
-   * Give already-available child status priority, then interrupt the one wait
-   * thread selected by the kernel for `signum`. This mirrors the exact-thread
-   * selection used by the other host-owned blocking operations.
-   */
-  private interruptWaitingChildForSignal(
-    targetPid: number,
-    signum: number,
-    entry: KernelWorkerEntryContext,
-  ): boolean {
-    this.wakeWaitingParent(targetPid, entry);
-
-    const targetTid = this.#pickKernelSignalTargetTid(
-      targetPid,
-      signum,
-      entry,
-    );
-    if (targetTid <= 0) return false;
-
-    const waiterIndex = this.waitingForChild.findIndex(
-      (waiter) =>
-        waiter.parentPid === targetPid &&
-        this.isRegisteredChannel(waiter.channel) &&
-        this.guestTidForChannel(waiter.channel) === targetTid,
-    );
-    if (waiterIndex < 0) return false;
-
-    const [waiter] = this.waitingForChild.splice(waiterIndex, 1);
-    if (this.interruptWaiterWithPendingSignal(waiter, entry)) return true;
-
-    // The signal may have been consumed or changed disposition between target
-    // selection and dequeue. Preserve the original wait in that rare race.
-    this.waitingForChild.splice(waiterIndex, 0, waiter);
-    return false;
-  }
-
-  /** Interrupt a wait owned by the exact pthread targeted by tkill(). */
-  private interruptWaitingChildForDirectedSignal(
-    pid: number,
-    tid: number,
-    entry: KernelWorkerEntryContext,
-  ): boolean {
-    const testHook = this.#scratchBoundaryTestHooks
-      ?.interruptWaitingChildForDirectedSignal;
-    if (testHook) return testHook(pid, tid);
-    this.wakeWaitingParent(pid, entry);
-    if (!this.#kernelThreadHasDeliverable(pid, tid, entry)) return false;
-
-    const waiterIndex = this.waitingForChild.findIndex(
-      (waiter) =>
-        waiter.parentPid === pid &&
-        this.isRegisteredChannel(waiter.channel) &&
-        this.guestTidForChannel(waiter.channel) === tid,
-    );
-    if (waiterIndex < 0) return false;
-
-    const [waiter] = this.waitingForChild.splice(waiterIndex, 1);
-    if (this.interruptWaiterWithPendingSignal(waiter, entry)) return true;
-    this.waitingForChild.splice(waiterIndex, 0, waiter);
-    return false;
-  }
-
-  /** Service waiters after a guest-originated kill, including pid/group sends. */
-  private interruptWaitingChildrenForGeneratedSignal(
-    signum: number,
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const testHook = this.#scratchBoundaryTestHooks
-      ?.interruptWaitingChildrenForGeneratedSignal;
-    if (testHook) {
-      testHook(signum);
-      return;
-    }
-    if (signum <= 0) return;
-    const waitingForChild = this.waitingForChild ?? [];
-    const parentPids = new Set(
-      waitingForChild.map((waiter) => waiter.parentPid),
-    );
-    for (const parentPid of parentPids) {
-      this.interruptWaitingChildForSignal(parentPid, signum, entry);
-    }
-  }
-
-  /** Wake a parent blocked in waitpid/waitid when a child exits. */
-  private wakeWaitingParent(
-    parentPid: number,
-    entry: KernelWorkerEntryContext,
-  ): void {
-    this.waitingForChild ??= [];
-    const resolved: Array<{
-      waiter: WaitingForChild;
-      poll: Exclude<WaitPollResult, { kind: "running" }>;
-    }> = [];
-
-    // Poll every matching waiter before publishing any completion. Each
-    // positive result is copied out of kernel scratch by pollWaitableChild,
-    // so later polls and signal delivery cannot overwrite it. A consuming
-    // waiter may reap the selected child; a following exact waiter then
-    // becomes immediately resolvable as ECHILD rather than remaining parked.
-    for (let i = 0; i < this.waitingForChild.length;) {
-      const waiter = this.waitingForChild[i];
-      if (waiter.parentPid !== parentPid) {
-        i++;
-        continue;
-      }
-      if (!this.isRegisteredChannel(waiter.channel)) {
-        this.waitingForChild.splice(i, 1);
-        continue;
-      }
-      const eventMask =
-        waiter.syscallNr === SYS_WAITID
-          ? this.waitidEventMask(waiter.options)
-          : this.wait4EventMask(waiter.options);
-      const pollFlags =
-        waiter.syscallNr === SYS_WAITID ? waiter.options & WAIT_WNOWAIT : 0;
-      const waiterPoll = this.pollWaitableChild(
-        waiter.channel,
-        waiter.pid,
-        eventMask,
-        pollFlags,
-        entry,
-      );
-      if (waiterPoll.kind === "running") {
-        i++;
-        continue;
-      }
-      this.waitingForChild.splice(i, 1);
-      resolved.push({ waiter, poll: waiterPoll });
-    }
-
-    for (const { waiter, poll } of resolved) {
-      if (poll.kind === "error") {
-        if (waiter.syscallNr === SYS_WAITID) {
-          this.completeWaitid(
-            waiter.channel,
-            waiter.origArgs,
-            -1,
-            poll.errno,
-            entry,
-          );
-        } else {
-          this.completeWaitpid(
-            waiter.channel,
-            waiter.origArgs,
-            -1,
-            poll.errno,
-            entry,
-          );
-        }
-        continue;
-      }
-
-      if (waiter.syscallNr === SYS_WAITID) {
-        this.writeWaitidResult(
-          waiter.channel,
-          waiter.origArgs[2],
-          waiter.origArgs[4],
-          poll,
-          processSiginfoLayout(this.getPtrWidth(waiter.channel.pid)),
-        );
-        this.completeWaitid(waiter.channel, waiter.origArgs, 0, 0, entry);
-      } else {
-        this.writeWait4Result(
-          waiter.channel,
-          waiter.origArgs[1],
-          waiter.origArgs[3],
-          poll,
-        );
-        this.completeWaitpid(
-          waiter.channel,
-          waiter.origArgs,
-          poll.childPid,
-          0,
-          entry,
-        );
-      }
-    }
-  }
-
-  /**
-   * Re-check deferred waitpid/waitid calls after a process group change.
-   * When a child changes its pgid (setpgid/setsid), a parent waiting on
-   * waitpid(-pgid) may no longer have matching children → return ECHILD.
-   */
-  private recheckDeferredWaitpids(entry: KernelWorkerEntryContext): void {
-    const parentsWithNewlyMatchingStatus = new Set<number>();
-    // Iterate backwards to safely splice while iterating
-    for (let i = this.waitingForChild.length - 1; i >= 0; i--) {
-      const waiter = this.waitingForChild[i];
-      // Only re-check waiters targeting a specific process group (pid < -1 or pid == 0)
-      if (waiter.pid > 0 || waiter.pid === -1) continue;
-
-      const eventMask =
-        waiter.syscallNr === SYS_WAITID
-          ? this.waitidEventMask(waiter.options)
-          : this.wait4EventMask(waiter.options);
-      // This is a membership/ECHILD probe, not a wait completion. Never let
-      // a process-group change silently consume or reap an eligible event.
-      const pollFlags = WAIT_WNOWAIT;
-      const poll = this.pollWaitableChild(
-        waiter.channel,
-        waiter.pid,
-        eventMask,
-        pollFlags,
-        entry,
-      );
-      if (poll.kind === "error") {
-        // No more matching children — wake with ECHILD
-        this.waitingForChild.splice(i, 1);
-        if (waiter.syscallNr === SYS_WAITID) {
-          this.completeWaitid(
-            waiter.channel,
-            waiter.origArgs,
-            -1,
-            poll.errno,
-            entry,
-          );
-        } else {
-          this.completeWaitpid(
-            waiter.channel,
-            waiter.origArgs,
-            -1,
-            poll.errno,
-            entry,
-          );
-        }
-      } else if (poll.kind === "event") {
-        // The pgid change can make an already-recorded status newly eligible.
-        // The WNOWAIT membership probe deliberately preserved it; service the
-        // parent's waiters afterward with their real consuming/peek flags.
-        parentsWithNewlyMatchingStatus.add(waiter.parentPid);
-      }
-    }
-
-    for (const parentPid of parentsWithNewlyMatchingStatus) {
-      this.wakeWaitingParent(parentPid, entry);
-    }
-  }
-
-  /**
-   * Handle SYS_WAITID: wait for a child process state change.
-   * Args: [idtype, id, siginfo_ptr, options, rusage_ptr]
-   *
-   * Supports P_PID, P_ALL, P_PGID id types and WNOWAIT/WNOHANG/WEXITED flags.
-   * Fills siginfo_t in process memory with si_signo, si_code, si_pid, si_uid, si_status.
-   */
-  private handleWaitid(
-    channel: ChannelInfo,
-    origArgs: number[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const idtype = origArgs[0];
-    const id = origArgs[1];
-    const siginfoPtr = origArgs[2];
-    const options = origArgs[3] >>> 0;
-    const rusagePtr = origArgs[4];
-    const parentPid = channel.pid;
-    const waitPid = this.waitidToWaitPid(idtype, id);
-    const siginfoLayout = processSiginfoLayout(this.getPtrWidth(channel.pid));
-
-    const allowedOptions =
-      WAIT_WNOHANG |
-      WAIT_WNOWAIT |
-      WAIT_WEXITED |
-      WAIT_WSTOPPED |
-      WAIT_WUNTRACED |
-      WAIT_WCONTINUED;
-    const eventMask = this.waitidEventMask(options);
-    if (
-      waitPid === undefined ||
-      (options & ~allowedOptions) !== 0 ||
-      eventMask === 0
-    ) {
-      this.completeWaitid(channel, origArgs, -1, EINVAL, entry);
-      return;
-    }
-    if (
-      !this.isRequiredGuestOutputRangeValid(
-        channel,
-        siginfoPtr,
-        siginfoLayout.size,
-      ) ||
-      !this.isOptionalGuestOutputRangeValid(
-        channel,
-        rusagePtr,
-        STRUCT_SIZE_WASM_RUSAGE_WIRE,
-      )
-    ) {
-      this.completeWaitid(channel, origArgs, -1, EFAULT, entry);
-      return;
-    }
-
-    const poll = this.pollWaitableChild(
-      channel,
-      waitPid,
-      eventMask,
-      options & WAIT_WNOWAIT,
-      entry,
-    );
-    if (poll.kind === "error") {
-      this.completeWaitid(channel, origArgs, -1, poll.errno, entry);
-      return;
-    }
-    if (poll.kind === "event") {
-      this.writeWaitidResult(
-        channel,
-        siginfoPtr,
-        rusagePtr,
-        poll,
-        siginfoLayout,
-      );
-      this.completeWaitid(channel, origArgs, 0, 0, entry);
-      return;
-    }
-
-    if (options & WAIT_WNOHANG) {
-      new Uint8Array(
-        channel.memory.buffer,
-        siginfoPtr,
-        siginfoLayout.size,
-      ).fill(0);
-      this.completeWaitid(channel, origArgs, 0, 0, entry);
-      return;
-    }
-
-    const pendingWaiter: WaitingForChild = {
-      ...this.#cancellationPointIdentity(channel),
-      parentPid,
-      channel,
-      origArgs,
-      pid: waitPid,
-      options,
-      syscallNr: SYS_WAITID,
-    };
-    if (this.interruptWaiterWithPendingSignal(pendingWaiter, entry)) return;
-    if (
-      this.interruptPendingCancellationBeforeRegistration(
-        channel,
-        SYS_WAITID,
-        pendingWaiter,
-        entry,
-      )
-    ) return;
-
-    // Blocking wait: defer until a child exits.
-    this.waitingForChild.push(pendingWaiter);
-  }
-
-  private waitidToWaitPid(idtype: number, id: number): number | undefined {
-    if (!Number.isSafeInteger(id)) return undefined;
-    if (idtype === P_PID) {
-      return id > 0 && id <= 0x7fffffff ? id : undefined;
-    }
-    if (idtype === P_PGID) {
-      return id >= 0 && id <= 0x7fffffff ? (id === 0 ? 0 : -id) : undefined;
-    }
-    if (idtype === P_ALL) return -1;
-    return undefined;
-  }
-
-  /**
-   * Write siginfo_t fields for waitid into process memory.
-   * The generated layout describes both caller widths. `si_status` shares the
-   * siginfo union slot represented by the generated value offset.
-   */
-  private writeWaitidResult(
-    channel: ChannelInfo,
-    siginfoPtr: number,
-    rusagePtr: number,
-    result: Extract<WaitPollResult, { kind: "event" }>,
-    layout: ProcessSiginfoLayout,
-  ): void {
-    const processMem = new Uint8Array(channel.memory.buffer);
-    const procView = new DataView(channel.memory.buffer);
-    processMem.fill(0, siginfoPtr, siginfoPtr + layout.size);
-    procView.setInt32(
-      siginfoPtr + PROCESS_SIGINFO_SIGNO_OFFSET,
-      SIGCHLD,
-      true,
-    );
-    procView.setInt32(
-      siginfoPtr + PROCESS_SIGINFO_CODE_OFFSET,
-      result.siCode,
-      true,
-    );
-    procView.setInt32(siginfoPtr + layout.pidOffset, result.childPid, true);
-    procView.setUint32(siginfoPtr + layout.uidOffset, result.childUid, true);
-    procView.setInt32(siginfoPtr + layout.statusOffset, result.siStatus, true);
-    if (rusagePtr !== 0) processMem.set(result.rusage, rusagePtr);
   }
 
   /**
@@ -24883,11 +23931,6 @@ export class CentralizedKernelWorker {
     // not ask the now-absent Rust process to select a sleeper.
     if (this.hostReaped.has(targetPid)) return;
     if (this.#getProcessExitSignal(targetPid, entry) > 0) return;
-
-    // wait4/waitid live outside the generic retry maps. Prefer any matching
-    // child status, then interrupt only the exact thread selected for this
-    // caught signal. If it was serviced, the signal has been consumed.
-    if (this.interruptWaitingChildForSignal(targetPid, signum, entry)) return;
 
     // Select the exact eligible thread before waking a per-thread blocking
     // channel. A process-level "some thread accepts this" answer is not enough:
@@ -29630,7 +28673,9 @@ export class CentralizedKernelWorker {
     const publish = entry.instance.exports.kernel_publish_spawn_child as
       (parentPid: number, childPid: number) => number;
     // Init reaps its children, so an agent that already exited goes now.
-    if (publish(SYNTHETIC_INIT_PID, pid) >= 0) this.notifyParentOfExitedProcess(pid, entry);
+    if (publish(SYNTHETIC_INIT_PID, pid) >= 0) {
+      this.notifyParentOfExitedProcess(pid, entry, SYNTHETIC_INIT_PID);
+    }
     this.#drainExchangeIfPendingWithinKernelEntry(entry);
   }
 

@@ -938,22 +938,6 @@ describe("Rust-owned host import ranges", () => {
     expect(read).not.toHaveBeenCalled();
   });
 
-  it("rejects an invalid wait status destination before reaping", () => {
-    const waitpid = vi.fn(() => ({ pid: 42, status: 0 }));
-    const { kernel, memory } = kernelHarness({});
-    Object.assign(kernel, { io: { waitpid } });
-    const imports = kernel.testAuthority.buildImportObject(memory) as {
-      env: Record<string, (...args: any[]) => any>;
-    };
-
-    expect(imports.env.host_waitpid(
-      42,
-      0,
-      memory.buffer.byteLength - 2,
-    )).toBe(-14);
-    expect(waitpid).not.toHaveBeenCalled();
-  });
-
   it("rejects network output larger than the Rust-provided capacity", () => {
     const { kernel, memory } = kernelHarness({});
     Object.assign(kernel, {

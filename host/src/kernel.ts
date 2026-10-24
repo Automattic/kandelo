@@ -756,7 +756,6 @@ export interface KmsDisplaySize {
 export interface KernelCallbacks {
   onAlarm?: (seconds: number) => number;
   onPosixTimer?: (timerId: number, signo: number, valueMs: number, intervalMs: number) => number;
-  onWaitpid?: (targetPid: number, options: number) => void;
   onNetListen?: (fd: number, port: number, addr: [number, number, number, number]) => number;
   /** Packed IPv4 source in network byte order, or a negative errno. */
   onUdpSourceAddress?: (destination: [number, number, number, number]) => number;
@@ -914,7 +913,6 @@ export class WasmPosixKernel {
   #rootfsImageProvider:
     | ((offset: bigint, dest: Uint8Array) => number)
     | undefined = undefined;
-  private waitpidSab: SharedArrayBuffer | null = null;
   /**
    * A backend directory iterator may already have advanced before the host
    * bridge discovers that it cannot marshal the returned entry into Wasm
@@ -1691,10 +1689,6 @@ export class WasmPosixKernel {
     return this.sharedPipes;
   }
 
-  registerWaitpidSab(sab: SharedArrayBuffer): void {
-    this.waitpidSab = sab;
-  }
-
   /**
    * Load and instantiate the kernel Wasm module exactly once.
    *
@@ -2268,26 +2262,6 @@ export class WasmPosixKernel {
           return this.#hostUtimensat(
             dir, namePtr, nameLen, atimeSec, atimeNsec, mtimeSec, mtimeNsec, flags,
           );
-        },
-        host_waitpid: (pid: number, options: number, statusPtr: KernelPointer): number => {
-          const hasStatus = typeof statusPtr === "bigint"
-            ? statusPtr !== 0n
-            : statusPtr !== 0;
-          try {
-            return this.#hostWaitpid(
-              pid,
-              options,
-              hasStatus
-                ? this.#rustLentKernelDestination(
-                    statusPtr,
-                    4,
-                    "host_waitpid status destination",
-                  )
-                : null,
-            );
-          } catch {
-            return -14; // EFAULT
-          }
         },
         host_net_connect: (handle: number, addrPtr: KernelPointer, addrLen: number, port: number): number => {
           return this.#hostNetConnect(handle, addrPtr, addrLen, port);
@@ -4135,95 +4109,6 @@ export class WasmPosixKernel {
     } catch (e) {
       return negErrno(e);
     }
-  }
-
-  /**
-   * host_waitpid(pid, options, status_ptr) -> i32
-   * Returns child pid on success, negative errno on error.
-   * Writes wait status to status_ptr.
-   */
-  #hostWaitpid(
-    pid: number,
-    options: number,
-    statusDestination: RustLentKernelDestination | null,
-  ): number {
-    // The import boundary mints this token before either wait backend can
-    // consume child state. Publication rechecks the current Memory generation.
-    // If we have a waitpid callback + SAB, use blocking host delegation
-    if (this.waitpidSab && this.callbacks.onWaitpid) {
-      const view = new IntrinsicInt32Array(this.waitpidSab);
-      intrinsicApply(intrinsicAtomicsStore, Atomics, [view, 0, 0]);
-      intrinsicApply(intrinsicAtomicsStore, Atomics, [view, 1, 0]);
-      intrinsicApply(intrinsicAtomicsStore, Atomics, [view, 2, 0]);
-
-      this.callbacks.onWaitpid(pid, options);
-
-      // Block until host signals completion
-      intrinsicApply(intrinsicAtomicsWait, Atomics, [view, 0, 0]);
-
-      const resultPid = intrinsicApply(
-        intrinsicAtomicsLoad,
-        Atomics,
-        [view, 1],
-      ) as number;
-      const resultStatus = intrinsicApply(
-        intrinsicAtomicsLoad,
-        Atomics,
-        [view, 2],
-      ) as number;
-
-      if (resultPid < 0) {
-        return resultPid; // negative errno
-      }
-
-      if (statusDestination !== null) {
-        const bytes = new IntrinsicUint8Array(4);
-        dataViewSetInt32(
-          new IntrinsicDataView(typedArrayBuffer(bytes)),
-          0,
-          resultStatus,
-          true,
-        );
-        try {
-          this.#writeKernelBytes(
-            statusDestination,
-            bytes,
-          );
-        } catch {
-          return -14; // EFAULT
-        }
-      }
-      return resultPid;
-    }
-
-    // Fallback to PlatformIO
-    if (!this.io.waitpid) {
-      return -10; // -ECHILD
-    }
-    let result: { pid: number; status: number };
-    try {
-      result = this.io.waitpid(pid, options);
-    } catch {
-      return -10; // -ECHILD
-    }
-    if (statusDestination !== null) {
-      const bytes = new IntrinsicUint8Array(4);
-      dataViewSetInt32(
-        new IntrinsicDataView(typedArrayBuffer(bytes)),
-        0,
-        result.status,
-        true,
-      );
-      try {
-        this.#writeKernelBytes(
-          statusDestination,
-          bytes,
-        );
-      } catch {
-        return -14; // EFAULT
-      }
-    }
-    return result.pid;
   }
 
   /**

@@ -382,11 +382,14 @@ describe("clone and exit entry authority", () => {
 
       harness.worker.handleSyscall(harness.channel);
 
+      // The parent is learned before the first drain: that drain announces
+      // the exit, and a parked parent (or the SA_NOCLDWAIT auto-reap) may
+      // consume the zombie in it.
       expect(orderAtCallback).toEqual([
         "Rust exit commit",
         "Rust state proof",
-        "Rust wake drain",
         "Rust parent query",
+        "Rust wake drain",
         "Rust wake drain",
         "host exit callback",
       ]);

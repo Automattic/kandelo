@@ -909,7 +909,6 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_transfer_scratch_capacity",
   "kernel_transfer_scratch_pointer",
   "kernel_validate_task",
-  "kernel_wait_child_poll",
   "kernel_wait_next_timeout_ns",
 ] as const;
 
@@ -1309,12 +1308,6 @@ export const STRUCT_SIZE_WASM_SYSV_MESSAGE_HEADER = 8 as const;
 export const STRUCT_SIZE_WASM_STATFS = 72 as const;
 export const STRUCT_SIZE_WPK_DRM_MODE_MODEINFO = 68 as const;
 export const STRUCT_SIZE_WASM_RUSAGE_WIRE = 144 as const;
-export const STRUCT_SIZE_KERNEL_WAIT_RESULT = 160 as const;
-export const KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET = 0 as const;
-export const KERNEL_WAIT_RESULT_SI_CODE_OFFSET = 4 as const;
-export const KERNEL_WAIT_RESULT_SI_STATUS_OFFSET = 8 as const;
-export const KERNEL_WAIT_RESULT_CHILD_UID_OFFSET = 12 as const;
-export const KERNEL_WAIT_RESULT_RUSAGE_OFFSET = 16 as const;
 
 export const HOST_INTERCEPTED_SYSCALLS = {
   SYS_EXECVE: 211,
@@ -1623,6 +1616,7 @@ export const CHANNEL_SCALAR_SLOT_CONTRACTS: Readonly<
   136: { 0: "process-size", },
   137: { 1: "process-address", },
   138: { 1: "process-address", },
+  139: { 1: "process-address", 3: "process-address", },
   200: { 0: "process-address", },
   203: { 0: "process-address", },
   237: { 1: "u32", },
@@ -1636,6 +1630,7 @@ export const CHANNEL_SCALAR_SLOT_CONTRACTS: Readonly<
   279: { 0: "process-address", 1: "process-size", },
   280: { 0: "process-address", 1: "process-size", },
   281: { 0: "process-address", 1: "process-size", },
+  288: { 2: "process-address", 4: "process-address", },
   290: { 4: "process-size", },
   291: { 4: "process-size", },
   293: { 1: "i64", 2: "process-size", },
@@ -2452,10 +2447,6 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   138: [
     { argIndex: 1, direction: "inout", size: { type: "kernel-dereferenced" }, nullable: true },
   ],
-  139: [
-    { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 }, nullable: true },
-    { argIndex: 3, direction: "out", size: { type: "fixed", size: 144 }, nullable: true },
-  ],
   140: [
     { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 256, tooLongErrno: 36 }, required: true },
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 4 }, required: true },
@@ -2535,10 +2526,6 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   ],
   272: [
     { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, required: true },
-  ],
-  288: [
-    { argIndex: 2, direction: "out", size: { type: "process-layout", wasm32Size: 128, wasm64Size: 128 }, required: true },
-    { argIndex: 4, direction: "out", size: { type: "fixed", size: 144 }, nullable: true },
   ],
   290: [
     { argIndex: 1, direction: "inout", size: { type: "fixed", size: 8 }, nullable: true },

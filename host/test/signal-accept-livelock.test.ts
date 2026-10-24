@@ -42,7 +42,6 @@ import { emptyProcessTimerCleanup } from "./kernel-worker-test-scratch";
 
 const SIGCHLD = 17;
 const SIGTERM = 15;
-const SYS_TKILL = 204;
 const ESRCH = 3;
 const SCRATCH_OFFSET = 4096;
 
@@ -545,34 +544,5 @@ describe("signal delivery to a process blocked in accept()", () => {
     expect(setCurrentTid).not.toHaveBeenCalled();
     expect(handleChannel).not.toHaveBeenCalled();
     expect(state.currentHandlePid).toBe(priorPid);
-  });
-
-  it("does not downgrade a successful directed tkill to a shared wake", () => {
-    const harness = createWorkerHarness();
-    const pid = 55;
-    const targetTid = 56;
-    const channel = createChannel(pid);
-    registerProcess(harness, pid, [channel]);
-    const processView = new DataView(channel.memory.buffer);
-    processView.setUint32(CH_SYSCALL, SYS_TKILL, true);
-    processView.setBigInt64(CH_ARGS, BigInt(targetTid), true);
-    processView.setBigInt64(
-      CH_ARGS + CH_ARG_SIZE,
-      BigInt(SIGCHLD),
-      true,
-    );
-    const exactWake = vi.fn(() => false);
-    const sharedWake = vi.fn();
-    harness.worker.testAuthority.configureScratchBoundaryHooksForTest({
-      synchronizeSharedMemoryForBoundary: vi.fn(),
-      scheduleWakeBlockedRetries: vi.fn(),
-      interruptWaitingChildForDirectedSignal: exactWake,
-      interruptWaitingChildrenForGeneratedSignal: sharedWake,
-    });
-
-    harness.worker.testAuthority.dispatchScratchBoundarySyscallForTest(channel);
-
-    expect(exactWake).toHaveBeenCalledWith(pid, targetTid);
-    expect(sharedWake).not.toHaveBeenCalled();
   });
 });

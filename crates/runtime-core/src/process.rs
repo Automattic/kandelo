@@ -275,7 +275,6 @@ pub trait HostIO {
     ) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
-    fn host_waitpid(&mut self, pid: i32, options: u32) -> Result<(i32, i32), Errno>;
     fn host_net_connect(&mut self, handle: i32, addr: &[u8], port: u16) -> Result<(), Errno>;
     fn host_net_connect_from(
         &mut self,
@@ -1606,6 +1605,7 @@ impl Process {
     }
 
     fn set_wait_event(&mut self, event_mask: u32, wait_status: i32, si_code: i32, si_status: i32) {
+        crate::wait_park::note_children_changed();
         self.wait_event = Some(ChildWaitEvent {
             event_mask,
             wait_status,
@@ -1674,6 +1674,7 @@ impl Process {
             status,
         );
         crate::process_table::queue_process_exit(self.pid);
+        crate::wait_park::note_child_exited(self.pid);
         true
     }
 
@@ -1694,6 +1695,7 @@ impl Process {
             signum as i32,
         );
         crate::process_table::queue_process_exit(self.pid);
+        crate::wait_park::note_child_exited(self.pid);
         true
     }
 
@@ -2773,9 +2775,6 @@ pub mod test_host {
             }
             Ok(b.len())
         }
-        fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
-            Err(Errno::ECHILD)
-        }
         fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> {
             Ok(())
         }
@@ -2947,9 +2946,6 @@ pub mod test_host {
         }
         fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {
             NoopHost.host_getrandom(b)
-        }
-        fn host_waitpid(&mut self, p: i32, o: u32) -> Result<(i32, i32), Errno> {
-            NoopHost.host_waitpid(p, o)
         }
         fn host_net_connect(&mut self, h: i32, a: &[u8], p: u16) -> Result<(), Errno> {
             NoopHost.host_net_connect(h, a, p)

@@ -86,12 +86,16 @@ pub enum Resume {
         remainder: Option<u64>,
         deadline: MonotonicNs,
     },
+    /// `wait4` / `waitid`: a child's state change or a signal ends it. The
+    /// kernel re-polls the request whenever a child's waitable state changes
+    /// ([`note_children_changed`]); see `crate::wait_child`.
+    Child(crate::wait_child::ChildWait),
 }
 
 impl Resume {
     fn woken_value(self) -> i32 {
         match self {
-            Resume::Futex { .. } | Resume::Sleep { .. } => 0,
+            Resume::Futex { .. } | Resume::Sleep { .. } | Resume::Child(_) => 0,
         }
     }
 
@@ -100,6 +104,8 @@ impl Resume {
             Resume::Futex { .. } => -(Errno::ETIMEDOUT as i32),
             // A sleep that ran its course succeeded.
             Resume::Sleep { .. } => 0,
+            // Child waits carry no deadline.
+            Resume::Child(_) => -(Errno::ETIMEDOUT as i32),
         }
     }
 
@@ -110,6 +116,9 @@ impl Resume {
             // Linux answers a sleep a caught handler interrupted with EINTR
             // whatever SA_RESTART says (nanosleep(2), signal(7)).
             Resume::Sleep { .. } => wire::FLAG_SUPPRESS_RESTART,
+            // wait4/waitid restart under SA_RESTART (signal(7)); the libc
+            // glue reissues them.
+            Resume::Child(_) => 0,
         }
     }
 
@@ -189,6 +198,12 @@ pub struct Parks {
     signals_dirty: bool,
     /// See [`note_parked_result`].
     last_park: Option<u64>,
+    /// Set whenever a child's waitable state changes; cleared by the kernel
+    /// pass that re-polls parked `wait4`/`waitid` callers.
+    children_dirty: bool,
+    /// Processes whose exit is recorded but not yet announced to the parent
+    /// (SIGCHLD, or the SA_NOCLDWAIT auto-reap); see [`note_child_exited`].
+    exit_notices: Vec<u32>,
 }
 
 impl Default for Parks {
@@ -205,6 +220,8 @@ impl Parks {
             completions: VecDeque::new(),
             signals_dirty: false,
             last_park: None,
+            children_dirty: false,
+            exit_notices: Vec::new(),
         }
     }
 
@@ -285,7 +302,7 @@ impl Parks {
         let woken = self.queue.wake_limited(WakeSource::Futex { pid, addr }, max, |s| {
             match resume.get(&s.id) {
                 Some(Resume::Futex { bitset: mine, .. }) => mine & bitset != 0,
-                Some(Resume::Sleep { .. }) | None => false,
+                Some(Resume::Sleep { .. } | Resume::Child(_)) | None => false,
             }
         });
         let count = woken.len();
@@ -341,6 +358,44 @@ impl Parks {
         self.queue
             .next_deadline_ns()
             .map(|deadline| deadline.saturating_sub(now_ns).max(0))
+    }
+
+    pub fn note_children_changed(&mut self) {
+        self.children_dirty = true;
+    }
+
+    /// The parked `wait4`/`waitid` callers, oldest first, if a child's state
+    /// changed since the last call. The kernel re-polls each and reports a
+    /// decision with [`Self::finish_child_waiter`].
+    pub fn take_dirty_child_waiters(&mut self) -> Option<Vec<(WaiterId, u32, u32, crate::wait_child::ChildWait)>> {
+        if !core::mem::take(&mut self.children_dirty) {
+            return None;
+        }
+        let resume = &self.resume;
+        Some(
+            self.queue
+                .iter()
+                .filter_map(|s| match resume.get(&s.id) {
+                    Some(Resume::Child(wait)) => Some((s.id, s.pid, s.tid, *wait)),
+                    _ => None,
+                })
+                .collect(),
+        )
+    }
+
+    /// Decide the child wait `id` of `parent` that the kernel re-polled.
+    /// Returns false if it is no longer parked.
+    pub fn finish_child_waiter(&mut self, id: WaiterId, parent: u32, value: i32) -> bool {
+        match self
+            .queue
+            .remove_with_reason(id, WakeReason::Source(WakeSource::ChildEvent { parent }))
+        {
+            Some(wakeup) => {
+                self.finish(wakeup, value, 0);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn note_signal_generated(&mut self) {
@@ -546,6 +601,46 @@ pub fn note_parked_result(generation: u64) {
 
 pub fn take_parked_result() -> Option<u64> {
     with(|p| p.last_park.take())
+}
+
+/// A child's waitable state changed: an event was recorded, a zombie was
+/// reaped, a process group changed, or a spawned child was published. Parked
+/// `wait4`/`waitid` callers are re-polled by the next settle.
+pub fn note_children_changed() {
+    with(|p| p.note_children_changed());
+}
+
+/// A process's exit was just recorded. Its parent is told (SIGCHLD, or an
+/// SA_NOCLDWAIT/SIG_IGN auto-reap) by the kernel's next exit-notice pass,
+/// which always runs before any wait is re-decided, so a parent's `wait`
+/// never returns an exit whose SIGCHLD has not been generated (Linux's
+/// exit_notify order).
+///
+/// WHY a queue and not an inline signal: the exit is recorded on the child's
+/// `Process`, which has no access to its parent; the pass runs where the
+/// process table is in hand.
+pub fn note_child_exited(pid: u32) {
+    with(|p| {
+        p.exit_notices.push(pid);
+        p.children_dirty = true;
+    });
+}
+
+/// Take the queued exit notices, oldest first.
+pub fn take_exit_notices() -> Vec<u32> {
+    with(|p| core::mem::take(&mut p.exit_notices))
+}
+
+/// Put back notices that cannot be announced yet (an unpublished spawn
+/// child), ahead of any queued since.
+pub fn requeue_exit_notices(mut pids: Vec<u32>) {
+    if pids.is_empty() {
+        return;
+    }
+    with(|p| {
+        pids.append(&mut p.exit_notices);
+        p.exit_notices = pids;
+    });
 }
 
 /// Called from `Process::prepare_signal_generation`.
@@ -881,6 +976,54 @@ mod tests {
             i32::from_le_bytes(out[16..20].try_into().unwrap()),
             -(Errno::EFAULT as i32)
         );
+    }
+
+    fn child_wait(parks: &mut Parks, pid: u32, tid: u32) -> u64 {
+        let wait = crate::wait_child::ChildWait::wait4(-1, 0, 0, 0).unwrap();
+        parks
+            .park(
+                pid,
+                tid,
+                WaitKind::ChildWait { options: 0 },
+                vec![WakeSource::ChildEvent { parent: pid }],
+                None,
+                Resume::Child(wait),
+            )
+            .expect("park")
+    }
+
+    #[test]
+    fn child_waiters_are_offered_only_after_a_child_change() {
+        let mut parks = Parks::new();
+        let generation = child_wait(&mut parks, 5, 5);
+        futex(&mut parks, 5, 6, 0x10, None);
+        assert_eq!(parks.take_dirty_child_waiters(), None, "nothing changed yet");
+        parks.note_children_changed();
+        let waiters = parks.take_dirty_child_waiters().expect("dirty");
+        assert_eq!(waiters.len(), 1, "only the child wait is offered, not the futex");
+        let (id, pid, tid, _) = waiters[0];
+        assert_eq!((pid, tid), (5, 5));
+        assert_eq!(parks.take_dirty_child_waiters(), None, "the flag is consumed");
+
+        assert!(parks.finish_child_waiter(id, pid, 42));
+        assert_eq!(
+            parks.take_completions(),
+            vec![Completion { generation, pid: 5, tid: 5, value: 42, flags: 0, remainder: None }]
+        );
+        assert!(!parks.finish_child_waiter(id, pid, 42), "a decided waiter is gone");
+    }
+
+    #[test]
+    fn an_interrupted_child_wait_may_be_restarted() {
+        let (mut table, pid) = table_with_process();
+        let mut parks = Parks::new();
+        child_wait(&mut parks, pid, pid);
+        table.get_mut(pid).unwrap().raise_signal(wasm_posix_shared::signal::SIGUSR1);
+        parks.note_signal_generated();
+        parks.sweep_signals(&table);
+        let done = parks.take_completions();
+        assert_eq!(done[0].value, -(Errno::EINTR as i32));
+        assert_eq!(done[0].flags, 0, "SA_RESTART restarts wait4/waitid");
     }
 
     #[test]
