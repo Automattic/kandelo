@@ -2367,7 +2367,7 @@ function localProductArtifactExists(source: VfsProductSource): boolean {
 function localProductBuildCommand(source: VfsProductSource): string | undefined {
   if (source.kind === "url") return undefined;
   return source.kind === "optional-demo"
-    ? "./run.sh fetch"
+    ? "./run.sh local-build"
     : "./run.sh build programs";
 }
 
