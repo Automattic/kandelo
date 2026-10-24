@@ -64,9 +64,11 @@ export class GlFenceOwner {
   private serial = 0;
   private closed = false;
 
-  prepare(source: CheckedGlOwner): GlFenceCandidate | null {
+  prepare(source: CheckedGlOwner, requestToken?: number): GlFenceCandidate | null {
+    this.pruneCompleted();
     const gl = source.gl;
-    if (this.closed || !gl || this.serial >= 0xffff_ffff) return null;
+    const token = requestToken ?? this.serial + 1;
+    if (this.closed || !gl || !Number.isInteger(token) || token <= this.serial || token > 0xffff_ffff) return null;
     let fence: Fence | undefined;
     let retirement: NativeRetirement | null = null;
     try {
@@ -78,7 +80,8 @@ export class GlFenceOwner {
       const deletion: ["deleteSync", WebGLSync | null] = ["deleteSync", null];
       retirement = reserveNativeRetirement(owner, [deletion]);
       if (!retirement) return null;
-      fence = { token: ++this.serial, owner, deletion, retirement,
+      this.serial = token;
+      fence = { token, owner, deletion, retirement,
         published: false, destroyed: false, references: 0 };
       const candidate = new GlFenceCandidate(this, fence);
       this.fences.set(fence.token, fence);
@@ -114,6 +117,23 @@ export class GlFenceOwner {
       return lease;
     } catch { return null; }
   }
+  has(token: number): boolean {
+    const fence = this.fences.get(token);
+    return !!fence?.published && !fence.destroyed;
+  }
+  /** The client knows this token before creation, so a lost reply can be
+   * cancelled. Advance the high-water mark even if cancellation beats a late
+   * create request; that older request must never revive the abandoned sync. */
+  abandon(token: number): boolean {
+    if (!Number.isInteger(token) || token < 1 || token > 0xffff_ffff) return false;
+    this.serial = Math.max(this.serial, token);
+    const fence = this.fences.get(token);
+    if (fence && !fence.destroyed) {
+      fence.destroyed = true;
+      this.collect(fence);
+    }
+    return true;
+  }
   destroy(token: number): boolean {
     const fence = this.fences.get(token);
     if (!fence?.published || fence.destroyed) return false;
@@ -127,12 +147,19 @@ export class GlFenceOwner {
   }
   private collect(fence: Fence): void {
     if (!fence.destroyed || fence.references !== 0) return;
-    this.fences.delete(fence.token);
     // Rejected native deletion remains in the preallocated retirement owner,
     // fences physical-context admission and survives this session's removal.
-    retireNativeRetirement(fence.retirement);
+    // Keep failed receipts discoverable by teardown even after the logical
+    // context disappears. Public lookup already rejects destroyed records.
+    if (retireNativeRetirement(fence.retirement)) this.fences.delete(fence.token);
+  }
+  private pruneCompleted(): void {
+    for (const [token, fence] of this.fences) {
+      if (fence.destroyed && fence.references === 0 && fence.retirement.complete) this.fences.delete(token);
+    }
   }
   contexts(): Set<WebGL2RenderingContext> {
+    this.pruneCompleted();
     return new Set([...this.fences.values()].map(fence => fence.owner.gl!));
   }
   close(): void {

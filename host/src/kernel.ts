@@ -1,6 +1,6 @@
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
 import { querySurfaceCapabilities, surfaceCapabilityRenderer } from "./webgl/surface-capabilities.js";
-import { QOP_SURFACE_CAPABILITIES, QOP_FINISH } from "./webgl/ops.js";
+import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH } from "./webgl/ops.js";
 /**
  * WasmPosixKernel — Loads the kernel Wasm module and provides host
  * import functions that bridge Wasm syscalls to the PlatformIO backend.
@@ -41,6 +41,7 @@ import { GlContextRegistry, type GlBinding } from "./webgl/registry";
 import { applyCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable } from "./webgl/current";
 import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
+import { isFenceQuery, validFenceQuery, prepareFenceQuery, type PreparedFenceQuery } from "./webgl/fence-query";
 import { SubmitQueue } from "./webgl/submit-queue";
 import { GlMuxer } from "./webgl/muxer";
 import { drainSubmitQueue } from "./webgl/submit-drain";
@@ -997,7 +998,14 @@ export class WasmPosixKernel {
   private gl_muxers = new WeakMap<WebGL2RenderingContext, GlMuxer>();
 
   private prepareForeignRetirements(b: GlBinding): boolean {
-    if (b.gl && !repairNativeState(b.gl)) return false;
+    if (b.gl) {
+      try {
+        // Cleanup may belong to an already retired owner. Preserve the
+        // currently selected peer's flags before replaying that cleanup.
+        this.gl_muxers.get(b.gl)?.captureCurrentErrors();
+        if (!repairNativeState(b.gl)) return false;
+      } catch { return false; }
+    }
     if (!this.gl.hasForeignRetirements()) return true;
     for (const gl of this.gl.foreignRetirementContexts()) this.gl_muxers.get(gl)?.invalidateCurrent();
     this.gl.retryForeignRetirements();
@@ -2895,7 +2903,7 @@ export class WasmPosixKernel {
           outPtr: KernelPointer, outLen: KernelPointer, sessionId?: number,
         ): number => {
           const b = this.gl.get(pid, sessionId);
-          if (!b || (!b.gl && !b.forward && op !== QOP_SURFACE_CAPABILITIES)) return -1;
+          if (!b || (!b.gl && !b.forward && op !== QOP_SURFACE_CAPABILITIES && !isFenceQuery(op))) return -1;
           let inputLength: number;
           let outputLength: number;
           let outputDestination: RustLentKernelDestination | null = null;
@@ -2921,7 +2929,7 @@ export class WasmPosixKernel {
             return -14; // EFAULT
           }
           if (op === QOP_SURFACE_CAPABILITIES && (inputLength !== 0 || outputLength !== 16)) return -22;
-          if (op === QOP_FINISH && (inputLength !== 0 || outputLength !== 0)) return -22;
+          if ((op === QOP_FINISH || op === QOP_FLUSH) && (inputLength !== 0 || outputLength !== 0)) return -22;
           let inBuf: Uint8Array;
           try {
             inBuf = inputLength > 0
@@ -2930,8 +2938,10 @@ export class WasmPosixKernel {
           } catch {
             return -14; // EFAULT
           }
+          if (isFenceQuery(op) && !validFenceQuery(inBuf,outputLength)) return -22;
           let outBuf: Uint8Array;
           let written: number;
+          let preparedFence: PreparedFenceQuery | undefined;
           try {
             if (!this.prepareForeignRetirements(b)) return -5;
             if (b.forward) {
@@ -2941,7 +2951,12 @@ export class WasmPosixKernel {
               outBuf = result.bytes;
             } else {
               outBuf = new IntrinsicUint8Array(outputLength);
-              if (op === QOP_SURFACE_CAPABILITIES) {
+              if (isFenceQuery(op)) {
+                preparedFence = prepareFenceQuery(b,op,inBuf,outBuf,
+                  gl => this.gl_muxers.get(gl)?.captureCurrentErrors(),
+                  () => { if (b.gl) this.glMuxerFor(b.gl).switchTo(b); });
+                written = preparedFence.rc;
+              } else if (op === QOP_SURFACE_CAPABILITIES) {
                 let canvas = b.canvas;
                 if (!canvas && this.kms.isMasterPid(pid)) {
                   const crtc = this.kms.masterCrtcForPid(pid) ?? this.callbacks.getKmsCrtcIds?.()[0];
@@ -2962,20 +2977,23 @@ export class WasmPosixKernel {
           } catch {
             return -5; // EIO: renderer/transport failed without a reply
           }
-          if (!Number.isSafeInteger(written)) return -5;
-          if (written < 0) return written;
-          if (written > outputLength) return -5;
-          if (written > 0) {
-            if (outputDestination === null) return -5;
-            try {
-              if (written > typedArrayByteLength(outBuf)) return -5;
-              this.#writeKernelBytes(
-                outputDestination,
-                subarrayUint8Array(outBuf, 0, written),
-              );
-            } catch { return -5; }
-          }
-          return written;
+          try {
+            if (!Number.isSafeInteger(written)) return -5;
+            if (written < 0) return written;
+            if (written > outputLength) return -5;
+            if (written > 0) {
+              if (outputDestination === null) return -5;
+              try {
+                if (written > typedArrayByteLength(outBuf)) return -5;
+                this.#writeKernelBytes(
+                  outputDestination,
+                  subarrayUint8Array(outBuf, 0, written),
+                );
+              } catch { return -5; }
+            }
+            if (preparedFence?.candidate && !preparedFence.candidate.publish()) return -5;
+            return written;
+          } finally { preparedFence?.candidate?.cancel(); }
         },
         // DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE: upload a CPU-tier bo's
         // pixels (canonical storage: the DRI registry SAB) into a

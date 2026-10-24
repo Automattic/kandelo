@@ -2251,3 +2251,50 @@ test("native fence waiters retain completion and pixels after creator-context de
     afterSecond: 1, afterUnbind: 1, nativeLive: false, error: 0 });
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
+
+for (const mode of ["native", "forwarded"] as const) {
+  test(`retained fence wire queries preserve completion and pixels through ${mode} host imports`, async ({ page }) => {
+    const root = fileURLToPath(new URL("../../../", import.meta.url));
+    await installBrowserMemoryBoundaryProbe(page);
+    await page.goto("/trap-signal-test.html");
+    const result = await page.evaluate(async ({ sourceRoot, mode }) => {
+      const { setupMainForward } = await import(`/@fs/${sourceRoot}host/src/webgl/main-forward.ts`);
+      const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+      document.body.replaceChildren(canvas);
+      const worker = new Worker("/test/support/fence-query-worker.ts", { type: "module" });
+      let dispose: (() => void) | undefined;
+      let gl: WebGL2RenderingContext | null = null, created = 0, deleted = 0;
+      if (mode === "forwarded") {
+        gl = canvas.getContext("webgl2", { antialias: false, preserveDrawingBuffer: true });
+        if (!gl) throw new Error("Main WebGL2 required");
+        const allocate = gl.fenceSync.bind(gl), destroy = gl.deleteSync.bind(gl);
+        gl.fenceSync = (condition, flags) => { const value = allocate(condition, flags); if (value) created++; return value; };
+        gl.deleteSync = sync => { if (sync) deleted++; destroy(sync); };
+        dispose = setupMainForward(worker, canvas, 91);
+      }
+      try {
+        const reply = await new Promise<any>((resolve, reject) => {
+          const deadline = setTimeout(() => reject(new Error("Fence worker timed out")), 15000);
+          worker.onerror = error => { clearTimeout(deadline); reject(new Error(error.message)); };
+          worker.addEventListener("message", ({ data }) => {
+            if (data.type === "fence_query_result") { clearTimeout(deadline); resolve(data); }
+          });
+          if (mode === "native") {
+            const offscreen = canvas.transferControlToOffscreen();
+            worker.postMessage({ type: "start_fence_query", mode, canvas: offscreen }, [offscreen]);
+          } else worker.postMessage({ type: "start_fence_query", mode });
+        });
+        if (reply.error) throw new Error(reply.error);
+        if (gl) {
+          const pixels = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+          if (gl.getError() !== 0) throw new Error("Forwarded GL error");
+          reply.pixels = [...pixels]; reply.created = created; reply.deleted = deleted;
+        }
+        return reply;
+      } finally { dispose?.(); worker.terminate(); }
+    }, { sourceRoot: process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? root, mode });
+    expect(result).toEqual({ type: "fence_query_result", signaled: true, retired: 2,
+      created: 1, deleted: 1, pixels: [255, 0, 0, 255] });
+    expect(await memoryBoundaryFailures(page)).toEqual([]);
+  });
+}

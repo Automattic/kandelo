@@ -117,7 +117,7 @@ export function runGlQuery(
   input: Uint8Array,
   out: Uint8Array,
 ): number {
-  if (op === O.QOP_FINISH && (input.byteLength !== 0 || out.byteLength !== 0)) return -22;
+  if ((op === O.QOP_FINISH || op === O.QOP_FLUSH) && (input.byteLength !== 0 || out.byteLength !== 0)) return -22;
   if (op === O.QOP_SURFACE_CAPABILITIES) {
     if (input.byteLength !== 0 || out.byteLength !== 16) return -22;
     if (!b.gl) return -1;
@@ -415,6 +415,12 @@ export function runGlQuery(
 
     // glFinish. The query is answered after the host has decoded every
     // earlier command, so finishing the context here completes them all.
+    case O.QOP_FLUSH:
+      return checkedGlCall(b, () => {
+        if (gl.isContextLost()) throw new Error("Cannot flush a lost renderer");
+        gl.flush();
+        if (gl.isContextLost()) throw new Error("Renderer lost during flush");
+      }) ? 0 : -5;
     case O.QOP_FINISH:
       return checkedGlCall(b, () => {
         if (gl.isContextLost()) throw new Error("Cannot finish a lost renderer");

@@ -4014,7 +4014,7 @@ the query ioctl owns its null-pointer semantics.
 The combined graphics branch uses ABI 54, one version above current main's
 ABI 53. It joins main's xattr, exchange and current process lifecycle
 contracts with the graphics interfaces from earlier development versions.
-Operation table 16 remains independently versioned. Generated source metadata
+Operation table 17 remains independently versioned. Generated source metadata
 is coherent; normal SDK/program/package/image and compositor validation still
 requires rebuilding the combined artifacts.
 
@@ -4207,7 +4207,7 @@ guest marshalling and the public C cross-context facade remain unvalidated.
 
 The GLES bridge exposes a GLES2 API over WebGL2. Operation-table version 2
 adds commands while preserving version 1 tags and payloads. `GLIO_INIT`
-accepts versions 1 through 16, and rejects zero or newer versions with `ENOSYS`.
+accepts versions 1 through 17, and rejects zero or newer versions with `ENOSYS`.
 Its version and extension strings describe that API. Extension queries carry
 an optional operation-table version: legacy requests retain their empty list,
 while version 2 advertises bridged capabilities. Optional float rendering and
@@ -4310,9 +4310,20 @@ in the existing native-retirement queue and blocks dependent admission.
 Records retain native handles and private error flags, with no guest memory
 or binding callback. Kernel and forwarded teardown capture errors from all
 retained native contexts, including fences whose creator is already gone.
-This source model is not yet connected to public EGL sync entry points:
-display-level handles, query authority, timeouts and server ordering remain
-implementation work in the compatibility inventory.
+Operation table 17 connects this owner to create/status/release queries.
+Each request carries one nonzero, monotonically allocated client token;
+its 16-byte reply contains status, echoed token, a signaled bit and magic.
+The client knows the token before creation, so cancellation can retire a
+lost reply and tombstone a request delivered late. Duplicate creation
+returns the retained identity without inserting another native fence.
+Creation requires current-thread and live-display authority. Status and
+release require a mapped, native-live object session owned by the caller,
+including after its creator/display root retires; this grants no ordinary
+GL query authority. Direct and forwarded replies publish creation only
+after output acceptance. Empty-payload flush has a separate acknowledgement
+and does not imply completion. The C sync entry points, display-level
+handles, timeout loops and server ordering remain implementation work;
+C glFlush is not yet routed to the new flush query.
 
 The main-thread fallback supports synchronous queries through one reusable
 65,556-byte device mailbox per channel, matching the kernel's 64 KiB query

@@ -2087,7 +2087,15 @@ Keep ABI 54 across implementation increments. Regenerate the full snapshot,
 C/TypeScript declarations and standalone resolver from the combined source.
 Normal SDK/kernel/program/package/image artifacts must be rebuilt together
 before the complete consumer/conformance phase. The independent GL
-operation table remains version 16.
+operation table is independently versioned; its current version is 17.
+
+Operation table 17 adds retained native-fence create/status/release queries
+and a flush acknowledgement. Fence requests carry a client-known nonzero
+u32 token and return four u32 words (status, echoed token, signaled bit,
+reply magic). Status/release authorize retained object sessions without a
+current context; creation retains live-display/current-thread checks. No
+marshalled structure or kernel-import signature changes. ABI 54 remains
+fixed for this unpublished combined effort as requested by the user.
 
 
 ## The snapshot

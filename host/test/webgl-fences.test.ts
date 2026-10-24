@@ -297,3 +297,17 @@ it("refuses token exhaustion instead of wrapping onto an older identity", () => 
   value.owner.destroy(finalToken);
   expect(value.native.deleted).toHaveLength(1);
 });
+
+it.each(["candidate", "published"] as const)("keeps the native context reachable for rejected %s cleanup through owner retirement", kind => {
+  const value = fixture(), candidate = value.owner.prepare(value.source)!;
+  if (kind === "published") candidate.publish();
+  value.native.deletionError(0x502);
+  if (kind === "published") value.owner.destroy(candidate.token);
+  else candidate.cancel();
+  expect(value.owner.contexts().has(value.native.gl)).toBe(true);
+  expect(value.owner.acquire(candidate.token)).toBeNull();
+  value.native.deletionError(0);
+  value.owner.close();
+  expect(value.native.deleted).toHaveLength(1);
+  expect(value.owner.contexts().size).toBe(0);
+});

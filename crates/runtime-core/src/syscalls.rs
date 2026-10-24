@@ -2371,7 +2371,28 @@ fn handle_dri_ioctl(
                     return Err(Errno::EINVAL);
                 }
             }
-            if info.op == gl::QOP_SURFACE_CAPABILITIES {
+            let fence_query = matches!(info.op, gl::QOP_CREATE_FENCE | gl::QOP_FENCE_STATUS | gl::QOP_RELEASE_FENCE);
+            if fence_query {
+                if info.in_buf_len != 4 || info.out_buf_len != 16 { return Err(Errno::EINVAL); }
+                let dri = dri_state(proc, ofd_idx)?;
+                let state = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
+                if state.role != gl::SESSION_OBJECTS || state.owner_pid != pid
+                    || !dri.gl_resources.borrow().owner.is_some_and(|owner| {
+                        owner.pid == pid && owner.session_id == state.session_id
+                            && owner.role == gl::SESSION_OBJECTS && owner.native_live
+                            && owner.cmdbuf_range.is_some()
+                    })
+                {
+                    return Err(Errno::EACCES);
+                }
+                // Creation needs current-thread and live-display authority.
+                // A retained waiter may poll/release its session's fences after
+                // the creator and display root retire; neither creates work.
+                if info.op == gl::QOP_CREATE_FENCE {
+                    require_gl_display_live(proc, ofd_idx)?;
+                    require_gl_current(proc, ofd_idx)?;
+                }
+            } else if info.op == gl::QOP_SURFACE_CAPABILITIES {
                 // Immutable limits do not expose context-local state and must
                 // be available to EGL configuration queries before MakeCurrent.
                 require_gl_display_live(proc, ofd_idx)?;
@@ -2411,6 +2432,9 @@ fn handle_dri_ioctl(
                 if rc < 0 {
                     return Err(Errno::EFAULT);
                 }
+            }
+            if fence_query && u32::from_le_bytes(in_buf[..4].try_into().unwrap()) == 0 {
+                return Err(Errno::EINVAL);
             }
             let mut out_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; info.out_buf_len as usize];
             let written = host.gl_query(pid, info.op, &in_buf, &mut out_buf, gl_session_id(proc, ofd_idx)?);
@@ -55840,6 +55864,112 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(host.gl_query_sessions.len(), 1);
         assert!(host.proc_write_calls.is_empty());
         assert_eq!(host.proc_memory, before);
+    }
+
+    fn glio_fence_query_test(proc: &mut Process, host: &mut MockHostIO, fd: i32, op: u32) -> Result<(), Errno> {
+        use wasm_posix_shared::gl;
+        host.proc_memory[32..36].copy_from_slice(&7u32.to_le_bytes());
+        let info = gl::GlQueryInfo { op, in_buf_ptr: 32, in_buf_len: 4,
+            out_buf_ptr: 64, out_buf_len: 16, ..Default::default() };
+        sys_ioctl(proc, host, fd, gl::GLIO_QUERY, &mut glio_query_bytes(info))
+    }
+
+    #[test]
+    fn glio_fence_queries_poll_and_cancel_without_current_but_creation_still_needs_it() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        let mut release = [0u8; 12];
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_MAKE_CURRENT, &mut release).unwrap();
+        for op in [gl::QOP_FENCE_STATUS, gl::QOP_RELEASE_FENCE] {
+            glio_fence_query_test(&mut proc, &mut host, fd, op).unwrap();
+        }
+        assert_eq!(host.gl_query_sessions.len(), 2);
+        assert_eq!(glio_fence_query_test(&mut proc, &mut host, fd, gl::QOP_CREATE_FENCE), Err(Errno::EACCES));
+        assert_eq!(host.gl_query_sessions.len(), 2);
+    }
+
+    #[test]
+    fn glio_fence_queries_keep_retained_session_authority_after_creator_and_display_retire() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        let mut release = [0u8; 12];
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_MAKE_CURRENT, &mut release).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_CONTEXT, &mut []).unwrap();
+        let root = proc.ofd_table.iter().find(|(_, ofd)| ofd.dri().and_then(|dri| dri.gl.as_ref())
+            .is_some_and(|state| state.role == gl::SESSION_DISPLAY)).map(|(idx,_)| idx).unwrap();
+        let root_fd = proc.fd_table.iter().find(|(_,desc)| desc.ofd_ref.0 == root).map(|(fd,_)| fd).unwrap();
+        sys_ioctl(&mut proc, &mut host, root_fd, gl::GLIO_TERMINATE, &mut []).unwrap();
+        glio_fence_query_test(&mut proc, &mut host, fd, gl::QOP_FENCE_STATUS).unwrap();
+        glio_fence_query_test(&mut proc, &mut host, fd, gl::QOP_RELEASE_FENCE).unwrap();
+        assert_eq!(host.gl_query_sessions.len(), 2);
+    }
+
+    #[test]
+    fn glio_fence_queries_validate_wire_shape_and_zero_token_before_renderer() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        host.proc_memory[32..36].copy_from_slice(&7u32.to_le_bytes());
+        for op in [gl::QOP_CREATE_FENCE, gl::QOP_FENCE_STATUS, gl::QOP_RELEASE_FENCE] {
+            for (input, output) in [(0,16),(8,16),(4,12),(4,20)] {
+                let info = gl::GlQueryInfo { op, in_buf_ptr: 32, in_buf_len: input,
+                    out_buf_ptr: 64, out_buf_len: output, ..Default::default() };
+                assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut glio_query_bytes(info)), Err(Errno::EINVAL));
+                assert!(host.gl_query_sessions.is_empty());
+            }
+            host.proc_memory[32..36].fill(0);
+            let info = gl::GlQueryInfo { op, in_buf_ptr: 32, in_buf_len: 4,
+                out_buf_ptr: 64, out_buf_len: 16, ..Default::default() };
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut glio_query_bytes(info)), Err(Errno::EINVAL));
+            assert!(host.gl_query_sessions.is_empty());
+            host.proc_memory[32..36].copy_from_slice(&7u32.to_le_bytes());
+        }
+    }
+
+    #[test]
+    fn glio_fence_queries_never_authorize_roots_unmapped_or_foreign_resource_owners() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        glio_fence_query_test(&mut proc, &mut host, fd, gl::QOP_FENCE_STATUS).unwrap();
+        host.gl_query_sessions.clear();
+        let index = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let original = dri_state(&proc,index).unwrap().gl_resources.borrow().owner.unwrap();
+        for (role, pid, session, live, mapped) in [
+            (gl::SESSION_DISPLAY, original.pid, original.session_id, true, true),
+            (gl::SESSION_OBJECTS, original.pid + 1, original.session_id, true, true),
+            (gl::SESSION_OBJECTS, original.pid, original.session_id + 1, true, true),
+            (gl::SESSION_OBJECTS, original.pid, original.session_id, false, true),
+            (gl::SESSION_OBJECTS, original.pid, original.session_id, true, false),
+        ] {
+            {
+                let dri = dri_state_mut(&mut proc,index).unwrap();
+                let mut resources = dri.gl_resources.borrow_mut();
+                let owner = resources.owner.as_mut().unwrap();
+                owner.role = role; owner.pid = pid; owner.session_id = session;
+                owner.native_live = live; owner.cmdbuf_range = if mapped { original.cmdbuf_range } else { None };
+            }
+            assert_eq!(glio_fence_query_test(&mut proc,&mut host,fd,gl::QOP_FENCE_STATUS), Err(Errno::EACCES));
+            assert!(host.gl_query_sessions.is_empty());
+        }
+        dri_state_mut(&mut proc,index).unwrap().gl_resources.borrow_mut().owner = Some(original);
+        dri_state_mut(&mut proc,index).unwrap().gl.as_mut().unwrap().owner_pid += 1;
+        assert_eq!(glio_fence_query_test(&mut proc,&mut host,fd,gl::QOP_RELEASE_FENCE), Err(Errno::EACCES));
+        assert!(host.gl_query_sessions.is_empty());
+    }
+
+    #[test]
+    fn glio_fence_queries_widen_only_poll_release_to_other_live_threads() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        proc.add_thread(crate::process::ThreadInfo::new(2,0,0,0));
+        proc.blocked_retries.bind_task(2);
+        set_test_current_tid(2);
+        glio_fence_query_test(&mut proc,&mut host,fd,gl::QOP_FENCE_STATUS).unwrap();
+        glio_fence_query_test(&mut proc,&mut host,fd,gl::QOP_RELEASE_FENCE).unwrap();
+        assert_eq!(glio_fence_query_test(&mut proc,&mut host,fd,gl::QOP_CREATE_FENCE), Err(Errno::EACCES));
+        let info = gl::GlQueryInfo { op: gl::QOP_GET_ERROR, out_buf_ptr:64, out_buf_len:4, ..Default::default() };
+        assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut glio_query_bytes(info)), Err(Errno::EACCES));
+        assert_eq!(host.gl_query_sessions.len(),2);
+        set_test_current_tid(0);
     }
 
     #[test]

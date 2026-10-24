@@ -4,8 +4,9 @@ import { GlContextRegistry, type GlForwardChannel } from "./registry.js";
 import { decodeAndDispatch, validateCommandBuffer } from "./bridge.js";
 import { recordGlError } from "./errors.js";
 import { runGlQuery } from "./query.js";
+import { isFenceQuery, validFenceQuery, prepareFenceQuery, type PreparedFenceQuery } from "./fence-query.js";
 import { querySurfaceCapabilities, surfaceCapabilityRenderer } from "./surface-capabilities.js";
-import { QOP_SURFACE_CAPABILITIES, QOP_FINISH } from "./ops.js";
+import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH } from "./ops.js";
 import { GlMuxer } from "./muxer.js";
 import { prepareCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable, type GlDrawableBinding } from "./current.js";
 import {
@@ -298,14 +299,24 @@ export function setupMainForward(
         return;
       }
       case "gl_forward_query": {
+        let preparedFence: PreparedFenceQuery | undefined;
         try {
+          if (!glForwardRequestPending(msg.mailbox)) return;
           if (msg.input.byteLength > GL_FORWARD_QUERY_MAX_BYTES) throw new RangeError("query input too long");
           const output = new Uint8Array(glForwardQueryCapacity(msg.mailbox));
-          if (msg.op === QOP_FINISH && (msg.input.byteLength !== 0 || output.byteLength !== 0)) {
+          if (isFenceQuery(msg.op) && !validFenceQuery(msg.input,output.byteLength)) {
+            completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return;
+          }
+          if ((msg.op === QOP_FINISH || msg.op === QOP_FLUSH) && (msg.input.byteLength !== 0 || output.byteLength !== 0)) {
             completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return;
           }
           let rc: number;
-          if (capabilities) {
+          if (isFenceQuery(msg.op)) {
+            preparedFence = prepareFenceQuery(b,msg.op,msg.input,output,
+              gl => muxers.get(gl)?.captureCurrentErrors(),
+              () => { if (b.gl) muxer(b.gl).switchTo(b); });
+            rc = preparedFence.rc;
+          } else if (capabilities) {
             if (msg.input.byteLength !== 0 || output.byteLength !== 16) { completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return; }
             const gl = surfaceCapabilityRenderer(b,canvas);
             if (gl) muxers.get(gl)?.captureCurrentErrors();
@@ -314,11 +325,11 @@ export function setupMainForward(
             if (b.gl) muxer(b.gl).switchTo(b);
             rc = runGlQuery(b, msg.op, msg.input, output);
           }
-          completeGlForwardQuery(msg.mailbox, rc, output);
+          if (completeGlForwardQuery(msg.mailbox, rc, output)) preparedFence?.candidate?.publish();
         } catch {
           try { completeGlForwardQuery(msg.mailbox, -5, new Uint8Array()); }
           catch { /* Invalid internal mailbox: waiting worker fails on timeout. */ }
-        }
+        } finally { preparedFence?.candidate?.cancel(); }
         return;
       }
       case "gl_forward_unbind": {

@@ -85,7 +85,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/FBO holds retain GEM backing; separate private source handles and logical native views preserve object state and storage identity. Confirmed C holds belong to retained shared object records with revision-ordered publication; uncertain import/attachment candidates belong to the shared group. Raw GPU views use the same independent storage model; BO retirement tracks every retained raw generation and retries native cleanup. CPU coherence, forwarded BO registration and complete lifecycle validation remain open | EGL, GLES object/storage model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | partial |
 | E06 | Respecification orphans sibling without altering others; OES_EGL_image | GPU view replacement preserves sibling parameters and canonical pixels, retargets logical FBOs and handles definite rejection before C backing release. C retains backing by object identity and rejects stale association completions. Raw GPU respecification and refresh preserve private canonical storage and independent parameters. CPU coherence, multi-failure recovery and guest CTS remain open | GLES storage model, host object/attachment tracking | Redefine imported texture, sample both siblings, retained FBO | partial |
 | E07 | dma-buf validation, multiple import and format/modifier enumeration; EXT import | Core EGLAttrib and KHR EGLint image creation share retained dma-buf storage and destruction. Parsing rejects wide aliases, missing mandatory fields and malformed modifier pairs before import, validates preservation and hint values, and ignores valid YUV hints for supported RGB formats. Full backing metadata, CPU coherence, format and rollback validation remain open | EGL, PRIME, GBM | CPU/GPU imports, bad fd/stride/offset/modifier; repeated import lifetime | open |
-| E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve for retained dma-buf imports. Native fence candidates, public authority, independent waiter leases and retryable cleanup now have a retained host model with three-engine source evidence. The five public EGL sync definitions and their wire/display authority, timeout and server-wait paths remain unimplemented. GL texture/cube/renderbuffer image sources also remain open. Client/GL waits acknowledge ordered completion in source; full lifecycle/errors and normal guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
+| E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve for retained dma-buf imports. Native fence candidates, waiter leases and retryable cleanup now have retained source models. Table 17 adds caller-known create/status/release tokens, accepted-reply publication, cancellation and mapped object-session authority without a current context. Native and forwarded source rendering pass. The five public C sync definitions, display records, timeout/flush loops and server ordering remain unimplemented; C glFlush is not yet routed to the new flush query. GL-source images and full lifecycle/errors/guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
 | B01 | GBM allocation/import/export and plane metadata | Dumb/GPU tiers; cage adds modifier allocators | GBM, DRM BOs, host registry | SDK guest fixtures both widths; unsupported format/flags | partial |
 | B02 | GBM map/unmap coherence and authority | Kernel authoritative BO references; changed-run publication on main | GBM, kernel maps, DRI registry | Importer writes, stale readers, unmap/exit/exec; browser pixels | partial |
 | B03 | Surface ring lock/release/destroy ownership | Main two-BO ring; audit lock/destroy/outstanding buffer lifetime | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks | partial |
@@ -4643,3 +4643,83 @@ turn that result into a pass. No normal graphics SDK/program/package/image
 rebuild, full browser-memory, guest CTS, cage/sway or POSIX result is
 claimed. Those complete gates remain deferred to the combined-artifact
 phase. The original full graphics objective remains active.
+
+### Retained fence wire queries and no-current authority
+
+Operation table 17 adds `QOP_CREATE_FENCE`, `QOP_FENCE_STATUS` and
+`QOP_RELEASE_FENCE`, plus a separate empty-payload `QOP_FLUSH` reply.
+ABI 54 remains fixed. All three fence operations take exactly four input
+bytes, a nonzero little-endian u32 token, and a 16-byte response: status,
+echoed token, signaled bit and `0x47514c33` reply magic. Status 0 is an
+accepted operation, 1 a rejected creation, and 2 a missing public token.
+Flush acknowledges native dispatch without claiming GPU completion.
+
+The client allocates tokens monotonically per object session before
+creation. An acknowledged duplicate returns the existing identity instead
+of inserting another fence. Release is idempotent and advances the token
+high-water mark even when it arrives before creation, preventing a late
+request from reviving an abandoned token. Unknown creation replies can
+therefore be reconciled with a token already known by C. A rejected native
+candidate remains privately owned for cleanup; no failed candidate is
+published as a usable sync object.
+
+The kernel validates fence shape, token and complete guest ranges before
+dispatch. Creation requires its current caller TID and a live display.
+Status/release allow another live thread to use the retained initialized
+object session even after creator destruction and display-root revocation.
+Authority still requires matching process/session ownership, object role,
+native liveness and a live command mapping. Display roots and foreign,
+unmapped, mismatched or revoked resource owners cannot use this exception.
+Ordinary GL queries retain their current-thread requirement.
+
+Both native imports and the main-forward receiver prepare creation before
+publishing it. Direct output acceptance or the forwarded mailbox's atomic
+completion transfers publication; a retired/failed reply cancels the private
+candidate. Malformed fence requests are rejected before native repair or
+muxer switching. Cleanup captures the actual selected owner's error flags
+before native repair, including admission through a surviving peer.
+
+Two new cases exposed a source-model gap: candidate/public destruction
+removed the native-context receipt from the session even when deletion was
+rejected. Destroyed records now remain discoverable until their checked
+retirement completes. Public lookup stays invalid while teardown can find
+and retry the old native context after its logical creator disappears.
+Completed receipts are pruned without reviving or reusing a token.
+
+| Check | Exact evidence |
+|---|---|
+| Original query authority/shape baseline | All three first new cases fail the unchanged query path from `e0ba170cc1`; `graphics-fence-wire-baseline.log` |
+| Retired native-context reachability baseline | Both new cases fail the preceding owner implementation; 23 other cases explicitly unselected in this diagnostic; `graphics-fence-retirement-baseline.log` |
+| Focused Rust GLIO | All 63 pass, including five new fence authority/shape cases; `graphics-fence-wire-rust.log` |
+| Shared wire/opcode checks | All five pass; `graphics-fence-wire-layouts.log` |
+| Complete graphics host source | All 622 in 25 files pass without skips, including 15 new wire cases and the two strengthened retirement cases; `graphics-fence-wire-host.log` |
+| Native C regression controls | All 185 fatal-UBSan cases pass with table 17 headers; `graphics-fence-wire-native.log`; public C sync functions are still absent |
+| Host Node/browser builds and declarations | Passed; `graphics-fence-wire-build.log`, `graphics-fence-wire-declarations.log` |
+| Complete evidence registry | All 597 files agree; `graphics-fence-wire-registry.log` |
+| ABI metadata and standalone resolver | Regeneration/check and resolver regeneration/test pass; `graphics-fence-wire-abi-update.log`, `graphics-fence-wire-abi-check.log`, `graphics-fence-wire-resolver.log`; the generated metadata remains unchanged because no structural ABI entry changed |
+
+The nine selected browser cases cover retained owner leases and actual
+native/forwarded query adapters in Chromium, Firefox and WebKit. The new
+worker submits clear commands through host imports, creates the same token
+twice, flushes, destroys the logical creator, yields before observing the
+retained fence, and releases it twice. The result requires one native
+allocation/deletion, correct red pixels, invalid public lookup after
+release and no browser memory-boundary failure. The test supplies synthetic
+Rust scratch/identity plumbing and executes real host imports/renderers;
+it does not execute a normal guest EGL/GLIO syscall. All nine pass after
+that final cleanup guard change, without skips; exact evidence is
+`graphics-fence-wire-browser.log`.
+
+The first wire-rendering fixture incorrectly emitted a nonexistent flush
+command tag; that fixture failure was corrected. The new flush query is a
+server-dispatch prerequisite for the sync API. C glFlush still submits its
+encoder only and must be connected to this acknowledgement in the next C
+increment; it is not claimed complete here.
+
+Five public EGL sync definitions, display-generation C handles, retained
+creator-session references, client timeout/flush loops and per-context
+server-wait ordering remain ordinary implementation work. No new extension
+is advertised, no full sync/CTS claim is made, and no hard platform boundary
+is inferred from the browser's event-loop scheduling requirement. Complete
+SDK/kernel/program/package/image rebuilds and required consumer, CTS,
+browser-memory and POSIX gates remain deferred until the rebuild/test phase.

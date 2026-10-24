@@ -5247,7 +5247,7 @@ pub mod gl {
     /// Version of the GLES op-table. Bumped independently of `ABI_VERSION`
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
     /// at compile time; GLIO_INIT accepts compatible versions 1..=OP_VERSION.
-    pub const OP_VERSION: u32 = 16;
+    pub const OP_VERSION: u32 = 17;
     /// Private mode of the existing foreign-BO bind ioctl. Its result is a
     /// source token for QOP_IMAGE_TARGET, never a public GLES texture name.
     pub const IMAGE_SOURCE_TARGET: u32 = 0x5750_4b49;
@@ -5505,6 +5505,14 @@ pub mod gl {
     /// V16: read-only renderer limits before a context is current. No input;
     /// width/height/pixels and QUERY_REPLY_MAGIC, exactly 16 output bytes.
     pub const QOP_SURFACE_CAPABILITIES: u32 = 0x002D;
+    /// V17 retained fences. Input: one nonzero client token, allocated
+    /// monotonically per object session before creation. Output: 16 bytes
+    /// (status, echoed token, signaled bool, checked reply magic).
+    pub const QOP_CREATE_FENCE: u32 = 0x002E;
+    pub const QOP_FENCE_STATUS: u32 = 0x002F;
+    pub const QOP_RELEASE_FENCE: u32 = 0x0030;
+    /// V17 server flush acknowledgement: no input or output bytes.
+    pub const QOP_FLUSH: u32 = 0x0031;
 
     // --- marshalled ioctl argument structs ---------------------------------
 
@@ -7225,6 +7233,10 @@ mod gl_tests {
             QOP_BIND_BUFFER,
             QOP_DELETE_BUFFER,
             QOP_SURFACE_CAPABILITIES,
+            QOP_CREATE_FENCE,
+            QOP_FENCE_STATUS,
+            QOP_RELEASE_FENCE,
+            QOP_FLUSH,
         ];
         for (i, &a) in qops.iter().enumerate() {
             for &b in &qops[i + 1..] {
