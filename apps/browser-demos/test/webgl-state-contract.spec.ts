@@ -2120,6 +2120,25 @@ test(`raw ${gpu ? "GPU" : "CPU"} upload retains failed utility restoration and c
 });
 }
 
+for (const fault of ["attachment","unit"]) {
+test(`raw BO revocation retains failed ${fault} inverses and shared native pixels`, async ({page}) => {
+  await installBrowserMemoryBoundaryProbe(page); await page.goto("/trap-signal-test.html");
+  const root = fileURLToPath(new URL("../../../",import.meta.url));
+  const result = await page.evaluate(async ({root,fault}) => {
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 2;
+    const worker = new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/foreign-retirement-worker.ts`,location.href),{type:"module"});
+    try { return await new Promise<any>((resolve,reject) => {
+      const timeout = setTimeout(() => reject(new Error("foreign retirement timed out")),35000);
+      worker.addEventListener("error",event => { clearTimeout(timeout); reject(new Error(event.message)); });
+      worker.addEventListener("message",({data}) => { clearTimeout(timeout); if (data.type === "foreign_retirement_failed") reject(new Error(data.error)); else resolve(data); });
+      const offscreen = canvas.transferControlToOffscreen(); worker.postMessage({canvas:offscreen,fault},[offscreen]);
+    }); } finally { worker.terminate(); }
+  },{root,fault});
+  expect(result).toEqual({type:"foreign_retirement_result",fault,colors:Array(fault === "attachment" ? 1 : 2).fill([0,255,0,255]),deadBinds:0,clean:true,error:0});
+  expect(await memoryBoundaryFailures(page)).toEqual([]);
+});
+}
+
 // Native source registration and logical image views; public C sharing and
 // normal guest ioctl marshalling are separate validation phases.
 test("logical image views preserve sibling parameters, pixels and retained identity",async({page})=>{

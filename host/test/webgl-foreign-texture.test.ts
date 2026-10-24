@@ -478,3 +478,163 @@ it("transfers a successful GPU view while obsolete carrier cleanup waits without
   expect(deleted).toEqual([object]); expect(alive.size).toBe(count+2);
   expect(bindGpuForeignTexture(b,41,gpu)).toBe(name); expect(deleted).toEqual([object]); expect(alive.has(textureNative(b,object))).toBe(true);
 });
+
+function revocationSetup() {
+  const setup = gpuRawSetup(), {reg,b,gl,gpu,query} = setup;
+  const name = bindGpuForeignTexture(b,41,gpu), object = b.textures.get(name)!, native = textureNative(b,object);
+  reg.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:64}); const peer = reg.get(7,12)!; peer.gl = gl; peer.contextId = 22;
+  expect(reg.shareObjects(7,12,11)).toBe(true);
+  const frames = [gl.createFramebuffer()!,gl.createFramebuffer()!];
+  for (const [index,owner] of [b,peer].entries()) {
+    const frame = frames[index]; owner.fbos.set(70+index,frame); owner.shadow.fbo = owner.shadow.readFbo = frame;
+    gl.bindFramebuffer(0x8d40,frame); query(owner,O.QOP_IMAGE_ATTACHMENT,[1,0x8d40,0x8ce0,0x0de1,name,0]);
+    owner.shadow.textureUnits[index] = object; gl.activeTexture(0x84c0+index); gl.bindTexture(0x0de1,native);
+  }
+  const unrelated = gl.createTexture()!;
+  gl.activeTexture(0x84c2); gl.bindTexture(0x0de1,unrelated);
+  gl.bindFramebuffer(0x8ca9,frames[0]); gl.bindFramebuffer(0x8ca8,frames[1]);
+  return {...setup,peer,name,object,native,framebuffers:frames,unrelated};
+}
+function blockedRevocationQueries(b: GlBinding, peer: GlBinding) {
+  for (const owner of [b,peer]) {
+    const out = new Uint8Array(4).fill(0xa5);
+    expect(runGlQuery(owner,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+    expect([...out]).toEqual([165,165,165,165]);
+  }
+}
+
+it("retains failed raw BO attachment inverses before any query or new raw import", () => {
+  const {reg,b,peer,gl,gpu,control,frames,framebuffers,name,object,alive} = revocationSetup();
+  const attach = gl.framebufferTexture2D.bind(gl); let rejected = false, block = true;
+  gl.framebufferTexture2D = (target,point,imageTarget,texture,level) => {
+    const frame = gl.getParameter(0x8ca6);
+    if (!rejected && frame === framebuffers[1] && !texture) { rejected = true; control.fault = "framebufferTexture2D"; }
+    else if (rejected && block && frame === framebuffers[0] && texture === gpu.tex) control.fault = "framebufferTexture2D";
+    attach(target,point,imageTarget,texture,level);
+  };
+  reg.retireForeignBo(41);
+  expect(rejected).toBe(true); expect(frames.get(framebuffers[0])!.get(0x8ce0)).toBeNull();
+  expect(b.textures.get(name)).toBe(object); expect(peer.shadow.textureUnits[1]).toBe(object);
+  expect(alive.has(gpu.tex)).toBe(true); blockedRevocationQueries(b,peer);
+  expect(bindGpuForeignTexture(peer,41,gpu)).toBe(-5);
+  block = false;
+  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),new Uint8Array(4))).toBe(4);
+  for (const frame of framebuffers) expect(frames.get(frame)!.get(0x8ce0)).toBe(gpu.tex);
+  expect(gl.getParameter(0x8ca6)).toBe(framebuffers[0]); expect(gl.getParameter(0x8caa)).toBe(framebuffers[1]); expect(gl.getParameter(0x84e0)).toBe(0x84c2);
+  expect(reg.hasForeignRetirements()).toBe(true); expect(b.textures.get(name)).toBe(object);
+  reg.retryForeignRetirements(); expect(reg.hasForeignRetirements()).toBe(false); expect(alive.has(gpu.tex)).toBe(false);
+  expect(b.textures.has(name)).toBe(false); expect(peer.shadow.textureUnits[1]).toBeNull();
+  for (const frame of framebuffers) expect(frames.get(frame)!.get(0x8ce0)).toBeNull();
+});
+
+it("retains failed raw BO texture-unit inverses and restores exact shared native views", () => {
+  const {reg,b,peer,gl,gpu,control,framebuffers,frames,native,object,unrelated,alive} = revocationSetup();
+  const bind = gl.bindTexture.bind(gl); let rejected = false, block = true;
+  gl.bindTexture = (target,texture) => {
+    const unit = gl.getParameter(0x84e0);
+    if (!rejected && unit === 0x84c1 && !texture) { rejected = true; control.fault = "bindTexture"; }
+    else if (rejected && block && unit === 0x84c0 && texture === native) control.fault = "bindTexture";
+    bind(target,texture);
+  };
+  reg.retireForeignBo(41); expect(rejected).toBe(true); blockedRevocationQueries(b,peer);
+  gl.activeTexture(0x84c0); expect(gl.getParameter(0x8069)).toBeNull(); gl.activeTexture(0x84c2);
+  expect(b.shadow.textureUnits[0]).toBe(object); expect(peer.shadow.textureUnits[1]).toBe(object); expect(alive.has(gpu.tex)).toBe(true);
+  block = false;
+  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),new Uint8Array(4))).toBe(4);
+  expect(gl.getParameter(0x84e0)).toBe(0x84c2); expect(gl.getParameter(0x8069)).toBe(unrelated);
+  for (const unit of [0,1]) { gl.activeTexture(0x84c0+unit); expect(gl.getParameter(0x8069)).toBe(native); }
+  gl.activeTexture(0x84c2);
+  for (const frame of framebuffers) expect(frames.get(frame)!.get(0x8ce0)).toBe(gpu.tex);
+  reg.retryForeignRetirements(); expect(reg.hasForeignRetirements()).toBe(false); expect(alive.has(unrelated)).toBe(true);
+});
+
+it("retains native unit capture restoration before detaching any raw BO reference", () => {
+  const {reg,b,peer,gl,gpu,frames,framebuffers,control,object} = revocationSetup();
+  const get = gl.getParameter.bind(gl), active = gl.activeTexture.bind(gl); let rejected = false, block = true;
+  gl.getParameter = (pname: number) => {
+    if (!rejected && pname === 0x8069 && get(0x84e0) === 0x84c1) { rejected = true; throw new Error("capture rejected"); }
+    return get(pname);
+  };
+  gl.activeTexture = unit => { if (rejected && block && unit === 0x84c2) control.fault = "activeTexture"; active(unit); };
+  reg.retireForeignBo(41); expect(rejected).toBe(true); blockedRevocationQueries(b,peer);
+  expect(b.shadow.textureUnits[0]).toBe(object);
+  for (const frame of framebuffers) expect(frames.get(frame)!.get(0x8ce0)).toBe(gpu.tex);
+  block = false;
+  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),new Uint8Array(4))).toBe(4);
+  expect(get(0x84e0)).toBe(0x84c2); reg.retryForeignRetirements(); expect(reg.hasForeignRetirements()).toBe(false);
+});
+
+it("keeps shared raw BO repair after the submitting container retires without reviving it", () => {
+  const {reg,b,peer,gl,gpu,control,frames,framebuffers,alive} = revocationSetup();
+  const attach = gl.framebufferTexture2D.bind(gl), bindFrame = gl.bindFramebuffer.bind(gl);
+  let rejected = false, block = true, retired = false, deadBinds = 0;
+  gl.framebufferTexture2D = (target,point,imageTarget,texture,level) => {
+    const frame = gl.getParameter(0x8ca6);
+    if (rejected && block && frame === framebuffers[1] && texture === gpu.tex) {
+      control.fault = "framebufferTexture2D"; attach(target,point,imageTarget,texture,level); return;
+    }
+    attach(target,point,imageTarget,texture,level);
+    if (!rejected && frame === framebuffers[1] && !texture) { rejected = true; control.fault = "framebufferTexture2D"; attach(target,point,imageTarget,texture,level); }
+  };
+  gl.bindFramebuffer = (target,frame) => { if (retired && frame === framebuffers[0]) deadBinds++; bindFrame(target,frame); };
+  reg.retireForeignBo(41); expect(rejected).toBe(true); blockedRevocationQueries(b,peer);
+  reg.destroyContext(7,11); retired = true;
+  expect(alive.has(framebuffers[0])).toBe(false); expect(alive.has(framebuffers[1])).toBe(true); expect(alive.has(gpu.tex)).toBe(true);
+  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),new Uint8Array(4))).toBe(-5);
+  block = false;
+  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),new Uint8Array(4))).toBe(4);
+  expect(deadBinds).toBe(0); expect(frames.get(framebuffers[1])!.get(0x8ce0)).toBe(gpu.tex);
+  reg.retryForeignRetirements(); expect(reg.hasForeignRetirements()).toBe(false); expect(alive.has(gpu.tex)).toBe(false);
+});
+
+for (const fault of ["draw","read","active"]) it(`retains raw BO detachment inverses after rejected ${fault} finalization`, () => {
+  const {reg,b,peer,gl,gpu,control,frames,framebuffers,native,object} = revocationSetup();
+  const texture = gl.bindTexture.bind(gl), frame = gl.bindFramebuffer.bind(gl), active = gl.activeTexture.bind(gl);
+  let detached = false, block = true;
+  gl.bindTexture = (target,value) => { texture(target,value); if (gl.getParameter(0x84e0) === 0x84c1 && !value) detached = true; };
+  gl.bindFramebuffer = (target,value) => {
+    if (detached && block && ((fault === "draw" && target === 0x8ca9 && value === framebuffers[0]) ||
+        (fault === "read" && target === 0x8ca8 && value === framebuffers[1]))) control.fault = "bindFramebuffer";
+    frame(target,value);
+  };
+  gl.activeTexture = value => { if (detached && block && fault === "active" && value === 0x84c2) control.fault = "activeTexture"; active(value); };
+  reg.retireForeignBo(41); expect(detached).toBe(true); blockedRevocationQueries(b,peer);
+  expect(b.shadow.textureUnits[0]).toBe(object); expect(peer.shadow.textureUnits[1]).toBe(object);
+  block = false;
+  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),new Uint8Array(4))).toBe(4);
+  expect(gl.getParameter(0x84e0)).toBe(0x84c2); expect(gl.getParameter(0x8ca6)).toBe(framebuffers[0]); expect(gl.getParameter(0x8caa)).toBe(framebuffers[1]);
+  for (const selected of [0,1]) { gl.activeTexture(0x84c0+selected); expect(gl.getParameter(0x8069)).toBe(native); }
+  gl.activeTexture(0x84c2);
+  for (const value of framebuffers) expect(frames.get(value)!.get(0x8ce0)).toBe(gpu.tex);
+  reg.retryForeignRetirements(); expect(reg.hasForeignRetirements()).toBe(false);
+});
+
+it("reserves raw BO mutation rollback after unit capture before detaching shared references", () => {
+  const {reg,b,peer,gl,gpu,frames,framebuffers,object} = revocationSetup(), set = WeakMap.prototype.set;
+  let reservations = 0;
+  WeakMap.prototype.set = function(key,value) { if (++reservations === 2) throw new RangeError("mutation inverse reservation failed"); return set.call(this,key,value); };
+  try { reg.retireForeignBo(41); } finally { WeakMap.prototype.set = set; }
+  expect(reservations).toBe(2); expect(reg.hasForeignRetirements()).toBe(true); expect(b.shadow.textureUnits[0]).toBe(object);
+  for (const frame of framebuffers) expect(frames.get(frame)!.get(0x8ce0)).toBe(gpu.tex);
+  expect(gl.getParameter(0x84e0)).toBe(0x84c2); expect(peer.shadow.textureUnits[1]).toBe(object);
+  reg.retryForeignRetirements(); expect(reg.hasForeignRetirements()).toBe(false);
+});
+
+it("completes raw BO repair and deletion after the final member retires", () => {
+  const {reg,b,peer,gl,gpu,control,framebuffers,alive,unrelated} = revocationSetup();
+  const bind = gl.bindTexture.bind(gl), frame = gl.bindFramebuffer.bind(gl); let rejected = false, block = true, retired = false, deadBinds = 0;
+  gl.bindTexture = (target,value) => {
+    const unit = gl.getParameter(0x84e0);
+    if (!rejected && !value && unit === 0x84c1) { rejected = true; control.fault = "bindTexture"; }
+    else if (rejected && block && value) control.fault = "bindTexture";
+    bind(target,value);
+  };
+  gl.bindFramebuffer = (target,value) => { if (retired && value && framebuffers.includes(value)) deadBinds++; frame(target,value); };
+  reg.retireForeignBo(41); blockedRevocationQueries(b,peer);
+  reg.destroyContext(7,11); reg.destroyContext(7,12); retired = true;
+  expect(reg.hasForeignRetirements()).toBe(true); expect(alive.has(gpu.tex)).toBe(true);
+  for (const value of framebuffers) expect(alive.has(value)).toBe(false);
+  block = false; reg.retryForeignRetirements();
+  expect(reg.hasForeignRetirements()).toBe(false); expect(deadBinds).toBe(0); expect(alive.has(gpu.tex)).toBe(false);
+  gl.deleteTexture(unrelated); expect(alive.size).toBe(0);
+});

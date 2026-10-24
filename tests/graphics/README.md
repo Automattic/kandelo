@@ -434,3 +434,20 @@ native state, then finish cleanup once and read the original blue/red textures.
 CPU upload is counted once; the GPU canonical source remains live. These tests
 exercise shared host source directly, with no normal guest/CTS or full
 browser-memory claim.
+
+Raw BO revocation has nine additional source cases for failed attachment/unit
+inverses, unit-capture restoration, mutation-plan reservation, draw/read/active
+finalization, and submitting/final-member retirement. Native effects precede
+the injected rollback failure; old logical references and query sentinels must
+survive until exact native restoration. All nine fail unchanged `a894455bb1`
+production source; thirty-seven unselected cases are not passing baseline
+coverage.
+
+A dedicated source worker also runs attachment and unit failures in each real
+browser engine. It checks complete green shared images after repair, exact old
+sampling views and separate native selectors. The attachment case retires the
+submitting container while its peer remains blocked. No dead container may be
+rebound. A subsequent successful BO retirement removes logical references and
+canonical/native views, then final teardown requires one deletion per created
+native resource and zero native liveness. Guest ioctl marshalling, full memory
+reclamation and compositor conformance remain separate gates.

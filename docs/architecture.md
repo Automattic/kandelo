@@ -4279,6 +4279,18 @@ Accepted uploads are not replayed by native repair. CPU image coherence, other
 resources and the full staging/error audit remain open. Indeterminate transport,
 context loss/recreation and general failed resource deletion remain open.
 
+Raw BO revocation stages retired-name and peer-container metadata before native
+detachment. It captures actual unit bindings in a separate retained utility
+transaction, completing active-unit restoration before attachment/binding
+mutations. A shared mutation plan snapshots native image attachment identities,
+sampling views and separate draw/read selectors. Failed detach or utility
+finalization retains every attempted inverse and fences dependent work before
+logical retirement commits. Repair survives submitting-context and final-member
+retirement; native container retirement prunes dead targets. BO canonical
+storage remains owned until shared repairs and native view cleanup complete.
+These records contain native handles/scalars rather than callbacks, logical
+bindings or guest memory.
+
 Public `eglCreateContext` sharing validates a live source handle in the active
 display generation, joins its retained C object owner, and sends the source
 backend identity through the existing ABI-58 creation request. Native failure
