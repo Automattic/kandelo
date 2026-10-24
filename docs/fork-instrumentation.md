@@ -107,6 +107,7 @@ planner does not rescan all module call sites for every function.
 
 Default storage budgets are a 32 MiB page-cache target for each main/temp
 schema, 1 MiB name cache,
+4 MiB shared target-list cache,
 128 MiB resident metadata/projection budget, 8 GiB maximum main database size
 and one quadrillion estimated work steps. Work includes SQLite VM instructions
 and minimum batch charges for short queries; it is a generous sanity check.
@@ -117,6 +118,11 @@ space is additional to the main database limit. SQLite's page cache is a
 hard process-memory ceiling. Row/work/disk failures are explicit, the private
 store is discarded on failed construction, and no unbounded Walrus fallback
 is introduced. Physical-footprint guards remain a separate validation layer.
+The target-list cache holds only full-signature or unknown-only memberships;
+caller eligibility is checked before reuse, and typed refinements remain
+caller-specific. It stores no return/exception summaries or function IR.
+Setting its allowance to zero disables it. Oversized entries and eviction
+fall back to disk lookups; they do not reject input. Reanalysis clears it.
 
 `streaming::sink` now includes a function-local abstract interpreter and
 disk-backed module metadata. The interpreter models normal/child control,

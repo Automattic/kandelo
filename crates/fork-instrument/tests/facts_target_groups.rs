@@ -7,6 +7,35 @@ enum Sites {
     MissingFacts,
     Untyped,
     Typed,
+    UnknownOnly,
+    Mixed,
+}
+
+impl Sites {
+    fn for_caller(self, index: u32) -> Self {
+        if self != Self::Mixed {
+            return self;
+        }
+        match index % 3 {
+            0 => Self::MissingFacts,
+            1 => Self::UnknownOnly,
+            _ => Self::Typed,
+        }
+    }
+    fn expected(self, targets: u32, caller: u32) -> Vec<u32> {
+        let sites = self.for_caller(caller);
+        (0..targets)
+            .filter(|i| {
+                if sites == Self::Typed {
+                    *i != 1
+                } else if sites == Self::UnknownOnly {
+                    *i >= 2
+                } else {
+                    true
+                }
+            })
+            .collect()
+    }
 }
 
 fn fixture(targets: u32, callers: u32, sites: Sites) -> Vec<u8> {
@@ -22,7 +51,7 @@ fn fixture(targets: u32, callers: u32, sites: Sites) -> Vec<u8> {
         wasm.push_str(&format!("(func $t{i} (type $sig) local.get 0)"));
     }
     let mut text = String::from("#kandelo-calltypes\t5\nM\tgroups.c\n");
-    if sites == Sites::Typed {
+    if matches!(sites, Sites::Typed | Sites::UnknownOnly | Sites::Mixed) {
         text.push_str("F\tt0\t1\nT\tt0\tKnown\nD\tt0\t0\t0\n");
         text.push_str("F\tt1\t1\nT\tt1\tOther\nD\tt1\t0\t0\n");
     }
@@ -30,9 +59,12 @@ fn fixture(targets: u32, callers: u32, sites: Sites) -> Vec<u8> {
         wasm.push_str(&format!(
             "(func $c{i} (type $sig) local.get 0 local.get 0 call_indirect (type $sig))"
         ));
-        if sites != Sites::MissingFacts {
-            let kind = if sites == Sites::Untyped {
+        let caller_sites = sites.for_caller(i);
+        if caller_sites != Sites::MissingFacts {
+            let kind = if caller_sites == Sites::Untyped {
                 "untyped"
+            } else if caller_sites == Sites::UnknownOnly {
+                "icall\tUnmatched"
             } else {
                 "icall\tKnown"
             };
@@ -60,7 +92,12 @@ fn fixture(targets: u32, callers: u32, sites: Sites) -> Vec<u8> {
 
 #[test]
 fn shared_signature_fallbacks_fit_without_a_caller_by_target_matrix() {
-    for sites in [Sites::MissingFacts, Sites::Untyped, Sites::Typed] {
+    for sites in [
+        Sites::MissingFacts,
+        Sites::Untyped,
+        Sites::Typed,
+        Sites::UnknownOnly,
+    ] {
         let input = fixture(1200, 600, sites);
         let scan = scan(&input).unwrap();
         let store = FactsStore::from_scan(
@@ -72,13 +109,10 @@ fn shared_signature_fallbacks_fit_without_a_caller_by_target_matrix() {
         )
         .unwrap();
         store.resolve_calls(&scan, Default::default()).unwrap();
-        let expected: Vec<_> = (0..1200)
-            .filter(|i| sites != Sites::Typed || *i != 1)
-            .collect();
         for caller in 1200..1800 {
             assert_eq!(
                 store.targets_for(caller, "i32->i32").unwrap(),
-                Some(expected.clone())
+                Some(sites.expected(1200, caller - 1200))
             );
         }
         assert!(store.targets_for(0, "i32->i32").unwrap().is_none());
@@ -88,7 +122,13 @@ fn shared_signature_fallbacks_fit_without_a_caller_by_target_matrix() {
 
 #[test]
 fn shared_fallback_projection_matches_the_unchanged_oracle() {
-    for sites in [Sites::MissingFacts, Sites::Untyped, Sites::Typed] {
+    for sites in [
+        Sites::MissingFacts,
+        Sites::Untyped,
+        Sites::Typed,
+        Sites::UnknownOnly,
+        Sites::Mixed,
+    ] {
         let input = fixture(12, 8, sites);
         let scan = scan(&input).unwrap();
         let store = FactsStore::from_scan(&scan, Default::default()).unwrap();
@@ -128,4 +168,81 @@ fn fallback_lookup_does_not_scan_functions_absent_from_the_table() {
     .unwrap();
     limited.resolve_calls(&scan, Default::default()).unwrap();
     assert_eq!(limited.targets_for(1, "i32->i32").unwrap(), Some(vec![0]));
+}
+
+#[test]
+fn shared_cache_preserves_caller_modes_eviction_and_invalidation() {
+    let input = fixture(16, 3, Sites::Mixed);
+    let scan = scan(&input).unwrap();
+    for cache_bytes in [0, 1, 256, 4 * 1024 * 1024] {
+        let store = FactsStore::from_scan(
+            &scan,
+            StorageLimits {
+                target_cache_bytes: cache_bytes,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        store.resolve_calls(&scan, Default::default()).unwrap();
+        for caller in [0, 1, 2, 0, 2, 1] {
+            let mut targets = store.targets_for(16 + caller, "i32->i32").unwrap().unwrap();
+            assert_eq!(targets, Sites::Mixed.expected(16, caller));
+            targets.clear(); // Returned lists must not mutate cached memberships.
+        }
+        assert!(store.targets_for(0, "i32->i32").unwrap().is_none());
+        store.solve_conversions(true, true).unwrap();
+        assert!(store.targets_for(16, "i32->i32").is_err());
+        store.resolve_calls(&scan, Default::default()).unwrap();
+        assert_eq!(
+            store.targets_for(16, "i32->i32").unwrap(),
+            Some((0..16).collect())
+        );
+    }
+}
+
+#[test]
+fn shared_cache_avoids_rereading_the_same_memberships_for_another_caller() {
+    for sites in [Sites::MissingFacts, Sites::UnknownOnly] {
+        let input = fixture(1200, 3, sites);
+        let scan = scan(&input).unwrap();
+        let complete = FactsStore::from_scan(&scan, Default::default()).unwrap();
+        complete.resolve_calls(&scan, Default::default()).unwrap();
+        complete.targets_for(1200, "i32->i32").unwrap().unwrap();
+        let warm_work = complete.report().unwrap().estimated_work_steps;
+        let limited = FactsStore::from_scan(
+            &scan,
+            StorageLimits {
+                work_steps: warm_work + 20_000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        limited.resolve_calls(&scan, Default::default()).unwrap();
+        limited
+            .targets_for(1200, "i32->i32")
+            .unwrap()
+            .unwrap()
+            .clear();
+        assert_eq!(
+            limited.targets_for(1201, "i32->i32").unwrap(),
+            Some(sites.expected(1200, 1))
+        );
+        let uncached = FactsStore::from_scan(
+            &scan,
+            StorageLimits {
+                target_cache_bytes: 0,
+                work_steps: warm_work + 20_000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        uncached.resolve_calls(&scan, Default::default()).unwrap();
+        uncached.targets_for(1200, "i32->i32").unwrap().unwrap();
+        let error = uncached.targets_for(1201, "i32->i32").unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("budget") || message.contains("interrupt"),
+            "{message}"
+        );
+    }
 }

@@ -25,6 +25,7 @@ mod flow;
 mod side;
 pub mod storage;
 pub mod stream;
+mod target_cache;
 mod targets;
 
 pub(crate) use targets::visit_retained_operators;

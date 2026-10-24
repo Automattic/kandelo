@@ -18,6 +18,7 @@ impl FactsStore {
         use sha2::{Digest, Sha256};
         let progress = crate::progress::Progress::new("call facts");
         self.calls_ready.set(false);
+        self.target_cache.borrow_mut().clear();
         let digest: [u8; 32] = Sha256::digest(scan.input()).into();
         ensure!(
             self.source_fingerprint == Some(digest),
@@ -67,10 +68,11 @@ impl FactsStore {
     }
 
     /// None means no facts group; Some(empty) is a proved empty target set.
-    /// Only one group's target indices need to be resident in the sink pass.
+    /// The requested group and a bounded shared-signature cache are resident;
+    /// the caller-by-target matrix is never retained.
     pub fn targets_for(&self, function: u32, signature: &str) -> Result<Option<Vec<u32>>> {
         ensure!(self.calls_ready.get(), "call planning has not completed");
-        self.charge_work(3)?;
+        self.charge_work(1)?;
         let Some(sig) = self.find_atom(signature)? else {
             return Ok(None);
         };
@@ -82,6 +84,29 @@ impl FactsStore {
         if !exists {
             return Ok(None);
         }
+        // Verify caller eligibility before sharing a list. A full-signature
+        // group and an unknown-only group have different immutable memberships;
+        // typed groups with explicit refinements remain caller-specific.
+        let key = if self.target_cache.borrow().enabled() {
+            self.charge_work(1)?;
+            let kind: u32 = self.db.query_row(
+                "SELECT CASE
+                  WHEN EXISTS(SELECT 1 FROM call_fallback WHERE caller=?1 AND sig=?2) THEN 1
+                  WHEN EXISTS(SELECT 1 FROM call_unknown_group WHERE caller=?1 AND sig=?2)
+                    AND NOT EXISTS(SELECT 1 FROM call_refined_target WHERE caller=?1 AND sig=?2) THEN 2
+                  ELSE 0 END",
+                params![function, sig], |r| r.get(0),
+            )?;
+            (kind != 0).then_some((sig, kind == 2))
+        } else {
+            None
+        };
+        if let Some(key) = key {
+            if let Some(targets) = self.target_cache.borrow().get(key) {
+                return Ok(Some(targets));
+            }
+        }
+        self.charge_work(2)?;
         let count: usize = self.db.query_row(
             "SELECT COUNT(*) FROM call_target WHERE caller=? AND sig=?",
             params![function, sig],
@@ -98,6 +123,9 @@ impl FactsStore {
         let mut rows = query.query(params![function, sig])?;
         while let Some(row) = rows.next()? {
             output.push(row.get(0)?);
+        }
+        if let Some(key) = key {
+            self.target_cache.borrow_mut().insert(key, &output);
         }
         Ok(Some(output))
     }

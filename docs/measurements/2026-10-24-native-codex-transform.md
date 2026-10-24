@@ -263,3 +263,35 @@ SHA-256:
 ```
 094beb5c342908873b674703b9d241c13c8dd057fc0af48afc72f49b762fd5e8
 ```
+
+## Sixth attempt: CPU deadline during summary solving
+
+The next full attempt reached the **1,800-second wall-time guard** during
+normal-summary solving, after at least 1,090,000 evaluations. It published
+no artifact. The memory guard did not fire: the highest observed OS lifetime
+physical footprint was **403.42 MiB**, with maximum sampled RSS **752.41 MiB**.
+Evidence is in `.context/native-codex-indexed-20261024/`, using the
+`094beb5...` executable above. This is not a completed-transform memory result.
+
+The follow-up adds a bounded cache of shared, immutable signature target lists.
+Full-signature and unknown-only lists can serve multiple eligible callers;
+typed groups with explicit known refinements remain caller-specific. Caller
+eligibility is checked before a hit, returned vectors are independent copies,
+and reanalysis clears the cache. Return/exception summaries are never cached.
+The default allowance is 4 MiB; zero disables it. Eviction or an oversized
+group falls back to ordinary lookup and does not reject input. This retains
+no function instruction IR and leaves the 16 GiB physical guard and 30-minute
+deadline unchanged for the next coordinated attempt.
+
+All 661 instrumenter tests passed with this cache, including disabled/tiny
+allowances, eviction, caller-mode separation, returned-vector independence and
+invalidation. The work regression includes a negative control: the same extra
+allowance succeeds with reuse and exhausts work when caching is disabled.
+Fourteen complete controlled transforms and fourteen separate validators
+passed with historical output hashes. Source and executable are preserved in
+`.context/native-target-cache-build/`, with checks in
+`.context/native-target-cache-controlled-smoke/`. Executable SHA-256:
+
+```
+e200881b339f676b9d7e8e95401e405b804fae9d536e5d923fea98e21e8a314e
+```

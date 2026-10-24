@@ -4,6 +4,7 @@
 use super::{
     definitions::{Definition, DefinitionIndex},
     stream::{self, Event, ReadLimits, ReadReport},
+    target_cache::TargetCache,
 };
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, Params, limits::Limit, params};
@@ -23,6 +24,8 @@ pub struct StorageLimits {
     /// temporaries spill to files and an external physical guard is separate.
     pub page_cache_bytes: usize,
     pub atom_cache_bytes: usize,
+    /// Optional shared signature-list cache. Eviction never rejects a group.
+    pub target_cache_bytes: usize,
     pub metadata_bytes: usize,
     /// Maximum main database size, including derived fixed-point relations.
     pub disk_bytes: u64,
@@ -36,6 +39,7 @@ impl Default for StorageLimits {
             read: ReadLimits::default(),
             page_cache_bytes: 32 * 1024 * 1024,
             atom_cache_bytes: 1024 * 1024,
+            target_cache_bytes: 4 * 1024 * 1024,
             metadata_bytes: 128 * 1024 * 1024,
             disk_bytes: 8 * 1024 * 1024 * 1024,
             work_steps: crate::limits::SQL_WORK,
@@ -55,6 +59,7 @@ pub struct FactsStore {
     pub(crate) db: Connection,
     _file: tempfile::NamedTempFile,
     cache: RefCell<Cache>,
+    pub(super) target_cache: RefCell<TargetCache>,
     limits: StorageLimits,
     work: Arc<AtomicU64>,
     report: ReadReport,
@@ -215,6 +220,7 @@ impl FactsStore {
             db,
             _file: file,
             cache: RefCell::default(),
+            target_cache: RefCell::new(TargetCache::new(limits.target_cache_bytes)),
             limits,
             work,
             report: ReadReport::default(),

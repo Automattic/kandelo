@@ -102,11 +102,12 @@ pub fn solve_summaries<'a>(
             output.evaluations += 1;
             if output.evaluations % 10_000 == 0 {
                 progress.note(format_args!(
-                    "{} evaluations, function {}, {} queued, {} work units",
+                    "{} evaluations, function {}, {} queued, {} work units, {} unsupported",
                     output.evaluations,
                     function,
                     queue.len(),
                     output.work_steps,
+                    output.unsupported.len(),
                 ));
             }
             let remaining = limits
@@ -182,8 +183,10 @@ pub fn solve_summaries<'a>(
         }
     }
     progress.note(format_args!(
-        "complete, {} evaluations, {} work units",
-        output.evaluations, output.work_steps,
+        "complete, {} evaluations, {} work units, {} unsupported",
+        output.evaluations,
+        output.work_steps,
+        output.unsupported.len(),
     ));
     Ok(output)
 }

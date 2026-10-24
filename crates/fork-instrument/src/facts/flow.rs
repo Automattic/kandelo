@@ -12,6 +12,7 @@ impl FactsStore {
         let progress = crate::progress::Progress::new("conversion facts");
         self.conversions_ready.set(false);
         self.calls_ready.set(false);
+        self.target_cache.borrow_mut().clear();
         self.db.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
             self.db.execute_batch(include_str!("flow.sql"))?;
