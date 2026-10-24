@@ -7783,7 +7783,11 @@ mod tests {
     /// `/link` (symlink). It carries no `KLZY` section, which is exactly the
     /// "older image" case `kernel_lazy_span` must read as `None` rather than as
     /// corruption.
-    const TINY_VFS: &[u8] = include_bytes!("testdata/tiny.vfs");
+    /// A small `/` image built at test time by the Rust image writer; see
+    /// `crate::test_fixtures::tiny_vfs` for its tree.
+    fn tiny_vfs() -> &'static [u8] {
+        crate::test_fixtures::tiny_vfs()
+    }
 
     /// A host that owns `image` and serves only [`ByteReq::Image`]. Blob and
     /// archive requests are `ENOSYS`, so a test that accidentally reaches for
@@ -7840,12 +7844,12 @@ mod tests {
         out
     }
 
-    /// `TINY_VFS` with a `KLZY` section appended and its container flag set.
+    /// `tiny_vfs()` with a `KLZY` section appended and its container flag set.
     /// The section goes after the existing (empty) lazy-JSON section, which is
     /// where `kernel_lazy_span` walks to find it, so this exercises the real
     /// section-walk rather than a shortcut.
     fn tiny_vfs_with_kernel_lazy(section: &[u8]) -> Vec<u8> {
-        let mut image = TINY_VFS.to_vec();
+        let mut image = tiny_vfs().to_vec();
         let flags = u32::from_le_bytes([image[8], image[9], image[10], image[11]]);
         let flagged = flags | wasm_posix_shared::abi::VFS_IMAGE_FLAG_HAS_KERNEL_LAZY;
         image[8..12].copy_from_slice(&flagged.to_le_bytes());
@@ -8167,12 +8171,12 @@ mod tests {
     #[test]
     fn load_image_rejects_an_image_that_declares_no_kernel_lazy_section() {
         let _guard = TestGuard::acquire();
-        // `TINY_VFS` has the container flag clear, so it predates the section.
+        // `tiny_vfs()` has the container flag clear, so it predates the section.
         // Loading it would build a tree where every deferred file reports size
         // 0 — wrong, and indistinguishable from right. It must fail loudly and
         // be rebuilt, not be read on a best-effort basis.
         assert_eq!(
-            load_image(TINY_VFS.len() as u64, image_host(TINY_VFS)).unwrap_err(),
+            load_image(tiny_vfs().len() as u64, image_host(tiny_vfs())).unwrap_err(),
             Errno::EINVAL
         );
         assert_eq!(lstat(b"/big.txt").unwrap_err(), Errno::ENOENT);
