@@ -295,3 +295,44 @@ passed with historical output hashes. Source and executable are preserved in
 ```
 e200881b339f676b9d7e8e95401e405b804fae9d536e5d923fea98e21e8a314e
 ```
+
+## Seventh attempt: repeated target memberships trigger an analysis retry
+
+The cached lookup run completed normal summaries in **474.9 seconds**, after
+1,213,389 evaluations with no unsupported bodies. Sink planning then failed
+with `sink interpretation exceeds call-target budget`. The interpreter
+retained target memberships separately at every call site, including repeated
+identical lists in the same function. The default allowed 1,048,576 such
+memberships per function. The existing conservative built-in retry started
+another analysis pass and reached at least 1,140,000 summary evaluations.
+
+The **1,800-second wall-time guard** stopped that retry. No artifact was
+published. The memory guard did not fire: the highest observed OS lifetime
+physical footprint was **408.39 MiB**, with maximum sampled RSS **750.84 MiB**.
+Evidence, including the guard status and explicit failed-attempt summary,
+is in `.context/native-codex-target-cache-20261024/`, using the `e200881...`
+executable above. These figures remain failed-transform observations. The
+completed summary-phase timing is not a completed-transform speed result.
+
+The follow-up shares exact sorted target lists across sites in one function,
+releasing superseded unions when their last site changes. The unchanged
+1,048,576-membership allowance now counts distinct retained sets. Sites keep
+independent unions. The database also stores each exact group once and keeps
+site/caller references, rather than retaining the expanded edge matrix.
+Digests narrow candidates; full comparison decides equality. Closure visits
+separate function and group vertices, and dependency queries project shared
+groups without materializing all function pairs.
+
+All 667 instrumenter tests passed, including forced digest collisions,
+independent union growth, and recursive/external closure compared with an
+expanded graph. A 600-site, 1,200-target regression fits a 4 MiB database;
+the negative control that retains all 720,000 edges exhausts the same
+allowance. A fresh [controlled comparison](2026-10-24-native-fork-instrumenter-shared-sinks.md)
+passed 42 complete transforms and 42 separate validators with historical
+output hashes. This does not establish complete Codex capacity.
+Source and executable are preserved in `.context/native-target-groups-build/`.
+Executable SHA-256:
+
+```
+7f9dd77356b566a1a78182b867a7f8ecc2899bf1cec0e0d7003fa13b038ab291
+```

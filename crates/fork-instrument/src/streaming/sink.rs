@@ -12,8 +12,11 @@ mod planner;
 mod policy;
 mod program;
 mod summaries;
+mod target_groups;
+mod target_sets;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use anyhow::Result;
 
@@ -121,7 +124,7 @@ pub struct Limits {
     pub work: usize,
     pub control_depth: usize,
     pub frame_slots: usize,
-    /// Target memberships across all call sites of this one body.
+    /// Memberships in distinct retained target sets of this one body.
     pub call_targets: usize,
 }
 
@@ -161,7 +164,8 @@ pub struct Evaluation {
     pub unsupported: bool,
     pub frame_escaped: bool,
     pub exception_locals: Tags,
-    pub targets: BTreeMap<usize, BTreeSet<u32>>,
+    /// Exact sorted unions per original instruction; identical sets share storage.
+    pub targets: BTreeMap<usize, Arc<[u32]>>,
     pub states: BTreeMap<usize, State>,
     pub work_steps: usize,
 }

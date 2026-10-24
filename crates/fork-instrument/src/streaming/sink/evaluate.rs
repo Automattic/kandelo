@@ -214,7 +214,7 @@ pub fn evaluate(
         output: Evaluation::default(),
         results,
         frame,
-        target_count: 0,
+        target_sets: target_sets::TargetSets::default(),
     };
     let initial = State {
         live: !child,
@@ -265,7 +265,7 @@ struct Walk<'a, 'b, E> {
     output: Evaluation,
     results: usize,
     frame: bool,
-    target_count: usize,
+    target_sets: target_sets::TargetSets,
 }
 
 impl<E: Environment> Walk<'_, '_, E> {
@@ -951,22 +951,17 @@ impl<E: Environment> Walk<'_, '_, E> {
         )?;
         self.charge(effect.targets.len() + 1)?;
         if self.options.record_targets {
-            let targets = self.output.targets.entry(index).or_default();
-            for target in effect
-                .targets
-                .into_iter()
-                .filter(|t| *t != u32::MAX)
-                .chain(effect.external.then_some(u32::MAX - 1))
-            {
-                if !targets.contains(&target) {
-                    ensure!(
-                        self.target_count < self.limits.call_targets,
-                        "sink interpretation exceeds call-target budget"
-                    );
-                    self.target_count += 1;
-                    targets.insert(target);
-                }
+            let mut targets = effect.targets;
+            targets.retain(|target| *target != u32::MAX);
+            if effect.external {
+                targets.push(u32::MAX - 1);
             }
+            self.target_sets.record(
+                &mut self.output.targets,
+                index,
+                targets,
+                self.limits.call_targets,
+            )?;
         }
         self.thrown(state, effect.thrown)?;
         if tail {

@@ -135,7 +135,10 @@ Differential fixtures compare results and
 original call coordinates with the unchanged Walrus interpreter. Unsupported
 operators are explicit and cannot prove a boundary. Default limits are
 4,294,967,295 abstract state values, one trillion work units, 16,384 nested control
-regions, 4,096 frame slots and 1,048,576 call-target memberships per body.
+regions, 4,096 frame slots and 1,048,576 memberships in distinct retained
+call-target sets per body. Equal sorted sets share storage across call sites;
+each site's union remains independent when later interpretation adds targets.
+Superseded sets are released when no site uses them.
 The state limit reserves a conservative bound for structured-control scratch
 and recorded states before evaluation; it is not a physical-memory ceiling.
 It is deliberately a generous sanity check: the estimate reserves the full
@@ -165,7 +168,12 @@ until semantic normalization is integrated; they cannot prove a sink.
 
 Sink metadata keeps compact function/global headers resident and caller,
 table-member and constant-slot relations on disk, using the same private
-storage budgets as compiler facts. `FactsStore::empty` creates planning storage
+storage budgets as compiler facts. Recorded target memberships are stored once
+per exact sorted group, with original call sites referring to that group.
+Digests narrow group lookups; exact membership comparison decides equality.
+Fork closure visits function and group vertices separately, and dependency
+queries project shared groups instead of retaining an expanded edge matrix.
+`FactsStore::empty` creates planning storage
 without claiming a compiler-facts solution. Reference-call dependencies are
 included when finding callers to revisit, including declared function-subtype
 chains. References in table/global initializers remain visible to dispatch.

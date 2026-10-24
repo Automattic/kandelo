@@ -26,6 +26,37 @@ impl Environment for Env {
 }
 
 #[test]
+fn repeated_call_sites_share_exact_targets_under_a_small_resident_allowance() {
+    let calls = "call $f drop ".repeat(100);
+    let input = wat::parse_str(format!(
+        "(module (import \"h\" \"f\" (func $f (result i32))) (func {calls}))"
+    ))
+    .unwrap();
+    let scan = scan(&input).unwrap();
+    let body = scan.body_provider(Default::default()).load(1).unwrap();
+    let result = evaluate(
+        &scan,
+        &body,
+        &mut Env,
+        Options {
+            record_targets: true,
+            ..Default::default()
+        },
+        Limits {
+            call_targets: 2,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(result.targets.len(), 100);
+    let first = result.targets.values().next().unwrap();
+    for targets in result.targets.values() {
+        assert_eq!(targets.as_ref(), &[0, 1]);
+        assert!(std::sync::Arc::ptr_eq(first, targets));
+    }
+}
+
+#[test]
 fn native_sink_budgets_reject_before_publishing_partial_results() {
     let input = wat::parse_str(
         r#"(module (import "h" "f" (func $f (result i32)))

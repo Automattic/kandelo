@@ -295,10 +295,15 @@ fn compare(wat: &str, children: bool) {
                 )
             })
             .collect();
-        let actual: BTreeMap<_, _> = new
+        let actual: BTreeMap<_, BTreeSet<_>> = new
             .targets
             .iter()
-            .map(|(&i, ts)| (body.instructions[i].point.offset, ts.clone()))
+            .map(|(&i, ts)| {
+                (
+                    body.instructions[i].point.offset,
+                    ts.iter().copied().collect(),
+                )
+            })
             .collect();
         assert_eq!(actual, expected, "targets in function {function} in {wat}");
         // Compare original local coordinates, not Walrus's compact local order.

@@ -269,18 +269,19 @@ impl<'a> Planner<'_, '_, 'a> {
     }
     fn callers(&self, function: u32) -> Result<Vec<u32>> {
         self.indices(
-            "SELECT caller FROM sink_rdep WHERE callee=? ORDER BY caller",
+            "SELECT DISTINCT caller FROM sink_rdep WHERE callee=? ORDER BY caller",
             [function],
         )
     }
     fn callees(&self, function: u32) -> Result<Vec<u32>> {
         self.indices(
-            "SELECT callee FROM sink_rdep WHERE caller=? ORDER BY callee",
+            "SELECT DISTINCT callee FROM sink_rdep WHERE caller=? ORDER BY callee",
             [function],
         )
     }
 
     fn targets(&mut self) -> Result<bool> {
+        let progress = crate::progress::Progress::new("sink targets");
         let plan = self.plan;
         let program = plan.original_program();
         let store = program.store;
@@ -289,6 +290,9 @@ impl<'a> Planner<'_, '_, 'a> {
             .original_scan()
             .body_provider(self.limits.interpreter.ir);
         for function in 0..self.n as u32 {
+            if function % 10_000 == 0 {
+                progress.note(format_args!("function {function}"));
+            }
             if program.functions[function as usize].imported {
                 continue;
             }
@@ -320,6 +324,9 @@ impl<'a> Planner<'_, '_, 'a> {
                 return Ok(false);
             }
             let transaction = store.db.unchecked_transaction()?;
+            // The evaluator has already shared equal lists. Resolve each one
+            // once per body instead of reading its database members per site.
+            let mut groups = BTreeMap::new();
             for (instruction, targets) in result.targets {
                 let source = &body.instructions[instruction];
                 let tail = matches!(
@@ -329,16 +336,22 @@ impl<'a> Planner<'_, '_, 'a> {
                         | Operator::ReturnCallRef { .. }
                 );
                 let point = i64::try_from(source.point.offset)?;
+                let group = match groups.entry(targets) {
+                    std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        let group = super::target_groups::intern(store, entry.key())?;
+                        entry.insert(group);
+                        group
+                    }
+                };
                 store.execute(
-                    "INSERT INTO sink_site VALUES(?,?,?,?)",
-                    params![function, point, instruction as u32, tail],
+                    "INSERT INTO sink_site VALUES(?,?,?,?,?)",
+                    params![function, point, instruction as u32, tail, group],
                 )?;
-                for target in targets {
-                    store.execute(
-                        "INSERT INTO sink_target VALUES(?,?,?)",
-                        params![function, point, target],
-                    )?;
-                }
+                store.execute(
+                    "INSERT OR IGNORE INTO sink_caller_group VALUES(?,?)",
+                    params![function, group],
+                )?;
             }
             transaction.commit()?;
         }
@@ -346,12 +359,13 @@ impl<'a> Planner<'_, '_, 'a> {
     }
     fn closure(&mut self) -> Result<()> {
         let store = self.plan.original_program().store;
-        store.execute("INSERT INTO sink_reaching WITH RECURSIVE r(function) AS (
-          VALUES(?1) UNION SELECT ?2 WHERE ?3 UNION SELECT t.caller FROM sink_target t JOIN r ON r.function=t.target)
-          SELECT function FROM r",params![self.seed,EXT,self.plan.original_program().has_external_dispatch()])?;
-        store.db.execute_batch(
-            "INSERT INTO sink_rdep SELECT DISTINCT t.target,t.caller FROM sink_target t
-          JOIN sink_reaching a ON a.function=t.target JOIN sink_reaching b ON b.function=t.caller;",
+        super::target_groups::reaching(
+            store,
+            self.seed,
+            self.plan
+                .original_program()
+                .has_external_dispatch()
+                .then_some(EXT),
         )?;
         for f in self.indices("SELECT function FROM sink_reaching ORDER BY function", [])? {
             let i = self.ix(f);
@@ -555,8 +569,8 @@ impl<'a> Planner<'_, '_, 'a> {
             let mut injections = BTreeMap::new();
             let mut needed = false;
             store.charge_work(1)?;
-            let mut query=store.db.prepare_cached("SELECT s.instruction,t.target FROM sink_site s JOIN sink_target t ON t.caller=s.caller AND t.point=s.point
-              JOIN sink_reaching r ON r.function=t.target WHERE s.caller=? ORDER BY s.instruction,t.target")?;
+            let mut query=store.db.prepare_cached("SELECT s.instruction,m.target FROM sink_site s JOIN sink_target_member m ON m.group_id=s.group_id
+              JOIN sink_reaching r ON r.function=m.target WHERE s.caller=? ORDER BY s.instruction,m.target")?;
             let mut rows = query.query([function])?;
             let mut site = None;
             let mut targets = Vec::new();
