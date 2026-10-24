@@ -1858,6 +1858,15 @@ captures:
   globals whose name matches `ABI_VALUE_CAPTURE_PREFIXES` (today
   `__abi_*`), the initial value is captured as well — so a change to
   an ABI-flag constant moves the snapshot directly.
+- `kernel_imports` — every entry of the built kernel's import section:
+  each `env.host_*` function with its rendered signature, and the shared
+  `env.memory` with its page limits. This is the contract every host
+  (Node.js, browser, the native test host) must satisfy before the
+  kernel can be instantiated. It is read from the artifact, not from the
+  `extern` block in `crates/kernel/src/wasm_api.rs`: an import nothing
+  calls is dead-code-eliminated, and a host is not required to supply an
+  import the module does not have. See [Imports classify in
+  reverse](#imports-classify-in-reverse).
 - `export_deny` — the filter lists themselves (`deny_prefixes`,
   `deny_exact`, `value_capture_prefixes`). Making the filter part of
   the snapshot means adding or removing a pattern is itself an
@@ -1937,8 +1946,38 @@ Fails if the committed snapshot drifts from the source. If the snapshot
 changed versus `origin/main` without a matching `ABI_VERSION` bump, CI
 classifies the diff and accepts only the additive cases listed above.
 
+### Imports classify in reverse
+
+`kernel_imports` is the one section where adding an entry is **breaking**
+and removing one is **compatible**. That is the direction of the
+dependency, not a special case. An export is something the kernel
+*offers*: a host may use it or not, so a new one harms nobody and a
+deleted one breaks whoever used it. An import is a requirement the kernel
+*places on the host*: a host built against the old contract has no
+implementation for a newly added one, so instantiation fails outright,
+while a host still offering an import the kernel no longer asks for is
+unaffected, because WebAssembly resolves imports by name. Changing an
+import's signature, or the imported memory's shape, is breaking.
+
+So **adding an `env.host_*` import fails the ABI check** unless
+`ABI_VERSION` is bumped in the same change. That is deliberate: growing
+the host surface is what the Rust-first migration is trying not to do, and
+it should cost a conversation rather than depend on a reviewer noticing a
+new line. Before this section existed, widening `host_proc_read_bytes` /
+`host_proc_write_bytes` from a 32-bit to a 64-bit address produced no
+snapshot diff at all. The section's first appearance is a pure addition
+and does not itself change the ABI.
+
 ## What the check does **not** catch
 
+- **wasm64 import signatures.** `kernel_imports` is recorded from the
+  wasm32 kernel, the only one `scripts/check-abi-version.sh` builds.
+  Imports declared with a pointer-width type (`usize`, `isize`, or a raw
+  pointer) render as `i32` there and would render as `i64` on a wasm64
+  kernel, so a drift only a wasm64 kernel would show is invisible.
+- **Imports the kernel declares but never calls.** They are not in the
+  artifact, so adding a *declaration* is invisible until something calls
+  it.
 - **Semantic changes with the same signature.** Reinterpreting a
   syscall argument, changing blocking behavior, or changing an errno
   value will not show up in the snapshot. Reviewers must catch these.
