@@ -27,6 +27,8 @@ import type { DisplayHandle } from "../panes/Display";
 import { TerminalDockControls } from "./TerminalDockControls";
 import { useNetworkSession } from "./use-network-session";
 import { NetworkPanel } from "./NetworkPanel";
+import { ExchangeToasts, useExchangePicker } from "./ExchangeToasts";
+import { useExchangeConsumer } from "../kernel-host/react";
 
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
 type ThemeFamily = "ubuntu" | "wordpress" | "kandelo";
@@ -66,6 +68,8 @@ const PANE_META: Record<DockPaneId, { title: string; subtitle: string }> = {
 export const App: React.FC = () => {
   const host = useKernelHost();
   const networkSession = useNetworkSession(host);
+  const exchangeConsumer = useExchangeConsumer();
+  const exchangePicker = useExchangePicker();
   const demoGuide = useDemoGuide();
   const lazyDownloads = useLazyDownloads();
   const machineProgress = useMachineProgress();
@@ -439,6 +443,8 @@ export const App: React.FC = () => {
         )}
 
         <LazyDownloadToasts downloads={lazyDownloads} />
+        <ExchangeToasts />
+        {exchangePicker.input}
         {surface.status === "running" && audioActive && audioState !== "running" && (
           <AudioStatusToast
             state={audioState}
@@ -452,6 +458,9 @@ export const App: React.FC = () => {
         {networkSession.open && <NetworkPanel session={networkSession} running={surface.status === "running"} />}
 
         <Dock
+          onSendFiles={surface.status === "running" && exchangeConsumer && exchangeConsumer.state !== "unavailable"
+            ? exchangePicker.open
+            : undefined}
           networkPhase={networkSession.state.phase}
           onOpenNetwork={() => networkSession.setOpen(true)}
           activePane={dockPane}

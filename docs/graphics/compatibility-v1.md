@@ -87,7 +87,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | H01 | Command framing, complete validation and bounded results | Full structural prevalidation now protects batches; host source regressions pass | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Canonical surface BO holds and image-owned renderer cleanup now survive descriptor inheritance/local close; focused native lifecycle checks pass. Raw BO retirement retains failed native cleanup across final member teardown and blocks affected operations until retry. Combined guest/memory-cycle validation remains pending | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
-| A01 | ABI and generated declarations match combined implementation | Main heap-safepoint ABI 52 and graphics session/thread-current/display-authority changes are combined under ABI 58 with shared-context construction and acknowledged surface creation; compatible graphics operation table 16 adds checked image transactions, framebuffer selection, buffer binding/deletion and immutable surface limits. Generated outputs and resolver verified, full artifacts pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
+| A01 | ABI and generated declarations match combined implementation | Current main `77b31c6962` ABI 53 xattr/exchange contracts and graphics development through ABI 58 are combined under fresh ABI 59. Regenerated snapshot, C/TS declarations and standalone resolver pass focused inspection; operation table stays 16. Normal artifacts and combined consumer/conformance gates remain pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
 | P01 | Real upstream compositor integration | wlroots/cage/sway recipes and consumers integrated; combined artifacts and compositor validation pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
 
 ## Separate expansions
@@ -4282,3 +4282,73 @@ server dependencies and retirement remain ordinary implementation work.
 No hard boundary is inferred from WebGL's event-loop signaling rules.
 Normal artifacts, current-main integration, upstream CTS, compositor
 consumers, full browser-memory and required POSIX suites remain deferred.
+
+
+## Current-main integration and compositor dependency audit (2026-10-24)
+
+Main `77b31c696279f8512b0cdbc93d125a9dd84cd1d6` contains four commits
+beyond the prior integrated base `f3cb7041f6`. They add truthful xattr
+marshalling/results, the getgroups size correction and Kandelo exchange,
+including its browser UI and image-owned runtime. The compatibility branch
+merges this history without rewriting contributors or replacing newer main
+behavior. Conflict resolution retains both sysfs/DRI cleanup and exchange
+open-description cleanup. Main's ABI 53 and graphics development through
+ABI 58 now combine under fresh ABI 59, with operation table 16 unchanged.
+The ABI history distinguishes main's released contract from graphics
+branch development checkpoints.
+
+The complete snapshot, generated C/TS interfaces and standalone resolver
+are regenerated from the combined source. ABI inspection builds only the
+kernel used for export-signature inspection. It does not rebuild or
+restamp normal SDK, program, package, image or distribution artifacts.
+The main exchange program and its image dependencies remain present.
+
+Focused combined-source evidence, all via `scripts/dev-shell.sh`:
+
+| Check | Exact evidence |
+|---|---|
+| ABI regeneration | `graphics-main59-abi-update.log` |
+| Snapshot/version and standalone resolver | Passed; `graphics-main59-abi-check.log` |
+| Rust GLIO / exchange / xattr / getgroups selections | 50 / 50 / 12 / 1 passed respectively; `graphics-main59-focused-rust.log`; filtered tests are not passing coverage |
+| Native C | All 174 fatal-UBSan cases pass; `graphics-main59-focused-source.log` |
+| Host source / Node and browser builds/declarations | All 582 cases in 23 files pass, no skips; same source log |
+| Actual-C browser source replays | All 30 affected cases pass on Chromium/Firefox/WebKit through native and forwarded dispatch, no skips; `graphics-main59-focused-browser.log` |
+
+This is focused integration evidence, not full workspace Rust, rebuilt
+guest, upstream CTS, compositor, browser-memory or POSIX conformance.
+Those gates remain unrun on ABI 59.
+
+The proposed compositor-first delivery uses the existing port and
+consumer tests as a distinct acceptance scope while the complete baseline
+remains open. Upstream wlroots 0.20.2 was read from the exact release
+archive pinned by its manifest: SHA-256
+`80c567d2ed4efb2cfa6b077f22c7a710d9c78ba4e185a75e8694001114af0733`.
+`compositor-source-audit.log` records acquisition and digest verification;
+selected source copies are under `.context/wlroots-source-audit/`.
+
+The upstream [EGL implementation](https://gitlab.freedesktop.org/wlroots/wlroots/-/blob/0.20.2/render/egl.c)
+requires EXT_platform_base, GBM, configless/surfaceless ES2 and KHR dma-buf
+images. Its native-fence functions load only when the corresponding
+optional extensions are advertised. The GLES2 renderer additionally
+requires BGRA8888 and unpack-subimage support; C advertises these existing
+client features. Timeline rendering requires both native-fence procedures
+and DRM syncobj-timeline capability; its normal implicit-sync submission
+uses glFlush. The texture readback path uses glFinish. Thus full core EGL
+sync/image APIs are not prerequisites for this pinned consumer path;
+their baseline gaps remain open. No advertisement is lowered or upstream
+assertion weakened to obtain this scope.
+
+The [render build](https://gitlab.freedesktop.org/wlroots/wlroots/-/blob/0.20.2/render/meson.build)
+always includes pixman independently of the GLES2 renderer option. The
+existing Node pixman test setup therefore agrees with the recipe; browser
+consumer tests still require GLES2. This source audit does not prove that
+either compositor currently builds or runs on the combined tree.
+
+A first landing still needs current-main/ABI-coherent normal builds,
+required input/protocol/wlroots dependencies, storage/DRM correctness
+fixes, rendered cage/sway sessions on all three engines, Node consumer
+semantics, exit/restart/master handoff, repeated memory teardown and the
+required Rust/ABI/POSIX checks. An extraction must preserve mho22's port
+authorship and the complete compatibility branch. No smaller landing PR
+or normal compositor build is created by this audit; expensive gates
+remain deferred while the user's sequencing choice is pending.

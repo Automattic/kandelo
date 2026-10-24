@@ -1585,9 +1585,42 @@ fn rd_bytes<'a>(buf: &'a [u8], pos: &mut usize, len: usize) -> Result<&'a [u8], 
 /// then inserts every entry parent-first. Returns the number of entries loaded.
 /// A malformed buffer or a rejected insert yields `EINVAL` with the store reset
 /// to empty (a partial tree is never left behind).
+/// Mount points of the kernel's own mounts. Images are not required to ship
+/// them: after loading an image the kernel creates them in the overlay (root
+/// owned, 0755), the way an init system creates its runtime mount points at
+/// boot. They are real directories, so `ls /run/kandelo` shows `exchange`.
+const KERNEL_MOUNT_POINTS: &[&[u8]] = &[crate::exchange::MOUNT_PATH];
+
+/// Create each kernel mount point and its missing ancestors. An existing
+/// non-directory on the way is a conflicting image: ENOTDIR, and the load
+/// fails rather than booting with an unreachable mount.
+fn ensure_kernel_mount_points() -> Result<(), Errno> {
+    for mount in KERNEL_MOUNT_POINTS {
+        for (index, &byte) in mount.iter().enumerate().skip(1) {
+            if byte == b'/' {
+                ensure_directory(&mount[..index])?;
+            }
+        }
+        ensure_directory(mount)?;
+    }
+    Ok(())
+}
+
+fn ensure_directory(path: &[u8]) -> Result<(), Errno> {
+    match mkdir(path, 0o755, 0, 0) {
+        Ok(()) => Ok(()),
+        Err(Errno::EEXIST) if lstat(path)?.st_mode & S_IFMT == S_IFDIR => Ok(()),
+        Err(Errno::EEXIST) => Err(Errno::ENOTDIR),
+        Err(error) => Err(error),
+    }
+}
+
 pub fn load_manifest(buf: &[u8]) -> Result<usize, Errno> {
     reset();
-    let result = load_manifest_inner(buf);
+    let result = load_manifest_inner(buf).and_then(|count| {
+        ensure_kernel_mount_points()?;
+        Ok(count)
+    });
     if result.is_err() {
         reset();
     }
@@ -1876,7 +1909,10 @@ where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
     reset();
-    let result = load_image_inner(image_len, byte_source);
+    let result = load_image_inner(image_len, byte_source).and_then(|count| {
+        ensure_kernel_mount_points()?;
+        Ok(count)
+    });
     if result.is_err() {
         reset();
     }
@@ -5799,6 +5835,43 @@ mod tests {
         // Still there, still deferred, still its real size: demoted, not
         // refused.
         assert_eq!(lstat(b"/bin/sudo").unwrap().st_size, 4_242);
+    }
+
+    fn minimal_manifest(extra: &[(&[u8], u8)]) -> alloc::vec::Vec<u8> {
+        let mut m = alloc::vec::Vec::new();
+        m.extend_from_slice(&MANIFEST_MAGIC.to_le_bytes());
+        m.extend_from_slice(&MANIFEST_VERSION_V3.to_le_bytes());
+        m.extend_from_slice(&(1 + extra.len() as u32).to_le_bytes());
+        enc_entry(&mut m, 1, 0o755, 0, 0, 1, 0, 0, 0, 0, b"/", b"");
+        for (index, (path, kind)) in extra.iter().enumerate() {
+            enc_entry(&mut m, *kind, 0o755, 0, 0, 2 + index as u64, 0, 0, 0, 0, path, b"");
+        }
+        m.extend_from_slice(&0u32.to_le_bytes()); // empty archive table
+        m
+    }
+
+    #[test]
+    fn loading_an_image_creates_the_kernel_mount_points() {
+        let _guard = TestGuard::acquire();
+        // An image with no /run at all still gets the exchange mount point,
+        // as an init system creates its runtime mount points at boot.
+        load_manifest(&minimal_manifest(&[])).unwrap();
+        for path in [&b"/run"[..], b"/run/kandelo", b"/run/kandelo/exchange"] {
+            let st = lstat(path).unwrap();
+            assert_eq!(st.st_mode, S_IFDIR | 0o755, "{}", core::str::from_utf8(path).unwrap());
+            assert_eq!((st.st_uid, st.st_gid), (0, 0));
+        }
+        // An image that already has /run keeps it.
+        load_manifest(&minimal_manifest(&[(b"/run", 1)])).unwrap();
+        assert_eq!(lstat(b"/run/kandelo/exchange").unwrap().st_mode & S_IFMT, S_IFDIR);
+    }
+
+    #[test]
+    fn an_image_with_a_file_where_a_mount_point_belongs_fails_to_load() {
+        let _guard = TestGuard::acquire();
+        // Kind 2 is a regular file: nothing can be mounted beneath it, and
+        // booting anyway would leave the exchange mount unreachable.
+        assert_eq!(load_manifest(&minimal_manifest(&[(b"/run", 2)])), Err(Errno::ENOTDIR));
     }
 
     #[test]

@@ -90,6 +90,21 @@ import {
   type PreparedExecKernel,
 } from "./exec-target";
 import type { DeferredFetchSettled } from "./vfs/rootfs-lazy-archives";
+import {
+  decodeNotifications,
+  encodeEntryRecord,
+  EXCHANGE_ID_BYTES,
+  ExchangeSourceCache,
+  EXCHANGE_AGENT_ENV,
+  EXCHANGE_AGENT_PATH,
+  runExchangeRequest,
+  type ExchangeActivation,
+  type ExchangeConsumerState,
+  type ExchangeEntryRecord,
+  type ExchangeNotification,
+  type ExchangeRangeRequester,
+  type ExchangeWorkerRequest,
+} from "./exchange-host";
 import { WasmModuleCache } from "./wasm-module-cache";
 import {
   buildRawHttpRequest,
@@ -152,6 +167,7 @@ import {
   PROCESS_STATE_STOPPED,
   POSIX_ARG_MAX_BYTES,
   POSIX_NAME_MAX_BYTES,
+  XATTR_SIZE_MAX_BYTES,
   POSIX_NGROUPS_MAX,
   POSIX_PATH_MAX_BYTES,
   PROCESS_FORK_MODE_FORK,
@@ -620,6 +636,33 @@ function boundedChannelArgumentSize(
   if (syscallNr === ABI_SYSCALLS.GetEnv && argIndex === 1) {
     return PROCESS_METADATA_ENTRY_MAX_BYTES;
   }
+  // No process has more than NGROUPS_MAX supplementary groups, so a larger
+  // getgroups buffer is valid (POSIX) and needs only that many entries.
+  if (syscallNr === ABI_SYSCALLS.Getgroups && argIndex === 1) {
+    return POSIX_NGROUPS_MAX * 4;
+  }
+  // Linux clamps an xattr value or name-list buffer to XATTR_SIZE_MAX
+  // (XATTR_LIST_MAX for lists, the same 64 KiB): no result can be longer.
+  if (
+    (
+      (
+        syscallNr === ABI_SYSCALLS.Getxattr
+        || syscallNr === ABI_SYSCALLS.Lgetxattr
+        || syscallNr === ABI_SYSCALLS.Fgetxattr
+      )
+      && argIndex === 2
+    )
+    || (
+      (
+        syscallNr === ABI_SYSCALLS.Listxattr
+        || syscallNr === ABI_SYSCALLS.Llistxattr
+        || syscallNr === ABI_SYSCALLS.Flistxattr
+      )
+      && argIndex === 1
+    )
+  ) {
+    return XATTR_SIZE_MAX_BYTES;
+  }
   if (
     (
       syscallNr === ABI_SYSCALLS.Recv
@@ -767,6 +810,19 @@ function validateCompleteChannelInputSize(
     || syscallNr === SYS_SENDTO && argIndex === 4;
   if (isSocketAddress) validateSocketAddressInputSize(size);
   if (
+    (
+      syscallNr === ABI_SYSCALLS.Setxattr
+      || syscallNr === ABI_SYSCALLS.Lsetxattr
+      || syscallNr === ABI_SYSCALLS.Fsetxattr
+    )
+    && argIndex === 2
+    && size > XATTR_SIZE_MAX_BYTES
+  ) {
+    // Linux XATTR_SIZE_MAX. Refusing here avoids copying a value no
+    // filesystem could accept.
+    throw new KernelScratchError("xattr value exceeds XATTR_SIZE_MAX", E2BIG);
+  }
+  if (
     syscallNr === ABI_SYSCALLS.Setsockopt
     && argIndex === 3
     && size > KERNEL_SCRATCH_SOCKET_OPTION_INPUT_MAX_BYTES
@@ -776,11 +832,10 @@ function validateCompleteChannelInputSize(
       EINVAL,
     );
   }
+  // setgroups must refuse a list longer than NGROUPS_MAX (EINVAL);
+  // getgroups instead bounds its buffer (see boundedChannelArgumentSize).
   if (
-    (
-      syscallNr === ABI_SYSCALLS.Getgroups
-      || syscallNr === ABI_SYSCALLS.Setgroups
-    )
+    syscallNr === ABI_SYSCALLS.Setgroups
     && argIndex === 1
     && size > POSIX_NGROUPS_MAX * 4
   ) {
@@ -1117,6 +1172,9 @@ const F_OFD_GETLK = 36;
 const F_OFD_SETLK = 37;
 const F_OFD_SETLKW = 38;
 const LOCK_NB = 4;
+
+/** The kernel's synthetic init (`process_table::SYNTHETIC_INIT_PID`). */
+const SYNTHETIC_INIT_PID = 1;
 
 /** Retry interval for EAGAIN polling (ms) */
 const EAGAIN_RETRY_MS = 1;
@@ -6375,6 +6433,7 @@ export class CentralizedKernelWorker {
         // tree to the in-kernel rootfs, before any guest filesystem op runs.
         enableKernelTmpfs(instance);
         this.#maybeLoadKernelRootfs(instance);
+        this.#initExchange(instance);
 
         // Blocking-wait deadlines are kernel state on CLOCK_MONOTONIC, not
         // host wall-clock arithmetic. Hand that authority over before any
@@ -13323,20 +13382,24 @@ export class CentralizedKernelWorker {
         }
 
         if (desc.size.type === "arg") {
-          const simpleCount =
-            (desc.size.multiplier ?? 1) === 1
-            && (desc.size.add ?? 0) === 0;
+          const multiplier = desc.size.multiplier ?? 1;
+          const simpleCount = multiplier === 1 && (desc.size.add ?? 0) === 0;
+          // An entry count (getgroups' gid_t count) may carry a bounded
+          // complete-result maximum too, in bytes.
+          const entryCount = multiplier > 1 && (desc.size.add ?? 0) === 0;
           const semanticCeiling = simpleCount
             ? shortChannelArgumentSize(syscallNr, desc.argIndex)
               ?? boundedChannelArgumentSize(syscallNr, desc.argIndex)
-            : undefined;
+            : entryCount
+              ? boundedChannelArgumentSize(syscallNr, desc.argIndex)
+              : undefined;
           if (semanticCeiling !== undefined && size > semanticCeiling) {
             // Only the two short-safe calls or a separately generated
             // complete-result maximum may rewrite a caller count. Every other
             // variable extent retains its exact operation semantics and uses a
             // Rust-owned large channel below.
             size = semanticCeiling;
-            adjustedArgs[desc.size.argIndex] = size;
+            adjustedArgs[desc.size.argIndex] = Math.floor(size / multiplier);
           }
         }
 
@@ -16573,6 +16636,13 @@ export class CentralizedKernelWorker {
       entry.deferProtocolEffect(() => {
         this.wakeAllBlockedRetries(true);
       });
+    }
+    // Kandelo exchange: only while the host has exchange activity, so idle
+    // machines add no export call per syscall.
+    if (this.#exchangeActive()) {
+      const takePending = this.#kernelInstanceForEntry(entry).exports
+        .kernel_exchange_take_pending as (() => number) | undefined;
+      if (takePending?.() === 1) this.#drainExchangeNotificationsWithinKernelEntry(entry);
     }
     const drainFn = this.#kernelInstanceForEntry(entry).exports.kernel_drain_wakeup_events as
       | ((outPtr: KernelPointer, outLen: number, maxEvents: number) => number)
@@ -23185,7 +23255,7 @@ export class CentralizedKernelWorker {
     childPid: number,
     authorityPath: string,
     diagnosticPath: string,
-    candidate: ResolvedSpawnProgram,
+    candidate: ResolvedSpawnProgram | null,
     originalArgv: string[],
     envp: string[],
   ): Promise<number> {
@@ -23217,7 +23287,7 @@ export class CentralizedKernelWorker {
             markTargetConsumed,
           ),
         compileModule: (bytes) => this.wasmModules.programModule(bytes),
-        preflightModule: candidate.programModule,
+        ...(candidate ? { preflightModule: candidate.programModule } : {}),
       }, async (request) => ({
         // onSpawn owns no replacement image before commit. If a future host
         // adds staged resources, they must remain bounded to this hook.
@@ -30447,6 +30517,546 @@ export class CentralizedKernelWorker {
         return undefined;
       });
     });
+  }
+
+  // ---- Kandelo exchange (see crates/runtime-core/src/exchange) ----------
+
+  readonly #exchangeSources = new ExchangeSourceCache((source, offset, length) => {
+    this.#exchangeRangeRequester?.(source, offset, length);
+  });
+  #exchangeRangeRequester: ExchangeRangeRequester | null = null;
+  #exchangeNotificationListener: ((notifications: ExchangeNotification[]) => void) | null = null;
+  /** Reasons the host wants notifications: listener, offers, leases, watchers. */
+  #exchangeInterest = 0;
+  #exchangeByteLimit: number | null = null;
+  #exchangeActivation: ExchangeActivation = "on-demand";
+  /** The kernel's last consumer report. */
+  #exchangeConsumerState: ExchangeConsumerState | null = null;
+
+  #exchangeActive(): boolean {
+    return this.#exchangeInterest > 0;
+  }
+
+  /**
+   * Route exchange traffic: range requests go to the side that offered the
+   * source, decoded notifications to the host's exchange state.
+   */
+  setExchangeHandlers(handlers: {
+    requestRange: ExchangeRangeRequester;
+    onNotifications: (notifications: ExchangeNotification[]) => void;
+  }): void {
+    this.#exchangeRangeRequester = handlers.requestRange;
+    this.#exchangeNotificationListener = handlers.onNotifications;
+  }
+
+  /** The embedder's `exchange.activation`, applied at boot. */
+  setExchangeActivation(mode: ExchangeActivation): void {
+    this.#exchangeActivation = mode;
+  }
+
+  /** The quota for `work/` and `outbox/`, applied at boot. */
+  setExchangeByteLimit(bytes: number): void {
+    this.#exchangeByteLimit = bytes;
+  }
+
+  /** Count (+1) or uncount (-1) a reason to receive exchange notifications. */
+  adjustExchangeInterest(delta: 1 | -1): void {
+    this.#exchangeInterest = Math.max(0, this.#exchangeInterest + delta);
+  }
+
+  #initExchange(instance: WebAssembly.Instance): void {
+    const init = instance.exports.kernel_exchange_init as
+      | ((lo: number, hi: number) => number)
+      | undefined;
+    if (typeof init !== "function") {
+      throw new Error("kernel lacks kernel_exchange_init; rebuild the kernel for this ABI");
+    }
+    const nonce = new Uint32Array(2);
+    globalThis.crypto.getRandomValues(nonce);
+    init(nonce[0]!, nonce[1]!);
+    if (this.#exchangeByteLimit !== null) {
+      const configure = instance.exports.kernel_exchange_configure as
+        (lo: number, hi: number) => number;
+      const limit = this.#exchangeByteLimit;
+      const result = configure(limit >>> 0, Math.floor(limit / 0x1_0000_0000));
+      if (result < 0) throw new Error(`kernel_exchange_configure failed with errno ${-result}`);
+    }
+    const configureActivation = instance.exports.kernel_exchange_configure_activation as
+      (mode: number) => number;
+    const configured = configureActivation(this.#exchangeActivation === "on-demand" ? 1 : 0);
+    if (configured < 0) throw new Error(`kernel_exchange_configure_activation failed with errno ${-configured}`);
+    this.#kernel.setExchangeSourceProvider((source, offset, dest) =>
+      this.#exchangeSources.read(source, offset, dest));
+  }
+
+  /** The side that offered `source` answered a range request. */
+  exchangeFulfillRange(source: bigint, offset: bigint, requested: number, bytes: Uint8Array): void {
+    this.#exchangeSources.fulfill(source, offset, requested, bytes);
+    this.#runOrDeferKernelEntry("exchange source bytes and wake", (entry) => {
+      this.scheduleWakeBlockedRetries(entry);
+      return undefined;
+    });
+  }
+
+  /** The side that offered `source` can no longer read it (EIO by default). */
+  exchangeFailRange(source: bigint, errno?: number): void {
+    this.#exchangeSources.fail(source, errno);
+    this.#runOrDeferKernelEntry("exchange source failure and wake", (entry) => {
+      this.scheduleWakeBlockedRetries(entry);
+      return undefined;
+    });
+  }
+
+  /**
+   * Run one exchange request from the main thread. Both worker entries call
+   * this public ingress rather than handing the worker to a helper.
+   */
+  exchangeRequest(request: ExchangeWorkerRequest): Promise<unknown> {
+    return runExchangeRequest(this, request);
+  }
+
+  /** Tell the kernel whether a host output listener exists. */
+  exchangeSetListener(present: boolean): Promise<void> {
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange listener", (entry) => {
+        // Required exports: kernel instantiation already proved they exist.
+        const setListener = entry.instance.exports.kernel_exchange_set_listener as (present: number) => number;
+        setListener(present ? 1 : 0);
+        // The consumer may be parked reading `events`; the new line wakes it.
+        this.scheduleWakeBlockedRetries(entry);
+        resolve();
+        return undefined;
+      });
+    });
+  }
+
+  /**
+   * The kernel's consumer state, current as of this call: the kernel decides
+   * about activation first, so the answer reflects the agent path now.
+   */
+  exchangeConsumerState(): Promise<ExchangeConsumerState | null> {
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange consumer state", (entry) => {
+        this.#activateExchangeAgentWithinKernelEntry(entry);
+        this.#drainExchangeNotificationsWithinKernelEntry(entry);
+        resolve(this.#exchangeConsumerState);
+        return undefined;
+      });
+    });
+  }
+
+  /** Whether a consumer holds `events`. */
+  exchangeConsumerPresent(): Promise<boolean> {
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange consumer", (entry) => {
+        const consumerPresent = entry.instance.exports.kernel_exchange_consumer_present as () => number;
+        resolve(consumerPresent() === 1);
+        return undefined;
+      });
+    });
+  }
+
+  /**
+   * Stage a batch and commit it, in one kernel entry. Resolves with the IDs
+   * and whether the batch is visible now or waits for a consumer; on any
+   * failure the partly staged batch is cancelled.
+   */
+  exchangeOffer(offer: {
+    label: string;
+    entries: readonly Omit<ExchangeEntryRecord, "batch">[];
+  }): Promise<
+    | { ok: true; batch: Uint8Array; entries: Uint8Array[]; committed: boolean }
+    | { ok: false; errno: number; stage: "begin" | "entry" | "commit"; index?: number }
+  > {
+    const label = new TextEncoder().encode(offer.label);
+    // Encode every record before entering the kernel: a throw inside a
+    // kernel entry fails the whole machine, while a malformed offer (an
+    // oversized name, a non-finite time) is just a refused offer (EINVAL).
+    // The batch ID is patched into each record's first 16 bytes later.
+    let records: Uint8Array[];
+    try {
+      if (label.byteLength > 64) throw new RangeError("exchange source label too long");
+      records = offer.entries.map((entry) => {
+        if (!Number.isFinite(entry.mtimeMs)) throw new RangeError("exchange mtime is not finite");
+        return encodeEntryRecord({ ...entry, batch: new Uint8Array(EXCHANGE_ID_BYTES) });
+      });
+    } catch {
+      return Promise.resolve({ ok: false as const, errno: EINVAL, stage: "entry" as const });
+    }
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange offer", (entry) => {
+        const scratch = this.#requireMainScratchRegion();
+        const now = Date.now();
+        const nowLo = now >>> 0;
+        const nowHi = Math.floor(now / 0x1_0000_0000);
+        const result = scratch.withLease((lease) => {
+          const idOffset = 0;
+          const dataOffset = EXCHANGE_ID_BYTES * 2;
+          lease.copyFrom(label, dataOffset);
+          const begun = this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_begin", [
+            lease.exportPointer(dataOffset, label.byteLength), label.byteLength,
+            lease.exportPointer(idOffset, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES, nowLo, nowHi,
+          ]);
+          if (begun !== 0) return { ok: false as const, errno: -begun, stage: "begin" as const };
+          const batch = lease.copyOut(idOffset, EXCHANGE_ID_BYTES);
+          const ids: Uint8Array[] = [];
+          let failure: { ok: false; errno: number; stage: "entry" | "commit"; index?: number } | null = null;
+          for (let index = 0; index < records.length; index++) {
+            const record = records[index]!;
+            record.set(batch, 0);
+            if (dataOffset + record.byteLength > scratch.capacity) {
+              failure = { ok: false, errno: 7, stage: "entry", index }; // E2BIG
+              break;
+            }
+            lease.copyFrom(record, dataOffset);
+            const added = this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_add_entry", [
+              lease.exportPointer(dataOffset, record.byteLength), record.byteLength,
+              lease.exportPointer(EXCHANGE_ID_BYTES, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES, nowLo, nowHi,
+            ]);
+            if (added !== 0) {
+              failure = { ok: false, errno: -added, stage: "entry", index };
+              break;
+            }
+            ids.push(lease.copyOut(EXCHANGE_ID_BYTES, EXCHANGE_ID_BYTES));
+          }
+          if (failure === null) {
+            lease.copyFrom(batch, 0);
+            const committed = this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_commit", [
+              lease.exportPointer(0, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES,
+            ]);
+            if (committed >= 0) {
+              return { ok: true as const, batch, entries: ids, committed: committed === 0 };
+            }
+            failure = { ok: false, errno: -committed, stage: "commit" };
+          }
+          // Nothing of a failed offer stays staged.
+          lease.copyFrom(batch, 0);
+          this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_cancel", [
+            lease.exportPointer(0, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES,
+          ]);
+          return failure;
+        });
+        if (result.ok) {
+          // A consumer parked on `events` must see the new line.
+          this.scheduleWakeBlockedRetries(entry);
+          this.#drainExchangeNotificationsWithinKernelEntry(entry);
+        }
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  /** Cancel a batch at any stage; resolves with 0 or a negative errno. */
+  exchangeCancel(batch: Uint8Array): Promise<number> {
+    const id = batch.slice();
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange cancel", (entry) => {
+        const result = this.#requireMainScratchRegion().withLease((lease) => {
+          lease.copyFrom(id, 0);
+          return this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_cancel", [
+            lease.exportPointer(0, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES,
+          ]);
+        });
+        this.#drainExchangeNotificationsWithinKernelEntry(entry);
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  /** Read up to `length` bytes of a published output; a negative errno on failure. */
+  exchangeReadOutput(output: Uint8Array, offset: number, length: number): Promise<Uint8Array | number> {
+    const id = output.slice();
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange output read", (entry) => {
+        const scratch = this.#requireMainScratchRegion();
+        const capacity = Math.min(length, scratch.capacity - EXCHANGE_ID_BYTES);
+        const result = scratch.withLease((lease) => {
+          lease.copyFrom(id, 0);
+          const count = this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_read_output", [
+            lease.exportPointer(0, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES, offset >>> 0, Math.floor(offset / 0x1_0000_0000),
+            lease.exportPointer(EXCHANGE_ID_BYTES, capacity), capacity,
+          ]);
+          return count < 0 ? count : lease.copyOut(EXCHANGE_ID_BYTES, count);
+        });
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  /** End the host's lease on an output; resolves with 0 or a negative errno. */
+  exchangeReleaseOutput(output: Uint8Array): Promise<number> {
+    const id = output.slice();
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange output release", (entry) => {
+        const result = this.#requireMainScratchRegion().withLease((lease) => {
+          lease.copyFrom(id, 0);
+          return this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_release_output", [
+            lease.exportPointer(0, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES,
+          ]);
+        });
+        // A stream's writers parked on a full FIFO now get EPIPE.
+        this.scheduleWakeBlockedRetries(entry);
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  /**
+   * Write host bytes into an input stream's FIFO; resolves with how many fit
+   * (possibly 0) or a negative errno. Readers parked on it are woken.
+   */
+  exchangeStreamPush(source: bigint, bytes: Uint8Array): Promise<number> {
+    const data = bytes.slice();
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange stream push", (entry) => {
+        const scratch = this.#requireMainScratchRegion();
+        const length = Math.min(data.byteLength, scratch.capacity);
+        const result = scratch.withLease((lease) => {
+          lease.copyFrom(data.subarray(0, length), 0);
+          return this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_stream_push", [
+            lease.exportPointer(0, length), length,
+            Number(source & 0xffff_ffffn), Number(source >> 32n),
+          ]);
+        });
+        if (result > 0) this.scheduleWakeBlockedRetries(entry);
+        this.#drainExchangeIfPendingWithinKernelEntry(entry);
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  /** The host stream behind an input ended, cleanly or not. */
+  exchangeStreamEnd(source: bigint, failed: boolean): Promise<number> {
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange stream end", (entry) => {
+        // Required export: kernel instantiation already proved it exists.
+        const end = entry.instance.exports.kernel_exchange_stream_end as
+          (sourceLo: number, sourceHi: number, failed: number) => number;
+        const result = end(Number(source & 0xffff_ffffn), Number(source >> 32n), failed ? 1 : 0);
+        this.scheduleWakeBlockedRetries(entry);
+        this.#drainExchangeIfPendingWithinKernelEntry(entry);
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  /** Become a streamed output's reader; a writer waiting in open proceeds. */
+  exchangeStreamStart(output: Uint8Array): Promise<number> {
+    const id = output.slice();
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange stream start", (entry) => {
+        const result = this.#requireMainScratchRegion().withLease((lease) => {
+          lease.copyFrom(id, 0);
+          return this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_stream_start", [
+            lease.exportPointer(0, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES,
+          ]);
+        });
+        this.scheduleWakeBlockedRetries(entry);
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  /**
+   * Read a streamed output: bytes, an empty array at its end, or a negative
+   * errno (`-EAGAIN` while a writer may still write). Writers parked on a
+   * full FIFO are woken.
+   */
+  exchangeStreamRead(output: Uint8Array, length: number): Promise<Uint8Array | number> {
+    const id = output.slice();
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange stream read", (entry) => {
+        const scratch = this.#requireMainScratchRegion();
+        const capacity = Math.max(1, Math.min(length, scratch.capacity - EXCHANGE_ID_BYTES));
+        const result = scratch.withLease((lease) => {
+          lease.copyFrom(id, 0);
+          const count = this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_stream_read", [
+            lease.exportPointer(0, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES,
+            lease.exportPointer(EXCHANGE_ID_BYTES, capacity), capacity,
+          ]);
+          return count < 0 ? count : lease.copyOut(EXCHANGE_ID_BYTES, count);
+        });
+        if (result instanceof Uint8Array && result.byteLength > 0) this.scheduleWakeBlockedRetries(entry);
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  /** A streamed output's `user.kandelo.end`, or a negative errno (`-ENODATA`: none). */
+  exchangeOutputEnd(output: Uint8Array): Promise<Uint8Array | number> {
+    const id = output.slice();
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange output end", (entry) => {
+        const scratch = this.#requireMainScratchRegion();
+        const capacity = Math.min(1024, scratch.capacity - EXCHANGE_ID_BYTES);
+        const result = scratch.withLease((lease) => {
+          lease.copyFrom(id, 0);
+          const count = this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_output_end", [
+            lease.exportPointer(0, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES,
+            lease.exportPointer(EXCHANGE_ID_BYTES, capacity), capacity,
+          ]);
+          return count < 0 ? count : lease.copyOut(EXCHANGE_ID_BYTES, count);
+        });
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  #drainExchangeIfPendingWithinKernelEntry(entry: KernelWorkerEntryContext): void {
+    const takePending = entry.instance.exports.kernel_exchange_take_pending as () => number;
+    if (takePending() === 1) this.#drainExchangeNotificationsWithinKernelEntry(entry);
+  }
+
+  #drainExchangeNotificationsWithinKernelEntry(entry: KernelWorkerEntryContext): void {
+    const scratch = this.#requireMainScratchRegion();
+    const notifications: ExchangeNotification[] = [];
+    // Activation can queue more notifications (its state, a backoff timer);
+    // each round decides at most once, so this ends.
+    for (let round = 0; round < 8; round++) {
+      const start = notifications.length;
+      for (;;) {
+        const bytes = scratch.withLease((lease) => {
+          const written = this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_drain_notifications", [
+            lease.exportPointer(0, scratch.capacity), scratch.capacity,
+          ]);
+          return written > 0 ? lease.copyOut(0, written) : null;
+        });
+        if (bytes === null) break;
+        notifications.push(...decodeNotifications(bytes));
+      }
+      if (!notifications.slice(start).some((n) => n.kind === "activation-check")) break;
+      this.#activateExchangeAgentWithinKernelEntry(entry);
+    }
+    const forwarded: ExchangeNotification[] = [];
+    for (const notification of notifications) {
+      switch (notification.kind) {
+        case "source-released":
+          this.#exchangeSources.release(notification.source);
+          forwarded.push(notification);
+          break;
+        case "activation-check":
+          break;
+        case "activation-timer":
+          setTimeout(() => {
+            this.#runOrDeferKernelEntry("exchange activation backoff", (timerEntry) => {
+              this.#activateExchangeAgentWithinKernelEntry(timerEntry);
+              this.#drainExchangeIfPendingWithinKernelEntry(timerEntry);
+              return undefined;
+            });
+          }, notification.delayMs);
+          break;
+        case "consumer-state":
+          this.#exchangeConsumerState = notification.consumer;
+          forwarded.push(notification);
+          break;
+        default:
+          forwarded.push(notification);
+      }
+    }
+    if (forwarded.length > 0) this.#exchangeNotificationListener?.(forwarded);
+  }
+
+  /**
+   * Ask the kernel to decide about activation now. The kernel creates the
+   * agent's process record when it decides to activate; the host launches
+   * it through the same exec-target and Worker path as a posix_spawn child,
+   * with init as the parent.
+   */
+  #activateExchangeAgentWithinKernelEntry(entry: KernelWorkerEntryContext): void {
+    const activate = entry.instance.exports.kernel_exchange_activate as
+      (nowLo: number, nowHi: number) => number;
+    const now = Date.now();
+    const pid = activate(now >>> 0, Math.floor(now / 0x1_0000_0000));
+    if (pid > 0) this.#launchExchangeAgent(pid, entry);
+  }
+
+  #launchExchangeAgent(pid: number, entry: KernelWorkerEntryContext): void {
+    // Like a posix_spawn child: target preparation, validation, compilation,
+    // commit, and Worker launch form one detached pending-child transaction
+    // whose every outcome re-enters through the pending-spawn completion.
+    entry.deferProtocolTransactionStart(() => {
+      let launch: Promise<number>;
+      try {
+        launch = this.#resolvePromise(this.#launchPreparedSpawn(
+          SYNTHETIC_INIT_PID,
+          pid,
+          EXCHANGE_AGENT_PATH,
+          EXCHANGE_AGENT_PATH,
+          null,
+          [EXCHANGE_AGENT_PATH],
+          [...EXCHANGE_AGENT_ENV],
+        ));
+      } catch (cause) {
+        this.#runOrDeferPendingSpawnCompletionKernelEntry(pid, "exchange agent launch failure", (completion) => {
+          this.#finishExchangeAgentLaunchWithinKernelEntry(pid, -EIO, cause, completion);
+          return undefined;
+        });
+        return undefined;
+      }
+      this.#continuePromise(launch, (rc) => {
+        this.#runOrDeferPendingSpawnCompletionKernelEntry(pid, "exchange agent launch completion", (completion) => {
+          this.#finishExchangeAgentLaunchWithinKernelEntry(pid, rc, undefined, completion);
+          return undefined;
+        });
+      }, (cause) => {
+        this.#runOrDeferPendingSpawnCompletionKernelEntry(pid, "exchange agent launch rejection", (completion) => {
+          this.#finishExchangeAgentLaunchWithinKernelEntry(pid, -EIO, cause, completion);
+          return undefined;
+        });
+      });
+      return undefined;
+    });
+  }
+
+  #finishExchangeAgentLaunchWithinKernelEntry(
+    pid: number,
+    rc: number,
+    cause: unknown,
+    entry: KernelWorkerEntryContext,
+  ): void {
+    const exitSignal = this.#finalizePendingChildTerminationWithinKernelEntry(pid, entry);
+    const launched = exitSignal < -1 || exitSignal > 0 || rc >= 0;
+    if (!launched) {
+      // Exec failed (ENOENT, EACCES, ENOEXEC, an ABI mismatch): retire the
+      // hidden child and report the errno as an activation failure.
+      if (cause !== undefined) {
+        entry.deferObserverEffect(() => {
+          console.error("[kernel] exchange agent launch failed:", cause);
+          return undefined;
+        });
+      }
+      try {
+        this.#rollbackChildHostRegistrationWithinKernelEntry(pid, entry);
+      } catch (error) {
+        this.#rethrowKernelEntryFatal(error);
+      }
+      this.#removeFromKernelProcessTableWithinKernelEntry(pid, entry);
+      const failed = entry.instance.exports.kernel_exchange_agent_failed as
+        (pid: number, errno: number) => number;
+      failed(pid, (-rc) >>> 0);
+      this.#drainExchangeIfPendingWithinKernelEntry(entry);
+      return;
+    }
+    if (exitSignal < -1) {
+      // The child is already gone; nothing remains to publish.
+      this.#rollbackChildHostRegistrationWithinKernelEntry(pid, entry);
+      this.#drainExchangeIfPendingWithinKernelEntry(entry);
+      return;
+    }
+    const publish = entry.instance.exports.kernel_publish_spawn_child as
+      (parentPid: number, childPid: number) => number;
+    // Init reaps its children, so an agent that already exited goes now.
+    if (publish(SYNTHETIC_INIT_PID, pid) >= 0) this.notifyParentOfExitedProcess(pid, entry);
+    this.#drainExchangeIfPendingWithinKernelEntry(entry);
   }
 
   /**

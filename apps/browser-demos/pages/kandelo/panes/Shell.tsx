@@ -14,6 +14,8 @@ import type { PtyHandle } from "../../../../../web-libs/kandelo-session/src/kern
 import type { TerminalLinkContext } from "../../../../../web-libs/kandelo-session/src/terminal-links";
 import { registerTerminalLinks } from "../../../lib/terminal-links";
 import { requestTerminalAutoFocus } from "./terminal-focus";
+import { useExchangeDrop } from "../app/exchange-drop";
+import { ExchangeDropOverlay } from "../app/ExchangeToasts";
 
 export interface ShellProps {
   dragProps?: import("./PaneHead").PaneHeadDragProps;
@@ -80,13 +82,18 @@ export const Shell: React.FC<ShellProps> = ({
     });
   }, [activeTerminal?.id, terminals]);
 
+  const exchangeDrop = useExchangeDrop(useStatus() === "running");
+
   return (
     <div
       className="kshell-surface"
+      data-drag-active={exchangeDrop.dragActive ? "true" : "false"}
       onPointerDown={() => {
         focusTerminalRef.current?.();
       }}
+      {...exchangeDrop.handlers}
     >
+      <ExchangeDropOverlay active={exchangeDrop.dragActive} refused={exchangeDrop.refused} testId="shell-exchange-dropzone" />
       {terminals.filter((item) => item.id === activeTerminal?.id || visitedTerminalIds.has(item.id)).map((item) => (
         <ShellTerminalHost
           key={item.id}

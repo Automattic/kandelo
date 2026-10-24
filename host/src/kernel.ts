@@ -901,6 +901,15 @@ export class WasmPosixKernel {
   /** Evict only the transport resource rejected by native validation. */
   #rootfsDeferredInvalidator: ((uri: string) => void) | undefined;
   /**
+   * Kandelo exchange input bytes, by source id. Fills `dest` from `offset`
+   * and returns the count, `-EAGAIN` while the bytes are being fetched from
+   * the side that offered the source, or another negative errno. Until the
+   * worker installs one, a read is `EIO`: no source was ever offered.
+   */
+  #exchangeSourceProvider:
+    | ((source: bigint, offset: bigint, dest: Uint8Array) => number)
+    | undefined = undefined;
+  /**
    * Raw VFS image byte window. The Rust kernel parses the `/` image itself — it
    * mounts the image's own filesystem, walks it, and reads its deferred-file
    * section — so the host never builds or encodes a tree. The host resolves no
@@ -1183,6 +1192,13 @@ export class WasmPosixKernel {
   /** Install native rejection feedback for the deferred transport cache. */
   setRootfsDeferredInvalidator(invalidator: ((uri: string) => void) | undefined): void {
     this.#rootfsDeferredInvalidator = invalidator;
+  }
+
+  /** Install the Kandelo exchange source byte provider. */
+  setExchangeSourceProvider(
+    provider: ((source: bigint, offset: bigint, dest: Uint8Array) => number) | undefined,
+  ): void {
+    this.#exchangeSourceProvider = provider;
   }
 
   /** Install the raw VFS image byte window. */
@@ -1904,6 +1920,28 @@ export class WasmPosixKernel {
               ),
               offsetLo,
               offsetHi,
+            );
+          } catch {
+            return -14; // EFAULT
+          }
+        },
+        host_exchange_source_read: (
+          sourceLo: number,
+          sourceHi: number,
+          offsetLo: number,
+          offsetHi: number,
+          bufPtr: KernelPointer,
+          bufLen: number,
+        ): number => {
+          try {
+            return this.#hostExchangeSourceRead(
+              u64FromWords(sourceLo, sourceHi),
+              u64FromWords(offsetLo, offsetHi),
+              this.#rustLentKernelDestination(
+                bufPtr,
+                bufLen,
+                "host_exchange_source_read destination",
+              ),
             );
           } catch {
             return -14; // EFAULT
@@ -3391,6 +3429,41 @@ export class WasmPosixKernel {
    * does not interpret it, and relaying it is not a decision that it may be
    * fetched — that decision belongs to the provider that goes and fetches.
    */
+  #hostExchangeSourceRead(
+    source: bigint,
+    offset: bigint,
+    destination: RustLentKernelDestination,
+  ): number {
+    const provider = this.#exchangeSourceProvider;
+    if (provider === undefined) {
+      return -5; // EIO: no exchange source was ever offered here.
+    }
+    const capacity = destination.capacity;
+    let staged: Uint8Array;
+    try {
+      staged = new IntrinsicUint8Array(capacity);
+    } catch {
+      return -12; // ENOMEM
+    }
+    let result: number;
+    try {
+      result = provider(source, offset, staged);
+    } catch {
+      return -5; // EIO: the provider violated its byte-source contract.
+    }
+    if (!Number.isSafeInteger(result) || result > capacity) {
+      return -5; // EIO
+    }
+    if (result > 0) {
+      try {
+        this.#writeKernelBytes(destination, subarrayUint8Array(staged, 0, result));
+      } catch {
+        return -14; // EFAULT
+      }
+    }
+    return result;
+  }
+
   #hostFetchDeferred(
     uri: string,
     offset: bigint,

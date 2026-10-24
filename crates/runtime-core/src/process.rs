@@ -104,6 +104,13 @@ pub trait HostIO {
     /// Forget a deferred resource rejected by the kernel's integrity checks.
     /// Hosts without a transport cache have nothing to discard.
     fn discard_deferred(&mut self, _uri: &[u8]) {}
+    /// Read bytes of a Kandelo exchange input at `offset` from the host that
+    /// offered it. EAGAIN while the host is fetching them: the blocked syscall
+    /// is retried when they arrive. A host that never offers inputs has no
+    /// sources, so a read is an I/O error rather than empty bytes.
+    fn exchange_source_read(&mut self, _source: u64, _offset: u64, _buf: &mut [u8]) -> Result<usize, Errno> {
+        Err(Errno::EIO)
+    }
     /// Read up to `buf.len()` bytes at `offset` from the raw bytes of the VFS
     /// image this kernel booted from. This is the seam that lets the kernel
     /// parse its own image (`rootfs::load_image`) rather than consume a tree the

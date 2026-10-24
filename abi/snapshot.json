@@ -1,5 +1,5 @@
 {
-  "abi_version": 58,
+  "abi_version": 59,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -962,6 +962,105 @@
       {
         "arguments": [
           {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "fgetxattr",
+        "number": 350,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "flistxattr",
+        "number": 351,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "fsetxattr",
+        "number": 353,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "getxattr",
+        "number": 354,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "listxattr",
+        "number": 355,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "lgetxattr",
+        "number": 356,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "llistxattr",
+        "number": 357,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "lsetxattr",
+        "number": 359,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "setxattr",
+        "number": 361,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
             "index": 2,
             "kind": "process-size"
           }
@@ -1164,7 +1263,7 @@
       }
     ],
     "manifest": {
-      "abi_version": 58,
+      "abi_version": 59,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -1256,6 +1355,26 @@
       "kernel_dequeue_signal",
       "kernel_epoll_wait_finish",
       "kernel_epoll_wait_token",
+      "kernel_exchange_activate",
+      "kernel_exchange_add_entry",
+      "kernel_exchange_agent_failed",
+      "kernel_exchange_begin",
+      "kernel_exchange_cancel",
+      "kernel_exchange_commit",
+      "kernel_exchange_configure",
+      "kernel_exchange_configure_activation",
+      "kernel_exchange_consumer_present",
+      "kernel_exchange_drain_notifications",
+      "kernel_exchange_init",
+      "kernel_exchange_output_end",
+      "kernel_exchange_read_output",
+      "kernel_exchange_release_output",
+      "kernel_exchange_set_listener",
+      "kernel_exchange_stream_end",
+      "kernel_exchange_stream_push",
+      "kernel_exchange_stream_read",
+      "kernel_exchange_stream_start",
+      "kernel_exchange_take_pending",
       "kernel_exec_commit",
       "kernel_exec_target_cancel",
       "kernel_exec_target_prepare",
@@ -2514,6 +2633,106 @@
       "kind": "func",
       "name": "kernel_epoll_watched_fd",
       "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_activate",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_add_entry",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_agent_failed",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_begin",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_cancel",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_commit",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_configure",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_configure_activation",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_consumer_present",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_drain_notifications",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_init",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_output_end",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_read_output",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_release_output",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_set_listener",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_stream_end",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_stream_push",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_stream_read",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_stream_start",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exchange_take_pending",
+      "signature": "() -> (i32)"
     },
     {
       "kind": "func",
@@ -8719,6 +8938,228 @@
         }
       }
     ],
+    "350": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 2,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "argIndex": 3,
+          "type": "arg"
+        }
+      }
+    ],
+    "351": [
+      {
+        "argIndex": 1,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "argIndex": 2,
+          "type": "arg"
+        }
+      }
+    ],
+    "352": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      }
+    ],
+    "353": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 2,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "argIndex": 3,
+          "type": "arg"
+        }
+      }
+    ],
+    "354": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 2,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "argIndex": 3,
+          "type": "arg"
+        }
+      }
+    ],
+    "355": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 1,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "argIndex": 2,
+          "type": "arg"
+        }
+      }
+    ],
+    "356": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 2,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "argIndex": 3,
+          "type": "arg"
+        }
+      }
+    ],
+    "357": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 1,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "argIndex": 2,
+          "type": "arg"
+        }
+      }
+    ],
+    "358": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      }
+    ],
+    "359": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 2,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "argIndex": 3,
+          "type": "arg"
+        }
+      }
+    ],
     "36": [
       {
         "argIndex": 1,
@@ -8736,6 +9177,59 @@
         "size": {
           "size": 16,
           "type": "fixed"
+        }
+      }
+    ],
+    "360": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      }
+    ],
+    "361": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 34,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 2,
+        "direction": "in",
+        "nullable": true,
+        "size": {
+          "argIndex": 3,
+          "type": "arg"
         }
       }
     ],
@@ -10207,6 +10701,54 @@
     {
       "name": "Shmctl",
       "number": 347
+    },
+    {
+      "name": "Fgetxattr",
+      "number": 350
+    },
+    {
+      "name": "Flistxattr",
+      "number": 351
+    },
+    {
+      "name": "Fremovexattr",
+      "number": 352
+    },
+    {
+      "name": "Fsetxattr",
+      "number": 353
+    },
+    {
+      "name": "Getxattr",
+      "number": 354
+    },
+    {
+      "name": "Listxattr",
+      "number": 355
+    },
+    {
+      "name": "Lgetxattr",
+      "number": 356
+    },
+    {
+      "name": "Llistxattr",
+      "number": 357
+    },
+    {
+      "name": "Lremovexattr",
+      "number": 358
+    },
+    {
+      "name": "Lsetxattr",
+      "number": 359
+    },
+    {
+      "name": "Removexattr",
+      "number": 360
+    },
+    {
+      "name": "Setxattr",
+      "number": 361
     },
     {
       "name": "Signalfd",

@@ -213,7 +213,12 @@ pub mod process_layout;
 ///     finish a collection that is suspected to be handed to a blocked thread
 ///     and to starve other workers' collections. docs/abi-versioning.md
 ///     ("ABI 52").
-/// 53: wlroots-compatible DRM master and framebuffers. The first open of
+/// 53: the extended-attribute syscalls marshal their arguments and carry
+///     channel scalar contracts. docs/abi-versioning.md ("ABI 53") lists each.
+/// Graphics development checkpoints 53-58 below preceded integration
+/// with main ABI 53; they are combined with it under ABI 59.
+/// Development 53: wlroots-compatible DRM master and framebuffers.
+///     The first open of
 ///     `/dev/dri/card0` while no file is master becomes the master, as
 ///     Linux's `drm_master_open` does. RMFB of the scanout framebuffer
 ///     disables the CRTC; the new DRM_IOCTL_MODE_CLOSEFB keeps it on screen
@@ -240,7 +245,9 @@ pub mod process_layout;
 ///     through an InOut argument. The host creation import returns status.
 /// 58: context creation names an optional live same-generation share context.
 ///     The renderer acknowledges group membership before publication.
-pub const ABI_VERSION: u32 = 58;
+/// 59: integrate main ABI 53 xattr/exchange contracts with the graphics
+///     session, thread-current, surface and shared-context interfaces.
+pub const ABI_VERSION: u32 = 59;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -293,6 +300,10 @@ pub mod platform_limits {
     pub const HOST_NAME_MAX_BYTES: usize = 256;
     /// Linux memfd name content is limited to 249 bytes, plus its NUL.
     pub const MEMFD_NAME_MAX_BYTES: usize = 250;
+    /// Linux XATTR_NAME_MAX (255 bytes of name) plus its terminating NUL.
+    pub const XATTR_NAME_MAX_BYTES: usize = 256;
+    /// Linux XATTR_SIZE_MAX: the largest value one xattr call accepts.
+    pub const XATTR_SIZE_MAX_BYTES: usize = 65_536;
     /// Largest one-entry argv/environment transport admitted by the host.
     ///
     /// This is not POSIX ARG_MAX; complete argv+env representation remains
@@ -3616,6 +3627,26 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_dequeue_signal"),
         HostAdapterKernelExport::required("kernel_epoll_wait_finish"),
         HostAdapterKernelExport::required("kernel_epoll_wait_token"),
+        HostAdapterKernelExport::required("kernel_exchange_activate"),
+        HostAdapterKernelExport::required("kernel_exchange_add_entry"),
+        HostAdapterKernelExport::required("kernel_exchange_agent_failed"),
+        HostAdapterKernelExport::required("kernel_exchange_begin"),
+        HostAdapterKernelExport::required("kernel_exchange_cancel"),
+        HostAdapterKernelExport::required("kernel_exchange_commit"),
+        HostAdapterKernelExport::required("kernel_exchange_configure"),
+        HostAdapterKernelExport::required("kernel_exchange_configure_activation"),
+        HostAdapterKernelExport::required("kernel_exchange_consumer_present"),
+        HostAdapterKernelExport::required("kernel_exchange_drain_notifications"),
+        HostAdapterKernelExport::required("kernel_exchange_init"),
+        HostAdapterKernelExport::required("kernel_exchange_output_end"),
+        HostAdapterKernelExport::required("kernel_exchange_read_output"),
+        HostAdapterKernelExport::required("kernel_exchange_release_output"),
+        HostAdapterKernelExport::required("kernel_exchange_set_listener"),
+        HostAdapterKernelExport::required("kernel_exchange_stream_end"),
+        HostAdapterKernelExport::required("kernel_exchange_stream_push"),
+        HostAdapterKernelExport::required("kernel_exchange_stream_read"),
+        HostAdapterKernelExport::required("kernel_exchange_stream_start"),
+        HostAdapterKernelExport::required("kernel_exchange_take_pending"),
         HostAdapterKernelExport::required("kernel_exec_commit"),
         HostAdapterKernelExport::required("kernel_exec_target_cancel"),
         HostAdapterKernelExport::required("kernel_exec_target_prepare"),
@@ -3865,6 +3896,18 @@ pub mod abi {
         pub const SYS_SHMAT: u32 = 345;
         pub const SYS_SHMDT: u32 = 346;
         pub const SYS_SHMCTL: u32 = 347;
+        pub const SYS_FGETXATTR: u32 = 350;
+        pub const SYS_FLISTXATTR: u32 = 351;
+        pub const SYS_FREMOVEXATTR: u32 = 352;
+        pub const SYS_FSETXATTR: u32 = 353;
+        pub const SYS_GETXATTR: u32 = 354;
+        pub const SYS_LISTXATTR: u32 = 355;
+        pub const SYS_LGETXATTR: u32 = 356;
+        pub const SYS_LLISTXATTR: u32 = 357;
+        pub const SYS_LREMOVEXATTR: u32 = 358;
+        pub const SYS_LSETXATTR: u32 = 359;
+        pub const SYS_REMOVEXATTR: u32 = 360;
+        pub const SYS_SETXATTR: u32 = 361;
         pub const SYS_SIGNALFD: u32 = 377;
         pub const SYS_EPOLL_CREATE: u32 = 378;
         pub const SYS_EPOLL_WAIT: u32 = 379;
@@ -4206,6 +4249,54 @@ pub mod abi {
             AbiSyscallNumber {
                 name: "Shmctl",
                 number: SYS_SHMCTL,
+            },
+            AbiSyscallNumber {
+                name: "Fgetxattr",
+                number: SYS_FGETXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Flistxattr",
+                number: SYS_FLISTXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Fremovexattr",
+                number: SYS_FREMOVEXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Fsetxattr",
+                number: SYS_FSETXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Getxattr",
+                number: SYS_GETXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Listxattr",
+                number: SYS_LISTXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Lgetxattr",
+                number: SYS_LGETXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Llistxattr",
+                number: SYS_LLISTXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Lremovexattr",
+                number: SYS_LREMOVEXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Lsetxattr",
+                number: SYS_LSETXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Removexattr",
+                number: SYS_REMOVEXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Setxattr",
+                number: SYS_SETXATTR,
             },
             AbiSyscallNumber {
                 name: "Signalfd",

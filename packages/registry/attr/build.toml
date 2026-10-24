@@ -1,0 +1,10 @@
+script_path = "packages/registry/attr/build-attr.sh"
+inputs = [
+  "packages/registry/attr/build-attr.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/package-build-roots.sh",
+]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+publication_state = "pending"

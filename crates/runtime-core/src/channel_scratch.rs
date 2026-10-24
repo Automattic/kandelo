@@ -571,10 +571,11 @@ pub unsafe fn validate_channel_scratch_arguments(
     region: ChannelScratchRegion,
     pointer_width: u8,
 ) -> Result<ValidatedChannelScratchArgs, Errno> {
-    if matches!(
-        syscall_number,
-        number if number == Syscall::Getgroups as u32 || number == Syscall::Setgroups as u32
-    ) && checked_size_scalar(args[0])? > crate::credentials::NGROUPS_MAX
+    // setgroups refuses a list longer than NGROUPS_MAX. getgroups does not:
+    // a larger buffer is valid, and the host lends at most NGROUPS_MAX
+    // entries of it (no list is longer).
+    if syscall_number == Syscall::Setgroups as u32
+        && checked_size_scalar(args[0])? > crate::credentials::NGROUPS_MAX
     {
         return Err(Errno::EINVAL);
     }
@@ -1058,7 +1059,7 @@ mod tests {
     }
 
     #[test]
-    fn group_descriptors_prove_complete_vectors_and_reject_oversized_counts() {
+    fn group_descriptors_prove_complete_vectors_and_reject_oversized_setgroups() {
         let bytes = vec![0u8; crate::credentials::NGROUPS_MAX * size_of::<u32>()];
         let start = bytes.as_ptr() as usize;
         let region = ChannelScratchRegion::new(start, bytes.len()).unwrap();
@@ -1072,9 +1073,10 @@ mod tests {
         .unwrap();
         assert_eq!(validated.pointer(1), Ok(start));
 
+        // More entries than the lent region: a descriptor fault, never the
+        // EINVAL that only setgroups owes for an oversized count.
         getgroups[0] = (crate::credentials::NGROUPS_MAX + 1) as i64;
-        getgroups[2] = size_of::<u32>() as i64;
-        assert_eq!(
+        assert_ne!(
             unsafe {
                 validate_channel_scratch_arguments(Syscall::Getgroups as u32, &getgroups, region, 4)
             },
@@ -1089,6 +1091,14 @@ mod tests {
         }
         .unwrap();
         assert_eq!(validated.pointer(1), Ok(start));
+
+        setgroups[0] = (crate::credentials::NGROUPS_MAX + 1) as i64;
+        assert_eq!(
+            unsafe {
+                validate_channel_scratch_arguments(Syscall::Setgroups as u32, &setgroups, region, 4)
+            },
+            Err(Errno::EINVAL),
+        );
     }
 
     #[test]

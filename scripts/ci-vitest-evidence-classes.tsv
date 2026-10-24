@@ -68,6 +68,10 @@ host/test/dylink.test.ts	source-only
 host/test/egl-dmabuf-smoke.test.ts	prepared-product
 host/test/environment-lifecycle.test.ts	prepared-product
 host/test/epoll-semantics.test.ts	prepared-product
+host/test/exchange-agent.test.ts	prepared-product
+host/test/exchange-controller.test.ts	source-only
+host/test/exchange-host.test.ts	source-only
+host/test/exchange-node.test.ts	prepared-product
 host/test/exec-brk-base.test.ts	prepared-product
 host/test/exec-retirement-marker.test.ts	source-only
 host/test/exec-state-tracking.test.ts	source-only
@@ -123,6 +127,7 @@ host/test/gc-reference-state-fresh-worker.test.ts	prepared-product
 host/test/generated-abi.test.ts	source-only
 host/test/getaddrinfo.test.ts	prepared-product
 host/test/getdents-boundary.test.ts	prepared-product
+host/test/getgroups-large-buffer.test.ts	prepared-product
 host/test/getpwent.test.ts	prepared-product
 host/test/glib-smoke.test.ts	prepared-product
 host/test/gtk3-smoke.test.ts	prepared-product
@@ -409,6 +414,7 @@ host/test/worker-exit-trap.test.ts	source-only
 host/test/worker-kernel-import-contract.test.ts	source-only
 host/test/worker-quiescence.test.ts	source-only
 host/test/wpkdraw-smoke.test.ts	prepared-product
+host/test/xattr-unsupported.test.ts	prepared-product
 host/test/zip.test.ts	source-only
 packages/registry/bash/test/bash.test.ts	prepared-product
 packages/registry/bzip2/test/bzip2.test.ts	prepared-product
@@ -482,8 +488,9 @@ tests/package-system/validate-wasm-artifacts.test.ts	prepared-product
 tests/package-system/vite-binary-resolution.test.ts	prepared-product
 tests/package-system/wasm-artifact-guards.test.ts	prepared-product
 web-libs/kandelo-session/test/demo-dock-action.test.ts	source-only
-web-libs/kandelo-session/test/demo-ingest.test.ts	source-only
 web-libs/kandelo-session/test/deployment-scope.test.ts	source-only
+web-libs/kandelo-session/test/device-owner.test.ts	source-only
+web-libs/kandelo-session/test/exchange-session.test.ts	source-only
 web-libs/kandelo-session/test/kandelo-session.test.ts	source-only
 web-libs/kandelo-session/test/lazy-download.test.ts	source-only
 web-libs/kandelo-session/test/vfs-asset-group.test.ts	source-only

@@ -593,6 +593,20 @@ const reviewedScalarKernelExportCall = (
 });
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
+  // Kandelo exchange control calls: scalars in, a scalar status out; every
+  // pointer-bearing exchange export goes through KernelScratchLease.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#drainAndProcessWakeupEventsWithinKernelEntry::kernel-export-direct-use::takePending?.()",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#initExchange::kernel-export-direct-use::init(nonce[0]!, nonce[1]!)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#initExchange::kernel-export-direct-use::configure(limit >>> 0, Math.floor(limit / 0x1_0000_0000))",
+  ),
+  reviewedScalarKernelExportCall(
+    'host/src/kernel-worker.ts::CentralizedKernelWorker.#initExchange::kernel-export-direct-use::configureActivation(this.#exchangeActivation === "on-demand" ? 1 : 0)',
+  ),
   // The coalesced PTY notification consumes a boolean within the existing
   // kernel entry; it accepts no pointer and borrows no kernel memory.
   reviewedScalarKernelExportCall(
@@ -1546,6 +1560,11 @@ const auditAllowances: AuditAllowance[] = [
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_image_read destination", )',
     disposition: "rust-lent",
     why: "The host_image_read import binds the untouched Rust pointer and capacity formals before the VFS image provider is consulted; the read is bounded by that capacity and never by the image length.",
+  },
+  {
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_exchange_source_read destination", )',
+    disposition: "rust-lent",
+    why: "The host_exchange_source_read import binds the untouched Rust pointer and capacity formals before the exchange source cache copies at most that capacity of offered bytes.",
   },
   {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( bufPtr, bufLen, "host_fetch_deferred destination", )',

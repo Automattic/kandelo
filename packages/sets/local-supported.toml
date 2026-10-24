@@ -47,6 +47,10 @@ name = "atkmm"
 class = "platform"
 
 [[packages]]
+name = "attr"
+class = "platform"
+
+[[packages]]
 name = "bash"
 class = "user-software"
 
@@ -232,6 +236,10 @@ class = "user-software"
 
 [[packages]]
 name = "jsoncpp"
+class = "platform"
+
+[[packages]]
+name = "kandelo-exchange"
 class = "platform"
 
 [[packages]]

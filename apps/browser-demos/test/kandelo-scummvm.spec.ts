@@ -32,9 +32,9 @@ let zipDir = "";
 let zipPath = "";
 
 test.beforeAll(() => {
-  // Metasyntactic payload: the chain under test is upload → write → extract,
+  // Metasyntactic payload: the chain under test is offer → handler → extract,
   // and nothing in it reads what the bytes mean.
-  zipDir = mkdtempSync(join(tmpdir(), "kandelo-scummvm-ingest-"));
+  zipDir = mkdtempSync(join(tmpdir(), "kandelo-scummvm-exchange-"));
   const gameDir = join(zipDir, "foo");
   execFileSync("mkdir", ["-p", gameDir]);
   writeFileSync(join(gameDir, "bar.000"), "baz\n");
@@ -222,22 +222,22 @@ test("the packaged GUI data reaches the guest and the guest owns the pointer", a
     .toContain("CONFIG_WRITABLE");
 });
 
-test("Load game data extracts an upload into the directory the launcher browses", async ({ page }) => {
+test("Load game data extracts the archive into the directory the launcher browses", async ({ page }) => {
   test.setTimeout(300_000);
   await bootScummvm(page);
 
   await openSurface(page, "Demo");
-  const button = page.getByTestId("kms-ingest-button");
+  const button = page.getByTestId("kms-exchange-button");
   await expect(button).toBeVisible();
   await expect(button).toHaveText(/load game data/i);
 
-  await page.getByTestId("kms-ingest-input").setInputFiles(zipPath);
-  await page.getByTestId("kms-ingest-busy")
-    .waitFor({ state: "detached", timeout: 90_000 })
-    .catch(() => { /* the write may finish before we look */ });
-  await expect(page.getByTestId("kms-ingest-error")).toHaveCount(0);
+  // The machine's scummvm zip rule extracts it while ScummVM keeps running.
+  await page.getByTestId("kms-exchange-input").setInputFiles(zipPath);
+  await expect.poll(
+    () => page.getByTestId("exchange-batch-status").last().textContent(),
+    { timeout: 90_000 },
+  ).toBe("extracted into /usr/share/scummvm-games; add it from the launcher");
 
-  // The extraction runs in the demo's shell after the write lands, so poll.
   await expect.poll(async () => {
     await runInShell(
       page,
@@ -248,14 +248,14 @@ test("Load game data extracts an upload into the directory the launcher browses"
   }, { timeout: 90_000, intervals: [2_000, 3_000, 5_000] })
     .toContain("EXTRACTED_OK");
 
-  // The archive itself is gone, so the launcher's browser shows a game
-  // directory rather than a zip it cannot open.
+  // Only the extracted game is there: the archive stayed in the exchange
+  // inbox and went with its batch, so the launcher shows no zip.
   await runInShell(
     page,
-    `test -e /usr/share/scummvm-games/upload.zip || ${marker("ARCHIVE", "REMOVED")}`,
+    `test -e /usr/share/scummvm-games/foo.zip || ${marker("ARCHIVE", "ABSENT")}`,
   );
   await expect.poll(() => terminalText(page), { timeout: 60_000 })
-    .toContain("ARCHIVE_REMOVED");
+    .toContain("ARCHIVE_ABSENT");
 });
 
 // The freeware menu's Beneath a Steel Sky: stop its actual display owner,

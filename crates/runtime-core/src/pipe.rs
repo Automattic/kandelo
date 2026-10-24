@@ -545,6 +545,16 @@ pub struct PipeBuffer {
     /// explicit receive barrier and keeps ordinary reads and peeks coherent.
     /// Absolute positions avoid walking every later record on each read.
     ancillary_fds: VecDeque<StreamAncillary>,
+    /// Writes fail with EPERM: the writer declared the stream finished
+    /// (a published Kandelo exchange stream's `user.kandelo.end`).
+    write_sealed: bool,
+    /// Once the buffered bytes are read, reads fail with this errno instead
+    /// of returning end-of-file: the writer failed, so the data is truncated.
+    read_error: u32,
+    /// The writer declared it will write nothing more, while keeping its
+    /// endpoint (a Kandelo exchange input whose host stream ended): an empty
+    /// read is end-of-file, and a reader's open still never blocks.
+    writes_finished: bool,
 }
 
 impl PipeBuffer {
@@ -586,6 +596,48 @@ impl PipeBuffer {
         self.socket_write_shutdown
     }
 
+    /// Make every later write fail with EPERM. Readers still drain what is
+    /// buffered and then see end-of-file once the writers close.
+    pub fn seal_writes(&mut self) {
+        self.write_sealed = true;
+        // Writers now see POLLERR, as when the last reader closes.
+        crate::epoll::notify(
+            crate::epoll::Source::Pipe(self.pipe_idx, crate::wakeup::WAKE_WRITABLE),
+            0x18,
+        );
+        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
+    }
+    pub fn is_write_sealed(&self) -> bool {
+        self.write_sealed
+    }
+    /// After the buffered bytes, fail reads with `error` rather than report
+    /// end-of-file. Unlike `reset_stream`, nothing already written is lost.
+    pub fn fail_reads_after_buffered(&mut self, error: Errno) {
+        if self.read_error == 0 {
+            self.read_error = error as u32;
+        }
+        // Readers see POLLERR once the buffered bytes are gone.
+        crate::epoll::notify(
+            crate::epoll::Source::Pipe(self.pipe_idx, crate::wakeup::WAKE_READABLE),
+            0x18,
+        );
+        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
+    }
+    /// The writer is done: once the buffered bytes are read, reads return
+    /// end-of-file even though its endpoint stays open.
+    pub fn finish_writes(&mut self) {
+        self.writes_finished = true;
+        // Readers see POLLHUP, as when the last writer closes.
+        crate::epoll::notify(
+            crate::epoll::Source::Pipe(self.pipe_idx, crate::wakeup::WAKE_READABLE),
+            0x18,
+        );
+        crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
+    }
+    /// The errno an empty read returns before end-of-file, if any.
+    pub fn read_error(&self) -> Option<Errno> {
+        Errno::from_u32(self.read_error)
+    }
     /// Reset stream data without releasing endpoint references. Ordinary pipes
     /// never set this state; the host invokes it for an actual socket reset.
     pub fn reset_stream(&mut self, error: Errno) {
@@ -655,6 +707,9 @@ impl PipeBuffer {
             fifo_metadata: None,
             fifo_open_waiters: BTreeMap::new(),
             ancillary_fds: VecDeque::new(),
+            write_sealed: false,
+            read_error: 0,
+            writes_finished: false,
         }
     }
 
@@ -906,6 +961,22 @@ impl PipeBuffer {
             if self.write_count == 0 {
                 self.fifo_writer_ever_opened = false;
             }
+        }
+    }
+
+    /// Let every blocked open of `side` complete even though its counterpart
+    /// never arrived (a Kandelo exchange stream released before the host read
+    /// it): the opened writers then see no reader, so they get EPIPE.
+    pub fn release_fifo_open_waiters(&mut self, side: FifoOpenSide) {
+        let mut released = false;
+        for waiter in self.fifo_open_waiters.values_mut() {
+            if waiter.side == side && !waiter.ready {
+                waiter.ready = true;
+                released = true;
+            }
+        }
+        if released {
+            crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
         }
     }
 
@@ -1379,10 +1450,13 @@ impl PipeBuffer {
     /// necessarily either non-blocking or observed after the last writer
     /// closed. Both cases return EOF.
     pub fn read_end_has_eof(&self) -> bool {
-        !self.is_write_end_open()
+        !self.is_write_end_open() || self.writes_finished
     }
 
     pub fn read_end_has_hangup(&self) -> bool {
+        if self.writes_finished {
+            return true;
+        }
         if self.is_fifo {
             self.fifo_read_hangup
         } else {

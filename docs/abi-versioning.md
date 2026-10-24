@@ -1707,7 +1707,69 @@ Semantic changes: none visible to programs. A timed-out wait keeps waiting on
 the same request, so syscall results, blocking behaviour, signals and errno
 values are unchanged.
 
-### ABI 53 graphics ownership and renderer acknowledgement
+### ABI 53 extended attributes, Kandelo exchange and getgroups
+
+ABI 53 makes the twelve extended-attribute syscalls (`getxattr`, `setxattr`,
+`listxattr`, `removexattr`, and their `l` and `f` variants, numbers 350-361)
+report what Kandelo actually supports. Until now the kernel answered them
+without reading their arguments: the set calls returned success and stored
+nothing, and the get and remove calls returned `ENODATA`, which claims the
+filesystem supports attributes. `__abi_version` equality is exact, so every
+program, package archive and VFS image is rebuilt for 53.
+
+Structural changes (recorded in the snapshot):
+
+- **Syscall numbers and marshalling.** `SYS_FGETXATTR` through `SYS_SETXATTR`
+  join the extended syscall table with argument descriptors: paths as
+  `PATH_MAX` C strings, names as C strings bounded by `XATTR_NAME_MAX` (255
+  bytes plus the NUL, `ERANGE` when longer), and value and list buffers sized
+  by their `size` argument and nullable when it is 0.
+- **Channel scalar contract.** Every `size` argument is a `ProcessSize`, so a
+  wasm64 caller's `size_t` crosses the channel at its full width. This is the
+  change the compatibility classifier treats as breaking: on wasm64 the glue
+  and the host must agree on how these slots are encoded.
+- **Platform limits.** `XATTR_NAME_MAX_BYTES` (256) and `XATTR_SIZE_MAX_BYTES`
+  (65536) join `platform_limits`; the host gets `XATTR_SIZE_MAX_BYTES` in
+  `host/src/generated/abi.ts`.
+
+- **Kandelo exchange.** Twenty required kernel exports,
+  `kernel_exchange_*`: init, configure (quota and activation), offers
+  (begin, add_entry, commit, cancel), notifications (take_pending,
+  drain_notifications), outputs (read_output, release_output,
+  output_end), streams (stream_push, stream_end, stream_start,
+  stream_read), and activation (activate, agent_failed), plus
+  set_listener and consumer_present. Every pointer is followed by its byte
+  length and travels through a kernel scratch lease. One new host import,
+  `host_exchange_source_read`, serves input bytes. The entry-record and
+  notification layouts are documented in
+  `crates/runtime-core/src/exchange/wire.rs`.
+
+Semantic changes:
+
+- **Kandelo exchange.** Every machine booted from a kernel rootfs image has
+  the exchange filesystem at `/run/kandelo/exchange` (`f_type`
+  `0x4B584348`), which stores `user.*` extended attributes. The virtual
+  init (pid 1) ignores SIGCHLD, so its children (the exchange agent the
+  kernel starts) are reaped as they exit.
+- **Truthful results.** Following Linux for a filesystem without xattr
+  support, get, set, and remove fail with `ENOTSUP`, and list succeeds with an
+  empty list. Path errors (`ENOENT`, `ENOTDIR`, `ELOOP`, `ENAMETOOLONG`,
+  `EACCES`) and descriptor errors (`EBADF`, including `O_PATH`) come first.
+  `setxattr` checks its flags (`EINVAL`), name (`ERANGE`), and size (`E2BIG`
+  above 64 KiB) before the path, as Linux does. Get and list buffers are
+  clamped to 64 KiB.
+- **`getgroups` with a large buffer.** A `gidsetsize` above `NGROUPS_MAX`
+  (32) now succeeds, as POSIX and Linux require; only a nonzero size
+  smaller than the group count is `EINVAL`. The host lends at most
+  `NGROUPS_MAX` entries of the caller's buffer, since no list is longer.
+  `setgroups` still refuses more than `NGROUPS_MAX` groups with `EINVAL`.
+
+The graphics ABI 53-58 entries below record unreleased development
+checkpoints on the compatibility branch. They do not replace main's
+ABI 53 above. ABI 59 combines both contracts; normal artifacts must be
+rebuilt from that combined source and snapshot.
+
+### Development ABI 53 graphics ownership and renderer acknowledgement
 
 ABI 53 changes the meaning of existing DRM ioctls so an unmodified wlroots
 compositor (cage) can drive `/dev/dri/card0`:
@@ -1977,6 +2039,22 @@ advance `OP_VERSION` to 8; ABI stays 58 and snapshot/generated outputs are
 unchanged. INIT accepts compatible 1..8, with explicit 1/5/6/7/8 coverage
 and zero/future rejection. This does not establish shader-name translation
 beyond WebGL's limits or full uniform conformance.
+
+
+### ABI 59 combined main and graphics interfaces
+
+ABI 59 combines main's ABI 53 xattr marshalling, scalar contracts and
+exchange imports/exports with the graphics session, thread-current,
+display-generation, independent-surface and shared-context contracts
+developed through ABI 58. Operation table 16 remains independently
+versioned. Generated declarations and the full snapshot must describe
+both sets of interfaces. Rebuild normal SDK/kernel/program/package/image
+artifacts through the existing build graph; prior artifacts cannot be
+restamped or reused across the changed ABI.
+
+Kernel-only export inspection is sufficient to regenerate the snapshot,
+not to establish runtime or compositor compatibility. The compatibility
+ledger records exact integration evidence and unrun normal build gates.
 
 
 ## The snapshot
