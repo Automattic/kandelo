@@ -118,7 +118,7 @@ When already inside `scripts/dev-shell.sh bash`, run the build commands
 directly:
 
 ```bash
-./run.sh setup                # Provision sysroot(s)/SDK, then build fork-instrument tool, kernel wasm, every package, rootfs, and TypeScript host
+./run.sh setup                # Provision SDKs; build fork tool, supported graph, rootfs, and host
 bash scripts/build-musl.sh --ensure  # Check wasm32 musl inputs and installed core outputs
 scripts/build-programs.sh    # Rebuild test/example C programs
 ```
@@ -126,8 +126,9 @@ scripts/build-programs.sh    # Rebuild test/example C programs
 `./run.sh setup` checks both musl sysroots for changed inputs and altered or
 missing installed core outputs. Package build entry points check core
 freshness before computing cache identities. After editing libc, run setup
-before Vitest or conformance tests so programs and fixtures are rebuilt too;
-a fresh libc alone does not make previously linked programs current.
+before Vitest or conformance tests to refresh package programs, then run
+`scripts/build-programs.sh` for example/test fixtures; a fresh libc alone
+does not make previously linked programs current.
 (`bash build.sh` still works as a deprecated delegator to
 `./run.sh setup`.)
 
@@ -139,16 +140,18 @@ run until you build them. This is a setup step, not a reason to say "I can't
 validate." The full sequence (see `validation.md` for detail):
 
 ```bash
-git submodule update --init --recursive           # musl, libc-test, os-test
+git submodule update --init --recursive           # musl, Rust libc, libc-test, os-test
 # if libc/musl exists but is a stray partial dir: rm -rf libc/musl && git submodule update --init libc/musl
-scripts/dev-shell.sh ./run.sh setup                # Check SDKs; build kernel, all packages, rootfs, and host
-npm ci && (cd host && npm ci)                      # root deps (tsx for conformance runners) + host deps
+./run.sh setup                                    # Check SDKs; build supported graph, rootfs, and host
 scripts/dev-shell.sh bash scripts/build-programs.sh # local-binaries/{programs,test-fixtures}/ that Vitest loads
 ```
 
 There is no fetch step: binary resolution is local-first, and
-`scripts/fetch-binaries.sh` no longer exists. `./run.sh setup` source-builds
-every package artifact the suites load.
+`scripts/fetch-binaries.sh` no longer exists. Setup builds the supported graph
+in `packages/sets/local-supported.toml`; a suite that loads an excluded or
+dormant image recipe may also need that recipe resolved through the normal
+package resolver. See the validation guide for artifact prerequisites and
+the case-sensitive Sortix source requirement on macOS.
 
 A stale `local-binaries/kernel.wasm` silently runs OLD kernel code in
 Vitest/conformance, so rebuild with `./run.sh setup` after any kernel Rust edit.
@@ -284,8 +287,7 @@ Update the authoritative doc for the contract touched:
 | Fork instrumentation behavior | `docs/fork-instrumentation.md` |
 | SDK tools, compiler flags, sysroot expectations | `docs/sdk-guide.md` |
 | Porting workflow or package build expectations | `docs/porting-guide.md` |
-| Package schema, resolver, cache, build-script contract | `docs/package-management.md` |
-| Binary release/index/fetch behavior | `docs/binary-releases.md` |
+| Package schema, resolver, cache, build-script contract, artifact layout | `docs/package-management.md` |
 | Browser capabilities, demo architecture, VFS images, service worker, UI metadata | `docs/browser-support.md` |
 | Repository layout or ownership boundaries | `docs/repository-organization.md` |
 | Major user-facing feature or project structure | `README.md` |

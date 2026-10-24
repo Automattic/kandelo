@@ -1,5 +1,8 @@
 # Tests
 
+See [Contributing](../CONTRIBUTING.md#prepare-to-run-tests) for setup and
+commands to run these suites.
+
 External and generated conformance test trees live here.
 
 - `libc/` contains the musl libc-test submodule, Kandelo overlays, and build

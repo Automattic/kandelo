@@ -6,7 +6,8 @@ Error messages and recovery paths may change as the browser host and image tooli
 
 ## SharedArrayBuffer Is Unavailable
 
-Kandelo requires cross-origin isolation:
+Kandelo requires a secure context (HTTPS or a trustworthy local address such
+as `127.0.0.1`) and cross-origin isolation:
 
 ```text
 Cross-Origin-Opener-Policy: same-origin
@@ -44,7 +45,28 @@ If a VFS image references lazy files or lazy archives with relative URLs, the br
 
 ## Network Requests Fail
 
-Browser Kandelo cannot open external raw TCP or UDP sockets. Use the service worker HTTP bridge, fetch-backed networking, or a proxy-backed transport. Local loopback and in-browser virtual networking are supported.
+Browser Kandelo cannot open raw TCP/UDP sockets to arbitrary internet
+endpoints. Internet egress uses fetch/TLS bridges and carries TCP only;
+external UDP fails with `EHOSTUNREACH`. Local loopback, in-browser virtual
+networks, and IPv4 UDP/TCP between connected WebRTC session peers are separate
+supported paths.
+
+If creating or joining a network session fails, check the signalling endpoint.
+The portable PHP piplet included in standalone production output needs a
+64-bit PHP 8.3+ server with a writable directory; a static file server cannot
+run it.
+For static-only hosting, rebuild with `--signalling-url URL` pointing to a
+separately hosted endpoint. The optional combined Spacefast package instead
+supplies a database-backed `/signalling` Function; both peers must have access
+if the Space is private. If signalling works but peers cannot connect,
+the default STUN-only ICE setup may not cross their network layout. See
+[network-session settings and limits](https://github.com/Automattic/kandelo/blob/main/docs/browser-support.md#purpose-checked-browser-peer-connections).
+
+For a Spacefast proxy that repeatedly fails its quota-session handshake, check
+that the app, proxy worker, and PHP session Function were deployed together.
+Reload older tabs to pick up the current protocol. The credential is stored
+on the app's origin; enabling third-party cookies is not required. Signalling
+success does not prove that either the CORS proxy or the peer link works.
 
 For the Kandelo UI, cross-origin fetches use the configured CORS proxy. In local development:
 

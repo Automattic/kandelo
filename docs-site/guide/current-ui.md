@@ -14,7 +14,8 @@ It boots prebuilt machines in the browser using `kernel.wasm`, package artifacts
 
 ## Requirements
 
-Kandelo needs browser support for `SharedArrayBuffer`. In practice the page must be cross-origin isolated:
+Kandelo needs a secure context (HTTPS, or a trustworthy local address such as
+`127.0.0.1`) and cross-origin isolation to expose `SharedArrayBuffer`:
 
 ```text
 Cross-Origin-Opener-Policy: same-origin
@@ -37,15 +38,9 @@ Open:
 http://127.0.0.1:5401/
 ```
 
-`./run.sh browser` prepares missing browser artifacts before starting Vite. The lower-level path is:
-
-```bash
-cd apps/browser-demos
-npm install
-npm run dev
-```
-
-That path assumes the needed kernel, rootfs, package, and VFS artifacts already exist.
+`./run.sh browser` builds or reuses the supported local graph and points Vite
+at its validated source-only projection. Prefer it to launching Vite directly,
+which omits that build and selection step.
 
 ## Gallery Presets
 
@@ -58,6 +53,9 @@ The current UI ships local gallery presets such as:
 - WordPress SQLite
 - WordPress MariaDB
 - fbDOOM
+- TyrQuake
+- Freeciv
+- LÖVE games
 
 When a user launches a preset, the UI selects a VFS image, boots the kernel, starts the configured process, and presents the relevant surfaces:
 
@@ -66,6 +64,11 @@ When a user launches a preset, the UI selects a VFS image, boots the kernel, sta
 - syslog and process internals
 - VFS browser
 - framebuffer, mouse, keyboard, and audio for demos that expose those devices
+
+The base shell also has PHP CLI and Composer. Each command downloads its
+deferred executable or archive on first use. Composer enables its required
+PHP extensions for its own invocation; ordinary `php` keeps its usual
+configuration, and these shell commands do not install PHP-FPM.
 
 ## Direct VFS Links
 
@@ -95,7 +98,45 @@ image, use a [direct VFS link](#direct-vfs-links).
 
 ## Network Behavior
 
-Browser Kandelo supports local loopback sockets and virtual machine-to-machine networking inside the browser session. Browser sandboxing prevents raw external TCP and UDP sockets. External network use goes through fetch, the service worker HTTP bridge, a CORS proxy, or future transport backends.
+Browser Kandelo supports local loopback sockets, virtual machine-to-machine
+networks inside one browser session, and WebRTC network sessions between
+computers. Internet egress uses fetch/TLS bridges, exposed to guests as a
+TCP-only link; external UDP fails with `EHOSTUNREACH`. Browser sandboxing
+still prevents raw TCP/UDP sockets to arbitrary internet endpoints. The
+service worker HTTP bridge lets browser requests reach guest web servers.
+
+### Network Sessions
+
+Open the dock's network panel on a running computer and create a session.
+Its invite link names the machine image and profile and opens the recipient's
+panel; the recipient clicks **Join** to connect. The host forwards IPv4 UDP
+and TCP between members. Leaving or booting another machine ends that
+computer's participation; when the host leaves, the session ends for everyone.
+Invite links do not carry the startup-script fragment from a Share link.
+
+Doom's **LAN game** dock menu can host a private game or join one in the
+session. Its waiting room shows joined players; the host can press Space
+to start early or Esc to quit. Quake's multiplayer menus can discover session
+peers. Freeciv's **Multiplayer** dock menu can host a server or join the
+session host; it uses a direct connection because multicast discovery does
+not reach peer machines. See [Freeciv multiplayer](https://github.com/Automattic/kandelo/blob/main/docs/freeciv.md#multiplayer).
+These are LAN links, not arbitrary internet UDP access. The default connection setup
+uses STUN without a TURN relay, so some network layouts cannot connect.
+Current guest-session validation covers Chromium; Firefox/WebKit guest
+behavior and general internet paths between computers remain unverified.
+
+Network sessions need a signalling server as well as the browser app. The
+development server runs the PHP piplet. A standalone production build includes
+`signalling/piplet.php`, requiring 64-bit PHP 8.3+ and a writable directory;
+static-only hosting needs a separately hosted endpoint selected at build time
+with `./run.sh build-browser --signalling-url URL`. The optional combined
+Spacefast package uses its database-backed `/signalling` Function instead,
+leaving the portable PHP build available for other hosts. Both clients must
+have access if that Space is private. See the
+[network-session reference](https://github.com/Automattic/kandelo/blob/main/docs/browser-support.md#purpose-checked-browser-peer-connections)
+for connection settings, deployment, and validation limits.
+
+### Cross-Origin HTTP Requests
 
 The browser app defaults cross-origin fetches to:
 
@@ -118,3 +159,10 @@ which hosts the default proxy, strips `Range` before it reaches the proxy.
 Anonymous bodyless GETs may omit other fields with a diagnostic. Requests that
 would lose credentials, a body, or state-changing semantics fail before proxy
 dispatch. Direct browser requests and Node.js-host networking are unchanged.
+
+The optional Spacefast proxy also requires a quota-session credential. The
+current app obtains it through the proxy's PHP session Function and stores it
+on the app's origin, without needing third-party cookies. Deploy the app,
+proxy, and session endpoint together and reload existing tabs after upgrading
+that protocol. The ordinary Playground proxy does not use this handshake.
+See [Spacefast deployment and limits](https://github.com/Automattic/kandelo/blob/main/apps/spacefast-cors-proxy/README.md#combined-kandelo-site).

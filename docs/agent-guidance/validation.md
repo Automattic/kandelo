@@ -1,5 +1,9 @@
 # Validation Contract
 
+For a shorter contributor introduction, see
+[Contributing](../../CONTRIBUTING.md#prepare-to-run-tests). This guide carries
+the detailed evidence and agent workflow requirements.
+
 Validation is evidence for a specific claim. Do not say "tests pass", "the
 branch is complete", "the browser works", "ABI is fine", or "performance
 improved" unless the evidence for that exact claim has been run and reported.
@@ -327,9 +331,9 @@ not found: …/kernel.wasm` (or a program `.wasm`), `sysroot not found`, or
 `libc/musl/src: No such file`. These are not "cannot validate" conditions, and
 they are not a reason to stop short of a goal (running a suite, reproducing a
 failure, or validating a branch before a merge). Building what a task needs is
-part of the task. Build or fetch what is missing:
+part of the task. Build what is missing:
 
-1. **Submodules** (musl, libc-test, os-test) — worktrees do not check them out:
+1. **Submodules** (musl, Rust libc, libc-test, os-test) — worktrees do not check them out:
    ```bash
    git submodule update --init --recursive
    ```
@@ -339,13 +343,13 @@ part of the task. Build or fetch what is missing:
 2. **Kernel wasm + host + rootfs + musl sysroot** — `./run.sh setup`
    checks both musl sysroots, rebuilding missing, stale, or altered core
    outputs and refreshing the graphics archives, then builds the
-   kernel, every package, and the rootfs, producing
+   kernel, supported package graph, and the rootfs, producing
    `local-binaries/source-only-v1/kernel.wasm` (the binary resolver prefers
    the published tree over `binaries/`) and `host/wasm/rootfs.vfs.zst`.
    The default rootfs records lazy-file sizes from that same published
    tree, including the programs' ABI-contract stamps:
    ```bash
-   scripts/dev-shell.sh ./run.sh setup
+   ./run.sh setup
    ```
    To check just the wasm32 core SDK after editing libc inputs:
    ```bash
@@ -361,10 +365,13 @@ part of the task. Build or fetch what is missing:
    npm ci            # root — provides tsx used by run-sortix/posix/libc-tests.sh
    (cd host && npm ci)
    ```
-4. **Package artifacts the suites load** — the MariaDB and Perl VFS images, the
-   program `.wasm` files, and the browser VFS products. `./run.sh setup` builds
-   all of them from source into `local-binaries/`; there is no separate fetch
-   step. (`scripts/fetch-binaries.sh` was deleted when binary resolution became
+4. **Package artifacts the suites load** — program `.wasm` files and VFS
+   images. Setup source-builds the supported graph declared in
+   `packages/sets/local-supported.toml` into `local-binaries/source-only-v1/`.
+   It does not build excluded packages or dormant standalone images such as
+   `mariadb-vfs` and `perl-vfs`. If a selected test loads one, resolve that
+   recipe through the normal package resolver for its declared architecture.
+   There is no separate fetch step. (`scripts/fetch-binaries.sh` was deleted when binary resolution became
    local-first; do not look for it. A single package can be resolved on demand
    with `cargo xtask build-deps resolve <name>`, which prefers the per-user
    cache and falls back to a source build.)
@@ -390,7 +397,7 @@ part of the task. Build or fetch what is missing:
 
 After that the full suites run. Do **not** report "I can't run Vitest / the
 conformance suites / the browser" because a fresh worktree lacks artifacts —
-build or fetch them with the steps above, then run the suite and report the real
+build them with the steps above, then run the suite and report the real
 result. If a suite genuinely cannot run (no network for a package source
 download, no display for browser tests, etc.), name the exact step that failed
 and why; that is different from validation being impossible.

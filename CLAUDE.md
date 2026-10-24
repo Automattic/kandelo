@@ -348,10 +348,12 @@ whoever can move the ref can change what executes in a job holding
 the sole exception; they resolve to the running commit. Dependabot keeps the
 pins current.
 
-`./run.sh setup` does not rebuild musl once a sysroot already exists —
-it only re-syncs overlay headers. After editing `libc/musl-overlay/` or
-`libc/glue/channel_syscall.c`, run `scripts/build-musl.sh` before relying on
-`./run.sh setup`, Vitest, or conformance tests.
+`./run.sh setup` checks both musl sysroots against source/toolchain inputs
+and installed core-output receipts, rebuilding missing, stale, or altered
+cores. After editing libc inputs, run setup to refresh linked package
+programs, and `scripts/build-programs.sh` for example/test fixtures before
+Vitest or conformance tests. A rebuilt libc alone does not refresh already
+linked programs. Use the dev shell for these commands.
 
 PR titles and commit subjects must begin with a concise purpose prefix in the
 form `Area: Purpose`, such as `Packages:`, `Kernel:`, `POSIX:`, `CI:`,
@@ -398,7 +400,8 @@ layer whose platform behavior is wrong.
 
 | Path | Owns |
 |---|---|
-| `crates/kernel/` | Rust kernel implementation: syscalls, process state, VFS, devices, memory, signals |
+| `crates/runtime-core/` | Engine-independent POSIX implementation: syscalls, process state, VFS, devices, memory, signals |
+| `crates/kernel/` | Wasm interface and host-import adapter around runtime-core |
 | `crates/shared/` | Shared ABI constants, syscall/interface definitions, host/kernel contract types |
 | `crates/fork-instrument/` | Wasm fork continuation instrumentation |
 | `abi/` | Committed ABI snapshot and generated ABI evidence |

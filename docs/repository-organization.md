@@ -1,14 +1,19 @@
 # Repository Organization
 
+For everyday build and test commands, start with [Contributing](../CONTRIBUTING.md).
+
 Kandelo is organized as a kernel-first monorepo. The kernel and host runtimes are the primary product surface; ported software packages, browser apps, VFS images, and automation are kept in separate trees so ownership and CI relevance are easy to reason about.
 
 ## Top-Level Ownership
 
 | Path | Owns | Does not own |
 |------|------|--------------|
-| `crates/kernel/` | Rust kernel implementation: syscalls, process table, fd tables, signals, sockets, PTY, devices | Host runtime, package builds |
+| `crates/runtime-core/` | Engine-independent POSIX subsystems: syscalls, process table, fd tables, filesystems, signals, sockets, PTY, devices | Worker lifecycle, browser APIs, package builds |
+| `crates/kernel/` | Wasm exports and host-import adapter around runtime-core | Independent POSIX implementations, package builds |
 | `host/src/` | TypeScript host runtime shared by Node.js and browser environments | Browser demo UI |
 | `apps/browser-demos/` | Vite app, demo pages, Kandelo web UI, app-local helpers | Core browser host runtime |
+| `apps/signalling/` | Portable PHP piplet, Spacefast database-backed signalling, and server tests | Guest socket semantics, RTC data transport |
+| `apps/spacefast-cors-proxy/` | Optional Spacefast proxy, quota-session service, and combined-site packager | Default browser hosting, guest networking semantics |
 | `web-libs/` | Browser-independent reusable UI/session contracts | App-specific page code |
 | `packages/registry/<name>/` | One ported package: manifest, build script, patches, package-owned demos, package-owned tests | Kernel/host behavior tests |
 | `packages/sets/` | Named product or CI package sets | Package implementation details |
@@ -83,7 +88,7 @@ The layout is designed so later CI path filters can make conservative, explainab
 
 | Changed path | Likely relevant checks |
 |--------------|------------------------|
-| `crates/kernel/**`, `libc/glue/**`, `host/src/kernel*.ts`, `host/src/worker*.ts` | Kernel/host build, host vitest, conformance smoke tests, affected browser checks |
+| `crates/runtime-core/**`, `crates/kernel/**`, `libc/glue/**`, `host/src/kernel*.ts`, `host/src/worker*.ts` | Kernel/host build, host vitest, conformance smoke tests, affected browser checks |
 | `host/src/node-*.ts` | Node host checks and host parity tests |
 | `host/src/browser-*.ts`, `host/src/worker-adapter-browser.ts` | Browser host checks, browser UI/tests, host parity tests |
 | `host/src/vfs/**`, `host/src/networking/**`, `host/src/framebuffer/**` | Shared host/runtime checks plus affected package/browser checks |
