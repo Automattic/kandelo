@@ -447,8 +447,19 @@ defect: when `catch_all_ref` rethrows a raw broker value, Walrus leaves its
 scratch reservation behind on normal, rewind and live-abort exits. Native
 emission must release that reservation completely. The fixture verifies the
 known oracle failure separately instead of weakening native cleanup checks.
-Legacy-handler normalization remains unfinished. Production continues to use
-Walrus.
+`LegacyHandlerPlan` discovers legacy exception ownership in one original
+function. It assigns each attached handler a parent link, resolves named
+rethrows and shares typed cleanup targets across repeated branches. Work
+and metadata limits cover discovery and ancestor walks. Original operator
+coordinates and branch signatures remain unchanged. Differential checks
+compare owned-exception counts and rethrow cleanup with the unchanged
+Walrus normalizer, including nested handlers and reference branches. A
+valid detached legacy catch makes the Walrus parser panic; that failure is
+recorded separately from the shared positive assertions.
+
+This ownership plan does not lower handlers or enable legacy replay.
+Legacy-handler normalization remains unfinished, and native activation
+emission still rejects it. Production continues to use Walrus.
 
 `FrameCodecCatalog` interns scalar save/restore recipes before output starts.
 It emits each helper serially and shares restores across save-commit policies.
