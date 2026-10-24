@@ -905,6 +905,104 @@ fn release_gl_current_for_tid(
     }
 }
 
+fn retain_gl_surface_bo(bo: u32) -> Result<(), Errno> {
+    crate::dri::with_registry(|registry| {
+        if registry.get(bo).is_none() {
+            return Err(Errno::ENOENT);
+        }
+        registry.incref(bo).ok_or(Errno::ENOMEM).map(|_| ())
+    })
+}
+
+fn collect_gl_bo_releases(ids: [Option<u32>; 2]) -> Vec<DriReleaseEffect> {
+    let mut effects = Vec::new();
+    for bo in ids.into_iter().flatten() {
+        if crate::dri::with_registry(|r| r.decref(bo)) == Some(0) {
+            effects.push(DriReleaseEffect::DestroyBo(bo));
+        }
+    }
+    effects
+}
+
+fn collect_gl_resource_releases(mut resources: crate::ofd::GlResources) -> Vec<DriReleaseEffect> {
+    let mut effects = Vec::new();
+    if let Some(owner) = resources.owner.take() {
+        if owner.native_live && owner.role == wasm_posix_shared::gl::SESSION_OBJECTS {
+            effects.push(DriReleaseEffect::UnbindGl {
+                owner_pid: owner.pid,
+                session_id: owner.session_id,
+            });
+        }
+    }
+    effects.extend(collect_gl_bo_releases([
+        resources.surface_bo.take(),
+        resources.pending_surface_bo.take(),
+    ]));
+    effects
+}
+
+/// Owner image teardown revokes its renderer even when another process still
+/// holds an inherited descriptor. Foreign child teardown must leave it live.
+fn take_owned_gl_resources(
+    dri: &mut crate::ofd::DriFdState,
+    pid: i32,
+    clear_owner: bool,
+) -> crate::ofd::GlResources {
+    take_owned_shared_gl_resources(&dri.gl_resources, pid, clear_owner)
+}
+
+fn take_owned_shared_gl_resources(
+    shared: &crate::ofd::SharedGlResources,
+    pid: i32,
+    clear_owner: bool,
+) -> crate::ofd::GlResources {
+    let mut resources = shared.borrow_mut();
+    if !resources.owner.is_some_and(|owner| owner.pid == pid) {
+        return Default::default();
+    }
+    let owner = if clear_owner {
+        resources.owner.take()
+    } else {
+        let owner = resources.owner;
+        if let Some(stored) = resources.owner.as_mut() {
+            stored.native_live = false;
+            stored.cmdbuf_range = None;
+        }
+        owner
+    };
+    crate::ofd::GlResources {
+        owner,
+        surface_bo: resources.surface_bo.take(),
+        pending_surface_bo: resources.pending_surface_bo.take(),
+    }
+}
+
+pub fn collect_owned_gl_image_release_effects(
+    pid: i32,
+    state: &mut crate::ofd::DriOfdState,
+) -> Vec<DriReleaseEffect> {
+    let dri = match state {
+        crate::ofd::DriOfdState::RenderNode(dri) | crate::ofd::DriOfdState::Card { dri, .. } => dri,
+        crate::ofd::DriOfdState::PrimeBo(_) => return Vec::new(),
+    };
+    collect_gl_resource_releases(take_owned_gl_resources(dri, pid, true))
+}
+
+/// Revoke image-owned renderers before discarding guest memory, even when
+/// every local descriptor has closed and only a child retains the description.
+pub fn collect_process_gl_image_release_effects(proc: &mut Process) -> Vec<DriReleaseEffect> {
+    let pid = proc.pid as i32;
+    let mut effects = Vec::new();
+    for weak in core::mem::take(&mut proc.gl_resource_owners) {
+        if let Some(shared) = weak.upgrade() {
+            effects.extend(collect_gl_resource_releases(
+                take_owned_shared_gl_resources(&shared, pid, true),
+            ));
+        }
+    }
+    effects
+}
+
 fn ranges_overlap(a_addr: usize, a_len: usize, b_addr: usize, b_len: usize) -> bool {
     let a_end = a_addr.saturating_add(a_len);
     let b_end = b_addr.saturating_add(b_len);
@@ -940,8 +1038,28 @@ fn unbind_gl_cmdbufs_in_range(proc: &mut Process, host: &mut dyn HostIO, addr: u
     let pid = proc.pid as i32;
     for (_, ofd) in proc.ofd_table.iter_mut() {
         let Some(dri) = ofd.dri_mut() else { continue };
-        if let Some(session_id) = clear_dri_fd_cmdbuf_in_range(dri, pid, addr, len) {
-            host.gl_unbind(pid, session_id);
+        if clear_dri_fd_cmdbuf_in_range(dri, pid, addr, len).is_some() {
+            let effects = collect_gl_resource_releases(take_owned_gl_resources(dri, pid, false));
+            apply_dri_release_effects(pid, effects, host);
+        }
+    }
+    // The owner may have closed every local fd while a child or an in-flight
+    // descriptor still holds the open description. Revoke that lease before
+    // any part of its old command memory is discarded or replaced.
+    for weak in &proc.gl_resource_owners {
+        let Some(shared) = weak.upgrade() else {
+            continue;
+        };
+        let overlaps = shared.borrow().owner.is_some_and(|owner| {
+            owner.pid == pid
+                && owner
+                    .cmdbuf_range
+                    .is_some_and(|(base, size)| ranges_overlap(base, size, addr, len))
+        });
+        if overlaps {
+            let effects =
+                collect_gl_resource_releases(take_owned_shared_gl_resources(&shared, pid, false));
+            apply_dri_release_effects(pid, effects, host);
         }
     }
 }
@@ -952,11 +1070,14 @@ fn release_process_dri_mappings(proc: &mut Process, host: &mut dyn HostIO) {
     for b in bindings {
         host.gbm_bo_unbind(pid, b.bo_id, b.addr, b.len);
     }
+    let effects = collect_process_gl_image_release_effects(proc);
+    apply_dri_release_effects(pid, effects, host);
     for (_, ofd) in proc.ofd_table.iter_mut() {
         let Some(dri) = ofd.dri_mut() else { continue };
         if dri.gl.as_ref().is_some_and(|gl| gl.owner_pid == pid) {
-            let gl = dri.gl.take().unwrap();
-            if gl.role == wasm_posix_shared::gl::SESSION_OBJECTS { host.gl_unbind(pid, gl.session_id); }
+            let effects = collect_gl_resource_releases(take_owned_gl_resources(dri, pid, true));
+            apply_dri_release_effects(pid, effects, host);
+            dri.gl = None;
         }
     }
 }
@@ -1295,10 +1416,9 @@ fn handle_dri_ioctl(
     if (gl::GLIO_INIT..=gl::GLIO_UPDATE_SURFACE).contains(&request)
         || request == DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE
     {
-        if dri_state(proc, ofd_idx)?
-            .gl
-            .as_ref()
-            .is_some_and(|gl| gl.owner_pid != pid)
+        let dri = dri_state(proc, ofd_idx)?;
+        if dri.gl.as_ref().is_some_and(|gl| gl.owner_pid != pid)
+            || dri.gl_resources.borrow().owner.is_some_and(|owner| owner.pid != pid)
         {
             return Err(Errno::EACCES);
         }
@@ -1652,30 +1772,87 @@ fn handle_dri_ioctl(
         // sys_mmap renderD128 block when offset==0; everything below is
         // pure state-machine + host bridge forwarding.
         gl::GLIO_INIT => {
-            if buf.len() < core::mem::size_of::<gl::GlInitInfo>() { return Err(Errno::EINVAL); }
-            let mut info: gl::GlInitInfo = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            if info.op_version == 0 || info.op_version > gl::OP_VERSION { return Err(Errno::ENOSYS); }
-            if dri_state(proc, ofd_idx)?.gl.is_some() { return Err(Errno::EBUSY); }
+            if buf.len() < core::mem::size_of::<gl::GlInitInfo>() {
+                return Err(Errno::EINVAL);
+            }
+            let mut info: gl::GlInitInfo =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if info.op_version == 0 || info.op_version > gl::OP_VERSION {
+                return Err(Errno::ENOSYS);
+            }
+            if let Some(owner) = dri_state(proc, ofd_idx)?.gl_resources.borrow().owner {
+                return Err(if owner.pid == pid {
+                    Errno::EBUSY
+                } else {
+                    Errno::EACCES
+                });
+            }
+            if dri_state(proc, ofd_idx)?.gl.is_some() {
+                return Err(Errno::EBUSY);
+            }
             match info.role {
                 gl::SESSION_DISPLAY => {
-                    if info.display_fd != -1 || info.display_id != 0 { return Err(Errno::EINVAL); }
+                    if info.display_fd != -1 || info.display_id != 0 {
+                        return Err(Errno::EINVAL);
+                    }
                 }
                 gl::SESSION_OBJECTS => {
                     let root_ofd = proc.fd_table.get(info.display_fd)?.ofd_ref.0;
-                    let root = dri_state(proc, root_ofd)?.gl.as_ref().ok_or(Errno::EINVAL)?;
-                    if root.owner_pid != pid { return Err(Errno::EACCES); }
-                    if !root.initialized || root.role != gl::SESSION_DISPLAY || info.display_id == 0
-                        || root.display_id != info.display_id { return Err(Errno::EINVAL); }
+                    let root = dri_state(proc, root_ofd)?
+                        .gl
+                        .as_ref()
+                        .ok_or(Errno::EINVAL)?;
+                    if root.owner_pid != pid {
+                        return Err(Errno::EACCES);
+                    }
+                    if !root.initialized
+                        || root.role != gl::SESSION_DISPLAY
+                        || info.display_id == 0
+                        || root.display_id != info.display_id
+                    {
+                        return Err(Errno::EINVAL);
+                    }
                 }
                 _ => return Err(Errno::EINVAL),
             }
             let session_id = crate::ofd::allocate_gl_id()?;
-            if info.role == gl::SESSION_DISPLAY { info.display_id = session_id; }
+            if info.role == gl::SESSION_DISPLAY {
+                info.display_id = session_id;
+            }
             dri_state_mut(proc, ofd_idx)?.gl = Some(crate::ofd::GlState {
-                session_id, owner_pid: pid, initialized: true,
-                role: info.role, display_id: info.display_id, ..Default::default()
+                session_id,
+                owner_pid: pid,
+                initialized: true,
+                role: info.role,
+                display_id: info.display_id,
+                ..Default::default()
             });
-            unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, info); }
+            dri_state_mut(proc, ofd_idx)?
+                .gl_resources
+                .borrow_mut()
+                .owner = Some(crate::ofd::GlResourceOwner {
+                native_live: true,
+                cmdbuf_range: None,
+                pid,
+                session_id,
+                role: info.role,
+            });
+            let weak = dri_state(proc, ofd_idx)?.gl_resources.downgrade();
+            proc.gl_resource_owners.retain(|entry| {
+                entry.upgrade().is_some_and(|shared| {
+                    shared.borrow().owner.is_some_and(|owner| owner.pid == pid)
+                })
+            });
+            if !proc
+                .gl_resource_owners
+                .iter()
+                .any(|entry| entry.ptr_eq(&weak))
+            {
+                proc.gl_resource_owners.push(weak);
+            }
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, info);
+            }
             Ok(())
         }
         gl::GLIO_TERMINATE => {
@@ -1683,8 +1860,12 @@ fn handle_dri_ioctl(
             if dri.gl.as_ref().is_some_and(|gl| gl.current.is_some()) {
                 return Err(Errno::EBUSY);
             }
-            let gl = dri.gl.take().ok_or(Errno::EINVAL)?;
-            if gl.role == gl::SESSION_OBJECTS { host.gl_unbind(pid, gl.session_id); }
+            if dri.gl.is_none() {
+                return Err(Errno::EINVAL);
+            }
+            let effects = collect_gl_resource_releases(take_owned_gl_resources(dri, pid, true));
+            apply_dri_release_effects(pid, effects, host);
+            dri.gl = None;
             Ok(())
         }
         gl::GLIO_CREATE_CONTEXT => {
@@ -1780,6 +1961,14 @@ fn handle_dri_ioctl(
                 if gls.surface_id.is_some() {
                     return Err(Errno::EBUSY);
                 }
+                let mut resources = dri.gl_resources.borrow_mut();
+                if resources.surface_bo.is_some() || resources.pending_surface_bo.is_some() {
+                    return Err(Errno::EBUSY);
+                }
+                if target_bo_id != 0 {
+                    retain_gl_surface_bo(target_bo_id)?;
+                    resources.surface_bo = Some(target_bo_id);
+                }
                 surface_id = 1u32;
                 gls.surface_id = Some(surface_id);
             }
@@ -1813,7 +2002,32 @@ fn handle_dri_ioctl(
             let session = gls.session_id;
             let mut host_attrs = buf[..size].to_vec();
             host_attrs[16..20].copy_from_slice(&target.to_le_bytes());
+            let changed = {
+                let mut resources = dri.gl_resources.borrow_mut();
+                if resources.pending_surface_bo.is_some() {
+                    return Err(Errno::EBUSY);
+                }
+                if resources.surface_bo == Some(target) {
+                    false
+                } else {
+                    retain_gl_surface_bo(target)?;
+                    resources.pending_surface_bo = Some(target);
+                    true
+                }
+            };
             let rc = host.gl_update_surface(pid, surface, &host_attrs, session);
+            let release = if changed {
+                let mut resources = dri_state_mut(proc, ofd_idx)?.gl_resources.borrow_mut();
+                let candidate = resources.pending_surface_bo.take();
+                if rc == 0 {
+                    core::mem::replace(&mut resources.surface_bo, candidate)
+                } else {
+                    candidate
+                }
+            } else {
+                None
+            };
+            apply_dri_release_effects(pid, collect_gl_bo_releases([release, None]), host);
             if rc != 0 {
                 return Err(rc
                     .checked_neg()
@@ -1836,6 +2050,14 @@ fn handle_dri_ioctl(
                 gls.surface_id = None;
             }
             host.gl_destroy_surface(pid, surface_id, gl_session_id(proc, ofd_idx)?);
+            let refs = {
+                let mut resources = dri_state_mut(proc, ofd_idx)?.gl_resources.borrow_mut();
+                [
+                    resources.surface_bo.take(),
+                    resources.pending_surface_bo.take(),
+                ]
+            };
+            apply_dri_release_effects(pid, collect_gl_bo_releases(refs), host);
             Ok(())
         }
         gl::GLIO_MAKE_CURRENT => {
@@ -2880,10 +3102,8 @@ pub fn collect_dri_release_effects(
             release_bo(&mut effects, p.bo_id);
         }
         crate::ofd::DriOfdState::RenderNode(dri) => {
-            if let Some(gl) = dri.gl {
-                if gl.role == wasm_posix_shared::gl::SESSION_OBJECTS {
-                    effects.push(DriReleaseEffect::UnbindGl { owner_pid: gl.owner_pid, session_id: gl.session_id });
-                }
+            if let Some(resources) = dri.gl_resources.into_last() {
+                effects.extend(collect_gl_resource_releases(resources));
             }
             for (_handle, bo_id) in dri.handles.into_iter() {
                 release_bo(&mut effects, bo_id);
@@ -2903,10 +3123,8 @@ pub fn collect_dri_release_effects(
             if kms.holds_master && crate::dri::master::drop_master(pid, ofd_idx) {
                 effects.push(DriReleaseEffect::DropMaster);
             }
-            if let Some(gl) = dri.gl {
-                if gl.role == wasm_posix_shared::gl::SESSION_OBJECTS {
-                    effects.push(DriReleaseEffect::UnbindGl { owner_pid: gl.owner_pid, session_id: gl.session_id });
-                }
+            if let Some(resources) = dri.gl_resources.into_last() {
+                effects.extend(collect_gl_resource_releases(resources));
             }
             for (_handle, bo_id) in dri.handles.into_iter() {
                 release_bo(&mut effects, bo_id);
@@ -12128,7 +12346,14 @@ pub fn sys_mmap(
                         }
                     }
                 }
-                host.gl_bind(proc.pid as i32, addr_out, len, gl_session_id(proc, proc.fd_table.get(fd)?.ofd_ref.0)?);
+                let ofd_idx = proc.fd_table.get(fd)?.ofd_ref.0;
+                if let Some(owner) = dri_state_mut(proc, ofd_idx)?
+                    .gl_resources.borrow_mut().owner.as_mut()
+                {
+                    owner.native_live = true;
+                    owner.cmdbuf_range = Some((addr_out, len));
+                }
+                host.gl_bind(proc.pid as i32, addr_out, len, gl_session_id(proc, ofd_idx)?);
                 return Ok(addr_out);
             }
             if (offset as u64) & 0xFFF != 0 {
@@ -23374,6 +23599,7 @@ mod tests {
         gbm_gpu_bo_create_rc: i32,
         /// Recorded `(pid, bo_id)` for every `gbm_bo_destroy` call.
         gbm_bo_destroy_calls: Vec<(i32, u32)>,
+        gl_surface_release_events: Vec<(u8,u32)>,
         /// Recorded `(pid, surface_id, attrs_bytes)` for every
         /// `gl_create_surface` call — lets tests assert the kernel handed
         /// the host a resolved target bo_id in `attrs.reserved[0]`.
@@ -23512,6 +23738,7 @@ mod tests {
                 gbm_gpu_bo_create_calls: Vec::new(),
                 gbm_gpu_bo_create_rc: 0,
                 gbm_bo_destroy_calls: Vec::new(),
+                gl_surface_release_events: Vec::new(),
                 gl_create_surface_calls: Vec::new(),
             }
         }
@@ -24310,6 +24537,7 @@ mod tests {
         }
         fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {
             self.gbm_bo_destroy_calls.push((pid, bo_id));
+            self.gl_surface_release_events.push((2,bo_id));
         }
         fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
             self.gbm_bo_bind_calls.push((pid, bo_id, addr, len));
@@ -24324,6 +24552,7 @@ mod tests {
         fn gl_unbind(&mut self, pid: i32, session_id: u32) {
             self.gl_unbind_calls.push(pid);
             self.gl_unbind_sessions.push(session_id);
+            self.gl_surface_release_events.push((1,session_id));
         }
         fn gl_submit(&mut self, _pid: i32, _offset: usize, _length: usize, session_id: u32) -> i32 {
             self.gl_submit_sessions.push(session_id);
@@ -24374,6 +24603,9 @@ mod tests {
             self.gl_bind_foreign_texture_calls
                 .push((pid, ctx_id, bo_id, gl_target));
             self.gl_bind_foreign_texture_rc
+        }
+        fn gl_destroy_surface(&mut self, _pid: i32, surface: u32, _session: u32) {
+            self.gl_surface_release_events.push((3,surface));
         }
         fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8], _session_id: u32) {
             self.gl_create_surface_calls
@@ -52582,6 +52814,7 @@ impl HostIO for RelSymlinkMock {
         let gls = dri_state_mut(&mut proc, ofd).unwrap().gl.as_mut().unwrap();
         gls.owner_pid = 1;
         let session_id = gls.session_id;
+        dri_state_mut(&mut proc,ofd).unwrap().gl_resources.borrow_mut().owner.as_mut().unwrap().pid = 1;
         for (request, size) in [
             (gl::GLIO_INIT, 16), (gl::GLIO_CREATE_CONTEXT, 16),
             (gl::GLIO_SUBMIT, 8), (gl::GLIO_QUERY, 24), (gl::GLIO_TERMINATE, 0),
@@ -52850,6 +53083,540 @@ impl HostIO for RelSymlinkMock {
                 .unwrap_err(),
             Errno::EIO,
         );
+    }
+
+    fn glio_surface_bo_setup(proc: &mut Process, host: &mut MockHostIO, gpu: bool) -> (i32, u32) {
+        use wasm_posix_shared::{dri::*, gl};
+        let (fd, bo) = if gpu {
+            let fd = sys_open(proc, host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+            let mut bytes = [0u8; 16];
+            for (word, value) in bytes.chunks_exact_mut(4).zip([64u32, 32, 0x34325258, 5]) {
+                word.copy_from_slice(&value.to_le_bytes());
+            }
+            sys_ioctl(proc, host, fd, DRM_IOCTL_WPK_CREATE_GPU_BO, &mut bytes).unwrap();
+            let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            (fd, *dri_state(proc, ofd).unwrap().handles.get(&1).unwrap())
+        } else {
+            let (fd, offset, _) = dri_alloc_dumb_for_mmap(proc, host, 64, 32);
+            (fd, (offset >> 12) as u32)
+        };
+        glio_init_objects_test(proc, host, fd, gl::OP_VERSION).unwrap();
+        let mut bytes = [0u8; 32];
+        for (word, value) in
+            bytes
+                .chunks_exact_mut(4)
+                .zip([gl::WPK_SURFACE_DEFAULT, 64, 32, 1, 1, 0, 0, 0])
+        {
+            word.copy_from_slice(&value.to_le_bytes());
+        }
+        sys_ioctl(proc, host, fd, gl::GLIO_CREATE_SURFACE, &mut bytes).unwrap();
+        (fd, bo)
+    }
+    fn glio_surface_bo_close_handle(proc: &mut Process, host: &mut MockHostIO, fd: i32, handle: u32) {
+        let mut bytes = [0u8; 8];
+        bytes[..4].copy_from_slice(&handle.to_le_bytes());
+        sys_ioctl(
+            proc,
+            host,
+            fd,
+            wasm_posix_shared::dri::DRM_IOCTL_GEM_CLOSE,
+            &mut bytes,
+        )
+        .unwrap();
+    }
+    fn glio_surface_bo_count(bo: u32) -> Option<u32> {
+        crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount))
+    }
+
+    #[test]
+    fn glio_surface_bo_survives_handle_close_for_cpu_and_gpu_until_destroy() {
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for gpu in [false, true] {
+            crate::dri::bo::reset_registry();
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let (fd, bo) = glio_surface_bo_setup(&mut proc, &mut host, gpu);
+            glio_surface_bo_close_handle(&mut proc, &mut host, fd, 1);
+            assert_eq!(glio_surface_bo_count(bo), Some(1));
+            assert!(host.gbm_bo_destroy_calls.is_empty());
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                wasm_posix_shared::gl::GLIO_DESTROY_SURFACE,
+                &mut [],
+            )
+            .unwrap();
+            assert_eq!(glio_surface_bo_count(bo), None);
+            assert_eq!(host.gbm_bo_destroy_calls, [(1, bo)]);
+            assert_eq!(host.gl_surface_release_events, [(3, 1), (2, bo)]);
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            assert_eq!(host.gbm_bo_destroy_calls.len(), 1);
+        }
+    }
+
+    fn check_glio_surface_bo_teardown(mode: &str) {
+        use wasm_posix_shared::gl;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, bo) = glio_surface_bo_setup(&mut proc, &mut host, true);
+        glio_map_test(&mut proc, &mut host, fd);
+        glio_surface_bo_close_handle(&mut proc, &mut host, fd, 1);
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+        assert!(host.gbm_bo_destroy_calls.is_empty());
+        match mode {
+            "terminate" => sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_TERMINATE, &mut []).unwrap(),
+            "unmap" => {
+                let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+                let address = dri_state(&proc, ofd)
+                    .unwrap()
+                    .gl
+                    .as_ref()
+                    .unwrap()
+                    .cmdbuf
+                    .unwrap()
+                    .addr;
+                sys_munmap(&mut proc, &mut host, address + 0x10000, 0x10000).unwrap();
+            }
+            "exec" => {
+                commit_exec_state(&mut proc, &mut host, 0).unwrap();
+            }
+            "exit" => sys_exit(&mut proc, &mut host, 0),
+            "close" => {
+                let alias = sys_dup(&mut proc, fd).unwrap();
+                sys_close(&mut proc, &mut host, fd).unwrap();
+                assert_eq!(glio_surface_bo_count(bo), Some(1));
+                assert!(host.gl_unbind_calls.is_empty());
+                sys_close(&mut proc, &mut host, alias).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(glio_surface_bo_count(bo), None);
+        assert_eq!(host.gbm_bo_destroy_calls, [(1, bo)]);
+        assert_eq!(host.gl_surface_release_events.len(), 2);
+        assert_eq!(host.gl_surface_release_events[0].0, 1);
+        assert_eq!(host.gl_surface_release_events[1], (2, bo));
+        if mode != "exit" && mode != "close" {
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
+        assert_eq!(host.gbm_bo_destroy_calls.len(), 1);
+        assert_eq!(host.gl_surface_release_events.len(), 2);
+    }
+    #[test]
+    fn glio_surface_bo_terminate_releases_after_native_unbind() {
+        check_glio_surface_bo_teardown("terminate");
+    }
+    #[test]
+    fn glio_surface_bo_partial_unmap_releases_after_native_unbind() {
+        check_glio_surface_bo_teardown("unmap");
+    }
+    #[test]
+    fn glio_surface_bo_exec_releases_after_native_unbind() {
+        check_glio_surface_bo_teardown("exec");
+    }
+    #[test]
+    fn glio_surface_bo_exit_releases_after_native_unbind() {
+        check_glio_surface_bo_teardown("exit");
+    }
+    #[test]
+    fn glio_surface_bo_final_duplicate_close_releases_after_native_unbind() {
+        check_glio_surface_bo_teardown("close");
+    }
+
+    #[test]
+    fn glio_surface_bo_update_preserves_old_storage_on_failure_and_transfers_after_acceptance() {
+        use wasm_posix_shared::{dri::*, gl};
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, old) = glio_surface_bo_setup(&mut proc, &mut host, true);
+        let mut bytes = [0u8; 16];
+        for (word, value) in bytes.chunks_exact_mut(4).zip([64u32, 32, 0x34325258, 5]) {
+            word.copy_from_slice(&value.to_le_bytes());
+        }
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_WPK_CREATE_GPU_BO,
+            &mut bytes,
+        )
+        .unwrap();
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let next = *dri_state(&proc, ofd).unwrap().handles.get(&2).unwrap();
+        let mut surface = [0u8; 32];
+        for (word, value) in
+            surface
+                .chunks_exact_mut(4)
+                .zip([gl::WPK_SURFACE_DEFAULT, 64, 32, 1, 1, 0, 0, 0])
+        {
+            word.copy_from_slice(&value.to_le_bytes());
+        }
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_UPDATE_SURFACE,
+            &mut surface,
+        )
+        .unwrap();
+        assert_eq!(glio_surface_bo_count(old), Some(2)); // Same target holds exactly one surface reference.
+        glio_surface_bo_close_handle(&mut proc, &mut host, fd, 1);
+        surface[16..20].copy_from_slice(&2u32.to_le_bytes());
+        let input = surface;
+        host.gl_update_surface_rc = -(Errno::ENOMEM as i32);
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                gl::GLIO_UPDATE_SURFACE,
+                &mut surface
+            ),
+            Err(Errno::ENOMEM)
+        );
+        assert_eq!(surface, input);
+        assert_eq!(glio_surface_bo_count(old), Some(1));
+        assert_eq!(glio_surface_bo_count(next), Some(1));
+        assert!(host.gbm_bo_destroy_calls.is_empty());
+        host.gl_update_surface_rc = 0;
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_UPDATE_SURFACE,
+            &mut surface,
+        )
+        .unwrap();
+        assert_eq!(glio_surface_bo_count(old), None);
+        assert_eq!(glio_surface_bo_count(next), Some(2));
+        assert_eq!(host.gbm_bo_destroy_calls, [(1, old)]);
+        glio_surface_bo_close_handle(&mut proc, &mut host, fd, 2);
+        assert_eq!(glio_surface_bo_count(next), Some(1));
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(host.gbm_bo_destroy_calls, [(1, old), (1, next)]);
+    }
+
+    #[test]
+    fn glio_surface_bo_fork_keeps_one_open_description_hold_until_final_child_close() {
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut table = crate::process_table::ProcessTable::new();
+        let mut host = MockHostIO::new();
+        let parent = table.create_process().unwrap();
+        let (fd, bo) = glio_surface_bo_setup(table.get_mut(parent).unwrap(), &mut host, true);
+        glio_surface_bo_close_handle(table.get_mut(parent).unwrap(), &mut host, fd, 1);
+        let child = table.fork_process_for_caller(parent, parent).unwrap();
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+        sys_close(table.get_mut(parent).unwrap(), &mut host, fd).unwrap();
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+        assert!(host.gl_unbind_calls.is_empty());
+        sys_close(table.get_mut(child).unwrap(), &mut host, fd).unwrap();
+        assert_eq!(glio_surface_bo_count(bo), None);
+        assert_eq!(host.gl_unbind_calls, [parent as i32]);
+        assert_eq!(host.gbm_bo_destroy_calls.len(), 1);
+    }
+
+    #[test]
+    fn glio_surface_bo_forced_removal_collects_one_final_hold_and_ordered_host_effects() {
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut table = crate::process_table::ProcessTable::new();
+        let mut host = MockHostIO::new();
+        let pid = table.create_process().unwrap();
+        let (fd, bo) = glio_surface_bo_setup(table.get_mut(pid).unwrap(), &mut host, true);
+        glio_surface_bo_close_handle(table.get_mut(pid).unwrap(), &mut host, fd, 1);
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+        let removed = table.remove_process(pid).unwrap();
+        assert_eq!(glio_surface_bo_count(bo), None);
+        assert_eq!(removed.dri_effects.len(), 2);
+        assert!(
+            matches!(removed.dri_effects[0],DriReleaseEffect::UnbindGl {owner_pid,..} if owner_pid == pid as i32)
+        );
+        assert_eq!(removed.dri_effects[1], DriReleaseEffect::DestroyBo(bo));
+        apply_dri_release_effects(pid as i32, removed.dri_effects, &mut host);
+        assert_eq!(host.gl_surface_release_events.len(), 2);
+        assert_eq!(host.gl_surface_release_events[0].0, 1);
+        assert_eq!(host.gl_surface_release_events[1], (2, bo));
+    }
+
+    #[test]
+    fn glio_surface_bo_busy_destroy_preserves_current_storage_until_release() {
+        use wasm_posix_shared::gl;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, bo) = glio_surface_bo_setup(&mut proc, &mut host, true);
+        let context = glio_test_bind(&mut proc, &mut host, fd);
+        let mut binding = [0u8; 12];
+        for (word, value) in binding.chunks_exact_mut(4).zip([context, 1, 1]) {
+            word.copy_from_slice(&value.to_le_bytes());
+        }
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_MAKE_CURRENT,
+            &mut binding,
+        )
+        .unwrap();
+        glio_surface_bo_close_handle(&mut proc, &mut host, fd, 1);
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut []),
+            Err(Errno::EBUSY)
+        );
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+        assert!(host.gl_surface_release_events.is_empty());
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_MAKE_CURRENT,
+            &mut [0; 12],
+        )
+        .unwrap();
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut []).unwrap();
+        assert_eq!(glio_surface_bo_count(bo), None);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn glio_surface_bo_child_cleanup_and_foreign_init_preserve_parent_ownership() {
+        use wasm_posix_shared::gl;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for mode in [
+            "fork close",
+            "fork exec",
+            "fork remove",
+            "spawn cloexec",
+            "failed spawn",
+        ] {
+            crate::dri::bo::reset_registry();
+            let mut table = crate::process_table::ProcessTable::new();
+            let mut host = MockHostIO::new();
+            let parent = table.create_process().unwrap();
+            let (fd, bo) = glio_surface_bo_setup(table.get_mut(parent).unwrap(), &mut host, true);
+            glio_surface_bo_close_handle(table.get_mut(parent).unwrap(), &mut host, fd, 1);
+            if mode == "failed spawn" {
+                let error = table.spawn_child_for_caller(
+                    parent,
+                    parent,
+                    &[],
+                    &[],
+                    &[crate::spawn::FileAction::Dup2 { srcfd: 999, fd: 1 }],
+                    &crate::spawn::SpawnAttrs::empty(),
+                    &mut host,
+                );
+                assert_eq!(error, Err(Errno::EBADF));
+            } else {
+                let child = if mode == "spawn cloexec" {
+                    sys_fcntl(table.get_mut(parent).unwrap(), fd, F_SETFD, FD_CLOEXEC).unwrap();
+                    table
+                        .spawn_child_for_caller(
+                            parent,
+                            parent,
+                            &[],
+                            &[],
+                            &[],
+                            &crate::spawn::SpawnAttrs::empty(),
+                            &mut host,
+                        )
+                        .unwrap()
+                } else {
+                    table.fork_process_for_caller(parent, parent).unwrap()
+                };
+                let mut bytes = glio_init_bytes(gl::GlInitInfo {
+                    op_version: gl::OP_VERSION,
+                    role: gl::SESSION_DISPLAY,
+                    display_fd: -1,
+                    display_id: 0,
+                });
+                let input = bytes;
+                assert_eq!(
+                    sys_ioctl(
+                        table.get_mut(child).unwrap(),
+                        &mut host,
+                        fd,
+                        gl::GLIO_INIT,
+                        &mut bytes
+                    ),
+                    Err(Errno::EACCES)
+                );
+                assert_eq!(bytes, input);
+                match mode {
+                    "fork close" => sys_close(table.get_mut(child).unwrap(), &mut host, fd).unwrap(),
+                    "fork exec" | "spawn cloexec" => {
+                        commit_exec_state(table.get_mut(child).unwrap(), &mut host, 0).unwrap();
+                        if mode == "fork exec" {
+                            sys_close(table.get_mut(child).unwrap(), &mut host, fd).unwrap();
+                        } else {
+                            assert!(table.get(child).unwrap().fd_table.get(fd).is_err());
+                        }
+                    }
+                    "fork remove" => {
+                        let removed = table.remove_process(child).unwrap();
+                        apply_dri_release_effects(child as i32, removed.dri_effects, &mut host);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            assert_eq!(glio_surface_bo_count(bo), Some(1));
+            assert!(host.gl_unbind_calls.is_empty());
+            assert!(host.gbm_bo_destroy_calls.is_empty());
+            sys_close(table.get_mut(parent).unwrap(), &mut host, fd).unwrap();
+            assert_eq!(glio_surface_bo_count(bo), None);
+            assert_eq!(host.gl_unbind_calls, [parent as i32]);
+            assert_eq!(host.gbm_bo_destroy_calls.len(), 1);
+        }
+    }
+
+    #[test]
+    fn glio_surface_bo_owner_image_end_revokes_shared_resources_before_child_close() {
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for (mode, close_parent) in ["exec", "exit", "forced"]
+            .into_iter()
+            .flat_map(|mode| [false, true].map(|closed| (mode, closed)))
+        {
+            crate::dri::bo::reset_registry();
+            let mut table = crate::process_table::ProcessTable::new();
+            let mut host = MockHostIO::new();
+            let parent = table.create_process().unwrap();
+            let (fd, bo) = glio_surface_bo_setup(table.get_mut(parent).unwrap(), &mut host, true);
+            glio_surface_bo_close_handle(table.get_mut(parent).unwrap(), &mut host, fd, 1);
+            let child = table.fork_process_for_caller(parent, parent).unwrap();
+            if close_parent {
+                sys_close(table.get_mut(parent).unwrap(), &mut host, fd).unwrap();
+            }
+            match mode {
+                "exec" => commit_exec_state(table.get_mut(parent).unwrap(), &mut host, 0).unwrap(),
+                "exit" => sys_exit(table.get_mut(parent).unwrap(), &mut host, 0),
+                "forced" => {
+                    let removed = table.remove_process(parent).unwrap();
+                    apply_dri_release_effects(parent as i32, removed.dri_effects, &mut host);
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(glio_surface_bo_count(bo), None);
+            assert_eq!(host.gl_unbind_calls, [parent as i32]);
+            assert_eq!(host.gbm_bo_destroy_calls.len(), 1);
+            sys_close(table.get_mut(child).unwrap(), &mut host, fd).unwrap();
+            assert_eq!(host.gl_unbind_calls, [parent as i32]);
+            assert_eq!(host.gbm_bo_destroy_calls.len(), 1);
+        }
+    }
+
+    #[test]
+    fn glio_surface_bo_owner_unmap_after_local_close_revokes_shared_renderer_once() {
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut table = crate::process_table::ProcessTable::new();
+        let mut host = MockHostIO::new();
+        let parent = table.create_process().unwrap();
+        let (fd, bo) = glio_surface_bo_setup(table.get_mut(parent).unwrap(), &mut host, true);
+        glio_map_test(table.get_mut(parent).unwrap(), &mut host, fd);
+        let proc = table.get(parent).unwrap();
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let address = dri_state(proc, ofd)
+            .unwrap()
+            .gl
+            .as_ref()
+            .unwrap()
+            .cmdbuf
+            .unwrap()
+            .addr;
+        glio_surface_bo_close_handle(table.get_mut(parent).unwrap(), &mut host, fd, 1);
+        let child = table.fork_process_for_caller(parent, parent).unwrap();
+        sys_close(table.get_mut(parent).unwrap(), &mut host, fd).unwrap();
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+        sys_munmap(
+            table.get_mut(parent).unwrap(),
+            &mut host,
+            address + 0x10000,
+            0x10000,
+        )
+        .unwrap();
+        assert_eq!(glio_surface_bo_count(bo), None);
+        assert_eq!(host.gl_unbind_calls, [parent as i32]);
+        assert_eq!(host.gl_surface_release_events.len(), 2);
+        assert_eq!(host.gl_surface_release_events[0].0, 1);
+        assert_eq!(host.gl_surface_release_events[1], (2, bo));
+        commit_exec_state(table.get_mut(parent).unwrap(), &mut host, 0).unwrap();
+        sys_close(table.get_mut(child).unwrap(), &mut host, fd).unwrap();
+        assert_eq!(host.gl_surface_release_events.len(), 2);
+    }
+
+    #[test]
+    fn glio_surface_bo_reference_overflow_leaves_surface_and_input_unpublished() {
+        use wasm_posix_shared::gl;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+        let bo = crate::dri::with_registry(|r| {
+            let b = r.try_alloc(64, 32, 32).unwrap();
+            b.refcount = u32::MAX;
+            b.id
+        });
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        dri_state_mut(&mut proc, ofd).unwrap().handles.insert(1, bo);
+        let mut bytes = [0u8; 32];
+        for (word, value) in
+            bytes
+                .chunks_exact_mut(4)
+                .zip([gl::WPK_SURFACE_DEFAULT, 64, 32, 1, 1, 0, 0, 0])
+        {
+            word.copy_from_slice(&value.to_le_bytes());
+        }
+        let input = bytes;
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                gl::GLIO_CREATE_SURFACE,
+                &mut bytes
+            ),
+            Err(Errno::ENOMEM)
+        );
+        assert_eq!(bytes, input);
+        assert!(host.gl_create_surface_calls.is_empty());
+        assert_eq!(
+            dri_state(&proc, ofd)
+                .unwrap()
+                .gl
+                .as_ref()
+                .unwrap()
+                .surface_id,
+            None
+        );
+        assert_eq!(glio_surface_bo_count(bo), Some(u32::MAX));
     }
 
     #[test]

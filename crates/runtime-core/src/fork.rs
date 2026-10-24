@@ -831,6 +831,7 @@ fn read_dri_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::DriFdState, Errno
         handles,
         next_handle,
         gl: None,
+        gl_resources: crate::ofd::SharedGlResources::default(),
     })
 }
 

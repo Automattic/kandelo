@@ -81,12 +81,12 @@ reproduction and correct observable failure; none is inferred from a stub.
 | B03 | Surface ring lock/release/destroy ownership | Main two-BO ring; audit lock/destroy/outstanding buffer lifetime | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks | partial |
 | K01 | Single display resources and consistent object IDs | Integrated dynamic mode catalog, properties and device-wide IDs; broader device/host validation pending | kernel dri/kms, host mode metadata | Rust ioctl and Node mode tests; preserve preferred/catalog semantics | partial |
 | K02 | Probe all nested outputs before writing | Property, enum and expanded connector outputs now preprobe all destinations; focused Rust regressions pass | syscall nested-output helpers | Valid first/invalid later buffers, unchanged sentinels and top-level bytes | open |
-| K03 | Shared OFD GEM/FB authority, PRIME and final references | Main documents forked KMS gaps; cage shares FB table | OFD, process/fork/spawn/exec/close, BO registry | Rust + real Node lifecycle/dup/fork/spawn tests | open |
+| K03 | Shared OFD GEM/FB authority, PRIME and final references | Shared KMS FBs and inherited graphics cleanup/BO holds are implemented; general forked GEM handle-map sharing and full guest validation remain open | OFD, process/fork/spawn/exec/close, BO registry | Rust + real Node lifecycle/dup/fork/spawn tests | open |
 | K04 | Legacy modeset/flip/vblank/master handoff | Main display owner and cleanup; cage changes automatic master and CLOSEFB | KMS, host scanout | Pending flip drop/exit/crash/master replacement, no stale event/scanout | partial |
 | K05 | GPU scanout, CPU fallback and context loss | Main has GPU producer target; cage adds scanout blit | host GPU registry/present target/KMS pump | Render imports to scanout; orientation/pixels three engines | open |
 | H01 | Command framing, complete validation and bounded results | Full structural prevalidation now protects batches; host source regressions pass | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
-| H03 | Process/worker/machine cleanup and resource retirement | Main authoritative final BO destruction; preserve its recent memory and exec fixes | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
+| H03 | Process/worker/machine cleanup and resource retirement | Canonical surface BO holds and image-owned renderer cleanup now survive descriptor inheritance/local close; focused native lifecycle checks pass. Combined guest/memory-cycle validation remains pending | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
 | A01 | ABI and generated declarations match combined implementation | Main heap-safepoint ABI 52 and graphics session/thread-current/display-authority changes are combined under ABI 56; generated outputs and resolver verified, full artifacts pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
 | P01 | Real upstream compositor integration | wlroots/cage/sway recipes and consumers integrated; combined artifacts and compositor validation pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
 
@@ -1752,3 +1752,68 @@ Main was fetched and remains `f3cb7041f6`, already integrated. Normal SDK,
 program, package and image rebuilds and guest CTS, cage/sway, full
 browser-memory and POSIX/conformance gates remain required and deferred until the
 combined implementation is ready. Draft PR #1574 tracks this progress.
+
+
+## Kernel surface BO ownership and inherited cleanup (2026-10-24)
+
+A surface now owns a kernel BO reference independently of its GEM handle.
+Closing the last handle preserves CPU or GPU target storage until surface
+retirement. An update retains its candidate before entering the backend,
+transfers ownership only on acknowledgement, and releases only the
+candidate on rejection. Same-target updates keep one reference. A pending
+candidate remains in canonical cleanup state if transport terminates
+indeterminately; full context-loss/error propagation remains open.
+
+Cleanup identity and active/pending surface holds belong to a shared lease
+on the inherited open description. Fork relinks that lease without copying
+command mappings or current-thread authority. Foreign GL initialization is
+rejected. Child close, exec, forced removal, spawn close-on-exec and failed
+spawn cannot revoke the parent's renderer. Final description close retires
+the native owner and backing once.
+
+Owner-image cleanup also retains weak reachability to its leases. Exec,
+exit, forced removal and command-buffer unmap revoke the old renderer even
+when the owner has closed every local descriptor and a child retains the
+open description. Weak references do not prolong storage lifetime. Native
+unbind or surface destruction is ordered before host BO destruction;
+subsequent child close does not repeat either effect. This fixes one
+inherited graphics resource family; general GEM handle-map sharing is
+still open under K03.
+
+Evidence includes actual kernel BO registry counts, real process-table
+fork/spawn/removal and ordered host effects through the native device
+double. These are kernel lifecycle assertions, not rendered guest proof.
+Ten new regressions fail against unchanged production at `51a3cce50a`:
+`.context/graphics-surface-bo-baseline-rust.log`. Additional owner-close
+cases first reproduced missed exec/exit/removal cleanup and command-memory
+unmap in `.context/graphics-surface-bo-closed-owner-baseline.log` and
+`.context/graphics-surface-bo-closed-owner-unmap-baseline.log`.
+
+| Focused check | Result | Evidence |
+|---|---|---|
+| GLIO surface/session/native lifecycle | 34 passed, including 14 added cases | `.context/graphics-surface-bo-related-rust.log` |
+| Related runtime-core selections | 4 GL lifecycle, 50 DRI, 48 fork-module, 56 process-table, 22 OFD-module and 42 spawn-filter cases passed; overlapping scopes | `.context/graphics-surface-bo-related-rust.log` |
+| Shared GL layouts/operations/query boundary | 5 passed | `.context/graphics-surface-bo-shared-gl-related.log` |
+| Shared ioctl contracts | 12 passed | `.context/graphics-surface-bo-related-rust.log` |
+| ABI source/snapshot consistency | Passed; global ABI 56 and operation version 5 unchanged | `.context/graphics-surface-bo-abi.log` |
+
+The initial shared-GL filter selected zero cases. The corrected `gl_tests`
+selection passed four module cases; `gl_` adds the query wire boundary for
+the five-case result above. Rust formatting was applied
+to changed helpers, graphics ioctl arms and new tests; the complete related
+selection passed afterward. ABI checking compiles the kernel for export
+inspection, not the normal combined SDK/program/package/image closure.
+No public wire, host imports, fork serialization or shared-memory ceilings
+changed. Existing valid ABI 56 programs keep their layouts and protocol.
+
+This closes kernel-held surface BO ownership in the present one-surface
+session model. Global surface IDs, creation acknowledgements, public
+independent draw/read routing, same-generation binding authority, multiple
+public contexts/share groups and the remaining ledger inventory stay open.
+The next incompatible surface wire requires a fresh ABI after checking main.
+Host and C production sources did not change in this batch; the preceding
+370 host, 99 rendered browser and 67 native C results remain historical
+source evidence. Full guest CTS, compositor consumers, browser-memory and
+POSIX/conformance suites and normal product rebuilds remain required and
+deferred until the combined implementation is ready. Draft PR #1574
+continues to track the active goal.

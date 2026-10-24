@@ -3837,8 +3837,22 @@ allocates a complete replacement before changing the surface or any of its
 selectors. Failed allocation preserves the previous target and pixels;
 successful replacement preserves user FBOs and updates selecting contexts.
 These native selectors have source tests; public kernel/C cross-session
-surface routing, generation validation and BO reference retention still
-need the complete surface protocol.
+surface routing and generation validation still need the complete surface
+protocol. Kernel surfaces now hold their target BO independently of GEM
+handles. An acknowledged update transfers that hold only after acceptance;
+rejection releases its candidate and preserves the previous hold. Native
+surface destruction/unbind precedes the final host BO destruction effect.
+
+Graphics cleanup identity and surface BO holds are shared across inherited
+open descriptions; command mappings and current-thread authority remain
+local to the creating image. Closing or execing a child cannot retire the
+parent's renderer. Final description close releases it once. The creating
+image also keeps weak cleanup references, so exec, exit, forced removal or
+command-memory unmap revokes its native binding even after its last local
+fd closes while a child retains the description. Weak references do not
+extend description or storage lifetime. They carry mapping bounds for
+revocation, never submission authority in the child. General forked GEM
+handle-map sharing remains an open part of the full OFD model.
 The multiplexer restores masks, stencil operations, clear values, dither,
 constant vertex attributes, independent 2D/cube texture bindings and pixel
 storage state when switching guest contexts. Synchronous native-state queries

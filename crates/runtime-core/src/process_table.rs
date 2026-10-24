@@ -613,11 +613,16 @@ impl ProcessTable {
         let mut host_net_closes: Vec<i32> = Vec::new();
         // A trapped process or failed launch may never execute close().
         // Retire the same kernel references as close, before discarding OFDs.
-        let mut dri_effects = Vec::new();
+        let mut dri_effects = crate::syscalls::collect_process_gl_image_release_effects(&mut proc);
         let dri_ofds: Vec<_> = proc.ofd_table.iter()
             .filter_map(|(idx, ofd)| ofd.dri_state.as_ref().map(|_| idx)).collect();
         for idx in dri_ofds {
-            let state = proc.ofd_table.get_mut(idx).unwrap().dri_state.take();
+            let mut state = proc.ofd_table.get_mut(idx).unwrap().dri_state.take();
+            if let Some(state) = state.as_deref_mut() {
+                dri_effects.extend(crate::syscalls::collect_owned_gl_image_release_effects(
+                    pid as i32, state,
+                ));
+            }
             dri_effects.extend(crate::syscalls::collect_dri_release_effects(pid as i32, idx, state));
         }
 

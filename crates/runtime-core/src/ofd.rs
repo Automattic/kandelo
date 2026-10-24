@@ -2,7 +2,7 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
-use alloc::rc::Rc;
+use alloc::rc::{Rc, Weak};
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell, UnsafeCell};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -248,6 +248,58 @@ const _: () = assert!(
         && crate::sysfs::SYSFS_DIR_HANDLE != crate::rootfs::ROOTFS_DIR_SENTINEL
 );
 
+/// Cleanup authority and storage are shared by inherited open descriptions;
+/// command mappings and current-thread state remain address-space local.
+#[derive(Clone, Copy, Debug)]
+pub struct GlResourceOwner {
+    pub native_live: bool,
+    /// Bounds only, for revocation after the owner closes its descriptor.
+    /// Children never receive command submission authority through this lease.
+    pub cmdbuf_range: Option<(usize, usize)>,
+    pub pid: i32,
+    pub session_id: u32,
+    pub role: u32,
+}
+
+#[derive(Debug, Default)]
+pub struct GlResources {
+    pub owner: Option<GlResourceOwner>,
+    pub surface_bo: Option<crate::dri::BoId>,
+    /// A backend update has not yet acknowledged replacing surface_bo.
+    /// Keep the candidate owned here if host transport fails indeterminately.
+    pub pending_surface_bo: Option<crate::dri::BoId>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SharedGlResources(Rc<RefCell<GlResources>>);
+impl SharedGlResources {
+    pub fn borrow(&self) -> core::cell::Ref<'_, GlResources> {
+        self.0.borrow()
+    }
+    pub fn borrow_mut(&self) -> core::cell::RefMut<'_, GlResources> {
+        self.0.borrow_mut()
+    }
+    pub fn downgrade(&self) -> WeakGlResources {
+        WeakGlResources(Rc::downgrade(&self.0))
+    }
+    pub fn into_last(self) -> Option<GlResources> {
+        Rc::try_unwrap(self.0).ok().map(RefCell::into_inner)
+    }
+}
+
+/// Owner-image teardown can find inherited leases after its last local close.
+/// A weak reference never extends the open description or backing lifetime.
+#[derive(Clone, Debug)]
+pub struct WeakGlResources(Weak<RefCell<GlResources>>);
+impl WeakGlResources {
+    pub fn upgrade(&self) -> Option<SharedGlResources> {
+        self.0.upgrade().map(SharedGlResources)
+    }
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.0, &other.0)
+    }
+}
+
 /// Per-fd state for `/dev/dri/renderD128` opens.
 ///
 /// Multiple fds pointing at the same OFD (`dup`, fork-inherit) share
@@ -264,6 +316,7 @@ pub struct DriFdState {
     /// until `GLIO_INIT` succeeds; `Some` until `GLIO_TERMINATE` /
     /// last close / exec.
     pub gl: Option<GlState>,
+    pub gl_resources: SharedGlResources,
 }
 
 impl Default for DriFdState {
@@ -272,6 +325,7 @@ impl Default for DriFdState {
             handles: BTreeMap::new(),
             next_handle: 1,
             gl: None,
+            gl_resources: SharedGlResources::default(),
         }
     }
 }
@@ -1006,6 +1060,9 @@ impl OfdTable {
                 (ofd.input_state.as_deref_mut(), source_ofd.input_state.as_deref())
             {
                 child_input.ring = source_input.ring.clone();
+            }
+            if let (Some(child_dri), Some(source_dri)) = (ofd.dri_mut(), source_ofd.dri()) {
+                child_dri.gl_resources = source_dri.gl_resources.clone();
             }
             if let (Some(child_kms), Some(source_kms)) = (ofd.kms_mut(), source_ofd.kms()) {
                 child_kms.fbs = source_kms.fbs.clone();

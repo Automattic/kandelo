@@ -1188,6 +1188,9 @@ pub struct Process {
     /// memory region with the bo currently bound there so `sys_munmap`
     /// can issue the matching [`HostIO::gbm_bo_unbind`].
     pub dri_bindings: Vec<DriBoBinding>,
+    /// Renderer leases created by this image, including descriptions now held
+    /// only by another process. Weak references do not keep resources alive.
+    pub(crate) gl_resource_owners: Vec<crate::ofd::WeakGlResources>,
     /// SysV shared-memory attachments keyed by the process virtual address
     /// returned from `shmat`.
     pub shm_mappings: Vec<ShmMapping>,
@@ -1463,6 +1466,7 @@ impl Process {
             has_exec: false,
             fb_binding: None,
             dri_bindings: Vec::new(),
+            gl_resource_owners: Vec::new(),
             shm_mappings: Vec::new(),
             fork_count: 0,
         }
