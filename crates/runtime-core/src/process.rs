@@ -377,8 +377,6 @@ pub trait HostIO {
     fn host_network_interface(&mut self) -> Option<crate::netif::InterfaceConfig> {
         None
     }
-    /// Futex wake: wake up to `count` waiters on addr. Returns number woken.
-    fn host_futex_wake(&mut self, addr: usize, count: u32) -> Result<i32, Errno>;
     /// Notify the host that process `pid` has mapped its `/dev/fb0`
     /// framebuffer at `[addr, addr+len)` within its wasm `Memory`. The host
     /// should mirror that byte range to whatever display surface it owns.
@@ -1633,7 +1631,7 @@ impl Process {
         );
         crate::wakeup::push(
             self.pid,
-            wasm_posix_shared::wait::WAKE_PROCESS_STOPPED as u8,
+            wasm_posix_shared::wait::WAKE_PROCESS_STOPPED,
         );
         true
     }
@@ -1653,7 +1651,7 @@ impl Process {
         );
         crate::wakeup::push(
             self.pid,
-            wasm_posix_shared::wait::WAKE_PROCESS_CONTINUED as u8,
+            wasm_posix_shared::wait::WAKE_PROCESS_CONTINUED,
         );
         true
     }
@@ -1665,6 +1663,8 @@ impl Process {
         }
         let status = status & 0xff;
         self.state = ProcessState::Exited;
+        // The image is gone; no parked thread of it may ever be completed.
+        crate::wait_park::retire_process(self.pid);
         self.exit_status = status;
         self.exit_signal = 0;
         self.set_wait_event(
@@ -1684,6 +1684,7 @@ impl Process {
         }
         let signum = signum & 0x7f;
         self.state = ProcessState::Exited;
+        crate::wait_park::retire_process(self.pid);
         self.exit_status = 0;
         self.exit_signal = signum;
         self.set_wait_event(
@@ -1709,6 +1710,11 @@ impl Process {
         if signum == 0 || signum >= NSIG {
             return;
         }
+        // Every generation passes through here, so this is the one place a
+        // kernel-owned park learns that a signal may now target it. The
+        // decision is made later, by `wait_park::Parks::sweep_signals`, once
+        // the generating syscall has finished and the target is final.
+        crate::wait_park::note_signal_generated();
         if signum == SIGCONT {
             for stop in [SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU] {
                 self.clear_signal_everywhere(stop);
@@ -2797,9 +2803,6 @@ pub mod test_host {
         fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::ENOENT)
         }
-        fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
-            Ok(0)
-        }
         fn bind_framebuffer(
             &mut self,
             _p: i32,
@@ -2968,9 +2971,6 @@ pub mod test_host {
         }
         fn host_getaddrinfo(&mut self, n: &[u8], r: &mut [u8]) -> Result<usize, Errno> {
             NoopHost.host_getaddrinfo(n, r)
-        }
-        fn host_futex_wake(&mut self, a: usize, c: u32) -> Result<i32, Errno> {
-            NoopHost.host_futex_wake(a, c)
         }
         fn bind_framebuffer(&mut self, p: i32, a: usize, l: usize, w: u32, h: u32, s: u32, f: u32) {
             NoopHost.bind_framebuffer(p, a, l, w, h, s, f)

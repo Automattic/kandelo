@@ -55,7 +55,6 @@ export type {
   ExecRequestMessage,
   ExecReplyMessage,
   ExecCompleteMessage,
-  AlarmSetMessage,
   CentralizedWorkerInitMessage,
   CentralizedThreadInitMessage,
   ThreadExitMessage,

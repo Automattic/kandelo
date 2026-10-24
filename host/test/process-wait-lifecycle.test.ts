@@ -48,6 +48,8 @@ import {
   WAIT_WSTOPPED,
   WAKE_PROCESS_CONTINUED,
   WAKE_PROCESS_STOPPED,
+  WAKEUP_EVENT_FIELDS,
+  WAKEUP_EVENT_RECORD_BYTES,
 } from "../src/generated/abi";
 import {
   createCentralizedKernelWorkerTestDouble,
@@ -1534,7 +1536,6 @@ describe("Rust-owned process wait lifecycle", () => {
     }]]);
     worker.channelTids = new Map([["7:256", 99]]);
     worker.pendingCancels = new Set();
-    worker.pendingFutexWaits = new Map();
     worker.pendingPollRetries = new Map();
     worker.pendingSelectRetries = new Map();
     worker.pendingPipeReaders = new Map();
@@ -1735,70 +1736,9 @@ describe("Rust-owned process wait lifecycle", () => {
     },
   );
 
-  it("retires an interrupted engine futex waiter before a later wake quota", async () => {
-    const memory = createSharedMemory();
-    const first = createChannel(7, memory, 0);
-    const second = createChannel(7, memory, 256);
-    const waker = createChannel(7, memory, 512);
-    const futexPtr = 4096;
-    new Int32Array(memory.buffer)[futexPtr >>> 2] = 0;
-    const worker = createWorkerHarness({});
-    worker.processes = new Map([[7, {
-      channels: [first, second, waker],
-      memory,
-    }]]);
-    worker.pendingFutexWaits = new Map();
-    observeRelisten(worker);
-    markPending(first);
-    markPending(second);
-
-    dispatchLifecycleSyscall(
-      worker,
-      first,
-      ABI_SYSCALLS.Futex,
-      [futexPtr, 0, 0, 0, 0, 0],
-    );
-    dispatchLifecycleSyscall(
-      worker,
-      second,
-      ABI_SYSCALLS.Futex,
-      [futexPtr, 0, 0, 0, 0, 0],
-    );
-    expect(worker.pendingFutexWaits.size).toBe(2);
-
-    worker.pendingFutexWaits.get(first).interrupt(-4, 4);
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-
-    expect(worker.pendingFutexWaits.size).toBe(0);
-    expect(readCompletion(first)).toMatchObject({ retVal: -4, errVal: 4 });
-    expect(readCompletion(second)).toMatchObject({ retVal: 0, errVal: 0 });
-
-    markPending(second);
-    dispatchLifecycleSyscall(
-      worker,
-      second,
-      ABI_SYSCALLS.Futex,
-      [futexPtr, 0, 0, 0, 0, 0],
-    );
-    expect(worker.pendingFutexWaits.size).toBe(1);
-    markPending(waker);
-    dispatchLifecycleSyscall(
-      worker,
-      waker,
-      ABI_SYSCALLS.Futex,
-      [futexPtr, 1, 1, 0, 0, 0],
-    );
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-
-    expect(readCompletion(waker)).toMatchObject({ retVal: 1, errVal: 0 });
-    expect(readCompletion(second)).toMatchObject({ retVal: 0, errVal: 0 });
-    expect(worker.pendingFutexWaits.size).toBe(0);
-  });
-
-  it("retires futex and cancel state with an exact thread channel", () => {
+  it("retires cancel state with an exact thread channel", () => {
     const memory = createSharedMemory();
     const channel = createChannel(7, memory, 256);
-    const retire = vi.fn();
     const worker = createWorkerHarness({});
     worker.processes = new Map([[7, { channels: [channel], memory }]]);
     worker.activeChannels = [channel];
@@ -1809,10 +1749,6 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.pendingCancels = new Set([channel]);
     worker.waitingForChild = [];
     worker.pendingSleeps = new Map();
-    worker.pendingFutexWaits = new Map([[channel, {
-      futexIndex: 1024,
-      retire,
-    }]]);
     worker.pendingPollRetries = new Map();
     worker.pendingSelectRetries = new Map();
     worker.pendingPipeReaders = new Map();
@@ -1823,8 +1759,6 @@ describe("Rust-owned process wait lifecycle", () => {
 
     worker.removeChannel(7, 256);
 
-    expect(retire).toHaveBeenCalledOnce();
-    expect(worker.pendingFutexWaits.size).toBe(0);
     expect(worker.pendingCancels.size).toBe(0);
     expect(worker.processes.get(7).channels).toEqual([]);
     expect(worker.activeChannels).toEqual([]);
@@ -2002,7 +1936,6 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.deferredStoppedChannels = new Map();
     worker.deferredProcessWorkerStarts = new Map();
     worker.pendingSleeps = new Map();
-    worker.pendingFutexWaits = new Map();
     worker.pendingPollRetries = new Map();
     worker.pendingSelectRetries = new Map();
     worker.pendingPipeReaders = new Map();
@@ -2082,7 +2015,6 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.deferredStoppedChannels = new Map();
     worker.deferredProcessWorkerStarts = new Map();
     worker.pendingSleeps = new Map();
-    worker.pendingFutexWaits = new Map();
     worker.pendingPollRetries = new Map();
     worker.pendingSelectRetries = new Map();
     worker.pendingPipeReaders = new Map();
@@ -2736,12 +2668,10 @@ describe("Rust-owned process wait lifecycle", () => {
     const kernelMemory = createSharedMemory();
     const exitSignals = new Map([[42, 0], [43, 15]]);
     const handleChannel = successfulKernelHandle(kernelMemory);
-    const pickSignalTarget = vi.fn(() => 0);
     const onExit = vi.fn();
     const worker = createWorkerHarness({
       kernel_handle_channel: handleChannel,
       kernel_get_process_exit_signal: vi.fn((pid: number) => exitSignals.get(pid) ?? -1),
-      kernel_pick_signal_target_tid: pickSignalTarget,
     }, 4, kernelMemory);
     const normalMemory = createSharedMemory();
     const signaledMemory = createSharedMemory();
@@ -2765,7 +2695,6 @@ describe("Rust-owned process wait lifecycle", () => {
 
     expect(worker.hostReaped.has(42)).toBe(false);
     expect(worker.hostReaped.has(43)).toBe(true);
-    expect(pickSignalTarget).toHaveBeenCalledWith(43, SIGTERM);
     expect(onExit).toHaveBeenCalledOnce();
     expect(onExit).toHaveBeenCalledWith(43, 128 + SIGTERM);
   });
@@ -2814,7 +2743,7 @@ describe("Rust-owned process wait lifecycle", () => {
     );
   });
 
-  it("thread exit uses Rust-owned ctid metadata for clear-tid wakeup", () => {
+  it("thread exit asks the kernel to perform the clear-tid wakeup", () => {
     const memory = createSharedMemory();
     const ctidPtr = 2048;
     new DataView(memory.buffer).setInt32(ctidPtr, 123, true);
@@ -2838,8 +2767,11 @@ describe("Rust-owned process wait lifecycle", () => {
     worker.threadForkContexts = new Map([["10:1024", { fnPtr: 1, argPtr: 2 }]]);
     worker.finalizeThreadExit(10, 77, threadChannel.channelOffset);
 
-    expect(kernelThreadExit).toHaveBeenCalledWith(10, 77);
-    expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(0);
+    // `1`: this thread really ran, so the kernel stores 0 at the clear-TID
+    // word and wakes a joiner parked in its futex queue. The host writes
+    // nothing itself; this mocked kernel does not store either.
+    expect(kernelThreadExit).toHaveBeenCalledWith(10, 77, 1);
+    expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(123);
     expect(worker.processes.get(10).channels).toEqual([mainChannel]);
     expect(worker.activeChannels).toEqual([mainChannel]);
     expect(worker.channelTids.has("10:1024")).toBe(false);
@@ -3178,10 +3110,10 @@ function writeWakeEvent(
   wakeIdx: number,
   wakeType: number,
 ): void {
-  const offset = ptr + index * 5;
+  const offset = ptr + index * WAKEUP_EVENT_RECORD_BYTES;
   const view = new DataView(memory.buffer);
-  view.setUint32(offset, wakeIdx, true);
-  view.setUint8(offset + 4, wakeType);
+  view.setUint32(offset + WAKEUP_EVENT_FIELDS.idx.offset, wakeIdx, true);
+  view.setUint16(offset + WAKEUP_EVENT_FIELDS.wakeType.offset, wakeType, true);
 }
 
 function markPending(channel: any): void {

@@ -44,6 +44,11 @@ import {
   WASM_POLL_FD_EVENTS_OFFSET,
   WASM_POLL_FD_FD_OFFSET,
   WASM_POLL_FD_REVENTS_OFFSET,
+  KERNEL_WAIT_PARKED_ERRNO,
+  WAIT_COMPLETION_FIELDS,
+  WAIT_COMPLETION_FLAGS,
+  WAKEUP_EVENT_FIELDS,
+  WAKEUP_EVENT_TYPES,
 } from "../src/generated/abi";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
@@ -208,6 +213,11 @@ function createRetryHarness(
     kernel_pick_signal_target_tid: vi.fn(() => pid),
     kernel_set_current_tid: () => 0,
     kernel_thread_has_deliverable: vi.fn(() => 1),
+    // Kernel-owned waits (wait_park): no park decides anything unless a test
+    // says so.
+    kernel_drain_wait_completions: vi.fn(() => 0),
+    kernel_drain_wakeup_events: vi.fn(() => 0),
+    kernel_wait_next_timeout_ns: vi.fn(() => -1n),
   };
   const onKernelFatal = vi.fn();
   const worker = createCentralizedKernelWorkerTestDouble({
@@ -811,40 +821,6 @@ afterEach(() => {
 });
 
 describe("blocking retry request snapshots", () => {
-  it.each(WIDTHS)(
-    "%s interprets futex bitset deadlines in the selected guest clock",
-    async (_name, pointerWidth) => {
-      for (const realtime of [false, true]) {
-        const harness = createRetryHarness(pointerWidth);
-        const now = { sec: realtime ? 1_800_000_000 : 123_456, nsec: 500_000_000 };
-        harness.worker.io.clockGettime = vi.fn(() => now);
-        const remaining = vi.fn((_channel, ms) => Date.now() + ms);
-        harness.worker.testAuthority.configureScratchBoundaryHooksForTest({
-          getReadinessDeadline: remaining,
-        });
-        const view = new DataView(harness.processMemory.buffer);
-        view.setBigInt64(0x1800, BigInt(now.sec), true);
-        view.setBigInt64(0x1808, BigInt(now.nsec + 100_000), true);
-        writeRequest(harness, ABI_SYSCALLS.Futex, [
-          0x1000n, BigInt(9 | 128 | (realtime ? 256 : 0)), 0n, 0x1800n, 0n, 0xffffffffn,
-        ]);
-        harness.worker.handleSyscall(harness.channel);
-        expect(harness.worker.io.clockGettime).toHaveBeenCalledWith(realtime ? 0 : 1);
-        expect(remaining.mock.calls[0]?.[1]).toBe(1);
-        harness.worker.pendingFutexWaits.get(harness.channel)?.retire();
-        // An expired absolute deadline must time out immediately.
-        view.setBigInt64(0x1800, BigInt(now.sec - 1), true);
-        writeRequest(harness, ABI_SYSCALLS.Futex, [
-          0x1000n, BigInt(9 | (realtime ? 256 : 0)), 0n, 0x1800n, 0n, 0xffffffffn,
-        ]);
-        harness.worker.handleSyscall(harness.channel);
-        expect(requestResult(harness)).toEqual({
-          status: CHANNEL_STATUS_COMPLETE, returnValue: -110, errno: 110,
-        });
-      }
-    },
-  );
-
   it.each(WIDTHS)(
     "%s retains a scalar write's fd, source range, length, and payload",
     async (_name, pointerWidth) => {
@@ -4025,29 +4001,19 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
     "treats -ESRCH from the %s as a vanished target, not corruption",
     async (_description, configure) => {
       const harness = createRetryHarness(4);
-      const futexPointer = 0x1000;
-      new Int32Array(
-        harness.processMemory.buffer,
-      )[futexPointer >>> 2] = 0;
-      writeRequest(harness, ABI_SYSCALLS.Futex, [
-        BigInt(futexPointer),
-        0n,
-        0n,
-        0n,
-        0n,
-        0n,
-      ]);
+      // A host-owned blocking retry (futex waits are kernel parks now, so
+      // the host no longer holds one to interrupt).
+      writeRequest(harness, ABI_SYSCALLS.Read, [7n, 0x1000n, 3n]);
       harness.kernelExports.kernel_handle_channel = vi.fn(
         (rawPointer: number | bigint) => {
-          publishKernelResult(kernelView(harness, rawPointer), 0, 0);
+          publishKernelResult(kernelView(harness, rawPointer), -1, EAGAIN);
           return 0;
         },
       );
-      harness.kernelExports.kernel_dequeue_signal = vi.fn(() => 0);
       harness.worker.handleSyscall(harness.channel);
-      expect(
-        harness.worker.pendingFutexWaits.has(harness.channel),
-      ).toBe(true);
+      expect(requestStatus(harness)).toBe(CHANNEL_STATUS_PENDING);
+      // Count only the dequeues the signal route makes.
+      harness.kernelExports.kernel_dequeue_signal = vi.fn(() => 0);
       configure(harness);
 
       harness.worker.testAuthority.sendSignalForTest(
@@ -4061,31 +4027,10 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         harness.kernelExports.kernel_dequeue_signal,
       ).not.toHaveBeenCalled();
       expect(requestStatus(harness)).toBe(CHANNEL_STATUS_PENDING);
-      expect(
-        harness.worker.pendingFutexWaits.has(harness.channel),
-      ).toBe(true);
     },
   );
 
   it.each([
-    [
-      "SYS_KILL missing signal-target selector",
-      ABI_SYSCALLS.Kill,
-      (harness: RetryHarness) => {
-        harness.kernelExports.kernel_pick_signal_target_tid = undefined;
-      },
-      "kernel export kernel_pick_signal_target_tid failed",
-    ],
-    [
-      "SYS_KILL negative signal-target selector",
-      ABI_SYSCALLS.Kill,
-      (harness: RetryHarness) => {
-        harness.kernelExports.kernel_pick_signal_target_tid = vi.fn(
-          () => -1,
-        );
-      },
-      "kernel returned invalid signal target TID -1",
-    ],
     [
       "SYS_TKILL missing deliverable-signal query",
       ABI_SYSCALLS.Tkill,
@@ -4127,244 +4072,6 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
 
       expect(harness.onKernelFatal).toHaveBeenCalledOnce();
       expect(requestStatus(harness)).toBe(CHANNEL_STATUS_PENDING);
-    },
-  );
-
-  it.each(WIDTHS)(
-    "%s interrupts only the exact caught-signal futex target",
-    async (_name, pointerWidth) => {
-      const harness = createRetryHarness(pointerWidth, {
-        channelOffsets: [4 * 65_536, 6 * 65_536],
-      });
-      const [mainChannel, threadChannel] = harness.channels;
-      const threadTid = 77;
-      harness.worker.channelTids.set(
-        `${threadChannel.pid}:${threadChannel.channelOffset}`,
-        threadTid,
-      );
-      const mainFutex = 0x1000;
-      const threadFutex = 0x1100;
-      new Int32Array(harness.processMemory.buffer)[mainFutex / 4] = 0;
-      new Int32Array(harness.processMemory.buffer)[threadFutex / 4] = 0;
-      writeRequest(
-        harness,
-        ABI_SYSCALLS.Futex,
-        [BigInt(mainFutex), 0n, 0n, 0n, 0n, 0n],
-        mainChannel,
-      );
-      writeRequest(
-        harness,
-        ABI_SYSCALLS.Futex,
-        [BigInt(threadFutex), 0n, 0n, 0n, 0n, 0n],
-        threadChannel,
-      );
-      harness.kernelExports.kernel_pick_signal_target_tid = vi.fn(
-        () => threadTid,
-      );
-      harness.kernelExports.kernel_thread_has_deliverable = vi.fn(() => 1);
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          publishKernelResult(kernelView(harness, rawPointer), 0, 0);
-          return 0;
-        },
-      );
-      harness.kernelExports.kernel_dequeue_signal = vi.fn(
-        (
-          _pid: number,
-          _tid: number,
-          rawPointer: number | bigint,
-        ) => writeKernelCaughtSignal(harness, rawPointer),
-      );
-
-      harness.worker.handleSyscall(mainChannel);
-      harness.worker.handleSyscall(threadChannel);
-      expect(harness.worker.pendingFutexWaits.has(mainChannel)).toBe(true);
-      expect(harness.worker.pendingFutexWaits.has(threadChannel)).toBe(true);
-
-      harness.worker.testAuthority.sendSignalForTest(
-        harness.channel.pid,
-        SIGUSR1,
-      );
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(requestStatus(harness, mainChannel)).toBe(
-        CHANNEL_STATUS_PENDING,
-      );
-      expect(requestResult(harness, threadChannel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        returnValue: -EINTR,
-        errno: EINTR,
-      });
-      expect(harness.worker.pendingFutexWaits.has(mainChannel)).toBe(true);
-      expect(harness.worker.pendingFutexWaits.has(threadChannel)).toBe(false);
-      expect(
-        harness.kernelExports.kernel_dequeue_signal,
-      ).toHaveBeenCalledWith(
-        harness.channel.pid,
-        threadTid,
-        expect.anything(),
-        expect.any(Number),
-      );
-      const threadView = new DataView(
-        harness.processMemory.buffer,
-        threadChannel.channelOffset,
-      );
-      expect(threadView.getUint32(CH_SIG_SIGNUM, true)).toBe(SIGUSR1);
-      expect(threadView.getUint32(CH_SIG_FLAGS, true)).toBe(SA_RESTART);
-
-      harness.worker.removeChannel(
-        mainChannel.pid,
-        mainChannel.channelOffset,
-      );
-    },
-  );
-
-  it.each([
-    ["wasm32 SYS_TKILL", 4, ABI_SYSCALLS.Tkill],
-    ["wasm64 SYS_TKILL", 8, ABI_SYSCALLS.Tkill],
-    ["wasm32 SYS_KILL", 4, ABI_SYSCALLS.Kill],
-    ["wasm64 SYS_KILL", 8, ABI_SYSCALLS.Kill],
-  ] as const)(
-    "%s interrupts the exact pending futex after successful guest dispatch",
-    async (_name, pointerWidth, signalSyscall) => {
-      const harness = createRetryHarness(pointerWidth, {
-        channelOffsets: [4 * 65_536, 6 * 65_536],
-      });
-      const [senderChannel, targetChannel] = harness.channels;
-      const targetTid = 77;
-      harness.worker.channelTids.set(
-        `${targetChannel.pid}:${targetChannel.channelOffset}`,
-        targetTid,
-      );
-      const futexPointer = 0x1000;
-      new Int32Array(harness.processMemory.buffer)[futexPointer / 4] = 0;
-      writeRequest(
-        harness,
-        ABI_SYSCALLS.Futex,
-        [BigInt(futexPointer), 0n, 0n, 0n, 0n, 0n],
-        targetChannel,
-      );
-      harness.kernelExports.kernel_pick_signal_target_tid = vi.fn(
-        () => targetTid,
-      );
-      harness.kernelExports.kernel_thread_has_deliverable = vi.fn(
-        (_pid: number, tid: number) => tid === targetTid ? 1 : 0,
-      );
-      harness.kernelExports.kernel_dequeue_signal = vi.fn(
-        (
-          _pid: number,
-          tid: number,
-          rawPointer: number | bigint,
-        ) => tid === targetTid
-          ? writeKernelCaughtSignal(harness, rawPointer)
-          : 0,
-      );
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          publishKernelResult(kernelView(harness, rawPointer), 0, 0);
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(targetChannel);
-      expect(harness.worker.pendingFutexWaits.has(targetChannel)).toBe(true);
-      const signalArgs = signalSyscall === ABI_SYSCALLS.Tkill
-        ? [BigInt(targetTid), BigInt(SIGUSR1)]
-        : [BigInt(senderChannel.pid), BigInt(SIGUSR1)];
-      writeRequest(harness, signalSyscall, signalArgs, senderChannel);
-      harness.worker.handleSyscall(senderChannel);
-      // Target publication enters only after the sender's kernel-entry token
-      // is revoked; the signal dequeue itself still happened synchronously
-      // under the authoritative sender transition.
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(requestResult(harness, senderChannel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        returnValue: 0,
-        errno: 0,
-      });
-      expect(
-        harness.kernelExports.kernel_thread_has_deliverable,
-      ).toHaveBeenCalledWith(senderChannel.pid, targetTid);
-      expect(requestResult(harness, targetChannel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        returnValue: -EINTR,
-        errno: EINTR,
-      });
-      expect(harness.worker.pendingFutexWaits.has(targetChannel)).toBe(false);
-      expect(
-        harness.kernelExports.kernel_dequeue_signal,
-      ).toHaveBeenCalledWith(
-        senderChannel.pid,
-        targetTid,
-        expect.anything(),
-        expect.any(Number),
-      );
-      const targetView = new DataView(
-        harness.processMemory.buffer,
-        targetChannel.channelOffset,
-      );
-      expect(targetView.getUint32(CH_SIG_SIGNUM, true)).toBe(SIGUSR1);
-      expect(targetView.getUint32(CH_SIG_FLAGS, true)).toBe(SA_RESTART);
-    },
-  );
-
-  it.each(WIDTHS)(
-    "%s clears effective SA_RESTART when a finite futex wait is interrupted",
-    async (_name, pointerWidth) => {
-      const harness = createRetryHarness(pointerWidth);
-      const futexPointer = 0x1000;
-      const timeoutPointer = 0x1800;
-      new Int32Array(harness.processMemory.buffer)[futexPointer / 4] = 0;
-      const processView = new DataView(harness.processMemory.buffer);
-      processView.setBigInt64(timeoutPointer, 10n, true);
-      processView.setBigInt64(timeoutPointer + 8, 0n, true);
-      writeRequest(harness, ABI_SYSCALLS.Futex, [
-        BigInt(futexPointer),
-        0n,
-        0n,
-        BigInt(timeoutPointer),
-        0n,
-        0n,
-      ]);
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          publishKernelResult(kernelView(harness, rawPointer), 0, 0);
-          return 0;
-        },
-      );
-      harness.kernelExports.kernel_dequeue_signal = vi.fn(
-        (
-          _pid: number,
-          _tid: number,
-          rawPointer: number | bigint,
-        ) => writeKernelCaughtSignal(harness, rawPointer),
-      );
-
-      harness.worker.handleSyscall(harness.channel);
-      expect(
-        harness.worker.pendingFutexWaits.get(harness.channel)?.hasTimeout,
-      ).toBe(true);
-      harness.worker.testAuthority.sendSignalForTest(
-        harness.channel.pid,
-        SIGUSR1,
-      );
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(requestResult(harness)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        returnValue: -EINTR,
-        errno: EINTR,
-      });
-      const channelView = new DataView(
-        harness.processMemory.buffer,
-        harness.channel.channelOffset,
-      );
-      expect(channelView.getUint32(CH_SIG_SIGNUM, true)).toBe(SIGUSR1);
-      expect(channelView.getUint32(CH_SIG_FLAGS, true)).toBe(0);
     },
   );
 
@@ -4636,21 +4343,124 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
           0n,
           0n,
         ]);
+        // The kernel owns the futex wait: it parks the request (generation 9)
+        // and, when the host's exact-task cleanup reaches it, decides EINTR
+        // and queues a completion record the host must publish.
+        const generation = 9;
+        let decided = false;
         harness.kernelExports.kernel_handle_channel = vi.fn(
-          (rawPointer: number | bigint) =>
-            publishRetryOrExactCleanup(harness, rawPointer, 0, 0),
+          (rawPointer: number | bigint) => {
+            const view = kernelView(harness, rawPointer);
+            if (view.getUint32(CH_SYSCALL, true) === ABI_SYSCALLS.Futex) {
+              publishKernelResult(view, generation, KERNEL_WAIT_PARKED_ERRNO);
+              return 0;
+            }
+            decided = true;
+            return publishRetryOrExactCleanup(harness, rawPointer, 0, 0);
+          },
         );
+        harness.kernelExports.kernel_drain_wakeup_events = vi.fn(
+          (rawPointer: number | bigint) => {
+            if (!decided) return 0;
+            const view = kernelView(harness, rawPointer);
+            view.setUint32(WAKEUP_EVENT_FIELDS.idx.offset, 0, true);
+            view.setUint16(
+              WAKEUP_EVENT_FIELDS.wakeType.offset,
+              WAKEUP_EVENT_TYPES.waitComplete,
+              true,
+            );
+            return 1;
+          },
+        );
+        harness.kernelExports.kernel_drain_wait_completions = vi.fn(
+          (rawPointer: number | bigint) => {
+            if (!decided) return 0;
+            decided = false;
+            const view = kernelView(harness, rawPointer);
+            const F = WAIT_COMPLETION_FIELDS;
+            view.setBigUint64(F.generation.offset, BigInt(generation), true);
+            view.setUint32(F.pid.offset, harness.channel.pid, true);
+            view.setUint32(F.tid.offset, harness.channel.pid, true);
+            view.setInt32(F.value.offset, -EINTR, true);
+            view.setUint32(F.flags.offset, WAIT_COMPLETION_FLAGS.cancelled, true);
+            return 1;
+          },
+        );
+        harness.kernelExports.kernel_wait_next_timeout_ns = vi.fn(() => -1n);
 
         harness.worker.handleSyscall(harness.channel);
 
         expectInterrupted(harness, "futex");
-        expect(
-          harness.worker.pendingFutexWaits.has(harness.channel),
-        ).toBe(false);
       }
     },
   );
 
+  it.each(WIDTHS)(
+    "%s publishes a kernel wait decision only into the park it names",
+    async (_name, pointerWidth) => {
+      // Invariant 1 of wait_queue.rs: a completion carries the park
+      // generation, and a record for any other generation -- a park this
+      // channel no longer holds -- must never complete the request.
+      const harness = createRetryHarness(pointerWidth);
+      writeRequest(harness, ABI_SYSCALLS.Futex, [0x1000n, 0n, 0n, 0n, 0n, 0n]);
+      harness.kernelExports.kernel_handle_channel = vi.fn(
+        (rawPointer: number | bigint) => {
+          publishKernelResult(
+            kernelView(harness, rawPointer),
+            9,
+            KERNEL_WAIT_PARKED_ERRNO,
+          );
+          return 0;
+        },
+      );
+      let recordGeneration = 8;
+      const decide = (): void => {
+        harness.kernelExports.kernel_drain_wait_completions = vi.fn(
+          (rawPointer: number | bigint) => {
+            harness.kernelExports.kernel_drain_wait_completions = vi.fn(() => 0);
+            const view = kernelView(harness, rawPointer);
+            const F = WAIT_COMPLETION_FIELDS;
+            view.setBigUint64(F.generation.offset, BigInt(recordGeneration), true);
+            view.setUint32(F.pid.offset, harness.channel.pid, true);
+            view.setUint32(F.tid.offset, harness.channel.pid, true);
+            view.setInt32(F.value.offset, 0, true);
+            view.setUint32(F.flags.offset, 0, true);
+            return 1;
+          },
+        );
+      };
+
+      decide();
+      harness.worker.handleSyscall(harness.channel);
+      expect(requestStatus(harness), "a stale generation").toBe(
+        CHANNEL_STATUS_PENDING,
+      );
+
+      // The kernel announces the real decision on the wake-event stream.
+      recordGeneration = 9;
+      decide();
+      harness.kernelExports.kernel_drain_wakeup_events = vi.fn(
+        (rawPointer: number | bigint) => {
+          harness.kernelExports.kernel_drain_wakeup_events = vi.fn(() => 0);
+          const view = kernelView(harness, rawPointer);
+          view.setUint32(WAKEUP_EVENT_FIELDS.idx.offset, 0, true);
+          view.setUint16(
+            WAKEUP_EVENT_FIELDS.wakeType.offset,
+            WAKEUP_EVENT_TYPES.waitComplete,
+            true,
+          );
+          return 1;
+        },
+      );
+      harness.worker.drainAndProcessWakeupEvents();
+      await Promise.resolve();
+      expect(requestResult(harness), "the parked generation").toEqual({
+        status: CHANNEL_STATUS_COMPLETE,
+        returnValue: 0,
+        errno: 0,
+      });
+    },
+  );
 
   it.each(WIDTHS)(
     "%s preserves disabled sleep and poll registrations while cancellation stays pending",

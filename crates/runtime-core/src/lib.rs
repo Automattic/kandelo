@@ -69,6 +69,7 @@ pub mod tmpfs;
 pub mod transfer;
 pub mod unix_socket;
 pub mod vfsi_container;
+pub mod wait_park;
 pub mod wait_queue;
 pub mod wait_shadow;
 pub mod wakeup;

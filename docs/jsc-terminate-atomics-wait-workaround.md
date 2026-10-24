@@ -167,18 +167,15 @@ boundary.
 
 ## Pending asynchronous futex waits
 
-Waking the guest's syscall channel is only half of futex teardown. The kernel
-worker also owns an `Atomics.waitAsync` on the futex address. Deleting its
-`pendingFutexWaits` entry does not cancel that engine wait: the unresolved
-promise reaction retains the process Memory and can survive termination of
-its owning Worker realm. This exhausts iOS's shared-Wasm reservation pool even
-when OS samples show no leaked guest Worker threads.
-
-Both teardown variants call each selected wait's `retire()` before dropping
-its registration. Retirement wakes the engine waiter and settles its state
-without publishing a guest syscall completion. Per-process teardown preserves
-sibling processes' waits. This is ordinary resource cleanup on every engine,
-not a temporary JavaScriptCore workaround.
+Futex waits used to need the same care: the kernel worker parked each
+waiter with an `Atomics.waitAsync` on the guest's futex word, and that
+engine wait, which has no cancellation API, retained the process Memory
+past its Worker's termination unless teardown explicitly woke it. That
+exhausted iOS's shared-Wasm reservation pool. The futex wait queue is
+now kernel state (`runtime_core::wait_park`, ABI 54): the host holds no
+engine wait on a futex word, so nothing is left to retire. A parked
+futex waiter blocks only on its syscall channel, whose listener teardown
+releases like any other channel's.
 
 ## Removal
 

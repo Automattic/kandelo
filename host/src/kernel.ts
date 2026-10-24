@@ -178,7 +178,6 @@ const intrinsicDataViewSetUint16 = DataView.prototype.setUint16;
 const intrinsicDataViewSetUint32 = DataView.prototype.setUint32;
 const intrinsicAtomicsCompareExchange = Atomics.compareExchange;
 const intrinsicAtomicsLoad = Atomics.load;
-const intrinsicAtomicsNotify = Atomics.notify;
 const intrinsicAtomicsStore = Atomics.store;
 const intrinsicAtomicsWait = Atomics.wait;
 const intrinsicReflectConstruct = Reflect.construct;
@@ -2382,9 +2381,6 @@ export class WasmPosixKernel {
           } catch {
             return -14; // EFAULT
           }
-        },
-        host_futex_wake: (addr: KernelPointer, count: number): number => {
-          return this.#hostFutexWake(addr, count);
         },
         host_is_thread_worker: (): number => {
           return this.isThreadWorker ? 1 : 0;
@@ -5335,34 +5331,6 @@ export class WasmPosixKernel {
     } catch (e: any) {
       if (e?.errno === 11) return -11; // -EAGAIN — kernel-worker retries
       return negErrno(e);
-    }
-  }
-
-  #hostFutexWake(addr: KernelPointer, count: number): number {
-    if (!this.#memory) return 0;
-    let index: number;
-    try {
-      const range = checkedWasmImportMemoryRange(
-        this.#memory,
-        addr,
-        4,
-        this.#kernelPtrWidth,
-        "host_futex_wake word",
-      );
-      if (range.pointer % 4 !== 0) return -22; // EINVAL
-      index = range.pointer / 4;
-    } catch {
-      return -14; // EFAULT
-    }
-    const i32view = new IntrinsicInt32Array(wasmMemoryBuffer(this.#memory));
-    try {
-      return intrinsicApply(
-        intrinsicAtomicsNotify,
-        Atomics,
-        [i32view, index, count],
-      ) as number;
-    } catch {
-      return -22; // EINVAL
     }
   }
 

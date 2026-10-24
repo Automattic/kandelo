@@ -359,9 +359,6 @@ mod tests {
         fn host_getaddrinfo(&mut self, _: &[u8], _: &mut [u8]) -> Result<usize, wasm_posix_shared::Errno> {
             unimplemented!()
         }
-        fn host_futex_wake(&mut self, _: usize, _: u32) -> Result<i32, wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
         fn host_network_interface(&mut self) -> Option<InterfaceConfig> {
             self.local_addr.map(|address| InterfaceConfig { address, netmask: [255, 255, 255, 0] })
         }

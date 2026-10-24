@@ -752,10 +752,15 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#killBlockedProcessForTeardownWithinKernelEntry::kernel-export-direct-use::getExitStatus(pid)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#notifyThreadExitWithinKernelEntry::kernel-export-direct-use::threadExit(pid, tid)",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#notifyThreadExitWithinKernelEntry::kernel-export-direct-use::threadExit(pid, tid, threadRan ? 1 : 0)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#pickKernelSignalTargetTid::kernel-export-direct-use::pickSignalTarget(pid, signum)",
+  ),
+  // Kernel-owned waits (wait_park): no arguments, a relative deadline in
+  // nanoseconds (or -1) out.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#settleKernelWaitsWithinKernelEntry::kernel-export-direct-use::(this.#kernelInstanceForEntry(entry).exports .kernel_wait_next_timeout_ns as () => bigint)()",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#prepareTcpListenerRegistration::kernel-export-direct-use::getAcceptWake?.(pid, fd)",
@@ -1615,11 +1620,7 @@ const auditAllowances: AuditAllowance[] = [
     disposition: "rust-lent",
     why: "The host_network_interface import binds its pointer formal to a fixed eight-byte capacity, and the single write that follows is an eight-byte buffer assembled from the host-owned address and netmask, each checked to be exactly four bytes.",
   },
-  {
-    key: "host/src/kernel.ts::WasmPosixKernel.#hostFutexWake::kernel-view::new IntrinsicInt32Array(wasmMemoryBuffer(this.#memory))",
-    disposition: "kernel-control",
-    why: "The lossless pointer, four-byte current-memory range, and alignment are proved before constructing this one synchronous futex-wake atomic view.",
-  },
+
   {
     key: "host/src/kernel.ts::WasmPosixKernel.#writeKernelBytes::kernel-write::intrinsicApply( intrinsicUint8ArraySet, this.#getMemoryBuffer(), [exactBytes, range.pointer], )",
     disposition: "rust-lent",

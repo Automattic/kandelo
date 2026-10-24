@@ -212,6 +212,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_create_process
     kernel_create_process_with_stdio
     kernel_dequeue_signal
+    kernel_drain_wait_completions
     kernel_epoll_wait_finish
     kernel_epoll_wait_token
     kernel_exchange_activate
@@ -306,6 +307,7 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_transfer_scratch_pointer
     kernel_validate_task
     kernel_wait_child_poll
+    kernel_wait_next_timeout_ns
 )
 
 has_valid_kernel_file() {

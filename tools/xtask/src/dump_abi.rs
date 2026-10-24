@@ -2728,6 +2728,7 @@ fn render_ts_module() -> String {
         ));
     }
     out.push_str("} as const;\n\n");
+    out.push_str(&render_ts_wait_completion_wire());
     out.push_str("export const POLL_EVENTS = {\n");
     for (name, value) in poll_events() {
         out.push_str(&format!("  {}: {},\n", name, value));
@@ -4315,6 +4316,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         process_snapshot_wire(),
     );
     root.insert("wakeup_event_wire".into(), wakeup_event_wire());
+    root.insert("wait_completion_wire".into(), wait_completion_wire());
     root.insert("io_multiplexing".into(), io_multiplexing());
     root.insert("vfs_metadata".into(), vfs_metadata());
     root.insert("spawn_contract".into(), spawn_contract());
@@ -4446,7 +4448,7 @@ struct WakeupEventType {
     bit: u8,
 }
 
-fn wakeup_event_types() -> [WakeupEventType; 7] {
+fn wakeup_event_types() -> [WakeupEventType; 8] {
     use shared::wakeup_event_wire as wire;
 
     [
@@ -4478,6 +4480,10 @@ fn wakeup_event_types() -> [WakeupEventType; 7] {
             name: "advisoryLock",
             bit: wire::TYPE_ADVISORY_LOCK,
         },
+        WakeupEventType {
+            name: "waitComplete",
+            bit: wire::TYPE_WAIT_COMPLETE,
+        },
     ]
 }
 
@@ -4508,6 +4514,96 @@ fn wakeup_event_wire() -> Value {
         "fields": fields,
         "types": types,
     })
+}
+
+fn wait_completion_fields() -> [WakeupEventField; 5] {
+    use shared::wait_completion_wire as wire;
+
+    [
+        WakeupEventField {
+            name: "generation",
+            offset: wire::GENERATION_OFFSET,
+            size: 8,
+            ty: "u64",
+        },
+        WakeupEventField {
+            name: "pid",
+            offset: wire::PID_OFFSET,
+            size: 4,
+            ty: "u32",
+        },
+        WakeupEventField {
+            name: "tid",
+            offset: wire::TID_OFFSET,
+            size: 4,
+            ty: "u32",
+        },
+        WakeupEventField {
+            name: "value",
+            offset: wire::VALUE_OFFSET,
+            size: 4,
+            ty: "i32",
+        },
+        WakeupEventField {
+            name: "flags",
+            offset: wire::FLAGS_OFFSET,
+            size: 4,
+            ty: "u32",
+        },
+    ]
+}
+
+fn wait_completion_wire() -> Value {
+    use shared::wait_completion_wire as wire;
+
+    let fields: Vec<Value> = wait_completion_fields()
+        .iter()
+        .map(|field| {
+            json!({
+                "name": field.name,
+                "offset": field.offset,
+                "size": field.size,
+                "type": field.ty,
+            })
+        })
+        .collect();
+    json!({
+        "record_size": wire::RECORD_BYTES,
+        "parked_errno": wire::PARKED_ERRNO,
+        "fields": fields,
+        "flags": {
+            "suppressRestart": wire::FLAG_SUPPRESS_RESTART,
+            "cancelled": wire::FLAG_CANCELLED,
+        },
+    })
+}
+
+fn render_ts_wait_completion_wire() -> String {
+    use shared::wait_completion_wire as wire;
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "export const WAIT_COMPLETION_RECORD_BYTES = {} as const;\n",
+        wire::RECORD_BYTES
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_WAIT_PARKED_ERRNO = {} as const;\n",
+        wire::PARKED_ERRNO
+    ));
+    out.push_str("export const WAIT_COMPLETION_FIELDS = {\n");
+    for field in wait_completion_fields() {
+        out.push_str(&format!(
+            "  {}: {{ offset: {}, size: {}, type: {:?} }},\n",
+            field.name, field.offset, field.size, field.ty
+        ));
+    }
+    out.push_str("} as const;\n");
+    out.push_str(&format!(
+        "export const WAIT_COMPLETION_FLAGS = {{\n  suppressRestart: {},\n  cancelled: {},\n}} as const;\n\n",
+        wire::FLAG_SUPPRESS_RESTART,
+        wire::FLAG_CANCELLED
+    ));
+    out
 }
 
 fn poll_events() -> [(&'static str, i16); 11] {
@@ -8552,8 +8648,29 @@ mod tests {
                 { "name": "processStopped", "bit": 16 },
                 { "name": "processContinued", "bit": 32 },
                 { "name": "advisoryLock", "bit": 64 },
+                { "name": "waitComplete", "bit": 128 },
             ])
         );
+    }
+
+    #[test]
+    fn generated_wait_completion_wire_is_packed_and_complete() {
+        let wire = wait_completion_wire();
+        assert_eq!(wire["record_size"], json!(24));
+        assert_eq!(wire["parked_errno"], json!(65536));
+        assert_eq!(
+            wire["fields"],
+            json!([
+                { "name": "generation", "offset": 0, "size": 8, "type": "u64" },
+                { "name": "pid", "offset": 8, "size": 4, "type": "u32" },
+                { "name": "tid", "offset": 12, "size": 4, "type": "u32" },
+                { "name": "value", "offset": 16, "size": 4, "type": "i32" },
+                { "name": "flags", "offset": 20, "size": 4, "type": "u32" },
+            ])
+        );
+        let rendered = render_ts_wait_completion_wire();
+        assert!(rendered.contains("export const WAIT_COMPLETION_RECORD_BYTES = 24 as const;"));
+        assert!(rendered.contains("export const KERNEL_WAIT_PARKED_ERRNO = 65536 as const;"));
     }
 
     #[test]

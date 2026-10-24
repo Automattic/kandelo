@@ -200,34 +200,6 @@ function mutableState(harness: EntryHarness) {
 }
 
 describe("teardown and pipe notifications at the kernel entry gate", () => {
-  it.each(["all", "pid"])("%s teardown releases engine futex waiters before dropping their bookkeeping", async mode => {
-    const harness = makeHarness();
-    const state = harness.worker as unknown as {
-      pendingFutexWaits: Map<TestChannel, { retire: () => void }>;
-    };
-    const words = new Int32Array(harness.channel.memory.buffer);
-    const index = words.length - 1;
-    const wait = Atomics.waitAsync(words, index, 0);
-    expect(wait.async).toBe(true);
-    const retire = vi.fn(() => { Atomics.notify(words, index); });
-    const sibling = { ...harness.channel, pid: PID + 1 };
-    const retireSibling = vi.fn();
-    state.pendingFutexWaits.set(harness.channel, { retire });
-    state.pendingFutexWaits.set(sibling, { retire: retireSibling });
-    try {
-      await (mode === "all"
-        ? harness.worker.killAllBlockedForTeardown()
-        : harness.worker.killBlockedProcessForTeardown(PID));
-      expect(retire).toHaveBeenCalledOnce();
-      expect(retireSibling).toHaveBeenCalledTimes(mode === "all" ? 1 : 0);
-      expect(state.pendingFutexWaits.has(harness.channel)).toBe(false);
-      expect(state.pendingFutexWaits.has(sibling)).toBe(mode === "pid");
-      await expect(wait.value).resolves.toBe("ok");
-    } finally {
-      Atomics.notify(words, index);
-    }
-  });
-
   it("defers teardown behind an active export and resolves after its wake publication", async () => {
     const harness = makeHarness();
     const getExitStatus = vi.fn(() => -1);

@@ -327,7 +327,6 @@ describe("Rust-owned advisory-lock retry scheduling", () => {
       channel: peerChannel,
     });
     state.waitingForChild = [];
-    state.pendingFutexWaits = new Map();
     state.pendingCancels = new Set();
     state.threadForkContexts = new Map();
     state.posixTimers = new Map();
@@ -646,7 +645,6 @@ interface MutableWorkerState {
   hostReaped: Set<number>;
   waitingForChild: unknown[];
   pendingSleeps: Map<TestChannel, unknown>;
-  pendingFutexWaits: Map<TestChannel, unknown>;
   pendingPollRetries: Map<TestChannel, unknown>;
   pendingAdvisoryLockRetries: Map<TestChannel, {
     cancellationPoint: boolean;
@@ -751,7 +749,6 @@ function createParkedAdvisoryCancellationHarness(
   state.activeChannels = [caller, target];
   state.channelTids = new Map([["13:256", 99]]);
   state.pendingCancels = new Set();
-  state.pendingFutexWaits = new Map();
   state.pendingPollRetries = new Map();
   state.pendingAdvisoryLockRetries = new Map();
   state.pendingSelectRetries = new Map();

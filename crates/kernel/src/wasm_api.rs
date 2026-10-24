@@ -286,7 +286,6 @@ unsafe extern "C" {
     /// (Workstream H4: the interface table, MAC, flags, and struct layout
     /// are kernel-owned; the assignment is the one fact only the host knows).
     fn host_network_interface(buf_ptr: *mut u8) -> i32;
-    fn host_futex_wake(addr: usize, count: u32) -> i32;
     fn host_is_thread_worker() -> i32;
     fn host_bind_framebuffer(
         pid: i32,
@@ -1075,18 +1074,6 @@ impl HostIO for WasmHostIO {
             [buf[0], buf[1], buf[2], buf[3]],
             [buf[4], buf[5], buf[6], buf[7]],
         )
-    }
-
-    fn host_futex_wake(&mut self, addr: usize, count: u32) -> Result<i32, Errno> {
-        let result = unsafe { host_futex_wake(addr, count) };
-        if result < 0 {
-            match Errno::from_u32((-result) as u32) {
-                Some(e) => Err(e),
-                None => Err(Errno::EIO),
-            }
-        } else {
-            Ok(result)
-        }
     }
 
     fn bind_framebuffer(
@@ -4782,6 +4769,16 @@ fn handle_owned_channel_allocation(
             )),
         }
     };
+    // A kernel-owned park answers `ret = generation, errno = PARKED_ERRNO`
+    // (see `wasm_posix_shared::wait_completion_wire`). Always consume the
+    // cell so a generation can never leak into a later entry's result.
+    let parked_generation = crate::wait_park::take_parked_result();
+    if outcome.channel_errno == wasm_posix_shared::wait_completion_wire::PARKED_ERRNO {
+        match parked_generation.and_then(|g| i64::try_from(g).ok()) {
+            Some(generation) => outcome.channel_result = generation,
+            None => outcome = ChannelDispatchOutcome::narrow(-(Errno::EIO as i32)),
+        }
+    }
     if crate::blocked_retry::result_needs_target(syscall_nr, outcome.channel_errno) {
         // connect(2) exposes EINPROGRESS/EALREADY while a host TCP handshake
         // is pending instead of leaking HostIO's internal EAGAIN sentinel.
@@ -6143,12 +6140,16 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         ), // SYS_CLONE
 
         // Futex
-        200 => kernel_futex(
-            process_address!(0),
+        // All three pointers are guest addresses the kernel reads through the
+        // cross-memory primitive; none is borrowed as kernel memory. Slots 3
+        // and 4 are raw bits because their meaning is per-command (slot 3 is
+        // the REQUEUE count, not a pointer).
+        200 => channel_futex(
+            guest_address!(0),
             a2 as u32,
             a3 as u32,
-            a4 as u32,
-            conditional_process_address!(4),
+            args[3] as u64,
+            args[4] as u64,
             a6 as u32,
         ), // SYS_FUTEX
 
@@ -14784,18 +14785,36 @@ pub fn kernel_get_robust_list(_pid: u32, _head_ptr: usize, _len_ptr: usize) -> i
 /// thread_exit — clean up thread state in the kernel.
 /// Called by the host when a thread Worker exits.
 /// Removes the thread from the process's thread table and returns the
-/// CLONE_CHILD_CLEARTID pointer recorded in ThreadInfo, or 0 if no clear-tid
-/// wake is needed. Errors are returned as negative errno values.
+/// CLONE_CHILD_CLEARTID pointer recorded in ThreadInfo, or 0 if there is
+/// none. Errors are returned as negative errno values.
+///
+/// `clear_child_tid` states a fact only the host knows: the thread really ran
+/// and has now ended (nonzero), as opposed to a rollback of a thread whose
+/// Worker never started or a whole-process teardown (zero). When it is set,
+/// the kernel performs `CLONE_CHILD_CLEARTID` itself: it stores 0 at the
+/// pointer and wakes one futex waiter there. It must be the kernel, because
+/// the futex wait queue is kernel state (`wait_park`); a host-side
+/// `Atomics.notify` on the word would wake nobody. A failed store is ignored,
+/// as Linux ignores a faulting `put_user` of the clear-TID word.
 ///
 /// WHY: an i64 keeps every wasm32 `usize` pointer nonnegative while reserving
 /// negative results for errno; narrowing to i32 would make high pointers
 /// indistinguishable from failures.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i64 {
+pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32, clear_child_tid: u32) -> i64 {
     let _gkl = GklGuard::acquire();
     let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
     match kernel_thread_exit_in_table(pt, pid, tid) {
-        Ok(ctid_ptr) => ctid_ptr as i64,
+        Ok(ctid_ptr) => {
+            if clear_child_tid != 0 && ctid_ptr != 0 {
+                let ctid = ctid_ptr as u64;
+                let mut host = WasmHostIO;
+                if host.proc_write_bytes(pid as i32, ctid, &0u32.to_le_bytes()) == 0 {
+                    crate::wait_park::with(|parks| parks.futex_wake(pid, ctid, 1, u32::MAX));
+                }
+            }
+            ctid_ptr as i64
+        }
         Err(e) => -(e as i64),
     }
 }
@@ -14840,19 +14859,24 @@ mod thread_exit_tests {
     }
 }
 
-/// futex — real implementation via host Atomics.wait/notify.
-pub fn kernel_futex(
-    uaddr: usize,
-    op: u32,
-    val: u32,
-    timeout: u32,
-    uaddr2: usize,
-    val3: u32,
-) -> i32 {
-    let _gkl = GklGuard::acquire();
+/// futex(2) from a channel: the kernel owns the wait (see `wait_park`).
+///
+/// A park is reported as `-PARKED_ERRNO`; the generation it minted is picked
+/// up by `handle_owned_channel_allocation` for the channel's return slot.
+fn channel_futex(uaddr: u64, op: u32, val: u32, timeout: u64, uaddr2: u64, val3: u32) -> i32 {
+    let (_gkl, proc, _locks) = unsafe { get_process_and_advisory_locks() };
+    let pid = proc.pid;
+    let tid = match syscalls::current_tid_for_process(proc) {
+        0 => pid,
+        tid => tid,
+    };
     let mut host = WasmHostIO;
-    match syscalls::sys_futex(&mut host, uaddr, op, val, timeout, uaddr2, val3) {
-        Ok(n) => n,
+    match syscalls::sys_futex(&mut host, pid, tid, uaddr, op, val, timeout, uaddr2, val3) {
+        Ok(syscalls::FutexOutcome::Done(n)) => n,
+        Ok(syscalls::FutexOutcome::Parked(generation)) => {
+            crate::wait_park::note_parked_result(generation);
+            -(wasm_posix_shared::wait_completion_wire::PARKED_ERRNO as i32)
+        }
         Err(e) => -(e as i32),
     }
 }
@@ -15935,16 +15959,74 @@ pub extern "C" fn kernel_pcm_clock_update(frames: u32) -> u32 {
 
 /// Drain pending wakeup events into the output buffer.
 ///
-/// Each event is 5 bytes: wake index (u32 LE) + wake_type (u8).
-/// Returns the number of events written.
+/// Each event is `wakeup_event_wire::RECORD_BYTES`: wake index (u32 LE) +
+/// wake_type (u8). Returns the number of events written.
+///
+/// Before draining, kernel-owned parks are settled: if a signal was generated
+/// since the last settle, the parked set is swept, and if any parked task's
+/// result has been decided a `TYPE_WAIT_COMPLETE` event tells the host to
+/// collect it with [`kernel_drain_wait_completions`]. With no park and no
+/// signal this costs two field reads, which is why the host can keep calling
+/// this once per syscall and no second export sits on the hot path.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_drain_wakeup_events(
     out_ptr: *mut u8,
     out_len: u32,
     max_events: u32,
 ) -> u32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if crate::wait_park::settle(table) {
+        crate::wakeup::push(0, wasm_posix_shared::wakeup_event_wire::TYPE_WAIT_COMPLETE);
+    }
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
     crate::wakeup::drain(out, max_events)
+}
+
+/// Collect the results the kernel decided for parked tasks.
+///
+/// Expires every park whose deadline has passed (reading `CLOCK_MONOTONIC`
+/// once, in `wait_park::now_ns`), sweeps for signals, then writes whole
+/// `wait_completion_wire::RECORD_BYTES` records -- at most `max_records` and
+/// as many as fit in `out_len` -- and returns how many. Records that do not
+/// fit stay queued in order. Hosts call this on `TYPE_WAIT_COMPLETE` and when
+/// the timer armed from [`kernel_wait_next_timeout_ns`] fires; the native
+/// host calls it once per pump iteration.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_drain_wait_completions(
+    out_ptr: *mut u8,
+    out_len: u32,
+    max_records: u32,
+) -> i32 {
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    let now = match crate::wait_park::now_ns(&mut WasmHostIO) {
+        Ok(now) => now,
+        Err(error) => return -(error as i32),
+    };
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
+    crate::wait_park::with(|parks| {
+        parks.expire(now);
+        parks.sweep_signals(table);
+        parks.drain(out, max_records) as i32
+    })
+}
+
+/// Nanoseconds until the earliest kernel-owned park deadline, `0` if one has
+/// already passed, or `-1` if no park is timed.
+///
+/// Relative on purpose: a host sleeps this long and re-enters through
+/// [`kernel_drain_wait_completions`], and never computes in the kernel's clock
+/// domain -- which is what lets a deterministic scheduler replace that clock
+/// without touching any host.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_wait_next_timeout_ns() -> i64 {
+    let now = match crate::wait_park::now_ns(&mut WasmHostIO) {
+        Ok(now) => now,
+        Err(error) => return -(error as i64),
+    };
+    crate::wait_park::with(|parks| parks.next_timeout_ns(now)).unwrap_or(-1)
 }
 
 /// Consume the coalesced PTY readiness notification. PTY queues are not pipe
