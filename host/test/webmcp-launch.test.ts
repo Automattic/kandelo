@@ -1,7 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { registerWebMcp, type AppBindings } from '../../apps/browser-demos/pages/kandelo/webmcp/adapter';
-import type { GalleryItem } from '../../web-libs/kandelo-session/src/gallery';
-import type { KernelHost } from '../../web-libs/kandelo-session/src/kernel-host';
+import type { GalleryItem, KernelHost } from '../../web-libs/kandelo-session/src/kernel-host';
 
 afterEach(() => vi.unstubAllGlobals());
 

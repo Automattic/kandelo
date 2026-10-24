@@ -90,7 +90,7 @@ kernel_runtime_changed_files() {
     -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules)$' \
     -e '^scripts/browser-memory64-example-fixtures\.(sh|txt)$' \
     -e '^scripts/check-browser-memory64-example-fixtures\.ts$' \
-    -e '^scripts/(build-musl|build-libcxx|build-programs|check-abi-version|check-libcxx-toolchain-version|ci-check-browser-assets|ci-run-test-suite|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests)\.sh$' \
+    -e '^scripts/(build-musl|build-libcxx|build-programs|check-abi-version|check-libcxx-toolchain-version|check-vitest-evidence-classes|ci-check-browser-assets|ci-run-test-suite|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests)\.sh$' \
     -e '^scripts/(abi-staging-pages-(producer(-fixture)?|readiness)(\.test)?\.ts|abi-staging-product-(browser|node)-evidence(\.test)?\.ts|abi-staging-product-input-sources\.ts|check-pages-vfs-product-registry(\.test)?\.mjs|test-abi-staging-(mini-lifecycle|pages-atomic|product-authority)\.sh|vfs-product-catalog(\.test)?\.mjs)$' \
     -e '^examples/run-example\.ts$' \
     || true
