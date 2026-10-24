@@ -4265,8 +4265,18 @@ Promoted-index and deletion temporaries use reserved ownership and retained
 selectors. Recovery never repeats the already accepted draw. Converted cache
 retirement and final buffer collection share cleanup dependencies, preventing
 duplicate accepted deletes. Reusing a layout after completed retirement creates
-a new native view rather than reviving the old handle. Raw-upload utility state,
-other resources and the full staging/error audit remain open. Indeterminate transport,
+a new native view rather than reviving the old handle.
+
+Raw CPU uploads and GPU carrier initialization also reserve native ownership
+before creating their texture. Namespace or native failure leaves cleanup owned
+until deletion accepts. CPU uploads journal selection of unit zero before
+querying its binding, then reserve a nested texture/unpack finalizer before
+upload effects. GPU initialization retains its actual active-unit binding.
+Failed utility restoration fences queries and subsequent uploads; repair and
+candidate cleanup survive retirement of the submitting context. Pixel-store
+inverses contain only scalar state, with no upload bytes or guest address space.
+Accepted uploads are not replayed by native repair. CPU image coherence, other
+resources and the full staging/error audit remain open. Indeterminate transport,
 context loss/recreation and general failed resource deletion remain open.
 
 Public `eglCreateContext` sharing validates a live source handle in the active

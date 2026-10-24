@@ -3695,3 +3695,87 @@ main integration, coherent artifact builds, upstream CTS, cage/sway, full
 browser-memory and required POSIX conformance remain in the deferred
 build/test phase. No artifacts were restamped or ordinary gaps declared
 hard platform boundaries.
+
+## Raw upload utility repair and candidate ownership (2026-10-24)
+
+Raw CPU BO uploads and GPU carrier creation now reserve a native cleanup
+receipt before `createTexture`. The receipt captures the handle inside the
+creation call, including a returned object accompanied by a native error.
+Namespace staging failure removes every partially inserted public/raw map
+entry and leaves rejected native deletion owned for later admission. A GPU
+import failure also retires its carrier independently of the image helper's
+nested candidate. Successful view publication transfers carrier ownership;
+the image helper's existing receipt owns obsolete carrier deletion without
+repeating an accepted delete.
+
+CPU utility work journals selection of unit zero before querying its actual
+binding. A nested plan reserves the old texture and all unpack state before
+upload mutations. Typed `pixelStorei` inverses restore row length, alignment,
+skip rows and skip pixels independently; the outer finalizer restores the
+original active unit. GPU carrier initialization likewise retains its old
+active-unit texture binding before initialization. Pending restoration or
+candidate cleanup blocks query output and further raw uploads. These physical
+utility plans survive retirement of the submitting logical context because
+unpack state is not completely reconstructed by muxer replay. Persistent
+records retain native handles/scalars, without BO bytes or a guest binding.
+Recovery restores utility state and retires resources; it never repeats the
+accepted pixel upload.
+
+The stateful CPU double now tracks actual active-unit bindings, native object
+liveness and deletion. Eighteen new cases cover seven restoration points,
+origin retirement, nested inverse reservation failure, CPU/GPU creation errors,
+ownership reservation and three namespace-map failures, GPU carrier restore,
+nested image metadata failure and successful GPU ownership transfer. Seventeen
+selected regressions fail the unchanged `c76083e495` production source in a
+private archive. The file loads; its twenty unselected cases are not baseline
+passing coverage. The successful-transfer addition verifies the already-owned
+image-helper path together with the new raw receipt.
+
+Two additional browser cases run in each engine. They execute valid CPU
+uploads or GPU carrier initialization, inject definite native errors instead
+of applying restoration, and require EIO plus unchanged query sentinels. After
+repair accepts, candidate deletion remains independently blocked. The tests
+then allow deletion, require exactly one accepted candidate delete, compare
+the complete saved physical state, and read unchanged blue/red native texture
+pixels. The CPU upload count remains one; canonical GPU storage stays live.
+The preceding native/forwarded C replay and image/storage tests remain enabled.
+
+Current focused evidence:
+
+| Check | Result | Evidence |
+|---|---|---|
+| Host graphics source and Node/browser JS/declarations | 547 cases in 23 files and builds passed | `.context/graphics-raw-upload-settled-host.log` |
+| Real source WebGL | 180 passed across Chromium/Firefox/WebKit, no skips | `.context/graphics-raw-upload-final-browser.log` |
+| Source protocol/memory-boundary negatives | 12 passed | `.context/graphics-raw-upload-final-memory-boundary.log` |
+| Unchanged pre-increment source baseline | All 17 selected regressions fail; file loads | `.context/graphics-raw-upload-settled-baseline-host.log` |
+
+Commands, from this worktree under `scripts/dev-shell.sh`:
+
+```sh
+cd host
+npx vitest run --config vitest.graphics.config.ts
+npm run build
+cd ../apps/browser-demos
+KANDELO_PLAYWRIGHT_PORT=5437 npx playwright test \
+  webgl-state-contract.spec.ts --workers=3
+node --import tsx/esm --test test/browser-memory-boundary.test.ts
+```
+
+The initial targeted host/browser runs passed before the final full runs.
+The baseline archive contains unchanged production source from `c76083e495`,
+the current raw-upload test file and unchanged supporting fixtures; only its
+standalone test config/dependency symlink are supplied externally. No C, Rust,
+wire/generated output or ABI change occurs in this increment: ABI 58 and GL
+operation table 15 remain. Native C 133/fatal-UBSan/private-link evidence at
+`e47d3766e0` and Rust 47/4/13/ABI evidence at `cfdd9a9c9f` are historical,
+unchanged-source results. No complete C/Rust rerun is claimed here.
+
+Other native factories/deletion, raw BO revocation rollback, complete staging/
+error handling, unpublished C raw-candidate cleanup and general uncertain
+transport completion still need work. CPU canonical image coherence, forwarded
+BO sources, image-zero/layout/formats, native context loss/recreation, worker/
+crash/KMS failure propagation and the remaining GLES/EGL1.5/GBM/KMS inventory
+remain ordinary gaps. Current-main integration, coherent normal SDK/kernel/
+program/package/image builds, upstream CTS, cage/sway, full browser-memory
+and required POSIX conformance remain in the deferred build/test phase. This
+increment neither restamps artifacts nor demonstrates a new hard boundary.

@@ -38,6 +38,8 @@ function makeFakeGl() {
     uploadState: [] as [number, number, number, number][],
   };
   let texN = 0;
+  const alive = new Set<object>();
+  const bindings = new Map<number,unknown>([[0x84c0,state.binding2d],[0x84c2,{name:"active-tex"}]]);
   const gl = {
     getError: () => 0,
     TEXTURE0: 0x84c0,
@@ -51,8 +53,11 @@ function makeFakeGl() {
     TEXTURE_MAG_FILTER: 0x2800,
     TEXTURE_WRAP_S: 0x2802,
     TEXTURE_WRAP_T: 0x2803,
-    createTexture: () => ({ id: ++texN }),
-    deleteTexture: (t: unknown) => { calls.deletedTextures.push(t); },
+    createTexture: () => { const tex = {id:++texN}; alive.add(tex); return tex; },
+    deleteTexture: (t: object) => {
+      calls.deletedTextures.push(t); alive.delete(t);
+      for (const [unit,texture] of bindings) if (texture === t) bindings.set(unit,null);
+    },
     getParameter: (p: number) =>
       p === 0x84e0
         ? state.activeTexture
@@ -60,8 +65,8 @@ function makeFakeGl() {
           ? state.unpackRowLength
           : p === 0x0cf5 ? state.unpackAlignment
             : p === 0x0cf3 ? state.unpackSkipRows
-              : p === 0x0cf4 ? state.unpackSkipPixels : state.binding2d,
-    activeTexture: (u: number) => { calls.activeTexture.push(u); },
+              : p === 0x0cf4 ? state.unpackSkipPixels : bindings.get(state.activeTexture) ?? null,
+    activeTexture: (u: number) => { calls.activeTexture.push(u); state.activeTexture = u; },
     pixelStorei: (p: number, v: number) => {
       calls.pixelStorei.push([p, v]);
       if (p === 0x0cf2) state.unpackRowLength = v;
@@ -69,7 +74,7 @@ function makeFakeGl() {
       if (p === 0x0cf3) state.unpackSkipRows = v;
       if (p === 0x0cf4) state.unpackSkipPixels = v;
     },
-    bindTexture: (_target: number, tex: unknown) => { calls.bindTexture.push(tex); },
+    bindTexture: (_target: number, tex: unknown) => { calls.bindTexture.push(tex); bindings.set(state.activeTexture,tex); },
     texParameteri: () => {},
     texImage2D: () => { calls.texImage2D++;
       calls.uploadState.push([state.unpackRowLength, state.unpackAlignment,
@@ -77,7 +82,7 @@ function makeFakeGl() {
     },
     texSubImage2D: () => { calls.texSubImage2D++; },
   };
-  return { gl: gl as unknown as WebGL2RenderingContext, calls, state };
+  return { gl: gl as unknown as WebGL2RenderingContext, calls, state, alive, bindings };
 }
 
 function makeBinding(gl: WebGL2RenderingContext | null): { reg: GlContextRegistry; b: GlBinding } {
@@ -322,4 +327,154 @@ it("retains a rejected canonical deletion for retry after all raw views have ret
   const {reg,gpu,control,alive}=gpuRawSetup();control.fault="deleteFramebuffer";
   reg.retireForeignBo(41);expect(reg.hasForeignRetirements()).toBe(true);expect(alive.has(gpu.tex)).toBe(true);
   reg.retryForeignRetirements();expect(reg.hasForeignRetirements()).toBe(false);expect(alive.has(gpu.tex)).toBe(false);
+});
+
+for (const fault of ["texture","active","unit-zero","row-length","alignment","skip-rows","skip-pixels"]) {
+  it(`retains rejected CPU upload ${fault} restoration before query or another upload`, () => {
+    const {gl,calls,state,bindings,alive} = makeFakeGl(), {b} = makeBinding(gl);
+    state.unpackRowLength = 5; state.unpackAlignment = 8; state.unpackSkipRows = 2; state.unpackSkipPixels = 3;
+    const previous = {...state}, unitTwo = bindings.get(0x84c2);
+    const active = gl.activeTexture.bind(gl), bind = gl.bindTexture.bind(gl), pixel = gl.pixelStorei.bind(gl);
+    const upload = gl.texImage2D.bind(gl);
+    let uploaded = false, block = true;
+    const reject = (selected: string) => { if (uploaded && block && fault === selected) throw new Error("restore rejected"); };
+    gl.texImage2D = ((...args: Parameters<typeof gl.texImage2D>) => { upload(...args); uploaded = true; }) as typeof gl.texImage2D;
+    gl.activeTexture = value => { reject(value === 0x84c2 ? "active" : "unit-zero"); active(value); };
+    gl.bindTexture = (target,object) => { if (object === previous.binding2d) reject("texture"); bind(target,object); };
+    gl.pixelStorei = (pname,value) => {
+      const restore = new Map([[0x0cf2,[5,"row-length"]],[0x0cf5,[8,"alignment"]],[0x0cf3,[2,"skip-rows"]],[0x0cf4,[3,"skip-pixels"]]]).get(pname);
+      if (restore && value === restore[0]) reject(String(restore[1])); pixel(pname,value);
+    };
+    expect(bindForeignTexture(b,1,new Uint8Array(4),{w:1,h:1,stride:4})).toBe(-5);
+    expect(calls.texImage2D).toBe(1); expect(b.textures.size).toBe(0); expect(b.foreignTextures.size).toBe(0);
+    expect(alive.size).toBe(1); expect(calls.deletedTextures).toHaveLength(0);
+    const out = new Uint8Array(4).fill(0xa5);
+    expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+    expect([...out]).toEqual([165,165,165,165]);
+    expect(bindForeignTexture(b,2,new Uint8Array(4),{w:1,h:1,stride:4})).toBe(-5);
+    expect(calls.texImage2D).toBe(1); expect(alive.size).toBe(1);
+    block = false;
+    expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+    expect(state).toEqual(previous); expect(bindings.get(0x84c0)).toBe(previous.binding2d); expect(bindings.get(0x84c2)).toBe(unitTwo);
+    expect(alive.size).toBe(0); expect(calls.deletedTextures).toHaveLength(1); expect(calls.texImage2D).toBe(1);
+    expect(bindForeignTexture(b,2,new Uint8Array(4),{w:1,h:1,stride:4})).toBeGreaterThan(0);
+  });
+}
+
+it("repairs physical unpack state and retires failed candidates after the submitting context dies", () => {
+  const {gl,state,alive} = makeFakeGl(), {b,reg} = makeBinding(gl);
+  state.unpackRowLength = 5;
+  const pixel = gl.pixelStorei.bind(gl); let block = true;
+  gl.pixelStorei = (pname,value) => { if (block && pname === 0x0cf2 && value === 5) throw new Error("restore rejected"); pixel(pname,value); };
+  expect(bindForeignTexture(b,1,new Uint8Array(4),{w:1,h:1,stride:4})).toBe(-5);
+  reg.unbind(7); reg.bind({pid:8,cmdbufAddr:0,cmdbufLen:0}); const peer = reg.get(8)!; peer.gl = gl;
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5); expect(alive.size).toBe(1);
+  block = false;
+  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(state.unpackRowLength).toBe(5); expect(alive.size).toBe(0); expect(peer.errors).toEqual([]);
+});
+
+it("restores the active unit when nested CPU utility reservation rejects before upload", () => {
+  const {gl,state,calls,alive} = makeFakeGl(), {b} = makeBinding(gl), set = WeakMap.prototype.set;
+  let reservations = 0, rc = 0;
+  WeakMap.prototype.set = function(key,value) { if (++reservations === 3) throw new RangeError("nested inverse reservation failed"); return set.call(this,key,value); };
+  try { rc = bindForeignTexture(b,1,new Uint8Array(4),{w:1,h:1,stride:4}); }
+  finally { WeakMap.prototype.set = set; }
+  expect(reservations).toBe(3); expect(rc).toBe(-5); expect(state.activeTexture).toBe(0x84c2);
+  expect(calls.texImage2D).toBe(0); expect(calls.deletedTextures).toHaveLength(1); expect(alive.size).toBe(0); expect(b.textures.size).toBe(0);
+});
+
+for (const gpu of [false,true]) {
+  it(`owns ${gpu ? "GPU" : "CPU"} raw candidates through creation errors and rejected deletion`, () => {
+    const {gl,alive,calls} = makeFakeGl(), {b} = makeBinding(gl);
+    const create = gl.createTexture.bind(gl), destroy = gl.deleteTexture.bind(gl); let error = 0, block = true;
+    gl.getError = () => { const result = error; error = 0; return result; };
+    gl.createTexture = () => { const object = create(); error = 0x505; return object; };
+    gl.deleteTexture = object => { if (block) { error = 0x502; return; } destroy(object); };
+    const bind = () => gpu ? bindGpuForeignTexture(b,1,{tex:{} as WebGLTexture,texId:17,w:1,h:1})
+      : bindForeignTexture(b,1,new Uint8Array(4),{w:1,h:1,stride:4});
+    expect(bind()).toBe(-5); expect(alive.size).toBe(1); expect(b.textures.size).toBe(0);
+    const out = new Uint8Array(4).fill(0xa5);
+    expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5); expect([...out]).toEqual([165,165,165,165]);
+    block = false;
+    expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+    expect(alive.size).toBe(0); expect(calls.deletedTextures).toHaveLength(1);
+    expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4); expect(calls.deletedTextures).toHaveLength(1);
+  });
+  it(`reserves ${gpu ? "GPU" : "CPU"} raw candidate ownership before native allocation`, () => {
+    const {gl,alive} = makeFakeGl(), {b} = makeBinding(gl), original = globalThis.Set;
+    globalThis.Set = class extends original { constructor() { super(); throw new RangeError("ownership allocation failed"); } } as SetConstructor;
+    let rc = 0;
+    try { rc = gpu ? bindGpuForeignTexture(b,1,{tex:{} as WebGLTexture,texId:17,w:1,h:1})
+      : bindForeignTexture(b,1,new Uint8Array(4),{w:1,h:1,stride:4}); } finally { globalThis.Set = original; }
+    expect(rc).toBe(-12); expect(alive.size).toBe(0); expect(b.textures.size).toBe(0);
+  });
+  it(`keeps ${gpu ? "GPU" : "CPU"} raw cleanup reachable when namespace staging rejects`, () => {
+    for (const field of ["textures","foreignTextures","foreignTextureBos"] as const) {
+      const {gl,alive,calls} = makeFakeGl(), {b} = makeBinding(gl), set = b[field].set;
+      const destroy = gl.deleteTexture.bind(gl); let block = true;
+      gl.deleteTexture = object => { if (block) throw new Error("delete rejected"); destroy(object); };
+      b[field].set = () => { throw new RangeError("metadata allocation failed"); };
+      try {
+        expect(gpu ? bindGpuForeignTexture(b,1,{tex:{} as WebGLTexture,texId:17,w:1,h:1})
+          : bindForeignTexture(b,1,new Uint8Array(4),{w:1,h:1,stride:4})).toBeLessThan(0);
+      } finally { b[field].set = set; }
+      expect(alive.size).toBe(1); expect(b.textures.size).toBe(0); expect(b.foreignTextures.size).toBe(0); expect(b.foreignTextureBos.size).toBe(0);
+      expect(calls.texImage2D).toBe(0); expect(calls.bindTexture).toHaveLength(0);
+      const out = new Uint8Array(4).fill(0xa5);
+      expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+      block = false;
+      expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4); expect(alive.size).toBe(0); expect(calls.deletedTextures).toHaveLength(1);
+    }
+  });
+}
+
+it("retains GPU carrier initialization restoration across origin retirement", () => {
+  const {gl,b,reg,gpu,alive,control} = gpuRawSetup(), previous = gl.createTexture()!;
+  gl.activeTexture(0x84c2); gl.bindTexture(0x0de1,previous);
+  const bind = gl.bindTexture.bind(gl), parameter = gl.texParameteri.bind(gl); let initialized = false, block = true;
+  gl.texParameteri = (target,pname,value) => { parameter(target,pname,value); initialized = true; };
+  gl.bindTexture = (target,object) => { if (initialized && block && object === previous) control.fault = "bindTexture"; bind(target,object); };
+  const count = alive.size;
+  expect(bindGpuForeignTexture(b,41,gpu)).toBe(-5); expect(b.textures.size).toBe(0); expect(b.foreignTextureBos.size).toBe(0);
+  expect(alive.size).toBe(count+1);
+  reg.destroyContext(7,11); reg.bind({pid:8,cmdbufAddr:0,cmdbufLen:0}); const peer = reg.get(8)!; peer.gl = gl;
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5); expect([...out]).toEqual([165,165,165,165]);
+  block = false;
+  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(gl.getParameter(0x84e0)).toBe(0x84c2); expect(gl.getParameter(0x8069)).toBe(previous);
+  expect(alive.size).toBe(count); expect(alive.has(gpu.tex)).toBe(true);
+});
+
+it("owns the raw GPU carrier and nested view after rejected image metadata and cleanup", () => {
+  const {gl,b,gpu,control,alive} = gpuRawSetup(), count = alive.size, set = b.textureViews.set;
+  const destroy = gl.deleteTexture.bind(gl), deleted: WebGLTexture[] = [];
+  gl.deleteTexture = object => { if (!control.failDelete && object) deleted.push(object); destroy(object); };
+  b.textureViews.set = () => { throw new RangeError("image view allocation failed"); }; control.failDelete = true;
+  try { expect(bindGpuForeignTexture(b,41,gpu)).toBe(-5); } finally { b.textureViews.set = set; }
+  expect(b.textures.size).toBe(0); expect(b.foreignTextures.size).toBe(0); expect(b.foreignTextureBos.size).toBe(0);
+  expect(b.textureViews.size).toBe(0); expect(b.textureViewOwners.size).toBe(0); expect(alive.size).toBe(count+2);
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5); expect([...out]).toEqual([165,165,165,165]);
+  control.failDelete = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(alive.size).toBe(count); expect(new Set(deleted).size).toBe(2); expect(deleted).toHaveLength(2);
+  expect(bindGpuForeignTexture(b,41,gpu)).toBeGreaterThan(0);
+});
+
+it("transfers a successful GPU view while obsolete carrier cleanup waits without duplicate deletion", () => {
+  const {gl,b,gpu,control,alive} = gpuRawSetup(), count = alive.size;
+  const destroy = gl.deleteTexture.bind(gl), deleted: WebGLTexture[] = [];
+  gl.deleteTexture = object => { if (!control.failDelete && object) deleted.push(object); destroy(object); };
+  control.failDelete = true;
+  const name = bindGpuForeignTexture(b,41,gpu), object = b.textures.get(name)!;
+  expect(name).toBeGreaterThan(0); expect(b.textureViews.get(object)!.source!.texture).toBe(gpu.tex); expect(alive.size).toBe(count+3);
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5); expect([...out]).toEqual([165,165,165,165]);
+  control.failDelete = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(deleted).toEqual([object]); expect(alive.size).toBe(count+2);
+  expect(bindGpuForeignTexture(b,41,gpu)).toBe(name); expect(deleted).toEqual([object]); expect(alive.has(textureNative(b,object))).toBe(true);
 });

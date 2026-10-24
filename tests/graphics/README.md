@@ -416,3 +416,21 @@ separately from GLES adaptation. Real native faults verify unchanged output,
 complete pointer/selector restoration, old blue pixels and a subsequent green
 fixed-point attribute draw in each browser engine. No normal guest or full CTS
 claim follows from these source checks.
+
+Raw CPU/GPU upload cases reserve native candidate ownership before creation,
+keep rejected cleanup after namespace/view metadata failure, and transfer a
+successful GPU view without repeating obsolete carrier deletion. CPU cases
+reject each utility restore, including unit selection and unpack fields, require
+query sentinels and block new uploads until repair. Nested reservation failure
+restores the prior active unit before any upload. Physical repairs and cleanup
+survive the submitting context's retirement. Seventeen selected regressions fail
+unchanged `c76083e495` production source; the successful GPU transfer case also
+covers the already-owned nested image cleanup path.
+
+Two additional real WebGL cases in each engine reject CPU unpack restoration or
+GPU carrier binding restoration after valid native effects. They independently
+reject candidate deletion, require unchanged query output and exact restored
+native state, then finish cleanup once and read the original blue/red textures.
+CPU upload is counted once; the GPU canonical source remains live. These tests
+exercise shared host source directly, with no normal guest/CTS or full
+browser-memory claim.

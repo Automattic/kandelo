@@ -2047,6 +2047,79 @@ for(const mode of ["native","forwarded"] as const) {
   });
 }
 
+for (const gpu of [false,true]) {
+test(`raw ${gpu ? "GPU" : "CPU"} upload retains failed utility restoration and candidate cleanup`, async ({page}) => {
+  await installBrowserMemoryBoundaryProbe(page); await page.goto("/trap-signal-test.html");
+  const root = fileURLToPath(new URL("../../../",import.meta.url));
+  const result = await page.evaluate(async ({root,gpu}) => {
+    const base = `/@fs/${root}host/src/webgl/`;
+    const {GlContextRegistry} = await import(base+"registry.ts");
+    const {bindForeignTexture,bindGpuForeignTexture} = await import(base+"foreign-texture.ts");
+    const {runGlQuery} = await import(base+"query.ts"), O = await import(base+"ops.ts");
+    const canvas = document.createElement("canvas"), gl = canvas.getContext("webgl2");
+    if (!gl) throw new Error("WebGL2 required");
+    const require = (condition: unknown,label: string) => { if (!condition) throw new Error(label); };
+    const reg = new GlContextRegistry(); reg.bind({pid:7,cmdbufAddr:0,cmdbufLen:0}); const b = reg.get(7)!; b.gl = gl;
+    const make = (unit: number,color: number[]) => {
+      gl.activeTexture(unit); const texture = gl.createTexture()!; gl.bindTexture(gl.TEXTURE_2D,texture);
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,new Uint8Array(color)); return texture;
+    };
+    const zero = make(gl.TEXTURE0,[0,0,255,255]), two = make(gl.TEXTURE2,[255,0,0,255]);
+    let canonical: any;
+    if (gpu) { require(reg.createGpuBo(41,gl,1,1) !== null,"GPU source"); canonical = reg.gpuBo(41); }
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D,two);
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH,5); gl.pixelStorei(gl.UNPACK_ALIGNMENT,8);
+    gl.pixelStorei(gl.UNPACK_SKIP_ROWS,2); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS,3);
+    const before = [gl.getParameter(gl.ACTIVE_TEXTURE),gl.getParameter(gl.TEXTURE_BINDING_2D),
+      ...[gl.UNPACK_ROW_LENGTH,gl.UNPACK_ALIGNMENT,gl.UNPACK_SKIP_ROWS,gl.UNPACK_SKIP_PIXELS].map(p => gl.getParameter(p))];
+    const create = gl.createTexture.bind(gl), destroy = gl.deleteTexture.bind(gl), bind = gl.bindTexture.bind(gl);
+    const pixel = gl.pixelStorei.bind(gl), image = gl.texImage2D.bind(gl), parameter = gl.texParameteri.bind(gl);
+    const candidates: WebGLTexture[] = [], deleted: WebGLTexture[] = [];
+    let armed = false, block = true, blockCleanup = true, uploads = 0;
+    gl.createTexture = () => { const object = create(); if (object) candidates.push(object); return object; };
+    gl.deleteTexture = object => {
+      if (object && candidates.includes(object) && blockCleanup) { bind(0xdead,null); return; }
+      if (object) deleted.push(object); destroy(object);
+    };
+    gl.texImage2D = ((...args: Parameters<typeof gl.texImage2D>) => { image(...args); uploads++; armed = true; }) as typeof gl.texImage2D;
+    gl.texParameteri = (target,pname,value) => { parameter(target,pname,value); if (gpu) armed = true; };
+    gl.bindTexture = (target,object) => {
+      if (gpu && armed && block && object === two) { bind(0xdead,null); return; } bind(target,object);
+    };
+    gl.pixelStorei = (pname,value) => {
+      if (!gpu && armed && block && pname === gl.UNPACK_ROW_LENGTH && value === 5) { bind(0xdead,null); return; } pixel(pname,value);
+    };
+    const first = gpu ? bindGpuForeignTexture(b,41,canonical)
+      : bindForeignTexture(b,41,new Uint8Array([17,29,41,255]),{w:1,h:1,stride:4});
+    require(first === -5 && armed && candidates.length === 1,"valid candidate then failed restoration");
+    require(b.textures.size === 0 && b.foreignTextures.size === 0 && b.foreignTextureBos.size === 0,"unpublished namespace");
+    const output = new Uint8Array(4).fill(0xa5);
+    const blocked = runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),output);
+    require(blocked === -5 && output.every(x => x === 165) && deleted.length === 0,"repair fence preserves output and candidate");
+    block = false;
+    require(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),output) === -5,"cleanup has independent completion");
+    const after = [gl.getParameter(gl.ACTIVE_TEXTURE),gl.getParameter(gl.TEXTURE_BINDING_2D),
+      ...[gl.UNPACK_ROW_LENGTH,gl.UNPACK_ALIGNMENT,gl.UNPACK_SKIP_ROWS,gl.UNPACK_SKIP_PIXELS].map(p => gl.getParameter(p))];
+    require(before.every((value,i) => value === after[i]),"exact physical state restored");
+    blockCleanup = false;
+    require(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),output) === 4,"cleanup retry completion");
+    require(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),output) === 4 && deleted.length === 1 && deleted[0] === candidates[0],"candidate deleted once");
+    require(!gl.isTexture(candidates[0]) && (!gpu || gl.isTexture(canonical.tex)),"candidate gone, canonical source alive");
+    gl.createTexture = create; gl.deleteTexture = destroy; gl.bindTexture = bind; gl.pixelStorei = pixel; gl.texImage2D = image; gl.texParameteri = parameter;
+    const frame = gl.createFramebuffer()!, colors: number[][] = [];
+    for (const texture of [zero,two]) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER,frame); gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,texture,0);
+      require(gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE,"retained texture complete");
+      const rgba = new Uint8Array(4); gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,rgba); colors.push([...rgba]);
+    }
+    gl.deleteFramebuffer(frame); gl.deleteTexture(zero); gl.deleteTexture(two); if (gpu) reg.retireForeignBo(41);
+    return {first,blocked,colors,uploads,deleted:deleted.length,error:gl.getError()};
+  },{root,gpu});
+  expect(result).toEqual({first:-5,blocked:-5,colors:[[0,0,255,255],[255,0,0,255]],uploads:gpu?0:1,deleted:1,error:0});
+  expect(await memoryBoundaryFailures(page)).toEqual([]);
+});
+}
+
 // Native source registration and logical image views; public C sharing and
 // normal guest ioctl marshalling are separate validation phases.
 test("logical image views preserve sibling parameters, pixels and retained identity",async({page})=>{

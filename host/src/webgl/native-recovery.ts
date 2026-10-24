@@ -6,6 +6,7 @@ import { recordGlError } from "./errors.js";
 export type NativeCall =
   | ["clearVertexAttribute", NativeRetirement, number, number, number, boolean, number, number]
   | ["activeTexture", number]
+  | ["pixelStorei", number, number]
   | ["bindTexture", number, WebGLTexture | null]
   | ["bindFramebuffer", number, WebGLFramebuffer | null]
   | ["bindRenderbuffer", number, WebGLRenderbuffer | null]

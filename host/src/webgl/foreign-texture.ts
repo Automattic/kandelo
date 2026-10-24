@@ -16,8 +16,9 @@
  * state (active unit, unit-0 TEXTURE_2D binding, unpack state) is saved and
  * restored so the upload does not become part of that owner's GL state.
  */
-import { importImageStorage, registerImageSource, destroyTextureView } from "./image-storage.js";
+import { importImageStorage, registerImageSource } from "./image-storage.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
+import { applyNativeChanges, nativeInverse, repairNativeState, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement } from "./native-recovery.js";
 import type { GlBinding } from "./registry.js";
 
 const GL_TEXTURE_2D = 0x0de1;
@@ -39,6 +40,7 @@ function allocateForeignName(b: GlBinding, preferred = b.nextForeignTexId): numb
 export function bindGpuForeignTexture(b: GlBinding, bo: number,
     gpu: {tex: WebGLTexture; texId: number; w: number; h: number}): number {
   if (!b.gl) return -5;
+  if (!repairNativeState(b.gl)) return -5;
   let entry = b.foreignTextures.get(bo);
   if (entry && b.textures.get(entry.texId) !== entry.tex) {
     try { b.retiredTextures.set(entry.tex, entry.texId); }
@@ -53,31 +55,63 @@ export function bindGpuForeignTexture(b: GlBinding, bo: number,
   }
   const name = allocateForeignName(b, gpu.texId);
   if (name <= 0) return name;
-  let object: WebGLTexture | null = null;
-  if (!checkedGlCall(b, () => { object = b.gl!.createTexture(); }) || !object) {
-    if (object) b.gl.deleteTexture(object);
-    recordGlError(b,0x505); return -5;
-  }
+  const candidate = reserveNativeRetirement(b,[["deleteTexture",null]]);
+  if (!candidate) return -12;
+  let object: WebGLTexture | null = null, published = false;
   try {
+    if (!checkedGlCall(b, () => { object = b.gl!.createTexture(); candidate.calls[0][1] = object; }) || !object) {
+      recordGlError(b,0x505); return -5;
+    }
     b.textures.set(name, object);
     b.foreignTextureBos.set(object, bo);
     b.foreignTextures.set(bo, {tex:object,texId:name,w:gpu.w,h:gpu.h,scratch:null});
-  } catch {
-    b.textures.delete(name); b.foreignTextureBos.delete(object); b.foreignTextures.delete(bo);
-    b.gl.deleteTexture(object); return -12;
-  }
-  let previous: WebGLTexture|null = null, captured = false, initialized = false, restored = true;
-  try {
-    if (checkedGlCall(b, () => { previous = b.gl!.getParameter(0x8069); captured = true; }) &&
-        checkedGlCall(b, () => b.gl!.bindTexture(0x0de1,object))) {
-      initialized = true;
+    let previous: WebGLTexture|null = null, active = 0;
+    if (!checkedGlCall(b, () => { active = Number(b.gl!.getParameter(0x84e0)); }) ||
+        !checkedGlCall(b, () => { previous = b.gl!.getParameter(0x8069); })) return -5;
+    const initialized = applyNativeChanges(b,[{apply: () => {
+      if (!checkedGlCall(b, () => b.gl!.bindTexture(GL_TEXTURE_2D,object))) return false;
       for (const [pname,value] of [[0x2801,0x2601],[0x2800,0x2601],[0x2802,0x812f],[0x2803,0x812f]])
-        if (!checkedGlCall(b, () => b.gl!.texParameteri(0x0de1,pname,value))) { initialized = false; break; }
+        if (!checkedGlCall(b, () => b.gl!.texParameteri(GL_TEXTURE_2D,pname,value))) return false;
+      return true;
+    },restore:nativeInverse(b)}], {shared:true,finalizer:nativeInverse(b,
+      [["activeTexture",active],["bindTexture",GL_TEXTURE_2D,previous]])});
+    if (!initialized || !importImageStorage(b,1,name,token)) return -5;
+    transferNativeRetirement(candidate); published = true; return name;
+  } catch { recordGlError(b,0x505); return -12; }
+  finally {
+    if (!published) {
+      if (object && b.textures.get(name) === object) b.textures.delete(name);
+      if (object) b.foreignTextureBos.delete(object);
+      if (b.foreignTextures.get(bo)?.tex === object) b.foreignTextures.delete(bo);
+      retireNativeRetirement(candidate);
     }
-  } finally { if (captured) restored = checkedGlCall(b, () => b.gl!.bindTexture(0x0de1,previous)); }
-  if (initialized && restored && importImageStorage(b,1,name,token)) return name;
-  b.textures.delete(name); b.foreignTextures.delete(bo); destroyTextureView(b,object);
-  return -5;
+  }
+}
+
+/** Selecting unit zero is itself journaled before querying its binding. The
+ * nested plan reserves all unpack/texture inverses before the first upload
+ * mutation. Repairs contain only native handles/scalars, never BO bytes. */
+function withForeignUploadState(b: GlBinding, call: () => boolean): boolean {
+  const gl = b.gl!;
+  let active = 0, rowLength = 0, alignment = 0, skipRows = 0, skipPixels = 0;
+  for (const capture of [
+    () => { active = Number(gl.getParameter(gl.ACTIVE_TEXTURE)); },
+    () => { rowLength = Number(gl.getParameter(GL_UNPACK_ROW_LENGTH)); },
+    () => { alignment = Number(gl.getParameter(GL_UNPACK_ALIGNMENT)); },
+    () => { skipRows = Number(gl.getParameter(0x0cf3)); },
+    () => { skipPixels = Number(gl.getParameter(0x0cf4)); },
+  ]) if (!checkedGlCall(b,capture)) return false;
+  // Unpack state is physical and not all of it is replayed by the muxer. It
+  // must be repaired even if the submitting logical context has retired.
+  return applyNativeChanges(b,[{apply: () => {
+    if (!checkedGlCall(b, () => gl.activeTexture(gl.TEXTURE0))) return false;
+    let texture: WebGLTexture|null = null;
+    if (!checkedGlCall(b, () => { texture = gl.getParameter(gl.TEXTURE_BINDING_2D); })) return false;
+    return applyNativeChanges(b,[{apply:call,restore:nativeInverse(b)}],{shared:true,finalizer:nativeInverse(b,
+      [["activeTexture",gl.TEXTURE0],["bindTexture",GL_TEXTURE_2D,texture]],
+      [["pixelStorei",0x0cf3,skipRows]], [["pixelStorei",0x0cf4,skipPixels]],
+      [["pixelStorei",GL_UNPACK_ROW_LENGTH,rowLength]], [["pixelStorei",GL_UNPACK_ALIGNMENT,alignment]])});
+  },restore:nativeInverse(b)}],{shared:true,finalizer:nativeInverse(b,[["activeTexture",active]])});
 }
 
 export function bindForeignTexture(
@@ -90,60 +124,50 @@ export function bindForeignTexture(
     || dims.w <= 0 || dims.h <= 0 || dims.stride < dims.w * 4 || dims.stride % 4 !== 0) return -22;
   const need = (dims.h - 1) * dims.stride + dims.w * 4;
   if (!Number.isSafeInteger(need) || need > boBytes.byteLength) return -22;
+  if (!repairNativeState(gl)) return -5;
   let entry = b.foreignTextures.get(bo_id);
   if (entry && b.textures.get(entry.texId) !== entry.tex) {
     try { b.retiredTextures.set(entry.tex, entry.texId); } catch { return -12; }
     b.foreignTextures.delete(bo_id); entry = undefined;
   }
   const isNew = !entry, realloc = !entry || entry.w !== dims.w || entry.h !== dims.h;
-  let staged = false, accepted = false, restored = true;
-  let prevActive = 0, prevTex: WebGLTexture | null = null;
-  let prevRowLen = 0, prevAlignment = 0, prevSkipRows = 0, prevSkipPixels = 0;
+  const candidate = isNew ? reserveNativeRetirement(b,[["deleteTexture",null]]) : null;
+  if (isNew && !candidate) return -12;
+  let published = false;
   try {
     if (!entry) {
       const texId = allocateForeignName(b); if (texId <= 0) return texId;
       let tex: WebGLTexture | null = null;
-      if (!checkedGlCall(b, () => { tex = gl.createTexture(); }) || !tex) { if (tex) gl.deleteTexture(tex); recordGlError(b,0x505); return -5; }
+      if (!checkedGlCall(b, () => { tex = gl.createTexture(); candidate!.calls[0][1] = tex; }) || !tex) { recordGlError(b,0x505); return -5; }
       entry = {tex,texId,w:dims.w,h:dims.h,scratch:null};
     }
     if (!entry.scratch || entry.scratch.byteLength !== need) entry.scratch = new Uint8Array(need);
     entry.scratch.set(boBytes.subarray(0,need));
     if (isNew) {
       b.textures.set(entry.texId,entry.tex); b.foreignTextureBos.set(entry.tex,bo_id); b.foreignTextures.set(bo_id,entry);
-      staged = true;
     }
-    if (!checkedGlCall(b, () => {
-      prevActive = Number(gl.getParameter(gl.ACTIVE_TEXTURE));
-      prevRowLen = Number(gl.getParameter(GL_UNPACK_ROW_LENGTH));
-      prevAlignment = Number(gl.getParameter(GL_UNPACK_ALIGNMENT));
-      prevSkipRows = Number(gl.getParameter(0x0cf3)); prevSkipPixels = Number(gl.getParameter(0x0cf4));
-    })) return -5;
-    if (!checkedGlCall(b, () => gl.activeTexture(gl.TEXTURE0))) return -5;
-    try {
-      if (!checkedGlCall(b, () => { prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null; })) return -5;
-      try {
+    const accepted = withForeignUploadState(b, () => {
         for (const [pname,value] of [[GL_UNPACK_ROW_LENGTH,dims.stride/4],[GL_UNPACK_ALIGNMENT,4],[0x0cf3,0],[0x0cf4,0]])
-          if (!checkedGlCall(b, () => gl.pixelStorei(pname,value))) return -5;
-        if (!checkedGlCall(b, () => gl.bindTexture(GL_TEXTURE_2D,entry!.tex))) return -5;
+          if (!checkedGlCall(b, () => gl.pixelStorei(pname,value))) return false;
+        if (!checkedGlCall(b, () => gl.bindTexture(GL_TEXTURE_2D,entry!.tex))) return false;
         if (realloc) {
           for (const [pname,value] of [[gl.TEXTURE_MIN_FILTER,gl.LINEAR],[gl.TEXTURE_MAG_FILTER,gl.LINEAR],[gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE],[gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE]])
-            if (!checkedGlCall(b, () => gl.texParameteri(GL_TEXTURE_2D,pname,value))) return -5;
-          accepted = checkedGlCall(b, () => gl.texImage2D(GL_TEXTURE_2D,0,gl.RGBA,dims.w,dims.h,0,gl.RGBA,gl.UNSIGNED_BYTE,entry!.scratch!));
-        } else accepted = checkedGlCall(b, () => gl.texSubImage2D(GL_TEXTURE_2D,0,0,0,dims.w,dims.h,gl.RGBA,gl.UNSIGNED_BYTE,entry!.scratch!));
-      } finally {
-        restored = checkedGlCall(b, () => gl.bindTexture(GL_TEXTURE_2D,prevTex));
-        for (const [pname,value] of [[0x0cf3,prevSkipRows],[0x0cf4,prevSkipPixels],[GL_UNPACK_ROW_LENGTH,prevRowLen],[GL_UNPACK_ALIGNMENT,prevAlignment]])
-          restored = checkedGlCall(b, () => gl.pixelStorei(pname,value)) && restored;
-      }
-    } finally { restored = checkedGlCall(b, () => gl.activeTexture(prevActive)) && restored; }
-    if (!accepted || !restored) return -5;
+            if (!checkedGlCall(b, () => gl.texParameteri(GL_TEXTURE_2D,pname,value))) return false;
+          return checkedGlCall(b, () => gl.texImage2D(GL_TEXTURE_2D,0,gl.RGBA,dims.w,dims.h,0,gl.RGBA,gl.UNSIGNED_BYTE,entry!.scratch!));
+        }
+        return checkedGlCall(b, () => gl.texSubImage2D(GL_TEXTURE_2D,0,0,0,dims.w,dims.h,gl.RGBA,gl.UNSIGNED_BYTE,entry!.scratch!));
+    });
+    if (!accepted) return -5;
+    if (candidate) transferNativeRetirement(candidate);
+    published = true;
     entry.w = dims.w; entry.h = dims.h; return entry.texId;
   } catch { recordGlError(b,0x505); return -5; }
   finally {
-    if (isNew && entry && (!accepted || !restored)) {
-      if (staged || b.textures.get(entry.texId) === entry.tex) b.textures.delete(entry.texId);
+    if (isNew && !published) {
+      if (entry && b.textures.get(entry.texId) === entry.tex) b.textures.delete(entry.texId);
       if (b.foreignTextures.get(bo_id) === entry) b.foreignTextures.delete(bo_id);
-      b.foreignTextureBos.delete(entry.tex); gl.deleteTexture(entry.tex);
+      if (entry) b.foreignTextureBos.delete(entry.tex);
+      retireNativeRetirement(candidate!);
     }
   }
 }
