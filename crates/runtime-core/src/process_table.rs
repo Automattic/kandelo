@@ -143,7 +143,7 @@ pub struct ExitApplication {
     /// Adopted zombies that synthetic init reaped because the host had
     /// already published their exits. The caller must finish each removal
     /// exactly as it finishes a `reap_process` result.
-    pub reaped: Vec<(u32, RemoveProcessResult)>,
+    pub reaped: Vec<InitReap>,
     /// Members of newly orphaned process groups that received SIGHUP and
     /// SIGCONT. When nonempty, the host must apply the same follow-up as a
     /// group `kill()` before it next relies on those processes' state.
@@ -156,7 +156,21 @@ pub struct ProcessExitPublication {
     /// Present when synthetic init was the exiting process's parent and has
     /// now reaped it, so no parent remains to notify. The caller must finish
     /// the removal exactly as it finishes a `reap_process` result.
-    pub reaped_by_init: Option<RemoveProcessResult>,
+    pub reaped_by_init: Option<InitReap>,
+}
+
+/// One process synthetic init reaped. Init has no wait loop, so the kernel
+/// acts as its `wait()`: the status is what a waiting parent would have
+/// consumed, and kernel-started init children (the exchange agent) learn
+/// how they ended from it.
+pub struct InitReap {
+    pub pid: u32,
+    /// Low eight bits of a normal exit status; 0 for a signal death.
+    pub exit_status: i32,
+    /// Terminating signal, or 0 for a normal exit.
+    pub exit_signal: u32,
+    /// Cleanup the caller must finish exactly as for a `reap_process` result.
+    pub removal: RemoveProcessResult,
 }
 
 /// Processes that reached the Exited state and whose consequences for the
@@ -2058,8 +2072,8 @@ impl ProcessTable {
         }
 
         for zombie in adoption.published_zombies {
-            if let Some(result) = self.reap_process(zombie) {
-                application.reaped.push((zombie, result));
+            if let Some(reap) = self.reap_for_init(zombie) {
+                application.reaped.push(reap);
             }
         }
     }
@@ -2087,11 +2101,27 @@ impl ProcessTable {
         }
         process.exit_published = true;
         let reaped_by_init = if process.ppid == SYNTHETIC_INIT_PID {
-            self.reap_process(pid)
+            self.reap_for_init(pid)
         } else {
             None
         };
         Ok(ProcessExitPublication { reaped_by_init })
+    }
+
+    /// Reap an exited child of synthetic init, keeping how it ended.
+    pub fn reap_for_init(&mut self, pid: u32) -> Option<InitReap> {
+        let process = self.processes.get(&pid)?;
+        if process.ppid != SYNTHETIC_INIT_PID || process.state != ProcessState::Exited {
+            return None;
+        }
+        let (exit_status, exit_signal) = (process.exit_status, process.exit_signal);
+        let removal = self.reap_process(pid)?;
+        Some(InitReap {
+            pid,
+            exit_status,
+            exit_signal,
+            removal,
+        })
     }
 
     /// Give every child of `parent_pid` to synthetic init.
@@ -4892,8 +4922,8 @@ mod orphan_tests {
         table.publish_process_exit(pid).unwrap()
     }
 
-    fn reaped(results: &[(u32, RemoveProcessResult)]) -> Vec<u32> {
-        results.iter().map(|(pid, _)| *pid).collect()
+    fn reaped(results: &[InitReap]) -> Vec<u32> {
+        results.iter().map(|reap| reap.pid).collect()
     }
 
     #[test]
@@ -4952,6 +4982,31 @@ mod orphan_tests {
         assert!(publication.reaped_by_init.is_some());
         assert!(table.get(child).is_none(), "init consumed the zombie");
         assert_eq!(table.parent_pid(child), None);
+    }
+
+    #[test]
+    fn init_reaps_report_how_each_process_ended() {
+        use wasm_posix_shared::signal::SIGTERM;
+
+        // Init has no wait loop, so the kernel acts as its wait(). Kernel
+        // started init children (the exchange agent) learn how they ended
+        // from what init reaped, exactly as a waiting parent would.
+        let mut table = ProcessTable::new();
+        let parent = process(&mut table, 0, 0, 0);
+        let zombie = process(&mut table, parent, parent, 0);
+        let live = process(&mut table, parent, parent, 0);
+        assert!(table.get_mut(zombie).unwrap().record_normal_exit(7));
+        table.apply_pending_exits(&mut NoopHost);
+        publish(&mut table, zombie);
+
+        let application = exit(&mut table, parent);
+        let adopted = &application.reaped[0];
+        assert_eq!((adopted.pid, adopted.exit_status, adopted.exit_signal), (zombie, 7, 0));
+
+        assert!(table.get_mut(live).unwrap().record_signal_exit(SIGTERM));
+        table.apply_pending_exits(&mut NoopHost);
+        let reaped = publish(&mut table, live).reaped_by_init.unwrap();
+        assert_eq!((reaped.pid, reaped.exit_status, reaped.exit_signal), (live, 0, SIGTERM));
     }
 
     #[test]

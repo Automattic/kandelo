@@ -1530,8 +1530,8 @@ fn apply_pending_process_exits() {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let mut host = WasmHostIO;
     let application = table.apply_pending_exits(&mut host);
-    for (pid, result) in application.reaped {
-        finish_removed_process(pid, result);
+    for reap in application.reaped {
+        finish_init_reap(reap);
     }
     let signaled = unsafe { &mut *ORPHANED_GROUP_SIGNALS.0.get() };
     *signaled = signaled.saturating_add(application.signaled.len() as u32);
@@ -3074,7 +3074,30 @@ fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessR
     // Synthetic init adopted this process's children. It reaps the zombies
     // among them whose exits the host already published.
     for zombie in result.adopted_zombies {
-        let _ = reap_process_and_cleanup(zombie);
+        let _ = reap_for_init_and_cleanup(zombie);
+    }
+}
+
+/// Finish a reap that synthetic init performed.
+///
+/// Init has no wait loop, so the kernel acts as its `wait()`. Every reap on
+/// init's behalf comes through here, so a kernel-started init child (the
+/// exchange agent) learns how it ended however init came to reap it.
+fn finish_init_reap(reap: crate::process_table::InitReap) {
+    finish_removed_process(reap.pid, reap.removal);
+    crate::exchange::activation::on_reaped(reap.pid, reap.exit_status, reap.exit_signal);
+}
+
+/// Reap an exited child of synthetic init. Returns 0, or `-ECHILD` when `pid`
+/// is not an exited child of init.
+fn reap_for_init_and_cleanup(pid: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.reap_for_init(pid) {
+        Some(reap) => {
+            finish_init_reap(reap);
+            0
+        }
+        None => -(Errno::ECHILD as i32),
     }
 }
 
@@ -3122,8 +3145,8 @@ pub extern "C" fn kernel_publish_process_exit(pid: u32) -> i32 {
         Ok(publication) => publication,
         Err(error) => return -(error as i32),
     };
-    if let Some(result) = publication.reaped_by_init {
-        finish_removed_process(pid, result);
+    if let Some(reap) = publication.reaped_by_init {
+        finish_init_reap(reap);
     }
     let signaled = unsafe { core::mem::take(&mut *ORPHANED_GROUP_SIGNALS.0.get()) };
     signaled.min(i32::MAX as u32) as i32
@@ -3531,14 +3554,10 @@ pub extern "C" fn kernel_reap_exited_child(parent_pid: u32, child_pid: u32) -> i
     }
     // Init reaps its children at once; the exchange agent is one of them,
     // and how it ended decides activation's next step.
-    let status = (parent_pid == crate::process_table::SYNTHETIC_INIT_PID)
-        .then(|| table.get(child_pid).map(|child| (child.exit_status, child.exit_signal)))
-        .flatten();
-    let result = reap_process_and_cleanup(child_pid);
-    if let (0, Some((exit_status, exit_signal))) = (result, status) {
-        crate::exchange::activation::on_reaped(child_pid, exit_status, exit_signal);
+    if parent_pid == crate::process_table::SYNTHETIC_INIT_PID {
+        return reap_for_init_and_cleanup(child_pid);
     }
-    result
+    reap_process_and_cleanup(child_pid)
 }
 
 /// Check if a process has SA_NOCLDWAIT set for SIGCHLD.
