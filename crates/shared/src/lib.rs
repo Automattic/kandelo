@@ -5182,7 +5182,7 @@ pub mod gl {
     /// Version of the GLES op-table. Bumped independently of `ABI_VERSION`
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
     /// at compile time; GLIO_INIT accepts compatible versions 1..=OP_VERSION.
-    pub const OP_VERSION: u32 = 7;
+    pub const OP_VERSION: u32 = 8;
 
     // --- ioctl request numbers (DRM 'D' magic, starting at 0x40) -----------
 
@@ -5402,6 +5402,11 @@ pub mod gl {
     /// Out: status, count, 16 value words (unused zero), completion magic.
     /// The checked 76-byte reply obtains width and values atomically.
     pub const QOP_GET_UNIFORM_VALUES: u32 = 0x001F;
+    /// V8: checked active-uniform chunks, same layout as ACTIVE_ATTRIB.
+    pub const QOP_GET_ACTIVE_UNIFORM_INFO: u32 = 0x0020;
+    /// V8: context-local name lookup: action/program/token/length-or-offset,
+    /// optional bytes; checked reply payload is echoed token and i32 location.
+    pub const QOP_LOOKUP_UNIFORM: u32 = 0x0021;
 
     // --- marshalled ioctl argument structs ---------------------------------
 
@@ -7105,6 +7110,8 @@ mod gl_tests {
             QOP_GET_TEX_PARAMETER,
             QOP_SHADER_SOURCE_UPLOAD,
             QOP_GET_UNIFORM_VALUES,
+            QOP_GET_ACTIVE_UNIFORM_INFO,
+            QOP_LOOKUP_UNIFORM,
         ];
         for (i, &a) in qops.iter().enumerate() {
             for &b in &qops[i + 1..] {

@@ -3839,7 +3839,7 @@ guest marshalling and the public C cross-context facade remain unvalidated.
 
 The GLES bridge exposes a GLES2 API over WebGL2. Operation-table version 2
 adds commands while preserving version 1 tags and payloads. `GLIO_INIT`
-accepts versions 1 through 7, and rejects zero or newer versions with `ENOSYS`.
+accepts versions 1 through 8, and rejects zero or newer versions with `ENOSYS`.
 Its version and extension strings describe that API. Extension queries carry
 an optional operation-table version: legacy requests retain their empty list,
 while version 2 advertises bridged capabilities. Optional float rendering and
@@ -3857,8 +3857,15 @@ cache. Shared program/location associations validate ownership and link
 state before reading without changing the current program. C publishes
 only a completed successful reply; failed or malformed results preserve
 caller output. Table 7 adds this query within ABI 58, preserving all older
-tags/layouts. Stable repeated location identity, long names and the full
-setter/reflection/link audit remain open.
+tags/layouts. Table 8 adds checked active-uniform chunks and context-owned
+name lookup transfers in the existing 64 KiB query messages. Public
+locations are stable across repeated names, array aliases and sharing
+peers until successful relink/final deletion; allocation failure rolls
+back maps before publication. Lookup transfers are token-checked, replaced
+or cancelled independently per context and released on retirement. C
+publishes reflected metadata/names only after accumulating every requested
+chunk. Fixed C name/reflection buffers are removed. Shader-name translation
+beyond WebGL limits and the full setter/link audit remain open.
 See [the graphics compatibility inventory](graphics/compatibility-v1.md).
 Texture uploads copy shared and
 possibly unaligned guest bytes into the typed views WebGL requires. GLES2's

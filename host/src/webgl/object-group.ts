@@ -24,6 +24,7 @@ export type GlSharedObjects = {
    *  reused so insert/delete cycles cannot collide. */
   uniformLocations: Map<number, WebGLUniformLocation>;
   uniformLocationPrograms: Map<number, number>;
+  uniformLocationNames: Map<number, string>;
   /** Monotonic counter for `uniformLocations`; never decremented. */
   nextUniformLoc: number;
 
@@ -55,7 +56,7 @@ export function createGlObjectGroup(): GlObjectGroup {
     members: new Set(), buffers: new Map(), bufferStores: new Map(), bufferViewOwners: new Map(), textures: new Map(), shaders: new Map(), programs: new Map(),
     rbos: new Map(), shaderSources: new Map(), shaderDeletePending: new Set(), programDeletePending: new Set(),
     programShaders: new Map(), programAttributeBindings: new Map(),
-    uniformLocations: new Map(), uniformLocationPrograms: new Map(), nextUniformLoc: 0,
+    uniformLocations: new Map(), uniformLocationPrograms: new Map(), uniformLocationNames: new Map(), nextUniformLoc: 0,
     foreignTextures: new Map(), nextForeignTexId: 0x4000_0000,
     retiredTextures: new Map(), retiredBuffers: new Map(), retiredRenderbuffers: new Map(), externallyOwnedTextures: new WeakSet(),
   };

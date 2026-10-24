@@ -1437,7 +1437,7 @@ describe("query handler", () => {
     expect(names).toEqual([0x86a3]);
   });
 
-  it("QOP_GET_UNIFORM_LOC allocates monotonic indices", () => {
+  it("QOP_GET_UNIFORM_LOC reuses live locations and allocates monotonic replacement indices", () => {
     const { b } = setup();
     // Plant a "program" object so the lookup succeeds.
     const prog = { kind: "program", id: 1 } as unknown as WebGLProgram;
@@ -1458,13 +1458,13 @@ describe("query handler", () => {
     const o2 = out(4);
     expect(runGlQuery(b, O.QOP_GET_UNIFORM_LOC, inp, o2)).toBe(4);
     const idx2 = new DataView(o2.buffer).getInt32(0, true);
-    expect(idx2).toBe(2);
+    expect(idx2).toBe(idx1);
 
-    // Delete idx1; next lookup should be idx 3, not reused 1.
+    // Removing the live record must never recycle its published index.
     b.uniformLocations.delete(1);
     const o3 = out(4);
     expect(runGlQuery(b, O.QOP_GET_UNIFORM_LOC, inp, o3)).toBe(4);
-    expect(new DataView(o3.buffer).getInt32(0, true)).toBe(3);
+    expect(new DataView(o3.buffer).getInt32(0, true)).toBe(2);
   });
 
   it("QOP_GET_UNIFORM_LOC returns -1 for a missing uniform", () => {

@@ -62,7 +62,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Multiple public contexts have focused native/source-browser coverage; full rollback, hints and CTS remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
 | G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffers plus client attributes use a bounded presence query; core buffer/vertex queries preserve logical state. Client staging now retains/restores actual ARRAY identity across peer deletion/reuse (operation table 6). Full size/limit/negative coverage remains open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core attribute/source/attachment reflection, acknowledged large-source uploads and validation entrypoints are implemented; complete executable/attribute/uniform validation still needs work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
-| G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Checked renderer replies now supply complete element widths/values without C reflection caches and preserve failed-query outputs. Shared-peer/source-retirement/relink cases have focused evidence; stable/repeated location identity, long names, active-uniform truncation and complete setter/type/array validation remain open | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
+| G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Checked renderer replies now supply complete element widths/values without C reflection caches and preserve failed-query outputs. Shared-peer/source-retirement/relink cases have focused evidence. Locations now remain stable across repeated/array-alias lookups, and checked chunked C lookup/reflection removes fixed buffers. Shader-name translation beyond WebGL limits and complete setter/type/array validation remain open | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization, core parameter queries and context-owned default texture objects are implemented in host source; complete target/state/error and guest CTS audit remain open | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
 | G07 | Raster/depth/stencil/blend/clear/readback; ES2 §§3,4 | Main provides offscreen color/depth/stencil; no broad CTS evidence | bridge, query, present-target | CTS functional render families; real pixels all three engines | partial |
 | G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | Default/user identities and read/draw state remain distinct; attachment records retain deleted texture/RBO storage, including unbound containers and separate packed depth/stencil points. Core attachment/renderbuffer queries implemented; full storage/negative/CTS coverage remains open | encoder, registry, image references, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
@@ -2403,3 +2403,109 @@ full browser-memory and POSIX checks stay deferred until implementation
 is ready. Kernel compilation here only inspects ABI exports; standalone
 resolver ABI 58 checks remain historical from `5985c3c727`. The complete
 goal stays active.
+
+
+## Stable locations and checked uniform names (2026-10-24)
+
+A successful link now owns one public location per canonical active name.
+Repeated queries and sharing peers reuse that index, including array base
+names and `[0]`. Valid decimal indices normalize leading zeros. Successful
+relink or final program deletion invalidates the group's location/name
+records; indices remain monotonic and never recycle. Reaching GLint's
+positive range reports OUT_OF_MEMORY for a new index while existing
+locations still work. Metadata allocation failure rolls back every map
+before publication. Program/type/link validation also applies to the
+legacy location query without changing its wire. The former test expected
+a new index on repeated lookup; it now checks stable live identity and
+monotonic replacement. A separate new regression fails unchanged
+`3bd2d988ea` (`.context/graphics-uniform-locations-baseline-host.log`).
+These rules follow [GLES 2.0 section 2.10.4](https://registry.khronos.org/OpenGL/specs/es/2.0/es_full_spec_2.0.pdf).
+
+The C lookup no longer has a 256-byte input buffer (248 name bytes after
+its header). It uses a checked inline request for short names and one
+context-owned transfer for larger names. Each message remains within the
+existing 64 KiB query limit. BEGIN reserves owned bytes, contiguous CHUNKs
+fill them and COMMIT looks up the then-live program. Tokens prevent stale
+requests or cancellation from removing newer work; abort is idempotent,
+replacement frees old bytes, and context retirement releases pending
+storage. No lookup buffer is shared with another context or the guest.
+C preallocates request/reply buffers so cancellation needs no allocation
+after transport failure; completion/status/token validation precedes
+returning a location. A failed abort can leave one context-owned transfer
+until replacement or destruction, not a reported successful lookup.
+
+`glGetActiveUniform` now uses checked metadata plus bounded name chunks,
+reusing the object-query accumulation path. Caller-selected truncation and
+zero-size metadata queries work; negative bufSize reports INVALID_VALUE.
+Complete results publish length, size, type and name together. A later
+chunk, allocation or GL failure leaves all public outputs unchanged.
+The fixture's 70,000-byte name spans multiple replies; no fixed 256-byte
+reflection limit remains in C. This is transfer evidence, not evidence
+that the renderer accepts a shader identifier that long.
+
+Operation table 8 adds:
+
+| Query | Request | Checked reply |
+|---|---|---|
+| `QOP_GET_ACTIVE_UNIFORM_INFO` (0x0020) | program, uniform index, byte offset, capacity (16 bytes) | status, total name length, size, type, name bytes/padding, completion marker (`20 + capacity` bytes) |
+| `QOP_LOOKUP_UNIFORM` (0x0021) | action, program, token, length/offset, optional bytes (16–65536 bytes) | status, echoed token, signed location, completion marker (16 bytes) |
+
+Lookup actions are INLINE=0, BEGIN=1, CHUNK=2, COMMIT=3 and ABORT=4.
+INLINE length equals its following bytes; BEGIN carries total size, CHUNK
+its offset, and COMMIT/ABORT use zero. Protocol shape errors reject before
+writes; GL errors use the checked failure envelope. Existing tags/layouts,
+imports and syscalls remain compatible, so ABI stays 58. INIT accepts
+tables 1 through 8; the focused regression includes 1/5/6/7/8 and rejects
+zero/future versions. Snapshot/generated outputs remain consistent.
+
+Focused evidence:
+
+| Check | Result | Evidence |
+|---|---|---|
+| Actual native EGL/GLES C with device double and UBSan | 89 cases passed | `.context/graphics-uniform-reflection-final-c-wasm.log` |
+| Private wasm32 EGL/GLES objects/link and entrypoint audit | Passed, 150 guards and 142/142 GLES2 core definitions/resolvers | `.context/graphics-uniform-reflection-final-c-wasm.log` |
+| Host graphics source and Node/browser declarations | 405 cases in 19 files and declarations passed | `.context/graphics-uniform-reflection-stable-host.log` |
+| Real Chromium/Firefox/WebKit source rendering | 147 passed, no skips | `.context/graphics-uniform-reflection-stable-browser.log` |
+| Kernel GLIO, shared GL layouts and ioctl-filter cases | 47, 4 and 18 passed | `.context/graphics-uniform-reflection-rust-abi.log` |
+| ABI source/snapshot/generated consistency | Passed, ABI 58 / table 8 | `.context/graphics-uniform-reflection-rust-abi.log` |
+| Browser protocol/memory-boundary negatives | 12 passed | `.context/graphics-uniform-reflection-memory-boundary.log` |
+
+The new C lookup and reflection regressions both fail against unchanged
+`3bd2d988ea` with the current fixture:
+`.context/graphics-uniform-reflection-baseline-native.log`. Three new C
+cases cover 249/300/65520/140001-byte lookups, each transfer phase's
+transport/status/token/completion failure, failed abort followed by
+replacement, allocation failure, long reflection, truncation and output
+rollback. The device double supplies lookup success; renderer acceptance
+is separate. Nine new host cases cover stable aliases across peers,
+chunk assembly, independent pending owners, stale cancellation, program
+retirement during transfer, map-allocation rollback, counter exhaustion,
+malformed spans, inactive/reserved names and checked reflection.
+
+The six shared-uniform browser executions now also use checked lookups,
+verify repeated/base/[0]/peer identity, read an actual 249-character shader
+uniform, enumerate reflected names/types/sizes in 17-byte chunks and send
+a 70,007-byte inactive name across bounded requests. All prior value,
+relink, rendered-pixel and final program/shader cleanup assertions remain.
+This is source host rendering through native worker imports and main
+forwarding with a synthetic kernel adapter, not public C sharing or Rust
+guest ioctl marshalling.
+
+WebGL specifies a 256-character lookup-string and shader-token limit
+([WebGL restrictions](https://registry.khronos.org/webgl/specs/latest/1.0/)).
+A long root absent from actual reflection is safely inactive and returns
+-1 without WebGL-only name errors. Active identifiers/paths exceeding that
+limit still need source/name translation and reverse reflection mapping.
+The new C transfer protocol alone does not implement that translation.
+This remains ordinary required GLES compatibility work, not a demonstrated
+impossibility or a reason to lower the baseline. No browser defect is
+claimed. Uniform setter/type/count semantics and the remaining program/
+link audit also remain open.
+
+Public C sharing still needs coherent image/storage/sampler objects and
+bindings. Interrupted staging cleanup, context loss, the remaining EGL/
+GLES/GBM/KMS inventory and the normal-artifact/conformance phase remain
+required. Normal SDK/program/package/image rebuilds, CTS, cage/sway, full
+browser-memory and POSIX checks stay deferred until implementation is
+ready. Kernel compilation here only inspected ABI exports; the ABI 58
+standalone resolver is unchanged from `5985c3c727`. The full goal is active.

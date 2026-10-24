@@ -220,6 +220,7 @@ struct wpk_gles_context {
     /* First client-side error, consumed before a host query. */
     GLenum client_error;
     uint32_t next_shader_upload;
+    uint32_t next_uniform_lookup;
     GLuint array_buffer;
     uint64_t array_serial;
     struct wpk_object_name *array_object;
@@ -1784,20 +1785,95 @@ void glBlendEquation(GLenum mode) {
 
 /* ----- queries: locations, shader/program info --------------------- */
 
+/* Preallocated query buffers also permit cancellation after a transport
+ * failure, without another allocation. Only acknowledged replies publish. */
+static int uniform_lookup_query(int fd, uint8_t *request, uint32_t length, uint8_t *reply,
+                                uint32_t token, GLint *location, int quiet) {
+    memset(reply, 0, 16);
+    struct gl_query_info info = {.op = QOP_LOOKUP_UNIFORM,
+                                 .in_buf_ptr = (uint32_t)(uintptr_t)request,
+                                 .in_buf_len = length,
+                                 .out_buf_ptr = (uint32_t)(uintptr_t)reply,
+                                 .out_buf_len = 16,
+                                 .reserved = 0};
+    if (ioctl(fd, GLIO_QUERY, &info) != 0)
+        goto invalid;
+    uint32_t status, echoed, footer;
+    memcpy(&status, reply, 4);
+    memcpy(&echoed, reply + 4, 4);
+    memcpy(&footer, reply + 12, 4);
+    if (status > 1 || footer != WPK_GL_QUERY_REPLY_MAGIC)
+        goto invalid;
+    if (status)
+        return 0;
+    if (echoed != token)
+        goto invalid;
+    memcpy(location, reply + 8, 4);
+    return 1;
+invalid:
+    if (!quiet)
+        raise_client_error(GL_INVALID_OPERATION);
+    return 0;
+}
 GLint glGetUniformLocation(GLuint program, const GLchar *name) {
-    if (!_wpk_gl_current_encoder()) return 0;
-    if (!name) return -1;
-    uint8_t in[256];
-    size_t nlen = strlen(name);
-    if (8 + nlen > sizeof in) return -1;
-    uint32_t prog_u32 = program, nlen_u32 = (uint32_t)nlen;
-    memcpy(in,     &prog_u32, 4);
-    memcpy(in + 4, &nlen_u32, 4);
-    memcpy(in + 8, name, nlen);
-    int32_t loc = -1;
-    if (_wpk_gl_query_into(QOP_GET_UNIFORM_LOC, in, (uint32_t)(8 + nlen), &loc, 4) != 0)
+    if (!_wpk_gl_current_encoder())
         return -1;
-    return loc;
+    if (!name) return -1;
+    size_t length = strlen(name);
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    if (length > UINT32_MAX || state->next_uniform_lookup == UINT32_MAX) {
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return -1;
+    }
+    uint32_t capacity = length <= 65520 ? (uint32_t)length + 16 : 65536;
+    uint8_t *request = malloc(capacity), *reply = malloc(16);
+    if (!request || !reply) {
+        free(request);
+        free(reply);
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return -1;
+    }
+    GLint location = -1;
+    if (flush_commands() != 0)
+        goto done;
+    int fd = _wpk_gl_fd();
+    uint32_t token = ++state->next_uniform_lookup;
+    uint32_t header[4] = {length <= 65520 ? 0u : 1u, program, token, (uint32_t)length};
+    memcpy(request, header, 16);
+    if (length <= 65520) {
+        memcpy(request + 16, name, length);
+        if (!uniform_lookup_query(fd, request, (uint32_t)length + 16, reply, token, &location, 0))
+            location = -1;
+        goto done;
+    }
+    if (!uniform_lookup_query(fd, request, 16, reply, token, &location, 0))
+        goto abort;
+    for (uint32_t offset = 0; offset < (uint32_t)length;) {
+        uint32_t count = (uint32_t)length - offset < 65520 ? (uint32_t)length - offset : 65520;
+        header[0] = 2;
+        header[3] = offset;
+        memcpy(request, header, 16);
+        memcpy(request + 16, name + offset, count);
+        if (!uniform_lookup_query(fd, request, count + 16, reply, token, &location, 0))
+            goto abort;
+        offset += count;
+    }
+    header[0] = 3;
+    header[3] = 0;
+    memcpy(request, header, 16);
+    if (!uniform_lookup_query(fd, request, 16, reply, token, &location, 0))
+        goto abort;
+    goto done;
+abort:
+    header[0] = 4;
+    header[3] = 0;
+    memcpy(request, header, 16);
+    (void)uniform_lookup_query(fd, request, 16, reply, token, &location, 1);
+    location = -1;
+done:
+    free(request);
+    free(reply);
+    return location;
 }
 
 GLenum glCheckFramebufferStatus(GLenum target) {
@@ -2754,39 +2830,6 @@ void glBindVertexArray(GLuint array) {
     EMIT_END()
 }
 
-void glGetActiveUniform(GLuint program, GLuint index, GLsizei bufSize,
-                        GLsizei *length, GLint *size, GLenum *type, GLchar *name) {
-    if (!_wpk_gl_current_encoder()) return;
-    if (length) *length = 0;
-    if (size) *size = 0;
-    if (type) *type = 0;
-    if (name && bufSize > 0) name[0] = '\0';
-    if (!name || bufSize <= 0) return;
-
-    uint8_t in[12];
-    uint32_t p = program, i = index, cap = (uint32_t)(bufSize - 1);
-    memcpy(in, &p, 4);
-    memcpy(in + 4, &i, 4);
-    memcpy(in + 8, &cap, 4);
-
-    uint8_t out[12 + 256];
-    if (_wpk_gl_query_into(QOP_GET_ACTIVE_UNIFORM, in, sizeof in, out, sizeof out) != 0) return;
-
-    uint32_t name_len = 0;
-    int32_t uniform_size = 0;
-    uint32_t uniform_type = 0;
-    memcpy(&name_len, out, 4);
-    memcpy(&uniform_size, out + 4, 4);
-    memcpy(&uniform_type, out + 8, 4);
-    if (name_len > sizeof out - 12) name_len = sizeof out - 12;
-    if (name_len > (uint32_t)(bufSize - 1)) name_len = (uint32_t)(bufSize - 1);
-    memcpy(name, out + 12, name_len);
-    name[name_len] = '\0';
-    if (length) *length = (GLsizei)name_len;
-    if (size) *size = uniform_size;
-    if (type) *type = (GLenum)uniform_type;
-}
-
 /* A single renderer read supplies both width and values. C reflection order,
  * name truncation and another shared context's relink cannot stale a cache. */
 static void get_uniform_values(GLuint program, GLint location, int integer, void *params) {
@@ -3058,6 +3101,33 @@ void glGetActiveAttrib(GLuint program, GLuint index, GLsizei bufSize,
     if (length) *length = (GLsizei)count;
     if (size) *size = (GLint)header[1];
     if (type) *type = (GLenum)header[2];
+    free(bytes);
+}
+void glGetActiveUniform(GLuint program, GLuint index, GLsizei bufSize, GLsizei *length, GLint *size,
+                        GLenum *type, GLchar *name) {
+    if (!_wpk_gl_current_encoder())
+        return;
+    if (bufSize < 0) {
+        raise_client_error(GL_INVALID_VALUE);
+        return;
+    }
+    uint32_t input[4] = {program, index, 0, 0}, count, header[3];
+    uint8_t *bytes;
+    uint32_t limit = name && bufSize > 0 ? (uint32_t)bufSize - 1 : 0;
+    if (!query_object_blob(QOP_GET_ACTIVE_UNIFORM_INFO, input, 4, 12, 1, limit, &bytes, &count,
+                           header))
+        return;
+    if (name && bufSize > 0) {
+        if (count)
+            memcpy(name, bytes, count);
+        name[count] = '\0';
+    }
+    if (length)
+        *length = (GLsizei)count;
+    if (size)
+        *size = (GLint)header[1];
+    if (type)
+        *type = (GLenum)header[2];
     free(bytes);
 }
 void glGetAttachedShaders(GLuint program, GLsizei maxCount, GLsizei *count, GLuint *shaders) {

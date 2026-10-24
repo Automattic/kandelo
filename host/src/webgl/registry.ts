@@ -1,3 +1,4 @@
+import type { GlUniformLookup } from "./uniform-queries.js";
 import type { GlSurfaceCreation } from "./surface-create.js";
 /**
  * Tracks live `/dev/dri/renderD128` GLES sessions reported by the kernel.
@@ -77,6 +78,8 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & {
   /** Undefined means no driver savepoint; null captures the zero binding.
    * This pin survives submit boundaries and is never a public object name. */
   savedClientArrayBuffer: WebGLBuffer | null | undefined;
+  uniformLookup: GlUniformLookup | null;
+  uniformLookupSerial: number;
   shaderUpload: GlShaderSourceUpload | null;
   shaderUploadSerial: number;
   /** No attachments: native framebuffer operations enforce surfaceless
@@ -182,6 +185,8 @@ export class GlContextRegistry {
       currentDrawable: null,
       hasBeenCurrent: false,
       savedClientArrayBuffer: undefined,
+      uniformLookup: null,
+      uniformLookupSerial: 0,
       undefinedDefaultFbo: null,
       cmdbufView: null,
       gl: null,
@@ -236,6 +241,8 @@ export class GlContextRegistry {
     const b = this.get(pid, sessionId);
     if (!b) return;
     const gl = b.gl;
+    b.uniformLookup = null;
+    b.uniformLookupSerial = 0;
     b.shaderUpload = null;
     b.shaderUploadSerial = 0;
     b.savedClientArrayBuffer = undefined;
@@ -260,7 +267,7 @@ export class GlContextRegistry {
       for (const object of programs) gl?.deleteProgram(object);
       for (const object of b.rbos.values()) gl?.deleteRenderbuffer(object);
       for (const map of [b.buffers,b.textures,b.shaders,b.programs,b.rbos,b.uniformLocations,
-        b.uniformLocationPrograms,b.programShaders,b.programAttributeBindings,b.foreignTextures,b.shaderSources]) map.clear();
+        b.uniformLocationPrograms,b.uniformLocationNames,b.programShaders,b.programAttributeBindings,b.foreignTextures,b.shaderSources]) map.clear();
       b.shaderDeletePending.clear(); b.programDeletePending.clear();
     } else {
       if (installedName) finalizeProgram(b, installedName);
@@ -336,10 +343,10 @@ export class GlContextRegistry {
     const target = this.get(pid,targetSession), source = this.get(pid,sourceSession);
     if (!target || !source || target === source || !target.gl || target.gl !== source.gl
         || target.contextId === null || source.contextId === null || target.hasBeenCurrent || target.savedClientArrayBuffer !== undefined
-        || target.objects.members.size !== 1) return false;
+        || target.uniformLookup !== null || target.objects.members.size !== 1) return false;
     const names = target.objects;
     if (names.buffers.size || names.bufferStores.size || names.textures.size || names.shaders.size || names.programs.size
-        || names.rbos.size || names.uniformLocations.size || names.foreignTextures.size
+        || names.rbos.size || names.uniformLocationNames.size || names.uniformLocations.size || names.foreignTextures.size
         || names.retiredTextures.size || names.retiredBuffers.size || names.retiredRenderbuffers.size
         || names.shaderDeletePending.size || names.programDeletePending.size) return false;
     // Reserve membership before removing the old owner; allocation failure

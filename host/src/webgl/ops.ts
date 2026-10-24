@@ -108,7 +108,7 @@ export const QOP_FINISH                = 0x0E;
 
 /** Bumped in lockstep with `shared::gl::OP_VERSION`. The kernel's
  *  `GLIO_INIT` accepts versions 1 through this value. */
-export const OP_VERSION = 7;
+export const OP_VERSION = 8;
 
 // Additive GLES entry points used by native renderers; existing tags stay stable.
 export const OP_BLEND_EQUATION = 0x000F;
@@ -170,3 +170,7 @@ export const QOP_SHADER_SOURCE_UPLOAD = 0x001E;
 
 // V7: checked uniform values, independent of client reflection caches.
 export const QOP_GET_UNIFORM_VALUES = 0x001F;
+
+// V8: checked active reflection and bounded name-lookup transactions.
+export const QOP_GET_ACTIVE_UNIFORM_INFO = 0x0020;
+export const QOP_LOOKUP_UNIFORM = 0x0021;

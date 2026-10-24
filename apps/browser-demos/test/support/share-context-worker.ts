@@ -71,15 +71,27 @@ self.onmessage=({data})=>{
         send(0,O.OP_SHADER_SOURCE,[name,bytes.length],bytes);send(0,O.OP_COMPILE_SHADER,[name]);
       };
       shader(10,0x8b31,"void main(){gl_Position=vec4(0.,0.,0.,1.);gl_PointSize=1.;}");
-      shader(11,0x8b30,"precision mediump float;uniform vec4 colorValue;uniform mat3 normal;uniform mat4 transform;uniform vec3 items[2];uniform bvec4 flags;uniform float scalar;void main(){gl_FragColor=colorValue+vec4(items[0]+items[1],0.)*scalar+vec4(flags)*.0001+vec4(normal[0][0]+transform[0][0])*.0001;}");
+      const longName="u"+"n".repeat(248);
+      shader(11,0x8b30,`precision mediump float;uniform float ${longName};uniform vec4 colorValue;uniform mat3 normal;uniform mat4 transform;uniform vec3 items[2];uniform bvec4 flags;uniform float scalar;void main(){gl_FragColor=colorValue+vec4(items[0]+items[1],0.)*scalar+vec4(flags)*.0001+vec4(normal[0][0]+transform[0][0])*.0001+vec4(${longName}*.0001);}`);
       send(0,O.OP_CREATE_PROGRAM,[20]);send(0,O.OP_ATTACH_SHADER,[20,10]);send(0,O.OP_ATTACH_SHADER,[20,11]);
       send(0,O.OP_LINK_PROGRAM,[20]);send(0,O.OP_USE_PROGRAM,[20]);
-      const location=(i:number,name:string)=>{
-        const bytes=new TextEncoder().encode(name),reply=query(i,O.QOP_GET_UNIFORM_LOC,[20,bytes.length],4,bytes);
-        const result=new DataView(new Uint8Array(reply).buffer).getInt32(0,true);if(result<0)throw new Error(`inactive uniform ${name}`);return result;
+      const tokens=[0,0,0,0];
+      const lookupName=(i:number,name:string)=>{
+        const bytes=new TextEncoder().encode(name),token=++tokens[i];
+        const request=(action:number,arg=0,tail=new Uint8Array())=>{
+          const reply=query(i,O.QOP_LOOKUP_UNIFORM,[action,20,token,arg],16,tail),view=new DataView(new Uint8Array(reply).buffer);
+          if(view.getUint32(0,true)!==0 || view.getUint32(4,true)!==token || view.getUint32(12,true)!==0x47514c33)throw new Error("checked uniform lookup failed");
+          return view.getInt32(8,true);
+        };
+        if(bytes.length<=65520)return request(0,bytes.length,bytes);
+        request(1,bytes.length);
+        for(let offset=0;offset<bytes.length;offset+=65520)request(2,offset,bytes.subarray(offset,offset+65520));
+        return request(3);
       };
-      const names=["colorValue","normal","transform","items[0]","items[1]","flags","scalar"];
+      const location=(i:number,name:string)=>{const result=lookupName(i,name);if(result<0)throw new Error(`inactive uniform ${name}`);return result;};
+      const names=["colorValue","normal","transform","items[0]","items[1]","flags","scalar",longName];
       const locations=names.map(name=>location(0,name));
+      const stable=location(0,"colorValue")===locations[0] && location(0,"items")===locations[3] && location(0,"items[000]")===locations[3];
       const floats=(i:number,op:number,words:number[],values:number[])=>send(i,op,words,new Uint8Array(new Float32Array(values).buffer));
       const matrix3=[1,2,3,4,5,6,7,8,9],matrix4=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];
       floats(0,O.OP_UNIFORM4F,[locations[0]],[.25,.5,.75,1]);
@@ -89,6 +101,22 @@ self.onmessage=({data})=>{
       send(0,O.OP_UNIFORM4IV,[locations[5],1],new Uint8Array(new Int32Array([1,0,1,0]).buffer));
       floats(0,O.OP_UNIFORM1F,[locations[6]],[.5]);
       create(1,0);current(1);
+      const peerStable=location(1,"items")===locations[3],missingBulk=lookupName(1,"missing"+"n".repeat(70000));
+      const reflected:Array<[string,number,number]>=[];
+      const count=new DataView(new Uint8Array(query(1,O.QOP_GET_PROGRAMIV,[20,0x8b86],4)).buffer).getUint32(0,true);
+      for(let index=0;index<count;index++){
+        const read=(offset:number,capacity:number)=>{
+          const bytes=new Uint8Array(query(1,O.QOP_GET_ACTIVE_UNIFORM_INFO,[20,index,offset,capacity],20+capacity)),v=new DataView(bytes.buffer);
+          if(v.getUint32(0,true)!==0 || v.getUint32(16+capacity,true)!==0x47514c33)throw new Error("reflection incomplete");
+          return {bytes:bytes.subarray(16,16+capacity),length:v.getUint32(4,true),size:v.getInt32(8,true),type:v.getUint32(12,true)};
+        };
+        const meta=read(0,0),bytes=new Uint8Array(meta.length);
+        for(let offset=0;offset<meta.length;offset+=17){const capacity=Math.min(17,meta.length-offset),part=read(offset,capacity);
+          if(part.length!==meta.length || part.size!==meta.size || part.type!==meta.type)throw new Error("changed reflection");bytes.set(part.bytes,offset);}
+        reflected.push([new TextDecoder().decode(bytes),meta.size,meta.type]);
+      }
+      reflected.sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0);
+
       const values=(i:number,loc:number,integer=0)=>{
         const bytes=query(i,O.QOP_GET_UNIFORM_VALUES,[20,loc,integer],76),view=new DataView(new Uint8Array(bytes).buffer);
         if(view.getUint32(72,true)!==0x47514c33)throw new Error("uniform reply incomplete");
@@ -114,7 +142,7 @@ self.onmessage=({data})=>{
         else imports!.host_gl_unbind(7,11+i);
       }
       const clean=forwarded?null:created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
-      postMessage({type:"uniform_values_result",shared,integers,booleans,survivor,rendered,failedLink,failedError,retainedExecutable,invalidated,staleError,relinked,pending,afterDelete,deletedError,clean,error:forwarded?0:gl!.getError()});return;
+      postMessage({type:"uniform_values_result",stable,peerStable,missingBulk,reflected,shared,integers,booleans,survivor,rendered,failedLink,failedError,retainedExecutable,invalidated,staleError,relinked,pending,afterDelete,deletedError,clean,error:forwarded?0:gl!.getError()});return;
     }
     create(0);current(0);storage(0,[255,0,0,255]);attachment(0);const red=pixels(0);
     create(1,0);current(1);attachment(1);const sharedRed=pixels(1);

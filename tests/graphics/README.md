@@ -55,7 +55,7 @@ scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh ce8cd9dbcf
 scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh
 ```
 
-The 86 current cases cover image siblings and retained framebuffer storage,
+The 89 current cases cover image siblings and retained framebuffer storage,
 redefinition, cleanup, invalid handles, repeated contexts, the shared
 shader/program namespace, boolean numeric conversion, vectors longer than
 four elements, unchanged query output after device failure and EGL config
@@ -202,3 +202,16 @@ source retirement, failed-link executable retention, successful relink
 invalidation, deletion pending/current release and final native shader/
 program cleanup. They use source host code with a synthetic kernel scratch
 adapter; public C sharing and normal guest marshalling remain separate.
+
+
+The checked name/reflection cases transfer 140,001-byte lookup strings and
+70,000-byte reflected names with bounded protocol records. They test each
+phase's malformed/transport/GL failure, cancellation, replacement and
+unchanged public outputs. These C transfer checks supply device-double
+lookup success, not a renderer accepting arbitrarily long identifiers.
+Host tests cover shared stable locations, array aliases, index exhaustion,
+metadata rollback and context-local pending storage. The shared-uniform
+browser cases additionally check an actual 249-character uniform, checked
+reflection chunks and a long inactive-name transfer through both routes
+in all engines. Source/name translation for active names beyond WebGL's
+limits remains required work.

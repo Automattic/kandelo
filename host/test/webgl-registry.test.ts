@@ -46,7 +46,10 @@ describe("GlContextRegistry", () => {
     expect(reg.shareObjects(7,12,11)).toBe(false);
     target.hasBeenCurrent = false;target.savedClientArrayBuffer=null;
     expect(reg.shareObjects(7,12,11)).toBe(false);
-    target.savedClientArrayBuffer=undefined; target.textures.set(1,{} as WebGLTexture);
+    target.savedClientArrayBuffer=undefined;
+    target.uniformLookup={program:1,token:1,bytes:new Uint8Array(1),cursor:0};
+    expect(reg.shareObjects(7,12,11)).toBe(false);
+    target.uniformLookup=null; target.textures.set(1,{} as WebGLTexture);
     expect(reg.shareObjects(7,12,11)).toBe(false);
     expect(target.objects).toBe(old); expect(target.objects).not.toBe(source.objects);
   });

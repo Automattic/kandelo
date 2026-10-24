@@ -1978,7 +1978,9 @@ for(const mode of ["native","forwarded"] as const) {
       } finally {worker.terminate();dispose();}
     },{root,mode});
     const ok=(values:number[])=>({status:0,count:values.length,values});
-    expect(result).toEqual({type:"uniform_values_result",shared:[ok([.25,.5,.75,1]),ok([1,2,3,4,5,6,7,8,9]),ok([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]),ok([1,2,3]),ok([4,5,6]),ok([1,0,1,0]),ok([.5])],
+    const reflected:Array<[string,number,number]>=[["colorValue",1,0x8b52],["normal",1,0x8b5b],["transform",1,0x8b5c],["items[0]",2,0x8b51],["flags",1,0x8b59],["scalar",1,0x1406],["u"+"n".repeat(248),1,0x1406]];
+    reflected.sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0);
+    expect(result).toEqual({type:"uniform_values_result",stable:true,peerStable:true,missingBulk:-1,reflected,shared:[ok([.25,.5,.75,1]),ok([1,2,3,4,5,6,7,8,9]),ok([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]),ok([1,2,3]),ok([4,5,6]),ok([1,0,1,0]),ok([.5]),ok([0])],
       integers:ok([0,1,1,1]),booleans:ok([1,0,1,0]),survivor:ok([.25,.5,.75,1]),rendered:[255,0,0,255],failedLink:{status:1,count:0,values:[]},failedError:[2,5,0,0],retainedExecutable:[255,0,0,255],invalidated:{status:1,count:0,values:[]},staleError:[2,5,0,0],relinked:ok([0,0,0,0]),pending:ok([0,0,0,0]),afterDelete:{status:1,count:0,values:[]},deletedError:[1,5,0,0],clean:true,error:0});
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });

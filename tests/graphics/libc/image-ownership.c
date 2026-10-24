@@ -176,6 +176,10 @@ static void overlap_wait(int phase) {
 }
 static uint32_t shader_names[2], program_names[2];
 static unsigned shaders_created, programs_created;
+static const char *lookup_expected;
+static uint8_t *lookup_pending;
+static uint32_t lookup_total, lookup_cursor, lookup_token, lookup_queries, lookup_chunks;
+static int lookup_fail_action = -1, lookup_failure, lookup_fail_abort;
 static unsigned uniform_count = 4, uniform_failure, uniform_queries, uniform_integer;
 static int numeric_queries;
 static int string_generation;
@@ -586,6 +590,66 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             const uint32_t reply[3] = {failure == 2 ? 1u : 0u,failure == 2 ? 0 : failure == 4 ? token+1 : token,failure == 3 ? 0 : 0x47514c33u};
             memcpy(output,reply,12); return 0;
         }
+        if (q->op == 0x21) {
+            assert(q->in_buf_len >= 16 && q->in_buf_len <= 65536 && q->out_buf_len == 16);
+            const uint8_t *input = allocation_for(q->in_buf_ptr, q->in_buf_len);
+            uint8_t *reply = allocation_for(q->out_buf_ptr, 16);
+            uint32_t header[4];
+            memcpy(header, input, 16);
+            unsigned action = header[0];
+            lookup_queries++;
+            if (action == 4 && lookup_fail_abort) {
+                errno = EIO;
+                return -1;
+            }
+            unsigned failure = action == (unsigned)lookup_fail_action ? lookup_failure : 0;
+            if (failure)
+                lookup_fail_action = -1;
+            if (failure == 1) {
+                errno = EIO;
+                return -1;
+            }
+            GLint location = -1;
+            if (!failure) {
+                if (action == 0) {
+                    assert(header[3] == q->in_buf_len - 16);
+                    assert(lookup_expected && strlen(lookup_expected) == header[3] &&
+                           !memcmp(input + 16, lookup_expected, header[3]));
+                    location = 7;
+                } else if (action == 1) {
+                    free(lookup_pending);
+                    lookup_pending = malloc(header[3]);
+                    assert(lookup_pending);
+                    lookup_total = header[3];
+                    lookup_cursor = 0;
+                    lookup_token = header[2];
+                } else if (action == 2) {
+                    assert(lookup_pending && lookup_token == header[2] &&
+                           header[3] == lookup_cursor);
+                    memcpy(lookup_pending + lookup_cursor, input + 16, q->in_buf_len - 16);
+                    lookup_cursor += q->in_buf_len - 16;
+                    lookup_chunks++;
+                } else if (action == 3) {
+                    assert(lookup_pending && lookup_cursor == lookup_total && lookup_expected &&
+                           strlen(lookup_expected) == lookup_total &&
+                           !memcmp(lookup_expected, lookup_pending, lookup_total));
+                    free(lookup_pending);
+                    lookup_pending = NULL;
+                    location = 7;
+                } else {
+                    assert(action == 4);
+                    free(lookup_pending);
+                    lookup_pending = NULL;
+                }
+            }
+            if (failure == 2)
+                query_gl_error = GL_INVALID_OPERATION;
+            const uint32_t words[4] = {failure == 2 ? 1u : 0u,
+                                       failure == 3 ? header[2] + 1 : header[2], (uint32_t)location,
+                                       failure == 4 ? 0 : 0x47514c33u};
+            memcpy(reply, words, 16);
+            return 0;
+        }
         if (q->op == 0x1f || q->op == 0x10 || q->op == 0x11) {
             assert(latest_allocation);
             uniform_queries++;
@@ -629,15 +693,16 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         if (q->op == QOP_GET_ERROR && query_gl_error) {
             memcpy(latest_allocation,&query_gl_error,4); query_gl_error = 0; return 0;
         }
-        if (q->op >= 0x18 && q->op <= 0x1d) {
+        if ((q->op >= 0x18 && q->op <= 0x1d) || q->op == 0x20) {
             core_calls++;
             if (core_fail_at && core_calls == core_fail_at) { errno = EIO; return -1; }
             assert(latest_allocation && q->out_buf_len <= 65536);
             uint8_t *reply = latest_allocation;
             memset(reply,0,q->out_buf_len); memcpy(reply,&query_status,4);
-            if (q->op <= 0x1a) {
-                const unsigned header = q->op == 0x18 ? 12 : 4, unit = q->op == 0x19 ? 4 : 1;
-                assert(q->in_buf_len == (q->op == 0x18 ? 16u : 12u));
+            if (q->op <= 0x1a || q->op == 0x20) {
+                const unsigned header = q->op == 0x18 || q->op == 0x20 ? 12 : 4,
+                               unit = q->op == 0x19 ? 4 : 1;
+                assert(q->in_buf_len == ((q->op == 0x18 || q->op == 0x20) ? 16u : 12u));
                 const unsigned cap = (q->out_buf_len-header-8)/unit;
                 if (!cap) core_offset = 0;
                 memcpy(reply+4,&core_total,4);
@@ -649,7 +714,10 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 core_offset += cap;
             } else if (q->op == 0x1b) {
                 assert(q->out_buf_len == 24); memcpy(reply+4,core_info,16);
-            } else { assert(q->out_buf_len == 12); memcpy(reply+4,&query_scalar,4); }
+            } else {
+                assert(q->out_buf_len == 12);
+                memcpy(reply + 4, &query_scalar, 4);
+            }
             const uint32_t magic = 0x47514c33u;
             memcpy(reply+q->out_buf_len-4,&magic,4); return 0;
         }
@@ -1088,6 +1156,108 @@ int main(int argc, char **argv) {
         glShaderSource(9,-1,NULL,NULL); assert(glGetError() == GL_INVALID_VALUE);
         free(text); assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-core-source"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-uniform-lookup")) {
+        char *name = malloc(140002);
+        assert(name);
+        for (unsigned length = 249; length <= 140001; length = length == 249     ? 300
+                                                               : length == 300   ? 65520
+                                                               : length == 65520 ? 140001
+                                                                                 : 140002) {
+            memset(name, 'u', length);
+            name[length] = 0;
+            lookup_expected = name;
+            lookup_chunks = 0;
+            assert(glGetUniformLocation(9, name) == 7);
+            assert(lookup_pending == NULL);
+            assert(lookup_chunks == (length > 65520 ? 3u : 0u));
+        }
+        unsigned calls = lookup_queries;
+        assert(glGetUniformLocation(9, NULL) == -1 && lookup_queries == calls);
+        free(name);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-uniform-lookup");
+        return 0;
+    }
+    if (!strcmp(argv[1], "encoder-uniform-lookup-errors")) {
+        char *name = malloc(70001);
+        assert(name);
+        memset(name, 'u', 70000);
+        name[70000] = 0;
+        lookup_expected = name;
+        for (int action = 0; action <= 3; action++)
+            for (int failure = 1; failure <= 4; failure++) {
+                lookup_fail_action = action;
+                lookup_failure = failure;
+                if (action == 0)
+                    name[300] = 0;
+                else
+                    name[300] = 'u';
+                assert(glGetUniformLocation(9, name) == -1);
+                assert(glGetError() == GL_INVALID_OPERATION);
+                assert(lookup_pending == NULL);
+                assert(glGetUniformLocation(9, name) == 7);
+            }
+        name[300] = 'u';
+        lookup_fail_action = 2;
+        lookup_failure = 1;
+        lookup_fail_abort = 1;
+        assert(glGetUniformLocation(9, name) == -1 && glGetError() == GL_INVALID_OPERATION &&
+               lookup_pending);
+        lookup_fail_abort = 0;
+        assert(glGetUniformLocation(9, name) == 7 && lookup_pending == NULL);
+        fail_malloc = 1;
+        assert(glGetUniformLocation(9, name) == -1);
+        fail_malloc = 0;
+        assert(glGetError() == GL_OUT_OF_MEMORY);
+        free(name);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-uniform-lookup-errors");
+        return 0;
+    }
+    if (!strcmp(argv[1], "encoder-uniform-reflection")) {
+        char *name = malloc(70001);
+        assert(name);
+        GLsizei length = -1;
+        GLint size = -1;
+        GLenum type = 0;
+        core_total = 70000;
+        glGetActiveUniform(9, 0, 70001, &length, &size, &type, name);
+        assert(length == 70000 && name[70000] == 0 && size == 1 && type == GL_FLOAT_VEC4);
+        for (unsigned i = 0; i < 70000; i++)
+            assert(name[i] == 'a' + i % 26);
+        char small[4] = "!!!";
+        glGetActiveUniform(9, 0, 4, &length, &size, &type, small);
+        assert(length == 3 && !strcmp(small, "abc"));
+        glGetActiveUniform(9, 0, 0, &length, &size, &type, NULL);
+        assert(length == 0 && size == 1 && type == GL_FLOAT_VEC4);
+        length = -1;
+        glGetActiveUniform(9, 0, -1, &length, &size, &type, small);
+        assert(length == -1 && glGetError() == GL_INVALID_VALUE);
+        core_calls = 0;
+        core_fail_at = 3;
+        length = -1;
+        size = -1;
+        type = 0;
+        memset(name, '!', 70001);
+        glGetActiveUniform(9, 0, 70001, &length, &size, &type, name);
+        assert(length == -1 && size == -1 && type == 0 && name[0] == '!' && name[70000] == '!' &&
+               glGetError() == GL_INVALID_OPERATION);
+        core_fail_at = 0;
+        fail_malloc = 1;
+        glGetActiveUniform(9, 0, 4, &length, &size, &type, small);
+        fail_malloc = 0;
+        assert(length == -1 && glGetError() == GL_OUT_OF_MEMORY);
+        query_status = 1;
+        query_gl_error = GL_INVALID_VALUE;
+        glGetActiveUniform(9, 0, 4, &length, &size, &type, small);
+        query_status = 0;
+        assert(length == -1 && size == -1 && type == 0 && !strcmp(small, "abc") &&
+               glGetError() == GL_INVALID_VALUE);
+        free(name);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-uniform-reflection");
+        return 0;
     }
     if (!strcmp(argv[1], "encoder-uniform-values")) {
         GLfloat values[17];

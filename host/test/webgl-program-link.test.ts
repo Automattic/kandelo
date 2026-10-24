@@ -20,6 +20,7 @@ class NativePrograms {
   uniformWrites = 0;
   uniformValue: unknown = new Float32Array([0.25,-1.75,2.5,1]);
   getUniform() { return this.uniformValue; }
+  getUniformLocation(_program: Program, _name: string) { return {}; }
   createShader() { return { compiled: true, deleted: false }; }
   createProgram(): Program | null {
     if (this.failCreate) { this.error = 0x505; return null; }
@@ -98,6 +99,101 @@ describe("program link attempts and installed executables", () => {
     expect(parent.registry.shareObjects(1,12,0)).toBe(true);
     return peer;
   }
+
+  it("keeps repeated uniform locations stable across a sharing peer until successful relink",()=>{
+    const parent=setup(),peer=sharePeer(parent);parent.b.nextUniformLoc=1;
+    const location=(b: typeof peer,name:string)=>{
+      const bytes=new TextEncoder().encode(name),input=new Uint8Array(8+bytes.length),out=new Uint8Array(4);
+      const view=new DataView(input.buffer);view.setUint32(0,20,true);view.setUint32(4,bytes.length,true);input.set(bytes,8);
+      expect(runGlQuery(b,O.QOP_GET_UNIFORM_LOC,input,out)).toBe(4);return new DataView(out.buffer).getInt32(0,true);
+    };
+    const first=location(parent.b,"colors[0]");
+    expect(location(parent.b,"colors[0]")).toBe(first);
+    expect(location(peer,"colors")).toBe(first);
+    expect(location(peer,"colors[000]")).toBe(first);
+    expect(location(peer,"colors[1]")).not.toBe(first);
+    linkProgramRetainingExecutable(peer,20);
+    expect(location(parent.b,"colors")).not.toBe(first);
+  });
+
+  function lookup(owner: ReturnType<typeof setup>["b"], action: number, token: number, arg=0, bytes=new Uint8Array(), program=20) {
+    const input=new Uint8Array(16+bytes.length),reply=new Uint8Array(16).fill(0xaa);
+    [action,program,token,arg].forEach((word,i)=>new DataView(input.buffer).setUint32(i*4,word,true));input.set(bytes,16);
+    const rc=runGlQuery(owner,O.QOP_LOOKUP_UNIFORM,input,reply),v=new DataView(reply.buffer);
+    if(rc>=0)expect(v.getUint32(12,true)).toBe(0x47514c33);
+    return {rc,status:v.getUint32(0,true),token:v.getUint32(4,true),location:v.getInt32(8,true)};
+  }
+  it("assembles a long name in bounded chunks and resolves the live shared program only at commit",()=>{
+    const parent=setup(),peer=sharePeer(parent);parent.b.nextUniformLoc=1;
+    const name="u"+"n".repeat(140000),bytes=new TextEncoder().encode(name),seen:string[]=[];
+    parent.native.getUniformLocation=(_program,text)=>{seen.push(text);return {};};
+    const original=parent.native.getProgramParameter.bind(parent.native);parent.native.getProgramParameter=(program,pname)=>pname===0x8b86?1:original(program,pname);
+    (parent.native as any).getActiveUniform=()=>({name,size:1,type:0x1406});
+    expect(lookup(peer,1,1,bytes.length).status).toBe(0);
+    for(let offset=0;offset<bytes.length;offset+=65520)expect(lookup(peer,2,1,offset,bytes.subarray(offset,offset+65520)).status).toBe(0);
+    expect(seen).toEqual([]);const done=lookup(peer,3,1);expect(done.status).toBe(0);expect(seen).toEqual([name]);expect(peer.uniformLookup).toBeNull();
+    const short=new TextEncoder().encode("color");const first=lookup(parent.b,0,1,short.length,short);
+    expect(lookup(peer,0,2,short.length,short).location).toBe(first.location);
+    expect(done.location).not.toBe(first.location);
+  });
+  it("returns inactive long roots and invalid or reserved names without WebGL-only name errors",()=>{
+    const {b,native}=setup();let calls=0;native.getUniformLocation=()=>{calls++;return {};};
+    for(const name of ["unknown"+"x".repeat(70000),"gl_reserved","","bad name","value[-1]"]) {
+      const bytes=new TextEncoder().encode(name);
+      if(bytes.length>65520){expect(lookup(b,1,1,bytes.length).status).toBe(0);
+        for(let at=0;at<bytes.length;at+=65520)lookup(b,2,1,at,bytes.subarray(at,at+65520));expect(lookup(b,3,1).location).toBe(-1);}
+      else {const result=lookup(b,0,b.uniformLookupSerial+1,bytes.length,bytes);expect(result.status).toBe(0);expect(result.location).toBe(-1);}
+    }
+    expect(calls).toBe(0);expect(b.errors).toEqual([]);
+  });
+  it("rejects incomplete chunks and stale tokens while cancellation never erases a newer lookup",()=>{
+    const {b}=setup();lookup(b,1,1,3);expect(lookup(b,2,1,1,new Uint8Array([65])).status).toBe(1);expect(b.uniformLookup).toBeNull();
+    lookup(b,1,2,3);lookup(b,2,2,0,new Uint8Array([65]));expect(lookup(b,3,2).status).toBe(1);expect(b.uniformLookup).toBeNull();
+    lookup(b,1,3,1);lookup(b,1,4,1);expect(lookup(b,4,3).status).toBe(1);expect(b.uniformLookup?.token).toBe(4);
+    expect(lookup(b,4,4).status).toBe(0);expect(lookup(b,4,4).status).toBe(0);expect(b.uniformLookup).toBeNull();
+    expect(lookup(b,1,4,1).status).toBe(1);expect(b.uniformLookup).toBeNull();
+  });
+  it("keeps lookup storage context-local and retires it on replacement or destruction",()=>{
+    const parent=setup(),peer=sharePeer(parent);lookup(parent.b,1,1,32);lookup(peer,1,1,64);
+    expect(parent.b.uniformLookup?.bytes.length).toBe(32);expect(peer.uniformLookup?.bytes.length).toBe(64);
+    const text=new TextEncoder().encode("color");expect(lookup(peer,0,2,text.length,text).status).toBe(0);expect(peer.uniformLookup).toBeNull();
+    lookup(peer,1,3,64);parent.registry.destroyContext(1,0);expect(parent.b.uniformLookup).toBeNull();expect(peer.uniformLookup?.bytes.length).toBe(64);
+    parent.registry.destroyContext(1,12);expect(peer.uniformLookup).toBeNull();expect(peer.uniformLocationNames.size).toBe(0);
+  });
+  it("rejects a program retired during a name transfer and preserves location state on allocation failure",()=>{
+    const {b,native}=setup();b.nextUniformLoc=1;lookup(b,1,1,1);lookup(b,2,1,0,new Uint8Array([65]));b.programs.delete(20);
+    expect(lookup(b,3,1).status).toBe(1);expect(b.uniformLookup).toBeNull();expect(b.errors.pop()).toBe(0x501);
+    const program=native.createProgram()!;program.linked=true;b.programs.set(20,program);
+    const set=b.uniformLocationNames.set.bind(b.uniformLocationNames);b.uniformLocationNames.set=()=>{throw new Error("allocation rejected");};
+    const text=new TextEncoder().encode("color");expect(lookup(b,0,2,text.length,text).status).toBe(1);
+    expect(b.nextUniformLoc).toBe(1);expect(b.uniformLocations.has(2)).toBe(false);expect(b.uniformLocationPrograms.has(2)).toBe(false);expect(b.errors.pop()).toBe(0x505);
+    b.uniformLocationNames.set=set;expect(lookup(b,0,3,text.length,text).location).toBe(2);
+  });
+  it("returns an existing location at counter exhaustion and rejects new indices without wrapping",()=>{
+    const {b}=setup();b.nextUniformLoc=1;const text=new TextEncoder().encode("color");const first=lookup(b,0,1,text.length,text).location;
+    b.nextUniformLoc=0x7fffffff;expect(lookup(b,0,2,text.length,text).location).toBe(first);
+    const other=new TextEncoder().encode("other");expect(lookup(b,0,3,other.length,other).status).toBe(1);expect(b.errors.pop()).toBe(0x505);expect(b.nextUniformLoc).toBe(0x7fffffff);
+  });
+  it("rejects malformed lookup records before publishing a reply or allocating pending storage",()=>{
+    const {b}=setup(),reply=new Uint8Array(16).fill(0xaa);
+    for(const words of [[5,20,1,0],[0,20,0,0],[0,20,1,1],[3,20,1,1]]) {
+      expect(runGlQuery(b,O.QOP_LOOKUP_UNIFORM,new Uint8Array(new Uint32Array(words).buffer),reply)).toBe(-22);
+    }
+    expect([...reply]).toEqual(new Array(16).fill(0xaa));expect(b.uniformLookup).toBeNull();
+  });
+  it("reads checked active-uniform metadata and long name chunks without mutating old error outputs",()=>{
+    const {b,native}=setup();const name="u"+"x".repeat(70000);
+    const original=native.getProgramParameter.bind(native);native.getProgramParameter=(program,pname)=>pname===0x8b86?1:original(program,pname);
+    (native as any).getActiveUniform=()=>({name,size:3,type:0x8b51});
+    const query=(index:number,offset:number,capacity:number)=>{
+      const input=new Uint8Array(new Uint32Array([20,index,offset,capacity]).buffer),out=new Uint8Array(20+capacity);
+      expect(runGlQuery(b,O.QOP_GET_ACTIVE_UNIFORM_INFO,input,out)).toBe(out.length);return {v:new DataView(out.buffer),out};
+    };
+    const meta=query(0,0,0);expect(meta.v.getUint32(0,true)).toBe(0);expect(meta.v.getUint32(4,true)).toBe(name.length);expect(meta.v.getUint32(8,true)).toBe(3);expect(meta.v.getUint32(12,true)).toBe(0x8b51);
+    const tail=query(0,69998,4);expect(new TextDecoder().decode(tail.out.subarray(16,20))).toBe("xxx\0");
+    expect(query(1,0,0).v.getUint32(0,true)).toBe(1);expect(b.errors.pop()).toBe(0x501);
+    expect(query(0,name.length+1,0).v.getUint32(0,true)).toBe(1);expect(b.errors.pop()).toBe(0x501);
+  });
 
   function uniformReply(b: ReturnType<typeof setup>["b"], name=20, location=1, integer=0) {
     const input = new Uint8Array(12), reply = new Uint8Array(76).fill(0xaa);

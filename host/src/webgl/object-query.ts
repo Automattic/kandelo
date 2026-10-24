@@ -17,6 +17,7 @@ function objectName<T>(names: Map<number,T>, retired: Map<T,number>, object: T):
 export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out: Uint8Array): number | undefined {
   let inputSize: number, size = 0, header = 0, unit = 1;
   switch (op) {
+    case O.QOP_GET_ACTIVE_UNIFORM_INFO:
     case O.QOP_GET_ACTIVE_ATTRIB: inputSize = 16; header = 12; break;
     case O.QOP_GET_ATTACHED_SHADERS: inputSize = 12; header = 4; unit = 4; break;
     case O.QOP_GET_SHADER_SOURCE: inputSize = 12; header = 4; break;
@@ -36,6 +37,7 @@ export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out:
     const gl = b.gl!, result = new DataView(payload.buffer);
     const name = v.getUint32(0,true), arg = v.getUint32(4,true);
     switch (op) {
+      case O.QOP_GET_ACTIVE_UNIFORM_INFO:
       case O.QOP_GET_ACTIVE_ATTRIB:
       case O.QOP_GET_ATTACHED_SHADERS: {
         const program = b.programs.get(name);
@@ -49,9 +51,9 @@ export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out:
           return payload.length;
         }
         let count = 0, info: WebGLActiveInfo | null = null;
-        if (!checkedGlCall(b, () => { count = Number(gl.getProgramParameter(program,0x8b89)); })) return -5;
+        if (!checkedGlCall(b, () => { count = Number(gl.getProgramParameter(program,op === O.QOP_GET_ACTIVE_UNIFORM_INFO ? 0x8b86 : 0x8b89)); })) return -5;
         if (arg >= count) return fail(b,0x501);
-        if (!checkedGlCall(b, () => { info = gl.getActiveAttrib(program,arg); })) return -5;
+        if (!checkedGlCall(b, () => { info = op === O.QOP_GET_ACTIVE_UNIFORM_INFO ? gl.getActiveUniform(program,arg) : gl.getActiveAttrib(program,arg); })) return -5;
         if (!info) return fail(b,0x502);
         const active = info as WebGLActiveInfo, bytes = new TextEncoder().encode(active.name);
         const offset = v.getUint32(8,true), capacity = v.getUint32(12,true);

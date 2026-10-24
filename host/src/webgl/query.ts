@@ -16,6 +16,7 @@
  * delete and would collide). Indices are number-keyed for clean u32
  * round-tripping.
  */
+import { runUniformLookup, uniformLocation } from "./uniform-queries.js";
 import { checkedQueryReply, runStateQuery } from "./state-query.js";
 import { runObjectQuery } from "./object-query.js";
 import { runShaderSourceUpload } from "./shader-source.js";
@@ -110,6 +111,7 @@ export function runGlQuery(
 ): number {
   if (!b.gl) return -1;
   const gl = b.gl;
+  if (op === O.QOP_LOOKUP_UNIFORM) return runUniformLookup(b,input,out);
   if (op === O.QOP_SHADER_SOURCE_UPLOAD) return runShaderSourceUpload(b,input,out);
   const inDv = new DataView(input.buffer, input.byteOffset, input.byteLength);
   const outDv = new DataView(out.buffer, out.byteOffset, out.byteLength);
@@ -180,17 +182,10 @@ export function runGlQuery(
       const programName = inDv.getUint32(0, true);
       const nameLen = inDv.getUint32(4, true);
       if (input.byteLength < 8 + nameLen) return -22;
-      const program = b.programs.get(programName);
-      const uniformName = new TextDecoder().decode(input.subarray(8, 8 + nameLen));
-      const loc = program ? gl.getUniformLocation(program, uniformName) : null;
-      if (loc) {
-        const idx = ++b.nextUniformLoc;
-        b.uniformLocations.set(idx, loc);
-        b.uniformLocationPrograms.set(idx, programName);
-        outDv.setInt32(0, idx, true);
-      } else {
-        outDv.setInt32(0, -1, true);
-      }
+      const text = new TextDecoder().decode(new Uint8Array(input.subarray(8,8+nameLen)));
+      const location = uniformLocation(b,programName,text);
+      if (location === null) return -22;
+      outDv.setInt32(0,location,true);
       return 4;
     }
 
