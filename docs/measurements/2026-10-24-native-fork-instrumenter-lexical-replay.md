@@ -53,9 +53,11 @@ transform timings, not guest application execution timings.
 No successful complete original-Codex Walrus/native pair exists. An earlier
 [shared-target checkpoint](2026-10-24-native-codex-transform.md) completed
 the native transform at 451.38 MiB physical peak in 1,073.45 seconds; its
-fingerprint is separate from this lexical-replay snapshot. The final-source
-large-input rerun remains pending. These controlled examples do not establish Codex
-capacity, broad process correctness or application performance.
+fingerprint is separate from this lexical-replay snapshot. The
+[final-source large-input run](2026-10-24-native-codex-lexical-transform.md)
+completed at 484.97 MiB physical peak in 1,029.34 seconds. These controlled
+examples alone do not establish Codex capacity, broad process correctness
+or application performance.
 
 ## Reproduction and provenance
 
@@ -86,4 +88,5 @@ Rust workspace passed 3,200 tests, xtask passed 726, and the ABI snapshot
 check passed. Selected native conformance checks passed: seven libc, 18 POSIX signal and
 113 Sortix process/signal/I/O checks. Two upstream Sortix signal cases retain
 their documented implementation-defined `SA_RESTART` skips. The final-source
-Codex rerun remains pending on the draft PR.
+Codex transform and the matched known-package comparisons also completed;
+their separate reports preserve scope and fingerprints.

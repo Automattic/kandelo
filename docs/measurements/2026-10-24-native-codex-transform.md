@@ -1,4 +1,9 @@
-# Guarded native Codex transform results
+# Earlier guarded native Codex transform results
+
+This report preserves the earlier shared-target checkpoint. The
+[final lexical-source run](2026-10-24-native-codex-lexical-transform.md)
+completed separately at 484.97 MiB physical peak in 1,029.34 seconds.
+The fingerprints and measurements below remain historical evidence.
 
 The complete native transform succeeded on the original 284.6 MB input in
 **1,073.45 seconds (17 minutes 53 seconds)**, including serial Wasm validation
