@@ -1893,7 +1893,7 @@ pub struct WasmDirent {
 ///
 /// Verified offsets: l_type=0, l_whence=2, l_start=8, l_len=16, l_pid=24.
 /// Total size: 32 bytes.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct WasmFlock {
     pub l_type: i16,   // F_RDLCK, F_WRLCK, F_UNLCK (short)

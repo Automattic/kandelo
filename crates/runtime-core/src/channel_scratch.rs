@@ -465,20 +465,10 @@ fn validate_special_layout(
     pointer_width: u8,
 ) -> Result<ValidatedChannelScratchArgs, Errno> {
     match syscall_number {
-        number if number == Syscall::Fcntl as u32 => {
-            let mut validated = ValidatedChannelScratchArgs::new();
-            if matches!(args[1] as u32, 5 | 6 | 7 | 12 | 13 | 14 | 36 | 37 | 38) {
-                checked_exact_range(
-                    &mut validated,
-                    args,
-                    2,
-                    region.start,
-                    kernel_scratch_wire::FCNTL_FLOCK_BYTES as usize,
-                    region,
-                )?;
-            }
-            Ok(validated)
-        }
+        // No fcntl arm: an advisory-lock command's `struct flock` is the
+        // caller's own address, which the kernel reads and writes through the
+        // cross-memory primitive (`channel_fcntl_lock`), because a blocking
+        // request parks with it and is re-executed after any staging is gone.
         number if number == Syscall::Ioctl as u32 => {
             validate_ioctl_layout(args, region, pointer_width)
         }
@@ -2106,7 +2096,7 @@ mod tests {
     // emits for one representative syscall per family and assert that
     // `prepare_channel_record` lays a scratch layout the UNCHANGED legacy
     // `validate_channel_scratch_arguments` / dispatch accept, including
-    // copy-back for value-result buffers. fcntl-lock, prctl, epoll_ctl,
+    // copy-back for value-result buffers. prctl, epoll_ctl,
     // epoll_pwait/epoll_wait reuse the generic flat-span placement
     // (single/ordered spans at the allocation base);
     // select/pselect6 use the dedicated fixed-offset `prepare_select_record`.
@@ -2142,30 +2132,6 @@ mod tests {
             Some(Err(errno)) => Some(Err(errno)),
             None => None,
         }
-    }
-
-    #[test]
-    fn record_fcntl_getlk_flock_matches_legacy_validator() {
-        // fcntl(fd=3, F_GETLK=5, flock): one INOUT flock span at arg 2. F_GETLK
-        // returns the conflicting lock in place, so the guest marshals INOUT and
-        // the kernel plans a copy-back (F_SETLK would be a plain IN span).
-        const FLOCK: usize = kernel_scratch_wire::FCNTL_FLOCK_BYTES as usize;
-        let mut flock = alloc::vec![0u8; FLOCK];
-        flock[0] = 1; // F_WRLCK marker (content is opaque to the layout)
-        let (start, prep, _data) = prep_record(
-            Syscall::Fcntl as u32,
-            [3, 5, 0, 0, 0, 0],
-            &[RecSpan { kind: SPAN_KIND_IN_OUT_PTR, arg_index: 2, payload: flock }],
-        );
-        assert_eq!(prep.syscall_nr, Syscall::Fcntl as u32);
-        assert_eq!(prep.args[2] as usize, start);
-        // F_GETLK writes the conflicting lock back -> one copy-back.
-        assert_eq!(prep.copy_back.len(), 1);
-        let region = ChannelScratchRegion::new(start, REC_CAP).unwrap();
-        let validated =
-            unsafe { validate_channel_scratch_arguments(prep.syscall_nr, &prep.args, region, 4) }
-                .expect("legacy validator accepts the reconstructed fcntl layout");
-        assert_eq!(validated.pointer(2), Ok(start));
     }
 
     #[test]

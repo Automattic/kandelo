@@ -61,7 +61,21 @@
   without the wait returning. Deleted `pendingSignalWaits`,
   `wakePendingSignalWaits`, the 500 ms NULL-timeout poll and the 10 ms
   `sigsuspend` poll.
-- Steps 2b, 5-6: not started.
+- **Step 5a (advisory locks): landed.** A blocking `fcntl(F_SETLKW /
+  F_SETLKW64 / F_OFD_SETLKW)` or `flock()` that conflicts parks in the kernel
+  with the request it must re-execute (`runtime_core::wait_retry`), holding
+  the blocked-retry binding of its open file description so a reused
+  descriptor number cannot redirect it; every advisory-lock state change
+  marks the parks dirty and the next drain re-executes them
+  (`settle_retry_waits`). A caught signal interrupts with `EINTR`, restarted
+  under `SA_RESTART`. The `struct flock` is the caller's own address.
+  Deleted the host's fcntl-lock intercept, its blocking-retry snapshot kind,
+  `pendingAdvisoryLockRetries` and the 10 ms lock re-run. Its guest test
+  exposed a lock leak the old 10 ms re-run also suffered: closing the last
+  reference to an open file description kept its OFD and flock locks while
+  an independent open of the same tmpfs or rootfs file stayed open; the
+  process table now releases them (`release_orphaned_ofd_locks`).
+- Steps 2b, 5b-6: not started (5b: transfers, then poll/select, then epoll).
 
 Two operational facts learned in step 1 that the next step should plan for:
 
@@ -379,13 +393,33 @@ msg/splice, IPC) → poll/select → epoll. Deletes `pendingPollRetries`,
 `blockingRetryWakeTargets`, the broad sweep, **all 10/50 ms polls, and the
 50 ms signal-safe grace** (the ordering it papered over becomes structural,
 because one serialized kernel sees the pipe write and the following `kill` in
-issue order). This step is the largest and carries the real hang risk; it
-needs the K3 §7.2 shadow comparison run first.
+issue order). This step is the largest and carries the real hang risk.
 
-The re-execution in step 5 needs the syscall's arguments and scratch bytes to
-be kernel-owned across the park. That is the "opaque record" transport's job
-(Phase 4 in `crates/shared/src/host_raw_syscalls.rs`) and must land with, or
-before, step 5.
+**Ruling (maintainer, 2026-10-02): raw caller addresses, no shadow mode.**
+The re-execution needs the syscall's arguments and buffers to outlive the
+park. This plan first gave that job to the "opaque record" transport (Phase 4
+in `crates/shared/src/host_raw_syscalls.rs`) and asked for the K3 §7.2 shadow
+comparison before any family moved. Steps 1-4 settled both differently, and
+step 5 follows them:
+
+- *Transport.* A parked call keeps the caller's own addresses (declared
+  `ChannelScalarKind::ProcessAddress`) and the kernel reads and writes them
+  through the cross-memory primitive when it re-executes, as `rem`,
+  `wait4`'s status and `sigtimedwait`'s `siginfo_t` already are. Nothing
+  staged per call has to outlive the park, so no second transport is needed;
+  a record format would be a second, competing copy of the same request.
+- *Shadow mode.* The comparator would run host and kernel decisions side by
+  side for a family that is deleted from the host in the same step. Steps 1-4
+  validated the same kind of move with the conformance suites (POSIX,
+  libc-test, Sortix), the full host Vitest suite and Chromium, which exercise
+  the real wake paths end to end; step 5 uses the same evidence, plus
+  targeted guest programs per sub-step (`examples/lock-kernel-wait.c` for
+  advisory locks).
+
+What carries over from the old protocol is the pinned target: a parked call
+holds the kernel's blocked-retry binding for its open file description, so a
+re-execution never follows a reused descriptor number
+(`crates/runtime-core/src/wait_retry.rs`).
 
 **Step 6 — remove scaffolding.** The blocking-retry token protocol
 (`kernel_blocking_retry_token`/`_release`), the per-fd wake-index exports,
@@ -477,7 +511,9 @@ Per commit (the brief's hard rules):
 - **A lost wakeup is a silent hang** (K3 §8.2). Step 1 keeps no safety-net
   timer for futex, because the futex contract has exactly four wake paths and
   each is tested; a miss would be a missing `FUTEX_WAKE` in the guest, which
-  Linux does not paper over either. Step 5 needs the shadow comparator first.
+  Linux does not paper over either. Step 5 has no shadow comparator (see the
+  2026-10-02 ruling under step 5); each sub-step adds a guest program that
+  blocks on every wake path it moves, and runs the conformance suites.
 - **A missed drain.** Signal interruption and completions reach the host on
   the next wake-event drain. Every kernel entry that can generate a signal,
   wake a futex, cancel, or exit a thread is followed by a drain today; the

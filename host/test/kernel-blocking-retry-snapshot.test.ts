@@ -19,7 +19,6 @@ import {
   CH_SYSCALL,
   CHANNEL_REQUEST_FLAG_CANCELLATION_POINT,
   CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED,
-  FCNTL_FLOCK_BYTES,
   PROCESS_MSGHDR_WASM32_CONTROLLEN_OFFSET,
   PROCESS_MSGHDR_WASM32_CONTROL_OFFSET,
   PROCESS_MSGHDR_WASM32_FLAGS_OFFSET,
@@ -2911,171 +2910,6 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
   );
 
   it.each(WIDTHS)(
-    "%s retains F_SETLKW's flock wire and acquires an exact target token",
-    async (_name, pointerWidth) => {
-      vi.useFakeTimers();
-      const harness = createRetryHarness(pointerWidth);
-      const flockPointer = 0x1000;
-      const replacementPointer = 0x2000;
-      const original = Array.from(
-        { length: FCNTL_FLOCK_BYTES },
-        (_, index) => (index * 7 + 3) & 0xff,
-      );
-      const replacement = new Array(FCNTL_FLOCK_BYTES).fill(0xee);
-      harness.processBytes.set(original, flockPointer);
-      harness.processBytes.set(replacement, replacementPointer);
-      writeRequest(harness, ABI_SYSCALLS.Fcntl, [
-        7n,
-        7n,
-        BigInt(flockPointer),
-      ]);
-      harness.kernelExports.kernel_blocking_retry_token = vi.fn(() => 43n);
-
-      const attempts: Array<{ fd: number; flock: number[] }> = [];
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          const view = kernelView(harness, rawPointer);
-          const stagedPointer = Number(kernelArg(view, 2));
-          attempts.push({
-            fd: Number(kernelArg(view, 0)),
-            flock: Array.from(
-              harness.kernelBytes.slice(
-                stagedPointer,
-                stagedPointer + FCNTL_FLOCK_BYTES,
-              ),
-            ),
-          });
-          publishKernelResult(
-            view,
-            attempts.length === 1 ? -1 : 0,
-            attempts.length === 1 ? EAGAIN : 0,
-          );
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(harness.channel);
-      harness.processBytes.fill(
-        0xaa,
-        flockPointer,
-        flockPointer + FCNTL_FLOCK_BYTES,
-      );
-      writeRequest(harness, ABI_SYSCALLS.Fcntl, [
-        88n,
-        7n,
-        BigInt(replacementPointer),
-      ]);
-      await vi.advanceTimersByTimeAsync(10);
-      await Promise.resolve();
-
-      expect(attempts).toEqual([
-        { fd: 7, flock: original },
-        { fd: 7, flock: original },
-      ]);
-      expectExactRetryBindingLifecycle(
-        harness,
-        ABI_SYSCALLS.Fcntl,
-        43n,
-      );
-    },
-  );
-
-  it.each(WIDTHS)(
-    "%s retains blocking flock scalars and its exact OFD token",
-    async (_name, pointerWidth) => {
-      vi.useFakeTimers();
-      const harness = createRetryHarness(pointerWidth);
-      writeRequest(harness, ABI_SYSCALLS.Flock, [7n, 2n]);
-      harness.kernelExports.kernel_blocking_retry_token = vi.fn(() => 44n);
-
-      const attempts: Array<{ fd: number; operation: number }> = [];
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          const view = kernelView(harness, rawPointer);
-          attempts.push({
-            fd: Number(kernelArg(view, 0)),
-            operation: Number(kernelArg(view, 1)),
-          });
-          publishKernelResult(
-            view,
-            attempts.length === 1 ? -1 : 0,
-            attempts.length === 1 ? EAGAIN : 0,
-          );
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(harness.channel);
-      writeRequest(harness, ABI_SYSCALLS.Flock, [88n, 8n]);
-      await vi.advanceTimersByTimeAsync(10);
-      await Promise.resolve();
-
-      expect(attempts).toEqual([
-        { fd: 7, operation: 2 },
-        { fd: 7, operation: 2 },
-      ]);
-      expectExactRetryBindingLifecycle(
-        harness,
-        ABI_SYSCALLS.Flock,
-        44n,
-      );
-    },
-  );
-
-  it.each([
-    ["wasm32 F_SETLK", 4, 6],
-    ["wasm64 F_SETLK", 8, 6],
-    ["wasm32 F_OFD_SETLK", 4, 37],
-    ["wasm64 F_OFD_SETLK", 8, 37],
-  ] as const)(
-    "%s releases its Rust target pin before returning EAGAIN",
-    (_name, pointerWidth, command) => {
-      const harness = createRetryHarness(pointerWidth);
-      const flockPointer = 0x1000;
-      harness.processBytes.fill(
-        0x3c,
-        flockPointer,
-        flockPointer + FCNTL_FLOCK_BYTES,
-      );
-      writeRequest(harness, ABI_SYSCALLS.Fcntl, [
-        7n,
-        BigInt(command),
-        BigInt(flockPointer),
-      ]);
-      harness.kernelExports.kernel_blocking_retry_token = vi.fn(() => 45n);
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          publishKernelResult(kernelView(harness, rawPointer), -1, EAGAIN);
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(harness.channel);
-
-      expect(requestResult(harness)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        returnValue: -1,
-        errno: EAGAIN,
-      });
-      expect(harness.worker.pendingAdvisoryLockRetries.size).toBe(0);
-      expect(
-        harness.kernelExports.kernel_blocking_retry_token,
-      ).toHaveBeenCalledWith(
-        harness.channel.pid,
-        harness.channel.pid,
-        ABI_SYSCALLS.Fcntl,
-      );
-      expect(
-        harness.kernelExports.kernel_blocking_retry_release,
-      ).toHaveBeenCalledWith(
-        harness.channel.pid,
-        harness.channel.pid,
-        45n,
-      );
-    },
-  );
-
-  it.each(WIDTHS)(
     "%s retains select fd_sets, timeout, and original output pointers",
     async (_name, pointerWidth) => {
       vi.useFakeTimers();
@@ -4061,26 +3895,6 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         expectInterrupted(harness, "select");
         expect(
           harness.worker.pendingSelectRetries.has(harness.channel),
-        ).toBe(false);
-      }
-
-      {
-        const harness = createRetryHarness(pointerWidth);
-        armCancellationPoint(
-          harness,
-          ABI_SYSCALLS.Flock,
-          [7n, 2n],
-        );
-        harness.kernelExports.kernel_handle_channel = vi.fn(
-          (rawPointer: number | bigint) =>
-            publishRetryOrExactCleanup(harness, rawPointer, -1, EAGAIN),
-        );
-
-        harness.worker.handleSyscall(harness.channel);
-
-        expectInterrupted(harness, "advisory lock");
-        expect(
-          harness.worker.pendingAdvisoryLockRetries.has(harness.channel),
         ).toBe(false);
       }
 
