@@ -2353,3 +2353,55 @@ for (const mode of ["native","forwarded"] as const) {
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
+
+for(const partial of [false,true]) {
+  test(`retained surface allocation survives resize and owner retirement${partial?" with partial cleanup retry":""}`,async({page})=>{
+    await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
+    const root=fileURLToPath(new URL("../../../",import.meta.url));
+    const result=await page.evaluate(async({root,partial})=>{
+      const base=new URL(`/@fs${root}host/src/webgl/`,location.href).href;
+      const {GlContextRegistry}=await import(base+"registry.ts"),{resizeSurfaceTarget}=await import(base+"present-target.ts");
+      const {retainSurfaceStorage}=await import(base+"surface-resources.ts"),{hasNativeRepair}=await import(base+"native-recovery.ts");
+      const canvas=document.createElement("canvas");canvas.width=4;canvas.height=3;document.body.replaceChildren(canvas);
+      const gl=canvas.getContext("webgl2",{antialias:false,preserveDrawingBuffer:true})!;if(!gl)throw new Error("no WebGL2");
+      const deleted:object[]=[],attempts:object[]=[];
+      let rejectTexture:WebGLTexture|null=null;
+      for(const method of ["deleteFramebuffer","deleteTexture","deleteRenderbuffer"] as const) {
+        const destroy=gl[method].bind(gl) as (object:any)=>void;
+        (gl as any)[method]=(object:object|null)=>{
+          if(object)attempts.push(object);
+          if(object && object===rejectTexture){rejectTexture=null;throw new Error("texture deletion rejected");}
+          destroy(object);if(object)deleted.push(object);
+        };
+      }
+      const reg=new GlContextRegistry();reg.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
+      const binding=reg.get(7,11)!;binding.gl=gl;binding.contextId=1;binding.surfaceId=31;binding.canvas=canvas;
+      const paint=(fbo:WebGLFramebuffer,color:number[])=>{gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);gl.clearColor(color[0],color[1],color[2],color[3]);gl.clear(gl.COLOR_BUFFER_BIT);};
+      const read=(fbo:WebGLFramebuffer)=>{gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);const pixel=new Uint8Array(4);gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);return [...pixel];};
+      if(!resizeSurfaceTarget(binding,4,3))throw new Error("initial allocation");
+      const old=binding.presentTarget!,first=retainSurfaceStorage(binding.surface)!;if(!first)throw new Error("lease");
+      const second=first.clone()!;if(!second)throw new Error("clone");
+      try {
+        paint(old.fbo,[1,0,0,1]);
+        if(!resizeSurfaceTarget(binding,8,6))throw new Error("resize");
+        paint(binding.presentTarget!.fbo,[0,0,1,1]);const replacement=read(binding.presentTarget!.fbo);
+        reg.destroySurface(7,11);reg.destroyContext(7,11);reg.unbind(7);
+        const retained=read(first.framebuffer),dimensions=[first.width,first.height];
+        if(!first.release(null))throw new Error("first release");
+        const liveAfterFirst=gl.isFramebuffer(second.framebuffer);
+        paint(second.framebuffer,[0,1,0,1]);const afterRetirement=read(second.framebuffer);
+        gl.bindFramebuffer(gl.FRAMEBUFFER,null);
+        if(partial)rejectTexture=old.tex;
+        const release=second.release(null),blocked=hasNativeRepair(gl);
+        if(!second.release(null))throw new Error("cleanup retry");
+        return {replacement,retained,dimensions,liveAfterFirst,afterRetirement,release,blocked,
+          oldDeleted:[old.fbo,old.tex,old.depthStencil].map(value=>deleted.filter(item=>item===value).length),
+          textureAttempts:attempts.filter(value=>value===old.tex).length,
+          clean:!gl.isFramebuffer(old.fbo)&&!gl.isTexture(old.tex)&&!gl.isRenderbuffer(old.depthStencil),error:gl.getError()};
+      } finally {rejectTexture=null;first.release(null);second.release(null);reg.unbind(7);}
+    },{root,partial});
+    expect(result).toEqual({replacement:[0,0,255,255],retained:[255,0,0,255],dimensions:[4,3],liveAfterFirst:true,
+      afterRetirement:[0,255,0,255],release:!partial,blocked:partial,oldDeleted:[1,1,1],textureAttempts:partial?2:1,clean:true,error:0});
+    expect(await memoryBoundaryFailures(page)).toEqual([]);
+  });
+}

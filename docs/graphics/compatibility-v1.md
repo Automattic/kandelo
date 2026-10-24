@@ -4889,3 +4889,54 @@ server semantics. All other baseline gaps and deferred normal builds,
 upstream CTS, cage/sway, complete browser-memory and POSIX gates remain
 required for the active full goal. Browser fixtures use independent device
 buffers and source adapters, not normal rebuilt guest ioctl marshalling.
+
+
+### Retained owned drawable allocations
+
+A queued command needs its selected allocation, not only a reference to
+an EGL surface whose target may resize. Two new source regressions fail
+unchanged `2c7075a919` when resize/destruction deletes the still-needed
+native framebuffer. The before-source fixture permits the absent hold
+helper so both failures occur at the native-lifetime assertion, rather
+than module loading.
+
+Owned surface targets now provide native-only allocation leases. A lease
+copies framebuffer identity, dimensions and surface ID and retains the
+existing native deletion receipt. It does not retain the mutable surface,
+its selecting bindings, a guest view or a callback. Resize and logical
+surface destruction can proceed while an old allocation remains usable.
+A retained lease may clone its reference after retirement; fresh receipt
+lookups cannot revive a retiring allocation. Released leases refuse use.
+
+Retirement holds and dependent receipts differ from failed restoration:
+intentional holds do not block admission while work still needs to run.
+Final release captures selected-owner errors before private cleanup.
+Failed capture keeps the active reference. Failed deletion ends use but
+retains a cleanup retry token, including after partial acceptance; accepted
+native deletions never replay. Retirement waits behind unresolved native
+inverses and removes their old handles only after actual deletion accepts.
+
+| Check | Exact evidence |
+|---|---|
+| Before-source lifetime evidence | Two regressions fail unchanged `2c7075a919` at premature native FBO deletion; `graphics-storage-lease-baseline.log` |
+| Complete graphics source gate | 649 cases in 28 files pass without skips, including 11 new allocation/clone/release/partial-cleanup/error-capture/dependency/inverse cases; `graphics-storage-lease-host.log` |
+| Node/browser canonical host build and declarations | Passed; `graphics-storage-lease-build.log`, `graphics-storage-lease-declarations.log` |
+| Real owned-allocation rendering | Six cases across Chromium/Firefox/WebKit preserve red old storage and blue replacement storage, retire the surface and context, render green through the retained allocation, and delete each native member once after final release; partial cleanup retry is included; `graphics-storage-lease-browser.log` |
+| Affected source rendering controls | All prior 18 core/KHR fence and owned-submit cases also pass in that 24-case selection; same log |
+| Evidence registry | All 599 files agree; `graphics-storage-lease-registry.log` |
+
+The browser fixture initially probed a second module instance through a
+non-normalized /@fs// URL. Its separate retirement map reported no pending
+cleanup although the real receipt retained the rejected texture. A raw
+.js URL then failed to load. Normalizing the source URLs makes the probe
+share the production module instance; all original cleanup and pixel
+assertions pass. These were fixture defects, not browser/runtime defects.
+
+These are source allocation leases, not a queued server-wait implementation.
+Borrowed BO allocation retention and independent context execution lifetime
+remain necessary before deferred submits can be enabled. Registry context
+destruction still clears execution-local state immediately. The server
+wait, all other ordinary inventory gaps and the deferred normal artifact,
+CTS, cage/sway, full browser-memory and POSIX phases remain required.
+ABI 54 and GL operation table 17 are unchanged. No full guest-marshalling,
+whole-machine reclamation or performance result is claimed.

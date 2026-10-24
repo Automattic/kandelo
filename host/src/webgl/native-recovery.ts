@@ -1,5 +1,6 @@
 import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
 import { recordGlError } from "./errors.js";
+import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
 
 /** Only native handles/scalars enter a persistent inverse, never guest data or
  * callbacks whose lexical environment could retain a whole binding. */
@@ -17,7 +18,7 @@ export type NativeCall =
 export type NativeDeletion = ["deleteTexture", WebGLTexture | null] | ["deleteRenderbuffer", WebGLRenderbuffer | null]
   | ["deleteFramebuffer", WebGLFramebuffer | null] | ["deleteBuffer", WebGLBuffer | null]
   | ["deleteSync", WebGLSync | null];
-export type NativeRetirement = {owner: CheckedGlOwner; calls: NativeDeletion[]; pending: boolean; complete: boolean; dependencies: readonly NativeRetirement[]};
+export type NativeRetirement = {owner: CheckedGlOwner; calls: NativeDeletion[]; pending: boolean; complete: boolean; references: number; dependencies: readonly NativeRetirement[]};
 const retirements = new WeakMap<WebGL2RenderingContext, Set<NativeRetirement>>();
 export type NativeInverse = { owner: CheckedGlOwner; groups: NativeCall[][] };
 export type NativeChange = { apply(): boolean; restore: NativeInverse };
@@ -73,7 +74,7 @@ function restoreInverse(inverse: NativeInverse): boolean {
 export function reserveNativeRetirement(b: CheckedGlOwner, calls: NativeDeletion[], dependencies: readonly NativeRetirement[] = []): NativeRetirement | null {
   if (!b.gl) return null;
   try {
-    const retirement = {owner:nativeOwner(b),calls,pending:false,complete:false,dependencies};
+    const retirement = {owner:nativeOwner(b),calls,pending:false,complete:false,references:0,dependencies};
     let owners = retirements.get(b.gl);
     if (!owners) { owners = new Set(); retirements.set(b.gl,owners); }
     owners.add(retirement);
@@ -81,13 +82,14 @@ export function reserveNativeRetirement(b: CheckedGlOwner, calls: NativeDeletion
   } catch { recordGlError(b,0x505); return null; }
 }
 export function transferNativeRetirement(retirement: NativeRetirement): void {
+  if (retirement.references !== 0) throw new Error("Cannot transfer retained native storage");
   retirements.get(retirement.owner.gl!)?.delete(retirement);
   retirement.complete = true;
 }
 function collectNativeRetirements(gl: WebGL2RenderingContext): boolean {
   let accepted = true;
   for (const retirement of retirements.get(gl) ?? []) {
-    if (!retirement.pending) continue;
+    if (!retirement.pending || retainedRetirement(retirement)) continue;
     for (const call of retirement.calls) {
       const object = call[1];
       if (!object) continue;
@@ -109,8 +111,58 @@ export function retireNativeRetirement(retirement: NativeRetirement): boolean {
 }
 export function hasNativeRepair(gl: WebGL2RenderingContext): boolean {
   for (let repair = repairs.get(gl); repair; repair = repair.parent) if (repair.pending) return true;
-  for (const retirement of retirements.get(gl) ?? []) if (retirement.pending) return true;
+  for (const retirement of retirements.get(gl) ?? []) if (retirement.pending && !retainedRetirement(retirement)) return true;
   return false;
+}
+
+/** Waiting for an explicit storage owner is not a failed native inverse.
+ * Admission must stay usable so the retained work can execute and release. */
+function retainedRetirement(retirement: NativeRetirement): boolean {
+  return retirement.references !== 0 || retirement.dependencies.some(value => !value.complete && retainedRetirement(value));
+}
+
+/** A native-only reference, independent of a surface, binding or guest view.
+ * A failed error capture keeps the reference; a failed final deletion keeps
+ * this retry token and the existing native receipt. Neither failure loses
+ * ownership or transfers private cleanup errors to the selected GL owner. */
+export class NativeRetirementLease {
+  #retirement: NativeRetirement | null;
+  #released = false;
+  private constructor(retirement: NativeRetirement) { this.#retirement = retirement; }
+  static acquire(retirement: NativeRetirement): NativeRetirementLease | null {
+    return NativeRetirementLease.take(retirement,false);
+  }
+  private static take(retirement: NativeRetirement, existing: boolean): NativeRetirementLease | null {
+    if (retirement.complete || (retirement.pending && (!existing || retirement.references === 0)) ||
+        retirement.references >= Number.MAX_SAFE_INTEGER) return null;
+    try {
+      const lease = new NativeRetirementLease(retirement);
+      retirement.references++;
+      return lease;
+    } catch { return null; }
+  }
+  get context(): WebGL2RenderingContext | null { return this.#retirement?.owner.gl ?? null; }
+  get active(): boolean { return this.#retirement !== null && !this.#released; }
+  clone(): NativeRetirementLease | null {
+    return this.active ? NativeRetirementLease.take(this.#retirement!,true) : null;
+  }
+  release(selectedErrors: GlErrorState | null): boolean {
+    const retirement = this.#retirement;
+    if (!retirement) return true;
+    if (retirement.complete) { this.#retirement = null; return true; }
+    const gl = retirement.owner.gl!;
+    try { captureNativeGlErrors(gl,selectedErrors); }
+    catch { return false; }
+    if (!this.#released) { this.#released = true; retirement.references--; }
+    if (!repairs.has(gl)) collectNativeRetirements(gl);
+    if (retirement.pending && !retirement.complete && retirement.references === 0) return false;
+    this.#retirement = null;
+    return true;
+  }
+}
+
+export function retainNativeRetirement(retirement: NativeRetirement): NativeRetirementLease | null {
+  return NativeRetirementLease.acquire(retirement);
 }
 
 export function repairNativeState(gl: WebGL2RenderingContext): boolean {

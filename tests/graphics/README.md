@@ -606,3 +606,16 @@ record despite rewriting input to green, using independent device-sized
 storage. Native/forwarded EGL core/KHR fence controls remain enabled.
 The submit drain is still synchronous; execution/drawable lifetime and
 server-wait barriers remain ordinary implementation work.
+
+
+Owned drawable allocation leases supplement command snapshots. Eleven host
+cases check storage surviving resize/owner destruction, reference clones,
+private cleanup retry, selected-error capture failure, exhaustion, inverse
+retention and native dependency holds. Two before-source cases fail at
+premature deletion on `2c7075a919`. Six browser cases preserve old red and
+replacement blue pixels, retire public owners, render green into retained
+storage and check exact final native deletion with and without partial
+cleanup failure. The source fixture normalizes its module URLs so its
+native cleanup probe shares the production module instance. These checks
+cover owned surface allocations; borrowed BO and context-execution leases,
+server-wait ordering and normal guest lifecycle validation remain open.

@@ -1,5 +1,6 @@
 import type { GlBinding } from "./registry.js";
-import { retireNativeObject, retireNativeRetirement, type NativeRetirement } from "./native-recovery.js";
+import { retireNativeRetirement, retainNativeRetirement, type NativeRetirement, type NativeRetirementLease } from "./native-recovery.js";
+import type { GlErrorState } from "./errors.js";
 
 export type GlPresentTarget = {
   fbo: WebGLFramebuffer; tex: WebGLTexture; depthStencil: WebGLRenderbuffer;
@@ -63,12 +64,57 @@ function collectSurface(s: GlSurfaceResources): void {
   const target = s.presentTarget;
   // A BO-backed FBO is borrowed. Its kernel BO lifetime is the deletion fence.
   if (target) {
-    if (s.gl) for (const object of [target.fbo,target.tex,target.depthStencil]) retireNativeObject(s.gl,object);
     retireNativeRetirement(target.retirement);
   }
   s.presentTarget = null; s.renderTargetFbo = null;
   s.surfaceId = null; s.surfaceSize = null; s.pendingRenderTargetBoId = 0;
   s.gl = null;
+}
+
+/** Captures an allocation, not the mutable logical surface or its users.
+ * Resize may publish a new target while queued work still owns this one. */
+export class GlSurfaceStorageLease {
+  #hold: NativeRetirementLease | null = null;
+  #framebuffer: WebGLFramebuffer;
+  readonly width: number;
+  readonly height: number;
+  readonly surfaceId: number | null;
+  private constructor(framebuffer: WebGLFramebuffer, width: number, height: number, surfaceId: number | null) {
+    this.#framebuffer = framebuffer; this.width = width; this.height = height; this.surfaceId = surfaceId;
+  }
+  static acquire(surface: GlSurfaceResources): GlSurfaceStorageLease | null {
+    const target = surface.presentTarget;
+    if (!target || !surface.gl || target.retirement.owner.gl !== surface.gl ||
+        surface.renderTargetFbo !== target.fbo) return null;
+    try {
+      const lease = new GlSurfaceStorageLease(target.fbo,target.w,target.h,surface.surfaceId);
+      lease.#hold = retainNativeRetirement(target.retirement);
+      return lease.#hold ? lease : null;
+    } catch { return null; }
+  }
+  get context(): WebGL2RenderingContext | null { return this.#hold?.context ?? null; }
+  get framebuffer(): WebGLFramebuffer {
+    if (!this.#hold?.active) throw new Error("Surface storage lease is released");
+    return this.#framebuffer;
+  }
+  clone(): GlSurfaceStorageLease | null {
+    if (!this.#hold?.active) return null;
+    try {
+      const lease = new GlSurfaceStorageLease(this.#framebuffer,this.width,this.height,this.surfaceId);
+      lease.#hold = this.#hold.clone();
+      return lease.#hold ? lease : null;
+    } catch { return null; }
+  }
+  release(selectedErrors: GlErrorState | null): boolean {
+    if (!this.#hold) return true;
+    if (!this.#hold.release(selectedErrors)) return false;
+    this.#hold = null;
+    return true;
+  }
+}
+
+export function retainSurfaceStorage(surface: GlSurfaceResources): GlSurfaceStorageLease | null {
+  return GlSurfaceStorageLease.acquire(surface);
 }
 
 export function retireSurface(s: GlSurfaceResources): void {

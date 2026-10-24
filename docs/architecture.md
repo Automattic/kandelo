@@ -4352,6 +4352,23 @@ place fences. EGL_KHR_wait_sync and eglWaitSyncKHR remain unavailable.
 The definitions still require the normal combined graphics build and
 conformance phase.
 
+Owned drawable allocation leases now retain the native framebuffer,
+dimensions and private retirement receipt independently of the mutable
+surface or its selecting bindings. Resize may publish fresh storage while
+a retained allocation remains usable; surface destruction revokes lookup
+without deleting that held allocation. Existing leases may clone their
+hold after retirement, while a new lookup cannot acquire a retiring receipt.
+
+Native retirement distinguishes a deliberate reference hold from failed
+cleanup. Held allocations and their retirement dependants do not block
+admission, so retained work can execute and release them. The last release
+captures selected-owner errors before private deletion. Failed error
+capture keeps the reference; failed deletion ends use but keeps a retry
+token and checked native receipt. Successful deletion members do not replay,
+and native inverses retain old handles until deletion really accepts.
+These leases currently cover owned surface targets. Borrowed BO storage,
+retained context execution and deferred wait integration remain work.
+
 GL submission now captures only the requested command span into an owned
 SubmitFrame before validation. Native worker dispatch and main forwarding
 validate and decode that same snapshot, so guest rewrites or renderer
