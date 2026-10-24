@@ -1371,6 +1371,22 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       await retryKernelEntryResult(() => kernelWorker.setCwd(pid, msg.cwd!));
     }
 
+    // What the process runs, before it runs: the kernel keeps it open as the
+    // image's executable (`/proc/<pid>/exe`). A program the host holds as
+    // bytes is a handle onto those bytes, never a kernel copy.
+    const attached = await retryKernelEntryResult(() =>
+      kernelWorker.attachProgram(
+        pid,
+        msg.programPath !== undefined
+          ? { path: msg.programPath }
+          : { bytes: new Uint8Array(programBytes), name: msg.argv[0] || "program" },
+      ));
+    if (attached < 0) {
+      throw new Error(
+        `spawn: the kernel refused the program as pid ${pid}'s executable (errno ${-attached})`,
+      );
+    }
+
     if (msg.pty) {
       const ptyIdx = await retryKernelEntryResult(() => kernelWorker.setupPty(pid));
       ptyByPid.set(pid, ptyIdx);

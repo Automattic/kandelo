@@ -1076,6 +1076,26 @@ pub struct Process {
     pub exec_generation: u64,
     /// Kernel-owned exact executable-object leases awaiting commit/cancel.
     pub prepared_exec_targets: PreparedExecLedger,
+    /// The open file description of the executable this image is running,
+    /// held for the life of the image: `/proc/<pid>/exe` names it and opens
+    /// it, and the fork module reads the program's fork sections through it.
+    ///
+    /// Linux semantics, and the reason it is an OPEN FILE rather than a path:
+    /// the image keeps running after its file is unlinked or replaced, so what
+    /// `/proc/self/exe` must reach is the object that was executed, not
+    /// whatever the path names now. An exec commit moves the target's own
+    /// lease here (releasing the previous image's), `fork` and `posix_spawn`
+    /// children inherit it, and process exit releases it.
+    ///
+    /// The cost is Linux's too: an executable that is replaced or unlinked
+    /// while a process runs it stays resident until the last process running
+    /// it exits or execs. A host-supplied program (no VFS file at all) is a
+    /// host handle onto bytes the host already holds, never a copy here.
+    ///
+    /// `None` only for a process no image was ever attached to (a host that
+    /// registered a process without saying what it runs): `/proc/<pid>/exe`
+    /// is then `ENOENT`, the truthful answer, rather than a guess from argv.
+    pub exe: Option<crate::fd::OpenFileDescRef>,
     /// A `posix_spawn` child is a real signal target while its host launch is
     /// pending, but it is not yet part of the parent's waitable child set.
     /// Only the parent-bound spawn publication transaction may clear this.
@@ -1409,6 +1429,7 @@ impl Process {
             pointer_width: 4,
             exec_generation: 0,
             prepared_exec_targets: PreparedExecLedger::new(),
+            exe: None,
             spawn_publication_pending: false,
             exit_published: false,
             pgid: pid,

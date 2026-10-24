@@ -4171,6 +4171,70 @@ pub extern "C" fn kernel_exec_target_prepare(
     }
 }
 
+/// Attach the executable a host launched `pid` from, named by a path in that
+/// process's namespace (`exec_target::attach_exe_path`). Returns 0 or a
+/// negative errno.
+///
+/// A host calls this once, after it creates a process and before the process
+/// runs, for a launch the kernel did not resolve itself; an exec and a
+/// `posix_spawn` keep the target their commit already resolved.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_process_attach_exe_path(
+    pid: u32,
+    path_ptr: usize,
+    path_len: usize,
+) -> i32 {
+    let path = match checked_exec_path(path_ptr, path_len) {
+        Ok(path) => path,
+        Err(error) => return -(error as i32),
+    };
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some((proc, advisory_locks)) = table.process_and_advisory_locks(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let mut host = WasmHostIO;
+    match crate::exec_target::attach_exe_path(proc, advisory_locks, &mut host, path) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Attach the executable a host launched `pid` from when the host supplied
+/// the program's bytes and no file holds them: `handle` is a host file handle
+/// onto those bytes (`exec_target::attach_exe_host_handle`), and the kernel
+/// owns it from this call on -- a refusal closes it. `name_ptr`/`name_len` is
+/// the name the host launched it under. Returns 0 or a negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_process_attach_exe_handle(
+    pid: u32,
+    handle: i64,
+    name_ptr: usize,
+    name_len: usize,
+) -> i32 {
+    let mut host = WasmHostIO;
+    let name = match checked_exec_path(name_ptr, name_len) {
+        Ok(name) => name,
+        Err(error) => {
+            if handle >= 0 {
+                let _ = host.host_close(handle);
+            }
+            return -(error as i32);
+        }
+    };
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some((proc, advisory_locks)) = table.process_and_advisory_locks(pid) else {
+        if handle >= 0 {
+            let _ = host.host_close(handle);
+        }
+        return -(Errno::ESRCH as i32);
+    };
+    match crate::exec_target::attach_exe_host_handle(proc, advisory_locks, &mut host, handle, name)
+    {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Prepare the exact initial executable for a newly allocated spawn child.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_spawn_exec_target_prepare(

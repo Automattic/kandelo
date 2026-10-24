@@ -920,7 +920,16 @@ fn commit_taken_target(
     }
     let ofd_ref = target.ofd_ref();
     let result = finish_commit(proc, locks, host, target, caller_tid);
-    let _ = crate::syscalls::release_prepared_exec_ofd_with_locks(proc, locks, host, ofd_ref);
+    // The committed image keeps the lease it was executed through, for its
+    // whole life (`Process::exe`); the image it replaced gives its own up.
+    // A refused commit keeps nothing.
+    let released = match result {
+        Ok(()) => proc.exe.replace(ofd_ref),
+        Err(_) => Some(ofd_ref),
+    };
+    if let Some(released) = released {
+        let _ = crate::syscalls::release_prepared_exec_ofd_with_locks(proc, locks, host, released);
+    }
     result
 }
 
@@ -937,6 +946,121 @@ pub fn commit_spawn(
         .owner()
         .validate_spawn(parent_pid, child_pid, proc.exec_generation);
     commit_taken_target(proc, locks, host, target, validation, None)
+}
+
+/// Make `opened` the image's executable (`Process::exe`), releasing the one it
+/// replaces.
+fn install_exe(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    opened: OpenFileDescRef,
+) {
+    if let Some(previous) = proc.exe.replace(opened) {
+        let _ = crate::syscalls::release_prepared_exec_ofd_with_locks(proc, locks, host, previous);
+    }
+}
+
+/// Attach the executable a HOST launched this process from, when the host
+/// named it by a path in the process's namespace (a spawn from the VFS).
+///
+/// The path is resolved and judged as the process itself would `execve` it --
+/// its CWD, search permission, a regular file with execute permission -- so
+/// what `/proc/self/exe` then names is what a guest exec of the same path
+/// would have run. An exec or `posix_spawn` never comes here: its commit
+/// keeps the target it already resolved.
+pub fn attach_exe_path(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    path: &[u8],
+) -> Result<(), Errno> {
+    let opened = crate::syscalls::open_prepared_exec_target(
+        proc,
+        host,
+        wasm_posix_shared::flags::AT_FDCWD,
+        path,
+        0,
+    )?;
+    install_exe(proc, locks, host, opened.ofd_ref);
+    Ok(())
+}
+
+/// Attach the executable a HOST launched this process from when the host
+/// supplied the program's bytes itself and no file in the namespace holds
+/// them: `handle` is a host file handle onto those bytes, read through
+/// `host_pread` like any host file, never copied into kernel memory.
+///
+/// The kernel owns `handle` from this call on, refused or not: a refusal
+/// closes it, and an accepted one is closed by the ordinary host-handle
+/// release when the last description of it goes (the image's exit or exec,
+/// and every `/proc/self/exe` descriptor a process opened). That is what lets
+/// the host drop its bytes at exactly the moment nothing can read them.
+///
+/// `name` is the diagnostic name the host launched it under. The bytes have
+/// no name in the namespace, which is what Linux's ` (deleted)` says of an
+/// executable whose file has no names left, so the description's path carries
+/// that marker from the start.
+pub fn attach_exe_host_handle(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    handle: i64,
+    name: &[u8],
+) -> Result<(), Errno> {
+    if handle < 0 {
+        return Err(Errno::EBADF);
+    }
+    let refuse = |host: &mut dyn HostIO, error: Errno| {
+        let _ = host.host_close(handle);
+        Err(error)
+    };
+    if name.is_empty() || name.len() > platform_limits::PATH_MAX_BYTES || name.contains(&0) {
+        return refuse(host, Errno::EINVAL);
+    }
+    let stat = match host.host_fstat(handle) {
+        Ok(stat) => stat,
+        Err(error) => return refuse(host, error),
+    };
+    if stat.st_mode & wasm_posix_shared::mode::S_IFMT != wasm_posix_shared::mode::S_IFREG {
+        return refuse(host, Errno::EINVAL);
+    }
+    let mut path = Vec::new();
+    if path
+        .try_reserve_exact(name.len() + crate::procfs::EXE_DELETED_SUFFIX.len())
+        .is_err()
+    {
+        return refuse(host, Errno::ENOMEM);
+    }
+    path.extend_from_slice(name);
+    path.extend_from_slice(crate::procfs::EXE_DELETED_SUFFIX);
+    let index = proc.ofd_table.create(
+        FileType::Regular,
+        wasm_posix_shared::flags::O_RDONLY,
+        handle,
+        path,
+    );
+    if let Some(ofd) = proc.ofd_table.get_mut(index) {
+        ofd.file_id = (stat.st_ino != 0).then_some(FileId::Host {
+            dev: stat.st_dev,
+            ino: stat.st_ino,
+        });
+    }
+    install_exe(proc, locks, host, OpenFileDescRef(index));
+    Ok(())
+}
+
+/// Release the executable the ending image ran (`Process::exe`). Process exit
+/// is where an image ends without a successor; an exec commit releases the
+/// outgoing image's lease itself.
+pub fn release_process_exe(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+) {
+    if let Some(exe) = proc.exe.take() {
+        let _ = crate::syscalls::release_prepared_exec_ofd_with_locks(proc, locks, host, exe);
+    }
 }
 
 pub fn drain_prepared_exec_targets(
