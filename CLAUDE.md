@@ -339,16 +339,16 @@ platform-values contract tells you to surface. Report what you built to reach
 a claim, then make the claim. See `docs/agent-guidance/validation.md` for the
 fresh-worktree provisioning steps.
 
-Never commit built files. Wasm modules, VFS images, archives, compressed
-images, native objects and libraries, reference outputs, test-run databases,
-and anything else a build or test produces are derived from tracked sources at
-build or test time. A test that needs a binary builds it from tracked source
-(Vitest global setup, `scripts/build-programs.sh`, or a builder the test runs)
-or writes a placeholder into a temporary directory; it never reads a committed
-binary. Never `git add -f` a build output past `.gitignore`. A committed binary
-drifts from the source that should produce it, hides ABI and toolchain
-changes, and cannot be reviewed. See "Built files stay out of Git" in
-`docs/agent-guidance/build-docs-and-prs.md`.
+Never commit built files. Compiled Wasm modules, native objects and libraries,
+package archives, and images the build produces are derived from tracked
+sources at build or test time. Test data such as input files, expected outputs,
+and format test vectors may be tracked. A test that needs a built binary builds
+it from tracked source (Vitest global setup, `scripts/build-programs.sh`, or a
+builder the test runs) or writes a placeholder into a temporary directory; it
+never reads a committed build output. Never `git add -f` a build output past
+`.gitignore`. A committed build output drifts from the source that should
+produce it and hides ABI and toolchain changes. See "Built files stay out of
+Git" in `docs/agent-guidance/build-docs-and-prs.md`.
 
 CI runs only reviewed code. Every third-party action in `.github/` is pinned to
 a full 40-character commit SHA with the version in a trailing comment
