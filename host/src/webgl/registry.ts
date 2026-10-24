@@ -7,9 +7,8 @@
  *
  *   - the cmdbuf region (a slice of the process's wasm Memory SAB),
  *   - a lazily-built `WebGL2RenderingContext` once a canvas is attached,
- *   - per-session handle maps that translate cmdbuf-side u32 names to
- *     real `WebGL*` objects (buffers, textures, shaders, programs, VAOs,
- *     framebuffers, renderbuffers, uniform locations).
+ *   - object-group maps for shareable GL names and uniform locations,
+ *   - context-local state, errors, VAOs and framebuffer containers.
  *
  * The cmdbuf view is built lazily on the first `host_gl_submit` and
  * invalidated on `WebAssembly.Memory.grow()` via `rebindMemory(pid)`,
@@ -24,6 +23,8 @@
 import { defaultShadow, type GlShadowState } from "./shadow.js";
 import type { GlDrawableBinding } from "./current.js";
 import { replaceDefaultFramebuffer } from "./framebuffer.js";
+import { createGlObjectGroup, exposeGlSharedObjects, type GlObjectGroup, type GlSharedObjects } from "./object-group.js";
+import { finalizeProgram, releaseRetainedExecutable } from "./program-objects.js";
 
 export type GlContextHandle = number;
 export type GlSurfaceHandle = number;
@@ -53,7 +54,7 @@ export type GlForwardChannel = {
   onQuery?(op: number, input: Uint8Array, outLen: number, sessionId?: number): { rc: number; bytes: Uint8Array };
 };
 
-export type GlBinding = GlBindingInput & {
+export type GlBinding = GlBindingInput & GlSharedObjects & {
   sessionId: number;
   currentDrawable: GlDrawableBinding | null;
   hasBeenCurrent: boolean;
@@ -80,41 +81,10 @@ export type GlBinding = GlBindingInput & {
    * a context/canvas. An old scanout is not the new EGL surface's size. */
   surfaceSize: { width: number; height: number } | null;
 
-  /** Cmdbuf-name (u32) → real GL object maps. */
-  buffers: Map<number, WebGLBuffer>;
-  textures: Map<number, WebGLTexture>;
-  shaders: Map<number, WebGLShader>;
-  programs: Map<number, WebGLProgram>;
-  shaderDeletePending: Set<number>;
-  programDeletePending: Set<number>;
-  programShaders: Map<number, Set<number>>;
-  programAttributeBindings: Map<number, Map<string, number>>;
+  objects: GlObjectGroup;
   errors: number[];
   vaos: Map<number, WebGLVertexArrayObject>;
   fbos: Map<number, WebGLFramebuffer>;
-  rbos: Map<number, WebGLRenderbuffer>;
-  /** Number-keyed (NOT string-keyed) so the cmdbuf int round-trips
-   *  cleanly. Indices are assigned by `++nextUniformLoc` and never
-   *  reused so insert/delete cycles cannot collide. */
-  uniformLocations: Map<number, WebGLUniformLocation>;
-  uniformLocationPrograms: Map<number, number>;
-  /** Monotonic counter for `uniformLocations`; never decremented. */
-  nextUniformLoc: number;
-
-  /** Foreign textures bound from DRI bos (`WPK_BIND_FOREIGN_TEXTURE`),
-   *  keyed by bo_id. Each entry mirrors into `textures` under `texId`
-   *  so cmdbuf `OP_BIND_TEXTURE` resolves it like any guest-generated
-   *  name. `scratch` caches the non-shared upload staging buffer
-   *  (WebGL rejects SAB-backed views). */
-  foreignTextures: Map<
-    number,
-    { tex: WebGLTexture; texId: number; w: number; h: number; scratch: Uint8Array | null }
-  >;
-  /** Id allocator for foreign textures. Starts far above any name the
-   *  guest-side monotonic counters (libglesv2_stub.c, from 1) can
-   *  reach, so host- and guest-assigned ids share `textures` without
-   *  collision. */
-  nextForeignTexId: number;
 
   /** CRTC whose scanout canvas this binding auto-claimed at context
    *  creation (`markKmsCanvasGlOwned`). Tracked so context destruction
@@ -218,7 +188,8 @@ export class GlContextRegistry {
     this.pendingCanvases.delete(b.pid);
     const sessionId = (b.sessionId ?? 0) >>> 0;
     if (this.get(b.pid, sessionId)) throw new Error("GL session is already bound");
-    this.bindings.set(`${b.pid}:${sessionId}`, {
+    const binding: GlBinding = exposeGlSharedObjects({
+      objects: createGlObjectGroup(),
       ...b,
       sessionId,
       currentDrawable: null,
@@ -230,23 +201,9 @@ export class GlContextRegistry {
       contextId: null,
       surfaceId: null,
       surfaceSize: null,
-      buffers: new Map(),
-      textures: new Map(),
-      shaders: new Map(),
-      programs: new Map(),
-      shaderDeletePending: new Set(),
-      programDeletePending: new Set(),
-      programShaders: new Map(),
-      programAttributeBindings: new Map(),
       errors: [],
       vaos: new Map(),
       fbos: new Map(),
-      rbos: new Map(),
-      uniformLocations: new Map(),
-      uniformLocationPrograms: new Map(),
-      nextUniformLoc: 0,
-      foreignTextures: new Map(),
-      nextForeignTexId: 0x4000_0000,
       claimedKmsCrtc: null,
       currentProgram: null,
       currentProgramId: 0,
@@ -256,6 +213,8 @@ export class GlContextRegistry {
       shadow: defaultShadow(),
       forward,
     });
+    binding.objects.members.add(binding);
+    this.bindings.set(`${binding.pid}:${sessionId}`, binding);
     for (const l of this.listeners) l(b.pid, "bind");
   }
 
@@ -283,40 +242,45 @@ export class GlContextRegistry {
   }
 
   /** The native WebGL context is shared and survives guest EGL contexts.
-   * Retire this context's resources and shadow state before reusing it. */
+   * Retire local state immediately and shared resources at the final owner. */
   destroyContext(pid: number, sessionId?: number): void {
     const b = this.get(pid, sessionId);
     if (!b) return;
     const gl = b.gl;
-    // A deleted native program remains alive while physically current.
-    // Release only this binding's program; another owner's context may be
-    // the one currently selected on the shared WebGL context.
-    const programs = new Set(b.programs.values());
-    if (b.currentProgram) programs.add(b.currentProgram);
-    if (gl && programs.size > 0) {
-      const current = gl.getParameter(0x8b8d) as WebGLProgram | null;
-      if (programs.has(current!)) gl.useProgram(null);
+    const objects = b.objects;
+    const installed = b.currentProgram;
+    const installedName = b.currentProgramId;
+    const retained = installed !== null && b.programs.get(installedName) !== installed;
+    objects.members.delete(b);
+    b.currentProgram = b.shadow.currentProgram = null;
+    b.currentProgramId = 0;
+    if (objects.members.size === 0) {
+      const programs = new Set(b.programs.values());
+      if (installed) programs.add(installed);
+      if (gl && programs.size && programs.has(gl.getParameter(0x8b8d) as WebGLProgram)) gl.useProgram(null);
+      const boTextures = new Set([...this.gpuBos.values()].map(bo => bo.tex));
+      const textures = new Set([
+        ...b.textures.values(), ...[...b.foreignTextures.values()].map(entry => entry.tex),
+      ]);
+      for (const texture of textures) if (!boTextures.has(texture)) gl?.deleteTexture(texture);
+      for (const object of b.buffers.values()) gl?.deleteBuffer(object);
+      for (const object of b.shaders.values()) gl?.deleteShader(object);
+      for (const object of programs) gl?.deleteProgram(object);
+      for (const object of b.rbos.values()) gl?.deleteRenderbuffer(object);
+      for (const map of [b.buffers,b.textures,b.shaders,b.programs,b.rbos,b.uniformLocations,
+        b.uniformLocationPrograms,b.programShaders,b.programAttributeBindings,b.foreignTextures]) map.clear();
+      b.shaderDeletePending.clear(); b.programDeletePending.clear();
+    } else {
+      if (installedName) finalizeProgram(b, installedName);
+      if (retained) releaseRetainedExecutable(b, installed);
     }
-    // Foreign GPU textures belong to their BO, independently of this
-    // context. CPU upload textures and ordinary guest textures are owned.
-    const boTextures = new Set([...this.gpuBos.values()].map(bo => bo.tex));
-    const textures = new Set([
-      ...b.textures.values(), ...[...b.foreignTextures.values()].map(entry => entry.tex),
-    ]);
-    for (const texture of textures) if (!boTextures.has(texture)) gl?.deleteTexture(texture);
-    for (const object of b.buffers.values()) gl?.deleteBuffer(object);
-    for (const object of b.shaders.values()) gl?.deleteShader(object);
-    for (const object of programs) gl?.deleteProgram(object);
     for (const object of b.vaos.values()) gl?.deleteVertexArray(object);
     for (const object of b.fbos.values()) gl?.deleteFramebuffer(object);
-    for (const object of b.rbos.values()) gl?.deleteRenderbuffer(object);
-    for (const map of [b.buffers, b.textures, b.shaders, b.programs, b.vaos,
-      b.fbos, b.rbos, b.uniformLocations, b.foreignTextures]) map.clear();
-    b.shaderDeletePending.clear();
-    b.programDeletePending.clear();
-    b.programShaders.clear();
-    b.programAttributeBindings.clear();
-    b.uniformLocationPrograms.clear();
+    b.vaos.clear(); b.fbos.clear();
+    b.objects = createGlObjectGroup();
+    b.objects.nextUniformLoc = objects.nextUniformLoc;
+    b.objects.nextForeignTexId = objects.nextForeignTexId;
+    b.objects.members.add(b);
     b.errors.length = 0;
     if (b.undefinedDefaultFbo) gl?.deleteFramebuffer(b.undefinedDefaultFbo);
     b.undefinedDefaultFbo = null;
@@ -348,6 +312,24 @@ export class GlContextRegistry {
 
   getContext(pid: number, contextId: number): GlBinding | undefined {
     return this.list().find(b => b.pid === pid && b.contextId === (contextId >>> 0));
+  }
+
+  /** Internal construction step, before the target context owns names or
+   * state. Guest sharing additionally requires display/version authority and
+   * complete shared deletion; the EGL facade does not expose this yet. */
+  shareObjects(pid: number, targetSession: number, sourceSession: number): boolean {
+    const target = this.get(pid,targetSession), source = this.get(pid,sourceSession);
+    if (!target || !source || target === source || !target.gl || target.gl !== source.gl
+        || target.contextId === null || source.contextId === null || target.hasBeenCurrent
+        || target.objects.members.size !== 1) return false;
+    const names = target.objects;
+    if (names.buffers.size || names.textures.size || names.shaders.size || names.programs.size
+        || names.rbos.size || names.uniformLocations.size || names.foreignTextures.size
+        || names.shaderDeletePending.size || names.programDeletePending.size) return false;
+    names.members.delete(target);
+    target.objects = source.objects;
+    source.objects.members.add(target);
+    return true;
   }
 
   list(): GlBinding[] {

@@ -4,6 +4,90 @@ import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./sup
 
 // Actual WebGL rendering through the shared decoder and muxer. This checks
 // host execution pixels; guest ABI/compositor integration has separate tests.
+test("internal object groups share textures and programs while context state and retirement stay separate", async ({ page }) => {
+  await page.goto("/trap-signal-test.html");
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const result = await page.evaluate(async sourceRoot => {
+    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const { GlContextRegistry } = await import(base+"registry.ts");
+    const { GlMuxer } = await import(base+"muxer.ts");
+    const { decodeAndDispatch } = await import(base+"bridge.ts");
+    const { runGlQuery } = await import(base+"query.ts");
+    const { applyCurrentDrawable } = await import(base+"current.ts");
+    const O = await import(base+"ops.ts");
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 4;
+    document.body.replaceChildren(canvas);
+    const gl = canvas.getContext("webgl2",{antialias:false,preserveDrawingBuffer:true});
+    if (!gl) throw new Error("WebGL2 is required");
+    const reg = new GlContextRegistry(), mux = new GlMuxer(gl);
+    const bindings = [101,102].map(sessionId => {
+      reg.bind({pid:91,sessionId,cmdbufAddr:0,cmdbufLen:1024});
+      const b = reg.get(91,sessionId)!; b.contextId = sessionId; b.gl = gl; b.cmdbufView = new Uint8Array(1024);
+      return b;
+    });
+    const [a,b] = bindings;
+    const send = (owner: typeof a, op: number, words: number[], tail = new Uint8Array(), floats = false) => {
+      mux.switchTo(owner);
+      const bytes = owner.cmdbufView!, view = new DataView(bytes.buffer);
+      view.setUint16(0,op,true); view.setUint16(2,words.length*4+tail.length,true);
+      words.forEach((word,i) => floats ? view.setFloat32(4+i*4,word,true) : view.setUint32(4+i*4,word,true));
+      bytes.set(tail,4+words.length*4);
+      const rc = decodeAndDispatch(owner,0,4+words.length*4+tail.length); if(rc) throw new Error(`command ${op}: ${rc}`);
+    };
+    const query = (owner: typeof a, op: number, words: number[], size = 4) => {
+      mux.switchTo(owner); const input = new Uint8Array(words.length*4), out = new Uint8Array(size);
+      words.forEach((word,i) => new DataView(input.buffer).setUint32(i*4,word,true));
+      const rc = runGlQuery(owner,op,input,out); if(rc !== size) throw new Error(`query ${op}: ${rc}`);
+      return out;
+    };
+    const number = (owner: typeof a, op: number, words: number[] = []) =>
+      new DataView(query(owner,op,words).buffer).getUint32(0,true);
+    for (const [name,type,text] of [
+      [11,gl.VERTEX_SHADER,"void main(){gl_Position=vec4(0.,0.,0.,1.);gl_PointSize=4.;}"],
+      [12,gl.FRAGMENT_SHADER,"precision mediump float;uniform sampler2D image;uniform float alpha;void main(){gl_FragColor=texture2D(image,vec2(.5))*alpha;}"]
+    ] as [number,number,string][]) {
+      send(a,O.OP_CREATE_SHADER,[type,name]); const textBytes = new TextEncoder().encode(text);
+      send(a,O.OP_SHADER_SOURCE,[name,textBytes.length],textBytes); send(a,O.OP_COMPILE_SHADER,[name]);
+      if(number(a,O.QOP_GET_SHADERIV,[name,gl.COMPILE_STATUS]) !== 1) throw new Error("shader failed");
+    }
+    send(a,O.OP_CREATE_PROGRAM,[13]); send(a,O.OP_ATTACH_SHADER,[13,11]); send(a,O.OP_ATTACH_SHADER,[13,12]);
+    send(a,O.OP_LINK_PROGRAM,[13]); if(number(a,O.QOP_GET_PROGRAMIV,[13,gl.LINK_STATUS]) !== 1) throw new Error("link failed");
+    send(a,O.OP_GEN_TEXTURES,[1,1]); send(a,O.OP_BIND_TEXTURE,[gl.TEXTURE_2D,1]);
+    send(a,O.OP_TEX_PARAMETERI,[gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST]);
+    send(a,O.OP_TEX_PARAMETERI,[gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST]);
+    send(a,O.OP_TEX_IMAGE_2D,[gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,4],new Uint8Array([255,0,0,255]));
+    if(!reg.shareObjects(91,102,101)) throw new Error("object group construction failed");
+    bindings.forEach(owner => { mux.invalidateCurrent(); applyCurrentDrawable(owner,{drawSurfaceId:1,readSurfaceId:1,width:4,height:4}); });
+    const initialPeerProgram = number(b,O.QOP_GET_INTEGERV,[gl.CURRENT_PROGRAM]);
+    send(a,O.OP_USE_PROGRAM,[13]); send(b,O.OP_USE_PROGRAM,[13]);
+    send(b,O.OP_BIND_TEXTURE,[gl.TEXTURE_2D,1]);
+    send(b,O.OP_TEX_SUB_IMAGE_2D,[gl.TEXTURE_2D,0,0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,4],new Uint8Array([0,255,0,255]));
+    const name = new TextEncoder().encode("alpha");
+    // Query names have a byte tail, so supply this one directly.
+    const input = new Uint8Array(8+name.length), output = new Uint8Array(4);
+    new DataView(input.buffer).setUint32(0,13,true); new DataView(input.buffer).setUint32(4,name.length,true); input.set(name,8);
+    if(runGlQuery(b,O.QOP_GET_UNIFORM_LOC,input,output) !== 4) throw new Error("uniform location failed");
+    const alpha = new DataView(output.buffer).getUint32(0,true);
+    const uniformBytes = new Uint8Array(12), uniformView = new DataView(uniformBytes.buffer);
+    uniformView.setUint16(0,O.OP_UNIFORM1F,true); uniformView.setUint16(2,8,true);
+    uniformView.setUint32(4,alpha,true); uniformView.setFloat32(8,1,true);
+    b.cmdbufView!.set(uniformBytes); if(decodeAndDispatch(b,0,12)) throw new Error("uniform failed");
+    const sharedUniform = new DataView(query(a,O.QOP_GET_UNIFORMFV,[13,alpha]).buffer).getFloat32(0,true);
+    send(a,O.OP_VIEWPORT,[0,0,4,4]); send(b,O.OP_VIEWPORT,[0,0,2,2]);
+    const pixels: number[][] = [];
+    for(const owner of [a,b,a]) { send(owner,O.OP_DRAW_ARRAYS,[gl.POINTS,0,1]); pixels.push([...query(owner,O.QOP_READ_PIXELS,[1,1,1,1,gl.RGBA,gl.UNSIGNED_BYTE])]); }
+    const texture = a.textures.get(1)!, program = a.programs.get(13)!;
+    send(a,O.OP_DELETE_PROGRAM,[13]); send(a,O.OP_USE_PROGRAM,[0]);
+    mux.invalidateCurrent(); reg.destroyContext(91,101);
+    const survived = gl.isTexture(texture) && gl.isProgram(program);
+    send(b,O.OP_DRAW_ARRAYS,[gl.POINTS,0,1]); pixels.push([...query(b,O.QOP_READ_PIXELS,[1,1,1,1,gl.RGBA,gl.UNSIGNED_BYTE])]);
+    const peerViewport = [...b.shadow.viewport], errors = number(b,O.QOP_GET_ERROR);
+    send(b,O.OP_USE_PROGRAM,[0]); mux.invalidateCurrent(); reg.destroyContext(91,102);
+    return {initialPeerProgram,sharedUniform,pixels,peerViewport,survived,retired:!gl.isTexture(texture)&&!gl.isProgram(program),errors};
+  },root);
+  expect(result).toEqual({initialPeerProgram:0,sharedUniform:1,pixels:Array(4).fill([0,255,0,255]),peerViewport:[0,0,2,2],survived:true,retired:true,errors:0});
+});
+
 test("surfaceless framebuffer zero rejects rendering while user framebuffers remain usable", async ({ page }) => {
   await installBrowserMemoryBoundaryProbe(page);
   await page.goto("/trap-signal-test.html");

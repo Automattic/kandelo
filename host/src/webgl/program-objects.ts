@@ -39,8 +39,8 @@ export function finalizeShader(b: GlBinding, name: number): void {
 export function finalizeProgram(b: GlBinding, name: number): void {
   if (!b.programDeletePending.has(name)) return;
   const program = b.programs.get(name);
-  if (name === currentProgramName(b)) return;
-  if (program && b.gl && !checkedGlCall(b, () => b.gl!.deleteProgram(program))) return;
+  if ([...b.objects.members].some(member => name === currentProgramName(member))) return;
+  if (program && b.gl && !deleteUnusedNativeProgram(b, program)) return;
   b.programDeletePending.delete(name);
   b.programs.delete(name);
   const shaders = b.programShaders.get(name);
@@ -65,10 +65,19 @@ export function currentProgramName(b: GlBinding): number {
   return 0;
 }
 
-function releaseRetainedExecutable(b: GlBinding, program: WebGLProgram | null): void {
-  if (!program || program === b.currentProgram) return;
+export function releaseRetainedExecutable(b: GlBinding, program: WebGLProgram | null): void {
+  if (!program || [...b.objects.members].some(member => program === member.currentProgram)) return;
   for (const object of b.programs.values()) if (object === program) return;
-  checkedGlCall(b, () => b.gl!.deleteProgram(program));
+  deleteUnusedNativeProgram(b, program);
+}
+
+function deleteUnusedNativeProgram(b: GlBinding, program: WebGLProgram): boolean {
+  return checkedGlCall(b, () => {
+    // No logical owner retains this executable. Release a stale physical
+    // installation too, so native deletion can complete during teardown.
+    if (b.gl!.getParameter(0x8b8d) === program) b.gl!.useProgram(null);
+    b.gl!.deleteProgram(program);
+  });
 }
 
 /** A current GLES executable survives failed relinking. A native WebGL
@@ -85,7 +94,7 @@ export function linkProgramRetainingExecutable(b: GlBinding, name: number): void
   const currentName = currentProgramName(b);
   const installed = b.currentProgram;
   let program = previous;
-  if (previous === b.currentProgram) {
+  if ([...b.objects.members].some(member => previous === member.currentProgram)) {
     let candidate: WebGLProgram | null = null;
     const allocated = checkedGlCall(b, () => { candidate = gl.createProgram(); });
     if (!allocated || !candidate) {

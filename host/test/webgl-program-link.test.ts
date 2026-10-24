@@ -4,6 +4,7 @@ import { GlMuxer } from "../src/webgl/muxer.js";
 import * as O from "../src/webgl/ops.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
+import { linkProgramRetainingExecutable, useProgramIfAccepted } from "../src/webgl/program-objects.js";
 
 type Shader = { compiled: boolean; deleted: boolean };
 type Program = { linked: boolean; shaders: Set<Shader>; attributes: Map<string, number> };
@@ -86,6 +87,50 @@ function setup() {
 }
 
 describe("program link attempts and installed executables", () => {
+  function sharePeer(parent: ReturnType<typeof setup>) {
+    parent.b.contextId = 21;
+    parent.registry.bind({pid:1,sessionId:12,cmdbufAddr:0,cmdbufLen:32});
+    const peer = parent.registry.get(1,12)!;
+    peer.gl = parent.gl; peer.contextId = 22;
+    peer.cmdbufView = new Uint8Array(32);
+    expect(parent.registry.shareObjects(1,12,0)).toBe(true);
+    return peer;
+  }
+
+  it("retains a deleted shared program until every current owner releases it", () => {
+    const parent = setup(), peer = sharePeer(parent);
+    useProgramIfAccepted(peer,20);
+    const view = new DataView(peer.cmdbufView!.buffer);
+    view.setUint16(0,O.OP_DELETE_PROGRAM,true); view.setUint16(2,4,true); view.setUint32(4,20,true);
+    expect(decodeAndDispatch(peer,0,8)).toBe(0);
+    useProgramIfAccepted(peer,0);
+    expect(parent.native.deleted.has(parent.original)).toBe(false);
+    expect(peer.programs.has(20)).toBe(true);
+    parent.registry.destroyContext(1,0);
+    expect(parent.native.deletions.get(parent.original)).toBe(1);
+    expect(peer.programs.has(20)).toBe(false);
+    parent.registry.destroyContext(1,12);
+    expect(parent.native.deletions.get(parent.original)).toBe(1);
+  });
+
+  it("keeps another context's executable through a peer's failed relink and final retirement", () => {
+    const parent = setup(), peer = sharePeer(parent);
+    (peer.shaders.get(11) as unknown as Shader).compiled = false;
+    linkProgramRetainingExecutable(peer,20);
+    expect(peer.programs.get(20)).not.toBe(parent.original);
+    expect(parent.original.linked).toBe(true);
+    expect(parent.b.currentProgram).toBe(parent.original);
+    expect(parent.native.deleted.has(parent.original)).toBe(false);
+    (peer.shaders.get(11) as unknown as Shader).compiled = true;
+    linkProgramRetainingExecutable(peer,20); useProgramIfAccepted(peer,20);
+    const replacement = peer.currentProgram as unknown as Program;
+    parent.registry.destroyContext(1,0);
+    expect(parent.native.deletions.get(parent.original)).toBe(1);
+    expect(peer.currentProgram).toBe(replacement);
+    parent.registry.destroyContext(1,12);
+    expect(parent.native.deletions.get(replacement)).toBe(1);
+  });
+
   it("retains the current executable after failed relink and an owner switch", () => {
     const { b, gl, native, send, query, original } = setup();
     (b.shaders.get(11) as unknown as Shader).compiled = false;

@@ -3890,6 +3890,15 @@ consumption, so another session cannot consume them or repeat a duplicate.
 A failed drain preserves the outgoing flags for a later retry and does not
 prevent cleanup. Queue dispatch reports renderer exceptions as EIO and
 releases the consumed frame. Complete GL negative-API coverage remains open.
+Host object groups now own shareable name maps, shader/program metadata,
+uniform-location allocation and imported textures. Each binding initially
+has its own group. An internal construction operation can join unused
+contexts on the same native renderer; guest EGL sharing is not wired to it
+yet. Context state, errors, VAOs and FBO containers stay local. Group
+resources survive member retirement until the last owner ends; pending
+program deletion and retained link executables consider every member.
+Shared buffer/texture deletion still needs binding/container references,
+and kernel display-generation authority plus C group routing remain open.
 Shader/program attachment records retain deleted shaders and current
 programs until their last logical reference releases. Native program deletion
 is deferred while the program is current in its owner, allowing muxer replay

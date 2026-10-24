@@ -59,7 +59,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | ID | Required behavior / source | Current implementation and known failure | Owner / dependencies | Executable validation | Status / boundary |
 |---|---|---|---|---|---|
 | G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Monotonic guest names and per-process WebGL maps; incomplete is/query functions | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
-| G02 | Context-local full state; ES2 state tables | Client encoder state and returned strings now belong to an EGL-owned heap record selected by the current binding; host cube/2D, dither and pixel storage replay separately. Broader rollback, hints, shared object groups and multiple public contexts still need work | EGL, encoder, shadow, muxer, decoder | Alternating contexts/processes; real rendered cube/2D and mask tests; native thread-transfer/isolation | partial |
+| G02 | Context-local full state; ES2 state tables | Client encoder state and strings belong to the current EGL record; host object groups separate shared names from local state and containers, with final group retirement and program-reference handling. Shared binding/container deletion references, rollback, hints and multiple public contexts remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/viewport rendering; native thread-transfer/isolation | partial |
 | G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Chunked encoder and transient client staging; bound index buffer plus client attributes rejected | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core reflection and complete executable/attribute/uniform validation still need work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
@@ -830,3 +830,42 @@ or browser execution is claimed for this C-only change. Guest thread/CTS,
 full browser-memory, compositor and POSIX checks remain required after
 current-artifact provisioning in the deferred phase. Performance was not
 measured.
+
+### Host shared-object group ownership
+
+The host now separates shareable name maps and shader/program/uniform
+metadata from execution-local state, errors, VAOs and FBOs. Each context
+starts in its own group. Internal construction can join a fresh target on
+the same native renderer; it does not copy maps or allocator counters.
+Retiring one context preserves its group's resources for other members.
+Pending program deletion and installed executables consider all logical
+current references; a failed relink through an inactive peer preserves
+another member's executable. Native programs without logical references
+are physically unbound before deletion so teardown can complete.
+
+This is an internal ownership foundation. GLIO and public EGL do not yet
+construct shared contexts, and no sharing extension or API support is
+claimed. Before enabling that path, shared buffer/texture/renderbuffer
+deletion needs references from every context binding and container. Kernel
+display-generation authority, independent context sessions/mappings,
+surface identity/ownership and C shared-name routing also remain open.
+Ordinary missing behavior is not a platform boundary.
+
+Focused source validation on ABI 55: 299 host tests in 16 files, plus both
+Node/browser declarations, pass in
+`.context/graphics-object-group-verified-host.log`. Real WebGL checks pass
+27 cases across Chromium, Firefox and WebKit, without skips:
+`.context/graphics-object-group-browser.log`. The new direct source-host
+case shares a texture and uniform/program namespace, renders alternating
+contexts with different viewport state, retires one member and renders
+again before final cleanup. It is not guest or forwarded sharing evidence.
+Unit cases cover constructor rejection, independent errors/containers,
+shared allocator state, final resource retirement, deferred program
+deletion and peer relink failure. Early checks exposed a missing empty-set
+guard and counter continuity at context retirement; corrected evidence is
+the verified log. There was no previous guest sharing implementation to
+claim as a before/after compatibility result.
+
+No wire or ABI version changed. No installed artifacts were rebuilt; full
+guest CTS/compositor, browser-memory and POSIX validation remain required
+after normal provisioning. Performance was not measured.

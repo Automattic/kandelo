@@ -2,6 +2,53 @@ import { describe, expect, it } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 
 describe("GlContextRegistry", () => {
+  it("shares object ownership while keeping state and containers local until final retirement", () => {
+    const reg = new GlContextRegistry(), deleted: unknown[] = [];
+    const gl = new Proxy({ isContextLost: () => false, getError: () => 0,
+      getParameter: () => null,
+      deleteTexture: (object: unknown) => deleted.push(object),
+      deleteBuffer: (object: unknown) => deleted.push(object),
+      deleteFramebuffer: (object: unknown) => deleted.push(object),
+    }, { get: (object,key) => Reflect.get(object,key) ?? (() => {}) }) as unknown as WebGL2RenderingContext;
+    for (const session of [11,12]) {
+      reg.bind({pid:7,sessionId:session,cmdbufAddr:0,cmdbufLen:4});
+      const b = reg.get(7,session)!; b.gl = gl; b.contextId = session;
+    }
+    const a = reg.get(7,11)!, b = reg.get(7,12)!;
+    expect(reg.shareObjects(7,12,11)).toBe(true);
+    const texture = {} as WebGLTexture, buffer = {} as WebGLBuffer, fbo = {} as WebGLFramebuffer;
+    a.textures.set(71,texture); a.buffers.set(72,buffer); a.fbos.set(73,fbo);
+    a.nextUniformLoc = 9;
+    expect(b.textures.get(71)).toBe(texture); expect(b.buffers.get(72)).toBe(buffer);
+    expect(++b.nextUniformLoc).toBe(10); expect(a.nextUniformLoc).toBe(10);
+    expect(b.fbos.has(73)).toBe(false); expect(b.vaos).not.toBe(a.vaos);
+    a.errors.push(0x500); a.shadow.viewport = [1,2,3,4];
+    expect(b.errors).toEqual([]); expect(b.shadow.viewport).toEqual([0,0,0,0]);
+    reg.destroyContext(7,11);
+    expect(deleted).toEqual([fbo]);
+    expect(b.textures.get(71)).toBe(texture); expect(b.buffers.get(72)).toBe(buffer);
+    expect(a.textures.size).toBe(0);
+    reg.destroyContext(7,12);
+    expect(deleted).toEqual([fbo,texture,buffer]);
+    expect(b.textures.size).toBe(0); expect(b.nextUniformLoc).toBe(10);
+  });
+
+  it("refuses sharing a used target or incompatible renderer without changing ownership", () => {
+    const reg = new GlContextRegistry(), gl = {} as WebGL2RenderingContext;
+    for (const session of [11,12]) {
+      reg.bind({pid:7,sessionId:session,cmdbufAddr:0,cmdbufLen:4});
+      const b = reg.get(7,session)!; b.gl = gl; b.contextId = session;
+    }
+    const source = reg.get(7,11)!, target = reg.get(7,12)!, old = target.objects;
+    target.gl = {} as WebGL2RenderingContext;
+    expect(reg.shareObjects(7,12,11)).toBe(false);
+    target.gl = gl; target.hasBeenCurrent = true;
+    expect(reg.shareObjects(7,12,11)).toBe(false);
+    target.hasBeenCurrent = false; target.textures.set(1,{} as WebGLTexture);
+    expect(reg.shareObjects(7,12,11)).toBe(false);
+    expect(target.objects).toBe(old); expect(target.objects).not.toBe(source.objects);
+  });
+
   it("preserves u32 session identities received as signed Wasm i32 arguments", () => {
     const reg = new GlContextRegistry();
     reg.bind({ pid: 7, sessionId: -2147483647, cmdbufAddr: 0, cmdbufLen: 4 });
