@@ -23,6 +23,7 @@ import {
 } from "./centralized-test-helper";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { buildVforkSideModuleFixture } from "./vfork-side-module-fixture";
+import { stampFixtureAbiContract } from "./support/compile-sdk-fixture";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
@@ -71,6 +72,7 @@ function instrumentInPlace(wasmPath: string, entry?: string): void {
   }
   execFileSync(instrument, args, { stdio: "pipe" });
   renameSync(output, wasmPath);
+  stampFixtureAbiContract(wasmPath);
 }
 
 /**
@@ -215,6 +217,8 @@ describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
   it("runs mode-1 vfork from a real side-module frame in the production worker path", async () => {
     const fixture = buildVforkSideModuleFixture();
     try {
+      stampFixtureAbiContract(fixture.libraryPath);
+      stampFixtureAbiContract(fixture.programPath);
       const libraryBytes = new Uint8Array(readFileSync(fixture.libraryPath));
       const imageOwner = KandeloImageFs.create();
       imageOwner.mkdir("/lib", 0o755);
