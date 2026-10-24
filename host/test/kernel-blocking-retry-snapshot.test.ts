@@ -974,6 +974,36 @@ describe("blocking retry request snapshots", () => {
   );
 
   it.each(WIDTHS)(
+    "%s ends a host socket's SO_RCVTIMEO wait with EAGAIN, not ETIMEDOUT",
+    (_name, pointerWidth) => {
+      // POSIX (and Linux) report an expired SO_RCVTIMEO/SO_SNDTIMEO as a
+      // partial transfer or -1 with EAGAIN/EWOULDBLOCK; ETIMEDOUT is a
+      // connection timing out. A host socket's timeout is the host's timer.
+      vi.useFakeTimers();
+      const harness = createRetryHarness(pointerWidth);
+      writeRequest(harness, ABI_SYSCALLS.Recv, [7n, 0x1000n, 1n, 0n]);
+      harness.kernelExports.kernel_is_fd_nonblock = vi.fn(() => 0);
+      harness.kernelExports.kernel_get_socket_timeout_ms = vi.fn(() => 25n);
+      harness.kernelExports.kernel_handle_channel = vi.fn(
+        (rawPointer: number | bigint) => {
+          publishKernelResult(kernelView(harness, rawPointer), -1, EAGAIN);
+          return 0;
+        },
+      );
+
+      harness.worker.handleSyscall(harness.channel);
+      expect(requestStatus(harness)).toBe(CHANNEL_STATUS_PENDING);
+      vi.advanceTimersByTime(25);
+
+      expect(requestResult(harness)).toEqual({
+        status: CHANNEL_STATUS_COMPLETE,
+        returnValue: -1,
+        errno: EAGAIN,
+      });
+    },
+  );
+
+  it.each(WIDTHS)(
     "%s returns MSG_DONTWAIT EAGAIN without descriptor-policy queries",
     (_name, pointerWidth) => {
       const harness = createRetryHarness(pointerWidth);
