@@ -556,7 +556,6 @@ impl OpenFileDesc {
         self.shared_state.clone()
     }
 
-    #[cfg(test)]
     pub fn shared_state_ref_count(&self) -> usize {
         Rc::strong_count(&self.shared_state.0)
     }

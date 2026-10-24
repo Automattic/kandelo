@@ -4824,7 +4824,7 @@ fn release_ofd_reference_impl(
     host: &mut dyn HostIO,
     idx: usize,
 ) -> Result<(), Errno> {
-    let (host_handle, file_type, status_flags, dir_host_handle, ofd_id) = {
+    let (host_handle, file_type, status_flags, dir_host_handle, ofd_id, final_machine_reference) = {
         let ofd = proc.ofd_table.get(idx).ok_or(Errno::EBADF)?;
         (
             ofd.host_handle,
@@ -4832,6 +4832,7 @@ fn release_ofd_reference_impl(
             ofd.status_flags(),
             ofd.dir_host_handle,
             ofd.ofd_id,
+            ofd.ref_count == 1 && ofd.shared_state_ref_count() == 1,
         )
     };
 
@@ -5055,7 +5056,16 @@ fn release_ofd_reference_impl(
                         || crate::tmpfs::is_tmpfs_file_handle(host_handle)
                         || crate::rootfs::is_rootfs_file_handle(host_handle))
                 {
-                    if crate::descriptor_backing::release_for_ofd(file_type, host_handle) {
+                    // WHY: tmpfs and rootfs count opens per inode, so their
+                    // backing outlives this OFD while any independent open of
+                    // the same file remains. The OFD's shared state names
+                    // every descriptor table and SCM_RIGHTS queue entry that
+                    // still holds this description.
+                    let inode_backed = crate::tmpfs::is_tmpfs_file_handle(host_handle)
+                        || crate::rootfs::is_rootfs_file_handle(host_handle);
+                    let backing_freed =
+                        crate::descriptor_backing::release_for_ofd(file_type, host_handle);
+                    if backing_freed || (inode_backed && final_machine_reference) {
                         release_final_ofd_locks(locks.as_deref_mut(), ofd_id);
                     }
                 } else if host_handle == crate::procfs::PROCFS_DIR_HANDLE
@@ -28413,6 +28423,78 @@ mod tests {
 
         sys_close_with_locks(&mut proc, &mut locks, &mut host, first).unwrap();
         sys_close_with_locks(&mut proc, &mut locks, &mut host, second).unwrap();
+    }
+
+    fn assert_flock_released_and_waiters_woken_when_holder_closes(path: &[u8]) {
+        let mut holder = Process::new(1);
+        let mut waiter = Process::new(2);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let holder_fd = sys_open(&mut holder, &mut host, path, O_RDWR | O_CREAT, 0o644).unwrap();
+        let waiter_fd = sys_open(&mut waiter, &mut host, path, O_RDWR, 0).unwrap();
+
+        sys_flock(&mut holder, &mut locks, holder_fd, LOCK_EX, &mut host).unwrap();
+        assert_eq!(
+            sys_flock(&mut waiter, &mut locks, waiter_fd, LOCK_EX, &mut host),
+            Err(Errno::EAGAIN)
+        );
+        let mut wake_buf = [0u8; 40];
+        crate::wakeup::drain(&mut wake_buf, 8);
+
+        // The waiter's open keeps the inode open; the holder's OFD still dies
+        // with its last descriptor.
+        sys_close_with_locks(&mut holder, &mut locks, &mut host, holder_fd).unwrap();
+
+        assert!(locks.is_empty());
+        assert_eq!(crate::wakeup::drain(&mut wake_buf, 8), 1);
+        assert_eq!(wake_buf[4], crate::wakeup::WAKE_ADVISORY_LOCK);
+        sys_flock(&mut waiter, &mut locks, waiter_fd, LOCK_EX, &mut host).unwrap();
+        sys_close_with_locks(&mut waiter, &mut locks, &mut host, waiter_fd).unwrap();
+        sys_unlink(&mut waiter, &mut host, path).unwrap();
+    }
+
+    #[test]
+    fn tmpfs_flock_is_released_and_wakes_waiters_when_holder_closes() {
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        assert_flock_released_and_waiters_woken_when_holder_closes(b"/tmp/flock-close-wake");
+    }
+
+    #[test]
+    fn rootfs_flock_is_released_and_wakes_waiters_when_holder_closes() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        assert_flock_released_and_waiters_woken_when_holder_closes(b"/flock-close-wake");
+    }
+
+    #[test]
+    fn tmpfs_flock_survives_fork_until_final_close() {
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        let path = b"/tmp/flock-fork-close";
+        let mut parent = Process::new(1);
+        let mut peer = Process::new(3);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut parent, &mut host, path, O_RDWR | O_CREAT, 0o644).unwrap();
+        let peer_fd = sys_open(&mut peer, &mut host, path, O_RDWR, 0).unwrap();
+        sys_flock(&mut parent, &mut locks, fd, LOCK_EX, &mut host).unwrap();
+
+        let mut fork_state = vec![0u8; 64 * 1024];
+        let written = crate::fork::serialize_fork_state(&parent, &mut fork_state).unwrap();
+        let mut child = crate::fork::deserialize_fork_state(&fork_state[..written], 2).unwrap();
+        child.ofd_table.link_shared_states_from(&parent.ofd_table).unwrap();
+        crate::process_table::bump_inherited_resource_refcounts(parent.pid, &child).unwrap();
+
+        sys_close_with_locks(&mut parent, &mut locks, &mut host, fd).unwrap();
+        assert_eq!(
+            sys_flock(&mut peer, &mut locks, peer_fd, LOCK_EX | LOCK_NB, &mut host),
+            Err(Errno::EAGAIN)
+        );
+        sys_close_with_locks(&mut child, &mut locks, &mut host, fd).unwrap();
+        sys_flock(&mut peer, &mut locks, peer_fd, LOCK_EX | LOCK_NB, &mut host).unwrap();
+
+        sys_close_with_locks(&mut peer, &mut locks, &mut host, peer_fd).unwrap();
+        sys_unlink(&mut peer, &mut host, path).unwrap();
     }
 
     #[test]
