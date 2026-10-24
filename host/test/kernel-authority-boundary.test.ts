@@ -202,7 +202,6 @@ describe("kernel authority boundary", () => {
     const expectedNames = [
       "completeDetachedCopybackForTest",
       "completeImmediatePollTimeoutForCopybackTest",
-      "completeSleepWithSignalCheckForTest",
       "configureScratchBoundaryHooksForTest",
       "dequeueSignalForDeliveryForTest",
       "discardStoppedProcessStateForTest",

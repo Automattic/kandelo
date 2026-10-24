@@ -134,6 +134,21 @@
       {
         "arguments": [
           {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "nanosleep",
+        "number": 41,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
             "index": 2,
             "kind": "process-size"
           }
@@ -442,6 +457,21 @@
         ],
         "musl_name": "getdents64",
         "number": 122,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-address"
+          },
+          {
+            "index": 3,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "clock_nanosleep",
+        "number": 124,
         "result": "i32"
       },
       {
@@ -8150,17 +8180,6 @@
         }
       }
     ],
-    "124": [
-      {
-        "argIndex": 2,
-        "direction": "in",
-        "required": true,
-        "size": {
-          "size": 16,
-          "type": "fixed"
-        }
-      }
-    ],
     "125": [
       {
         "argIndex": 1,
@@ -9704,17 +9723,6 @@
       {
         "argIndex": 1,
         "direction": "out",
-        "required": true,
-        "size": {
-          "size": 16,
-          "type": "fixed"
-        }
-      }
-    ],
-    "41": [
-      {
-        "argIndex": 0,
-        "direction": "in",
         "required": true,
         "size": {
           "size": 16,

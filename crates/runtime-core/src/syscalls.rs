@@ -11224,26 +11224,18 @@ fn guest_clock_now(host: &mut dyn HostIO, host_clock_id: u32) -> Result<(i64, i6
     host.host_clock_gettime(host_clock_id)
 }
 
-/// Sleep for the specified duration.
-pub fn sys_nanosleep(
-    _proc: &Process,
-    _host: &mut dyn HostIO,
-    req: &WasmTimespec,
-) -> Result<(), Errno> {
-    if req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1_000_000_000 {
-        return Err(Errno::EINVAL);
-    }
-    credit_image_build_sleep(req.tv_sec, req.tv_nsec);
-    Ok(())
+/// An image-build kernel's realtime clock advances by the time a task sleeps
+/// (`image_build_determinism`): the full requested duration, credited when
+/// the sleep begins, so the credit depends on the task's history and not on
+/// when a signal happened to end it. A no-op otherwise.
+fn credit_image_build_sleep_ns(ns: i64) {
+    crate::image_build_determinism::credit_current_task_sleep(ns.max(0) as u64);
 }
 
-/// An image-build kernel's realtime clock advances by the time a task sleeps
-/// (`image_build_determinism`); a no-op otherwise.
-fn credit_image_build_sleep(sec: i64, nsec: i64) {
-    let ns = (sec.max(0) as u64)
-        .saturating_mul(1_000_000_000)
-        .saturating_add(nsec.max(0) as u64);
-    crate::image_build_determinism::credit_current_task_sleep(ns);
+/// [`guest_clock_now`] in nanoseconds.
+fn guest_clock_ns(host: &mut dyn HostIO, clock_id: u32) -> Result<i64, Errno> {
+    let (sec, nsec) = guest_clock_now(host, clock_id)?;
+    Ok(sec.saturating_mul(1_000_000_000).saturating_add(nsec))
 }
 
 /// Get clock resolution. Returns hardcoded values since Wasm doesn't
@@ -11269,53 +11261,6 @@ pub fn sys_clock_getres(_proc: &Process, clock_id: u32) -> Result<WasmTimespec, 
             })
         }
         _ => Err(Errno::EINVAL),
-    }
-}
-
-/// Sleep using a specific clock. For TIMER_ABSTIME, rewrite the requested
-/// deadline to the relative duration consumed by the host channel.
-pub fn sys_clock_nanosleep(
-    _proc: &Process,
-    host: &mut dyn HostIO,
-    clock_id: u32,
-    flags: u32,
-    req: &WasmTimespec,
-    req_ptr: *const u8,
-) -> Result<(), Errno> {
-    use wasm_posix_shared::clock::*;
-    // Validate clock_id
-    if clock_id != CLOCK_REALTIME && clock_id != CLOCK_MONOTONIC && clock_id != CLOCK_BOOTTIME {
-        return Err(Errno::EINVAL);
-    }
-    // Validate timespec
-    if req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1_000_000_000 {
-        return Err(Errno::EINVAL);
-    }
-    const TIMER_ABSTIME: u32 = 1;
-    if flags & TIMER_ABSTIME != 0 {
-        // Absolute sleep: compute relative delay from the clock the guest
-        // computed its deadline on.
-        let (now_sec, now_nsec) = guest_clock_now(host, clock_id)?;
-        let mut sec = req.tv_sec - now_sec;
-        let mut nsec = req.tv_nsec - now_nsec;
-        if nsec < 0 {
-            sec -= 1;
-            nsec += 1_000_000_000;
-        }
-        // Write relative delay to scratch and return immediately; the host
-        // reads it from CH_DATA and sets up the timer.
-        let out = unsafe { core::slice::from_raw_parts_mut(req_ptr as *mut u8, 16) };
-        if sec < 0 {
-            out[0..16].fill(0);
-        } else {
-            out[0..8].copy_from_slice(&sec.to_le_bytes());
-            out[8..16].copy_from_slice(&nsec.to_le_bytes());
-            credit_image_build_sleep(sec, nsec);
-        }
-        Ok(())
-    } else {
-        credit_image_build_sleep(req.tv_sec, req.tv_nsec);
-        Ok(())
     }
 }
 
@@ -16624,18 +16569,6 @@ pub fn sys_gettimeofday(_proc: &mut Process, host: &mut dyn HostIO) -> Result<(i
     Ok((sec, usec))
 }
 
-/// Sleep for a specified number of microseconds.
-///
-/// Like [`sys_nanosleep`], this validates and returns; it does not sleep. The
-/// duration is the caller's `usec` argument, which the runtime reads from the
-/// channel and parks on. Sleeping here would block the single kernel thread
-/// that multiplexes every process in the machine, so a `usleep(500000)` in one
-/// process would stall all of them for half a second.
-pub fn sys_usleep(_proc: &mut Process, _host: &mut dyn HostIO, usec: u32) -> Result<(), Errno> {
-    credit_image_build_sleep(i64::from(usec / 1_000_000), i64::from(usec % 1_000_000) * 1_000);
-    Ok(())
-}
-
 /// Resolve a path relative to a directory fd through the global namespace.
 /// Absolute paths ignore `dirfd`; relative paths use either cwd or the
 /// canonical path captured by the directory OFD.
@@ -18154,9 +18087,159 @@ pub fn sys_set_robust_list() -> Result<(), Errno> {
     Ok(())
 }
 
-/// What a futex call did: answered now, or parked the caller in the kernel.
+/// The task a waiting syscall acts for: whose memory holds its arguments and
+/// who parks. `pointer_width` decides how a guest `struct timespec`'s
+/// `tv_nsec` is read (a wasm32 `long` is four bytes plus padding).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FutexOutcome {
+pub struct GuestTask {
+    pub pid: u32,
+    pub tid: u32,
+    pub pointer_width: u8,
+}
+
+impl GuestTask {
+    pub const fn wasm32(pid: u32, tid: u32) -> Self {
+        Self { pid, tid, pointer_width: 4 }
+    }
+}
+
+/// Read a guest `struct timespec` (16 bytes on both caller widths: an `i64`
+/// `tv_sec` and a `tv_nsec` in the next eight bytes) and return it as
+/// nanoseconds. `EFAULT` if unreadable, `EINVAL` if not a valid duration;
+/// a value too large for `i64` nanoseconds saturates (it is a deadline no
+/// machine will reach).
+fn read_guest_timespec_ns(host: &mut dyn HostIO, task: GuestTask, addr: u64) -> Result<i64, Errno> {
+    let mut raw = [0u8; 16];
+    if addr == 0 || host.proc_read_bytes(task.pid as i32, addr, &mut raw) < 0 {
+        return Err(Errno::EFAULT);
+    }
+    let sec = i64::from_le_bytes(raw[0..8].try_into().expect("8 bytes"));
+    // WHY by width: a wasm32 caller's `long tv_nsec` is four bytes followed
+    // by padding musl does not initialise, so only the low half is the value.
+    let nsec = if task.pointer_width == 4 {
+        i64::from(i32::from_le_bytes(raw[8..12].try_into().expect("4 bytes")))
+    } else {
+        i64::from_le_bytes(raw[8..16].try_into().expect("8 bytes"))
+    };
+    if sec < 0 || !(0..1_000_000_000).contains(&nsec) {
+        return Err(Errno::EINVAL);
+    }
+    Ok(sec
+        .checked_mul(1_000_000_000)
+        .and_then(|ns| ns.checked_add(nsec))
+        .unwrap_or(i64::MAX))
+}
+
+/// Park the caller until `deadline` (kernel `CLOCK_MONOTONIC` ns), or answer
+/// at once if it has already passed. `remainder` is the guest `rem` address a
+/// signal interruption fills with the unslept time (relative sleeps only).
+fn park_sleep(
+    task: GuestTask,
+    now: i64,
+    deadline: i64,
+    remainder: Option<u64>,
+) -> Result<ParkOutcome, Errno> {
+    if deadline <= now {
+        return Ok(ParkOutcome::Done(0));
+    }
+    let generation = crate::wait_park::with(|parks| {
+        parks.park(
+            task.pid,
+            task.tid,
+            crate::wait_queue::WaitKind::Sleep,
+            alloc::vec::Vec::new(),
+            Some(deadline),
+            crate::wait_park::Resume::Sleep {
+                remainder,
+                deadline,
+            },
+        )
+    })?;
+    Ok(ParkOutcome::Parked(generation))
+}
+
+/// nanosleep(2), owned by the kernel: the caller parks in
+/// [`crate::wait_park`] with a `CLOCK_MONOTONIC` deadline.
+///
+/// # Why the kernel owns the sleep
+///
+/// The host used to take the kernel's "success", start a JavaScript timer
+/// for the duration it re-read from the marshalled request, and publish the
+/// result when the timer fired -- unless one of four separate host arms (a
+/// signal, a pthread_cancel, a PTY resize, a SIGCONT) got there first. The
+/// native host had no such timer at all, so its sleeps returned at once.
+/// Parking here makes the deadline and every early end one kernel decision,
+/// visible to a deterministic scheduler through the same clock read as every
+/// other park.
+///
+/// `rem` is written only when a signal ends the sleep early, as POSIX
+/// requires; it was never written before. The write happens when the
+/// decision is drained, which is the moment before the guest observes it.
+///
+/// Linux answers a sleep interrupted by a caught signal with `EINTR` even
+/// under `SA_RESTART`; the park's resume rule says so.
+pub fn sys_nanosleep(
+    host: &mut dyn HostIO,
+    task: GuestTask,
+    req: u64,
+    rem: u64,
+) -> Result<ParkOutcome, Errno> {
+    let span = read_guest_timespec_ns(host, task, req)?;
+    let now = crate::wait_park::now_ns(host)?;
+    credit_image_build_sleep_ns(span);
+    park_sleep(task, now, now.saturating_add(span), (rem != 0).then_some(rem))
+}
+
+/// clock_nanosleep(2), owned by the kernel. See [`sys_nanosleep`].
+///
+/// A relative request parks for its duration on the monotonic clock whatever
+/// the named clock, because the two advance together here. An absolute
+/// (`TIMER_ABSTIME`) request is converted to a monotonic deadline once, at
+/// park time, by reading the named clock. Known gap: a later
+/// `clock_settime(CLOCK_REALTIME)` does not move a parked absolute realtime
+/// sleep, as Linux would; Kandelo does not let guests set the realtime clock.
+/// `rem` is never written for an absolute sleep (POSIX).
+pub fn sys_clock_nanosleep(
+    host: &mut dyn HostIO,
+    task: GuestTask,
+    clock_id: u32,
+    flags: u32,
+    req: u64,
+    rem: u64,
+) -> Result<ParkOutcome, Errno> {
+    use wasm_posix_shared::clock::*;
+    const TIMER_ABSTIME: u32 = 1;
+    if clock_id != CLOCK_REALTIME && clock_id != CLOCK_MONOTONIC && clock_id != CLOCK_BOOTTIME {
+        return Err(Errno::EINVAL);
+    }
+    let span = read_guest_timespec_ns(host, task, req)?;
+    let now = crate::wait_park::now_ns(host)?;
+    if flags & TIMER_ABSTIME == 0 {
+        credit_image_build_sleep_ns(span);
+        return park_sleep(task, now, now.saturating_add(span), (rem != 0).then_some(rem));
+    }
+    // Measured against the clock the guest computed its deadline on: an
+    // image-build kernel's guest clocks are logical, not the kernel's.
+    let left = span.saturating_sub(guest_clock_ns(host, clock_id)?);
+    if left > 0 {
+        credit_image_build_sleep_ns(left);
+    }
+    park_sleep(task, now, now.saturating_add(left.max(0)), None)
+}
+
+/// Kandelo's `usleep` syscall: a relative sleep with no remainder.
+/// See [`sys_nanosleep`].
+pub fn sys_usleep(host: &mut dyn HostIO, task: GuestTask, usec: u32) -> Result<ParkOutcome, Errno> {
+    let now = crate::wait_park::now_ns(host)?;
+    credit_image_build_sleep_ns(i64::from(usec) * 1_000);
+    park_sleep(task, now, now.saturating_add(i64::from(usec) * 1_000), None)
+}
+
+
+/// What a waiting syscall did: answered now, or parked the caller in the
+/// kernel (`futex`, `nanosleep`, `clock_nanosleep`, `usleep`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParkOutcome {
     /// The syscall's result.
     Done(i32),
     /// The caller is parked in [`crate::wait_park`] under this generation;
@@ -18190,15 +18273,14 @@ pub enum FutexOutcome {
 #[allow(clippy::too_many_arguments)]
 pub fn sys_futex(
     host: &mut dyn HostIO,
-    pid: u32,
-    tid: u32,
+    task: GuestTask,
     uaddr: u64,
     op: u32,
     val: u32,
     timeout: u64,
     uaddr2: u64,
     val3: u32,
-) -> Result<FutexOutcome, Errno> {
+) -> Result<ParkOutcome, Errno> {
     const FUTEX_WAIT: u32 = 0;
     const FUTEX_WAKE: u32 = 1;
     const FUTEX_REQUEUE: u32 = 3;
@@ -18209,6 +18291,7 @@ pub fn sys_futex(
     const FUTEX_PRIVATE_FLAG: u32 = 128;
     const FUTEX_CLOCK_REALTIME: u32 = 256;
     const FUTEX_BITSET_MATCH_ANY: u32 = u32::MAX;
+    let GuestTask { pid, tid, .. } = task;
 
     let command = op & !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
     if uaddr & 3 != 0 {
@@ -18249,23 +18332,11 @@ pub fn sys_futex(
                 return Err(Errno::EAGAIN);
             }
             let now = crate::wait_park::now_ns(host)?;
-            let deadline = if timeout == 0 {
+            // The wait's length, relative, on the guest's own clock.
+            let timeout_ns = if timeout == 0 {
                 None
             } else {
-                let mut raw = [0u8; 16];
-                if host.proc_read_bytes(pid as i32, timeout, &mut raw) < 0 {
-                    return Err(Errno::EFAULT);
-                }
-                let sec = i64::from_le_bytes(raw[0..8].try_into().expect("8 bytes"));
-                let nsec = i64::from_le_bytes(raw[8..16].try_into().expect("8 bytes"));
-                if sec < 0 || !(0..1_000_000_000).contains(&nsec) {
-                    return Err(Errno::EINVAL);
-                }
-                let span = sec
-                    .checked_mul(1_000_000_000)
-                    .and_then(|ns| ns.checked_add(nsec))
-                    .unwrap_or(i64::MAX);
-                // The wait's length, relative, on the guest's own clock.
+                let span = read_guest_timespec_ns(host, task, timeout)?;
                 Some(if command == FUTEX_WAIT {
                     // FUTEX_WAIT's timeout is relative.
                     span
@@ -18280,11 +18351,9 @@ pub fn sys_futex(
                     } else {
                         wasm_posix_shared::clock::CLOCK_MONOTONIC
                     };
-                    let (sec, nsec) = guest_clock_now(host, clock)?;
-                    span.saturating_sub(sec.saturating_mul(1_000_000_000).saturating_add(nsec))
+                    span.saturating_sub(guest_clock_ns(host, clock)?)
                 })
             };
-            let timeout_ns = deadline;
             if timeout_ns.is_some_and(|ns| ns <= 0) {
                 return Err(Errno::ETIMEDOUT);
             }
@@ -18302,7 +18371,7 @@ pub fn sys_futex(
                     },
                 )
             })?;
-            Ok(FutexOutcome::Parked(generation))
+            Ok(ParkOutcome::Parked(generation))
         }
         FUTEX_WAKE | FUTEX_WAKE_BITSET => {
             let bitset = if command == FUTEX_WAKE {
@@ -18313,7 +18382,7 @@ pub fn sys_futex(
             if bitset == 0 {
                 return Err(Errno::EINVAL);
             }
-            Ok(FutexOutcome::Done(wake(uaddr, val, bitset) as i32))
+            Ok(ParkOutcome::Done(wake(uaddr, val, bitset) as i32))
         }
         FUTEX_REQUEUE | FUTEX_CMP_REQUEUE => {
             check_uaddr2()?;
@@ -18331,13 +18400,13 @@ pub fn sys_futex(
             } else {
                 woken
             };
-            Ok(FutexOutcome::Done(i32::try_from(total).unwrap_or(i32::MAX)))
+            Ok(ParkOutcome::Done(i32::try_from(total).unwrap_or(i32::MAX)))
         }
         FUTEX_WAKE_OP => {
             check_uaddr2()?;
             let woken = wake(uaddr, val, FUTEX_BITSET_MATCH_ANY)
                 + wake(uaddr2, val2, FUTEX_BITSET_MATCH_ANY);
-            Ok(FutexOutcome::Done(i32::try_from(woken).unwrap_or(i32::MAX)))
+            Ok(ParkOutcome::Done(i32::try_from(woken).unwrap_or(i32::MAX)))
         }
         _ => Err(Errno::ENOSYS),
     }
@@ -24186,7 +24255,7 @@ mod tests {
         let mut host = MockHostIO::new();
         host.proc_memory[0x100..0x104].copy_from_slice(&7u32.to_le_bytes());
         assert_eq!(
-            sys_futex(&mut host, 5, 5, 0x100, FUTEX_WAIT_OP, 6, 0, 0, 0),
+            sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x100, FUTEX_WAIT_OP, 6, 0, 0, 0),
             Err(Errno::EAGAIN)
         );
         assert_eq!(crate::wait_park::with(|p| p.len()), 0, "a mismatch must not park");
@@ -24195,13 +24264,13 @@ mod tests {
     #[test]
     fn futex_wait_parks_in_the_kernel_and_a_wake_decides_zero() {
         let mut host = MockHostIO::new();
-        let outcome = sys_futex(&mut host, 5, 6, 0x100, FUTEX_WAIT_OP, 0, 0, 0, 0).unwrap();
-        let FutexOutcome::Parked(generation) = outcome else {
+        let outcome = sys_futex(&mut host, GuestTask::wasm32(5, 6), 0x100, FUTEX_WAIT_OP, 0, 0, 0, 0).unwrap();
+        let ParkOutcome::Parked(generation) = outcome else {
             panic!("a matching word must park, got {outcome:?}");
         };
         assert_eq!(
-            sys_futex(&mut host, 5, 5, 0x100, FUTEX_WAKE_OP_WAKE, 1, 0, 0, 0),
-            Ok(FutexOutcome::Done(1))
+            sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x100, FUTEX_WAKE_OP_WAKE, 1, 0, 0, 0),
+            Ok(ParkOutcome::Done(1))
         );
         let done = crate::wait_park::with(|p| p.take_completions());
         assert_eq!(done.len(), 1);
@@ -24212,20 +24281,20 @@ mod tests {
     fn futex_rejects_a_misaligned_or_unreadable_word() {
         let mut host = MockHostIO::new();
         assert_eq!(
-            sys_futex(&mut host, 5, 5, 0x102, FUTEX_WAIT_OP, 0, 0, 0, 0),
+            sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x102, FUTEX_WAIT_OP, 0, 0, 0, 0),
             Err(Errno::EINVAL)
         );
         // The last aligned word of guest memory is readable; one past it is not.
         let last = host.proc_memory.len() as u64 - 4;
         assert_eq!(
-            sys_futex(&mut host, 5, 5, last, FUTEX_WAIT_OP, 0, 0, 0, 0).map(|_| ()),
+            sys_futex(&mut host, GuestTask::wasm32(5, 5), last, FUTEX_WAIT_OP, 0, 0, 0, 0).map(|_| ()),
             Ok(()),
             "an aligned word inside memory is readable"
         );
         crate::wait_park::retire_process(5);
         let end = host.proc_memory.len() as u64;
         assert_eq!(
-            sys_futex(&mut host, 5, 5, end, FUTEX_WAIT_OP, 0, 0, 0, 0),
+            sys_futex(&mut host, GuestTask::wasm32(5, 5), end, FUTEX_WAIT_OP, 0, 0, 0, 0),
             Err(Errno::EFAULT)
         );
     }
@@ -24237,7 +24306,7 @@ mod tests {
             host.proc_memory[0x200..0x208].copy_from_slice(&sec.to_le_bytes());
             host.proc_memory[0x208..0x210].copy_from_slice(&nsec.to_le_bytes());
             assert_eq!(
-                sys_futex(&mut host, 5, 5, 0x100, FUTEX_WAIT_OP, 0, 0x200, 0, 0),
+                sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x100, FUTEX_WAIT_OP, 0, 0x200, 0, 0),
                 Err(Errno::EINVAL),
                 "({sec}, {nsec})"
             );
@@ -24270,8 +24339,8 @@ mod tests {
             host.proc_memory[0x208..0x210]
                 .copy_from_slice(&(now_nsec + 100_000).to_le_bytes());
             let outcome =
-                sys_futex(&mut host, 5, 5, 0x100, op, 0, 0x200, 0, u32::MAX).unwrap();
-            assert!(matches!(outcome, FutexOutcome::Parked(_)), "realtime={realtime}");
+                sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x100, op, 0, 0x200, 0, u32::MAX).unwrap();
+            assert!(matches!(outcome, ParkOutcome::Parked(_)), "realtime={realtime}");
             let monotonic_now = 123_456i64 * 1_000_000_000 + 500_000_000;
             assert_eq!(
                 crate::wait_park::with(|p| p.next_timeout_ns(monotonic_now)),
@@ -24283,7 +24352,7 @@ mod tests {
             // An absolute deadline already passed times out without parking.
             host.proc_memory[0x200..0x208].copy_from_slice(&(now_sec - 1).to_le_bytes());
             assert_eq!(
-                sys_futex(&mut host, 5, 5, 0x100, op, 0, 0x200, 0, u32::MAX),
+                sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x100, op, 0, 0x200, 0, u32::MAX),
                 Err(Errno::ETIMEDOUT),
                 "realtime={realtime}"
             );
@@ -24297,15 +24366,17 @@ mod tests {
         // 4 GiB + 0x100 must not reach a waiter at 0x100 -- the aliasing the
         // host's width checks used to guard against, now impossible by type.
         let mut host = MockHostIO::new();
-        let outcome = sys_futex(&mut host, 5, 6, 0x100, FUTEX_WAIT_OP, 0, 0, 0, 0).unwrap();
-        assert!(matches!(outcome, FutexOutcome::Parked(_)));
+        let waiter = GuestTask { pid: 5, tid: 6, pointer_width: 8 };
+        let waker = GuestTask { pid: 5, tid: 5, pointer_width: 8 };
+        let outcome = sys_futex(&mut host, waiter, 0x100, FUTEX_WAIT_OP, 0, 0, 0, 0).unwrap();
+        assert!(matches!(outcome, ParkOutcome::Parked(_)));
         assert_eq!(
-            sys_futex(&mut host, 5, 5, 0x1_0000_0100, FUTEX_WAKE_OP_WAKE, 1, 0, 0, 0),
-            Ok(FutexOutcome::Done(0))
+            sys_futex(&mut host, waker, 0x1_0000_0100, FUTEX_WAKE_OP_WAKE, 1, 0, 0, 0),
+            Ok(ParkOutcome::Done(0))
         );
         assert_eq!(
-            sys_futex(&mut host, 5, 5, 0x200, FUTEX_WAKE_OP_CODE, 0, 1, 0x1_0000_0100, 0),
-            Ok(FutexOutcome::Done(0))
+            sys_futex(&mut host, waker, 0x200, FUTEX_WAKE_OP_CODE, 0, 1, 0x1_0000_0100, 0),
+            Ok(ParkOutcome::Done(0))
         );
         crate::wait_park::retire_process(5);
     }
@@ -32246,62 +32317,145 @@ mod tests {
         assert!(matches!(sys_clock_getres(&proc, 10), Err(Errno::EINVAL),));
     }
 
+    /// Write a guest timespec at `addr` in the mock's process memory.
+    fn put_timespec(host: &mut MockHostIO, addr: usize, sec: i64, nsec_bytes: [u8; 8]) {
+        host.proc_memory[addr..addr + 8].copy_from_slice(&sec.to_le_bytes());
+        host.proc_memory[addr + 8..addr + 16].copy_from_slice(&nsec_bytes);
+    }
+
+    const MOCK_NOW_NS: i64 = 1_234_567_890 * 1_000_000_000 + 123_456_789;
+
     #[test]
-    fn test_nanosleep_rejects_negative() {
-        let proc = Process::new(1);
+    fn nanosleep_rejects_an_invalid_or_unreadable_request_without_parking() {
+        for (sec, nsec) in [(-1i64, 0i64), (0, -1), (0, 1_000_000_000)] {
+            let mut host = MockHostIO::new();
+            put_timespec(&mut host, 0x200, sec, nsec.to_le_bytes());
+            assert_eq!(
+                sys_nanosleep(&mut host, GuestTask::wasm32(1, 1), 0x200, 0),
+                Err(Errno::EINVAL),
+                "({sec}, {nsec})"
+            );
+        }
         let mut host = MockHostIO::new();
-        let req = WasmTimespec {
-            tv_sec: -1,
-            tv_nsec: 0,
-        };
-        assert_eq!(sys_nanosleep(&proc, &mut host, &req), Err(Errno::EINVAL));
+        assert_eq!(sys_nanosleep(&mut host, GuestTask::wasm32(1, 1), 0, 0), Err(Errno::EFAULT));
+        let end = host.proc_memory.len() as u64;
+        assert_eq!(
+            sys_nanosleep(&mut host, GuestTask::wasm32(1, 1), end, 0),
+            Err(Errno::EFAULT)
+        );
+        assert_eq!(crate::wait_park::with(|p| p.len()), 0);
     }
 
     #[test]
-    fn test_nanosleep_rejects_invalid_nsec() {
-        let proc = Process::new(1);
+    fn nanosleep_parks_until_its_monotonic_deadline() {
         let mut host = MockHostIO::new();
-        let req = WasmTimespec {
-            tv_sec: 0,
-            tv_nsec: 1_000_000_000,
+        put_timespec(&mut host, 0x200, 1, 500_000_000i64.to_le_bytes());
+        let ParkOutcome::Parked(generation) =
+            sys_nanosleep(&mut host, GuestTask::wasm32(1, 2), 0x200, 0x300).unwrap()
+        else {
+            panic!("a positive sleep must park");
         };
-        assert_eq!(sys_nanosleep(&proc, &mut host, &req), Err(Errno::EINVAL));
+        crate::wait_park::with(|p| {
+            assert_eq!(p.next_timeout_ns(MOCK_NOW_NS), Some(1_500_000_000));
+            p.expire(MOCK_NOW_NS + 1_499_999_999);
+            assert!(p.take_completions().is_empty(), "not due yet");
+            p.expire(MOCK_NOW_NS + 1_500_000_000);
+            let done = p.take_completions();
+            assert_eq!((done[0].generation, done[0].tid, done[0].value), (generation, 2, 0));
+            assert_eq!(done[0].remainder, None, "a sleep that ran out leaves rem alone");
+        });
     }
 
     #[test]
-    fn test_nanosleep_valid() {
-        let proc = Process::new(1);
+    fn a_zero_sleep_answers_at_once() {
         let mut host = MockHostIO::new();
-        let req = WasmTimespec {
-            tv_sec: 1,
-            tv_nsec: 500_000_000,
-        };
-        assert_eq!(sys_nanosleep(&proc, &mut host, &req), Ok(()));
+        assert_eq!(
+            sys_nanosleep(&mut host, GuestTask::wasm32(1, 1), 0x200, 0),
+            Ok(ParkOutcome::Done(0))
+        );
+        assert_eq!(
+            sys_usleep(&mut host, GuestTask::wasm32(1, 1), 0),
+            Ok(ParkOutcome::Done(0))
+        );
+        assert_eq!(crate::wait_park::with(|p| p.len()), 0);
     }
 
     #[test]
-    fn test_clock_nanosleep_boottime_absolute_uses_monotonic_equivalent() {
-        let proc = Process::new(1);
+    fn a_wasm32_timespec_ignores_the_padding_after_tv_nsec() {
+        // musl's wasm32 `struct timespec` is `{ i64 tv_sec; long tv_nsec;
+        // int :32; }`; the padding is not initialised by designated
+        // initialisers, so it must not reach validation.
+        let mut garbage_high = [0u8; 8];
+        garbage_high[0..4].copy_from_slice(&5i32.to_le_bytes());
+        garbage_high[4..8].copy_from_slice(&0x7eadbeefu32.to_le_bytes());
         let mut host = MockHostIO::new();
-        let req = WasmTimespec {
-            tv_sec: 1_234_567_891,
-            tv_nsec: 123_456_789,
-        };
-        let mut relative = [0_u8; 16];
+        put_timespec(&mut host, 0x200, 0, garbage_high);
+        assert!(matches!(
+            sys_nanosleep(&mut host, GuestTask::wasm32(1, 1), 0x200, 0),
+            Ok(ParkOutcome::Parked(_))
+        ));
+        crate::wait_park::retire_process(1);
+        let wasm64 = GuestTask { pid: 1, tid: 1, pointer_width: 8 };
+        assert_eq!(
+            sys_nanosleep(&mut host, wasm64, 0x200, 0),
+            Err(Errno::EINVAL),
+            "a wasm64 long is all eight bytes"
+        );
+    }
 
+    #[test]
+    fn clock_nanosleep_converts_an_absolute_deadline_once() {
+        use wasm_posix_shared::clock::{CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_REALTIME};
+        const TIMER_ABSTIME: u32 = 1;
+        for clock in [CLOCK_REALTIME, CLOCK_BOOTTIME, CLOCK_MONOTONIC] {
+            let mut host = MockHostIO::new();
+            // One second after the mock's "now" on every clock.
+            put_timespec(&mut host, 0x200, 1_234_567_891, 123_456_789i64.to_le_bytes());
+            assert!(matches!(
+                sys_clock_nanosleep(&mut host, GuestTask::wasm32(1, 1), clock, TIMER_ABSTIME, 0x200, 0),
+                Ok(ParkOutcome::Parked(_))
+            ));
+            assert_eq!(
+                crate::wait_park::with(|p| p.next_timeout_ns(MOCK_NOW_NS)),
+                Some(1_000_000_000),
+                "clock {clock}"
+            );
+            crate::wait_park::retire_process(1);
+            // A deadline already behind the clock answers at once.
+            put_timespec(&mut host, 0x200, 1_000, 0i64.to_le_bytes());
+            assert_eq!(
+                sys_clock_nanosleep(&mut host, GuestTask::wasm32(1, 1), clock, TIMER_ABSTIME, 0x200, 0),
+                Ok(ParkOutcome::Done(0)),
+                "clock {clock}"
+            );
+        }
+        let mut host = MockHostIO::new();
+        put_timespec(&mut host, 0x200, 1, 0i64.to_le_bytes());
         assert_eq!(
             sys_clock_nanosleep(
-                &proc,
                 &mut host,
-                wasm_posix_shared::clock::CLOCK_BOOTTIME,
-                1,
-                &req,
-                relative.as_mut_ptr(),
+                GuestTask::wasm32(1, 1),
+                wasm_posix_shared::clock::CLOCK_PROCESS_CPUTIME_ID,
+                0,
+                0x200,
+                0
             ),
-            Ok(()),
+            Err(Errno::EINVAL)
         );
-        assert_eq!(i64::from_le_bytes(relative[0..8].try_into().unwrap()), 1);
-        assert_eq!(i64::from_le_bytes(relative[8..16].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn usleep_parks_for_its_microseconds() {
+        let mut host = MockHostIO::new();
+        assert!(matches!(
+            sys_usleep(&mut host, GuestTask::wasm32(1, 1), 2_500),
+            Ok(ParkOutcome::Parked(_))
+        ));
+        assert_eq!(
+            crate::wait_park::with(|p| p.next_timeout_ns(MOCK_NOW_NS)),
+            Some(2_500_000)
+        );
+        crate::wait_park::retire_process(1);
     }
 
     #[test]
@@ -35016,14 +35170,6 @@ mod tests {
         let (sec, usec) = sys_gettimeofday(&mut proc, &mut host).unwrap();
         assert_eq!(sec, 1234567890);
         assert_eq!(usec, 123456); // 123456789 nsec / 1000 = 123456 usec
-    }
-
-    #[test]
-    fn test_usleep() {
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
-        // MockHostIO nanosleep is a no-op, so this should succeed
-        sys_usleep(&mut proc, &mut host, 1000).unwrap();
     }
 
     #[test]

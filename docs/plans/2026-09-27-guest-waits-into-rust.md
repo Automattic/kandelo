@@ -13,7 +13,13 @@
 
 - **Step 1 (park contract + futex): landed** on `lane-waits-rust`. The commit
   message carries its validation record.
-- Steps 2-6: not started.
+- **Step 2a (sleeps): landed.** `nanosleep`, `clock_nanosleep` and `usleep`
+  park in the kernel with a deadline and write `rem` on a signal. Both
+  timespecs travel as raw process addresses (declared in the channel scalar
+  contract), because `rem` is written when the decision is drained, after
+  any per-call staging is gone. `alarm`, `setitimer` and POSIX timers (the
+  rest of step 2) are step 2b.
+- Steps 2b-6: not started.
 
 Two operational facts learned in step 1 that the next step should plan for:
 

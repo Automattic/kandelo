@@ -173,14 +173,6 @@ function mutableState(harness: SignalHarness) {
     }>;
     activeChannels: TestChannel[];
     channelTids: Map<string, number>;
-    pendingSleeps: Map<TestChannel, {
-      timer: ReturnType<typeof setTimeout>;
-      channel: TestChannel;
-      syscallNr: number;
-      origArgs: number[];
-      retVal: number;
-      errVal: number;
-    }>;
     pendingSignalWaits: Map<string, unknown>;
     pendingPollRetries: Map<TestChannel, {
       timer: ReturnType<typeof setTimeout> | null;
@@ -290,52 +282,7 @@ describe("signal delivery to a process blocked in accept()", () => {
     expect(retryCount).toBe(1);
   });
 
-  it("interrupts only the sleeping thread selected for a shared signal", () => {
-    vi.useFakeTimers();
-    try {
-      const harness = createWorkerHarness();
-      const state = mutableState(harness);
-      const pid = 44;
-      const threadTid = 45;
-      const memory = createSharedMemory();
-      const mainChannel = createChannel(pid, 0, memory);
-      const threadChannel = createChannel(pid, 256, memory);
-      registerProcess(harness, pid, [mainChannel, threadChannel]);
-      state.channelTids.set(`${pid}:${threadChannel.channelOffset}`, threadTid);
-      const mainSleep = {
-        timer: setTimeout(() => {}, 60_000),
-        channel: mainChannel,
-        syscallNr: 1,
-        origArgs: [],
-        retVal: 0,
-        errVal: 0,
-      };
-      const threadSleep = {
-        timer: setTimeout(() => {}, 60_000),
-        channel: threadChannel,
-        syscallNr: 1,
-        origArgs: [],
-        retVal: 0,
-        errVal: 0,
-      };
-      state.pendingSleeps.set(mainChannel, mainSleep);
-      state.pendingSleeps.set(threadChannel, threadSleep);
-      const pickSignalTarget = vi.fn(() => threadTid);
-      harness.implementations.kernel_pick_signal_target_tid = pickSignalTarget;
-
-      harness.worker.testAuthority.sendSignalForTest(pid, SIGCHLD);
-
-      expect(pickSignalTarget).toHaveBeenCalledWith(pid, SIGCHLD);
-      expect(state.pendingSleeps.get(mainChannel)).toBe(mainSleep);
-      expect(state.pendingSleeps.has(threadChannel)).toBe(false);
-      expect(harness.completeChannel).toHaveBeenCalledOnce();
-      expect(harness.completeChannel.mock.calls[0]?.[0]).toBe(threadChannel);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("passes a sleeping pthread's exact TID when dequeuing its signal", () => {
+  it("passes a pthread's exact TID when dequeuing its signal", () => {
     const harness = createWorkerHarness();
     const state = mutableState(harness);
     const pid = 46;
@@ -348,13 +295,7 @@ describe("signal delivery to a process blocked in accept()", () => {
     harness.implementations.kernel_set_current_tid = setCurrentTid;
     harness.implementations.kernel_dequeue_signal = dequeueSignal;
 
-    harness.worker.testAuthority.completeSleepWithSignalCheckForTest(
-      channel,
-      1,
-      [],
-      0,
-      0,
-    );
+    harness.worker.testAuthority.dequeueSignalForDeliveryForTest(channel);
 
     expect(setCurrentTid).not.toHaveBeenCalled();
     expect(dequeueSignal).toHaveBeenCalledWith(
@@ -452,35 +393,6 @@ describe("signal delivery to a process blocked in accept()", () => {
     );
   });
 
-  it("does not resume a sleeping pthread after dequeue terminates it", () => {
-    const harness = createWorkerHarness();
-    const state = mutableState(harness);
-    const pid = 49;
-    const tid = 50;
-    const channel = createChannel(pid, 256);
-    registerProcess(harness, pid, [channel]);
-    state.channelTids.set(`${pid}:${channel.channelOffset}`, tid);
-    let exited = false;
-    harness.implementations.kernel_dequeue_signal = vi.fn(() => {
-      exited = true;
-      return 0;
-    });
-    harness.implementations.kernel_get_process_exit_signal =
-      () => exited ? SIGTERM : -1;
-
-    harness.worker.testAuthority.completeSleepWithSignalCheckForTest(
-      channel,
-      1,
-      [],
-      0,
-      0,
-    );
-
-    expect(state.hostReaped.has(pid)).toBe(true);
-    expect(harness.onExit).toHaveBeenCalledWith(pid, 128 + SIGTERM);
-    expect(harness.completeChannel).not.toHaveBeenCalled();
-  });
-
   it("leaves waits parked when the kernel consumed an ignored signal", () => {
     vi.useFakeTimers();
     try {
@@ -489,14 +401,6 @@ describe("signal delivery to a process blocked in accept()", () => {
       const pid = 51;
       const channel = createChannel(pid);
       registerProcess(harness, pid, [channel]);
-      const sleep = {
-        timer: setTimeout(() => {}, 60_000),
-        channel,
-        syscallNr: 1,
-        origArgs: [],
-        retVal: 0,
-        errVal: 0,
-      };
       const pollEntry = {
         timer: null,
         channel,
@@ -508,7 +412,6 @@ describe("signal delivery to a process blocked in accept()", () => {
         origArgs: [],
         syscallNr: 0,
       };
-      state.pendingSleeps.set(channel, sleep);
       state.pendingPollRetries.set(channel, pollEntry);
       state.pendingSelectRetries.set(channel, selectEntry);
       harness.implementations.kernel_thread_has_deliverable = () => 0;
@@ -519,7 +422,6 @@ describe("signal delivery to a process blocked in accept()", () => {
 
       harness.worker.testAuthority.sendSignalForTest(pid, SIGCHLD);
 
-      expect(state.pendingSleeps.get(channel)).toBe(sleep);
       expect(state.pendingPollRetries.get(channel)).toBe(pollEntry);
       expect(state.pendingSelectRetries.get(channel)).toBe(selectEntry);
       expect(retrySyscall).not.toHaveBeenCalled();

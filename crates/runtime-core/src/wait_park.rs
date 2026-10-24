@@ -22,6 +22,9 @@
 //!
 //! # How a park ends, and why each way is decided here
 //!
+//! Parked today: `futex` waits and sleeps (`nanosleep`, `clock_nanosleep`,
+//! `usleep`).
+//!
 //! * **A source fires** (`FUTEX_WAKE`): the waking syscall runs in the kernel,
 //!   so the wake and the park are ordered by the kernel's own serialization.
 //!   No lost wakeup is possible between a compare and a park: if the wake is
@@ -74,18 +77,29 @@ pub enum Resume {
     /// image-build kernel credits the task's logical clock with the full
     /// timeout when the wait runs out (`image_build_determinism`).
     Futex { bitset: u32, timeout_ns: Option<u64> },
+    /// `nanosleep` / `clock_nanosleep` / `usleep`: only the deadline or a
+    /// signal ends it.
+    ///
+    /// `remainder` is the guest `rem` address of a relative sleep; a signal
+    /// interruption fills it with the unslept part of `deadline`.
+    Sleep {
+        remainder: Option<u64>,
+        deadline: MonotonicNs,
+    },
 }
 
 impl Resume {
     fn woken_value(self) -> i32 {
         match self {
-            Resume::Futex { .. } => 0,
+            Resume::Futex { .. } | Resume::Sleep { .. } => 0,
         }
     }
 
     fn deadline_value(self) -> i32 {
         match self {
             Resume::Futex { .. } => -(Errno::ETIMEDOUT as i32),
+            // A sleep that ran its course succeeded.
+            Resume::Sleep { .. } => 0,
         }
     }
 
@@ -93,7 +107,45 @@ impl Resume {
         match self {
             Resume::Futex { timeout_ns: Some(_), .. } => wire::FLAG_SUPPRESS_RESTART,
             Resume::Futex { timeout_ns: None, .. } => 0,
+            // Linux answers a sleep a caught handler interrupted with EINTR
+            // whatever SA_RESTART says (nanosleep(2), signal(7)).
+            Resume::Sleep { .. } => wire::FLAG_SUPPRESS_RESTART,
         }
+    }
+
+    fn interrupted_remainder(self) -> Option<Remainder> {
+        match self {
+            Resume::Sleep {
+                remainder: Some(addr),
+                deadline,
+            } => Some(Remainder { addr, deadline }),
+            _ => None,
+        }
+    }
+}
+
+/// A `rem` write owed to an interrupted sleep: the unslept part of
+/// `deadline`, stored at guest address `addr` as a `struct timespec`.
+///
+/// It is computed and written when the decision is drained -- the moment
+/// before the guest can observe it -- because that is when the kernel next
+/// reads its clock; the sweep that decided the interruption has no clock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Remainder {
+    pub addr: u64,
+    pub deadline: MonotonicNs,
+}
+
+impl Remainder {
+    /// The `struct timespec` bytes for the time left at `now_ns`. Sixteen
+    /// bytes on both caller widths; on wasm32 the high half of the second
+    /// word is `tv_nsec`'s padding, written as zero.
+    pub fn timespec_at(&self, now_ns: MonotonicNs) -> [u8; 16] {
+        let left = self.deadline.saturating_sub(now_ns).max(0);
+        let mut out = [0u8; 16];
+        out[0..8].copy_from_slice(&(left / 1_000_000_000).to_le_bytes());
+        out[8..16].copy_from_slice(&(left % 1_000_000_000).to_le_bytes());
+        out
     }
 }
 
@@ -105,6 +157,8 @@ pub struct Completion {
     pub tid: u32,
     pub value: i32,
     pub flags: u32,
+    /// Owed to an interrupted relative sleep; see [`Remainder`].
+    pub remainder: Option<Remainder>,
 }
 
 impl Completion {
@@ -203,6 +257,10 @@ impl Parks {
     }
 
     fn finish(&mut self, wakeup: Wakeup, value: i32, flags: u32) {
+        self.finish_with(wakeup, value, flags, None);
+    }
+
+    fn finish_with(&mut self, wakeup: Wakeup, value: i32, flags: u32, remainder: Option<Remainder>) {
         self.resume.remove(&wakeup.id);
         self.queue.release_channel(wakeup.channel);
         self.completions.push_back(Completion {
@@ -211,6 +269,7 @@ impl Parks {
             tid: wakeup.tid,
             value,
             flags,
+            remainder,
         });
     }
 
@@ -226,7 +285,7 @@ impl Parks {
         let woken = self.queue.wake_limited(WakeSource::Futex { pid, addr }, max, |s| {
             match resume.get(&s.id) {
                 Some(Resume::Futex { bitset: mine, .. }) => mine & bitset != 0,
-                None => false,
+                Some(Resume::Sleep { .. }) | None => false,
             }
         });
         let count = woken.len();
@@ -255,20 +314,26 @@ impl Parks {
     }
 
     /// End every park whose deadline is at or before `now_ns`.
-    pub fn expire(&mut self, now_ns: MonotonicNs) {
+    ///
+    /// Returns the timed futex waits that ran out, as `(pid, tid, timeout)`:
+    /// an image-build kernel advances each task's logical clock by its
+    /// timeout (`image_build_determinism`), as the host's deadline records
+    /// did before the wait moved here. The caller applies them, so this
+    /// decision stays testable without that mode's machine-wide state.
+    /// (Sleeps are credited when they begin.)
+    pub fn expire(&mut self, now_ns: MonotonicNs) -> Vec<(u32, u32, u64)> {
+        let mut credits = Vec::new();
         for wakeup in self.queue.expire(now_ns) {
             let resume = self.resume.get(&wakeup.id).copied();
-            // A timed futex wait that ran out advances an image-build task's
-            // logical clock by its timeout, as the host's deadline records did
-            // before the wait moved here.
             if let Some(Resume::Futex { timeout_ns: Some(ns), .. }) = resume {
-                crate::image_build_determinism::credit_task_wait(wakeup.pid, wakeup.tid, ns);
+                credits.push((wakeup.pid, wakeup.tid, ns));
             }
             let value = resume
                 .map(|r| r.deadline_value())
                 .unwrap_or(-(Errno::ETIMEDOUT as i32));
             self.finish(wakeup, value, 0);
         }
+        credits
     }
 
     /// Nanoseconds until the earliest park deadline, saturating at zero.
@@ -310,12 +375,10 @@ impl Parks {
         }
         for id in interrupt {
             if let Some(wakeup) = self.queue.remove_with_reason(id, WakeReason::Interrupted) {
-                let flags = self
-                    .resume
-                    .get(&wakeup.id)
-                    .map(|r| r.interrupted_flags())
-                    .unwrap_or(0);
-                self.finish(wakeup, -(Errno::EINTR as i32), flags);
+                let resume = self.resume.get(&wakeup.id).copied();
+                let flags = resume.map(|r| r.interrupted_flags()).unwrap_or(0);
+                let remainder = resume.and_then(|r| r.interrupted_remainder());
+                self.finish_with(wakeup, -(Errno::EINTR as i32), flags, remainder);
             }
         }
     }
@@ -352,14 +415,31 @@ impl Parks {
     }
 
     /// Move up to `max` records into `out`; the rest stay queued in order.
-    pub fn drain(&mut self, out: &mut [u8], max: u32) -> u32 {
+    ///
+    /// A record that owes a `rem` write gets it first, through
+    /// `write_guest(pid, addr, bytes)` (the kernel's cross-memory write);
+    /// `now_ns` is the clock the remainder is measured against. If the write
+    /// fails the result becomes `EFAULT`, as Linux reports a `rem` it cannot
+    /// store.
+    pub fn drain(
+        &mut self,
+        out: &mut [u8],
+        max: u32,
+        now_ns: MonotonicNs,
+        write_guest: &mut dyn FnMut(u32, u64, &[u8]) -> bool,
+    ) -> u32 {
         let fit = (out.len() / wire::RECORD_BYTES).min(max as usize);
         let count = fit.min(self.completions.len());
         for i in 0..count {
-            let completion = self
+            let mut completion = self
                 .completions
                 .pop_front()
                 .expect("count is bounded by the queue length");
+            if let Some(remainder) = completion.remainder.take() {
+                if !write_guest(completion.pid, remainder.addr, &remainder.timespec_at(now_ns)) {
+                    completion.value = -(Errno::EFAULT as i32);
+                }
+            }
             completion.encode(&mut out[i * wire::RECORD_BYTES..(i + 1) * wire::RECORD_BYTES]);
         }
         count as u32
@@ -532,8 +612,8 @@ mod tests {
         assert_eq!(
             done,
             vec![
-                Completion { generation: first, pid: 10, tid: 11, value: 0, flags: 0 },
-                Completion { generation: second, pid: 10, tid: 12, value: 0, flags: 0 },
+                Completion { generation: first, pid: 10, tid: 11, value: 0, flags: 0, remainder: None },
+                Completion { generation: second, pid: 10, tid: 12, value: 0, flags: 0, remainder: None },
             ]
         );
         assert_eq!(parks.len(), 1, "the third waiter must stay parked");
@@ -594,9 +674,28 @@ mod tests {
                 tid: 1,
                 value: -(Errno::ETIMEDOUT as i32),
                 flags: 0,
+                remainder: None,
             }]
         );
         assert_eq!(parks.next_timeout_ns(60 * MS), None, "the untimed waiter has no deadline");
+    }
+
+    #[test]
+    fn only_a_timed_futex_that_runs_out_reports_its_timeout() {
+        let mut parks = Parks::new();
+        futex(&mut parks, 1, 1, 0x10, Some(50 * MS));
+        futex(&mut parks, 1, 2, 0x10, Some(80 * MS));
+        futex(&mut parks, 1, 3, 0x10, None);
+        parks
+            .park(1, 4, WaitKind::Sleep, Vec::new(), Some(10 * MS),
+                Resume::Sleep { remainder: None, deadline: 10 * MS })
+            .unwrap();
+        // The sleep and the first futex are due; the sleep credits nothing
+        // here (sleeps are credited when they begin).
+        assert_eq!(parks.expire(60 * MS), vec![(1, 1, (50 * MS) as u64)]);
+        // A wait woken before its deadline credits nothing either.
+        assert_eq!(parks.futex_wake(1, 0x10, usize::MAX, ANY), 2);
+        assert!(parks.expire(100 * MS).is_empty());
     }
 
     #[test]
@@ -630,7 +729,7 @@ mod tests {
         futex(&mut parks, 7, 9, 0x10, None);
         parks.futex_wake(7, 0x10, usize::MAX, ANY);
         let mut out = [0u8; wire::RECORD_BYTES];
-        assert_eq!(parks.drain(&mut out, 8), 1, "only one record fits");
+        assert_eq!(parks.drain(&mut out, 8, 0, &mut |_, _, _| unreachable!()), 1, "only one record fits");
         assert_eq!(u64::from_le_bytes(out[0..8].try_into().unwrap()), a);
         assert_eq!(u32::from_le_bytes(out[8..12].try_into().unwrap()), 7);
         assert_eq!(u32::from_le_bytes(out[12..16].try_into().unwrap()), 8);
@@ -663,6 +762,7 @@ mod tests {
                 tid: pid,
                 value: -(Errno::EINTR as i32),
                 flags: wire::FLAG_SUPPRESS_RESTART,
+                remainder: None,
             }],
             "a timed futex must not be restarted by SA_RESTART"
         );
@@ -705,5 +805,89 @@ mod tests {
         parks.sweep_signals(&table);
         assert!(parks.take_completions().is_empty());
         assert!(parks.is_empty());
+    }
+
+    fn sleep(parks: &mut Parks, pid: u32, tid: u32, deadline: MonotonicNs, rem: Option<u64>) -> u64 {
+        parks
+            .park(
+                pid,
+                tid,
+                WaitKind::Sleep,
+                Vec::new(),
+                Some(deadline),
+                Resume::Sleep {
+                    remainder: rem,
+                    deadline,
+                },
+            )
+            .expect("park")
+    }
+
+    #[test]
+    fn a_sleep_that_runs_out_succeeds_and_owes_no_remainder() {
+        let mut parks = Parks::new();
+        let generation = sleep(&mut parks, 1, 1, 10 * MS, Some(0x40));
+        parks.expire(10 * MS);
+        assert_eq!(
+            parks.take_completions(),
+            vec![Completion { generation, pid: 1, tid: 1, value: 0, flags: 0, remainder: None }]
+        );
+    }
+
+    #[test]
+    fn an_interrupted_sleep_answers_eintr_and_writes_the_unslept_time() {
+        let (mut table, pid) = table_with_process();
+        let mut parks = Parks::new();
+        let generation = sleep(&mut parks, pid, pid, 3_250 * MS, Some(0x40));
+        table.get_mut(pid).unwrap().raise_signal(wasm_posix_shared::signal::SIGUSR1);
+        parks.note_signal_generated();
+        parks.sweep_signals(&table);
+
+        let mut writes = Vec::new();
+        let mut out = [0u8; wire::RECORD_BYTES];
+        let drained = parks.drain(&mut out, 1, 1_000 * MS, &mut |p, addr, bytes| {
+            writes.push((p, addr, bytes.to_vec()));
+            true
+        });
+        assert_eq!(drained, 1);
+        assert_eq!(u64::from_le_bytes(out[0..8].try_into().unwrap()), generation);
+        assert_eq!(
+            i32::from_le_bytes(out[16..20].try_into().unwrap()),
+            -(Errno::EINTR as i32)
+        );
+        assert_eq!(
+            u32::from_le_bytes(out[20..24].try_into().unwrap()),
+            wire::FLAG_SUPPRESS_RESTART,
+            "SA_RESTART never restarts a sleep"
+        );
+        assert_eq!(writes.len(), 1);
+        let (p, addr, bytes) = &writes[0];
+        assert_eq!((*p, *addr), (pid, 0x40));
+        assert_eq!(i64::from_le_bytes(bytes[0..8].try_into().unwrap()), 2);
+        assert_eq!(i64::from_le_bytes(bytes[8..16].try_into().unwrap()), 250_000_000);
+    }
+
+    #[test]
+    fn an_unwritable_remainder_turns_the_result_into_efault() {
+        let (mut table, pid) = table_with_process();
+        let mut parks = Parks::new();
+        sleep(&mut parks, pid, pid, 5 * MS, Some(0x40));
+        table.get_mut(pid).unwrap().raise_signal(wasm_posix_shared::signal::SIGUSR1);
+        parks.note_signal_generated();
+        parks.sweep_signals(&table);
+        let mut out = [0u8; wire::RECORD_BYTES];
+        parks.drain(&mut out, 1, 0, &mut |_, _, _| false);
+        assert_eq!(
+            i32::from_le_bytes(out[16..20].try_into().unwrap()),
+            -(Errno::EFAULT as i32)
+        );
+    }
+
+    #[test]
+    fn a_cancelled_sleep_owes_no_remainder() {
+        let mut parks = Parks::new();
+        sleep(&mut parks, 1, 1, 5 * MS, Some(0x40));
+        assert!(parks.cancel_task(1, 1));
+        assert_eq!(parks.take_completions()[0].remainder, None);
     }
 }

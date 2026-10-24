@@ -1590,6 +1590,7 @@ export const CHANNEL_SCALAR_SLOT_CONTRACTS: Readonly<
   19: { 2: "process-size", },
   23: { 1: "process-size", },
   26: { 3: "process-size", },
+  41: { 0: "process-address", 1: "process-address", },
   43: { 2: "process-size", },
   46: { 0: "process-address", 1: "process-size", 5: "i64", },
   47: { 0: "process-address", 1: "process-size", },
@@ -1615,6 +1616,7 @@ export const CHANNEL_SCALAR_SLOT_CONTRACTS: Readonly<
   119: { 1: "split-i64-high-i32", 2: "split-i64-low-u32", },
   120: { 1: "process-size", },
   122: { 2: "process-size", },
+  124: { 2: "process-address", 3: "process-address", },
   126: { 0: "process-address", 1: "process-size", 2: "process-size", },
   128: { 0: "process-address", 1: "process-size", },
   135: { 0: "process-size", },
@@ -2260,9 +2262,6 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   40: [
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 }, required: true },
   ],
-  41: [
-    { argIndex: 0, direction: "in", size: { type: "fixed", size: 16 }, required: true },
-  ],
   43: [
     { argIndex: 0, direction: "in", size: { type: "cstring", maxBytes: 65537, tooLongErrno: 7 }, required: true },
     { argIndex: 1, direction: "out", size: { type: "arg", argIndex: 2 }, required: true },
@@ -2419,9 +2418,6 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   ],
   123: [
     { argIndex: 1, direction: "out", size: { type: "fixed", size: 16 }, nullable: true },
-  ],
-  124: [
-    { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 }, required: true },
   ],
   125: [
     { argIndex: 1, direction: "in", size: { type: "cstring", maxBytes: 4096, tooLongErrno: 36 }, nullable: true },

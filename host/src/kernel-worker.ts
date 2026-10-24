@@ -904,10 +904,6 @@ function isValidMemoryRange(
 /** Backstop for a spawn waiting on a lazily fetched target. */
 const SPAWN_EAGAIN_MAX_WAIT_MS = 30_000;
 
-/** Syscall numbers for sleep/delay */
-const SYS_NANOSLEEP = ABI_SYSCALLS.Nanosleep;
-const SYS_USLEEP = ABI_SYSCALLS.Usleep;
-const SYS_CLOCK_NANOSLEEP = ABI_SYSCALLS.ClockNanosleep;
 const SYS_FUTEX = ABI_SYSCALLS.Futex;
 const SYS_POLL = ABI_SYSCALLS.Poll;
 const SYS_PPOLL = ABI_SYSCALLS.Ppoll;
@@ -1437,7 +1433,6 @@ interface PlannedChannelDispatchResult {
   rawRetVal: bigint;
   errVal: number;
   outputWrites: ChannelOutputWrite[];
-  sleepDelayMs: number | undefined;
 }
 
 /**
@@ -2524,13 +2519,6 @@ interface CentralizedKernelWorkerTestAuthority {
     signum: number,
     queueSignal?: boolean,
   ): void;
-  completeSleepWithSignalCheckForTest(
-    channel: ChannelInfo,
-    syscallNr: number,
-    origArgs: number[],
-    retVal: number,
-    errVal: number,
-  ): void;
   dequeueSignalForDeliveryForTest(channel: ChannelInfo): number;
   drainWakeupEventsForTest(): void;
   dispatchRegisteredMainChannelForAdvisoryLockTest(pid: number): void;
@@ -3184,21 +3172,6 @@ export class CentralizedKernelWorker {
       /** Re-armed one-shot for an interval longer than an engine timer. */
       longInterval?: ReturnType<typeof setTimeout>;
       signo: number;
-    }
-  >();
-  /** Pending sleep timers keyed by exact process/thread channel generation. */
-  private pendingSleeps = new Map<
-    ChannelInfo,
-    {
-      cancellationPoint: boolean;
-      cancellationWakeAllowed: boolean;
-      timer: ReturnType<typeof setTimeout>;
-      channel: ChannelInfo;
-      syscallNr: number;
-      origArgs: number[];
-      retVal: number;
-      errVal: number;
-      outputWrites: ChannelOutputWrite[];
     }
   >();
   /** Threads blocked in rt_sigtimedwait, keyed by `pid:channelOffset`. */
@@ -4234,21 +4207,6 @@ export class CentralizedKernelWorker {
         queueSignal = true,
       ): void => {
         this.sendSignalToProcess(targetPid, signum, queueSignal);
-      },
-      completeSleepWithSignalCheckForTest: (
-        channel,
-        syscallNr,
-        origArgs,
-        retVal,
-        errVal,
-      ): void => {
-        this.completeSleepWithSignalCheck(
-          channel,
-          syscallNr,
-          origArgs,
-          retVal,
-          errVal,
-        );
       },
       dequeueSignalForDeliveryForTest: (channel): number => {
         if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
@@ -7012,20 +6970,6 @@ export class CentralizedKernelWorker {
           publicationRetVal = -1;
           errVal = EFAULT;
         }
-        let sleepDelayMs: number | undefined;
-        if (
-          retVal >= 0
-          && (
-            plan.syscallNr === SYS_NANOSLEEP
-            || plan.syscallNr === SYS_CLOCK_NANOSLEEP
-          )
-        ) {
-          const timespec = lease.dataView(CH_DATA, 12);
-          const sec = timespec.getUint32(0, true);
-          const nsec = timespec.getUint32(8, true);
-          sleepDelayMs = sec * 1000 + Math.floor(nsec / 1_000_000);
-        }
-
         const outputWrites: ChannelOutputWrite[] = [];
         let outputContractViolation = false;
         for (const planned of plan.plannedChannelScratchArgs) {
@@ -7196,7 +7140,6 @@ export class CentralizedKernelWorker {
           rawRetVal,
           errVal,
           outputWrites,
-          sleepDelayMs,
         };
       },
       retryToken,
@@ -7207,7 +7150,6 @@ export class CentralizedKernelWorker {
       rawRetVal: -1n,
       errVal: dispatched.errno,
       outputWrites: [],
-      sleepDelayMs: undefined,
     };
   }
 
@@ -8156,30 +8098,9 @@ export class CentralizedKernelWorker {
     if (!kernelPtySetWinsize) return;
     kernelPtySetWinsize(ptyIdx, rows, cols);
     this.scheduleWakeBlockedRetries(kernelEntry);
-
-    // A process parked in a host-side setTimeout-backed nanosleep won't notice
-    // the SIGWINCH the kernel just raised — the timer just runs to completion.
-    // Speculatively dequeue a Handler signal for each blocked pid; if one was
-    // pending we complete the sleep with EINTR so the glue can dispatch it.
-    // Skipped pids (no signal queued) keep their original sleep deadline.
-    const EINTR = 4;
-    for (const [sleepChannel, entry] of Array.from(this.pendingSleeps.entries())) {
-      if (!this.isRegisteredChannel(entry.channel)) continue;
-      this.#dequeueSignalForDelivery(entry.channel, kernelEntry);
-      if (this.#finishSignalTermination(entry.channel, kernelEntry)) continue;
-      const view = new DataView(entry.channel.memory.buffer, entry.channel.channelOffset);
-      if (view.getUint32(CH_SIG_SIGNUM, true) > 0) {
-        this.#cancelRegisteredTimeout(entry.timer);
-        this.pendingSleeps.delete(sleepChannel);
-        this.completeChannel(
-          entry.channel, entry.syscallNr, entry.origArgs,
-          SYSCALL_ARGS[entry.syscallNr], -1, EINTR,
-          [],
-          undefined,
-          kernelEntry,
-        );
-      }
-    }
+    // The SIGWINCH the kernel may just have raised ends any kernel-owned park
+    // (a sleep, a futex) of the thread it targets. Collect those decisions.
+    this.#settleKernelWaitsWithinKernelEntry(kernelEntry);
   }
 
   /**
@@ -8583,7 +8504,6 @@ export class CentralizedKernelWorker {
     // Clean up pending pipe readers/writers
     this.cleanupPendingPipeReaders(pid);
     this.cleanupPendingPipeWriters(pid);
-    this.cancelPendingSleepsForProcess(pid);
     // Clean up socket timeout timers for this process
     for (const [ch, timer] of this.socketTimeoutTimers) {
       if (ch.pid === pid) {
@@ -8636,14 +8556,6 @@ export class CentralizedKernelWorker {
       throw new Error("Kernel is not initialized for process removal");
     }
     this.removeFromKernelProcessTable(pid);
-  }
-
-  private cancelPendingSleepsForProcess(pid: number): void {
-    for (const [channel, sleep] of this.pendingSleeps) {
-      if (channel.pid !== pid) continue;
-      this.#cancelRegisteredTimeout(sleep.timer);
-      this.pendingSleeps.delete(channel);
-    }
   }
 
   private cancelAlarmTimerForProcess(pid: number): void {
@@ -8881,8 +8793,6 @@ export class CentralizedKernelWorker {
     this.execHandoffPids?.delete(pid);
     this.committedExecSecureExec.delete(pid);
     this.#releaseHostStdinForExitedProcess(pid, entry);
-    // Cancel pending sleeps for every thread in this process.
-    this.cancelPendingSleepsForProcess(pid);
     // Clean up pending poll retries
     this.cleanupPendingPollRetries(pid);
     // Clean up pending select retries
@@ -10101,7 +10011,6 @@ export class CentralizedKernelWorker {
     this.waitingForChild = (this.waitingForChild ?? []).filter(
       (waiter) => waiter.parentPid !== pid,
     );
-    this.cancelPendingSleepsForProcess(pid);
     for (const channel of this.pendingCancels) {
       if (channel.pid === pid) this.pendingCancels.delete(channel);
     }
@@ -10430,10 +10339,6 @@ export class CentralizedKernelWorker {
     this.pendingSignalWaits?.delete(signalWaitKey);
     this.closeWaitDeadline(channel, entry);
 
-    const sleep = this.pendingSleeps?.get(channel);
-    if (sleep) this.#cancelRegisteredTimeout(sleep.timer);
-    this.pendingSleeps?.delete(channel);
-
 
     const poll = this.pendingPollRetries?.get(channel);
     if (poll?.timer !== null && poll?.timer !== undefined) {
@@ -10483,9 +10388,6 @@ export class CentralizedKernelWorker {
     }
     for (const waiter of this.waitingForChild ?? []) {
       if (waiter.channel.pid === pid) channels.add(waiter.channel);
-    }
-    for (const channel of this.pendingSleeps?.keys() ?? []) {
-      if (channel.pid === pid) channels.add(channel);
     }
     for (const channel of this.pendingPollRetries?.keys() ?? []) {
       if (channel.pid === pid) channels.add(channel);
@@ -14256,23 +14158,6 @@ export class CentralizedKernelWorker {
         return;
       }
 
-      // 2. Sleep syscalls: kernel returned success immediately, but we need
-      //    to delay the response to simulate the sleep duration.
-      if (
-        this.handleSleepDelay(
-          channel,
-          syscallNr,
-          origArgs,
-          retVal,
-          errVal,
-          kernelResult.sleepDelayMs,
-          kernelResult.outputWrites,
-          entry,
-        )
-      ) {
-        return;
-      }
-
       // --- Process group change: re-check deferred waitpid calls ---
       // When a process changes its pgid (setpgid/setsid), a parent blocked in
       // waitpid(-pgid) may no longer have any matching children. Wake it with ECHILD.
@@ -14293,8 +14178,8 @@ export class CentralizedKernelWorker {
       //       their handlers observe the new exit state and complete with the
       //       right errno (handled by scheduleWakeBlockedRetries).
       //   (b) For any process the kernel marked Exited but that is still
-      //       blocked in a non-blocking-retry path (most importantly
-      //       pendingSleeps), call handleProcessTerminated directly so the
+      //       blocked outside a retry path (most importantly a kernel-owned
+      //       sleep or futex park), call handleProcessTerminated directly so the
       //       parent's wait4 actually sees the killed child. Without this,
       //       a `kill` of a sleeping child can leave the parent blocked even
       //       though Rust has marked the child as an Exited zombie.
@@ -15177,22 +15062,6 @@ export class CentralizedKernelWorker {
       return false;
     }
 
-    const sleep = this.pendingSleeps.get(channel);
-    if (sleep) {
-      this.#cancelRegisteredTimeout(sleep.timer);
-      this.pendingSleeps.delete(channel);
-      this.#completeSleepWithSignalCheckWithinKernelEntry(
-        sleep.channel,
-        sleep.syscallNr,
-        sleep.origArgs,
-        sleep.retVal,
-        sleep.errVal,
-        sleep.outputWrites,
-        entry,
-      );
-      return true;
-    }
-
     let blocked =
       this.pendingPollRetries.has(channel) ||
       (this.pendingAdvisoryLockRetries?.has(channel) ?? false) ||
@@ -15495,14 +15364,12 @@ export class CentralizedKernelWorker {
       this.#cancelRegisteredTimeout(e.timer);
     }
     for (const e of this.pendingSelectRetries.values()) if (e.timer) this.#cancelRegisteredTimeout(e.timer);
-    for (const e of this.pendingSleeps.values()) this.#cancelRegisteredTimeout(e.timer);
     for (const e of this.pendingSignalWaits.values()) this.#cancelRegisteredTimeout(e.timer);
     this.pendingPipeReaders.clear();
     this.pendingPipeWriters.clear();
     this.pendingPollRetries.clear();
     this.pendingAdvisoryLockRetries?.clear();
     this.pendingSelectRetries.clear();
-    this.pendingSleeps.clear();
     this.pendingSignalWaits.clear();
     // Teardown has not yet transitioned these live tasks in Rust. Consume
     // every exact target pin before discarding the immutable host plans.
@@ -15628,7 +15495,6 @@ export class CentralizedKernelWorker {
       dropChannelKeyed(this.pendingAdvisoryLockRetries);
     }
     dropChannelKeyed(this.pendingSelectRetries);
-    dropChannelKeyed(this.pendingSleeps);
     for (const [key, value] of [...this.pendingSignalWaits]) {
       if (value.channel.pid !== pid) continue;
       this.#cancelRegisteredTimeout(value.timer);
@@ -17388,31 +17254,14 @@ export class CentralizedKernelWorker {
     // retry timer, etc.) avoids racing against the handler's own
     // completion path — we never write the channel directly here.
 
-    // 1) A kernel-owned park (futex): the exact-task cleanup above already
-    //    ended it with EINTR inside the kernel. Collect that decision.
+    // 1) A kernel-owned park (futex, sleep): the exact-task cleanup above
+    //    already ended it with EINTR inside the kernel. Collect that decision.
     if (target.kernelWaitGeneration !== undefined) {
       this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
       return;
     }
 
-    // 2) Host-deferred sleep — discard its staged timeout output and cancel
-    //    the exact timer before publishing EINTR. A stale callback must never
-    //    complete a later request that reuses this mailbox.
-    const sleepEntry = this.pendingSleeps.get(target);
-    if (isWakeableCancellationPoint(sleepEntry)) {
-      this.pendingCancels.delete(target);
-      this.#cancelRegisteredTimeout(sleepEntry.timer);
-      this.pendingSleeps.delete(target);
-      this.completeChannelRawAndRelisten(
-        target,
-        -EINTR_ERRNO,
-        EINTR_ERRNO,
-        entry,
-      );
-      return;
-    }
-
-    // 3) rt_sigtimedwait — retire both the current timer and its persistent
+    // 2) rt_sigtimedwait — retire both the current timer and its persistent
     //    deadline. The key is numeric, so prove that it still names this exact
     //    channel generation before deleting either record.
     const signalWaitKey = `${target.pid}:${target.channelOffset}`;
@@ -19174,157 +19023,6 @@ export class CentralizedKernelWorker {
     // Re-entering the public wrapper here would put this selected mailbox
     // behind itself again.
     this.#handleSyscallWithinKernelEntry(channel, entry);
-  }
-
-  /**
-   * Handle sleep syscalls where the kernel returns success immediately
-   * but we need to delay the channel response.
-   * Returns true if this is a sleep syscall that was handled.
-   */
-  private handleSleepDelay(
-    channel: ChannelInfo,
-    syscallNr: number,
-    origArgs: number[],
-    retVal: number,
-    errVal: number,
-    capturedDelayMs?: number,
-    outputWrites: ChannelOutputWrite[] = [],
-    entry?: KernelWorkerEntryContext,
-  ): boolean {
-    let delayMs = 0;
-
-    if (syscallNr === SYS_NANOSLEEP && retVal >= 0) {
-      delayMs = capturedDelayMs ?? 0;
-    } else if (syscallNr === SYS_USLEEP && retVal >= 0) {
-      const usec = origArgs[0] >>> 0;
-      delayMs = Math.max(1, Math.floor(usec / 1000));
-    } else if (syscallNr === SYS_CLOCK_NANOSLEEP && retVal >= 0) {
-      delayMs = capturedDelayMs ?? 0;
-    }
-
-    if (delayMs > 0) {
-      if (
-        entry
-        && this.interruptPendingCancellationBeforeRegistration(
-          channel,
-          syscallNr,
-          this.#cancellationPointIdentity(channel),
-          entry,
-        )
-      ) return true;
-      const register = (): undefined => {
-        const timer = this.#registerTimeout(() => {
-          const pending = this.pendingSleeps.get(channel);
-          if (pending?.timer !== timer || pending.channel !== channel) return;
-          this.pendingSleeps.delete(channel);
-          if (this.isRegisteredChannel(channel)) {
-            this.completeSleepWithSignalCheck(
-              channel,
-              syscallNr,
-              origArgs,
-              retVal,
-              errVal,
-              outputWrites,
-            );
-          }
-        }, delayMs);
-        this.pendingSleeps.set(channel, {
-          ...this.#cancellationPointIdentity(channel),
-          timer,
-          channel,
-          syscallNr,
-          origArgs,
-          retVal,
-          errVal,
-          outputWrites,
-        });
-        return undefined;
-      };
-      // WHY: timer registration is a host effect and its callback outlives the
-      // current kernel stack. Install it only after scope revocation; the
-      // callback enters through the public completion root below.
-      if (entry) entry.deferProtocolEffect(register);
-      else register();
-      return true;
-    }
-
-    return false;
-  }
-
-  /**
-   * Complete a sleep syscall, checking for pending signals first.
-   * POSIX: sleep interrupted by signal returns EINTR.
-   */
-  private completeSleepWithSignalCheck(
-    channel: ChannelInfo,
-    syscallNr: number,
-    origArgs: number[],
-    retVal: number,
-    errVal: number,
-    outputWrites: ChannelOutputWrite[] = [],
-  ): void {
-    if (!this.isRegisteredChannel(channel)) return;
-    this.#runOrDeferChannelKernelEntry(
-      channel,
-      "sleep completion",
-      (entry) => {
-        this.#completeSleepWithSignalCheckWithinKernelEntry(
-          channel,
-          syscallNr,
-          origArgs,
-          retVal,
-          errVal,
-          outputWrites,
-          entry,
-        );
-        return undefined;
-      },
-    );
-  }
-
-  #completeSleepWithSignalCheckWithinKernelEntry(
-    channel: ChannelInfo,
-    syscallNr: number,
-    origArgs: number[],
-    retVal: number,
-    errVal: number,
-    outputWrites: ChannelOutputWrite[],
-    entry: KernelWorkerEntryContext,
-  ): void {
-    // Check if a signal became pending during the sleep
-    const deliveredSignal = this.#dequeueSignalForDelivery(channel, entry);
-    if (this.#finishSignalTermination(channel, entry)) return;
-
-    // The kernel dequeue return is the authority marker. Another process
-    // thread can write its shared mailbox, so CH_SIG bytes alone must never
-    // manufacture an interruption.
-    if (deliveredSignal > 0) {
-      // POSIX: nanosleep/usleep interrupted by signal returns -1/EINTR
-      const EINTR = 4;
-      this.completeChannel(
-        channel,
-        syscallNr,
-        origArgs,
-        SYSCALL_ARGS[syscallNr],
-        -1,
-        EINTR,
-        [],
-        undefined,
-        entry,
-      );
-    } else {
-      this.completeChannel(
-        channel,
-        syscallNr,
-        origArgs,
-        SYSCALL_ARGS[syscallNr],
-        retVal,
-        errVal,
-        outputWrites,
-        undefined,
-        entry,
-      );
-    }
   }
 
   // -----------------------------------------------------------------------
@@ -23807,7 +23505,6 @@ export class CentralizedKernelWorker {
 
     this.discardStoppedChannelStateForProcess(pid);
     if (this.hostReaped.has(pid)) return true;
-    this.cancelPendingSleepsForProcess(pid);
 
     const channel = this.processes.get(pid)?.channels[0];
     if (channel && entry) {
@@ -23916,9 +23613,6 @@ export class CentralizedKernelWorker {
       if (this.#getProcessExitSignal(pid, entry) <= 0) continue;
       if (this.hostReaped.has(pid)) continue; // already handled for this task ID
 
-      // Cancel any pending blocking-syscall timers — the process is gone.
-      this.cancelPendingSleepsForProcess(pid);
-
       const proc = this.processes.get(pid);
       const ch = proc?.channels[0];
       // handleProcessTerminated re-checks hostReaped and adds the pid
@@ -23950,7 +23644,6 @@ export class CentralizedKernelWorker {
     entry?: KernelWorkerEntryContext,
   ): boolean {
     if (this.#getProcessExitSignal(channel.pid, entry) <= 0) return false;
-    this.cancelPendingSleepsForProcess(channel.pid);
     if (entry) {
       this.#handleProcessTerminatedWithinKernelEntry(channel, entry);
     } else {
@@ -25217,23 +24910,6 @@ export class CentralizedKernelWorker {
     // PCM and pipe write/writev waits live in the targeted writable registry,
     // not the poll-timer map below. Retry only the signal-selected thread.
     if (this.retryPendingWriterForCaughtSignal(targetPid, targetTid)) return;
-
-    // 1. Pending sleep (nanosleep, usleep, clock_nanosleep)
-    const pendingSleepMatch = Array.from(this.pendingSleeps.entries()).find(
-      ([channel]) => channel.pid === targetPid
-        && this.guestTidForChannel(channel) === targetTid,
-    );
-    if (pendingSleepMatch) {
-      const [sleepChannel, pendingSleep] = pendingSleepMatch;
-      this.#cancelRegisteredTimeout(pendingSleep.timer);
-      this.pendingSleeps.delete(sleepChannel);
-      this.#completeSleepWithSignalCheckWithinKernelEntry(
-        pendingSleep.channel, pendingSleep.syscallNr, pendingSleep.origArgs,
-        pendingSleep.retVal, pendingSleep.errVal,
-        [],
-        entry,
-      );
-    }
 
     // 2. Pending ppoll/poll retry — wake ALL threads for this pid.
     //    Snapshot-and-skip-if-replaced: retrySyscall runs handleSyscall

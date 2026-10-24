@@ -381,6 +381,7 @@ host/test/signal-process.test.ts	prepared-product
 host/test/signal-to-threaded.test.ts	prepared-product
 host/test/sigpending.test.ts	prepared-product
 host/test/sjlj-noexcept-boundary.test.ts	prepared-product
+host/test/sleep-kernel-wait.test.ts	prepared-product
 host/test/socket-timeout-options.test.ts	prepared-product
 host/test/spawn-credential-order.test.ts	source-only
 host/test/spawn-host-parity.test.ts	source-only
