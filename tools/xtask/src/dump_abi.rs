@@ -4552,6 +4552,7 @@ fn wait_completion_wire() -> Value {
         "flags": {
             "suppressRestart": wire::FLAG_SUPPRESS_RESTART,
             "cancelled": wire::FLAG_CANCELLED,
+            "published": wire::FLAG_PUBLISHED,
         },
     })
 }
@@ -4577,9 +4578,10 @@ fn render_ts_wait_completion_wire() -> String {
     }
     out.push_str("} as const;\n");
     out.push_str(&format!(
-        "export const WAIT_COMPLETION_FLAGS = {{\n  suppressRestart: {},\n  cancelled: {},\n}} as const;\n\n",
+        "export const WAIT_COMPLETION_FLAGS = {{\n  suppressRestart: {},\n  cancelled: {},\n  published: {},\n}} as const;\n\n",
         wire::FLAG_SUPPRESS_RESTART,
-        wire::FLAG_CANCELLED
+        wire::FLAG_CANCELLED,
+        wire::FLAG_PUBLISHED
     ));
     out
 }

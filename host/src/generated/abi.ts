@@ -514,6 +514,7 @@ export const WAIT_COMPLETION_FIELDS = {
 export const WAIT_COMPLETION_FLAGS = {
   suppressRestart: 1,
   cancelled: 2,
+  published: 4,
 } as const;
 
 export const POLL_EVENTS = {

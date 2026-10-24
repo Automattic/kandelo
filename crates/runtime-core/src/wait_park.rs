@@ -527,9 +527,21 @@ impl Parks {
 
     /// Decide the re-executed call `id` of `(pid, tid)`.
     pub fn finish_retry_waiter(&mut self, id: WaiterId, op: crate::wait_retry::RetryOp, value: i32) -> bool {
+        self.finish_retry_waiter_with_flags(id, op, value, 0)
+    }
+
+    /// [`Self::finish_retry_waiter`] with completion `flags` (the direct-
+    /// publication experiment marks a result the kernel already published).
+    pub fn finish_retry_waiter_with_flags(
+        &mut self,
+        id: WaiterId,
+        op: crate::wait_retry::RetryOp,
+        value: i32,
+        flags: u32,
+    ) -> bool {
         match self.queue.remove_with_reason(id, WakeReason::Source(op.source())) {
             Some(wakeup) => {
-                self.finish(wakeup, value, 0);
+                self.finish(wakeup, value, flags);
                 true
             }
             None => false,
