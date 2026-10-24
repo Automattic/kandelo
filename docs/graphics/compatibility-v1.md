@@ -58,9 +58,9 @@ reproduction and correct observable failure; none is inferred from a stub.
 
 | ID | Required behavior / source | Current implementation and known failure | Owner / dependencies | Executable validation | Status / boundary |
 |---|---|---|---|---|---|
-| G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reserved guest buffer names and host shared-object maps; incomplete is/query functions | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
+| G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reserved guest buffer names and host shared-object maps; core object predicates implemented, full query/error coverage still open | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
 | G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Full rollback, hints and multiple public contexts remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
-| G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffer plus client attributes and full size/limit/query coverage remain open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
+| G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffers plus client attributes use a bounded presence query; core buffer/vertex queries preserve logical state. Full size/limit/negative coverage remains open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core reflection and complete executable/attribute/uniform validation still need work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization exists; complete target/state/error audit missing | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
@@ -1176,3 +1176,80 @@ and client attributes, complete buffer/vertex queries and broader negative/
 limit coverage. No wire layout changed; ABI remains 55. Normal full
 SDK/kernel/package/image provisioning and CTS/compositor, browser-memory and
 POSIX validation remain deferred until the combined build/test phase.
+
+
+### Logical buffer/vertex queries and mixed client/index draws
+
+Operation-table v3 adds buffer size/usage, vertex metadata/current values,
+object predicates, enable predicates and bounded index-usage queries. The
+C library exports the eleven corresponding GLES2 entrypoints through
+`eglGetProcAddress`. Buffer queries resolve logical stores, including an
+old deleted object retained by a binding and native views invalidated by
+another-target write. Host vertex queries retain GLES formats and strides;
+C queries also retain original client pointers, buffer names and offsets
+after private packed staging. Capability calls reject WebGL2-only enums
+without changing native or logical state.
+
+A draw combining client attributes with a bound byte/short index buffer
+flushes commands before querying the authoritative index storage. The
+8204-byte reply contains status, maximum index, an 8192-byte presence
+bitset and a completion marker. It fits the existing 65536-byte query
+limit and independent 65556-byte forwarding mailbox. Readback scratch is
+bounded at 64 KiB; client staging copies only referenced vertices. The
+original element binding survives staging. Client-only indexed draws now
+use the same compact bitset instead of one byte per possible vertex.
+
+Every new query uses a status/payload/completion envelope. API failures
+leave the GL error flag with the host exactly once; transport or truncated
+replies become client errors. Caller outputs remain unchanged on failure,
+including allocation failure. Buffer allocation/update calls now reject
+invalid core targets, usages, signed sizes and absent bindings before
+reading client data; zero-length updates still reach logical range checks.
+
+Existing operation tags and layouts are unchanged. The graphics-specific
+`OP_VERSION` advances from 2 to 3 under its documented independent
+versioning policy; global `ABI_VERSION` remains 55. Focused kernel tests
+accept versions 1, 2 and 3 and reject 0 and 4. Snapshot regeneration and
+checking succeeded without generated-file changes. An older op-table-2
+kernel rejects a v3 library at initialization; installed artifacts still
+need the normal combined rebuild, rather than restamping.
+
+The exact `fafcf3074a` native baseline passes 46 old cases and fails all
+five additions (missing query resolvers, bound-index/client-array rejection
+and its error path): `.context/graphics-query-baseline-native.log`.
+The new direct host-query browser case fails in all three engines against
+that exact archived host source, `.context/graphics-query-before/`:
+`.context/graphics-query-baseline-browser.log`.
+
+Focused evidence on the v3 source tree:
+
+| Gate | Result | Evidence |
+|---|---|---|
+| Native actual EGL/GLES with device double and UBSan | 51 passed | `.context/graphics-query-final-native.log` |
+| Host graphics source gate and Node/browser declarations | 336 cases in 16 files; declarations passed | `.context/graphics-query-final-verified-host.log` |
+| Real Chromium/Firefox/WebKit source WebGL | 72 passed, no skips | `.context/graphics-query-final-browser.log` |
+| Kernel operation-table negotiation and graphics lifecycle | 16 GLIO cases; 4 additional lifecycle cases passed | `.context/graphics-query-glio-rust.log`, `.context/graphics-query-rust.log` |
+| Browser protocol/memory-boundary negative checks | 10 passed | `.context/graphics-query-memory-boundary.log` |
+| Private wasm32 EGL/GLES objects and paired relocatable link | Passed | `.context/graphics-query-wasm.log` |
+| Public-entrypoint current-context authority audit | All 142 defined public GL functions guarded | `.context/graphics-query-audit.log` |
+| ABI snapshot/source consistency | Passed; global ABI 55, generated files unchanged | `.context/graphics-query-abi-check.log` |
+
+The two additional captured-C bound-index streams render cyan at the
+maximum byte/short vertex in all three engines. Their native device double
+supplies the controlled index query response; captured command replay does
+not execute that query. Separate real-browser tests query native WebGL
+storage, including stale element views, sparse indices, original formats,
+deleted/reused names, independent context values and single GL errors.
+This does not establish end-to-end guest query marshalling or public EGL
+sharing. Source inventory still lacks eight GLES2 core functions:
+`glGetActiveAttrib`, `glGetAttachedShaders`,
+`glGetFramebufferAttachmentParameteriv`, `glGetRenderbufferParameteriv`,
+`glGetShaderSource`, `glGetTexParameterfv`, `glGetTexParameteriv` and
+`glValidateProgram`. The C attribute mirror still has a fixed 16-slot limit;
+native limits and all negative/size cases require further audit. G01–G04
+remain partial, and the other inventory families remain open as listed.
+
+Snapshot verification compiled the focused kernel component. Normal full
+SDK/archive/program/package/image provisioning, guest CTS, cage/sway,
+full browser-memory and POSIX validation remain deferred to the combined
+build/test phase. Performance was not measured.

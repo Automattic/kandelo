@@ -16,6 +16,7 @@
  * delete and would collide). Indices are number-keyed for clean u32
  * round-tripping.
  */
+import { runStateQuery } from "./state-query.js";
 import { canonicalBuffer } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
@@ -109,6 +110,9 @@ export function runGlQuery(
   const gl = b.gl;
   const inDv = new DataView(input.buffer, input.byteOffset, input.byteLength);
   const outDv = new DataView(out.buffer, out.byteOffset, out.byteLength);
+
+  const state = runStateQuery(b,op,input,out);
+  if (state !== undefined) return state;
 
   switch (op) {
     case O.QOP_GET_ERROR:

@@ -74,6 +74,8 @@ static int string_generation;
 static unsigned context_create_calls;
 static unsigned buffer_uploads;
 static unsigned draw_commands;
+static int indexed_queries;
+static uint32_t indexed_max, query_scalar, query_gl_error, query_status;
 static int capture_array_upload;
 static unsigned char captured_bytes[524288];
 static uint32_t captured_size, captured_type, captured_stride;
@@ -211,6 +213,30 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             return 0;
         }
         if (numeric_queries == 3) { errno = EINVAL; return -1; }
+        if (q->op == QOP_GET_ERROR && query_gl_error) {
+            memcpy(latest_allocation,&query_gl_error,4); query_gl_error = 0; return 0;
+        }
+        if (q->op == 0x17 && indexed_queries) {
+            assert(q->in_buf_len == 12 && q->out_buf_len == 8204 && latest_allocation);
+            if (indexed_queries == 2) { errno = EIO; return -1; }
+            memset(latest_allocation,0,8204);
+            const uint32_t status = indexed_queries == 4 ? 1 : 0;
+            memcpy(latest_allocation,&status,4); memcpy((uint8_t *)latest_allocation+4,&indexed_max,4);
+            ((uint8_t *)latest_allocation)[8+indexed_max/8] |= (uint8_t)(1u << (indexed_max%8));
+            const uint32_t footer = indexed_queries == 3 ? 0 : 0x47514c33u;
+            memcpy((uint8_t *)latest_allocation+8200,&footer,4); return 0;
+        }
+        if (q->op == 0x12 || q->op == 0x15 || q->op == 0x16) {
+            assert(q->out_buf_len == 12 && latest_allocation);
+            memset(latest_allocation,0,12); memcpy(latest_allocation,&query_status,4); memcpy((uint8_t *)latest_allocation+4,&query_scalar,4);
+            const uint32_t footer = 0x47514c33u; memcpy((uint8_t *)latest_allocation+8,&footer,4); return 0;
+        }
+        if (q->op == 0x13 || q->op == 0x14) {
+            assert(q->in_buf_len == 8 && q->out_buf_len == 24 && latest_allocation);
+            const GLfloat f[4] = {-1.75f,0.25f,2.5f,1}; const GLint i[4] = {-2,0,3,1};
+            memset(latest_allocation,0,24); memcpy((uint8_t *)latest_allocation+4,q->op == 0x14 ? (const void *)f : (const void *)i,16);
+            const uint32_t footer = 0x47514c33u; memcpy((uint8_t *)latest_allocation+20,&footer,4); return 0;
+        }
         if (numeric_queries) {
             assert(latest_allocation);
             assert(q->out_buf_ptr == (uint32_t)(uintptr_t)latest_allocation);
@@ -336,6 +362,65 @@ int main(int argc, char **argv) {
         fail_make_current = 0;
     }
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1], "encoder-buffer-query")) {
+        void (*get)(GLenum,GLenum,GLint *) = (void (*)(GLenum,GLenum,GLint *))eglGetProcAddress("glGetBufferParameteriv");
+        GLboolean (*is)(GLuint) = (GLboolean (*)(GLuint))eglGetProcAddress("glIsBuffer"); assert(get && is);
+        GLuint buffer; glGenBuffers(1,&buffer); glBindBuffer(GL_ARRAY_BUFFER,buffer); glBufferData(GL_ARRAY_BUFFER,64,NULL,GL_STATIC_DRAW);
+        GLint value = 87; query_scalar = 64; get(GL_ARRAY_BUFFER,GL_BUFFER_SIZE,&value); assert(value == 64);
+        query_scalar = GL_STATIC_DRAW; get(GL_ARRAY_BUFFER,GL_BUFFER_USAGE,&value); assert(value == GL_STATIC_DRAW);
+        value = 87; get(0xdead,GL_BUFFER_SIZE,&value); assert(value == 87 && glGetError() == GL_INVALID_ENUM);
+        get(GL_ARRAY_BUFFER,0xdead,&value); assert(value == 87 && glGetError() == GL_INVALID_ENUM);
+        numeric_queries = 3; get(GL_ARRAY_BUFFER,GL_BUFFER_SIZE,&value); numeric_queries = 0;
+        assert(value == 87 && glGetError() == GL_INVALID_OPERATION);
+        query_status = 1; query_gl_error = GL_INVALID_OPERATION; get(GL_ARRAY_BUFFER,GL_BUFFER_SIZE,&value); query_status = 0;
+        assert(value == 87 && glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        fail_malloc = 1; get(GL_ARRAY_BUFFER,GL_BUFFER_SIZE,&value); fail_malloc = 0;
+        assert(value == 87 && glGetError() == GL_OUT_OF_MEMORY);
+        query_scalar = 1; assert(is(buffer)); glDeleteBuffers(1,&buffer); query_scalar = 0; assert(!is(buffer));
+        glBufferData(GL_ARRAY_BUFFER,-1,NULL,GL_STATIC_DRAW); assert(glGetError() == GL_INVALID_VALUE);
+        glBufferData(GL_ARRAY_BUFFER,4,NULL,GL_STATIC_DRAW); assert(glGetError() == GL_INVALID_OPERATION);
+        glBufferSubData(GL_ARRAY_BUFFER,0,0,NULL); assert(glGetError() == GL_INVALID_OPERATION);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-buffer-query"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-vertex-query")) {
+        void (*iv)(GLuint,GLenum,GLint *) = (void (*)(GLuint,GLenum,GLint *))eglGetProcAddress("glGetVertexAttribiv");
+        void (*fv)(GLuint,GLenum,GLfloat *) = (void (*)(GLuint,GLenum,GLfloat *))eglGetProcAddress("glGetVertexAttribfv");
+        void (*pv)(GLuint,GLenum,void **) = (void (*)(GLuint,GLenum,void **))eglGetProcAddress("glGetVertexAttribPointerv"); assert(iv && fv && pv);
+        const GLfixed data[5] = {65536,0,0,0,0};
+        glVertexAttribPointer(1,3,GL_FIXED,GL_TRUE,20,data); glEnableVertexAttribArray(1); glDrawArrays(GL_POINTS,0,1);
+        GLint i = 87; GLfloat f = 87; void *pointer = NULL;
+        iv(1,GL_VERTEX_ATTRIB_ARRAY_STRIDE,&i); assert(i == 20); fv(1,GL_VERTEX_ATTRIB_ARRAY_SIZE,&f); assert(f == 3);
+        iv(1,GL_VERTEX_ATTRIB_ARRAY_TYPE,&i); assert(i == GL_FIXED); iv(1,GL_VERTEX_ATTRIB_ARRAY_NORMALIZED,&i); assert(i == 1);
+        iv(1,GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&i); assert(i == 0); pv(1,GL_VERTEX_ATTRIB_ARRAY_POINTER,&pointer); assert(pointer == data);
+        GLint v[4]; GLfloat w[4]; iv(1,GL_CURRENT_VERTEX_ATTRIB,v); fv(1,GL_CURRENT_VERTEX_ATTRIB,w);
+        assert(v[0] == -2 && v[2] == 3 && w[0] == -1.75f && w[2] == 2.5f);
+        i = 87; iv(16,GL_VERTEX_ATTRIB_ARRAY_SIZE,&i); assert(i == 87 && glGetError() == GL_INVALID_VALUE);
+        pv(1,0xdead,&pointer); assert(pointer == data && glGetError() == GL_INVALID_ENUM);
+        GLuint buffer; glGenBuffers(1,&buffer); glBindBuffer(GL_ARRAY_BUFFER,buffer); glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,0,(void *)8);
+        iv(1,GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&i); assert((GLuint)i == buffer); glDeleteBuffers(1,&buffer);
+        iv(1,GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&i); assert(i == 0); pv(1,GL_VERTEX_ATTRIB_ARRAY_POINTER,&pointer); assert(pointer == (void *)8);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-vertex-query"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-bound-errors")) {
+        const GLfloat vertices[4] = {0,0,-0.5f,1.5f}; const GLushort index = 1;
+        GLuint buffer; glGenBuffers(1,&buffer); glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,buffer); glBufferData(GL_ELEMENT_ARRAY_BUFFER,2,&index,GL_STATIC_DRAW);
+        capture_array_upload = 1; glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,vertices); glEnableVertexAttribArray(0); indexed_max = 1;
+        indexed_queries = 1; fail_malloc = 1; glDrawElements(GL_POINTS,1,GL_UNSIGNED_SHORT,NULL); fail_malloc = 0;
+        assert(draw_commands == 0 && glGetError() == GL_OUT_OF_MEMORY);
+        for (int failure=2; failure<=3; failure++) {
+            indexed_queries = failure; glDrawElements(GL_POINTS,1,GL_UNSIGNED_SHORT,NULL);
+            assert(draw_commands == 0 && captured_size == 0 && glGetError() == GL_INVALID_OPERATION);
+        }
+        indexed_queries = 4; query_gl_error = GL_OUT_OF_MEMORY; glDrawElements(GL_POINTS,1,GL_UNSIGNED_SHORT,NULL);
+        assert(draw_commands == 0 && glGetError() == GL_OUT_OF_MEMORY && glGetError() == GL_NO_ERROR);
+        indexed_queries = 1; glDrawElements(GL_POINTS,1,GL_UNSIGNED_SHORT,NULL); glFlush();
+        assert(draw_commands == 1 && captured_size == 16 && glGetError() == GL_NO_ERROR);
+        glDeleteBuffers(1,&buffer);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-bound-errors"); return 0;
+    }
     if (!strcmp(argv[1], "encoder-draw-enums")) {
         glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,(const void *)1); glEnableVertexAttribArray(0);
         glDrawArrays(0xdead,0,1); assert(glGetError() == GL_INVALID_ENUM);
@@ -345,8 +430,8 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-draw-enums"); return 0;
     }
-    if (!strcmp(argv[1], "encoder-max-byte") || !strcmp(argv[1], "encoder-max-short")) {
-        const int wide = !strcmp(argv[1], "encoder-max-short");
+    if (!strcmp(argv[1], "encoder-max-byte") || !strcmp(argv[1], "encoder-max-short") || !strcmp(argv[1], "encoder-bound-byte") || !strcmp(argv[1], "encoder-bound-short")) {
+        const int wide = strstr(argv[1],"short") != NULL, bound = strstr(argv[1],"bound") != NULL;
         const unsigned maximum = wide ? 65535 : 255, count = 33000, width = wide ? 2 : 1;
         GLfloat *vertices = calloc((size_t)maximum+1,2*sizeof(GLfloat)); assert(vertices);
         vertices[maximum*2] = -0.5f; vertices[maximum*2+1] = 1.5f;
@@ -357,7 +442,10 @@ int main(int argc, char **argv) {
         }
         capture_array_upload = 1;
         glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,vertices); glEnableVertexAttribArray(0);
-        glDrawElements(GL_POINTS,count,wide ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE,indices); glFlush();
+        GLuint buffer = 0;
+        if (bound) { glGenBuffers(1,&buffer); glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,buffer); glBufferData(GL_ELEMENT_ARRAY_BUFFER,count*width,indices,GL_STATIC_DRAW); indexed_queries = 1; indexed_max = maximum; }
+        glDrawElements(GL_POINTS,count,wide ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE,bound ? NULL : indices); glFlush();
+        if (bound) glDeleteBuffers(1,&buffer);
         assert(draw_commands == 1 && glGetError() == GL_NO_ERROR);
         assert(captured_size == (maximum+1)*2*sizeof(GLfloat));
         assert(!memcmp(captured_bytes+maximum*2*sizeof(GLfloat),vertices+maximum*2,2*sizeof(GLfloat)));

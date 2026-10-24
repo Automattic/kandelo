@@ -5175,7 +5175,7 @@ pub mod gl {
     /// Version of the GLES op-table. Bumped independently of `ABI_VERSION`
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
     /// at compile time; GLIO_INIT accepts compatible versions 1..=OP_VERSION.
-    pub const OP_VERSION: u32 = 2;
+    pub const OP_VERSION: u32 = 3;
 
     // --- ioctl request numbers (DRM 'D' magic, starting at 0x40) -----------
 
@@ -5354,6 +5354,17 @@ pub mod gl {
     pub const QOP_GET_ACTIVE_UNIFORM: u32 = 0x000F;
     pub const QOP_GET_UNIFORMFV: u32 = 0x0010;
     pub const QOP_GET_UNIFORMIV: u32 = 0x0011;
+
+    // New v3 replies: u32 status (0 success, 1 recorded GL error), payload,
+    // u32 completion magic 0x47514c33. Index usage payload is u32 maximum
+    // index plus 8192 bytes of index-presence bits; total reply 8204 bytes.
+    // Existing query tags/layouts remain unchanged.
+    pub const QOP_GET_BUFFER_PARAMETER: u32 = 0x0012;
+    pub const QOP_GET_VERTEX_ATTRIBIV: u32 = 0x0013;
+    pub const QOP_GET_VERTEX_ATTRIBFV: u32 = 0x0014;
+    pub const QOP_IS_OBJECT: u32 = 0x0015;
+    pub const QOP_IS_ENABLED: u32 = 0x0016;
+    pub const QOP_GET_INDEX_USAGE: u32 = 0x0017;
 
     // --- marshalled ioctl argument structs ---------------------------------
 

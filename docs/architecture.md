@@ -3929,8 +3929,18 @@ scratch/masks and signed size checks. Indexed draws widen byte/short values into
 using bounded chunks and one draw to preserve complete primitive topology.
 This keeps GLES2 maximum indices from becoming WebGL restart markers.
 Native element/copy bindings are restored and private handles deleted on
-all exits. Core draw enums are checked before client reads. Combined bound
-indices/client arrays, complete query/negative/limit coverage,
+all exits. Core draw enums are checked before client reads. Bound index
+buffers can also drive client attributes: a checked synchronous query reads
+the authoritative index storage and returns its maximum and an 8192-byte
+presence bitset. The encoder stages only referenced client vertices. New
+operation-table v3 queries use a status/payload/completion envelope; GL
+failures remain owned by the host error flags, and malformed/incomplete
+replies preserve caller outputs. Existing operation layouts remain valid;
+the global ABI stays 55. Buffer queries read logical size/usage rather than
+stale native views. Vertex queries preserve original client pointers,
+formats and strides despite private draw staging. Object and enable
+predicates use the appropriate logical namespace and context state.
+Complete query/negative/limit coverage,
 image sibling sampler identity and kernel display-generation authority plus
 C group routing remain open.
 Shader/program attachment records retain deleted shaders and current

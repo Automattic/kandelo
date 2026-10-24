@@ -13,7 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define WPK_GL_OP_VERSION 2u
+#define WPK_GL_OP_VERSION 3u
 #define WPK_GL_CMDBUF_LEN (1u << 20)
 #define WPK_GL_DEVICE     "/dev/dri/renderD128"
 
@@ -157,6 +157,20 @@
 #define QOP_CHECK_FB_STATUS       0x0Cu
 #define QOP_GET_SHADER_PRECISION_FORMAT 0x0Du
 #define QOP_FINISH                0x0Eu
+
+#define QOP_GET_BUFFER_PARAMETER 0x0012u
+#define QOP_GET_VERTEX_ATTRIBIV 0x0013u
+#define QOP_GET_VERTEX_ATTRIBFV 0x0014u
+#define QOP_IS_OBJECT 0x0015u
+#define QOP_IS_ENABLED 0x0016u
+#define QOP_GET_INDEX_USAGE 0x0017u
+
+/* New v3 query replies: u32 status (0 success, 1 recorded GL error),
+ * payload, u32 completion magic. Index usage payload: u32 maximum index
+ * followed by 8192 bytes of index-presence bits (byte/short indices).
+ * Old query layouts are unchanged. All words are little-endian. */
+#define WPK_GL_INDEX_REPLY_LEN 8204u
+#define WPK_GL_QUERY_REPLY_MAGIC 0x47514c33u
 
 /* Marshalled ioctl arg structs — must match shared::gl byte-for-byte. */
 struct gl_submit_info { uint32_t offset; uint32_t length; };

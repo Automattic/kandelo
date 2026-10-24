@@ -405,6 +405,87 @@ describe("shared buffer deletion", () => {
     return {gl,reg,a,b,send};
   }
 
+  function queryWords(owner: ReturnType<typeof setup>["a"], op: number, words: number[], size = 4) {
+    const input = new Uint8Array(words.length*4), out = new Uint8Array(size+8).fill(0xaa);
+    words.forEach((word,i) => new DataView(input.buffer).setUint32(i*4,word,true));
+    const rc = runGlQuery(owner,op,input,out);
+    return {rc:rc < 0 ? rc : rc-8,status:new DataView(out.buffer).getUint32(0,true),out:out.slice(4,size+4)};
+  }
+
+  it("queries logical buffer size/usage while a bound native view is stale", () => {
+    const {a,send} = setup();
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); send(a,O.OP_BUFFER_DATA,[0x8892,4,0x88e4]); send(a,O.OP_BIND_BUFFER,[0x8893,71]);
+    send(a,O.OP_BUFFER_DATA,[0x8892,32,0x88e8]);
+    for (const [pname,value] of [[0x8764,32],[0x8765,0x88e8]]) {
+      const q = queryWords(a,O.QOP_GET_BUFFER_PARAMETER,[0x8893,pname]);
+      expect(q.rc).toBe(4); expect(new DataView(q.out.buffer).getUint32(0,true)).toBe(value);
+    }
+    const q = queryWords(a,O.QOP_GET_BUFFER_PARAMETER,[0x8893,0xdead]);
+    expect(q.status).toBe(1); expect([...q.out]).toEqual([0,0,0,0]); expect(a.errors).toContain(0x500);
+  });
+
+  it("queries logical converted attribute formats and rounds current integer values", () => {
+    const {a,send} = setup();
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,3,0x140c,1,1024,16]);
+    for (const [pname,value] of [[0x8623,3],[0x8624,1024],[0x8625,0x140c],[0x886a,1],[0x889f,71]]) {
+      const q = queryWords(a,O.QOP_GET_VERTEX_ATTRIBIV,[0,pname]);
+      expect(q.rc).toBe(4); expect(new DataView(q.out.buffer).getInt32(0,true)).toBe(value);
+    }
+    a.shadow.vertexAttribValues.set(0,[-1.75,0.25,2.5,1]);
+    const integer = queryWords(a,O.QOP_GET_VERTEX_ATTRIBIV,[0,0x8626],16), floats = queryWords(a,O.QOP_GET_VERTEX_ATTRIBFV,[0,0x8626],16);
+    expect([...new Int32Array(integer.out.buffer)]).toEqual([-2,0,3,1]); expect([...new Float32Array(floats.out.buffer)]).toEqual([-1.75,0.25,2.5,1]);
+  });
+
+  it("distinguishes reserved, bound, deleted and reused buffer names", () => {
+    const {a,b,send} = setup();
+    send(a,O.OP_GEN_BUFFERS,[1,71]);
+    expect(new DataView(queryWords(a,O.QOP_IS_OBJECT,[0,71]).out.buffer).getUint32(0,true)).toBe(0);
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); send(b,O.OP_BIND_BUFFER,[0x8892,71]);
+    expect(new DataView(queryWords(a,O.QOP_IS_OBJECT,[0,71]).out.buffer).getUint32(0,true)).toBe(1);
+    send(a,O.OP_DELETE_BUFFERS,[1,71]);
+    expect(new DataView(queryWords(b,O.QOP_IS_OBJECT,[0,71]).out.buffer).getUint32(0,true)).toBe(0);
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]);
+    expect(new DataView(queryWords(a,O.QOP_IS_OBJECT,[0,71]).out.buffer).getUint32(0,true)).toBe(1);
+  });
+
+  it("reports GLES enable state and rejects foreign enable caps without mutating native state", () => {
+    const {gl,a,send} = setup();
+    expect(new DataView(queryWords(a,O.QOP_IS_ENABLED,[0x0bd0]).out.buffer).getUint32(0,true)).toBe(1);
+    send(a,O.OP_ENABLE,[0x0be2]); expect(new DataView(queryWords(a,O.QOP_IS_ENABLED,[0x0be2]).out.buffer).getUint32(0,true)).toBe(1);
+    const calls = gl.log.length; send(a,O.OP_ENABLE,[0x8c89]);
+    expect(gl.log.length).toBe(calls); expect(a.errors).toContain(0x500);
+  });
+
+  it("returns a bounded index bitset from authoritative storage after another-target updates", () => {
+    const {gl,a,send} = setup();
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); send(a,O.OP_BUFFER_DATA,[0x8892,12,0x88e4]); send(a,O.OP_BIND_BUFFER,[0x8893,71]);
+    const data = new Uint8Array(new Uint16Array([123,1,65535,1,255,9]).buffer);
+    send(a,O.OP_BUFFER_SUB_DATA,[0x8892,0,data.length],data);
+    const q = queryWords(a,O.QOP_GET_INDEX_USAGE,[0x1403,2,4],8196), view = new DataView(q.out.buffer);
+    expect(q.rc).toBe(8196); expect(q.status).toBe(0); expect(view.getUint32(0,true)).toBe(65535);
+    expect(q.out[4]).toBe(2); expect(q.out[4+Math.floor(255/8)]).toBe(128); expect(q.out[8195]).toBe(128);
+    expect(q.out.subarray(4,8196).reduce((n,bits) => n+[...bits.toString(2)].filter(v => v === "1").length,0)).toBe(3);
+    expect(gl.getParameter(0x8f36)).toBeNull(); expect(gl.getParameter(0x8f37)).toBeNull();
+  });
+
+  it("rejects short v3 envelopes before modifying their output bytes", () => {
+    const {a} = setup();
+    const out = new Uint8Array(8203).fill(0xaa), input = new Uint8Array(12);
+    expect(runGlQuery(a,O.QOP_GET_INDEX_USAGE,input,out)).toBe(-22);
+    expect(out.every(v => v === 170)).toBe(true); expect(a.errors).toEqual([]);
+  });
+
+  it("marks index query failures without returning partial payloads", () => {
+    const {gl,a,send} = setup();
+    send(a,O.OP_BIND_BUFFER,[0x8893,71]); send(a,O.OP_BUFFER_DATA,[0x8893,2,0x88e4]);
+    for (const words of [[0x1403,1,1],[0x1401,0,3],[0x1401,0,0]]) {
+      const q = queryWords(a,O.QOP_GET_INDEX_USAGE,words,8196); expect(q.status).toBe(1); expect(q.out.every(v => v === 0)).toBe(true);
+    }
+    const errors: number[] = []; gl.getError = () => errors.shift() ?? 0; gl.getBufferSubData = () => { errors.push(0x505); };
+    const q = queryWords(a,O.QOP_GET_INDEX_USAGE,[0x1403,0,1],8196); expect(q.status).toBe(1); expect(q.out.every(v => v === 0)).toBe(true);
+    expect(gl.getParameter(0x8f36)).toBeNull(); expect(gl.getParameter(0x8f37)).toBeNull();
+  });
+
   it("widens byte indices including 255 in bounded chunks while keeping one strip draw", () => {
     const {gl,a,send} = setup();
     const values = Uint8Array.from({length:40001},(_,i) => i%256);

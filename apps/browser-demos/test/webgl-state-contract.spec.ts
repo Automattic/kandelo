@@ -7,8 +7,8 @@ import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./sup
 
 // Actual WebGL rendering through the shared decoder and muxer. This checks
 // host execution pixels; guest ABI/compositor integration has separate tests.
-for (const kind of ["client", "fixed", "max-byte", "max-short"] as const) {
-  test(`actual C encoder renders ${kind.startsWith("max-") ? `maximum ${kind.slice(4)} indices` : `a large ${kind === "fixed" ? "fixed-point" : "float"} client array`} through WebGL`, async ({ page }) => {
+for (const kind of ["client", "fixed", "max-byte", "max-short", "bound-byte", "bound-short"] as const) {
+  test(`actual C encoder renders ${kind.startsWith("bound-") ? `bound ${kind.slice(6)} indices with client attributes` : kind.startsWith("max-") ? `maximum ${kind.slice(4)} indices` : `a large ${kind === "fixed" ? "fixed-point" : "float"} client array`} through WebGL`, async ({ page }) => {
     const root = fileURLToPath(new URL("../../../",import.meta.url));
     mkdirSync(join(root,".context"),{recursive:true});
     const temporary = mkdtempSync(join(root,".context/graphics-client-trace-"));
@@ -16,7 +16,7 @@ for (const kind of ["client", "fixed", "max-byte", "max-short"] as const) {
     try {
       const path = join(temporary,"commands.bin");
       execFileSync("bash",[join(root,"tests/graphics/run-libc-unit.sh")],{
-        cwd:root, env:{...process.env,KANDELO_GRAPHICS_LIBC_CASES:kind.startsWith("max-") ? `encoder-${kind}` : `encoder-large-${kind}`,KANDELO_GRAPHICS_COMMAND_TRACE:path},
+        cwd:root, env:{...process.env,KANDELO_GRAPHICS_LIBC_CASES:kind.includes("-") ? `encoder-${kind}` : `encoder-large-${kind}`,KANDELO_GRAPHICS_COMMAND_TRACE:path},
         timeout:60000,stdio:"pipe",
       });
       trace = [...readFileSync(path)];
@@ -65,6 +65,83 @@ for (const kind of ["client", "fixed", "max-byte", "max-short"] as const) {
     expect(result).toEqual({pixels:[0,255,255,255],error:0,buffersRetired:true});
   });
 }
+
+test("op-table v3 queries preserve logical state, sparse indices and single GL errors", async ({ page }) => {
+  await page.goto("/trap-signal-test.html");
+  const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
+  const result = await page.evaluate(async sourceRoot => {
+    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const { GlContextRegistry } = await import(base+"registry.ts");
+    const { GlMuxer } = await import(base+"muxer.ts");
+    const { decodeAndDispatch } = await import(base+"bridge.ts");
+    const { runGlQuery } = await import(base+"query.ts");
+    const O = await import(base+"ops.ts");
+    const canvas = document.createElement("canvas"), gl = canvas.getContext("webgl2");
+    if (!gl) throw new Error("WebGL2 required");
+    const reg = new GlContextRegistry(), mux = new GlMuxer(gl);
+    const [a,b] = [101,102].map(sessionId => {
+      reg.bind({pid:97,sessionId,cmdbufAddr:0,cmdbufLen:1024}); const owner = reg.get(97,sessionId)!;
+      owner.gl = gl; owner.contextId = sessionId; owner.cmdbufView = new Uint8Array(1024); return owner;
+    });
+    if (!reg.shareObjects(97,102,101)) throw new Error("group construction failed");
+    const send = (owner: typeof a, op: number, words: number[], tail = new Uint8Array()) => {
+      mux.switchTo(owner); const view = new DataView(owner.cmdbufView!.buffer);
+      view.setUint16(0,op,true); view.setUint16(2,words.length*4+tail.length,true);
+      words.forEach((word,i) => view.setUint32(4+i*4,word,true)); owner.cmdbufView!.set(tail,4+words.length*4);
+      if (decodeAndDispatch(owner,0,4+words.length*4+tail.length)) throw new Error("command failed");
+    };
+    const query = (owner: typeof a, op: number, words: number[], size = 4, allowError = false) => {
+      mux.switchTo(owner); const input = new Uint8Array(words.length*4), out = new Uint8Array(size+8);
+      words.forEach((word,i) => new DataView(input.buffer).setUint32(i*4,word,true));
+      if (runGlQuery(owner,op,input,out) !== size+8) throw new Error("v3 query transport failed");
+      const view = new DataView(out.buffer);
+      if (view.getUint32(size+4,true) !== 0x47514c33 || (!allowError && view.getUint32(0,true))) throw new Error("bad v3 reply");
+      return {status:view.getUint32(0,true),bytes:out.slice(4,size+4)};
+    };
+    const scalar = (owner: typeof a, op: number, words: number[]) => new DataView(query(owner,op,words).bytes.buffer).getUint32(0,true);
+    const error = (owner: typeof a) => {
+      mux.switchTo(owner); const out = new Uint8Array(4);
+      if (runGlQuery(owner,O.QOP_GET_ERROR,new Uint8Array(),out) !== 4) throw new Error("error query failed");
+      return new DataView(out.buffer).getUint32(0,true);
+    };
+    send(a,O.OP_GEN_BUFFERS,[1,71]); const reserved = scalar(a,O.QOP_IS_OBJECT,[0,71]);
+    send(a,O.OP_BIND_BUFFER,[gl.ARRAY_BUFFER,71]); send(a,O.OP_BUFFER_DATA,[gl.ARRAY_BUFFER,32,gl.STATIC_DRAW]);
+    send(a,O.OP_BIND_BUFFER,[gl.ELEMENT_ARRAY_BUFFER,71]); send(a,O.OP_BUFFER_DATA,[gl.ARRAY_BUFFER,64,gl.DYNAMIC_DRAW]);
+    const size = scalar(a,O.QOP_GET_BUFFER_PARAMETER,[gl.ELEMENT_ARRAY_BUFFER,gl.BUFFER_SIZE]);
+    const usage = scalar(a,O.QOP_GET_BUFFER_PARAMETER,[gl.ELEMENT_ARRAY_BUFFER,gl.BUFFER_USAGE]);
+    const data = new Uint8Array(new Uint16Array([65535,1,65535]).buffer);
+    send(a,O.OP_BUFFER_SUB_DATA,[gl.ARRAY_BUFFER,4,data.length],data);
+    const index = query(a,O.QOP_GET_INDEX_USAGE,[gl.UNSIGNED_SHORT,4,3],8196).bytes;
+    const sparse = {maximum:new DataView(index.buffer).getUint32(0,true),low:index[4],high:index[8195]};
+    send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,3,0x140c,1,1024,16]);
+    const format = [gl.VERTEX_ATTRIB_ARRAY_SIZE,gl.VERTEX_ATTRIB_ARRAY_STRIDE,gl.VERTEX_ATTRIB_ARRAY_TYPE,gl.VERTEX_ATTRIB_ARRAY_NORMALIZED,gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING]
+      .map(pname => scalar(a,O.QOP_GET_VERTEX_ATTRIBIV,[0,pname]));
+    send(a,O.OP_VERTEX_ATTRIB_4FV,[0,...new Uint32Array(new Float32Array([-1.75,.25,2.5,1]).buffer)]);
+    const integers = [...new Int32Array(query(a,O.QOP_GET_VERTEX_ATTRIBIV,[0,gl.CURRENT_VERTEX_ATTRIB],16).bytes.buffer)];
+    const floats = [...new Float32Array(query(a,O.QOP_GET_VERTEX_ATTRIBFV,[0,gl.CURRENT_VERTEX_ATTRIB],16).bytes.buffer)];
+    const peerCurrent = [...new Float32Array(query(b,O.QOP_GET_VERTEX_ATTRIBFV,[0,gl.CURRENT_VERTEX_ATTRIB],16).bytes.buffer)];
+    send(b,O.OP_BIND_BUFFER,[gl.ARRAY_BUFFER,71]); send(b,O.OP_VERTEX_ATTRIB_POINTER,[0,3,0x140c,1,1024,16]);
+    send(a,O.OP_DELETE_BUFFERS,[1,71]); const deleted = scalar(b,O.QOP_IS_OBJECT,[0,71]);
+    const oldBinding = scalar(b,O.QOP_GET_VERTEX_ATTRIBIV,[0,gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING]);
+    send(a,O.OP_BIND_BUFFER,[gl.ARRAY_BUFFER,71]); send(a,O.OP_BUFFER_DATA,[gl.ARRAY_BUFFER,8,gl.STREAM_DRAW]);
+    const oldSize = scalar(b,O.QOP_GET_BUFFER_PARAMETER,[gl.ARRAY_BUFFER,gl.BUFFER_SIZE]);
+    send(a,O.OP_ENABLE,[gl.BLEND]); const enabled = scalar(a,O.QOP_IS_ENABLED,[gl.BLEND]);
+    send(a,O.OP_ENABLE,[0x8c89]); const foreignCap = [error(a),error(a),gl.isEnabled(0x8c89)];
+    const failed = query(a,O.QOP_GET_BUFFER_PARAMETER,[gl.ELEMENT_ARRAY_BUFFER,gl.BUFFER_SIZE],4,true);
+    const failedQuery = [failed.status,error(a),error(a)];
+    const kinds: number[] = [];
+    send(a,O.OP_BIND_TEXTURE,[gl.TEXTURE_2D,5]); kinds.push(scalar(a,O.QOP_IS_OBJECT,[1,5]));
+    send(a,O.OP_BIND_RENDERBUFFER,[gl.RENDERBUFFER,6]); kinds.push(scalar(a,O.QOP_IS_OBJECT,[2,6]));
+    send(a,O.OP_BIND_FRAMEBUFFER,[gl.FRAMEBUFFER,7]); kinds.push(scalar(a,O.QOP_IS_OBJECT,[3,7]));
+    send(a,O.OP_CREATE_SHADER,[gl.VERTEX_SHADER,8]); kinds.push(scalar(a,O.QOP_IS_OBJECT,[4,8]));
+    send(a,O.OP_CREATE_PROGRAM,[9]); kinds.push(scalar(a,O.QOP_IS_OBJECT,[5,9]));
+    const errors = [error(a),error(b)]; mux.invalidateCurrent(); reg.destroyContext(97,101); reg.destroyContext(97,102);
+    return {reserved,size,usage,sparse,format,integers,floats,peerCurrent,deleted,oldBinding,oldSize,enabled,foreignCap,failedQuery,kinds,errors};
+  },root);
+  expect(result).toEqual({reserved:0,size:64,usage:0x88e8,sparse:{maximum:65535,low:2,high:128},format:[3,1024,0x140c,1,71],
+    integers:[-2,0,3,1],floats:[-1.75,.25,2.5,1],peerCurrent:[0,0,0,1],deleted:0,oldBinding:71,oldSize:64,
+    enabled:1,foreignCap:[0x500,0,false],failedQuery:[1,0x502,0],kinds:[1,1,1,1,1],errors:[0,0]});
+});
 
 for (const width of [1,2]) {
   test(`maximum ${width*8}-bit VBO indices preserve strip topology and shared storage`, async ({ page }) => {

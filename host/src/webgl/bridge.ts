@@ -18,6 +18,7 @@
  * returns a negative errno so `GLIO_SUBMIT` can fail like any other
  * ioctl-style device operation instead of hiding the failure in host code.
  */
+import { capabilityEnabled } from "./state-query.js";
 import { drawGlesElements } from "./index-data.js";
 import { setConvertedVertexAttribute } from "./vertex-data.js";
 import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
@@ -482,13 +483,15 @@ function dispatch(
     }
     case O.OP_ENABLE: {
       const cap = v.getUint32(p, true);
-      gl.enable(cap);
+      if (capabilityEnabled(b,cap) === undefined) { recordGlError(b,0x500); return; }
+      if (!checkedGlCall(b, () => gl.enable(cap))) return;
       setCap(b.shadow, cap, true);
       return;
     }
     case O.OP_DISABLE: {
       const cap = v.getUint32(p, true);
-      gl.disable(cap);
+      if (capabilityEnabled(b,cap) === undefined) { recordGlError(b,0x500); return; }
+      if (!checkedGlCall(b, () => gl.disable(cap))) return;
       setCap(b.shadow, cap, false);
       return;
     }
