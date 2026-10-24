@@ -153,6 +153,48 @@ every package artifact the suites load.
 A stale `local-binaries/kernel.wasm` silently runs OLD kernel code in
 Vitest/conformance, so rebuild with `./run.sh setup` after any kernel Rust edit.
 
+### Built files stay out of Git
+
+Never commit a built file. That covers Wasm modules, VFS images (`.vfs`,
+`.vfs.zst`), archives, compressed images, native objects and libraries,
+reference outputs captured from a tool, test-run databases and logs, and
+anything else a build or test produces. Commit the source and the script that
+derives the file; build the file at build or test time.
+
+A committed binary is a second, unchecked copy of the truth. It keeps passing
+after the source, the SDK, or the kernel ABI that should have changed it has
+moved on, so a test can pass against bytes nothing in the tree can still
+produce. It also cannot be reviewed in a diff.
+
+When a test needs a binary:
+
+- Build it from tracked source at test time. Vitest's
+  `host/test/global-setup.ts` compiles C and WAT fixtures,
+  `scripts/build-programs.sh` builds `local-binaries/programs/` and
+  `local-binaries/test-fixtures/`, and the image builders produce VFS images.
+  Add new fixtures to one of these or have the test build its own.
+- If a test only needs a file to exist, write a placeholder into a temporary
+  directory during the test. Take the list of required files from the code
+  that requires them rather than a copy in the test. For example,
+  `tests/scripts/ci-run-test-suite-groups.test.sh` creates its placeholders
+  from `scripts/pack-ci-test-workspace.sh --list-required-artifacts`.
+- Never `git add -f` a build output past `.gitignore`. If a new output path is
+  not ignored, add an ignore rule in the same change.
+
+Before committing, check that no binary is staged:
+
+```bash
+git diff --cached --stat
+git diff --cached --numstat | awk '$1 == "-" { print $3 }'   # binary files
+```
+
+Some binaries predate this rule and are still tracked: the image and
+compression test vectors in `crates/runtime-core/src/testdata/` (`tiny.vfs` was
+force-added past the `*.vfs` ignore rule), the FFmpeg reference outputs and
+clip in `packages/registry/ffmpeg/test/fixtures/`, and the SQLite test-run
+databases under `test-runs/`. Do not add to them. When you change the tests
+that read them, replace them with files derived at test time.
+
 ## Documentation And PRs
 
 PR titles and commit subjects must begin with a concise purpose prefix in the

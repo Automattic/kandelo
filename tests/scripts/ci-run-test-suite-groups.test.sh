@@ -1133,30 +1133,16 @@ grep -Fq \
 chmod +x "$prepared_xtask"
 rm -rf "$FIXTURE/.ci-test-binary-cache"
 
-prepared_files=(
-    target/fixture-host/release/xtask
-    local-binaries/kernel.wasm
-    host/wasm/rootfs.vfs.zst
-    examples/gencat.wasm
-    examples/pthread_channel_reuse_test.wasm
-    examples/wait_lifecycle_test.wasm
-)
-BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$FIXTURE"
-BROWSER_MEMORY64_FIXTURES_MANIFEST="$FIXTURE/scripts/browser-memory64-example-fixtures.txt"
-memory64_outputs="$(browser_memory64_fixture_outputs)"
-while IFS= read -r output; do
-    prepared_files+=("$output")
-done <<< "$memory64_outputs"
-for benchmark in \
-    pipe-throughput.wasm \
-    file-throughput.wasm \
-    syscall-latency.wasm \
-    fork-bench.wasm \
-    clone-bench.wasm \
-    spawn-bench.wasm \
-    hello.wasm; do
-    prepared_files+=("benchmarks/wasm/$benchmark")
-done
+# Placeholders for every artifact the packer requires, taken from the
+# packer's own list so a newly required artifact cannot be missed here.
+prepared_files=(target/fixture-host/release/xtask)
+while IFS= read -r prepared; do
+    prepared_files+=("$prepared")
+done < <(bash "$FIXTURE/scripts/pack-ci-test-workspace.sh" --list-required-artifacts)
+[ "${#prepared_files[@]}" -gt 1 ] || {
+    echo "pack-ci-test-workspace.sh listed no required artifacts" >&2
+    exit 1
+}
 for prepared in "${prepared_files[@]}"; do
     mkdir -p "$FIXTURE/$(dirname "$prepared")"
     if [ "$prepared" != "target/fixture-host/release/xtask" ]; then
@@ -1236,7 +1222,11 @@ if PATH="$FIXTURE/bin:$PATH" \
     exit 1
 fi
 grep -Fq "program resolver link targets a noncanonical cache" \
-    "$TMP_DIR/rejected-workspace.out"
+    "$TMP_DIR/rejected-workspace.out" || {
+    echo "pack-ci-test-workspace.sh rejected the outside program mirror for the wrong reason" >&2
+    cat "$TMP_DIR/rejected-workspace.out" >&2
+    exit 1
+}
 rm "$FIXTURE/binaries/programs/wasm32/outside.wasm"
 
 printf 'flattened program\n' \
