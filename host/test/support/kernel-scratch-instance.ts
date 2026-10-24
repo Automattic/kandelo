@@ -60,6 +60,10 @@ function signatures(
       parameters: [pointer, i32, i32],
       result: i32,
     },
+    kernel_drain_wait_completions: {
+      parameters: [pointer, i32, i32],
+      result: i32,
+    },
     kernel_take_pty_readiness_changed: {
       parameters: [],
       result: i32,
@@ -549,7 +553,11 @@ function signatures(
       result: i32,
     },
     kernel_thread_exit: {
-      parameters: [i32, i32],
+      parameters: [i32, i32, i32],
+      result: i64,
+    },
+    kernel_wait_next_timeout_ns: {
+      parameters: [],
       result: i64,
     },
     kernel_thread_has_deliverable: {

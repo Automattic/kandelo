@@ -1078,7 +1078,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       value: 0,
       errno: 0,
     });
-    expect(threadExit).toHaveBeenCalledWith(pid, tid);
+    expect(threadExit).toHaveBeenCalledWith(pid, tid, 1);
   });
 
   it("keeps completing pthread SYS_EXIT channels when no host terminator is installed", async () => {
@@ -1143,7 +1143,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       value: 0,
       errno: 0,
     });
-    expect(threadExit).toHaveBeenCalledWith(pid, tid);
+    expect(threadExit).toHaveBeenCalledWith(pid, tid, 1);
   });
 
   it("rejects pthread exit when the channel lost its kernel-allocated TID", () => {
@@ -1355,8 +1355,11 @@ describe("CentralizedKernelWorker Process Management", () => {
 
     harness.worker.finalizeThreadExit(pid, tid, threadChannelOffset);
 
-    expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(0);
-    expect(threadExit).toHaveBeenCalledWith(pid, tid);
+    // The kernel performs CLONE_CHILD_CLEARTID (the store and the wake of a
+    // joiner parked in its futex queue); the host states only that the thread
+    // really ran. This mocked kernel does not store, so the word is untouched.
+    expect(threadExit).toHaveBeenCalledWith(pid, tid, 1);
+    expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(tid);
 
     // Reusing the exact channel offset proves forced cleanup released the
     // transport attachment as well as the guest clear-TID word.
@@ -1447,8 +1450,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       tid,
       2 * WASM_PAGE_SIZE,
     );
-    expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(0);
-    expect(threadExit).toHaveBeenCalledWith(pid, tid);
+    expect(threadExit).toHaveBeenCalledWith(pid, tid, 1);
 
     resolveClone();
     await waitForMailboxCompletion(memory, mainChannelOffset);
@@ -1556,9 +1558,8 @@ describe("CentralizedKernelWorker Process Management", () => {
       tid,
       threadChannelOffset,
     );
-    expect(new DataView(newMemory.buffer).getInt32(newCtidPtr, true)).toBe(0);
     expect(threadExit).toHaveBeenCalledTimes(1);
-    expect(threadExit).toHaveBeenCalledWith(pid, tid);
+    expect(threadExit).toHaveBeenCalledWith(pid, tid, 1);
     expect(
       Atomics.load(
         new Int32Array(oldMemory.buffer, channelOffset),

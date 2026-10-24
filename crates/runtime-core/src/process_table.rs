@@ -732,6 +732,7 @@ impl ProcessTable {
             return None;
         }
         let mut proc = self.processes.remove(&pid)?;
+        crate::wait_park::retire_process(pid);
         // Whole-process teardown consumes the OFD table itself, but retry
         // bindings can also own machine-global MQ/IPC pins and SCM_RIGHTS
         // references. Drop those before the ordinary backing walk and its

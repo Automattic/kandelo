@@ -208,15 +208,6 @@ mod wasm_api_source_guards {
                 4,
             ),
             (
-                r#"200 => kernel_futex(
-            process_address!(0),
-            a2 as u32,
-            a3 as u32,
-            a4 as u32,
-            conditional_process_address!(4),"#,
-                2,
-            ),
-            (
                 "203 => kernel_set_tid_address(process_address!(0)), // SYS_SET_TID_ADDRESS",
                 1,
             ),

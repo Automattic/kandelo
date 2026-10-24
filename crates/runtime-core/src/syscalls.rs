@@ -961,6 +961,10 @@ fn commit_exec_state_impl(
             return Err(Errno::ESRCH);
         }
     }
+    // Sibling threads parked in the kernel belong to the old image. Exec keeps
+    // the pid, so their parks must be dropped here, before any decision could
+    // be published into the replacement image's channels.
+    crate::wait_park::retire_process(proc.pid);
     // The old image owns every blocked request snapshot. Release its stable
     // kernel targets before closing CLOEXEC descriptors or discarding sibling
     // threads, so no retry can survive into the replacement program.
@@ -3680,6 +3684,10 @@ pub fn cancel_host_owned_wait_for_live_tid(
         return Err(Errno::ESRCH);
     }
     cancel_host_owned_wait_for_tid(proc, tid);
+    // A wait the kernel owns ends here too, with EINTR, and the host
+    // publishes that decision like any other. Hosts call this only for a
+    // wakeable cancellation point, so a plain syscall's park is untouched.
+    crate::wait_park::cancel_task(proc.pid, tid);
     Ok(())
 }
 
@@ -5629,6 +5637,7 @@ pub fn cleanup_exiting_thread_with_state(
     let release_result = release_blocking_retry_bindings_for_tid(proc, locks, host, tid);
     let owner = ((proc.pid as u64) << 32) | tid as u64;
     cancel_fifo_open_for_owner(proc, owner);
+    crate::wait_park::retire_task(proc.pid, tid);
     let thread = proc.remove_thread(tid).ok_or(Errno::ESRCH)?;
     release_result?;
     Ok(thread)
@@ -18145,20 +18154,53 @@ pub fn sys_set_robust_list() -> Result<(), Errno> {
     Ok(())
 }
 
-/// futex — real implementation using host Atomics.wait/notify.
+/// What a futex call did: answered now, or parked the caller in the kernel.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FutexOutcome {
+    /// The syscall's result.
+    Done(i32),
+    /// The caller is parked in [`crate::wait_park`] under this generation;
+    /// its result will arrive as a completion record.
+    Parked(u64),
+}
+
+/// futex(2), owned by the kernel.
+///
+/// # Why the kernel owns the wait
+///
+/// Every futex operation that matters is a syscall, and every syscall is
+/// serialized through the kernel. A compare-and-park performed here is
+/// therefore atomic with respect to every `FUTEX_WAKE`: if the wake is handled
+/// first, the later wait reads the new word and answers `EAGAIN`; if the wait
+/// is handled first, the wake finds it parked. No host-side `Atomics.waitAsync`
+/// on the guest word is involved, which is also Linux's model -- the wait
+/// queue is kernel state, not a property of the memory word.
+///
+/// The futex word is read through [`HostIO::proc_read_bytes`], the kernel's
+/// cross-memory primitive, and compared once on that copy.
+///
+/// `FUTEX_PRIVATE_FLAG` is accepted and ignored: waits are keyed by
+/// `(pid, address)`, and Kandelo processes never share a linear memory, so a
+/// shared futex and a private one name the same queue.
+///
+/// Known gap: `FUTEX_WAKE_OP` does not perform its atomic read-modify-write of
+/// `*uaddr2` (the cross-memory primitive is a copy, not an atomic RMW); it
+/// wakes `val` waiters on `uaddr` and `val2` on `uaddr2`, as the host did
+/// before. musl never issues it.
+#[allow(clippy::too_many_arguments)]
 pub fn sys_futex(
     host: &mut dyn HostIO,
-    uaddr: usize,
+    pid: u32,
+    tid: u32,
+    uaddr: u64,
     op: u32,
     val: u32,
-    timeout: u32,
-    uaddr2: usize,
+    timeout: u64,
+    uaddr2: u64,
     val3: u32,
-) -> Result<i32, Errno> {
+) -> Result<FutexOutcome, Errno> {
     const FUTEX_WAIT: u32 = 0;
     const FUTEX_WAKE: u32 = 1;
-    #[allow(dead_code)]
-    const FUTEX_FD: u32 = 2;
     const FUTEX_REQUEUE: u32 = 3;
     const FUTEX_CMP_REQUEUE: u32 = 4;
     const FUTEX_WAKE_OP: u32 = 5;
@@ -18166,41 +18208,138 @@ pub fn sys_futex(
     const FUTEX_WAKE_BITSET: u32 = 10;
     const FUTEX_PRIVATE_FLAG: u32 = 128;
     const FUTEX_CLOCK_REALTIME: u32 = 256;
+    const FUTEX_BITSET_MATCH_ANY: u32 = u32::MAX;
 
-    let base_op = op & !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
-
-    match base_op {
-        FUTEX_WAIT | FUTEX_WAIT_BITSET => Err(Errno::EAGAIN),
-        FUTEX_WAKE | FUTEX_WAKE_BITSET => host.host_futex_wake(uaddr, val),
-        FUTEX_REQUEUE => {
-            // Wake val waiters on uaddr, requeue up to val2 waiters to uaddr2.
-            // We can't truly requeue across futex addresses with Atomics, so
-            // wake val + val2 on uaddr instead — woken threads will re-check
-            // their conditions and re-wait on the correct address if needed.
-            let val2 = timeout; // timeout param repurposed as val2 for REQUEUE
-            host.host_futex_wake(uaddr, val + val2)
+    let command = op & !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+    if uaddr & 3 != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let read_word = |host: &mut dyn HostIO, addr: u64| -> Result<u32, Errno> {
+        let mut word = [0u8; 4];
+        if host.proc_read_bytes(pid as i32, addr, &mut word) < 0 {
+            return Err(Errno::EFAULT);
         }
-        FUTEX_CMP_REQUEUE => {
-            // Like REQUEUE but check *uaddr == val3 first
-            let val2 = timeout;
-            let actual = unsafe { core::ptr::read_volatile(uaddr as *const u32) };
-            if actual != val3 {
+        Ok(u32::from_le_bytes(word))
+    };
+    let check_uaddr2 = || -> Result<(), Errno> {
+        if uaddr2 & 3 != 0 {
+            Err(Errno::EINVAL)
+        } else {
+            Ok(())
+        }
+    };
+    // Linux passes REQUEUE/CMP_REQUEUE/WAKE_OP's second count in the timeout
+    // argument slot, as an integer.
+    let val2 = timeout as u32;
+    let wake = |addr: u64, max: u32, bitset: u32| -> usize {
+        crate::wait_park::with(|parks| parks.futex_wake(pid, addr, max as usize, bitset))
+    };
+
+    match command {
+        FUTEX_WAIT | FUTEX_WAIT_BITSET => {
+            let bitset = if command == FUTEX_WAIT {
+                FUTEX_BITSET_MATCH_ANY
+            } else {
+                val3
+            };
+            if bitset == 0 {
+                return Err(Errno::EINVAL);
+            }
+            if read_word(host, uaddr)? != val {
                 return Err(Errno::EAGAIN);
             }
-            host.host_futex_wake(uaddr, val + val2)
+            let now = crate::wait_park::now_ns(host)?;
+            let deadline = if timeout == 0 {
+                None
+            } else {
+                let mut raw = [0u8; 16];
+                if host.proc_read_bytes(pid as i32, timeout, &mut raw) < 0 {
+                    return Err(Errno::EFAULT);
+                }
+                let sec = i64::from_le_bytes(raw[0..8].try_into().expect("8 bytes"));
+                let nsec = i64::from_le_bytes(raw[8..16].try_into().expect("8 bytes"));
+                if sec < 0 || !(0..1_000_000_000).contains(&nsec) {
+                    return Err(Errno::EINVAL);
+                }
+                let span = sec
+                    .checked_mul(1_000_000_000)
+                    .and_then(|ns| ns.checked_add(nsec))
+                    .unwrap_or(i64::MAX);
+                // The wait's length, relative, on the guest's own clock.
+                Some(if command == FUTEX_WAIT {
+                    // FUTEX_WAIT's timeout is relative.
+                    span
+                } else {
+                    // FUTEX_WAIT_BITSET's is absolute, on CLOCK_REALTIME with
+                    // FUTEX_CLOCK_REALTIME and CLOCK_MONOTONIC otherwise.
+                    // Measure it against the clock the guest computed it on
+                    // (an image-build kernel's guest clocks are logical) once,
+                    // at park time.
+                    let clock = if op & FUTEX_CLOCK_REALTIME != 0 {
+                        wasm_posix_shared::clock::CLOCK_REALTIME
+                    } else {
+                        wasm_posix_shared::clock::CLOCK_MONOTONIC
+                    };
+                    let (sec, nsec) = guest_clock_now(host, clock)?;
+                    span.saturating_sub(sec.saturating_mul(1_000_000_000).saturating_add(nsec))
+                })
+            };
+            let timeout_ns = deadline;
+            if timeout_ns.is_some_and(|ns| ns <= 0) {
+                return Err(Errno::ETIMEDOUT);
+            }
+            let deadline = timeout_ns.map(|ns| now.saturating_add(ns));
+            let generation = crate::wait_park::with(|parks| {
+                parks.park(
+                    pid,
+                    tid,
+                    crate::wait_queue::WaitKind::Futex,
+                    alloc::vec![crate::wait_queue::WakeSource::Futex { pid, addr: uaddr }],
+                    deadline,
+                    crate::wait_park::Resume::Futex {
+                        bitset,
+                        timeout_ns: timeout_ns.map(|ns| ns as u64),
+                    },
+                )
+            })?;
+            Ok(FutexOutcome::Parked(generation))
+        }
+        FUTEX_WAKE | FUTEX_WAKE_BITSET => {
+            let bitset = if command == FUTEX_WAKE {
+                FUTEX_BITSET_MATCH_ANY
+            } else {
+                val3
+            };
+            if bitset == 0 {
+                return Err(Errno::EINVAL);
+            }
+            Ok(FutexOutcome::Done(wake(uaddr, val, bitset) as i32))
+        }
+        FUTEX_REQUEUE | FUTEX_CMP_REQUEUE => {
+            check_uaddr2()?;
+            if command == FUTEX_CMP_REQUEUE && read_word(host, uaddr)? != val3 {
+                return Err(Errno::EAGAIN);
+            }
+            let woken = wake(uaddr, val, FUTEX_BITSET_MATCH_ANY);
+            let moved = crate::wait_park::with(|parks| {
+                parks.futex_requeue(pid, uaddr, uaddr2, val2 as usize)
+            });
+            // Linux: REQUEUE returns the number woken; CMP_REQUEUE the number
+            // woken or requeued.
+            let total = if command == FUTEX_CMP_REQUEUE {
+                woken + moved
+            } else {
+                woken
+            };
+            Ok(FutexOutcome::Done(i32::try_from(total).unwrap_or(i32::MAX)))
         }
         FUTEX_WAKE_OP => {
-            // Wake val waiters on uaddr, then conditionally wake val3 on uaddr2
-            // Simplified: wake val on uaddr + val3 on uaddr2
-            let woken1 = host.host_futex_wake(uaddr, val)?;
-            let woken2 = if uaddr2 != 0 && val3 > 0 {
-                host.host_futex_wake(uaddr2, val3)?
-            } else {
-                0
-            };
-            Ok(woken1 + woken2)
+            check_uaddr2()?;
+            let woken = wake(uaddr, val, FUTEX_BITSET_MATCH_ANY)
+                + wake(uaddr2, val2, FUTEX_BITSET_MATCH_ANY);
+            Ok(FutexOutcome::Done(i32::try_from(woken).unwrap_or(i32::MAX)))
         }
-        _ => Ok(0), // no-op for unrecognized ops
+        _ => Err(Errno::ENOSYS),
     }
 }
 
@@ -23903,9 +24042,6 @@ mod tests {
             result[..copied].copy_from_slice(&bytes[..copied]);
             Ok(self.getaddrinfo_reported)
         }
-        fn host_futex_wake(&mut self, _addr: usize, _count: u32) -> Result<i32, Errno> {
-            Ok(0)
-        }
         fn bind_framebuffer(
             &mut self,
             _pid: i32,
@@ -24033,6 +24169,145 @@ mod tests {
             }
         }
         table_addr
+    }
+
+    // --- futex: the kernel owns the wait (crate::wait_park) ----------------
+    //
+    // These replace host-side checks that lived in kernel-worker.ts's
+    // handleFutex before the wait moved into the kernel: every one of them is
+    // now a kernel decision, made once for every host.
+
+    const FUTEX_WAIT_OP: u32 = 0;
+    const FUTEX_WAKE_OP_WAKE: u32 = 1;
+    const FUTEX_WAKE_OP_CODE: u32 = 5;
+
+    #[test]
+    fn futex_wait_answers_eagain_when_the_word_already_changed() {
+        let mut host = MockHostIO::new();
+        host.proc_memory[0x100..0x104].copy_from_slice(&7u32.to_le_bytes());
+        assert_eq!(
+            sys_futex(&mut host, 5, 5, 0x100, FUTEX_WAIT_OP, 6, 0, 0, 0),
+            Err(Errno::EAGAIN)
+        );
+        assert_eq!(crate::wait_park::with(|p| p.len()), 0, "a mismatch must not park");
+    }
+
+    #[test]
+    fn futex_wait_parks_in_the_kernel_and_a_wake_decides_zero() {
+        let mut host = MockHostIO::new();
+        let outcome = sys_futex(&mut host, 5, 6, 0x100, FUTEX_WAIT_OP, 0, 0, 0, 0).unwrap();
+        let FutexOutcome::Parked(generation) = outcome else {
+            panic!("a matching word must park, got {outcome:?}");
+        };
+        assert_eq!(
+            sys_futex(&mut host, 5, 5, 0x100, FUTEX_WAKE_OP_WAKE, 1, 0, 0, 0),
+            Ok(FutexOutcome::Done(1))
+        );
+        let done = crate::wait_park::with(|p| p.take_completions());
+        assert_eq!(done.len(), 1);
+        assert_eq!((done[0].generation, done[0].tid, done[0].value), (generation, 6, 0));
+    }
+
+    #[test]
+    fn futex_rejects_a_misaligned_or_unreadable_word() {
+        let mut host = MockHostIO::new();
+        assert_eq!(
+            sys_futex(&mut host, 5, 5, 0x102, FUTEX_WAIT_OP, 0, 0, 0, 0),
+            Err(Errno::EINVAL)
+        );
+        // The last aligned word of guest memory is readable; one past it is not.
+        let last = host.proc_memory.len() as u64 - 4;
+        assert_eq!(
+            sys_futex(&mut host, 5, 5, last, FUTEX_WAIT_OP, 0, 0, 0, 0).map(|_| ()),
+            Ok(()),
+            "an aligned word inside memory is readable"
+        );
+        crate::wait_park::retire_process(5);
+        let end = host.proc_memory.len() as u64;
+        assert_eq!(
+            sys_futex(&mut host, 5, 5, end, FUTEX_WAIT_OP, 0, 0, 0, 0),
+            Err(Errno::EFAULT)
+        );
+    }
+
+    #[test]
+    fn futex_rejects_a_non_normalized_timeout_before_parking() {
+        for (sec, nsec) in [(-1i64, 0i64), (0, -1), (0, 1_000_000_000)] {
+            let mut host = MockHostIO::new();
+            host.proc_memory[0x200..0x208].copy_from_slice(&sec.to_le_bytes());
+            host.proc_memory[0x208..0x210].copy_from_slice(&nsec.to_le_bytes());
+            assert_eq!(
+                sys_futex(&mut host, 5, 5, 0x100, FUTEX_WAIT_OP, 0, 0x200, 0, 0),
+                Err(Errno::EINVAL),
+                "({sec}, {nsec})"
+            );
+            assert_eq!(crate::wait_park::with(|p| p.len()), 0);
+        }
+    }
+
+    #[test]
+    fn futex_wait_bitset_measures_its_absolute_deadline_on_the_selected_clock() {
+        // FUTEX_WAIT_BITSET's timeout is an absolute deadline on
+        // CLOCK_MONOTONIC, or CLOCK_REALTIME with FUTEX_CLOCK_REALTIME (ABI
+        // 52). Give the two clocks very different readings so measuring the
+        // deadline against the wrong one cannot pass by accident.
+        const FUTEX_WAIT_BITSET: u32 = 9;
+        const FUTEX_PRIVATE_FLAG: u32 = 128;
+        const FUTEX_CLOCK_REALTIME: u32 = 256;
+        for realtime in [false, true] {
+            let mut host = MockHostIO::new();
+            host.monotonic_time = Some((123_456, 500_000_000));
+            host.clock_time = (1_800_000_000, 500_000_000);
+            let (now_sec, now_nsec) = if realtime {
+                host.clock_time
+            } else {
+                host.monotonic_time.unwrap()
+            };
+            let op = FUTEX_WAIT_BITSET
+                | FUTEX_PRIVATE_FLAG
+                | if realtime { FUTEX_CLOCK_REALTIME } else { 0 };
+            host.proc_memory[0x200..0x208].copy_from_slice(&now_sec.to_le_bytes());
+            host.proc_memory[0x208..0x210]
+                .copy_from_slice(&(now_nsec + 100_000).to_le_bytes());
+            let outcome =
+                sys_futex(&mut host, 5, 5, 0x100, op, 0, 0x200, 0, u32::MAX).unwrap();
+            assert!(matches!(outcome, FutexOutcome::Parked(_)), "realtime={realtime}");
+            let monotonic_now = 123_456i64 * 1_000_000_000 + 500_000_000;
+            assert_eq!(
+                crate::wait_park::with(|p| p.next_timeout_ns(monotonic_now)),
+                Some(100_000),
+                "a deadline 100 us ahead on the selected clock (realtime={realtime})"
+            );
+            crate::wait_park::retire_process(5);
+
+            // An absolute deadline already passed times out without parking.
+            host.proc_memory[0x200..0x208].copy_from_slice(&(now_sec - 1).to_le_bytes());
+            assert_eq!(
+                sys_futex(&mut host, 5, 5, 0x100, op, 0, 0x200, 0, u32::MAX),
+                Err(Errno::ETIMEDOUT),
+                "realtime={realtime}"
+            );
+            assert_eq!(crate::wait_park::with(|p| p.len()), 0);
+        }
+    }
+
+    #[test]
+    fn a_high_wasm64_futex_address_never_aliases_a_low_one() {
+        // Waits are keyed on the full 64-bit guest address. A wasm64 wake at
+        // 4 GiB + 0x100 must not reach a waiter at 0x100 -- the aliasing the
+        // host's width checks used to guard against, now impossible by type.
+        let mut host = MockHostIO::new();
+        let outcome = sys_futex(&mut host, 5, 6, 0x100, FUTEX_WAIT_OP, 0, 0, 0, 0).unwrap();
+        assert!(matches!(outcome, FutexOutcome::Parked(_)));
+        assert_eq!(
+            sys_futex(&mut host, 5, 5, 0x1_0000_0100, FUTEX_WAKE_OP_WAKE, 1, 0, 0, 0),
+            Ok(FutexOutcome::Done(0))
+        );
+        assert_eq!(
+            sys_futex(&mut host, 5, 5, 0x200, FUTEX_WAKE_OP_CODE, 0, 1, 0x1_0000_0100, 0),
+            Ok(FutexOutcome::Done(0))
+        );
+        crate::wait_park::retire_process(5);
     }
 
     /// Read back the bytes one staged iovec entry names.
@@ -39525,9 +39800,6 @@ impl HostIO for TrackingHostIO {
         fn host_getaddrinfo(&mut self, _name: &[u8], _result: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::ENOENT)
         }
-        fn host_futex_wake(&mut self, _addr: usize, _count: u32) -> Result<i32, Errno> {
-            Ok(0)
-        }
         fn bind_framebuffer(
             &mut self,
             pid: i32,
@@ -40682,9 +40954,6 @@ impl HostIO for NetMock {
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
                 Err(Errno::ENOENT)
-            }
-            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
-                Ok(0)
             }
             fn bind_framebuffer(
                 &mut self,
@@ -45666,9 +45935,6 @@ impl HostIO for SymlinkMock {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
                 Ok(0)
             }
-            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
-                Ok(0)
-            }
             fn bind_framebuffer(
                 &mut self,
                 _pid: i32,
@@ -45878,9 +46144,6 @@ impl HostIO for LoopMock {
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
                 Ok(0)
             }
-            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
-                Ok(0)
-            }
             fn bind_framebuffer(
                 &mut self,
                 _pid: i32,
@@ -46085,9 +46348,6 @@ impl HostIO for RelSymlinkMock {
                 Ok(())
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
                 Ok(0)
             }
             fn bind_framebuffer(

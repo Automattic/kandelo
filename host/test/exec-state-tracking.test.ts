@@ -855,10 +855,6 @@ describe("exec host-state transition", () => {
           [threadChannel, { timer: threadSleepTimer, channel: threadChannel }],
           [otherChannel, { timer: otherSleepTimer, channel: otherChannel }],
         ]),
-        pendingFutexWaits: new Map([
-          [threadChannel, { futexIndex: 4 }],
-          [otherChannel, { futexIndex: 5 }],
-        ]),
         pendingCancels: new Set([threadChannel, otherChannel]),
         stoppedPids: new Set([7, 8]),
         parkedChannelCompletions: new Map([
@@ -878,7 +874,6 @@ describe("exec host-state transition", () => {
           ["8:0", { fnPtr: 3, argPtr: 4 }],
         ]),
       });
-      const notify = vi.spyOn(Atomics, "notify");
       const parkedMain = worker.parkedChannelCompletions.get(mainChannel);
       worker.parkedChannelCompletions.delete(mainChannel);
       worker.stoppedPids.delete(7);
@@ -909,8 +904,6 @@ describe("exec host-state transition", () => {
       expect(worker.pendingSleeps.has(mainChannel)).toBe(false);
       expect(worker.pendingSleeps.has(threadChannel)).toBe(false);
       expect(worker.pendingSleeps.has(otherChannel)).toBe(true);
-      expect(worker.pendingFutexWaits.has(threadChannel)).toBe(false);
-      expect(worker.pendingFutexWaits.has(otherChannel)).toBe(true);
       expect(worker.pendingCancels.has(threadChannel)).toBe(false);
       expect(worker.pendingCancels.has(otherChannel)).toBe(true);
       expect(worker.stoppedPids.has(7)).toBe(true);
@@ -923,11 +916,6 @@ describe("exec host-state transition", () => {
       expect(worker.channelTids.get("8:0")).toBe(8);
       expect(worker.threadForkContexts.has("7:256")).toBe(false);
       expect(worker.threadForkContexts.has("8:0")).toBe(true);
-      expect(notify).toHaveBeenCalledWith(
-        expect.any(Int32Array),
-        4,
-        1,
-      );
       clearTimeout(otherSleepTimer);
     } finally {
       vi.restoreAllMocks();

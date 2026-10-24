@@ -1215,31 +1215,6 @@ describe("Rust-owned host import ranges", () => {
       .toEqual(new Uint8Array([1, 2, 3, 4]));
   });
 
-  it("does not wrap a wasm64 futex address onto a low kernel word", () => {
-    const { kernel, memory } = kernelHarness({}, 8);
-    const imports = kernel.testAuthority.buildImportObject(memory) as {
-      env: Record<string, (...args: any[]) => any>;
-    };
-    const notify = vi.spyOn(Atomics, "notify");
-
-    expect(imports.env.host_futex_wake(0x1_0000_1000n, 1)).toBe(-14);
-    expect(notify).not.toHaveBeenCalled();
-    notify.mockRestore();
-  });
-
-  it("rejects unaligned and end-crossing futex words", () => {
-    const { kernel, memory } = kernelHarness({});
-    const imports = kernel.testAuthority.buildImportObject(memory) as {
-      env: Record<string, (...args: any[]) => any>;
-    };
-
-    expect(imports.env.host_futex_wake(4097, 1)).toBe(-22);
-    expect(imports.env.host_futex_wake(
-      memory.buffer.byteLength - 2,
-      1,
-    )).toBe(-14);
-  });
-
   it("rejects lossy device metadata conversions before registration", () => {
     const { kernel, memory } = fullKernelHarness({}, {}, 8);
     const imports = kernel.testAuthority.buildImportObject(memory) as {

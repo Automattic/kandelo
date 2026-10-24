@@ -495,10 +495,25 @@ export const WAKEUP_EVENT_TYPES = {
   processStopped: 16,
   processContinued: 32,
   advisoryLock: 64,
+  waitComplete: 128,
 } as const;
 export const WAKEUP_EVENT_FIELDS = {
   idx: { offset: 0, size: 4, type: "u32" },
   wakeType: { offset: 4, size: 1, type: "u8" },
+} as const;
+
+export const WAIT_COMPLETION_RECORD_BYTES = 24 as const;
+export const KERNEL_WAIT_PARKED_ERRNO = 65536 as const;
+export const WAIT_COMPLETION_FIELDS = {
+  generation: { offset: 0, size: 8, type: "u64" },
+  pid: { offset: 8, size: 4, type: "u32" },
+  tid: { offset: 12, size: 4, type: "u32" },
+  value: { offset: 16, size: 4, type: "i32" },
+  flags: { offset: 20, size: 4, type: "u32" },
+} as const;
+export const WAIT_COMPLETION_FLAGS = {
+  suppressRestart: 1,
+  cancelled: 2,
 } as const;
 
 export const POLL_EVENTS = {
@@ -800,6 +815,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_create_process",
   "kernel_create_process_with_stdio",
   "kernel_dequeue_signal",
+  "kernel_drain_wait_completions",
   "kernel_epoll_wait_finish",
   "kernel_epoll_wait_token",
   "kernel_exchange_activate",
@@ -894,6 +910,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_transfer_scratch_pointer",
   "kernel_validate_task",
   "kernel_wait_child_poll",
+  "kernel_wait_next_timeout_ns",
 ] as const;
 
 export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [

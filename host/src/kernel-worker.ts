@@ -236,6 +236,10 @@ import {
   WAKEUP_EVENT_FIELDS,
   WAKEUP_EVENT_RECORD_BYTES,
   WAKEUP_EVENT_TYPES,
+  KERNEL_WAIT_PARKED_ERRNO,
+  WAIT_COMPLETION_FIELDS,
+  WAIT_COMPLETION_FLAGS,
+  WAIT_COMPLETION_RECORD_BYTES,
   type SyscallArgDesc,
   KANDELO_CLIPBOARD_ACK_PENDING,
   KANDELO_CLIPBOARD_MAX_TEXT_BYTES,
@@ -1095,12 +1099,10 @@ const CLONE_CHILD_SETTID = 0x01000000;
 
 /** Futex commands whose overloaded argument slots have pointer meaning. */
 const FUTEX_WAIT = 0;
-const FUTEX_WAKE = 1;
 const FUTEX_REQUEUE = 3;
 const FUTEX_CMP_REQUEUE = 4;
 const FUTEX_WAKE_OP = 5;
 const FUTEX_WAIT_BITSET = 9;
-const FUTEX_WAKE_BITSET = 10;
 const FUTEX_PRIVATE_FLAG = 128;
 const FUTEX_CLOCK_REALTIME = 256;
 
@@ -1197,7 +1199,6 @@ const WAIT_KIND_POLL = 1;
 const WAIT_KIND_SELECT = 2;
 const WAIT_KIND_EPOLL = 3;
 const WAIT_KIND_SIGTIMEDWAIT = 5;
-const WAIT_KIND_FUTEX = 8;
 
 /**
  * `kernel_wait_deadline_remaining_ns` sentinel for "this wait is live and has
@@ -1659,6 +1660,12 @@ interface ChannelInfo {
   /** A temporary epoll_pwait sigmask swap is active for this parked wait. */
   pollSigmaskSwapped?: boolean;
   epollWaitToken?: bigint;
+  /**
+   * Generation of the kernel-owned park holding this channel's request, or
+   * undefined. The kernel decides the result; the host publishes a completion
+   * record only into the channel that still carries its generation.
+   */
+  kernelWaitGeneration?: number;
 }
 
 /**
@@ -3370,24 +3377,10 @@ export class CentralizedKernelWorker {
    * to complete the syscall with ETIMEDOUT. Cleared when the operation
    * completes before the timeout. */
   private socketTimeoutTimers = new Map<ChannelInfo, ReturnType<typeof setTimeout>>();
-  /** Pending futex waits keyed by exact channel generation.
-   * Tracked so SYS_THREAD_CANCEL can force-wake a futex-blocked thread
-   * by firing Atomics.notify on the address it is waiting on. The waitAsync
-   * Promise in handleFutex then resolves and writes the channel result. */
-  private pendingFutexWaits = new Map<
-    ChannelInfo,
-    {
-      cancellationPoint: boolean;
-      cancellationWakeAllowed: boolean;
-      futexIndex: number;
-      /** Finite relative waits must expose EINTR even under SA_RESTART. */
-      hasTimeout: boolean;
-      /** Settle this exact wait once without racing its waitAsync callback. */
-      interrupt: (retVal: number, errVal: number) => void;
-      /** Retire a discarded channel without publishing a guest completion. */
-      retire: () => void;
-    }
-  >();
+  /** The one host timer that re-enters the kernel at its next park
+   * deadline (`kernel_wait_next_timeout_ns`), and when it is due. */
+  #kernelWaitTimer: ReturnType<typeof setTimeout> | undefined;
+  #kernelWaitDueAt = 0;
   /** Exact channel generations with a cancellation request pending. Set by
    * SYS_THREAD_CANCEL as the pre-enqueue race guard for every host-owned
    * cancellation-point registration. Already-tracked sleep/signal/readiness/
@@ -6889,6 +6882,11 @@ export class CentralizedKernelWorker {
     errVal: number;
   } {
     if (errVal !== 0) {
+      // A kernel-owned park carries its generation in the return slot; the
+      // post-dispatch path reads it from the raw value.
+      if (errVal === KERNEL_WAIT_PARKED_ERRNO) {
+        return { retVal: -1, publicationRetVal: -1, errVal };
+      }
       if (rawRetVal !== -1n) {
         return { retVal: -1, publicationRetVal: -1, errVal: EIO };
       }
@@ -10098,29 +10096,12 @@ export class CentralizedKernelWorker {
       this.pendingAdvisoryLockRetries.delete(channel);
     }
 
-    // Deferred wait/sleep/futex completions retain the discarded Memory and
+    // Deferred wait/sleep completions retain the discarded Memory and
     // would otherwise be able to run after the same pid is re-registered.
     this.waitingForChild = (this.waitingForChild ?? []).filter(
       (waiter) => waiter.parentPid !== pid,
     );
     this.cancelPendingSleepsForProcess(pid);
-    for (const [channel, wait] of this.pendingFutexWaits) {
-      if (channel.pid !== pid) continue;
-      this.pendingFutexWaits.delete(channel);
-      // Release the waitAsync closure so it can observe that this channel is
-      // stale and drop its completion instead of retaining the old Memory.
-      try {
-        if (wait.retire) wait.retire();
-        else
-          Atomics.notify(
-            new Int32Array(channel.memory.buffer),
-            wait.futexIndex,
-            1,
-          );
-      } catch {
-        // A detached/invalid discarded buffer needs no further cleanup.
-      }
-    }
     for (const channel of this.pendingCancels) {
       if (channel.pid === pid) this.pendingCancels.delete(channel);
     }
@@ -10453,21 +10434,6 @@ export class CentralizedKernelWorker {
     if (sleep) this.#cancelRegisteredTimeout(sleep.timer);
     this.pendingSleeps?.delete(channel);
 
-    const futex = this.pendingFutexWaits?.get(channel);
-    if (futex) {
-      this.pendingFutexWaits.delete(channel);
-      if (futex.retire) futex.retire();
-      else {
-        try {
-          Atomics.notify(
-            new Int32Array(channel.memory.buffer),
-            futex.futexIndex,
-          );
-        } catch {
-          // A detached discarded memory has no waiter left to release.
-        }
-      }
-    }
 
     const poll = this.pendingPollRetries?.get(channel);
     if (poll?.timer !== null && poll?.timer !== undefined) {
@@ -10519,9 +10485,6 @@ export class CentralizedKernelWorker {
       if (waiter.channel.pid === pid) channels.add(waiter.channel);
     }
     for (const channel of this.pendingSleeps?.keys() ?? []) {
-      if (channel.pid === pid) channels.add(channel);
-    }
-    for (const channel of this.pendingFutexWaits?.keys() ?? []) {
       if (channel.pid === pid) channels.add(channel);
     }
     for (const channel of this.pendingPollRetries?.keys() ?? []) {
@@ -12540,37 +12503,10 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    // --- Futex: must operate on process memory, not kernel memory ---
-    // The kernel's host_futex_wake/wait imports use kernel memory, but futex
-    // addresses are in process memory. Intercept here and handle directly.
-    if (syscallNr === SYS_FUTEX) {
-      if (logging) {
-        // Futex args: (uaddr, op, val, timeout, uaddr2, val3). Decode the op
-        // to make hung-thread investigations readable.
-        const FUTEX_OPS: Record<number, string> = {
-          0: "WAIT", 1: "WAKE", 2: "FD", 3: "REQUEUE", 4: "CMP_REQUEUE",
-          5: "WAKE_OP", 6: "LOCK_PI", 7: "UNLOCK_PI", 8: "TRYLOCK_PI",
-          9: "WAIT_BITSET", 10: "WAKE_BITSET", 11: "WAIT_REQUEUE_PI",
-          12: "CMP_REQUEUE_PI",
-        };
-        const FUTEX_PRIVATE_FLAG = 128;
-        const FUTEX_CLOCK_REALTIME = 256;
-        const op = origArgs[1];
-        const cmd = op & ~(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
-        const opName = FUTEX_OPS[cmd] ?? `op${cmd}`;
-        const flags = (op & FUTEX_PRIVATE_FLAG ? "|PRIVATE" : "")
-          + (op & FUTEX_CLOCK_REALTIME ? "|REALTIME" : "");
-        const tid = this.channelTids.get(`${channel.pid}:${channel.channelOffset}`);
-        const tidSuffix = tid !== undefined ? `:t${tid}` : ``;
-        console.error(`[${channel.pid}${tidSuffix}] futex(0x${origArgs[0].toString(16)}, ${opName}${flags}, val=${origArgs[2]})`);
-      }
-      this.handleFutex(channel, origArgs, rawArgs, entry);
-      return;
-    }
-
     // --- pthread_cancel wake-up: handled entirely on host side because
-    // the state we must perturb (futex waitAsync, pipe reader registration,
-    // poll/select retry timers) lives in TS, not in the kernel wasm. ---
+    // the state we must perturb (pipe reader registration, sleep and
+    // poll/select retry timers) still lives in TS. Kernel-owned parks are
+    // ended by the kernel cleanup this handler invokes. ---
     if (syscallNr === SYS_THREAD_CANCEL) {
       if (logging) console.error(logEntry);
       this.handleThreadCancel(channel, origArgs, entry);
@@ -13846,6 +13782,28 @@ export class CentralizedKernelWorker {
       // Postprocessing below may run nested synthetic syscalls or wake another
       // channel, so it must never retain or reread the shared allocation.
       let { retVal, publicationRetVal, errVal } = kernelResult;
+      if (errVal === KERNEL_WAIT_PARKED_ERRNO) {
+        // The kernel parked this request and will decide its result. Record
+        // only the park generation a completion must match. A pthread_cancel
+        // that arrived before the park is consumed by the kernel's exact-task
+        // cleanup, which ends the park with EINTR; the settle below publishes
+        // that, or a signal that was already pending for this thread.
+        if (logging) console.error(logEntry + " = (parked in kernel)");
+        channel.kernelWaitGeneration = Number(kernelResult.rawRetVal);
+        const identity = this.#cancellationPointIdentity(channel);
+        if (
+          identity.cancellationPoint
+          && identity.cancellationWakeAllowed
+          && this.pendingCancels.has(channel)
+          && !this.#cancelLiveTaskKernelWait(channel, entry)
+        ) {
+          this.#failBlockingRetryProtocol(
+            "cancellation of a kernel-parked wait failed",
+          );
+        }
+        this.#settleKernelWaitsWithinKernelEntry(entry);
+        return;
+      }
       if (
         syscallNr === SYS_RT_SIGTIMEDWAIT &&
         !(retVal === -1 && errVal === EAGAIN)
@@ -14162,8 +14120,11 @@ export class CentralizedKernelWorker {
         errVal,
         plannedDispatch,
       );
+      // futex's EAGAIN is a final answer ("the word changed"), not a request
+      // to block: the kernel owns the futex wait and parks it itself.
       const isRetryResult =
         retVal === -1
+        && syscallNr !== SYS_FUTEX
         && (
           errVal === EAGAIN
           || errVal === EINPROGRESS
@@ -14239,7 +14200,7 @@ export class CentralizedKernelWorker {
 
       // 1. EAGAIN: kernel returned EAGAIN for a blocking syscall.
       //    Schedule async retry — the process stays blocked on Atomics.wait.
-      if (retVal === -1 && errVal === EAGAIN) {
+      if (isRetryResult && errVal === EAGAIN) {
         if (logging) {
           console.error(logEntry + " = -1 (EAGAIN, will retry)");
         }
@@ -14349,12 +14310,6 @@ export class CentralizedKernelWorker {
         this.scheduleWakeBlockedRetries(entry);
         this.reapKilledProcessesAfterSyscall(entry);
         if (syscallNr === SYS_TKILL) {
-          this.interruptPendingFutexForCaughtSignal(
-            channel.pid,
-            origArgs[1] >>> 0,
-            entry,
-            origArgs[0] >>> 0,
-          );
           this.wakePendingSignalWaits(
             channel.pid,
             origArgs[1] >>> 0,
@@ -14366,30 +14321,6 @@ export class CentralizedKernelWorker {
             entry,
           );
         } else {
-          const targetSelector = origArgs[0];
-          if (targetSelector > 0) {
-            this.interruptPendingFutexForCaughtSignal(
-              targetSelector,
-              origArgs[1] >>> 0,
-              entry,
-            );
-          } else {
-            // Process-group and broadcast signals have no single target PID
-            // in the request. Ask Rust independently for each pid that has a
-            // host-owned futex; non-target processes report no deliverable TID.
-            const pendingPids = new Set(
-              Array.from(this.pendingFutexWaits.keys(), (candidate) =>
-                candidate.pid
-              ),
-            );
-            for (const pendingPid of pendingPids) {
-              this.interruptPendingFutexForCaughtSignal(
-                pendingPid,
-                origArgs[1] >>> 0,
-                entry,
-              );
-            }
-          }
           this.interruptWaitingChildrenForGeneratedSignal(
             origArgs[1],
             entry,
@@ -15031,6 +14962,11 @@ export class CentralizedKernelWorker {
 
     for (const channel of Array.from(registration.channels)) {
       if (!this.isRegisteredChannel(channel)) continue;
+      // A kernel-owned park is the kernel's to interrupt: its signal sweep
+      // already ran for this SIGCONT and ended the park if a signal targets
+      // this thread. Dequeuing here would take the signal from the thread the
+      // kernel chose and leave this one parked with a handler record.
+      if (channel.kernelWaitGeneration !== undefined) continue;
 
       const channelView = new DataView(
         channel.memory.buffer,
@@ -15254,20 +15190,6 @@ export class CentralizedKernelWorker {
         sleep.outputWrites,
         entry,
       );
-      return true;
-    }
-
-    const futex = this.pendingFutexWaits.get(channel);
-    if (futex) {
-      if (futex.interrupt) {
-        futex.interrupt(-EINTR_ERRNO, EINTR_ERRNO);
-      } else {
-        Atomics.notify(
-          new Int32Array(channel.memory.buffer),
-          futex.futexIndex,
-          1,
-        );
-      }
       return true;
     }
 
@@ -15582,13 +15504,6 @@ export class CentralizedKernelWorker {
     this.pendingSelectRetries.clear();
     this.pendingSleeps.clear();
     this.pendingSignalWaits.clear();
-    // Removing bookkeeping does not cancel Atomics.waitAsync. Its engine
-    // waiter retains the reaction closure and the entire process Memory,
-    // even after the owning Worker realm terminates on WebKit. Retire each
-    // exact wait before dropping it; retirement wakes without completing a
-    // guest syscall that teardown is about to replace.
-    for (const wait of Array.from(this.pendingFutexWaits.values())) wait.retire();
-    this.pendingFutexWaits.clear();
     // Teardown has not yet transitioned these live tasks in Rust. Consume
     // every exact target pin before discarding the immutable host plans.
     for (const channel of Array.from(this.blockingRetrySnapshots.keys())) {
@@ -15728,11 +15643,6 @@ export class CentralizedKernelWorker {
       const kept = waiters.filter((w) => w.pid !== pid);
       if (kept.length) this.pendingPipeWriters.set(pipeIdx, kept);
       else this.pendingPipeWriters.delete(pipeIdx);
-    }
-    for (const [channel, wait] of [...this.pendingFutexWaits]) {
-      if (!ownsChannel(channel)) continue;
-      wait.retire();
-      this.pendingFutexWaits.delete(channel);
     }
     for (const channel of Array.from(this.blockingRetrySnapshots.keys())) {
       if (ownsChannel(channel)) {
@@ -16476,6 +16386,95 @@ export class CentralizedKernelWorker {
   }
 
   /**
+   * Publish every result the kernel decided for a parked channel, then keep
+   * the one host timer that re-enters the kernel at its next park deadline.
+   *
+   * The kernel owns these waits (see `wait_completion_wire` in crates/shared):
+   * the drain export itself expires due deadlines and applies pending
+   * signals, so this method makes no decision. The timer is armed for the
+   * kernel's *relative* answer, so the host never computes in the kernel's
+   * clock domain; a timer that fires early drains nothing and re-arms.
+   */
+  #settleKernelWaitsWithinKernelEntry(
+    entry: KernelWorkerEntryContext,
+  ): void {
+    const MAX_RECORDS = 64;
+    const bufSize = MAX_RECORDS * WAIT_COMPLETION_RECORD_BYTES;
+    const records: DataView[] = [];
+    for (;;) {
+      const bytes = this.#requireMainScratchRegion().withLease((lease) => {
+        const count = this.#invokeEntryScratchExport(
+          entry,
+          lease,
+          "kernel_drain_wait_completions",
+          [lease.exportPointer(0, bufSize), bufSize, MAX_RECORDS],
+        );
+        if (!Number.isSafeInteger(count) || count < 0 || count > MAX_RECORDS) {
+          throw new KernelScratchError(
+            `wait completion drain returned invalid count ${count}`,
+            EIO,
+          );
+        }
+        return lease.copyOut(0, count * WAIT_COMPLETION_RECORD_BYTES);
+      });
+      for (let off = 0; off < bytes.byteLength; off += WAIT_COMPLETION_RECORD_BYTES) {
+        records.push(new DataView(bytes.buffer, bytes.byteOffset + off));
+      }
+      if (bytes.byteLength < bufSize) break;
+    }
+    const F = WAIT_COMPLETION_FIELDS;
+    for (const record of records) {
+      const generation = Number(record.getBigUint64(F.generation.offset, true));
+      const pid = record.getUint32(F.pid.offset, true);
+      const tid = record.getUint32(F.tid.offset, true);
+      const value = record.getInt32(F.value.offset, true);
+      const flags = record.getUint32(F.flags.offset, true);
+      // Invariant 1 of wait_queue.rs: publish only into the exact park. A
+      // channel that exec'd, exited or completed otherwise no longer carries
+      // this generation, so a stale decision cannot reach a later request.
+      const channel = this.processes.get(pid)?.channels.find(
+        (candidate) => candidate.kernelWaitGeneration === generation
+          && this.guestTidForChannel(candidate) === tid,
+      );
+      if (!channel || !this.isRegisteredChannel(channel)) continue;
+      channel.kernelWaitGeneration = undefined;
+      if ((flags & WAIT_COMPLETION_FLAGS.cancelled) !== 0) {
+        this.pendingCancels.delete(channel);
+      }
+      this.#dequeueSignalForDelivery(
+        channel,
+        entry,
+        (flags & WAIT_COMPLETION_FLAGS.suppressRestart) !== 0,
+      );
+      if (this.#finishSignalTermination(channel, entry)) continue;
+      this.completeChannelRawAndRelisten(
+        channel,
+        value,
+        value < 0 ? -value : 0,
+        entry,
+      );
+    }
+
+    const nextNs = (this.#kernelInstanceForEntry(entry).exports
+      .kernel_wait_next_timeout_ns as () => bigint)();
+    if (nextNs < 0n) return;
+    const delayMs = Math.min(Number((nextNs + 999_999n) / 1_000_000n), 2_147_483_647);
+    const dueAt = performance.now() + delayMs;
+    if (this.#kernelWaitTimer !== undefined) {
+      if (this.#kernelWaitDueAt <= dueAt) return;
+      this.#cancelRegisteredTimeout(this.#kernelWaitTimer);
+    }
+    this.#kernelWaitDueAt = dueAt;
+    this.#kernelWaitTimer = this.#registerTimeout(() => {
+      this.#kernelWaitTimer = undefined;
+      this.#runOrDeferKernelEntry("kernel wait deadline", (timerEntry) => {
+        this.#settleKernelWaitsWithinKernelEntry(timerEntry);
+        return undefined;
+      });
+    }, delayMs);
+  }
+
+  /**
    * Drain kernel wakeup events and process readiness/lifecycle wakeups.
    * Called after each syscall completion. The kernel pushes events from
    * PipeBuffer operations, listener backlog changes, and datagram send-state
@@ -16577,7 +16576,9 @@ export class CentralizedKernelWorker {
               (batch.bytes[idxOffset + 2] << 16) |
               (batch.bytes[idxOffset + 3] << 24)) >>>
             0,
-          wakeType: batch.bytes[off + WAKEUP_EVENT_FIELDS.wakeType.offset],
+          wakeType:
+            batch.bytes[off + WAKEUP_EVENT_FIELDS.wakeType.offset]
+            | (batch.bytes[off + WAKEUP_EVENT_FIELDS.wakeType.offset + 1] << 8),
         });
       }
       if (count < MAX_EVENTS) break;
@@ -16588,8 +16589,12 @@ export class CentralizedKernelWorker {
     let needDatagramWriterWake = false;
     let needAdvisoryLockWake = false;
     let needSignalSafeDeferredWake = false;
+    let needWaitCompletionDrain = false;
 
     for (const { wakeIdx, wakeType } of events) {
+      if (wakeType & WAKEUP_EVENT_TYPES.waitComplete) {
+        needWaitCompletionDrain = true;
+      }
       const lifecycleEvent =
         wakeType & (
           WAKEUP_EVENT_TYPES.processStopped
@@ -16719,6 +16724,9 @@ export class CentralizedKernelWorker {
     // reader/writer and non-signal-safe poll wakes above run synchronously
     // (not via this deferred path). Only matching signal-safe ppoll entries
     // remain parked for the grace period.
+    if (needWaitCompletionDrain) {
+      this.#settleKernelWaitsWithinKernelEntry(entry);
+    }
     if (needDatagramWriterWake) {
       this.wakeBlockedFallbackWriters();
     }
@@ -17283,8 +17291,8 @@ export class CentralizedKernelWorker {
    * on CH_STATUS (if blocked). Strategy depends on what the target is
    * waiting on:
    *
-   *   - futex wait: settle the exact engine wait with -EINTR and wake its
-   *     waitAsync closure so it cannot consume a later wake quota.
+   *   - a kernel-owned park (futex): the kernel's exact-task cleanup ends
+   *     it with -EINTR; the host publishes that completion.
    *   - nanosleep/clock_nanosleep and rt_sigtimedwait: cancel the exact timer,
    *     discard any retained deadline/output state, and complete with -EINTR.
    *   - pipe read/write blocked on pendingPipeReaders/Writers: remove the
@@ -17350,7 +17358,8 @@ export class CentralizedKernelWorker {
     }
     if (!target) return;
 
-    // Arm the host-side pre-enqueue guard used by wait, futex, and FIFO open.
+    // Arm the host-side pre-enqueue guard used by wait, sleep, a kernel park,
+    // and FIFO open.
     // The guest pthread_t cancel bit remains authoritative for untracked
     // operations and is checked by __syscall_cp before/after their next
     // cancellation point.
@@ -17375,21 +17384,14 @@ export class CentralizedKernelWorker {
     // If the target has already parked in a tracked blocking wait, wake
     // it so its natural completion path runs and the guest sees the
     // cancel in __syscall_cp_check. Doing the wake via the same mechanism
-    // the wait uses (Atomics.notify on the futex addr, cancelling the
+    // the wait uses (cancelling the
     // retry timer, etc.) avoids racing against the handler's own
     // completion path — we never write the channel directly here.
 
-    // 1) Futex wait — Atomics.notify wakes the in-flight waitAsync, which
-    //    calls complete() and completeChannelRaw naturally.
-    const futexEntry = this.pendingFutexWaits.get(target);
-    if (isWakeableCancellationPoint(futexEntry)) {
-      this.pendingCancels.delete(target);
-      if (futexEntry.interrupt) {
-        futexEntry.interrupt(-EINTR_ERRNO, EINTR_ERRNO);
-      } else {
-        const tgtMemView = new Int32Array(target.memory.buffer);
-        Atomics.notify(tgtMemView, futexEntry.futexIndex, 1);
-      }
+    // 1) A kernel-owned park (futex): the exact-task cleanup above already
+    //    ended it with EINTR inside the kernel. Collect that decision.
+    if (target.kernelWaitGeneration !== undefined) {
+      this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
       return;
     }
 
@@ -18465,83 +18467,6 @@ export class CentralizedKernelWorker {
     const cancellationIdentity: FrozenCancellationPointIdentity =
       retainedRetrySnapshot
       ?? this.#cancellationPointIdentity(channel);
-
-    // Futex wait: use Atomics.waitAsync on the target address in process memory
-    if (syscallNr === SYS_FUTEX) {
-      const futexOp = origArgs[1] & 0x7f; // mask out FUTEX_PRIVATE_FLAG
-      if (futexOp === 0) { // FUTEX_WAIT
-        if (deliveredSignal > 0) {
-          this.completeChannel(
-            channel,
-            syscallNr,
-            origArgs,
-            SYSCALL_ARGS[syscallNr],
-            -1,
-            EINTR_ERRNO,
-            [],
-            undefined,
-            entry,
-          );
-          return;
-        }
-        let addr: number;
-        try {
-          addr = this.checkedProcessRange(
-            channel,
-            origArgs[0],
-            4,
-            "futex retry uaddr",
-          ).pointer;
-          if ((addr & 3) !== 0) {
-            throw new KernelScratchError(
-              "futex retry uaddr is not aligned",
-              EINVAL,
-            );
-          }
-        } catch (error) {
-          this.#rejectScratchTransfer(channel, error, entry);
-          return;
-        }
-        const expectedVal = origArgs[2];
-        const i32View = new Int32Array(channel.memory.buffer);
-        const index = addr / 4;
-
-        // Check if value already changed
-        const currentVal = Atomics.load(i32View, index);
-        if (currentVal !== expectedVal) {
-          // Value changed, retry syscall immediately — kernel should succeed
-          this.retrySyscall(channel);
-          return;
-        }
-
-        // pthread_cancel may have selected this thread after the futex value
-        // check. Consume it only at the final boundary before installing an
-        // asynchronous engine wait.
-        if (
-          this.interruptPendingCancellationBeforeRegistration(
-            channel,
-            syscallNr,
-            cancellationIdentity,
-            entry,
-          )
-        ) return;
-
-        // Wait for value to change
-        const waitResult = Atomics.waitAsync(i32View, index, expectedVal);
-        if (waitResult.async) {
-          this.#continuePromise(waitResult.value, () => {
-            if (this.isRegisteredChannel(channel)) {
-              this.retrySyscall(channel);
-            }
-          });
-        } else {
-          // Already changed — use setImmediate (not queueMicrotask) to avoid
-          // microtask chains that starve the browser event loop.
-          this.#registerImmediate(() => this.retrySyscall(channel));
-        }
-        return;
-      }
-    }
 
     // Poll with timeout: the kernel did a non-blocking check and returned EAGAIN.
     // We retry after a short delay. If poll has timeout=0 (EAGAIN means no events),
@@ -24939,321 +24864,6 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Handle SYS_FUTEX directly on process memory.
-   *
-   * The kernel's host_futex_wake/wait imports operate on kernel memory, but
-   * futex addresses are in process memory. We bypass the kernel entirely and
-   * implement the futex ops here.
-   *
-   * FUTEX_WAIT: compare-and-block. If the value at addr matches expected,
-   * use Atomics.waitAsync to wait for a change, then return 0. If it doesn't
-   * match, return -EAGAIN.
-   *
-   * FUTEX_WAKE: wake up to `val` waiters on addr. Returns number woken.
-   */
-  private handleFutex(
-    channel: ChannelInfo,
-    origArgs: number[],
-    rawArgs: readonly bigint[] | undefined,
-    entry: KernelWorkerEntryContext,
-  ): void {
-    const rawOp = rawArgs?.[1] ?? BigInt(origArgs[1]);
-    const op = Number(BigInt.asUintN(32, rawOp));
-    const val = origArgs[2];      // value (expected for WAIT, count for WAKE)
-    const baseOp = op & ~(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
-
-    let addr: number;
-    let timeoutPtr = 0;
-    let timeoutMs: number | undefined;
-    let uaddr2 = 0;
-    try {
-      addr = this.checkedProcessRange(
-        channel,
-        rawArgs?.[0] ?? origArgs[0],
-        4,
-        "futex uaddr",
-      ).pointer;
-      if ((addr & 3) !== 0) {
-        throw new KernelScratchError("futex uaddr is not aligned", EINVAL);
-      }
-      if (baseOp === FUTEX_WAIT || baseOp === FUTEX_WAIT_BITSET) {
-        const rawTimeout = rawArgs?.[3] ?? origArgs[3];
-        if (rawTimeout !== 0n && rawTimeout !== 0) {
-          const range = this.checkedProcessRange(
-            channel,
-            rawTimeout,
-            16,
-            "futex timeout",
-          );
-          timeoutPtr = range.pointer;
-          const timeoutView = new DataView(
-            channel.memory.buffer,
-            range.pointer,
-            range.length,
-          );
-          const sec = timeoutView.getBigInt64(0, true);
-          const nsec = timeoutView.getBigInt64(8, true);
-          if (sec < 0n || nsec < 0n || nsec >= 1_000_000_000n) {
-            throw new KernelScratchError(
-              "futex timeout is not a normalized timespec",
-              EINVAL,
-            );
-          }
-          // WHY: validate and cap in bigint before converting to Number.
-          // Otherwise a large signed timespec can round to a different wait,
-          // while an invalid nanosecond field can silently carry into seconds.
-          let remainingNs = sec * 1_000_000_000n + nsec;
-          if (baseOp === FUTEX_WAIT_BITSET) {
-            // WAIT_BITSET takes an absolute deadline, unlike WAIT's
-            // relative duration. Use the same provider as clock_gettime:
-            // worker-local performance.now() has a different epoch on Node.
-            const clockId = (op & FUTEX_CLOCK_REALTIME) !== 0 ? 0 : 1;
-            // PlatformIO can call back into the worker. Keep that callback
-            // serialized without lending it Wasm authority, and consume its
-            // result fields before returning to the scoped syscall handler.
-            const nowNs = this.#invokeSerializedHostOperation(entry, () => {
-              const now = this.io.clockGettime(clockId);
-              return BigInt(now.sec) * 1_000_000_000n + BigInt(now.nsec);
-            });
-            remainingNs -= nowNs;
-            if (remainingNs < 0n) remainingNs = 0n;
-          }
-          const requestedMs = (remainingNs + 999_999n) / 1_000_000n;
-          const cappedMs =
-            requestedMs > 2_147_483_647n
-              ? 2_147_483_647n
-              : requestedMs;
-          timeoutMs = Number(cappedMs);
-        }
-      }
-      if (
-        baseOp === FUTEX_REQUEUE
-        || baseOp === FUTEX_CMP_REQUEUE
-        || baseOp === FUTEX_WAKE_OP
-      ) {
-        uaddr2 = this.checkedProcessRange(
-          channel,
-          rawArgs?.[4] ?? origArgs[4],
-          4,
-          "futex uaddr2",
-        ).pointer;
-        if ((uaddr2 & 3) !== 0) {
-          throw new KernelScratchError("futex uaddr2 is not aligned", EINVAL);
-        }
-      }
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      this.#rejectScratchTransfer(channel, error, entry);
-      return;
-    }
-
-    const i32View = new Int32Array(channel.memory.buffer);
-    const index = addr / 4;
-
-    if (baseOp === FUTEX_WAIT || baseOp === FUTEX_WAIT_BITSET) {
-      // Compare value at addr with expected
-      const currentVal = Atomics.load(i32View, index);
-      if (currentVal !== val) {
-        // Value already changed — return -EAGAIN (Linux convention)
-        this.completeChannelRawAndRelisten(
-          channel,
-          -EAGAIN,
-          EAGAIN,
-          entry,
-        );
-        return;
-      }
-
-      if (timeoutMs === 0) {
-        this.completeChannelRawAndRelisten(
-          channel,
-          -ETIMEDOUT,
-          ETIMEDOUT,
-          entry,
-        );
-        return;
-      }
-      if (
-        this.interruptPendingCancellationBeforeRegistration(
-          channel,
-          SYS_FUTEX,
-          this.#cancellationPointIdentity(channel),
-          entry,
-        )
-      ) return;
-
-      // Value matches — wait asynchronously for it to change
-      const waitResult = Atomics.waitAsync(i32View, index, val);
-      if (waitResult.async) {
-        let settled = false;
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        // Arm here, while the kernel entry is open: the deferred effect below
-        // runs after this entry's scope is revoked, and the non-async branch
-        // completes without ever parking, so arming earlier would leave a
-        // deadline behind for a wait that never happened.
-        const futexTimeoutMs = timeoutMs;
-        const futexRemainingMs = futexTimeoutMs === undefined
-          ? -1
-          : this.waitRemainingMs(
-              channel,
-              futexTimeoutMs,
-              WAIT_KIND_FUTEX,
-              entry,
-            );
-
-        // WHY this does not retire the kernel deadline itself: `settle` runs
-        // from a host timer, from the `waitAsync` continuation, and from a
-        // signal delivery that is already inside a kernel entry. The entry
-        // gate refuses an unbound kernel export call during that third case,
-        // and `settle` has no entry to hand it.
-        //
-        // It does not need one. Every path that settles *and completes* goes
-        // through `complete` below, which opens its own entry and reaches
-        // `clearReadinessWait`; every path that settles without completing is
-        // a channel or process teardown, which retires the wait by channel
-        // generation or by pid.
-        const settle = (): boolean => {
-          if (settled) return false;
-          settled = true;
-          if (timer !== undefined) this.#cancelRegisteredTimeout(timer);
-          this.pendingFutexWaits.delete(channel);
-          return true;
-        };
-        const complete = (retVal: number, errVal: number) => {
-          if (!settle()) return;
-          if (!this.isRegisteredChannel(channel)) return;
-          this.#runOrDeferChannelKernelEntry(
-            channel,
-            "futex completion",
-            (completionEntry) => {
-              this.completeChannelRawAndRelisten(
-                channel,
-                retVal,
-                errVal,
-                completionEntry,
-              );
-              channel.consecutiveSyscalls = 0; // genuinely blocked — reset
-              return undefined;
-            },
-          );
-        };
-        const wakeAllEngineWaiters = () => {
-          // waitAsync has no exact-waiter cancellation API. Wake every engine
-          // waiter on this address so a retired closure cannot remain stale
-          // and consume a later FUTEX_WAKE(1) quota. Peer wakeups are valid
-          // spurious futex returns and recheck their predicates.
-          Atomics.notify(i32View, index);
-        };
-        const interrupt = (
-          interruptRetVal: number,
-          interruptErrVal: number,
-        ) => {
-          wakeAllEngineWaiters();
-          complete(interruptRetVal, interruptErrVal);
-        };
-        const retire = () => {
-          wakeAllEngineWaiters();
-          settle();
-        };
-
-        entry.deferProtocolEffect(() => {
-          // Track and continue the engine wait only after the scoped kernel
-          // authority is revoked. The retained closures own process memory
-          // and channel identity only; every completion opens a fresh entry.
-          this.pendingFutexWaits.set(channel, {
-            ...this.#cancellationPointIdentity(channel),
-            futexIndex: index,
-            hasTimeout: timeoutMs !== undefined,
-            interrupt,
-            retire,
-          });
-
-          this.#continuePromise(waitResult.value, () => {
-            complete(0, 0);
-          });
-
-          if (futexTimeoutMs !== undefined) {
-            // The deadline is the kernel's, on CLOCK_MONOTONIC. It used to be
-            // `Date.now() + timeoutMs` re-read on each chunk, so a system
-            // clock step could make a timed `FUTEX_WAIT` return ETIMEDOUT
-            // early or hold a thread past its timeout.
-            //
-            // Each chunk re-reads it rather than trusting its own arithmetic,
-            // and every re-read after the first happens inside a host timer
-            // callback, outside any kernel entry.
-            const armTimeoutChunk = (remainingMs: number): void => {
-              if (settled) return;
-              if (remainingMs <= 0) {
-                interrupt(-ETIMEDOUT, ETIMEDOUT);
-                return;
-              }
-              timer = this.#registerTimeout(() => {
-                if (settled) return;
-                // Reading the deadline is a kernel export call, and a timer
-                // callback is outside any kernel entry, so it opens one. The
-                // next chunk is armed after that entry's scope is revoked. An
-                // unregistered channel was torn down; its wait was retired.
-                this.#runOrDeferChannelKernelEntry(
-                  channel,
-                  "futex deadline check",
-                  (deadlineEntry) => {
-                    if (settled) return undefined;
-                    const remaining = this.waitRemainingMs(
-                      channel,
-                      futexTimeoutMs,
-                      WAIT_KIND_FUTEX,
-                      deadlineEntry,
-                    );
-                    deadlineEntry.deferProtocolEffect(() => {
-                      armTimeoutChunk(remaining);
-                    });
-                    return undefined;
-                  },
-                );
-              }, Math.max(Math.ceil(remainingMs), 1));
-            };
-            armTimeoutChunk(futexRemainingMs);
-          }
-          return undefined;
-        });
-      } else {
-        // Already changed — return 0
-        this.completeChannelRawAndRelisten(channel, 0, 0, entry);
-      }
-      return;
-    }
-
-    if (baseOp === FUTEX_WAKE || baseOp === FUTEX_WAKE_BITSET) {
-      const woken = Atomics.notify(i32View, index, val);
-      this.completeChannelRawAndRelisten(channel, woken, 0, entry);
-      return;
-    }
-
-    if (baseOp === FUTEX_REQUEUE || baseOp === FUTEX_CMP_REQUEUE) {
-      // Wake val waiters on uaddr, can't truly requeue with Atomics,
-      // so wake val + val2 on uaddr.
-      const val2 = origArgs[3]; // timeout param repurposed as val2
-      const woken = Atomics.notify(i32View, index, val + val2);
-      this.completeChannelRawAndRelisten(channel, woken, 0, entry);
-      return;
-    }
-
-    if (baseOp === FUTEX_WAKE_OP) {
-      // Wake val waiters on uaddr, then conditionally wake val2 on uaddr2.
-      // Simplified: just wake both.
-      const val2 = origArgs[3];
-      const index2 = uaddr2 / 4;
-      let woken = Atomics.notify(i32View, index, val);
-      woken += Atomics.notify(i32View, index2, val2);
-      this.completeChannelRawAndRelisten(channel, woken, 0, entry);
-      return;
-    }
-
-    // Unknown futex op — return -ENOSYS
-    this.completeChannelRawAndRelisten(channel, -38, 38, entry);
-  }
-
-  /**
    * Notify the kernel that a thread has exited.
    *
    * WHY: whole-process forced teardown retires the process memory, so it does
@@ -25274,14 +24884,18 @@ export class CentralizedKernelWorker {
     pid: number,
     tid: number,
     entry?: KernelWorkerEntryContext,
+    threadRan = false,
   ): number {
     const threadExit = this.#kernelInstanceForEntry(entry).exports
       .kernel_thread_exit as
-      ((pid: number, tid: number) => bigint) | undefined;
+      ((pid: number, tid: number, clearChildTid: number) => bigint) | undefined;
     if (!threadExit) {
       throw new Error("Kernel missing required kernel_thread_exit export");
     }
-    const result = threadExit(pid, tid);
+    // `threadRan` is the fact only the host knows: this thread really ran
+    // and ended. The kernel then performs CLONE_CHILD_CLEARTID itself -- the
+    // store and the wake of a joiner parked in its futex queue.
+    const result = threadExit(pid, tid, threadRan ? 1 : 0);
     if (result < 0n) {
       const errno = Number(-result);
       throw new KernelTaskBindingError(
@@ -25358,41 +24972,18 @@ export class CentralizedKernelWorker {
     const channel = this.activeChannels.find(
       (ch) => ch.pid === pid && ch.channelOffset === channelOffset,
     );
-    const memory = channel?.memory ?? this.processes.get(pid)?.memory;
 
-    // Remove authoritative ThreadInfo before any host-memory bookkeeping can
-    // fail. The clone path prevalidates ctid, but this check also rejects stale
-    // or externally-constructed registrations without stranding a kernel TID.
-    const ctidPtr = this.#notifyThreadExitWithinKernelEntry(pid, tid, entry);
+    // Remove authoritative ThreadInfo, and let the kernel clear and wake the
+    // CLONE_CHILD_CLEARTID word: a joiner is parked in the kernel's futex
+    // queue, so only the kernel can wake it.
+    this.#notifyThreadExitWithinKernelEntry(pid, tid, entry, true);
     if (channel) {
       // kernel_thread_exit consumed this TID's exact retry binding before it
       // removed task authority. Host retirement must not release it twice.
       this.#forgetBlockingRetrySnapshotAfterKernelLifecycle(channel);
     }
     try {
-      if (ctidPtr !== 0) {
-        if (!memory) {
-          throw new KernelTaskBindingError(
-            pid,
-            tid,
-            EFAULT,
-            `Missing process memory for clear-TID of tid ${tid} in process ${pid}`,
-          );
-        }
-        const bytes = new Uint8Array(memory.buffer);
-        if ((ctidPtr & 3) !== 0 || !isValidMemoryRange(bytes, ctidPtr, 4)) {
-          throw new KernelTaskBindingError(
-            pid,
-            tid,
-            EFAULT,
-            `Invalid clear-TID pointer ${ctidPtr} for tid ${tid} in process ${pid}`,
-          );
-        }
-        const procView = new DataView(memory.buffer);
-        procView.setInt32(ctidPtr, 0, true);
-        const i32View = new Int32Array(memory.buffer);
-        Atomics.notify(i32View, ctidPtr / 4, 1);
-      }
+      this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
     } finally {
       this.#removeChannelWithinKernelEntry(pid, channelOffset, entry);
     }
@@ -25536,52 +25127,6 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Interrupt the exact host-owned futex selected for one caught signal.
-   *
-   * The dequeue must precede the host wake: it both proves that this TID owns
-   * a caught handler action and copies the immutable signal record into that
-   * mailbox. A raw Atomics.notify would instead complete the futex with
-   * success and strand the handler metadata in Rust.
-   */
-  private interruptPendingFutexForCaughtSignal(
-    targetPid: number,
-    signum: number,
-    entry: KernelWorkerEntryContext,
-    directedTid?: number,
-  ): boolean {
-    const targetTid = directedTid
-      === undefined
-      ? this.#pickKernelSignalTargetTid(targetPid, signum, entry)
-      : this.#validateKernelSignalTargetTid(directedTid);
-    if (targetTid <= 0) return false;
-
-    const registration = this.processes.get(targetPid);
-    const target = registration?.channels.find(
-      (candidate) =>
-        this.guestTidForChannel(candidate) === targetTid
-        && this.isRegisteredChannel(candidate),
-    );
-    if (!target) return false;
-    const wait = this.pendingFutexWaits.get(target);
-    if (!wait) return false;
-
-    if (!this.#kernelThreadHasDeliverable(targetPid, targetTid, entry)) {
-      return false;
-    }
-
-    const deliveredSignal = this.#dequeueSignalForDelivery(
-      target,
-      entry,
-      wait.hasTimeout,
-    );
-    if (this.#finishSignalTermination(target, entry)) return true;
-    if (deliveredSignal <= 0) return false;
-
-    wait.interrupt(-EINTR_ERRNO, EINTR_ERRNO);
-    return true;
-  }
-
-  /**
    * Queue a signal on a target process through the host-owned kernel boundary.
    * The signal is recorded in the kernel's ProcessTable and will be delivered
    * via dequeueSignalForDelivery on the target's next guest checkpoint.
@@ -25666,15 +25211,6 @@ export class CentralizedKernelWorker {
     // not shorten a sleep merely because its mask would have accepted a
     // signal that is no longer pending.
     if (!this.#kernelThreadHasDeliverable(targetPid, targetTid, entry)) return;
-
-    if (
-      this.interruptPendingFutexForCaughtSignal(
-        targetPid,
-        signum,
-        entry,
-        targetTid,
-      )
-    ) return;
 
     // Signal is deliverable — wake any blocking syscall for this process
 

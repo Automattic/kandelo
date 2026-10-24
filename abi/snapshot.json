@@ -1358,6 +1358,7 @@
       "kernel_create_process",
       "kernel_create_process_with_stdio",
       "kernel_dequeue_signal",
+      "kernel_drain_wait_completions",
       "kernel_epoll_wait_finish",
       "kernel_epoll_wait_token",
       "kernel_exchange_activate",
@@ -1451,7 +1452,8 @@
       "kernel_transfer_scratch_capacity",
       "kernel_transfer_scratch_pointer",
       "kernel_validate_task",
-      "kernel_wait_child_poll"
+      "kernel_wait_child_poll",
+      "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
     "version": 1,
@@ -2509,6 +2511,11 @@
       "kind": "func",
       "name": "kernel_drain_fs_changes",
       "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_drain_wait_completions",
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3593,7 +3600,7 @@
     {
       "kind": "func",
       "name": "kernel_thread_exit",
-      "signature": "(i32,i32) -> (i64)"
+      "signature": "(i32,i32,i32) -> (i64)"
     },
     {
       "kind": "func",
@@ -3674,6 +3681,11 @@
       "kind": "func",
       "name": "kernel_wait_deadline_remaining_ns",
       "signature": "(i64) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait_next_timeout_ns",
+      "signature": "() -> (i64)"
     },
     {
       "kind": "func",
@@ -3814,12 +3826,6 @@
       "module": "env",
       "name": "host_ftruncate",
       "signature": "(i64,i64) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "module": "env",
-      "name": "host_futex_wake",
-      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -11486,6 +11492,46 @@
       }
     ]
   },
+  "wait_completion_wire": {
+    "fields": [
+      {
+        "name": "generation",
+        "offset": 0,
+        "size": 8,
+        "type": "u64"
+      },
+      {
+        "name": "pid",
+        "offset": 8,
+        "size": 4,
+        "type": "u32"
+      },
+      {
+        "name": "tid",
+        "offset": 12,
+        "size": 4,
+        "type": "u32"
+      },
+      {
+        "name": "value",
+        "offset": 16,
+        "size": 4,
+        "type": "i32"
+      },
+      {
+        "name": "flags",
+        "offset": 20,
+        "size": 4,
+        "type": "u32"
+      }
+    ],
+    "flags": {
+      "cancelled": 2,
+      "suppressRestart": 1
+    },
+    "parked_errno": 65536,
+    "record_size": 24
+  },
   "wait_contract": {
     "PROCESS_STATE_EXITED": 2,
     "PROCESS_STATE_RUNNING": 0,
@@ -11550,6 +11596,10 @@
       {
         "bit": 64,
         "name": "advisoryLock"
+      },
+      {
+        "bit": 128,
+        "name": "waitComplete"
       }
     ]
   }
