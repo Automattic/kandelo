@@ -2863,3 +2863,40 @@ identity and concurrent storage commits are coherent. CPU layout/coherence,
 raw WPK namespace/mutability audit, image zero behavior, broader formats,
 indeterminate transport or failed restoration/context-loss recovery and the
 other EGL/GLES/GBM/KMS inventory remain required. The full goal stays active.
+
+
+## Bound image identity and accepted revisions (2026-10-24)
+
+Operation table 11 adds `QOP_BOUND_IMAGE_TARGET` (`0x25`, kind/target/
+source, 12-byte input) and `QOP_BOUND_IMAGE_STATE` (`0x26`, kind/target,
+8-byte input). Their exact 16-byte checked reply contains status, source,
+revision and completion marker. These resolve the selected context's
+actual logical binding, including an unnamed object retained after a peer
+has deleted and reused its public number. The table-10 explicit-name
+queries and their 12-byte replies remain valid. ABI 58, ioctl layouts,
+imports, syscalls and the structural snapshot stay unchanged.
+
+The host share group owns an unsigned, monotonically increasing revision
+for each retained object's accepted image association. Import and orphan
+replacement advance it; definite metadata/native-retarget failure restores
+the old value. Exhaustion fails with `GL_OUT_OF_MEMORY` before publication
+rather than wrapping. Final native-view collection removes the revision.
+This is an image-association revision, not a version cache for pixel writes.
+It provides ordering information for the upcoming shared C hold commits;
+C still uses the table-10 queries and encoder-local holds at this checkpoint.
+
+Six additional host cases cover retained identity versus a reused name,
+complete request/reply validation, texture/RBO import and orphan revisions,
+metadata/native retarget failure, exhaustion and final collection. The
+three-engine GPU driver additionally imports into the retained old binding,
+checks its revisions and red pixels, and proves the peer's newly reused
+name remains yellow through import and source-context retirement.
+
+Focused validation is recorded in `.context/graphics-bound-image-final-*`:
+440 host cases in 21 files plus Node/browser declarations; 103 native C
+UBSan cases, private wasm32 paired link and 150/142 authority/core audits;
+47 kernel GLIO, four shared GL layout and 13 ioctl-contract cases; ABI 58 /
+table 11 consistency. The rendered source suite contains 168 executions
+across Chromium, Firefox and WebKit, with no skips. These use source host
+code with synthetic kernel scratch plumbing, not rebuilt guest artifacts.
+The full compatibility goal and deferred integration gates above remain open.

@@ -14,12 +14,19 @@ self.onmessage = ({ data }) => {
     for (const [createName, deleteName, isName] of [["createTexture", "deleteTexture", "isTexture"], ["createFramebuffer", "deleteFramebuffer", "isFramebuffer"],
       ["createRenderbuffer", "deleteRenderbuffer", "isRenderbuffer"], ["createProgram", "deleteProgram", "isProgram"], ["createShader", "deleteShader", "isShader"]]) {
       const api = gl as any, create = api[createName].bind(gl), destroy = api[deleteName].bind(gl), isLive = api[isName].bind(gl);
-      api[createName] = (...args: unknown[]) => { const value = create(...args); if (value) {
-        made.push(value);
-        live.push(() => isLive(value));
-      } return value; };
-      api[deleteName] = (value: object | null) => { if (value)
-        deleted.push(value); destroy(value); };
+      api[createName] = (...args: unknown[]) => {
+        const value = create(...args);
+        if (value) {
+          made.push(value);
+          live.push(() => isLive(value));
+        }
+        return value;
+      };
+      api[deleteName] = (value: object | null) => {
+        if (value)
+          deleted.push(value);
+        destroy(value);
+      };
     }
     const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
     const kernel = createWasmPosixKernelTestHarness({ io: {} as any, callbacks: { getProcessMemory: () => memory }, memory, pointerWidth: 4,
@@ -27,8 +34,10 @@ self.onmessage = ({ data }) => {
     const api = (kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => number>;
     }).env;
-    const require = (test: unknown, label: string) => { if (!test)
-      throw new Error(label); };
+    const require = (test: unknown, label: string) => {
+      if (!test)
+        throw new Error(label);
+    };
     for (const session of [11, 12])
       api.host_gl_bind(7, 4096, 65536, session);
     kernel.gl.attachCanvas(7, canvas);
@@ -187,6 +196,17 @@ self.onmessage = ({ data }) => {
     const reused = pixels(75);
     current(12);
     const retained = pixels(81, 12);
+    const revisionQuery = (op: number, words: number[]) => {
+      const reply = new DataView(query(op, words, 16, 12).buffer);
+      require(reply.getUint32(0, true) === 0 && reply.getUint32(12, true) === 0x47514c33, "bound image revision query");
+      return [reply.getUint32(4, true), reply.getUint32(8, true)];
+    };
+    const retainedState = revisionQuery(O.QOP_BOUND_IMAGE_STATE, [1, 0x0de1]);
+    const retainedImport = revisionQuery(O.QOP_BOUND_IMAGE_TARGET, [1, 0x0de1, source]);
+    const retainedImported = pixels(81, 12);
+    current(11);
+    const reusedAfterPeerImport = pixels(75);
+    current(12);
     const errors = [error(12)];
     api.host_gl_destroy_context(7, 21);
     const afterSourceRetirement = pixels(81, 12);
@@ -196,7 +216,7 @@ self.onmessage = ({ data }) => {
     api.host_gl_unbind(7, 12);
     kernel.gl.destroyGpuBo(41);
     const clean = made.length === deleted.length && made.every(value => deleted.includes(value)) && live.every(check => !check());
-    postMessage({ type: "image_storage_result", namespace, firstParam, secondParam, red, rboName, green, sampledGreen, orphan, aSource, bSource, mipOrphan, reimport, rboSource, rboOrphan, rejected, retargetRejected, reused, retained, afterSourceRetirement, errors, clean, error: gl.getError() });
+    postMessage({ type: "image_storage_result", namespace, firstParam, secondParam, red, rboName, green, sampledGreen, orphan, aSource, bSource, mipOrphan, reimport, rboSource, rboOrphan, rejected, retargetRejected, reused, retained, retainedState, retainedImport, retainedImported, reusedAfterPeerImport, afterSourceRetirement, errors, clean, error: gl.getError() });
   }
   catch (error) {
     postMessage({ type: "image_storage_failed", error: String(error) });

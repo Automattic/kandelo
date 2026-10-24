@@ -13,7 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define WPK_GL_OP_VERSION 10u
+#define WPK_GL_OP_VERSION 11u
 #define WPK_GL_CMDBUF_LEN (1u << 20)
 #define WPK_GL_DEVICE     "/dev/dri/renderD128"
 
@@ -187,6 +187,8 @@
 #define QOP_BIND_IMAGE_OBJECT 0x0022
 #define QOP_IMAGE_TARGET 0x0023u
 #define QOP_IMAGE_SOURCE_STATE 0x0024u
+#define QOP_BOUND_IMAGE_TARGET 0x0025u
+#define QOP_BOUND_IMAGE_STATE 0x0026u
 /* Private mode of the existing BO bind ioctl, returning a source token. */
 #define WPK_GL_IMAGE_SOURCE_TARGET 0x57504b49u
 

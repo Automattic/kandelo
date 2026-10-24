@@ -13,6 +13,8 @@ export type GlSharedObjects = {
   textures: Map<number, WebGLTexture>;
   imageSources: Map<number, GlImageSource>;
   nextImageSource: number;
+  /** Monotonic accepted image-association changes, keyed by retained identity. */
+  imageRevisions: Map<WebGLTexture | WebGLRenderbuffer, number>;
   textureViews: Map<WebGLTexture, GlTextureView>;
   textureViewOwners: Map<WebGLTexture, WebGLTexture>;
   renderbufferViews: Map<WebGLRenderbuffer, GlRenderbufferView>;
@@ -60,7 +62,7 @@ export type GlObjectGroup = GlSharedObjects & { members: Set<GlBinding> };
 
 export function createGlObjectGroup(): GlObjectGroup {
   return {
-    imageSources:new Map(),nextImageSource:1,textureViews:new Map(),textureViewOwners:new Map(),renderbufferViews:new Map(),renderbufferViewOwners:new Map(),
+    imageSources:new Map(),nextImageSource:1,imageRevisions:new Map(),textureViews:new Map(),textureViewOwners:new Map(),renderbufferViews:new Map(),renderbufferViewOwners:new Map(),
     members: new Set(), buffers: new Map(), bufferStores: new Map(), bufferViewOwners: new Map(), textures: new Map(), shaders: new Map(), programs: new Map(),
     rbos: new Map(), shaderSources: new Map(), shaderDeletePending: new Set(), programDeletePending: new Set(),
     programShaders: new Map(), programAttributeBindings: new Map(),

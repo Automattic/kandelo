@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
-import { registerImageSource, textureNative, canonicalTexture, WPK_IMAGE_SOURCE_TARGET } from "../src/webgl/image-storage.js";
+import { registerImageSource, textureNative, canonicalTexture, WPK_IMAGE_SOURCE_TARGET, imageTextureOperation, imageRenderbufferStorage, destroyTextureView, destroyRenderbufferView } from "../src/webgl/image-storage.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
@@ -117,3 +117,83 @@ it("registers a GPU source through the actual kernel host import without overwri
   expect(b.imageSources.size).toBe(1);
   expect(api.host_gl_bind_foreign_texture(7, 21, 999, WPK_IMAGE_SOURCE_TARGET)).toBe(-22);
 });
+it("reads the retained bound image and revision after public name deletion and reuse", () => {
+  const { b } = setup(), old = {} as WebGLTexture, fresh = {} as WebGLTexture, view = {} as WebGLTexture;
+  b.textures.set(17, fresh);
+  b.retiredTextures.set(old, 17);
+  b.shadow.textureUnits[0] = old;
+  b.textureViews.set(old, { native: view, source: { token: 3, bo: 41, texture: {} as WebGLTexture, width: 2, height: 2 }, read: null });
+  b.imageRevisions.set(old, 9);
+  expect([...checked(b, O.QOP_BOUND_IMAGE_STATE, [1, 0x0de1], 16)]).toEqual([0, 3, 9, 0x47514c33]);
+  expect([...checked(b, O.QOP_IMAGE_SOURCE_STATE, [1, 17])]).toEqual([0, 0, 0x47514c33]);
+  b.shadow.renderbuffer = {} as WebGLRenderbuffer;
+  b.imageRevisions.set(b.shadow.renderbuffer, 4);
+  expect([...checked(b, O.QOP_BOUND_IMAGE_STATE, [2, 0x8d41], 16)]).toEqual([0, 0, 4, 0x47514c33]);
+});
+it("validates bound-image selectors and complete V11 spans before touching renderer state", () => {
+  const { b } = setup();
+  for (const op of [O.QOP_BOUND_IMAGE_TARGET, O.QOP_BOUND_IMAGE_STATE]) {
+    const expected = op === O.QOP_BOUND_IMAGE_TARGET ? 12 : 8;
+    for (const [inputLength, replyLength] of [[expected - 4, 16], [expected + 4, 16], [expected, 12], [expected, 20]]) {
+      const output = new Uint8Array(replyLength).fill(0xa5);
+      expect(runGlQuery(b, op, new Uint8Array(inputLength), output)).toBe(-22);
+      expect([...output]).toEqual(Array(replyLength).fill(0xa5));
+    }
+  }
+  expect([...checked(b, O.QOP_BOUND_IMAGE_STATE, [1, 0x8513], 16)]).toEqual([1, 0, 0, 0x47514c33]);
+  expect([...checked(b, O.QOP_BOUND_IMAGE_STATE, [1, 0x0de1], 16)]).toEqual([1, 0, 0, 0x47514c33]);
+  expect(b.imageRevisions.size).toBe(0);
+});
+for (const kind of [1, 2]) {
+  it(`advances accepted image revisions and removes them only at final collection (kind ${kind})`, () => {
+    const { b, gl } = setup(), object = {} as WebGLTexture & WebGLRenderbuffer;
+    Object.assign(gl, { createTexture: () => ({}), createFramebuffer: () => ({}), createRenderbuffer: () => ({}), checkFramebufferStatus: () => 0x8cd5 });
+    if (kind === 1)
+      b.shadow.textureUnits[0] = object;
+    else
+      b.shadow.renderbuffer = object;
+    registerImageSource(b, 41, {} as WebGLTexture, 2, 2);
+    const target = kind === 1 ? 0x0de1 : 0x8d41;
+    expect([...checked(b, O.QOP_BOUND_IMAGE_TARGET, [kind, target, 1], 16)]).toEqual([0, 1, 1, 0x47514c33]);
+    expect([...checked(b, O.QOP_BOUND_IMAGE_TARGET, [kind, target, 1], 16)]).toEqual([0, 1, 2, 0x47514c33]);
+    expect(kind === 1 ? imageTextureOperation(b, target, true, () => { }, false) : imageRenderbufferStorage(b, () => { })).toBe(true);
+    expect([...checked(b, O.QOP_BOUND_IMAGE_STATE, [kind, target], 16)]).toEqual([0, 0, 3, 0x47514c33]);
+    expect(kind === 1 ? destroyTextureView(b, object) : destroyRenderbufferView(b, object)).toBe(true);
+    expect(b.imageRevisions.has(object)).toBe(false);
+  });
+  it(`preserves image revisions after metadata, native retarget and exhaustion rejection (kind ${kind})`, () => {
+    const { b, gl } = setup(), object = {} as WebGLTexture & WebGLRenderbuffer, fbo = {} as WebGLFramebuffer;
+    Object.assign(gl, { createTexture: () => ({}), createFramebuffer: () => ({}), checkFramebufferStatus: () => 0x8cd5 });
+    if (kind === 1)
+      b.shadow.textureUnits[0] = object;
+    else
+      b.shadow.renderbuffer = object;
+    registerImageSource(b, 41, {} as WebGLTexture, 2, 2);
+    const target = kind === 1 ? 0x0de1 : 0x8d41;
+    expect(checked(b, O.QOP_BOUND_IMAGE_TARGET, [kind, target, 1], 16)[0]).toBe(0);
+    const oldView = kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object);
+    const set = b.imageRevisions.set;
+    b.imageRevisions.set = (key, value) => { if (value === 2)
+      throw new RangeError("metadata exhausted"); return set.call(b.imageRevisions, key, value); };
+    try {
+      expect(checked(b, O.QOP_BOUND_IMAGE_TARGET, [kind, target, 1], 16)[0]).toBe(1);
+    }
+    finally {
+      b.imageRevisions.set = set;
+    }
+    expect(b.imageRevisions.get(object)).toBe(1);
+    b.framebufferAttachments.set(fbo, new Map([[0x8ce0, kind === 1 ? { kind: "texture", object, target, level: 0 } : { kind: "renderbuffer", object }]]));
+    let reject = true;
+    Object.assign(gl, { framebufferTexture2D: (fbTarget: number) => { if (reject && fbTarget === 0x8ca9) {
+        reject = false;
+        throw new Error("retarget rejected");
+      } } });
+    expect(checked(b, O.QOP_BOUND_IMAGE_TARGET, [kind, target, 1], 16)[0]).toBe(1);
+    expect(b.imageRevisions.get(object)).toBe(1);
+    expect(kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object)).toBe(oldView);
+    b.imageRevisions.set(object, 0xffffffff);
+    expect(checked(b, O.QOP_BOUND_IMAGE_TARGET, [kind, target, 1], 16)[0]).toBe(1);
+    expect(b.imageRevisions.get(object)).toBe(0xffffffff);
+    expect(kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object)).toBe(oldView);
+  });
+}

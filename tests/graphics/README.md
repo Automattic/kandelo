@@ -269,3 +269,12 @@ synthetic kernel scratch plumbing, not guest marshalling or public C sharing.
 Forwarded BO registration, CPU canonical views and full shared C storage
 holds remain open. The standalone Chromium copy/respecification reproduction
 lives in `tests/runtime-workarounds/CHROMIUM-COPY-TEX-RESPEC/`.
+
+
+Bound-image protocol checks distinguish an old retained binding from a new
+object with the same public number. Texture and renderbuffer cases verify
+accepted import/orphan revisions, metadata and native-retarget rollback,
+revision exhaustion and final collection. The GPU browser driver imports
+into the unnamed old binding, checks the source/revision reply and red
+pixels, and observes unchanged yellow pixels through the peer's reused
+name. Public C shared-image hold publication remains a separate requirement.

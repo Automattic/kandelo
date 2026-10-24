@@ -240,6 +240,22 @@ function retarget(b: GlBinding, kind: number, object: WebGLTexture | WebGLRender
 function replaceTextureView(b: GlBinding, object: WebGLTexture, next: GlTextureView): boolean {
   const old = b.textureViews.get(object) ?? { native: object, source: null, read: null };
   const had = b.textureViews.has(object);
+  const previousRevision = b.imageRevisions.get(object) ?? 0;
+  if (previousRevision === 0xffffffff) {
+    recordGlError(b, 0x505);
+    return false;
+  }
+  try {
+    b.imageRevisions.set(object, previousRevision + 1);
+  }
+  catch {
+    recordGlError(b, 0x505);
+    return false;
+  }
+  const restoreRevision = () => {
+    if (previousRevision) b.imageRevisions.set(object, previousRevision);
+    else b.imageRevisions.delete(object);
+  };
   try {
     b.textureViews.set(object, next);
     b.textureViewOwners.set(next.native, object);
@@ -249,6 +265,7 @@ function replaceTextureView(b: GlBinding, object: WebGLTexture, next: GlTextureV
       b.textureViews.set(object, old);
     else
       b.textureViews.delete(object);
+    restoreRevision();
     recordGlError(b, 0x505);
     return false;
   }
@@ -265,6 +282,7 @@ function replaceTextureView(b: GlBinding, object: WebGLTexture, next: GlTextureV
     else
       b.textureViews.delete(object);
     b.textureViewOwners.delete(next.native);
+    restoreRevision();
     return false;
   }
   b.textureViewOwners.delete(old.native);
@@ -277,6 +295,22 @@ function replaceTextureView(b: GlBinding, object: WebGLTexture, next: GlTextureV
 function replaceRenderbufferView(b: GlBinding, object: WebGLRenderbuffer, next: GlRenderbufferView): boolean {
   const old = b.renderbufferViews.get(object) ?? { native: object, source: null };
   const had = b.renderbufferViews.has(object);
+  const previousRevision = b.imageRevisions.get(object) ?? 0;
+  if (previousRevision === 0xffffffff) {
+    recordGlError(b, 0x505);
+    return false;
+  }
+  try {
+    b.imageRevisions.set(object, previousRevision + 1);
+  }
+  catch {
+    recordGlError(b, 0x505);
+    return false;
+  }
+  const restoreRevision = () => {
+    if (previousRevision) b.imageRevisions.set(object, previousRevision);
+    else b.imageRevisions.delete(object);
+  };
   try {
     b.renderbufferViews.set(object, next);
     b.renderbufferViewOwners.set(next.native, object);
@@ -286,6 +320,7 @@ function replaceRenderbufferView(b: GlBinding, object: WebGLRenderbuffer, next: 
       b.renderbufferViews.set(object, old);
     else
       b.renderbufferViews.delete(object);
+    restoreRevision();
     recordGlError(b, 0x505);
     return false;
   }
@@ -303,6 +338,7 @@ function replaceRenderbufferView(b: GlBinding, object: WebGLRenderbuffer, next: 
       b.renderbufferViews.delete(object);
     if (next.native !== old.native)
       b.renderbufferViewOwners.delete(next.native);
+    restoreRevision();
     return false;
   }
   if (next.native !== old.native) {
@@ -316,8 +352,12 @@ export function importImageStorage(b: GlBinding, kind: number, name: number, tok
     recordGlError(b, 0x500);
     return false;
   }
-  const source = b.imageSources.get(token), object = kind === 1 ? b.textures.get(name) : b.rbos.get(name);
-  if (!source || !object || !name) {
+  const object = kind === 1 ? b.textures.get(name) : b.rbos.get(name);
+  return importImageObject(b, kind, object ?? null, token);
+}
+function importImageObject(b: GlBinding, kind: number, object: WebGLTexture | WebGLRenderbuffer | null, token: number): boolean {
+  const source = b.imageSources.get(token);
+  if (!source || !object) {
     recordGlError(b, 0x502);
     return false;
   }
@@ -347,6 +387,30 @@ export function imageSourceToken(b: GlBinding, kind: number, name: number): numb
     return object ? (b.renderbufferViews.get(object)?.source?.token ?? 0) : null;
   }
   return null;
+}
+export type GlBoundImageState = {
+  source: number;
+  revision: number;
+};
+function boundImageObject(b: GlBinding, kind: number, target: number): WebGLTexture | WebGLRenderbuffer | null {
+  if ((kind !== 1 && kind !== 2) || (kind === 1 ? target !== TEX : target !== RBO)) {
+    recordGlError(b, 0x500);
+    return null;
+  }
+  const object = kind === 1 ? b.shadow.textureUnits[b.shadow.activeTexture] : b.shadow.renderbuffer;
+  if (!object)
+    recordGlError(b, 0x502);
+  return object ?? null;
+}
+/** Resolve the implicit binding, never a potentially reused public name. */
+export function boundImageState(b: GlBinding, kind: number, target: number, source?: number): GlBoundImageState | null {
+  const object = boundImageObject(b, kind, target);
+  if (!object)
+    return null;
+  if (source !== undefined && !importImageObject(b, kind, object, source))
+    return null;
+  const view = kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object);
+  return { source: view?.source?.token ?? 0, revision: b.imageRevisions.get(object) ?? 0 };
 }
 /** Each sampling view has independent parameters. Refresh its pixels from the
  * canonical image before every draw, including writes made through other APIs. */
@@ -424,6 +488,7 @@ export function destroyTextureView(b: GlBinding, object: WebGLTexture): boolean 
     b.gl!.deleteFramebuffer(view.read);
   b.textureViewOwners.delete(native);
   b.textureViews.delete(object);
+  b.imageRevisions.delete(object);
   return true;
 }
 export function destroyRenderbufferView(b: GlBinding, object: WebGLRenderbuffer): boolean {
@@ -432,5 +497,6 @@ export function destroyRenderbufferView(b: GlBinding, object: WebGLRenderbuffer)
     return false;
   b.renderbufferViewOwners.delete(native);
   b.renderbufferViews.delete(object);
+  b.imageRevisions.delete(object);
   return true;
 }

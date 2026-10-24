@@ -4157,6 +4157,15 @@ new upload does not publish a texture name. Node
 hosts without WebGL2 cannot render these sessions; no software simulation
 stands in for the native LÖVE renderer.
 
+Operation-table v11 adds checked implicit-bound image target/state queries.
+They address the retained logical object rather than resolving its public
+number again after peer deletion/reuse. A shared per-object image-association
+revision advances on accepted import/orphaning, remains unchanged after
+definite replacement failure and is removed at final native collection.
+Unsigned revision exhaustion fails before publication. The v10 explicit-name
+queries keep their original request/reply layouts. C image holds still need
+migration to shared retained records before public EGL sharing is enabled.
+
 The user-space libraries are sysroot libraries, not kernel build outputs:
 `scripts/build-musl.sh` installs the headers, resolves the `libdrm` package
 into `sysroot/lib/libdrm.a`, and builds `libgbm.a`, `libEGL.a`, and

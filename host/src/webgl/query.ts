@@ -16,7 +16,7 @@
  * delete and would collide). Indices are number-keyed for clean u32
  * round-tripping.
  */
-import { canonicalTexture, canonicalRenderbuffer, imageSourceToken, importImageStorage } from "./image-storage.js";
+import { canonicalTexture, canonicalRenderbuffer, imageSourceToken, importImageStorage, boundImageState } from "./image-storage.js";
 import { collectRetiredImages } from "./image-references.js";
 import { bindImageObject } from "./image-bindings.js";
 import { runUniformLookup, uniformLocation } from "./uniform-queries.js";
@@ -119,6 +119,18 @@ export function runGlQuery(
   const inDv = new DataView(input.buffer, input.byteOffset, input.byteLength);
   const outDv = new DataView(out.buffer, out.byteOffset, out.byteLength);
 
+  if (op === O.QOP_BOUND_IMAGE_TARGET || op === O.QOP_BOUND_IMAGE_STATE) {
+    if (input.byteLength !== (op === O.QOP_BOUND_IMAGE_TARGET ? 12 : 8) || out.byteLength !== 16) return -22;
+    return checkedQueryReply(b, out, 8, payload => {
+      const result = new DataView(payload.buffer);
+      const state = boundImageState(b, inDv.getUint32(0, true), inDv.getUint32(4, true),
+        op === O.QOP_BOUND_IMAGE_TARGET ? inDv.getUint32(8, true) : undefined);
+      if (!state) return -5;
+      result.setUint32(0, state.source, true);
+      result.setUint32(4, state.revision, true);
+      return 8;
+    });
+  }
   if(op===O.QOP_IMAGE_TARGET||op===O.QOP_IMAGE_SOURCE_STATE){
     if(input.byteLength!==(op===O.QOP_IMAGE_TARGET?12:8)||out.byteLength!==12)return -22;
     return checkedQueryReply(b,out,4,payload=>{
