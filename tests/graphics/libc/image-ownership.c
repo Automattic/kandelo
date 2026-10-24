@@ -17,6 +17,10 @@
 #include <sys/stat.h>
 #include <pthread.h>
 #include "gl_abi.h"
+/* Existing bridge entry points; this fixture does not advertise GLES3. */
+void glGenVertexArrays(GLsizei, GLuint *);
+void glDeleteVertexArrays(GLsizei, const GLuint *);
+void glBindVertexArray(GLuint);
 
 /* Native pointers exceed the guest's u32 query fields. Resolve the query's
  * recorded allocation explicitly instead of dereferencing a truncated host
@@ -26,8 +30,10 @@
 #undef free
 static void *latest_allocation;
 static int fail_calloc;
+static int calloc_before_failure = -1;
 void *graphics_calloc(size_t count, size_t size) {
-    if (fail_calloc) { errno = ENOMEM; return NULL; }
+    if (fail_calloc || calloc_before_failure == 0) { errno = ENOMEM; return NULL; }
+    if (calloc_before_failure > 0) calloc_before_failure--;
     return calloc(count, size);
 }
 void *graphics_malloc(size_t size) { return latest_allocation = malloc(size); }
@@ -64,6 +70,8 @@ static unsigned shaders_created, programs_created;
 static int numeric_queries;
 static int string_generation;
 static unsigned context_create_calls;
+static unsigned buffer_uploads;
+static unsigned draw_commands;
 int graphics_open(const char *path, int flags, ...) {
     (void)flags;
     assert(!strcmp(path, WPK_GL_DEVICE));
@@ -129,6 +137,8 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             memcpy(words, commands + at + 4, len < 8 ? len : 8);
             if (op == OP_BIND_TEXTURE) bound_texture = words[1];
             if (op == OP_CLEAR) clear_commands++;
+            if (op == OP_BUFFER_DATA) buffer_uploads++;
+            if (op == OP_DRAW_ARRAYS || op == OP_DRAW_ELEMENTS) draw_commands++;
             if (op == OP_TEX_IMAGE_2D) redefined_texture = bound_texture;
             if (op == OP_CREATE_SHADER && shaders_created < 2)
                 shader_names[shaders_created++] = words[1];
@@ -298,6 +308,90 @@ int main(int argc, char **argv) {
         fail_make_current = 0;
     }
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1], "encoder-buffer-names")) {
+        glBindBuffer(GL_ARRAY_BUFFER,1);
+        GLuint names[2] = {99,99}; glGenBuffers(2,names);
+        assert(names[0] == 2 && names[1] == 3);
+        GLuint failed[2] = {99,99}; calloc_before_failure = 1;
+        glGenBuffers(2,failed); assert(failed[0] == 99 && failed[1] == 99);
+        assert(glGetError() == GL_OUT_OF_MEMORY); calloc_before_failure = -1;
+        glGenBuffers(2,failed); assert(failed[0] == 4 && failed[1] == 5);
+        assert(glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-buffer-names"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-stage-allocation")) {
+        const GLfloat vertex[2] = {0,0};
+        for (unsigned i = 0; i < 2; i++) {
+            glVertexAttribPointer(i,2,GL_FLOAT,GL_FALSE,0,vertex); glEnableVertexAttribArray(i);
+        }
+        GLuint application; glGenBuffers(1,&application); glBindBuffer(GL_ARRAY_BUFFER,application);
+        calloc_before_failure = 1; // First staging buffer succeeds, second fails.
+        glDrawArrays(GL_POINTS,0,1); glFlush();
+        assert(draw_commands == 0 && buffer_uploads == 1 && glGetError() == GL_OUT_OF_MEMORY);
+        calloc_before_failure = -1;
+        glDrawArrays(GL_POINTS,0,1); glFlush();
+        assert(draw_commands == 1 && buffer_uploads == 3 && glGetError() == GL_NO_ERROR);
+        const GLushort index = 0;
+        fail_calloc = 1;
+        glDrawElements(GL_POINTS,1,GL_UNSIGNED_SHORT,&index); glFlush();
+        assert(draw_commands == 1 && buffer_uploads == 3 && glGetError() == GL_OUT_OF_MEMORY);
+        fail_calloc = 0;
+        glDrawElements(GL_POINTS,1,GL_UNSIGNED_SHORT,&index); glFlush();
+        assert(draw_commands == 2 && buffer_uploads == 6 && glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-stage-allocation"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-vao-name-reuse")) {
+        GLuint array; glGenVertexArrays(1,&array); glBindVertexArray(array);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,71); glBindVertexArray(0);
+        glDeleteBuffers(1,(const GLuint[]){71});
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,71); glBindVertexArray(array);
+        glDeleteBuffers(1,(const GLuint[]){71});
+        glDrawElements(GL_POINTS,1,GL_UNSIGNED_SHORT,NULL); glFlush();
+        assert(draw_commands == 1 && buffer_uploads == 0 && glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-vao-name-reuse"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-delete-array")) {
+        GLuint buffer; glGenBuffers(1,&buffer); glBindBuffer(GL_ARRAY_BUFFER,buffer);
+        glDeleteBuffers(1,&buffer);
+        const GLfloat vertex[2] = {0,0};
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,vertex); glEnableVertexAttribArray(0);
+        glDrawArrays(GL_POINTS,0,1); glFlush();
+        assert(buffer_uploads == 1 && glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-delete-array"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-delete-element")) {
+        GLuint buffer; glGenBuffers(1,&buffer); glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,buffer);
+        glDeleteBuffers(1,&buffer); const GLushort index = 0;
+        glDrawElements(GL_POINTS,1,GL_UNSIGNED_SHORT,&index); glFlush();
+        assert(buffer_uploads == 1 && glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-delete-element"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-vao-elements")) {
+        GLuint arrays[2], buffer; glGenVertexArrays(2,arrays); glGenBuffers(1,&buffer);
+        glBindVertexArray(arrays[0]); glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,buffer);
+        glBindVertexArray(arrays[1]); const GLushort index = 0;
+        glDrawElements(GL_POINTS,1,GL_UNSIGNED_SHORT,&index); glFlush();
+        assert(buffer_uploads == 1);
+        glBindVertexArray(arrays[0]); glDrawElements(GL_POINTS,1,GL_UNSIGNED_SHORT,NULL); glFlush();
+        assert(buffer_uploads == 1 && glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-vao-elements"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-vao-attribs")) {
+        const GLfloat vertex[2] = {0,0};
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,vertex); glEnableVertexAttribArray(0);
+        GLuint array; glGenVertexArrays(1,&array); glBindVertexArray(array);
+        glDrawArrays(GL_POINTS,0,1); glFlush(); assert(buffer_uploads == 0);
+        glDeleteVertexArrays(1,&array); glDrawArrays(GL_POINTS,0,1); glFlush();
+        assert(buffer_uploads == 1 && glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-vao-attribs"); return 0;
+    }
     if (!strcmp(argv[1], "encoder-strings")) {
         string_generation = 1;
         assert(!strcmp((const char *)glGetString(GL_VENDOR),"renderer A"));

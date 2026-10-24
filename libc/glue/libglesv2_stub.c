@@ -40,6 +40,18 @@ struct wpk_client_attrib {
     GLboolean normalized;
     GLsizei stride;
     const void *pointer;
+    uint64_t buffer_serial;
+};
+struct wpk_vertex_array {
+    GLuint name, element_buffer;
+    uint64_t element_serial;
+    struct wpk_client_attrib attribs[WPK_GL_MAX_ATTRIBS];
+    struct wpk_vertex_array *next;
+};
+struct wpk_buffer_name {
+    GLuint name;
+    uint64_t serial;
+    struct wpk_buffer_name *next;
 };
 struct wpk_gl_alias { GLuint name; GLuint host; struct wpk_egl_image *image; };
 struct wpk_gl_alias_table { struct wpk_gl_alias *v; size_t len, cap; };
@@ -69,8 +81,9 @@ struct wpk_gles_context {
     uint32_t next_buffer;
     uint32_t next_shader_program;
     GLuint array_buffer;
-    GLuint element_buffer;
-    struct wpk_client_attrib attribs[WPK_GL_MAX_ATTRIBS];
+    uint64_t array_serial, next_buffer_serial;
+    struct wpk_buffer_name *buffer_names;
+    struct wpk_vertex_array default_vertex_array, *current_vertex_array, *vertex_arrays;
     uint32_t next_texture;
     uint32_t next_framebuffer;
     struct wpk_gl_alias_table texture_aliases;
@@ -100,8 +113,8 @@ struct wpk_gles_context {
 #define g_next_buffer (_wpk_gl_current_encoder()->next_buffer)
 #define g_next_shader_program (_wpk_gl_current_encoder()->next_shader_program)
 #define g_array_buffer (_wpk_gl_current_encoder()->array_buffer)
-#define g_element_buffer (_wpk_gl_current_encoder()->element_buffer)
-#define g_attribs (_wpk_gl_current_encoder()->attribs)
+#define g_element_buffer (_wpk_gl_current_encoder()->current_vertex_array->element_buffer)
+#define g_attribs (_wpk_gl_current_encoder()->current_vertex_array->attribs)
 #define g_next_texture (_wpk_gl_current_encoder()->next_texture)
 #define g_next_framebuffer (_wpk_gl_current_encoder()->next_framebuffer)
 #define g_texture_aliases (_wpk_gl_current_encoder()->texture_aliases)
@@ -122,6 +135,13 @@ struct wpk_gles_context *_wpk_gl_create_encoder(void) {
     state->unpack_alignment = 4;
     state->next_buffer = state->next_shader_program = state->next_texture = 1;
     state->next_framebuffer = state->next_renderbuffer = state->next_vertex_array = 1;
+    state->next_buffer_serial = 1;
+    state->current_vertex_array = &state->default_vertex_array;
+    for (unsigned i=0; i<WPK_GL_MAX_ATTRIBS; i++) {
+        state->default_vertex_array.attribs[i].size = 4;
+        state->default_vertex_array.attribs[i].type = GL_FLOAT;
+        state->default_vertex_array.attribs[i].client = 1;
+    }
     return state;
 }
 
@@ -245,10 +265,39 @@ static GLuint next_shader_program_name(void) {
 
 void glGenBuffers(GLsizei n, GLuint *out) {
     if (!_wpk_gl_current_encoder()) return;
-    if (n <= 0 || !out) return;
-    /* Payload: u32 n, u32 names[n] — assign names, then emit in
-     * u16-length-safe chunks. */
-    for (GLsizei i = 0; i < n; i++) out[i] = g_next_buffer++;
+    if (n < 0) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
+        return;
+    }
+    if (n == 0 || !out) return;
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    struct wpk_buffer_name *pending = NULL;
+    GLuint candidate = g_next_buffer;
+    uint64_t serial = state->next_buffer_serial;
+    for (GLsizei i=0; i<n; i++) {
+        /* Arbitrary nonzero names created by BindBuffer are also reserved.
+         * Generated but not yet bound names remain reserved until deletion. */
+        while (candidate) {
+            struct wpk_buffer_name *used = state->buffer_names;
+            while (used && used->name != candidate) used = used->next;
+            if (!used) break;
+            candidate++;
+        }
+        struct wpk_buffer_name *entry;
+        if (!candidate || !serial || !(entry = calloc(1,sizeof *entry))) {
+            while (pending) { entry = pending; pending = entry->next; free(entry); }
+            if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+            return;
+        }
+        *entry = (struct wpk_buffer_name){candidate++,serial++,pending};
+        pending = entry;
+    }
+    for (GLsizei i=n; i>0; i--) {
+        struct wpk_buffer_name *entry = pending; pending = entry->next;
+        out[i-1] = entry->name;
+        entry->next = state->buffer_names; state->buffer_names = entry;
+    }
+    g_next_buffer = candidate; state->next_buffer_serial = serial;
     emit_name_array(OP_GEN_BUFFERS, n, out);
 }
 
@@ -257,8 +306,29 @@ void glGenBuffers(GLsizei n, GLuint *out) {
 
 void glBindBuffer(GLenum target, GLuint buf) {
     if (!_wpk_gl_current_encoder()) return;
+    if (target != GL_ARRAY_BUFFER && target != GL_ELEMENT_ARRAY_BUFFER) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM;
+        return;
+    }
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    uint64_t serial = 0;
+    if (buf) {
+        struct wpk_buffer_name *entry = state->buffer_names;
+        while (entry && entry->name != buf) entry = entry->next;
+        if (!entry) {
+            if (state->next_buffer_serial == 0 || !(entry = calloc(1,sizeof *entry))) {
+                if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+                return;
+            }
+            *entry = (struct wpk_buffer_name){buf,state->next_buffer_serial++,state->buffer_names};
+            state->buffer_names = entry;
+        }
+        serial = entry->serial;
+    }
     if (target == GL_ARRAY_BUFFER) g_array_buffer = buf;
     if (target == GL_ELEMENT_ARRAY_BUFFER) g_element_buffer = buf;
+    if (target == GL_ARRAY_BUFFER) state->array_serial = serial;
+    else state->current_vertex_array->element_serial = serial;
     EMIT_BEGIN(OP_BIND_BUFFER, 8)
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, (uint32_t)buf);
@@ -454,6 +524,7 @@ static void emit_vertex_attrib_pointer(GLuint index, GLint size, GLenum type,
     w_i32(&_c, (int32_t)offset);
     EMIT_END()
 }
+static uint32_t attrib_type_size(GLenum type);
 
 void glEnableVertexAttribArray(GLuint index) {
     if (!_wpk_gl_current_encoder()) return;
@@ -471,7 +542,25 @@ void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
                            GLboolean normalized, GLsizei stride,
                            const void *pointer) {
     if (!_wpk_gl_current_encoder()) return;
-    if (g_array_buffer == 0 && index < WPK_GL_MAX_ATTRIBS) {
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    if (!attrib_type_size(type)) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM;
+        return;
+    }
+    if (size < 1 || size > 4 || stride < 0) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
+        return;
+    }
+    if (state->current_vertex_array->name && g_array_buffer == 0 && pointer != NULL) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_OPERATION;
+        return;
+    }
+    if (index < WPK_GL_MAX_ATTRIBS) {
+        struct wpk_client_attrib *a = &g_attribs[index];
+        a->size = size; a->type = type; a->normalized = normalized;
+        a->stride = stride; a->pointer = pointer; a->buffer_serial = state->array_serial;
+    }
+    if (g_array_buffer == 0 && !state->current_vertex_array->name && index < WPK_GL_MAX_ATTRIBS) {
         /* Client memory: record it; the draw uploads what it reads. */
         struct wpk_client_attrib *a = &g_attribs[index];
         a->client = 1;
@@ -480,6 +569,9 @@ void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
         a->normalized = normalized;
         a->stride = stride;
         a->pointer = pointer;
+        /* Clear a previous native VBO reference without forwarding the
+         * client pointer. Draw-time staging supplies the actual bytes. */
+        emit_vertex_attrib_pointer(index,size,type,normalized,stride,0);
         return;
     }
     if (index < WPK_GL_MAX_ATTRIBS) g_attribs[index].client = 0;
@@ -513,6 +605,7 @@ static uint32_t attrib_type_size(GLenum type) {
  * made (the error is latched for glGetError). */
 static int stage_client_attribs(GLint first, GLsizei count, GLuint *names) {
     int made = 0;
+    GLuint original_array = g_array_buffer;
     if (count <= 0) return 0;
     for (uint32_t i = 0; i < WPK_GL_MAX_ATTRIBS; i++) {
         struct wpk_client_attrib *a = &g_attribs[i];
@@ -520,30 +613,40 @@ static int stage_client_attribs(GLint first, GLsizei count, GLuint *names) {
         uint32_t tsize = attrib_type_size(a->type);
         if (tsize == 0 || a->size < 1 || a->size > 4 || a->pointer == NULL) {
             if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_OPERATION;
-            return -1;
+            goto failed;
         }
         uint32_t elem = tsize * (uint32_t)a->size;
         uint32_t stride = a->stride ? (uint32_t)a->stride : elem;
-        uint64_t len = (uint64_t)(uint32_t)(first + count - 1) * stride + elem;
+        uint64_t len = ((uint64_t)(uint32_t)first + (uint32_t)count - 1) * stride + elem;
         /* One glBufferData record carries at most 65523 bytes (see
          * glBufferData); a larger client array cannot be staged. */
         if (len > 0xFFFFu - 12u) {
             if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
-            return -1;
+            goto failed;
         }
-        GLuint name = g_next_buffer++;
-        emit_name_array(OP_GEN_BUFFERS, 1, &name);
+        GLuint name = 0;
+        glGenBuffers(1,&name);
+        if (!name) goto failed;
         glBindBuffer(GL_ARRAY_BUFFER, name);
+        if (g_array_buffer != name) { glDeleteBuffers(1,&name); goto failed; }
         glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)len, a->pointer, GL_STREAM_DRAW);
         emit_vertex_attrib_pointer(i, a->size, a->type, a->normalized,
                                    a->stride, 0);
         names[made++] = name;
     }
     return made;
+failed:
+    glBindBuffer(GL_ARRAY_BUFFER,original_array);
+    if (made) glDeleteBuffers(made,names);
+    return -1;
 }
 
 void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     if (!_wpk_gl_current_encoder()) return;
+    if (first < 0 || count < 0) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
+        return;
+    }
     GLuint staged[WPK_GL_MAX_ATTRIBS];
     GLuint app_buffer = g_array_buffer;
     int n = stage_client_attribs(first, count, staged);
@@ -556,9 +659,9 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
         w_i32(&_c, (int32_t)count);
         EMIT_END()
     }
-    /* The attributes keep referring to the deleted buffers until the next
-     * draw restages them, as GL allows. */
-    if (n > 0) emit_name_array(OP_DELETE_BUFFERS, n, staged);
+    /* The client definition lives in its VAO record. These private staging
+     * objects end after the draw; the next draw uploads that definition. */
+    if (n > 0) glDeleteBuffers(n, staged);
 }
 
 /* ----- sync queries ------------------------------------------------- */
@@ -813,6 +916,14 @@ void _wpk_gl_destroy_encoder(struct wpk_gles_context *state) {
         for (size_t j = 0; j < tables[i]->len; j++) _wpk_egl_image_release(tables[i]->v[j].image);
         free(tables[i]->v);
     }
+    while (state->buffer_names) {
+        struct wpk_buffer_name *entry = state->buffer_names;
+        state->buffer_names = entry->next; free(entry);
+    }
+    while (state->vertex_arrays) {
+        struct wpk_vertex_array *entry = state->vertex_arrays;
+        state->vertex_arrays = entry->next; free(entry);
+    }
     free(state);
 }
 
@@ -1063,7 +1174,24 @@ void glPixelStorei(GLenum pname, GLint param) {
 
 void glDeleteBuffers(GLsizei n, const GLuint *names) {
     if (!_wpk_gl_current_encoder()) return;
+    if (n < 0) { if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE; return; }
     if (n <= 0 || !names) return;
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    for (GLsizei i=0; i<n; i++) {
+        struct wpk_buffer_name **slot = &state->buffer_names;
+        while (*slot && (*slot)->name != names[i]) slot = &(*slot)->next;
+        if (!*slot) continue;
+        struct wpk_buffer_name *entry = *slot;
+        if (state->array_serial == entry->serial) { g_array_buffer = 0; state->array_serial = 0; }
+        if (state->current_vertex_array->element_serial == entry->serial) {
+            g_element_buffer = 0; state->current_vertex_array->element_serial = 0;
+        }
+        for (unsigned a=0; a<WPK_GL_MAX_ATTRIBS; a++) if (g_attribs[a].buffer_serial == entry->serial) {
+            g_attribs[a].buffer_serial = 0;
+            g_attribs[a].client = state->current_vertex_array->name == 0;
+        }
+        *slot = entry->next; free(entry);
+    }
     emit_name_array(OP_DELETE_BUFFERS, n, names);
 }
 
@@ -2212,19 +2340,62 @@ void glReadBuffer(GLenum src) {
 
 void glGenVertexArrays(GLsizei n, GLuint *out) {
     if (!_wpk_gl_current_encoder()) return;
+    if (n < 0) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
+        return;
+    }
     if (n <= 0 || !out) return;
-    for (GLsizei i = 0; i < n; i++) out[i] = g_next_vertex_array++;
+    if (g_next_vertex_array == 0 || (uint64_t)(uint32_t)n > (uint64_t)UINT32_MAX-g_next_vertex_array+1) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+        return;
+    }
+    struct wpk_vertex_array *pending = NULL;
+    for (GLsizei i=0; i<n; i++) {
+        struct wpk_vertex_array *entry = calloc(1,sizeof *entry);
+        if (!entry) {
+            while (pending) { entry = pending; pending = entry->next; free(entry); }
+            if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+            return;
+        }
+        entry->name = g_next_vertex_array+(GLuint)i;
+        for (unsigned a=0; a<WPK_GL_MAX_ATTRIBS; a++) { entry->attribs[a].size = 4; entry->attribs[a].type = GL_FLOAT; }
+        entry->next = pending; pending = entry;
+    }
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    while (pending) {
+        struct wpk_vertex_array *entry = pending; pending = entry->next;
+        entry->next = state->vertex_arrays; state->vertex_arrays = entry;
+    }
+    for (GLsizei i=0; i<n; i++) out[i] = g_next_vertex_array++;
     emit_name_array(OP_GEN_VERTEX_ARRAYS, n, out);
 }
 
 void glDeleteVertexArrays(GLsizei n, const GLuint *names) {
     if (!_wpk_gl_current_encoder()) return;
+    if (n < 0) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
+        return;
+    }
     if (n <= 0 || !names) return;
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    for (GLsizei i=0; i<n; i++) {
+        struct wpk_vertex_array **slot = &state->vertex_arrays;
+        while (*slot && (*slot)->name != names[i]) slot = &(*slot)->next;
+        if (!*slot) continue;
+        struct wpk_vertex_array *entry = *slot;
+        if (state->current_vertex_array == entry) state->current_vertex_array = &state->default_vertex_array;
+        *slot = entry->next; free(entry);
+    }
     emit_name_array(OP_DELETE_VERTEX_ARRAYS, n, names);
 }
 
 void glBindVertexArray(GLuint array) {
     if (!_wpk_gl_current_encoder()) return;
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    struct wpk_vertex_array *entry = array ? state->vertex_arrays : &state->default_vertex_array;
+    while (entry && entry->name != array) entry = entry->next;
+    if (!entry) { if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_OPERATION; return; }
+    state->current_vertex_array = entry;
     EMIT_BEGIN(OP_BIND_VERTEX_ARRAY, 4)
     w_u32(&_c, array);
     EMIT_END()
@@ -2297,6 +2468,10 @@ void glFlush(void) {
 
 void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices) {
     if (!_wpk_gl_current_encoder()) return;
+    if (count < 0) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
+        return;
+    }
     if (count <= 0) return;
     GLuint staged[WPK_GL_MAX_ATTRIBS];
     GLuint app_array_buffer = g_array_buffer, app_element_buffer = g_element_buffer;
@@ -2322,7 +2497,9 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices
             if (value > max_index) max_index = value;
         }
         glGenBuffers(1, &element);
+        if (!element) return;
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, element);
+        if (g_element_buffer != element) { glDeleteBuffers(1,&element); return; }
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)((size_t)count * index_size), indices, GL_STREAM_DRAW);
         offset = 0;
     }
@@ -2335,7 +2512,7 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices
             w_u32(&_c, (uint32_t)type); w_u32(&_c, offset);
             EMIT_END()
         }
-        if (n > 0) emit_name_array(OP_DELETE_BUFFERS, n, staged);
+        if (n > 0) glDeleteBuffers(n, staged);
     }
     if (element) {
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, app_element_buffer);

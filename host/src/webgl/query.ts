@@ -388,7 +388,8 @@ function queryParameter(b: GlBinding, pname: number): unknown {
   switch (pname) {
     case 0x8894: // ARRAY_BUFFER_BINDING
     case 0x8895: // ELEMENT_ARRAY_BUFFER_BINDING (VAO-local)
-      return nameForObject(b.buffers, value as WebGLBuffer | null);
+      return nameForObject(b.buffers, value as WebGLBuffer | null)
+        || b.retiredBuffers.get(value as WebGLBuffer) || 0;
     case 0x8069: // TEXTURE_BINDING_2D
     case 0x8514: // TEXTURE_BINDING_CUBE_MAP
       return nameForObject(b.textures, value as WebGLTexture | null)

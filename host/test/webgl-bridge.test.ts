@@ -370,6 +370,137 @@ describe("shared image object deletion", () => {
   });
 });
 
+describe("shared buffer deletion", () => {
+  function setup() {
+    const gl = new RecordingGl(), reg = new GlContextRegistry();
+    const [a,b] = [11,12].map(sessionId => {
+      reg.bind({pid:7,sessionId,cmdbufAddr:0,cmdbufLen:1024});
+      const owner = reg.get(7,sessionId)!; owner.gl = gl as unknown as WebGL2RenderingContext;
+      owner.contextId = sessionId; owner.cmdbufView = new Uint8Array(1024); return owner;
+    });
+    expect(reg.shareObjects(7,12,11)).toBe(true);
+    const send = (owner: typeof a, op: number, words: number[]) => {
+      const t = new Tlv(owner.cmdbufView!.buffer), {p} = t.op(op,words.length*4);
+      words.forEach((word,i) => t.view.setUint32(p+i*4,word,true));
+      expect(decodeAndDispatch(owner,0,t.p)).toBe(0);
+    };
+    return {gl,reg,a,b,send};
+  }
+
+  it("rejects duplicate generated names and failed native buffer binds without replacing references", () => {
+    const {gl,a,send} = setup();
+    send(a,O.OP_GEN_BUFFERS,[2,71,72]); const old = a.buffers.get(71)!;
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]);
+    send(a,O.OP_GEN_BUFFERS,[1,71]); expect(a.buffers.get(71)).toBe(old);
+    expect(a.errors).toContain(0x502);
+    const errors: number[] = [];
+    gl.getError = () => errors.shift() ?? 0;
+    gl.bindBuffer = () => { errors.push(0x502); };
+    send(a,O.OP_BIND_BUFFER,[0x8892,72]);
+    expect(a.shadow.arrayBuffer).toBe(old);
+    expect(a.vertexArrays.get(0)!.element).toBeNull();
+  });
+
+  it("preserves a peer buffer binding and its old name until rebinding", () => {
+    const {gl,a,b,send} = setup();
+    send(a,O.OP_GEN_BUFFERS,[1,71]); const old = a.buffers.get(71)!;
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); send(b,O.OP_BIND_BUFFER,[0x8892,71]);
+    send(a,O.OP_DELETE_BUFFERS,[1,71]);
+    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toEqual([]);
+    expect(a.shadow.arrayBuffer).toBeNull(); expect(b.shadow.arrayBuffer).toBe(old);
+    const input = new Uint8Array(4), out = new Uint8Array(4);
+    new DataView(input.buffer).setUint32(0,0x8894,true); gl.getParameter = () => old as any;
+    expect(runGlQuery(b,O.QOP_GET_INTEGERV,input,out)).toBe(4);
+    expect(new DataView(out.buffer).getUint32(0,true)).toBe(71);
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); expect(a.buffers.get(71)).not.toBe(old);
+    send(b,O.OP_BIND_BUFFER,[0x8892,0]);
+    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toEqual([["deleteBuffer",[old]]]);
+  });
+
+  it("retains buffer storage through an unbound VAO until that container ends", () => {
+    const {gl,a,send} = setup();
+    send(a,O.OP_GEN_BUFFERS,[1,71]); const buffer = a.buffers.get(71)!;
+    send(a,O.OP_GEN_VERTEX_ARRAYS,[1,31]); send(a,O.OP_BIND_VERTEX_ARRAY,[31]);
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]);
+    send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]);
+    send(a,O.OP_BIND_VERTEX_ARRAY,[0]); send(a,O.OP_DELETE_BUFFERS,[1,71]);
+    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toEqual([]);
+    send(a,O.OP_DELETE_VERTEX_ARRAYS,[1,31]);
+    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toEqual([["deleteBuffer",[buffer]]]);
+  });
+
+  it("clears only active attribute and element references on deletion", () => {
+    const {gl,a,b,send} = setup();
+    send(a,O.OP_GEN_BUFFERS,[1,71]); const old = a.buffers.get(71)!;
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]);
+    send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,8,4]);
+    send(a,O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);
+    send(a,O.OP_BIND_BUFFER,[0x8893,71]);
+    send(b,O.OP_BIND_BUFFER,[0x8893,71]);
+    send(a,O.OP_DELETE_BUFFERS,[1,71]);
+    expect(a.vertexArrays.get(0)!.element).toBeNull();
+    expect(a.vertexArrays.get(0)!.attributes.get(0)).toEqual({buffer:null,enabled:true,
+      size:2,type:0x1406,normalized:false,stride:8,offset:4});
+    expect(b.vertexArrays.get(0)!.element).toBe(old);
+    expect(gl.log.filter(([name,args]) => name === "deleteBuffer" && args[0] === old)).toEqual([]);
+    expect(gl.log.filter(([name]) => name === "vertexAttribPointer")).toEqual([
+      ["vertexAttribPointer",[0,2,0x1406,false,8,4]], ["vertexAttribPointer",[0,2,0x1406,false,8,4]]]);
+    send(b,O.OP_BIND_BUFFER,[0x8893,0]);
+    expect(gl.log.filter(([name,args]) => name === "deleteBuffer" && args[0] === old)).toEqual([["deleteBuffer",[old]]]);
+  });
+
+  it("preserves accepted pointer state when a later native pointer update fails", () => {
+    const {gl,a,send} = setup();
+    send(a,O.OP_GEN_BUFFERS,[2,71,72]); const old = a.buffers.get(71)!;
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]);
+    send(a,O.OP_BIND_BUFFER,[0x8892,72]);
+    const errors: number[] = [];
+    gl.getError = () => errors.shift() ?? 0;
+    gl.vertexAttribPointer = () => { errors.push(0x501); };
+    send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,5,0x1406,0,0,0]);
+    expect(a.vertexArrays.get(0)!.attributes.get(0)!.buffer).toBe(old);
+    expect(a.vertexArrays.get(0)!.attributes.get(0)!.size).toBe(2);
+    expect(a.errors).toContain(0x501);
+  });
+
+  it("keeps names and references intact when buffer-zero clearing cannot allocate", () => {
+    const {gl,a,send} = setup();
+    send(a,O.OP_GEN_BUFFERS,[1,71]); const old = a.buffers.get(71)!;
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]);
+    gl.createBuffer = () => null as any;
+    send(a,O.OP_DELETE_BUFFERS,[1,71]);
+    expect(a.buffers.get(71)).toBe(old); expect(a.shadow.arrayBuffer).toBe(old);
+    expect(a.vertexArrays.get(0)!.attributes.get(0)!.buffer).toBe(old);
+    expect(a.errors).toContain(0x505);
+  });
+
+  it("returns to the private default VAO and retains its element binding", () => {
+    const {gl,a,send} = setup();
+    send(a,O.OP_GEN_BUFFERS,[1,71]); const old = a.buffers.get(71)!;
+    send(a,O.OP_BIND_BUFFER,[0x8893,71]);
+    send(a,O.OP_GEN_VERTEX_ARRAYS,[1,31]); send(a,O.OP_BIND_VERTEX_ARRAY,[31]);
+    expect(a.vertexArrays.get(31)!.element).toBeNull();
+    send(a,O.OP_DELETE_VERTEX_ARRAYS,[1,31]);
+    expect(a.vertexArrayId).toBe(0); expect(a.shadow.vao).toBeNull();
+    expect(a.vertexArrays.get(0)!.element).toBe(old);
+    expect(gl.log.at(-1)).toEqual(["bindVertexArray",[a.shadow.defaultVao]]);
+    send(a,O.OP_BIND_VERTEX_ARRAY,[31]);
+    expect(a.vertexArrayId).toBe(0); expect(a.errors).toContain(0x502);
+  });
+
+  it("retires deleted storage on the last owning context's destruction", () => {
+    const {gl,reg,a,b,send} = setup();
+    send(a,O.OP_GEN_BUFFERS,[1,71]); const old = a.buffers.get(71)!;
+    send(b,O.OP_GEN_VERTEX_ARRAYS,[1,31]); send(b,O.OP_BIND_VERTEX_ARRAY,[31]);
+    send(b,O.OP_BIND_BUFFER,[0x8893,71]); send(b,O.OP_BIND_VERTEX_ARRAY,[0]);
+    send(a,O.OP_DELETE_BUFFERS,[1,71]); reg.destroyContext(7,11);
+    expect(gl.log.filter(([name,args]) => name === "deleteBuffer" && args[0] === old)).toEqual([]);
+    reg.destroyContext(7,12);
+    expect(gl.log.filter(([name,args]) => name === "deleteBuffer" && args[0] === old)).toEqual([["deleteBuffer",[old]]]);
+  });
+
+});
+
 describe("cmdbuf decoder — TLV walker", () => {
   it("rejects a malformed trailing command before changing any GL state", () => {
     const gl = new RecordingGl();

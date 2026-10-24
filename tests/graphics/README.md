@@ -55,7 +55,7 @@ scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh ce8cd9dbcf
 scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh
 ```
 
-The twenty-nine current cases cover image siblings and retained framebuffer storage,
+The thirty-six current cases cover image siblings and retained framebuffer storage,
 redefinition, cleanup, invalid handles, repeated contexts, the shared
 shader/program namespace, boolean numeric conversion, vectors longer than
 four elements, unchanged query output after device failure and EGL config
@@ -65,7 +65,9 @@ surface/display teardown, stale handles, bind rollback and failed context
 allocation followed by retry, surfaceless backend binding, failed-release
 rollback, backend bind errors and atomic native-window retargeting,
 encoder allocation rollback, unbound-thread isolation, state transfer
-between threads and context-owned string caching.
+between threads and context-owned string caching, deleted array/index binding
+reset, per-VAO client attributes and indices, reused-name generation isolation,
+reserved name allocation and draw-staging allocation failure/retry.
 Native query
 tests resolve the library's recorded heap allocation explicitly because the
 guest wire format uses u32 pointers. They do not execute guest marshalling or

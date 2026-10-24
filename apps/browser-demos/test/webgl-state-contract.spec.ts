@@ -4,6 +4,110 @@ import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./sup
 
 // Actual WebGL rendering through the shared decoder and muxer. This checks
 // host execution pixels; guest ABI/compositor integration has separate tests.
+for (const kind of ["attribute", "element"] as const) {
+  test(`deleted shared ${kind} buffers retain unbound VAO storage across name reuse`, async ({ page }) => {
+    await page.goto("/trap-signal-test.html");
+    const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../", import.meta.url));
+    const result = await page.evaluate(async ({sourceRoot,kind}) => {
+      const base = `/@fs/${sourceRoot}host/src/webgl/`;
+      const { GlContextRegistry } = await import(base+"registry.ts");
+      const { GlMuxer } = await import(base+"muxer.ts");
+      const { decodeAndDispatch } = await import(base+"bridge.ts");
+      const { runGlQuery } = await import(base+"query.ts");
+      const O = await import(base+"ops.ts");
+      const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+      document.body.replaceChildren(canvas);
+      const gl = canvas.getContext("webgl2",{antialias:false,preserveDrawingBuffer:true});
+      if (!gl) throw new Error("WebGL2 required");
+      const reg = new GlContextRegistry(), mux = new GlMuxer(gl);
+      const [a,b] = [101,102].map(sessionId => {
+        reg.bind({pid:93,sessionId,cmdbufAddr:0,cmdbufLen:1024});
+        const owner = reg.get(93,sessionId)!;
+        owner.gl = gl; owner.contextId = sessionId; owner.cmdbufView = new Uint8Array(1024); return owner;
+      });
+      if (!reg.shareObjects(93,102,101)) throw new Error("group construction failed");
+      const send = (owner: typeof a, op: number, words: number[], tail = new Uint8Array()) => {
+        mux.switchTo(owner); const view = new DataView(owner.cmdbufView!.buffer);
+        view.setUint16(0,op,true); view.setUint16(2,words.length*4+tail.length,true);
+        words.forEach((word,i) => view.setUint32(4+i*4,word,true));
+        owner.cmdbufView!.set(tail,4+words.length*4);
+        if (decodeAndDispatch(owner,0,4+words.length*4+tail.length)) throw new Error("command failed");
+      };
+      const query = (owner: typeof a, op: number, words: number[] = []) => {
+        mux.switchTo(owner); const input = new Uint8Array(words.length*4), out = new Uint8Array(4);
+        words.forEach((word,i) => new DataView(input.buffer).setUint32(i*4,word,true));
+        if (runGlQuery(owner,op,input,out) !== 4) throw new Error("query failed"); return out;
+      };
+      const number = (owner: typeof a, op: number, words: number[] = []) => new DataView(query(owner,op,words).buffer).getUint32(0,true);
+      const upload = (target: number, data: Uint8Array) => {
+        const tail = new Uint8Array(data.length+4); tail.set(data);
+        new DataView(tail.buffer).setUint32(data.length,gl.STATIC_DRAW,true);
+        send(a,O.OP_BUFFER_DATA,[target,data.length],tail);
+      };
+      for (const [name,type,text] of [
+        [11,gl.VERTEX_SHADER,"attribute vec4 color; varying vec4 c; void main(){c=color;gl_Position=vec4(0.,0.,0.,1.);gl_PointSize=1.;}"],
+        [12,gl.FRAGMENT_SHADER,"precision mediump float; varying vec4 c; void main(){gl_FragColor=c;}"]
+      ] as [number,number,string][]) {
+        send(a,O.OP_CREATE_SHADER,[type,name]); const bytes = new TextEncoder().encode(text);
+        send(a,O.OP_SHADER_SOURCE,[name,bytes.length],bytes); send(a,O.OP_COMPILE_SHADER,[name]);
+        if (number(a,O.QOP_GET_SHADERIV,[name,gl.COMPILE_STATUS]) !== 1) throw new Error("compile failed");
+      }
+      send(a,O.OP_CREATE_PROGRAM,[13]); send(a,O.OP_ATTACH_SHADER,[13,11]); send(a,O.OP_ATTACH_SHADER,[13,12]);
+      send(a,O.OP_BIND_ATTRIB_LOCATION,[13,0,5],new TextEncoder().encode("color"));
+      send(a,O.OP_LINK_PROGRAM,[13]);
+      if (number(a,O.QOP_GET_PROGRAMIV,[13,gl.LINK_STATUS]) !== 1) throw new Error("link failed");
+      send(a,O.OP_GEN_BUFFERS,[2,71,72]);
+      send(a,O.OP_BIND_BUFFER,[gl.ARRAY_BUFFER,71]);
+      upload(gl.ARRAY_BUFFER,new Uint8Array([0,255,0,255,0,0,255,255]));
+      send(a,O.OP_BIND_BUFFER,[gl.ELEMENT_ARRAY_BUFFER,72]); upload(gl.ELEMENT_ARRAY_BUFFER,new Uint8Array([0]));
+      for (const owner of [a,b]) {
+        send(owner,O.OP_USE_PROGRAM,[13]); send(owner,O.OP_VIEWPORT,[0,0,1,1]);
+        send(owner,O.OP_GEN_VERTEX_ARRAYS,[1,31]); send(owner,O.OP_BIND_VERTEX_ARRAY,[31]);
+        send(owner,O.OP_BIND_BUFFER,[gl.ARRAY_BUFFER,71]);
+        send(owner,O.OP_VERTEX_ATTRIB_POINTER,[0,4,gl.UNSIGNED_BYTE,1,0,0]); send(owner,O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);
+        send(owner,O.OP_BIND_BUFFER,[gl.ARRAY_BUFFER,0]); send(owner,O.OP_BIND_BUFFER,[gl.ELEMENT_ARRAY_BUFFER,72]);
+      }
+      const name = kind === "attribute" ? 71 : 72;
+      const old = a.buffers.get(name)!;
+      send(b,O.OP_BIND_VERTEX_ARRAY,[0]);
+      send(a,O.OP_DELETE_BUFFERS,[1,name]);
+      const callerCleared = kind === "attribute"
+        ? gl.getVertexAttrib(0,gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING) === null
+        : gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING) === null;
+      const retained = gl.isBuffer(old);
+      const target = kind === "attribute" ? gl.ARRAY_BUFFER : gl.ELEMENT_ARRAY_BUFFER;
+      send(a,O.OP_GEN_BUFFERS,[1,name]);
+      send(a,O.OP_BIND_BUFFER,[target,name]);
+      upload(target,kind === "attribute" ? new Uint8Array([0,0,255,255]) : new Uint8Array([1]));
+      const replacement = a.buffers.get(name)!;
+      if (kind === "attribute") send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,4,gl.UNSIGNED_BYTE,1,0,0]);
+      send(b,O.OP_BIND_VERTEX_ARRAY,[31]);
+      const oldBinding = kind === "attribute"
+        ? gl.getVertexAttrib(0,gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING) === old
+        : number(b,O.QOP_GET_INTEGERV,[gl.ELEMENT_ARRAY_BUFFER_BINDING]) === name;
+      const pixels: number[][] = [];
+      for (const owner of [b,a]) {
+        send(owner,O.OP_DRAW_ELEMENTS,[gl.POINTS,1,gl.UNSIGNED_BYTE,0]);
+        pixels.push([...query(owner,O.QOP_READ_PIXELS,[0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE])]);
+      }
+      send(b,O.OP_DELETE_VERTEX_ARRAYS,[1,31]);
+      const defaultRetains = kind === "element" && gl.isBuffer(old);
+      if (kind === "element") {
+        send(a,O.OP_BIND_VERTEX_ARRAY,[0]);
+        if (number(a,O.QOP_GET_INTEGERV,[gl.ELEMENT_ARRAY_BUFFER_BINDING]) !== name) throw new Error("default VAO lost old object name");
+        send(a,O.OP_BIND_BUFFER,[gl.ELEMENT_ARRAY_BUFFER,0]);
+      }
+      const oldRetired = !gl.isBuffer(old), errors = [number(a,O.QOP_GET_ERROR),number(b,O.QOP_GET_ERROR)];
+      mux.invalidateCurrent(); reg.destroyContext(93,101);
+      const peerRetains = gl.isBuffer(replacement);
+      mux.invalidateCurrent(); reg.destroyContext(93,102);
+      return {callerCleared,retained,oldBinding,pixels,oldRetired,errors,peerRetains,defaultRetains,retired:!gl.isBuffer(replacement)};
+    },{sourceRoot:root,kind});
+    expect(result).toEqual({callerCleared:true,retained:true,oldBinding:true,pixels:[[0,255,0,255],[0,0,255,255]],
+      oldRetired:true,errors:[0,0],peerRetains:true,defaultRetains:kind === "element",retired:true});
+  });
+}
+
 test("deleted shared renderbuffers retain bindings and unbound framebuffer storage", async ({ page }) => {
   await page.goto("/trap-signal-test.html");
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../", import.meta.url));

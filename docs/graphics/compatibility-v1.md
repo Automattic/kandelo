@@ -58,9 +58,9 @@ reproduction and correct observable failure; none is inferred from a stub.
 
 | ID | Required behavior / source | Current implementation and known failure | Owner / dependencies | Executable validation | Status / boundary |
 |---|---|---|---|---|---|
-| G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Monotonic guest names and per-process WebGL maps; incomplete is/query functions | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
-| G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted texture/RBO names retain binding/FBO references and program lifetime spans current owners. Buffer/VAO references, rollback, hints and multiple public contexts remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
-| G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Chunked encoder and transient client staging; bound index buffer plus client attributes rejected | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
+| G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reserved guest buffer names and host shared-object maps; incomplete is/query functions | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
+| G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Full rollback, hints and multiple public contexts remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
+| G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO client/index mirrors and retained deleted host buffer references. Bound index buffer plus client attributes rejected; dual-target storage, GL_FIXED and full size/limit/query coverage remain open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core reflection and complete executable/attribute/uniform validation still need work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization exists; complete target/state/error audit missing | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
@@ -907,9 +907,78 @@ are direct host-internal group tests, not guest or forwarded sharing.
 The browser protocol/memory-boundary checks also pass all ten cases:
 `.context/graphics-image-delete-memory-boundary.log`.
 
-Shared buffer/VAO references, logical image sibling/sampler identity and
+Logical image sibling/sampler identity, full buffer storage semantics and
 public EGL/group/display-generation routing remain ordinary open work.
 This does not complete the sharing baseline. No wire change or artifact
 rebuild occurred; ABI remains 55. Full guest CTS/compositor, browser-memory
 and POSIX validation remain required in the deferred provisioning phase.
 Performance was not measured.
+
+
+### Deleted buffers and vertex array ownership
+
+Buffer names now retire separately from native objects. The host retains
+objects referenced by another context's array binding or by any bound or
+unbound vertex array object (VAO), including disabled attributes and element
+bindings. Deletion clears the caller's array binding and active VAO's buffer
+references. Queries on surviving bindings retain their original numeric
+name. Reusing a deleted name creates independent storage; the final binding,
+VAO or context release retires the original object once.
+
+A private empty native buffer clears active attribute references through
+native deletion without deleting the real object retained elsewhere. This
+translation preserves the saved attribute format and global array binding.
+Native bind/pointer rejection preserves the corresponding ownership record;
+allocation failure before clearing leaves the old name and references live.
+
+The C encoder now owns attribute definitions, enables and the element binding
+per VAO, with a separate default VAO. Buffer generations prevent deletion of
+a reused name from clearing an older unbound VAO reference. Generated names
+reserve entries and skip arbitrary names created by binding. Staging failures
+release temporary names and suppress the draw, and negative draw ranges do
+not enter client memory staging. Named-VAO client pointer restrictions follow
+[OES_vertex_array_object](https://registry.khronos.org/OpenGL/extensions/OES/OES_vertex_array_object.txt).
+
+Before repair, the expanded native suite has 30 passes and six failures on
+`e8a7ce1e51`: `.context/graphics-buffer-vao-complete-native-baseline.log`.
+The initial two host regressions fail on that revision:
+`.context/graphics-buffer-vao-host-baseline.log`. The two rendered regression
+cases fail in all three engines when importing the exact archived pre-change
+WebGL tree: `.context/graphics-buffer-vao-verified-baseline-browser.log`
+(six failures). The earlier browser baseline omitted explicit generated
+names and also exercised implicit allocation; use the verified baseline for
+the deletion comparison.
+
+Current focused evidence, ABI 55:
+
+| Gate | Result | Evidence |
+|---|---|---|
+| Native actual EGL/GLES sources with device double and UBSan | 36 cases passed | `.context/graphics-buffer-vao-verified-native.log` |
+| Host graphics source gate and Node/browser declarations | 314 cases in 16 files; declarations passed | `.context/graphics-buffer-vao-final-verified-host.log` |
+| Real Chromium/Firefox/WebKit source WebGL | 36 cases passed, no skips | `.context/graphics-buffer-vao-final-browser.log` |
+| Browser protocol/memory-boundary negative checks | 10 passed, no skips | `.context/graphics-buffer-vao-memory-boundary.log` |
+| Private wasm32 EGL/GLES objects and relocatable paired link | Passed | `.context/graphics-buffer-vao-wasm.log` |
+
+The new browser cases render green from an unbound peer VAO's old attribute
+or index storage while the reused name renders blue. They check caller-only
+clearing, old binding names, independent default VAO references and final
+native deletion. These remain direct host-internal group checks, not public
+EGL or forwarded shared-context evidence.
+
+The initial index-buffer test correctly found a surviving default-VAO
+reference; the final case explicitly releases it before asserting deletion.
+An accidental default Vitest invocation began ordinary fixture setup and was
+stopped; it is not the focused graphics result. Subsequent checks use
+`vitest.graphics.config.ts` with no global provisioning.
+
+This does not close G01–G03. Unlike GLES2,
+[WebGL2 buffer binding](https://registry.khronos.org/webgl/specs/2.0/#5.1)
+classifies native buffers as element data or other data. A coherent logical
+buffer with separate native views remains to be implemented for cross-target
+use. This is an ordinary translation gap, not a hard platform boundary.
+GL_FIXED conversion, larger client staging, combined bound indices and client
+attributes, complete negative/limit/query behavior and C shared-group routing
+also remain open. No wire change occurred; ABI remains 55. Full SDK/archive,
+kernel, package and image rebuilds, guest CTS/compositor, browser-memory and
+POSIX validation remain deferred until the implementation is ready for the
+combined build/test phase. Performance was not measured.

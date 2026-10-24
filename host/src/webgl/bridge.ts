@@ -25,6 +25,7 @@ import { combinedTextureUnits, maxViewport } from "./limits.js";
 import * as O from "./ops.js";
 import { boundFramebuffer, defaultFramebuffer, isDefaultFramebuffer, validFramebufferTarget } from "./framebuffer.js";
 import { collectRetiredImages, deleteRenderbufferName, deleteTextureName, setImageAttachment } from "./image-references.js";
+import { activeVertexArray, clearNativeAttributeBuffers, collectRetiredBuffers, defaultVertexArray, deleteBufferNames, vertexAttribute } from "./buffer-references.js";
 import {
   GL_BACK,
   GL_FRONT,
@@ -98,6 +99,7 @@ export function decodeAndDispatch(
     }
   });
   collectRetiredImages(b);
+  collectRetiredBuffers(b);
   return result;
 }
 
@@ -655,27 +657,35 @@ function dispatch(
       const n = v.getUint32(p, true);
       for (let i = 0; i < n; i++) {
         const name = v.getUint32(p + 4 + i * 4, true);
-        const buf = gl.createBuffer();
-        if (buf) b.buffers.set(name, buf);
+        if (!name || b.buffers.has(name)) { recordGlError(b,0x502); continue; }
+        let buffer: WebGLBuffer | null = null;
+        if (checkedGlCall(b, () => { buffer = gl.createBuffer(); }) && buffer) b.buffers.set(name,buffer);
+        else recordGlError(b,0x505);
       }
       return;
     }
     case O.OP_DELETE_BUFFERS: {
       const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        const obj = b.buffers.get(name);
-        if (obj) gl.deleteBuffer(obj);
-        if (obj === b.shadow.arrayBuffer) b.shadow.arrayBuffer = null;
-        b.buffers.delete(name);
-      }
+      deleteBufferNames(b,Array.from({length:n},(_,i) => v.getUint32(p+4+i*4,true)));
       return;
     }
     case O.OP_BIND_BUFFER: {
       const target = v.getUint32(p, true);
-      const buffer = b.buffers.get(v.getUint32(p + 4, true)) ?? null;
-      gl.bindBuffer(target, buffer);
+      if (target !== 0x8892 && target !== 0x8893) { recordGlError(b,0x500); return; }
+      const name = v.getUint32(p+4,true);
+      let buffer = b.buffers.get(name) ?? null;
+      const allocate = name !== 0 && buffer === null;
+      if (allocate && (!checkedGlCall(b, () => { buffer = gl.createBuffer(); }) || !buffer)) {
+        if (buffer) gl.deleteBuffer(buffer);
+        recordGlError(b,0x505); return;
+      }
+      if (!checkedGlCall(b, () => gl.bindBuffer(target,buffer))) {
+        if (allocate && buffer) gl.deleteBuffer(buffer);
+        return;
+      }
+      if (allocate && buffer) b.buffers.set(name,buffer);
       if (target === GL_ARRAY_BUFFER) b.shadow.arrayBuffer = buffer;
+      else activeVertexArray(b).element = buffer;
       return;
     }
     // Payload: u32 target, u32 dataLen, u8 data[dataLen], u32 usage
@@ -1092,12 +1102,18 @@ function dispatch(
     }
 
     // ----- vertex attribs / draws -----------------------------------------
-    case O.OP_ENABLE_VERTEX_ATTRIB_ARRAY:
-      gl.enableVertexAttribArray(v.getUint32(p, true));
+    case O.OP_ENABLE_VERTEX_ATTRIB_ARRAY: {
+      const index = v.getUint32(p,true);
+      if (!checkedGlCall(b, () => gl.enableVertexAttribArray(index))) return;
+      activeVertexArray(b).attributes.set(index,{...vertexAttribute(b,index),enabled:true});
       return;
-    case O.OP_DISABLE_VERTEX_ATTRIB_ARRAY:
-      gl.disableVertexAttribArray(v.getUint32(p, true));
+    }
+    case O.OP_DISABLE_VERTEX_ATTRIB_ARRAY: {
+      const index = v.getUint32(p,true);
+      if (!checkedGlCall(b, () => gl.disableVertexAttribArray(index))) return;
+      activeVertexArray(b).attributes.set(index,{...vertexAttribute(b,index),enabled:false});
       return;
+    }
     // Payload: u32 index, i32 size, u32 type, u32 normalizedBool,
     //          i32 stride, i32 offset
     case O.OP_VERTEX_ATTRIB_POINTER: {
@@ -1107,7 +1123,13 @@ function dispatch(
       const normalized = v.getUint32(p + 12, true) !== 0;
       const stride = v.getInt32(p + 16, true);
       const off = v.getInt32(p + 20, true);
-      gl.vertexAttribPointer(index, size, type, normalized, stride, off);
+      const attribute = {buffer:b.shadow.arrayBuffer,enabled:vertexAttribute(b,index).enabled,
+        size,type,normalized,stride,offset:off};
+      if (!attribute.buffer) {
+        if (off !== 0) { recordGlError(b,0x502); return; }
+        if (!clearNativeAttributeBuffers(b,[[index,attribute]],null)) return;
+      } else if (!checkedGlCall(b, () => gl.vertexAttribPointer(index,size,type,normalized,stride,off))) return;
+      activeVertexArray(b).attributes.set(index,attribute);
       return;
     }
     case O.OP_DRAW_ARRAYS:
@@ -1145,8 +1167,11 @@ function dispatch(
       const n = v.getUint32(p, true);
       for (let i = 0; i < n; i++) {
         const name = v.getUint32(p + 4 + i * 4, true);
-        const vao = gl.createVertexArray();
-        if (vao) b.vaos.set(name, vao);
+        if (!name || b.vaos.has(name)) { recordGlError(b,0x502); continue; }
+        let vao: WebGLVertexArrayObject | null = null;
+        if (checkedGlCall(b, () => { vao = gl.createVertexArray(); }) && vao) {
+          b.vaos.set(name,vao); b.vertexArrays.set(name,defaultVertexArray());
+        } else recordGlError(b,0x505);
       }
       return;
     }
@@ -1155,16 +1180,24 @@ function dispatch(
       for (let i = 0; i < n; i++) {
         const name = v.getUint32(p + 4 + i * 4, true);
         const obj = b.vaos.get(name);
-        if (obj) gl.deleteVertexArray(obj);
+        if (obj && !checkedGlCall(b, () => gl.deleteVertexArray(obj))) continue;
+        if (obj && name === b.vertexArrayId) {
+          gl.bindVertexArray(b.shadow.defaultVao);
+          b.shadow.vao = null; b.vertexArrayId = 0;
+        }
         b.vaos.delete(name);
+        if (name) b.vertexArrays.delete(name);
       }
       return;
     }
     case O.OP_BIND_VERTEX_ARRAY: {
-      const vao = b.vaos.get(v.getUint32(p, true)) ?? null;
+      const name = v.getUint32(p,true), vao = b.vaos.get(name) ?? null;
+      if (name !== 0 && !vao) { recordGlError(b,0x502); return; }
       // Vertex array 0 is this binding's own default (see GlShadowState).
-      gl.bindVertexArray(vao ?? b.shadow.defaultVao);
+      if (!checkedGlCall(b, () => gl.bindVertexArray(vao ?? b.shadow.defaultVao))) return;
       b.shadow.vao = vao;
+      b.vertexArrayId = name;
+      activeVertexArray(b);
       return;
     }
 

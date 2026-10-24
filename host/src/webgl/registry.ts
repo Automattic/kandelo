@@ -26,6 +26,7 @@ import { replaceDefaultFramebuffer } from "./framebuffer.js";
 import { createGlObjectGroup, exposeGlSharedObjects, type GlObjectGroup, type GlSharedObjects } from "./object-group.js";
 import { finalizeProgram, releaseRetainedExecutable } from "./program-objects.js";
 import { collectRetiredImages, type GlImageAttachment } from "./image-references.js";
+import { collectRetiredBuffers, defaultVertexArray, type GlVertexArray } from "./buffer-references.js";
 
 export type GlContextHandle = number;
 export type GlSurfaceHandle = number;
@@ -87,6 +88,8 @@ export type GlBinding = GlBindingInput & GlSharedObjects & {
   vaos: Map<number, WebGLVertexArrayObject>;
   fbos: Map<number, WebGLFramebuffer>;
   framebufferAttachments: Map<WebGLFramebuffer, Map<number, GlImageAttachment>>;
+  vertexArrayId: number;
+  vertexArrays: Map<number, GlVertexArray>;
 
   /** CRTC whose scanout canvas this binding auto-claimed at context
    *  creation (`markKmsCanvasGlOwned`). Tracked so context destruction
@@ -207,6 +210,8 @@ export class GlContextRegistry {
       vaos: new Map(),
       fbos: new Map(),
       framebufferAttachments: new Map(),
+      vertexArrayId: 0,
+      vertexArrays: new Map([[0,defaultVertexArray()]]),
       claimedKmsCrtc: null,
       currentProgram: null,
       currentProgramId: 0,
@@ -281,7 +286,9 @@ export class GlContextRegistry {
     for (const object of b.fbos.values()) gl?.deleteFramebuffer(object);
     b.vaos.clear(); b.fbos.clear();
     b.framebufferAttachments.clear();
+    b.vertexArrays.clear();
     collectRetiredImages(b);
+    collectRetiredBuffers(b);
     b.objects = createGlObjectGroup();
     b.objects.nextUniformLoc = objects.nextUniformLoc;
     b.objects.nextForeignTexId = objects.nextForeignTexId;
@@ -305,6 +312,8 @@ export class GlContextRegistry {
     b.currentDrawable = null;
     b.hasBeenCurrent = false;
     b.shadow = defaultShadow();
+    b.vertexArrayId = 0;
+    b.vertexArrays.set(0,defaultVertexArray());
     b.contextId = null;
     b.gl = null;
   }
@@ -330,7 +339,7 @@ export class GlContextRegistry {
     const names = target.objects;
     if (names.buffers.size || names.textures.size || names.shaders.size || names.programs.size
         || names.rbos.size || names.uniformLocations.size || names.foreignTextures.size
-        || names.retiredTextures.size || names.retiredRenderbuffers.size
+        || names.retiredTextures.size || names.retiredBuffers.size || names.retiredRenderbuffers.size
         || names.shaderDeletePending.size || names.programDeletePending.size) return false;
     names.members.delete(target);
     target.objects = source.objects;

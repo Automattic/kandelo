@@ -3904,7 +3904,15 @@ unbound FBOs retain storage. Reusing a name creates a distinct object, while
 surviving bindings still query their original name. Packed depth/stencil
 attachments retain each point independently. Native retirement follows the
 last reference; BO-owned textures retain their separate canonical owner.
-Shared buffer/VAO references, image sibling sampler identity and kernel
+Deleted buffer names likewise retain native objects referenced by other
+contexts or unbound VAOs. Array bindings stay context-local; element bindings
+and attribute definitions belong to each VAO. Caller deletion clears only its
+active VAO references, using a private empty native buffer to clear attribute
+references without deleting shared storage. Retirement scans every group
+member and container. The C encoder mirrors VAO ownership, reserves buffer
+names and distinguishes reused-name generations; failed client staging drops
+temporary names and suppresses the draw. Dual-target buffer storage,
+GL_FIXED/client staging coverage, image sibling sampler identity and kernel
 display-generation authority plus C group routing remain open.
 Shader/program attachment records retain deleted shaders and current
 programs until their last logical reference releases. Native program deletion
