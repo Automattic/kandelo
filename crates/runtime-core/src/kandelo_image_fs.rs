@@ -786,7 +786,11 @@ pub struct KandeloImageDirent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const TINY_VFS: &[u8] = include_bytes!("testdata/tiny.vfs");
+    /// A small `/` image built at test time by the Rust image writer; see
+    /// `crate::test_fixtures::tiny_vfs` for its tree.
+    fn tiny_vfs() -> &'static [u8] {
+        crate::test_fixtures::tiny_vfs()
+    }
 
     /// The metadata section round-trips through the container writer, at every
     /// combination of the OPTIONAL sections that precede it.
@@ -908,7 +912,7 @@ mod tests {
     /// different size and would be testing the fixture, not the reader.
     #[test]
     fn statfs_reports_the_images_own_geometry() {
-        let image = unwrap_vfsi(TINY_VFS).expect("VFSI unwrap");
+        let image = unwrap_vfsi(tiny_vfs()).expect("VFSI unwrap");
         let fs = KandeloImageFs::mount(image).expect("mount");
         let st = fs.statfs().expect("statfs");
 
@@ -936,7 +940,7 @@ mod tests {
     /// read a wildly generous free count off a damaged image and pass.
     #[test]
     fn statfs_refuses_a_superblock_claiming_impossible_free_counts() {
-        let image = unwrap_vfsi(TINY_VFS).expect("VFSI unwrap");
+        let image = unwrap_vfsi(tiny_vfs()).expect("VFSI unwrap");
         let mut owned = image.to_vec();
         let total_blocks = u32::from_le_bytes(owned[12..16].try_into().unwrap());
         owned[20..24].copy_from_slice(&(total_blocks + 1).to_le_bytes());
@@ -946,7 +950,7 @@ mod tests {
 
     #[test]
     fn unwrap_vfsi_returns_the_image_with_valid_magic() {
-        let image = unwrap_vfsi(TINY_VFS).expect("VFSI unwrap");
+        let image = unwrap_vfsi(tiny_vfs()).expect("VFSI unwrap");
         // Inner filesystem superblock magic "KIFS" at byte 0. The constant is
         // 0x5346_494B because it is read as a LITTLE-ENDIAN u32, so the low
         // byte is the first character. "SFFS" hid this: its bytes are a
@@ -956,21 +960,21 @@ mod tests {
 
     #[test]
     fn unwrap_vfsi_rejects_bad_magic() {
-        let mut bad = TINY_VFS.to_vec();
+        let mut bad = tiny_vfs().to_vec();
         bad[0] ^= 0xff;
         assert!(unwrap_vfsi(&bad).is_err());
     }
 
     #[test]
     fn mount_validates_superblock() {
-        let image = unwrap_vfsi(TINY_VFS).unwrap();
+        let image = unwrap_vfsi(tiny_vfs()).unwrap();
         let fs = KandeloImageFs::mount(image).expect("mount");
         assert!(fs.inode_table_start >= 1);
     }
 
     #[test]
     fn mount_rejects_wrong_block_size() {
-        let mut bad = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
+        let mut bad = unwrap_vfsi(tiny_vfs()).unwrap().to_vec();
         bad[8] = 0; bad[9] = 0; bad[10] = 0; bad[11] = 0; // BLOCK_SIZE=0
         assert!(KandeloImageFs::mount(bad.as_slice()).is_err());
     }
@@ -979,14 +983,14 @@ mod tests {
     fn mount_accepts_an_owned_source() {
         // `Vec<u8>` is a `BlockSource` too, so a caller that owns the image
         // does not have to keep a borrow alive alongside the mount.
-        let owned = unwrap_vfsi(TINY_VFS).unwrap().to_vec();
+        let owned = unwrap_vfsi(tiny_vfs()).unwrap().to_vec();
         let fs = KandeloImageFs::mount(owned).expect("mount owned");
         assert_eq!(fs.stat_ino(ROOT_INO).unwrap().mode & 0xf000, 0x4000);
     }
 
     #[test]
     fn root_inode_is_a_directory() {
-        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(tiny_vfs()).unwrap()).unwrap();
         let st = fs.stat_ino(ROOT_INO).unwrap();
         assert_eq!(st.mode & 0xf000, 0x4000, "root is S_IFDIR");
         assert!(st.nlink >= 2, "dir has >= 2 links (. and ..)");
@@ -994,7 +998,7 @@ mod tests {
 
     #[test]
     fn block_map_direct_hole_and_beyond_max() {
-        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(tiny_vfs()).unwrap()).unwrap();
         // Root dir's first data block is allocated (non-zero physical block).
         assert!(fs.block_map(ROOT_INO, 0).unwrap() != 0, "root dir data block 0");
         // An unallocated direct block within range reads as a sparse hole (0).
@@ -1006,7 +1010,7 @@ mod tests {
     #[test]
     fn read_at_reads_root_dir_bytes_nonzero() {
         // Directory data is readable via read_at too; assert we get bytes.
-        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(tiny_vfs()).unwrap()).unwrap();
         let size = fs.stat_ino(ROOT_INO).unwrap().size;
         let mut buf = [0u8; 64];
         let n = fs.read_at(ROOT_INO, 0, &mut buf).unwrap();
@@ -1021,7 +1025,7 @@ mod tests {
         // direct blocks, so a whole-file read walks the single-indirect
         // block. Under the cursor the inode is fetched once for the whole
         // read rather than once per 4 KiB chunk; the bytes must be identical.
-        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(tiny_vfs()).unwrap()).unwrap();
         let ino = fs.resolve(b"/big.txt", true).unwrap();
         let size = fs.stat_ino(ino).unwrap().size as usize;
         assert_eq!(size, 45000);
@@ -1040,7 +1044,7 @@ mod tests {
 
     #[test]
     fn read_dir_lists_root_entries() {
-        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(tiny_vfs()).unwrap()).unwrap();
         let names: alloc::vec::Vec<alloc::vec::Vec<u8>> =
             fs.read_dir(ROOT_INO).unwrap().into_iter().map(|e| e.name).collect();
         for want in [b"hello.txt".as_slice(), b"dir", b"link", b"big.txt"] {
@@ -1054,7 +1058,7 @@ mod tests {
 
     #[test]
     fn lookup_finds_children_and_misses() {
-        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(tiny_vfs()).unwrap()).unwrap();
         let dir = fs.lookup(ROOT_INO, b"dir").unwrap();
         assert_eq!(fs.stat_ino(dir).unwrap().mode & 0xf000, 0x4000);
         assert!(fs.lookup(dir, b"nested.txt").is_ok());
@@ -1066,7 +1070,7 @@ mod tests {
 
     #[test]
     fn read_link_inline_target() {
-        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(tiny_vfs()).unwrap()).unwrap();
         let link = fs.lookup(ROOT_INO, b"link").unwrap();
         assert_eq!(fs.stat_ino(link).unwrap().mode & 0xf000, 0xa000);
         assert_eq!(fs.read_link(link).unwrap(), b"hello.txt");
@@ -1077,7 +1081,7 @@ mod tests {
 
     #[test]
     fn resolve_paths_and_symlink() {
-        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(tiny_vfs()).unwrap()).unwrap();
         // exact content read through a resolved path
         let ino = fs.resolve(b"/hello.txt", true).unwrap();
         let mut buf = [0u8; 32];
@@ -1101,14 +1105,14 @@ mod tests {
     fn mount_rejects_oversized_inode_table() {
         // The KIFS superblock TOTAL_INODES is at filesystem-offset 16; the VFSI header
         // adds 16 bytes, so the field lives at absolute `.vfs` offset 32.
-        let mut img = TINY_VFS.to_vec();
+        let mut img = tiny_vfs().to_vec();
         img[32..36].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
         assert!(KandeloImageFs::mount(unwrap_vfsi(&img).unwrap()).is_err());
     }
 
     #[test]
     fn stat_ino_rejects_out_of_range_ino() {
-        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(tiny_vfs()).unwrap()).unwrap();
         // The errno is the contract, not merely that it failed: a reader
         // returning EIO here would look identical to `is_err()`.
         // `.err()` rather than `unwrap_err()`: the Ok type is `KandeloImageStat`,
@@ -1124,11 +1128,11 @@ mod tests {
         // in-inode-table absolute offset we can compute via the crate-private
         // `inode_offset`) to a value larger than the whole image, and assert
         // `read_link` fails rather than allocating/reading garbage.
-        let fs = KandeloImageFs::mount(unwrap_vfsi(TINY_VFS).unwrap()).unwrap();
+        let fs = KandeloImageFs::mount(unwrap_vfsi(tiny_vfs()).unwrap()).unwrap();
         let link = fs.lookup(ROOT_INO, b"link").unwrap();
         let size_off = fs.inode_offset(link) as usize + INO_SIZE;
         drop(fs);
-        let mut img = TINY_VFS.to_vec();
+        let mut img = tiny_vfs().to_vec();
         let abs = VFSI_HEADER + size_off;
         img[abs..abs + 8].copy_from_slice(&u64::MAX.to_le_bytes());
         let fs2 = KandeloImageFs::mount(unwrap_vfsi(&img).unwrap()).unwrap();
@@ -1139,16 +1143,16 @@ mod tests {
     fn kernel_lazy_span_absent_when_the_flag_is_clear() {
         // The fixture predates the section, so a reader must report "not
         // declared" rather than inventing one out of the bytes that follow.
-        assert_eq!(kernel_lazy_section(TINY_VFS).unwrap(), None);
+        assert_eq!(kernel_lazy_section(tiny_vfs()).unwrap(), None);
     }
 
     #[test]
     fn kernel_lazy_span_reads_an_appended_section() {
         // Append a section to the fixture the way `saveImage` does and check
-        // the container walk lands on exactly those bytes. `tiny.vfs` sets no
+        // the container walk lands on exactly those bytes. `tiny_vfs()` sets no
         // archive/metadata flags, so its trailer is the lazy JSON length alone.
         let payload: &[u8] = b"KLZY-payload-bytes";
-        let mut img = TINY_VFS.to_vec();
+        let mut img = tiny_vfs().to_vec();
         let flags = u32::from_le_bytes([img[8], img[9], img[10], img[11]]);
         img[8..12].copy_from_slice(
             &(flags | wasm_posix_shared::abi::VFS_IMAGE_FLAG_HAS_KERNEL_LAZY).to_le_bytes(),

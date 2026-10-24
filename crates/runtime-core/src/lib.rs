@@ -66,6 +66,8 @@ pub mod spawn;
 pub mod syscalls;
 pub mod terminal;
 pub mod tmpfs;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 pub mod transfer;
 pub mod unix_socket;
 pub mod vfsi_container;
