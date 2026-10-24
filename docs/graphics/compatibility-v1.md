@@ -69,7 +69,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
 | G10 | Every core function resolves; ES2 API | All 142 GLES2 core symbols are defined and resolved; native/private-Wasm audit passes. Full semantic and guest conformance remain pending | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | partial |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
-| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. ABI 56 separates revocable display-generation roots from object sessions. C generation records retain old current descriptors, mappings, encoders and imported images while a new generation initializes. Host surface records retain native draw/read targets across context destruction and owner retirement. ABI 57 returns fresh surface IDs and acknowledged dimensions. Creation/bind failure preserves prior state. Multiple public contexts within one generation, sharing, public independent surface routing and the full error/lifecycle audit remain open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
+| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. ABI 56 separates revocable display-generation roots from object sessions. C generation records retain old current descriptors, mappings, encoders and imported images while a new generation initializes. Host surface records retain native draw/read targets across context destruction and owner retirement. ABI 57 returns fresh surface IDs and acknowledged dimensions. Kernel/host cross-session draw/read selection validates process, live generation and TID, with canonical surface storage retained after owner retirement. Creation/bind failure preserves prior state. Multiple public contexts within one generation, sharing, public independent surface routing and the full error/lifecycle audit remain open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
 | E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Public pbuffer creation still fails and several core symbols are absent; ABI 57 returns accepted surface dimensions and fresh identities | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | open |
 | E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context / OES_surfaceless_context | Explicit kernel/host bind, initial zero viewport/scissor, undefined framebuffer-zero status and native operation errors implemented; user FBOs remain usable. Real source-browser checks pass; guest CTS/current artifacts remain pending | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | partial |
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/alias/FBO references now retain GEM storage; CPU coherence and complete object semantics remain open | EGL, GLES alias model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | open |
@@ -1903,3 +1903,95 @@ of the inventory remain ordinary work. Normal SDK/program/package/image
 rebuilds, guest CTS, cage/sway, full browser-memory and POSIX/conformance
 remain required and deferred until implementation is ready. Draft PR #1574
 continues to track the active goal.
+
+
+## Canonical cross-session draw/read surfaces (2026-10-24)
+
+Kernel surfaces now have a canonical shared record containing identity,
+PID/display generation, dimensions and active/pending BO holds. The owner
+and current draw/read selectors retain that record, including the case
+where both selectors name it. They do not duplicate its one BO hold or
+allocate another surface for each context. Make-current resolves live
+same-process/same-generation surface IDs across object sessions, rejects
+another thread's selected surface before backend entry, and replaces prior
+references only after renderer acceptance.
+
+Explicit surface destruction remains busy while any current selector uses
+it. Owner close, terminate or command-memory unmap retires its authority
+without destroying storage still selected by another context. Retired IDs
+cannot grant new selection; existing current operations retain their actual
+targets. Release, replacement, thread cleanup, close, partial unmap, exec,
+exit or forced removal retire the last references once. Weak image-owned
+cleanup also finds a current context whose final local fd closed while a
+child retains its description. A rejected replacement keeps its backing.
+
+The host resolves the same independent native records in direct and
+main-forward make-current. Framebuffer zero and swap use selected resources;
+a context needs no fake owned surface. Retargeting a borrowed GPU BO prepares
+all affected default bindings and drawable sizes, preserving user FBOs,
+other read surfaces and viewport/scissor state. Publication performs no
+native calls or allocation after preparation. This removes the former
+partial update path through replaceDefaultFramebuffer. Kernel BO metadata
+retains original width/height independently of stride padding.
+
+Focused evidence:
+
+| Check | Result | Evidence |
+|---|---|---|
+| Kernel GLIO surface/context lifecycle | 44 passed, including 8 added cross-session cases | `.context/graphics-surface-routing-final-rust.log` |
+| Related runtime-core selections | 4 GL lifecycle, 50 DRI-filter, 26 DRI-module, 48 fork-module, 56 process-table, 22 OFD-module, 42 spawn-filter cases passed; overlapping selections | `.context/graphics-surface-routing-final-rust.log` |
+| Shared GL/query and ioctl contracts | 5 and 13 passed | `.context/graphics-surface-routing-final-rust.log` |
+| Host graphics source and Node/browser declarations | 375 cases in 19 files, declarations passed | `.context/graphics-surface-routing-stable-host.log` |
+| Actual source WebGL, native worker and main-forward paths | 111 passed across Chromium/Firefox/WebKit, no skips | `.context/graphics-surface-routing-stable-browser.log` |
+| Source protocol/memory-boundary checks | 12 passed | `.context/graphics-surface-routing-memory-boundary.log` |
+| ABI source/snapshot consistency | Passed; ABI 57 / operation version 5 unchanged | `.context/graphics-surface-routing-abi.log` |
+
+The eight new kernel cases cover independent selectors, failed replacement,
+PID/generation/unknown/mixed-null/TID rejection, same-thread transfer,
+closed-local-description rebind/thread cleanup, shared BO retargeting,
+owner terminate/unmap against six selector teardown paths, and
+foreign-process/inherited-description authority rejection. They use actual
+process-table inheritance/removal and BO registry reference
+counts with a native host double. The first three regressions fail against
+unchanged production at `1197c7f971`:
+`.context/graphics-surface-routing-baseline-rust.log`. The new direct-host
+cross-session case also fails meaningfully on that source:
+`.context/graphics-surface-routing-baseline-host.log`.
+
+Nine new browser executions cover three paths in all three engines: direct
+host imports in a dedicated worker with a real OffscreenCanvas, main-thread
+forwarding from a real worker, and native GPU BO retargeting. They read red
+and green source surfaces, clear a different draw surface blue while still
+reading green, retain pixels after both owners retire, reject stale new
+selection, and present the selected owned draw target to visible canvas.
+The GPU case destroys the former native BO after retarget, reads blue from
+the replacement and green from its independent read surface. Final cleanup
+checks actual native framebuffer, texture and renderbuffer retirement.
+The native import fixture uses a synthetic kernel scratch module; it does
+not execute Rust ioctl marshalling or normal guest artifacts. Its explicit
+BO destroy events stand in for the kernel ownership path tested separately
+above. These are source renderer and native kernel proofs, not a combined
+CTS result.
+
+Older forwarded fixtures now create real surfaces with distinct identities
+before binding rather than supplying unowned positive IDs. A new lifecycle
+matrix initially lacked its context command mapping; the fixture was fixed
+to map owner and context sessions before use, then all 44 cases passed.
+No browser/runtime defect is claimed.
+
+This is private-state and additive binding work under ABI 57. The existing
+12-byte make-current wire, valid own-surface/surfaceless requests, host
+imports, forwarding messages and serialized fork bytes keep their layouts.
+No new shared-memory ceiling or mailbox is introduced. C production sources
+are unchanged; the earlier 68 native C and private-Wasm audits remain
+historical evidence at `1197c7f971`, not rerun results for this batch.
+
+The public EGL facade still needs multiple context/group/surface records
+within each generation and the corresponding sharing and lifecycle APIs.
+Complete EGL queries/pbuffers, GLES errors/limits, full context-loss and
+indeterminate-operation propagation, general forked GEM handle authority
+and the remaining inventory are still ordinary gaps. Normal ABI 57 SDK,
+program/package/image rebuilds, guest CTS, cage/sway, full browser-memory
+and POSIX/conformance remain required and deferred until implementation is
+ready. Main remains fetched `f3cb7041f6`, already integrated. Draft PR #1574
+tracks this progress; the full goal remains active.

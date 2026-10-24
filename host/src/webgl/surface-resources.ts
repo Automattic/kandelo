@@ -108,3 +108,27 @@ export function replaceSurfaceTarget(s: GlSurfaceResources, target: GlPresentTar
       b.shadow.readFbo = b.currentDrawable?.readSurfaceId === 0 ? b.undefinedDefaultFbo : target.fbo;
   }
 }
+
+/** Prepare every selector's default references before replacing a borrowed
+ * BO target. Publication performs no native calls or allocation, so failure
+ * in preflight cannot leave some contexts pointing at the retired FBO. */
+export function prepareBorrowedSurfaceTarget(owner: GlBinding,
+  target: {gl: WebGL2RenderingContext; fbo: WebGLFramebuffer; w: number; h: number}, boId: number): () => void {
+  const s = owner.surface, previous = s.renderTargetFbo;
+  const size = {width:target.w,height:target.h};
+  const users = new Set([...s.users,owner]);
+  const updates = [...users].map(b => ({b,
+    draw: (b.drawSurface === s || (b === owner && !b.drawSurface)) && b.shadow.fbo === previous,
+    read: (b.readSurface === s || (b === owner && !b.readSurface)) && b.shadow.readFbo === previous,
+    drawable: b.currentDrawable?.drawSurfaceId === s.surfaceId ? {...b.currentDrawable,width:target.w,height:target.h} : b.currentDrawable,
+  }));
+  return () => {
+    s.gl = target.gl; s.pendingRenderTargetBoId = boId;
+    s.surfaceSize = size; s.renderTargetFbo = target.fbo;
+    for (const {b,draw,read,drawable} of updates) {
+      if (draw) b.shadow.fbo = b.currentDrawable?.drawSurfaceId === 0 ? b.undefinedDefaultFbo : target.fbo;
+      if (read) b.shadow.readFbo = b.currentDrawable?.readSurfaceId === 0 ? b.undefinedDefaultFbo : target.fbo;
+      b.currentDrawable = drawable;
+    }
+  };
+}

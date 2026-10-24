@@ -4,7 +4,7 @@ import { GlContextRegistry, type GlForwardChannel } from "./registry.js";
 import { decodeAndDispatch } from "./bridge.js";
 import { runGlQuery } from "./query.js";
 import { GlMuxer } from "./muxer.js";
-import { prepareCurrentDrawable, validCurrentDrawable, type GlDrawableBinding } from "./current.js";
+import { prepareCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable, type GlDrawableBinding } from "./current.js";
 import {
   completeGlForwardQuery, createGlForwardQueryMailbox, glForwardQueryCapacity,
   glForwardRequestPending, GL_FORWARD_QUERY_MAX_BYTES, prepareGlForwardQuery, retireGlForwardQuery,
@@ -146,6 +146,9 @@ export function setupMainForward(
           if (glForwardQueryCapacity(msg.mailbox) !== 8 || !validSurfaceCreation(msg.surface) || msg.surface.targetBoId !== 0) {
             completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return;
           }
+          if (reg.getSurface(pid,msg.surface.surfaceId)) {
+            completeGlForwardQuery(msg.mailbox,-16,new Uint8Array()); return;
+          }
           const result = prepareSurfaceCreation(b,msg.surface,undefined,canvas);
           const prepared = result.prepared;
           if (!prepared) { completeGlForwardQuery(msg.mailbox,result.rc,new Uint8Array()); return; }
@@ -170,7 +173,7 @@ export function setupMainForward(
           if (glForwardQueryCapacity(msg.mailbox) !== 0) { completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return; }
           if (!b.gl || b.gl.isContextLost()) { completeGlForwardQuery(msg.mailbox,-5,new Uint8Array()); return; }
           muxer(b.gl).switchTo(b);
-          if (b.presentTarget) blitPresentTarget(b);
+          if ((b.drawSurface ?? b.surface).presentTarget) blitPresentTarget(b);
           b.gl.flush();
           completeGlForwardQuery(msg.mailbox,0,new Uint8Array());
         } catch { try { completeGlForwardQuery(msg.mailbox,-5,new Uint8Array()); } catch { /* No reply authority. */ } }
@@ -187,9 +190,14 @@ export function setupMainForward(
             completeGlForwardQuery(msg.mailbox, -5, new Uint8Array());
             return;
           }
+          const surfaces = msg.drawable.drawSurfaceId === 0 ? null
+            : resolveDrawableSurfaces(reg,b,msg.drawable.drawSurfaceId,msg.drawable.readSurfaceId);
+          if (msg.drawable.drawSurfaceId !== 0 && !surfaces) {
+            completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return;
+          }
           if (!glForwardRequestPending(msg.mailbox)) return;
           muxer(b.gl).invalidateCurrent();
-          const prepared = prepareCurrentDrawable(b, msg.drawable);
+          const prepared = prepareCurrentDrawable(b, msg.drawable, surfaces ?? undefined);
           if (!prepared) {
             completeGlForwardQuery(msg.mailbox, -12, new Uint8Array());
             return;

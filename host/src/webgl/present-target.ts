@@ -19,7 +19,7 @@
  * their output is sampled by a compositor, never composited by the browser.
  */
 import type { GlBinding } from "./registry.js";
-import { replaceSurfaceTarget } from "./surface-resources.js";
+import { replaceSurfaceTarget, type GlSurfaceResources } from "./surface-resources.js";
 
 const GL_READ_FRAMEBUFFER = 0x8ca8;
 const GL_DRAW_FRAMEBUFFER = 0x8ca9;
@@ -97,9 +97,9 @@ export function resizeSurfaceTarget(b: GlBinding, w: number, h: number): boolean
 
 /** Blit the present target onto the real default framebuffer. This is the
  *  buffer flip: the first composite after it shows a whole frame. */
-export function blitPresentTarget(b: GlBinding): void {
+export function blitPresentTarget(b: GlBinding, surface: GlSurfaceResources = b.drawSurface ?? b.surface): void {
   const gl = b.gl;
-  const target = b.presentTarget;
+  const target = surface.presentTarget;
   if (!gl || !target) return;
 
   const prevRead = gl.getParameter(GL_READ_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;

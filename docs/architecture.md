@@ -3816,7 +3816,7 @@ cannot remove a later surface. Ordinary canvas swap blits private storage
 to the visible default target; forwarded swap selects, blits and flushes
 before acknowledging through that same mailbox. Source tests exercise
 accepted dimensions, retained pixels and stale cleanup across all three browser engines; full
-guest marshalling and public cross-session selection remain unvalidated.
+guest marshalling and the public C cross-context facade remain unvalidated.
 
 The GLES bridge exposes a GLES2 API over WebGL2. Operation-table version 2
 adds commands while preserving version 1 tags and payloads. `GLIO_INIT`
@@ -3854,10 +3854,16 @@ separately, including a combined `GL_FRAMEBUFFER` bind. A candidate resize
 allocates a complete replacement before changing the surface or any of its
 selectors. Failed allocation preserves the previous target and pixels;
 successful replacement preserves user FBOs and updates selecting contexts.
-These native selectors have source tests; public kernel/C cross-session
-surface routing and generation validation still need the complete surface
-protocol. Kernel surfaces now hold their target BO independently of GEM
-handles. An acknowledged update transfers that hold only after acceptance;
+Kernel and host selectors now resolve independent draw/read surfaces across
+object sessions within a live display generation. The kernel checks PID,
+generation and validated current TID before backend entry. Retired owners
+cannot grant new selection. Explicit destruction is busy while selected;
+owner close, unmap or termination retires its ownership while existing
+current selectors retain storage. One canonical surface record owns its BO
+hold, independent of the number of owner/draw/read references. The public C
+facade still needs separate context/group/surface records to expose this
+routing through EGL. Kernel surfaces hold their target BO independently of
+GEM handles. An acknowledged update transfers that hold only after acceptance;
 rejection releases its candidate and preserves the previous hold. Native
 surface destruction/unbind precedes the final host BO destruction effect.
 
@@ -3870,7 +3876,21 @@ command-memory unmap revokes its native binding even after its last local
 fd closes while a child retains the description. Weak references do not
 extend description or storage lifetime. They carry mapping bounds for
 revocation, never submission authority in the child. General forked GEM
-handle-map sharing remains an open part of the full OFD model.
+handle-map sharing remains an open part of the full OFD model. Current
+cleanup reachability also survives closing a context's last local fd while
+a child retains that description: replacement or thread retirement releases
+its former selectors before their final BO destruction. Backend rejection
+preserves the prior current references.
+
+Host surface lookup grants new selection only through a live owner on the
+same process and renderer. Both direct and main-forward paths select the
+actual records; framebuffer zero and swap use the selected draw/read
+resources. GPU retargeting prepares all affected default references and
+drawable metadata before publication, then changes the canonical record
+without native calls or allocation during commit. User FBOs, independent
+read targets and viewport/scissor state are preserved. The BO registry now
+keeps original width/height separately from padded stride, so accepted
+kernel retargets retain actual geometry.
 The multiplexer restores masks, stencil operations, clear values, dither,
 constant vertex attributes, independent 2D/cube texture bindings and pixel
 storage state when switching guest contexts. Synchronous native-state queries

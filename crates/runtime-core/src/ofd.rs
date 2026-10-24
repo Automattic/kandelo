@@ -197,8 +197,9 @@ pub struct GlCurrentState {
 
 /// Per-fd GL state for `/dev/dri/renderD128` handles, hung off
 /// [`DriFdState`] below. Each fresh `open()` of renderD128 yields a
-/// new `GlState`; `dup` / fork-inherit shares one. A renderer's address-space
-/// ownership remains with `owner_pid` even when the description is shared.
+/// new `GlState`; same-process dup aliases share it. Forked descriptions
+/// share cleanup/storage leases but do not inherit executable GL state.
+/// Renderer address-space ownership remains with `owner_pid`.
 #[derive(Clone, Debug, Default)]
 pub struct GlState {
     pub session_id: u32,
@@ -261,12 +262,48 @@ pub struct GlResourceOwner {
     pub role: u32,
 }
 
+/// Storage identity is independent of the session which created it. One BO
+/// hold belongs to this record; owner and current draw/read references keep
+/// the record alive without duplicating the backing hold.
+#[derive(Debug)]
+pub struct GlSurface {
+    pub id: u32,
+    pub pid: i32,
+    pub display_id: u32,
+    pub owner_alive: bool,
+    pub width: u32,
+    pub height: u32,
+    pub target_bo: Option<crate::dri::BoId>,
+    pub pending_target_bo: Option<crate::dri::BoId>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SharedGlSurface(Rc<RefCell<GlSurface>>);
+impl SharedGlSurface {
+    pub fn new(surface: GlSurface) -> Self {
+        Self(Rc::new(RefCell::new(surface)))
+    }
+    pub fn borrow(&self) -> core::cell::Ref<'_, GlSurface> {
+        self.0.borrow()
+    }
+    pub fn borrow_mut(&self) -> core::cell::RefMut<'_, GlSurface> {
+        self.0.borrow_mut()
+    }
+    pub fn into_last(self) -> Option<GlSurface> {
+        Rc::try_unwrap(self.0).ok().map(RefCell::into_inner)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct GlResources {
     pub owner: Option<GlResourceOwner>,
-    pub surface_bo: Option<crate::dri::BoId>,
-    /// A backend update has not yet acknowledged replacing surface_bo.
-    /// Keep the candidate owned here if host transport fails indeterminately.
+    pub surface: Option<SharedGlSurface>,
+    pub draw_surface: Option<SharedGlSurface>,
+    pub read_surface: Option<SharedGlSurface>,
+    /// Cleanup reachability after the creating image closes its local fd.
+    /// Inherited descriptions do not grant command execution authority.
+    pub current_tid: Option<u32>,
+    /// A surface creation has not yet acknowledged acceptance.
     pub pending_surface_bo: Option<crate::dri::BoId>,
 }
 
@@ -302,10 +339,9 @@ impl WeakGlResources {
 
 /// Per-fd state for `/dev/dri/renderD128` opens.
 ///
-/// Multiple fds pointing at the same OFD (`dup`, fork-inherit) share
-/// the same `DriFdState`; a fresh `open()` yields a new OFD with
-/// `DriFdState::default()`. This matches Linux per-fd handle
-/// namespacing.
+/// Same-process aliases share the sidecar; a fresh open has a new handle
+/// namespace. Fork relinks GL cleanup/storage and KMS framebuffer leases,
+/// while the general forked GEM handle map remains a copied snapshot.
 #[derive(Clone, Debug)]
 pub struct DriFdState {
     /// GEM-handle → global `BoId` map for this fd.

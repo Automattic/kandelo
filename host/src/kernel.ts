@@ -20,7 +20,7 @@ import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } f
  * IMPORTANT: Wasm i64 values appear as BigInt in JavaScript.
  */
 
-import { createSurfaceResources, retireSurface, releaseSurfaceResources } from "./webgl/surface-resources.js";
+import { createSurfaceResources, retireSurface, releaseSurfaceResources, prepareBorrowedSurfaceTarget } from "./webgl/surface-resources.js";
 import type {
   AppendOutcome,
   HostFileOffset,
@@ -36,8 +36,7 @@ import { FramebufferRegistry } from "./framebuffer/registry";
 import { GbmBoRegistry } from "./dri/registry";
 import { KmsRegistry } from "./dri/kms-registry";
 import { GlContextRegistry, type GlBinding } from "./webgl/registry";
-import { applyCurrentDrawable, validCurrentDrawable } from "./webgl/current";
-import { replaceDefaultFramebuffer } from "./webgl/framebuffer";
+import { applyCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable } from "./webgl/current";
 import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
 import { SubmitQueue } from "./webgl/submit-queue";
@@ -2565,7 +2564,7 @@ export class WasmPosixKernel {
             const creation = {surfaceId, kind:view.getUint32(0,true), width:view.getUint32(4,true),
               height:view.getUint32(8,true), configId:view.getUint32(12,true), targetBoId:view.getUint32(16,true)};
             if (!validSurfaceCreation(creation)) return -22;
-            if (b.surfaceId !== null) return -16;
+            if (b.surfaceId !== null || this.gl.getSurface(pid,surfaceId)) return -16;
             if (b.forward) {
               if (!b.forward.onCreateSurface) return -38;
               const result = b.forward.onCreateSurface(creation, b.sessionId);
@@ -2616,20 +2615,10 @@ export class WasmPosixKernel {
                 || (b.gl && b.gl !== target.gl)) return -5;
             const width = view.getUint32(4, true), height = view.getUint32(8, true);
             if ((width !== 0 && width !== target.w) || (height !== 0 && height !== target.h)) return -22;
-            const size = { width: target.w, height: target.h };
-            const drawable = b.currentDrawable?.drawSurfaceId === b.surfaceId ? {
-              drawSurfaceId: b.currentDrawable.drawSurfaceId, readSurfaceId: b.currentDrawable.readSurfaceId,
-              width: target.w, height: target.h,
-            } : b.currentDrawable;
-            if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
-            const previous = b.renderTargetFbo;
-            b.pendingRenderTargetBoId = targetId;
-            b.surfaceSize = size;
-            if (b.gl) {
-              b.renderTargetFbo = target.fbo;
-              replaceDefaultFramebuffer(b, previous);
-            }
-            b.currentDrawable = drawable;
+            if (b.surface.gl && b.surface.gl !== target.gl) return -5;
+            const commit = prepareBorrowedSurfaceTarget(b,target,targetId);
+            this.gl_muxers.get(target.gl)?.invalidateCurrent();
+            commit();
             return 0;
           } catch { return -5; }
         },
@@ -2655,14 +2644,16 @@ export class WasmPosixKernel {
             return 0;
           }
           if (!b || b.contextId !== ctxId || (!b.gl && !b.forward)) return -5;
-          if ((drawId === 0) !== (readId === 0)
-              || (drawId !== 0 && (b.surfaceId !== drawId || b.surfaceId !== readId))) return -22;
+          if ((drawId === 0) !== (readId === 0)) return -22;
+          const surfaces = drawId === 0 ? null : resolveDrawableSurfaces(this.gl,b,drawId,readId);
+          if (drawId !== 0 && !surfaces) return -22;
           if (b.gl?.isContextLost()) return -5;
-          const target = this.gl.gpuBo(b.pendingRenderTargetBoId);
+          const size = surfaces?.draw.surfaceSize;
+          const target = this.gl.gpuBo(surfaces?.draw.pendingRenderTargetBoId ?? 0);
           const drawable = {
             drawSurfaceId: drawId, readSurfaceId: readId,
-            width: drawId === 0 ? 0 : b.surfaceSize?.width ?? target?.w ?? b.canvas?.width ?? 0,
-            height: drawId === 0 ? 0 : b.surfaceSize?.height ?? target?.h ?? b.canvas?.height ?? 0,
+            width: drawId === 0 ? 0 : size?.width ?? target?.w ?? b.canvas?.width ?? 0,
+            height: drawId === 0 ? 0 : size?.height ?? target?.h ?? b.canvas?.height ?? 0,
           };
           if (!validCurrentDrawable(drawable)) return -22;
           if (b.forward) {
@@ -2673,7 +2664,7 @@ export class WasmPosixKernel {
             } catch { return -5; }
           }
           if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
-          try { if (!applyCurrentDrawable(b, drawable)) return -12; }
+          try { if (!applyCurrentDrawable(b, drawable, surfaces ?? undefined)) return -12; }
           catch { return -5; }
           return 0;
         },
@@ -2765,7 +2756,8 @@ export class WasmPosixKernel {
               return Number.isInteger(rc) && rc <= 0 ? rc : -5;
             } catch { return -5; }
           }
-          if (b.canvas && b.presentTarget && b.claimedKmsCrtc == null) {
+          const selected = b.drawSurface ?? b.surface;
+          if (selected.presentTarget && (selected !== b.surface || b.claimedKmsCrtc == null)) {
             try { blitPresentTarget(b); b.gl?.flush(); return 0; } catch { return -5; }
           }
           // A GPU-tier producer renders into an offscreen bo FBO on the

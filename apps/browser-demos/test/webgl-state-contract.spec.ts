@@ -376,7 +376,8 @@ test(`actual C shader source upload crosses query chunks and renders after commi
           try {
             if (event.data.retire) { channel.onDestroyContext(); channel.onUnbind(1); postMessage({type:"upload_retired"}); return; }
             channel = createMainForwardChannel({postMessage: message => postMessage(message)},94,1);
-            if (channel.onCreateContext() || channel.onMakeCurrent({drawSurfaceId:1,readSurfaceId:1,width:1,height:1})) throw new Error("forwarded creation failed");
+            if (channel.onCreateContext() || channel.onCreateSurface({surfaceId:1,kind:1,width:1,height:1,configId:1,targetBoId:0}).rc
+                || channel.onMakeCurrent({drawSurfaceId:1,readSurfaceId:1,width:1,height:1})) throw new Error("forwarded creation failed");
             const memory = new WebAssembly.Memory({initial:2,maximum:2,shared:true}), scratch = new Uint8Array(memory.buffer);
             const data = new Uint8Array(event.data.frames), view = new DataView(data.buffer);
             let queries = 0, maximum = 0;
@@ -1083,9 +1084,11 @@ test("forwarded native errors stay with their owner across switches and invalida
         try {
           const channels = [101,102].map(session => createMainForwardChannel(
             { postMessage: message => postMessage(message) }, 71, session));
-          const drawable = { drawSurfaceId: 1, readSurfaceId: 1, width: 1, height: 1 };
-          for (const channel of channels) {
-            if (channel.onCreateContext() !== 0 || channel.onMakeCurrent(drawable) !== 0)
+          const drawables = [101,102].map(id => ({drawSurfaceId:id,readSurfaceId:id,width:1,height:1}));
+          for (const [index,channel] of channels.entries()) {
+            if (channel.onCreateContext() !== 0
+                || channel.onCreateSurface({surfaceId:101+index,kind:1,width:1,height:1,configId:1,targetBoId:0}).rc !== 0
+                || channel.onMakeCurrent(drawables[index]) !== 0)
               throw new Error("failed to bind renderer");
           }
           const invalid = new Uint8Array(16), v = new DataView(invalid.buffer);
@@ -1100,7 +1103,7 @@ test("forwarded native errors stay with their owner across switches and invalida
           const results = [];
           for (const invalidate of [false,true]) {
             channels[0].onSubmit(invalid);
-            if (invalidate && channels[1].onMakeCurrent(drawable) !== 0)
+            if (invalidate && channels[1].onMakeCurrent(drawables[1]) !== 0)
               throw new Error("replacement bind failed");
             results.push([error(channels[1]), error(channels[0]), error(channels[0])]);
           }
@@ -1310,7 +1313,9 @@ test(`forwarded synchronous queries isolate ${sameProcess ? "sessions in one pro
           for (let round = 0; round < 3; round++) {
             channels.forEach((channel,index) => {
               if (channel.onCreateContext() !== 0) throw new Error("renderer did not acknowledge context creation");
-              if (channel.onMakeCurrent({ drawSurfaceId: 1, readSurfaceId: 1, width: 8, height: 8 }) !== 0)
+              if (round === 0 && channel.onCreateSurface({surfaceId:index+1,kind:1,width:8,height:8,configId:1,targetBoId:0}).rc !== 0)
+                throw new Error("surface creation failed");
+              if (channel.onMakeCurrent({ drawSurfaceId: index+1, readSurfaceId: index+1, width: 8, height: 8 }) !== 0)
                 throw new Error("renderer did not acknowledge current drawable");
               view.setUint16(0, O.OP_CLEAR_COLOR, true); view.setUint16(2, 16, true);
               [index, 1-index, 0, 1].forEach((v,j) => view.setFloat32(4+4*j,v,true));
@@ -1419,6 +1424,8 @@ test("forwarded first-current initializes viewport and scissor once", async ({ p
             values.forEach((value, index) => view.setInt32(4 + index * 4, value, true));
             channel.onSubmit(bytes);
           }
+          if (channel.onCreateSurface({surfaceId:1,kind:1,width:8,height:8,configId:1,targetBoId:0}).rc !== 0)
+            throw new Error("window creation failed");
           if (current(1) !== 0) throw new Error("window bind failed");
           const rebound = [state(0x0ba2), state(0x0c10)];
           postMessage({ type: "first_current_result", first, rebound });
@@ -1792,3 +1799,53 @@ test("forwarded surface creation acknowledges dimensions and preserves selected 
     red:[255,0,0,255],retained:[255,0,0,255],green:[0,255,0,255],rejected:-16,afterStale:[0,255,0,255],visible:[0,255,0,255]});
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
+
+for (const mode of ["native","forwarded","retarget"] as const) {
+  test(`${mode} cross-session surfaces preserve separate pixels and retire after their final selector`, async ({page}) => {
+    await installBrowserMemoryBoundaryProbe(page);
+    await page.goto("/trap-signal-test.html");
+    const root = fileURLToPath(new URL("../../../",import.meta.url));
+    const result = await page.evaluate(async ({root,mode}) => {
+      const canvas = document.createElement("canvas");canvas.width=canvas.height=8;document.body.replaceChildren(canvas);
+      const gl = mode === "forwarded" ? canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true})! : null;
+      const created: object[] = [], deleted: object[] = [], live: Array<() => boolean> = [];
+      if (gl) {
+        for (const [createName,deleteName,isName] of [
+          ["createFramebuffer","deleteFramebuffer","isFramebuffer"],
+          ["createTexture","deleteTexture","isTexture"],
+          ["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],
+        ]) {
+          const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
+          api[createName]=() => {const value=create();if(value){created.push(value);live.push(() => isLive(value));}return value;};
+          api[deleteName]=(value:object|null) => {if(value)deleted.push(value);destroy(value);};
+        }
+      }
+      const worker = new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/surface-routing-worker.ts`,location.href),{type:"module"});
+      const {setupMainForward} = await import(new URL(`/@fs/${root}host/src/webgl/main-forward.ts`,location.href).href);
+      const dispose = mode === "forwarded" ? setupMainForward(worker,canvas,7) : () => {};
+      try {
+        const result = await new Promise<any>((resolve,reject) => {
+          const timeout=setTimeout(() => reject(new Error("surface routing worker timed out")),35000);
+          worker.addEventListener("error",event => {clearTimeout(timeout);reject(new Error(event.message));});
+          worker.addEventListener("message",({data}) => {
+            if (data.type === "surface_routing_result") {clearTimeout(timeout);resolve(data);}
+            if (data.type === "surface_routing_failed") {clearTimeout(timeout);reject(new Error(data.error));}
+          });
+          if (mode === "forwarded") worker.postMessage({mode});
+          else {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,canvas:offscreen},[offscreen]);}
+        });
+        if (gl) {
+          const previous=gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);gl.bindFramebuffer(gl.READ_FRAMEBUFFER,null);
+          const visible=new Uint8Array(4);gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,visible);gl.bindFramebuffer(gl.READ_FRAMEBUFFER,previous);
+          result.visible=[...visible];result.clean=created.length===deleted.length && created.every(value => deleted.includes(value)) && live.every(isLive => !isLive());
+          result.error=gl.getError();
+        }
+        return result;
+      } finally {worker.terminate();dispose();}
+    },{root,mode});
+    expect(result).toEqual({type:"surface_routing_result",red:[255,0,0,255],green:[0,255,0,255],independent:[0,255,0,255],
+      blue:mode === "retarget" ? [0,0,255,255] : null,retained:[0,255,0,255],rejected:-22,afterRejected:[0,255,0,255],
+      visible:mode === "retarget" ? null : [0,0,255,255],clean:true,error:0});
+    expect(await memoryBoundaryFailures(page)).toEqual([]);
+  });
+}

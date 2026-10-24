@@ -100,12 +100,20 @@ describe("context creation acknowledgement", () => {
     expect(b.shadow.scissor.rect).toEqual([0, 0, 64, 32]);
     expect(kernel.gl.createGpuBo(38, b.gl!, 96, 48)).not.toBeNull();
     kernel.gl.applyRenderTarget(b);
+    kernel.gl.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0});
+    const peer = kernel.gl.get(7,12)!; peer.gl = b.gl; peer.contextId = 22;
+    expect(imports.host_gl_make_current(7,22,1,1,12)).toBe(0);
+    const oldTarget = b.renderTargetFbo;
+    expect(peer.shadow.fbo).toBe(oldTarget); expect(peer.shadow.readFbo).toBe(oldTarget);
     b.shadow.viewport = [1, 2, 5, 6]; b.shadow.scissor.rect = [0, 1, 4, 5];
     const attrs = new DataView(memory.buffer, 64, 32);
     attrs.setUint32(0, 1, true); attrs.setUint32(12, 1, true); attrs.setUint32(16, 38, true);
     expect(imports.host_gl_update_surface(7, 1, 64, 32, 11)).toBe(0);
     expect(b.renderTargetFbo).toBe(kernel.gl.gpuBo(38)!.fbo);
     expect(b.surfaceSize).toEqual({ width: 96, height: 48 });
+    expect(peer.shadow.fbo).toBe(b.renderTargetFbo); expect(peer.shadow.readFbo).toBe(b.renderTargetFbo);
+    expect(peer.currentDrawable).toEqual({drawSurfaceId:1,readSurfaceId:1,width:96,height:48});
+    expect(peer.shadow.viewport).toEqual([0,0,64,32]);
     expect(b.shadow.viewport).toEqual([1, 2, 5, 6]);
     expect(b.shadow.scissor.rect).toEqual([0, 1, 4, 5]);
     const target = b.renderTargetFbo;
@@ -317,4 +325,37 @@ it("publishes accepted dimensions and private storage, preserving state on alloc
   imports.host_gl_make_current(7,0,0,0,11);
   imports.host_gl_destroy_surface(7,72,11);
   expect(deleted).toEqual([fbo]); expect(b.surfaceId).toBeNull();
+});
+
+it("selects independent surfaces across sessions and retains them after their owners unbind", () => {
+  const {kernel,imports,memory} = harness();
+  const deleted: unknown[] = [];
+  let serial = 0;
+  const gl = new Proxy({
+    getExtension: () => null, isContextLost: () => false, getParameter: () => null, getError: () => 0,
+    createTexture: () => ({tex:++serial}), createFramebuffer: () => ({fbo:++serial}), createRenderbuffer: () => ({rbo:++serial}),
+    FRAMEBUFFER_COMPLETE:0x8cd5, checkFramebufferStatus: () => 0x8cd5,
+    deleteFramebuffer: (value:unknown) => deleted.push(value),
+  },{get:(object,key) => Reflect.get(object,key) ?? (() => null)}) as unknown as WebGL2RenderingContext;
+  kernel.gl.attachCanvas(7,{width:8,height:6,getContext:() => gl} as unknown as OffscreenCanvas);
+  for (const [i,session] of [11,12,13].entries()) {
+    imports.host_gl_bind(7,128,0,session);
+    expect(imports.host_gl_create_context(7,21+i,0,0,session)).toBe(0);
+    if (i < 2) {
+      new Uint32Array(memory.buffer,64,9).set([1,3+i,2,1,0,0,0,0,0]);
+      expect(imports.host_gl_create_surface(7,71+i,64,36,session)).toBe(0);
+    }
+  }
+  const a = kernel.gl.get(7,11)!, b = kernel.gl.get(7,12)!, c = kernel.gl.get(7,13)!;
+  const first = a.surface, second = b.surface;
+  const firstFbo = a.presentTarget!.fbo, secondFbo = b.presentTarget!.fbo;
+  expect(imports.host_gl_make_current(7,23,71,72,13)).toBe(0);
+  expect(c.drawSurface).toBe(first); expect(c.readSurface).toBe(second);
+  expect(c.currentDrawable).toEqual({drawSurfaceId:71,readSurfaceId:72,width:3,height:2});
+  imports.host_gl_unbind(7,11); imports.host_gl_unbind(7,12);
+  expect(first.ownerAlive).toBe(false); expect(second.ownerAlive).toBe(false); expect(deleted).toEqual([]);
+  expect(imports.host_gl_make_current(7,23,71,72,13)).toBe(-22);
+  expect(c.drawSurface).toBe(first); expect(c.readSurface).toBe(second);
+  expect(imports.host_gl_make_current(7,0,0,0,13)).toBe(0);
+  expect(new Set(deleted)).toEqual(new Set([firstFbo,secondFbo]));
 });

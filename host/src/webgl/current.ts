@@ -20,6 +20,17 @@ export function validCurrentDrawable(value: GlDrawableBinding): boolean {
     && Number.isInteger(value.height) && value.height >= 0 && value.height <= 0x7fff_ffff;
 }
 
+/** Surface identity and renderer preflight. Display-generation authority is
+ * checked by the kernel before a guest request reaches this renderer. */
+export function resolveDrawableSurfaces(registry: { getSurface(pid: number, id: number): GlSurfaceResources | undefined },
+  b: GlBinding, drawId: number, readId: number): GlDrawableSurfaces | null {
+  const draw = registry.getSurface(b.pid,drawId), read = registry.getSurface(b.pid,readId);
+  if (!draw || !read) return null;
+  if ((draw.gl && draw.gl !== b.gl) || (read.gl && read.gl !== b.gl)) return null;
+  if ((!draw.gl && draw !== b.surface && b.gl) || (!read.gl && read !== b.surface && b.gl)) return null;
+  return {draw,read};
+}
+
 export type GlDrawableSurfaces = { draw: GlSurfaceResources; read: GlSurfaceResources };
 
 /** Prepare native storage without changing current ownership. Forwarded
@@ -32,7 +43,9 @@ export function prepareCurrentDrawable(b: GlBinding, drawable: GlDrawableBinding
   const read = drawable.readSurfaceId === 0 ? null : surfaces?.read ?? b.surface;
   if (surfaces && (drawable.drawSurfaceId === 0 || !draw?.ownerAlive || !read?.ownerAlive
       || draw.surfaceId !== drawable.drawSurfaceId || read.surfaceId !== drawable.readSurfaceId
-      || draw.pid !== b.pid || read.pid !== b.pid || draw.gl !== b.gl || read.gl !== b.gl)) return null;
+      || draw.pid !== b.pid || read.pid !== b.pid
+      || (draw.gl !== b.gl && !(draw === b.surface && draw.gl === null))
+      || (read.gl !== b.gl && !(read === b.surface && read.gl === null)))) return null;
   if ((draw?.gl && draw.gl !== b.gl) || (read?.gl && read.gl !== b.gl)) return null;
   let framebuffer: WebGLFramebuffer | null = null;
   const gl = b.gl;

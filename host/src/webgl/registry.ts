@@ -315,6 +315,12 @@ export class GlContextRegistry {
     return bindings.length === 1 ? bindings[0] : undefined;
   }
 
+  /** Only live owner records grant new selection. Existing users retain a
+   * retired record independently after its owner is destroyed or unbound. */
+  getSurface(pid: number, surfaceId: number): GlSurfaceResources | undefined {
+    return this.list().find(b => b.pid === pid && b.surfaceId === surfaceId && b.surface.ownerAlive)?.surface;
+  }
+
   getContext(pid: number, contextId: number): GlBinding | undefined {
     return this.list().find(b => b.pid === pid && b.contextId === (contextId >>> 0));
   }
