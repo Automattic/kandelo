@@ -1855,7 +1855,7 @@ orphans when it exits. They are reparented to init rather than to the host,
 and the host's `ppid=0` reap still covers only the launched process itself.
 
 `kernel_publish_process_exit` is declared
-`optional_until(..., 51, 52)`. An ABI-51 kernel built before this change
+`optional_until(..., 53, 54)`. An ABI-53 kernel built before this change
 lacks both the export and the reparenting; a new host loads it and keeps
 the previous behavior rather than failing to boot.
 

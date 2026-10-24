@@ -155,9 +155,9 @@ capability disabled. No cursor host import is required. See
 ownership rules.
 
 Exit acknowledgement uses it too. `kernel_publish_process_exit` is
-optional in ABI 51 and required from ABI 52. Orphan adoption itself
+optional in ABI 53 and required from ABI 54. Orphan adoption itself
 happens inside the kernel; the export only lets init reap once the host
-has seen an exit. A new host that loads an ABI-51 kernel built without
+has seen an exit. A new host that loads an ABI-53 kernel built without
 the export keeps that kernel's old behavior, with no adoption.
 Reparenting changes what `getppid()` and `wait()` observe for orphans,
 but no existing program depends on the old observations: they were the
