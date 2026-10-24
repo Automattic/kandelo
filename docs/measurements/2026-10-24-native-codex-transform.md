@@ -137,3 +137,49 @@ files are in `.context/native-codex-progress-build/`. Executable SHA-256:
 ```
 e28dc9b2727199a74db1763d9f5a21e4a84fc1e57a9354cc2aee10453c140fa4
 ```
+
+## Fourth attempt: disk growth and SQL work accounting
+
+The next attempt ran for 1,070.43 seconds and stopped with SQLite's
+`SQLITE_INTERRUPT`, during built-in normal-summary solving. The highest
+observed OS lifetime physical footprint was **351.86 MiB**; maximum sampled
+RSS was **666.77 MiB**. No artifact was published and neither external guard
+fired. Evidence is in `.context/native-codex-progress-20261024/`, using the
+`e28dc9b...` executable above.
+
+The phase log exposed an earlier compiler-fact failure: SQLite reported a
+full database during call resolution, under the configured 8 GiB main-database
+ceiling. The underlying filesystem still had about 116 GiB free. Analysis
+then selected the existing conservative built-in path. Its parameter pass
+completed all 263,515 local functions in 22.7 seconds. Normal summaries
+completed at least 890,000 evaluations before the store's 100-billion-unit
+work counter interrupted SQL. These estimated SQL units include a minimum
+batch charge for short queries and differ from abstract-interpreter work.
+
+This run does not prove completed Codex capacity or successful compiler-fact
+resolution. The next diagnostic isolates compiler-fact solving, without
+retrying the entire transform. A smaller explicit database allowance is used
+only to locate relation growth quickly, not as a capacity measurement.
+
+A separate guarded, 2.38-second structural scan found 239,569 conservative
+fork activations and 239,569 control-reachable functions, with no tail sites.
+The activation catalog counts these separately, so its old 64 MiB metadata
+preflight could reject this closure before actual allocation. The pipeline
+and activation catalog defaults now allow a generous 1 GiB estimate. Native
+computational defaults are shared across passes, and the SQL sanity ceiling
+is one quadrillion estimated units. Neither change allocates memory or
+retains more IR. The 32 MiB SQLite cache target and 8 GiB main-database ceiling
+remain unchanged while relation growth is investigated. New opt-in diagnostics
+report database bytes and work counts at compiler-fact stage boundaries.
+
+The follow-up passed all 655 instrumenter tests, including SQL work exhaustion
+without publishing partial conversions. Fourteen complete controlled
+transforms and fourteen separate Node validators passed, with all output
+hashes matching the historical comparison within each backend. The source
+snapshot and executable are in `.context/native-storage-diagnostics-build/`,
+and the checks in `.context/native-storage-controlled-smoke/`. Executable
+SHA-256:
+
+```
+e6e7d672d3247c79f00ac8a4bc85213f088836e0c67b4bf5970fdb1ae03b3d37
+```

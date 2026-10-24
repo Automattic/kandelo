@@ -21,8 +21,8 @@ pub struct PipelineLimits {
 impl Default for PipelineLimits {
     fn default() -> Self {
         Self {
-            metadata_bytes: 64 * 1024 * 1024,
-            state_rewrite_work: 100 * 1024 * 1024,
+            metadata_bytes: crate::limits::MODULE_METADATA_BYTES,
+            state_rewrite_work: crate::limits::TOTAL_WORK,
             gc_plan: Default::default(),
             constructors: Default::default(),
             gc_codec: Default::default(),

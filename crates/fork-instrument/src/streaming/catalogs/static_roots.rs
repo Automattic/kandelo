@@ -18,7 +18,7 @@ impl Default for StaticRootLimits {
     fn default() -> Self {
         Self {
             metadata_bytes: 64 * 1024 * 1024,
-            work: 100 * 1024 * 1024,
+            work: crate::limits::TOTAL_WORK,
         }
     }
 }

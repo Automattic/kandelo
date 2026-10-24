@@ -16,7 +16,7 @@ pub struct ParameterLimits {
 impl Default for ParameterLimits {
     fn default() -> Self {
         Self {
-            work: super::DEFAULT_TOTAL_WORK_LIMIT,
+            work: crate::limits::TOTAL_WORK,
         }
     }
 }

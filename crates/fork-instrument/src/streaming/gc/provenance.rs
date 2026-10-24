@@ -22,7 +22,7 @@ impl Default for GcConstructorLimits {
     fn default() -> Self {
         Self {
             metadata_bytes: 64 * 1024 * 1024,
-            work: 100 * 1024 * 1024,
+            work: crate::limits::TOTAL_WORK,
             parameters: 1000,
         }
     }

@@ -26,7 +26,7 @@ impl Default for ReferenceLimits {
         Self {
             state_words: 8 * 1024 * 1024,
             edges: 4 * 1024 * 1024,
-            work: 100 * 1024 * 1024,
+            work: crate::limits::LOCAL_WORK,
             landing_values: 1024 * 1024,
         }
     }

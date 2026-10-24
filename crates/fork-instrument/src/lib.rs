@@ -39,6 +39,7 @@ pub mod facts;
 pub mod instrument;
 pub mod legacy_dlopen;
 pub mod legacy_eh;
+mod limits;
 pub mod linked_frames;
 pub mod module_exception_codec;
 pub mod module_gc_codec;

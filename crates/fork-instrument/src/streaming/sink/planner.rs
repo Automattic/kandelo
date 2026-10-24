@@ -36,7 +36,7 @@ impl Default for SinkLimits {
             interpreter: InterpreterLimits::default(),
             summaries: SummaryLimits::default(),
             metadata_bytes: 128 * 1024 * 1024,
-            work: super::DEFAULT_TOTAL_WORK_LIMIT,
+            work: crate::limits::TOTAL_WORK,
             evaluations_per_function: 50,
         }
     }

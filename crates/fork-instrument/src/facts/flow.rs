@@ -9,28 +9,39 @@ impl FactsStore {
     /// Preserve the oracle's pass-through fixed point and its four slot/type
     /// feedback rounds. All intermediate relations remain file backed.
     pub fn solve_conversions(&self, effective_types: bool, slots: bool) -> Result<()> {
+        let progress = crate::progress::Progress::new("conversion facts");
         self.conversions_ready.set(false);
         self.calls_ready.set(false);
         self.db.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
             self.db.execute_batch(include_str!("flow.sql"))?;
             if slots {
+                self.trace(&progress, "pass-through");
                 self.pass_through()
                     .context("solving direct-call pass-through facts")?;
+                self.trace(&progress, "records");
                 self.records().context("solving nested record facts")?;
-                self.link_shapes()?;
+                self.trace(&progress, "link shapes");
+                self.link_shapes().context("linking slot shapes")?;
             }
-            self.conversions()?;
+            self.trace(&progress, "conversion reach");
+            self.conversions().context("solving conversion reach")?;
             if slots {
-                for _ in 0..4 {
+                for round in 0..4 {
+                    progress.note(format_args!("feedback round {}", round + 1));
                     self.db.execute_batch(
                         "DELETE FROM old_conversion_reach; DELETE FROM old_conversion_name;
                         INSERT INTO old_conversion_reach SELECT * FROM conversion_reach;
                         INSERT INTO old_conversion_name SELECT * FROM conversion_name;",
                     )?;
+                    self.trace(&progress, "slot origins");
                     self.origins().context("solving pointer slot origins")?;
-                    self.read_backs(effective_types)?;
-                    self.conversions()?;
+                    self.trace(&progress, "read backs");
+                    self.read_backs(effective_types)
+                        .context("solving slot read backs")?;
+                    self.trace(&progress, "conversion reach");
+                    self.conversions()
+                        .context("solving conversion reach feedback")?;
                     let changed: bool = self.db.query_row("SELECT
                         EXISTS(SELECT * FROM conversion_reach EXCEPT SELECT * FROM old_conversion_reach)
                         OR EXISTS(SELECT * FROM old_conversion_reach EXCEPT SELECT * FROM conversion_reach)
@@ -46,7 +57,9 @@ impl FactsStore {
         if result.is_ok() {
             self.db.execute_batch("COMMIT")?;
             self.conversions_ready.set(true);
+            self.trace(&progress, "complete");
         } else {
+            self.trace(&progress, "failed");
             let _ = self.db.execute_batch("ROLLBACK");
         }
         result

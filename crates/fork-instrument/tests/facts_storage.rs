@@ -125,6 +125,38 @@ fn incomplete_or_malformed_facts_never_return_a_partially_usable_store() {
 }
 
 #[test]
+fn sqlite_work_exhaustion_does_not_publish_partial_conversion_results() {
+    let mut facts = String::from("#kandelo-calltypes\t5\nW\tf\tT0\n");
+    for i in 0..1000 {
+        facts.push_str(&format!("Z\tT{i}\tT{}\n", i + 1));
+    }
+    let complete = FactsStore::read_sections([facts.as_bytes()], Default::default()).unwrap();
+    let loaded = complete.report().unwrap().estimated_work_steps;
+    complete.solve_conversions(false, false).unwrap();
+    let solved = complete.report().unwrap().estimated_work_steps;
+    assert!(solved > loaded + 1000);
+
+    // Admit the same input but exhaust the VM counter during the SQL solve.
+    let limited = FactsStore::read_sections(
+        [facts.as_bytes()],
+        StorageLimits {
+            work_steps: loaded + (solved - loaded) / 2,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let error = limited.solve_conversions(false, false).unwrap_err();
+    assert!(format!("{error:#}").contains("interrupt"), "{error:#}");
+    assert!(
+        limited
+            .visit_conversion_reach(|_, _| Ok(()))
+            .unwrap_err()
+            .to_string()
+            .contains("not completed")
+    );
+}
+
+#[test]
 fn dense_binding_and_target_relations_stay_queryable_without_collecting_the_matrix() {
     use wasm_encoder::*;
     let mut module = Module::new();

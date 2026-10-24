@@ -30,16 +30,6 @@ pub use summaries::*;
 pub type Tags = u64;
 pub const ALL_TAGS: Tags = u64::MAX;
 
-// WHY: work counts include state copies and fixed-point revisits, not just
-// input operators. Keep the default a generous runaway-analysis check rather
-// than a module-size restriction. This counter reserves no memory; local IR
-// lifetimes and disk-backed facts provide the normal memory bound.
-const DEFAULT_TOTAL_WORK_LIMIT: usize = 16_000_000usize.saturating_mul(1_000_000);
-// The interpreter reserves a body's allowance before specializing callees.
-// Leave room for its supported nesting and escape-analysis retries so default
-// budgets do not silently disable otherwise available constant refinement.
-const DEFAULT_WORK_LIMIT: usize = DEFAULT_TOTAL_WORK_LIMIT / 16;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Value {
     Unknown,
@@ -143,7 +133,7 @@ impl Default for Limits {
             // level, even when a body writes only one slot. Keep it generous;
             // function-local interpretation provides the normal memory saving.
             state_values: u32::MAX as usize,
-            work: DEFAULT_WORK_LIMIT,
+            work: crate::limits::LOCAL_WORK,
             control_depth: 16 * 1024,
             frame_slots: 4096,
             call_targets: 1024 * 1024,

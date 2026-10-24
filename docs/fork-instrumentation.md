@@ -102,7 +102,10 @@ unbounded target matrix.
 Default storage budgets are a 32 MiB page-cache target for each main/temp
 schema, 1 MiB name cache,
 128 MiB resident metadata/projection budget, 8 GiB maximum main database size
-and 100 billion estimated work steps. Query temporaries use files; their disk
+and one quadrillion estimated work steps. Work includes SQLite VM instructions
+and minimum batch charges for short queries; it is a generous sanity check.
+With `WPK_FORK_PROGRESS=1`, stage diagnostics report database bytes and work
+counts without scanning relations. Query temporaries use files; their disk
 space is additional to the main database limit. SQLite's page cache is a
 [suggested limit](https://www.sqlite.org/pragma.html#pragma_cache_size), not a
 hard process-memory ceiling. Row/work/disk failures are explicit, the private
@@ -140,6 +143,9 @@ Increasing them allocates no memory.
 Set `WPK_FORK_PROGRESS=1` for native phase timings and periodic analysis-function
 counters on stderr. Local work-limit errors include the original function and
 the requested, remaining and allowed work.
+Other native passes share the generous local/module work ceilings. Pipeline
+and activation catalogs allow a 1 GiB metadata estimate; their actual storage
+grows with entries, and individual body buffers retain separate bounds.
 Unused trailing local declarations are omitted from abstract states while
 referenced locals keep their original coordinates. Delegation and nested
 mixed modern/legacy handlers remain explicitly unsupported by this analysis

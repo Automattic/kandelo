@@ -12,6 +12,8 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 use wasm_encoder::reencode::Reencode;
+#[path = "memory_comparison/facts.rs"]
+mod facts_inspection;
 #[path = "memory_comparison/full.rs"]
 mod full;
 #[path = "memory_comparison/shapes.rs"]
@@ -456,6 +458,10 @@ fn main() -> Result<()> {
     match args.get(1).map(String::as_str) {
         Some("generate") if args.len() == 3 => generate(Path::new(&args[2])),
         Some("generate-sinks") if args.len() == 3 => generate_sinks(Path::new(&args[2])),
+        Some("facts") if args.len() == 4 => {
+            let disk_bytes = args[3].parse::<u64>()?;
+            facts_inspection::inspect(Path::new(&args[2]), disk_bytes)
+        }
         Some("shapes") if args.len() == 3 => shapes::inspect(Path::new(&args[2])),
         Some("measure") if args.len() == 5 => {
             ensure!(
@@ -471,8 +477,10 @@ fn main() -> Result<()> {
             scan(&std::fs::read(&args[2])?)?;
             Ok(())
         }
-        _ => anyhow::bail!(
-            "usage: memory_comparison generate|generate-sinks DIR | measure eager|stream frontend|roundtrip|sinks INPUT | measure eager|stream instrument INPUT OUTPUT | validate INPUT"
-        ),
+        _ => anyhow::bail!(concat!(
+            "usage: memory_comparison generate|generate-sinks DIR | shapes INPUT | ",
+            "facts INPUT DB_BYTES | measure eager|stream frontend|roundtrip|sinks INPUT | ",
+            "measure eager|stream instrument INPUT OUTPUT | validate INPUT",
+        )),
     }
 }

@@ -21,8 +21,8 @@ pub struct ActivationModuleLimits {
 impl Default for ActivationModuleLimits {
     fn default() -> Self {
         Self {
-            metadata_bytes: 64 * 1024 * 1024,
-            work: 500 * 1024 * 1024,
+            metadata_bytes: crate::limits::MODULE_METADATA_BYTES,
+            work: crate::limits::TOTAL_WORK,
             ir: IrLimits::default(),
             continuation: ContinuationLimits::default(),
             tails: TailLimits::default(),

@@ -25,7 +25,7 @@ impl Default for SummaryLimits {
         Self {
             metadata_bytes: 128 * 1024 * 1024,
             evaluations_per_function: 50,
-            work: super::DEFAULT_TOTAL_WORK_LIMIT,
+            work: crate::limits::TOTAL_WORK,
         }
     }
 }

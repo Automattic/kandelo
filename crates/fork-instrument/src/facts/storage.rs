@@ -38,7 +38,7 @@ impl Default for StorageLimits {
             atom_cache_bytes: 1024 * 1024,
             metadata_bytes: 128 * 1024 * 1024,
             disk_bytes: 8 * 1024 * 1024 * 1024,
-            work_steps: 100_000_000_000,
+            work_steps: crate::limits::SQL_WORK,
         }
     }
 }
@@ -187,13 +187,26 @@ impl FactsStore {
         let _ = db.set_limit(Limit::SQLITE_LIMIT_LENGTH, i32::try_from(row_limit)?)?;
         let work = Arc::new(AtomicU64::new(0));
         let counter = work.clone();
+        let progress = crate::progress::Progress::new("storage");
+        let mut reported = false;
         db.progress_handler(
             1000,
             Some(move || {
-                counter
+                let spent = counter
                     .fetch_add(1000, Ordering::Relaxed)
-                    .saturating_add(1000)
-                    > limits.work_steps
+                    .saturating_add(1000);
+                if spent > limits.work_steps {
+                    if !reported {
+                        progress.note(format_args!(
+                            "work budget exhausted ({spent} units, limit {})",
+                            limits.work_steps,
+                        ));
+                        reported = true;
+                    }
+                    true
+                } else {
+                    false
+                }
             }),
         );
         db.execute_batch(include_str!("storage.sql"))
@@ -216,6 +229,24 @@ impl FactsStore {
         Ok(self.db.prepare_cached(sql)?.execute(parameters)?)
     }
 
+    /// Constant-size diagnostics: never scan relations merely to report progress.
+    pub(crate) fn trace(&self, progress: &crate::progress::Progress, stage: &str) {
+        if !progress.enabled() {
+            return;
+        }
+        match self
+            .db
+            .pragma_query_value(None, "page_count", |r| r.get::<_, u64>(0))
+        {
+            Ok(pages) => progress.note(format_args!(
+                "{stage}, {} database bytes, {} work units",
+                pages.saturating_mul(4096),
+                self.work.load(Ordering::Relaxed),
+            )),
+            Err(error) => progress.note(format_args!("{stage}, page count unavailable: {error}")),
+        }
+    }
+
     pub(crate) fn charge_work(&self, batches: u64) -> Result<()> {
         // Short statements may finish before SQLite invokes its progress
         // callback. Charge a full batch in addition to observed VM batches.
@@ -228,7 +259,8 @@ impl FactsStore {
             .saturating_add(charge);
         ensure!(
             spent <= self.limits.work_steps,
-            "facts analysis exceeds work budget"
+            "facts analysis exceeds work budget ({spent} units, limit {})",
+            self.limits.work_steps,
         );
         Ok(())
     }

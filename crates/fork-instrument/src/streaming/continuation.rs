@@ -30,7 +30,7 @@ impl Default for ContinuationLimits {
         Self {
             metadata_bytes: 64 * 1024 * 1024,
             values: 1_000_000,
-            work: 100 * 1024 * 1024,
+            work: crate::limits::LOCAL_WORK,
             frame: FrameLimits::default(),
             references: ReferenceLimits::default(),
         }

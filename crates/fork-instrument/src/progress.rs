@@ -26,4 +26,8 @@ impl Progress {
             );
         }
     }
+
+    pub(crate) fn enabled(&self) -> bool {
+        self.enabled
+    }
 }

@@ -16,6 +16,7 @@ const PARAMS_AGREE: &str = "(w.nparams=d.nparams OR (w.nparams>d.nparams AND (
 impl FactsStore {
     pub fn resolve_calls(&self, scan: &Scan<'_>, options: FactsOptions) -> Result<FactsReport> {
         use sha2::{Digest, Sha256};
+        let progress = crate::progress::Progress::new("call facts");
         self.calls_ready.set(false);
         let digest: [u8; 32] = Sha256::digest(scan.input()).into();
         ensure!(
@@ -26,18 +27,29 @@ impl FactsStore {
         self.db.execute_batch("BEGIN IMMEDIATE")?;
         let result: Result<()> = (|| {
             self.db.execute_batch(include_str!("calls.sql"))?;
-            self.wasm_inputs(scan)?;
-            self.bind_definitions()?;
-            self.choose_definitions()?;
-            self.registries()?;
-            self.hubs()?;
-            self.targets()?;
+            self.trace(&progress, "Wasm inputs");
+            self.wasm_inputs(scan)
+                .context("collecting original Wasm call facts")?;
+            self.trace(&progress, "bind definitions");
+            self.bind_definitions()
+                .context("binding compiler definitions")?;
+            self.trace(&progress, "choose definitions");
+            self.choose_definitions()
+                .context("choosing compiler definitions")?;
+            self.trace(&progress, "registries");
+            self.registries().context("resolving callback registries")?;
+            self.trace(&progress, "hubs");
+            self.hubs().context("resolving callback dispatch hubs")?;
+            self.trace(&progress, "targets");
+            self.targets().context("resolving indirect call targets")?;
+            self.trace(&progress, "complete");
             Ok(())
         })();
         if result.is_ok() {
             self.db.execute_batch("COMMIT")?;
             self.calls_ready.set(true);
         } else {
+            self.trace(&progress, "failed");
             let _ = self.db.execute_batch("ROLLBACK");
         }
         result?;

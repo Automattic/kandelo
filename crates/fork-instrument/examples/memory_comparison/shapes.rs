@@ -26,6 +26,12 @@ impl Maximum {
 pub(super) fn inspect(path: &Path) -> Result<()> {
     let (input, _) = MappedArtifact::read(path, 8 * 1024 * 1024 * 1024)?;
     let scan = scan(input.bytes())?;
+    let seeds = scan.functions.iter().enumerate().filter_map(|(index, f)| {
+        f.import.as_ref().and_then(|(module, name)| {
+            (module == "kernel" && name == "kernel_fork").then_some(index as u32)
+        })
+    });
+    let reaching = scan.reaching_from_seeds(seeds, false)?;
     let (mut operators, mut locals, mut nesting, mut calls) = (
         Maximum::default(),
         Maximum::default(),
@@ -70,11 +76,20 @@ pub(super) fn inspect(path: &Path) -> Result<()> {
         calls.record(function, call_count);
     }
     println!(
-        "{{\"functions\":{functions},\"max_operators\":{},\"max_declared_locals\":{},\"max_control_depth\":{},\"max_normal_calls\":{}}}",
+        concat!(
+            "{{\"functions\":{},\"max_operators\":{},\"max_declared_locals\":{},",
+            "\"max_control_depth\":{},\"max_normal_calls\":{},",
+            "\"conservative_fork_activations\":{},\"conservative_control_reachable\":{},",
+            "\"conservative_tail_sites\":{}}}",
+        ),
+        functions,
         operators.json(),
         locals.json(),
         nesting.json(),
         calls.json(),
+        reaching.activations.len(),
+        reaching.control_reachable.len(),
+        reaching.tail_sites.len(),
     );
     Ok(())
 }

@@ -38,7 +38,7 @@ impl Default for DispatchLimits {
         Self {
             output_bytes: 32 * 1024 * 1024,
             metadata_bytes: 64 * 1024 * 1024,
-            work: 100 * 1024 * 1024,
+            work: crate::limits::LOCAL_WORK,
         }
     }
 }

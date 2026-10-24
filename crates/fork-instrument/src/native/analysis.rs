@@ -77,6 +77,7 @@ pub fn analyze<'a>(
 }
 
 fn refine(analysis: &mut Analysis<'_>, options: &Options, limits: AnalysisLimits) -> Result<()> {
+    let progress = crate::progress::Progress::new("analysis");
     let seed = analysis.decision.entry_imports[0];
     if options.facts
         && analysis
@@ -101,7 +102,7 @@ fn refine(analysis: &mut Analysis<'_>, options: &Options, limits: AnalysisLimits
                 return Ok(());
             }
             Err(error) => {
-                crate::progress::Progress::new("facts").note(format_args!(
+                progress.note(format_args!(
                     "unavailable: {error:#}; trying builtin analysis"
                 ));
                 analysis.decision.facts_error = Some(format!("{error:#}"));
