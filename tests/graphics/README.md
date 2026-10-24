@@ -278,3 +278,12 @@ revision exhaustion and final collection. The GPU browser driver imports
 into the unnamed old binding, checks the source/revision reply and red
 pixels, and observes unchanged yellow pixels through the peer's reused
 name. Public C shared-image hold publication remains a separate requirement.
+
+
+The uncertain-import peer cases cover texture and renderbuffer candidates
+held after transport failure or an invalid completion. They destroy the
+public image and submitting context while a private shared metadata peer
+survives, then require BO release only after that peer retires. They fail
+against unchanged table-11 sources before the shared quarantine change.
+The private peer is not a public EGL context and retires before its display
+generation; these cases prove C ownership, not peer rendering or public sharing.

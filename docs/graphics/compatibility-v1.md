@@ -2900,3 +2900,32 @@ table 11 consistency. The rendered source suite contains 168 executions
 across Chromium, Firefox and WebKit, with no skips. These use source host
 code with synthetic kernel scratch plumbing, not rebuilt guest artifacts.
 The full compatibility goal and deferred integration gates above remain open.
+
+
+## Shared quarantine for indeterminate imports (2026-10-24)
+
+C uncertain-import candidates now belong to the shared object group. A
+lost transport response or malformed completion can leave a native view
+reachable by a peer, so retiring the submitting encoder alone cannot
+release its candidate image. Group publication uses the metadata mutex;
+final image release runs after that mutex is unlocked and the last encoder
+has retired. Confirmed image aliases still need their separate migration
+to retained object records; public EGL context sharing remains rejected.
+
+Two actual C regressions create a private shared metadata peer, inject
+transport failure and missing completion for texture/RBO image imports,
+destroy the public image and retire the submitting encoder. BO close must
+wait until the private peer retires. These fail unchanged `e10546f459` at
+source encoder retirement and pass with the shared quarantine. The private
+peer has no public EGL context record and is retired before its owning
+display generation; this is not public C sharing or display-retirement
+rendering evidence.
+
+The complete focused native run now passes 105 UBSan cases, private wasm32
+paired linking, 150 authority guards and 142/142 core definitions/resolvers:
+`.context/graphics-image-quarantine-final-native-v2.log`. Baseline failures
+are in `.context/graphics-image-quarantine-baseline-native-v2.log`. The 12
+source browser-memory/protocol negatives pass in
+`.context/graphics-image-quarantine-memory-boundary.log`; the full memory
+and guest integration gates remain deferred. Host/browser/Rust production
+code is unchanged from the preceding table-11 checkpoint.

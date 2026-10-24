@@ -4163,8 +4163,11 @@ number again after peer deletion/reuse. A shared per-object image-association
 revision advances on accepted import/orphaning, remains unchanged after
 definite replacement failure and is removed at final native collection.
 Unsigned revision exhaustion fails before publication. The v10 explicit-name
-queries keep their original request/reply layouts. C image holds still need
+queries keep their original request/reply layouts. C confirmed image holds still need
 migration to shared retained records before public EGL sharing is enabled.
+Indeterminate import candidates already belong to the group: submitting
+encoder retirement cannot release backing a peer might retain. Final group
+retirement releases these candidates outside the metadata mutex.
 
 The user-space libraries are sysroot libraries, not kernel build outputs:
 `scripts/build-musl.sh` installs the headers, resolves the `libdrm` package

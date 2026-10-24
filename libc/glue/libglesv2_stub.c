@@ -50,12 +50,19 @@ struct wpk_object_name {
     int named, external;
     struct wpk_object_name *next;
 };
+struct wpk_pending_image {
+    struct wpk_egl_image *image;
+    struct wpk_pending_image *next;
+};
 struct wpk_object_group {
     pthread_mutex_t mutex;
     unsigned references;
     GLuint next_name[WPK_NAMES_COUNT];
     uint64_t next_serial;
     struct wpk_object_name *names;
+    /* Unknown native completion can leave storage reachable by any peer.
+     * Retain candidate inputs until the last acknowledged encoder retires. */
+    struct wpk_pending_image *pending_images;
 };
 static struct wpk_object_group *object_group_create(void) {
     struct wpk_object_group *group = calloc(1, sizeof *group);
@@ -85,6 +92,12 @@ static void object_group_release(struct wpk_object_group *group) {
     pthread_mutex_unlock(&group->mutex);
     if (!final)
         return;
+    while (group->pending_images) {
+        struct wpk_pending_image *entry = group->pending_images;
+        group->pending_images = entry->next;
+        _wpk_egl_image_release(entry->image);
+        free(entry);
+    }
     while (group->names) {
         struct wpk_object_name *entry = group->names;
         group->names = entry->next;
@@ -212,10 +225,6 @@ struct wpk_gl_alias {
     GLuint source;
     struct wpk_egl_image *image;
 };
-struct wpk_pending_image {
-    struct wpk_egl_image *image;
-    struct wpk_pending_image *next;
-};
 struct wpk_gl_alias_table { struct wpk_gl_alias *v; size_t len, cap; };
 struct wpk_image_attachment {
     GLuint framebuffer, point, kind, name, query_kind, query_name, query_host;
@@ -254,7 +263,6 @@ struct wpk_gles_context {
     struct wpk_object_name *array_object;
     struct wpk_vertex_array default_vertex_array, *current_vertex_array, *vertex_arrays;
     uint32_t next_framebuffer;
-    struct wpk_pending_image *pending_images;
     struct wpk_gl_alias_table texture_aliases;
     struct wpk_gl_alias_table renderbuffer_aliases;
     GLuint active_unit;
@@ -1367,13 +1375,8 @@ static void release_vertex_array_objects(struct wpk_gles_context *state,
  * another context's stream. Release/exit flushed this context before its last
  * current reference ended; host destruction retires native object maps. */
 void _wpk_gl_destroy_encoder(struct wpk_gles_context *state) {
-    if (!state) return;
-    while (state->pending_images) {
-        struct wpk_pending_image *entry = state->pending_images;
-        state->pending_images = entry->next;
-        _wpk_egl_image_release(entry->image);
-        free(entry);
-    }
+    if (!state)
+        return;
     while (state->image_attachments) {
         struct wpk_image_attachment *entry = state->image_attachments;
         state->image_attachments = entry->next;
@@ -1484,7 +1487,8 @@ static int bind_image_object(uint32_t kind, GLenum target, GLuint name) {
     return accepted;
 }
 /* Positive reply transfers a reference into the alias owner. An unknown
- * completion keeps the input image until acknowledged context retirement. */
+ * completion keeps the input image until the last acknowledged group encoder
+ * retires; destroying only the submitting encoder cannot prove peer release. */
 static int import_image_object(uint32_t kind, GLuint name, GLuint source,
                                struct wpk_egl_image *image) {
     struct wpk_pending_image *pending = calloc(1, sizeof *pending);
@@ -1511,8 +1515,11 @@ static int import_image_object(uint32_t kind, GLuint name, GLuint source,
     }
     _wpk_egl_image_retain(image);
     pending->image = image;
-    pending->next = _wpk_gl_current_encoder()->pending_images;
-    _wpk_gl_current_encoder()->pending_images = pending;
+    struct wpk_object_group *group = _wpk_gl_current_encoder()->objects;
+    pthread_mutex_lock(&group->mutex);
+    pending->next = group->pending_images;
+    group->pending_images = pending;
+    pthread_mutex_unlock(&group->mutex);
     raise_client_error(GL_INVALID_OPERATION);
     return 0;
 }

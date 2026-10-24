@@ -2097,6 +2097,38 @@ int main(int argc, char **argv) {
         puts("PASS image-import-reject");
         return 0;
     }
+    if (!strcmp(argv[1], "image-import-unknown-peer-texture") ||
+        !strcmp(argv[1], "image-import-unknown-peer-rbo")) {
+        int texture = !strcmp(argv[1], "image-import-unknown-peer-texture");
+        struct wpk_gles_context *peer = _wpk_gl_create_shared_encoder(_wpk_gl_current_encoder());
+        assert(peer);
+        GLuint name = 17;
+        if (texture)
+            glBindTexture(GL_TEXTURE_2D, name);
+        else
+            glBindRenderbuffer(GL_RENDERBUFFER, name);
+        for (unsigned failure = 1; failure <= 3; failure += 2) {
+            EGLImageKHR img = image(dpy);
+            image_failure = failure;
+            if (texture)
+                glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+            else
+                glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, img);
+            assert(glGetError() == GL_INVALID_OPERATION);
+            assert(eglDestroyImageKHR(dpy, img) && closes == 0);
+        }
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && closes == 0);
+        // Source encoder retirement alone cannot prove that a peer has stopped
+        // using a candidate accepted before its acknowledgement was lost.
+        // This private metadata peer has no public EGL context record, so retire
+        // it before terminating the generation that owns the imported handles.
+        _wpk_gl_destroy_encoder(peer);
+        assert(closes == 1);
+        assert(eglTerminate(dpy) && allocation_count() == 0);
+        puts(texture ? "PASS image-import-unknown-peer-texture"
+                     : "PASS image-import-unknown-peer-rbo");
+        return 0;
+    }
     if (!strcmp(argv[1], "image-import-unknown")) {
         GLuint name = 17;
         glBindTexture(GL_TEXTURE_2D, name);
