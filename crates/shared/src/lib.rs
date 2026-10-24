@@ -5182,7 +5182,7 @@ pub mod gl {
     /// Version of the GLES op-table. Bumped independently of `ABI_VERSION`
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
     /// at compile time; GLIO_INIT accepts compatible versions 1..=OP_VERSION.
-    pub const OP_VERSION: u32 = 5;
+    pub const OP_VERSION: u32 = 6;
 
     // --- ioctl request numbers (DRM 'D' magic, starting at 0x40) -----------
 
@@ -5251,6 +5251,10 @@ pub mod gl {
     pub const OP_BIND_BUFFER: u16 = 0x0102;
     pub const OP_BUFFER_DATA: u16 = 0x0103;
     pub const OP_BUFFER_SUB_DATA: u16 = 0x0104;
+    /// Private client-array upload transaction: retain/restore actual ARRAY identity.
+    /// Both records have an empty payload and are local to the context.
+    pub const OP_BEGIN_CLIENT_ARRAY: u16 = 0x0105;
+    pub const OP_END_CLIENT_ARRAY: u16 = 0x0106;
 
     pub const OP_GEN_TEXTURES: u16 = 0x0200;
     pub const OP_DELETE_TEXTURES: u16 = 0x0201;

@@ -52496,6 +52496,45 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
+    fn glio_op_table_six_preserves_legacy_sessions_and_rejects_future_tables() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        for version in [1, 5, gl::OP_VERSION] {
+            let (root, generation) = glio_display_test(&mut proc, &mut host, version).unwrap();
+            let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+            let mut info = glio_init_bytes(gl::GlInitInfo {
+                op_version: version,
+                role: gl::SESSION_OBJECTS,
+                display_fd: root,
+                display_id: generation,
+            });
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut info).unwrap();
+            let mut context = [0u8; 16];
+            context[..4].copy_from_slice(&2u32.to_le_bytes());
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                gl::GLIO_CREATE_CONTEXT,
+                &mut context,
+            )
+            .unwrap();
+            assert_ne!(&context[12..16], &[0; 4]);
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            sys_close(&mut proc, &mut host, root).unwrap();
+        }
+        assert_eq!(
+            glio_display_test(&mut proc, &mut host, 0),
+            Err(Errno::ENOSYS)
+        );
+        assert_eq!(
+            glio_display_test(&mut proc, &mut host, gl::OP_VERSION + 1),
+            Err(Errno::ENOSYS)
+        );
+    }
+
+    #[test]
     fn glio_display_root_cannot_map_or_create_renderer_objects() {
         use wasm_posix_shared::gl;
         use wasm_posix_shared::mmap::{PROT_READ,PROT_WRITE,MAP_SHARED};

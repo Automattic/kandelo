@@ -60,7 +60,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 |---|---|---|---|---|---|
 | G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reference-counted C name owner reserves buffer/texture/renderbuffer names, including implicit binds; shared shader/program allocation is serialized. Public C groups and full query/error coverage remain open | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
 | G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Multiple public contexts have focused native/source-browser coverage; full rollback, hints and CTS remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
-| G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffers plus client attributes use a bounded presence query; core buffer/vertex queries preserve logical state. Full size/limit/negative coverage remains open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
+| G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffers plus client attributes use a bounded presence query; core buffer/vertex queries preserve logical state. Client staging now retains/restores actual ARRAY identity across peer deletion/reuse (operation table 6). Full size/limit/negative coverage remains open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core attribute/source/attachment reflection, acknowledged large-source uploads and validation entrypoints are implemented; complete executable/attribute/uniform validation still needs work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization, core parameter queries and context-owned default texture objects are implemented in host source; complete target/state/error and guest CTS audit remain open | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
@@ -2240,11 +2240,86 @@ historical evidence for those unchanged sources, not newly repeated gates.
 ABI 58 / operation version 5 stay unchanged. Normal artifacts and the broad
 integration/conformance phase remain deferred as requested.
 
-Required C work remains: image alias/object records and peer binding/FBO
-references; shared program/reflection/link metadata; and restoration by
-retained buffer identity when client-array staging temporarily rebinds an
-array buffer after a peer deleted or reused its numeric name. Saving only
-that numeric name would select a different object. The public sharing
-rejection remains until these models are complete. All other open EGL,
+At this checkpoint, required C work included image alias/object records
+and peer binding/FBO references, shared program/reflection/link metadata,
+and retained ARRAY restoration during client staging. The last item is
+implemented below. Public sharing remains rejected until the other models
+are complete. All other open EGL,
 GLES, GBM/KMS, fork authority and full-validation requirements remain part
 of the active goal; ordinary gaps are not platform boundaries.
+
+
+## Retained ARRAY identity during client staging (2026-10-24)
+
+Client-array uploads temporarily bind private buffers. Restoring the
+application's saved numeric name could select a replacement object if a
+peer deleted and reused that name while the upload crossed a submit
+boundary. The C encoder now retains its actual buffer record before
+staging and transfers that reference back afterward without name lookup.
+The capture belongs to the encoder and final destruction releases it.
+
+The host has one context-local saved ARRAY binding. Empty-payload
+`OP_BEGIN_CLIENT_ARRAY` (0x0105) and `OP_END_CLIENT_ARRAY` (0x0106) retain
+and restore the actual native view across submissions. A saved zero
+binding is distinct from no capture. Retired-buffer collection includes
+this pin across all group members and canonicalizes separate index/vertex
+views. Restore reuses the existing ARRAY view without allocating or
+synchronizing storage; ordinary data/draw operations synchronize it before
+use. Native restore rejection preserves the pin and current shadow for
+retry, and dependent draws fail with INVALID_OPERATION while capture is
+pending. Nested/missing captures are errors; malformed payloads reject the
+whole submitted batch before mutation. Context destruction releases pins.
+
+This is additive operation-table version 6. Existing tags, layouts, host
+imports and syscall meanings are unchanged, so global ABI stays 58 under
+the independently versioned command-table policy in `shared::gl`.
+GLIO_INIT still accepts versions 1 through 6 and rejects zero/future tables.
+The ABI snapshot and generated outputs remain consistent without changes.
+
+Focused evidence:
+
+| Check | Result | Evidence |
+|---|---|---|
+| Actual native EGL/GLES C with device double and UBSan | 84 cases passed | `.context/graphics-array-save-final-c-wasm.log` |
+| Private wasm32 EGL/GLES objects/link and entrypoint audit | Passed; 150 guards and 142/142 GLES2 core symbols/resolvers | `.context/graphics-array-save-final-c-wasm.log` |
+| Host graphics source and Node/browser declarations | 386 cases in 19 files and declarations passed | `.context/graphics-array-save-stable-host.log` |
+| Real Chromium/Firefox/WebKit source rendering | 141 passed, no skips | `.context/graphics-array-save-stable-browser.log` |
+| Kernel GLIO lifecycle, shared layouts and ioctl-filter cases | 47, 4 and 18 passed | `.context/graphics-array-save-rust-abi.log` |
+| ABI source/snapshot/generated consistency | Passed, ABI 58 / operation table 6 | `.context/graphics-array-save-rust-abi.log` |
+| Browser protocol/memory-boundary negatives | 12 passed | `.context/graphics-array-save-memory-boundary.log` |
+
+Three new host regressions fail against unchanged production before the
+new tags are recognized (`.context/graphics-array-save-baseline-host.log`).
+New host checks also cover index-first buffers with separate ARRAY views,
+failed native restoration/retry, context retirement, zero captures and
+prevalidated malformed records. Three new native C cases cover balanced
+capture/end on normal draws, staging allocation failure and zero-count
+draws, plus vertex-first and index-first rendered trace scenarios.
+
+Twelve new browser executions replay those actual C staging streams
+through native worker imports and main forwarding in all three engines.
+The adapter explicitly injects a renderer peer's deletion/reuse of buffer
+17 after the temporary upload bind. The old buffer has no VAO reference
+at that point: its saved ARRAY pin alone preserves it. The first draw is
+green; an attribute captured from the restored old ARRAY then draws red,
+not the replacement's blue. Both initial native buffer classifications
+pass, and all tracked buffers, VAOs, textures, FBOs and renderbuffers are
+retired at final teardown. Program setup and peer injection are renderer
+fixture operations. This is real WebGL rendering of actual C bytes with a
+synthetic kernel adapter, not public EGL sharing or Rust guest marshalling.
+
+Image alias/storage/sampler references and program/link/query metadata
+remain prerequisites for public C sharing. Abruptly interrupted staging
+also needs private temporary-name ownership/cleanup in a future shared C
+group; current successful and allocation-failure cleanup do not establish
+that broader lifecycle contract. Indeterminate submit/context-loss
+propagation remains in G09/E02. The failed native restore test proves a
+retained pin and explicit renderer retry, not complete C recovery from an
+indeterminate submission. These ordinary gaps remain required work.
+
+No normal SDK/program/package/image artifact was rebuilt or restamped.
+Kernel compilation was limited to ABI export inspection; other builds
+were source-host declarations and private test objects. Standalone resolver ABI 58 results remain historical from
+`5985c3c727`; no epoch change requires regeneration here. Normal artifacts,
+guest CTS, cage/sway, full browser-memory and POSIX/conformance remain
+deferred until implementation is ready. The complete goal stays active.

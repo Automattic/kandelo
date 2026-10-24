@@ -13,7 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define WPK_GL_OP_VERSION 5u
+#define WPK_GL_OP_VERSION 6u
 #define WPK_GL_CMDBUF_LEN (1u << 20)
 #define WPK_GL_DEVICE     "/dev/dri/renderD128"
 
@@ -55,6 +55,8 @@
 #define OP_BIND_BUFFER                 0x0102u
 #define OP_BUFFER_DATA                 0x0103u
 #define OP_BUFFER_SUB_DATA             0x0104u
+#define OP_BEGIN_CLIENT_ARRAY 0x0105u
+#define OP_END_CLIENT_ARRAY 0x0106u
 
 #define OP_GEN_TEXTURES                0x0200u
 #define OP_DELETE_TEXTURES             0x0201u

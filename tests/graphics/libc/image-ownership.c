@@ -142,6 +142,8 @@ struct device_slot {
     pthread_t current_thread;
     uint32_t current_surface, current_read_surface;
     unsigned clears, closes;
+    uint32_t array_binding, saved_array_binding;
+    int array_saved;
 };
 static struct device_slot device_slots[8];
 static struct {
@@ -152,6 +154,7 @@ static unsigned pending_device;
 static unsigned char *commands;
 static unsigned mappings;
 static unsigned destroyed_contexts, destroyed_surfaces, submit_batches, clear_commands;
+static unsigned array_captures, array_restores;
 static int fail_make_current, fail_create_context;
 static int make_current_errno = EACCES;
 static uint32_t next_backend_context = 31;
@@ -424,6 +427,24 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             assert(at + 4 + len <= end);
             uint32_t words[2] = {0};
             memcpy(words, commands + at + 4, len < 8 ? len : 8);
+#ifdef OP_BEGIN_CLIENT_ARRAY
+            if (op == OP_BEGIN_CLIENT_ARRAY) {
+                assert(len == 0 && !slot->array_saved);
+                slot->array_saved = 1;
+                slot->saved_array_binding = slot->array_binding;
+                array_captures++;
+            }
+            if (op == OP_END_CLIENT_ARRAY) {
+                assert(len == 0 && slot->array_saved);
+                slot->array_binding = slot->saved_array_binding;
+                slot->array_saved = 0;
+                array_restores++;
+            }
+            if (op == OP_DRAW_ARRAYS || op == OP_DRAW_ELEMENTS)
+                assert(!slot->array_saved);
+#endif
+            if (op == OP_BIND_BUFFER && words[0] == GL_ARRAY_BUFFER)
+                slot->array_binding = words[1];
             if (op == OP_BIND_TEXTURE) bound_texture = words[1];
             if (op == OP_CLEAR) { clear_commands++; slot->clears++; }
             if (op == 0x030b) validate_commands++;
@@ -1253,6 +1274,70 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-buffer-names"); return 0;
     }
+#ifdef OP_BEGIN_CLIENT_ARRAY
+    if (!strcmp(argv[1], "encoder-array-render") ||
+        !strcmp(argv[1], "encoder-array-index-render")) {
+        const EGLint dimensions[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
+        EGLSurface surface = eglCreateWindowSurface(dpy, (EGLConfig)1, NULL, dimensions);
+        assert(surface && eglMakeCurrent(dpy, surface, surface, ctx));
+        glViewport(0, 0, 1, 1);
+        const GLfloat position[2] = {0, 0}, red[4] = {1, 0, 0, 1};
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, position);
+        glEnableVertexAttribArray(1);
+        glVertexAttrib4f(0, 0, 1, 0, 1);
+        if (!strcmp(argv[1], "encoder-array-index-render")) {
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 17);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof red, red, GL_STATIC_DRAW);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+        }
+        glBindBuffer(GL_ARRAY_BUFFER, 17);
+        glBufferData(GL_ARRAY_BUFFER, sizeof red, red, GL_STATIC_DRAW);
+        glDrawArrays(GL_POINTS, 0, 1);
+        glFlush();
+        glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, NULL);
+        glEnableVertexAttribArray(0);
+        glDrawArrays(GL_POINTS, 0, 1);
+        glFlush();
+        assert(array_captures == 2 && array_restores == 2 && device_slots[0].array_binding == 17);
+        assert(eglSwapBuffers(dpy, surface));
+        GLuint buffer = 17;
+        glDeleteBuffers(1, &buffer);
+        assert(eglDestroySurface(dpy, surface) && eglDestroyContext(dpy, ctx));
+        assert(eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        printf("PASS %s\n", argv[1]);
+        return 0;
+    }
+    if (!strcmp(argv[1], "encoder-array-save")) {
+        const GLfloat vertex[2] = {0, 0};
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, vertex);
+        glEnableVertexAttribArray(0);
+        glBindBuffer(GL_ARRAY_BUFFER, 17);
+        glBufferData(GL_ARRAY_BUFFER, 24, NULL, GL_STATIC_DRAW);
+        glDrawArrays(GL_POINTS, 0, 1);
+        glFlush();
+        assert(array_captures == 1 && array_restores == 1 && device_slots[0].array_binding == 17 &&
+               draw_commands == 1);
+        calloc_before_failure = 0;
+        glDrawArrays(GL_POINTS, 0, 1);
+        calloc_before_failure = -1;
+        glFlush();
+        assert(glGetError() == GL_OUT_OF_MEMORY && array_captures == 2 && array_restores == 2 &&
+               device_slots[0].array_binding == 17 && draw_commands == 1);
+        const GLushort index = 0;
+        glDrawElements(GL_POINTS, 1, GL_UNSIGNED_SHORT, &index);
+        glFlush();
+        assert(glGetError() == GL_NO_ERROR && array_captures == 3 && array_restores == 3 &&
+               device_slots[0].array_binding == 17 && draw_commands == 2);
+        glDisableVertexAttribArray(0);
+        glDrawArrays(GL_POINTS, 0, 0);
+        glFlush();
+        assert(array_captures == 3 && array_restores == 3 && !device_slots[0].array_saved);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS encoder-array-save");
+        return 0;
+    }
+#endif
     if (!strcmp(argv[1], "encoder-stage-allocation")) {
         const GLfloat vertex[2] = {0,0};
         for (unsigned i = 0; i < 2; i++) {

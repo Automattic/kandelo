@@ -18,6 +18,7 @@
  * returns a negative errno so `GLIO_SUBMIT` can fail like any other
  * ioctl-style device operation instead of hiding the failure in host code.
  */
+import { beginClientArray, endClientArray } from "./buffer-references.js";
 import { capabilityEnabled } from "./state-query.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import { installShaderSource } from "./shader-source.js";
@@ -293,6 +294,9 @@ function normalizeTextureInternalFormat(internal: number, format: number, type: 
 
 function validPayload(op: number, v: DataView): boolean {
   switch (op) {
+    case O.OP_BEGIN_CLIENT_ARRAY:
+    case O.OP_END_CLIENT_ARRAY:
+      return exact(v,0);
     case O.OP_CLEAR:
     case O.OP_ENABLE:
     case O.OP_DISABLE:
@@ -692,6 +696,10 @@ function dispatch(
       deleteBufferNames(b,Array.from({length:n},(_,i) => v.getUint32(p+4+i*4,true)));
       return;
     }
+    case O.OP_BEGIN_CLIENT_ARRAY:
+      beginClientArray(b); return;
+    case O.OP_END_CLIENT_ARRAY:
+      endClientArray(b); return;
     case O.OP_BIND_BUFFER:
       bindBufferObject(b,v.getUint32(p,true),v.getUint32(p+4,true));
       return;
@@ -1150,6 +1158,7 @@ function dispatch(
       return;
     }
     case O.OP_DRAW_ARRAYS:
+      if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }
       if (v.getUint32(p,true) > 6) { recordGlError(b,0x500); return; }
       if (v.getInt32(p+4,true) < 0 || v.getInt32(p+8,true) < 0) { recordGlError(b,0x501); return; }
       if (!prepareBufferDraw(b,false)) return;
@@ -1160,6 +1169,7 @@ function dispatch(
       );
       return;
     case O.OP_DRAW_ELEMENTS:
+      if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }
       drawGlesElements(b,v.getUint32(p,true),v.getInt32(p+4,true),v.getUint32(p+8,true),v.getUint32(p+12,true));
       return;
     // Payload: u32 index, f32 x, f32 y, f32 z, f32 w

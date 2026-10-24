@@ -31,6 +31,8 @@ export const OP_DELETE_BUFFERS              = 0x0101;
 export const OP_BIND_BUFFER                 = 0x0102;
 export const OP_BUFFER_DATA                 = 0x0103;
 export const OP_BUFFER_SUB_DATA             = 0x0104;
+export const OP_BEGIN_CLIENT_ARRAY           = 0x0105;
+export const OP_END_CLIENT_ARRAY             = 0x0106;
 
 export const OP_GEN_TEXTURES                = 0x0200;
 export const OP_DELETE_TEXTURES             = 0x0201;
@@ -106,7 +108,7 @@ export const QOP_FINISH                = 0x0E;
 
 /** Bumped in lockstep with `shared::gl::OP_VERSION`. The kernel's
  *  `GLIO_INIT` accepts versions 1 through this value. */
-export const OP_VERSION = 5;
+export const OP_VERSION = 6;
 
 // Additive GLES entry points used by native renderers; existing tags stay stable.
 export const OP_BLEND_EQUATION = 0x000F;

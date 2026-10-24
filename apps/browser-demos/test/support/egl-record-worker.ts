@@ -24,6 +24,7 @@ self.onmessage = ({data}) => {
         ["createFramebuffer","deleteFramebuffer","isFramebuffer"],
         ["createTexture","deleteTexture","isTexture"],
         ["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],
+        ...(data.peerDelete?[["createBuffer","deleteBuffer","isBuffer"],["createVertexArray","deleteVertexArray","isVertexArray"]]:[]),
       ]) {
         const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
         api[createName]=()=>{const value=create();if(value){created.push(value);live.push(()=>isLive(value));}return value;};
@@ -50,6 +51,33 @@ self.onmessage = ({data}) => {
       if(rc!==4)throw new Error(`native pixel read: ${rc}`);
       return [...new Uint8Array(memory!.buffer,128,4)];
     };
+    const submit=(fd:number,bytes:Uint8Array)=>{
+      if(forwarded)channel(fd).onSubmit(bytes);
+      else {new Uint8Array(memory!.buffer,4096,bytes.length).set(bytes);requireZero(imports!.host_gl_submit(7,0,bytes.length,fd),"submit");}
+    };
+    const send=(fd:number,op:number,words:number[],tail=new Uint8Array())=>{
+      const bytes=new Uint8Array(4+words.length*4+tail.length),v=new DataView(bytes.buffer);
+      v.setUint16(0,op,true);v.setUint16(2,words.length*4+tail.length,true);
+      words.forEach((word,i)=>v.setUint32(4+i*4,word,true));bytes.set(tail,4+words.length*4);submit(fd,bytes);
+    };
+    let sourceContext=0,sourceDraw=0,sourceRead=0,captured=false,injected=false;
+    const peer=90;
+    const make=(fd:number,id:number,draw:number,read:number)=>{
+      const size=sizes.get(draw)??{width:0,height:0};
+      requireZero(forwarded?channel(fd).onMakeCurrent!({drawSurfaceId:draw,readSurfaceId:read,...size})
+        :imports!.host_gl_make_current(7,id,draw,read,fd),"driver current");
+    };
+    const prepareProgram=(fd:number)=>{
+      for(const [name,type,text] of [[901,0x8b31,"attribute vec4 color; attribute vec2 position; varying vec4 c; void main(){c=color;gl_Position=vec4(position,0.,1.);gl_PointSize=1.;}"],
+        [902,0x8b30,"precision mediump float; varying vec4 c; void main(){gl_FragColor=c;}"]] as [number,number,string][]) {
+        const bytes=new TextEncoder().encode(text);send(fd,O.OP_CREATE_SHADER,[type,name]);
+        send(fd,O.OP_SHADER_SOURCE,[name,bytes.length],bytes);send(fd,O.OP_COMPILE_SHADER,[name]);
+      }
+      send(fd,O.OP_CREATE_PROGRAM,[903]);send(fd,O.OP_ATTACH_SHADER,[903,901]);send(fd,O.OP_ATTACH_SHADER,[903,902]);
+      send(fd,O.OP_BIND_ATTRIB_LOCATION,[903,0,5],new TextEncoder().encode("color"));
+      send(fd,O.OP_BIND_ATTRIB_LOCATION,[903,1,8],new TextEncoder().encode("position"));
+      send(fd,O.OP_LINK_PROGRAM,[903]);send(fd,O.OP_USE_PROGRAM,[903]);
+    };
     const frames=new Uint8Array(data.trace),view=new DataView(frames.buffer),observed:number[][]=[];
     const retiredContexts:number[]=[],retiredSurfaces:number[]=[];
     for(let offset=0;offset<frames.length;) {
@@ -63,6 +91,15 @@ self.onmessage = ({data}) => {
       } else if(kind===2) {
         const id=words.getUint32(12,true);
         requireZero(forwarded?channel(fd).onCreateContext():imports!.host_gl_create_context(7,id,0,0,fd),"create context");
+        if(data.peerDelete) {
+          sourceContext=id;
+          if(forwarded){channels.set(peer,createMainForwardChannel({postMessage:message=>postMessage(message)},7,peer));requireZero(channel(peer).onCreateContext(peer,fd),"create peer");}
+          else {
+            imports!.host_gl_bind(7,4096,65536,peer);new Uint32Array(memory!.buffer,64,4).set([2,id,0,0]);
+            requireZero(imports!.host_gl_create_context(7,900,64,16,peer),"create peer");
+          }
+          prepareProgram(fd);
+        }
       } else if(kind===3) {
         const surfaceId=words.getUint32(32,true),width=words.getUint32(4,true),height=words.getUint32(8,true);
         sizes.set(surfaceId,{width,height});
@@ -76,6 +113,7 @@ self.onmessage = ({data}) => {
         }
       } else if(kind===4) {
         const context=words.getUint32(0,true),draw=words.getUint32(4,true),read=words.getUint32(8,true);
+        if(data.peerDelete && context){sourceDraw=draw;sourceRead=read;}
         if(!context) {
           if(!forwarded)requireZero(imports!.host_gl_make_current(7,0,0,0,fd),"release");
           currentSession=null;
@@ -89,17 +127,35 @@ self.onmessage = ({data}) => {
           currentSession=fd;
         }
       } else if(kind===5) {
-        if(forwarded)channel(fd).onSubmit(bytes);
-        else {
-          new Uint8Array(memory!.buffer,4096,bytes.length).set(bytes);
-          requireZero(imports!.host_gl_submit(7,0,bytes.length,fd),"submit");
+        if(data.peerDelete) {
+          // Explicit renderer peer actions interrupt actual C TLVs. They do
+          // not stand in for public C shared-context creation or guest marshalling.
+          for(let at=0;at<bytes.length;) {
+            const op=words.getUint16(at,true),size=words.getUint16(at+2,true),end=at+4+size;
+            submit(fd,bytes.slice(at,end));
+            if(op===O.OP_BEGIN_CLIENT_ARRAY)captured=true;
+            if(op===O.OP_END_CLIENT_ARRAY)captured=false;
+            if(captured && !injected && op===O.OP_BIND_BUFFER && words.getUint32(at+4,true)===0x8892) {
+              make(peer,900,0,0);send(peer,O.OP_DELETE_BUFFERS,[1,17]);
+              send(peer,O.OP_BIND_BUFFER,[0x8892,17]);
+              const blue=new Uint8Array(new Float32Array([0,0,1,1]).buffer);
+              send(peer,O.OP_BUFFER_DATA,[0x8892,16,0x88e4]);send(peer,O.OP_BUFFER_SUB_DATA,[0x8892,0,16],blue);
+              make(fd,sourceContext,sourceDraw,sourceRead);
+              if(!forwarded)requireZero(imports!.host_gl_make_current(7,0,0,0,peer),"release peer");
+              injected=true;
+            }
+            if(op===O.OP_DRAW_ARRAYS)observed.push(pixels(fd));
+            at=end;
+          }
+        } else {
+          submit(fd,bytes);
+          let clear=false;
+          for(let at=0;at<bytes.length;) {
+            const op=words.getUint16(at,true),size=words.getUint16(at+2,true);at+=4+size;
+            if(op===O.OP_CLEAR)clear=true;
+          }
+          if(clear)observed.push(pixels(fd));
         }
-        let clear=false;
-        for(let at=0;at<bytes.length;) {
-          const op=words.getUint16(at,true),size=words.getUint16(at+2,true);at+=4+size;
-          if(op===O.OP_CLEAR)clear=true;
-        }
-        if(clear)observed.push(pixels(fd));
       } else if(kind===6) {
         const id=words.getUint32(0,true);retiredContexts.push(id);
         if(forwarded)channel(fd).onDestroyContext!();else imports!.host_gl_destroy_context(7,id);
@@ -114,7 +170,11 @@ self.onmessage = ({data}) => {
         } else imports!.host_gl_unbind(7,fd);
       } else throw new Error(`unknown trace operation ${kind}`);
     }
+    if(data.peerDelete) {
+      if(forwarded){channel(peer).onUnbind!(peer);if(channel(peer).onPresent!()!==-5)throw new Error("peer revived");}
+      else imports!.host_gl_unbind(7,peer);
+    }
     const clean=forwarded?null:created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
-    postMessage({type:"egl_record_result",observed,retiredContexts,retiredSurfaces,clean,error:forwarded?0:gl!.getError()});
+    postMessage({type:"egl_record_result",observed,retiredContexts,retiredSurfaces,clean,...(data.peerDelete?{injected}:{}),error:forwarded?0:gl!.getError()});
   } catch(error) {postMessage({type:"egl_record_failed",error:String(error)});}
 };

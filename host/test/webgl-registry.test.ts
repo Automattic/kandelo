@@ -44,7 +44,9 @@ describe("GlContextRegistry", () => {
     expect(reg.shareObjects(7,12,11)).toBe(false);
     target.gl = gl; target.hasBeenCurrent = true;
     expect(reg.shareObjects(7,12,11)).toBe(false);
-    target.hasBeenCurrent = false; target.textures.set(1,{} as WebGLTexture);
+    target.hasBeenCurrent = false;target.savedClientArrayBuffer=null;
+    expect(reg.shareObjects(7,12,11)).toBe(false);
+    target.savedClientArrayBuffer=undefined; target.textures.set(1,{} as WebGLTexture);
     expect(reg.shareObjects(7,12,11)).toBe(false);
     expect(target.objects).toBe(old); expect(target.objects).not.toBe(source.objects);
   });

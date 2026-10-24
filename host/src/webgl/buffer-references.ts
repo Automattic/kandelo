@@ -65,12 +65,30 @@ export function deleteBufferNames(b: GlBinding, names: number[]): void {
   for (const [object,name] of objects) { b.buffers.delete(name); b.retiredBuffers.set(object,name); }
 }
 
+/** Driver staging saves an identity before any temporary rebind. */
+export function beginClientArray(b: GlBinding): void {
+  if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }
+  b.savedClientArrayBuffer = b.shadow.arrayBuffer;
+}
+export function endClientArray(b: GlBinding): void {
+  const saved = b.savedClientArrayBuffer;
+  if (saved === undefined) { recordGlError(b,0x502); return; }
+  // Restore the existing, already-classified native ARRAY view. Synchronizing
+  // storage here could allocate while restoring hidden state; normal data and
+  // draw operations synchronize views before using their contents.
+  if (!checkedGlCall(b, () => b.gl!.bindBuffer(0x8892,saved))) return;
+  b.shadow.arrayBuffer = saved;
+  b.savedClientArrayBuffer = undefined;
+}
+
 export function collectRetiredBuffers(b: GlBinding): void {
   if (!b.gl) return;
   collectConvertedVertexData(b);
   for (const [object] of b.retiredBuffers) {
     let referenced = false;
     for (const owner of b.objects.members) {
+      const saved = owner.savedClientArrayBuffer;
+      if (saved != null && canonicalBuffer(owner,saved) === object) { referenced = true; break; }
       if (owner.shadow.arrayBuffer !== null && canonicalBuffer(owner,owner.shadow.arrayBuffer) === object) { referenced = true; break; }
       for (const vao of owner.vertexArrays.values()) {
         if (vao.element === object || [...vao.attributes.values()].some(a => a.buffer === object)) {

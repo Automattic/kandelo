@@ -3797,9 +3797,18 @@ locks serialize whole-batch buffer/texture/renderbuffer reservations and
 shader/program name allocation, including implicit binds. Array bindings
 and every VAO's element/attribute capture retain actual buffer records;
 namespace deletion does not erase an inactive container's old identity.
+Client staging retains a separate buffer-record reference, restores its
+pointer/name/serial directly and keeps any pending capture encoder-owned.
+The host saves the actual native ARRAY view in a context-local slot across
+submit boundaries; buffer collection includes that pin across group
+members, including separate index/vertex views. Empty BEGIN/END commands
+restore identity independently of public names. Failed native restoration
+keeps the pin and rejects dependent draws until a successful END retry;
+context destruction releases it. Full indeterminate-submit recovery and
+interrupted temporary-name cleanup remain open.
 Local reference cleanup precedes releasing the common owner. The private
 shared-owner constructor is tested; public C sharing still rejects until
-image aliases, program/link metadata and retained rebinding are complete.
+image aliases and program/link metadata are complete.
 User-visible context/surface handles are monotonic. Each backend
 session admits one context and surface. The public EGL facade allocates
 additional sessions for independent context/surface records within a
@@ -3831,7 +3840,7 @@ guest marshalling and the public C cross-context facade remain unvalidated.
 
 The GLES bridge exposes a GLES2 API over WebGL2. Operation-table version 2
 adds commands while preserving version 1 tags and payloads. `GLIO_INIT`
-accepts versions 1 through 5, and rejects zero or newer versions with `ENOSYS`.
+accepts versions 1 through 6, and rejects zero or newer versions with `ENOSYS`.
 Its version and extension strings describe that API. Extension queries carry
 an optional operation-table version: legacy requests retain their empty list,
 while version 2 advertises bridged capabilities. Optional float rendering and
@@ -3872,8 +3881,8 @@ cannot grant new selection. Explicit destruction is busy while selected;
 owner close, unmap or termination retires its ownership while existing
 current selectors retain storage. One canonical surface record owns its BO
 hold, independent of the number of owner/draw/read references. The public C
-facade still needs separate context/group/surface records to expose this
-routing through EGL. Kernel surfaces hold their target BO independently of
+facade now owns separate context/surface records and exposes independent
+draw/read selection; shared C image/program ownership remains open. Kernel surfaces hold their target BO independently of
 GEM handles. An acknowledged update transfers that hold only after acceptance;
 rejection releases its candidate and preserves the previous hold. Native
 surface destruction/unbind precedes the final host BO destruction effect.

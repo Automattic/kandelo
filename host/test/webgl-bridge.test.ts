@@ -405,6 +405,55 @@ describe("shared buffer deletion", () => {
     return {gl,reg,a,b,send};
   }
 
+  it.each([false,true])("pins and restores the unnamed ARRAY identity across temporary rebinding and peer name reuse (index first: %s)",(indexFirst)=>{
+    const {gl,reg,a,b,send}=setup();
+    const target=indexFirst?0x8893:0x8892;
+    send(a,O.OP_BIND_BUFFER,[target,71]);send(a,O.OP_BUFFER_DATA,[target,12,0x88e4]);
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]);if(indexFirst)send(a,O.OP_BIND_BUFFER,[0x8893,0]);
+    const old=a.shadow.arrayBuffer!,object=a.buffers.get(71)!;
+    send(a,0x0105,[]);send(a,O.OP_BIND_BUFFER,[0x8892,72]);
+    send(b,O.OP_DELETE_BUFFERS,[1,71]);
+    expect(a.retiredBuffers.get(object)).toBe(71);expect(a.bufferStores.has(object)).toBe(true);
+    expect(gl.log.filter(([name,args])=>name==="deleteBuffer" && args[0]===old)).toEqual([]);
+    send(b,O.OP_BIND_BUFFER,[0x8892,71]);const replacement=b.shadow.arrayBuffer;
+    expect(replacement).not.toBe(old);
+    send(a,0x0106,[]);expect(a.shadow.arrayBuffer).toBe(old);
+    expect(a.bufferStores.get(object)!.size).toBe(12);
+    expect(gl.log.at(-1)).toEqual(["bindBuffer",[0x8892,old]]);
+    send(a,O.OP_BIND_BUFFER,[0x8892,0]);expect(a.bufferStores.has(object)).toBe(false);
+    expect(b.shadow.arrayBuffer).toBe(replacement);reg.unbind(7);
+  });
+  it("retains a failed restore for retry and releases a captured buffer on context retirement",()=>{
+    const {gl,reg,a,b,send}=setup();
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]);send(a,O.OP_BUFFER_DATA,[0x8892,4,0x88e4]);const old=a.shadow.arrayBuffer!;
+    send(a,0x0105,[]);send(a,O.OP_BIND_BUFFER,[0x8892,72]);const temporary=a.shadow.arrayBuffer;
+    send(b,O.OP_DELETE_BUFFERS,[1,71]);
+    const original=gl.bindBuffer.bind(gl);let reject=true;
+    gl.bindBuffer=(target:number,value:unknown)=>{if(target===0x8892 && value===old && reject)throw new Error("restore rejected");original(target,value);};
+    send(a,0x0106,[]);expect(a.shadow.arrayBuffer).toBe(temporary);expect(a.bufferStores.has(old)).toBe(true);
+    expect(a.errors).not.toEqual([]);
+    send(a,O.OP_DRAW_ARRAYS,[0,0,1]);expect(gl.log.some(([name])=>name==="drawArrays")).toBe(false);
+    reject=false;
+    send(a,0x0106,[]);expect(a.shadow.arrayBuffer).toBe(old);
+    send(a,0x0105,[]);send(a,O.OP_BIND_BUFFER,[0x8892,72]);reg.destroyContext(7,11);
+    expect(b.bufferStores.has(old)).toBe(false);reg.unbind(7);
+  });
+  it("keeps zero savepoints distinct from absent ones and rejects nested captures",()=>{
+    const {a,send}=setup();
+    send(a,0x0105,[]);send(a,O.OP_BIND_BUFFER,[0x8892,71]);
+    send(a,0x0105,[]);expect(a.errors).toEqual([0x502]);a.errors.length=0;
+    send(a,0x0106,[]);expect(a.shadow.arrayBuffer).toBeNull();
+    send(a,0x0106,[]);expect(a.errors).toEqual([0x502]);
+  });
+
+  it("rejects a malformed capture record before any preceding state mutation",()=>{
+    const {a}=setup();const bytes=a.cmdbufView!,v=new DataView(bytes.buffer);
+    v.setUint16(0,0x0105,true);v.setUint16(2,0,true);
+    v.setUint16(4,0x0106,true);v.setUint16(6,4,true);v.setUint32(8,0,true);
+    expect(decodeAndDispatch(a,0,12)).toBe(GL_SUBMIT_EINVAL);
+    expect(a.savedClientArrayBuffer).toBeUndefined();expect(a.shadow.arrayBuffer).toBeNull();
+  });
+
   function queryWords(owner: ReturnType<typeof setup>["a"], op: number, words: number[], size = 4) {
     const input = new Uint8Array(words.length*4), out = new Uint8Array(size+8).fill(0xaa);
     words.forEach((word,i) => new DataView(input.buffer).setUint32(i*4,word,true));

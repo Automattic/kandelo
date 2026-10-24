@@ -55,7 +55,7 @@ scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh ce8cd9dbcf
 scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh
 ```
 
-The sixty-seven current cases cover image siblings and retained framebuffer storage,
+The 84 current cases cover image siblings and retained framebuffer storage,
 redefinition, cleanup, invalid handles, repeated contexts, the shared
 shader/program namespace, boolean numeric conversion, vectors longer than
 four elements, unchanged query output after device failure and EGL config
@@ -176,3 +176,18 @@ buffer cycles verify bounded tracked allocation lifetime. These are private
 metadata tests, not public EGL sharing. The implicit/generated texture
 regression also replays actual C calls and bytes into both renderer paths,
 reads red/green/red storage in all three engines and checks native cleanup.
+
+
+The retained-ARRAY cases exercise balanced private staging capture on
+success, allocation failure and zero-count draws. Actual C vertex-first
+and index-first streams are replayed in all three browser engines through
+native worker imports and main forwarding. The fixture injects an explicit
+renderer peer deletion/reuse after the temporary bind, then checks that
+capturing an attribute from the restored ARRAY draws the original red
+buffer rather than its blue replacement. It checks final native buffer,
+VAO, texture, FBO and renderbuffer retirement. Program setup and peer
+operations are fixture-provided; this proves the host's saved identity
+with actual C staging bytes, not public C sharing or Rust marshalling.
+Host tests separately cover failed native restore/retry, retained capture
+cleanup and malformed/nested BEGIN/END. Complete context-loss recovery
+and interrupted private-name cleanup remain open.

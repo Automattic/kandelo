@@ -208,10 +208,18 @@ struct uniform_meta {
     char name[WPK_GL_UNIFORM_NAME_MAX];
 };
 
+struct wpk_array_capture {
+    struct wpk_object_name *object;
+    GLuint name;
+    uint64_t serial;
+    int active;
+};
+
 /* Client execution state belongs to the EGL context and follows it across
  * thread transfers. Shared object groups are a separate ownership layer. */
 struct wpk_gles_context {
     struct wpk_object_group *objects;
+    struct wpk_array_capture array_capture;
     uint8_t *cursor;
     /* Client upload layout is gathered into command records exactly once. */
     GLint unpack_alignment;
@@ -829,13 +837,59 @@ static uint32_t attrib_type_size(GLenum type) {
     }
 }
 
+static int begin_array_capture(struct wpk_array_capture *capture) {
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    if (!object_reference(state->objects, state->array_object)) {
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return 0;
+    }
+    uint8_t *cursor = reserve(4);
+    if (!cursor) {
+        object_release(state->objects, state->array_object);
+        return 0;
+    }
+    w_u16(&cursor, OP_BEGIN_CLIENT_ARRAY);
+    w_u16(&cursor, 0);
+    g_cursor = cursor;
+    *capture = (struct wpk_array_capture){.object = state->array_object,
+                                          .name = state->array_buffer,
+                                          .serial = state->array_serial,
+                                          .active = 1};
+    return 1;
+}
+static int end_array_capture(struct wpk_array_capture *capture) {
+    if (!capture->active)
+        return 1;
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    uint8_t *cursor = reserve(4);
+    int emitted = cursor != NULL;
+    if (emitted) {
+        w_u16(&cursor, OP_END_CLIENT_ARRAY);
+        w_u16(&cursor, 0);
+        g_cursor = cursor;
+    }
+    /* Transfer the saved reference back into ARRAY without a name lookup.
+     * A peer may have deleted or reused that numeric name during upload. */
+    object_release(state->objects, state->array_object);
+    state->array_object = capture->object;
+    state->array_buffer = capture->name;
+    state->array_serial = capture->serial;
+    capture->object = NULL;
+    capture->active = 0;
+    return emitted;
+}
+
 /* Stage only referenced elements, packed at their original vertex indices.
  * A bounded scratch buffer avoids reading client stride gaps or unused
  * prefixes. Indexed client draws supply a presence mask for sparse indices. */
 static int stage_client_attribs(GLint first, GLsizei count, GLuint *names,
                                 const uint8_t *used) {
     int made = 0;
-    GLuint original_array = g_array_buffer;
+    struct wpk_array_capture *capture = &_wpk_gl_current_encoder()->array_capture;
+    if (capture->active) {
+        raise_client_error(GL_INVALID_OPERATION);
+        return -1;
+    }
     uint8_t *scratch = NULL;
     if (count <= 0) return 0;
     for (uint32_t i = 0; i < WPK_GL_MAX_ATTRIBS; i++) {
@@ -860,6 +914,8 @@ static int stage_client_attribs(GLint first, GLsizei count, GLuint *names,
             if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
             goto failed;
         }
+        if (!capture->active && !begin_array_capture(capture))
+            goto failed;
         GLuint name = 0;
         glGenBuffers(1,&name);
         if (!name) goto failed;
@@ -889,11 +945,13 @@ static int stage_client_attribs(GLint first, GLsizei count, GLuint *names,
         }
         emit_vertex_attrib_pointer(i, a->size, a->type, a->normalized,0,0);
     }
+    if (!end_array_capture(capture))
+        goto failed;
     free(scratch);
     return made;
 failed:
     free(scratch);
-    glBindBuffer(GL_ARRAY_BUFFER,original_array);
+    (void)end_array_capture(capture);
     if (made) glDeleteBuffers(made,names);
     return -1;
 }
@@ -909,10 +967,9 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
         return;
     }
     GLuint staged[WPK_GL_MAX_ATTRIBS];
-    GLuint app_buffer = g_array_buffer;
     int n = stage_client_attribs(first, count, staged,NULL);
-    if (n < 0) return;
-    if (n > 0) glBindBuffer(GL_ARRAY_BUFFER, app_buffer);
+    if (n < 0)
+        return;
     {
         EMIT_BEGIN(OP_DRAW_ARRAYS, 12)
         w_u32(&_c, (uint32_t)mode);
@@ -1267,6 +1324,7 @@ void _wpk_gl_destroy_encoder(struct wpk_gles_context *state) {
     }
     release_vertex_array_objects(state, &state->default_vertex_array);
     object_release(state->objects, state->array_object);
+    object_release(state->objects, state->array_capture.object);
     object_group_release(state->objects);
     free(state);
 }
@@ -2899,7 +2957,7 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices
     }
     if (count <= 0) return;
     GLuint staged[WPK_GL_MAX_ATTRIBS];
-    GLuint app_array_buffer = g_array_buffer, app_element_buffer = g_element_buffer;
+    GLuint app_element_buffer = g_element_buffer;
     GLuint element = 0;
     uint32_t offset = (uint32_t)(uintptr_t)indices;
     int has_client = 0;
@@ -2963,7 +3021,6 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices
     }
     int n = has_client ? stage_client_attribs(0, (GLsizei)(max_index + 1), staged,used) : 0;
     if (n >= 0) {
-        if (n > 0) glBindBuffer(GL_ARRAY_BUFFER, app_array_buffer);
         {
             EMIT_BEGIN(OP_DRAW_ELEMENTS, 16)
             w_u32(&_c, (uint32_t)mode); w_i32(&_c, count);

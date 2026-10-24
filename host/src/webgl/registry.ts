@@ -74,6 +74,9 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & {
   sessionId: number;
   currentDrawable: GlDrawableBinding | null;
   hasBeenCurrent: boolean;
+  /** Undefined means no driver savepoint; null captures the zero binding.
+   * This pin survives submit boundaries and is never a public object name. */
+  savedClientArrayBuffer: WebGLBuffer | null | undefined;
   shaderUpload: GlShaderSourceUpload | null;
   shaderUploadSerial: number;
   /** No attachments: native framebuffer operations enforce surfaceless
@@ -178,6 +181,7 @@ export class GlContextRegistry {
       sessionId,
       currentDrawable: null,
       hasBeenCurrent: false,
+      savedClientArrayBuffer: undefined,
       undefinedDefaultFbo: null,
       cmdbufView: null,
       gl: null,
@@ -234,6 +238,7 @@ export class GlContextRegistry {
     const gl = b.gl;
     b.shaderUpload = null;
     b.shaderUploadSerial = 0;
+    b.savedClientArrayBuffer = undefined;
     const objects = b.objects;
     const installed = b.currentProgram;
     const installedName = b.currentProgramId;
@@ -330,7 +335,7 @@ export class GlContextRegistry {
   shareObjects(pid: number, targetSession: number, sourceSession: number): boolean {
     const target = this.get(pid,targetSession), source = this.get(pid,sourceSession);
     if (!target || !source || target === source || !target.gl || target.gl !== source.gl
-        || target.contextId === null || source.contextId === null || target.hasBeenCurrent
+        || target.contextId === null || source.contextId === null || target.hasBeenCurrent || target.savedClientArrayBuffer !== undefined
         || target.objects.members.size !== 1) return false;
     const names = target.objects;
     if (names.buffers.size || names.bufferStores.size || names.textures.size || names.shaders.size || names.programs.size
