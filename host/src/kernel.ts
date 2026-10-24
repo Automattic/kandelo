@@ -106,6 +106,12 @@ export function getWasmPosixKernelRuntimeAccess(
 }
 
 const MAX_U64 = (1n << 64n) - 1n;
+/**
+ * The first host handle a program image is held by (see `#programImages`):
+ * far above any handle a `PlatformIO` backend allocates, and still a safe
+ * integer.
+ */
+const PROGRAM_IMAGE_HANDLE_BASE = 2 ** 48;
 const intrinsicApply = Reflect.apply;
 const intrinsicBigInt = BigInt;
 const intrinsicNumber = Number;
@@ -1127,6 +1133,44 @@ export class WasmPosixKernel {
       this.bos.releaseProcess(pid);
       if (this.kms.isMasterPid(pid)) this.kms.dropMaster();
     }
+  }
+
+  /**
+   * Programs the HOST supplied as bytes (`spawn(programBytes)`), held as host
+   * file handles the kernel keeps as the running image's executable
+   * (`kernel_process_attach_exe_handle`, `Process::exe` in the kernel).
+   *
+   * WHY A HANDLE, NOT A COPY: such a program has no file in the namespace,
+   * yet the kernel must keep the object a process runs (so `/proc/self/exe`
+   * opens it, and the fork module reads the program's fork sections through
+   * it). Copying the bytes into kernel memory would cost a whole program per
+   * distinct program -- node.wasm is tens of megabytes -- in a memory that
+   * never shrinks. A handle onto the bytes this worker already holds costs
+   * nothing: the kernel reads it through `host_pread` one request at a time,
+   * like any host file, and closes it (`host_close`) when the last
+   * description of it goes, which is when the entry here is dropped.
+   *
+   * Handles come from a range no `PlatformIO` backend issues, so no host file
+   * can be mistaken for a program image or the reverse.
+   */
+  readonly #programImages = new Map<number, Uint8Array>();
+  #nextProgramImageHandle = PROGRAM_IMAGE_HANDLE_BASE;
+
+  /**
+   * Hold `bytes` as a program image and return the host handle the kernel
+   * reads it by. The bytes are referenced, never copied; they must not change
+   * while a process can read them, which is what an immutable program buffer
+   * already promises.
+   */
+  registerProgramImage(bytes: Uint8Array): bigint {
+    const handle = this.#nextProgramImageHandle++;
+    this.#programImages.set(handle, bytes);
+    return intrinsicBigInt(handle);
+  }
+
+  /** How many program images the kernel still holds (tests only). */
+  get heldProgramImageCount(): number {
+    return this.#programImages.size;
   }
 
   /**
@@ -3181,6 +3225,9 @@ export class WasmPosixKernel {
   #hostClose(handle: bigint): number {
     const h = intrinsicNumber(handle);
 
+    // The kernel released the last description of a program image.
+    if (this.#programImages.delete(h)) return 0;
+
     // Check shared pipe registry
     const entry = this.sharedPipes.get(h);
     if (entry) {
@@ -3435,6 +3482,17 @@ export class WasmPosixKernel {
       }
       return result;
     };
+
+    const image = this.#programImages.get(h);
+    if (image !== undefined) {
+      // The kernel owns a regular file's cursor and reads it positioned.
+      if (offset === null) return -29; // ESPIPE
+      const at = intrinsicNumber(offset);
+      if (!intrinsicNumberIsSafeInteger(at) || at < 0) return -22; // EINVAL
+      const n = Math.max(0, Math.min(destinationCapacity, image.byteLength - at));
+      if (n > 0) staged.set(image.subarray(at, at + n));
+      return publish(n);
+    }
 
     if (offset === null) {
       // Check shared pipe registry
@@ -3712,6 +3770,17 @@ export class WasmPosixKernel {
     destination: RustLentKernelDestination,
   ): number {
     const h = Number(handle);
+
+    const image = this.#programImages.get(h);
+    if (image !== undefined) {
+      // A read-only regular file with no name anywhere (`nlink` 0) and no
+      // identity to share a page cache on (`ino` 0: see `StatResult.ino`).
+      this.#writeStatToMemory(destination, {
+        dev: 0, ino: 0, mode: 0o100555, nlink: 0, uid: 0, gid: 0,
+        size: image.byteLength, atimeMs: 0, mtimeMs: 0, ctimeMs: 0,
+      });
+      return 0;
+    }
 
     try {
       const stat = this.io.fstat(h);
@@ -4039,6 +4108,8 @@ export class WasmPosixKernel {
     handle: bigint,
     destination: RustLentKernelDestination,
   ): number {
+    // A program image is on no filesystem: the kernel's default answers.
+    if (this.#programImages.has(Number(handle))) return -38; // ENOSYS
     if (!this.io.fstatfs) return -38; // ENOSYS
     try {
       const statfs = this.io.fstatfs(Number(handle));

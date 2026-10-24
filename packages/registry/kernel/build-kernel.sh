@@ -107,6 +107,8 @@ wasm_require_exports "$OUT" \
     kernel_pick_tcp_listener_target \
     kernel_pipe_has_readers \
     kernel_posix_timer_fire \
+    kernel_process_attach_exe_handle \
+    kernel_process_attach_exe_path \
     kernel_process_metadata_begin \
     kernel_process_metadata_cancel \
     kernel_process_metadata_commit \

@@ -1124,8 +1124,10 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           // effect batch, so a nested export is correctly rejected as
           // reentrant. Move child deactivation to the next fresh host turn,
           // like the production Node and browser teardown paths do after
-          // their worker-quiescence await.
-          queueMicrotask(() => {
+          // their worker-quiescence await. A macrotask, not a microtask: a
+          // microtask can still run while another export's effects drain
+          // (seen when a parent execs right after reaping the child).
+          setTimeout(() => {
             try {
               kernelWorker.deactivateProcess(exitPid);
               processProgramBytes.delete(exitPid);
@@ -1145,7 +1147,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
                 error instanceof Error ? error : new Error(String(error)),
               );
             }
-          });
+          }, 0);
         }
       },
     },
@@ -1204,6 +1206,14 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     maxAddr: layout.maxAddr,
   });
   kernelWorker.setCredentials(pid, { uid: options.uid, gid: options.gid });
+  // The production spawn's step: the kernel holds what the process runs.
+  const attached = kernelWorker.attachProgram(pid, {
+    bytes: new Uint8Array(programBytes),
+    name: options.argv?.[0] || options.programPath,
+  });
+  if (attached < 0) {
+    throw new Error(`attachProgram(pid=${pid}) failed: errno ${-attached}`);
+  }
   // Query before stdin is installed, as the Node and browser worker entries
   // do: delivering stdin wakes blocked readers through a deferred effect, and
   // a synchronous kernel query must not run while that effect is queued.

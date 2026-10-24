@@ -183,6 +183,8 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_pipe_write",
   "kernel_pick_tcp_listener_target",
   "kernel_poll",
+  "kernel_process_attach_exe_handle",
+  "kernel_process_attach_exe_path",
   "kernel_process_metadata_read",
   "kernel_process_metadata_stage",
   "kernel_pty_master_read",
@@ -317,6 +319,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_get_cwd":
     case "kernel_getrusage":
     case "kernel_pipe2":
+    case "kernel_process_attach_exe_path":
     case "kernel_pty_master_read":
     case "kernel_pty_master_write":
     case "kernel_read_proc_maps":
@@ -335,6 +338,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_pipe_read":
     case "kernel_pipe_write":
     case "kernel_pick_tcp_listener_target":
+    case "kernel_process_attach_exe_handle":
     case "kernel_rootfs_export_container_read":
     case "kernel_spawn_exec_target_prepare":
     case "kernel_tcsetattr":
@@ -432,6 +436,8 @@ function isKernelScratchExportName(
     case "kernel_pipe_write":
     case "kernel_pick_tcp_listener_target":
     case "kernel_poll":
+    case "kernel_process_attach_exe_handle":
+    case "kernel_process_attach_exe_path":
     case "kernel_process_metadata_read":
     case "kernel_process_metadata_stage":
     case "kernel_pty_master_read":

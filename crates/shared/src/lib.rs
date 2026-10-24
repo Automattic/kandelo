@@ -3657,6 +3657,8 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_pick_tcp_listener_target"),
         HostAdapterKernelExport::required("kernel_pipe_has_readers"),
         HostAdapterKernelExport::required("kernel_posix_timer_fire"),
+        HostAdapterKernelExport::required("kernel_process_attach_exe_handle"),
+        HostAdapterKernelExport::required("kernel_process_attach_exe_path"),
         HostAdapterKernelExport::required("kernel_process_metadata_begin"),
         HostAdapterKernelExport::required("kernel_process_metadata_cancel"),
         HostAdapterKernelExport::required("kernel_process_metadata_commit"),

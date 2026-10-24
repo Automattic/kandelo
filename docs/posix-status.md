@@ -387,6 +387,7 @@ proves and reserves only the 128-byte prefix the kernel can write.
 | `grantpt()` / `unlockpt()` | Full | PTY allocation already initializes the persistent slave metadata, so `grantpt()` is a no-op. `unlockpt()` clears the lock flag on the PTY pair. |
 | `ptsname()` | Full | Returns `/dev/pts/N` path for the slave side. |
 | `ttyname()` | Full | Via `/proc/self/fd/N` readlink on PTY slave fds. |
+| `/proc/<pid>/exe` | Partial | The open file the running image was executed through, kept by the kernel for the image's life (Linux semantics: it survives unlink and replacement of the path). `readlink` gives the executed path (` (deleted)` when an in-kernel filesystem shows no names left; a host-supplied program, which has no name in the namespace, always carries it); `open` gives a new read-only open file description of that object (`ETXTBSY` for write); `stat` follows it; `execve` re-runs it. `ENOENT` for a process no executable was attached to. Gaps: opening another process's `exe` is `EACCES` (ptrace access is not modelled), and ` (deleted)` is not reported for an executable on a host mount. |
 | `tcgetsid()` | Full | Via TIOCGSID ioctl. Returns session ID of the controlling terminal. |
 | `tcgetpgrp()` / `tcsetpgrp()` | Full | Via TIOCGPGRP/TIOCSPGRP ioctls. Gets/sets foreground process group. |
 

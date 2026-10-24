@@ -300,6 +300,7 @@ host/test/poll-timeout-preserves-pollfds.test.ts	prepared-product
 host/test/popen-daemon-regression.test.ts	prepared-product
 host/test/posix-timer-thread.test.ts	prepared-product
 host/test/prepared-exec-target.test.ts	source-only
+host/test/proc-self-exe.test.ts	prepared-product
 host/test/process-generation-detach-host-parity.test.ts	source-only
 host/test/process-generation-detach.test.ts	source-only
 host/test/process-memory-allocator.test.ts	source-only

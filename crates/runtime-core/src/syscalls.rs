@@ -2875,7 +2875,17 @@ fn resolve_namespace_path_from(
             // Preserve final fd-link metadata for procfs handling instead of
             // feeding its descriptive OFD path to a filesystem backend.
             // Directory-fd traversal through procfs remains a documented gap.
-            if matches!(procfs_entry, Some(crate::procfs::ProcfsEntry::FdLink(_, _))) {
+            // `/proc/<pid>/exe` is the same kind of magic link: it names the
+            // executable the image runs (`Process::exe`), which may have no
+            // path left at all, so it is opened as itself, never re-resolved
+            // through the text `readlink` reports.
+            if matches!(
+                procfs_entry,
+                Some(
+                    crate::procfs::ProcfsEntry::FdLink(_, _)
+                        | crate::procfs::ProcfsEntry::Exe(_)
+                )
+            ) {
                 if !is_final || require_directory {
                     return Err(Errno::ENOTDIR);
                 }
@@ -3360,6 +3370,49 @@ pub struct PreparedExecOpen {
 /// guest descriptor. The resulting reference is owned by the prepared-target
 /// ledger, so RLIMIT_NOFILE and POSIX close-any-fd lock semantics do not enter
 /// this internal authority path.
+/// The exec target behind `/proc/<pid>/exe`: a fresh description of the
+/// running image's executable, judged like any other target.
+fn open_prepared_exec_target_exe(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    pid: u32,
+) -> Result<PreparedExecOpen, Errno> {
+    let stat = process_exe_stat(proc, host, pid)?;
+    if stat.st_mode & S_IFMT != S_IFREG {
+        return Err(Errno::EACCES);
+    }
+    check_access(proc, &stat, X_OK)?;
+    let (ofd_index, _) = reopen_process_exe(proc, host, pid, O_RDONLY)?;
+    let (ofd_ref, ofd_id, host_handle, diagnostic_path) = {
+        let ofd = proc.ofd_table.get(ofd_index).ok_or(Errno::EIO)?;
+        (OpenFileDescRef(ofd_index), ofd.ofd_id, ofd.host_handle, ofd.path.clone())
+    };
+    let statfs = if crate::rootfs::is_rootfs_file_handle(host_handle) {
+        crate::rootfs::statfs(&diagnostic_path)
+    } else {
+        host_fstatfs_or_default(host, host_handle)
+    };
+    let statfs = match statfs {
+        Ok(statfs) => statfs,
+        Err(error) => {
+            let _ = release_ofd_reference_impl(proc, None, host, ofd_index);
+            return Err(error);
+        }
+    };
+    let file_id = (stat.st_ino != 0).then_some(FileId::Host {
+        dev: stat.st_dev,
+        ino: stat.st_ino,
+    });
+    Ok(PreparedExecOpen {
+        ofd_ref,
+        ofd_id,
+        file_id,
+        stat,
+        statfs,
+        diagnostic_path,
+    })
+}
+
 pub fn open_prepared_exec_target(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -3394,6 +3447,15 @@ pub fn open_prepared_exec_target(
     // reports the truthful EACCES rather than pretending the name is unknown.
     if is_devfs_namespace_path(&resolved) && !is_delegated_devfs_path(&resolved) {
         return Err(Errno::EACCES);
+    }
+
+    // `execve("/proc/self/exe")` re-runs the image's own executable -- the
+    // object that was executed, even if its path is gone or now names
+    // something else.
+    if let Some(crate::procfs::ProcfsEntry::Exe(pid)) =
+        crate::procfs::match_procfs(&resolved, proc.pid)
+    {
+        return open_prepared_exec_target_exe(proc, host, pid);
     }
 
     if crate::tmpfs::claims_path(&resolved) {
@@ -4108,6 +4170,13 @@ pub fn sys_open(
 
     if let Some(fd) = try_open_fifo(proc, host, &resolved, oflags, exclusive_create)? {
         return Ok(fd);
+    }
+
+    // `/proc/<pid>/exe` opens the executable the image runs, not a path.
+    if let Some(crate::procfs::ProcfsEntry::Exe(pid)) =
+        crate::procfs::match_procfs(&resolved, proc.pid)
+    {
+        return open_process_exe(proc, host, pid, oflags);
     }
 
     // Procfs (/proc/...) — in-kernel virtual filesystem
@@ -8241,6 +8310,101 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
 /// Return the same live OFD metadata through a procfs fd link as `fstat(fd)`.
 /// A numeric procfs fd name that is not open is absent, not an EBADF syscall
 /// argument owned by the caller.
+/// The metadata of the regular file behind an executable's description:
+/// served by the in-kernel filesystem that owns the handle, or the host.
+fn exe_backing_fstat(host: &mut dyn HostIO, host_handle: i64) -> Result<WasmStat, Errno> {
+    if crate::rootfs::is_rootfs_file_handle(host_handle) {
+        crate::rootfs::fstat(host_handle)
+    } else if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
+        crate::tmpfs::fstat(host_handle)
+    } else if host_handle >= 0 {
+        host.host_fstat(host_handle)
+    } else {
+        Err(Errno::EBADF)
+    }
+}
+
+/// The metadata `/proc/<pid>/exe` follows to: the running image's file.
+pub(crate) fn process_exe_stat(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    pid: u32,
+) -> Result<WasmStat, Errno> {
+    if pid != proc.pid {
+        return Err(Errno::EACCES);
+    }
+    let exe = proc.exe.ok_or(Errno::ENOENT)?;
+    let host_handle = proc.ofd_table.get(exe.0).ok_or(Errno::ENOENT)?.host_handle;
+    exe_backing_fstat(host, host_handle)
+}
+
+/// A NEW open file description of the executable the image runs
+/// (`Process::exe`), at offset 0, sharing its backing -- what Linux gives an
+/// open of `/proc/self/exe`: the object that was executed, even after its
+/// path was unlinked or now names a different file. Returns the description's
+/// index (one reference, no descriptor yet) and the file's metadata.
+///
+/// Only the caller's own image. Linux lets a process open another's `exe`
+/// with ptrace access, which Kandelo does not model, so another pid is
+/// `EACCES` -- the errno Linux gives a caller without that access.
+fn reopen_process_exe(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    pid: u32,
+    status_flags: u32,
+) -> Result<(usize, WasmStat), Errno> {
+    if pid != proc.pid {
+        return Err(Errno::EACCES);
+    }
+    let exe = proc.exe.ok_or(Errno::ENOENT)?;
+    let (file_type, host_handle, path, file_id) = {
+        let ofd = proc.ofd_table.get(exe.0).ok_or(Errno::ENOENT)?;
+        (ofd.file_type, ofd.host_handle, ofd.path.clone(), ofd.file_id)
+    };
+    let stat = exe_backing_fstat(host, host_handle)?;
+    // One more owner of the backing, exactly as an inherited description is.
+    if !crate::descriptor_backing::add_ref_for_ofd(file_type, host_handle)? {
+        if host_handle < 0 {
+            return Err(Errno::EBADF);
+        }
+        crate::ofd::host_handle_fork_ref(host_handle);
+    }
+    let index = proc.ofd_table.create(file_type, status_flags, host_handle, path);
+    if let Some(ofd) = proc.ofd_table.get_mut(index) {
+        ofd.file_id = file_id;
+    }
+    Ok((index, stat))
+}
+
+/// `open("/proc/<pid>/exe")`: a descriptor for the running image's file.
+///
+/// Read-only: writing to a file a process is executing is `ETXTBSY` on Linux,
+/// and an open of the exe link for writing asks exactly that. The file's own
+/// read permission still applies.
+fn open_process_exe(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    pid: u32,
+    oflags: u32,
+) -> Result<i32, Errno> {
+    if oflags & O_ACCMODE != O_RDONLY {
+        return Err(Errno::ETXTBSY);
+    }
+    if oflags & O_DIRECTORY != 0 {
+        return Err(Errno::ENOTDIR);
+    }
+    let stat = process_exe_stat(proc, host, pid)?;
+    check_access(proc, &stat, R_OK)?;
+    let (index, _) = reopen_process_exe(proc, host, pid, oflags & !CREATION_FLAGS)?;
+    match proc.fd_table.alloc(OpenFileDescRef(index), oflags_to_fd_flags(oflags)) {
+        Ok(fd) => Ok(fd),
+        Err(error) => {
+            let _ = release_ofd_reference_impl(proc, None, host, index);
+            Err(error)
+        }
+    }
+}
+
 pub fn procfs_fd_target_stat(
     proc: &Process,
     host: &mut dyn HostIO,
@@ -8804,6 +8968,9 @@ fn procfs_entry_stat(
 ) -> Result<WasmStat, Errno> {
     crate::procfs::validate_entry(proc, entry)?;
     if follow {
+        if let crate::procfs::ProcfsEntry::Exe(pid) = entry {
+            return process_exe_stat(proc, host, *pid);
+        }
         if let crate::procfs::ProcfsEntry::FdLink(pid, fd) = entry {
             if *pid == proc.pid {
                 return procfs_fd_target_stat(proc, host, *fd);
@@ -10874,11 +11041,15 @@ fn cleanup_process_for_exit(
     // Prepared executable tokens are exact OFD leases owned by this image,
     // not guest descriptors. Retire them before the ordinary fd walk so exit,
     // signal death, and trap cleanup cannot leave host-visible authority alive.
+    // The executable the image ran goes with it (`Process::exe`): a zombie
+    // runs nothing, so it holds no executable resident.
     if let Some(machine_locks) = locks.as_deref_mut() {
         crate::exec_target::drain_prepared_exec_targets(proc, machine_locks, host);
+        crate::exec_target::release_process_exe(proc, machine_locks, host);
     } else {
         let mut isolated_locks = AdvisoryLockManager::new();
         crate::exec_target::drain_prepared_exec_targets(proc, &mut isolated_locks, host);
+        crate::exec_target::release_process_exe(proc, &mut isolated_locks, host);
     }
 
     // The exiting image owns every blocked request. Consume its stable
@@ -16668,6 +16839,13 @@ pub fn sys_openat(
 
     if let Some(fd) = try_open_fifo(proc, host, &resolved, oflags, exclusive_create)? {
         return Ok(fd);
+    }
+
+    // `/proc/<pid>/exe` opens the executable the image runs, not a path.
+    if let Some(crate::procfs::ProcfsEntry::Exe(pid)) =
+        crate::procfs::match_procfs(&resolved, proc.pid)
+    {
+        return open_process_exe(proc, host, pid, oflags);
     }
 
     // Procfs (/proc/...) — in-kernel virtual filesystem
@@ -52648,7 +52826,142 @@ impl HostIO for RelSymlinkMock {
         )
         .unwrap();
         assert_eq!(proc.exec_generation, 1);
-        assert_eq!(host.closed_handles, vec![100]);
+        // The image keeps the object it executed even though its path was
+        // renamed away, unlinked and replaced: `/proc/self/exe` names it by
+        // the path it was executed through, not by what that path names now.
+        assert!(host.closed_handles.is_empty());
+        let mut link = [0u8; 64];
+        let n = crate::procfs::procfs_readlink(
+            &proc,
+            &crate::procfs::ProcfsEntry::Exe(pid),
+            &mut link,
+        )
+        .unwrap();
+        assert_eq!(&link[..n], b"/bin/original");
+        // Exit releases it.
+        sys_exit_with_locks(&mut proc, &mut locks, &mut host, 0);
+        assert!(proc.exe.is_none());
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![100]);
+    }
+
+    /// `/proc/self/exe` names and opens the file the image was executed
+    /// through. It used to be `argv[0]` -- the caller's choice, here `sh` --
+    /// which named a different file or none.
+    #[test]
+    fn proc_self_exe_is_the_executed_file_not_argv0() {
+        let mut proc = Process::new(186);
+        let pid = proc.pid;
+        proc.argv = vec![b"sh".to_vec()];
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        let mut link = [0u8; 64];
+
+        // No executable attached yet: the truthful answer is ENOENT, not argv.
+        assert_eq!(
+            sys_readlink(&mut proc, &mut host, b"/proc/self/exe", &mut link),
+            Err(Errno::ENOENT),
+        );
+
+        let token = prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/real-shell");
+        let mut image = [0u8; 5];
+        crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut image).unwrap();
+        crate::exec_target::commit_process(&mut proc, &mut locks, &mut host, pid, pid, token)
+            .unwrap();
+        let n = sys_readlink(&mut proc, &mut host, b"/proc/self/exe", &mut link).unwrap();
+        assert_eq!(&link[..n], b"/bin/real-shell");
+
+        // Replace the file the path names; the image still reads its own.
+        host.set_file_with_owner(b"/bin/real-shell", 0, 0, S_IFREG | 0o755, b"world");
+        host.prepared_exec_bytes = Some(b"world".to_vec());
+        let fd = sys_open(&mut proc, &mut host, b"/proc/self/exe", O_RDONLY, 0).unwrap();
+        let mut bytes = [0u8; 5];
+        assert_eq!(sys_pread(&mut proc, &mut host, fd, &mut bytes, 0), Ok(5));
+        assert_eq!(&bytes, b"hello");
+        assert_eq!(sys_fstat(&proc, &mut host, fd).unwrap().st_size, 5);
+        assert_eq!(sys_stat(&mut proc, &mut host, b"/proc/self/exe").unwrap().st_size, 5);
+        // Writing to a running executable is ETXTBSY, as on Linux.
+        assert_eq!(
+            sys_open(&mut proc, &mut host, b"/proc/self/exe", O_RDWR, 0),
+            Err(Errno::ETXTBSY),
+        );
+
+        // The opened description is its own owner of the backing: closing it
+        // leaves the image's, and exit releases the last.
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert!(host.closed_handles.is_empty());
+        sys_exit_with_locks(&mut proc, &mut locks, &mut host, 0);
+        // Exit also closes the process's stdio handles; the executable's
+        // backing (handle 100) is released exactly once.
+        assert_eq!(host.closed_handles.iter().filter(|&&h| h == 100).count(), 1);
+    }
+
+    /// A fork child runs its parent's image, so it inherits the executable:
+    /// one more owner of the same description, released by its own exit.
+    #[test]
+    fn fork_child_inherits_the_executable() {
+        let mut proc = Process::new(187);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let token = prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/forker");
+        let mut image = [0u8; 5];
+        crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut image).unwrap();
+        crate::exec_target::commit_process(&mut proc, &mut locks, &mut host, pid, pid, token)
+            .unwrap();
+        let exe = proc.exe.unwrap();
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = crate::fork::serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = crate::fork::deserialize_fork_state(&buf[..written], 188).unwrap();
+        assert_eq!(child.exe, Some(exe));
+        let inherited = child.ofd_table.get(exe.0).unwrap();
+        assert_eq!(inherited.ref_count, 1);
+        assert_eq!(inherited.path, b"/bin/forker");
+    }
+
+    /// A host-supplied program is a host handle onto the host's own bytes: it
+    /// has no name in the namespace, so its link carries ` (deleted)` from the
+    /// start, and the kernel owns the handle -- closing it when the image ends,
+    /// or at once when it refuses it.
+    #[test]
+    fn host_supplied_executable_is_a_handle_the_kernel_releases() {
+        let mut proc = Process::new(189);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/host/program", 0, 0, S_IFREG | 0o755, b"hello");
+        let handle = crate::hostdir::open(&mut host, b"/host/program", O_RDONLY, 0).unwrap();
+
+        crate::exec_target::attach_exe_host_handle(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            handle,
+            b"hello.wasm",
+        )
+        .unwrap();
+        let mut link = [0u8; 64];
+        let n = sys_readlink(&mut proc, &mut host, b"/proc/self/exe", &mut link).unwrap();
+        assert_eq!(&link[..n], b"hello.wasm (deleted)");
+        assert!(host.closed_handles.is_empty());
+        sys_exit_with_locks(&mut proc, &mut locks, &mut host, 0);
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![handle]);
+
+        // A refused handle is closed by the refusal.
+        let mut other = Process::new(190);
+        let refused = crate::hostdir::open(&mut host, b"/host/program", O_RDONLY, 0).unwrap();
+        assert_eq!(
+            crate::exec_target::attach_exe_host_handle(
+                &mut other,
+                &mut locks,
+                &mut host,
+                refused,
+                b"",
+            ),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![handle, refused]);
+        assert!(other.exe.is_none());
     }
 
     #[test]
@@ -52680,7 +52993,7 @@ impl HostIO for RelSymlinkMock {
             ),
             Err(Errno::EINVAL),
         );
-        assert_eq!(host.closed_handles, vec![100]);
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![100]);
 
         let stale_generation =
             prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/generation");
@@ -52705,7 +53018,7 @@ impl HostIO for RelSymlinkMock {
             ),
             Err(Errno::EINVAL),
         );
-        assert_eq!(host.closed_handles, vec![100, 101]);
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![100, 101]);
 
         proc.exec_generation = 0;
         let wrong_process =
@@ -52721,7 +53034,7 @@ impl HostIO for RelSymlinkMock {
             ),
             Err(Errno::ESRCH),
         );
-        assert_eq!(host.closed_handles, vec![100, 101, 102]);
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![100, 101, 102]);
         assert_eq!(proc.exec_generation, 0);
     }
 
@@ -52800,7 +53113,18 @@ impl HostIO for RelSymlinkMock {
                 assert!(proc.fd_table.get(cloexec_fd).is_err());
                 assert_eq!(proc.exec_generation, 1);
             }
-            assert_eq!(host.closed_handles, vec![100]);
+            // A refused commit gives its lease up; a committed image keeps
+            // the one it was executed through (`Process::exe`).
+            if make_stale {
+                assert_eq!(host.closed_handles, vec![100]);
+                assert!(proc.exe.is_none());
+            } else {
+                assert!(host.closed_handles.is_empty());
+                assert_eq!(
+                    proc.ofd_table.get(proc.exe.unwrap().0).unwrap().host_handle,
+                    100,
+                );
+            }
             assert_eq!(
                 crate::exec_target::commit_spawn(
                     &mut proc,
@@ -52812,7 +53136,9 @@ impl HostIO for RelSymlinkMock {
                 ),
                 Err(Errno::EINVAL),
             );
-            assert_eq!(host.closed_handles, vec![100]);
+            // A repeated commit releases nothing more.
+            let expected: &[i64] = if make_stale { &[100] } else { &[] };
+            assert_eq!(host.closed_handles, expected);
         }
     }
 
@@ -53270,7 +53596,10 @@ impl HostIO for RelSymlinkMock {
             assert!(proc.has_exec);
             assert!(proc.threads.is_empty());
             assert!(proc.prepared_exec_targets.is_empty());
-            assert_eq!(host.closed_handles.len(), 2);
+            // The loser's lease is released; the winner's is the image's
+            // executable now (`Process::exe`).
+            assert_eq!(host.closed_handles.len(), 1);
+            assert!(proc.exe.is_some());
 
             assert_eq!(
                 crate::exec_target::commit_process(
@@ -53284,7 +53613,7 @@ impl HostIO for RelSymlinkMock {
                 Err(Errno::EINVAL),
             );
             assert_eq!(proc.exec_generation, 1);
-            assert_eq!(host.closed_handles.len(), 2);
+            assert_eq!(host.closed_handles.len(), 1);
         }
     }
 
@@ -53538,7 +53867,10 @@ impl HostIO for RelSymlinkMock {
             crate::exec_target::cancel(&mut proc, &mut locks, &mut host, pid, second),
             Err(Errno::EINVAL),
         );
-        assert_eq!(host.closed_handles, vec![101, 100]);
+        // The competitor is released at the commit; the winner stays held as
+        // the image's executable (`Process::exe`).
+        assert_eq!(host.closed_handles, vec![101]);
+        assert!(proc.exe.is_some());
     }
 
     #[test]

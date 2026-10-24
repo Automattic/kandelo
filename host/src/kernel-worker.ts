@@ -9017,6 +9017,66 @@ export class CentralizedKernelWorker {
     return result;
   }
 
+  /**
+   * Tell the kernel what a host-launched process runs, before it runs
+   * (`Process::exe` in the kernel): the open file `/proc/<pid>/exe` names and
+   * opens, and the one the fork module reads the program's fork sections
+   * through. An exec or `posix_spawn` needs no call -- its commit keeps the
+   * target it resolved.
+   *
+   * `{ path }` is a program in the process's VFS, resolved and judged as the
+   * process would `execve` it. `{ bytes, name }` is a program only the host
+   * holds: the kernel gets a host handle onto these bytes, not a copy of them
+   * (`WasmPosixKernel.registerProgramImage`), and closes it when the last
+   * process running the image is gone. Returns 0 or a negative errno.
+   */
+  attachProgram(
+    pid: number,
+    program:
+      | { readonly path: string }
+      | { readonly bytes: Uint8Array; readonly name: string },
+  ): number {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    const text = "path" in program ? program.path : program.name;
+    const encoded = new TextEncoder().encode(text);
+    if (encoded.byteLength > POSIX_PATH_MAX_BYTES) return -ENAMETOOLONG;
+    const region = this.#requireMainScratchRegion();
+    if (encoded.byteLength > region.capacity) return -ENAMETOOLONG;
+    const handle = "path" in program
+      ? undefined
+      : this.#kernel.registerProgramImage(program.bytes);
+    let result = -EIO;
+    let completed = false;
+    const deferred = this.#runOrDeferKernelEntry(
+      `kernel attach program pid=${pid}`,
+      (entry) => {
+        result = region.withLease((lease) => {
+          lease.copyFrom(encoded);
+          const name = lease.exportPointer(0, encoded.byteLength);
+          return handle === undefined
+            ? this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_process_attach_exe_path",
+              [pid, name, encoded.byteLength],
+            )
+            : this.#invokeEntryScratchExport(
+              entry,
+              lease,
+              "kernel_process_attach_exe_handle",
+              [pid, handle, name, encoded.byteLength],
+            );
+        });
+        completed = true;
+        return undefined;
+      },
+    );
+    if (deferred || !completed) {
+      throw new KernelReentrantEntryError("kernel attach program");
+    }
+    return result;
+  }
+
   execTargetSize(ownerPid: number, target: number): bigint {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     let result = -EIO as number | bigint;
