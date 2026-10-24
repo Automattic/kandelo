@@ -231,10 +231,10 @@ the native provider additionally runs on memory64. It covers exact local tags
 in fresh instances, scalar/vector bits, recursively nested exceptions, alias
 identity, brokered values, ingress, cache cleanup, invalid IDs and disjoint
 transaction scratch. Budget tests reject metadata, work and output exhaustion;
-256 repeated tag signatures keep the same physical local count. These are
-provider component checks. Linked activation replay through catch-all and
-reference-bearing catches, local garbage-collection providers and full module
-bootstrap remain unfinished. Provider metadata alone certifies no artifact.
+256 repeated tag signatures keep the same physical local count. These
+providers now compose with activation frame vectors in the linked catch
+fixtures below. Local garbage-collection providers and full module bootstrap
+remain unfinished. Provider metadata alone certifies no artifact.
 
 `FrameBuilder` now plans one function's activation storage. It keeps parameters
 and first-used original locals in lexical order, assigns synthetic value keys,
@@ -278,9 +278,25 @@ input parameters and produces invalid Wasm for the typed-input fixture; those
 native cases instead have independent Wasm validation and execution evidence.
 Differential planning checks cover reference, vector and catch-all payloads,
 including 448 static regions sharing constant physical temporary storage.
-Complete reference recipe providers, linked exception-payload replay and
-legacy-handler normalization remain unfinished. The normal production
-backend still uses Walrus.
+
+Linked recipe fixtures execute all four modern catch kinds with vector and
+externref payloads, user/synthetic exception aliases, private-tag shielding,
+fresh-instance rewind, allocation-failure restart and invalid selectors.
+They run shared and inline scalar codecs on both pointer widths, with and
+without virtual scratch spills. Catch-all fixtures also capture and replay
+broker-owned raw values. A shared host fixture implements durable recipe IDs,
+disjoint exchange ranges and frame vectors; the real generated Wasm codec
+owns exception reconstruction. No JavaScript `exnref` provider substitutes for
+it. Scratch release is checked against each activation's entry baseline,
+including the restored fork-time stack pointer during replay.
+
+The same journal assertions run against Walrus, with one recorded oracle
+defect: when `catch_all_ref` rethrows a raw broker value, Walrus leaves its
+scratch reservation behind on normal, rewind and live-abort exits. Native
+emission must release that reservation completely. The fixture verifies the
+known oracle failure separately instead of weakening native cleanup checks.
+Complete reference providers and legacy-handler normalization remain
+unfinished. Production continues to use Walrus.
 
 `FrameCodecCatalog` interns scalar save/restore recipes before output starts.
 It emits each helper serially and shares restores across save-commit policies.

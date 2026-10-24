@@ -1,10 +1,7 @@
 use fork_instrument::streaming::*;
-use std::collections::{BTreeMap, BTreeSet};
-use wasm_encoder::{ExportKind, ValType, reencode::Reencode};
 
 #[path = "support/streaming_activation.rs"]
 mod harness;
-use harness::ActivationModule;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ForkPlacement {
@@ -46,126 +43,7 @@ fn fixture(wide: bool, catch_ref: bool, typed: bool, placement: ForkPlacement) -
 }
 
 fn artifact(input: &[u8], shared: bool) -> (Vec<u8>, u32) {
-    let scan = scan(input).unwrap();
-    let types = SourceTypes::new(&scan);
-    let mut runtime = NativeRuntime::plan(&scan, Default::default(), 1 << 20).unwrap();
-    let environment = FrameEnvironment::discover(&scan, &mut runtime, 1 << 20).unwrap();
-    let body = scan.body_provider(Default::default()).load(1).unwrap();
-    let mut plan = NativeActivationPlan::plan(
-        &scan,
-        &body,
-        &types,
-        &mut runtime,
-        environment,
-        &BTreeSet::from([0]),
-        Default::default(),
-    )
-    .unwrap();
-    assert_eq!(plan.catches.regions.len(), 1);
-    assert!(plan.catches.selector.is_some());
-    assert!(
-        plan.continuation.references.slots.is_empty(),
-        "scalar catch ownership requires no reference recipe"
-    );
-    let catch_offset = plan.continuation.frame.catch[0].fields[0].offset;
-    let first_type = scan.types.as_ref().core_type_count_in_module()
-        + runtime.function_declarations().type_count();
-    let first_function = runtime.imports_plan().helper_function_base() + 7;
-    let mut support = ActivationSupportCatalog::new(
-        environment,
-        runtime.indices(),
-        runtime.frames_start_offset(),
-        first_type,
-        first_function,
-        1 << 20,
-    )
-    .unwrap();
-    let frame_select = support.frame_select();
-    let transport = support
-        .transport(
-            ActivationCallTarget::Direct(0),
-            &[ValType::I32],
-            &[ValType::I32],
-        )
-        .unwrap();
-    let resume = support
-        .resume_thunk(
-            runtime.function_index(1).unwrap(),
-            &[ValType::I32],
-            &plan.results,
-            &plan.continuation.frame,
-        )
-        .unwrap();
-    let result_block = support.result_block(&plan.results).unwrap();
-    plan.catches.bind_types(&mut support).unwrap();
-    let support = support.freeze().unwrap();
-    plan.catches.bind_frozen_types(&support).unwrap();
-    let mut codecs = FrameCodecCatalog::new(
-        environment,
-        runtime.indices(),
-        first_type + support.declarations().type_count(),
-        first_function + support.declarations().function_count(),
-        1 << 20,
-    )
-    .unwrap();
-    let shape = plan
-        .continuation
-        .frame
-        .codec_shape(true, &plan.continuation.references)
-        .unwrap();
-    assert!(
-        !shape.commits,
-        "catch payload must be complete before commit"
-    );
-    let pair = codecs.request(&shape).unwrap();
-    let codecs = codecs.freeze().unwrap();
-    let declarations = FrozenDeclarations::concatenate(
-        &[
-            runtime.function_declarations(),
-            support.declarations(),
-            codecs.declarations(),
-        ],
-        1 << 20,
-    )
-    .unwrap();
-    let mut module = ModuleDeclarationBuilder::from_frozen(
-        &scan,
-        Some(runtime.imports_plan()),
-        runtime.local_declarations().clone(),
-        1 << 20,
-    )
-    .unwrap();
-    module
-        .export("unwind_tag", ExportKind::Tag, runtime.indices().unwind_tag)
-        .unwrap();
-    module
-        .export("resume_root", ExportKind::Func, resume)
-        .unwrap();
-    let emission = ActivationEmission {
-        runtime: runtime.indices(),
-        frame_select,
-        function_ordinal: 0,
-        result_block,
-        scalar_codecs: shared.then_some(pair),
-        boundary: None,
-    };
-    let mut transform = ActivationModule {
-        runtime,
-        support,
-        codecs,
-        declarations,
-        module: module.freeze(),
-        plans: BTreeMap::from([(1, plan)]),
-        emission: BTreeMap::from([(1, emission)]),
-        routes: vec![(ReferenceCallKind::Direct(0), transport)],
-        tails: BTreeMap::new(),
-    };
-    let mut output = Vec::new();
-    emit_remapped(&scan, &mut transform, &mut output, Default::default()).unwrap();
-    wasmparser::Validator::new_with_features(features())
-        .validate_all(&output)
-        .unwrap();
-    (output, catch_offset)
+    harness::emit_catch_fixture(input, 1, shared, false)
 }
 
 fn oracle_artifact(input: &[u8]) -> Vec<u8> {

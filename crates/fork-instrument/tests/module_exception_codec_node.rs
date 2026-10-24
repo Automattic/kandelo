@@ -199,6 +199,11 @@ fn run_node(provider: Vec<u8>, wide: bool) {
     fs::write(directory.join("helper.wasm"), helper_module()).expect("write helper");
     fs::write(directory.join("anyref.wasm"), anyref_dependencies()).expect("write anyref");
     fs::write(
+        directory.join("exception_recipe_host.cjs"),
+        include_str!("fixtures/exception_recipe_host.cjs"),
+    )
+    .expect("write exception host");
+    fs::write(
         directory.join("test.mjs"),
         include_str!("fixtures/streaming_exception_codec.mjs"),
     )

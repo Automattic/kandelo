@@ -163,6 +163,7 @@ fn artifact(wide: bool) -> Vec<u8> {
     let direct_tail = runtime.function_index(2).unwrap();
     let mut transform = ActivationModule {
         runtime,
+        exceptions: None,
         support,
         codecs,
         declarations,

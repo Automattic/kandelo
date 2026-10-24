@@ -154,6 +154,7 @@ fn artifact(wide: bool, shared: bool) -> (Vec<u8>, Vec<u32>) {
         .unwrap();
     let mut transform = ActivationModule {
         runtime,
+        exceptions: None,
         support,
         codecs,
         declarations,
@@ -342,6 +343,7 @@ fn reference_artifact(wide: bool, shared: bool) -> Vec<u8> {
     };
     let mut transform = ActivationModule {
         runtime,
+        exceptions: None,
         support,
         codecs,
         declarations,
