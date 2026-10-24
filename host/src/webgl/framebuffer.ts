@@ -11,7 +11,8 @@ export function validFramebufferTarget(target: number): boolean {
 
 export function defaultFramebuffer(b: GlBinding, read = false): WebGLFramebuffer | null {
   const surface = read ? b.currentDrawable?.readSurfaceId : b.currentDrawable?.drawSurfaceId;
-  return surface === 0 ? b.undefinedDefaultFbo : b.renderTargetFbo;
+  const selected = read ? b.readSurface : b.drawSurface;
+  return surface === 0 ? b.undefinedDefaultFbo : selected ? selected.renderTargetFbo : b.renderTargetFbo;
 }
 
 export function boundFramebuffer(b: GlBinding, target: number): WebGLFramebuffer | null {
@@ -19,7 +20,8 @@ export function boundFramebuffer(b: GlBinding, target: number): WebGLFramebuffer
 }
 
 export function isDefaultFramebuffer(b: GlBinding, framebuffer: WebGLFramebuffer | null): boolean {
-  return framebuffer === null || framebuffer === b.renderTargetFbo || framebuffer === b.undefinedDefaultFbo;
+  return framebuffer === null || framebuffer === b.renderTargetFbo || framebuffer === b.undefinedDefaultFbo
+    || framebuffer === b.drawSurface?.renderTargetFbo || framebuffer === b.readSurface?.renderTargetFbo;
 }
 
 /** A changed native window target must not displace a user FBO or the

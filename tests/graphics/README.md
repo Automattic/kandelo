@@ -109,6 +109,12 @@ case replays those actual C streams into two host session targets, checks
 red/blue pixels and proves old-target retirement preserves the new one.
 These records do not execute guest initialization or ioctl marshalling.
 
+The source host/browser surface cases also check retained presentation
+storage across context replacement, failed resize preserving pixels,
+independent native draw/read selectors and framebuffer-zero rebinding,
+and final retirement after owner/selector release. Native selector tests
+do not establish public cross-session EGL surface routing or guest CTS.
+
 The native index-usage query double supplies a controlled maximum/presence
 reply; it does not dereference the guest's u32 input pointer on a 64-bit
 native host. Replayed command traces omit synchronous queries. Separate

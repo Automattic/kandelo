@@ -3827,6 +3827,18 @@ GPU-backed Wayland window buffers also own 24-bit depth and 8-bit stencil
 attachments. Allocation checks framebuffer completeness and restores the
 shared context's texture, renderbuffer, and separate read/draw framebuffer
 bindings. Destroying the buffer releases all three GL objects.
+Host surface records own presentation allocations independently of context
+state. An explicit live surface keeps its target when its context is
+destroyed and recreated. Draw/read selectors retain their surface records;
+retiring the owner description defers target deletion until both kinds of
+reference end. Framebuffer zero resolves the selected draw and read targets
+separately, including a combined `GL_FRAMEBUFFER` bind. A candidate resize
+allocates a complete replacement before changing the surface or any of its
+selectors. Failed allocation preserves the previous target and pixels;
+successful replacement preserves user FBOs and updates selecting contexts.
+These native selectors have source tests; public kernel/C cross-session
+surface routing, generation validation and BO reference retention still
+need the complete surface protocol.
 The multiplexer restores masks, stencil operations, clear values, dither,
 constant vertex attributes, independent 2D/cube texture bindings and pixel
 storage state when switching guest contexts. Synchronous native-state queries
@@ -3882,6 +3894,9 @@ Another thread cannot acquire a live binding. A replacement is acknowledged
 before displacing the caller's prior binding, and thread exit revokes it.
 The first accepted bind initializes viewport/scissor from the drawable,
 including zero dimensions for surfaceless; later binds preserve client state.
+The forwarded renderer prepares native default storage without publishing
+current state, then commits only after its reply mailbox accepts the bind.
+A cancelled or expired acknowledgement retires the candidate allocation.
 Native Wayland window resizing updates an existing GPU target atomically
 without destroying its current EGL surface. Failed updates preserve the old
 target and attached size. This path currently requires an existing GPU

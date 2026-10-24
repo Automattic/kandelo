@@ -19,6 +19,7 @@
  * IMPORTANT: Wasm i64 values appear as BigInt in JavaScript.
  */
 
+import { releaseSurfaceResources } from "./webgl/surface-resources.js";
 import type {
   AppendOutcome,
   HostFileOffset,
@@ -2529,7 +2530,7 @@ export class WasmPosixKernel {
             // attaches the drawable. Roll it back unless creation succeeds.
             b.contextId = ctxId;
             this.tryAttachKmsGlCanvas(b);
-            if (b.gl && !b.gl.isContextLost()) return 0;
+            if (b.gl && !b.gl.isContextLost() && (!b.surface.gl || b.surface.gl === b.gl)) return 0;
           } catch {
             // Native allocation and extension setup can throw. They must
             // follow the same rollback as a null/lost context.
@@ -2646,29 +2647,8 @@ export class WasmPosixKernel {
         host_gl_destroy_surface: (pid: number, _surfaceId: number, sessionId?: number): void => {
           const b = this.gl.get(pid, sessionId);
           if (!b) return;
-          b.surfaceId = null;
-          b.surfaceSize = null;
-          // Drop the producer render-target reference — the FBO itself is
-          // owned by the GPU bo (freed via destroyGpuBo on bo destroy),
-          // so never delete it here. Reset shadow.fbo so a subsequent
-          // surface on this binding starts at the default framebuffer.
-          // Also clear the pending target so a re-created context does not
-          // re-apply a stale redirect.
-          b.pendingRenderTargetBoId = 0;
-          if (b.renderTargetFbo) {
-            const previous = b.renderTargetFbo;
-            b.renderTargetFbo = null;
-            replaceDefaultFramebuffer(b, previous);
-          }
-          // The canvas-backed present target IS owned by this binding, so
-          // dropping the redirect above has to free it as well; a later
-          // context rebuilds one.
-          if (b.presentTarget) {
-            b.gl?.deleteFramebuffer(b.presentTarget.fbo);
-            b.gl?.deleteTexture(b.presentTarget.tex);
-            b.gl?.deleteRenderbuffer(b.presentTarget.depthStencil);
-            b.presentTarget = null;
-          }
+          if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
+          this.gl.destroySurface(pid, b.sessionId);
         },
         host_gl_make_current: (
           pid: number, ctxId: number, drawId: number, readId: number, sessionId: number,
@@ -2680,7 +2660,7 @@ export class WasmPosixKernel {
             // Revoking a kernel binding does not alter the cached native
             // context or wait on a renderer. Queued forwarded commands still
             // observe their old drawable; a new bind is acknowledged in order.
-            if (b) b.currentDrawable = null;
+            if (b) { releaseSurfaceResources(b); b.currentDrawable = null; }
             return 0;
           }
           if (!b || b.contextId !== ctxId || (!b.gl && !b.forward)) return -5;

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
+import { ensurePresentTarget } from "../src/webgl/present-target.js";
 
 function harness(callbacks = {}) {
   const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
@@ -23,6 +24,33 @@ function harness(callbacks = {}) {
 }
 
 describe("context creation acknowledgement", () => {
+  it("rejects a replacement renderer while retaining the existing surface for retry", () => {
+    const {kernel, create, imports} = harness();
+    const deleted: unknown[] = [];
+    const renderer = () => new Proxy({
+      getExtension: () => null, isContextLost: () => false, getParameter: () => null, getError: () => 0,
+      createTexture: () => ({}), createFramebuffer: () => ({}), createRenderbuffer: () => ({}),
+      FRAMEBUFFER_COMPLETE: 0x8cd5, checkFramebufferStatus: () => 0x8cd5,
+      deleteFramebuffer: (value: unknown) => deleted.push(value),
+    }, {get: (object,key) => Reflect.get(object,key) ?? (() => null)}) as unknown as WebGL2RenderingContext;
+    const original = renderer(); let selected = original;
+    kernel.gl.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
+    kernel.gl.attachCanvas(7,{width:4,height:3,getContext:() => selected} as unknown as OffscreenCanvas);
+    expect(create(7,21,11)).toBe(0);
+    const b = kernel.gl.get(7,11)!; b.surfaceId = 71;
+    expect(ensurePresentTarget(b)).toBe(true); const target = b.presentTarget;
+    imports.host_gl_destroy_context(7,21);
+    selected = renderer();
+    expect(create(7,22,11)).toBe(-19);
+    expect(b.contextId).toBeNull(); expect(b.gl).toBeNull();
+    expect(b.presentTarget).toBe(target); expect(deleted).toEqual([]);
+    selected = original;
+    expect(create(7,23,11)).toBe(0); expect(b.gl).toBe(original);
+    expect(ensurePresentTarget(b)).toBe(true); expect(b.presentTarget).toBe(target);
+    imports.host_gl_unbind(7,11);
+    expect(deleted).toEqual([target!.fbo]);
+  });
+
   it("rolls back a failed surfaceless allocation and retires its successful retry", () => {
     const { kernel, create, imports } = harness();
     kernel.gl.bind({ pid: 7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });

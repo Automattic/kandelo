@@ -19,7 +19,7 @@
  * their output is sampled by a compositor, never composited by the browser.
  */
 import type { GlBinding } from "./registry.js";
-import { replaceDefaultFramebuffer } from "./framebuffer.js";
+import { replaceSurfaceTarget } from "./surface-resources.js";
 
 const GL_READ_FRAMEBUFFER = 0x8ca8;
 const GL_DRAW_FRAMEBUFFER = 0x8ca9;
@@ -31,78 +31,66 @@ const GL_DRAW_FRAMEBUFFER_BINDING = 0x8ca6;
  *  already renders into a GPU bo, or one without a canvas. Returns true
  *  when the binding has a usable present target. */
 export function ensurePresentTarget(b: GlBinding): boolean {
-  const gl = b.gl;
   const canvas = b.canvas;
-  if (!gl || !canvas) return false;
-  // A GPU-tier producer owns its render target; never displace it.
+  return canvas ? resizeSurfaceTarget(b, canvas.width, canvas.height) : false;
+}
+
+/** Allocate one surface's storage on its renderer. Explicit dimensions also
+ * support independently sized offscreen draw/read targets; allocation does
+ * not require another canvas or WebGL context. */
+export function resizeSurfaceTarget(b: GlBinding, w: number, h: number): boolean {
+  const gl = b.gl;
+  if (!gl || gl.isContextLost() || !Number.isInteger(w) || !Number.isInteger(h) || w < 1 || h < 1
+      || w > 0x7fff_ffff || h > 0x7fff_ffff) return false;
   if (b.renderTargetFbo && !b.presentTarget) return false;
-
-  const w = canvas.width;
-  const h = canvas.height;
-  if (!(w >= 1) || !(h >= 1)) return false;
-
+  if (b.surface.gl && b.surface.gl !== gl) return false;
   const existing = b.presentTarget;
   if (existing && existing.w === w && existing.h === h) return true;
-
   const prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
   const prevRead = gl.getParameter(GL_READ_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
   const prevDraw = gl.getParameter(GL_DRAW_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
-
   const prevRbo = gl.getParameter(gl.RENDERBUFFER_BINDING) as WebGLRenderbuffer | null;
-  const depthStencil = existing?.depthStencil ?? gl.createRenderbuffer();
-  const tex = existing?.tex ?? gl.createTexture();
-  const fbo = existing?.fbo ?? gl.createFramebuffer();
-  if (!tex || !fbo || !depthStencil) {
-    if (tex && !existing) gl.deleteTexture(tex);
-    if (fbo && !existing) gl.deleteFramebuffer(fbo);
-    if (depthStencil && !existing) gl.deleteRenderbuffer(depthStencil);
-    return false;
+  let depthStencil: WebGLRenderbuffer | null = null;
+  let tex: WebGLTexture | null = null;
+  let fbo: WebGLFramebuffer | null = null;
+  let accepted = false;
+  try {
+    // Resize into a candidate. Mutating the old texture/renderbuffer would
+    // destroy the last valid drawable before allocation can be acknowledged.
+    depthStencil = gl.createRenderbuffer(); tex = gl.createTexture(); fbo = gl.createFramebuffer();
+    if (!tex || !fbo || !depthStencil) return false;
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(GL_DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindRenderbuffer(gl.RENDERBUFFER, depthStencil);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, w, h);
+    gl.framebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, depthStencil);
+    if (gl.checkFramebufferStatus(GL_DRAW_FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) return false;
+    accepted = true;
+  } catch { return false; }
+  finally {
+    gl.bindRenderbuffer(gl.RENDERBUFFER, prevRbo);
+    gl.bindTexture(gl.TEXTURE_2D, prevTex);
+    // A successful resize preserves the logical default binding. User FBOs
+    // and independent read/draw selections keep their original bindings.
+    gl.bindFramebuffer(GL_READ_FRAMEBUFFER, accepted && existing && prevRead === existing.fbo ? fbo : prevRead);
+    gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, accepted && existing && prevDraw === existing.fbo ? fbo : prevDraw);
+    if (!accepted) {
+      if (fbo) gl.deleteFramebuffer(fbo);
+      if (tex) gl.deleteTexture(tex);
+      if (depthStencil) gl.deleteRenderbuffer(depthStencil);
+    }
   }
-
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  gl.texImage2D(
-    gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null,
-  );
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
-  gl.framebufferTexture2D(
-    GL_DRAW_FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0,
-  );
-  // EGL's window config provides 24-bit depth and 8-bit stencil, including
-  // when default framebuffer 0 is redirected to this double-buffer target.
-  gl.bindRenderbuffer(gl.RENDERBUFFER, depthStencil);
-  gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, w, h);
-  gl.framebufferRenderbuffer(GL_DRAW_FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, depthStencil);
-  const complete =
-    gl.checkFramebufferStatus(GL_DRAW_FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
-
-  gl.bindRenderbuffer(gl.RENDERBUFFER, prevRbo);
-  gl.bindTexture(gl.TEXTURE_2D, prevTex);
-  gl.bindFramebuffer(GL_READ_FRAMEBUFFER, prevRead);
-  gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDraw);
-
-  if (!complete) {
-    // A failed resize destroys the old target too. Do not retain a deleted
-    // framebuffer in either the default-target redirect or context replay.
-    if (b.renderTargetFbo === fbo) b.renderTargetFbo = null;
-    replaceDefaultFramebuffer(b, fbo);
-    if (prevRead === fbo) gl.bindFramebuffer(GL_READ_FRAMEBUFFER, null);
-    if (prevDraw === fbo) gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, null);
-    gl.deleteFramebuffer(fbo);
-    gl.deleteTexture(tex);
-    gl.deleteRenderbuffer(depthStencil);
-    b.presentTarget = null;
-    // Without a target the guest renders to the canvas's native framebuffer.
-    return false;
+  b.surface.gl = gl;
+  replaceSurfaceTarget(b.surface, { fbo: fbo!, tex: tex!, depthStencil: depthStencil!, w, h }, b);
+  if (existing) {
+    gl.deleteFramebuffer(existing.fbo); gl.deleteTexture(existing.tex); gl.deleteRenderbuffer(existing.depthStencil);
   }
-
-  b.presentTarget = { fbo, tex, depthStencil, w, h };
-  const previous = b.renderTargetFbo;
-  b.renderTargetFbo = fbo;
-  replaceDefaultFramebuffer(b, previous);
   return true;
 }
 

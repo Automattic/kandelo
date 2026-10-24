@@ -30,6 +30,11 @@ import { destroyBufferStorage } from "./buffer-storage.js";
 import { collectRetiredBuffers, defaultVertexArray, type GlVertexArray } from "./buffer-references.js";
 import type { GlShaderSourceUpload } from "./shader-source.js";
 
+import {
+  createSurfaceResources, exposeSurfaceResources, releaseSurfaceResources, retireSurface,
+  type GlSurfaceFields, type GlSurfaceResources,
+} from "./surface-resources.js";
+
 export type GlContextHandle = number;
 export type GlSurfaceHandle = number;
 
@@ -58,7 +63,10 @@ export type GlForwardChannel = {
   onQuery?(op: number, input: Uint8Array, outLen: number, sessionId?: number): { rc: number; bytes: Uint8Array };
 };
 
-export type GlBinding = GlBindingInput & GlSharedObjects & {
+export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & {
+  surface: GlSurfaceResources;
+  drawSurface: GlSurfaceResources | null;
+  readSurface: GlSurfaceResources | null;
   sessionId: number;
   currentDrawable: GlDrawableBinding | null;
   hasBeenCurrent: boolean;
@@ -81,11 +89,6 @@ export type GlBinding = GlBindingInput & GlSharedObjects & {
 
   /** Kernel-issued EGL backend context identity. */
   contextId: GlContextHandle | null;
-  /** EGL surface handle (opaque u32 the C side picks). */
-  surfaceId: GlSurfaceHandle | null;
-  /** Drawable dimensions survive context replacement and may arrive before
-   * a context/canvas. An old scanout is not the new EGL surface's size. */
-  surfaceSize: { width: number; height: number } | null;
 
   objects: GlObjectGroup;
   errors: number[];
@@ -110,39 +113,6 @@ export type GlBinding = GlBindingInput & GlSharedObjects & {
    * currentProgram still holds an earlier installed native executable. */
   currentProgramId: number;
 
-  /** GPU-tier producer render target (PR10 §7.1): the FBO whose color
-   *  attachment IS a GPU bo's texture. Set when the client's EGL window
-   *  surface targets a GPU bo (`GLIO_CREATE_SURFACE` with a target bo).
-   *  Non-null redirects the client's "bind default framebuffer 0" (its
-   *  window) into the bo's FBO, so its GL output lands in the bo the
-   *  compositor samples zero-copy. Owned by the bo, NOT this binding —
-   *  never deleted on unbind (destroyed via `destroyGpuBo` on bo
-   *  destroy). Canvas-backed sessions also use this redirect while their
-   *  own presentTarget exists; that FBO is owned by this binding. Null for
-   *  CPU-tier sessions and canvases drawing directly to the default FBO. */
-  renderTargetFbo: WebGLFramebuffer | null;
-
-  /** Canvas-backed present target: an offscreen FBO the session renders
-   *  into, blitted to the real default framebuffer once per
-   *  `GLIO_PRESENT`. A canvas-backed session draws a frame across many
-   *  syscalls, so it spans many worker tasks, and the browser composites
-   *  an OffscreenCanvas at task end — without this the viewer sees
-   *  cleared and half-drawn frames as the program redraws (a whole-screen
-   *  flicker). Rendering offscreen means every composite shows the last
-   *  COMPLETE frame. Owned by this binding; freed on unbind. Null for
-   *  GPU-tier producers, which already render into a bo FBO. */
-  presentTarget:
-    | { fbo: WebGLFramebuffer; tex: WebGLTexture; depthStencil: WebGLRenderbuffer; w: number; h: number }
-    | null;
-
-  /** Target GPU bo_id captured at `GLIO_CREATE_SURFACE` but not yet
-   *  applied, because the client created its window surface BEFORE its
-   *  GL context (SDL2's Wayland+GLES backend creates the wl_egl_window
-   *  surface during `SDL_CreateWindow`, then the context during
-   *  `SDL_GL_CreateContext`). The redirect needs both `b.gl` (set at
-   *  context creation) and the resolved bo, so whichever of the two
-   *  runs last applies it. 0 = no pending target. */
-  pendingRenderTargetBoId: number;
 
   shadow: GlShadowState;
 
@@ -197,7 +167,8 @@ export class GlContextRegistry {
     this.pendingCanvases.delete(b.pid);
     const sessionId = (b.sessionId ?? 0) >>> 0;
     if (this.get(b.pid, sessionId)) throw new Error("GL session is already bound");
-    const binding: GlBinding = exposeGlSharedObjects({
+    const binding: GlBinding = exposeSurfaceResources(exposeGlSharedObjects({
+      surface: createSurfaceResources(b.pid), drawSurface: null, readSurface: null,
       objects: createGlObjectGroup(),
       ...b,
       sessionId,
@@ -208,8 +179,6 @@ export class GlContextRegistry {
       gl: null,
       canvas,
       contextId: null,
-      surfaceId: null,
-      surfaceSize: null,
       errors: [],
       vaos: new Map(),
       fbos: new Map(),
@@ -219,14 +188,11 @@ export class GlContextRegistry {
       claimedKmsCrtc: null,
       currentProgram: null,
       currentProgramId: 0,
-      renderTargetFbo: null,
-      presentTarget: null,
-      pendingRenderTargetBoId: 0,
       shadow: defaultShadow(),
       shaderUpload: null,
       shaderUploadSerial: 0,
       forward,
-    });
+    }));
     binding.objects.members.add(binding);
     this.bindings.set(`${binding.pid}:${sessionId}`, binding);
     for (const l of this.listeners) l(b.pid, "bind");
@@ -240,6 +206,7 @@ export class GlContextRegistry {
       b.cmdbufView = null;
       try {
         this.destroyContext(pid, b.sessionId);
+        retireSurface(b.surface);
         b.forward?.onUnbind?.(b.sessionId);
       } catch (error) {
         failure ??= error;
@@ -310,13 +277,13 @@ export class GlContextRegistry {
     }
     for (const texture of b.shadow.defaultTextures.values()) gl?.deleteTexture(texture);
     b.shadow.defaultTextures.clear();
-    if (b.presentTarget) {
-      b.gl?.deleteFramebuffer(b.presentTarget.fbo);
-      b.gl?.deleteTexture(b.presentTarget.tex);
-      b.gl?.deleteRenderbuffer(b.presentTarget.depthStencil);
-      b.presentTarget = null;
+    releaseSurfaceResources(b);
+    // An explicit surface outlives context destruction. An unpublished
+    // staging target has no EGL owner and can be reclaimed immediately.
+    if (b.surfaceId === null) {
+      retireSurface(b.surface);
+      b.surface = createSurfaceResources(b.pid);
     }
-    b.renderTargetFbo = null;
     b.currentProgram = null;
     b.currentProgramId = 0;
     b.currentDrawable = null;
@@ -326,6 +293,16 @@ export class GlContextRegistry {
     b.vertexArrays.set(0,defaultVertexArray());
     b.contextId = null;
     b.gl = null;
+  }
+
+  destroySurface(pid: number, sessionId?: number): void {
+    const b = this.get(pid, sessionId);
+    if (!b) return;
+    const surface = b.surface;
+    if (!b.drawSurface && b.shadow.fbo === surface.renderTargetFbo) b.shadow.fbo = null;
+    if (!b.readSurface && b.shadow.readFbo === surface.renderTargetFbo) b.shadow.readFbo = null;
+    retireSurface(surface);
+    b.surface = createSurfaceResources(b.pid);
   }
 
   get(pid: number, sessionId?: number): GlBinding | undefined {

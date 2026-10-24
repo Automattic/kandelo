@@ -2,7 +2,7 @@ import { GlContextRegistry, type GlForwardChannel } from "./registry.js";
 import { decodeAndDispatch } from "./bridge.js";
 import { runGlQuery } from "./query.js";
 import { GlMuxer } from "./muxer.js";
-import { applyCurrentDrawable, validCurrentDrawable, type GlDrawableBinding } from "./current.js";
+import { prepareCurrentDrawable, validCurrentDrawable, type GlDrawableBinding } from "./current.js";
 import {
   completeGlForwardQuery, createGlForwardQueryMailbox, glForwardQueryCapacity,
   glForwardRequestPending, GL_FORWARD_QUERY_MAX_BYTES, prepareGlForwardQuery, retireGlForwardQuery,
@@ -128,20 +128,15 @@ export function setupMainForward(
             return;
           }
           if (!glForwardRequestPending(msg.mailbox)) return;
-          const previous = { drawable: b.currentDrawable, initialized: b.hasBeenCurrent,
-            viewport: b.shadow.viewport, scissor: b.shadow.scissor.rect, fbo: b.shadow.fbo, readFbo: b.shadow.readFbo };
           muxer(b.gl).invalidateCurrent();
-          if (!applyCurrentDrawable(b, msg.drawable)) {
+          const prepared = prepareCurrentDrawable(b, msg.drawable);
+          if (!prepared) {
             completeGlForwardQuery(msg.mailbox, -12, new Uint8Array());
             return;
           }
-          if (!completeGlForwardQuery(msg.mailbox, 0, new Uint8Array())) {
-            // A caller that timed out did not commit a new kernel binding.
-            // Roll back before processing any commands it sends afterwards.
-            b.currentDrawable = previous.drawable; b.hasBeenCurrent = previous.initialized;
-            b.shadow.viewport = previous.viewport; b.shadow.scissor.rect = previous.scissor;
-            b.shadow.fbo = previous.fbo; b.shadow.readFbo = previous.readFbo;
-          }
+          try {
+            if (completeGlForwardQuery(msg.mailbox, 0, new Uint8Array())) prepared.commit();
+          } finally { prepared.cancel(); }
         } catch {
           try { completeGlForwardQuery(msg.mailbox, -5, new Uint8Array()); } catch { /* no reply authority */ }
         }

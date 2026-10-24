@@ -1609,3 +1609,118 @@ test("deleted current programs survive owner switches and retire after their las
     retired:true,otherLive:true,failedLink:0,recoveredLink:1,
     recoveredPixels:[0,0,255,255],oldExecutableRetired:true,error:0 });
 });
+
+// Source surface ownership checks. Guest surface identities and cross-session
+// routing remain a separate kernel/C integration requirement.
+for (const replaceContext of [false,true]) {
+test(`a live surface preserves pixels across ${replaceContext ? "context replacement and a failed resize" : "a failed resize"}`, async ({ page }) => {
+  await installBrowserMemoryBoundaryProbe(page);
+  await page.goto("/trap-signal-test.html");
+  const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
+  const result = await page.evaluate(async ({sourceRoot,replaceContext}) => {
+    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const { GlContextRegistry } = await import(base+"registry.ts");
+    const { GlMuxer } = await import(base+"muxer.ts");
+    const { ensurePresentTarget } = await import(base+"present-target.ts");
+    const { applyCurrentDrawable } = await import(base+"current.ts");
+    const { runGlQuery } = await import(base+"query.ts");
+    const O = await import(base+"ops.ts");
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+    const gl = canvas.getContext("webgl2"); if (!gl) throw new Error("WebGL2 required");
+    const reg = new GlContextRegistry(), mux = new GlMuxer(gl);
+    reg.bind({pid:99,sessionId:1,cmdbufAddr:0,cmdbufLen:256});
+    const b = reg.get(99,1)!; b.gl = gl; b.canvas = canvas; b.contextId = 1; b.surfaceId = 71;
+    if (!ensurePresentTarget(b) || !applyCurrentDrawable(b,{drawSurfaceId:71,readSurfaceId:71,width:1,height:1})) throw new Error("initial drawable failed");
+    mux.switchTo(b); gl.clearColor(1,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT);
+    const original = b.presentTarget!;
+    mux.invalidateCurrent(); if (replaceContext) reg.destroyContext(99,1);
+    const retained = gl.isFramebuffer(original.fbo) && gl.isTexture(original.tex) && gl.isRenderbuffer(original.depthStencil);
+    if (!retained) throw new Error("context destruction retired a live surface");
+    b.gl = gl; b.contextId = 2;
+    if (!ensurePresentTarget(b) || !applyCurrentDrawable(b,{drawSurfaceId:71,readSurfaceId:71,width:1,height:1})) throw new Error("replacement failed");
+    const pixels = () => {
+      mux.switchTo(b); const input = new Uint8Array(24), out = new Uint8Array(4);
+      [0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE].forEach((n,i) => new DataView(input.buffer).setUint32(i*4,n,true));
+      if (runGlQuery(b,O.QOP_READ_PIXELS,input,out) !== 4) throw new Error("pixel query failed");
+      return [...out];
+    };
+    const before = pixels(); canvas.width = 2; mux.invalidateCurrent();
+    const status = gl.checkFramebufferStatus.bind(gl);
+    gl.checkFramebufferStatus = () => gl.FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+    let failed: boolean;
+    try { failed = !ensurePresentTarget(b); } finally { gl.checkFramebufferStatus = status; }
+    const unchanged = b.presentTarget === original && gl.isFramebuffer(original.fbo);
+    const after = pixels(); mux.invalidateCurrent();
+    const retried = ensurePresentTarget(b), replacement = b.presentTarget!;
+    const oldRetired = !gl.isFramebuffer(original.fbo) && !gl.isTexture(original.tex) && !gl.isRenderbuffer(original.depthStencil);
+    reg.unbind(99,1);
+    return {retained,before,failed,unchanged,after,retried,oldRetired,
+      retired:!gl.isFramebuffer(replacement.fbo) && !gl.isTexture(replacement.tex) && !gl.isRenderbuffer(replacement.depthStencil),error:gl.getError()};
+  },{sourceRoot:root,replaceContext});
+  expect(result).toEqual({retained:true,before:[255,0,0,255],failed:true,unchanged:true,after:[255,0,0,255],retried:true,oldRetired:true,retired:true,error:0});
+  expect(await memoryBoundaryFailures(page)).toEqual([]);
+});
+}
+
+test("surface draw/read selectors retain storage across owner retirement and independent resizing", async ({ page }) => {
+  await installBrowserMemoryBoundaryProbe(page);
+  await page.goto("/trap-signal-test.html");
+  const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
+  const result = await page.evaluate(async sourceRoot => {
+    const base = `/@fs/${sourceRoot}host/src/webgl/`;
+    const { GlContextRegistry } = await import(base+"registry.ts");
+    const { GlMuxer } = await import(base+"muxer.ts");
+    const { resizeSurfaceTarget } = await import(base+"present-target.ts");
+    const { applyCurrentDrawable } = await import(base+"current.ts");
+    const { runGlQuery } = await import(base+"query.ts");
+    const { decodeAndDispatch } = await import(base+"bridge.ts");
+    const O = await import(base+"ops.ts");
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+    const gl = canvas.getContext("webgl2"); if (!gl) throw new Error("WebGL2 required");
+    const reg = new GlContextRegistry(), mux = new GlMuxer(gl);
+    const [a,b,c] = [1,2,3].map(sessionId => {
+      reg.bind({pid:100,sessionId,cmdbufAddr:0,cmdbufLen:256});
+      const value = reg.get(100,sessionId)!; value.gl = gl; value.contextId = sessionId; return value;
+    });
+    a.surfaceId = 71; b.surfaceId = 72;
+    if (!resizeSurfaceTarget(a,1,1) || !resizeSurfaceTarget(b,1,1)) throw new Error("independent storage failed");
+    const original = a.presentTarget!, readTarget = b.presentTarget!, draw = a.surface, read = b.surface;
+    const bind = (owner: typeof a, drawOwner: typeof a, readOwner = drawOwner) => {
+      mux.invalidateCurrent();
+      if (!applyCurrentDrawable(owner,{drawSurfaceId:drawOwner.surfaceId!,readSurfaceId:readOwner.surfaceId!,width:1,height:1},
+        {draw:drawOwner.surface,read:readOwner.surface})) throw new Error("surface selection failed");
+      mux.switchTo(owner);
+    };
+    bind(a,a); gl.clearColor(1,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT);
+    bind(b,b); gl.clearColor(0,1,0,1); gl.clear(gl.COLOR_BUFFER_BIT);
+    bind(c,a,b);
+    c.fbos.set(99,gl.createFramebuffer()!); c.cmdbufView = new Uint8Array(12);
+    const send = (name: number) => {
+      const view = new DataView(c.cmdbufView!.buffer);
+      view.setUint16(0,O.OP_BIND_FRAMEBUFFER,true); view.setUint16(2,8,true);
+      view.setUint32(4,gl.FRAMEBUFFER,true); view.setUint32(8,name,true);
+      if (decodeAndDispatch(c,0,12)) throw new Error("framebuffer command failed");
+    };
+    send(99); send(0);
+    const framebufferZero = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) === original.fbo
+      && gl.getParameter(gl.READ_FRAMEBUFFER_BINDING) === readTarget.fbo;
+    gl.clearColor(0,0,1,1); gl.clear(gl.COLOR_BUFFER_BIT);
+    const pixels = () => {
+      mux.switchTo(c); const input = new Uint8Array(24), out = new Uint8Array(4);
+      [0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE].forEach((n,i) => new DataView(input.buffer).setUint32(i*4,n,true));
+      if (runGlQuery(c,O.QOP_READ_PIXELS,input,out) !== 4) throw new Error("pixel query failed");
+      return [...out];
+    };
+    const separateRead = pixels(); mux.invalidateCurrent();
+    if (!resizeSurfaceTarget(a,2,1)) throw new Error("resize failed");
+    const resized = a.presentTarget!;
+    const independent = c.shadow.fbo === resized.fbo && c.shadow.readFbo === readTarget.fbo && b.presentTarget === readTarget;
+    reg.unbind(100,1); reg.unbind(100,2);
+    const retained = gl.isFramebuffer(resized.fbo) && gl.isFramebuffer(readTarget.fbo) && draw.users.has(c) && read.users.has(c);
+    const afterRetirement = pixels(); mux.invalidateCurrent(); reg.unbind(100,3);
+    return {framebufferZero,separateRead,independent,retained,afterRetirement,oldRetired:!gl.isFramebuffer(original.fbo),
+      final:!gl.isFramebuffer(resized.fbo) && !gl.isFramebuffer(readTarget.fbo) && !draw.users.size && !read.users.size,error:gl.getError()};
+  },root);
+  expect(result).toEqual({framebufferZero:true,separateRead:[0,255,0,255],independent:true,retained:true,afterRetirement:[0,255,0,255],oldRetired:true,final:true,error:0});
+  expect(await memoryBoundaryFailures(page)).toEqual([]);
+});
