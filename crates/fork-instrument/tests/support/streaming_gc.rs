@@ -12,6 +12,8 @@ mod tables;
 #[path = "streaming_gc_emit.rs"]
 mod emission;
 use emission::Provider;
+#[path = "streaming_pipeline.rs"]
+mod pipeline;
 
 #[allow(dead_code)] // Root-state targets use emit_roots instead.
 pub fn emit(input: &[u8]) -> Vec<u8> {
@@ -35,18 +37,17 @@ pub fn emit_staged_tables(input: &[u8], wide: bool) -> Vec<u8> {
 }
 #[allow(dead_code)]
 pub fn emit_activations(input: &[u8], shared: bool) -> Vec<u8> {
-    emit_mode(input, State::Activations { shared }, false)
+    pipeline::emit(input, shared)
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
     None,
     Roots,
     Tables,
-    Activations { shared: bool },
 }
 fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
     let with_roots = state != State::None;
-    let with_tables = matches!(state, State::Tables | State::Activations { .. });
+    let with_tables = state == State::Tables;
     let scan = scan(input).unwrap();
     let source_types = SourceTypes::new(&scan);
     let plan = NativeGcPlan::discover(
@@ -170,98 +171,6 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
                 + roots.declarations.function_count(),
         )
     });
-    let activations = if let State::Activations { shared } = state {
-        assert_eq!(
-            scan.functions[0].import.as_ref().unwrap(),
-            &("h".into(), "fork".into())
-        );
-        let roots = roots.as_ref().unwrap();
-        let tables = tables.as_ref().unwrap();
-        let options = ActivationModuleOptions {
-            shared_codecs: shared,
-            table_guards: tables
-                .tables
-                .synchronized_tables()
-                .into_iter()
-                .map(|table| (table, tables.tables.reconcile))
-                .collect(),
-            ..Default::default()
-        };
-        let activations = NativeActivations::plan(
-            &scan,
-            &mut runtime,
-            scan.reaching_from_seeds(
-                std::iter::once(0).chain(loader.source_functions()),
-                loader.driver().is_some(),
-            )
-            .unwrap(),
-            first_type
-                + exception.declarations().type_count()
-                + roots.declarations.type_count()
-                + tables.declarations.type_count(),
-            imports.helper_function_base()
-                + first_exception
-                + exception.declarations().function_count()
-                + roots.declarations.function_count()
-                + tables.declarations.function_count(),
-            options,
-            Default::default(),
-        )
-        .unwrap();
-        for (name, kind, function) in &scan.exports {
-            if *kind == wasmparser::ExternalKind::Func {
-                if let Some(entry) = activations.entry(*function) {
-                    module
-                        .export(
-                            &format!("resume_{name}"),
-                            wasm_encoder::ExportKind::Func,
-                            entry.resume,
-                        )
-                        .unwrap();
-                }
-            }
-        }
-        module
-            .export(
-                "unwind_tag",
-                wasm_encoder::ExportKind::Tag,
-                runtime.indices().unwind_tag,
-            )
-            .unwrap();
-        Some(activations)
-    } else {
-        None
-    };
-    let loader_activation = if let Some(activations) = &activations {
-        let roots = roots.as_ref().unwrap();
-        let tables = tables.as_ref().unwrap();
-        let environment = runtime.frame_environment(&scan, 1 << 20).unwrap();
-        loader
-            .plan_activation(
-                &runtime,
-                environment,
-                LoaderActivationOptions {
-                    function_ordinal: activations.entries().count().try_into().unwrap(),
-                    first_type: first_type
-                        + exception.declarations().type_count()
-                        + roots.declarations.type_count()
-                        + tables.declarations.type_count()
-                        + activations.declarations().type_count(),
-                    first_function: imports.helper_function_base()
-                        + first_exception
-                        + exception.declarations().function_count()
-                        + roots.declarations.function_count()
-                        + tables.declarations.function_count()
-                        + activations.declarations().function_count(),
-                    table_guard: Some(tables.tables.reconcile),
-                    shared_codecs: matches!(state, State::Activations { shared: true }),
-                },
-                Default::default(),
-            )
-            .unwrap()
-    } else {
-        None
-    };
     let identities = roots.as_ref().map(|roots| {
         let table_types = tables
             .as_ref()
@@ -269,38 +178,22 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
         let table_functions = tables
             .as_ref()
             .map_or(0, |tables| tables.declarations.function_count());
-        let activation_types = activations
-            .as_ref()
-            .map_or(0, |activations| activations.declarations().type_count());
-        let activation_functions = activations
-            .as_ref()
-            .map_or(0, |activations| activations.declarations().function_count());
         catalogs::Components::plan(
             &scan,
             &mut runtime,
             &roots.bootstrap,
-            activations.as_ref(),
-            loader_activation
-                .as_ref()
-                .map(|activation| activation.entry),
+            None,
+            None,
             &mut module,
             first_type
                 + exception.declarations().type_count()
                 + roots.declarations.type_count()
-                + table_types
-                + activation_types
-                + loader_activation
-                    .as_ref()
-                    .map_or(0, |activation| activation.declarations().type_count()),
+                + table_types,
             imports.helper_function_base()
                 + first_exception
                 + exception.declarations().function_count()
                 + roots.declarations.function_count()
-                + table_functions
-                + activation_functions
-                + loader_activation
-                    .as_ref()
-                    .map_or(0, |activation| activation.declarations().function_count()),
+                + table_functions,
         )
     });
     let mut parts = vec![
@@ -315,12 +208,6 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
     }
     if let Some(tables) = &tables {
         parts.push(&tables.declarations);
-    }
-    if let Some(activations) = &activations {
-        parts.push(activations.declarations());
-    }
-    if let Some(activation) = &loader_activation {
-        parts.push(activation.declarations());
     }
     if let Some(identities) = &identities {
         parts.push(identities.declarations());
@@ -350,10 +237,7 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
     }
     let mut transform = Provider {
         identities,
-        scan: &scan,
-        activations,
         loader,
-        loader_activation,
         first_constructors,
         runtime,
         plan,

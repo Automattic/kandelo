@@ -688,6 +688,23 @@ resume-table routing. The private resume table remains outside source tracking.
 Constructor provenance and table/drop hooks compose with already-lowered
 source operations, preserving original program points and symbolic branches.
 
+`NativePipeline` now owns the full native component assembly in the library.
+It accepts the original scan, an original-index reaching plan and explicit
+sink boundaries. It reserves loader adapters and reference providers before
+freezing imports, then schedules exception recipes, bootstrap, roots, sparse
+tables, source barriers, activations, generated loader capture and identity
+catalogs with checked type/function cursors. Emission visits each source body
+once and writes through the code/data spools. Catalog and function limits
+remain explicit; output-writer failures propagate, and the same frozen plan
+can be emitted again. Descriptor budgets are checked before writing a header.
+
+The shared full-provider replay fixtures now use this library assembly. Their
+test helper adds diagnostic exports only; it no longer owns the activation
+schedule or source rewriting. `NativePipeline` deliberately emits no fork
+capability certificate. Production entry/sink policy orchestration, artifact
+admission, feature declarations and atomic file publication remain separate
+integration work. The command-line instrumenter still uses unchanged Walrus.
+
 A shared Node fixture now composes the real native GC and exact-tag exception
 providers, activation frame vectors, modern reference catches, globals,
 sparse tables and segment lifetimes. The same assertions run against unchanged

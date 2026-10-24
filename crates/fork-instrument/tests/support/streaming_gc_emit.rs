@@ -2,15 +2,12 @@
 use super::{catalogs, roots, tables};
 use fork_instrument::streaming::*;
 use wasm_encoder::{
-    Function, Instruction,
+    Function,
     reencode::{Error, Reencode},
 };
-pub(super) struct Provider<'s, 'a> {
-    pub(super) scan: &'s Scan<'a>,
+pub(super) struct Provider {
     pub(super) identities: Option<catalogs::Components>,
-    pub(super) activations: Option<NativeActivations<'a>>,
     pub(super) loader: NativeLegacyLoader,
-    pub(super) loader_activation: Option<NativeLoaderActivation>,
     pub(super) first_constructors: u32,
     pub(super) runtime: NativeRuntime,
     pub(super) plan: NativeGcPlan,
@@ -31,7 +28,7 @@ macro_rules! remap {
         }
     };
 }
-impl Reencode for Provider<'_, '_> {
+impl Reencode for Provider {
     type Error = ImportIndexError;
     remap!(function_index);
     remap!(table_index);
@@ -39,7 +36,7 @@ impl Reencode for Provider<'_, '_> {
     remap!(global_index);
     remap!(tag_index);
 }
-impl FunctionTransform for Provider<'_, '_> {
+impl FunctionTransform for Provider {
     fn defer_module_initializers(&self) -> bool {
         self.roots.is_some()
     }
@@ -56,19 +53,6 @@ impl FunctionTransform for Provider<'_, '_> {
         Some(Default::default())
     }
     fn transform_ir(&mut self, source: &FunctionIr<'_>, limit: usize) -> anyhow::Result<Function> {
-        if let Some(activations) = &self.activations {
-            return activations.emit_function(
-                self.scan,
-                source,
-                &mut Sources {
-                    runtime: &mut self.runtime,
-                    plan: &self.plan,
-                    constructors: &self.constructors,
-                    state: &self.tables.as_ref().expect("stateful activations").rewrites,
-                },
-                limit,
-            );
-        }
         if let Some(roots) = &self.roots {
             let mut output = self
                 .runtime
@@ -103,15 +87,7 @@ impl FunctionTransform for Provider<'_, '_> {
     fn emit_helper(&mut self, ordinal: u32, limit: usize) -> anyhow::Result<Function> {
         match ordinal {
             0..7 => self.runtime.emit_control(ordinal, limit),
-            n if n < self.first_constructors => {
-                if n == 7
-                    && let Some(activation) = &self.loader_activation
-                {
-                    activation.emit_driver(&self.loader, limit)
-                } else {
-                    self.loader.emit_helper(n - 7, limit)
-                }
-            }
+            n if n < self.first_constructors => self.loader.emit_helper(n - 7, limit),
             n if n < self.first_gc => {
                 self.constructors
                     .emit_helper(n - self.first_constructors, &self.plan, limit)
@@ -136,60 +112,11 @@ impl FunctionTransform for Provider<'_, '_> {
                     }
                     ordinal -= tables.declarations.function_count();
                 }
-                if let Some(activations) = &self.activations {
-                    if ordinal < activations.declarations().function_count() {
-                        return activations.emit_helper(ordinal, limit);
-                    }
-                    ordinal -= activations.declarations().function_count();
-                }
-                if let Some(activation) = &self.loader_activation {
-                    if ordinal < activation.declarations().function_count() {
-                        return activation.emit_helper(ordinal, limit);
-                    }
-                    ordinal -= activation.declarations().function_count();
-                }
                 self.identities
                     .as_ref()
                     .expect("identity catalogs")
                     .emit_helper(ordinal, limit)
             }
         }
-    }
-}
-
-struct Sources<'a> {
-    runtime: &'a mut NativeRuntime,
-    plan: &'a NativeGcPlan,
-    constructors: &'a FrozenGcConstructors,
-    state: &'a FrozenStateRewrites,
-}
-impl Reencode for Sources<'_> {
-    type Error = ImportIndexError;
-    remap!(function_index);
-    remap!(table_index);
-    remap!(memory_index);
-    remap!(global_index);
-    remap!(tag_index);
-    remap!(type_index);
-    remap!(data_index);
-    remap!(element_index);
-}
-impl NativeSourceHooks for Sources<'_> {
-    fn emit_native_source(
-        &mut self,
-        source: &SourceInstruction<'_>,
-        instruction: Instruction<'_>,
-        output: &mut Function,
-        limit: usize,
-    ) -> anyhow::Result<()> {
-        let instruction = if let Some(helper) = self
-            .constructors
-            .replacement(self.plan, &source.operation)?
-        {
-            Instruction::Call(helper)
-        } else {
-            instruction
-        };
-        self.state.emit_source(source, instruction, output, limit)
     }
 }
