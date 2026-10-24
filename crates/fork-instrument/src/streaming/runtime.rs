@@ -12,8 +12,8 @@ use wasm_encoder::{
 use wasmparser::{Parser, Payload, TypeRef};
 
 use super::{
-    FrozenDeclarations, FrozenImports, FrozenModuleDeclarations, FunctionTransform,
-    ImportIndexError, ModuleDeclarationBuilder, PlannedImport, Scan,
+    FrozenDeclarations, FrozenImports, FrozenModuleDeclarations, FunctionAdapter,
+    FunctionTransform, ImportIndexError, ModuleDeclarationBuilder, PlannedImport, Scan,
 };
 use crate::runtime::{
     ABORT_SELECTOR_SIZE, STATE_ABORT_UNWINDING, STATE_NORMAL, STATE_REWINDING, STATE_UNWINDING,
@@ -51,6 +51,9 @@ pub struct NativeCodecOverrides {
 pub struct RuntimeInputs {
     pub types: Vec<FuncType>,
     pub imports: Vec<PlannedImport>,
+    /// Original function imports replaced by reserved local helper ordinals.
+    /// Adapter declarations/bodies belong to their owning transform.
+    pub function_adapters: Vec<FunctionAdapter>,
     /// A process-memory import reserved by module-state planning when the
     /// original module has no memory. This is an import ordinal, not an index.
     pub staging_memory: Option<u32>,
@@ -321,7 +324,12 @@ impl NativeRuntime {
             )?;
             codecs[i] = Some(CodecLocation::Import(CodecPair { encode, decode }));
         }
-        let mut imports = FrozenImports::new(scan, inputs.imports, budget)?;
+        let mut imports = FrozenImports::with_function_adapters(
+            scan,
+            inputs.imports,
+            inputs.function_adapters,
+            budget,
+        )?;
         let index = |ordinal| {
             imports
                 .index(ordinal)

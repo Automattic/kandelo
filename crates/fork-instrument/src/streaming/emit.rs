@@ -164,6 +164,9 @@ where
     let helper_count = declarations
         .as_ref()
         .map_or(0, FrozenDeclarations::function_count);
+    if let Some(imports) = &imports {
+        imports.validate_adapters(scan, transform, declarations.as_ref())?;
+    }
     let module_declarations = transform
         .module_declarations()
         .map(|declarations| {
@@ -333,7 +336,11 @@ where
                     "import section exceeds streaming input budget"
                 );
                 let mut section = wasm_encoder::ImportSection::new();
-                transform.parse_import_section(&mut section, s)?;
+                if let Some(imports) = &imports {
+                    imports.parse_source_imports(transform, &mut section, s)?;
+                } else {
+                    transform.parse_import_section(&mut section, s)?;
+                }
                 if let Some(imports) = &imports {
                     imports.append(&mut section);
                 }

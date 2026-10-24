@@ -172,20 +172,59 @@ returned explicitly for later runtime generation. Resource exhaustion returns
 an error without a partial plan; unsupported analysis scope returns `None`,
 requiring the conservative closure. Raw legacy loader/longjmp imports, missing
 dynamic-link facts, oversized tag masks and unsupported body operations cannot
-produce a sink proof. Normalization, complete runtime/continuation generation
-and production backend integration remain unfinished. Production continues to
-use the unchanged Walrus implementation.
+produce a sink proof. Such inputs still require conservative closure planning;
+generated loader callbacks do not acquire original compiler facts. Production
+orchestration and backend integration remain unfinished. Production continues
+to use the unchanged Walrus implementation.
 
-`FrozenImports` freezes appended runtime imports and their source-index shifts
-for functions, tables, memories, globals and tags. Existing imported entities
-retain their indices; definitions shift past the new imports. Reencoding
-applies those shifts to instructions, names, start, exports, initializers and
-segments. Import descriptors already use final output type/heap indices.
-The writer inserts an absent import section in canonical order and can combine
-it with frozen helper types/declarations/bodies. Plans are fingerprinted to
-the original input and checked before output begins. This append-only primitive
-does not yet replace legacy imports with local adapters or generate the full
-runtime's complete state and metadata.
+`FrozenImports` freezes added runtime imports and optional conversions of
+original function imports into local helpers. Retained function imports
+compact after explicit removals; imported tables, memories, globals and tags
+retain their indices. Definitions shift by the resulting import delta.
+Reencoding applies the mapping to instructions, names, start, exports,
+initializers and segments. Descriptors use final output type/heap indices.
+Removed imports must resolve to declared helpers with the same original
+function types; mismatches fail before writing the module header. Import and
+local declaration layouts include these mappings in their source binding.
+The writer inserts absent sections in canonical order and emits one source
+or helper body at a time.
+
+`LegacyLoaderPlan` replaces historical `env.__wasm_dlopen` imports with local
+staged adapters while preserving every original function identity. It accepts
+the existing two-, four- and five-argument integer/pointer shapes, including
+mixed widths. Canonically equivalent staged imports are reused. Missing name
+ranges and flags keep their historical defaults; empty four/five-argument
+ranges select main-program lookup. The adapter calls prepare and tail-calls a
+shared scalar driver, removing dead byte/name pointer parameters before guest
+initializers or deferred-signal checkpoints can fork. The canonical function
+table can be table32 or table64. As in the old transform, an absent canonical
+table gets an unexported fallback, and prepare/next reports that unavailable
+linker contract before an initializer can use it.
+
+`NativeLoaderActivation` captures the generated driver using a small validated
+source domain of its own. Original functions keep their exact input bytes and
+compiler-fact coordinates. The fixed-size driver body is regenerated, planned
+and emitted separately with the normal continuation machinery. Its only user
+locals are the i32 transaction token and entry; its frame is 24 bytes on both
+pointer widths. All three checkpoint sites and the indirect initializer call
+use frozen transports. The initializer transport reconciles the process table
+before normal or private resume routing. The generated driver gets a resume
+catalog entry after the original activation entries. Callers must seed the
+original loader imports and enable conservative external dispatch in the
+original closure, then include this generated activation in resume planning.
+Raw protocol emission alone does not claim fork capability.
+
+Standalone fixtures compare staged call order, argument defaults, main/failure
+paths, checkpoint counts and function-reference identity with unchanged
+Walrus. Linked fixtures execute initializer and all three checkpoint fork
+sites, fresh-instance replay and allocation failure at each of the three
+captured frames. They cover both memory/table widths, all three historical
+argument counts and shared/inline scalar codecs. Replay does not repeat
+prepare, next or commit work. The original caller retains its live reference
+while the driver has no reference vector. One old runtime defect is recorded
+separately: its generated `wpk_fork_resume_thread` can pass an i32 index to the
+canonical table64, producing invalid Wasm. Native table64 fixtures validate
+and execute strictly; positive oracle paths keep the same runtime assertions.
 
 `ModuleDeclarationBuilder` reserves final indices for appended local tables,
 memories, tags, globals and element segments, plus new exports. It rejects
@@ -700,7 +739,7 @@ the unobservable root, and the unchanged oracle harvest traps. This test does
 not weaken the ordinary cross-backend replay assertions.
 
 These remain component fixtures rather than the normal production path.
-Import adapters, process-level integration,
+Process-level integration,
 artifact certification and production backend integration remain work. No
 end-to-end memory improvement is claimed.
 

@@ -9,6 +9,8 @@ use wasm_encoder::{
 use wasmparser::{Parser, Payload, TypeRef};
 
 use super::{FunctionTransform, Scan};
+mod functions;
+pub use functions::FunctionAdapter;
 
 /// Types and heap identities here already use final output indices. Appended
 /// imports precede all source definitions in their respective index spaces.
@@ -154,13 +156,14 @@ impl std::fmt::Display for ImportIndexError {
 }
 impl std::error::Error for ImportIndexError {}
 
-/// An immutable append-only import plan. Existing imports keep their indices;
-/// source definitions shift past the new imports. This includes references in
-/// bodies, exports, segments, initializers, start and names via Reencode.
-/// Type/data/element indices do not shift when adding imports.
+/// Immutable added imports and explicit function-to-local conversions.
+/// Retained function imports compact after removals; other imported entities
+/// keep their indices. Source definitions shift by the resulting import delta.
+/// Reencode applies this to bodies, exports, segments, initializers, start and
+/// names. Type/data/element indices do not shift when changing imports.
 ///
-/// This does not normalize a source import into a local adapter, declare new
-/// local state, or implement fork runtime behavior. Those consume this plan.
+/// Adapter bodies, local state and fork behavior consume this mapping and
+/// must be declared separately before emission.
 #[derive(Clone, Debug)]
 pub struct FrozenImports {
     imports: Vec<PlannedImport>,
@@ -170,14 +173,33 @@ pub struct FrozenImports {
     total: Counts,
     fingerprint: [u8; 32],
     estimated_bytes: usize,
+    adapters: Vec<FunctionAdapter>,
 }
 
 impl FrozenImports {
     pub fn new(scan: &Scan<'_>, imports: Vec<PlannedImport>, budget: usize) -> Result<Self> {
+        Self::with_function_adapters(scan, imports, Vec::new(), budget)
+    }
+    /// Removed source function imports resolve to already-reserved local
+    /// helper ordinals. All other source identities shift consistently.
+    pub fn with_function_adapters(
+        scan: &Scan<'_>,
+        imports: Vec<PlannedImport>,
+        adapters: Vec<FunctionAdapter>,
+        budget: usize,
+    ) -> Result<Self> {
         let mut estimate = imports
             .len()
             .checked_mul(128)
             .context("frozen import size overflow")?;
+        estimate = estimate
+            .checked_add(
+                adapters
+                    .len()
+                    .checked_mul(256)
+                    .context("function adapter metadata overflow")?,
+            )
+            .context("function adapter metadata overflow")?;
         for import in &imports {
             estimate = estimate
                 .checked_add(import.module.len())
@@ -204,8 +226,12 @@ impl FrozenImports {
             }
         }
         let source = Counts::for_scan(scan);
+        functions::validate(scan, &adapters, imported.functions)?;
+        let removed = u32::try_from(adapters.len())?;
         let mut total = source;
         let mut inserted = imported;
+        total.functions -= removed;
+        inserted.functions -= removed;
         let mut indices = Vec::with_capacity(imports.len());
         for import in &imports {
             indices.push(inserted.add(import.ty)?);
@@ -219,6 +245,7 @@ impl FrozenImports {
             total,
             fingerprint: Sha256::digest(scan.input()).into(),
             estimated_bytes: estimate,
+            adapters,
         };
         output.check_budget(budget)?;
         Ok(output)
@@ -240,7 +267,7 @@ impl FrozenImports {
         Ok((self.indices[ordinal as usize], memory))
     }
     pub fn is_empty(&self) -> bool {
-        self.imports.is_empty()
+        self.imports.is_empty() && self.adapters.is_empty()
     }
     /// Final index in this import's own entity index space.
     pub fn index(&self, ordinal: u32) -> Option<u32> {
@@ -283,6 +310,10 @@ impl FrozenImports {
         let mut hash = Sha256::new();
         hash.update(self.fingerprint);
         hash.update(bytes);
+        for adapter in &self.adapters {
+            hash.update(adapter.source_function.to_le_bytes());
+            hash.update(adapter.helper_ordinal.to_le_bytes());
+        }
         Some(hash.finalize().into())
     }
 
@@ -336,13 +367,7 @@ impl FrozenImports {
 impl Reencode for FrozenImports {
     type Error = ImportIndexError;
     fn function_index(&mut self, i: u32) -> Result<u32, Error<Self::Error>> {
-        self.shift(
-            i,
-            self.imported.functions,
-            self.source.functions,
-            self.total.functions,
-            "function",
-        )
+        self.mapped_function(i)
     }
     fn table_index(&mut self, i: u32) -> Result<u32, Error<Self::Error>> {
         self.shift(

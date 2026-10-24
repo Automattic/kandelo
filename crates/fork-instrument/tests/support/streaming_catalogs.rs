@@ -12,6 +12,7 @@ impl Components {
         runtime: &mut NativeRuntime,
         bootstrap: &FrozenModuleBootstrap,
         activations: Option<&NativeActivations<'_>>,
+        generated: Option<NativeActivationEntry>,
         module: &mut ModuleDeclarationBuilder<'_, '_>,
         first_type: u32,
         first_function: u32,
@@ -32,7 +33,8 @@ impl Components {
         let entries = activations
             .into_iter()
             .flat_map(NativeActivations::entries)
-            .map(|(_, entry)| (entry.ordinal, entry.resume));
+            .map(|(_, entry)| (entry.ordinal, entry.resume))
+            .chain(generated.map(|entry| (entry.ordinal, entry.resume)));
         let resume = NativeResumeCatalog::declare(entries, module, 1 << 20).unwrap();
         Self { roots, resume }
     }

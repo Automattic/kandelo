@@ -9,6 +9,9 @@ pub(super) struct Provider<'s, 'a> {
     pub(super) scan: &'s Scan<'a>,
     pub(super) identities: Option<catalogs::Components>,
     pub(super) activations: Option<NativeActivations<'a>>,
+    pub(super) loader: NativeLegacyLoader,
+    pub(super) loader_activation: Option<NativeLoaderActivation>,
+    pub(super) first_constructors: u32,
     pub(super) runtime: NativeRuntime,
     pub(super) plan: NativeGcPlan,
     pub(super) constructors: FrozenGcConstructors,
@@ -100,7 +103,19 @@ impl FunctionTransform for Provider<'_, '_> {
     fn emit_helper(&mut self, ordinal: u32, limit: usize) -> anyhow::Result<Function> {
         match ordinal {
             0..7 => self.runtime.emit_control(ordinal, limit),
-            n if n < self.first_gc => self.constructors.emit_helper(n - 7, &self.plan, limit),
+            n if n < self.first_constructors => {
+                if n == 7
+                    && let Some(activation) = &self.loader_activation
+                {
+                    activation.emit_driver(&self.loader, limit)
+                } else {
+                    self.loader.emit_helper(n - 7, limit)
+                }
+            }
+            n if n < self.first_gc => {
+                self.constructors
+                    .emit_helper(n - self.first_constructors, &self.plan, limit)
+            }
             n if n < self.first_exception => {
                 self.gc.emit_helper(n - self.first_gc, &self.plan, limit)
             }
@@ -126,6 +141,12 @@ impl FunctionTransform for Provider<'_, '_> {
                         return activations.emit_helper(ordinal, limit);
                     }
                     ordinal -= activations.declarations().function_count();
+                }
+                if let Some(activation) = &self.loader_activation {
+                    if ordinal < activation.declarations().function_count() {
+                        return activation.emit_helper(ordinal, limit);
+                    }
+                    ordinal -= activation.declarations().function_count();
                 }
                 self.identities
                     .as_ref()

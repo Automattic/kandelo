@@ -1,7 +1,7 @@
 // Linked-frame transaction shared by capture, live abort and fresh replay.
 // Payloads and reference vectors are written by the real guest codecs.
 const assert = require('node:assert/strict');
-module.exports = function createFrameJournal(wide, wasmModule, { requireIndirectGuard = true } = {}) {
+module.exports = function createFrameJournal(wide, wasmModule, { requireIndirectGuard = true, requireReferenceVector = true } = {}) {
   const pointer = value => wide ? BigInt(value) : value;
   const committed = [];
   const bindings = [];
@@ -32,7 +32,7 @@ module.exports = function createFrameJournal(wide, wasmModule, { requireIndirect
         const address = Number(pointer);
         assert(reserved.has(address));
         const vector = header(address, 12);
-        assert(vector > 0, 'references and catches require a durable vector before commit');
+        if (requireReferenceVector) assert(vector > 0, 'references and catches require a durable vector before commit');
         committed.push({ address, size: reserved.get(address), ordinal: header(address, 0), vector });
         reserved.delete(address);
       },

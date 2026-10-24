@@ -57,6 +57,8 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
     )
     .unwrap();
     let mut inputs = RuntimeInputs::default();
+    let loader_plan = LegacyLoaderPlan::reserve(&scan, &mut inputs, 7, Default::default()).unwrap();
+    let first_constructors = 7 + loader_plan.helper_count();
     if staging_wide {
         assert_eq!(scan.types.as_ref().memory_count(), 0);
         inputs.imports.push(PlannedImport {
@@ -76,10 +78,16 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
         with_roots.then(|| RootStateImports::append(&scan, &mut inputs, 1 << 20).unwrap());
     let table_imports =
         with_tables.then(|| TableStateImports::append(&scan, &mut inputs, 1 << 20).unwrap());
-    let constructors =
-        GcConstructorPlan::reserve(&scan, &plan, &mut inputs, 7, Default::default()).unwrap();
+    let constructors = GcConstructorPlan::reserve(
+        &scan,
+        &plan,
+        &mut inputs,
+        first_constructors,
+        Default::default(),
+    )
+    .unwrap();
     let exception_imports = NativeExceptionImports::append(&scan, &mut inputs, 1 << 20).unwrap();
-    let first_gc = 7 + constructors.helper_count();
+    let first_gc = first_constructors + constructors.helper_count();
     let gc = GcCodecPlan::reserve(&scan, &plan, &mut inputs, first_gc, Default::default()).unwrap();
     inputs.helper_codecs.anyref = Some(gc.anyref_codecs());
     inputs.helper_codecs.externref = Some(gc.externref_codecs());
@@ -99,6 +107,7 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
         1 << 20,
     )
     .unwrap();
+    let loader = loader_plan.freeze(&scan, &imports, &mut module).unwrap();
     let gc = gc
         .freeze(&scan, &plan, &imports, runtime.indices(), &mut module)
         .unwrap();
@@ -181,7 +190,11 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
         let activations = NativeActivations::plan(
             &scan,
             &mut runtime,
-            scan.reaching_from_seeds([0], false).unwrap(),
+            scan.reaching_from_seeds(
+                std::iter::once(0).chain(loader.source_functions()),
+                loader.driver().is_some(),
+            )
+            .unwrap(),
             first_type
                 + exception.declarations().type_count()
                 + roots.declarations.type_count()
@@ -219,6 +232,36 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
     } else {
         None
     };
+    let loader_activation = if let Some(activations) = &activations {
+        let roots = roots.as_ref().unwrap();
+        let tables = tables.as_ref().unwrap();
+        let environment = runtime.frame_environment(&scan, 1 << 20).unwrap();
+        loader
+            .plan_activation(
+                &runtime,
+                environment,
+                LoaderActivationOptions {
+                    function_ordinal: activations.entries().count().try_into().unwrap(),
+                    first_type: first_type
+                        + exception.declarations().type_count()
+                        + roots.declarations.type_count()
+                        + tables.declarations.type_count()
+                        + activations.declarations().type_count(),
+                    first_function: imports.helper_function_base()
+                        + first_exception
+                        + exception.declarations().function_count()
+                        + roots.declarations.function_count()
+                        + tables.declarations.function_count()
+                        + activations.declarations().function_count(),
+                    table_guard: Some(tables.tables.reconcile),
+                    shared_codecs: matches!(state, State::Activations { shared: true }),
+                },
+                Default::default(),
+            )
+            .unwrap()
+    } else {
+        None
+    };
     let identities = roots.as_ref().map(|roots| {
         let table_types = tables
             .as_ref()
@@ -237,22 +280,32 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
             &mut runtime,
             &roots.bootstrap,
             activations.as_ref(),
+            loader_activation
+                .as_ref()
+                .map(|activation| activation.entry),
             &mut module,
             first_type
                 + exception.declarations().type_count()
                 + roots.declarations.type_count()
                 + table_types
-                + activation_types,
+                + activation_types
+                + loader_activation
+                    .as_ref()
+                    .map_or(0, |activation| activation.declarations().type_count()),
             imports.helper_function_base()
                 + first_exception
                 + exception.declarations().function_count()
                 + roots.declarations.function_count()
                 + table_functions
-                + activation_functions,
+                + activation_functions
+                + loader_activation
+                    .as_ref()
+                    .map_or(0, |activation| activation.declarations().function_count()),
         )
     });
     let mut parts = vec![
         runtime.function_declarations(),
+        loader.declarations(),
         constructors.declarations(),
         gc.declarations(),
         exception.declarations(),
@@ -265,6 +318,9 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
     }
     if let Some(activations) = &activations {
         parts.push(activations.declarations());
+    }
+    if let Some(activation) = &loader_activation {
+        parts.push(activation.declarations());
     }
     if let Some(identities) = &identities {
         parts.push(identities.declarations());
@@ -296,6 +352,9 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
         identities,
         scan: &scan,
         activations,
+        loader,
+        loader_activation,
+        first_constructors,
         runtime,
         plan,
         constructors,

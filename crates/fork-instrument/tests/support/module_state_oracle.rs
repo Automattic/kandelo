@@ -10,6 +10,9 @@ pub fn emit_activations(input: &[u8]) -> Vec<u8> {
 }
 fn emit_mode(input: &[u8], activations: bool) -> Vec<u8> {
     let mut module = walrus::Module::from_buffer(input).unwrap();
+    if activations {
+        fork_instrument::legacy_dlopen::lower(&mut module).unwrap();
+    }
     let activation = activations.then(|| {
         use fork_instrument::{call_graph, instrument};
         let fork = call_graph::find_import_func(&module, "h.fork").unwrap();
