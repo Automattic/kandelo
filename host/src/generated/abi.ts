@@ -1619,6 +1619,7 @@ export const CHANNEL_SCALAR_SLOT_CONTRACTS: Readonly<
   139: { 1: "process-address", 3: "process-address", },
   200: { 0: "process-address", },
   203: { 0: "process-address", },
+  207: { 0: "process-address", 1: "process-address", 2: "process-address", },
   237: { 1: "u32", },
   238: { 1: "u32", },
   241: { 5: "process-size", },
@@ -2456,11 +2457,6 @@ export const SYSCALL_ARGS: Record<number, SyscallArgDesc[]> = {
   ],
   206: [
     { argIndex: 0, direction: "out", size: { type: "fixed", size: 8 }, required: true },
-  ],
-  207: [
-    { argIndex: 0, direction: "in", size: { type: "fixed", size: 8 }, required: true },
-    { argIndex: 1, direction: "out", size: { type: "process-layout", wasm32Size: 128, wasm64Size: 128 }, nullable: true },
-    { argIndex: 2, direction: "in", size: { type: "fixed", size: 16 }, nullable: true },
   ],
   209: [
     { argIndex: 0, direction: "in", size: { type: "process-layout", wasm32Size: 12, wasm64Size: 24 }, nullable: true },

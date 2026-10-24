@@ -227,6 +227,24 @@ const PROCESS_ADDRESS_ARGUMENTS_2_4: &[ChannelScalarArgument] = &[
         kind: ChannelScalarKind::ProcessAddress,
     },
 ];
+/// `rt_sigtimedwait(set, info, timeout, sigsetsize)`: all three pointers are
+/// caller addresses; `info` is written when the wait is decided, which for a
+/// parked caller is after any per-call staging is gone
+/// (`runtime_core::wait_signal`).
+const PROCESS_ADDRESS_ARGUMENTS_0_1_2: &[ChannelScalarArgument] = &[
+    ChannelScalarArgument {
+        index: 0,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+    ChannelScalarArgument {
+        index: 1,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+    ChannelScalarArgument {
+        index: 2,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+];
 const U32_ARGUMENT_2: &[ChannelScalarArgument] = &[ChannelScalarArgument {
     index: 2,
     kind: ChannelScalarKind::U32,
@@ -668,6 +686,12 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
         syscall_number: extended_syscalls::SYS_SET_TID_ADDRESS,
         musl_name: "set_tid_address",
         arguments: PROCESS_ADDRESS_ARGUMENT_0,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
+        syscall_number: extended_syscalls::SYS_RT_SIGTIMEDWAIT,
+        musl_name: "rt_sigtimedwait",
+        arguments: PROCESS_ADDRESS_ARGUMENTS_0_1_2,
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {

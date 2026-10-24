@@ -191,7 +191,6 @@ function createRetryHarness(
     ABI_SYSCALLS.Openat,
     ABI_SYSCALLS.Poll,
     ABI_SYSCALLS.Ppoll,
-    ABI_SYSCALLS.RtSigtimedwait,
     ABI_SYSCALLS.Select,
     ABI_SYSCALLS.Pselect6,
   ]);
@@ -677,7 +676,6 @@ describe("blocking retry snapshot contract", () => {
       "Syscall::Select as u32",
       "extended_syscalls::SYS_PPOLL",
       "extended_syscalls::SYS_PSELECT6",
-      "extended_syscalls::SYS_RT_SIGTIMEDWAIT",
     ]);
 
     const fromSyscall = BLOCKED_RETRY_SOURCE.match(
@@ -2850,86 +2848,6 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
   );
 
   it.each(WIDTHS)(
-    "%s retains rt_sigtimedwait's mask, output destination, and timeout",
-    async (_name, pointerWidth) => {
-      vi.useFakeTimers();
-      const harness = createRetryHarness(pointerWidth);
-      const mask = 0x1000;
-      const info = 0x1200;
-      const timeout = 0x1400;
-      const replacementInfo = 0x2200;
-      const processView = new DataView(harness.processMemory.buffer);
-      processView.setBigUint64(mask, 0x0102030405060708n, true);
-      processView.setBigInt64(timeout, 5n, true);
-      processView.setBigInt64(timeout + 8, 0n, true);
-      writeRequest(harness, ABI_SYSCALLS.RtSigtimedwait, [
-        BigInt(mask),
-        BigInt(info),
-        BigInt(timeout),
-        BigInt(SIGNAL_MASK_BYTES),
-      ]);
-
-      const attempts: Array<{ mask: bigint; timeoutSeconds: bigint }> = [];
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          const view = kernelView(harness, rawPointer);
-          const stagedMask = new DataView(
-            harness.kernelBytes.buffer,
-            Number(kernelArg(view, 0)),
-            SIGNAL_MASK_BYTES,
-          );
-          const stagedTimeout = new DataView(
-            harness.kernelBytes.buffer,
-            Number(kernelArg(view, 2)),
-            16,
-          );
-          attempts.push({
-            mask: stagedMask.getBigUint64(0, true),
-            timeoutSeconds: stagedTimeout.getBigInt64(0, true),
-          });
-          if (attempts.length === 1) {
-            publishKernelResult(view, -1, EAGAIN);
-          } else {
-            const infoPointer = Number(kernelArg(view, 1));
-            harness.kernelBytes.fill(0x5a, infoPointer, infoPointer + 128);
-            publishKernelResult(view, 10, 0);
-          }
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(harness.channel);
-      processView.setBigUint64(mask, 0xffffffffffffffffn, true);
-      processView.setBigInt64(timeout, 0n, true);
-      writeRequest(harness, ABI_SYSCALLS.RtSigtimedwait, [
-        BigInt(mask),
-        BigInt(replacementInfo),
-        0n,
-        BigInt(SIGNAL_MASK_BYTES),
-      ]);
-      harness.worker.retrySyscall(harness.channel);
-      await Promise.resolve();
-
-      expect(attempts).toEqual([
-        { mask: 0x0102030405060708n, timeoutSeconds: 5n },
-        { mask: 0x0102030405060708n, timeoutSeconds: 5n },
-      ]);
-      expect(
-        Array.from(harness.processBytes.slice(info, info + 128)),
-      ).toEqual(new Array(128).fill(0x5a));
-      expect(
-        Array.from(
-          harness.processBytes.slice(replacementInfo, replacementInfo + 128),
-        ),
-      ).toEqual(new Array(128).fill(0));
-      expectHostOnlyRetryLifecycle(
-        harness,
-        ABI_SYSCALLS.RtSigtimedwait,
-      );
-    },
-  );
-
-  it.each(WIDTHS)(
     "%s retains a FIFO open pathname and flags while parked",
     async (_name, pointerWidth) => {
       vi.useFakeTimers();
@@ -4097,38 +4015,6 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
 
       {
         const harness = createRetryHarness(pointerWidth);
-        const maskPointer = 0x1000;
-        const infoPointer = 0x1200;
-        const timeoutPointer = 0x1400;
-        const view = new DataView(harness.processMemory.buffer);
-        view.setBigUint64(maskPointer, 1n, true);
-        view.setBigInt64(timeoutPointer, 5n, true);
-        view.setBigInt64(timeoutPointer + 8, 0n, true);
-        armCancellationPoint(harness, ABI_SYSCALLS.RtSigtimedwait, [
-          BigInt(maskPointer),
-          BigInt(infoPointer),
-          BigInt(timeoutPointer),
-          BigInt(SIGNAL_MASK_BYTES),
-        ]);
-        harness.kernelExports.kernel_handle_channel = vi.fn(
-          (rawPointer: number | bigint) =>
-            publishRetryOrExactCleanup(harness, rawPointer, -1, EAGAIN),
-        );
-
-        harness.worker.handleSyscall(harness.channel);
-
-        expectInterrupted(harness, "sigtimedwait");
-        const key =
-          `${harness.channel.pid}:${harness.channel.channelOffset}`;
-        expect(harness.worker.pendingSignalWaits.has(key)).toBe(false);
-        // The deadline is kernel state keyed on this channel's execution
-        // generation now, not a host map keyed on `pid:offset`. Retiring it
-        // clears the handle.
-        expect(harness.channel.waitHandle).toBeUndefined();
-      }
-
-      {
-        const harness = createRetryHarness(pointerWidth);
         armCancellationPoint(harness, ABI_SYSCALLS.Poll, [
           0n,
           0n,
@@ -4651,108 +4537,6 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         ABI_SYSCALLS.Nanosleep,
         ABI_SYSCALLS.ThreadCancel,
       ]);
-    },
-  );
-
-  it.each(WIDTHS)(
-    "%s cancellation retires an exact sigtimedwait deadline before mailbox reuse",
-    async (_name, pointerWidth) => {
-      vi.useFakeTimers();
-      const harness = createRetryHarness(pointerWidth, {
-        channelOffsets: [4 * 65_536, 6 * 65_536],
-      });
-      const [callerChannel, targetChannel] = harness.channels;
-      const targetTid = 78;
-      harness.worker.channelTids.set(
-        `${targetChannel.pid}:${targetChannel.channelOffset}`,
-        targetTid,
-      );
-      const maskPointer = 0x1000;
-      const infoPointer = 0x1200;
-      const timeoutPointer = 0x1400;
-      const processView = new DataView(harness.processMemory.buffer);
-      processView.setBigUint64(maskPointer, 1n, true);
-      processView.setBigInt64(timeoutPointer, 5n, true);
-      processView.setBigInt64(timeoutPointer + 8, 0n, true);
-      harness.processBytes.fill(0x6b, infoPointer, infoPointer + 128);
-      writeRequest(
-        harness,
-        ABI_SYSCALLS.RtSigtimedwait,
-        [
-          BigInt(maskPointer),
-          BigInt(infoPointer),
-          BigInt(timeoutPointer),
-          BigInt(SIGNAL_MASK_BYTES),
-        ],
-        targetChannel,
-        true,
-      );
-      const syscalls: number[] = [];
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          const view = kernelView(harness, rawPointer);
-          const syscall = view.getUint32(CH_SYSCALL, true);
-          syscalls.push(syscall);
-          publishKernelResult(
-            view,
-            syscall === ABI_SYSCALLS.RtSigtimedwait ? -1 : 0,
-            syscall === ABI_SYSCALLS.RtSigtimedwait ? EAGAIN : 0,
-          );
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(targetChannel);
-      const signalWaitKey =
-        `${targetChannel.pid}:${targetChannel.channelOffset}`;
-      expect(harness.worker.pendingSignalWaits.has(signalWaitKey)).toBe(true);
-      expect(targetChannel.waitHandle).toBeTypeOf("bigint");
-
-      writeRequest(
-        harness,
-        ABI_SYSCALLS.ThreadCancel,
-        [BigInt(targetTid)],
-        callerChannel,
-      );
-      harness.worker.handleSyscall(callerChannel);
-
-      expect(requestResult(harness, callerChannel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        returnValue: 0,
-        errno: 0,
-      });
-      expect(requestResult(harness, targetChannel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        returnValue: -EINTR,
-        errno: EINTR,
-      });
-      expect(harness.worker.pendingSignalWaits.has(signalWaitKey)).toBe(false);
-      expect(targetChannel.waitHandle).toBeUndefined();
-      expect(harness.worker.pendingCancels.has(targetChannel)).toBe(false);
-      expect(
-        Array.from(
-          harness.processBytes.slice(infoPointer, infoPointer + 128),
-        ),
-      ).toEqual(new Array(128).fill(0x6b));
-      expect(
-        harness.worker.blockingRetrySnapshots.has(targetChannel),
-      ).toBe(false);
-      expect(syscalls).toEqual([
-        ABI_SYSCALLS.RtSigtimedwait,
-        ABI_SYSCALLS.ThreadCancel,
-      ]);
-
-      writeRequest(
-        harness,
-        ABI_SYSCALLS.Getpid,
-        [],
-        targetChannel,
-      );
-      await vi.advanceTimersByTimeAsync(5_000);
-      await Promise.resolve();
-      expect(requestStatus(harness, targetChannel)).toBe(
-        CHANNEL_STATUS_PENDING,
-      );
     },
   );
 

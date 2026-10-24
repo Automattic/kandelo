@@ -222,6 +222,11 @@ _Static_assert(__NR_futex == 200u,
 #endif
 _Static_assert(__NR_set_tid_address == 203u,
 "musl __NR_set_tid_address drifted from the Kandelo channel scalar contract");
+#ifndef __NR_rt_sigtimedwait
+#error "musl is missing __NR_rt_sigtimedwait required by the Kandelo channel scalar contract"
+#endif
+_Static_assert(__NR_rt_sigtimedwait == 207u,
+"musl __NR_rt_sigtimedwait drifted from the Kandelo channel scalar contract");
 #ifndef __NR_sched_setaffinity
 #error "musl is missing __NR_sched_setaffinity required by the Kandelo channel scalar contract"
 #endif

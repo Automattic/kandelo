@@ -5449,80 +5449,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             }
             0
         }
-        207 => {
-            // SYS_RT_SIGTIMEDWAIT: (mask_ptr, info_ptr, timeout_ptr, sigsetsize)
-            let model = match crate::process_wire::ProcessDataModel::from_width(i64::from(caller_pointer_width)) {
-                Ok(model) => model,
-                Err(error) => return -(error as i32),
-            };
-            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-            let mut host = WasmHostIO;
-            // Read the 64-bit signal mask from the pointer
-            let mask = if args[0] != 0 {
-                let p = channel_const_ptr!(0, u8);
-                let mut bytes = [0u8; 8];
-                unsafe {
-                    for i in 0..8 {
-                        bytes[i] = *p.add(i);
-                    }
-                }
-                u64::from_le_bytes(bytes)
-            } else {
-                0
-            };
-            // Read timeout from timespec pointer (time64: i64 sec + i64 nsec)
-            let timeout_ms = if args[2] != 0 {
-                let p = channel_const_ptr!(2, u8);
-                let mut sec_bytes = [0u8; 8];
-                let mut nsec_bytes = [0u8; 8];
-                unsafe {
-                    for i in 0..8 {
-                        sec_bytes[i] = *p.add(i);
-                    }
-                    for i in 0..8 {
-                        nsec_bytes[i] = *p.add(8 + i);
-                    }
-                }
-                let sec = i64::from_le_bytes(sec_bytes);
-                let nsec = i64::from_le_bytes(nsec_bytes);
-                (sec * 1000 + nsec / 1_000_000) as i32
-            } else {
-                -1 // NULL timeout = wait indefinitely
-            };
-            let result = match syscalls::sys_sigtimedwait(proc, &mut host, mask, timeout_ms) {
-                Ok((sig, si_value, si_code, siginfo_word_1, siginfo_word_2)) => {
-                    // Write siginfo_t if pointer is non-null
-                    if args[1] != 0 {
-                        let p = channel_mut_ptr!(1, u8);
-                        let mut encoded = alloc::vec![0; model.siginfo_size()];
-                        if let Err(error) = crate::process_wire::write_siginfo(
-                            &mut encoded,
-                            crate::process_wire::NativeSiginfo {
-                                signo: sig as i32,
-                                code: si_code,
-                                word_1: siginfo_word_1,
-                                // Keep uid/timer-overrun bits lossless across
-                                // the signed/unsigned siginfo union views.
-                                word_2_bits: siginfo_word_2 as u32,
-                                value_bits: si_value,
-                            },
-                            model,
-                        ) {
-                            return -(error as i32);
-                        }
-                        // WHY: encode the complete native object before
-                        // replacing the capacity-checked scratch destination.
-                        // The host holds one exclusive synchronous lease.
-                        let output = unsafe { slice::from_raw_parts_mut(p, model.siginfo_size()) };
-                        output.copy_from_slice(&encoded);
-                    }
-                    sig as i32
-                }
-                Err(e) => -(e as i32),
-            };
-            deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-            result
-        }
+        // SYS_RT_SIGTIMEDWAIT: (set, info, timeout, sigsetsize). The kernel
+        // owns the wait (see `channel_sigtimedwait`); all three pointers are
+        // caller addresses, and `info` is written when the wait is decided.
+        207 => channel_sigtimedwait(guest_address!(0), guest_address!(1), guest_address!(2)),
 
         // Time
         40 => kernel_clock_gettime(a1 as u32, channel_mut_ptr!(1, u8)), // SYS_CLOCK_GETTIME
@@ -14295,7 +14225,7 @@ fn queue_posix_timer_fire(proc: &mut Process, timer_id: u32) -> i32 {
 
     match notify {
         SIGEV_SIGNAL => {
-            proc.signals.raise_timer(signo, value, timer_id);
+            proc.raise_process_timer(signo, value, timer_id);
             0
         }
         SIGEV_THREAD_ID => {
@@ -14464,12 +14394,39 @@ pub fn kernel_sigsuspend(mask_lo: u32, mask_hi: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let mask = ((mask_hi as u64) << 32) | (mask_lo as u64);
-    let result = match syscalls::sys_sigsuspend(proc, &mut host, mask) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
-    };
+    let suspended = syscalls::sys_sigsuspend(proc, &mut host, mask);
+    let result = park_suspend(proc, suspended);
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
+}
+
+/// sigsuspend/pause: the temporary mask is installed and no signal can end
+/// the wait yet (`EAGAIN`), so park the caller; the signal sweep ends it with
+/// `EINTR` (see `runtime_core::wait_signal`).
+fn park_suspend(proc: &Process, outcome: Result<(), Errno>) -> i32 {
+    match outcome {
+        Ok(()) => 0,
+        Err(Errno::EAGAIN) => {
+            let task = channel_guest_task(proc);
+            report_park(
+                crate::wait_park::with(|parks| {
+                    parks.park(
+                        task.pid,
+                        task.tid,
+                        crate::wait_queue::WaitKind::SigTimedWait { mask: 0 },
+                        alloc::vec![crate::wait_queue::WakeSource::Signal {
+                            pid: task.pid,
+                            tid: task.tid,
+                        }],
+                        None,
+                        crate::wait_park::Resume::Suspend,
+                    )
+                })
+                .map(syscalls::ParkOutcome::Parked),
+            )
+        }
+        Err(e) => -(e as i32),
+    }
 }
 
 /// pause -- suspend until a signal is delivered.
@@ -14477,10 +14434,8 @@ pub fn kernel_sigsuspend(mask_lo: u32, mask_hi: u32) -> i32 {
 pub fn kernel_pause() -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_pause(proc, &mut host) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
-    };
+    let paused = syscalls::sys_pause(proc, &mut host);
+    let result = park_suspend(proc, paused);
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
@@ -14908,6 +14863,85 @@ fn settle_child_waits() {
             };
             crate::wait_park::with(|p| p.finish_child_waiter(id, pid, value));
         }
+    }
+}
+
+/// rt_sigtimedwait from a channel: the kernel owns the wait (see
+/// `runtime_core::wait_signal`). A signal in the set already pending is taken
+/// now; otherwise the caller parks until [`settle_signal_waits`] takes one,
+/// a caught signal outside the set interrupts it, or the timeout passes.
+fn channel_sigtimedwait(set: u64, info: u64, timeout: u64) -> i32 {
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let task = channel_guest_task(proc);
+    let mut host = WasmHostIO;
+    let outcome = (|| -> Result<syscalls::ParkOutcome, Errno> {
+        let mut raw = [0u8; 8];
+        if set == 0 || host.proc_read_bytes(task.pid as i32, set, &mut raw) < 0 {
+            return Err(Errno::EFAULT);
+        }
+        let timeout_ns = if timeout == 0 {
+            None
+        } else {
+            Some(syscalls::read_guest_timespec_ns(&mut host, task, timeout)?)
+        };
+        let wait = crate::wait_signal::SigWait {
+            mask: u64::from_le_bytes(raw),
+            info,
+            timeout_ns: timeout_ns.map(|ns| ns as u64),
+        };
+        wait.probe(&mut host, task)?;
+        if let Some(taken) = crate::wait_signal::take_signal_for(proc, task.tid, wait.mask) {
+            return wait.report(&mut host, task, &taken).map(syscalls::ParkOutcome::Done);
+        }
+        if timeout_ns == Some(0) {
+            return Err(Errno::EAGAIN);
+        }
+        let deadline = match timeout_ns {
+            Some(ns) => Some(crate::wait_park::now_ns(&mut host)?.saturating_add(ns)),
+            None => None,
+        };
+        let generation = crate::wait_park::with(|parks| {
+            parks.park(
+                task.pid,
+                task.tid,
+                crate::wait_queue::WaitKind::SigTimedWait { mask: wait.mask },
+                alloc::vec![crate::wait_queue::WakeSource::Signal { pid: task.pid, tid: task.tid }],
+                deadline,
+                crate::wait_park::Resume::SigTimed(wait),
+            )
+        })?;
+        Ok(syscalls::ParkOutcome::Parked(generation))
+    })();
+    let result = report_park(outcome);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
+/// Offer every parked `rt_sigtimedwait` the signals in its set, after a signal
+/// generation and before the generic sweep (which would otherwise deliver a
+/// set member that happens to be unblocked). With no generation since the
+/// last sweep it is one flag read.
+fn settle_signal_waits() {
+    let waiters = crate::wait_park::with(|p| p.dirty_signal_waiters());
+    if waiters.is_empty() {
+        return;
+    }
+    let mut host = WasmHostIO;
+    for (id, pid, tid, wait) in waiters {
+        let (taken, pointer_width) = {
+            let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+            let Some(proc) = table.get_mut(pid) else { continue };
+            if !proc.is_live_explicit_tid(tid) {
+                continue;
+            }
+            (crate::wait_signal::take_signal_for(proc, tid, wait.mask), proc.pointer_width)
+        };
+        let Some(taken) = taken else { continue };
+        let task = syscalls::GuestTask { pid, tid, pointer_width };
+        let value = wait
+            .report(&mut host, task, &taken)
+            .unwrap_or_else(|error| -(error as i32));
+        crate::wait_park::with(|p| p.finish_signal_waiter(id, pid, tid, value));
     }
 }
 
@@ -15896,7 +15930,7 @@ pub extern "C" fn kernel_pty_set_winsize(pty_idx: u32, rows: u32, cols: u32) -> 
         let pids = table.pids_in_group(fg_pgid as u32);
         for pid in pids {
             if let Some(proc) = table.get_mut(pid) {
-                proc.signals.raise(wasm_posix_shared::signal::SIGWINCH);
+                proc.raise_signal(wasm_posix_shared::signal::SIGWINCH);
             }
         }
     }
@@ -16019,6 +16053,7 @@ pub extern "C" fn kernel_drain_wakeup_events(
     max_events: u32,
 ) -> u32 {
     settle_child_waits();
+    settle_signal_waits();
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     if crate::wait_park::settle(table) {
         crate::wakeup::push(0, wasm_posix_shared::wakeup_event_wire::TYPE_WAIT_COMPLETE);
@@ -16050,6 +16085,7 @@ pub extern "C" fn kernel_drain_wait_completions(
         Err(error) => return -(error as i32),
     };
     settle_child_waits();
+    settle_signal_waits();
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
     crate::wait_park::with(|parks| {
