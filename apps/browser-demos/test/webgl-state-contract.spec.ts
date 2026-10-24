@@ -208,6 +208,87 @@ test("remaining GLES2 core object queries retain source and attachment identitie
   expect(result.before).toEqual([0x1702,10,0,0x8516]); expect(result.after).toEqual(result.before); expect(result.errors).toEqual([0,1,0x502,0]);
 });
 
+for (const cube of [false,true]) {
+  test(`texture zero retains ${cube ? "cube" : "2D"} storage across units, deletion and context retirement`, async ({ page }) => {
+    await page.goto("/trap-signal-test.html");
+    const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
+    const result = await page.evaluate(async ({sourceRoot,cube}) => {
+      const base = `/@fs/${sourceRoot}host/src/webgl/`;
+      const { GlContextRegistry } = await import(base+"registry.ts"), { GlMuxer } = await import(base+"muxer.ts");
+      const { decodeAndDispatch } = await import(base+"bridge.ts"), { runGlQuery } = await import(base+"query.ts"), O = await import(base+"ops.ts");
+      const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+      const gl = canvas.getContext("webgl2"); if (!gl) throw new Error("WebGL2 required");
+      const reg = new GlContextRegistry(), mux = new GlMuxer(gl);
+      const [a,b] = [1,2].map(sessionId => {
+        reg.bind({pid:93,sessionId,cmdbufAddr:0,cmdbufLen:4096}); const owner = reg.get(93,sessionId)!;
+        owner.gl = gl; owner.contextId = sessionId; owner.cmdbufView = new Uint8Array(4096); return owner;
+      });
+      if (!reg.shareObjects(93,2,1)) throw new Error("share group failed");
+      const target = cube ? gl.TEXTURE_CUBE_MAP : gl.TEXTURE_2D;
+      const send = (owner: typeof a, op: number, words: number[], tail = new Uint8Array()) => {
+        mux.switchTo(owner); const v = new DataView(owner.cmdbufView!.buffer);
+        v.setUint16(0,op,true); v.setUint16(2,words.length*4+tail.length,true);
+        words.forEach((word,i) => v.setUint32(4+4*i,word,true)); owner.cmdbufView!.set(tail,4+4*words.length);
+        if (decodeAndDispatch(owner,0,4+4*words.length+tail.length)) throw new Error("texture command failed");
+      };
+      const query = (owner: typeof a, op: number, words: number[], size: number) => {
+        mux.switchTo(owner); const input = new Uint8Array(words.length*4), out = new Uint8Array(size);
+        words.forEach((word,i) => new DataView(input.buffer).setUint32(4*i,word,true));
+        if (runGlQuery(owner,op,input,out) !== size) throw new Error("texture query failed"); return out;
+      };
+      const parameter = (owner: typeof a, pname: number) => {
+        const out = query(owner,O.QOP_GET_TEX_PARAMETER,[target,pname],12), v = new DataView(out.buffer);
+        if (v.getUint32(0,true) || v.getUint32(8,true) !== 0x47514c33) throw new Error("default texture unavailable"); return v.getUint32(4,true);
+      };
+      const defaults = [gl.TEXTURE_MIN_FILTER,gl.TEXTURE_MAG_FILTER,gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T].map(pname => parameter(a,pname));
+      const zeroA = a.shadow.defaultTextures.get(target)!;
+      const upload = (owner: typeof a, rgba: number[]) => {
+        for (const image of cube ? [0,1,2,3,4,5].map(i => gl.TEXTURE_CUBE_MAP_POSITIVE_X+i) : [gl.TEXTURE_2D])
+          send(owner,O.OP_TEX_IMAGE_2D,[image,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,4],new Uint8Array(rgba));
+        send(owner,O.OP_TEX_PARAMETERI,[target,gl.TEXTURE_MIN_FILTER,gl.NEAREST]);
+        send(owner,O.OP_TEX_PARAMETERI,[target,gl.TEXTURE_MAG_FILTER,gl.NEAREST]); send(owner,O.OP_GENERATE_MIPMAP,[target]);
+      };
+      for (const [name,type,text] of [[11,gl.VERTEX_SHADER,"void main(){gl_Position=vec4(0.,0.,0.,1.);gl_PointSize=1.;}"],
+        [12,gl.FRAGMENT_SHADER,`precision mediump float; uniform ${cube ? "samplerCube" : "sampler2D"} tex; void main(){gl_FragColor=${cube ? "textureCube(tex,vec3(1.,0.,0.))" : "texture2D(tex,vec2(.5))"};}`]] as const) {
+        send(a,O.OP_CREATE_SHADER,[type,name]); const bytes = new TextEncoder().encode(text); send(a,O.OP_SHADER_SOURCE,[name,bytes.length],bytes); send(a,O.OP_COMPILE_SHADER,[name]);
+      }
+      send(a,O.OP_CREATE_PROGRAM,[13]); send(a,O.OP_ATTACH_SHADER,[13,11]); send(a,O.OP_ATTACH_SHADER,[13,12]); send(a,O.OP_LINK_PROGRAM,[13]);
+      const locIn = new Uint8Array(11); new DataView(locIn.buffer).setUint32(0,13,true); new DataView(locIn.buffer).setUint32(4,3,true); locIn.set(new TextEncoder().encode("tex"),8);
+      const locOut = new Uint8Array(4); if (runGlQuery(a,O.QOP_GET_UNIFORM_LOC,locIn,locOut) !== 4) throw new Error("sampler query failed");
+      const location = new DataView(locOut.buffer).getInt32(0,true);
+      for (const [owner,name,color] of [[a,21,[255,0,0,255]],[b,22,[0,255,0,255]]] as const) {
+        send(owner,O.OP_BIND_FRAMEBUFFER,[gl.FRAMEBUFFER,name]); send(owner,O.OP_BIND_TEXTURE,[gl.TEXTURE_2D,name]);
+        send(owner,O.OP_TEX_IMAGE_2D,[gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,0]);
+        send(owner,O.OP_FRAMEBUFFER_TEXTURE_2D,[gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,name,0]); send(owner,O.OP_BIND_TEXTURE,[gl.TEXTURE_2D,0]);
+        upload(owner,[...color]); send(owner,O.OP_USE_PROGRAM,[13]); send(owner,O.OP_UNIFORM1I,[location,1]); send(owner,O.OP_VIEWPORT,[0,0,1,1]);
+      }
+      const render = (owner: typeof a) => { send(owner,O.OP_DRAW_ARRAYS,[gl.POINTS,0,1]); return [...query(owner,O.QOP_READ_PIXELS,[0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE],4)]; };
+      const pixels = [render(a),render(b)]; mux.invalidateCurrent(); pixels.push(render(a));
+      send(a,O.OP_DELETE_TEXTURES,[1,0]); pixels.push(render(a));
+      const face = cube ? gl.TEXTURE_CUBE_MAP_POSITIVE_X : gl.TEXTURE_2D;
+      send(a,O.OP_TEX_SUB_IMAGE_2D,[face,0,0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,4],new Uint8Array([255,255,0,255])); pixels.push(render(a));
+      send(a,O.OP_CLEAR_COLOR,[...new Uint32Array(new Float32Array([0,0,1,1]).buffer)]); send(a,O.OP_CLEAR,[gl.COLOR_BUFFER_BIT]);
+      send(a,O.OP_COPY_TEX_SUB_IMAGE_2D,[face,0,0,0,0,0,1,1]); pixels.push(render(a));
+      send(a,O.OP_CLEAR_COLOR,[...new Uint32Array(new Float32Array([1,0,0,1]).buffer)]); send(a,O.OP_CLEAR,[gl.COLOR_BUFFER_BIT]);
+      send(a,O.OP_COPY_TEX_IMAGE_2D,[face,0,gl.RGBA,0,0,1,1,0]); pixels.push(render(a));
+      send(a,O.OP_BIND_TEXTURE,[target,30]); upload(a,[0,0,255,255]); send(a,O.OP_BIND_TEXTURE,[target,0]);
+      pixels.push(render(a)); send(a,O.OP_ACTIVE_TEXTURE,[gl.TEXTURE0+1]); send(a,O.OP_BIND_TEXTURE,[target,30]); pixels.push(render(a));
+      send(a,O.OP_DELETE_TEXTURES,[1,30]); pixels.push(render(a));
+      const bindingName = new DataView(query(a,O.QOP_GET_INTEGERV,[cube ? gl.TEXTURE_BINDING_CUBE_MAP : gl.TEXTURE_BINDING_2D],4).buffer).getUint32(0,true);
+      const predicate = query(a,O.QOP_IS_OBJECT,[1,0],12), isZero = new DataView(predicate.buffer).getUint32(4,true);
+      send(a,O.OP_TEX_PARAMETERI,[target,0x813c,1]);
+      const foreignParameter = [new DataView(query(a,O.QOP_GET_ERROR,[],4).buffer).getUint32(0,true),gl.getTexParameter(target,0x813c)];
+      const afterParameter = parameter(a,gl.TEXTURE_MIN_FILTER), errors = [new DataView(query(a,O.QOP_GET_ERROR,[],4).buffer).getUint32(0,true),new DataView(query(b,O.QOP_GET_ERROR,[],4).buffer).getUint32(0,true)];
+      const zeroB = b.shadow.defaultTextures.get(target)!; mux.invalidateCurrent(); reg.destroyContext(93,1);
+      const retirement = [gl.isTexture(zeroA),gl.isTexture(zeroB)]; pixels.push(render(b));
+      mux.invalidateCurrent(); reg.destroyContext(93,2); retirement.push(gl.isTexture(zeroB));
+      return {defaults,pixels,bindingName,isZero,afterParameter,foreignParameter,errors,retirement};
+    },{sourceRoot:root,cube});
+    expect(result).toEqual({defaults:[0x2702,0x2601,0x2901,0x2901],pixels:[[255,0,0,255],[0,255,0,255],[255,0,0,255],[255,0,0,255],[255,255,0,255],[0,0,255,255],[255,0,0,255],[255,0,0,255],[0,0,255,255],[255,0,0,255],[0,255,0,255]],
+      bindingName:0,isZero:0,afterParameter:0x2600,foreignParameter:[0x500,0],errors:[0,0],retirement:[false,true,false]});
+  });
+}
+
 for (const width of [1,2]) {
   test(`maximum ${width*8}-bit VBO indices preserve strip topology and shared storage`, async ({ page }) => {
     await page.goto("/trap-signal-test.html");

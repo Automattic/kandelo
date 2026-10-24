@@ -1,5 +1,6 @@
 // Replay each GLES2 texture target independently on the shared context.
 import { knownTextureUnitLimit } from "./limits.js";
+import { nativeTextureBinding } from "./texture-bindings.js";
 import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
 import {
   GL_BLEND,
@@ -103,8 +104,8 @@ export class GlMuxer {
       this.current?.shadow.cubeTextureUnits.length ?? 0);
     for (let i = 0; i < units; i++) {
       gl.activeTexture(GL_TEXTURE0 + i);
-      gl.bindTexture(GL_TEXTURE_2D, s.textureUnits[i] ?? null);
-      gl.bindTexture(0x8513, s.cubeTextureUnits[i] ?? null);
+      gl.bindTexture(GL_TEXTURE_2D, nativeTextureBinding(s,GL_TEXTURE_2D,i));
+      gl.bindTexture(0x8513, nativeTextureBinding(s,0x8513,i));
     }
     gl.activeTexture(GL_TEXTURE0 + s.activeTexture);
 

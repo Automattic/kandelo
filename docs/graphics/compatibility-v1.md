@@ -63,7 +63,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffers plus client attributes use a bounded presence query; core buffer/vertex queries preserve logical state. Full size/limit/negative coverage remains open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core attribute/source/attachment reflection and validation entrypoints are implemented; complete executable/attribute/uniform validation still needs work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
-| G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization and core parameter queries exist; default texture-zero objects and complete target/state/error audit remain open | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
+| G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization, core parameter queries and context-owned default texture objects are implemented in host source; complete target/state/error and guest CTS audit remain open | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
 | G07 | Raster/depth/stencil/blend/clear/readback; ES2 §§3,4 | Main provides offscreen color/depth/stencil; no broad CTS evidence | bridge, query, present-target | CTS functional render families; real pixels all three engines | partial |
 | G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | Default/user identities and read/draw state remain distinct; attachment records retain deleted texture/RBO storage, including unbound containers and separate packed depth/stencil points. Core attachment/renderbuffer queries implemented; full storage/negative/CTS coverage remains open | encoder, registry, image references, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
 | G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Some guest paths silently return; missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
@@ -1356,3 +1356,83 @@ ordinary implementation gaps. Public EGL sharing, independent surfaces,
 display generations, sibling sampler/storage identity and the other
 inventory families remain open. No new platform boundary is claimed.
 Performance was not measured.
+
+
+### Context-owned default textures
+
+GLES default 2D and cube texture objects now have private native storage
+and sampler state. They remain separate from shared public texture maps
+and from each other. A logical null binding continues to mean name zero;
+only the native binding resolves it to the private stand-in. Creation
+binds the object on every native unit whose logical binding is zero,
+including units not selected by the client, and restores the active unit.
+Later muxer replay resolves those same default objects. Naming/binding a
+public texture preserves existing default state, and deleting a bound
+public texture restores the caller's default object. Deleting name zero
+is ignored, binding queries report zero and the public object predicate
+remains false for zero.
+
+Storage, subimage, compressed-image, copy and mipmap paths prepare the
+appropriate default object before issuing the native operation. Parameter
+queries and setters use only the four core GLES2 parameter names; foreign
+ES3 targets/parameter enums are rejected before private allocation or
+state changes. Allocation or partial-binding failure restores affected
+units, deletes the temporary native handle, preserves named bindings and
+suppresses the dependent operation. Private objects retire when their
+individual context is destroyed, even while shared objects and another
+context survive.
+
+These are the GLES2 default-object semantics described in the
+[OpenGL ES 2.0 specification, sections 3.7 and appendix C](https://registry.khronos.org/OpenGL/specs/es/2.0/es_full_spec_2.0.pdf).
+The [WebGL2 texture-object rule](https://registry.khronos.org/webgl/specs/latest/2.0/#TEXTUREOBJECTS)
+rejects modifying/querying a null native binding, so a native stand-in is
+required to implement the GLES state. This uses the existing commands and
+query envelopes; global ABI remains 55 and operation-table version 4.
+No protocol, kernel, C library or installed archive changed in this batch.
+
+The new default-texture rendering cases fail in all three engines against
+the exact `486dfb0a16` host source archive at
+`.context/graphics-texture-zero-before/` (six failures at the initial
+default-parameter query):
+`.context/graphics-texture-zero-final-baseline-browser.log`.
+
+
+Focused current evidence:
+
+| Gate | Result | Evidence |
+|---|---|---|
+| Host graphics source gate and Node/browser declarations | 350 cases in 17 files; declarations passed | `.context/graphics-texture-zero-checked-host.log` |
+| Real Chromium/Firefox/WebKit source WebGL | 81 passed, no skips | `.context/graphics-texture-zero-browser.log` |
+| Browser protocol/memory-boundary negative checks | 10 passed | `.context/graphics-texture-zero-memory-boundary.log` |
+
+The six new host cases check initial parameters, separate target/context
+objects, all 64 units in the native test model, named-binding preservation,
+zero-name deletion, rollback/retry, enum rejection and per-context native
+retirement. The existing odd-record decoder fixture now binds a named
+texture explicitly, keeping its assertions about unaligned uniform records
+independent of lazy default-object creation. Earlier focused host runs
+failed only that fixture's old assumption about the complete call list;
+the corrected current gate above has no skips or failures.
+
+The real-browser 2D and cube cases render distinct red/green context
+textures through an initially unselected sampler unit, alternate owners,
+invalidate/replay, and retain pixels after deleting zero. They update the
+default image through subimage, copy-subimage and copy-image calls, render
+a named blue texture, then recover the original default pixels after
+named deletion. Queries still report binding name zero and false object
+predicate. ES3-only parameter mutation is rejected while native state
+stays unchanged. Destroying one context deletes its private native object
+and leaves the peer's storage renderable; final peer teardown retires its
+own object. These direct host tests use internal groups; public shared
+EGL contexts and full guest marshalling remain unvalidated.
+
+This closes the default-object implementation gap at the host source
+layer. G06 remains partial: the C texture-unit mirror is fixed at 32,
+complete formats/negative/storage/limit coverage and guest CTS remain
+open, as do EGLImage sibling sampler identity and public context/surface/
+display-generation routing. C shader upload and attribute limits remain
+ordinary gaps in their inventory families. No outside-runtime defect or
+new platform boundary is asserted. Normal full SDK/kernel/program/package/
+image provisioning, guest CTS, cage/sway, full browser-memory and POSIX
+validation remain deferred to the combined build/test phase. Performance
+was not measured.

@@ -99,3 +99,11 @@ real-browser tests exercise the host's v3 query implementation against
 native WebGL storage, including stale vertex/index views. Together these
 are focused source evidence; guest end-to-end query marshalling and CTS
 still require the normal rebuilt artifacts.
+
+
+The host source gate (`host/vitest.graphics.config.ts`) includes independent
+models of texture-zero allocation, per-unit binding and retirement. The
+real WebGL state-contract suite also renders context-owned default 2D/cube
+textures, including deletion recovery and subimage/copy operations, in all
+three engines. These checks execute shared host source; they do not imply
+public EGL sharing or guest CTS execution.

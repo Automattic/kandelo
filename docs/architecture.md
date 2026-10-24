@@ -3946,10 +3946,17 @@ the shared shader object; attachment queries retain old names through
 namespace reuse. String/list replies use bounded chunks, with private C
 accumulation before caller outputs change. EGLImage attachment queries
 translate matching native storage back to its public sibling type/name.
-All 142 GLES2 core symbols are defined and resolved; full conformance,
-default texture-zero objects, source upload limits and complete
-query/negative/limit coverage remain open, alongside image sibling sampler identity and kernel display-generation authority plus
-C group routing remain open.
+Each GLES context also owns separate unnamed 2D and cube textures. Private
+native stand-ins materialize on storage/parameter use and bind to every
+unit whose logical name is zero, including unselected units. Muxer replay,
+named-object deletion and explicit zero binding restore those stand-ins;
+queries still return name zero. They do not enter shared name maps and
+retire with their individual context. Failed allocation/binding rolls back
+partial installation and suppresses the dependent texture operation.
+All 142 GLES2 core symbols are defined and resolved. Full conformance,
+source upload limits, complete query/negative/limit coverage, image sibling
+sampler identity, kernel display-generation authority and C group routing
+remain open.
 Shader/program attachment records retain deleted shaders and current
 programs until their last logical reference releases. Native program deletion
 is deferred while the program is current in its owner, allowing muxer replay

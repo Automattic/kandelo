@@ -1056,6 +1056,11 @@ describe("cmdbuf decoder — TLV walker", () => {
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);
     seedUniform(b);
+    // SDL updates a named texture. Keep this fixture about unaligned
+    // record layout rather than lazy creation of GLES texture zero.
+    const texture = gl.createTexture() as unknown as WebGLTexture;
+    b.textures.set(1,texture); b.shadow.textureUnits[0] = texture;
+    gl.bindTexture(0x0de1,texture); gl.log.length = 0;
     const mat: number[] = [];
     for (let i = 0; i < 16; i++) mat.push(i * 0.25);
     const vec = [0.5, -1, 2, 8];

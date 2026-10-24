@@ -43,6 +43,7 @@ function detachBoundImages(b: GlBinding, kind: GlImageAttachment["kind"], object
 /** Delete a public name while retaining the object for other context and
  * container references. Only the calling context's bindings are reset. */
 export function deleteTextureName(b: GlBinding, name: number): void {
+  if (name === 0) return;
   const texture = b.textures.get(name);
   if (!texture || !b.gl) return;
   const gl = b.gl;
@@ -50,7 +51,7 @@ export function deleteTextureName(b: GlBinding, name: number): void {
   const accepted = checkedGlCall(b, () => {
     try {
       for (const [target,units] of tables) for (let unit=0; unit<units.length; unit++) {
-        if (units[unit] === texture) { gl.activeTexture(0x84c0+unit); gl.bindTexture(target,null); }
+        if (units[unit] === texture) { gl.activeTexture(0x84c0+unit); gl.bindTexture(target,b.shadow.defaultTextures.get(target) ?? null); }
       }
     } finally { gl.activeTexture(0x84c0+b.shadow.activeTexture); }
   });

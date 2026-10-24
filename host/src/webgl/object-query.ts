@@ -2,6 +2,7 @@ import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
 import { boundFramebuffer, isDefaultFramebuffer } from "./framebuffer.js";
+import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import * as O from "./ops.js";
 
 function fail(b: GlBinding, error: number): number { recordGlError(b,error); return -22; }
@@ -93,7 +94,8 @@ export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out:
         result.setInt32(0,value,true); return 4;
       }
       case O.QOP_GET_TEX_PARAMETER: {
-        if ((name !== 0x0de1 && name !== 0x8513) || ![0x2800,0x2801,0x2802,0x2803].includes(arg)) return fail(b,0x500);
+        if ((name !== 0x0de1 && name !== 0x8513) || !validGlesTextureParameter(arg)) return fail(b,0x500);
+        if (!prepareTextureOperation(b,name)) return -5;
         let value = 0;
         if (!checkedGlCall(b, () => { value = Number(gl.getTexParameter(name,arg)); })) return -5;
         result.setInt32(0,value,true); return 4;

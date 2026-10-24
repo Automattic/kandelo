@@ -19,6 +19,7 @@
  * ioctl-style device operation instead of hiding the failure in host code.
  */
 import { capabilityEnabled } from "./state-query.js";
+import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import { drawGlesElements } from "./index-data.js";
 import { setConvertedVertexAttribute } from "./vertex-data.js";
 import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
@@ -443,6 +444,20 @@ function dispatch(
     recordGlError(b, error);
     return;
   }
+  switch (op) {
+    case O.OP_TEX_IMAGE_2D: case O.OP_TEX_SUB_IMAGE_2D:
+    case O.OP_COMPRESSED_TEX_IMAGE_2D: case O.OP_COMPRESSED_TEX_SUB_IMAGE_2D:
+    case O.OP_COPY_TEX_IMAGE_2D: case O.OP_COPY_TEX_SUB_IMAGE_2D:
+      if (!prepareTextureOperation(b,v.getUint32(p,true),true)) return;
+      break;
+    case O.OP_TEX_PARAMETERI: case O.OP_TEX_PARAMETERF:
+      if (!validGlesTextureParameter(v.getUint32(p+4,true))) { recordGlError(b,0x500); return; }
+      if (!prepareTextureOperation(b,v.getUint32(p,true))) return;
+      break;
+    case O.OP_GENERATE_MIPMAP:
+      if (!prepareTextureOperation(b,v.getUint32(p,true))) return;
+      break;
+  }
   if (op >= O.OP_UNIFORM1I && op <= O.OP_UNIFORM_MATRIX3FV) {
     const location = v.getInt32(p, true);
     if (location !== -1 && (!b.uniformLocations.has(location) ||
@@ -708,6 +723,7 @@ function dispatch(
       const n = v.getUint32(p, true);
       for (let i = 0; i < n; i++) {
         const name = v.getUint32(p + 4 + i * 4, true);
+        if (name === 0) continue;
         const tex = gl.createTexture();
         if (tex) b.textures.set(name, tex);
       }
@@ -725,7 +741,7 @@ function dispatch(
       const target = v.getUint32(p, true);
       const texName = v.getUint32(p + 4, true);
       if (target !== 0x0de1 && target !== 0x8513) { recordGlError(b,0x500); return; }
-      let tex = b.textures.get(texName) ?? null;
+      let tex = texName ? b.textures.get(texName) ?? null : b.shadow.defaultTextures.get(target) ?? null;
       const allocate = texName !== 0 && tex === null;
       if (allocate && (!checkedGlCall(b, () => { tex = gl.createTexture(); }) || !tex)) {
         if (tex) gl.deleteTexture(tex);
@@ -738,8 +754,8 @@ function dispatch(
       if (allocate && tex) b.textures.set(texName,tex);
       const unit = b.shadow.activeTexture;
       if (unit >= 0 && unit < b.shadow.textureUnits.length) {
-        if (target === 0x0de1) b.shadow.textureUnits[unit] = tex;
-        else if (target === 0x8513) b.shadow.cubeTextureUnits[unit] = tex;
+        if (target === 0x0de1) b.shadow.textureUnits[unit] = texName ? tex : null;
+        else if (target === 0x8513) b.shadow.cubeTextureUnits[unit] = texName ? tex : null;
       }
       return;
     }

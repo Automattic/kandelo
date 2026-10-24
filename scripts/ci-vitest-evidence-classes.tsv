@@ -375,6 +375,7 @@ host/test/webgl-muxer.test.ts	source-only
 host/test/webgl-present-target.test.ts	source-only
 host/test/webgl-registry.test.ts	source-only
 host/test/webgl-shadow.test.ts	source-only
+host/test/webgl-texture-zero.test.ts	source-only
 host/test/webgl-submit-drain.test.ts	source-only
 host/test/webgl-submit-queue.test.ts	source-only
 host/test/webmcp-guest-listing.test.ts	source-only

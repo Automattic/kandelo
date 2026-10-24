@@ -55,6 +55,9 @@ export interface GlShadowState {
   vertexAttribValues: Map<number, [number, number, number, number]>;
 
   activeTexture: number;
+  /** Private native stand-ins for the two context-owned GLES texture-zero
+   * objects. Null unit entries continue to mean logical name zero. */
+  defaultTextures: Map<number, WebGLTexture>;
   textureUnits: (WebGLTexture | null)[];
   cubeTextureUnits: (WebGLTexture | null)[];
   pixelStore: Map<number, number>;
@@ -125,6 +128,7 @@ export function defaultShadow(): GlShadowState {
     readFbo: null,
     vertexAttribValues: new Map(),
     activeTexture: 0,
+    defaultTextures: new Map(),
     textureUnits: new Array(32).fill(null),
     cubeTextureUnits: new Array(32).fill(null),
     pixelStore: new Map(EXTRA_PIXEL_STORE_DEFAULTS),
