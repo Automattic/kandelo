@@ -1,117 +1,16 @@
 //! Full native GC and exception providers, composed with frozen runtime
 //! controls and source constructor rewriting. No JavaScript reference codec.
 use fork_instrument::{module_exception_codec, module_gc_codec, streaming::*};
-use wasm_encoder::{
-    Function,
-    reencode::{Error, Reencode, RoundtripReencoder},
-};
+use wasm_encoder::reencode::RoundtripReencoder;
 #[path = "streaming_roots.rs"]
 mod roots;
 #[path = "streaming_tables.rs"]
 mod tables;
 
-struct Provider {
-    runtime: NativeRuntime,
-    plan: NativeGcPlan,
-    constructors: FrozenGcConstructors,
-    gc: NativeGcCodec,
-    exception: NativeExceptionCodec,
-    first_gc: u32,
-    first_exception: u32,
-    roots: Option<roots::Components>,
-    tables: Option<tables::Components>,
-    declarations: FrozenDeclarations,
-    module: FrozenModuleDeclarations,
-}
-macro_rules! remap {
-    ($name:ident) => {
-        fn $name(&mut self, source: u32) -> Result<u32, Error<Self::Error>> {
-            self.runtime.$name(source)
-        }
-    };
-}
-impl Reencode for Provider {
-    type Error = ImportIndexError;
-    remap!(function_index);
-    remap!(table_index);
-    remap!(memory_index);
-    remap!(global_index);
-    remap!(tag_index);
-}
-impl FunctionTransform for Provider {
-    fn defer_module_initializers(&self) -> bool {
-        self.roots.is_some()
-    }
-    fn imports(&self) -> Option<&FrozenImports> {
-        Some(self.runtime.imports_plan())
-    }
-    fn declarations(&self) -> Option<&FrozenDeclarations> {
-        Some(&self.declarations)
-    }
-    fn module_declarations(&self) -> Option<&FrozenModuleDeclarations> {
-        Some(&self.module)
-    }
-    fn function_ir_limits(&self) -> Option<IrLimits> {
-        Some(Default::default())
-    }
-    fn transform_ir(&mut self, source: &FunctionIr<'_>, limit: usize) -> anyhow::Result<Function> {
-        if let Some(roots) = &self.roots {
-            let mut output = self
-                .runtime
-                .new_function_with_parsed_locals(&source.source)?;
-            for instruction in &source.instructions {
-                let operation = if let Some(helper) = self
-                    .constructors
-                    .replacement(&self.plan, &instruction.operation)?
-                {
-                    wasm_encoder::Instruction::Call(helper)
-                } else {
-                    self.runtime.instruction(instruction.operation.clone())?
-                };
-                if let Some(tables) = &self.tables {
-                    tables
-                        .rewrites
-                        .emit_source(instruction, operation, &mut output, limit)?;
-                } else {
-                    roots.roots.emit_source(
-                        &instruction.operation,
-                        operation,
-                        &mut output,
-                        limit,
-                    )?;
-                }
-            }
-            return Ok(output);
-        }
-        self.constructors
-            .emit_function(&self.plan, source, &mut self.runtime, limit)
-    }
-    fn emit_helper(&mut self, ordinal: u32, limit: usize) -> anyhow::Result<Function> {
-        match ordinal {
-            0..7 => self.runtime.emit_control(ordinal, limit),
-            n if n < self.first_gc => self.constructors.emit_helper(n - 7, &self.plan, limit),
-            n if n < self.first_exception => {
-                self.gc.emit_helper(n - self.first_gc, &self.plan, limit)
-            }
-            n if n < self.first_exception + self.exception.declarations().function_count() => {
-                self.exception.emit_helper(n - self.first_exception, limit)
-            }
-            n => {
-                let roots = self.roots.as_ref().expect("root catalog");
-                let ordinal =
-                    n - self.first_exception - self.exception.declarations().function_count();
-                if ordinal < roots.declarations.function_count() {
-                    roots.emit_helper(ordinal, limit)
-                } else {
-                    self.tables
-                        .as_ref()
-                        .expect("table catalog")
-                        .emit_helper(ordinal - roots.declarations.function_count(), limit)
-                }
-            }
-        }
-    }
-}
+#[path = "streaming_gc_emit.rs"]
+mod emission;
+use emission::Provider;
+
 #[allow(dead_code)] // Root-state targets use emit_roots instead.
 pub fn emit(input: &[u8]) -> Vec<u8> {
     emit_mode(input, State::None, false)
@@ -132,14 +31,20 @@ pub fn emit_tables(input: &[u8]) -> Vec<u8> {
 pub fn emit_staged_tables(input: &[u8], wide: bool) -> Vec<u8> {
     emit_mode(input, State::Tables, wide)
 }
+#[allow(dead_code)]
+pub fn emit_activations(input: &[u8], shared: bool) -> Vec<u8> {
+    emit_mode(input, State::Activations { shared }, false)
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum State {
     None,
     Roots,
     Tables,
+    Activations { shared: bool },
 }
 fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
     let with_roots = state != State::None;
+    let with_tables = matches!(state, State::Tables | State::Activations { .. });
     let scan = scan(input).unwrap();
     let source_types = SourceTypes::new(&scan);
     let plan = NativeGcPlan::discover(
@@ -167,8 +72,8 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
     }
     let root_imports =
         with_roots.then(|| RootStateImports::append(&scan, &mut inputs, 1 << 20).unwrap());
-    let table_imports = (state == State::Tables)
-        .then(|| TableStateImports::append(&scan, &mut inputs, 1 << 20).unwrap());
+    let table_imports =
+        with_tables.then(|| TableStateImports::append(&scan, &mut inputs, 1 << 20).unwrap());
     let constructors =
         GcConstructorPlan::reserve(&scan, &plan, &mut inputs, 7, Default::default()).unwrap();
     let exception_imports = NativeExceptionImports::append(&scan, &mut inputs, 1 << 20).unwrap();
@@ -254,6 +159,64 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
                 + roots.declarations.function_count(),
         )
     });
+    let activations = if let State::Activations { shared } = state {
+        assert_eq!(
+            scan.functions[0].import.as_ref().unwrap(),
+            &("h".into(), "fork".into())
+        );
+        let roots = roots.as_ref().unwrap();
+        let tables = tables.as_ref().unwrap();
+        let options = ActivationModuleOptions {
+            shared_codecs: shared,
+            table_guards: tables
+                .tables
+                .synchronized_tables()
+                .into_iter()
+                .map(|table| (table, tables.tables.reconcile))
+                .collect(),
+            ..Default::default()
+        };
+        let activations = NativeActivations::plan(
+            &scan,
+            &mut runtime,
+            scan.reaching_from_seeds([0], false).unwrap(),
+            first_type
+                + exception.declarations().type_count()
+                + roots.declarations.type_count()
+                + tables.declarations.type_count(),
+            imports.helper_function_base()
+                + first_exception
+                + exception.declarations().function_count()
+                + roots.declarations.function_count()
+                + tables.declarations.function_count(),
+            options,
+            Default::default(),
+        )
+        .unwrap();
+        for (name, kind, function) in &scan.exports {
+            if *kind == wasmparser::ExternalKind::Func {
+                if let Some(entry) = activations.entry(*function) {
+                    module
+                        .export(
+                            &format!("resume_{name}"),
+                            wasm_encoder::ExportKind::Func,
+                            entry.resume,
+                        )
+                        .unwrap();
+                }
+            }
+        }
+        module
+            .export(
+                "unwind_tag",
+                wasm_encoder::ExportKind::Tag,
+                runtime.indices().unwind_tag,
+            )
+            .unwrap();
+        Some(activations)
+    } else {
+        None
+    };
     let mut parts = vec![
         runtime.function_declarations(),
         constructors.declarations(),
@@ -265,6 +228,9 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
     }
     if let Some(tables) = &tables {
         parts.push(&tables.declarations);
+    }
+    if let Some(activations) = &activations {
+        parts.push(activations.declarations());
     }
     let declarations = FrozenDeclarations::concatenate(&parts, 1 << 20).unwrap();
     let mut descriptors = vec![
@@ -287,6 +253,8 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
         ));
     }
     let mut transform = Provider {
+        scan: &scan,
+        activations,
         runtime,
         plan,
         constructors,

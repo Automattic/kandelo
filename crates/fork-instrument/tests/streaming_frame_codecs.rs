@@ -83,6 +83,13 @@ fn artifact(wide: bool, selector: bool, commits: bool) -> Vec<u8> {
     );
     assert_ne!(pair.save, other.save);
     let codecs = catalog.freeze().unwrap();
+    assert_eq!(codecs.lookup(&shape).unwrap(), pair);
+    let mut unknown = shape.clone();
+    unknown.scalars = vec![ValType::I32];
+    assert!(codecs.lookup(&unknown).is_err());
+    let mut invalid = shape.clone();
+    invalid.restored_scalars = 99;
+    assert!(codecs.lookup(&invalid).is_err());
     assert!(codecs.emit_helper(999, 1 << 20).is_err());
     assert!(codecs.emit_helper(0, 1).is_err());
     let declarations = FrozenDeclarations::concatenate(

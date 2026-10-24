@@ -181,6 +181,7 @@ impl FrameCodecCatalog {
             recipes: self.recipes,
             environment: self.environment,
             runtime: self.runtime,
+            helpers: self.helpers,
         })
     }
 }
@@ -190,8 +191,44 @@ pub struct FrozenFrameCodecs {
     recipes: Vec<Recipe>,
     environment: FrameEnvironment,
     runtime: NativeRuntimeIndices,
+    helpers: BTreeMap<Recipe, u32>,
 }
 impl FrozenFrameCodecs {
+    /// Resolve a shape while rebuilding one activation during emission.
+    /// This lookup cannot extend the frozen declaration catalog.
+    pub fn lookup(&self, shape: &FrameCodecShape) -> Result<FrameCodecPair> {
+        ensure!(
+            shape.scalars.len() <= 900
+                && shape
+                    .scalars
+                    .iter()
+                    .all(|ty| !matches!(ty, ValType::Ref(_))),
+            "invalid scalar frame codec shape"
+        );
+        ensure!(
+            shape.restored_scalars == usize::from(!shape.catch_selector).min(shape.scalars.len()),
+            "frame restore must return at most one value"
+        );
+        let save = Recipe::Save {
+            scalars: shape.scalars.clone(),
+            selector: shape.catch_selector,
+            commits: shape.commits,
+        };
+        let restore = Recipe::Restore {
+            scalars: shape.scalars.clone(),
+            selector: shape.catch_selector,
+        };
+        Ok(FrameCodecPair {
+            save: *self
+                .helpers
+                .get(&save)
+                .context("frame save shape was not frozen")?,
+            restore: *self
+                .helpers
+                .get(&restore)
+                .context("frame restore shape was not frozen")?,
+        })
+    }
     pub fn declarations(&self) -> &FrozenDeclarations {
         &self.declarations
     }

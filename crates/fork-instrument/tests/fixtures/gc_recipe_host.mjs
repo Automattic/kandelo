@@ -44,13 +44,16 @@ export default function createGcStore(providerModule, transit, wide, options = {
       ...exceptionBinding.imports,
       __wpk_fork_ref_encode_funcref(value) {
         if (value === null) return 0;
-        if (value !== instance.exports.source_function) throw new Error("unexpected function identity");
-        return 1000000;
+        const names = options.functions ?? ["source_function"];
+        const ordinal = names.findIndex(name => instance.exports[name] === value);
+        if (ordinal < 0) throw new Error("unexpected function identity");
+        return 1000000 + ordinal;
       },
       __wpk_fork_ref_decode_funcref(recipe) {
         if (recipe === 0) return null;
-        if (recipe !== 1000000) throw new Error("invalid function recipe");
-        return instance.exports.source_function;
+        const name = (options.functions ?? ["source_function"])[recipe - 1000000];
+        if (name === undefined) throw new Error("invalid function recipe");
+        return instance.exports[name];
       },
       __wpk_fork_ref_gc_lookup(slot) {
         const value = transit.get(slot);

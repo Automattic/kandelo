@@ -126,6 +126,11 @@ impl FrozenActivationSupport {
         let resume_slot_local = u32::try_from(count)?;
         let runtime = self.runtime;
         let mut output = Function::new_with_locals_types([ValType::I32]);
+        if let ActivationCallTarget::Indirect { table, .. } = operation.target {
+            if let Some(&guard) = self.table_guards.get(&table) {
+                output.instruction(&Instruction::Call(guard));
+            }
+        }
         output.instruction(&Instruction::GlobalGet(runtime.state_global));
         output.instruction(&Instruction::I32Const(crate::runtime::STATE_REWINDING));
         output.instruction(&Instruction::I32GeU);

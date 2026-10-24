@@ -68,6 +68,7 @@ pub struct ActivationSupportCatalog {
     recipes: Vec<Recipe>,
     signatures: BTreeMap<(Vec<ValType>, Vec<ValType>), u32>,
     transports: BTreeMap<Transport, u32>,
+    table_guards: BTreeMap<u32, u32>,
     estimated: usize,
     budget: usize,
 }
@@ -96,6 +97,7 @@ impl ActivationSupportCatalog {
             recipes: Vec::new(),
             signatures: BTreeMap::new(),
             transports: BTreeMap::new(),
+            table_guards: BTreeMap::new(),
             estimated: 0,
             budget,
         };
@@ -142,6 +144,17 @@ impl ActivationSupportCatalog {
     }
     pub fn frame_select(&self) -> u32 {
         self.first_function
+    }
+    /// Guard generated source-table transports at entry. The private process
+    /// resume table remains outside this policy. Bind before freezing helpers.
+    pub fn reconcile_table(&mut self, table: u32, guard: u32) -> Result<()> {
+        if let Some(&previous) = self.table_guards.get(&table) {
+            ensure!(previous == guard, "conflicting transport table guards");
+        } else {
+            self.charge(128)?;
+            self.table_guards.insert(table, guard);
+        }
+        Ok(())
     }
     #[allow(clippy::too_many_arguments)]
     pub fn resume_thunk_with_references(
@@ -377,18 +390,21 @@ impl ActivationSupportCatalog {
     pub fn freeze(self) -> Result<FrozenActivationSupport> {
         Ok(FrozenActivationSupport {
             declarations: FrozenDeclarations::new(self.types, self.functions, self.budget)?,
+            select_function: self.first_function,
             environment: self.environment,
             runtime: self.runtime,
             frames_start: self.frames_start,
             recipes: self.recipes,
             transports: self.transports,
             signatures: self.signatures,
+            table_guards: self.table_guards,
             metadata_budget: self.budget,
         })
     }
 }
 
 pub struct FrozenActivationSupport {
+    select_function: u32,
     declarations: FrozenDeclarations,
     environment: FrameEnvironment,
     runtime: NativeRuntimeIndices,
@@ -397,9 +413,14 @@ pub struct FrozenActivationSupport {
     transports: BTreeMap<Transport, u32>,
     signatures: BTreeMap<(Vec<ValType>, Vec<ValType>), u32>,
     metadata_budget: usize,
+    table_guards: BTreeMap<u32, u32>,
 }
 
 impl FrozenActivationSupport {
+    pub fn frame_select(&self) -> u32 {
+        self.select_function
+    }
+
     pub fn lookup_block_type(
         &self,
         parameters: &[ValType],

@@ -240,8 +240,8 @@ transaction scratch. Budget tests reject metadata, work and output exhaustion;
 256 repeated tag signatures keep the same physical local count. These
 providers now compose with activation frame vectors in the linked catch
 fixtures below. The GC providers described next also compose with these exact
-exception recipes. Composition with the complete module-state and production bootstrap
-pipeline remains unfinished. Provider metadata alone certifies no artifact.
+exception recipes. Production bootstrap integration remains unfinished.
+Provider metadata alone certifies no artifact.
 
 `NativeGcPlan` discovers aggregate layouts and constructor provenance before
 runtime helpers are declared. It records aligned scalar fields, reference
@@ -384,9 +384,9 @@ externrefs, empty and failed mutations, delayed segment drops, malformed baselin
 and page records, and a generation publication during reconciliation. Additional
 native memoryless fixtures cover both process/table widths; a mixed-width
 module checks table32 and table64 in the same helper. This is component
-execution evidence; complete provider/activation composition, process-level
-cross-worker replay, production integration and artifact certification remain
-unfinished.
+execution evidence; process-level cross-worker replay, production integration
+and artifact certification remain unfinished. Provider/activation composition
+is described below.
 
 `FrameBuilder` now plans one function's activation storage. It keeps parameters
 and first-used original locals in lexical order, assigns synthetic value keys,
@@ -447,8 +447,8 @@ defect: when `catch_all_ref` rethrows a raw broker value, Walrus leaves its
 scratch reservation behind on normal, rewind and live-abort exits. Native
 emission must release that reservation completely. The fixture verifies the
 known oracle failure separately instead of weakening native cleanup checks.
-Complete reference providers and legacy-handler normalization remain
-unfinished. Production continues to use Walrus.
+Legacy-handler normalization remains unfinished. Production continues to use
+Walrus.
 
 `FrameCodecCatalog` interns scalar save/restore recipes before output starts.
 It emits each helper serially and shares restores across save-commit policies.
@@ -531,7 +531,8 @@ executes without recursive source emission. Reference call/branch fixtures
 and legacy rethrow/delegate fixtures exercise normal execution, not reference
 or owned-exception frame replay. These dispatcher fixtures use a private test
 frame store. Native linked-frame composition is described below; source
-exception normalization and full module-state integration remain unfinished.
+exception normalization and production module-state integration remain
+unfinished.
 
 `NativeActivationPlan` and `emit_native_activation` now compose the dispatcher
 with linked-frame scalar capture/restore, a function-wide private-tag catch,
@@ -590,13 +591,45 @@ Walrus function transforms on both memory/table widths. They cover a
 eliminated callers, and scratch cleanup before normal, private-unwind and
 foreign-exception tail exits. The direct chain retains its self `return_call`
 and eliminated callers neither save nor consume journal frames.
-These remain component fixtures rather than the normal production
-instrumentation path. Source exception ownership normalization remains an
-explicit unsupported boundary of the activation wrapper. Complete module state,
-transport/state-hook composition, complete provider integration,
-artifact certification and production backend
-integration remain work; these fixtures do not establish full fork support or
-memory gains.
+`NativeActivations` now owns the module-wide declaration schedule without
+retaining these local plans. Its first pass loads one selected original body,
+reserves transports, resume thunks and catch block types, then releases that
+body and plan. A separate pass reloads each activation to intern scalar codecs
+after support indices are final. Emission rebuilds one local plan, resolves
+only frozen types/codecs/transports, emits it and releases it. Dense activation
+ordinals and resume entries are the compact per-function state. Source hooks
+also run for transparent tails and functions outside the capture closure.
+
+The catalog borrows the original immutable input bytes; emission checks input
+and body identity in constant time instead of hashing the full module for every
+function. Default module metadata is 64 MiB, with 524,288,000 original-operator
+visits across planning passes. Visits are charged before body decoding;
+function-local analysis, work, IR and output limits still apply separately.
+Unknown source roles, unplanned shapes, changed bytes and resource failures
+reject explicitly. No all-function body or activation-layout cache is retained.
+
+Generated indirect transports now carry the frozen source-table guard policy.
+They reconcile at helper entry, before either normal invocation or private
+resume-table routing. The private resume table remains outside source tracking.
+Constructor provenance and table/drop hooks compose with already-lowered
+source operations, preserving original program points and symbolic branches.
+
+A shared Node fixture now composes the real native GC and exact-tag exception
+providers, activation frame vectors, modern reference catches, globals,
+sparse tables and segment lifetimes. The same assertions run against unchanged
+Walrus on both pointer widths. Native output runs with shared and inline scalar
+codecs. Normal execution, fresh-child rewind and allocation failure at either
+activation preserve GC/exception cycles, typed non-null resume parameters,
+function/externref aliases and arrays rebuilt from parent-dropped segments.
+A transparent indirect tail commits no extra frame. Wide mutable-global
+arguments force virtual scratch; changing their source global before replay
+still delivers the captured argument bits. Scratch checks preserve the existing
+ABI's restored fork-time stack-pointer floor for replayed prologues.
+
+These remain component fixtures rather than the normal production path.
+Legacy exception normalization, static reference catalogs, import adapters,
+process-level integration, artifact certification and production backend
+integration remain work. No end-to-end memory improvement is claimed.
 
 `wasm-fork-instrument input.wasm --streaming-scan` runs that diagnostic scan
 without constructing a Walrus module or producing an executable. It reports
