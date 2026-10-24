@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { ROOTFS_LAZY_ASSET_URLS } from "../../apps/browser-demos/lib/init/rootfs-lazy-files";
+import { ROOTFS_LAZY_ASSET_URLS } from "../../apps/browser-demos/lib/init/generated/rootfs-lazy-asset-urls";
+import { parsePackagesToml, rootfsLazyOutputs } from "../../scripts/rootfs-packages-toml.mjs";
 import {
   imageOwnedRuntimeUrlMapper,
   imageOwnedRuntimeUrlTable,
@@ -93,20 +94,25 @@ describe("image-owned grouped runtime URLs", () => {
     );
   });
 
-  it("keeps browser rootfs imports within the declared rootfs outputs", () => {
-    const mapping = readFileSync(new URL("../../images/rootfs/PACKAGES.toml", import.meta.url), "utf8");
-    const source = readFileSync(new URL("../../apps/browser-demos/lib/init/rootfs-lazy-files.ts", import.meta.url), "utf8");
-    const declared = new Set([...mapping.matchAll(/^\s*binary\s*=\s*("(?:[^"\\]|\\.)*")/gm)]
-      .map(match => JSON.parse(match[1]) as string));
+  it("serves exactly the rootfs image's declared lazy outputs", () => {
+    const mapping = parsePackagesToml(
+      readFileSync(new URL("../../images/rootfs/PACKAGES.toml", import.meta.url), "utf8"),
+    );
+    const source = readFileSync(
+      new URL("../../apps/browser-demos/lib/init/generated/rootfs-lazy-asset-urls.ts", import.meta.url),
+      "utf8",
+    );
+    const lazy = rootfsLazyOutputs(mapping);
     const imports = [...source.matchAll(/from\s+"@binaries\/([^"?]+)\?url"/g)]
       .map(match => match[1]);
-    expect(imports.length).toBeGreaterThan(0);
-    // A static import outside this closure prevents every focused image from
-    // booting under SourceOnly, even when it never executes that program.
-    for (const path of imports) expect(declared.has(path), path).toBe(true);
+    expect(lazy.length).toBeGreaterThan(0);
+    // Every lazy entry the rootfs image records has a URL, and nothing else
+    // does: a static import outside this closure prevents every focused image
+    // from booting under SourceOnly, even when it never executes that program.
     expect([...ROOTFS_LAZY_ASSET_URLS.keys()].sort()).toEqual(
-      imports.map(path => `binaries/${path}`).sort(),
+      lazy.map(output => output.lazyUrl).sort(),
     );
+    expect(imports.sort()).toEqual(lazy.map(output => output.binary).sort());
   });
 
   it("falls back to the deployment's own asset URLs when there is no asset group", () => {

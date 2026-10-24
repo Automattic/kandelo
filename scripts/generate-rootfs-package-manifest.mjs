@@ -13,6 +13,11 @@ import {
 import { spawnSync } from "node:child_process";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  outputInstallMode,
+  outputLazyUrl,
+  parsePackagesToml,
+} from "./rootfs-packages-toml.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -110,85 +115,6 @@ function parseArgs(argv) {
     defaultInstall,
     out,
   };
-}
-
-function stripComment(line) {
-  let inString = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"' && line[i - 1] !== "\\") inString = !inString;
-    if (ch === "#" && !inString) return line.slice(0, i);
-  }
-  return line;
-}
-
-function parseValue(raw) {
-  const value = raw.trim();
-  if (value.startsWith("[") && value.endsWith("]")) {
-    const inner = value.slice(1, -1).trim();
-    if (!inner) return [];
-    return inner
-      .split(",")
-      .map((part) => part.trim())
-      .filter((part) => part.length > 0)
-      .map((part) => parseValue(part));
-  }
-  if (value.startsWith('"') && value.endsWith('"')) {
-    return value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-  }
-  if (/^[0-9]+$/.test(value)) return Number(value);
-  throw new Error(`unsupported TOML value: ${raw}`);
-}
-
-function parsePackagesToml(text) {
-  const root = {
-    default_install: "lazy",
-    lazy_url_prefix: "",
-    packages: [],
-  };
-  let currentPackage = null;
-  let currentOutput = null;
-
-  const lines = text.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const line = stripComment(lines[i]).trim();
-    if (!line) continue;
-
-    if (line === "[[packages]]") {
-      currentPackage = { outputs: [] };
-      root.packages.push(currentPackage);
-      currentOutput = null;
-      continue;
-    }
-    if (line === "[[packages.outputs]]") {
-      if (!currentPackage) {
-        throw new Error(`line ${i + 1}: [[packages.outputs]] before [[packages]]`);
-      }
-      currentOutput = {};
-      currentPackage.outputs.push(currentOutput);
-      continue;
-    }
-
-    const match = /^([A-Za-z0-9_]+)\s*=\s*(.+)$/.exec(line);
-    if (!match) throw new Error(`line ${i + 1}: expected key = value`);
-    const [, key] = match;
-    let raw = match[2];
-    if (raw.trim().startsWith("[") && !raw.trim().endsWith("]")) {
-      const startLine = i + 1;
-      while (++i < lines.length) {
-        const next = stripComment(lines[i]).trim();
-        raw += ` ${next}`;
-        if (next.endsWith("]")) break;
-      }
-      if (!raw.trim().endsWith("]")) {
-        throw new Error(`line ${startLine}: unterminated array`);
-      }
-    }
-    const target = currentOutput ?? currentPackage ?? root;
-    target[key] = parseValue(raw);
-  }
-
-  return root;
 }
 
 function asArray(value, name) {
@@ -460,13 +386,6 @@ function requireRegularFileIfPresent(path, binaryRel, treeName) {
   return true;
 }
 
-function encodeBinaryUrlPath(binaryRel) {
-  return binaryRel
-    .split("/")
-    .map((segment) => encodeURIComponent(segment))
-    .join("/");
-}
-
 function manifestToken(value, context) {
   if (/\s/.test(value)) throw new Error(`${context} contains whitespace: ${value}`);
   return value;
@@ -652,8 +571,6 @@ function generateManifest(config, binariesDir, defaultInstall, resolvedOutputs) 
 
   for (const pkg of config.packages) {
     const packageName = requireString(pkg, "name", "package");
-    const packageInstall =
-      pkg.install ?? defaultInstall ?? config.default_install ?? "lazy";
     if (!Array.isArray(pkg.outputs) || pkg.outputs.length === 0) {
       throw new Error(`package ${packageName}: at least one output is required`);
     }
@@ -662,7 +579,7 @@ function generateManifest(config, binariesDir, defaultInstall, resolvedOutputs) 
     for (const output of pkg.outputs) {
       const binaryRel = requireBinaryPath(output, `package ${packageName} output`);
       const path = requireString(output, "path", `package ${packageName} output ${binaryRel}`);
-      const install = output.install ?? packageInstall;
+      const install = outputInstallMode(config, pkg, output, defaultInstall);
       const mode = modeString(output.mode);
       const uid = output.uid ?? 0;
       const gid = output.gid ?? 0;
@@ -697,8 +614,7 @@ function generateManifest(config, binariesDir, defaultInstall, resolvedOutputs) 
           `${path} f ${mode} ${uid} ${gid} src=${manifestToken(resolved.path, "src")}`,
         );
       } else if (install === "lazy") {
-        const lazyUrl =
-          output.lazy_url ?? `${config.lazy_url_prefix ?? ""}${encodeBinaryUrlPath(binaryRel)}`;
+        const lazyUrl = outputLazyUrl(config, output);
         // Hashed from the artifact this line already opened to measure. Until
         // now these files were fetched with LENGTH as their only check, and
         // several ship mode 4755 — so bytes of the same length from a

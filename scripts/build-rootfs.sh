@@ -154,6 +154,7 @@ rootfs_input_hash() {
         host/src/vfs/zip.ts \
         scripts/build-rootfs.sh \
         scripts/generate-rootfs-package-manifest.mjs \
+        scripts/rootfs-packages-toml.mjs \
         scripts/build-step-input-hash.sh \
         crates/shared/src/lib.rs \
         "literal:ABI_VERSION=$ABI_VERSION"

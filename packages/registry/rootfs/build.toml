@@ -3,6 +3,7 @@ inputs = [
   "packages/registry/rootfs/build-rootfs-package.sh",
   "scripts/build-rootfs.sh",
   "scripts/generate-rootfs-package-manifest.mjs",
+  "scripts/rootfs-packages-toml.mjs",
   "package.json",
   "package-lock.json",
   "MANIFEST",
