@@ -1,3 +1,4 @@
+import { canonicalBuffer, destroyBufferStorage } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 
@@ -49,7 +50,7 @@ export function deleteBufferNames(b: GlBinding, names: number[]): void {
   if (!objects.size) return;
   const vao = activeVertexArray(b);
   const attributes = [...vao.attributes].filter(([,a]) => a.buffer !== null && objects.has(a.buffer));
-  const array = b.shadow.arrayBuffer && objects.has(b.shadow.arrayBuffer) ? null : b.shadow.arrayBuffer;
+  const array = b.shadow.arrayBuffer && objects.has(canonicalBuffer(b,b.shadow.arrayBuffer)) ? null : b.shadow.arrayBuffer;
   if (attributes.length && !clearNativeAttributeBuffers(b,attributes,array)) return;
   if (!checkedGlCall(b, () => {
     if (array !== b.shadow.arrayBuffer) b.gl!.bindBuffer(0x8892,null);
@@ -66,7 +67,7 @@ export function collectRetiredBuffers(b: GlBinding): void {
   for (const [object] of b.retiredBuffers) {
     let referenced = false;
     for (const owner of b.objects.members) {
-      if (owner.shadow.arrayBuffer === object) { referenced = true; break; }
+      if (owner.shadow.arrayBuffer !== null && canonicalBuffer(owner,owner.shadow.arrayBuffer) === object) { referenced = true; break; }
       for (const vao of owner.vertexArrays.values()) {
         if (vao.element === object || [...vao.attributes.values()].some(a => a.buffer === object)) {
           referenced = true; break;
@@ -74,6 +75,6 @@ export function collectRetiredBuffers(b: GlBinding): void {
       }
       if (referenced) break;
     }
-    if (!referenced && checkedGlCall(b, () => b.gl!.deleteBuffer(object))) b.retiredBuffers.delete(object);
+    if (!referenced && destroyBufferStorage(b,object)) b.retiredBuffers.delete(object);
   }
 }

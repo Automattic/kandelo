@@ -60,7 +60,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 |---|---|---|---|---|---|
 | G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reserved guest buffer names and host shared-object maps; incomplete is/query functions | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
 | G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Full rollback, hints and multiple public contexts remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
-| G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO client/index mirrors and retained deleted host buffer references. Bound index buffer plus client attributes rejected; dual-target storage, GL_FIXED and full size/limit/query coverage remain open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
+| G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Bound index buffer plus client attributes rejected; GL_FIXED, larger client staging and full size/limit/query coverage remain open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core reflection and complete executable/attribute/uniform validation still need work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Metadata-based result widths; query truncation and link invalidation need audit | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | WebGL2 normalization exists; complete target/state/error audit missing | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
@@ -973,12 +973,71 @@ stopped; it is not the focused graphics result. Subsequent checks use
 
 This does not close G01–G03. Unlike GLES2,
 [WebGL2 buffer binding](https://registry.khronos.org/webgl/specs/2.0/#5.1)
-classifies native buffers as element data or other data. A coherent logical
-buffer with separate native views remains to be implemented for cross-target
-use. This is an ordinary translation gap, not a hard platform boundary.
+classifies native buffers as element data or other data. The storage stage
+below implements separate native views over one logical buffer; this
+difference is not a hard platform boundary.
 GL_FIXED conversion, larger client staging, combined bound indices and client
 attributes, complete negative/limit/query behavior and C shared-group routing
 also remain open. No wire change occurred; ABI remains 55. Full SDK/archive,
 kernel, package and image rebuilds, guest CTS/compositor, browser-memory and
 POSIX validation remain deferred until the implementation is ready for the
 combined build/test phase. Performance was not measured.
+
+
+### Coherent vertex and index buffer storage
+
+Each logical host buffer now tracks its data length, usage and an
+authoritative native view. A second native view allows the same GLES name
+to serve both vertex and index bindings despite WebGL's classification rule.
+Successful data replacement or partial updates invalidate other views.
+Binding, subsequent partial updates and draws synchronize the required views,
+including buffers retained by another context or an unbound VAO. Native
+vertex-array pointers continue to refer to stable view objects. Queries and
+retirement resolve both views to the original logical identity, so deleted
+names, name reuse and final-reference cleanup keep the preceding ownership
+contract.
+
+Synchronization reads native bytes in independent chunks of at most 64 KiB
+and uploads them to the other class. It preserves native copy bindings and
+does not retain a full CPU copy of the buffer. It translates the native
+classification rule using the standard
+[WebGL2 readback API](https://registry.khronos.org/webgl/specs/2.0/).
+Readback can have a performance cost;
+performance was not measured. Rejected updates leave size/usage and the
+source unchanged. Failed synchronization suppresses the draw, keeps the view
+invalid for a later retry and restores copy bindings. Failure to construct a
+second view restores the previous binding and retires the temporary object.
+
+On the exact archived `937539798b` WebGL source tree, the two new rendered
+cases fail in all three engines (six failures):
+`.context/graphics-buffer-storage-verified-baseline-browser.log`. The archive
+is `.context/graphics-buffer-storage-before/`. The earlier baseline used the
+live source tree; the archived run is the authoritative comparison.
+
+Current focused evidence, ABI 55:
+
+| Gate | Result | Evidence |
+|---|---|---|
+| Host graphics source gate and Node/browser declarations | 320 cases in 16 files; declarations passed | `.context/graphics-buffer-storage-final-verified-host.log` |
+| Real Chromium/Firefox/WebKit source WebGL | 42 cases passed, no skips | `.context/graphics-buffer-storage-verified-browser.log` |
+| Browser protocol/memory-boundary negative checks | 10 passed, no skips | `.context/graphics-buffer-storage-memory-boundary.log` |
+
+The new real rendering cases start with either vertex or index classification,
+allocate 131080 bytes, update through both targets, redefine the store through
+the index binding and render the changed colors through a peer VAO. Reusing
+the deleted name renders independent magenta storage while the peer still
+renders the old yellow data. Both old native views retire at the final
+reference, and final group teardown deletes the two replacement views.
+The cases verify the 64 KiB transfer bound, both numeric binding names
+and preserved copy bindings. Source-host tests additionally inject
+allocation, readback and native update failures and verify retry/cleanup.
+These are host-internal group checks; public EGL sharing and guest execution
+remain unvalidated.
+
+This stage changes no wire layout, C source or installed artifacts. ABI stays
+55. The full G03 audit still includes GL_FIXED, client staging sizes, combined
+bound indices/client attributes, complete buffer/vertex queries and negative
+API/limit behavior. Public sharing also needs C/kernel/EGL group routing.
+The authorized deferral of normal SDK/kernel/package/image rebuilds and full
+CTS/compositor, browser-memory and POSIX runs remains in effect until the
+implementation reaches the combined build/test phase.

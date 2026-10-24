@@ -3911,7 +3911,13 @@ active VAO references, using a private empty native buffer to clear attribute
 references without deleting shared storage. Retirement scans every group
 member and container. The C encoder mirrors VAO ownership, reserves buffer
 names and distinguishes reused-name generations; failed client staging drops
-temporary names and suppresses the draw. Dual-target buffer storage,
+temporary names and suppresses the draw. Logical buffer stores track size,
+usage and one authoritative native view; separate stable vertex/index views
+synchronize before binding, partial updates and draws. Transfers use bounded
+independent 64 KiB readback chunks, preserve native copy bindings and avoid a
+full CPU mirror. Queries and retirement resolve each view to the logical
+identity, including old references after name reuse. Failed synchronization
+keeps the view invalid and suppresses drawing until a successful retry.
 GL_FIXED/client staging coverage, image sibling sampler identity and kernel
 display-generation authority plus C group routing remain open.
 Shader/program attachment records retain deleted shaders and current

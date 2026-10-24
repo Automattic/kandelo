@@ -26,6 +26,7 @@ import { replaceDefaultFramebuffer } from "./framebuffer.js";
 import { createGlObjectGroup, exposeGlSharedObjects, type GlObjectGroup, type GlSharedObjects } from "./object-group.js";
 import { finalizeProgram, releaseRetainedExecutable } from "./program-objects.js";
 import { collectRetiredImages, type GlImageAttachment } from "./image-references.js";
+import { destroyBufferStorage } from "./buffer-storage.js";
 import { collectRetiredBuffers, defaultVertexArray, type GlVertexArray } from "./buffer-references.js";
 
 export type GlContextHandle = number;
@@ -271,7 +272,7 @@ export class GlContextRegistry {
         ...b.textures.values(), ...[...b.foreignTextures.values()].map(entry => entry.tex),
       ]);
       for (const texture of textures) if (!boTextures.has(texture)) gl?.deleteTexture(texture);
-      for (const object of b.buffers.values()) gl?.deleteBuffer(object);
+      for (const object of b.buffers.values()) if (gl) destroyBufferStorage(b,object);
       for (const object of b.shaders.values()) gl?.deleteShader(object);
       for (const object of programs) gl?.deleteProgram(object);
       for (const object of b.rbos.values()) gl?.deleteRenderbuffer(object);
@@ -337,7 +338,7 @@ export class GlContextRegistry {
         || target.contextId === null || source.contextId === null || target.hasBeenCurrent
         || target.objects.members.size !== 1) return false;
     const names = target.objects;
-    if (names.buffers.size || names.textures.size || names.shaders.size || names.programs.size
+    if (names.buffers.size || names.bufferStores.size || names.textures.size || names.shaders.size || names.programs.size
         || names.rbos.size || names.uniformLocations.size || names.foreignTextures.size
         || names.retiredTextures.size || names.retiredBuffers.size || names.retiredRenderbuffers.size
         || names.shaderDeletePending.size || names.programDeletePending.size) return false;

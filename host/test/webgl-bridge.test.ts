@@ -22,6 +22,8 @@ class RecordingGl {
 
   // counters so each create*() returns a unique handle the test can match
   private next = 1;
+  private boundBuffers = new Map<number, unknown>();
+  bufferContents = new Map<unknown, Uint8Array>();
 
   // factories
   createBuffer() {
@@ -75,9 +77,19 @@ class RecordingGl {
   pixelStorei(p: number, v: number) { this.log.push(["pixelStorei", [p, v]]); }
 
   // buffers / textures
-  bindBuffer(t: number, b: unknown) { this.log.push(["bindBuffer", [t, b]]); }
-  bufferData(t: number, d: unknown, u: number) { this.log.push(["bufferData", [t, d, u]]); }
-  bufferSubData(t: number, o: number, d: unknown) { this.log.push(["bufferSubData", [t, o, d]]); }
+  bindBuffer(t: number, b: unknown) { this.log.push(["bindBuffer", [t, b]]); this.boundBuffers.set(t,b); }
+  bufferData(t: number, d: unknown, u: number) {
+    this.log.push(["bufferData", [t, d, u]]);
+    this.bufferContents.set(this.boundBuffers.get(t), typeof d === "number" ? new Uint8Array(d) : new Uint8Array(d as Uint8Array));
+  }
+  bufferSubData(t: number, o: number, d: unknown) {
+    this.log.push(["bufferSubData", [t, o, d]]);
+    this.bufferContents.get(this.boundBuffers.get(t))?.set(d as Uint8Array,o);
+  }
+  getBufferSubData(t: number, o: number, d: Uint8Array) {
+    this.log.push(["getBufferSubData",[t,o,d.byteLength]]);
+    d.set(this.bufferContents.get(this.boundBuffers.get(t))!.subarray(o,o+d.byteLength));
+  }
   deleteBuffer(b: unknown) { this.log.push(["deleteBuffer", [b]]); }
   bindTexture(t: number, x: unknown) { this.log.push(["bindTexture", [t, x]]); }
   texImage2D(...a: unknown[]) { this.log.push(["texImage2D", a]); }
@@ -130,6 +142,7 @@ class RecordingGl {
   finish() { this.log.push(["finish", []]); }
   getError() { return 0; }
   getParameter(p: number) {
+    if (p === 0x8f36 || p === 0x8f37) return this.boundBuffers.get(p) ?? null;
     if (p === 0x1F03 /* GL_EXTENSIONS */) return "WEBGL_test";
     return 42;
   }
@@ -379,13 +392,111 @@ describe("shared buffer deletion", () => {
       owner.contextId = sessionId; owner.cmdbufView = new Uint8Array(1024); return owner;
     });
     expect(reg.shareObjects(7,12,11)).toBe(true);
-    const send = (owner: typeof a, op: number, words: number[]) => {
-      const t = new Tlv(owner.cmdbufView!.buffer), {p} = t.op(op,words.length*4);
+    const send = (owner: typeof a, op: number, words: number[], tail = new Uint8Array()) => {
+      const t = new Tlv(owner.cmdbufView!.buffer), {p} = t.op(op,words.length*4+tail.length);
       words.forEach((word,i) => t.view.setUint32(p+i*4,word,true));
+      owner.cmdbufView!.set(tail,p+words.length*4);
       expect(decodeAndDispatch(owner,0,t.p)).toBe(0);
     };
     return {gl,reg,a,b,send};
   }
+
+  it("retains both views through a peer's secondary array binding alone", () => {
+    const {gl,a,b,send} = setup();
+    send(a,O.OP_BIND_BUFFER,[0x8893,71]); send(a,O.OP_BUFFER_DATA,[0x8893,4,0x88e4]);
+    send(b,O.OP_BIND_BUFFER,[0x8892,71]);
+    const object = a.buffers.get(71)!, vertex = b.shadow.arrayBuffer!;
+    expect(vertex).not.toBe(object);
+    send(a,O.OP_DELETE_BUFFERS,[1,71]);
+    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toEqual([]);
+    expect(b.shadow.arrayBuffer).toBe(vertex);
+    send(b,O.OP_BIND_BUFFER,[0x8892,0]);
+    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toEqual([["deleteBuffer",[object]],["deleteBuffer",[vertex]]]);
+    expect(b.bufferStores.size).toBe(0); expect(b.bufferViewOwners.size).toBe(0);
+  });
+
+  it("accepts an empty partial update using the logical size without synchronizing a stale view", () => {
+    const {gl,a,send} = setup();
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); send(a,O.OP_BUFFER_DATA,[0x8892,4,0x88e4]); send(a,O.OP_BIND_BUFFER,[0x8893,71]);
+    send(a,O.OP_BUFFER_DATA,[0x8892,8,0x88e4]);
+    const object = a.buffers.get(71)!, store = a.bufferStores.get(object)!;
+    const calls = gl.log.length;
+    send(a,O.OP_BUFFER_SUB_DATA,[0x8893,8,0]);
+    expect(gl.log.length).toBe(calls); expect(a.errors).toEqual([]);
+    expect(store.views.get(0x8893)!.valid).toBe(false); expect(store.source).toBe(object);
+  });
+
+  it("synchronizes large vertex/index views in bounded chunks and preserves copy bindings", () => {
+    const {gl,a,send} = setup();
+    const savedRead = gl.createBuffer(), savedWrite = gl.createBuffer();
+    gl.bindBuffer(0x8f36,savedRead); gl.bindBuffer(0x8f37,savedWrite);
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); const object = a.buffers.get(71)!;
+    send(a,O.OP_BUFFER_DATA,[0x8892,131080,0x88e8]);
+    send(a,O.OP_BUFFER_SUB_DATA,[0x8892,131076,4],new Uint8Array([1,2,3,4]));
+    send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,1,0x1406,0,0,0]); send(a,O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);
+    send(a,O.OP_BIND_BUFFER,[0x8893,71]);
+    const store = a.bufferStores.get(object)!, index = store.views.get(0x8893)!.native;
+    expect(index).not.toBe(object);
+    expect(gl.bufferContents.get(index)).toEqual(gl.bufferContents.get(object));
+    expect(gl.log.filter(([name]) => name === "getBufferSubData")).toEqual([
+      ["getBufferSubData",[0x8f36,0,65536]], ["getBufferSubData",[0x8f36,65536,65536]], ["getBufferSubData",[0x8f36,131072,8]]]);
+    send(a,O.OP_BUFFER_SUB_DATA,[0x8893,0,1],new Uint8Array([9])); send(a,O.OP_DRAW_ARRAYS,[0,0,1]);
+    expect(gl.bufferContents.get(object)![0]).toBe(9);
+    expect(store.size).toBe(131080); expect(store.usage).toBe(0x88e8);
+    expect(gl.getParameter(0x8f36)).toBe(savedRead); expect(gl.getParameter(0x8f37)).toBe(savedWrite);
+    expect(a.errors).toEqual([]);
+  });
+
+  it("keeps storage metadata and bytes unchanged after invalid updates", () => {
+    const {gl,a,send} = setup();
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); send(a,O.OP_BUFFER_DATA,[0x8892,4,0x88e4]);
+    send(a,O.OP_BUFFER_SUB_DATA,[0x8892,0,4],new Uint8Array([1,2,3,4]));
+    const object = a.buffers.get(71)!, store = a.bufferStores.get(object)!;
+    const errors: number[] = [];
+    gl.getError = () => errors.shift() ?? 0;
+    const bufferData = gl.bufferData.bind(gl); gl.bufferData = () => { errors.push(0x500); };
+    send(a,O.OP_BUFFER_DATA,[0x8892,8,0]); gl.bufferData = bufferData;
+    send(a,O.OP_BUFFER_SUB_DATA,[0x8892,3,2],new Uint8Array([9,9]));
+    expect(store.size).toBe(4); expect(store.usage).toBe(0x88e4); expect(store.source).toBe(object);
+    expect(gl.bufferContents.get(object)).toEqual(new Uint8Array([1,2,3,4]));
+    expect(a.errors).toContain(0x500); expect(a.errors).toContain(0x501);
+  });
+
+  it("suppresses a draw after failed synchronization and retries from authoritative storage", () => {
+    const {gl,a,send} = setup();
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]); send(a,O.OP_BUFFER_DATA,[0x8892,1,0x88e4]); send(a,O.OP_BIND_BUFFER,[0x8893,71]);
+    send(a,O.OP_BUFFER_SUB_DATA,[0x8892,0,1],new Uint8Array([9]));
+    const object = a.buffers.get(71)!, store = a.bufferStores.get(object)!;
+    const errors: number[] = [];
+    gl.getError = () => errors.shift() ?? 0;
+    const read = gl.getBufferSubData.bind(gl); gl.getBufferSubData = () => { errors.push(0x505); };
+    send(a,O.OP_DRAW_ELEMENTS,[0,1,0x1401,0]);
+    expect(gl.log.some(([name]) => name === "drawElements")).toBe(false);
+    expect(store.source).toBe(object); expect(store.views.get(0x8893)!.valid).toBe(false);
+    expect(gl.getParameter(0x8f36)).toBeNull(); expect(gl.getParameter(0x8f37)).toBeNull();
+    gl.getBufferSubData = read; send(a,O.OP_DRAW_ELEMENTS,[0,1,0x1401,0]);
+    expect(gl.bufferContents.get(store.views.get(0x8893)!.native)).toEqual(new Uint8Array([9]));
+    expect(gl.log.filter(([name]) => name === "drawElements")).toHaveLength(1);
+    expect(a.errors).toContain(0x505);
+  });
+
+  it("rolls back failed second-view allocation and deletes both successful views at the final reference", () => {
+    const {gl,a,send} = setup();
+    send(a,O.OP_BIND_BUFFER,[0x8893,71]); send(a,O.OP_BUFFER_DATA,[0x8893,4,0x88e4]);
+    const object = a.buffers.get(71)!, store = a.bufferStores.get(object)!;
+    const errors: number[] = [];
+    gl.getError = () => errors.shift() ?? 0;
+    const data = gl.bufferData.bind(gl); gl.bufferData = () => { errors.push(0x505); };
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]);
+    expect(a.shadow.arrayBuffer).toBeNull(); expect(store.views.size).toBe(1); expect(a.bufferViewOwners.size).toBe(1);
+    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toHaveLength(1);
+    gl.bufferData = data; send(a,O.OP_BIND_BUFFER,[0x8892,71]);
+    const vertex = store.views.get(0x8892)!.native;
+    send(a,O.OP_DELETE_BUFFERS,[1,71]);
+    expect(a.bufferStores.size).toBe(0); expect(a.bufferViewOwners.size).toBe(0);
+    expect(gl.log.filter(([name,args]) => name === "deleteBuffer" && args[0] === object)).toHaveLength(1);
+    expect(gl.log.filter(([name,args]) => name === "deleteBuffer" && args[0] === vertex)).toHaveLength(1);
+  });
 
   it("rejects duplicate generated names and failed native buffer binds without replacing references", () => {
     const {gl,a,send} = setup();

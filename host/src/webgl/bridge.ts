@@ -18,6 +18,7 @@
  * returns a negative errno so `GLIO_SUBMIT` can fail like any other
  * ioctl-style device operation instead of hiding the failure in host code.
  */
+import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, currentProgramName, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted } from "./program-objects.js";
 import { stateArgumentError } from "./state-validation.js";
@@ -669,36 +670,20 @@ function dispatch(
       deleteBufferNames(b,Array.from({length:n},(_,i) => v.getUint32(p+4+i*4,true)));
       return;
     }
-    case O.OP_BIND_BUFFER: {
-      const target = v.getUint32(p, true);
-      if (target !== 0x8892 && target !== 0x8893) { recordGlError(b,0x500); return; }
-      const name = v.getUint32(p+4,true);
-      let buffer = b.buffers.get(name) ?? null;
-      const allocate = name !== 0 && buffer === null;
-      if (allocate && (!checkedGlCall(b, () => { buffer = gl.createBuffer(); }) || !buffer)) {
-        if (buffer) gl.deleteBuffer(buffer);
-        recordGlError(b,0x505); return;
-      }
-      if (!checkedGlCall(b, () => gl.bindBuffer(target,buffer))) {
-        if (allocate && buffer) gl.deleteBuffer(buffer);
-        return;
-      }
-      if (allocate && buffer) b.buffers.set(name,buffer);
-      if (target === GL_ARRAY_BUFFER) b.shadow.arrayBuffer = buffer;
-      else activeVertexArray(b).element = buffer;
+    case O.OP_BIND_BUFFER:
+      bindBufferObject(b,v.getUint32(p,true),v.getUint32(p+4,true));
       return;
-    }
     // Payload: u32 target, u32 dataLen, u8 data[dataLen], u32 usage
     case O.OP_BUFFER_DATA: {
       const target = v.getUint32(p, true);
       const byteLength = v.getUint32(p + 4, true);
       if (v.byteLength === 12) {
         const usage = v.getUint32(p + 8, true);
-        gl.bufferData(target, byteLength, usage);
+        replaceBufferData(b,target,byteLength,usage);
       } else {
         const usage = v.getUint32(p + 8 + byteLength, true);
         const data = copyBytes(v, p + 8, byteLength);
-        gl.bufferData(target, data, usage);
+        replaceBufferData(b,target,data,usage);
       }
       return;
     }
@@ -708,7 +693,7 @@ function dispatch(
       const dstOff = v.getInt32(p + 4, true);
       const dataLen = v.getUint32(p + 8, true);
       const data = copyBytes(v, p + 12, dataLen);
-      gl.bufferSubData(target, dstOff, data);
+      updateBufferData(b,target,dstOff,data);
       return;
     }
 
@@ -1123,7 +1108,7 @@ function dispatch(
       const normalized = v.getUint32(p + 12, true) !== 0;
       const stride = v.getInt32(p + 16, true);
       const off = v.getInt32(p + 20, true);
-      const attribute = {buffer:b.shadow.arrayBuffer,enabled:vertexAttribute(b,index).enabled,
+      const attribute = {buffer:b.shadow.arrayBuffer && canonicalBuffer(b,b.shadow.arrayBuffer),enabled:vertexAttribute(b,index).enabled,
         size,type,normalized,stride,offset:off};
       if (!attribute.buffer) {
         if (off !== 0) { recordGlError(b,0x502); return; }
@@ -1133,6 +1118,7 @@ function dispatch(
       return;
     }
     case O.OP_DRAW_ARRAYS:
+      if (!prepareBufferDraw(b,false)) return;
       gl.drawArrays(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
@@ -1140,6 +1126,7 @@ function dispatch(
       );
       return;
     case O.OP_DRAW_ELEMENTS:
+      if (!prepareBufferDraw(b,true)) return;
       gl.drawElements(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),

@@ -1,10 +1,14 @@
+import type { GlBufferStore } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 
 /** Shareable object names and metadata. Bindings, FBOs, VAOs and errors
  * belong to individual contexts even when these objects are shared. */
 export type GlSharedObjects = {
   /** Cmdbuf-name (u32) → real GL object maps. */
+  /** Buffer map values are stable identities; native views live in bufferStores. */
   buffers: Map<number, WebGLBuffer>;
+  bufferStores: Map<WebGLBuffer, GlBufferStore>;
+  bufferViewOwners: Map<WebGLBuffer, WebGLBuffer>;
   textures: Map<number, WebGLTexture>;
   shaders: Map<number, WebGLShader>;
   programs: Map<number, WebGLProgram>;
@@ -46,7 +50,7 @@ export type GlObjectGroup = GlSharedObjects & { members: Set<GlBinding> };
 
 export function createGlObjectGroup(): GlObjectGroup {
   return {
-    members: new Set(), buffers: new Map(), textures: new Map(), shaders: new Map(), programs: new Map(),
+    members: new Set(), buffers: new Map(), bufferStores: new Map(), bufferViewOwners: new Map(), textures: new Map(), shaders: new Map(), programs: new Map(),
     rbos: new Map(), shaderDeletePending: new Set(), programDeletePending: new Set(),
     programShaders: new Map(), programAttributeBindings: new Map(),
     uniformLocations: new Map(), uniformLocationPrograms: new Map(), nextUniformLoc: 0,
