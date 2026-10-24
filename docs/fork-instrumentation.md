@@ -756,8 +756,16 @@ snapshot before validation and atomic publication.
 Focused evidence includes file-limit/failure tests, real post-optimization,
 12 main/dynamic/side and memory32/64 artifacts accepted by the production host
 contract checker before/after optimization, and capture/parent replay through
-the production continuation coordinator. Full process/browser/conformance
-gates remain pending. The [complete-transform memory comparison](measurements/2026-10-24-native-fork-instrumenter-full.md)
+the production continuation coordinator. These checks also pass through
+Vitest's normal global setup. A separate 16-case native process matrix builds
+existing C probes through the current SDK, compiler-facts path and default
+Binaryen post-optimizer on memory32 and memory64. Real kernel/process workers
+exercise direct/indirect and loop forks, stack carryovers, child/grandchild
+replay, signal handlers, pthread entry replay and root/later continuation
+allocation failures followed by recovery. The fixtures carry the current ABI
+contract stamp and require clean stderr. The ABI snapshot check also passes.
+Broader process, browser and conformance gates remain pending.
+The [complete-transform memory comparison](measurements/2026-10-24-native-fork-instrumenter-full.md)
 now covers seven controlled examples, three fresh runs per backend, identical
 inputs, bounded atomic I/O and separate host-contract/normal-execution checks.
 It excludes post-optimization and does not establish large Codex capacity.

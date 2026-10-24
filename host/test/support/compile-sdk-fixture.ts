@@ -4,9 +4,16 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeHostScratchTempRoot } from "../centralized-test-helper";
 
+interface FixtureOptions {
+  forkInstrument?: boolean;
+  arch?: "wasm32" | "wasm64";
+  backend?: "native" | "walrus";
+}
+
 /** Build and stamp a test-owned guest using the current SDK and ABI contract. */
 export function compileSdkFixture(
-  source: URL, linkArgs: string[] = [], { forkInstrument = false } = {},
+  source: URL, linkArgs: string[] = [],
+  { forkInstrument = false, arch = "wasm32", backend }: FixtureOptions = {},
 ) {
   const root = fileURLToPath(new URL("../../../", import.meta.url));
   const scratch = makeHostScratchTempRoot("sdk-fixture-");
@@ -14,11 +21,12 @@ export function compileSdkFixture(
   const programPath = join(scratch, "probe.wasm");
   try {
     const linked = forkInstrument ? `${programPath}.linked` : programPath;
-    execFileSync(join(root, "sdk/bin/wasm32posix-cc"), [
+    execFileSync(join(root, `sdk/bin/${arch}posix-cc`), [
       fileURLToPath(source), "-O2", ...linkArgs, "-o", linked,
     ], { cwd: root, stdio: "pipe" });
     if (forkInstrument) execFileSync("bash", [
       join(root, "scripts/run-wasm-fork-instrument.sh"), linked, "-o", programPath,
+      ...(backend ? ["--backend", backend] : []),
     ], { cwd: root, stdio: "pipe" });
     const configured = process.env.WASM_POSIX_XTASK_BIN;
     const target = configured ? undefined
