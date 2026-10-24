@@ -18,13 +18,19 @@
  * path alone.
  *
  * Usage: npx tsx benchmarks/input-injection-bench.ts [--frames-per-wave N]
- *        [--waves N] [--rounds N]
+ *        [--waves N] [--rounds N] [--kernel-worker=bundled|tsx]
  */
 import { readFileSync } from "node:fs";
 
 import { NodeKernelHost } from "../host/src/node-kernel-host.js";
 import { tryResolveBinary } from "../host/src/binary-resolver.js";
 import type { InputEvent } from "../host/src/input/input-source.js";
+import {
+  benchmarkKernelWorkerPolicy,
+  describeBenchmarkKernelWorker,
+  finishBenchmarkKernelWorker,
+  prepareBenchmarkKernelWorker,
+} from "./host-worker-path.js";
 
 const EV_SYN = 0x00;
 const EV_REL = 0x02;
@@ -115,6 +121,11 @@ function median(xs: number[]): number {
 }
 
 async function main() {
+  // Pin the kernel worker path before any NodeKernelHost starts.
+  const hostWorker = prepareBenchmarkKernelWorker(
+    benchmarkKernelWorkerPolicy(process.argv.slice(2)),
+  );
+  console.log(describeBenchmarkKernelWorker(hostWorker));
   const bin = tryResolveBinary("programs/input-inject-bench.wasm");
   if (!bin) {
     console.error(
@@ -140,6 +151,7 @@ async function main() {
     }
   }
 
+  console.log(describeBenchmarkKernelWorker(finishBenchmarkKernelWorker(hostWorker)));
   const perRecord = median(results["per-record"]);
   const batched = median(results.batched);
   console.log(`\nmedian per-record : ${perRecord.toFixed(1)} ms`);

@@ -20,7 +20,7 @@ import type { VfsChangeEvent } from "./vfs/types";
  */
 import type { ImageBuildDeterminism } from "./types";
 import type { WasmModuleCacheStats } from "./wasm-module-cache";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pathToFileURL } from "node:url";
@@ -42,7 +42,7 @@ import type { OwnedJobRead } from "./owned-jobs";
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
-import { compiledWorkerEntryIsCurrent } from "./compiled-worker-entry";
+import { inspectCompiledWorkerEntry } from "./compiled-worker-entry";
 import { createDestroyProgressFanout } from "./destroy-progress-fanout";
 import {
   snapshotClosedLazyAssets,
@@ -1640,25 +1640,158 @@ export function resolveRootfsArtifact(
   }
 }
 
-/** Spawn a worker_thread running node-kernel-worker-entry.ts */
-function spawnKernelWorkerThread(): NodeThreadWorker {
-  const entryTs = join(MODULE_DIR, "node-kernel-worker-entry.ts");
-  const entryJs = join(MODULE_DIR, "node-kernel-worker-entry.js");
+/** How the kernel worker's code reached the worker_thread. */
+export type NodeKernelWorkerPath = "bundled" | "tsx";
+
+/**
+ * Environment variable that pins the kernel worker path.
+ *
+ * Unset or `auto` keeps the normal source-checkout behavior: run the compiled
+ * bundle when its build-input fingerprint matches the current host sources,
+ * otherwise compile the TypeScript entry with tsx. `bundled` refuses to start
+ * a kernel without a current bundle, and `tsx` always takes the TypeScript
+ * path. Benchmarks set it, because the tsx path is measurably slower and a
+ * silent fallback makes a before/after comparison measure two different
+ * host builds.
+ */
+export const NODE_KERNEL_WORKER_PATH_ENV = "KANDELO_NODE_KERNEL_WORKER_PATH";
+
+/** The command that rebuilds the compiled host bundle in a source checkout. */
+export const HOST_BUNDLE_BUILD_COMMAND = "scripts/dev-shell.sh ./run.sh build host";
+
+/** Which kernel worker entry a NodeKernelHost would launch, and why. */
+export interface NodeKernelWorkerEntrySelection {
+  path: NodeKernelWorkerPath;
+  /** File the worker runs (the bundle, or the TypeScript source for tsx). */
+  entry: string;
+  /** Requested policy: `auto`, `bundled`, or `tsx`. */
+  policy: "auto" | NodeKernelWorkerPath;
+  /** Host build-input fingerprint embedded in the bundle that was judged. */
+  bundleFingerprint: string | null;
+  /** Fingerprint of the checkout's host build inputs, when it has sources. */
+  sourceFingerprint: string | null;
+  /** Why the bundle was not used; null on the bundled path. */
+  fallbackReason: string | null;
+}
+
+function nodeKernelWorkerPolicy(
+  env: NodeJS.ProcessEnv,
+): NodeKernelWorkerEntrySelection["policy"] {
+  const raw = env[NODE_KERNEL_WORKER_PATH_ENV];
+  if (raw === undefined || raw === "" || raw === "auto") return "auto";
+  if (raw === "bundled" || raw === "tsx") return raw;
+  throw new Error(
+    `${NODE_KERNEL_WORKER_PATH_ENV}=${raw} is not one of auto, bundled, tsx`,
+  );
+}
+
+/**
+ * Choose the kernel worker entry exactly as `NodeKernelHost` will.
+ *
+ * Exported so callers that must know the path before they start (the
+ * benchmark runner) ask the same function the host uses instead of keeping a
+ * second copy of the rule. Throws under the `bundled` policy when no current
+ * bundle exists, naming the rebuild command.
+ */
+export function selectNodeKernelWorkerEntry(
+  options: { env?: NodeJS.ProcessEnv; moduleDir?: string } = {},
+): NodeKernelWorkerEntrySelection {
+  const env = options.env ?? process.env;
+  const moduleDir = options.moduleDir ?? MODULE_DIR;
+  const policy = nodeKernelWorkerPolicy(env);
+  const entryTs = join(moduleDir, "node-kernel-worker-entry.ts");
+  const entryJs = join(moduleDir, "node-kernel-worker-entry.js");
   const distJs = entryTs.replace(/\/src\/([^/]+)\.ts$/, "/dist/$1.js");
 
-  // Check for compiled .js version first (much faster startup)
-  if (compiledWorkerEntryIsCurrent(entryTs, distJs)) {
-    return new NodeThreadWorker(distJs);
+  if (policy === "tsx") {
+    return {
+      path: "tsx",
+      entry: entryTs,
+      policy,
+      bundleFingerprint: null,
+      sourceFingerprint: null,
+      fallbackReason: `${NODE_KERNEL_WORKER_PATH_ENV}=tsx`,
+    };
   }
-  if (compiledWorkerEntryIsCurrent(entryTs, entryJs)) {
-    return new NodeThreadWorker(entryJs);
+
+  // Check for compiled .js version first (much faster startup and runtime).
+  const reasons: string[] = [];
+  let judged: ReturnType<typeof inspectCompiledWorkerEntry> | null = null;
+  for (const candidate of distJs === entryTs ? [entryJs] : [distJs, entryJs]) {
+    const inspection = inspectCompiledWorkerEntry(entryTs, candidate);
+    if (inspection.current) {
+      return {
+        path: "bundled",
+        entry: candidate,
+        policy,
+        bundleFingerprint: inspection.bundleFingerprint,
+        sourceFingerprint: inspection.sourceFingerprint,
+        fallbackReason: null,
+      };
+    }
+    if (!existsSync(candidate)) continue;
+    judged ??= inspection;
+    if (inspection.reason) reasons.push(inspection.reason);
+  }
+
+  const fallbackReason = reasons.join("; ")
+    || `no compiled kernel worker entry (looked for ${distJs === entryTs ? entryJs : distJs})`;
+  if (policy === "bundled") {
+    throw new Error(
+      `The host bundle is stale or missing, and ` +
+        `${NODE_KERNEL_WORKER_PATH_ENV}=bundled forbids the slower tsx ` +
+        `fallback: ${fallbackReason}. ` +
+        `Rebuild it with: ${HOST_BUNDLE_BUILD_COMMAND}`,
+    );
+  }
+  return {
+    path: "tsx",
+    entry: entryTs,
+    policy,
+    bundleFingerprint: judged?.bundleFingerprint ?? null,
+    sourceFingerprint: judged?.sourceFingerprint ?? null,
+    fallbackReason,
+  };
+}
+
+const kernelWorkerLaunches: Record<NodeKernelWorkerPath, number> = {
+  bundled: 0,
+  tsx: 0,
+};
+const kernelWorkerLaunchFingerprints = new Set<string>();
+
+/**
+ * Kernel worker launches in this process, by path, with the bundle
+ * fingerprints that bundled launches ran. Benchmarks record this as evidence
+ * of what actually ran, not only what a preflight predicted.
+ */
+export function nodeKernelWorkerLaunches(): {
+  bundled: number;
+  tsx: number;
+  bundleFingerprints: string[];
+} {
+  return {
+    ...kernelWorkerLaunches,
+    bundleFingerprints: [...kernelWorkerLaunchFingerprints].sort(),
+  };
+}
+
+/** Spawn a worker_thread running node-kernel-worker-entry.ts */
+function spawnKernelWorkerThread(): NodeThreadWorker {
+  const selection = selectNodeKernelWorkerEntry();
+  kernelWorkerLaunches[selection.path] += 1;
+  if (selection.path === "bundled") {
+    if (selection.bundleFingerprint !== null) {
+      kernelWorkerLaunchFingerprints.add(selection.bundleFingerprint);
+    }
+    return new NodeThreadWorker(selection.entry);
   }
 
   // Fallback: tsx eval bootstrap
   const require = createRequire(pathToFileURL(join(MODULE_DIR, "node-kernel-host.js")).href);
   const tsxApiPath = require.resolve("tsx/esm/api");
   const tsxApiUrl = pathToFileURL(tsxApiPath).href;
-  const entryUrl = pathToFileURL(entryTs).href;
+  const entryUrl = pathToFileURL(selection.entry).href;
   const bootstrap = [
     `import { register } from '${tsxApiUrl}';`,
     `register();`,

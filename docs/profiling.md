@@ -157,12 +157,63 @@ After printing the artifact report, the runner stops before workloads when a
 required, selected input is missing.
 
 Results also fingerprint `host/src`. Node results fingerprint the compiled
-worker bundle and reject a bundle whose recorded TypeScript input content does
-not match the current source. `gitHead` and `gitRef` do not record worktree
+worker bundle and record which kernel worker path ran (see
+[Kernel worker path](#kernel-worker-path)). `gitHead` and `gitRef` do not record worktree
 dirtiness, so benchmark-relevant sources and rebuilt artifacts must match the
 exact committed final head. Preserve and report unrelated user-owned worktree
 or submodule changes rather than cleaning them to manufacture a globally clean
 status.
+
+### Kernel worker path
+
+In a source checkout the Node host runs the compiled kernel worker bundle
+(`host/dist/node-kernel-worker-entry.js`) only while the build-input
+fingerprint embedded in the bundle matches the current `host/` sources.
+Otherwise it compiles the TypeScript entry with `tsx`. That fallback is
+slower: one measurement saw `syscall_latency_us` rise from about 28 to 36 and
+`pipe_mbps` drop about 20%. A run that silently took it, or a before/after
+pair where only one side took it, would measure the host build state instead
+of the change.
+
+The Node benchmark runners (`benchmarks/run.ts`,
+`benchmarks/php-mariadb-transport.ts` and `benchmarks/input-injection-bench.ts`)
+therefore pin the host's kernel worker policy,
+`KANDELO_NODE_KERNEL_WORKER_PATH`, before any kernel starts. The default,
+`--kernel-worker=bundled`, requires a current kernel worker bundle and a
+current process worker bundle (`host/dist/worker-entry.js`). A stale or
+missing bundle stops the run before any workload, with the rebuild command:
+
+```bash
+scripts/dev-shell.sh ./run.sh build host
+```
+
+The host enforces the policy at every kernel worker launch, not only at the
+preflight, so a source edit during a long run fails the next launch rather
+than switching paths. The runners do not rebuild the bundle themselves: a
+benchmark should observe the tree, and an automatic rebuild would hide which
+sources the measured bundle came from.
+
+To measure the `tsx` path on purpose, pass `--kernel-worker=tsx`:
+
+```bash
+scripts/dev-shell.sh npx tsx benchmarks/run.ts --suite=syscall-io --kernel-worker=tsx
+```
+
+Every Node result records the evidence in `hostWorker`: the requested
+`policy`, the `path` that ran (`bundled` or `tsx`), the `entry` file, the
+bundle's `bundleFingerprint` and the checkout's `sourceFingerprint`, and
+`kernelWorkerLaunches`, the launches the host actually made by path. The run
+is refused if any launch took the other path or ran a bundle with a different
+fingerprint. `benchmarks/compare.ts` refuses a pair whose sides ran different
+paths (pass `--allow-mixed-kernel-worker` when that is the comparison you
+mean), prints each side's path, and warns about results that predate this
+record.
+
+Browser results have no `hostWorker` record. The browser runner serves
+`host/src` through the Vite dev server, which compiles the current sources on
+request, so there is no compiled bundle that can go stale and no fallback to
+take. The guest Wasm and VFS images it serves are covered by the artifact
+fingerprints above.
 
 ### Available Suites
 
