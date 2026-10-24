@@ -75,7 +75,11 @@ pub fn evaluate(
     }
     ensure!(
         max_depth <= limits.control_depth,
-        "sink interpretation exceeds control-depth budget"
+        "sink interpretation exceeds control-depth budget for function {} \
+         (depth {}, limit {})",
+        body.function,
+        max_depth,
+        limits.control_depth,
     );
     // The conservative legacy approximation uses a separate handler search.
     // Delegation or nested mixed EH requires semantic normalization first;
@@ -418,6 +422,21 @@ impl<E: Environment> Walk<'_, '_, E> {
     }
 
     fn region(
+        &mut self,
+        region: RegionId,
+        entry: State,
+        start: usize,
+        end: usize,
+    ) -> Result<State> {
+        // LLVM emits thousands of nested switch labels in ordinary functions.
+        // Keep recursive control traversal independent of the caller's native
+        // thread stack; each temporary segment is released while unwinding.
+        stacker::maybe_grow(256 * 1024, 2 * 1024 * 1024, || {
+            self.region_on_stack(region, entry, start, end)
+        })
+    }
+
+    fn region_on_stack(
         &mut self,
         region: RegionId,
         entry: State,

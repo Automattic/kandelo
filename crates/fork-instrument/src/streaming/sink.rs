@@ -132,9 +132,9 @@ impl Default for Limits {
             // estimate reserves maximum frame slots at every active control
             // level, even when a body writes only one slot. Keep it generous;
             // function-local interpretation provides the normal memory saving.
-            state_values: 256 * 1024 * 1024,
+            state_values: u32::MAX as usize,
             work: 100 * 1024 * 1024,
-            control_depth: 256,
+            control_depth: 16 * 1024,
             frame_slots: 4096,
             call_targets: 1024 * 1024,
         }

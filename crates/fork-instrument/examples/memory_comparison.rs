@@ -14,6 +14,8 @@ use std::{
 use wasm_encoder::reencode::Reencode;
 #[path = "memory_comparison/full.rs"]
 mod full;
+#[path = "memory_comparison/shapes.rs"]
+mod shapes;
 
 struct CountingAllocator;
 static LIVE: AtomicUsize = AtomicUsize::new(0);
@@ -454,6 +456,7 @@ fn main() -> Result<()> {
     match args.get(1).map(String::as_str) {
         Some("generate") if args.len() == 3 => generate(Path::new(&args[2])),
         Some("generate-sinks") if args.len() == 3 => generate_sinks(Path::new(&args[2])),
+        Some("shapes") if args.len() == 3 => shapes::inspect(Path::new(&args[2])),
         Some("measure") if args.len() == 5 => {
             ensure!(
                 matches!(args[3].as_str(), "frontend" | "roundtrip" | "sinks"),

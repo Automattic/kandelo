@@ -119,7 +119,7 @@ the policy interpreter and child-continuation planner use this driver.
 Differential fixtures compare results and
 original call coordinates with the unchanged Walrus interpreter. Unsupported
 operators are explicit and cannot prove a boundary. Default limits are
-268,435,456 abstract state values, 104,857,600 work units, 256 nested control
+4,294,967,295 abstract state values, 104,857,600 work units, 16,384 nested control
 regions, 4,096 frame slots and 1,048,576 call-target memberships per body.
 The state limit reserves a conservative bound for structured-control scratch
 and recorded states before evaluation; it is not a physical-memory ceiling.
@@ -127,7 +127,11 @@ It is deliberately a generous sanity check: the estimate reserves the full
 frame-slot allowance at every active control level, even for a function that
 only writes one slot. Normal memory savings come from retaining one function
 and its active control states, then discarding them. Explicit smaller budgets
-remain available to library callers and resource-failure tests.
+remain available to library callers and resource-failure tests. Deep structured
+control uses temporary native stack segments through `stacker` on the same
+analysis thread. Segments are acquired only when needed and released on return;
+they do not retain module instruction IR or alter the guest stack. A 2,000-level
+fixture runs with precise frame tracking on a 256 KiB calling thread stack.
 Unused trailing local declarations are omitted from abstract states while
 referenced locals keep their original coordinates. Delegation and nested
 mixed modern/legacy handlers remain explicitly unsupported by this analysis
