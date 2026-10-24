@@ -463,10 +463,36 @@ impl FactsStore {
             "INSERT INTO call_group SELECT caller,sig FROM wasm_indirect",
             [],
         )?;
-        self.execute("INSERT OR IGNORE INTO call_target
-          SELECT g.caller,g.sig,t.id FROM call_group g JOIN wasm_function w ON w.id=g.caller
-          JOIN wasm_function t ON t.sig=g.sig AND t.in_table
+        self.execute(
+            "INSERT INTO call_fallback
+          SELECT g.caller,g.sig FROM call_group g JOIN wasm_function w ON w.id=g.caller
           WHERE NOT w.imported AND w.name<>?1 AND (w.chosen_count=0 OR EXISTS(
+            SELECT 1 FROM chosen_definition c JOIN site s ON s.definition=c.definition
+            WHERE c.caller=w.id AND s.direct IS NULL AND s.sig=g.sig AND s.untyped))",
+            [cleanup],
+        )?;
+        self.execute(
+            "INSERT INTO call_target_class
+          SELECT t.sig,(EXISTS(SELECT 1 FROM own_known o WHERE o.target=t.id)
+            OR EXISTS(SELECT 1 FROM vslot v WHERE v.name=t.name)),t.id
+          FROM wasm_function t WHERE t.in_table",
+            [],
+        )?;
+        self.execute(
+            "INSERT INTO call_unknown_group
+          SELECT g.caller,g.sig FROM call_group g JOIN wasm_function w ON w.id=g.caller
+          WHERE NOT w.imported AND w.name<>?1
+            AND NOT EXISTS(SELECT 1 FROM call_fallback f WHERE f.caller=g.caller AND f.sig=g.sig)
+            AND EXISTS(SELECT 1 FROM chosen_definition c JOIN site s ON s.definition=c.definition
+              WHERE c.caller=w.id AND s.direct IS NULL AND s.sig=g.sig)",
+            [cleanup],
+        )?;
+        self.execute("INSERT OR IGNORE INTO call_refined_target
+          SELECT g.caller,g.sig,t.id FROM call_group g JOIN wasm_function w ON w.id=g.caller
+          JOIN call_target_class k ON k.sig=g.sig AND k.known=1
+          JOIN wasm_function t ON t.id=k.target
+          WHERE NOT EXISTS(SELECT 1 FROM call_fallback f WHERE f.caller=g.caller AND f.sig=g.sig)
+          AND NOT w.imported AND w.name<>?1 AND (w.chosen_count=0 OR EXISTS(
             SELECT 1 FROM chosen_definition c JOIN site s ON s.definition=c.definition
             WHERE c.caller=w.id AND s.direct IS NULL AND s.sig=g.sig AND (
               s.untyped OR (

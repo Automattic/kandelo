@@ -98,6 +98,12 @@ module before lowering. The store exposes one target group at a time for the
 native sink planner. The compatibility `CallFacts` projection has
 a separate resident metadata budget and fails instead of collecting an
 unbounded target matrix.
+Conservative indirect-call groups share the signature/table index and unknown
+function memberships; they do not copy the same possible targets for every
+caller. Known typed refinements remain separate, and a filtered view exposes
+the original target-group API.
+Return-flow queries start from each function's small visited-slot set so the
+planner does not rescan all module call sites for every function.
 
 Default storage budgets are a 32 MiB page-cache target for each main/temp
 schema, 1 MiB name cache,

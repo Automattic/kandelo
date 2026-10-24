@@ -183,3 +183,50 @@ SHA-256:
 ```
 e6e7d672d3247c79f00ac8a4bc85213f088836e0c67b4bf5970fdb1ae03b3d37
 ```
+
+## Isolated compiler-fact diagnosis and sharing fix
+
+The facts-only diagnostic loaded 18,495 definitions and 73,959 relations into
+15,147,008 database bytes. The initial 512 MiB diagnostic run spent 352.5
+seconds in return-flow analysis. Conversion solving then finished at about
+148 MB, followed by Wasm inputs, bindings and callback policy at about 272 MB.
+The indirect-target stage exhausted the diagnostic database allowance. This
+was not a full transform and did not execute the input.
+
+Two causes were identified. Some return-walk queries scanned module-wide
+relations for each visited slot or function. Conservative target sets were
+also copied for every caller sharing the same signature. A first partial fix
+still failed the 512 MiB target stage after 302.93 seconds. It exposed remaining
+recursive/parameter scans and duplicated unknown targets at typed sites.
+
+The final fix anchors return-walk queries on the current or visited slots,
+using [SQLite's documented CROSS JOIN ordering](https://www.sqlite.org/optoverview.html#manual_control_of_query_plans_using_cross_join).
+Target groups share full-signature and unknown-function memberships. Known
+typed refinements remain separate. The filtered target API preserves the
+original rules, with disjoint branches and no caller-by-fallback-target matrix.
+
+The same facts-only probe then completed in **60.57 seconds**, with a
+**277.94 MiB** main database under the unchanged 512 MiB diagnostic allowance.
+It bound 13,109 functions. The highest observed OS lifetime physical footprint
+was **318.95 MiB**. Return-flow analysis took 0.4 seconds in this single run.
+These are diagnostic phase timings, not a repeated application benchmark or
+a completed-transform before/after pair. The default 8 GiB database allowance
+and 32 MiB cache target were unchanged.
+
+Evidence for the three probes is in `.context/native-facts-growth-probe-20261024/`,
+`.context/native-facts-shared-probe-20261024/`, and
+`.context/native-facts-shared-complete-probe-20261024/`. The final probe's
+source/executable are in `.context/native-shared-facts-complete-build/`.
+Executable SHA-256:
+
+```
+30bb80963e0733463af0456e25fc46c556ca47cbcf9db30a442ed52f10cb3f05
+```
+
+All 658 instrumenter tests passed, including mixed known/unknown target
+equivalence with unchanged Walrus, 600 callers sharing 1,200 possible targets
+under a 4 MiB database allowance, and indexed recursive return-walk scaling.
+A fresh [complete controlled comparison](2026-10-24-native-fork-instrumenter-shared-facts.md)
+passed 42 transforms and 42 separate validators with historical output hashes.
+The original Codex input still requires a successful full transform before
+any complete capacity claim.

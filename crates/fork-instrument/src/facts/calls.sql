@@ -30,8 +30,25 @@ CREATE TABLE IF NOT EXISTS inferred_unknown_registry (registry INTEGER PRIMARY K
 CREATE TABLE IF NOT EXISTS hub (caller INTEGER,definition INTEGER,site INTEGER,ty INTEGER,priority INTEGER,registry INTEGER,
   PRIMARY KEY(caller,definition,site,ty,priority,registry)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS call_group (caller INTEGER,sig INTEGER,PRIMARY KEY(caller,sig)) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS call_target (caller INTEGER,sig INTEGER,target INTEGER,
+CREATE TABLE IF NOT EXISTS call_fallback (caller INTEGER,sig INTEGER,
+  PRIMARY KEY(caller,sig)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS call_unknown_group (caller INTEGER,sig INTEGER,
+  PRIMARY KEY(caller,sig)) WITHOUT ROWID;
+-- Known means function facts or a virtual-slot entry, matching the target rule.
+CREATE TABLE IF NOT EXISTS call_target_class (sig INTEGER,known INTEGER,target INTEGER,
+  PRIMARY KEY(sig,known,target)) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS call_refined_target (caller INTEGER,sig INTEGER,target INTEGER,
   PRIMARY KEY(caller,sig,target)) WITHOUT ROWID;
+-- Unrefined groups share the existing signature/table index instead of copying
+-- the same memberships for every caller. The branches are disjoint.
+CREATE VIEW IF NOT EXISTS call_target AS
+  SELECT caller,sig,target FROM call_refined_target
+  UNION ALL
+  SELECT g.caller,g.sig,t.id FROM call_fallback g JOIN wasm_function t
+    ON t.sig=g.sig AND t.in_table
+  UNION ALL
+  SELECT g.caller,g.sig,t.target FROM call_unknown_group g JOIN call_target_class t
+    ON t.sig=g.sig AND t.known=0;
 CREATE TABLE IF NOT EXISTS cleanup_caller (caller INTEGER PRIMARY KEY,name INTEGER) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS cleanup_handler (caller INTEGER,handler INTEGER,PRIMARY KEY(caller,handler)) WITHOUT ROWID;
 
@@ -41,4 +58,6 @@ DELETE FROM bound_definition; DELETE FROM chosen_definition;
 DELETE FROM definition_signature; DELETE FROM definition_holes;
 DELETE FROM own_known; DELETE FROM own_cfi; DELETE FROM verified_dtors;
 DELETE FROM extra_registered; DELETE FROM inferred_unknown_registry; DELETE FROM hub;
-DELETE FROM call_group; DELETE FROM call_target; DELETE FROM cleanup_caller; DELETE FROM cleanup_handler;
+DELETE FROM call_group; DELETE FROM call_fallback; DELETE FROM call_refined_target;
+DELETE FROM call_unknown_group; DELETE FROM call_target_class;
+DELETE FROM cleanup_caller; DELETE FROM cleanup_handler;

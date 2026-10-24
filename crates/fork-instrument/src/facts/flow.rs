@@ -113,33 +113,36 @@ impl FactsStore {
                 let name: i64 = row.get(0)?;
                 let slot: i64 = row.get(1)?;
                 self.execute("DELETE FROM pass_walk", [])?;
+                // WHY: these work tables belong to one return walk. Anchor
+                // lookups on its current/visited slots; otherwise SQLite can
+                // scan module relations for every slot and every function.
                 self.execute("WITH RECURSIVE walk(slot) AS (
                     SELECT src FROM slot_edge WHERE dst=?2
                     UNION
-                    SELECT e.src FROM walk w JOIN atom a ON a.id=w.slot JOIN slot_edge e ON e.dst=w.slot
+                    SELECT e.src FROM walk w CROSS JOIN atom a ON a.id=w.slot CROSS JOIN slot_edge e ON e.dst=w.slot
                       WHERE a.kind=2 AND a.owner=?1 AND NOT EXISTS(SELECT 1 FROM last_call_site c WHERE c.site=w.slot)
                     UNION
-                    SELECT a.slot FROM walk w JOIN last_call_site c ON c.site=w.slot
-                      JOIN argument a ON a.site=c.site WHERE c.caller=?1 AND (
+                    SELECT a.slot FROM walk w CROSS JOIN last_call_site c ON c.site=w.slot
+                      CROSS JOIN argument a ON a.site=c.site WHERE c.caller=?1 AND (
                         NOT EXISTS(SELECT 1 FROM known_function k WHERE k.name=c.callee)
                         OR EXISTS(SELECT 1 FROM pass_parameter p WHERE p.name=c.callee AND p.parameter=a.parameter))
                   ) INSERT OR IGNORE INTO pass_walk SELECT slot FROM walk", params![name,slot])?;
                 changed += self.execute(
                     "INSERT OR IGNORE INTO pass_parameter
-                    SELECT ?1,a.parameter FROM pass_walk w JOIN atom a ON a.id=w.slot
+                    SELECT ?1,a.parameter FROM pass_walk w CROSS JOIN atom a ON a.id=w.slot
                       WHERE a.kind=1 AND a.owner=?1 AND a.parameter IS NOT NULL
                         AND NOT EXISTS(SELECT 1 FROM last_call_site c WHERE c.site=w.slot)",
                     [name],
                 )?;
                 changed += self.execute("INSERT OR IGNORE INTO pass_other
-                    SELECT ?1,w.slot FROM pass_walk w JOIN atom a ON a.id=w.slot
+                    SELECT ?1,w.slot FROM pass_walk w CROSS JOIN atom a ON a.id=w.slot
                       WHERE NOT (a.kind IN (1,2) AND a.owner=?1)
                         AND NOT EXISTS(SELECT 1 FROM last_call_site c WHERE c.site=w.slot)
-                    UNION SELECT ?1,w.slot FROM pass_walk w JOIN last_call_site c ON c.site=w.slot WHERE c.caller<>?1
-                    UNION SELECT ?1,o.slot FROM pass_walk w JOIN last_call_site c ON c.site=w.slot
+                    UNION SELECT ?1,w.slot FROM pass_walk w CROSS JOIN last_call_site c ON c.site=w.slot WHERE c.caller<>?1
+                    UNION SELECT ?1,o.slot FROM pass_walk w CROSS JOIN last_call_site c ON c.site=w.slot
                       JOIN pass_other o ON o.name=c.callee WHERE c.caller=?1
                         AND EXISTS(SELECT 1 FROM known_function k WHERE k.name=c.callee)
-                    UNION SELECT ?1,r.slot FROM pass_walk w JOIN last_call_site c ON c.site=w.slot
+                    UNION SELECT ?1,r.slot FROM pass_walk w CROSS JOIN last_call_site c ON c.site=w.slot
                       JOIN return_slot r ON r.name=c.callee WHERE c.caller=?1
                         AND NOT EXISTS(SELECT 1 FROM known_function k WHERE k.name=c.callee)", [name])?;
             }

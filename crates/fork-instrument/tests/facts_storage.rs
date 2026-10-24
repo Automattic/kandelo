@@ -157,6 +157,54 @@ fn sqlite_work_exhaustion_does_not_publish_partial_conversion_results() {
 }
 
 #[test]
+fn return_walks_do_not_rescan_unrelated_module_call_sites() {
+    let mut facts = String::from("#kandelo-calltypes\t5\nW\tobserved\tStart\nZ\tStart\tFinish\n");
+    for i in 0..200 {
+        facts.push_str(&format!(
+            "SL\tSignature\tret\tid{i}\nSE\tp:id{i}:0\tl:id{i}:0\n"
+        ));
+        for local in 0..4 {
+            facts.push_str(&format!("SE\tl:id{i}:{local}\tl:id{i}:{}\n", local + 1));
+        }
+        facts.push_str(&format!("SE\tl:id{i}:4\tr:id{i}\n"));
+    }
+    for i in 0..2000 {
+        facts.push_str(&format!(
+            "SC\tl:unrelated:{i}\tunknown{i}\tunrelated\n\
+             SE\tl:unrelated:{i}\tr:unrelated\n"
+        ));
+    }
+    let loaded = FactsStore::read_sections([facts.as_bytes()], Default::default())
+        .unwrap()
+        .report()
+        .unwrap()
+        .estimated_work_steps;
+    let store = FactsStore::read_sections(
+        [facts.as_bytes()],
+        StorageLimits {
+            work_steps: loaded + 25_000_000,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    store.solve_conversions(false, true).unwrap();
+    let mut reached = Vec::new();
+    store
+        .visit_conversion_reach(|name, ty| {
+            reached.push((name.to_owned(), ty.to_owned()));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        reached,
+        vec![
+            ("observed".to_owned(), "Finish".to_owned()),
+            ("observed".to_owned(), "Start".to_owned()),
+        ]
+    );
+}
+
+#[test]
 fn dense_binding_and_target_relations_stay_queryable_without_collecting_the_matrix() {
     use wasm_encoder::*;
     let mut module = Module::new();
