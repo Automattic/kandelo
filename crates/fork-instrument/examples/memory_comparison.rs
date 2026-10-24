@@ -1,4 +1,4 @@
-//! Controlled analysis/emission comparison, not a complete fork benchmark.
+//! Controlled comparisons of separate phases and complete fork transforms.
 //! Each measurement runs in a fresh process against the same exact input.
 
 use anyhow::{Context, Result, ensure};
@@ -12,6 +12,8 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 use wasm_encoder::reencode::Reencode;
+#[path = "memory_comparison/full.rs"]
+mod full;
 
 struct CountingAllocator;
 static LIVE: AtomicUsize = AtomicUsize::new(0);
@@ -459,12 +461,15 @@ fn main() -> Result<()> {
             );
             measure(&args[2], &args[3], Path::new(&args[4]))
         }
+        Some("measure") if args.len() == 6 && args[3] == "instrument" => {
+            full::measure(&args[2], Path::new(&args[4]), Path::new(&args[5]))
+        }
         Some("validate") if args.len() == 3 => {
             scan(&std::fs::read(&args[2])?)?;
             Ok(())
         }
         _ => anyhow::bail!(
-            "usage: memory_comparison generate|generate-sinks DIR | measure eager|stream frontend|roundtrip|sinks INPUT | validate INPUT"
+            "usage: memory_comparison generate|generate-sinks DIR | measure eager|stream frontend|roundtrip|sinks INPUT | measure eager|stream instrument INPUT OUTPUT | validate INPUT"
         ),
     }
 }

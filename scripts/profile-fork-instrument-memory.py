@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Guarded macOS analysis/serialization measurements on controlled examples.
+"""Guarded macOS phase and complete-transform measurements on controlled examples.
 
-No input is executed and no full fork-transform claim is made. The native
-example reports the OS lifetime physical-footprint peak; polling enforces the
-guard and supplies a trace, rather than estimating short-lived peak usage.
+The instrument phase transforms, validates and atomically writes complete
+artifacts. A separate guarded Node process checks their host contract and
+controlled normal execution; it is excluded from transformation measurements.
+The native example reports the OS lifetime physical-footprint peak; polling
+enforces the guard rather than estimating short-lived peaks.
 """
 
 import argparse
@@ -82,7 +84,7 @@ def main():
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--guard-gib", type=float, default=1.0)
     parser.add_argument("--timeout", type=float, default=120)
-    parser.add_argument("--phases", nargs="+", choices=("frontend", "roundtrip", "sinks"),
+    parser.add_argument("--phases", nargs="+", choices=("frontend", "roundtrip", "sinks", "instrument"),
                         default=["frontend", "roundtrip"])
     parser.add_argument("--generator", choices=("generate", "generate-sinks"), default="generate")
     args = parser.parse_args()
@@ -90,6 +92,8 @@ def main():
         parser.error("the physical-footprint comparison currently requires macOS")
     if args.rounds < 1 or not (0 < args.guard_gib <= 16) or args.timeout <= 0:
         parser.error("invalid rounds, guard (0 < GiB <= 16), or timeout")
+    if "instrument" in args.phases and args.generator != "generate-sinks":
+        parser.error("instrument comparisons require the controlled ABI-valid generate-sinks fixtures")
     binary = args.binary.resolve(strict=True)
     directory = args.output_dir.resolve()
     directory.mkdir(parents=True, exist_ok=False)
@@ -105,28 +109,44 @@ def main():
                 "binary": str(binary), "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
                 "input_sha256": hashes, "rayon_threads": 2,
                 "generator": args.generator, "phases": args.phases,
-                "scope": "frontend: typed front-end, closure, definition binding; roundtrip: also serialization; sinks: full compiler facts and sink planning; NOT complete fork instrumentation"}
+                "scope": "frontend: front-end/closure/binding; roundtrip: also serialization; sinks: facts/sink planning; instrument: complete transform, file snapshots, feature declaration, validation, atomic publish, checksums; excludes Binaryen and separate Node validation"}
     rows = []
     report = directory / "results.json"
     for source in sorted(inputs.glob("*.wasm")):
         for phase in args.phases:
             expected = None
+            output_hashes = {}
             for repeat in range(args.rounds):
                 order = ("eager", "stream") if repeat % 2 == 0 else ("stream", "eager")
                 for backend in order:
                     prefix = directory / f"{source.stem}-{phase}-{repeat}-{backend}"
-                    status = guarded([str(binary), "measure", backend, phase, str(source)],
+                    command = [str(binary), "measure", backend, phase, str(source)]
+                    artifact = prefix.with_suffix(".wasm")
+                    if phase == "instrument":
+                        command.append(str(artifact))
+                    status = guarded(command,
                                      prefix, ceiling, args.timeout, env)
                     row = json.loads(prefix.with_suffix(".stdout").read_text())
                     if row["physical_lifetime_peak_bytes"] >= ceiling:
                         raise RuntimeError(f"{prefix.name} exceeded the physical guard between samples")
-                    check = tuple(row[k] for k in ("functions", "activations", "control",
+                    if phase == "instrument":
+                        check = tuple(row[k] for k in ("input_bytes", "contract_sha256", "data_sha256"))
+                        if output_hashes.setdefault(backend, row["output_sha256"]) != row["output_sha256"]:
+                            raise RuntimeError(f"nondeterministic full output: {prefix.name}")
+                        if hashlib.sha256(artifact.read_bytes()).hexdigest() != row["output_sha256"]:
+                            raise RuntimeError(f"published bytes differ from measured artifact: {prefix.name}")
+                        checker = Path(__file__).resolve().with_name("check-fork-memory-artifact.ts")
+                        row["validation_status"] = guarded(
+                            ["node", "--experimental-wasm-exnref", "--import", "tsx", str(checker), str(artifact)],
+                            directory / f"{prefix.name}-validation", ceiling, args.timeout, env)
+                    else:
+                        check = tuple(row[k] for k in ("functions", "activations", "control",
                                                    "activation_hash", "control_hash", "binding_hash",
                                                    "boundaries", "boundary_hash", "fork_returning", "returning_hash"))
                     if expected is None:
                         expected = check
                     if check != expected:
-                        raise RuntimeError(f"analysis equivalence failed for {prefix.name}: {check} != {expected}")
+                        raise RuntimeError(f"comparison fingerprint differs for {prefix.name}: {check} != {expected}")
                     row.update(case=source.stem, repeat=repeat, guard_status=status)
                     rows.append(row)
                     report.write_text(json.dumps({"metadata": metadata, "runs": rows}, indent=2) + "\n")

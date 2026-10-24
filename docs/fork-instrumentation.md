@@ -757,7 +757,10 @@ Focused evidence includes file-limit/failure tests, real post-optimization,
 12 main/dynamic/side and memory32/64 artifacts accepted by the production host
 contract checker before/after optimization, and capture/parent replay through
 the production continuation coordinator. Full process/browser/conformance
-gates and end-to-end memory measurements remain pending.
+gates remain pending. The [complete-transform memory comparison](measurements/2026-10-24-native-fork-instrumenter-full.md)
+now covers seven controlled examples, three fresh runs per backend, identical
+inputs, bounded atomic I/O and separate host-contract/normal-execution checks.
+It excludes post-optimization and does not establish large Codex capacity.
 
 A shared Node fixture now composes the real native GC and exact-tag exception
 providers, activation frame vectors, modern reference catches, globals,
