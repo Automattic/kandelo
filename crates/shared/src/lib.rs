@@ -238,7 +238,9 @@ pub mod process_layout;
 ///     prevents new objects/bindings while current resources remain usable.
 /// 57: surface creation returns a fresh identity and acknowledged dimensions
 ///     through an InOut argument. The host creation import returns status.
-pub const ABI_VERSION: u32 = 57;
+/// 58: context creation names an optional live same-generation share context.
+///     The renderer acknowledges group membership before publication.
+pub const ABI_VERSION: u32 = 58;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -5426,15 +5428,17 @@ pub mod gl {
     }
 
     /// Argument to `GLIO_CREATE_CONTEXT`. Total: 16 bytes.
-    /// Mirrors a tiny subset of EGL config attrs; v1 only consults
-    /// `client_version`.
+    /// Sharing is resolved against live same-process, same-generation
+    /// contexts before entering the renderer.
     #[repr(C)]
     #[derive(Clone, Copy, Default)]
     pub struct GlContextAttrs {
         /// EGL client version (2 → GLES 2, 3 → GLES 3).
         pub client_version: u32,
+        /// Source context identity, or zero for an independent object group.
+        pub share_context_id: u32,
         /// Reserved; must be zero.
-        pub reserved: [u32; 2],
+        pub reserved: u32,
         /// Kernel-issued context identity. Zero on input, nonzero on success.
         pub context_id: u32,
     }
@@ -6971,6 +6975,9 @@ mod gl_tests {
         assert_eq!(size_of::<GlInitInfo>(), 16);
         assert_eq!(size_of::<GlSubmitInfo>(), 8);
         assert_eq!(size_of::<GlContextAttrs>(), 16);
+        assert_eq!(core::mem::offset_of!(GlContextAttrs, share_context_id), 4);
+        assert_eq!(core::mem::offset_of!(GlContextAttrs, reserved), 8);
+        assert_eq!(core::mem::offset_of!(GlContextAttrs, context_id), 12);
         assert_eq!(size_of::<GlSurfaceAttrs>(), 32);
         assert_eq!(size_of::<GlSurfaceCreateInfo>(), 36);
         assert_eq!(size_of::<GlQueryInfo>(), 24);

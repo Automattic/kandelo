@@ -359,3 +359,72 @@ it("selects independent surfaces across sessions and retains them after their ow
   expect(imports.host_gl_make_current(7,0,0,0,13)).toBe(0);
   expect(new Set(deleted)).toEqual(new Set([firstFbo,secondFbo]));
 });
+
+function sharingRenderer() {
+  return new Proxy({getExtension:()=>null,isContextLost:()=>false,getParameter:()=>null,getError:()=>0,
+    createFramebuffer:()=>({}),createTexture:()=>({}),createRenderbuffer:()=>({}),
+    FRAMEBUFFER_COMPLETE:0x8cd5,checkFramebufferStatus:()=>0x8cd5,
+  },{get:(object,key)=>Reflect.get(object,key)??(()=>null)}) as unknown as WebGL2RenderingContext;
+}
+describe("share group construction",()=>{
+  it("joins the live source before publication and retains objects after source destruction",()=>{
+    const {kernel,imports,memory,create}=harness(),gl=sharingRenderer();
+    kernel.gl.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
+    kernel.gl.attachCanvas(7,{width:1,height:1,getContext:()=>gl} as unknown as OffscreenCanvas);
+    expect(create(7,21,11)).toBe(0);
+    const source=kernel.gl.get(7,11)!,texture={} as WebGLTexture;
+    source.textures.set(5,texture);source.shadow.activeTexture=3;source.errors.push(0x500);
+    kernel.gl.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0});
+    new Uint32Array(memory.buffer,64,4).set([2,21,0,0]);
+    expect(imports.host_gl_create_context(7,22,64,16,12)).toBe(0);
+    const target=kernel.gl.get(7,12)!;
+    expect(target.objects).toBe(source.objects);expect(target.textures.get(5)).toBe(texture);
+    expect(target.shadow).not.toBe(source.shadow);expect(target.shadow.activeTexture).toBe(0);expect(target.errors).toEqual([]);
+    imports.host_gl_destroy_context(7,21);
+    expect(target.textures.get(5)).toBe(texture);expect(target.objects.members.size).toBe(1);
+    kernel.gl.bind({pid:7,sessionId:13,cmdbufAddr:0,cmdbufLen:0});
+    new Uint32Array(memory.buffer,64,4).set([2,22,0,0]);
+    expect(imports.host_gl_create_context(7,23,64,16,13)).toBe(0);
+    expect(kernel.gl.get(7,13)!.objects).toBe(target.objects);
+    imports.host_gl_unbind(7);
+    expect(target.textures.size).toBe(0);
+  });
+  it("rejects malformed, missing, foreign-process, stale and incompatible sources without publishing a target",()=>{
+    const {kernel,imports,memory,create}=harness(),gl=sharingRenderer();
+    kernel.gl.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
+    kernel.gl.attachCanvas(7,{width:1,height:1,getContext:()=>gl} as unknown as OffscreenCanvas);
+    expect(create(7,21,11)).toBe(0);
+    kernel.gl.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0});
+    const target=kernel.gl.get(7,12)!,original=target.objects;
+    for(const request of [[2,99,0,0],[2,21,1,0],[2,21,0,22],[1,21,0,0]]) {
+      new Uint32Array(memory.buffer,64,4).set(request);
+      expect(imports.host_gl_create_context(7,22,64,16,12)).toBe(-22);
+      expect(target.contextId).toBeNull();expect(target.objects).toBe(original);
+    }
+    new Uint32Array(memory.buffer,64,4).set([2,21,0,0]);
+    expect(imports.host_gl_create_context(7,22,64,12,12)).toBe(-22);
+    kernel.gl.bind({pid:8,sessionId:12,cmdbufAddr:0,cmdbufLen:0});
+    expect(imports.host_gl_create_context(8,22,64,16,12)).toBe(-22);
+    target.canvas={width:1,height:1,getContext:()=>sharingRenderer()} as unknown as OffscreenCanvas;
+    expect(imports.host_gl_create_context(7,22,64,16,12)).toBe(-19);
+    expect(target.contextId).toBeNull();expect(kernel.gl.get(7,11)!.contextId).toBe(21);
+    target.canvas={width:1,height:1,getContext:()=>gl} as unknown as OffscreenCanvas;
+    imports.host_gl_destroy_context(7,21);
+    expect(imports.host_gl_create_context(7,22,64,16,12)).toBe(-22);
+    expect(target.contextId).toBeNull();
+  });
+});
+it("translates a shared kernel context identity to a reviewed forward session before acknowledgement",()=>{
+  const {kernel,imports,memory,create}=harness();
+  const calls:Array<[number|undefined,number|undefined]>=[];let rc=0;
+  kernel.gl.attachMainForward(7,{onCreateContext:(session,source)=>{calls.push([session,source]);return rc;},onDestroyContext(){},onSubmit(){}});
+  kernel.gl.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
+  kernel.gl.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0});
+  expect(create(7,21,11)).toBe(0);
+  const target=kernel.gl.get(7,12)!,source=kernel.gl.get(7,11)!;
+  new Uint32Array(memory.buffer,64,4).set([2,21,0,0]);rc=-12;
+  expect(imports.host_gl_create_context(7,22,64,16,12)).toBe(-12);
+  expect(target.contextId).toBeNull();expect(source.contextId).toBe(21);
+  rc=0;expect(imports.host_gl_create_context(7,22,64,16,12)).toBe(0);
+  expect(target.contextId).toBe(22);expect(calls).toEqual([[11,undefined],[12,11],[12,11]]);
+});

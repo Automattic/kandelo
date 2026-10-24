@@ -1977,9 +1977,30 @@ fn handle_dri_ioctl(
                 unsafe { core::ptr::read_unaligned(attrs_bytes.as_ptr() as *const _) };
             if (attrs.client_version != 2 && attrs.client_version != 3)
                 || attrs.context_id != 0
-                || attrs.reserved != [0; 2]
+                || attrs.reserved != 0
             {
                 return Err(Errno::EINVAL);
+            }
+            if attrs.share_context_id != 0 {
+                let display_id = dri_state(proc, ofd_idx)?
+                    .gl
+                    .as_ref()
+                    .ok_or(Errno::EINVAL)?
+                    .display_id;
+                let source_live = proc.ofd_table.iter().any(|(_, ofd)| {
+                    ofd.dri()
+                        .and_then(|dri| dri.gl.as_ref())
+                        .is_some_and(|source| {
+                            source.owner_pid == pid
+                                && source.initialized
+                                && source.role == gl::SESSION_OBJECTS
+                                && source.display_id == display_id
+                                && source.context_id == Some(attrs.share_context_id)
+                        })
+                });
+                if !source_live {
+                    return Err(Errno::EINVAL);
+                }
             }
             let (ctx_id, session_id);
             {
@@ -23673,6 +23694,7 @@ mod tests {
         gl_submit_sessions: Vec<u32>,
         gl_query_sessions: Vec<u32>,
         gl_create_context_sessions: Vec<u32>,
+        gl_create_context_attrs: Vec<Vec<u8>>,
         gl_bind_sessions: Vec<u32>,
         proc_write_calls: Vec<(i32, u64, Vec<u8>)>,
         cursor_supported: bool,
@@ -23838,6 +23860,7 @@ mod tests {
                 gl_submit_sessions: Vec::new(),
                 gl_query_sessions: Vec::new(),
                 gl_create_context_sessions: Vec::new(),
+                gl_create_context_attrs: Vec::new(),
                 gl_bind_sessions: Vec::new(),
                 proc_write_calls: Vec::new(),
                 cursor_supported: false,
@@ -24735,8 +24758,9 @@ mod tests {
             self.gl_make_current_calls.push((ctx, draw, read, session));
             if ctx == 0 { 0 } else { self.gl_make_current_rc }
         }
-        fn gl_create_context(&mut self, _pid: i32, _ctx_id: u32, _attrs: &[u8], session_id: u32) -> i32 {
+        fn gl_create_context(&mut self, _pid: i32, _ctx_id: u32, attrs: &[u8], session_id: u32) -> i32 {
             self.gl_create_context_sessions.push(session_id);
+            self.gl_create_context_attrs.push(attrs.to_vec());
             self.gl_create_context_rc
         }
         fn proc_write_bytes(&mut self, pid: i32, ptr: u64, bytes: &[u8]) -> i32 {
@@ -53055,6 +53079,241 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(host.gl_unbind_sessions, sessions);
     }
 
+    fn glio_share_join(proc: &mut Process, host: &mut MockHostIO, root: i32, generation: u32) -> i32 {
+        use wasm_posix_shared::gl;
+        let fd = sys_open(proc, host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut info = glio_init_bytes(gl::GlInitInfo {
+            op_version: gl::OP_VERSION,
+            role: gl::SESSION_OBJECTS,
+            display_fd: root,
+            display_id: generation,
+        });
+        sys_ioctl(proc, host, fd, gl::GLIO_INIT, &mut info).unwrap();
+        fd
+    }
+    fn glio_share_attrs(source: u32) -> [u8; 16] {
+        let mut attrs = [0; 16];
+        attrs[..4].copy_from_slice(&2u32.to_le_bytes());
+        attrs[4..8].copy_from_slice(&source.to_le_bytes());
+        attrs
+    }
+    #[test]
+    fn glio_shared_context_creation_validates_and_forwards_live_source_identity() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (root, generation) = glio_display_test(&mut proc, &mut host, gl::OP_VERSION).unwrap();
+        let source = glio_share_join(&mut proc, &mut host, root, generation);
+        let mut original = glio_share_attrs(0);
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            source,
+            gl::GLIO_CREATE_CONTEXT,
+            &mut original,
+        )
+        .unwrap();
+        let source_id = u32::from_le_bytes(original[12..16].try_into().unwrap());
+        glio_map_test(&mut proc, &mut host, source);
+        glio_test_bind(&mut proc, &mut host, source);
+        proc.add_thread(crate::process::ThreadInfo::new(2, 0, 0, 0));
+        proc.blocked_retries.bind_task(2);
+        let target = glio_share_join(&mut proc, &mut host, root, generation);
+        let mut joined = glio_share_attrs(source_id);
+        let unchanged = joined;
+        host.gl_create_context_rc = -(Errno::ENOMEM as i32);
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                target,
+                gl::GLIO_CREATE_CONTEXT,
+                &mut joined
+            ),
+            Err(Errno::ENOMEM)
+        );
+        assert_eq!(joined, unchanged);
+        let target_ofd = proc.fd_table.get(target).unwrap().ofd_ref.0;
+        assert!(
+            dri_state(&proc, target_ofd)
+                .unwrap()
+                .gl
+                .as_ref()
+                .unwrap()
+                .context_id
+                .is_none()
+        );
+        let source_ofd = proc.fd_table.get(source).unwrap().ofd_ref.0;
+        assert!(
+            dri_state(&proc, source_ofd)
+                .unwrap()
+                .gl
+                .as_ref()
+                .unwrap()
+                .current
+                .is_some()
+        );
+        host.gl_create_context_rc = 0;
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            target,
+            gl::GLIO_CREATE_CONTEXT,
+            &mut joined,
+        )
+        .unwrap();
+        let target_id = u32::from_le_bytes(joined[12..16].try_into().unwrap());
+        assert_ne!(target_id, source_id);
+        assert_ne!(target_id, 0);
+        assert_eq!(&joined[..12], &unchanged[..12]);
+        assert_eq!(
+            host.gl_create_context_attrs.last(),
+            Some(&unchanged.to_vec())
+        );
+        // Retiring the original source does not prevent joining a surviving peer.
+        proc.blocked_retries.bind_task(1);
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            source,
+            gl::GLIO_MAKE_CURRENT,
+            &mut [0; 12],
+        )
+        .unwrap();
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            source,
+            gl::GLIO_DESTROY_CONTEXT,
+            &mut [],
+        )
+        .unwrap();
+        let third = glio_share_join(&mut proc, &mut host, root, generation);
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            third,
+            gl::GLIO_CREATE_CONTEXT,
+            &mut glio_share_attrs(target_id),
+        )
+        .unwrap();
+    }
+    #[test]
+    fn glio_shared_context_creation_rejects_unknown_foreign_generation_and_dead_sources_before_host_entry()
+     {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (root, generation) = glio_display_test(&mut proc, &mut host, gl::OP_VERSION).unwrap();
+        let source = glio_share_join(&mut proc, &mut host, root, generation);
+        let mut attrs = glio_share_attrs(0);
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            source,
+            gl::GLIO_CREATE_CONTEXT,
+            &mut attrs,
+        )
+        .unwrap();
+        let id = u32::from_le_bytes(attrs[12..16].try_into().unwrap());
+        let target = glio_share_join(&mut proc, &mut host, root, generation);
+        let (other_root, other_generation) =
+            glio_display_test(&mut proc, &mut host, gl::OP_VERSION).unwrap();
+        let other = glio_share_join(&mut proc, &mut host, other_root, other_generation);
+        let calls = host.gl_create_context_sessions.len();
+        for (fd, source_id) in [(target, u32::MAX), (other, id)] {
+            let mut request = glio_share_attrs(source_id);
+            let unchanged = request;
+            assert_eq!(
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    fd,
+                    gl::GLIO_CREATE_CONTEXT,
+                    &mut request
+                ),
+                Err(Errno::EINVAL)
+            );
+            assert_eq!(request, unchanged);
+        }
+        let source_ofd = proc.fd_table.get(source).unwrap().ofd_ref.0;
+        dri_state_mut(&mut proc, source_ofd)
+            .unwrap()
+            .gl
+            .as_mut()
+            .unwrap()
+            .owner_pid = 2;
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                target,
+                gl::GLIO_CREATE_CONTEXT,
+                &mut glio_share_attrs(id)
+            ),
+            Err(Errno::EINVAL)
+        );
+        dri_state_mut(&mut proc, source_ofd)
+            .unwrap()
+            .gl
+            .as_mut()
+            .unwrap()
+            .owner_pid = 1;
+        let mut reserved = glio_share_attrs(id);
+        reserved[8] = 1;
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                target,
+                gl::GLIO_CREATE_CONTEXT,
+                &mut reserved
+            ),
+            Err(Errno::EINVAL)
+        );
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            source,
+            gl::GLIO_DESTROY_CONTEXT,
+            &mut [],
+        )
+        .unwrap();
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                target,
+                gl::GLIO_CREATE_CONTEXT,
+                &mut glio_share_attrs(id)
+            ),
+            Err(Errno::EINVAL)
+        );
+        sys_close(&mut proc, &mut host, source).unwrap();
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                target,
+                gl::GLIO_CREATE_CONTEXT,
+                &mut glio_share_attrs(id)
+            ),
+            Err(Errno::EINVAL)
+        );
+        sys_ioctl(&mut proc, &mut host, root, gl::GLIO_TERMINATE, &mut []).unwrap();
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                target,
+                gl::GLIO_CREATE_CONTEXT,
+                &mut glio_share_attrs(id)
+            ),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(host.gl_create_context_sessions.len(), calls);
+    }
+
     #[test]
     fn glio_create_context_preserves_backend_failure_and_allows_retry() {
         use wasm_posix_shared::gl;
@@ -53107,7 +53366,7 @@ impl HostIO for RelSymlinkMock {
 
         let attrs = gl::GlContextAttrs {
             client_version: 2,
-            reserved: [0; 2],
+            share_context_id: 0, reserved: 0,
             context_id: 0,
         };
         let mut buf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
@@ -53210,7 +53469,7 @@ impl HostIO for RelSymlinkMock {
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
         glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
-        let attrs = gl::GlContextAttrs { client_version: 3, reserved: [0; 2], context_id: 0 };
+        let attrs = gl::GlContextAttrs { client_version: 3, share_context_id: 0, reserved: 0, context_id: 0 };
         let mut abuf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
         unsafe { core::ptr::write_unaligned(abuf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut abuf).unwrap();
@@ -54518,7 +54777,7 @@ impl HostIO for RelSymlinkMock {
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
         glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
-        let cattrs = gl::GlContextAttrs { client_version: 3, reserved: [0; 2], context_id: 0 };
+        let cattrs = gl::GlContextAttrs { client_version: 3, share_context_id: 0, reserved: 0, context_id: 0 };
         let mut abuf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
         unsafe { core::ptr::write_unaligned(abuf.as_mut_ptr() as *mut gl::GlContextAttrs, cattrs) };
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut abuf).unwrap();

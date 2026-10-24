@@ -25,7 +25,7 @@ export interface ForwardWorkerLike {
 }
 
 export type GlForwardMessage =
-  | { type: "gl_forward_create_context"; pid: number; sessionId: number; mailbox: SharedArrayBuffer }
+  | { type: "gl_forward_create_context"; pid: number; sessionId: number; shareSessionId?: number; mailbox: SharedArrayBuffer }
   | { type: "gl_forward_create_surface"; pid: number; sessionId: number; surface: GlSurfaceCreation; mailbox: SharedArrayBuffer }
   | { type: "gl_forward_present"; pid: number; sessionId: number; mailbox: SharedArrayBuffer }
   | { type: "gl_forward_destroy_surface"; pid: number; sessionId: number; surfaceId: number }
@@ -53,9 +53,14 @@ export function createMainForwardChannel(
     }
   }
   return {
-    onCreateContext(sessionId = defaultSessionId) {
-      const { rc } = request(0, mailbox =>
-        port.postMessage({ type: "gl_forward_create_context", pid, sessionId, mailbox }));
+    onCreateContext(sessionId = defaultSessionId, shareSessionId?: number) {
+      if (shareSessionId !== undefined && (!Number.isInteger(shareSessionId) || shareSessionId < 0 || shareSessionId > 0xffff_ffff)) return -22;
+      const { rc } = request(0, mailbox => {
+        // Copy only the reviewed identity, never structurally compatible extras.
+        const message: GlForwardMessage = { type: "gl_forward_create_context", pid, sessionId, mailbox };
+        if (shareSessionId !== undefined) message.shareSessionId = shareSessionId;
+        port.postMessage(message);
+      });
       // An unacknowledged allocation can still have reached the renderer.
       // Ordered cleanup also covers a timeout racing native creation.
       if (rc !== 0) {
@@ -211,12 +216,21 @@ export function setupMainForward(
         return;
       }
       case "gl_forward_create_context": {
+        let publishedHere = false;
         try {
           if (!glForwardRequestPending(msg.mailbox)) return;
           if (glForwardQueryCapacity(msg.mailbox) !== 0) throw new RangeError("invalid creation reply");
           if (b.gl) {
             completeGlForwardQuery(msg.mailbox, -16, new Uint8Array());
             return;
+          }
+          const shareSession = msg.shareSessionId;
+          if (shareSession !== undefined && (!Number.isInteger(shareSession) || shareSession < 0 || shareSession > 0xffff_ffff)) {
+            completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return;
+          }
+          const source = shareSession === undefined ? undefined : reg.get(pid,shareSession);
+          if (shareSession !== undefined && (!source || source === b || source.contextId === null || !source.gl)) {
+            completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return;
           }
           const gl = canvas.getContext("webgl2", {
             antialias: false,
@@ -242,12 +256,19 @@ export function setupMainForward(
           // runs. Do not publish a late context into that retired channel.
           if (!glForwardRequestPending(msg.mailbox)) return;
           b.gl = gl;
+          b.contextId = msg.sessionId;
+          publishedHere = true;
+          if (source && !reg.shareObjects(pid,msg.sessionId,source.sessionId)) {
+            reg.destroyContext(pid,msg.sessionId);
+            completeGlForwardQuery(msg.mailbox,-19,new Uint8Array()); return;
+          }
           b.shadow.viewport = [0, 0, canvas.width, canvas.height];
           b.shadow.scissor.rect = [0, 0, canvas.width, canvas.height];
           if (!completeGlForwardQuery(msg.mailbox, 0, new Uint8Array())) {
             reg.destroyContext(pid, msg.sessionId);
           }
         } catch {
+          if (publishedHere && b.contextId !== null) reg.destroyContext(pid,msg.sessionId);
           try { completeGlForwardQuery(msg.mailbox, -5, new Uint8Array()); }
           catch { /* A malformed mailbox has no reply authority. */ }
         }

@@ -56,7 +56,7 @@ export type GlBindingInput = {
  *  out of the SAB-backed cmdbuf so the channel may transfer the buffer. */
 export type GlForwardChannel = {
   /** Zero acknowledges a live renderer; negative errno leaves no context. */
-  onCreateContext(sessionId?: number): number;
+  onCreateContext(sessionId?: number, shareSessionId?: number): number;
   onDestroyContext(sessionId?: number): void;
   onCreateSurface?(surface: GlSurfaceCreation, sessionId?: number): {rc: number; width: number; height: number};
   onDestroySurface?(surfaceId: number, sessionId?: number): void;
@@ -325,9 +325,8 @@ export class GlContextRegistry {
     return this.list().find(b => b.pid === pid && b.contextId === (contextId >>> 0));
   }
 
-  /** Internal construction step, before the target context owns names or
-   * state. Guest sharing additionally requires display/version authority and
-   * complete shared deletion; the EGL facade does not expose this yet. */
+  /** Construction only: the kernel validates process/display authority.
+   * Bindings, containers and errors remain local to each group member. */
   shareObjects(pid: number, targetSession: number, sourceSession: number): boolean {
     const target = this.get(pid,targetSession), source = this.get(pid,sourceSession);
     if (!target || !source || target === source || !target.gl || target.gl !== source.gl
@@ -338,9 +337,11 @@ export class GlContextRegistry {
         || names.rbos.size || names.uniformLocations.size || names.foreignTextures.size
         || names.retiredTextures.size || names.retiredBuffers.size || names.retiredRenderbuffers.size
         || names.shaderDeletePending.size || names.programDeletePending.size) return false;
+    // Reserve membership before removing the old owner; allocation failure
+    // must not strand the target between groups.
+    source.objects.members.add(target);
     names.members.delete(target);
     target.objects = source.objects;
-    source.objects.members.add(target);
     return true;
   }
 

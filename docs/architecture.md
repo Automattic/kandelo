@@ -3799,7 +3799,7 @@ generation. Each context has its own encoder and command mapping; current
 bindings can select separate draw/read surfaces from other sessions in the
 same generation. A surface can survive its session's context destruction.
 A retained current old generation can overlap a newly initialized one.
-Guest share-group creation and the full API/error audit remain open.
+Public C share-group ownership and the full API/error audit remain open.
 
 ABI 57 surface creation uses a 36-byte input/output GlSurfaceCreateInfo:
 32 attribute bytes followed by a zero-on-input surface identity. The
@@ -3941,6 +3941,15 @@ GL context identities are also kernel-issued and returned by creation;
 foreign texture imports select the exact context. Cross-process inherited
 descriptions cannot operate another process's renderer or invalidate its
 command mapping; final cleanup retains the renderer's original process.
+ABI 58 context creation can name a live source context in the same process
+and display generation. The kernel validates authority before backend
+entry; the host joins the new context to its source's object maps before
+acknowledgement. Native compatibility and forwarded source-session lookup
+preserve local bindings, errors, default textures and FBO/VAO containers.
+Cancelled creation removes only its unpublished member. Source destruction
+leaves surviving members and their shared storage usable. The C facade
+still rejects sharing until its own client object/reference layer can join
+that group safely; see the graphics compatibility ledger.
 The kernel owns each session's current thread identity. Bind requests name
 the context and both draw/read surfaces; zero surfaces bind surfaceless,
 while an all-zero request releases the caller's bindings. Submit, query and

@@ -1902,3 +1902,40 @@ for (const mode of ["native", "forwarded"] as const) {
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
+
+for(const mode of ["native","forwarded"] as const) {
+  test(`ABI 58 shared context construction preserves object identity through ${mode} dispatch`,async({page})=>{
+    await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
+    const root=fileURLToPath(new URL("../../../",import.meta.url));
+    const result=await page.evaluate(async({root,mode})=>{
+      const canvas=document.createElement("canvas");canvas.width=canvas.height=1;document.body.replaceChildren(canvas);
+      const gl=mode==="forwarded"?canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true})!:null;
+      const created:object[]=[],deleted:object[]=[],live:Array<()=>boolean>=[];
+      if(gl)for(const [createName,deleteName,isName] of [["createTexture","deleteTexture","isTexture"],["createFramebuffer","deleteFramebuffer","isFramebuffer"],["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"]]) {
+        const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
+        api[createName]=()=>{const value=create();if(value){created.push(value);live.push(()=>isLive(value));}return value;};
+        api[deleteName]=(value:object|null)=>{if(value)deleted.push(value);destroy(value);};
+      }
+      const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/share-context-worker.ts`,location.href),{type:"module"});
+      const {setupMainForward}=await import(new URL(`/@fs/${root}host/src/webgl/main-forward.ts`,location.href).href);
+      const dispose=mode==="forwarded"?setupMainForward(worker,canvas,7):()=>{};
+      try {
+        const result=await new Promise<any>((resolve,reject)=>{
+          const timeout=setTimeout(()=>reject(new Error("shared context worker timed out")),35000);
+          worker.addEventListener("error",event=>{clearTimeout(timeout);reject(new Error(event.message));});
+          worker.addEventListener("message",({data})=>{
+            if(data.type==="share_context_result"){clearTimeout(timeout);resolve(data);}
+            if(data.type==="share_context_failed"){clearTimeout(timeout);reject(new Error(data.error));}
+          });
+          if(mode==="forwarded")worker.postMessage({mode});
+          else {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,canvas:offscreen},[offscreen]);}
+        });
+        if(gl){result.clean=created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());result.error=gl.getError();}
+        return result;
+      } finally {worker.terminate();dispose();}
+    },{root,mode});
+    expect(result).toEqual({type:"share_context_result",red:[255,0,0,255],sharedRed:[255,0,0,255],sharedGreen:[0,255,0,255],independent:[0,0,255,255],
+      survivor:[0,255,0,255],chained:[0,255,0,255],unnamed:[0,255,0,255],publicName:[0,0,0,0],afterReuse:[0,255,0,255],afterPeerDestroy:[0,255,0,255],clean:true,error:0});
+    expect(await memoryBoundaryFailures(page)).toEqual([]);
+  });
+}

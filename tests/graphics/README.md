@@ -160,3 +160,10 @@ This check uses the provisioned SDK headers and dev-shell wayland-scanner.
 The optional XML argument defaults to its installed path under sysroot.
 It executes the actual native-window C source with UBSan; it does not run
 Wayland peers, normal guest artifacts or a compositor.
+
+The ABI 58 driver-level sharing source case constructs contexts through
+native host imports and forwarding, using the reviewed share-context/
+source-session identities. It checks common texture storage, independent
+context containers, source/peer destruction, deleted-name retention and
+reuse with actual pixels in all three engines. It uses a synthetic kernel
+scratch adapter and does not execute Rust marshalling or public C sharing.

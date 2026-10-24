@@ -190,7 +190,8 @@
 struct gl_init_info { uint32_t op_version, role; int32_t display_fd; uint32_t display_id; };
 struct gl_submit_info { uint32_t offset; uint32_t length; };
 struct gl_make_current { uint32_t context_id, draw_surface_id, read_surface_id; };
-struct gl_context_attrs { uint32_t client_version; uint32_t reserved[2]; uint32_t context_id; };
+/* ABI 58: source context 0 creates an independent object group. */
+struct gl_context_attrs { uint32_t client_version; uint32_t share_context_id; uint32_t reserved; uint32_t context_id; };
 struct gl_surface_attrs { uint32_t kind; uint32_t width; uint32_t height; uint32_t config_id; uint32_t reserved[4]; };
 /* ABI 57: zero identity on input; accepted size and fresh identity on output. */
 struct gl_surface_create { struct gl_surface_attrs attrs; uint32_t surface_id; };

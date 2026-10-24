@@ -2502,43 +2502,61 @@ export class WasmPosixKernel {
         },
         host_gl_create_context: (
           pid: number, ctxId: number,
-          _attrsPtr: KernelPointer, _attrsLen: KernelPointer, sessionId?: number,
+          attrsPtr: KernelPointer, attrsLen: KernelPointer, sessionId?: number,
         ): number => {
           const b = this.gl.get(pid, sessionId);
-          if (!b) return -5; // EIO: no session owns this request.
+          if (!b) return -5;
           ctxId >>>= 0;
-          if (b.contextId !== null) return -16; // EBUSY
+          if (b.contextId !== null) return -16;
+          let shareContextId = 0;
+          try {
+            const length = this.#checkedKernelIndex(attrsLen, "context creation length");
+            // Empty attributes remain the embedder's independent-context path.
+            // Kernel ioctl creation always supplies the complete 16-byte wire.
+            if (length !== 0) {
+              if (length !== 16) return -22;
+              const bytes = this.#readKernelBytes(attrsPtr, 16);
+              const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+              if (![2,3].includes(view.getUint32(0,true)) || view.getUint32(8,true) !== 0
+                  || view.getUint32(12,true) !== 0) return -22;
+              shareContextId = view.getUint32(4,true);
+            }
+          } catch { return -22; }
+          const source = shareContextId ? this.gl.getContext(pid, shareContextId) : undefined;
+          if (shareContextId && (!source || source === b)) return -22;
+          if (source && (!!source.forward !== !!b.forward)) return -19;
           const previousCanvas = b.canvas;
+          let failure = -19;
           try {
             if (b.forward) {
-              const rc = b.forward.onCreateContext(b.sessionId);
+              const rc = b.forward.onCreateContext(b.sessionId, source?.sessionId);
               if (rc !== 0) return Number.isInteger(rc) && rc < 0 ? rc : -5;
               b.contextId = ctxId;
               return 0;
             }
-            // GPU producers use the compositor's physical context so BO
-            // storage is visible without a CPU readback. Logical state
-            // remains isolated by the ordinary context multiplexer.
             if (!b.canvas && !this.kms.isMasterPid(pid)) {
-              const shared = this.#sharedGlContext();
+              const shared = source?.gl ?? this.#sharedGlContext();
               if (shared && !shared.isContextLost()) {
                 b.gl = shared;
                 this.gl.applyRenderTarget(b);
               }
             }
-            // tryAttachKmsGlCanvas needs the pending identity while it
-            // attaches the drawable. Roll it back unless creation succeeds.
             b.contextId = ctxId;
             this.tryAttachKmsGlCanvas(b);
-            if (b.gl && !b.gl.isContextLost() && (!b.surface.gl || b.surface.gl === b.gl)) return 0;
+            if (b.gl && !b.gl.isContextLost() && (!b.surface.gl || b.surface.gl === b.gl)) {
+              if (!source) return 0;
+              if (b.gl === source.gl) {
+                if (this.gl.shareObjects(pid,b.sessionId,source.sessionId)) return 0;
+                failure = -22;
+              }
+            }
           } catch {
-            // Native allocation and extension setup can throw. They must
-            // follow the same rollback as a null/lost context.
+            // An unacknowledged target must not retain membership or names.
           }
           this.releaseClaimedKmsCanvas(pid, b.sessionId);
           this.gl.destroyContext(pid, b.sessionId);
           b.canvas = previousCanvas;
-          return -19; // ENODEV: no live rendering backend.
+          return failure;
         },
         host_gl_destroy_context: (pid: number, ctxId: number): void => {
           const b = this.gl.getContext(pid, ctxId);

@@ -419,3 +419,65 @@ it("cancels forwarded surface allocation when completion loses its mailbox autho
   expect(disposed).toEqual([{fbo:true}]);
   dispose(); expect(disposed).toHaveLength(1);
 });
+
+function shareForwardFixture() {
+  const worker=new FakeWorker(),live=new Set<object>(),deleted:object[]=[],messages:GlForwardMessage[]=[];
+  const gl=new Proxy({getExtension:()=>null,isContextLost:()=>false,getParameter:()=>null,getError:()=>0,
+    createTexture:()=>{const value={};live.add(value);return value;},isTexture:(value:object)=>live.has(value),
+    deleteTexture:(value:object)=>{deleted.push(value);live.delete(value);},
+  },{get:(object,key)=>Reflect.get(object,key)??(()=>null)}) as unknown as WebGL2RenderingContext;
+  const dispose=setupMainForward(worker,{width:1,height:1,getContext:()=>gl} as unknown as HTMLCanvasElement,7);
+  let loseCleanup=false;
+  const channel=(session:number)=>createMainForwardChannel({postMessage(message){
+    if(loseCleanup && message.type==="gl_forward_destroy_context")throw new Error("lost cleanup");
+    messages.push(message);worker.fire(message);
+  }},7,session);
+  const command=(c:ReturnType<typeof channel>,op:number,words:number[])=>{
+    const bytes=new Uint8Array(4+4*words.length),v=new DataView(bytes.buffer);
+    v.setUint16(0,op,true);v.setUint16(2,4*words.length,true);words.forEach((word,i)=>v.setUint32(4+4*i,word,true));c.onSubmit(bytes);
+  };
+  const texture=(c:ReturnType<typeof channel>)=>{
+    const input=new Uint8Array(8),v=new DataView(input.buffer);v.setUint32(0,1,true);v.setUint32(4,17,true);
+    const reply=c.onQuery!(O.QOP_IS_OBJECT,input,12);expect(reply.rc).toBe(12);
+    return new DataView(reply.bytes.buffer,reply.bytes.byteOffset,reply.bytes.length).getUint32(4,true);
+  };
+  return {worker,channel,command,texture,messages,deleted,live,dispose,setLoseCleanup:(value:boolean)=>{loseCleanup=value;}};
+}
+it("constructs shared forwarded objects while retaining local state and survivor ownership",()=>{
+  const f=shareForwardFixture(),source=f.channel(11),target=f.channel(12),independent=f.channel(13);
+  expect(source.onCreateContext()).toBe(0);
+  f.command(source,O.OP_GEN_TEXTURES,[1,17]);f.command(source,O.OP_BIND_TEXTURE,[0x0de1,17]);
+  expect(target.onCreateContext(12,11)).toBe(0);expect(independent.onCreateContext()).toBe(0);
+  expect(f.texture(target)).toBe(1);expect(f.texture(independent)).toBe(0);
+  const message=f.messages.find(m=>m.type==="gl_forward_create_context" && m.sessionId===12)!;
+  expect(Object.keys(message).sort()).toEqual(["type","pid","sessionId","shareSessionId","mailbox"].sort());
+  source.onDestroyContext();expect(f.texture(target)).toBe(1);expect(f.deleted).toEqual([]);
+  target.onDestroyContext();expect(f.deleted).toHaveLength(1);expect(f.live.size).toBe(0);
+  f.dispose();
+});
+it("cancels a joined forwarded creation without retiring the source group",()=>{
+  const f=shareForwardFixture(),source=f.channel(11),target=f.channel(12);
+  expect(source.onCreateContext()).toBe(0);
+  f.command(source,O.OP_GEN_TEXTURES,[1,17]);f.command(source,O.OP_BIND_TEXTURE,[0x0de1,17]);
+  f.setLoseCleanup(true);
+  const compare=Atomics.compareExchange,intercept=vi.spyOn(Atomics,"compareExchange").mockImplementation(((words:Int32Array,index:number,expected:number,value:number)=>{
+    if(expected===1 && value===2)Atomics.store(words,index,3);
+    return compare(words,index,expected,value);
+  }) as typeof Atomics.compareExchange);
+  try {expect(target.onCreateContext(12,11)).toBe(-5);} finally {intercept.mockRestore();f.setLoseCleanup(false);}
+  expect(f.texture(source)).toBe(1);expect(f.deleted).toEqual([]);
+  expect(f.channel(12).onCreateContext(12,11)).toBe(0);
+  f.dispose();expect(f.deleted).toHaveLength(1);expect(f.live.size).toBe(0);
+});
+it("rejects missing and malformed forwarding share identities without damaging an existing source",()=>{
+  const f=shareForwardFixture(),source=f.channel(11),target=f.channel(12);
+  expect(source.onCreateContext()).toBe(0);
+  f.command(source,O.OP_GEN_TEXTURES,[1,17]);f.command(source,O.OP_BIND_TEXTURE,[0x0de1,17]);
+  for(const id of [Number.NaN,-1,0x1_0000_0000])expect(target.onCreateContext(12,id)).toBe(-22);
+  expect(target.onCreateContext(12,99)).toBe(-22);
+  // Malformed reply capacity on an existing context must not destroy it.
+  const mailbox=createGlForwardQueryMailbox();prepareGlForwardQuery(mailbox,4);
+  f.worker.fire({type:"gl_forward_create_context",pid:7,sessionId:11,shareSessionId:12,mailbox});
+  expect(waitForGlForwardQuery(mailbox).rc).toBe(-5);expect(f.texture(source)).toBe(1);
+  expect(f.channel(12).onCreateContext(12,11)).toBe(0);f.dispose();expect(f.deleted).toHaveLength(1);
+});

@@ -5710,6 +5710,7 @@ fn marshalled_structs() -> Value {
         "GlContextAttrs".into(),
         struct_layout!(GlContextAttrs {
             client_version,
+            share_context_id,
             reserved,
             context_id
         }),
