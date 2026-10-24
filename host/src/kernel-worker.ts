@@ -3206,7 +3206,7 @@ export class CentralizedKernelWorker {
   >();
   /** Socket timeout timers: channel → timer. When a socket read/write
    * blocks and has SO_RCVTIMEO/SO_SNDTIMEO set, a timer is scheduled
-   * to complete the syscall with ETIMEDOUT. Cleared when the operation
+   * to complete the syscall with EAGAIN. Cleared when the operation
    * completes before the timeout. */
   private socketTimeoutTimers = new Map<ChannelInfo, ReturnType<typeof setTimeout>>();
   /** The one host timer that re-enters the kernel at its next park
@@ -17963,8 +17963,11 @@ export class CentralizedKernelWorker {
       )
     ) return;
 
-    // Socket timeout check: if a read/write-like syscall blocks on a socket
-    // with SO_RCVTIMEO or SO_SNDTIMEO set, schedule a timer for ETIMEDOUT.
+    // Socket timeout check: if a read/write-like syscall blocks on a host
+    // socket with SO_RCVTIMEO or SO_SNDTIMEO set, schedule a timer that ends
+    // it with EAGAIN, as POSIX and Linux report an expired socket timeout
+    // (ETIMEDOUT means a connection timed out). A kernel pipe-backed socket
+    // parks in the kernel, which answers the same.
     const socketTimeoutMs =
       retryDisposition?.applicableSocketTimeoutMs ?? 0;
     if (
@@ -17992,7 +17995,7 @@ export class CentralizedKernelWorker {
                 origArgs,
                 SYSCALL_ARGS[syscallNr],
                 -1,
-                ETIMEDOUT,
+                EAGAIN,
                 [],
                 undefined,
                 timeoutEntry,
