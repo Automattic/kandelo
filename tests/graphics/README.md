@@ -55,7 +55,7 @@ scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh ce8cd9dbcf
 scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh
 ```
 
-The 89 current cases cover image siblings and retained framebuffer storage,
+The 96 current cases cover image siblings and retained framebuffer storage,
 redefinition, cleanup, invalid handles, repeated contexts, the shared
 shader/program namespace, boolean numeric conversion, vectors longer than
 four elements, unchanged query output after device failure and EGL config
@@ -225,3 +225,18 @@ case checks native/forwarded dispatch in all engines, exact native buffer/
 texture/renderbuffer creation counts and final deletion. Existing unit
 lifetime fixtures explicitly bind before retaining their native identity.
 These source checks do not establish public C sharing or guest marshalling.
+
+
+The C image-record cases check retained 2D/cube/RBO bindings and FBO
+references, logical binding queries after EGLImage import, target mismatch
+rollback, unrealized/wrong-type/default attachments, allocation failure,
+100 deletion/reuse cycles and growth to a reported 64-unit limit. The
+allocation counter measures tracked C records. The native device double
+models native texture types and per-session/unit bindings. Public WPK names
+also cover attachment without a prior C bind, type checking, native-authority
+binding queries and reuse after BO-owner revocation. Query selection
+is explicit fixture state rather than inferred from truncated stack
+pointers. An actual C stream also renders red, rejects a cube-to-2D bind,
+deletes the cube and uploads blue through the preserved binding. Browser
+replay checks both routes in all engines and final native cleanup. Shared
+image storage, sampler independence and full submit recovery remain open.

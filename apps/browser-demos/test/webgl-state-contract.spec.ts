@@ -1849,9 +1849,9 @@ for (const mode of ["native","forwarded","retarget"] as const) {
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
-for(const scenario of ["records-basic","names-render","encoder-array-render","encoder-array-index-render"] as const) {
+for(const scenario of ["records-basic","names-render","image-target-render","encoder-array-render","encoder-array-index-render"] as const) {
 for (const mode of ["native", "forwarded"] as const) {
-  test(`actual C ${scenario === "records-basic" ? "independent EGL records preserve draw/read pixels" : scenario === "names-render" ? "implicit and generated texture names retain independent storage" : `client staging restores the retained buffer across a renderer peer deletion${scenario.includes("index") ? " with separate index/vertex views" : ""}`} through ${mode} dispatch`, async ({page}) => {
+  test(`actual C ${scenario === "records-basic" ? "independent EGL records preserve draw/read pixels" : scenario === "names-render" ? "implicit and generated texture names retain independent storage" : scenario === "image-target-render" ? "a rejected texture target preserves binding and storage" : `client staging restores the retained buffer across a renderer peer deletion${scenario.includes("index") ? " with separate index/vertex views" : ""}`} through ${mode} dispatch`, async ({page}) => {
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const temporary=mkdtempSync(join(root,".context/graphics-egl-record-trace-"));
     let trace:number[];
@@ -1888,8 +1888,8 @@ for (const mode of ["native", "forwarded"] as const) {
             if(data.type==="egl_record_result"){clearTimeout(timeout);resolve(data);}
             if(data.type==="egl_record_failed"){clearTimeout(timeout);reject(new Error(data.error));}
           });
-          if(mode==="forwarded")worker.postMessage({mode,trace,peerDelete:scenario.startsWith("encoder-array-")});
-          else {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,trace,canvas:offscreen,peerDelete:scenario.startsWith("encoder-array-")},[offscreen]);}
+          if(mode==="forwarded")worker.postMessage({mode,trace,peerDelete:scenario.startsWith("encoder-array-"),captureUpload:scenario==="image-target-render"});
+          else {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,trace,canvas:offscreen,peerDelete:scenario.startsWith("encoder-array-"),captureUpload:scenario==="image-target-render"},[offscreen]);}
         });
         if(gl) {
           result.clean=created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
@@ -1901,6 +1901,7 @@ for (const mode of ["native", "forwarded"] as const) {
     expect(result).toEqual(scenario === "records-basic" ? {type:"egl_record_result",observed:[
       [255,0,0,255],[0,255,0,255],[0,255,0,255],[0,0,255,255],[0,255,0,255],[0,255,0,255],
     ],retiredContexts:[32,31],retiredSurfaces:[132,131,133],clean:true,error:0}
+    :scenario === "image-target-render"?{type:"egl_record_result",observed:[[255,0,0,255],[0,0,255,255]],retiredContexts:[31],retiredSurfaces:[],clean:true,error:0}
     :scenario === "names-render"?{type:"egl_record_result",observed:[[255,0,0,255],[0,255,0,255],[255,0,0,255]],retiredContexts:[31],retiredSurfaces:[],clean:true,error:0}
     :{type:"egl_record_result",observed:[[0,255,0,255],[255,0,0,255]],retiredContexts:[31],retiredSurfaces:[131],clean:true,injected:true,error:0});
     expect(await memoryBoundaryFailures(page)).toEqual([]);

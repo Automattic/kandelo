@@ -133,6 +133,8 @@ static unsigned display_opens, display_closes, object_closes;
 static uint32_t display_generation = 91;
 static int display_live, fail_display_join;
 static uint32_t bound_texture, redefined_texture;
+static GLenum binding_query_kind;
+static unsigned binding_model, advertised_texture_units;
 static unsigned char command_storage[8][WPK_GL_CMDBUF_LEN];
 struct device_slot {
     int root_open, object_open, root_live;
@@ -144,6 +146,11 @@ struct device_slot {
     unsigned clears, closes;
     uint32_t array_binding, saved_array_binding;
     int array_saved;
+    uint32_t texture_active, texture_2d[128], texture_cube[128], renderbuffer_binding;
+    struct {
+        GLuint name;
+        GLenum target;
+    } texture_targets[128];
 };
 static struct device_slot device_slots[8];
 static struct {
@@ -450,7 +457,59 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
 #endif
             if (op == OP_BIND_BUFFER && words[0] == GL_ARRAY_BUFFER)
                 slot->array_binding = words[1];
-            if (op == OP_BIND_TEXTURE) bound_texture = words[1];
+            if (op == OP_ACTIVE_TEXTURE)
+                slot->texture_active = words[0] - GL_TEXTURE0;
+            if (op == OP_BIND_TEXTURE) {
+                int accepted = 1;
+                if (binding_model && words[1]) {
+                    unsigned index = 0;
+                    while (index < 128 && slot->texture_targets[index].name &&
+                           slot->texture_targets[index].name != words[1])
+                        index++;
+                    assert(index < 128);
+                    if (slot->texture_targets[index].name &&
+                        slot->texture_targets[index].target != words[0]) {
+                        query_gl_error = GL_INVALID_OPERATION;
+                        accepted = 0;
+                    } else {
+                        slot->texture_targets[index].name = words[1];
+                        slot->texture_targets[index].target = words[0];
+                    }
+                }
+                if (accepted) {
+                    assert(slot->texture_active < 128);
+                    if (words[0] == GL_TEXTURE_2D) {
+                        bound_texture = words[1];
+                        slot->texture_2d[slot->texture_active] = words[1];
+                    } else if (words[0] == GL_TEXTURE_CUBE_MAP)
+                        slot->texture_cube[slot->texture_active] = words[1];
+                }
+            }
+            if (op == OP_BIND_RENDERBUFFER)
+                slot->renderbuffer_binding = words[1];
+            if (op == OP_DELETE_TEXTURES)
+                for (uint32_t i = 0; i < words[0]; i++) {
+                    uint32_t name;
+                    memcpy(&name, commands + at + 8 + i * 4, 4);
+                    if (!name)
+                        continue;
+                    for (unsigned u = 0; u < 128; u++) {
+                        if (slot->texture_2d[u] == name)
+                            slot->texture_2d[u] = 0;
+                        if (slot->texture_cube[u] == name)
+                            slot->texture_cube[u] = 0;
+                    }
+                    for (unsigned t = 0; t < 128; t++)
+                        if (slot->texture_targets[t].name == name)
+                            slot->texture_targets[t].name = 0;
+                }
+            if (op == OP_DELETE_RENDERBUFFERS)
+                for (uint32_t i = 0; i < words[0]; i++) {
+                    uint32_t name;
+                    memcpy(&name, commands + at + 8 + i * 4, 4);
+                    if (name && slot->renderbuffer_binding == name)
+                        slot->renderbuffer_binding = 0;
+                }
             if (op == OP_CLEAR) { clear_commands++; slot->clears++; }
             if (op == 0x030b) validate_commands++;
             if (op == OP_BUFFER_DATA) {
@@ -679,6 +738,25 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 }
             } else
                 memcpy(latest_allocation, values, q->out_buf_len < 16 ? q->out_buf_len : 16);
+            return 0;
+        }
+        if (advertised_texture_units && q->op == QOP_GET_INTEGERV && !binding_query_kind) {
+            assert(q->out_buf_len == 4 && latest_allocation);
+            memcpy(latest_allocation, &advertised_texture_units, 4);
+            return 0;
+        }
+        if (binding_query_kind && (q->op == QOP_GET_INTEGERV || q->op == QOP_GET_FLOATV)) {
+            assert(q->out_buf_len == 4 && latest_allocation);
+            GLuint value = binding_query_kind == GL_TEXTURE_BINDING_2D
+                               ? slot->texture_2d[slot->texture_active]
+                           : binding_query_kind == GL_TEXTURE_BINDING_CUBE_MAP
+                               ? slot->texture_cube[slot->texture_active]
+                               : slot->renderbuffer_binding;
+            if (q->op == QOP_GET_FLOATV) {
+                const GLfloat result = (GLfloat)value;
+                memcpy(latest_allocation, &result, 4);
+            } else
+                memcpy(latest_allocation, &value, 4);
             return 0;
         }
         if (q->op == QOP_GET_STRING && string_generation) {
@@ -1878,6 +1956,255 @@ int main(int argc, char **argv) {
         return 0;
     }
 #endif
+    if (!strcmp(argv[1], "image-external-name")) {
+        binding_model = 1;
+        EGLImageKHR img = image(dpy);
+        assert(img);
+        extern unsigned wpkEglBindBoTexture(EGLDisplay, unsigned, unsigned);
+        GLuint texture = wpkEglBindBoTexture(dpy, 77, GL_TEXTURE_2D);
+        assert(texture == 0x60000000u);
+        query_scalar = 1;
+        GLuint framebuffer;
+        glGenFramebuffers(1, &framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+        assert(glGetError() == GL_NO_ERROR);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, texture);
+        assert(glGetError() == GL_INVALID_OPERATION);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        binding_query_kind = GL_TEXTURE_BINDING_2D;
+        GLint value = 0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &value);
+        assert((GLuint)value == texture);
+        // Model the host's BO-owner revocation independently of C bindings.
+        query_scalar = 0;
+        device_slots[0].texture_2d[0] = 0;
+        for (unsigned i = 0; i < 128; i++)
+            if (device_slots[0].texture_targets[i].name == texture)
+                device_slots[0].texture_targets[i].name = 0;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &value);
+        assert(value == 0);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, texture);
+        assert(glGetError() == GL_NO_ERROR);
+        glDeleteTextures(1, &texture);
+        glDeleteFramebuffers(1, &framebuffer);
+        assert(eglDestroyImageKHR(dpy, img));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS image-external-name");
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-attachment-errors")) {
+        const unsigned baseline = allocation_count();
+        GLuint texture = 17, unused, renderbuffer = 18, framebuffer;
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glBindRenderbuffer(GL_RENDERBUFFER, renderbuffer);
+        glGenFramebuffers(1, &framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+        glGenTextures(1, &unused);
+        const unsigned retained = allocation_count();
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, unused, 0);
+        assert(glGetError() == GL_INVALID_OPERATION && allocation_count() == retained);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X,
+                               texture, 0);
+        assert(glGetError() == GL_INVALID_OPERATION && allocation_count() == retained);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteTextures(1, &texture);
+        assert(allocation_count() == retained);
+        glDeleteTextures(1, &unused);
+        glDeleteRenderbuffers(1, &renderbuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+        assert(allocation_count() == baseline);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        const unsigned before = allocation_count();
+        fail_calloc = 1;
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+        fail_calloc = 0;
+        assert(glGetError() == GL_OUT_OF_MEMORY && allocation_count() == before);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+        assert(glGetError() == GL_INVALID_OPERATION);
+        glDeleteTextures(1, &texture);
+        glDeleteFramebuffers(1, &framebuffer);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS image-attachment-errors");
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-target-render")) {
+        binding_model = 1;
+        GLuint cube = 17, texture = 18, framebuffer;
+        glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glGenFramebuffers(1, &framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+        glClearColor(1, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFlush();
+        glBindTexture(GL_TEXTURE_2D, cube);
+        assert(glGetError() == GL_INVALID_OPERATION);
+        glDeleteTextures(1, &cube);
+        binding_query_kind = GL_TEXTURE_BINDING_2D;
+        GLint binding = -1;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &binding);
+        assert(binding == 18);
+        const unsigned char blue[4] = {0, 0, 255, 255};
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, blue);
+        glFlush();
+        glDeleteTextures(1, &texture);
+        glDeleteFramebuffers(1, &framebuffer);
+        assert(glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS image-target-render");
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-unit-growth")) {
+        binding_model = 1;
+        advertised_texture_units = 64;
+        GLuint low = 17, high = 18;
+        glBindTexture(GL_TEXTURE_2D, low);
+        fail_calloc = 1;
+        glActiveTexture(GL_TEXTURE0 + 63);
+        fail_calloc = 0;
+        assert(glGetError() == GL_OUT_OF_MEMORY);
+        binding_query_kind = GL_TEXTURE_BINDING_2D;
+        GLint value = -1;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &value);
+        assert(value == 17);
+        binding_query_kind = 0;
+        glActiveTexture(GL_TEXTURE0 + 63);
+        glBindTexture(GL_TEXTURE_2D, high);
+        binding_query_kind = GL_TEXTURE_BINDING_2D;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &value);
+        assert(value == 18);
+        glActiveTexture(GL_TEXTURE0 + 64);
+        assert(glGetError() == GL_INVALID_ENUM);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &value);
+        assert(value == 18);
+        glActiveTexture(GL_TEXTURE0);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &value);
+        assert(value == 17);
+        glDeleteTextures(1, &high);
+        glActiveTexture(GL_TEXTURE0 + 63);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &value);
+        assert(value == 0);
+        glDeleteTextures(1, &low);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS image-unit-growth");
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-logical-bindings")) {
+        binding_model = 1;
+        advertised_texture_units = 32;
+        EGLImageKHR img = image(dpy);
+        GLuint texture = 17, renderbuffer = 23;
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+        assert(eglDestroyImageKHR(dpy, img));
+        binding_query_kind = GL_TEXTURE_BINDING_2D;
+        GLint integer = -1;
+        GLfloat floating = -1;
+        GLboolean boolean = GL_FALSE;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &integer);
+        assert(integer == 17);
+        glGetFloatv(GL_TEXTURE_BINDING_2D, &floating);
+        assert(floating == 17);
+        glGetBooleanv(GL_TEXTURE_BINDING_2D, &boolean);
+        assert(boolean == GL_TRUE);
+        binding_query_kind = 0;
+        glActiveTexture(GL_TEXTURE1);
+        binding_query_kind = GL_TEXTURE_BINDING_2D;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &integer);
+        assert(integer == 0);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, 19);
+        binding_query_kind = GL_TEXTURE_BINDING_CUBE_MAP;
+        glGetIntegerv(GL_TEXTURE_BINDING_CUBE_MAP, &integer);
+        assert(integer == 19);
+        glGetFloatv(GL_TEXTURE_BINDING_CUBE_MAP, &floating);
+        assert(floating == 19);
+        glBindRenderbuffer(GL_RENDERBUFFER, renderbuffer);
+        binding_query_kind = GL_RENDERBUFFER_BINDING;
+        glGetIntegerv(GL_RENDERBUFFER_BINDING, &integer);
+        assert(integer == 23);
+        glGetBooleanv(GL_RENDERBUFFER_BINDING, &boolean);
+        assert(boolean == GL_TRUE);
+        glDeleteRenderbuffers(1, &renderbuffer);
+        glGetIntegerv(GL_RENDERBUFFER_BINDING, &integer);
+        assert(integer == 0);
+        glDeleteTextures(1, &texture);
+        assert(closes == 1);
+        assert(glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS image-logical-bindings");
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-target-identity")) {
+        binding_model = 1;
+        GLuint cube = 17, texture = 18;
+        glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glBindTexture(GL_TEXTURE_2D, cube);
+        assert(glGetError() == GL_INVALID_OPERATION);
+        glDeleteTextures(1, &cube);
+        binding_query_kind = GL_TEXTURE_BINDING_2D;
+        GLint value = -1;
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &value);
+        assert(value == 18);
+        binding_query_kind = GL_TEXTURE_BINDING_CUBE_MAP;
+        glGetIntegerv(GL_TEXTURE_BINDING_CUBE_MAP, &value);
+        assert(value == 0);
+        glBindTexture(GL_TEXTURE_2D, cube);
+        assert(glGetError() == GL_NO_ERROR); // Reuse creates a new type identity.
+        glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
+        assert(glGetError() == GL_INVALID_OPERATION);
+        glDeleteTextures(1, &cube);
+        glDeleteTextures(1, &texture);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS image-target-identity");
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-record-lifetime")) {
+        const unsigned baseline = allocation_count();
+        for (unsigned i = 0; i < 100; i++) {
+            GLuint name = 17, framebuffers[2];
+            glGenFramebuffers(2, framebuffers);
+            glBindTexture(GL_TEXTURE_2D, name);
+            glBindRenderbuffer(GL_RENDERBUFFER, name);
+            glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[0]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, name, 0);
+            glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[1]);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, name);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glDeleteTextures(1, &name);
+            glDeleteRenderbuffers(1, &name);
+            assert(allocation_count() ==
+                   baseline + 4); // Two retained records and two attachment records.
+            glBindTexture(GL_TEXTURE_CUBE_MAP, name);
+            glBindRenderbuffer(GL_RENDERBUFFER, name);
+            glDeleteTextures(1, &name);
+            glDeleteRenderbuffers(1, &name);
+            assert(allocation_count() == baseline + 4);
+            glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[0]);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+            glBindFramebuffer(GL_FRAMEBUFFER, framebuffers[1]);
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, 0);
+            glDeleteFramebuffers(2, framebuffers);
+            glFlush();
+            assert(allocation_count() == baseline);
+        }
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS image-record-lifetime");
+        return 0;
+    }
     if (!strcmp(argv[1], "names-lifetime")) {
         const unsigned baseline = allocation_count();
         for (unsigned i = 0; i < 100; i++) {

@@ -3796,6 +3796,19 @@ locks serialize whole-batch buffer/texture/renderbuffer reservations and
 shader/program name allocation, including implicit binds. Array bindings
 and every VAO's element/attribute capture retain actual buffer records;
 namespace deletion does not erase an inactive container's old identity.
+Texture 2D/cube units, the renderbuffer binding and framebuffer attachments
+also retain explicit C records. First bind fixes texture dimensionality;
+wrong-target binds and unrealized/wrong-type attachments preserve old
+client references. Inactive FBOs keep an unnamed old record through name
+reuse. Binding queries translate private EGLImage BO carriers back to their
+logical 2D names; ordinary/raw WPK queries retain native authority. Public
+WPK BO texture names are registered after acknowledged creation, and checked
+liveness reconciles owner-revoked names before C bind/attachment validation.
+Hidden image carriers bypass public registration. The inline 32-unit
+capacity grows to the queried renderer limit,
+with failed growth preserving selection and final teardown releasing it.
+Image/storage aliases remain a separate incomplete ownership layer.
+
 Client staging retains a separate buffer-record reference, restores its
 pointer/name/serial directly and keeps any pending capture encoder-owned.
 The host saves the actual native ARRAY view in a context-local slot across

@@ -152,7 +152,7 @@ self.onmessage = ({data}) => {
           let clear=false;
           for(let at=0;at<bytes.length;) {
             const op=words.getUint16(at,true),size=words.getUint16(at+2,true);at+=4+size;
-            if(op===O.OP_CLEAR)clear=true;
+            if(op===O.OP_CLEAR || (data.captureUpload && op===O.OP_TEX_SUB_IMAGE_2D))clear=true;
           }
           if(clear)observed.push(pixels(fd));
         }

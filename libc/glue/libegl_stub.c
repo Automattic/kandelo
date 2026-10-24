@@ -1551,8 +1551,8 @@ unsigned wpkEglImportDmabufHandle(EGLDisplay dpy, int prime_fd) {
  * Re-call after the producer commits to refresh the texture — the
  * returned id is stable per bo. Returns 0 on failure (no GL backing on
  * this host, unknown handle) — callers degrade to their CPU path. */
-unsigned wpkEglBindBoTexture(EGLDisplay dpy, unsigned bo_handle,
-                             unsigned gl_target) {
+static unsigned bind_bo_texture(EGLDisplay dpy, unsigned bo_handle, unsigned gl_target,
+                                int publish) {
     struct egl_generation *generation = g_thread_binding.generation;
     struct egl_context_record *context = g_thread_binding.object;
     if (dpy != EGL_DPY_HANDLE || !generation || !context || context->session->fd < 0)
@@ -1571,7 +1571,17 @@ unsigned wpkEglBindBoTexture(EGLDisplay dpy, unsigned bo_handle,
     };
     int accepted = ioctl(context->session->fd, WPK_DRM_IOCTL_BIND_FOREIGN_TEXTURE, &req) == 0;
     release_transferred_bo(generation, generation->fd, context->session->fd, local_handle);
+    if (accepted && req.gl_texture_id && publish) {
+        uint32_t error = _wpk_gl_register_external_texture(context->encoder, req.gl_texture_id);
+        if (error) {
+            g_last_error = error == 0x505 ? EGL_BAD_ALLOC : EGL_BAD_MATCH;
+            return 0;
+        }
+    }
     return accepted ? req.gl_texture_id : 0;
+}
+unsigned wpkEglBindBoTexture(EGLDisplay dpy, unsigned bo_handle, unsigned gl_target) {
+    return bind_bo_texture(dpy, bo_handle, gl_target, 1);
 }
 
 /* Target the NEXT eglCreateWindowSurface at a GPU-tier bo's FBO: a
@@ -1886,7 +1896,7 @@ static void retire_imported_images(struct egl_generation *generation) {
 
 uint32_t _wpk_egl_image_texture(const struct wpk_egl_image *image) {
     if (!image || image->pixels || image->generation != g_thread_binding.generation) return 0;
-    return wpkEglBindBoTexture(EGL_DPY_HANDLE, image->handle, GL_TEXTURE_2D);
+    return bind_bo_texture(EGL_DPY_HANDLE, image->handle, GL_TEXTURE_2D, 0);
 }
 
 EGLBoolean eglQueryDmaBufFormatsEXT(EGLDisplay dpy, EGLint max_formats,

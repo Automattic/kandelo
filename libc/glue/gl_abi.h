@@ -228,6 +228,9 @@ struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *
  * Returns a GL error enum; failure leaves output and reservations unchanged. */
 uint32_t _wpk_gl_reserve_names(struct wpk_gles_context *state, uint32_t name_space, int32_t count,
                                uint32_t *out);
+/* Adopt an acknowledged public WPK texture name; hidden image carriers are
+ * not public objects. Returns a GL error enum, preserving first error. */
+uint32_t _wpk_gl_register_external_texture(struct wpk_gles_context *state, uint32_t name);
 void _wpk_gl_destroy_encoder(struct wpk_gles_context *state);
 
 /* An EGLImage made by eglCreateImageKHR from one dma-buf plane. A

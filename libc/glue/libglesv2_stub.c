@@ -33,7 +33,7 @@
 #include "gl_abi.h"
 
 #define WPK_GL_MAX_ATTRIBS 16u
-#define WPK_GL_TEXTURE_UNITS 32
+#define WPK_GL_INITIAL_TEXTURE_UNITS 32
 
 enum wpk_name_space {
     WPK_NAMES_BUFFER,
@@ -45,8 +45,9 @@ enum wpk_name_space {
 struct wpk_object_name {
     GLuint name;
     uint32_t name_space, references;
+    GLenum target;
     uint64_t serial;
-    int named;
+    int named, external;
     struct wpk_object_name *next;
 };
 struct wpk_object_group {
@@ -154,23 +155,37 @@ static int object_reference(struct wpk_object_group *group, struct wpk_object_na
     pthread_mutex_unlock(&group->mutex);
     return retained;
 }
-static void unname_object(struct wpk_object_group *group, uint32_t name_space, GLuint name) {
+/* The first bind realizes a reserved texture/RBO and fixes its target.
+ * Namespace and binding references remain independent of numeric reuse. */
+static GLenum realize_image_object(struct wpk_object_group *group, struct wpk_object_name *object,
+                                   GLenum target) {
+    if (!object)
+        return GL_NO_ERROR;
+    pthread_mutex_lock(&group->mutex);
+    GLenum error = object->target && object->target != target ? GL_INVALID_OPERATION : GL_NO_ERROR;
+    if (!error)
+        object->target = target;
+    pthread_mutex_unlock(&group->mutex);
+    return error;
+}
+static struct wpk_object_name *attachment_object(struct wpk_object_group *group,
+                                                 uint32_t name_space, GLuint name, GLenum target,
+                                                 GLenum *error) {
+    *error = GL_NO_ERROR;
+    if (!name)
+        return NULL;
     pthread_mutex_lock(&group->mutex);
     struct wpk_object_name *object = find_object_name(group, name_space, name);
-    if (object) {
-        object->named = 0;
-        release_object_locked(group, object);
-    }
+    if (!object || object->target != target) {
+        *error = GL_INVALID_OPERATION;
+        object = NULL;
+    } else if (object->references == UINT_MAX) {
+        *error = GL_OUT_OF_MEMORY;
+        object = NULL;
+    } else
+        object->references++;
     pthread_mutex_unlock(&group->mutex);
-}
-static int reserve_implicit_name(struct wpk_object_group *group, uint32_t name_space, GLuint name) {
-    if (!name)
-        return 1;
-    struct wpk_object_name *object = object_acquire(group, name_space, name);
-    if (!object)
-        return 0;
-    object_release(group, object);
-    return 1;
+    return object;
 }
 
 struct wpk_client_attrib {
@@ -197,7 +212,12 @@ struct wpk_gl_alias_table { struct wpk_gl_alias *v; size_t len, cap; };
 struct wpk_image_attachment {
     GLuint framebuffer, point, kind, name, query_kind, query_name, query_host;
     struct wpk_egl_image *image;
+    struct wpk_object_name *object;
     struct wpk_image_attachment *next;
+};
+struct wpk_texture_unit {
+    GLuint texture, cube;
+    struct wpk_object_name *texture_object, *cube_object;
 };
 struct wpk_array_capture {
     struct wpk_object_name *object;
@@ -229,8 +249,11 @@ struct wpk_gles_context {
     struct wpk_gl_alias_table texture_aliases;
     struct wpk_gl_alias_table renderbuffer_aliases;
     GLuint active_unit;
-    GLuint bound_texture_2d[WPK_GL_TEXTURE_UNITS];
+    struct wpk_texture_unit initial_texture_units[WPK_GL_INITIAL_TEXTURE_UNITS];
+    struct wpk_texture_unit *texture_units;
+    uint32_t texture_unit_count, texture_unit_limit;
     GLuint bound_renderbuffer;
+    struct wpk_object_name *renderbuffer_object;
     struct wpk_image_attachment *image_attachments;
     GLuint bound_framebuffer;
     uint32_t next_vertex_array;
@@ -254,7 +277,7 @@ struct wpk_gles_context {
 #define g_texture_aliases (_wpk_gl_current_encoder()->texture_aliases)
 #define g_renderbuffer_aliases (_wpk_gl_current_encoder()->renderbuffer_aliases)
 #define g_active_unit (_wpk_gl_current_encoder()->active_unit)
-#define g_bound_texture_2d (_wpk_gl_current_encoder()->bound_texture_2d)
+#define g_texture_units (_wpk_gl_current_encoder()->texture_units)
 #define g_bound_renderbuffer (_wpk_gl_current_encoder()->bound_renderbuffer)
 #define g_image_attachments (_wpk_gl_current_encoder()->image_attachments)
 #define g_bound_framebuffer (_wpk_gl_current_encoder()->bound_framebuffer)
@@ -273,6 +296,8 @@ struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *
         free(state);
         return NULL;
     }
+    state->texture_units = state->initial_texture_units;
+    state->texture_unit_count = WPK_GL_INITIAL_TEXTURE_UNITS;
     state->unpack_alignment = 4;
     state->next_framebuffer = state->next_vertex_array = 1;
     state->current_vertex_array = &state->default_vertex_array;
@@ -1206,42 +1231,65 @@ static void emit_framebuffer_renderbuffer(GLenum target, GLenum attachment, GLui
     w_u32(&_c, name);
     EMIT_END()
 }
+/* Consume the caller's object reference on every path. Image ownership is
+ * still separate pending the shared logical storage implementation. */
 static int track_image_attachment(GLuint point, GLuint kind, GLuint name,
-                                 struct wpk_egl_image *image) {
-    if (!g_bound_framebuffer) return 1;
+                                  struct wpk_egl_image *image, struct wpk_object_name *object) {
+    struct wpk_object_group *group = _wpk_gl_current_encoder()->objects;
+    if (!g_bound_framebuffer) {
+        object_release(group, object);
+        return 1;
+    }
     struct wpk_image_attachment **slot = &g_image_attachments;
     while (*slot && ((*slot)->framebuffer != g_bound_framebuffer || (*slot)->point != point))
         slot = &(*slot)->next;
-    if (!*slot) {
-        if (!name) return 1;
-        *slot = calloc(1, sizeof **slot);
-        if (!*slot) { raise_client_error(GL_OUT_OF_MEMORY); return 0; }
-        (*slot)->framebuffer = g_bound_framebuffer;
-        (*slot)->point = point;
-    }
     struct wpk_image_attachment *entry = *slot;
+    if (!entry) {
+        if (!name) {
+            object_release(group, object);
+            return 1;
+        }
+        entry = calloc(1, sizeof *entry);
+        if (!entry) {
+            object_release(group, object);
+            raise_client_error(GL_OUT_OF_MEMORY);
+            return 0;
+        }
+        entry->framebuffer = g_bound_framebuffer;
+        entry->point = point;
+    }
     if (image) _wpk_egl_image_retain(image);
     if (entry->image) {
         _wpk_gl_flush();
         _wpk_egl_image_release(entry->image);
     }
+    object_release(group, entry->object);
+    entry->object = object;
     entry->image = image;
     entry->kind = kind;
     entry->name = name;
-    entry->query_kind = kind; entry->query_name = name;
-    entry->query_host = kind == GL_RENDERBUFFER ? alias_lookup(&g_renderbuffer_aliases,name) : host_texture_name(name);
-    if (!name) { *slot = entry->next; free(entry); }
+    entry->query_kind = kind;
+    entry->query_name = name;
+    entry->query_host = kind == GL_RENDERBUFFER ? alias_lookup(&g_renderbuffer_aliases, name)
+                                                : host_texture_name(name);
+    *slot = entry;
+    if (!name) {
+        *slot = entry->next;
+        free(entry);
+    }
     return 1;
 }
-static void refresh_image_attachments(GLuint kind, GLuint name, GLuint host,
+static void refresh_image_attachments(GLuint kind, struct wpk_object_name *object, GLuint host,
                                       struct wpk_egl_image *image) {
     for (struct wpk_image_attachment *entry = g_image_attachments; entry; entry = entry->next) {
-        if (entry->kind != kind || entry->name != name) continue;
+        if (entry->object != object)
+            continue;
         if (image) _wpk_egl_image_retain(image);
         emit_bind_framebuffer(entry->framebuffer);
         if (kind == GL_TEXTURE_2D || image)
             emit_framebuffer_texture_2d(GL_FRAMEBUFFER, entry->point, GL_TEXTURE_2D, host, 0);
-        else emit_framebuffer_renderbuffer(GL_FRAMEBUFFER, entry->point, name);
+        else
+            emit_framebuffer_renderbuffer(GL_FRAMEBUFFER, entry->point, object ? object->name : 0);
         _wpk_gl_flush();
         if (entry->image) _wpk_egl_image_release(entry->image);
         entry->image = image;
@@ -1256,25 +1304,35 @@ static void retire_image_attachments(GLuint framebuffer) {
         if (entry->framebuffer != framebuffer) { slot = &entry->next; continue; }
         _wpk_gl_flush();
         if (entry->image) _wpk_egl_image_release(entry->image);
+        object_release(_wpk_gl_current_encoder()->objects, entry->object);
         *slot = entry->next;
         free(entry);
     }
 }
-static void delete_attached_image_name(GLuint kind, GLuint name) {
-    for (struct wpk_image_attachment *entry = g_image_attachments; entry; entry = entry->next) {
-        if (entry->kind != kind || entry->name != name) continue;
+static void delete_attached_image_object(GLuint kind, struct wpk_object_name *object) {
+    struct wpk_image_attachment **slot = &g_image_attachments;
+    while (*slot) {
+        struct wpk_image_attachment *entry = *slot;
+        if (entry->object != object) {
+            slot = &entry->next;
+            continue;
+        }
         if (entry->framebuffer == g_bound_framebuffer) {
             if (kind == GL_TEXTURE_2D || entry->image)
                 emit_framebuffer_texture_2d(GL_FRAMEBUFFER, entry->point, GL_TEXTURE_2D, 0, 0);
-            else emit_framebuffer_renderbuffer(GL_FRAMEBUFFER, entry->point, 0);
+            else
+                emit_framebuffer_renderbuffer(GL_FRAMEBUFFER, entry->point, 0);
             _wpk_gl_flush();
             if (entry->image) _wpk_egl_image_release(entry->image);
-            entry->image = NULL;
+            object_release(_wpk_gl_current_encoder()->objects, entry->object);
+            *slot = entry->next;
+            free(entry);
+            continue;
         }
-        // An attachment in an unbound FBO owns the now-unnamed object.
-        // Rebinding the same numeric name later creates a distinct object.
+        // An unbound container retains the actual old record and image.
         entry->kind = 0;
         entry->name = 0;
+        slot = &entry->next;
     }
 }
 
@@ -1297,6 +1355,7 @@ void _wpk_gl_destroy_encoder(struct wpk_gles_context *state) {
         struct wpk_image_attachment *entry = state->image_attachments;
         state->image_attachments = entry->next;
         if (entry->image) _wpk_egl_image_release(entry->image);
+        object_release(state->objects, entry->object);
         free(entry);
     }
     struct wpk_gl_alias_table *tables[] = { &state->texture_aliases, &state->renderbuffer_aliases };
@@ -1310,6 +1369,13 @@ void _wpk_gl_destroy_encoder(struct wpk_gles_context *state) {
         release_vertex_array_objects(state, entry);
         free(entry);
     }
+    for (unsigned unit = 0; unit < state->texture_unit_count; unit++) {
+        object_release(state->objects, state->texture_units[unit].texture_object);
+        object_release(state->objects, state->texture_units[unit].cube_object);
+    }
+    object_release(state->objects, state->renderbuffer_object);
+    if (state->texture_units != state->initial_texture_units)
+        free(state->texture_units);
     release_vertex_array_objects(state, &state->default_vertex_array);
     object_release(state->objects, state->array_object);
     object_release(state->objects, state->array_capture.object);
@@ -1317,16 +1383,74 @@ void _wpk_gl_destroy_encoder(struct wpk_gles_context *state) {
     free(state);
 }
 
+static int checked_query_reply(uint32_t, const void *, uint32_t, uint8_t *, uint32_t);
+uint32_t _wpk_gl_register_external_texture(struct wpk_gles_context *state, uint32_t name) {
+    if (!state || !name)
+        return GL_INVALID_OPERATION;
+    struct wpk_object_name *object = object_acquire(state->objects, WPK_NAMES_TEXTURE, name);
+    GLenum error =
+        object ? realize_image_object(state->objects, object, GL_TEXTURE_2D) : GL_OUT_OF_MEMORY;
+    if (!error) {
+        pthread_mutex_lock(&state->objects->mutex);
+        object->external = 1;
+        pthread_mutex_unlock(&state->objects->mutex);
+    }
+    object_release(state->objects, object);
+    if (error && state->client_error == GL_NO_ERROR)
+        state->client_error = error;
+    return error;
+}
+/* Raw WPK views can be revoked by their BO owner outside the C command
+ * stream. Reconcile their namespace before realizing a reused public name. */
+static int external_texture_live(struct wpk_gles_context *state, struct wpk_object_name *object) {
+    if (!object || !object->external)
+        return 1;
+    uint32_t input[2] = {1, object->name}, live;
+    uint8_t reply[12];
+    if (!checked_query_reply(QOP_IS_OBJECT, input, sizeof input, reply, 4))
+        return -1;
+    memcpy(&live, reply + 4, 4);
+    if (live)
+        return 1;
+    struct wpk_object_group *group = state->objects;
+    pthread_mutex_lock(&group->mutex);
+    if (object->named) {
+        object->named = 0;
+        release_object_locked(group, object);
+    }
+    for (uint32_t unit = 0; unit < state->texture_unit_count; unit++) {
+        struct wpk_texture_unit *binding = &state->texture_units[unit];
+        if (binding->texture_object == object) {
+            binding->texture_object = NULL;
+            binding->texture = 0;
+            release_object_locked(group, object);
+        }
+        if (binding->cube_object == object) {
+            binding->cube_object = NULL;
+            binding->cube = 0;
+            release_object_locked(group, object);
+        }
+    }
+    pthread_mutex_unlock(&group->mutex);
+    return 0;
+}
+
 static void emit_bind_texture(GLenum target, GLuint host);
-static void rebind_image_texture_name(GLuint name, GLuint host) {
-    for (GLuint unit = 0; unit < WPK_GL_TEXTURE_UNITS; unit++) {
-        if (g_bound_texture_2d[unit] != name) continue;
-        { EMIT_BEGIN(OP_ACTIVE_TEXTURE, 4)
-          w_u32(&_c, GL_TEXTURE0 + unit); EMIT_END() }
+static void rebind_image_texture_object(struct wpk_object_name *object, GLuint host) {
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    for (uint32_t unit = 0; unit < state->texture_unit_count; unit++) {
+        if (state->texture_units[unit].texture_object != object)
+            continue;
+        {
+            EMIT_BEGIN(OP_ACTIVE_TEXTURE, 4) w_u32(&_c, GL_TEXTURE0 + unit);
+            EMIT_END()
+        }
         emit_bind_texture(GL_TEXTURE_2D, host);
     }
-    { EMIT_BEGIN(OP_ACTIVE_TEXTURE, 4)
-      w_u32(&_c, GL_TEXTURE0 + g_active_unit); EMIT_END() }
+    {
+        EMIT_BEGIN(OP_ACTIVE_TEXTURE, 4) w_u32(&_c, GL_TEXTURE0 + g_active_unit);
+        EMIT_END()
+    }
 }
 
 void glDeleteTextures(GLsizei n, const GLuint *names) {
@@ -1335,17 +1459,45 @@ void glDeleteTextures(GLsizei n, const GLuint *names) {
         raise_client_error(GL_INVALID_VALUE);
         return;
     }
-    if (n == 0 || !names)
+    if (!n || !names)
         return;
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    struct wpk_object_group *group = state->objects;
     for (GLsizei i = 0; i < n; i++) {
-        if (!names[i]) continue;
-        delete_attached_image_name(GL_TEXTURE_2D, names[i]);
-        rebind_image_texture_name(names[i], 0);
-        for (GLuint u = 0; u < WPK_GL_TEXTURE_UNITS; u++) {
-            if (g_bound_texture_2d[u] == names[i]) g_bound_texture_2d[u] = 0;
+        pthread_mutex_lock(&group->mutex);
+        struct wpk_object_name *object = find_object_name(group, WPK_NAMES_TEXTURE, names[i]);
+        if (!object) {
+            pthread_mutex_unlock(&group->mutex);
+            continue;
         }
+        if (object->references == UINT_MAX) {
+            pthread_mutex_unlock(&group->mutex);
+            raise_client_error(GL_OUT_OF_MEMORY);
+            return;
+        }
+        object->references++; // Pin through attachment and image cleanup.
+        object->named = 0;
+        release_object_locked(group, object);
+        pthread_mutex_unlock(&group->mutex);
+        delete_attached_image_object(GL_TEXTURE_2D, object);
+        rebind_image_texture_object(object, 0);
+        pthread_mutex_lock(&group->mutex);
+        for (uint32_t unit = 0; unit < state->texture_unit_count; unit++) {
+            struct wpk_texture_unit *binding = &state->texture_units[unit];
+            if (binding->texture_object == object) {
+                binding->texture_object = NULL;
+                binding->texture = 0;
+                release_object_locked(group, object);
+            }
+            if (binding->cube_object == object) {
+                binding->cube_object = NULL;
+                binding->cube = 0;
+                release_object_locked(group, object);
+            }
+        }
+        pthread_mutex_unlock(&group->mutex);
         alias_drop(&g_texture_aliases, names[i]);
-        unname_object(_wpk_gl_current_encoder()->objects, WPK_NAMES_TEXTURE, names[i]);
+        object_release(group, object);
     }
     emit_name_array(OP_DELETE_TEXTURES, n, names);
 }
@@ -1363,21 +1515,102 @@ void glBindTexture(GLenum target, GLuint tex) {
         raise_client_error(GL_INVALID_ENUM);
         return;
     }
-    if (!reserve_implicit_name(_wpk_gl_current_encoder()->objects, WPK_NAMES_TEXTURE, tex)) {
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    struct wpk_object_name *object = object_acquire(state->objects, WPK_NAMES_TEXTURE, tex);
+    if (tex && !object) {
         raise_client_error(GL_OUT_OF_MEMORY);
         return;
     }
-    if (target == GL_TEXTURE_2D) g_bound_texture_2d[g_active_unit] = tex;
-    emit_bind_texture(target, host_texture_name(tex));
+    int live = external_texture_live(state, object);
+    if (live < 0) {
+        object_release(state->objects, object);
+        return;
+    }
+    if (!live) {
+        object_release(state->objects, object);
+        object = object_acquire(state->objects, WPK_NAMES_TEXTURE, tex);
+        if (!object) {
+            raise_client_error(GL_OUT_OF_MEMORY);
+            return;
+        }
+    }
+    uint8_t *cursor = reserve(12);
+    if (!cursor) {
+        object_release(state->objects, object);
+        return;
+    }
+    GLenum error = realize_image_object(state->objects, object, target);
+    if (error) {
+        object_release(state->objects, object);
+        raise_client_error(error);
+        return;
+    }
+    struct wpk_object_name **slot = target == GL_TEXTURE_2D
+                                        ? &state->texture_units[g_active_unit].texture_object
+                                        : &state->texture_units[g_active_unit].cube_object;
+    object_release(state->objects, *slot);
+    *slot = object;
+    if (target == GL_TEXTURE_2D)
+        g_texture_units[g_active_unit].texture = tex;
+    else
+        g_texture_units[g_active_unit].cube = tex;
+    w_u16(&cursor, OP_BIND_TEXTURE);
+    w_u16(&cursor, 8);
+    w_u32(&cursor, target);
+    w_u32(&cursor, host_texture_name(tex));
+    g_cursor = cursor;
 }
 
 void glActiveTexture(GLenum unit) {
-    if (!_wpk_gl_current_encoder()) return;
-    if (unit >= GL_TEXTURE0 && unit < GL_TEXTURE0 + WPK_GL_TEXTURE_UNITS)
-        g_active_unit = unit - GL_TEXTURE0;
-    EMIT_BEGIN(OP_ACTIVE_TEXTURE, 4)
-    w_u32(&_c, (uint32_t)unit);
-    EMIT_END()
+    if (!_wpk_gl_current_encoder())
+        return;
+    if (unit < GL_TEXTURE0) {
+        raise_client_error(GL_INVALID_ENUM);
+        return;
+    }
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    uint32_t index = unit - GL_TEXTURE0;
+    if (!state->texture_unit_limit) {
+        GLint limit = 0;
+        uint32_t pname = GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS;
+        if (_wpk_gl_query_into(QOP_GET_INTEGERV, &pname, 4, &limit, 4) != 0) {
+            raise_client_error(GL_INVALID_OPERATION);
+            return;
+        }
+        if (limit <= 0) {
+            raise_client_error(GL_INVALID_OPERATION);
+            return;
+        }
+        state->texture_unit_limit = (uint32_t)limit;
+    }
+    if (index >= state->texture_unit_limit) {
+        raise_client_error(GL_INVALID_ENUM);
+        return;
+    }
+    if (index >= state->texture_unit_count) {
+        if (state->texture_unit_limit > SIZE_MAX / sizeof *state->texture_units) {
+            raise_client_error(GL_OUT_OF_MEMORY);
+            return;
+        }
+        struct wpk_texture_unit *units = calloc(state->texture_unit_limit, sizeof *units);
+        if (!units) {
+            raise_client_error(GL_OUT_OF_MEMORY);
+            return;
+        }
+        memcpy(units, state->texture_units, state->texture_unit_count * sizeof *units);
+        if (state->texture_units != state->initial_texture_units)
+            free(state->texture_units);
+        state->texture_units = units;
+        state->texture_unit_count = state->texture_unit_limit;
+    }
+    uint8_t *cursor = reserve(8);
+    if (!cursor)
+        return;
+    w_u16(&cursor, OP_ACTIVE_TEXTURE);
+    w_u16(&cursor, 4);
+    w_u32(&cursor, unit);
+    g_cursor = cursor;
+    g_active_unit = index;
 }
 
 /* Bytes-per-pixel for the GL (format,type) pairs we know how to
@@ -1497,8 +1730,8 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                   GLenum format, GLenum type, const void *data) {
     if (!_wpk_gl_current_encoder()) return;
     if (internalFormat == GL_BGRA_EXT) internalFormat = GL_RGBA;
-    if (target == GL_TEXTURE_2D && alias_lookup(&g_texture_aliases,
-            g_bound_texture_2d[g_active_unit])) {
+    if (target == GL_TEXTURE_2D &&
+        alias_lookup(&g_texture_aliases, g_texture_units[g_active_unit].texture)) {
         if (width < 0 || height < 0 || level < 0 || border != 0) {
             raise_client_error(GL_INVALID_VALUE);
             return;
@@ -1509,10 +1742,11 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
         }
         // Respecification replaces this texture's storage, independently of
         // the image and its other texture/renderbuffer siblings.
-        GLuint name = g_bound_texture_2d[g_active_unit];
+        GLuint name = g_texture_units[g_active_unit].texture;
         alias_drop(&g_texture_aliases, name);
-        refresh_image_attachments(GL_TEXTURE_2D, name, name, NULL);
-        rebind_image_texture_name(name, name);
+        refresh_image_attachments(GL_TEXTURE_2D, g_texture_units[g_active_unit].texture_object,
+                                  name, NULL);
+        rebind_image_texture_object(g_texture_units[g_active_unit].texture_object, name);
     }
     EMIT_BEGIN(OP_TEX_IMAGE_2D, 36u)
     w_u32(&_c, (uint32_t)target);
@@ -1741,10 +1975,31 @@ void glFramebufferTexture2D(GLenum target, GLenum attachment,
         raise_client_error(GL_INVALID_ENUM); return;
     }
     if (level != 0) { raise_client_error(GL_INVALID_VALUE); return; }
+    if (!g_bound_framebuffer) {
+        raise_client_error(GL_INVALID_OPERATION);
+        return;
+    }
+    GLenum error;
+    struct wpk_object_name *object =
+        attachment_object(_wpk_gl_current_encoder()->objects, WPK_NAMES_TEXTURE, texture,
+                          textarget == GL_TEXTURE_2D ? GL_TEXTURE_2D : GL_TEXTURE_CUBE_MAP, &error);
+    if (error) {
+        raise_client_error(error);
+        return;
+    }
+    int live = external_texture_live(_wpk_gl_current_encoder(), object);
+    if (live <= 0) {
+        object_release(_wpk_gl_current_encoder()->objects, object);
+        if (!live)
+            raise_client_error(GL_INVALID_OPERATION);
+        return;
+    }
     struct wpk_egl_image *image = NULL;
     for (size_t i = 0; i < g_texture_aliases.len; i++)
         if (g_texture_aliases.v[i].name == texture) image = g_texture_aliases.v[i].image;
-    if (target == GL_FRAMEBUFFER && !track_image_attachment(attachment, GL_TEXTURE_2D, texture, image)) return;
+    if (target == GL_FRAMEBUFFER &&
+        !track_image_attachment(attachment, GL_TEXTURE_2D, texture, image, object))
+        return;
     emit_framebuffer_texture_2d(target, attachment, textarget,
                                 host_texture_name(texture), level);
 }
@@ -2069,9 +2324,27 @@ const GLubyte *glGetString(GLenum name) {
 }
 
 /* Scalar and vector pnames use the same query with their complete width. */
+/* Client names differ from private BO carrier names after EGLImage binding. */
+static int client_image_binding(GLenum pname, GLuint *value) {
+    if (pname == GL_TEXTURE_BINDING_2D) {
+        GLuint name = g_texture_units[g_active_unit].texture;
+        if (name && alias_lookup(&g_texture_aliases, name)) {
+            *value = name;
+            return 1;
+        }
+    }
+    // Ordinary and raw WPK bindings stay authoritative in the host, including
+    // BO-owner revocation. Only hidden EGLImage carriers need translation.
+    return 0;
+}
 void glGetIntegerv(GLenum pname, GLint *data) {
     if (!_wpk_gl_current_encoder()) return;
     if (!data) return;
+    GLuint binding;
+    if (client_image_binding(pname, &binding)) {
+        *data = (GLint)binding;
+        return;
+    }
     if (pname == GL_UNPACK_ROW_LENGTH_EXT) { *data = g_unpack_row_length; return; }
     if (pname == GL_UNPACK_SKIP_ROWS_EXT) { *data = g_unpack_skip_rows; return; }
     if (pname == GL_UNPACK_SKIP_PIXELS_EXT) { *data = g_unpack_skip_pixels; return; }
@@ -2319,6 +2592,11 @@ static uint32_t query_value_count(GLenum pname) {
 void glGetFloatv(GLenum pname, GLfloat *data) {
     if (!_wpk_gl_current_encoder()) return;
     if (!data) return;
+    GLuint binding;
+    if (client_image_binding(pname, &binding)) {
+        *data = (GLfloat)binding;
+        return;
+    }
     if (pname == GL_UNPACK_ROW_LENGTH_EXT) { *data = (GLfloat)g_unpack_row_length; return; }
     if (pname == GL_UNPACK_SKIP_ROWS_EXT) { *data = (GLfloat)g_unpack_skip_rows; return; }
     if (pname == GL_UNPACK_SKIP_PIXELS_EXT) { *data = (GLfloat)g_unpack_skip_pixels; return; }
@@ -2331,6 +2609,11 @@ void glGetFloatv(GLenum pname, GLfloat *data) {
 void glGetBooleanv(GLenum pname, GLboolean *data) {
     if (!_wpk_gl_current_encoder()) return;
     if (!data) return;
+    GLuint binding;
+    if (client_image_binding(pname, &binding)) {
+        *data = binding ? GL_TRUE : GL_FALSE;
+        return;
+    }
     if (pname == GL_UNPACK_ROW_LENGTH_EXT) { *data = g_unpack_row_length != 0; return; }
     if (pname == GL_UNPACK_SKIP_ROWS_EXT) { *data = g_unpack_skip_rows != 0; return; }
     if (pname == GL_UNPACK_SKIP_PIXELS_EXT) { *data = g_unpack_skip_pixels != 0; return; }
@@ -2577,32 +2860,70 @@ void glDeleteRenderbuffers(GLsizei n, const GLuint *names) {
         raise_client_error(GL_INVALID_VALUE);
         return;
     }
-    if (n == 0 || !names)
+    if (!n || !names)
         return;
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    struct wpk_object_group *group = state->objects;
     for (GLsizei i = 0; i < n; i++) {
-        delete_attached_image_name(GL_RENDERBUFFER, names[i]);
+        pthread_mutex_lock(&group->mutex);
+        struct wpk_object_name *object = find_object_name(group, WPK_NAMES_RENDERBUFFER, names[i]);
+        if (!object) {
+            pthread_mutex_unlock(&group->mutex);
+            continue;
+        }
+        if (object->references == UINT_MAX) {
+            pthread_mutex_unlock(&group->mutex);
+            raise_client_error(GL_OUT_OF_MEMORY);
+            return;
+        }
+        object->references++;
+        if (state->renderbuffer_object == object) {
+            state->renderbuffer_object = NULL;
+            g_bound_renderbuffer = 0;
+            release_object_locked(group, object);
+        }
+        object->named = 0;
+        release_object_locked(group, object);
+        pthread_mutex_unlock(&group->mutex);
+        delete_attached_image_object(GL_RENDERBUFFER, object);
         alias_drop(&g_renderbuffer_aliases, names[i]);
-        unname_object(_wpk_gl_current_encoder()->objects, WPK_NAMES_RENDERBUFFER, names[i]);
-        if (g_bound_renderbuffer == names[i]) g_bound_renderbuffer = 0;
+        object_release(group, object);
     }
     emit_name_array(OP_DELETE_RENDERBUFFERS, n, names);
 }
 
 void glBindRenderbuffer(GLenum target, GLuint rb) {
-    if (!_wpk_gl_current_encoder()) return;
+    if (!_wpk_gl_current_encoder())
+        return;
     if (target != GL_RENDERBUFFER) {
         raise_client_error(GL_INVALID_ENUM);
         return;
     }
-    if (!reserve_implicit_name(_wpk_gl_current_encoder()->objects, WPK_NAMES_RENDERBUFFER, rb)) {
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    struct wpk_object_name *object = object_acquire(state->objects, WPK_NAMES_RENDERBUFFER, rb);
+    if (rb && !object) {
         raise_client_error(GL_OUT_OF_MEMORY);
         return;
     }
-    if (target == GL_RENDERBUFFER) g_bound_renderbuffer = rb;
-    EMIT_BEGIN(OP_BIND_RENDERBUFFER, 8)
-    w_u32(&_c, (uint32_t)target);
-    w_u32(&_c, rb);
-    EMIT_END()
+    uint8_t *cursor = reserve(12);
+    if (!cursor) {
+        object_release(state->objects, object);
+        return;
+    }
+    GLenum error = realize_image_object(state->objects, object, target);
+    if (error) {
+        object_release(state->objects, object);
+        raise_client_error(error);
+        return;
+    }
+    object_release(state->objects, state->renderbuffer_object);
+    state->renderbuffer_object = object;
+    g_bound_renderbuffer = rb;
+    w_u16(&cursor, OP_BIND_RENDERBUFFER);
+    w_u16(&cursor, 8);
+    w_u32(&cursor, target);
+    w_u32(&cursor, rb);
+    g_cursor = cursor;
 }
 
 void glRenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, GLsizei height) {
@@ -2613,7 +2934,8 @@ void glRenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, 
             return;
         }
         alias_drop(&g_renderbuffer_aliases, g_bound_renderbuffer);
-        refresh_image_attachments(GL_RENDERBUFFER, g_bound_renderbuffer, g_bound_renderbuffer, NULL);
+        refresh_image_attachments(GL_RENDERBUFFER, _wpk_gl_current_encoder()->renderbuffer_object,
+                                  g_bound_renderbuffer, NULL);
     }
     EMIT_BEGIN(OP_RENDERBUFFER_STORAGE, 16)
     w_u32(&_c, (uint32_t)target);
@@ -2632,10 +2954,24 @@ void glFramebufferRenderbuffer(GLenum target, GLenum attachment,
         || (attachment != GL_COLOR_ATTACHMENT0 && attachment != GL_DEPTH_ATTACHMENT && attachment != GL_STENCIL_ATTACHMENT)) {
         raise_client_error(GL_INVALID_ENUM); return;
     }
+    if (!g_bound_framebuffer) {
+        raise_client_error(GL_INVALID_OPERATION);
+        return;
+    }
+    GLenum error;
+    struct wpk_object_name *object =
+        attachment_object(_wpk_gl_current_encoder()->objects, WPK_NAMES_RENDERBUFFER, renderbuffer,
+                          GL_RENDERBUFFER, &error);
+    if (error) {
+        raise_client_error(error);
+        return;
+    }
     struct wpk_egl_image *image = NULL;
     for (size_t i = 0; i < g_renderbuffer_aliases.len; i++)
         if (g_renderbuffer_aliases.v[i].name == renderbuffer) image = g_renderbuffer_aliases.v[i].image;
-    if (target == GL_FRAMEBUFFER && !track_image_attachment(attachment, GL_RENDERBUFFER, renderbuffer, image)) return;
+    if (target == GL_FRAMEBUFFER &&
+        !track_image_attachment(attachment, GL_RENDERBUFFER, renderbuffer, image, object))
+        return;
     GLuint host = renderbuffer
         ? alias_lookup(&g_renderbuffer_aliases, renderbuffer) : 0;
     if (host) {
@@ -2664,7 +3000,7 @@ void glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image) {
         return;
     }
     struct wpk_egl_image *img = _wpk_egl_image_lookup(image);
-    GLuint name = g_bound_texture_2d[g_active_unit];
+    GLuint name = g_texture_units[g_active_unit].texture;
     if (!img) {
         raise_client_error(GL_INVALID_VALUE);
         return;
@@ -2681,8 +3017,9 @@ void glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image) {
             _wpk_egl_image_release(img);
             return;
         }
-        refresh_image_attachments(GL_TEXTURE_2D, name, host, img);
-        rebind_image_texture_name(name, host);
+        refresh_image_attachments(GL_TEXTURE_2D, g_texture_units[g_active_unit].texture_object,
+                                  host, img);
+        rebind_image_texture_object(g_texture_units[g_active_unit].texture_object, host);
         _wpk_egl_image_release(img);
         return;
     }
@@ -2734,7 +3071,8 @@ void glEGLImageTargetRenderbufferStorageOES(GLenum target, GLeglImageOES image) 
         _wpk_egl_image_release(img);
         return;
     }
-    refresh_image_attachments(GL_RENDERBUFFER, g_bound_renderbuffer, host, img);
+    refresh_image_attachments(GL_RENDERBUFFER, _wpk_gl_current_encoder()->renderbuffer_object, host,
+                              img);
     _wpk_egl_image_release(img);
 }
 
