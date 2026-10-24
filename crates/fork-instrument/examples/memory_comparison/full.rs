@@ -24,7 +24,14 @@ pub(super) fn measure(backend: &str, input: &Path, destination: &Path) -> Result
             native::validate(artifact.bytes())?;
             artifact
         }
-        "stream" => native::instrument(input.bytes(), &options, Default::default())?.bytes,
+        "stream" => {
+            let output = native::instrument(input.bytes(), &options, Default::default())?;
+            eprintln!("native analysis: {}", output.decision.source.as_str());
+            if let Some(error) = &output.decision.facts_error {
+                eprintln!("compiler facts unavailable: {error}");
+            }
+            output.bytes
+        }
         _ => bail!("backend must be eager or stream"),
     };
     output.publish(destination, permissions)?;

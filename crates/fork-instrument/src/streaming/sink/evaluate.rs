@@ -131,7 +131,11 @@ pub fn evaluate(
         .saturating_add(retained.saturating_mul(2));
     ensure!(
         width <= limits.state_values / active,
-        "sink interpretation exceeds state-value budget"
+        "sink interpretation exceeds state-value budget for function {} \
+         (estimated {} values, limit {})",
+        body.function,
+        width.saturating_mul(active),
+        limits.state_values,
     );
     if let Some(states) = options.normal_states {
         let mut values = 0usize;

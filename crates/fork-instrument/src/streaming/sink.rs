@@ -128,7 +128,11 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            state_values: 8 * 1024 * 1024,
+            // A sanity ceiling, not the intended working set. The preflight
+            // estimate reserves maximum frame slots at every active control
+            // level, even when a body writes only one slot. Keep it generous;
+            // function-local interpretation provides the normal memory saving.
+            state_values: 256 * 1024 * 1024,
             work: 100 * 1024 * 1024,
             control_depth: 256,
             frame_slots: 4096,
