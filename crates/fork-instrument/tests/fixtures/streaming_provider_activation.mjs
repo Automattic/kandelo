@@ -11,7 +11,7 @@ const pointer = value => wide ? BigInt(value) : value;
 function scenario(mode, failAt = 0) {
   const transit = new WebAssembly.Instance(load('./transit.wasm')).exports.transit;
   const tables = createTableJournal(wide, wide);
-  const frames = createFrameJournal(wide);
+  const frames = createFrameJournal(wide, provider);
   let nextMode = mode;
   const store = createGcStore(provider, transit, wide, {
     functions: ['source_function', 'child', 'handler'],

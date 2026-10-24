@@ -1,5 +1,5 @@
 //! One-body emission for the shared real-provider test factory.
-use super::{roots, tables};
+use super::{catalogs, roots, tables};
 use fork_instrument::streaming::*;
 use wasm_encoder::{
     Function, Instruction,
@@ -7,6 +7,7 @@ use wasm_encoder::{
 };
 pub(super) struct Provider<'s, 'a> {
     pub(super) scan: &'s Scan<'a>,
+    pub(super) identities: Option<catalogs::Components>,
     pub(super) activations: Option<NativeActivations<'a>>,
     pub(super) runtime: NativeRuntime,
     pub(super) plan: NativeGcPlan,
@@ -108,22 +109,28 @@ impl FunctionTransform for Provider<'_, '_> {
             }
             n => {
                 let roots = self.roots.as_ref().expect("root catalog");
-                let ordinal =
+                let mut ordinal =
                     n - self.first_exception - self.exception.declarations().function_count();
                 if ordinal < roots.declarations.function_count() {
-                    roots.emit_helper(ordinal, limit)
-                } else {
-                    let tables = self.tables.as_ref().expect("table catalog");
-                    let ordinal = ordinal - roots.declarations.function_count();
-                    if ordinal < tables.declarations.function_count() {
-                        tables.emit_helper(ordinal, limit)
-                    } else {
-                        self.activations
-                            .as_ref()
-                            .expect("activation catalog")
-                            .emit_helper(ordinal - tables.declarations.function_count(), limit)
-                    }
+                    return roots.emit_helper(ordinal, limit);
                 }
+                ordinal -= roots.declarations.function_count();
+                if let Some(tables) = &self.tables {
+                    if ordinal < tables.declarations.function_count() {
+                        return tables.emit_helper(ordinal, limit);
+                    }
+                    ordinal -= tables.declarations.function_count();
+                }
+                if let Some(activations) = &self.activations {
+                    if ordinal < activations.declarations().function_count() {
+                        return activations.emit_helper(ordinal, limit);
+                    }
+                    ordinal -= activations.declarations().function_count();
+                }
+                self.identities
+                    .as_ref()
+                    .expect("identity catalogs")
+                    .emit_helper(ordinal, limit)
             }
         }
     }

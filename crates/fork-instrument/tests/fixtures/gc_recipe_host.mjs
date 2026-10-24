@@ -20,6 +20,7 @@ export default function createGcStore(providerModule, transit, wide, options = {
   const capturedValues = new Map();
   const provenance = new WeakMap();
   const brokerValues = new Map();
+  const staticRecipes = new Map();
   const vectors = [{ expected: 0, values: [] }];
   const exceptions = createExceptionStore();
   let nextRecipe = 1;
@@ -44,6 +45,13 @@ export default function createGcStore(providerModule, transit, wide, options = {
       ...exceptionBinding.imports,
       __wpk_fork_ref_encode_funcref(value) {
         if (value === null) return 0;
+        const catalog = instance.exports.__wpk_fork_function_catalog;
+        if (catalog) {
+          for (let ordinal = 0; ordinal < catalog.length; ordinal++) {
+            if (catalog.get(ordinal) === value) return 1000000 + ordinal;
+          }
+          throw new Error("function is absent from the original catalog");
+        }
         const names = options.functions ?? ["source_function"];
         const ordinal = names.findIndex(name => instance.exports[name] === value);
         if (ordinal < 0) throw new Error("unexpected function identity");
@@ -51,13 +59,28 @@ export default function createGcStore(providerModule, transit, wide, options = {
       },
       __wpk_fork_ref_decode_funcref(recipe) {
         if (recipe === 0) return null;
+        const catalog = instance.exports.__wpk_fork_function_catalog;
+        if (catalog) {
+          const ordinal = recipe - 1000000;
+          if (ordinal < 0 || ordinal >= catalog.length) throw new Error("invalid function ordinal");
+          return catalog.get(ordinal);
+        }
         const name = (options.functions ?? ["source_function"])[recipe - 1000000];
         if (name === undefined) throw new Error("invalid function recipe");
         return instance.exports[name];
       },
       __wpk_fork_ref_gc_lookup(slot) {
         const value = transit.get(slot);
-        return value === null ? 0 : (identities.get(value) ?? 0);
+        if (value === null) return 0;
+        const known = identities.get(value);
+        if (known !== undefined) return known;
+        const ordinal = options.lookupStatic?.(value, instance);
+        if (ordinal === undefined || ordinal === null) return 0;
+        const recipe = nextRecipe++;
+        identities.set(value, recipe);
+        capturedValues.set(recipe, value);
+        staticRecipes.set(recipe, ordinal);
+        return recipe;
       },
       __wpk_fork_ref_gc_claim(slot) {
         const value = transit.get(slot);
@@ -323,5 +346,5 @@ export default function createGcStore(providerModule, transit, wide, options = {
       },
     };
   }
-  return { recipes, vectors, brokerValues, instantiate };
+  return { recipes, vectors, brokerValues, staticRecipes, instantiate };
 }

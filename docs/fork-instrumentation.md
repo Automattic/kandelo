@@ -626,10 +626,48 @@ arguments force virtual scratch; changing their source global before replay
 still delivers the captured argument bits. Scratch checks preserve the existing
 ABI's restored fork-time stack-pointer floor for replayed prologues.
 
+`declare_function_catalog` now exports a fixed table containing only original
+functions, in source ordinal order, followed by the explicit bootstrap entry.
+Private runtime, provider, harvest and continuation helpers have no source
+function ordinal. `NativeResumeCatalog` emits the existing descriptor and
+fixed thunk table from strictly ascending frame ordinals; it supports sparse
+entry subsets without changing the ordinals stored in frames.
+
+`StaticRootPlan` discovers immutable GC global roots and aliases, allocating
+nonempty table initializers and allocating live element expressions directly
+from the original scan. It retains bounded source coordinates and visits no
+function IR. `NativeStaticRoots` freezes a null-initialized anyref harvest table
+and one helper. That helper reads globals/table slot zero or copies an exact
+segment item, so it never reevaluates an allocation or hoists a permanent
+reference global. The host must harvest before explicit bootstrap, register
+weak coordinates, clear every buffer entry and pin only roots named by the
+current replay transaction before applying overlays or segment drops. Declared
+segments are already dropped at instantiation and supply no harvestable root.
+Discovery and emission enforce metadata, work, index and output limits; data
+payloads stay outside retained metadata.
+
+Native and production Walrus output run shared catalog/replay assertions on
+both pointer widths; native output uses both scalar codec policies. Static-root
+and resume descriptor bytes match on ordinary inputs. Original function exports
+and bootstrap match their catalog slots, helpers stay excluded, and harvest
+adds no reference globals. Fresh replay preserves identity across imported and
+aliased immutable globals, primitive/array roots, table initializers, passive
+and deferred active elements, frame locals and sparse table state. Cleared
+harvest buffers retain no roots. Static aggregate identities use fresh child
+coordinates rather than structural clone recipes. The composed activation
+fixture now resolves function recipes and resume routing through these actual
+catalogs instead of export-name lists.
+
+One additional oracle defect is recorded separately: Walrus tries to harvest
+an allocating declared element expression through `table.init` after the
+segment has been dropped. The original module executes, native harvest skips
+the unobservable root, and the unchanged oracle harvest traps. This test does
+not weaken the ordinary cross-backend replay assertions.
+
 These remain component fixtures rather than the normal production path.
-Legacy exception normalization, static reference catalogs, import adapters,
-process-level integration, artifact certification and production backend
-integration remain work. No end-to-end memory improvement is claimed.
+Legacy exception normalization, import adapters, process-level integration,
+artifact certification and production backend integration remain work. No
+end-to-end memory improvement is claimed.
 
 `wasm-fork-instrument input.wasm --streaming-scan` runs that diagnostic scan
 without constructing a Walrus module or producing an executable. It reports
@@ -640,7 +678,8 @@ does not run an optimizer.
 Production `instrument`, `analyze`, `sink_report` and normal CLI output still
 use the existing, unmodified Walrus implementation. The native sink planner
 is not yet connected to production; complete component composition and
-production artifact generation remain. No complete bounded fork transform or measured Codex memory improvement is claimed.
+production artifact generation remain. No complete bounded fork transform or
+measured Codex memory improvement is claimed.
 See the [dependency map and migration plan](plans/2026-10-22-streaming-fork-instrumentation.md).
 The [front-end memory measurements](measurements/2026-10-23-streaming-instrumenter-front-end.md)
 compare six controlled examples and explicitly exclude the full transform.

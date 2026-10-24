@@ -7,6 +7,7 @@
 
 mod activation;
 mod bootstrap;
+mod catalogs;
 mod continuation;
 mod declarations;
 mod definitions;
@@ -31,6 +32,7 @@ mod types;
 
 pub use activation::*;
 pub use bootstrap::*;
+pub use catalogs::*;
 pub use continuation::*;
 pub use declarations::*;
 pub use definitions::*;

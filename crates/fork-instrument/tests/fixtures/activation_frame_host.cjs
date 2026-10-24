@@ -1,7 +1,7 @@
 // Linked-frame transaction shared by capture, live abort and fresh replay.
 // Payloads and reference vectors are written by the real guest codecs.
 const assert = require('node:assert/strict');
-module.exports = function createFrameJournal(wide) {
+module.exports = function createFrameJournal(wide, wasmModule, { requireIndirectGuard = true } = {}) {
   const pointer = value => wide ? BigInt(value) : value;
   const committed = [];
   const bindings = [];
@@ -49,21 +49,34 @@ module.exports = function createFrameJournal(wide) {
         return pointer(pending[0].address);
       },
       __wpk_fork_resume_peek() {
-        assert(publication.reconciles > 0, 'generated indirect transport reconciles before replay routing');
+        if (requireIndirectGuard) assert(publication.reconciles > 0, 'generated indirect transport reconciles before replay routing');
         return pending.length ? pending[0].ordinal + 1 : 0;
       },
     };
     state.link = instance => {
-      resume.set(1, instance.exports.resume_handler);
-      resume.set(2, instance.exports.resume_root);
+      const catalog = instance.exports.__wpk_fork_resume_catalog;
+      const sections = WebAssembly.Module.customSections(wasmModule, 'kandelo.wpk_fork.resume_catalog');
+      assert.equal(sections.length, 1);
+      const descriptor = new DataView(sections[0]);
+      assert.equal(descriptor.getUint16(4, true), 1);
+      assert.equal(descriptor.getUint16(6, true), 12);
+      assert.equal(descriptor.byteLength, 12 + descriptor.getUint32(8, true) * 8);
+      for (let entry = 0; entry < descriptor.getUint32(8, true); entry++) {
+        const ordinal = descriptor.getUint32(12 + entry * 8, true);
+        const slot = descriptor.getUint32(16 + entry * 8, true);
+        if (resume.length <= ordinal + 1) resume.grow(ordinal + 2 - resume.length);
+        resume.set(ordinal + 1, catalog.get(slot));
+      }
     };
     state.fork = (ordinal, ...operands) => {
       state.calls++;
       assert.equal(ordinal, 3);
       assert(operands.length === 0 || operands.length === 40);
       assert(operands.every(value => value === 11n), 'restored wide arguments retain their bits');
-      if (state.calls === 1) state.forkStackPointer = Number(getInstance().exports.sp.value);
-      assert(publication.reconciles > 0, 'the original indirect call also uses its generated guard');
+      if (state.calls === 1 && getInstance().exports.sp instanceof WebAssembly.Global) {
+        state.forkStackPointer = Number(getInstance().exports.sp.value);
+      }
+      if (requireIndirectGuard) assert(publication.reconciles > 0, 'the original indirect call also uses its generated guard');
       const exports = getInstance().exports;
       if (state.mode === 'rewind') { state.mode = 'normal'; exports.wpk_fork_rewind_end(); return 0; }
       if (state.mode === 'abort') { state.mode = 'normal'; exports.wpk_fork_abort_end(); return -1; }

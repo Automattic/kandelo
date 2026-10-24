@@ -2,6 +2,8 @@
 //! controls and source constructor rewriting. No JavaScript reference codec.
 use fork_instrument::{module_exception_codec, module_gc_codec, streaming::*};
 use wasm_encoder::reencode::RoundtripReencoder;
+#[path = "streaming_catalogs.rs"]
+mod catalogs;
 #[path = "streaming_roots.rs"]
 mod roots;
 #[path = "streaming_tables.rs"]
@@ -217,6 +219,38 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
     } else {
         None
     };
+    let identities = roots.as_ref().map(|roots| {
+        let table_types = tables
+            .as_ref()
+            .map_or(0, |tables| tables.declarations.type_count());
+        let table_functions = tables
+            .as_ref()
+            .map_or(0, |tables| tables.declarations.function_count());
+        let activation_types = activations
+            .as_ref()
+            .map_or(0, |activations| activations.declarations().type_count());
+        let activation_functions = activations
+            .as_ref()
+            .map_or(0, |activations| activations.declarations().function_count());
+        catalogs::Components::plan(
+            &scan,
+            &mut runtime,
+            &roots.bootstrap,
+            activations.as_ref(),
+            &mut module,
+            first_type
+                + exception.declarations().type_count()
+                + roots.declarations.type_count()
+                + table_types
+                + activation_types,
+            imports.helper_function_base()
+                + first_exception
+                + exception.declarations().function_count()
+                + roots.declarations.function_count()
+                + table_functions
+                + activation_functions,
+        )
+    });
     let mut parts = vec![
         runtime.function_declarations(),
         constructors.declarations(),
@@ -231,6 +265,9 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
     }
     if let Some(activations) = &activations {
         parts.push(activations.declarations());
+    }
+    if let Some(identities) = &identities {
+        parts.push(identities.declarations());
     }
     let declarations = FrozenDeclarations::concatenate(&parts, 1 << 20).unwrap();
     let mut descriptors = vec![
@@ -252,7 +289,11 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
             tables.tables.imported_tables_descriptor().to_vec(),
         ));
     }
+    if let Some(identities) = &identities {
+        descriptors.extend(identities.descriptors());
+    }
     let mut transform = Provider {
+        identities,
         scan: &scan,
         activations,
         runtime,
