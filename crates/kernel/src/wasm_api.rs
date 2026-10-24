@@ -1608,6 +1608,17 @@ unsafe fn get_process_tid_and_advisory_locks() -> (
 /// The pending check keeps ordinary channel dispatches and host-TCP pipe
 /// operations to one empty-queue branch and avoids walking an empty release
 /// queue.
+/// Release OFD/flock locks a close left without an owner
+/// (`ProcessTable::release_orphaned_ofd_locks`); one flag read when no close
+/// asked for it. Runs after every channel dispatch and exit commit, and at
+/// the start of both drains, so a parked lock request sees the release on the
+/// same drain that announces it.
+fn release_orphaned_ofd_locks() {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.release_orphaned_ofd_locks();
+}
+
 fn finish_machine_scm_rights_cleanup_if_pending() {
     syscalls::finish_scm_rights_cleanup_if_pending(|| {
         let _gkl = GklGuard::acquire();
@@ -4398,7 +4409,13 @@ fn activate_blocking_retry_for_current_task(
     let proc = table.current_process().ok_or(Errno::ESRCH)?;
     proc.blocked_retries.begin_dispatch(tid)?;
     let activation = if retry_token == 0 {
-        if proc.blocked_retries.has_binding_for_tid(tid) {
+        // A task holding a binding is blocked in a retried call, so it issues
+        // no other syscall. The one request a host sends on its behalf is the
+        // cancellation that ends a kernel-parked call (whose binding the
+        // park owns and releases when the cancellation completes it).
+        if proc.blocked_retries.has_binding_for_tid(tid)
+            && syscall_nr != syscall_numbers::SYS_THREAD_CANCEL
+        {
             Err(Errno::EBUSY)
         } else {
             Ok(())
@@ -4429,9 +4446,14 @@ fn retain_blocking_retry_target(syscall_nr: u32, args: &[i64; 6]) -> Result<(), 
         .ok_or(Errno::ESRCH)?;
     let mut host = WasmHostIO;
     match operation {
+        // A blocking advisory lock parks in the kernel and pins its own
+        // target (`channel_fcntl_lock`, `channel_flock`); the EAGAIN that
+        // reaches here is a non-blocking caller's answer, which no host
+        // retries, so a pin taken now would never be released.
+        crate::blocked_retry::BlockingRetryOperation::Fcntl
+        | crate::blocked_retry::BlockingRetryOperation::Flock => {}
         crate::blocked_retry::BlockingRetryOperation::Read
         | crate::blocked_retry::BlockingRetryOperation::Write
-        | crate::blocked_retry::BlockingRetryOperation::Fcntl
         | crate::blocked_retry::BlockingRetryOperation::Pread
         | crate::blocked_retry::BlockingRetryOperation::Pwrite
         | crate::blocked_retry::BlockingRetryOperation::Accept
@@ -4440,8 +4462,7 @@ fn retain_blocking_retry_target(syscall_nr: u32, args: &[i64; 6]) -> Result<(), 
         | crate::blocked_retry::BlockingRetryOperation::Recv
         | crate::blocked_retry::BlockingRetryOperation::Sendto
         | crate::blocked_retry::BlockingRetryOperation::Recvfrom
-        | crate::blocked_retry::BlockingRetryOperation::Recvmsg
-        | crate::blocked_retry::BlockingRetryOperation::Flock => {
+        | crate::blocked_retry::BlockingRetryOperation::Recvmsg => {
             syscalls::ensure_blocking_retry_ofd_binding(
                 proc,
                 locks,
@@ -4717,6 +4738,7 @@ fn handle_owned_channel_allocation(
     // channel syscall fail-safe against a newly introduced ancillary drop,
     // while the ordinary hot path pays only an empty-queue check.
     finish_machine_scm_rights_cleanup_if_pending();
+    release_orphaned_ofd_locks();
 
     // Write result back to channel
     let out = unsafe {
@@ -5234,13 +5256,28 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 // Lock commands: arg is a pointer to struct flock
                 // POSIX: 5=F_GETLK, 6=F_SETLK, 7=F_SETLKW; 12-14=64-bit variants
                 // OFD:   36=F_OFD_GETLK, 37=F_OFD_SETLK, 38=F_OFD_SETLKW
+                // The kernel owns a blocking lock request (see
+                // `channel_fcntl_lock`); `arg` is the caller's own address.
                 5 | 6 | 7 | 12 | 13 | 14 | 36 | 37 | 38 => {
-                    kernel_fcntl_lock(a1, a2 as u32, channel_mut_ptr!(2, u8))
+                    {
+                        // `arg` is the caller's own address (no host stages
+                        // the flock any more). It travels as the caller's
+                        // `long`, so a wasm32 address may arrive
+                        // sign-extended; keep its low 32 bits, as
+                        // `channel_futex` does for its pointer slots.
+                        let raw = args[2] as u64;
+                        let flock_addr = if caller_pointer_width!() == 4 {
+                            raw as u32 as u64
+                        } else {
+                            raw
+                        };
+                        channel_fcntl_lock(a1, a2 as u32, flock_addr)
+                    }
                 }
                 _ => kernel_fcntl(a1, a2 as u32, a3 as u32),
             }
         }
-        121 => kernel_flock(a1, a2 as u32), // SYS_FLOCK
+        121 => channel_flock(a1, a2 as u32), // SYS_FLOCK
 
         // Stat — musl: (path, stat_buf) / (path, stat_buf) / (dirfd, path, stat_buf, flags)
         11 => {
@@ -9335,35 +9372,7 @@ pub fn kernel_fcntl(fd: i32, cmd: u32, arg: u32) -> i32 {
     result
 }
 
-/// fcntl lock operations. The flock struct is read from/written to the pointer.
-/// Returns 0 on success, or negative errno on error.
-pub fn kernel_fcntl_lock(fd: i32, cmd: u32, flock_ptr: *mut u8) -> i32 {
-    if flock_ptr.is_null() {
-        return -(Errno::EFAULT as i32);
-    }
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let flock = unsafe { &mut *(flock_ptr as *mut wasm_posix_shared::WasmFlock) };
-    let mut host = WasmHostIO;
-    let result = match syscalls::sys_fcntl_lock(proc, advisory_locks, fd, cmd, flock, &mut host) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
 
-/// BSD flock() — whole-file advisory locking.
-/// Returns 0 on success, or negative errno on error.
-pub fn kernel_flock(fd: i32, operation: u32) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let result = match syscalls::sys_flock(proc, advisory_locks, fd, operation, &mut host) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
 
 /// Stat a file by path. Writes a complete native musl `struct kstat`.
 /// Returns 0 on success, or negative errno on error.
@@ -11436,6 +11445,7 @@ fn commit_current_task_exit(status: i32) -> i32 {
     // must not leave the exited task available to a later dispatch.
     unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
     finish_machine_scm_rights_cleanup_if_pending();
+    release_orphaned_ofd_locks();
     committed_status
 }
 
@@ -14917,6 +14927,163 @@ fn channel_sigtimedwait(set: u64, info: u64, timeout: u64) -> i32 {
     result
 }
 
+/// fcntl lock commands from a channel. The `struct flock` is the caller's
+/// address: read once at entry, written back for F_GETLK. A blocking set-lock
+/// that conflicts parks the caller with the request; the kernel re-executes
+/// it whenever advisory-lock state changes (`settle_retry_waits`).
+fn channel_fcntl_lock(fd: i32, cmd: u32, flock_addr: u64) -> i32 {
+    const FLOCK_BYTES: usize = core::mem::size_of::<wasm_posix_shared::WasmFlock>();
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let task = channel_guest_task(proc);
+    let mut host = WasmHostIO;
+    let outcome = (|| -> Result<syscalls::ParkOutcome, Errno> {
+        let mut raw = [0u8; FLOCK_BYTES];
+        if flock_addr == 0 || host.proc_read_bytes(task.pid as i32, flock_addr, &mut raw) < 0 {
+            return Err(Errno::EFAULT);
+        }
+        // SAFETY: WasmFlock is repr(C), plain integers, exactly FLOCK_BYTES.
+        let mut flock: wasm_posix_shared::WasmFlock =
+            unsafe { core::ptr::read_unaligned(raw.as_ptr().cast()) };
+        match syscalls::sys_fcntl_lock(proc, advisory_locks, fd, cmd, &mut flock, &mut host) {
+            Ok(()) => {
+                // F_GETLK reports through the same struct; set-locks never
+                // change it, so writing it back is harmless and uniform.
+                let out: [u8; FLOCK_BYTES] = unsafe { core::mem::transmute(flock) };
+                if host.proc_write_bytes(task.pid as i32, flock_addr, &out) < 0 {
+                    return Err(Errno::EFAULT);
+                }
+                Ok(syscalls::ParkOutcome::Done(0))
+            }
+            Err(Errno::EAGAIN) if crate::wait_retry::fcntl_lock_blocks(cmd) => {
+                let token = syscalls::ensure_blocking_retry_ofd_binding(
+                    proc, advisory_locks, &mut host, task.tid, 10, fd, None,
+                )?;
+                park_retry_pinned(
+                    proc,
+                    advisory_locks,
+                    task,
+                    crate::wait_retry::RetryOp::FcntlLock { fd, cmd, flock, token },
+                )
+            }
+            Err(error) => Err(error),
+        }
+    })();
+    let result = report_park(outcome);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
+/// flock(2) from a channel; a blocking request that conflicts parks like
+/// `channel_fcntl_lock`.
+fn channel_flock(fd: i32, operation: u32) -> i32 {
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let task = channel_guest_task(proc);
+    let mut host = WasmHostIO;
+    let outcome = match syscalls::sys_flock(proc, advisory_locks, fd, operation, &mut host) {
+        Ok(()) => Ok(syscalls::ParkOutcome::Done(0)),
+        Err(Errno::EAGAIN) if crate::wait_retry::flock_blocks(operation) => {
+            syscalls::ensure_blocking_retry_ofd_binding(
+                proc,
+                advisory_locks,
+                &mut host,
+                task.tid,
+                wasm_posix_shared::abi::extended_syscalls::SYS_FLOCK,
+                fd,
+                None,
+            )
+            .and_then(|token| {
+                park_retry_pinned(
+                    proc,
+                    advisory_locks,
+                    task,
+                    crate::wait_retry::RetryOp::Flock { fd, operation, token },
+                )
+            })
+        }
+        Err(error) => Err(error),
+    };
+    let result = report_park(outcome);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
+/// Park a re-executable call whose target `op.token()` already pins. If the
+/// park itself fails, the pin is released here: nothing else owns it yet.
+fn park_retry_pinned(
+    proc: &mut Process,
+    advisory_locks: &mut crate::lock::AdvisoryLockManager,
+    task: syscalls::GuestTask,
+    op: crate::wait_retry::RetryOp,
+) -> Result<syscalls::ParkOutcome, Errno> {
+    let parked = crate::wait_park::with(|parks| {
+        parks.park(
+            task.pid,
+            task.tid,
+            crate::wait_queue::WaitKind::AdvisoryLock,
+            alloc::vec![op.source()],
+            None,
+            crate::wait_park::Resume::Retry(op),
+        )
+    });
+    match parked {
+        Ok(generation) => Ok(syscalls::ParkOutcome::Parked(generation)),
+        Err(error) => {
+            let _ = syscalls::release_blocking_retry_binding(
+                proc,
+                advisory_locks,
+                &mut WasmHostIO,
+                task.tid,
+                op.token(),
+            );
+            Err(error)
+        }
+    }
+}
+
+/// Release the blocked-retry binding of every re-executable park that
+/// completed (`wait_retry`). Runs before completions are published, so a
+/// guest never resumes while its finished call still pins a file.
+fn release_completed_retry_bindings() {
+    let released = crate::wait_park::with(|p| p.take_released_retry_bindings());
+    if released.is_empty() {
+        return;
+    }
+    let mut host = WasmHostIO;
+    for (pid, tid, token) in released {
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        if let Some((proc, locks)) = table.process_and_advisory_locks(pid) {
+            // ENOENT: exec or thread exit already released it.
+            let _ = syscalls::release_blocking_retry_binding(proc, locks, &mut host, tid, token);
+        }
+    }
+}
+
+/// Re-execute every parked call whose source fired (`wait_retry`). A call
+/// that would still block stays parked; anything else is its answer.
+fn settle_retry_waits() {
+    let waiters = crate::wait_park::with(|p| p.take_dirty_retry_waiters());
+    if waiters.is_empty() {
+        return;
+    }
+    let mut host = WasmHostIO;
+    for (id, pid, tid, op) in waiters {
+        let outcome = {
+            let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+            let Some((proc, locks)) = table.process_and_advisory_locks(pid) else { continue };
+            if !proc.is_live_explicit_tid(tid) {
+                continue;
+            }
+            op.attempt(proc, locks, &mut host, tid)
+        };
+        let value = match outcome {
+            Err(Errno::EAGAIN) => continue,
+            Ok(value) => value,
+            Err(error) => -(error as i32),
+        };
+        crate::wait_park::with(|p| p.finish_retry_waiter(id, op, value));
+    }
+}
+
 /// Offer every parked `rt_sigtimedwait` the signals in its set, after a signal
 /// generation and before the generic sweep (which would otherwise deliver a
 /// set member that happens to be unblocked). With no generation since the
@@ -16054,6 +16221,8 @@ pub extern "C" fn kernel_drain_wakeup_events(
 ) -> u32 {
     settle_child_waits();
     settle_signal_waits();
+    release_orphaned_ofd_locks();
+    settle_retry_waits();
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     if crate::wait_park::settle(table) {
         crate::wakeup::push(0, wasm_posix_shared::wakeup_event_wire::TYPE_WAIT_COMPLETE);
@@ -16086,9 +16255,11 @@ pub extern "C" fn kernel_drain_wait_completions(
     };
     settle_child_waits();
     settle_signal_waits();
+    release_orphaned_ofd_locks();
+    settle_retry_waits();
     let table = unsafe { &*PROCESS_TABLE.0.get() };
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
-    crate::wait_park::with(|parks| {
+    let drained = crate::wait_park::with(|parks| {
         for (pid, tid, ns) in parks.expire(now) {
             crate::image_build_determinism::credit_task_wait(pid, tid, ns);
         }
@@ -16098,7 +16269,11 @@ pub extern "C" fn kernel_drain_wait_completions(
         parks.drain(out, max_records, now, &mut |pid, addr, bytes| {
             WasmHostIO.proc_write_bytes(pid as i32, addr, bytes) == 0
         }) as i32
-    })
+    });
+    // Every decision above, the sweep's EINTRs included, is unpublished
+    // until this returns: release the finished calls' pins first.
+    release_completed_retry_bindings();
+    drained
 }
 
 /// Nanoseconds until the earliest kernel-owned park deadline, `0` if one has

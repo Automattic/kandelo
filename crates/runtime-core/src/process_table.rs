@@ -1285,6 +1285,30 @@ impl ProcessTable {
         Some((process, advisory_locks))
     }
 
+    /// Release the OFD and flock locks of every open file description no
+    /// process references any more, when a close asked for the check
+    /// (`crate::ofd::note_possibly_orphaned_ofd_locks`). A description lives
+    /// while any process's table holds it or a descriptor carrying it is
+    /// queued in SCM_RIGHTS ancillary data, exactly the rule process removal
+    /// applies. Publishes the advisory-lock wake if anything was released.
+    pub fn release_orphaned_ofd_locks(&mut self) {
+        if !crate::ofd::take_orphaned_ofd_lock_check() {
+            return;
+        }
+        let mut live: Vec<crate::lock::OfdId> = self
+            .processes
+            .values()
+            .flat_map(|proc| proc.ofd_table.iter().map(|(_, ofd)| ofd.ofd_id))
+            .collect();
+        live.sort_unstable();
+        let mutation = self.advisory_locks.remove_dead_ofd_owners(|id| {
+            live.binary_search(&id).is_ok() || crate::ofd::has_in_flight_ofd(id)
+        });
+        if mutation.may_unblock {
+            crate::wakeup::push_advisory_lock();
+        }
+    }
+
     #[cfg(test)]
     pub fn advisory_locks(&self) -> &AdvisoryLockManager {
         &self.advisory_locks

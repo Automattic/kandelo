@@ -5217,6 +5217,10 @@ fn release_ofd_reference_impl(
                 {
                     if crate::descriptor_backing::release_for_ofd(file_type, host_handle) {
                         release_final_ofd_locks(locks.as_deref_mut(), ofd_id);
+                    } else {
+                        // Another open of the same file keeps the backing
+                        // alive, which says nothing about this description.
+                        crate::ofd::note_possibly_orphaned_ofd_locks();
                     }
                 } else if host_handle == crate::procfs::PROCFS_DIR_HANDLE
                     || host_handle == crate::devfs::DEVFS_DIR_HANDLE
@@ -29141,6 +29145,117 @@ mod tests {
         sys_close_with_locks(&mut proc, &mut locks, &mut host, second).unwrap();
     }
 
+    // PR #1538's cases (mho22): an OFD or flock lock belongs to the open
+    // file description, so the holder's close must release it and wake the
+    // waiters even while an independent open keeps the same tmpfs or rootfs
+    // file (the same inode) open. The kernel runs
+    // `ProcessTable::release_orphaned_ofd_locks` after every channel syscall;
+    // these tests run it where the kernel would.
+    fn table_open(
+        table: &mut crate::process_table::ProcessTable,
+        host: &mut MockHostIO,
+        pid: u32,
+        path: &[u8],
+        flags: u32,
+    ) -> i32 {
+        let (proc, _) = table.process_and_advisory_locks(pid).unwrap();
+        sys_open(proc, host, path, flags, 0o644).unwrap()
+    }
+
+    fn table_flock(
+        table: &mut crate::process_table::ProcessTable,
+        host: &mut MockHostIO,
+        pid: u32,
+        fd: i32,
+        operation: u32,
+    ) -> Result<(), Errno> {
+        let (proc, locks) = table.process_and_advisory_locks(pid).unwrap();
+        sys_flock(proc, locks, fd, operation, host)
+    }
+
+    fn table_close(
+        table: &mut crate::process_table::ProcessTable,
+        host: &mut MockHostIO,
+        pid: u32,
+        fd: i32,
+    ) {
+        let (proc, locks) = table.process_and_advisory_locks(pid).unwrap();
+        sys_close_with_locks(proc, locks, host, fd).unwrap();
+        table.release_orphaned_ofd_locks();
+    }
+
+    fn assert_flock_released_and_waiters_woken_when_holder_closes(path: &[u8]) {
+        let mut table = crate::process_table::ProcessTable::new();
+        let holder = table.create_process().unwrap();
+        let waiter = table.create_process().unwrap();
+        let mut host = MockHostIO::new();
+        let holder_fd = table_open(&mut table, &mut host, holder, path, O_RDWR | O_CREAT);
+        let waiter_fd = table_open(&mut table, &mut host, waiter, path, O_RDWR);
+
+        table_flock(&mut table, &mut host, holder, holder_fd, LOCK_EX).unwrap();
+        assert_eq!(
+            table_flock(&mut table, &mut host, waiter, waiter_fd, LOCK_EX),
+            Err(Errno::EAGAIN)
+        );
+        let mut wake_buf = [0u8; 40];
+        crate::wakeup::drain(&mut wake_buf, 8);
+
+        // The waiter's open keeps the inode open; the holder's description
+        // still dies with its last descriptor.
+        table_close(&mut table, &mut host, holder, holder_fd);
+
+        assert!(table.advisory_locks().is_empty());
+        assert_eq!(crate::wakeup::drain(&mut wake_buf, 8), 1);
+        assert_eq!(wake_buf[4], crate::wakeup::WAKE_ADVISORY_LOCK);
+        table_flock(&mut table, &mut host, waiter, waiter_fd, LOCK_EX).unwrap();
+        table_close(&mut table, &mut host, waiter, waiter_fd);
+        let (proc, _) = table.process_and_advisory_locks(waiter).unwrap();
+        sys_unlink(proc, &mut host, path).unwrap();
+    }
+
+    #[test]
+    fn tmpfs_flock_is_released_and_wakes_waiters_when_holder_closes() {
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        assert_flock_released_and_waiters_woken_when_holder_closes(b"/tmp/flock-close-wake");
+    }
+
+    #[test]
+    fn rootfs_flock_is_released_and_wakes_waiters_when_holder_closes() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        assert_flock_released_and_waiters_woken_when_holder_closes(b"/flock-close-wake");
+    }
+
+    #[test]
+    fn tmpfs_flock_survives_fork_until_final_close() {
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        let path = b"/tmp/flock-fork-close";
+        let mut table = crate::process_table::ProcessTable::new();
+        let parent = table.create_process().unwrap();
+        let peer = table.create_process().unwrap();
+        let mut host = MockHostIO::new();
+        let fd = table_open(&mut table, &mut host, parent, path, O_RDWR | O_CREAT);
+        let peer_fd = table_open(&mut table, &mut host, peer, path, O_RDWR);
+        table_flock(&mut table, &mut host, parent, fd, LOCK_EX).unwrap();
+
+        let child = table.fork_process_for_caller(parent, parent).unwrap();
+
+        // The child's copy of the descriptor shares the description, so the
+        // parent's close leaves the lock in place.
+        table_close(&mut table, &mut host, parent, fd);
+        assert_eq!(
+            table_flock(&mut table, &mut host, peer, peer_fd, LOCK_EX | LOCK_NB),
+            Err(Errno::EAGAIN)
+        );
+        table_close(&mut table, &mut host, child, fd);
+        table_flock(&mut table, &mut host, peer, peer_fd, LOCK_EX | LOCK_NB).unwrap();
+
+        table_close(&mut table, &mut host, peer, peer_fd);
+        let (proc, _) = table.process_and_advisory_locks(peer).unwrap();
+        sys_unlink(proc, &mut host, path).unwrap();
+    }
+
     #[test]
     fn seek_end_negative_locks_work_on_synthetic_and_procfs_regular_files() {
         let mut proc = Process::new(1);
@@ -52211,6 +52326,51 @@ impl HostIO for RelSymlinkMock {
         );
         proc.blocked_retries.clear_active();
         release_blocking_retry_binding(&mut proc, &mut locks, &mut host, tid, token).unwrap();
+    }
+
+    #[test]
+    fn a_parked_lock_re_execution_acts_on_the_pinned_file_not_a_reused_number() {
+        use crate::wait_retry::RetryOp;
+        use wasm_posix_shared::flock_op::{LOCK_EX, LOCK_NB};
+
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let mut holder = Process::new(30);
+        let held = sys_open(&mut holder, &mut host, b"/pinned", O_RDWR, 0).unwrap();
+        sys_flock(&mut holder, &mut locks, held, LOCK_EX, &mut host).unwrap();
+
+        let mut proc = Process::new(31);
+        let tid = proc.pid;
+        let fd = sys_open(&mut proc, &mut host, b"/pinned", O_RDWR, 0).unwrap();
+        let token = ensure_blocking_retry_ofd_binding(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            tid,
+            wasm_posix_shared::abi::extended_syscalls::SYS_FLOCK,
+            fd,
+            None,
+        )
+        .unwrap();
+        let op = RetryOp::Flock { fd, operation: LOCK_EX, token };
+        sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
+        let reused = sys_open(&mut proc, &mut host, b"/elsewhere", O_RDONLY, 0).unwrap();
+        assert_eq!(reused, fd);
+
+        // Still conflicts on the pinned file, although the number now names
+        // an unlocked one.
+        assert_eq!(op.attempt(&mut proc, &mut locks, &mut host, tid), Err(Errno::EAGAIN));
+        assert_eq!(
+            sys_flock(&mut proc, &mut locks, reused, LOCK_EX | LOCK_NB, &mut host),
+            Ok(()),
+            "the reused number names a different, unlocked file",
+        );
+
+        // Once the holder lets go, the same re-execution takes the lock on
+        // the pinned file.
+        let _ = held;
+        sys_exit_with_locks(&mut holder, &mut locks, &mut host, 0);
+        assert_eq!(op.attempt(&mut proc, &mut locks, &mut host, tid), Ok(0));
     }
 
     #[test]

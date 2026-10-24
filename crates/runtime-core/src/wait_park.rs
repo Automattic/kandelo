@@ -97,6 +97,10 @@ pub enum Resume {
     /// `crate::wait_signal`), a caught signal outside it (`EINTR`), or the
     /// deadline (`EAGAIN`).
     SigTimed(crate::wait_signal::SigWait),
+    /// A blocking call the kernel re-executes when one of its sources fires
+    /// (`crate::wait_retry`). A caught signal interrupts it with `EINTR`
+    /// (restartable under `SA_RESTART`, as Linux's ERESTARTSYS).
+    Retry(crate::wait_retry::RetryOp),
 }
 
 impl Resume {
@@ -106,7 +110,8 @@ impl Resume {
             | Resume::Sleep { .. }
             | Resume::Child(_)
             | Resume::Suspend
-            | Resume::SigTimed(_) => 0,
+            | Resume::SigTimed(_)
+            | Resume::Retry(_) => 0,
         }
     }
 
@@ -116,7 +121,7 @@ impl Resume {
             // A sleep that ran its course succeeded.
             Resume::Sleep { .. } => 0,
             // Child waits and suspends carry no deadline.
-            Resume::Child(_) | Resume::Suspend => -(Errno::ETIMEDOUT as i32),
+            Resume::Child(_) | Resume::Suspend | Resume::Retry(_) => -(Errno::ETIMEDOUT as i32),
             // POSIX: a sigtimedwait whose timeout passes fails with EAGAIN.
             Resume::SigTimed(_) => -(Errno::EAGAIN as i32),
         }
@@ -131,7 +136,7 @@ impl Resume {
             Resume::Sleep { .. } => wire::FLAG_SUPPRESS_RESTART,
             // wait4/waitid restart under SA_RESTART (signal(7)); the libc
             // glue reissues them.
-            Resume::Child(_) => 0,
+            Resume::Child(_) | Resume::Retry(_) => 0,
             // Neither is ever restarted (signal(7)).
             Resume::Suspend | Resume::SigTimed(_) => wire::FLAG_SUPPRESS_RESTART,
         }
@@ -219,6 +224,12 @@ pub struct Parks {
     /// Processes whose exit is recorded but not yet announced to the parent
     /// (SIGCHLD, or the SA_NOCLDWAIT auto-reap); see [`note_child_exited`].
     exit_notices: Vec<u32>,
+    /// Advisory-lock state changed since the last re-execution pass.
+    advisory_dirty: bool,
+    /// `(pid, tid, token)` of re-executable calls whose park completed: the
+    /// kernel releases each blocked-retry binding (`crate::wait_retry`)
+    /// before the completion can reach the guest.
+    released_retry_bindings: Vec<(u32, u32, i64)>,
 }
 
 impl Default for Parks {
@@ -237,6 +248,8 @@ impl Parks {
             last_park: None,
             children_dirty: false,
             exit_notices: Vec::new(),
+            advisory_dirty: false,
+            released_retry_bindings: Vec::new(),
         }
     }
 
@@ -293,7 +306,10 @@ impl Parks {
     }
 
     fn finish_with(&mut self, wakeup: Wakeup, value: i32, flags: u32, remainder: Option<Remainder>) {
-        self.resume.remove(&wakeup.id);
+        if let Some(Resume::Retry(op)) = self.resume.remove(&wakeup.id) {
+            self.released_retry_bindings
+                .push((wakeup.pid, wakeup.tid, op.token()));
+        }
         self.queue.release_channel(wakeup.channel);
         self.completions.push_back(Completion {
             generation: wakeup.channel.0,
@@ -449,6 +465,45 @@ impl Parks {
         }
     }
 
+    /// The parked re-executable calls whose sources fired since the last
+    /// pass, oldest first. Today the only source is advisory-lock state.
+    pub fn take_dirty_retry_waiters(&mut self) -> Vec<(WaiterId, u32, u32, crate::wait_retry::RetryOp)> {
+        if !core::mem::take(&mut self.advisory_dirty) {
+            return Vec::new();
+        }
+        let resume = &self.resume;
+        self.queue
+            .iter()
+            .filter_map(|s| match resume.get(&s.id) {
+                Some(Resume::Retry(op)) => Some((s.id, s.pid, s.tid, *op)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Decide the re-executed call `id` of `(pid, tid)`.
+    pub fn finish_retry_waiter(&mut self, id: WaiterId, op: crate::wait_retry::RetryOp, value: i32) -> bool {
+        match self.queue.remove_with_reason(id, WakeReason::Source(op.source())) {
+            Some(wakeup) => {
+                self.finish(wakeup, value, 0);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The blocked-retry bindings of completed re-executable parks, for the
+    /// kernel to release. A park that was retired instead (its thread or
+    /// image is gone) is not listed: that lifecycle cleanup releases it.
+    pub fn take_released_retry_bindings(&mut self) -> Vec<(u32, u32, i64)> {
+        core::mem::take(&mut self.released_retry_bindings)
+    }
+
+    #[cfg(test)]
+    pub fn note_advisory_lock_changed_for_test(&mut self) {
+        self.advisory_dirty = true;
+    }
+
     pub fn note_signal_generated(&mut self) {
         if !self.queue.is_empty() {
             self.signals_dirty = true;
@@ -518,6 +573,7 @@ impl Parks {
             self.forget(wakeup);
         }
         self.completions.retain(|c| c.pid != pid);
+        self.released_retry_bindings.retain(|&(p, _, _)| p != pid);
     }
 
     /// Move up to `max` records into `out`; the rest stay queued in order.
@@ -704,6 +760,16 @@ pub fn note_child_exited(pid: u32) {
     with(|p| {
         p.exit_notices.push(pid);
         p.children_dirty = true;
+    });
+}
+
+/// Advisory-lock state changed (a lock was released or downgraded, an owner
+/// went away): parked lock requests are re-executed by the next settle.
+pub fn note_advisory_lock_changed() {
+    with(|p| {
+        if !p.queue.is_empty() {
+            p.advisory_dirty = true;
+        }
     });
 }
 

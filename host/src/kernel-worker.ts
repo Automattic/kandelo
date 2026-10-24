@@ -146,7 +146,6 @@ import {
   CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED,
   CHANNEL_REQUEST_FLAGS_KNOWN_MASK,
   FCNTL_COMMANDS,
-  FCNTL_FLOCK_BYTES,
   FILE_MODES,
   CHANNEL_REQUEST_FLAG_OPAQUE_RECORD,
   HOST_INTERCEPTED_SYSCALLS,
@@ -2054,16 +2053,6 @@ interface GenericBlockingRetrySnapshot extends BlockingRetryDisposition {
   readonly retryToken: bigint;
 }
 
-interface FcntlLockBlockingRetrySnapshot
-  extends FrozenCancellationPointIdentity {
-  readonly kind: "fcntl-lock";
-  readonly syscallNr: typeof SYS_FCNTL;
-  readonly origArgs: number[];
-  readonly flockPointer: number;
-  readonly flockBytes: Uint8Array;
-  readonly retryToken: bigint;
-}
-
 interface SelectBlockingRetrySnapshot
   extends FrozenCancellationPointIdentity {
   readonly kind: "select";
@@ -2091,7 +2080,6 @@ interface FlattenedBlockingRetrySnapshot extends BlockingRetryDisposition {
 
 type BlockingRetrySnapshot =
   | GenericBlockingRetrySnapshot
-  | FcntlLockBlockingRetrySnapshot
   | SelectBlockingRetrySnapshot
   | FlattenedBlockingRetrySnapshot;
 
@@ -3173,17 +3161,6 @@ export class CentralizedKernelWorker {
     ChannelInfo,
     BlockingRetryWakeTargets
   >();
-  /**
-   * Blocking advisory-lock requests waiting for a Rust-owned lock-state
-   * change. The host owns only channel parking and the short retry safety
-   * timer; it never inspects advisory-lock state.
-   */
-  private pendingAdvisoryLockRetries = new Map<ChannelInfo, {
-    cancellationPoint: boolean;
-    cancellationWakeAllowed: boolean;
-    timer: ReturnType<typeof setTimeout>;
-    channel: ChannelInfo;
-  }>();
   /** Pending pselect6/select retries keyed by exact channel generation. */
   private pendingSelectRetries = new Map<ChannelInfo, {
     cancellationPoint: boolean;
@@ -9750,11 +9727,6 @@ export class CentralizedKernelWorker {
     });
     this.cleanupPendingPipeReaders(pid);
     this.cleanupPendingPipeWriters(pid);
-    for (const [channel, entry] of this.pendingAdvisoryLockRetries ?? []) {
-      if (channel.pid !== pid) continue;
-      this.#cancelRegisteredTimeout(entry.timer);
-      this.pendingAdvisoryLockRetries.delete(channel);
-    }
 
     for (const channel of this.pendingCancels) {
       if (channel.pid === pid) this.pendingCancels.delete(channel);
@@ -10084,9 +10056,6 @@ export class CentralizedKernelWorker {
       this.#cancelRegisteredImmediate(poll.timer);
     }
     this.pendingPollRetries?.delete(channel);
-    const advisoryLock = this.pendingAdvisoryLockRetries?.get(channel);
-    if (advisoryLock) this.#cancelRegisteredTimeout(advisoryLock.timer);
-    this.pendingAdvisoryLockRetries?.delete(channel);
     const select = this.pendingSelectRetries?.get(channel);
     if (select?.timer !== null && select?.timer !== undefined) {
       this.#cancelRegisteredTimeout(select.timer);
@@ -10128,9 +10097,6 @@ export class CentralizedKernelWorker {
       if (channel.pid === pid) channels.add(channel);
     }
     for (const channel of this.blockingRetrySnapshots?.keys() ?? []) {
-      if (channel.pid === pid) channels.add(channel);
-    }
-    for (const channel of this.pendingAdvisoryLockRetries?.keys() ?? []) {
       if (channel.pid === pid) channels.add(channel);
     }
     for (const channel of this.pendingSelectRetries?.keys() ?? []) {
@@ -12167,18 +12133,9 @@ export class CentralizedKernelWorker {
     // header, its iovec table and its CMSG chain itself, in the caller's data
     // model.)
 
-    // --- fcntl with struct flock pointer ---
-    // When cmd is a lock operation, arg3 points to the generated flock wire.
-    // Handle as inout so the kernel can read/write the flock struct.
-    if (syscallNr === SYS_FCNTL) {
-      const cmd = origArgs[1];
-      if (cmd === F_GETLK || cmd === F_SETLK || cmd === F_SETLKW ||
-          cmd === F_GETLK64 || cmd === F_SETLK64 || cmd === F_SETLKW64 ||
-          cmd === F_OFD_GETLK || cmd === F_OFD_SETLK || cmd === F_OFD_SETLKW) {
-        this.handleFcntlLock(channel, origArgs, entry);
-        return;
-      }
-    }
+    // (fcntl lock commands and flock go through the normal kernel path: the
+    // kernel reads the caller's `struct flock` itself and parks a blocking
+    // request (runtime_core::wait_retry).)
 
     // --- epoll_pwait: the wait is still host-owned ---
     // `epoll_create1`/`epoll_create`/`epoll_ctl` are NOT intercepted: they are
@@ -13739,11 +13696,15 @@ export class CentralizedKernelWorker {
       // futex's EAGAIN is a final answer ("the word changed"), not a request
       // to block: the kernel owns the futex wait and parks it itself. The
       // same holds for rt_sigtimedwait, whose EAGAIN is POSIX's "timed out"
-      // (or a zero-timeout poll that found nothing).
+      // (or a zero-timeout poll that found nothing), and for advisory locks,
+      // whose EAGAIN is a non-blocking caller's answer (LOCK_NB, F_SETLK):
+      // the kernel parks a blocking lock request itself.
       const isRetryResult =
         retVal === -1
         && syscallNr !== SYS_FUTEX
         && syscallNr !== SYS_RT_SIGTIMEDWAIT
+        && syscallNr !== SYS_FLOCK
+        && syscallNr !== SYS_FCNTL
         && (
           errVal === EAGAIN
           || errVal === EINPROGRESS
@@ -13793,25 +13754,6 @@ export class CentralizedKernelWorker {
           undefined,
           deliveredSignal,
           retryDisposition,
-        )
-      ) {
-        return;
-      }
-
-      // flock shares Rust's advisory-lock wake contract but not fcntl's
-      // struct-flock marshalling path.  LOCK_NB is a public EAGAIN result;
-      // only the blocking form may be parked for a lock-state wake.
-      if (
-        this.handleFlockConflict(
-          channel,
-          syscallNr,
-          origArgs,
-          retVal,
-          errVal,
-          deliveredSignal,
-          argDescs,
-          plannedDispatch,
-          entry,
         )
       ) {
         return;
@@ -14747,7 +14689,6 @@ export class CentralizedKernelWorker {
   ): boolean {
     let blocked =
       this.pendingPollRetries.has(channel) ||
-      (this.pendingAdvisoryLockRetries?.has(channel) ?? false) ||
       this.pendingSelectRetries.has(channel);
     for (const readers of this.pendingPipeReaders.values()) {
       if (readers.some((reader) => reader.channel === channel)) {
@@ -15043,14 +14984,10 @@ export class CentralizedKernelWorker {
     // epoll_pwait(), a socket read, or a futex may not appear in any of these
     // maps, but it is always sitting at CH_PENDING on its channel.
     for (const e of this.pendingPollRetries.values()) if (e.timer) this.#cancelRegisteredTimeout(e.timer);
-    for (const e of this.pendingAdvisoryLockRetries?.values() ?? []) {
-      this.#cancelRegisteredTimeout(e.timer);
-    }
     for (const e of this.pendingSelectRetries.values()) if (e.timer) this.#cancelRegisteredTimeout(e.timer);
     this.pendingPipeReaders.clear();
     this.pendingPipeWriters.clear();
     this.pendingPollRetries.clear();
-    this.pendingAdvisoryLockRetries?.clear();
     this.pendingSelectRetries.clear();
     // Teardown has not yet transitioned these live tasks in Rust. Consume
     // every exact target pin before discarding the immutable host plans.
@@ -15172,9 +15109,6 @@ export class CentralizedKernelWorker {
       }
     };
     dropChannelKeyed(this.pendingPollRetries);
-    if (this.pendingAdvisoryLockRetries) {
-      dropChannelKeyed(this.pendingAdvisoryLockRetries);
-    }
     dropChannelKeyed(this.pendingSelectRetries);
     for (const [pipeIdx, waiters] of [...this.pendingPipeReaders]) {
       const kept = waiters.filter((w) => w.pid !== pid);
@@ -16020,9 +15954,9 @@ export class CentralizedKernelWorker {
    * Drain kernel wakeup events and process readiness/lifecycle wakeups.
    * Called after each syscall completion. The kernel pushes events from
    * PipeBuffer operations, listener backlog changes, and datagram send-state
-   * changes such as capacity, association, shutdown, close, or unlink, plus
-   * advisory-lock changes that may unblock a parked F_SETLKW request.
-   * A separate coalesced notification covers PTY queues, modes, and hangups.
+   * changes such as capacity, association, shutdown, close, or unlink.
+   * (Advisory-lock changes re-execute kernel-parked lock requests inside the
+   * kernel; the host only collects the resulting completions.)
    */
   private drainAndProcessWakeupEvents(): void {
     this.#runOrDeferKernelEntry(
@@ -16129,7 +16063,6 @@ export class CentralizedKernelWorker {
 
     let needBroadWake = false;
     let needDatagramWriterWake = false;
-    let needAdvisoryLockWake = false;
     let needSignalSafeDeferredWake = false;
     let needWaitCompletionDrain = false;
 
@@ -16228,10 +16161,6 @@ export class CentralizedKernelWorker {
         needDatagramWriterWake = true;
       }
 
-      if (wakeType & WAKEUP_EVENT_TYPES.advisoryLock) {
-        needAdvisoryLockWake = true;
-      }
-
       if (
         wakeType &
         (WAKEUP_EVENT_TYPES.readable
@@ -16272,9 +16201,6 @@ export class CentralizedKernelWorker {
     if (needDatagramWriterWake) {
       this.wakeBlockedFallbackWriters();
     }
-    if (needAdvisoryLockWake) {
-      this.wakeBlockedAdvisoryLockRetries();
-    }
     if (needBroadWake || ptyReadinessChanged) {
       if (
         needSignalSafeDeferredWake
@@ -16283,24 +16209,6 @@ export class CentralizedKernelWorker {
         this.scheduleWakeBlockedRetriesDeferred(entry);
       } else if (needBroadWake) {
         this.scheduleWakeBlockedRetries(entry);
-      }
-    }
-  }
-
-  /** Retry only blocking advisory-lock waiters after a Rust lock-state change. */
-  private wakeBlockedAdvisoryLockRetries(): void {
-    const pending = this.pendingAdvisoryLockRetries;
-    if (!pending || pending.size === 0) return;
-
-    // Retrying can synchronously re-park the same channel, so iterate a
-    // snapshot and skip entries that another wake already replaced.
-    const entries = Array.from(pending.entries());
-    for (const [key, entry] of entries) {
-      if (pending.get(key) !== entry) continue;
-      this.#cancelRegisteredTimeout(entry.timer);
-      pending.delete(key);
-      if (this.isRegisteredChannel(entry.channel)) {
-        this.retrySyscall(entry.channel);
       }
     }
   }
@@ -16738,12 +16646,6 @@ export class CentralizedKernelWorker {
       this.pendingPollRetries.delete(channel);
     }
 
-    const advisoryLockEntry = this.pendingAdvisoryLockRetries?.get(channel);
-    if (advisoryLockEntry) {
-      this.#cancelRegisteredTimeout(advisoryLockEntry.timer);
-      this.pendingAdvisoryLockRetries.delete(channel);
-    }
-
     const selectEntry = this.pendingSelectRetries.get(channel);
     if (selectEntry) {
       if (selectEntry.timer !== null) {
@@ -16945,21 +16847,6 @@ export class CentralizedKernelWorker {
       this.pendingCancels.delete(target);
       if (pollEntry.timer !== null) this.#cancelRegisteredTimeout(pollEntry.timer);
       this.pendingPollRetries.delete(target);
-      this.completeChannelRawAndRelisten(
-        target,
-        -EINTR_ERRNO,
-        EINTR_ERRNO,
-        entry,
-      );
-      return;
-    }
-
-    // 5) Advisory-lock retry timer.
-    const advisoryLockEntry = this.pendingAdvisoryLockRetries?.get(target);
-    if (isWakeableCancellationPoint(advisoryLockEntry)) {
-      this.pendingCancels.delete(target);
-      this.#cancelRegisteredTimeout(advisoryLockEntry.timer);
-      this.pendingAdvisoryLockRetries.delete(target);
       this.completeChannelRawAndRelisten(
         target,
         -EINTR_ERRNO,
@@ -17244,125 +17131,6 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Park a blocking advisory-lock request without retaining any lock state in
-   * the host. Rust wake events provide the normal retry path; the timer is a
-   * short safety net for a lost event or an older compatible kernel.
-   */
-  private parkAdvisoryLockRetry(
-    channel: ChannelInfo,
-    syscallNr: number = SYS_FCNTL,
-    entry?: KernelWorkerEntryContext,
-  ): void {
-    if (!this.isRegisteredChannel(channel)) return;
-    if (
-      entry
-      && this.interruptPendingCancellationBeforeRegistration(
-        channel,
-        syscallNr,
-        this.blockingRetrySnapshots.get(channel)
-          ?? this.#cancellationPointIdentity(channel),
-        entry,
-      )
-    ) return;
-
-    const register = (): undefined => {
-      const pending = this.pendingAdvisoryLockRetries ??= new Map();
-      const previous = pending.get(channel);
-      if (previous) this.#cancelRegisteredTimeout(previous.timer);
-
-      const retry = () => {
-        const pendingEntry = pending.get(channel);
-        if (!pendingEntry || pendingEntry.timer !== timer) return;
-        pending.delete(channel);
-        if (this.isRegisteredChannel(channel)) {
-          // WHY: a timer owns no kernel authority. The retry root revalidates
-          // the exact channel generation and process state under a fresh scope.
-          this.retrySyscall(channel);
-        }
-      };
-      const timer = this.#registerTimeout(retry, 10);
-      pending.set(channel, {
-        ...this.#cancellationPointIdentity(channel),
-        timer,
-        channel,
-      });
-
-      if (PROFILING) {
-        const profileEntry = this.profileData!.get(syscallNr);
-        if (profileEntry) profileEntry.retries++;
-      }
-      return undefined;
-    };
-    if (entry) entry.deferProtocolEffect(register);
-    else register();
-  }
-
-  /** Apply flock's LOCK_NB/blocking distinction before generic EAGAIN retry. */
-  private handleFlockConflict(
-    channel: ChannelInfo,
-    syscallNr: number,
-    origArgs: number[],
-    retVal: number,
-    errVal: number,
-    deliveredSignal: number,
-    argDescs: SyscallArgDesc[] | undefined,
-    plannedDispatch: PlannedBlockingChannelDispatch,
-    entry: KernelWorkerEntryContext,
-    retainedSnapshot?: GenericBlockingRetrySnapshot,
-  ): boolean {
-    if (syscallNr !== SYS_FLOCK || retVal !== -1 || errVal !== EAGAIN) {
-      return false;
-    }
-    if (
-      !retainedSnapshot
-      && !this.#rememberBlockingRetrySnapshot(
-        channel,
-        {
-          ...this.#cancellationPointIdentity(channel),
-          retryForbiddenByCallFlags: (origArgs[1] & LOCK_NB) !== 0,
-          fdWasNonblocking: false,
-          applicableSocketTimeoutMs: 0,
-          kind: "generic-channel",
-          syscallNr,
-          origArgs: origArgs.slice(),
-          argDescs,
-          dispatch: plannedDispatch,
-          retryToken: 0n,
-        },
-        entry,
-      )
-    ) return true;
-    if ((origArgs[1] & LOCK_NB) !== 0) {
-      this.completeChannel(
-        channel,
-        syscallNr,
-        origArgs,
-        argDescs,
-        retVal,
-        errVal,
-        [],
-        undefined,
-        entry,
-      );
-    } else if (deliveredSignal > 0) {
-      this.completeChannel(
-        channel,
-        syscallNr,
-        origArgs,
-        argDescs,
-        -1,
-        EINTR_ERRNO,
-        [],
-        undefined,
-        entry,
-      );
-    } else {
-      this.parkAdvisoryLockRetry(channel, syscallNr, entry);
-    }
-    return true;
-  }
-
-  /**
    * Publish the first detached plan for one exact mailbox generation.
    *
    * A later EAGAIN pass may only continue the existing logical operation;
@@ -17559,14 +17327,6 @@ export class CentralizedKernelWorker {
       case "generic-channel":
         this.#replayGenericBlockingRetry(channel, snapshot, entry);
         return;
-      case "fcntl-lock":
-        this.handleFcntlLock(
-          channel,
-          snapshot.origArgs,
-          entry,
-          snapshot,
-        );
-        return;
       case "select":
         if (snapshot.syscallNr === SYS_PSELECT6) {
           this.handlePselect6(channel, snapshot.origArgs, entry, snapshot);
@@ -17677,21 +17437,6 @@ export class CentralizedKernelWorker {
         entry,
         snapshot,
         deliveredSignal,
-      )
-    ) return;
-
-    if (
-      this.handleFlockConflict(
-        channel,
-        snapshot.syscallNr,
-        snapshot.origArgs,
-        result.retVal,
-        result.errVal,
-        deliveredSignal,
-        snapshot.argDescs,
-        snapshot.dispatch,
-        entry,
-        snapshot,
       )
     ) return;
 
@@ -18474,175 +18219,6 @@ export class CentralizedKernelWorker {
   // Both the array and each iov_base range belong to caller process memory.
   // Validate those ranges there before staging capacity-bounded kernel copies.
   // -----------------------------------------------------------------------
-
-  /**
-   * Handle fcntl lock operations (F_GETLK, F_SETLK, F_SETLKW).
-   * Arg3 points to the generated fixed-size flock wire and needs copy in/out.
-   */
-  private handleFcntlLock(
-    channel: ChannelInfo,
-    origArgs: number[],
-    entry: KernelWorkerEntryContext,
-    retainedSnapshot?: FcntlLockBlockingRetrySnapshot,
-  ): void {
-    const flockPtr = retainedSnapshot?.flockPointer ?? origArgs[2];
-    let flockBytes = retainedSnapshot?.flockBytes;
-    if (!flockBytes) {
-      const processMem = new Uint8Array(channel.memory.buffer);
-      if (
-        !Number.isSafeInteger(flockPtr) ||
-        flockPtr <= 0 ||
-        flockPtr > processMem.byteLength - FCNTL_FLOCK_BYTES
-      ) {
-        this.completeChannel(
-          channel,
-          SYS_FCNTL,
-          origArgs,
-          undefined,
-          -1,
-          EFAULT,
-          [],
-          undefined,
-          entry,
-        );
-        return;
-      }
-      flockBytes = processMem.slice(
-        flockPtr,
-        flockPtr + FCNTL_FLOCK_BYTES,
-      );
-    }
-    const cmd = origArgs[1];
-    let retVal = -1;
-    let errVal = 0;
-    let resultFlock: Uint8Array | undefined;
-    try {
-      this.#requireMainScratchRegion().withLease((lease) => {
-        const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-        lease.copyFrom(flockBytes, CH_DATA, 0, FCNTL_FLOCK_BYTES);
-        kernelView.setUint32(CH_SYSCALL, SYS_FCNTL, true);
-        kernelView.setBigInt64(CH_ARGS, BigInt(origArgs[0]), true);
-        kernelView.setBigInt64(
-          CH_ARGS + CH_ARG_SIZE,
-          BigInt(origArgs[1]),
-          true,
-        );
-        lease.writeAddress(
-          CH_ARGS + 2 * CH_ARG_SIZE,
-          CH_DATA,
-          FCNTL_FLOCK_BYTES,
-          "u64-le",
-        );
-        for (let i = 3; i < CH_ARGS_COUNT; i++) {
-          kernelView.setBigInt64(
-            CH_ARGS + i * CH_ARG_SIZE,
-            BigInt(origArgs[i]),
-            true,
-          );
-        }
-
-        this.#bindKernelTidForChannel(channel, entry);
-        this.currentHandlePid = channel.pid;
-        try {
-          this.#invokeEntryScratchExport(
-            entry,
-            lease,
-            "kernel_handle_channel",
-            [
-              lease.exportPointer(0, CH_TOTAL_SIZE),
-              CH_TOTAL_SIZE,
-              channel.pid,
-              retainedSnapshot?.retryToken ?? 0n,
-            ],
-          );
-        } finally {
-          this.currentHandlePid = 0;
-        }
-        // This lease-bound wrapper rechecks ownership and refreshes its native
-        // view after memory growth. Reuse it within this lease rather than
-        // allocate a second wrapper and its closures for every lock request.
-        retVal = Number(kernelView.getBigInt64(CH_RETURN, true));
-        errVal = kernelView.getUint32(CH_ERRNO, true);
-        // Only GETLK commands have output. SETLK/SETLKW take an input-only
-        // flock; avoid allocating and writing back a redundant result copy.
-        // The original owned input remains immutable for blocking retries.
-        if (retVal >= 0 && (cmd === F_GETLK || cmd === F_GETLK64 || cmd === F_OFD_GETLK)) {
-          resultFlock = lease.copyOut(CH_DATA, FCNTL_FLOCK_BYTES);
-        }
-      });
-    } catch (error) {
-      this.#rethrowKernelEntryFatal(error);
-      this.#rejectScratchTransfer(channel, error, entry);
-      return;
-    }
-
-    if (this.#finishSignalTermination(channel, entry)) return;
-
-    // This marshalling path bypasses the generic syscall completion path,
-    // so it must also dequeue a caught signal itself. A conflicting blocking
-    // request is interruptible: once a handler signal is prepared for this
-    // exact channel, publish EINTR instead of re-parking it on EAGAIN.
-    const deliveredSignal = this.#dequeueSignalForDelivery(channel, entry);
-    if (this.#finishSignalTermination(channel, entry)) return;
-
-    // Copy flock struct back from kernel → process (F_GETLK writes to it)
-    if (resultFlock) {
-      new Uint8Array(channel.memory.buffer).set(resultFlock, flockPtr);
-    }
-
-    if (
-      retVal === -1
-      && errVal === EAGAIN
-      && !retainedSnapshot
-      && !this.#rememberBlockingRetrySnapshot(
-        channel,
-        {
-          ...this.#cancellationPointIdentity(channel),
-          kind: "fcntl-lock",
-          syscallNr: SYS_FCNTL,
-          origArgs: origArgs.slice(),
-          flockPointer: flockPtr,
-          flockBytes,
-          retryToken: 0n,
-        },
-        entry,
-      )
-    ) return;
-    if (
-      retVal === -1 &&
-      errVal === EAGAIN &&
-      (cmd === F_SETLKW || cmd === F_SETLKW64 || cmd === F_OFD_SETLKW)
-    ) {
-      if (deliveredSignal > 0) {
-        this.completeChannel(
-          channel,
-          SYS_FCNTL,
-          origArgs,
-          undefined,
-          -1,
-          EINTR_ERRNO,
-          [],
-          undefined,
-          entry,
-        );
-        return;
-      }
-      this.parkAdvisoryLockRetry(channel, SYS_FCNTL, entry);
-      return;
-    }
-
-    this.completeChannel(
-      channel,
-      SYS_FCNTL,
-      origArgs,
-      undefined,
-      retVal,
-      errVal,
-      [],
-      undefined,
-      entry,
-    );
-  }
 
   /**
    * Handle pselect6: copy fd_sets (inout), decode timeout/sigmask from
@@ -23651,23 +23227,6 @@ export class CentralizedKernelWorker {
       this.pendingPollRetries.delete(key);
       if (this.processes.has(targetPid)) {
         this.retrySyscall(pollEntry.channel);
-      }
-    }
-
-    // 3. Pending F_SETLKW retries (same snapshot rationale). Lock state stays
-    //    in Rust; this wake only lets the kernel observe the pending signal.
-    const advisoryRetries = this.pendingAdvisoryLockRetries;
-    const advisoryMatches = advisoryRetries
-      ? Array.from(advisoryRetries.entries()).filter(
-          ([, entry]) => entry.channel.pid === targetPid,
-        )
-      : [];
-    for (const [key, entry] of advisoryMatches) {
-      if (advisoryRetries.get(key) !== entry) continue;
-      this.#cancelRegisteredTimeout(entry.timer);
-      advisoryRetries.delete(key);
-      if (this.isRegisteredChannel(entry.channel)) {
-        this.retrySyscall(entry.channel);
       }
     }
 

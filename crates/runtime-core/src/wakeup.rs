@@ -177,6 +177,8 @@ pub fn push_datagram_writable() {
 /// Notify runtimes that parked advisory-lock requests should be retried.
 pub fn push_advisory_lock() {
     push(0, WAKE_ADVISORY_LOCK);
+    // Kernel-parked lock requests re-execute on the next settle.
+    crate::wait_park::note_advisory_lock_changed();
 }
 
 /// Drain all pending wakeup events, writing them to the output buffer.
