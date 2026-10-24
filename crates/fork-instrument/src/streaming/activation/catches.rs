@@ -9,6 +9,8 @@ use anyhow::{Context, Result, ensure};
 use std::{collections::BTreeMap, ops::Range};
 use wasm_encoder::{BlockType, RefType, ValType, reencode::Reencode};
 
+mod emit;
+
 #[derive(Clone, Copy, Debug)]
 pub struct CatchLimits {
     pub metadata_bytes: usize,

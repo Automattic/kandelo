@@ -38,9 +38,31 @@ impl Default for DispatchLimits {
     }
 }
 
-/// Hooks must balance any extra control blocks they emit. Only the supplied
-/// source instruction may keep a control frame open across hook invocations.
+/// Ordinary call/source hooks balance temporary control blocks. A source
+/// region can additionally declare prefix wrappers, which remain tracked until
+/// its matching region-end hook closes them.
 pub trait ContinuationHooks: Reencode {
+    /// Number of wrapper labels emitted immediately before a source opener.
+    /// They are included in source branch/catch remapping and must all close
+    /// in `emit_continuation_region_end`, after the original End is emitted.
+    fn source_prefix_blocks(&self, _source: &SourceInstruction<'_>) -> usize {
+        0
+    }
+
+    /// Handler depths are measured after the source End, while all declared
+    /// wrapper labels are still open. Synthetic capture tails can adjust them
+    /// as they close their wrappers and then branch to the original handlers.
+    fn emit_continuation_region_end(
+        &mut self,
+        _region: RegionId,
+        _handler_depths: &[u32],
+        _layout: &FrameLayout,
+        _output: &mut Function,
+        _limit: usize,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Arguments and carryovers are already on the operand stack. The complete
     /// transform must install frozen transport/resume routing and record this
     /// ordinal. This default preserves only the source lexical invocation.
@@ -86,6 +108,7 @@ pub trait ContinuationHooks: Reencode {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Label {
     Source(RegionId),
+    SourceWrapper(RegionId),
     Synthetic(usize),
     External,
 }
@@ -127,6 +150,7 @@ struct Emitter<'a, 'b, T> {
     tasks: Vec<Task>,
     next_label: usize,
     sequence_by_region: Vec<Vec<SequenceId>>,
+    source_wrappers: Vec<usize>,
     work: usize,
     queued_bytes: usize,
 }
@@ -191,6 +215,7 @@ where
         tasks: vec![Task::Sequence(SequenceId(0))],
         next_label: 0,
         sequence_by_region,
+        source_wrappers: vec![0; body.regions.len()],
         work: limits.work,
         queued_bytes: 128,
     };
@@ -601,6 +626,18 @@ where
                 "source branch table exceeds metadata budget"
             );
         }
+        if let Some(region) = source.opens {
+            let count = self.hooks.source_prefix_blocks(source);
+            ensure!(
+                count <= self.limits.metadata_bytes / 128,
+                "source wrappers exceed metadata budget"
+            );
+            self.step(count)?;
+            self.source_wrappers[region.0] = count;
+            self.labels
+                .extend(std::iter::repeat_n(Label::SourceWrapper(region), count));
+            self.check()?;
+        }
         let mut encoded = self.hooks.instruction(source.operation.clone())?;
         if matches!(encoded, Instruction::Return) && self.environment.function_exit_block.is_some()
         {
@@ -672,6 +709,40 @@ where
         )?;
         if let Some(region) = source.opens {
             self.labels.push(Label::Source(region));
+        }
+        if closing {
+            let count = self.source_wrappers[source.region.0];
+            if count != 0 {
+                let handlers = &self.body.regions[source.region.0].handlers;
+                ensure!(
+                    handlers.len() <= self.limits.metadata_bytes / 128,
+                    "handler depths exceed metadata budget"
+                );
+                self.step(handlers.len())?;
+                let depths = handlers
+                    .iter()
+                    .map(|handler| {
+                        self.depth(Label::Source(
+                            handler
+                                .target
+                                .context("wrapped handler has no source target")?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                self.hooks.emit_continuation_region_end(
+                    source.region,
+                    &depths,
+                    &self.plan.frame,
+                    self.output,
+                    self.limits.output_bytes,
+                )?;
+                for _ in 0..count {
+                    ensure!(
+                        self.labels.pop() == Some(Label::SourceWrapper(source.region)),
+                        "unbalanced source wrapper label"
+                    );
+                }
+            }
         }
         self.check()
     }

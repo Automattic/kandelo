@@ -4,10 +4,10 @@ use super::{
 };
 use crate::streaming::runtime::{load, ptr_const, store};
 use crate::streaming::{
-    CallContinuation, ContinuationHooks, ContinuationLimits, ContinuationPlan, DispatchEnvironment,
-    DispatchLimits, FrameAddress, FrameCodecPair, FrameEnvironment, FrameLayout, FunctionIr,
-    LocalKey, NativeRuntimeIndices, RegionKind, Scan, SourceInstruction, SourceTypes,
-    emit_continuation_dispatch, plan_continuations_with,
+    CallContinuation, CatchFrameIo, ContinuationHooks, ContinuationLimits, ContinuationPlan,
+    DispatchEnvironment, DispatchLimits, FrameAddress, FrameCodecPair, FrameEnvironment,
+    FrameLayout, FunctionIr, LocalKey, NativeRuntimeIndices, RegionId, RegionKind, Scan,
+    SourceInstruction, SourceTypes, emit_continuation_dispatch, plan_continuations_with,
 };
 use anyhow::{Context, Result, ensure};
 use std::{borrow::Cow, collections::BTreeSet};
@@ -120,10 +120,10 @@ pub struct ActivationEmission {
     pub boundary: Option<u32>,
 }
 
-/// Linked-frame wrapper, including live allocation-failure restart. Source EH
-/// ownership requires normalization before using this wrapper. Tail routes
-/// must be bound before emission; unsupported plans fail before a body is
-/// exposed as a fork artifact.
+/// Linked-frame wrapper, including modern catch ownership and live restart.
+/// Catch wrapper types and tail routes must be bound before emission. Legacy
+/// handlers require normalization; unsupported plans fail before exposing a
+/// body as a fork artifact.
 ///
 /// The dispatcher sits inside seven labels, outside-to-inside:
 /// `normal_exit -> escaping_exception -> outer_try -> restart_loop ->
@@ -152,8 +152,9 @@ where
     ensure!(
         body.regions
             .iter()
-            .all(|region| !matches!(region.kind, RegionKind::LegacyTry | RegionKind::TryTable)),
-        "native activation requires exception ownership normalization"
+            .all(|region| region.kind != RegionKind::LegacyTry
+                || !body.instructions[region.opener.unwrap()].retained),
+        "native activation requires legacy exception normalization"
     );
     ensure!(
         plan.tail_transfers.is_some()
@@ -173,7 +174,8 @@ where
                     .all(Vec::is_empty)),
         "native activation reference-frame I/O is not installed"
     );
-    let shape = layout.codec_shape(false, &continuation.references);
+    plan.catches.validate_emission()?;
+    let shape = layout.codec_shape(plan.catches.selector.is_some(), &continuation.references);
     ensure!(
         emission.scalar_codecs.is_none() || shape.is_some(),
         "scalar codec is unavailable for this activation shape"
@@ -217,6 +219,8 @@ where
         hooks,
         selector: plan.call_selector,
         tails: plan.tail_transfers.as_ref(),
+        catches: &plan.catches,
+        runtime,
     };
     emit_continuation_dispatch(
         body,
@@ -311,10 +315,14 @@ fn restore_scalars(
     let runtime = emission.runtime;
     let layout = &plan.continuation.frame;
     let pointer_type = plan.environment.pointer;
-    let mut first_resident_field = true;
+    let mut helper_scalar_available =
+        emission.scalar_codecs.is_some() && plan.catches.selector.is_none();
     if let Some(codecs) = emission.scalar_codecs {
         output.instruction(&ptr_const(pointer_type, i64::from(layout.size)));
         output.instruction(&Instruction::Call(codecs.restore));
+        if let Some(selector) = plan.catches.selector {
+            layout.emit_set(selector, output, limit)?;
+        }
     } else {
         output.instruction(&Instruction::GlobalGet(runtime.buf_global));
         output.instruction(&ptr_const(pointer_type, i64::from(layout.size)));
@@ -325,21 +333,36 @@ fn restore_scalars(
         output.instruction(&Instruction::GlobalGet(runtime.frame_global));
         output.instruction(&load(ValType::I32, frame_field(plan, ValType::I32, 4)));
         output.instruction(&Instruction::GlobalSet(runtime.call_index_global));
+        if let Some(selector) = plan.catches.selector {
+            output.instruction(&Instruction::GlobalGet(runtime.frame_global));
+            output.instruction(&load(ValType::I32, frame_field(plan, ValType::I32, 8)));
+            layout.emit_set(selector, output, limit)?;
+        }
     }
     for field in &layout.fields {
         if !is_stored_in_wasm_local(layout, field.local) {
             continue;
         }
-        // Shared restore helpers leave the first resident scalar on the stack;
-        // remaining fields are loaded here to keep their result arity bounded.
-        if emission.scalar_codecs.is_none() || !first_resident_field {
+        // Shared restore returns at most one value: the catch selector when
+        // present, otherwise the first scalar. Load all remaining fields here.
+        if !helper_scalar_available {
             output.instruction(&Instruction::GlobalGet(runtime.frame_global));
             output.instruction(&load(field.ty, frame_field(plan, field.ty, field.offset)));
         }
         layout.emit_set(field.local, output, limit)?;
-        first_resident_field = false;
+        helper_scalar_available = false;
     }
-    layout.emit_scratch_restore(FrameAddress::Global(runtime.frame_global), output, limit)
+    layout.emit_scratch_restore(FrameAddress::Global(runtime.frame_global), output, limit)?;
+    if let Some(selector) = plan.catches.selector {
+        layout.emit_catch_scalars(
+            FrameAddress::Global(runtime.frame_global),
+            selector,
+            CatchFrameIo::Restore,
+            output,
+            limit,
+        )?;
+    }
+    Ok(())
 }
 fn save_frame(
     plan: &NativeActivationPlan,
@@ -351,6 +374,9 @@ fn save_frame(
     let layout = &plan.continuation.frame;
     if let Some(codecs) = emission.scalar_codecs {
         output.instruction(&Instruction::I32Const(emission.function_ordinal as i32));
+        if let Some(selector) = plan.catches.selector {
+            layout.emit_get(selector, output, limit)?;
+        }
         for field in &layout.fields {
             if is_stored_in_wasm_local(layout, field.local) {
                 layout.emit_get(field.local, output, limit)?;
@@ -360,7 +386,11 @@ fn save_frame(
     } else {
         for (offset, value) in [(0, emission.function_ordinal), (8, 0), (12, 0)] {
             emit_frame_address(plan, runtime, output);
-            output.instruction(&Instruction::I32Const(value as i32));
+            if offset == 8 && plan.catches.selector.is_some() {
+                layout.emit_get(plan.catches.selector.unwrap(), output, limit)?;
+            } else {
+                output.instruction(&Instruction::I32Const(value as i32));
+            }
             output.instruction(&store(
                 ValType::I32,
                 frame_field(plan, ValType::I32, offset),
@@ -375,6 +405,15 @@ fn save_frame(
         }
     }
     layout.emit_scratch_save(FrameAddress::Buffer(runtime.buf_global), output, limit)?;
+    if let Some(selector) = plan.catches.selector {
+        layout.emit_catch_scalars(
+            FrameAddress::Buffer(runtime.buf_global),
+            selector,
+            CatchFrameIo::Save,
+            output,
+            limit,
+        )?;
+    }
     if let Some(io) = &plan.reference_io {
         io.emit_save(
             &plan.continuation.references,
@@ -387,7 +426,10 @@ fn save_frame(
     }
     if emission.scalar_codecs.is_none()
         || !layout
-            .codec_shape(false, &plan.continuation.references)
+            .codec_shape(
+                plan.catches.selector.is_some(),
+                &plan.continuation.references,
+            )
             .unwrap()
             .commits
     {
@@ -405,6 +447,8 @@ struct CaptureHooks<'a, T> {
     hooks: &'a mut T,
     selector: Option<LocalKey>,
     tails: Option<&'a TailTransferPlan>,
+    catches: &'a NativeCatchPlan,
+    runtime: NativeRuntimeIndices,
 }
 macro_rules! index {
     ($name:ident) => {
@@ -431,6 +475,33 @@ impl<T: Reencode> Reencode for CaptureHooks<'_, T> {
     }
 }
 impl<T: ContinuationHooks> ContinuationHooks for CaptureHooks<'_, T> {
+    fn source_prefix_blocks(&self, source: &SourceInstruction<'_>) -> usize {
+        source
+            .opens
+            .map_or(0, |region| self.catches.prefix_blocks(region))
+            .saturating_add(self.hooks.source_prefix_blocks(source))
+    }
+    fn emit_continuation_region_end(
+        &mut self,
+        region: RegionId,
+        handler_depths: &[u32],
+        layout: &FrameLayout,
+        output: &mut Function,
+        limit: usize,
+    ) -> Result<()> {
+        if self.catches.prefix_blocks(region) != 0 {
+            self.catches.emit_suffix(
+                region,
+                handler_depths,
+                layout,
+                self.runtime.unwind_tag,
+                output,
+                limit,
+            )?;
+        }
+        self.hooks
+            .emit_continuation_region_end(region, handler_depths, layout, output, limit)
+    }
     fn emit_continuation_call(
         &mut self,
         ordinal: u32,
@@ -461,6 +532,26 @@ impl<T: ContinuationHooks> ContinuationHooks for CaptureHooks<'_, T> {
     where
         Self::Error: std::error::Error + Send + Sync + 'static,
     {
+        if let (Some(region), Instruction::TryTable(kind, _)) = (source.opens, &instruction) {
+            if self.catches.prefix_blocks(region) != 0 {
+                ensure!(
+                    self.hooks.source_prefix_blocks(source) == 0,
+                    "catch wrappers cannot overlap another source wrapper policy"
+                );
+                let instruction = self.catches.emit_prefix(
+                    region,
+                    *kind,
+                    self.runtime.unwind_tag,
+                    output,
+                    limit,
+                )?;
+                self.hooks
+                    .emit_continuation_source(source, instruction, layout, output, limit)?;
+                return self
+                    .catches
+                    .emit_replay_guard(region, layout, self.runtime, output, limit);
+            }
+        }
         let instruction = if is_tail_transfer(&source.operation) {
             let tails = self
                 .tails

@@ -226,8 +226,8 @@ fields remain first, and the spill tail stays contiguous for bulk frame I/O.
 Scratch values have no physical Wasm locals; one base and one temporary per
 scalar type serve their loads/stores. Reserve/release/reseed and bulk save/
 restore primitives support both pointer widths. The native activation wrapper
-installs cleanup for normal, escaping-exception and tail exits; owned source
-catch landings still require exception normalization. Discover the frame
+installs cleanup for normal, escaping-exception and tail exits; modern source
+catch landings reseed scratch before entering user handlers. Discover the frame
 environment and source type catalog once per module, then discard each local
 frame plan.
 
@@ -237,9 +237,26 @@ slot when complete recipes are required. Its scalar payloads use the existing
 overlaid frame range. `FrameLayout::emit_catch_scalars` saves or restores only
 the selected arm, skips selector zero and traps on unknown selectors before
 accessing payload memory. Its emitted selection has constant nesting. These
-planning and frame-I/O pieces do not yet enable source exceptions in the native
-activation wrapper; catch interception, replay emission and legacy
-normalization remain unfinished.
+pieces now compose with the native activation wrapper: typed capture blocks
+intercept each modern catch arm, publish its exact selector and forward its
+original operands. A first private-tag clause shields instrumentation unwind
+from user handlers. Replay reconstructs the selected catch inside its original
+try; normal results bypass all capture tails. The dispatcher tracks these
+added labels when remapping source branches and handler destinations.
+
+Node component fixtures execute scalar `catch` and `catch_ref` ownership on
+both pointer widths, with shared and inline frame codecs, empty or multi-value
+try inputs, normal try results, and forks inside the try or after its handlers.
+They check exact frame payloads, fresh-instance rewind, live allocation-failure
+restart and invalid-selector traps. Untyped try cases run the same assertions
+against the unchanged Walrus transform. Its current catch wrapper loses try
+input parameters and produces invalid Wasm for the typed-input fixture; those
+native cases instead have independent Wasm validation and execution evidence.
+Differential planning checks cover reference, vector and catch-all payloads,
+including 448 static regions sharing constant physical temporary storage.
+Complete exception/reference recipe providers, linked replay of those payloads
+and legacy-handler normalization remain unfinished. The normal production
+backend still uses Walrus.
 
 `FrameCodecCatalog` interns scalar save/restore recipes before output starts.
 It emits each helper serially and shares restores across save-commit policies.
