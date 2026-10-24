@@ -34,6 +34,12 @@ impl Default for EmitLimits {
 /// provided limit while building a body. No helper may be declared here:
 /// later declarations could invalidate earlier emitted function indices.
 pub trait FunctionTransform: Reencode {
+    /// Module bootstrap owns active segments and the original start. Segment
+    /// indices stay unchanged; data payloads still pass through the disk spool.
+    /// The caller must install the corresponding frozen bootstrap helpers.
+    fn defer_module_initializers(&self) -> bool {
+        false
+    }
     /// Runtime imports are frozen before emission. The transform's Reencode
     /// mapping must use this plan (or a complete mapping derived from it).
     fn imports(&self) -> Option<&FrozenImports> {
@@ -176,6 +182,8 @@ where
     let mut functions_written = false;
     let mut module_written = [false; 6];
     let mut code_written = false;
+    let defer_initializers = transform.defer_module_initializers();
+    let mut data_count_written = false;
     let mut bodies = transform.function_ir_limits().map(|mut ir_limits| {
         ir_limits.body_bytes = ir_limits.body_bytes.min(limits.max_function_bytes);
         scan.body_provider(ir_limits)
@@ -271,6 +279,13 @@ where
             );
         }
         if let Some(order) = standard {
+            if order > 11 && !data_count_written && defer_initializers && scan.data_segments != 0 {
+                let section = wasm_encoder::DataCountSection {
+                    count: transform.data_count(scan.data_segments)?,
+                };
+                write_encoded_section(output, &section, limits.max_metadata_section_bytes)?;
+                data_count_written = true;
+            }
             if order > 12 && !code_written && helper_count != 0 {
                 let mut spool =
                     tempfile::tempfile().context("spooling helper-only code section")?;
@@ -382,25 +397,48 @@ where
                 )
             }
             Payload::ElementSection(s) => {
-                section!(
-                    s,
-                    wasm_encoder::ElementSection,
-                    parse_element_section,
-                    5,
-                    append_elements
-                )
+                if defer_initializers {
+                    ensure!(
+                        s.range().len() <= limits.max_metadata_section_bytes,
+                        "element section exceeds streaming input budget"
+                    );
+                    let mut section = wasm_encoder::ElementSection::new();
+                    for element in s {
+                        let mut element = element?;
+                        if matches!(element.kind, wasmparser::ElementKind::Active { .. }) {
+                            element.kind = wasmparser::ElementKind::Passive;
+                        }
+                        transform.parse_element(&mut section, element)?;
+                    }
+                    if let Some(declarations) = &module_declarations {
+                        declarations.append_elements(&mut section);
+                    }
+                    write_encoded_section(output, &section, limits.max_metadata_section_bytes)?;
+                    module_written[5] = true;
+                } else {
+                    section!(
+                        s,
+                        wasm_encoder::ElementSection,
+                        parse_element_section,
+                        5,
+                        append_elements
+                    )
+                }
             }
             Payload::StartSection { func, .. } => {
-                let encoded = wasm_encoder::StartSection {
-                    function_index: transform.start_section(func)?,
-                };
-                write_encoded_section(output, &encoded, limits.max_metadata_section_bytes)?;
+                if !defer_initializers {
+                    let encoded = wasm_encoder::StartSection {
+                        function_index: transform.start_section(func)?,
+                    };
+                    write_encoded_section(output, &encoded, limits.max_metadata_section_bytes)?;
+                }
             }
             Payload::DataCountSection { count, .. } => {
                 let encoded = wasm_encoder::DataCountSection {
                     count: transform.data_count(count)?,
                 };
                 write_encoded_section(output, &encoded, limits.max_metadata_section_bytes)?;
+                data_count_written = true;
             }
             Payload::DataSection(s) => {
                 // WHY: a data section can be most of the module. Reencoding
@@ -412,6 +450,9 @@ where
                     let data = data?;
                     match data.kind {
                         wasmparser::DataKind::Passive => write_u32(&mut spool, 1)?,
+                        wasmparser::DataKind::Active { .. } if defer_initializers => {
+                            write_u32(&mut spool, 1)?
+                        }
                         wasmparser::DataKind::Active {
                             memory_index,
                             offset_expr,

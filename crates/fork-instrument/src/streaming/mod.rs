@@ -6,6 +6,7 @@
 //! `docs/plans/2026-10-22-streaming-fork-instrumentation.md`.
 
 mod activation;
+mod bootstrap;
 mod continuation;
 mod declarations;
 mod definitions;
@@ -25,6 +26,7 @@ mod state;
 mod types;
 
 pub use activation::*;
+pub use bootstrap::*;
 pub use continuation::*;
 pub use declarations::*;
 pub use definitions::*;

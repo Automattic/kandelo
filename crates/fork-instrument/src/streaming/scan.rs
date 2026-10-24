@@ -94,6 +94,7 @@ pub struct Scan<'a> {
     pub table_initializers: Vec<ValueProof>,
     pub exports: Vec<(String, ExternalKind, u32)>,
     pub start: Option<u32>,
+    pub data_segments: u32,
     pub custom_sections: Vec<(&'a str, Range<usize>)>,
     pub code_range: Option<Range<usize>>,
     pub operators: u64,
@@ -122,6 +123,7 @@ pub fn scan(input: &[u8]) -> Result<Scan<'_>> {
     let mut names = BTreeMap::new();
     let mut custom_sections = Vec::new();
     let mut start = None;
+    let mut data_segments = 0;
     let mut code_range = None;
     let mut operators = 0;
     let mut defined = 0;
@@ -232,6 +234,7 @@ pub fn scan(input: &[u8]) -> Result<Scan<'_>> {
                 }
             }
             Payload::StartSection { func, .. } => start = Some(func),
+            Payload::DataSection(section) => data_segments = section.count(),
             Payload::CodeSectionStart { range, .. } => code_range = Some(range),
             Payload::CustomSection(section) => {
                 custom_sections.push((section.name(), section.data_offset()..section.range().end));
@@ -269,6 +272,7 @@ pub fn scan(input: &[u8]) -> Result<Scan<'_>> {
         table_initializers,
         exports,
         start,
+        data_segments,
         custom_sections,
         code_range,
         operators,

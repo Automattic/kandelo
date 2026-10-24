@@ -234,8 +234,8 @@ transaction scratch. Budget tests reject metadata, work and output exhaustion;
 256 repeated tag signatures keep the same physical local count. These
 providers now compose with activation frame vectors in the linked catch
 fixtures below. The GC providers described next also compose with these exact
-exception recipes. Full module bootstrap remains unfinished. Provider metadata
-alone certifies no artifact.
+exception recipes. Full module-state capture/restore and production bootstrap
+integration remain unfinished. Provider metadata alone certifies no artifact.
 
 `NativeGcPlan` discovers aggregate layouts and constructor provenance before
 runtime helpers are declared. It records aligned scalar fields, reference
@@ -293,6 +293,27 @@ retain nine scalar/pointer locals with either one or 256 distinct GC layouts;
 they narrow references at use rather than allocating a local for every type.
 This validates provider components, not a complete native fork artifact,
 production bootstrap, browser behavior or end-to-end memory improvement.
+
+`ModuleBootstrapPlan` discovers active segment schedules without copying data
+payloads. `FrozenModuleBootstrap` freezes three initialization phases. Parent
+bootstrap applies elements, then data, then the original start, once. Thread
+bootstrap applies local table baselines and consumes converted active segments
+without copying data or calling start. Fork restore applies only table baselines
+after globals have been restored; it keeps constructor segments physically live
+until the later module-state finish phase. Offset expressions become immutable
+globals, preserving the VM's extended-constant evaluation. Logical initial drop
+flags still describe the original active, passive and declared segments.
+
+The bounded writer can defer original initialization: active segments become
+passive at their original indices, the original start moves to its explicit
+helper, and a missing data-count section is inserted before code. Data payloads
+continue through the disk spool. Node tests cover memory32/table32 and
+memory64/table64, overlapping initializer order, empty segments, extended
+constant offsets, shifted local indices and copied-memory preservation. Parent
+and thread assertions compare unchanged Walrus; native segment lifetime checks
+also compare the original module. Metadata/work/output failures reject
+explicitly. This is initialization ownership only; global/table snapshots,
+drop-state restore and the complete production pipeline remain unfinished.
 
 `FrameBuilder` now plans one function's activation storage. It keeps parameters
 and first-used original locals in lexical order, assigns synthetic value keys,
