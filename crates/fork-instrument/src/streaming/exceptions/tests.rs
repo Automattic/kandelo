@@ -1,5 +1,6 @@
 use super::*;
 use crate::streaming::{CodecPair, NativeRuntime};
+use wasm_encoder::GlobalType;
 
 fn codec(source: &str, limits: ExceptionCodecLimits) -> Result<NativeExceptionCodec> {
     let input = wat::parse_str(source)?;

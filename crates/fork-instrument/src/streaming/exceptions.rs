@@ -8,8 +8,7 @@ use super::{
 use crate::module_exception_codec as abi;
 use anyhow::{Context, Result, ensure};
 use wasm_encoder::{
-    BlockType, EntityType, ExportKind, FuncType, GlobalType, RefType, TableType, ValType,
-    reencode::Reencode,
+    BlockType, EntityType, ExportKind, FuncType, RefType, TableType, ValType, reencode::Reencode,
 };
 
 mod emit;

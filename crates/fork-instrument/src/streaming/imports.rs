@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 use wasm_encoder::{
-    Encode, EntityType, ImportSection,
+    Encode, EntityType, GlobalType, ImportSection, ValType,
     reencode::{Error, Reencode},
 };
 use wasmparser::{Parser, Payload, TypeRef};
@@ -17,6 +17,73 @@ pub struct PlannedImport {
     pub module: String,
     pub name: String,
     pub ty: EntityType,
+}
+
+/// Appending imports preserves existing imported-global indices. New bindings
+/// resolve by their reserved ordinal after the complete import plan freezes.
+#[derive(Clone, Copy)]
+pub(super) enum ImmutableGlobalImport {
+    Source(u32),
+    Planned(u32),
+}
+impl ImmutableGlobalImport {
+    pub fn resolve(self, imports: &FrozenImports) -> Result<u32> {
+        match self {
+            Self::Source(index) => Ok(index),
+            Self::Planned(ordinal) => imports
+                .index(ordinal)
+                .context("reserved global import was not frozen"),
+        }
+    }
+}
+
+pub(super) fn immutable_i32_import(
+    scan: &Scan<'_>,
+    imports: &mut Vec<PlannedImport>,
+    module: &str,
+    name: &str,
+) -> Result<ImmutableGlobalImport> {
+    let mut global_index = 0u32;
+    for payload in Parser::new(0).parse_all(scan.input()) {
+        if let Payload::ImportSection(section) = payload? {
+            for import in section.into_imports() {
+                let import = import?;
+                if import.module == module && import.name == name {
+                    ensure!(
+                        matches!(import.ty, TypeRef::Global(global)
+                        if global.content_type == wasmparser::ValType::I32 && !global.mutable && !global.shared),
+                        "reserved import {module}.{name} must be an immutable i32 global"
+                    );
+                    return Ok(ImmutableGlobalImport::Source(global_index));
+                }
+                if matches!(import.ty, TypeRef::Global(_)) {
+                    global_index += 1;
+                }
+            }
+        }
+    }
+    if let Some((ordinal, import)) = imports
+        .iter()
+        .enumerate()
+        .find(|(_, import)| import.module == module && import.name == name)
+    {
+        ensure!(
+            matches!(import.ty, EntityType::Global(global) if global.val_type == ValType::I32 && !global.mutable && !global.shared),
+            "planned import {module}.{name} must be an immutable i32 global"
+        );
+        return Ok(ImmutableGlobalImport::Planned(u32::try_from(ordinal)?));
+    }
+    let ordinal = u32::try_from(imports.len())?;
+    imports.push(PlannedImport {
+        module: module.into(),
+        name: name.into(),
+        ty: EntityType::Global(GlobalType {
+            val_type: ValType::I32,
+            mutable: false,
+            shared: false,
+        }),
+    });
+    Ok(ImmutableGlobalImport::Planned(ordinal))
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -142,6 +209,9 @@ impl FrozenImports {
     }
     pub fn len(&self) -> u32 {
         self.imports.len() as u32
+    }
+    pub(super) fn source_identity(&self) -> [u8; 32] {
+        self.fingerprint
     }
     pub fn is_empty(&self) -> bool {
         self.imports.is_empty()

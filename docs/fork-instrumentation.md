@@ -255,8 +255,21 @@ planning preserves the original distinction. Metadata tests cover every array
 constructor, constructor sites outside fork, source retention, field/seed
 ownership and resource failures; 10,000 repeated sites retain two layouts
 within an 8 KiB catalog budget. This is planning evidence, not measured process
-memory or a working GC provider. Typed GC helper emission, reconstruction and
-constructor rewriting remain unfinished.
+memory or a working GC provider.
+
+`GcConstructorPlan` reserves typed wrapper declarations and provenance imports
+before indices freeze. `FrozenGcConstructors` rewrites original constructor
+sites without changing their coordinates, including sites outside fork. Each
+wrapper evaluates the original allocation first, then records scalar operand
+bits and required reference seeds through the existing host protocol. Trapping
+allocations publish no provenance. Packed/vector operands, data/element ranges,
+empty non-null arrays and seeds separated by scalar fields are covered by Node
+execution against unchanged Walrus on both memory widths. Operand effects run
+once in source order, and the transit slot is cleared after publication.
+Catalogs reject source/type-mapping mismatches and enforce metadata, work,
+signature and output limits. GC and exception catalogs share the immutable
+activation import. This is a constructor-tracking component; GC graph encoding,
+allocation, filling and reconstruction remain unfinished.
 
 `FrameBuilder` now plans one function's activation storage. It keeps parameters
 and first-used original locals in lexical order, assigns synthetic value keys,

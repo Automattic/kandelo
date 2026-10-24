@@ -1,13 +1,10 @@
 //! Scalar-only host dependencies reserved before runtime import freezing.
 use super::*;
+use crate::streaming::imports::{ImmutableGlobalImport, immutable_i32_import};
 
 pub struct NativeExceptionImports {
-    activation: ActivationImport,
+    activation: ImmutableGlobalImport,
     functions: [u32; 11],
-}
-enum ActivationImport {
-    Source(u32),
-    Planned(u32),
 }
 #[derive(Clone, Copy)]
 pub(super) struct ExceptionHost {
@@ -41,7 +38,12 @@ impl NativeExceptionImports {
         } else {
             ValType::I32
         };
-        let activation = activation_import(scan, inputs)?;
+        let activation = immutable_i32_import(
+            scan,
+            &mut inputs.imports,
+            abi::HOST_IMPORT_MODULE,
+            abi::IMPORT_ACTIVATION,
+        )?;
         let mut functions = [0; 11];
         let i = ValType::I32;
         let transfer = vec![i, i, i, i, pointer, i, pointer, i];
@@ -91,11 +93,7 @@ impl NativeExceptionImports {
                 .context("exception import was not frozen")
         };
         Ok(ExceptionHost {
-            activation: match self.activation {
-                // Appended imports never shift earlier imported globals.
-                ActivationImport::Source(index) => index,
-                ActivationImport::Planned(ordinal) => index(ordinal)?,
-            },
+            activation: self.activation.resolve(imports)?,
             lookup: index(self.functions[0])?,
             claim: index(self.functions[1])?,
             define: index(self.functions[2])?,
@@ -109,47 +107,4 @@ impl NativeExceptionImports {
             release: index(self.functions[10])?,
         })
     }
-}
-
-fn activation_import(scan: &Scan<'_>, inputs: &mut RuntimeInputs) -> Result<ActivationImport> {
-    let mut global_index = 0u32;
-    for payload in wasmparser::Parser::new(0).parse_all(scan.input()) {
-        if let wasmparser::Payload::ImportSection(section) = payload? {
-            for import in section.into_imports() {
-                let import = import?;
-                if import.module == abi::HOST_IMPORT_MODULE && import.name == abi::IMPORT_ACTIVATION
-                {
-                    ensure!(
-                        matches!(import.ty, wasmparser::TypeRef::Global(global)
-                        if global.content_type == wasmparser::ValType::I32 && !global.mutable && !global.shared),
-                        "exception activation import must be an immutable i32 global"
-                    );
-                    return Ok(ActivationImport::Source(global_index));
-                }
-                if matches!(import.ty, wasmparser::TypeRef::Global(_)) {
-                    global_index += 1;
-                }
-            }
-        }
-    }
-    if let Some((ordinal, import)) = inputs.imports.iter().enumerate().find(|(_, import)| {
-        import.module == abi::HOST_IMPORT_MODULE && import.name == abi::IMPORT_ACTIVATION
-    }) {
-        ensure!(
-            matches!(import.ty, EntityType::Global(global) if global.val_type == ValType::I32 && !global.mutable && !global.shared),
-            "planned exception activation import must be an immutable i32 global"
-        );
-        return Ok(ActivationImport::Planned(u32::try_from(ordinal)?));
-    }
-    let ordinal = u32::try_from(inputs.imports.len())?;
-    inputs.imports.push(PlannedImport {
-        module: abi::HOST_IMPORT_MODULE.into(),
-        name: abi::IMPORT_ACTIVATION.into(),
-        ty: EntityType::Global(GlobalType {
-            val_type: ValType::I32,
-            mutable: false,
-            shared: false,
-        }),
-    });
-    Ok(ActivationImport::Planned(ordinal))
 }

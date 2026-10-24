@@ -3,13 +3,16 @@
 //! ownership; discovering it alone installs no reference provider.
 use super::{FrozenReferenceKinds, IrLimits, NativeReferenceClass, Scan, SourceTypes};
 use anyhow::{Context, Result, ensure};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use wasm_encoder::{FieldType, StorageType, ValType, reencode::Reencode};
+use wasm_encoder::{Encode, FieldType, StorageType, ValType, reencode::Reencode};
 
 mod constructors;
 mod descriptor;
 mod layouts;
+mod provenance;
 mod types;
+pub use provenance::*;
 
 #[derive(Clone, Copy, Debug)]
 pub struct GcPlanLimits {
@@ -116,6 +119,8 @@ pub struct NativeGcPlan {
     bases: BTreeMap<u32, usize>,
     constructors: BTreeMap<(u32, NativeGcConstructor), usize>,
     metadata_budget: usize,
+    source: [u8; 32],
+    identity: [u8; 32],
 }
 impl NativeGcPlan {
     pub fn discover<T: Reencode>(
@@ -129,6 +134,7 @@ impl NativeGcPlan {
     {
         let mut budget = Budget::new(limits);
         let original = types::OriginalGcTypes::read(scan, source_types, limits, &mut budget)?;
+        let source: [u8; 32] = Sha256::digest(scan.input()).into();
         let mut plan = Self {
             layouts: Vec::new(),
             dispatch: Vec::new(),
@@ -136,6 +142,8 @@ impl NativeGcPlan {
             bases: BTreeMap::new(),
             constructors: BTreeMap::new(),
             metadata_budget: limits.metadata_bytes,
+            source,
+            identity: source,
         };
         budget.charge(
             plan.identities
@@ -174,6 +182,19 @@ impl NativeGcPlan {
             let layout = &plan.layouts[(id - 1) as usize];
             (std::cmp::Reverse(layout.subtype_depth), layout.type_ordinal)
         });
+        let mut identity = Sha256::new();
+        identity.update(plan.source);
+        identity.update(plan.descriptor()?);
+        let mut storage = Vec::new();
+        for layout in &plan.layouts {
+            identity.update(layout.type_index.to_le_bytes());
+            for field in &layout.fields {
+                storage.clear();
+                field.field.element_type.encode(&mut storage);
+                identity.update(&storage);
+            }
+        }
+        plan.identity = identity.finalize().into();
         Ok(plan)
     }
     fn next_id(&self) -> Result<u32> {
@@ -185,6 +206,13 @@ impl NativeGcPlan {
     }
     pub fn layouts(&self) -> &[NativeGcLayout] {
         &self.layouts
+    }
+    pub(super) fn validate_source(&self, scan: &Scan<'_>) -> Result<()> {
+        ensure!(
+            self.source == <[u8; 32]>::from(Sha256::digest(scan.input())),
+            "GC plan belongs to another source module"
+        );
+        Ok(())
     }
     pub fn dispatch_layouts(&self) -> &[u32] {
         &self.dispatch
