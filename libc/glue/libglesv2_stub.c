@@ -394,6 +394,18 @@ static int flush_commands(void) {
 }
 int _wpk_gl_flush_checked(void) { return flush_commands(); }
 void _wpk_gl_flush(void) { (void)_wpk_gl_flush_checked(); }
+int _wpk_gl_server_flush_checked(void) {
+    int fd = _wpk_gl_fd();
+    if (!_wpk_gl_current_encoder() || fd < 0 || !_wpk_gl_cmdbuf_base()) {
+        errno = ENODEV;
+        return -1;
+    }
+    if (flush_commands() != 0) return -1;
+    /* Submission alone only decodes commands. The empty query acknowledges
+     * the native flush without claiming GPU completion. */
+    struct gl_query_info info = {.op = QOP_FLUSH};
+    return ioctl(fd, GLIO_QUERY, &info);
+}
 
 /* Reserve `bytes` of cmdbuf space and return a write cursor for the
  * caller to fill. Flushes if the next op would overflow CMDBUF_LEN.
@@ -3282,7 +3294,7 @@ void glGetUniformiv(GLuint program, GLint location, GLint *params) {
 
 void glFlush(void) {
     if (!_wpk_gl_current_encoder()) return;
-    _wpk_gl_flush();
+    if (_wpk_gl_server_flush_checked() != 0) raise_client_error(GL_INVALID_OPERATION);
 }
 
 void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices) {

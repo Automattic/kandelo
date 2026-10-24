@@ -257,6 +257,7 @@ void _wpk_gl_end_name_scope(struct wpk_gl_name_scope *scope);
         _wpk_gl_begin_name_scope(state);                                                        \
     if (!name_scope.group) return
 int _wpk_gl_flush_checked(void);
+int _wpk_gl_server_flush_checked(void);
 int _wpk_gl_finish_checked(void);
 #define WPK_GL_EXTERNAL_NAME_COLLISION 0x0502u
 int _wpk_gl_discard_external_candidate(uint32_t name);

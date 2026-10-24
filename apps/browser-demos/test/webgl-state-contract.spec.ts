@@ -1866,11 +1866,11 @@ for (const mode of ["native","forwarded","retarget"] as const) {
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
-for(const scenario of ["core-image-render","shared-records-render","records-basic","names-render","image-target-render","image-bind-render","encoder-array-render","encoder-array-index-render","raw-discard-render","surface-limits-render","platform-window-render","completion-render","pbuffer-basic","pbuffer-zero"] as const) {
+for(const scenario of ["sync-render","core-image-render","shared-records-render","records-basic","names-render","image-target-render","image-bind-render","encoder-array-render","encoder-array-index-render","raw-discard-render","surface-limits-render","platform-window-render","completion-render","pbuffer-basic","pbuffer-zero"] as const) {
 for (const mode of ["native", "forwarded"] as const) {
   // Forwarded BO-source registration remains an ordinary inventory gap.
   if((scenario === "raw-discard-render" || scenario === "core-image-render") && mode === "forwarded")continue;
-  test(`actual C ${scenario.startsWith("pbuffer-") ? `${scenario === "pbuffer-zero" ? "zero-sized" : "rendered"} pbuffers preserve the visible canvas` : scenario === "core-image-render" ? "core EGL images retain sibling pixels through destruction and respecification" : scenario === "completion-render" ? "completion waits finish before pixels are read" : scenario === "platform-window-render" ? "GBM platform windows preserve pixels around surface operations" : scenario === "surface-limits-render" ? "surface limits preserve current rendering across display generations" : scenario === "raw-discard-render" ? "unpublished raw candidate cleanup permits fresh cube pixels" : scenario === "shared-records-render" ? "public shared contexts retain texture storage after source retirement" : scenario === "records-basic" ? "independent EGL records preserve draw/read pixels" : scenario === "names-render" ? "implicit and generated texture names retain independent storage" : scenario === "image-bind-render" ? "native binding allocation failure preserves binding and dimensionality" : scenario === "image-target-render" ? "a rejected texture target preserves binding and storage" : `client staging restores the retained buffer across a renderer peer deletion${scenario.includes("index") ? " with separate index/vertex views" : ""}`} through ${mode} dispatch`, async ({page}) => {
+  test(`actual C ${scenario.startsWith("pbuffer-") ? `${scenario === "pbuffer-zero" ? "zero-sized" : "rendered"} pbuffers preserve the visible canvas` : scenario === "sync-render" ? "EGL client fences retain completed pixels after creator retirement" : scenario === "core-image-render" ? "core EGL images retain sibling pixels through destruction and respecification" : scenario === "completion-render" ? "completion waits finish before pixels are read" : scenario === "platform-window-render" ? "GBM platform windows preserve pixels around surface operations" : scenario === "surface-limits-render" ? "surface limits preserve current rendering across display generations" : scenario === "raw-discard-render" ? "unpublished raw candidate cleanup permits fresh cube pixels" : scenario === "shared-records-render" ? "public shared contexts retain texture storage after source retirement" : scenario === "records-basic" ? "independent EGL records preserve draw/read pixels" : scenario === "names-render" ? "implicit and generated texture names retain independent storage" : scenario === "image-bind-render" ? "native binding allocation failure preserves binding and dimensionality" : scenario === "image-target-render" ? "a rejected texture target preserves binding and storage" : `client staging restores the retained buffer across a renderer peer deletion${scenario.includes("index") ? " with separate index/vertex views" : ""}`} through ${mode} dispatch`, async ({page}) => {
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const temporary=mkdtempSync(join(root,".context/graphics-egl-record-trace-"));
     let trace:number[];
@@ -1893,10 +1893,11 @@ for (const mode of ["native", "forwarded"] as const) {
 
       if(gl)for(const [createName,deleteName,isName] of [
         ["createFramebuffer","deleteFramebuffer","isFramebuffer"],["createTexture","deleteTexture","isTexture"],["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],
+        ["fenceSync","deleteSync","isSync"],
         ...(scenario.startsWith("encoder-array-")?[["createBuffer","deleteBuffer","isBuffer"],["createVertexArray","deleteVertexArray","isVertexArray"]]:[]),
       ]) {
         const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
-        api[createName]=()=>{const value=create();if(value){created.push(value);live.push(()=>isLive(value));}return value;};
+        api[createName]=(...args:unknown[])=>{const value=create(...args);if(value){created.push(value);live.push(()=>isLive(value));}return value;};
         api[deleteName]=(value:object|null)=>{if(value)deleted.push(value);destroy(value);};
       }
       if(gl && scenario.startsWith("pbuffer-")) { gl.clearColor(0,0,1,1); gl.clear(gl.COLOR_BUFFER_BIT); }
@@ -1950,7 +1951,8 @@ for (const mode of ["native", "forwarded"] as const) {
         return result;
       } finally {worker.terminate();dispose();}
     },{root,mode,trace,scenario});
-    expect(result).toEqual(scenario === "shared-records-render" ? {type:"egl_record_result",observed:[[255,0,0,255],[0,255,0,255],[0,0,255,255],[255,255,0,255]],retiredContexts:[31,32],retiredSurfaces:[],clean:true,error:0}
+    expect(result).toEqual(scenario === "sync-render" ? {type:"egl_record_result",observed:[[255,0,0,255]],retiredContexts:[31],retiredSurfaces:[131],clean:true,error:0}
+    :scenario === "shared-records-render" ? {type:"egl_record_result",observed:[[255,0,0,255],[0,255,0,255],[0,0,255,255],[255,255,0,255]],retiredContexts:[31,32],retiredSurfaces:[],clean:true,error:0}
     :scenario === "records-basic" ? {type:"egl_record_result",observed:[
       [255,0,0,255],[0,255,0,255],[0,255,0,255],[0,0,255,255],[0,255,0,255],[0,255,0,255],
     ],retiredContexts:[32,31],retiredSurfaces:[132,131,133],clean:true,error:0}

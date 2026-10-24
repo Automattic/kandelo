@@ -98,7 +98,7 @@ The source WebGL contract suite also compiles selected current native C
 cases through this harness, captures actual submitted bytes and replays them
 through the browser decoder. Its float/fixed and maximum-index client-array cases are cross-layer
 source evidence, not guest execution or unmodified CTS. Selection uses
-`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 185 cases.
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 206 cases.
 `KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
 file for those test-only replays. Each browser test owns and removes its
 private trace directory.
@@ -568,3 +568,17 @@ It does not execute rebuilt guest ioctl marshalling. Forwarded BO-source
 registration remains an ordinary gap, so this new GPU import scenario has
 native dispatch coverage only; the remaining applicable C replays still
 exercise both routes.
+
+
+Core fence client APIs now have native C cases for preallocation rollback,
+known-token reconciliation after unknown replies, per-record wire storage,
+finite/zero/FOREVER waits, current versus creator flush selection, retained
+sessions after context destruction, public destruction with two waiters,
+display reinitialization and cancellation cleanup. The revision runner's
+initial three cases fail unchanged `81e9638207`. Actual-C browser traces
+exercise real native/forwarded fence create/status/release and flush,
+correct red pixels and final native cleanup on all three engines. The
+adapter yields for native completion rather than copying the device
+mock's signaled status. These are source checks; normal guest marshalling,
+CTS and full browser-memory gates remain required. Server-side eglWaitSync,
+KHR sync spellings and sync capability declarations remain open.

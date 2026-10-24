@@ -5,7 +5,7 @@ import * as O from "../../../../host/src/webgl/ops";
 
 // Replay accepted public-C operations. This adapter supplies the kernel's
 // dispatch/identity role; real Rust guest marshalling remains a separate gate.
-self.onmessage = ({data}) => {
+self.onmessage = async ({data}) => {
   try {
     const forwarded=data.mode==="forwarded";
     const channels=new Map<number,ReturnType<typeof createMainForwardChannel>>();
@@ -29,10 +29,11 @@ self.onmessage = ({data}) => {
         ["createFramebuffer","deleteFramebuffer","isFramebuffer"],
         ["createTexture","deleteTexture","isTexture"],
         ["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],
+        ["fenceSync","deleteSync","isSync"],
         ...(data.peerDelete?[["createBuffer","deleteBuffer","isBuffer"],["createVertexArray","deleteVertexArray","isVertexArray"]]:[]),
       ]) {
         const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
-        api[createName]=()=>{const value=create();if(value){created.push(value);live.push(()=>isLive(value));}return value;};
+        api[createName]=(...args:unknown[])=>{const value=create(...args);if(value){created.push(value);live.push(()=>isLive(value));}return value;};
         api[deleteName]=(value:object|null)=>{if(value)deleted.push(value);destroy(value);};
       }
       if(data.pbuffer) { gl.clearColor(0,0,1,1); gl.clear(gl.COLOR_BUFFER_BIT); }
@@ -182,6 +183,31 @@ self.onmessage = ({data}) => {
             if(data.completion)completionRead=true;
             else observed.push(pixels(fd));
           }
+        }
+      } else if(kind===18) {
+        requireZero(forwarded ? channel(fd).onQuery!(O.QOP_FLUSH,new Uint8Array(),0).rc
+          : imports!.host_gl_query(7,O.QOP_FLUSH,0,0,0,0,fd),"native flush");
+      } else if(kind===19) {
+        const op=words.getUint32(0,true),token=words.getUint32(4,true);
+        const input=new Uint8Array(4);new DataView(input.buffer).setUint32(0,token,true);
+        const deadline=performance.now()+5000;
+        for(;;) {
+          let rc:number,reply:Uint8Array;
+          if(forwarded){const result=channel(fd).onQuery!(op,input,16);rc=result.rc;reply=result.bytes;}
+          else {
+            new Uint8Array(memory!.buffer,64,4).set(input);
+            rc=imports!.host_gl_query(7,op,64,4,128,16,fd);
+            reply=new Uint8Array(memory!.buffer,128,16).slice();
+          }
+          const output=new DataView(reply.buffer,reply.byteOffset,reply.byteLength);
+          if(rc!==16||output.getUint32(0,true)!==0||output.getUint32(4,true)!==token||
+              output.getUint32(12,true)!==0x47514c33||output.getUint32(8,true)>1)
+            throw new Error("C retained fence query acknowledgement");
+          if(op!==O.QOP_FENCE_STATUS || output.getUint32(8,true)===1)break;
+          if(performance.now()>=deadline)throw new Error("C retained fence did not signal");
+          // The recorded C driver marks this render fence complete. Prove
+          // native completion after yielding instead of copying that status.
+          await new Promise(resolve=>setTimeout(resolve,1));
         }
       } else if(kind===15) {
         requireZero(forwarded ? channel(fd).onQuery!(O.QOP_FINISH,new Uint8Array(),0).rc

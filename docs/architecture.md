@@ -4102,8 +4102,8 @@ paths acknowledge only after acceptance. The C wait keeps current ownership
 and reports failure without holding the EGL metadata mutex during completion.
 GLES glFinish also exposes failed completion instead of discarding it. Swap
 interval validates display/context/draw ownership; every request clamps to the
-single config's zero bounds. EGL fence objects and native wait semantics remain
-separate compatibility work.
+single config's zero bounds. Retained EGL fence client waits are described
+below; server-side wait ordering remains separate compatibility work.
 
 EGL error status and bound client API are thread-local; an unsupported API
 bind reports BAD_PARAMETER while preserving the calling thread's prior API.
@@ -4321,9 +4321,30 @@ release require a mapped, native-live object session owned by the caller,
 including after its creator/display root retires; this grants no ordinary
 GL query authority. Direct and forwarded replies publish creation only
 after output acceptance. Empty-payload flush has a separate acknowledgement
-and does not imply completion. The C sync entry points, display-level
-handles, timeout loops and server ordering remain implementation work;
-C glFlush is not yet routed to the new flush query.
+and does not imply completion. Public C glFlush submits the encoder before
+requesting this native flush, and preserves GL error reporting on failure.
+Internal encoder-only submission retains its separate helper contract.
+
+Core eglCreateSync, eglDestroySync, eglGetSyncAttrib and eglClientWaitSync
+now use generation-owned records and never-reused public handles. Each
+record reserves heap request/reply storage and a reply mutex before native
+creation, and independently retains its creator's initialized session.
+Destroying the creator does not invalidate its syncs. Public destruction
+invalidates future lookups while existing waiters keep their references;
+display termination invalidates public handles while in-flight waits retain
+the old mapping and descriptor. Unknown creation and deletion replies keep
+the known token for idempotent cleanup; unresolved cleanup gates further
+allocation on that session instead of discarding ownership.
+
+Client waits poll outside the EGL metadata lock, serialize only each wire
+reply, and use monotonic elapsed time for finite waits. They yield between
+polls, implement zero/FOREVER timeouts, and flush the waiting thread's
+current context only when requested and initially unsignaled. Cancellation
+releases the waiter reference. Metadata retirement disables cancellation
+until unlocking, so a cleanup ioctl cannot strand peers. Server-side
+ordering through eglWaitSync and KHR spellings remain implementation gaps.
+No sync extension is newly advertised; these source implementations still
+require the normal combined graphics build and conformance phase.
 
 The main-thread fallback supports synchronous queries through one reusable
 65,556-byte device mailbox per channel, matching the kernel's 64 KiB query

@@ -159,6 +159,7 @@ struct device_slot {
     pthread_t current_thread;
     uint32_t current_surface, current_read_surface;
     unsigned clears, closes;
+    uint32_t fence_tokens[32], fence_signaled[32];
     uint32_t array_binding, element_binding, saved_array_binding;
     int array_saved;
     uint32_t texture_active, texture_2d[128], texture_cube[128], renderbuffer_binding;
@@ -196,6 +197,20 @@ static uint64_t max_surface_pixels = UINT64_MAX;
 static unsigned surface_create_attempts, surface_presents;
 static unsigned finish_queries;
 static int finish_failure;
+static pthread_mutex_t fence_driver_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t fence_driver_changed = PTHREAD_COND_INITIALIZER;
+static unsigned fence_creates, fence_polls, fence_releases, flush_queries;
+static _Thread_local int *fence_wait_started;
+static int fence_create_failure, fence_status_failure, fence_release_failure, flush_failure;
+static unsigned fence_flush_signal;
+static int last_flush_fd;
+static void signal_fences(void) {
+    pthread_mutex_lock(&fence_driver_mutex);
+    for (unsigned fd=0; fd<8; fd++) for (unsigned i=0; i<32; i++)
+        if (device_slots[fd].fence_tokens[i]) device_slots[fd].fence_signaled[i] = 1;
+    pthread_cond_broadcast(&fence_driver_changed);
+    pthread_mutex_unlock(&fence_driver_mutex);
+}
 static int surface_present_failure;
 static uint32_t surface_target;
 static int fail_surface_update;
@@ -425,6 +440,7 @@ int graphics_close(int fd) {
         return 0;
     }
     assert(fd >= 10 && fd < 18 && device_slots[fd-10].object_open);
+    for (unsigned i = 0; i < 32; i++) assert(!device_slots[fd-10].fence_tokens[i]);
     assert(!transferred_handles[fd - 10]);
     imported_owners[fd - 10] = 0;
     egl_trace(9, fd, NULL, 0);
@@ -825,6 +841,54 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         egl_trace(8, fd, NULL, 0);
     } else if (request == GLIO_QUERY) {
         struct gl_query_info *q = arg;
+        if (q->op >= 0x2e && q->op <= 0x30) {
+            assert(q->in_buf_len == 4 && q->out_buf_len == 16 && q->reserved == 0);
+            const uint32_t token = *(uint32_t *)allocation_for(q->in_buf_ptr,4);
+            assert(token);
+            uint32_t *reply = allocation_for(q->out_buf_ptr,16);
+            pthread_mutex_lock(&fence_driver_mutex);
+            unsigned index = 0;
+            while (index < 32 && slot->fence_tokens[index] != token) index++;
+            uint32_t status = 0, signaled = 0;
+            if (q->op == 0x2e) {
+                assert(slot->has_current && pthread_equal(slot->current_thread,pthread_self()));
+                fence_creates++;
+                if (fence_create_failure == 1) status = 1;
+                else if (index == 32) {
+                    index = 0; while (index < 32 && slot->fence_tokens[index]) index++;
+                    assert(index < 32); slot->fence_tokens[index] = token; slot->fence_signaled[index] = 0;
+                }
+            } else if (q->op == 0x2f) {
+                fence_polls++;
+                if (fence_wait_started) *fence_wait_started = 1;
+                status = index == 32 ? 2 : 0;
+                signaled = index == 32 ? 0 : slot->fence_signaled[index];
+            } else {
+                fence_releases++;
+                if (fence_release_failure != 1 && index < 32) slot->fence_tokens[index] = 0;
+            }
+            const int failure = q->op == 0x2e ? fence_create_failure : q->op == 0x2f ? fence_status_failure : fence_release_failure;
+            if ((q->op == 0x2e && failure == 2) || (q->op == 0x2f && failure == 1) || (q->op == 0x30 && (failure == 1 || failure == 2))) {
+                pthread_cond_broadcast(&fence_driver_changed);
+                pthread_mutex_unlock(&fence_driver_mutex); errno = EIO; return -1;
+            }
+            reply[0] = status; reply[1] = token; reply[2] = signaled;
+            reply[3] = failure == 3 || (q->op == 0x2f && failure == 2) ? 0 : WPK_GL_QUERY_REPLY_MAGIC;
+            if (q->op == 0x2f && failure == 3) { reply[2] = 2; reply[3] = WPK_GL_QUERY_REPLY_MAGIC; }
+            uint32_t trace[2] = {q->op,token}; egl_trace(19,fd,trace,sizeof trace);
+            protocol_trace(2,q->op,&token,4,16);
+            pthread_cond_broadcast(&fence_driver_changed);
+            pthread_mutex_unlock(&fence_driver_mutex);
+            return 0;
+        }
+        if (q->op == 0x31) {
+            assert(q->in_buf_len == 0 && q->out_buf_len == 0 && q->reserved == 0);
+            assert(slot->has_current && pthread_equal(slot->current_thread,pthread_self()));
+            flush_queries++; last_flush_fd = fd;
+            if (flush_failure) { errno = EIO; return -1; }
+            if (fence_flush_signal) signal_fences();
+            egl_trace(18,fd,NULL,0); protocol_trace(2,q->op,NULL,0,0); return 0;
+        }
         if (q->op == 0x0e) {
             assert(q->in_buf_len == 0 && q->out_buf_len == 0 && q->reserved == 0);
             finish_queries++;
@@ -1431,6 +1495,19 @@ static void *shared_name_peer(void *data) {
     return NULL;
 }
 
+struct sync_wait_input {
+    EGLDisplay display;
+    EGLSync sync;
+    EGLint result, error;
+    int started;
+};
+static void *sync_wait_thread(void *data) {
+    struct sync_wait_input *input = data;
+    fence_wait_started = &input->started;
+    input->result = eglClientWaitSync(input->display,input->sync,0,EGL_FOREVER);
+    input->error = eglGetError();
+    return NULL;
+}
 int main(int argc, char **argv) {
     assert(argc == 2);
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -1450,6 +1527,192 @@ int main(int argc, char **argv) {
     }
     assert(eglInitialize(dpy, NULL, NULL));
     const EGLint attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    if (!strncmp(argv[1],"sync-",5)) {
+        PFNEGLCREATESYNCPROC create = (PFNEGLCREATESYNCPROC)eglGetProcAddress("eglCreateSync");
+        PFNEGLDESTROYSYNCPROC destroy = (PFNEGLDESTROYSYNCPROC)eglGetProcAddress("eglDestroySync");
+        PFNEGLCLIENTWAITSYNCPROC wait = (PFNEGLCLIENTWAITSYNCPROC)eglGetProcAddress("eglClientWaitSync");
+        PFNEGLGETSYNCATTRIBPROC query = (PFNEGLGETSYNCATTRIBPROC)eglGetProcAddress("eglGetSyncAttrib");
+        assert(create && destroy && wait && query);
+        if (!strcmp(argv[1],"sync-invalid")) {
+            assert(create(dpy,EGL_SYNC_FENCE,NULL) == EGL_NO_SYNC && eglGetError() == EGL_BAD_MATCH);
+            assert(create(EGL_NO_DISPLAY,EGL_SYNC_FENCE,NULL) == EGL_NO_SYNC && eglGetError() == EGL_BAD_DISPLAY);
+            EGLAttrib value = 17;
+            assert(!query(dpy,EGL_NO_SYNC,EGL_SYNC_TYPE,&value) && eglGetError() == EGL_BAD_PARAMETER && value == 17);
+            assert(wait(dpy,EGL_NO_SYNC,0,0) == EGL_FALSE && eglGetError() == EGL_BAD_PARAMETER);
+            assert(!destroy(dpy,EGL_NO_SYNC) && eglGetError() == EGL_BAD_PARAMETER);
+        }
+        EGLContext context = eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs);
+        assert(context && eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,context));
+        if (!strcmp(argv[1],"sync-invalid")) {
+            const EGLAttrib bad[] = {EGL_SYNC_CONDITION,EGL_SYNC_PRIOR_COMMANDS_COMPLETE,EGL_NONE};
+            assert(create(dpy,EGL_SYNC_FENCE,bad) == EGL_NO_SYNC && eglGetError() == EGL_BAD_ATTRIBUTE);
+            assert(create(dpy,0xdead,NULL) == EGL_NO_SYNC && eglGetError() == EGL_BAD_PARAMETER);
+        }
+        if (!strcmp(argv[1],"sync-allocation")) {
+            unsigned initial = allocation_count();
+            fail_calloc = 1; assert(!create(dpy,EGL_SYNC_FENCE,NULL) && eglGetError() == EGL_BAD_ALLOC); fail_calloc = 0;
+            for (int i = 0; i < 2; i++) {
+                malloc_before_failure = i;
+                assert(!create(dpy,EGL_SYNC_FENCE,NULL) && eglGetError() == EGL_BAD_ALLOC);
+                malloc_before_failure = -1;
+            }
+            assert(allocation_count() == initial && !fence_creates);
+        }
+        if (!strcmp(argv[1],"sync-create-reject")) {
+            fence_create_failure = 1;
+            assert(!create(dpy,EGL_SYNC_FENCE,NULL) && eglGetError() == EGL_BAD_ALLOC);
+            assert(!fence_releases); fence_create_failure = 0; fence_creates = 0;
+        }
+        if (!strcmp(argv[1],"sync-create-unknown") || !strcmp(argv[1],"sync-create-malformed")) {
+            fence_create_failure = !strcmp(argv[1],"sync-create-unknown") ? 2 : 3;
+            fence_release_failure = 1;
+            assert(!create(dpy,EGL_SYNC_FENCE,NULL) && eglGetError() == EGL_BAD_ACCESS);
+            assert(fence_creates == 1 && fence_releases == 1);
+            assert(!create(dpy,EGL_SYNC_FENCE,NULL) && eglGetError() == EGL_BAD_ACCESS);
+            assert(fence_creates == 1 && fence_releases == 2);
+            fence_create_failure = fence_release_failure = 0;
+            assert(eglInitialize(dpy,NULL,NULL) && fence_releases == 3);
+            fence_creates = fence_releases = 0;
+        }
+        if (!strcmp(argv[1],"sync-submit-reject")) {
+            glClearColor(1,0,0,1); fail_submit = 1;
+            assert(!create(dpy,EGL_SYNC_FENCE,NULL) && eglGetError() == EGL_BAD_ACCESS && !fence_creates);
+            assert(glGetError() == GL_INVALID_OPERATION); fail_submit = 0;
+        }
+        if (!strcmp(argv[1],"sync-wide") && sizeof(EGLAttrib) > 4) {
+            const EGLAttrib bad[] = {(EGLAttrib)((uint64_t)1 << 32) | EGL_NONE};
+            assert(!create(dpy,EGL_SYNC_FENCE,bad) && eglGetError() == EGL_BAD_ATTRIBUTE && !fence_creates);
+        }
+        if (!strcmp(argv[1],"sync-guard")) {
+            long page = sysconf(_SC_PAGESIZE);
+            void *mapping = mmap(NULL,(size_t)page*2,PROT_READ|PROT_WRITE,MAP_ANON|MAP_PRIVATE,-1,0); assert(mapping != MAP_FAILED);
+            assert(!mprotect((char *)mapping+page,(size_t)page,PROT_NONE));
+            EGLAttrib *key = (EGLAttrib *)((char *)mapping+page-sizeof(EGLAttrib)); *key = EGL_SYNC_TYPE;
+            assert(!create(dpy,EGL_SYNC_FENCE,key) && eglGetError() == EGL_BAD_ATTRIBUTE && !fence_creates);
+            assert(!munmap(mapping,(size_t)page*2));
+        }
+        EGLSurface sync_surface = EGL_NO_SURFACE;
+        if (!strcmp(argv[1],"sync-render")) {
+            sync_surface = eglCreateWindowSurface(dpy,(EGLConfig)1,(EGLNativeWindowType)&record_windows[0],NULL);
+            assert(sync_surface && eglMakeCurrent(dpy,sync_surface,sync_surface,context));
+            glClearColor(1,0,0,1); glClear(GL_COLOR_BUFFER_BIT);
+        }
+        EGLSync sync = create(dpy,EGL_SYNC_FENCE,NULL); assert(sync && fence_creates == 1);
+        if (!strcmp(argv[1],"sync-render")) {
+            glFlush(); signal_fences();
+            assert(wait(dpy,sync,EGL_SYNC_FLUSH_COMMANDS_BIT,EGL_FOREVER) == EGL_CONDITION_SATISFIED);
+        }
+        if (!strcmp(argv[1],"sync-flush-peer")) {
+            int creator_fd = _wpk_gl_fd();
+            EGLContext peer = eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs); assert(peer);
+            assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,peer));
+            int peer_fd = _wpk_gl_fd(); assert(peer_fd != creator_fd);
+            fence_flush_signal = 1;
+            assert(wait(dpy,sync,EGL_SYNC_FLUSH_COMMANDS_BIT,EGL_FOREVER) == EGL_CONDITION_SATISFIED);
+            assert(last_flush_fd == peer_fd && flush_queries == 1);
+            assert(eglReleaseThread() && eglDestroyContext(dpy,peer) && eglDestroyContext(dpy,context));
+            assert(destroy(dpy,sync) && eglTerminate(dpy)); puts("PASS sync-flush-peer"); return 0;
+        }
+        if (!strcmp(argv[1],"sync-session-reuse")) {
+            assert(eglReleaseThread() && eglDestroyContext(dpy,context));
+            context = eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs); assert(context);
+            assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,context));
+            EGLSync second = create(dpy,EGL_SYNC_FENCE,NULL); assert(second && second != sync);
+            unsigned count = 0;
+            for (unsigned fd = 0; fd < 8; fd++) for (unsigned i = 0; i < 32; i++) count += device_slots[fd].fence_tokens[i] != 0;
+            assert(count == 2 && destroy(dpy,second)); fence_creates = 1; fence_releases = 0;
+        }
+        if (!strcmp(argv[1],"sync-terminated-create")) {
+            assert(eglTerminate(dpy));
+            assert(!create(dpy,EGL_SYNC_FENCE,NULL) && eglGetError() == EGL_BAD_DISPLAY);
+            assert(eglInitialize(dpy,NULL,NULL));
+            assert(!create(dpy,EGL_SYNC_FENCE,NULL) && eglGetError() == EGL_BAD_MATCH && fence_creates == 1);
+            assert(eglReleaseThread() && eglTerminate(dpy)); puts("PASS sync-terminated-create"); return 0;
+        }
+        if (!strcmp(argv[1],"sync-status-errors")) {
+            for (int i = 1; i <= 3; i++) {
+                fence_status_failure = i; EGLAttrib output = 17;
+                assert(!query(dpy,sync,EGL_SYNC_STATUS,&output) && eglGetError() == EGL_BAD_ACCESS && output == 17);
+                assert(wait(dpy,sync,0,0) == EGL_FALSE && eglGetError() == EGL_BAD_ACCESS);
+            }
+            fence_status_failure = 0;
+        }
+        if (!strcmp(argv[1],"sync-flush-current")) {
+            fence_flush_signal = 1;
+            assert(wait(dpy,sync,EGL_SYNC_FLUSH_COMMANDS_BIT,EGL_FOREVER) == EGL_CONDITION_SATISFIED && flush_queries == 1);
+            assert(wait(dpy,sync,EGL_SYNC_FLUSH_COMMANDS_BIT,0) == EGL_CONDITION_SATISFIED && flush_queries == 1);
+            assert(destroy(dpy,sync)); fence_creates = fence_releases = flush_queries = 0; fence_flush_signal = 0;
+            sync = create(dpy,EGL_SYNC_FENCE,NULL); assert(sync);
+        }
+        if (!strcmp(argv[1],"sync-timeout")) {
+            struct timespec start, end; assert(!clock_gettime(CLOCK_MONOTONIC,&start));
+            assert(wait(dpy,sync,0,3000000) == EGL_TIMEOUT_EXPIRED);
+            assert(!clock_gettime(CLOCK_MONOTONIC,&end));
+            assert((end.tv_sec-start.tv_sec)*1000000000LL+end.tv_nsec-start.tv_nsec >= 3000000);
+        }
+        if (!strcmp(argv[1],"sync-release-unknown")) {
+            fence_release_failure = 2;
+            assert(destroy(dpy,sync) && fence_releases == 1);
+            assert(!destroy(dpy,sync) && eglGetError() == EGL_BAD_PARAMETER);
+            assert(!create(dpy,EGL_SYNC_FENCE,NULL) && eglGetError() == EGL_BAD_ACCESS && fence_creates == 1);
+            fence_release_failure = 0;
+            assert(eglInitialize(dpy,NULL,NULL));
+            fence_creates = fence_releases = 0; sync = create(dpy,EGL_SYNC_FENCE,NULL); assert(sync);
+        }
+        if (!strcmp(argv[1],"sync-destroy-wait") || !strcmp(argv[1],"sync-generation") || !strcmp(argv[1],"sync-cancel")) {
+            assert(eglReleaseThread() && eglDestroyContext(dpy,context));
+            struct sync_wait_input inputs[2] = {{dpy,sync,0,0},{dpy,sync,0,0}};
+            pthread_t threads[2]; unsigned count = !strcmp(argv[1],"sync-cancel") ? 1 : 2;
+            for (unsigned i = 0; i < count; i++) {
+                assert(!pthread_create(&threads[i],NULL,sync_wait_thread,&inputs[i]));
+                pthread_mutex_lock(&fence_driver_mutex);
+                while (!inputs[i].started) pthread_cond_wait(&fence_driver_changed,&fence_driver_mutex);
+                pthread_mutex_unlock(&fence_driver_mutex);
+            }
+            assert(destroy(dpy,sync) && !fence_releases);
+            EGLContext peer = eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs); assert(peer);
+            assert(eglDestroyContext(dpy,peer));
+            if (!strcmp(argv[1],"sync-generation")) {
+                assert(eglTerminate(dpy) && !object_closes && eglInitialize(dpy,NULL,NULL));
+                EGLAttrib output = 17;
+                assert(!query(dpy,sync,EGL_SYNC_STATUS,&output) && eglGetError() == EGL_BAD_PARAMETER && output == 17);
+            }
+            if (!strcmp(argv[1],"sync-cancel")) assert(!pthread_cancel(threads[0])); else signal_fences();
+            for (unsigned i = 0; i < count; i++) {
+                void *result = NULL; assert(!pthread_join(threads[i],&result));
+                if (!strcmp(argv[1],"sync-cancel")) assert(result == PTHREAD_CANCELED);
+                else assert(inputs[i].result == EGL_CONDITION_SATISFIED && inputs[i].error == EGL_SUCCESS);
+            }
+            assert(fence_releases == 1 && eglTerminate(dpy));
+            printf("PASS %s\n",argv[1]); return 0;
+        }
+
+        EGLAttrib value = -1;
+        assert(query(dpy,sync,EGL_SYNC_TYPE,&value) && value == EGL_SYNC_FENCE);
+        assert(query(dpy,sync,EGL_SYNC_CONDITION,&value) && value == EGL_SYNC_PRIOR_COMMANDS_COMPLETE);
+        assert(query(dpy,sync,EGL_SYNC_STATUS,&value) && value == (!strcmp(argv[1],"sync-render") ? EGL_SIGNALED : EGL_UNSIGNALED));
+        value = 17; assert(!query(dpy,sync,0xdead,&value) && eglGetError() == EGL_BAD_ATTRIBUTE && value == 17);
+        assert(wait(dpy,sync,0,0) == (!strcmp(argv[1],"sync-render") ? EGL_CONDITION_SATISFIED : EGL_TIMEOUT_EXPIRED));
+        assert(eglReleaseThread() && eglDestroyContext(dpy,context));
+        if (sync_surface) assert(eglDestroySurface(dpy,sync_surface));
+        assert(fence_releases == 0);
+        if (strcmp(argv[1],"sync-render")) assert(wait(dpy,sync,EGL_SYNC_FLUSH_COMMANDS_BIT,0) == EGL_TIMEOUT_EXPIRED && flush_queries == 0);
+        signal_fences();
+        assert(wait(dpy,sync,0,EGL_FOREVER) == EGL_CONDITION_SATISFIED);
+        assert(destroy(dpy,sync) && fence_releases == 1);
+        assert(!destroy(dpy,sync) && eglGetError() == EGL_BAD_PARAMETER);
+        assert(eglTerminate(dpy));
+        printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strcmp(argv[1],"flush-ack")) {
+        EGLContext context = eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs);
+        assert(context && eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,context));
+        glFlush(); assert(flush_queries == 1 && glGetError() == GL_NO_ERROR);
+        flush_failure = 1; glFlush(); assert(glGetError() == GL_INVALID_OPERATION);
+        flush_failure = 0;
+        assert(eglReleaseThread() && eglDestroyContext(dpy,context) && eglTerminate(dpy));
+        puts("PASS flush-ack"); return 0;
+    }
     if (!strncmp(argv[1],"core-image-",11) || !strncmp(argv[1],"dmabuf-",7)) {
         PFNEGLCREATEIMAGEPROC create = (PFNEGLCREATEIMAGEPROC)eglGetProcAddress("eglCreateImage");
         PFNEGLDESTROYIMAGEPROC destroy = (PFNEGLDESTROYIMAGEPROC)eglGetProcAddress("eglDestroyImage");

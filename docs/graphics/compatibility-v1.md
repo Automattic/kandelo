@@ -85,7 +85,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/FBO holds retain GEM backing; separate private source handles and logical native views preserve object state and storage identity. Confirmed C holds belong to retained shared object records with revision-ordered publication; uncertain import/attachment candidates belong to the shared group. Raw GPU views use the same independent storage model; BO retirement tracks every retained raw generation and retries native cleanup. CPU coherence, forwarded BO registration and complete lifecycle validation remain open | EGL, GLES object/storage model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | partial |
 | E06 | Respecification orphans sibling without altering others; OES_EGL_image | GPU view replacement preserves sibling parameters and canonical pixels, retargets logical FBOs and handles definite rejection before C backing release. C retains backing by object identity and rejects stale association completions. Raw GPU respecification and refresh preserve private canonical storage and independent parameters. CPU coherence, multi-failure recovery and guest CTS remain open | GLES storage model, host object/attachment tracking | Redefine imported texture, sample both siblings, retained FBO | partial |
 | E07 | dma-buf validation, multiple import and format/modifier enumeration; EXT import | Core EGLAttrib and KHR EGLint image creation share retained dma-buf storage and destruction. Parsing rejects wide aliases, missing mandatory fields and malformed modifier pairs before import, validates preservation and hint values, and ignores valid YUV hints for supported RGB formats. Full backing metadata, CPU coherence, format and rollback validation remain open | EGL, PRIME, GBM | CPU/GPU imports, bad fd/stride/offset/modifier; repeated import lifetime | open |
-| E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve for retained dma-buf imports. Native fence candidates, waiter leases and retryable cleanup now have retained source models. Table 17 adds caller-known create/status/release tokens, accepted-reply publication, cancellation and mapped object-session authority without a current context. Native and forwarded source rendering pass. The five public C sync definitions, display records, timeout/flush loops and server ordering remain unimplemented; C glFlush is not yet routed to the new flush query. GL-source images and full lifecycle/errors/guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
+| E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve for retained dma-buf imports. Native fence candidates, waiter leases and retryable cleanup now have retained source models. Table 17 adds caller-known create/status/release tokens, accepted-reply publication, cancellation and mapped object-session authority without a current context. Native and forwarded source rendering pass. Core C create/destroy/query/client-wait now use generation-owned records, retained sessions, serialized replies, monotonic timeouts and cancellation-safe waiter references; public glFlush requests acknowledged native flush. Focused C and three-engine source evidence is recorded below. eglWaitSync server ordering, KHR spellings and sync capability declarations remain open; no sync extension is newly advertised. GL-source images and full lifecycle/errors/guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
 | B01 | GBM allocation/import/export and plane metadata | Dumb/GPU tiers; cage adds modifier allocators | GBM, DRM BOs, host registry | SDK guest fixtures both widths; unsupported format/flags | partial |
 | B02 | GBM map/unmap coherence and authority | Kernel authoritative BO references; changed-run publication on main | GBM, kernel maps, DRI registry | Importer writes, stale readers, unmap/exit/exec; browser pixels | partial |
 | B03 | Surface ring lock/release/destroy ownership | Main two-BO ring; audit lock/destroy/outstanding buffer lifetime | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks | partial |
@@ -97,7 +97,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | H01 | Command framing, complete validation and bounded results | Full structural prevalidation protects batches. Kernel query dispatch preprobes nonempty guest destinations, rejects nonzero reserved fields/null inputs, and rejects oversized host replies without copying output. Focused Rust/host source evidence is recorded below; complete guest coverage remains open | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Canonical surface BO holds and image-owned renderer cleanup now survive descriptor inheritance/local close; focused native lifecycle checks pass. Raw BO retirement retains failed native cleanup across final member teardown and blocks affected operations until retry. Combined guest/memory-cycle validation remains pending | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
-| A01 | ABI and generated declarations match combined implementation | Current main `5cd771bff8` ABI 53 and graphics development contracts are consolidated under ABI 54. Regenerated snapshot, C/TS declarations and standalone resolver pass focused inspection; operation table stays 16. Normal artifacts and combined consumer/conformance gates remain pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
+| A01 | ABI and generated declarations match combined implementation | Current main `5cd771bff8` ABI 53 and graphics development contracts are consolidated under ABI 54. Regenerated snapshot, C/TS declarations and standalone resolver pass focused inspection; operation table stays 17. Normal artifacts and combined consumer/conformance gates remain pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
 | P01 | Real upstream compositor integration | wlroots/cage/sway recipes and consumers integrated; combined artifacts and compositor validation pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
 
 ## Separate expansions
@@ -4724,3 +4724,69 @@ is advertised, no full sync/CTS claim is made, and no hard platform boundary
 is inferred from the browser's event-loop scheduling requirement. Complete
 SDK/kernel/program/package/image rebuilds and required consumer, CTS,
 browser-memory and POSIX gates remain deferred until the rebuild/test phase.
+
+
+### Public C fence client waits and acknowledged flush
+
+Core `eglCreateSync`, `eglDestroySync`, `eglGetSyncAttrib` and
+`eglClientWaitSync` are now defined and resolved. The shared kernel ABI
+remains 54 and GL operation table remains 17. Creation submits preceding
+encoder work before inserting the fence; public `glFlush` additionally
+requests the empty native-flush acknowledgement, without a finish.
+
+Display-generation records give syncs never-reused handles and retain
+their initialized creator session independently of context records.
+Native client tokens remain monotonic across context/session reuse.
+All C record, mutex and request/reply storage is reserved before native
+creation. An unknown create or release reply retains its known token for
+idempotent cleanup and gates new allocation on that session while cleanup
+is unresolved. Retired generations retry cleanup at initialization.
+
+Waiters acquire a reference before releasing the EGL metadata lock. A
+per-record mutex serializes only wire IO and checked reply copies. Zero,
+finite and FOREVER waits use monotonic elapsed time and yield between
+polls. The flush flag selects the waiting thread's current context and is
+ignored without one; an already-signaled fence needs no flush. Public
+destruction and display termination invalidate future lookups while
+existing waiters retain the object session and mapping. Wait cancellation
+releases the reference; retirement disables cancellation until the
+metadata lock is released. Query failures preserve caller output.
+
+The rules follow the Khronos reference pages for
+[creation](https://registry.khronos.org/EGL/sdk/docs/man/html/eglCreateSync.xhtml),
+[client waits](https://registry.khronos.org/EGL/sdk/docs/man/html/eglClientWaitSync.xhtml),
+[attributes](https://registry.khronos.org/EGL/sdk/docs/man/html/eglGetSyncAttrib.xhtml)
+and [destruction](https://registry.khronos.org/EGL/sdk/docs/man/html/eglDestroySync.xhtml).
+No `eglWaitSync` server-ordering implementation or KHR spellings are
+claimed. Sync extension strings remain unadvertised, including the GLES2
+client support declaration; this is a partial source increment, not full
+EGL sync capability/conformance. These remaining items are ordinary work.
+
+| Check | Exact evidence |
+|---|---|
+| Before-source reproduction | All three initial cases fail unchanged `81e9638207`: two missing API resolution assertions and native-flush assertion; `graphics-c-sync-baseline.log` |
+| New C cases | All 21 pass: allocation rollback, rejected/unknown/malformed create, submit rejection, guarded/wide attributes, status failures/output preservation, current/peer/no-current flushing, finite timeout, uncertain release, session reuse, stale generation creation, two retained waiters, display reinitialization and cancellation; `graphics-c-sync-native.log` |
+| Complete native regression selection | All 206 cases pass under fatal UndefinedBehaviorSanitizer; same log |
+| Private wasm32 EGL/GLES compile/link and GLES audit | Passed; all 150 public GL guards and 142 core definitions/resolvers remain; `graphics-c-sync-wasm.log` |
+| EGL definition/resolver inventory | 43/44 core definitions and corresponding resolvers; only eglWaitSync absent; `graphics-c-sync-api-inventory.log`; definitions are not semantic conformance |
+| Actual-C native/forwarded browser selection | 21 pass across Chromium/Firefox/WebKit, including six new fence cases plus image, platform-window and completion controls; `graphics-c-sync-browser.log` |
+| Final fence source rerun | Six native/forwarded cases pass across all three engines; `graphics-c-sync-browser-final.log` |
+| Test evidence registry | All 597 files agree; `graphics-c-sync-registry.log` |
+
+The new browser cases replay actual C command/query traces, render red,
+insert and flush a real native fence, yield until it signals, retire the
+creator and continue polling through its retained session. They require
+one checked cleanup path, no live native resources and no GL errors.
+Native mocks do not supply browser completion or pixel results. The
+adapter still supplies synthetic kernel identity/scratch plumbing; it
+does not execute rebuilt guest EGL/GLIO marshalling. Persistent-realm
+memory boundary probes remain enabled.
+
+The private extra actual-GBM compile stopped at missing `xf86drm.h` after
+the EGL/GLES paired link and audits passed; `graphics-c-sync-wasm.log`.
+No actual-GBM link rerun is claimed for this increment. Its source is
+unchanged, and normal package/header provisioning remains part of the
+required deferred build phase, not a platform boundary. Normal graphics
+SDK/kernel/program/package/image rebuilds, upstream CTS, compositor
+consumers, complete browser-memory and POSIX gates remain deferred/unrun.
+The full compatibility goal stays active.
