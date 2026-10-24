@@ -58,9 +58,9 @@ reproduction and correct observable failure; none is inferred from a stub.
 
 | ID | Required behavior / source | Current implementation and known failure | Owner / dependencies | Executable validation | Status / boundary |
 |---|---|---|---|---|---|
-| G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reference-counted C name owner reserves buffer/texture/renderbuffer names, including implicit binds; shared shader/program allocation is serialized. Checked buffer/texture/RBO binding and texture/RBO/FBO deletion preserve C ownership on definite rejection. Public C groups, indeterminate reconciliation and full query/error coverage remain open | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
+| G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reference-counted C name owner reserves buffer/texture/renderbuffer names, including implicit binds; shared shader/program allocation is serialized. Checked buffer/texture/RBO binding and buffer/texture/RBO/FBO deletion preserve C ownership on definite rejection. Public C groups, indeterminate reconciliation and full query/error coverage remain open | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
 | G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Multiple public contexts have focused native/source-browser coverage; full rollback, hints and CTS remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
-| G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Native buffer realization now occurs on first bind; delayed reservations cannot reject or replace a peer object. Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffers plus client attributes use a bounded presence query; core buffer/vertex queries preserve logical state. Client staging now retains/restores actual ARRAY identity across peer deletion/reuse (operation table 6). Checked buffer binds preserve C pointer interpretation on definite rejection. Buffer deletion, concurrent name ordering and full size/limit/negative coverage remain open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
+| G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Native buffer realization now occurs on first bind; delayed reservations cannot reject or replace a peer object. Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffers plus client attributes use a bounded presence query; core buffer/vertex queries preserve logical state. Client staging now retains/restores actual ARRAY identity across peer deletion/reuse (operation table 6). Checked buffer binds preserve C pointer interpretation on definite rejection. Buffer deletion also waits for native acceptance; concurrent name ordering and full size/limit/negative coverage remain open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core attribute/source/attachment reflection, acknowledged large-source uploads and validation entrypoints are implemented; complete executable/attribute/uniform validation still needs work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Checked renderer replies now supply complete element widths/values without C reflection caches and preserve failed-query outputs. Shared-peer/source-retirement/relink cases have focused evidence. Locations now remain stable across repeated/array-alias lookups, and checked chunked C lookup/reflection removes fixed buffers. Shader-name translation beyond WebGL limits and complete setter/type/array validation remain open | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | Texture reservations now remain separate from native realization, including delayed shared declarations. C bindings/attachments retain typed object records, acknowledged binds publish references/dimensionality after renderer acceptance, logical image views separate per-object sampling state from canonical GPU pixels, and texture-unit storage follows the reported limit. WebGL2 normalization, core parameter queries and context-owned default texture objects are implemented in host source; complete target/state/error and guest CTS audit remain open | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
@@ -87,7 +87,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | H01 | Command framing, complete validation and bounded results | Full structural prevalidation now protects batches; host source regressions pass | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Canonical surface BO holds and image-owned renderer cleanup now survive descriptor inheritance/local close; focused native lifecycle checks pass. Combined guest/memory-cycle validation remains pending | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
-| A01 | ABI and generated declarations match combined implementation | Main heap-safepoint ABI 52 and graphics session/thread-current/display-authority changes are combined under ABI 58 with shared-context construction and acknowledged surface creation; compatible graphics operation table 14 adds checked image transactions, framebuffer selection and buffer binding. Generated outputs and resolver verified, full artifacts pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
+| A01 | ABI and generated declarations match combined implementation | Main heap-safepoint ABI 52 and graphics session/thread-current/display-authority changes are combined under ABI 58 with shared-context construction and acknowledged surface creation; compatible graphics operation table 15 adds checked image transactions, framebuffer selection and buffer binding/deletion. Generated outputs and resolver verified, full artifacts pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
 | P01 | Real upstream compositor integration | wlroots/cage/sway recipes and consumers integrated; combined artifacts and compositor validation pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
 
 ## Separate expansions
@@ -3193,3 +3193,60 @@ Buffer deletion acknowledgement, concurrent C/native name ordering,
 indeterminate/context-loss reconciliation and the preceding full inventory
 remain unfinished. Normal artifact, CTS, compositor, full browser-memory
 and POSIX gates remain user-deferred until the implementation phase ends.
+
+
+## Acknowledged buffer deletion and native VAO rollback (2026-10-24)
+
+C buffer deletion now pins the selected object while native acceptance is
+pending, then releases namespace, active ARRAY/ELEMENT and active-VAO
+attribute references after a positive reply. Definite rejection leaves
+these records and subsequent pointer/index interpretation intact. The new
+`QOP_DELETE_BUFFER` (`0x2c`) accepts an exact four-byte name and returns a
+12-byte checked acceptance reply. Operation table 15 is mirrored in Rust,
+C and TypeScript; prior layouts and ABI 58 remain unchanged.
+
+Queued batched and checked host deletion use one transaction. Copies of
+namespace, retired-object and active attribute metadata precede effects.
+Native clearing uses a temporary buffer to preserve legal attribute
+formats/offsets before deleting its native bindings. Every native setup,
+attribute, ARRAY, ELEMENT and temporary-release step is checked. Definite
+failure reverses all attempted steps, including the failing one, restoring
+original normal/converted vertex views and the separate native index view.
+Only complete acceptance publishes metadata. Final native storage collection
+still respects inactive VAOs, peer bindings and saved client-array pins.
+
+Both new C cases fail unchanged `3fc319e85f` after equivalent queued native
+delete rejection. They prove attribute-buffer identity or retained-index
+interpretation survives, then accept retry, use client indices after
+accepted deletion, and finish with zero tracked allocations. Twelve host
+cases cover ordinary/converted views, temporary allocation, partial pointer,
+late ELEMENT and temporary-delete failure, a pointer wrapper that mutates
+before reporting failure, metadata allocation, batched duplicates and exact
+query spans/absent names. Existing shared-retirement cases remain enabled.
+
+The GPU source driver renders green using two attributes and an index in
+one logical buffer with separate native vertex/index views. It rejects
+temporary allocation and injects real invalid-enum pointer, late ELEMENT
+and temporary-release failures. Each rejection preserves green rendering.
+Accepted deletion clears both native attributes and ARRAY/ELEMENT bindings;
+reusing the public number for fresh blue data renders blue. Actual C record
+replay carries checked deletion through native and forwarded routes. The
+source fixtures still supply synthetic kernel dispatch/identity plumbing.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Native C UBSan and private wasm32 paired link/audit | 124 passed; 150 authority guards, 142/142 core definitions/resolvers | `.context/graphics-buffer-delete-first-native.log` |
+| Host graphics source and Node/browser declarations | 485 cases in 23 files and declarations passed | `.context/graphics-buffer-delete-first-host.log` |
+| Real source WebGL | 168 passed across Chromium/Firefox/WebKit, no skips | `.context/graphics-buffer-delete-first-browser.log` |
+| Source protocol/memory-boundary negatives | 12 passed | `.context/graphics-buffer-delete-final-memory-boundary.log` |
+| Rust GLIO/layout/ioctl and ABI inspection | 47/4/13 passed; ABI 58, operation table 15 consistent | `.context/graphics-buffer-delete-first-rust-abi.log` |
+| C baseline | Both cases fail unchanged `3fc319e85f` | `.context/graphics-buffer-delete-baseline-native.log` |
+
+This closes definite buffer-deletion publication/rollback for the tested
+paths. Concurrent C/native name ordering through peer deletion/reuse and
+multiple-failure/indeterminate/context-loss recovery remain open before
+public C sharing. CPU image coherence, forwarded BO-source registration
+and the full preceding compatibility inventory remain unfinished. Normal
+SDK/program/package/image rebuilds, CTS, compositor consumers, full browser
+memory and POSIX validation remain deferred until the implementation phase
+is ready; these source results do not establish those contracts.

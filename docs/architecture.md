@@ -4202,9 +4202,22 @@ name and serial only after acceptance, preserving pointer interpretation on
 definite rejection. Queued and checked host binds share native realization,
 view synchronization and rollback. Namespace/store/view metadata is reserved
 before binding; failed candidates and their metadata are removed and prior
-native selection restored. Buffer deletion and concurrent C/native name
-ordering remain separate unfinished transactions. Indeterminate completion
+native selection restored. Concurrent C/native name ordering remains an
+unfinished transaction. Indeterminate completion
 still requires general reconciliation; public C sharing remains rejected.
+
+Operation-table v15 adds checked single-name buffer deletion (four-byte
+input, 12-byte acceptance reply). C pins the selected record through native
+acceptance before releasing namespace, active ARRAY/ELEMENT and active-VAO
+attribute references. Host queued/batched and checked deletion share staged
+namespace/retired/attribute metadata. Native clearing uses a temporary buffer,
+then checks individual attribute, ARRAY and ELEMENT changes. A definite
+failure restores attempted steps in reverse, including original converted
+vertex views and the separate native index view. Metadata publishes after
+all native changes accept; final storage collection follows logical retirement.
+Inactive containers, other contexts and saved client-array identities keep
+retired storage. Multiple restoration failures and indeterminate completion
+still require general context recovery, and public C sharing remains rejected.
 
 The user-space libraries are sysroot libraries, not kernel build outputs:
 `scripts/build-musl.sh` installs the headers, resolves the `libdrm` package

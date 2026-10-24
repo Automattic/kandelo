@@ -314,6 +314,62 @@ self.onmessage = ({ data }) => {
       mutate(O.QOP_BIND_BUFFER, [target, name + 1]);
       bufferBindRetry.push(new DataView(query(O.QOP_GET_INTEGERV, [pname], 4, 12).buffer).getUint32(0, true));
     }
+    // One object supplies two vertex attributes and a separately classified
+    // native index view. A later selector failure must restore all of them.
+    checked(O.QOP_BIND_IMAGE_OBJECT, [1, 0x0de1, 30], 0, 12);
+    mutate(O.QOP_IMAGE_STORAGE, [O.OP_TEX_IMAGE_2D, 0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 0]);
+    mutate(O.QOP_BIND_FRAMEBUFFER, [0x8d40, 88]);
+    mutate(O.QOP_IMAGE_ATTACHMENT, [1, 0x8d40, 0x8ce0, 0x0de1, 30, 0]);
+    for (const [name, type, text] of [
+      [201, 0x8b31, "attribute vec2 position;attribute vec4 color;varying vec4 c;void main(){c=color;gl_Position=vec4(position,0.,1.);gl_PointSize=1.;}"],
+      [202, 0x8b30, "precision mediump float;varying vec4 c;void main(){gl_FragColor=c;}"]
+    ] as [number, number, string][]) {
+      const bytes = new TextEncoder().encode(text);
+      send(O.OP_CREATE_SHADER, [type, name], new Uint8Array(), 12);
+      send(O.OP_SHADER_SOURCE, [name, bytes.length], bytes, 12);
+      send(O.OP_COMPILE_SHADER, [name], new Uint8Array(), 12);
+    }
+    send(O.OP_CREATE_PROGRAM, [203], new Uint8Array(), 12);
+    send(O.OP_ATTACH_SHADER, [203, 201], new Uint8Array(), 12); send(O.OP_ATTACH_SHADER, [203, 202], new Uint8Array(), 12);
+    send(O.OP_BIND_ATTRIB_LOCATION, [203, 0, 8], new TextEncoder().encode("position"), 12);
+    send(O.OP_BIND_ATTRIB_LOCATION, [203, 1, 5], new TextEncoder().encode("color"), 12);
+    send(O.OP_LINK_PROGRAM, [203], new Uint8Array(), 12); send(O.OP_USE_PROGRAM, [203], new Uint8Array(), 12);
+    send(O.OP_VIEWPORT, [0, 0, 1, 1], new Uint8Array(), 12);
+    const geometry = (color: number[]) => {
+      mutate(O.QOP_BIND_BUFFER, [0x8892, 200]);
+      send(O.OP_BUFFER_DATA, [0x8892, 26, 0x88e4], new Uint8Array(), 12);
+      const bytes = new Uint8Array(26); bytes.set(new Uint8Array(new Float32Array([0, 0, ...color]).buffer));
+      send(O.OP_BUFFER_SUB_DATA, [0x8892, 0, 26], bytes, 12);
+      for (const [index, size, offset] of [[0, 2, 0], [1, 4, 8]]) {
+        send(O.OP_VERTEX_ATTRIB_POINTER, [index, size, 0x1406, 0, 24, offset], new Uint8Array(), 12);
+        send(O.OP_ENABLE_VERTEX_ATTRIB_ARRAY, [index], new Uint8Array(), 12);
+      }
+      mutate(O.QOP_BIND_BUFFER, [0x8893, 200]);
+    };
+    const renderBuffer = () => {
+      send(O.OP_DRAW_ELEMENTS, [0, 1, 0x1403, 24], new Uint8Array(), 12);
+      return pixels(88, 12);
+    };
+    geometry([0, 1, 0, 1]); require(error(12) === 0, "buffer deletion render setup");
+    const bufferDeleteRollback: number[][] = [];
+    const createForDelete = gl.createBuffer; gl.createBuffer = () => null;
+    try { mutate(O.QOP_DELETE_BUFFER, [200], 1); } finally { gl.createBuffer = createForDelete; }
+    require(error(12) === 0x505, "buffer delete allocation rejection"); bufferDeleteRollback.push(renderBuffer());
+    inject("vertexAttribPointer", (original, args) => original(args[0], args[1], 0xdead, ...args.slice(3)), () => mutate(O.QOP_DELETE_BUFFER, [200], 1));
+    bufferDeleteRollback.push(renderBuffer());
+    const bindForDelete = gl.bindBuffer.bind(gl); let rejectedElement = false;
+    gl.bindBuffer = (target, buffer) => {
+      if (target === 0x8893 && buffer === null && !rejectedElement) { rejectedElement = true; bindForDelete(0xdead, null); }
+      else bindForDelete(target, buffer);
+    };
+    try { mutate(O.QOP_DELETE_BUFFER, [200], 1); } finally { gl.bindBuffer = bindForDelete; }
+    require(rejectedElement && error(12) === 0x500, "buffer delete late selector rejection"); bufferDeleteRollback.push(renderBuffer());
+    inject("deleteBuffer", () => gl.bindBuffer(0xdead, null), () => mutate(O.QOP_DELETE_BUFFER, [200], 1));
+    bufferDeleteRollback.push(renderBuffer());
+    mutate(O.QOP_DELETE_BUFFER, [200]);
+    const bufferDeleteCleared = [gl.getParameter(gl.ARRAY_BUFFER_BINDING), gl.getParameter(gl.ELEMENT_ARRAY_BUFFER_BINDING),
+      gl.getVertexAttrib(0, gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING), gl.getVertexAttrib(1, gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING)].map(value => value === null ? 0 : 1);
+    geometry([0, 0, 1, 1]); const bufferDeleteRetry = renderBuffer();
     const errors = [error(12)];
     api.host_gl_destroy_context(7, 21);
     const afterSourceRetirement = pixels(81, 12);
@@ -323,7 +379,7 @@ self.onmessage = ({ data }) => {
     api.host_gl_unbind(7, 12);
     kernel.gl.destroyGpuBo(41);
     const clean = made.length === deleted.length && made.every(value => deleted.includes(value)) && live.every(check => !check());
-    postMessage({ type: "image_storage_result", namespace, firstParam, secondParam, red, rboName, green, sampledGreen, orphan, aSource, bSource, mipOrphan, reimport, rboSource, rboOrphan, rejected, retargetRejected, reused, retained, retainedState, retainedImport, retainedImported, reusedAfterPeerImport, afterSourceRetirement, mutationRollback, storageReject, ownedStorageRetry, framebufferBindReject, framebufferBindRetry, bufferBindReject, bufferBindRetry, errors, clean, error: gl.getError() });
+    postMessage({ type: "image_storage_result", namespace, firstParam, secondParam, red, rboName, green, sampledGreen, orphan, aSource, bSource, mipOrphan, reimport, rboSource, rboOrphan, rejected, retargetRejected, reused, retained, retainedState, retainedImport, retainedImported, reusedAfterPeerImport, afterSourceRetirement, mutationRollback, storageReject, ownedStorageRetry, framebufferBindReject, framebufferBindRetry, bufferBindReject, bufferBindRetry, bufferDeleteRollback, bufferDeleteCleared, bufferDeleteRetry, errors, clean, error: gl.getError() });
   }
   catch (error) {
     postMessage({ type: "image_storage_failed", error: String(error) });

@@ -24,7 +24,7 @@ import { runUniformLookup, uniformLocation } from "./uniform-queries.js";
 import { checkedQueryReply, runStateQuery } from "./state-query.js";
 import { runObjectQuery } from "./object-query.js";
 import { runShaderSourceUpload } from "./shader-source.js";
-import { collectRetiredBuffers } from "./buffer-references.js";
+import { collectRetiredBuffers, deleteBufferNames } from "./buffer-references.js";
 import { bindBufferObject, canonicalBuffer } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
@@ -121,6 +121,15 @@ export function runGlQuery(
   const inDv = new DataView(input.buffer, input.byteOffset, input.byteLength);
   const outDv = new DataView(out.buffer, out.byteOffset, out.byteLength);
 
+  if (op === O.QOP_DELETE_BUFFER) {
+    if (input.byteLength !== 4 || out.byteLength !== 12) return -22;
+    return checkedQueryReply(b, out, 4, payload => {
+      if (!deleteBufferNames(b, [inDv.getUint32(0, true)])) return -5;
+      collectRetiredBuffers(b);
+      new DataView(payload.buffer).setUint32(0, 1, true);
+      return 4;
+    });
+  }
   if (op === O.QOP_BIND_BUFFER) {
     if (input.byteLength !== 8 || out.byteLength !== 12) return -22;
     return checkedQueryReply(b, out, 4, payload => {

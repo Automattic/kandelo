@@ -204,7 +204,7 @@ static int indexed_queries;
 static uint32_t indexed_max, query_scalar, query_gl_error, query_status;
 static unsigned image_failure, image_queries, fail_image_storage, image_pixel_updates;
 static unsigned bind_failure, bind_queries;
-static unsigned buffer_bind_failure;
+static unsigned buffer_bind_failure, buffer_delete_failure;
 static unsigned image_mutation_failure, image_mutation_queries;
 static EGLImageKHR nested_image_import, nested_image_state;
 static struct wpk_gles_context *close_group_peer;
@@ -268,6 +268,18 @@ static int native_buffer_bind(struct device_slot *slot, uint32_t target, uint32_
         assert(target == GL_ELEMENT_ARRAY_BUFFER);
         slot->element_binding = name;
     }
+    return 1;
+}
+static int native_buffer_delete(struct device_slot *slot, uint32_t name) {
+    if (buffer_delete_failure) {
+        buffer_delete_failure = 0;
+        query_gl_error = GL_OUT_OF_MEMORY;
+        return 0;
+    }
+    if (name && slot->array_binding == name)
+        slot->array_binding = 0;
+    if (name && slot->element_binding == name)
+        slot->element_binding = 0;
     return 1;
 }
 static uint32_t *object_image_revision(struct device_slot *slot, uint32_t kind, uint32_t name) {
@@ -562,6 +574,12 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             }
             if (op == OP_BIND_BUFFER)
                 (void)native_buffer_bind(slot, words[0], words[1]);
+            if (op == OP_DELETE_BUFFERS)
+                for (uint32_t i = 0; i < words[0]; i++) {
+                    uint32_t name;
+                    memcpy(&name, commands + at + 8 + i * 4, 4);
+                    (void)native_buffer_delete(slot, name);
+                }
             if (op == OP_ACTIVE_TEXTURE)
                 slot->texture_active = words[0] - GL_TEXTURE0;
             if (op == OP_BIND_TEXTURE)
@@ -769,6 +787,18 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             memcpy(trace + 3, input, q->in_buf_len);
             egl_trace(11, fd, trace, 12 + q->in_buf_len);
             protocol_trace(2, q->op, input, q->in_buf_len, 12);
+            return 0;
+        }
+        if (q->op == 0x2c) {
+            assert(q->in_buf_len == 4 && q->out_buf_len == 12);
+            const uint32_t *input = allocation_for(q->in_buf_ptr, 4);
+            uint32_t *reply = allocation_for(q->out_buf_ptr, 12);
+            reply[0] = native_buffer_delete(slot, input[0]) ? 0u : 1u;
+            reply[1] = reply[0] ? 0u : 1u;
+            reply[2] = 0x47514c33u;
+            uint32_t trace[4] = {q->op, 12, reply[0], input[0]};
+            egl_trace(11, fd, trace, sizeof trace);
+            protocol_trace(2, q->op, input, 4, 12);
             return 0;
         }
         if (q->op == 0x2b) {
@@ -2335,6 +2365,51 @@ int main(int argc, char **argv) {
         _wpk_gl_destroy_encoder(peer);
         assert(closes == 1);
         assert(eglTerminate(dpy) && allocation_count() == 0);
+        printf("PASS %s\n", argv[1]);
+        return 0;
+    }
+    if (!strcmp(argv[1], "buffer-delete-reject-array") ||
+        !strcmp(argv[1], "buffer-delete-reject-element")) {
+        int array = !strcmp(argv[1], "buffer-delete-reject-array");
+        GLenum target = array ? GL_ARRAY_BUFFER : GL_ELEMENT_ARRAY_BUFFER;
+        GLuint name = 17;
+        glBindBuffer(target, name);
+        if (array)
+            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+        glFlush();
+        buffer_delete_failure = 1;
+        glDeleteBuffers(1, &name);
+        glFlush();
+        assert(glGetError() == GL_OUT_OF_MEMORY);
+        assert((array ? device_slots[0].array_binding : device_slots[0].element_binding) == name);
+        if (array) {
+            GLint value = -1;
+            glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &value);
+            assert(value == 17);
+            glBufferData(target, 8, NULL, GL_STATIC_DRAW);
+            glFlush();
+            assert(buffer_uploads == 1 && glGetError() == GL_NO_ERROR);
+        } else {
+            glDrawElements(GL_POINTS, 1, GL_UNSIGNED_SHORT, NULL);
+            glFlush();
+            assert(draw_commands == 1 && buffer_uploads == 0 && glGetError() == GL_NO_ERROR);
+        }
+        glDeleteBuffers(1, &name);
+        glFlush();
+        assert((array ? device_slots[0].array_binding : device_slots[0].element_binding) == 0);
+        if (array) {
+            GLint value = -1;
+            glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &value);
+            assert(value == 0);
+        } else {
+            const GLushort index = 0;
+            glDrawElements(GL_POINTS, 1, GL_UNSIGNED_SHORT, &index);
+            glFlush();
+            assert(draw_commands == 2 && buffer_uploads == 1 && glGetError() == GL_NO_ERROR);
+        }
+        assert(glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
         printf("PASS %s\n", argv[1]);
         return 0;
     }

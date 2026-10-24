@@ -55,7 +55,7 @@ scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh ce8cd9dbcf
 scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh
 ```
 
-The 122 current cases cover image siblings and retained framebuffer storage,
+The 124 current cases cover image siblings and retained framebuffer storage,
 redefinition, cleanup, invalid handles, repeated contexts, the shared
 shader/program namespace, boolean numeric conversion, vectors longer than
 four elements, unchanged query output after device failure and EGL config
@@ -341,3 +341,17 @@ actual synchronous queries and submits in order; peer-deletion injection
 recognizes both binding encodings. The GPU driver checks preserved native
 buffer bytes after rejected creation/binding and accepted retry on both
 targets. Buffer deletion and concurrent namespace ordering remain open.
+
+
+Buffer-delete rejection cases preserve C attribute/index interpretation and
+native selectors after failed deletion, then accept retry and require final
+zero tracked allocations. Both fail unchanged `3fc319e85f`. Host deletion
+checks restore multiple ordinary/converted attribute pointers and separate
+index views after partial failure, including a wrapper that mutates before
+reporting an error. Metadata copies precede effects; queued multi-name and
+checked single-name paths share the transaction. Source GPU checks render
+after temporary allocation/pointer/late selector/release rejection, require
+all active native references cleared on acceptance, then reuse the number
+with fresh data and render again. Generic C query replay validates the checked
+deletions on native and forwarded routes. These checks do not prove concurrent
+public C sharing or general recovery after multiple native failures.

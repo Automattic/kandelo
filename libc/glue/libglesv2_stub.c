@@ -1885,11 +1885,26 @@ void glDeleteBuffers(GLsizei n, const GLuint *names) {
         return;
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
     struct wpk_object_group *group = state->objects;
-    pthread_mutex_lock(&group->mutex);
     for (GLsizei i = 0; i < n; i++) {
+        pthread_mutex_lock(&group->mutex);
         struct wpk_object_name *object = find_object_name(group, WPK_NAMES_BUFFER, names[i]);
-        if (!object)
+        if (!object) {
+            pthread_mutex_unlock(&group->mutex);
             continue;
+        }
+        if (object->references == UINT_MAX) {
+            pthread_mutex_unlock(&group->mutex);
+            raise_client_error(GL_OUT_OF_MEMORY);
+            return;
+        }
+        object->references++; // Pin the exact record through native acceptance.
+        pthread_mutex_unlock(&group->mutex);
+        uint32_t word = names[i];
+        if (checked_mutation_query(QOP_DELETE_BUFFER, &word, 1) != 1) {
+            object_release(group, object);
+            continue;
+        }
+        pthread_mutex_lock(&group->mutex);
         // Only the caller's active bindings are detached. Other VAOs and
         // group members retain the actual now-unnamed object identity.
         if (state->array_object == object) {
@@ -1915,9 +1930,9 @@ void glDeleteBuffers(GLsizei n, const GLuint *names) {
             }
         object->named = 0;
         release_object_locked(group, object);
+        pthread_mutex_unlock(&group->mutex);
+        object_release(group, object);
     }
-    pthread_mutex_unlock(&group->mutex);
-    emit_name_array(OP_DELETE_BUFFERS, n, names);
 }
 
 static int checked_query_reply(uint32_t op, const void *input, uint32_t input_len, uint8_t *reply,
