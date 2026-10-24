@@ -2405,6 +2405,9 @@ static const char *const k_client_extensions[] = {
     "GL_EXT_texture_format_BGRA8888",
     "GL_EXT_unpack_subimage",
     "GL_OES_EGL_image",
+    /* Fence placement is supplied by the EGL client facade, rather than a
+     * WebGL getExtension name. It adds no GLES entry points. */
+    "GL_OES_EGL_sync",
 };
 
 static int has_extension(const char *list, const char *name) {

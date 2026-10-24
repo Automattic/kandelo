@@ -85,7 +85,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/FBO holds retain GEM backing; separate private source handles and logical native views preserve object state and storage identity. Confirmed C holds belong to retained shared object records with revision-ordered publication; uncertain import/attachment candidates belong to the shared group. Raw GPU views use the same independent storage model; BO retirement tracks every retained raw generation and retries native cleanup. CPU coherence, forwarded BO registration and complete lifecycle validation remain open | EGL, GLES object/storage model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | partial |
 | E06 | Respecification orphans sibling without altering others; OES_EGL_image | GPU view replacement preserves sibling parameters and canonical pixels, retargets logical FBOs and handles definite rejection before C backing release. C retains backing by object identity and rejects stale association completions. Raw GPU respecification and refresh preserve private canonical storage and independent parameters. CPU coherence, multi-failure recovery and guest CTS remain open | GLES storage model, host object/attachment tracking | Redefine imported texture, sample both siblings, retained FBO | partial |
 | E07 | dma-buf validation, multiple import and format/modifier enumeration; EXT import | Core EGLAttrib and KHR EGLint image creation share retained dma-buf storage and destruction. Parsing rejects wide aliases, missing mandatory fields and malformed modifier pairs before import, validates preservation and hint values, and ignores valid YUV hints for supported RGB formats. Full backing metadata, CPU coherence, format and rollback validation remain open | EGL, PRIME, GBM | CPU/GPU imports, bad fd/stride/offset/modifier; repeated import lifetime | open |
-| E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve for retained dma-buf imports. Native fence candidates, waiter leases and retryable cleanup now have retained source models. Table 17 adds caller-known create/status/release tokens, accepted-reply publication, cancellation and mapped object-session authority without a current context. Native and forwarded source rendering pass. Core C create/destroy/query/client-wait now use generation-owned records, retained sessions, serialized replies, monotonic timeouts and cancellation-safe waiter references; public glFlush requests acknowledged native flush. Focused C and three-engine source evidence is recorded below. eglWaitSync server ordering, KHR spellings and sync capability declarations remain open; no sync extension is newly advertised. GL-source images and full lifecycle/errors/guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
+| E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve for retained dma-buf imports. Native fence candidates, waiter leases and retryable cleanup now have retained source models. Table 17 adds caller-known create/status/release tokens, accepted-reply publication, cancellation and mapped object-session authority without a current context. Native and forwarded source rendering pass. Core C create/destroy/query/client-wait now use generation-owned records, retained sessions, serialized replies, monotonic timeouts and cancellation-safe waiter references; public glFlush requests acknowledged native flush. Focused C and three-engine source evidence is recorded below. The four KHR_fence_sync aliases share these records with width-correct lists/output and 64-bit timeouts; EGL_KHR_fence_sync and client GL_OES_EGL_sync are declared. eglWaitSync server ordering remains open; EGL_KHR_wait_sync is not advertised. GL-source images and full lifecycle/errors/guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
 | B01 | GBM allocation/import/export and plane metadata | Dumb/GPU tiers; cage adds modifier allocators | GBM, DRM BOs, host registry | SDK guest fixtures both widths; unsupported format/flags | partial |
 | B02 | GBM map/unmap coherence and authority | Kernel authoritative BO references; changed-run publication on main | GBM, kernel maps, DRI registry | Importer writes, stale readers, unmap/exit/exec; browser pixels | partial |
 | B03 | Surface ring lock/release/destroy ownership | Main two-BO ring; audit lock/destroy/outstanding buffer lifetime | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks | partial |
@@ -4790,3 +4790,48 @@ required deferred build phase, not a platform boundary. Normal graphics
 SDK/kernel/program/package/image rebuilds, upstream CTS, compositor
 consumers, complete browser-memory and POSIX gates remain deferred/unrun.
 The full compatibility goal stays active.
+
+
+### KHR fence interfaces and client support declaration
+
+The four `EGL_KHR_fence_sync` entry points now resolve to width-correct
+wrappers over the core registry. Core and KHR handles interoperate for
+query, waiting and destruction. KHR creation reads an EGLint attribute
+key without accessing a value for an unknown key, and distinguishes its
+BAD_ATTRIBUTE error for an unsupported type from core BAD_PARAMETER.
+KHR attribute queries copy only four bytes after success, preserving
+neighboring storage and failed outputs. Timeout values remain 64-bit.
+
+EGL now declares EGL_KHR_fence_sync. The C client extension layer adds
+GL_OES_EGL_sync to identify the GLES2 API's ability to place fence commands;
+it does not request an unrelated WebGL extension or add GLES functions.
+Both strings are defined by
+[the KHR fence specification](https://registry.khronos.org/EGL/extensions/KHR/EGL_KHR_fence_sync.txt).
+That extension contains the four client interfaces, not server-side
+`eglWaitSync`. EGL_KHR_wait_sync remains unadvertised and eglWaitSyncKHR
+unresolved. The missing core server wait remains ordinary baseline work;
+no full EGL 1.5 or upstream sync-conformance result is claimed.
+
+| Check | Exact evidence |
+|---|---|
+| Before-source comparison | Five new cases fail unchanged `7efae46e42` at missing KHR resolution; `graphics-khr-sync-baseline.log` |
+| Native C source selection | All 211 fatal-UBSan cases pass, including five KHR cases for resolution, core/KHR identities, distinct errors, protected attribute-list endings, four-byte outputs and a retained wait whose finite timeout exceeds u32; `graphics-khr-sync-native.log` |
+| Private wasm32 source | EGL/GLES paired link, all 150 GL current guards, 142 GLES2 core symbols and all four KHR fence definitions pass; `graphics-khr-sync-wasm.log`, `graphics-khr-sync-symbols.txt` |
+| Actual-C browser replays | All 12 KHR/core native/forwarded cases pass across Chromium/Firefox/WebKit with real fences, red pixels, accepted completion, creator retirement and native cleanup; `graphics-khr-sync-browser.log` |
+| Evidence inventory | All 597 registered files agree; `graphics-khr-sync-registry.log` |
+
+Browser control traces now distinguish a completion assertion from an
+unsignaled zero-timeout observation. A real fence may finish sooner than
+the native device double's schedule. A required completion still waits
+for the real native status after yielding; no mock status becomes a
+browser completion result. These remain source replays with synthetic
+kernel identity/scratch plumbing, not normal guest EGL/GLIO execution.
+ABI 54 and GL operation table 17 remain fixed. Normal graphics artifact
+builds, CTS, cage/sway, full browser-memory and POSIX gates remain deferred.
+
+The server-wait audit also confirms that the existing SubmitQueue still
+borrows guest memory and dispatches through mutable current bindings.
+Nonblocking server ordering must reserve owned work and execution lifetime
+before acknowledging a wait, preserve query/presentation order and release
+retained dependencies on teardown. A blocking client wait inside glFlush,
+a finish substitution or a no-op does not implement that contract.

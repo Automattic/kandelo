@@ -188,7 +188,7 @@ self.onmessage = async ({data}) => {
         requireZero(forwarded ? channel(fd).onQuery!(O.QOP_FLUSH,new Uint8Array(),0).rc
           : imports!.host_gl_query(7,O.QOP_FLUSH,0,0,0,0,fd),"native flush");
       } else if(kind===19) {
-        const op=words.getUint32(0,true),token=words.getUint32(4,true);
+        const op=words.getUint32(0,true),token=words.getUint32(4,true),requireSignaled=words.getUint32(8,true)!==0;
         const input=new Uint8Array(4);new DataView(input.buffer).setUint32(0,token,true);
         const deadline=performance.now()+5000;
         for(;;) {
@@ -203,10 +203,11 @@ self.onmessage = async ({data}) => {
           if(rc!==16||output.getUint32(0,true)!==0||output.getUint32(4,true)!==token||
               output.getUint32(12,true)!==0x47514c33||output.getUint32(8,true)>1)
             throw new Error("C retained fence query acknowledgement");
-          if(op!==O.QOP_FENCE_STATUS || output.getUint32(8,true)===1)break;
+          if(op!==O.QOP_FENCE_STATUS || !requireSignaled || output.getUint32(8,true)===1)break;
           if(performance.now()>=deadline)throw new Error("C retained fence did not signal");
-          // The recorded C driver marks this render fence complete. Prove
-          // native completion after yielding instead of copying that status.
+          // A driver completion assertion requires actual native completion.
+          // A zero-timeout unsignaled observation may complete sooner here.
+          // Yield rather than copying the device double's signaled status.
           await new Promise(resolve=>setTimeout(resolve,1));
         }
       } else if(kind===15) {

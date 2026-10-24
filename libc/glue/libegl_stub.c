@@ -1639,6 +1639,35 @@ EGLint eglClientWaitSync(EGLDisplay dpy, EGLSync handle, EGLint flags, EGLTime t
     return result;
 }
 
+/* KHR fence sync predates the pointer-width core attribute list and reports
+ * an unsupported sync type as BAD_ATTRIBUTE, not core's BAD_PARAMETER. Do
+ * not cast either the input list or the output pointer between these APIs. */
+EGLSyncKHR eglCreateSyncKHR(EGLDisplay dpy, EGLenum type, const EGLint *list) {
+    lock_context();
+    EGLSyncKHR result = EGL_NO_SYNC_KHR;
+    if (dpy != EGL_DPY_HANDLE || !g_active_generation || !g_active_generation->initialized)
+        g_last_error = EGL_BAD_DISPLAY;
+    else if (type != EGL_SYNC_FENCE_KHR || (list && *list != EGL_NONE))
+        g_last_error = EGL_BAD_ATTRIBUTE;
+    else result = (EGLSyncKHR)create_sync_locked(dpy, EGL_SYNC_FENCE, NULL);
+    unlock_context();
+    return result;
+}
+EGLBoolean eglDestroySyncKHR(EGLDisplay dpy, EGLSyncKHR sync) {
+    return eglDestroySync(dpy, (EGLSync)sync);
+}
+EGLint eglClientWaitSyncKHR(EGLDisplay dpy, EGLSyncKHR sync, EGLint flags, EGLTimeKHR timeout) {
+    return eglClientWaitSync(dpy, (EGLSync)sync, flags, (EGLTime)timeout);
+}
+EGLBoolean eglGetSyncAttribKHR(EGLDisplay dpy, EGLSyncKHR sync, EGLint attribute, EGLint *value) {
+    EGLAttrib output;
+    EGLBoolean result = eglGetSyncAttrib(dpy, (EGLSync)sync, attribute, value ? &output : NULL);
+    /* Every supported fence attribute is an enum representable in EGLint.
+     * Copy only after success, preserving the caller's neighboring bytes. */
+    if (result) *value = (EGLint)output;
+    return result;
+}
+
 const char *eglQueryString(EGLDisplay dpy, EGLint name) {
     /* EGL_EXT_client_extensions: EGL_NO_DISPLAY answers the extensions
      * that exist before a display does. The GBM platform is the one this
@@ -1659,7 +1688,7 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
             return "EGL_EXT_image_dma_buf_import "
                    "EGL_EXT_image_dma_buf_import_modifiers "
                    "EGL_KHR_image_base EGL_KHR_no_config_context "
-                   "EGL_KHR_surfaceless_context";
+                   "EGL_KHR_surfaceless_context EGL_KHR_fence_sync";
         default:              return NULL;
     }
 }
@@ -1677,6 +1706,10 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
     WPK_MAP_GL(eglDestroySync);
     WPK_MAP_GL(eglClientWaitSync);
     WPK_MAP_GL(eglGetSyncAttrib);
+    WPK_MAP_GL(eglCreateSyncKHR);
+    WPK_MAP_GL(eglDestroySyncKHR);
+    WPK_MAP_GL(eglClientWaitSyncKHR);
+    WPK_MAP_GL(eglGetSyncAttribKHR);
     WPK_MAP_GL(eglQueryString);
     WPK_MAP_GL(eglGetError);
     WPK_MAP_GL(eglBindAPI);

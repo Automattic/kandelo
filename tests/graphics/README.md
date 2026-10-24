@@ -98,7 +98,7 @@ The source WebGL contract suite also compiles selected current native C
 cases through this harness, captures actual submitted bytes and replays them
 through the browser decoder. Its float/fixed and maximum-index client-array cases are cross-layer
 source evidence, not guest execution or unmodified CTS. Selection uses
-`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 206 cases.
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 211 cases.
 `KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
 file for those test-only replays. Each browser test owns and removes its
 private trace directory.
@@ -581,4 +581,16 @@ correct red pixels and final native cleanup on all three engines. The
 adapter yields for native completion rather than copying the device
 mock's signaled status. These are source checks; normal guest marshalling,
 CTS and full browser-memory gates remain required. Server-side eglWaitSync,
-KHR sync spellings and sync capability declarations remain open.
+server-ordering integration remains open.
+
+
+Five KHR fence cases cover dynamic resolution, mixed core/KHR handles,
+KHR-specific invalid-type errors, protected-page narrow attribute keys,
+four-byte output canaries, and a finite timeout greater than u32 while a
+wait survives public destruction and display reinitialization. They fail
+unchanged `7efae46e42`. The KHR rendered replay uses the same actual wire
+and native fences as core, with independent native/forwarded coverage in
+Chromium, Firefox and WebKit. The control trace records whether the driver
+required completion; a prior unsignaled observation may complete sooner
+in the real browser. EGL_KHR_fence_sync and GL_OES_EGL_sync are declared;
+EGL_KHR_wait_sync and server-side eglWaitSyncKHR remain unavailable.

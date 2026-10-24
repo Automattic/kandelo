@@ -4342,9 +4342,15 @@ polls, implement zero/FOREVER timeouts, and flush the waiting thread's
 current context only when requested and initially unsignaled. Cancellation
 releases the waiter reference. Metadata retirement disables cancellation
 until unlocking, so a cleanup ioctl cannot strand peers. Server-side
-ordering through eglWaitSync and KHR spellings remain implementation gaps.
-No sync extension is newly advertised; these source implementations still
-require the normal combined graphics build and conformance phase.
+ordering through eglWaitSync remains an implementation gap. The four
+KHR_fence_sync spellings share these records, retain 64-bit timeout values,
+validate their narrow input lists independently and copy only EGLint-sized
+attribute outputs. Unsupported types produce KHR's BAD_ATTRIBUTE rather
+than core's BAD_PARAMETER. EGL advertises EGL_KHR_fence_sync and the C GLES
+extension layer adds GL_OES_EGL_sync, indicating that this client API can
+place fences. EGL_KHR_wait_sync and eglWaitSyncKHR remain unavailable.
+The definitions still require the normal combined graphics build and
+conformance phase.
 
 The main-thread fallback supports synchronous queries through one reusable
 65,556-byte device mailbox per channel, matching the kernel's 64 KiB query

@@ -875,7 +875,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             reply[0] = status; reply[1] = token; reply[2] = signaled;
             reply[3] = failure == 3 || (q->op == 0x2f && failure == 2) ? 0 : WPK_GL_QUERY_REPLY_MAGIC;
             if (q->op == 0x2f && failure == 3) { reply[2] = 2; reply[3] = WPK_GL_QUERY_REPLY_MAGIC; }
-            uint32_t trace[2] = {q->op,token}; egl_trace(19,fd,trace,sizeof trace);
+            uint32_t trace[3] = {q->op,token,signaled}; egl_trace(19,fd,trace,sizeof trace);
             protocol_trace(2,q->op,&token,4,16);
             pthread_cond_broadcast(&fence_driver_changed);
             pthread_mutex_unlock(&fence_driver_mutex);
@@ -1499,12 +1499,15 @@ struct sync_wait_input {
     EGLDisplay display;
     EGLSync sync;
     EGLint result, error;
-    int started;
+    int started, use_khr;
+    EGLTime timeout;
 };
 static void *sync_wait_thread(void *data) {
     struct sync_wait_input *input = data;
     fence_wait_started = &input->started;
-    input->result = eglClientWaitSync(input->display,input->sync,0,EGL_FOREVER);
+    PFNEGLCLIENTWAITSYNCKHRPROC wait_khr = (PFNEGLCLIENTWAITSYNCKHRPROC)eglGetProcAddress("eglClientWaitSyncKHR");
+    input->result = input->use_khr ? wait_khr(input->display,input->sync,0,input->timeout)
+        : eglClientWaitSync(input->display,input->sync,0,EGL_FOREVER);
     input->error = eglGetError();
     return NULL;
 }
@@ -1543,6 +1546,77 @@ int main(int argc, char **argv) {
         }
         EGLContext context = eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs);
         assert(context && eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,context));
+        if (!strncmp(argv[1],"sync-khr-",9)) {
+            PFNEGLCREATESYNCKHRPROC make = (PFNEGLCREATESYNCKHRPROC)eglGetProcAddress("eglCreateSyncKHR");
+            PFNEGLDESTROYSYNCKHRPROC drop = (PFNEGLDESTROYSYNCKHRPROC)eglGetProcAddress("eglDestroySyncKHR");
+            PFNEGLGETSYNCATTRIBKHRPROC get = (PFNEGLGETSYNCATTRIBKHRPROC)eglGetProcAddress("eglGetSyncAttribKHR");
+            PFNEGLCLIENTWAITSYNCKHRPROC await = (PFNEGLCLIENTWAITSYNCKHRPROC)eglGetProcAddress("eglClientWaitSyncKHR");
+            assert(make && drop && get && await);
+            assert(strstr(eglQueryString(dpy,EGL_EXTENSIONS),"EGL_KHR_fence_sync"));
+            assert(!strstr(eglQueryString(dpy,EGL_EXTENSIONS),"EGL_KHR_wait_sync"));
+            assert(eglGetProcAddress("eglWaitSyncKHR") == NULL);
+            string_generation = 1;
+            const char *extensions = (const char *)glGetString(GL_EXTENSIONS); assert(extensions);
+            assert(strstr(extensions,"GL_OES_EGL_sync") && glGetError() == GL_NO_ERROR);
+            EGLSurface surface = EGL_NO_SURFACE;
+            if (!strcmp(argv[1],"sync-khr-render")) {
+                surface = eglCreateWindowSurface(dpy,(EGLConfig)1,(EGLNativeWindowType)&record_windows[0],NULL);
+                assert(surface && eglMakeCurrent(dpy,surface,surface,context));
+                glClearColor(1,0,0,1); glClear(GL_COLOR_BUFFER_BIT);
+            }
+            if (!strcmp(argv[1],"sync-khr-errors")) {
+                const EGLint bad[] = {EGL_SYNC_TYPE_KHR};
+                assert(!make(dpy,0xdead,NULL) && eglGetError() == EGL_BAD_ATTRIBUTE);
+                assert(!create(dpy,0xdead,NULL) && eglGetError() == EGL_BAD_PARAMETER);
+                assert(!make(dpy,EGL_SYNC_FENCE_KHR,bad) && eglGetError() == EGL_BAD_ATTRIBUTE);
+                assert(!make(EGL_NO_DISPLAY,EGL_SYNC_FENCE_KHR,(const EGLint *)(uintptr_t)1) && eglGetError() == EGL_BAD_DISPLAY);
+                assert(!drop(dpy,EGL_NO_SYNC_KHR) && eglGetError() == EGL_BAD_PARAMETER);
+            }
+            if (!strcmp(argv[1],"sync-khr-width")) {
+                long page = sysconf(_SC_PAGESIZE);
+                void *mapping = mmap(NULL,(size_t)page*2,PROT_READ|PROT_WRITE,MAP_ANON|MAP_PRIVATE,-1,0); assert(mapping != MAP_FAILED);
+                assert(!mprotect((char *)mapping+page,(size_t)page,PROT_NONE));
+                EGLint *key = (EGLint *)((char *)mapping+page-sizeof(EGLint)); *key = EGL_SYNC_TYPE_KHR;
+                assert(!make(dpy,EGL_SYNC_FENCE_KHR,key) && eglGetError() == EGL_BAD_ATTRIBUTE);
+                *key = EGL_NONE;
+                EGLSyncKHR guarded = make(dpy,EGL_SYNC_FENCE_KHR,key); assert(guarded && drop(dpy,guarded));
+                assert(!munmap(mapping,(size_t)page*2));
+            }
+            const EGLint empty[] = {EGL_NONE};
+            EGLSyncKHR sync = make(dpy,EGL_SYNC_FENCE_KHR,empty); assert(sync);
+            struct { EGLint value; uint32_t guard; } output = {17,0x12345678};
+            assert(get(dpy,sync,EGL_SYNC_TYPE_KHR,&output.value) && output.value == EGL_SYNC_FENCE_KHR && output.guard == 0x12345678);
+            assert(get(dpy,sync,EGL_SYNC_CONDITION_KHR,&output.value) && output.value == EGL_SYNC_PRIOR_COMMANDS_COMPLETE_KHR);
+            output.value = 17;
+            assert(!get(dpy,sync,0xdead,&output.value) && eglGetError() == EGL_BAD_ATTRIBUTE && output.value == 17 && output.guard == 0x12345678);
+            assert(!get(dpy,sync,EGL_SYNC_TYPE_KHR,NULL) && eglGetError() == EGL_BAD_PARAMETER);
+            assert(await(dpy,sync,0,0) == EGL_TIMEOUT_EXPIRED_KHR);
+            if (!strcmp(argv[1],"sync-khr-render")) { glFlush(); signal_fences(); }
+            assert(eglReleaseThread() && eglDestroyContext(dpy,context));
+            if (surface) assert(eglDestroySurface(dpy,surface));
+            if (!strcmp(argv[1],"sync-khr-lifetime")) {
+                struct sync_wait_input input = {.display=dpy,.sync=sync,.use_khr=1,.timeout=(EGLTime)UINT32_MAX+1};
+                pthread_t thread; assert(!pthread_create(&thread,NULL,sync_wait_thread,&input));
+                pthread_mutex_lock(&fence_driver_mutex);
+                while (!input.started) pthread_cond_wait(&fence_driver_changed,&fence_driver_mutex);
+                pthread_mutex_unlock(&fence_driver_mutex);
+                assert(destroy(dpy,sync));
+                assert(eglTerminate(dpy) && eglInitialize(dpy,NULL,NULL));
+                signal_fences();
+                assert(!pthread_join(thread,NULL) && input.result == EGL_CONDITION_SATISFIED_KHR && input.error == EGL_SUCCESS);
+            } else {
+                signal_fences();
+                assert(await(dpy,sync,0,EGL_FOREVER_KHR) == EGL_CONDITION_SATISFIED_KHR);
+                EGLAttrib wide = 0; assert(query(dpy,sync,EGL_SYNC_STATUS,&wide) && wide == EGL_SIGNALED);
+                assert(destroy(dpy,sync));
+                assert(!drop(dpy,sync) && eglGetError() == EGL_BAD_PARAMETER);
+                assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,
+                    context=eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs)));
+                EGLSync core = create(dpy,EGL_SYNC_FENCE,NULL); assert(core && (EGLSyncKHR)core != sync && drop(dpy,(EGLSyncKHR)core));
+                assert(eglReleaseThread() && eglDestroyContext(dpy,context));
+            }
+            assert(eglTerminate(dpy)); printf("PASS %s\n",argv[1]); return 0;
+        }
         if (!strcmp(argv[1],"sync-invalid")) {
             const EGLAttrib bad[] = {EGL_SYNC_CONDITION,EGL_SYNC_PRIOR_COMMANDS_COMPLETE,EGL_NONE};
             assert(create(dpy,EGL_SYNC_FENCE,bad) == EGL_NO_SYNC && eglGetError() == EGL_BAD_ATTRIBUTE);
