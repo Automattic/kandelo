@@ -10,9 +10,10 @@
  * run, not as silent decode corruption.
  */
 
+#include <stddef.h>
 #include <stdint.h>
 
-#define WPK_GL_OP_VERSION 2u
+#define WPK_GL_OP_VERSION 16u
 #define WPK_GL_CMDBUF_LEN (1u << 20)
 #define WPK_GL_DEVICE     "/dev/dri/renderD128"
 
@@ -27,6 +28,7 @@
 #define GLIO_SUBMIT           0x47u
 #define GLIO_PRESENT          0x48u
 #define GLIO_QUERY            0x49u
+#define GLIO_UPDATE_SURFACE   0x4Au
 
 /* Surface kind tags. */
 #define WPK_SURFACE_DEFAULT  1u
@@ -53,6 +55,8 @@
 #define OP_BIND_BUFFER                 0x0102u
 #define OP_BUFFER_DATA                 0x0103u
 #define OP_BUFFER_SUB_DATA             0x0104u
+#define OP_BEGIN_CLIENT_ARRAY 0x0105u
+#define OP_END_CLIENT_ARRAY 0x0106u
 
 #define OP_GEN_TEXTURES                0x0200u
 #define OP_DELETE_TEXTURES             0x0201u
@@ -156,10 +160,67 @@
 #define QOP_GET_SHADER_PRECISION_FORMAT 0x0Du
 #define QOP_FINISH                0x0Eu
 
+#define QOP_GET_BUFFER_PARAMETER 0x0012u
+#define QOP_GET_VERTEX_ATTRIBIV 0x0013u
+#define QOP_GET_VERTEX_ATTRIBFV 0x0014u
+#define QOP_IS_OBJECT 0x0015u
+#define QOP_IS_ENABLED 0x0016u
+#define QOP_GET_INDEX_USAGE 0x0017u
+
+#define QOP_GET_ACTIVE_ATTRIB 0x0018u
+#define QOP_GET_ATTACHED_SHADERS 0x0019u
+#define QOP_GET_SHADER_SOURCE 0x001Au
+#define QOP_GET_FB_ATTACHMENT 0x001Bu
+#define QOP_GET_RENDERBUFFER_PARAMETER 0x001Cu
+#define QOP_GET_TEX_PARAMETER 0x001Du
+#define OP_VALIDATE_PROGRAM 0x030Bu
+
+#define QOP_SHADER_SOURCE_UPLOAD 0x001Eu
+/* Upload input: action, shader, token, total/offset, optional CHUNK bytes.
+ * BEGIN=1, CHUNK=2, COMMIT=3, ABORT=4. Checked reply payload echoes token. */
+
+/* V7 checked result: status, count, 16 values, completion magic (76 bytes). */
+#define QOP_GET_UNIFORM_VALUES 0x001Fu
+#define QOP_GET_ACTIVE_UNIFORM_INFO 0x0020u
+#define QOP_LOOKUP_UNIFORM 0x0021u
+/* V9: kind (texture=1/RBO=2), target, name; checked accepted=1 reply. */
+#define QOP_BIND_IMAGE_OBJECT 0x0022
+#define QOP_IMAGE_TARGET 0x0023u
+#define QOP_IMAGE_SOURCE_STATE 0x0024u
+#define QOP_BOUND_IMAGE_TARGET 0x0025u
+#define QOP_BOUND_IMAGE_STATE 0x0026u
+#define QOP_IMAGE_OBJECT_DELETE 0x0027u
+#define QOP_IMAGE_ATTACHMENT 0x0028u
+#define QOP_IMAGE_STORAGE 0x0029u
+#define QOP_BIND_FRAMEBUFFER 0x002Au
+// V14: target/name (8 bytes), checked accepted binding (12-byte reply).
+#define QOP_BIND_BUFFER 0x002Bu
+/* V15: name (4 bytes), checked accepted deletion (12-byte reply). */
+#define QOP_DELETE_BUFFER 0x002Cu
+/* V16: no input; width, height, pixels and completion marker (16 bytes).
+ * Requires a live display's mapped object session, not a current context. */
+#define QOP_SURFACE_CAPABILITIES 0x002Du
+/* Private mode of the existing BO bind ioctl, returning a source token. */
+#define WPK_GL_IMAGE_SOURCE_TARGET 0x57504b49u
+
+/* V3+ query replies: u32 status (0 success, 1 recorded GL error),
+ * payload, u32 completion magic. Index usage payload: u32 maximum index
+ * followed by 8192 bytes of index-presence bits (byte/short indices).
+ * Old query layouts are unchanged. All words are little-endian. */
+#define WPK_GL_INDEX_REPLY_LEN 8204u
+#define WPK_GL_QUERY_REPLY_MAGIC 0x47514c33u
+
 /* Marshalled ioctl arg structs — must match shared::gl byte-for-byte. */
+#define WPK_GL_SESSION_DISPLAY 1u
+#define WPK_GL_SESSION_OBJECTS 2u
+struct gl_init_info { uint32_t op_version, role; int32_t display_fd; uint32_t display_id; };
 struct gl_submit_info { uint32_t offset; uint32_t length; };
-struct gl_context_attrs { uint32_t client_version; uint32_t reserved[3]; };
+struct gl_make_current { uint32_t context_id, draw_surface_id, read_surface_id; };
+/* ABI 58: source context 0 creates an independent object group. */
+struct gl_context_attrs { uint32_t client_version; uint32_t share_context_id; uint32_t reserved; uint32_t context_id; };
 struct gl_surface_attrs { uint32_t kind; uint32_t width; uint32_t height; uint32_t config_id; uint32_t reserved[4]; };
+/* ABI 57: zero identity on input; accepted size and fresh identity on output. */
+struct gl_surface_create { struct gl_surface_attrs attrs; uint32_t surface_id; };
 struct gl_query_info {
     uint32_t op;
     uint32_t in_buf_ptr;
@@ -169,11 +230,72 @@ struct gl_query_info {
     uint32_t reserved;
 };
 
-/* Cross-archive accessors. libEGL.a defines them; libGLESv2.a calls
- * them. Returns -1 / NULL until eglMakeCurrent has run, so the GL
- * stubs no-op cleanly if called before context setup. */
+/* Cross-archive accessors require a current context on the calling thread.
+ * Native windows own independent device descriptors and transfer BO names. */
 int      _wpk_gl_fd(void);
 uint8_t *_wpk_gl_cmdbuf_base(void);
 void     _wpk_gl_flush(void);
+
+/* Opaque client encoder state belongs to an EGL context, not its current
+ * thread. Only libGLESv2 knows its layout; EGL owns creation and retirement. */
+struct wpk_gles_context;
+struct wpk_object_group;
+/* Private cross-archive guard; no device/wire layout is changed. A null group
+ * means admission failed and begin already unlocked/restored cancellation. */
+struct wpk_gl_name_scope {
+    struct wpk_object_group *group;
+    int cancel_state;
+};
+struct wpk_gl_name_scope _wpk_gl_begin_name_scope(struct wpk_gles_context *state);
+void _wpk_gl_end_name_scope(struct wpk_gl_name_scope *scope);
+#define WPK_GL_NAME_SCOPE(state)                                                                   \
+    struct wpk_gl_name_scope name_scope __attribute__((cleanup(_wpk_gl_end_name_scope))) =         \
+        _wpk_gl_begin_name_scope(state);                                                        \
+    if (!name_scope.group) return
+int _wpk_gl_flush_checked(void);
+int _wpk_gl_finish_checked(void);
+#define WPK_GL_EXTERNAL_NAME_COLLISION 0x0502u
+int _wpk_gl_discard_external_candidate(uint32_t name);
+
+struct wpk_gles_context *_wpk_gl_current_encoder(void);
+struct wpk_gles_context *_wpk_gl_create_encoder(void);
+#define WPK_GL_OBJECT_GROUPS 1
+struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *source);
+/* Internal name spaces: buffer 0, texture 1, renderbuffer 2, shader/program 3.
+ * Returns a GL error enum; failure leaves output and reservations unchanged. */
+uint32_t _wpk_gl_reserve_names(struct wpk_gles_context *state, uint32_t name_space, int32_t count,
+                               uint32_t *out);
+/* Adopt an acknowledged public WPK texture name; hidden image carriers are
+ * not public objects. Returns a GL error enum, preserving first error. */
+uint32_t _wpk_gl_register_external_texture(struct wpk_gles_context *state, uint32_t name);
+void _wpk_gl_destroy_encoder(struct wpk_gles_context *state);
+
+/* An EGLImage made by eglCreateImageKHR from one dma-buf plane. A
+ * GPU-tier bo (its PRIME fd has no CPU mapping) is sampled and rendered
+ * through the host texture the bo owns; a CPU-tier bo is read from
+ * `pixels`, the caller's mapping of the dma-buf. */
+struct egl_generation;
+struct wpk_egl_image {
+    struct egl_generation *generation; /* owns the imported GEM handle */
+    uintptr_t public_handle; /* never reuse an invalidated public identity */
+    unsigned references;    /* public image plus every live GL sibling */
+    int public_live;
+    struct wpk_egl_image *next;
+    uint32_t handle;          /* GEM handle on the EGL session's fd */
+    uint32_t width, height;
+    uint32_t fourcc;          /* DRM_FORMAT_[AX]RGB8888 / [AX]BGR8888 */
+    uint32_t pitch;
+    const uint8_t *pixels;    /* first row of a CPU-tier image, else NULL */
+    void *map;                /* the mmap behind `pixels` */
+    size_t map_len;
+};
+
+/* A private source token, separate from public GL names, for a GPU image.
+ * Zero for CPU images, no current context or unavailable native storage. */
+/* Lookup retains a temporary reference; the caller must release it. */
+struct wpk_egl_image *_wpk_egl_image_lookup(const void *image);
+void _wpk_egl_image_retain(struct wpk_egl_image *image);
+void _wpk_egl_image_release(struct wpk_egl_image *image);
+uint32_t _wpk_egl_image_texture(const struct wpk_egl_image *image);
 
 #endif

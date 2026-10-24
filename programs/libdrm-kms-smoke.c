@@ -30,9 +30,10 @@ int main(void) {
     CHECK(res->count_crtcs >= 1, "count_crtcs");
     CHECK(res->count_connectors >= 1, "count_connectors");
     CHECK(res->count_encoders >= 1, "count_encoders");
+    /* Mode objects share one id space, as on Linux. */
     CHECK(res->crtcs[0] == 1, "crtcs[0]");
-    CHECK(res->connectors[0] == 1, "connectors[0]");
-    CHECK(res->encoders[0] == 1, "encoders[0]");
+    CHECK(res->encoders[0] == 2, "encoders[0]");
+    CHECK(res->connectors[0] == 3, "connectors[0]");
     uint32_t crtc_id = res->crtcs[0];
     uint32_t conn_id = res->connectors[0];
     uint32_t enc_id  = res->encoders[0];

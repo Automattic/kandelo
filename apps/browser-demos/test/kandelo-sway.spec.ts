@@ -1,0 +1,264 @@
+import { expect, test, type Locator, type Page } from "@playwright/test";
+
+import { gotoMachine } from "./support/kandelo-machine";
+
+/** Show the Internals syslog, the demo canvas, or the machine's terminal.
+ *  Internals is an overlay toggle in the dock; showing another view means
+ *  closing it and selecting that view. */
+async function openSurface(page: Page, label: "Internals" | "Demo" | "Terminal") {
+  const internals = page.getByRole("button", { name: "Internals", exact: true });
+  await internals.waitFor({ state: "visible", timeout: 30_000 });
+  const open = (await internals.getAttribute("aria-pressed")) === "true";
+  if (open !== (label === "Internals")) await internals.click();
+  if (label !== "Internals") {
+    const view = page
+      .getByLabel("Computer views")
+      .getByRole("button", { name: label, exact: true });
+    if ((await view.getAttribute("aria-current")) !== "true") await view.click();
+  }
+}
+
+async function syslogText(page: Page): Promise<string> {
+  const lines = await page.locator(".ksys-line").allInnerTexts();
+  return lines.join("\n");
+}
+
+/** The machine's terminal: the shell that runs sway, and sway's stderr. */
+async function terminalText(page: Page): Promise<string> {
+  if ((await page.locator(".xterm-rows").count()) === 0) return "";
+  const rows = await page.locator(".xterm-rows").first().locator(":scope > div").allInnerTexts();
+  return rows.join("\n");
+}
+
+const canvasLocator = (page: Page) =>
+  page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
+
+/** Full text of the Modeset status chip in the dock ("" while mounting). */
+async function chipText(page: Page): Promise<string> {
+  const texts = await page
+    .locator(".kdemo-surface-controls")
+    .filter({ hasText: "flips" })
+    .allInnerTexts()
+    .catch(() => [] as string[]);
+  return texts.join(" ");
+}
+
+type Rgb = [number, number, number];
+
+/** The canvas and the size of the output sway drives on it. */
+type Output = { canvas: Locator; width: number; height: number };
+
+/** The connector mode follows the pane's device pixels, and the Modeset
+ *  chip reports it ("1088×612 · 40 flips · …"). */
+async function output(page: Page): Promise<Output> {
+  const mode = (await chipText(page)).match(/(\d+)×(\d+)/);
+  expect(mode, "the Modeset chip reports the connector mode").not.toBeNull();
+  return { canvas: canvasLocator(page), width: Number(mode![1]), height: Number(mode![2]) };
+}
+
+/** A region of the output, as it is on screen. */
+async function outputShot({ canvas, ...size }: Output, x: number, y: number, width: number, height: number) {
+  const box = (await canvas.boundingBox())!;
+  const sx = box.width / size.width;
+  const sy = box.height / size.height;
+  return canvas.page().screenshot({
+    animations: "disabled",
+    clip: { x: box.x + x * sx, y: box.y + y * sy, width: width * sx, height: height * sy },
+  });
+}
+
+/** The mean color of each pixel row, or each column, of a PNG, decoded in
+ *  the page. */
+async function lineColors(page: Page, png: Buffer, axis: "row" | "column"): Promise<Rgb[]> {
+  return page.evaluate(async ([base64, axis]) => {
+    const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+    const surface = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const context = surface.getContext("2d")!;
+    context.drawImage(bitmap, 0, 0);
+    const { data, width, height } = context.getImageData(0, 0, bitmap.width, bitmap.height);
+    const [lines, length] = axis === "row" ? [height, width] : [width, height];
+    const colors: [number, number, number][] = [];
+    for (let line = 0; line < lines; line++) {
+      const sum = [0, 0, 0];
+      for (let i = 0; i < length; i++) {
+        const pixel = axis === "row" ? line * width + i : i * width + line;
+        for (let c = 0; c < 3; c++) sum[c] += data[pixel * 4 + c];
+      }
+      colors.push([sum[0] / length, sum[1] / length, sum[2] / length]);
+    }
+    return colors;
+  }, [png.toString("base64"), axis] as const);
+}
+
+async function meanColor(page: Page, png: Buffer): Promise<Rgb> {
+  const rows = await lineColors(page, png, "row");
+  const sum = rows.reduce((a, r) => [a[0] + r[0], a[1] + r[1], a[2] + r[2]], [0, 0, 0]);
+  return [sum[0] / rows.length, sum[1] / rows.length, sum[2] / rows.length];
+}
+
+/** The middle of the output, where the tiled windows are. */
+const middle = (out: Output) => outputShot(out, out.width / 4, out.height / 4, out.width / 2, out.height / 2);
+
+/** The right half of swaybar, where the status line is: upstream's config
+ *  puts the bar at the top. */
+const statusLine = (out: Output) => outputShot(out, out.width / 2, 0, out.width / 2, 16);
+
+/** The columns at the middle of the output, where two tiles meet. */
+const seam = (out: Output) => outputShot(out, out.width / 2 - 8, out.height / 4, 16, out.height / 2);
+
+/** foot's background is a dark, neutral gray. */
+const isFoot = ([r, g, b]: Rgb) => r > 20 && r < 60 && Math.abs(r - g) < 8 && Math.abs(r - b) < 8;
+
+/** The sway wallpaper, and sway's focused window border, are blue. */
+const isBlue = ([r, , b]: Rgb) => b > r + 40;
+
+/** swaynag's warning bar is yellow. */
+const isWarning = ([r, g, b]: Rgb) => r > 180 && g > 120 && b < 90;
+
+/** Press a point of the output, scaled to the canvas on screen. */
+async function clickOutput({ canvas, ...size }: Output, x: number, y: number) {
+  const box = (await canvas.boundingBox())!;
+  await canvas.click({ position: { x: (x * box.width) / size.width, y: (y * box.height) / size.height } });
+}
+
+/**
+ * Browser gate for the sway machine: upstream sway on wlroots' GLES2
+ * renderer, which reaches the host's WebGL2 bridge through libEGL's GBM
+ * platform. The Node gates (host/test/sway-smoke.test.ts) run the pixman
+ * renderer, so this spec is the only gate on that path for sway.
+ *
+ * Gates:
+ *   1. The machine runs sway, and sway's GL context owns the canvas: the
+ *      Modeset chip reports the `webgl2-gl` renderer.
+ *   2. swaybar redraws its status line: the upstream status_command prints
+ *      the time every second, so it changes with no input.
+ *   3. The config's `exec $term` starts foot, whose window fills the
+ *      output. Once its prompt holds still, a keystroke reaches it: the
+ *      shell's echo changes it.
+ *   4. Super+2 shows an empty workspace, where swaybg's wallpaper is
+ *      visible, and Super+1 brings foot back.
+ *   5. Ctrl+Return opens a second foot, and sway tiles the two: the new
+ *      window's focused border runs down the middle of the output.
+ *   6. Ctrl+Shift+E starts swaynag, and its "Yes, exit sway" button runs
+ *      `swaymsg exit`: sway exits with status 0 to the machine's shell.
+ *   7. A sway started next on the pixman renderer reaches the canvas that
+ *      the GLES2 session gave up: the vblank pump presents its CPU frames,
+ *      so swaybar's clock moves again.
+ */
+test("Kandelo sway tiles foot terminals under swaybar with wlroots' GLES2 renderer", async ({ page }) => {
+  test.setTimeout(420_000);
+
+  await gotoMachine(page, "sway");
+
+  await openSurface(page, "Internals");
+  await expect
+    .poll(() => syslogText(page), { timeout: 180_000 })
+    .toMatch(/running .*\/usr\/local\/bin\/sway/);
+  expect(await syslogText(page)).not.toMatch(/configured command failed/);
+
+  // Gate 1.
+  await openSurface(page, "Demo");
+  const canvas = canvasLocator(page);
+  await expect(canvas).toBeVisible({ timeout: 30_000 });
+  await expect
+    .poll(() => chipText(page), { timeout: 120_000 })
+    .toMatch(/webgl2-gl/i);
+  let out = await output(page);
+
+  // Gate 2.
+  await expect
+    .poll(
+      async () => {
+        const before = await statusLine(out);
+        await page.waitForTimeout(1_500);
+        return (await statusLine(out)).equals(before);
+      },
+      { timeout: 120_000, intervals: [1_000] },
+    )
+    .toBe(false);
+
+  // Gate 3. foot is lazy and large, so its first frame can take a while.
+  await expect
+    .poll(async () => isFoot(await meanColor(page, await middle(out))), { timeout: 180_000, intervals: [2_000] })
+    .toBe(true);
+  // The Demo button keeps the keyboard focus, and keys reach the machine
+  // only while the page body or the demo surface has it.
+  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  const prompt = () => outputShot(out, 0, 40, out.width / 2, 200);
+  let idle = await prompt();
+  await expect
+    .poll(async () => {
+      await page.waitForTimeout(1_000);
+      const next = await prompt();
+      const still = next.equals(idle);
+      idle = next;
+      return still;
+    }, { timeout: 60_000, intervals: [0] })
+    .toBe(true);
+  await page.keyboard.type("echo sway-gles2-ok\n", { delay: 40 });
+  await expect
+    .poll(async () => (await prompt()).equals(idle), { timeout: 60_000, intervals: [500, 1_000] })
+    .toBe(false);
+
+  // Gate 4.
+  await page.keyboard.press("Meta+2");
+  await expect
+    .poll(async () => isBlue(await meanColor(page, await middle(out))), { timeout: 120_000, intervals: [2_000] })
+    .toBe(true);
+  await page.keyboard.press("Meta+1");
+  await expect
+    .poll(async () => isFoot(await meanColor(page, await middle(out))), { timeout: 30_000, intervals: [1_000] })
+    .toBe(true);
+
+  // Gate 5.
+  const tiled = async () => (await lineColors(page, await seam(out), "column")).some(isBlue);
+  expect(await tiled()).toBe(false);
+  await page.keyboard.press("Control+Enter");
+  await expect.poll(tiled, { timeout: 180_000, intervals: [2_000] }).toBe(true);
+
+  // Gate 6. swaynag lays its buttons out from the right edge: the dismiss
+  // button, a gap, then "Yes, exit sway", which spans about 56-155 pixels
+  // left of the edge.
+  await page.keyboard.press("Control+Shift+E");
+  const top = 120;
+  let band: number[] = [];
+  await expect
+    .poll(async () => {
+      const rows = await lineColors(page, await outputShot(out, 0, 0, out.width, top), "row");
+      band = rows.flatMap((row, y) => (isWarning(row) ? [(y * top) / rows.length] : []));
+      return band.length;
+    }, { timeout: 120_000, intervals: [1_000] })
+    .toBeGreaterThan(0);
+  await clickOutput(out, out.width - 105, (band[0] + band[band.length - 1]) / 2);
+  await openSurface(page, "Terminal");
+  // The disconnected foot clients can print after the shell's prompt.
+  await expect
+    .poll(async () => (await terminalText(page)).match(/kandelo\$/g)?.length ?? 0, { timeout: 60_000 })
+    .toBeGreaterThan(1);
+  await page.locator(".xterm").first().click();
+  await page.keyboard.type("echo sway-exit=$?\n", { delay: 40 });
+  await expect.poll(() => terminalText(page), { timeout: 30_000 }).toMatch(/sway-exit=0/);
+
+  // Gate 7.
+  await page.keyboard.type(
+    "WLR_RENDERER=pixman LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo"
+      + " FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/local/bin/sway\n",
+  );
+  await openSurface(page, "Demo");
+  await expect
+    .poll(
+      async () => {
+        const before = await statusLine(out);
+        await page.waitForTimeout(1_500);
+        return (await statusLine(out)).equals(before);
+      },
+      { timeout: 180_000, intervals: [1_000] },
+    )
+    .toBe(false);
+  expect(await chipText(page)).not.toMatch(/webgl2-gl/i);
+  out = await output(page);
+  await expect
+    .poll(async () => isFoot(await meanColor(page, await middle(out))), { timeout: 180_000, intervals: [2_000] })
+    .toBe(true);
+});

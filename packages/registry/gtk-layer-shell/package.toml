@@ -22,13 +22,13 @@ depends_on = [
   "cairo@1.18.6",
   "gdk-pixbuf@2.36.12",
   "libwayland@1.24.0",
-  "wayland-protocols@1.45",
+  "wayland-protocols@1.47",
 ]
 
 [[host_tools]]
 # Generates the client glue for the two protocol XMLs the library
 # compiles against (wlr-layer-shell from the tarball's protocol/,
-# xdg-shell from the vendored wayland-protocols set).
+# xdg-shell from the wayland-protocols package).
 name = "wayland-scanner"
 version_constraint = ">=1.24"
 probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:\\.\\d+)?)" }

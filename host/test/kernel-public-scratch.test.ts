@@ -11,7 +11,7 @@ import {
   createWasmPosixKernelTestHarness,
   WasmPosixKernel,
 } from "../src/kernel";
-import { QOP_GET_ERROR } from "../src/webgl/ops";
+import { QOP_GET_ERROR, QOP_FINISH } from "../src/webgl/ops";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
 function hostileBytes(length: number, reportedLength = 1): Uint8Array {
@@ -1282,10 +1282,15 @@ describe("Rust-owned host import ranges", () => {
   it("preflights GL output before executing a query", () => {
     const { kernel, memory } = fullKernelHarness();
     kernel.gl.bind({ pid: 7, cmdbufAddr: 4096, cmdbufLen: 4096 });
-    const getError = vi.fn(() => 0x1234);
-    kernel.gl.get(7)!.gl = {
-      getError,
-    } as unknown as WebGL2RenderingContext;
+    const getError = vi.fn().mockReturnValueOnce(0)
+      .mockReturnValueOnce(0x1234).mockReturnValue(0);
+    kernel.gl.get(7)!.gl = new Proxy({ getError }, {
+      get(target, name) {
+        if (name === "getError") return target.getError;
+        if (name === "createVertexArray") return () => ({});
+        return () => {};
+      },
+    }) as unknown as WebGL2RenderingContext;
     const imports = kernel.testAuthority.buildImportObject(memory) as {
       env: Record<string, (...args: any[]) => any>;
     };
@@ -1308,7 +1313,7 @@ describe("Rust-owned host import ranges", () => {
       memory.buffer.byteLength - 4,
       4,
     )).toBe(4);
-    expect(getError).toHaveBeenCalledTimes(1);
+    expect(getError).toHaveBeenCalledTimes(3);
     expect(
       new DataView(memory.buffer).getUint32(
         memory.buffer.byteLength - 4,
@@ -1369,4 +1374,88 @@ describe("Rust-owned host import ranges", () => {
       ).some((byte) => byte !== 0),
     ).toBe(true);
   });
+});
+
+it("GL queries select the caller's state even without a command submission", () => {
+  const { kernel, memory } = fullKernelHarness();
+  let clearColor = [0,0,0,0];
+  const gl = new Proxy({}, {
+    get(_target, key) {
+      if (key === "clearColor") return (...value: number[]) => { clearColor = value; };
+      if (key === "getParameter") return () => clearColor;
+      if (key === "getError") return () => 0;
+      if (key === "createVertexArray") return () => ({});
+      return () => {};
+    },
+  }) as WebGL2RenderingContext;
+  for (const [pid, value] of [[7,[0.125,0.25,0.375,1]], [8,[0.5,0.625,0.75,1]]] as const) {
+    kernel.gl.bind({ pid, cmdbufAddr: 4096, cmdbufLen: 4096 });
+    const binding = kernel.gl.get(pid)!;
+    binding.gl = gl;
+    binding.shadow.clearColor = [...value];
+  }
+  const imports = kernel.testAuthority.buildImportObject(memory) as {
+    env: Record<string, (...args: any[]) => any>;
+  };
+  const bytes = new DataView(memory.buffer);
+  bytes.setUint32(4096, 0x0c22, true); // GL_COLOR_CLEAR_VALUE
+  for (const pid of [7,8,7]) {
+    expect(imports.env.host_gl_query(pid, 4, 4096, 4, 8192, 16)).toBe(16);
+    expect([...new Float32Array(memory.buffer,8192,4)])
+      .toEqual(pid === 7 ? [0.125,0.25,0.375,1] : [0.5,0.625,0.75,1]);
+  }
+});
+
+it.each([4,8] as const)("completion queries preflight before native or forwarded work at wasm%d widths", (width) => {
+  const {kernel,memory} = fullKernelHarness({}, {}, width);
+  const native = vi.fn(), forwarded = vi.fn(() => ({rc:0,bytes:new Uint8Array()}));
+  for(const pid of [7,8]) kernel.gl.bind({pid,cmdbufAddr:4096,cmdbufLen:4096});
+  kernel.gl.get(7)!.gl = new Proxy({}, {get() { return native; }}) as WebGL2RenderingContext;
+  kernel.gl.attachMainForward(8,{onCreateContext() {return 0;},onDestroyContext() {},onSubmit() {},onQuery:forwarded});
+  const imports = kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+  const ptr = (value:number) => width === 8 ? BigInt(value) : value;
+  const output = new Uint8Array(memory.buffer,8192,4); output.fill(0xa5);
+  for(const pid of [7,8]) {
+    expect(imports.env.host_gl_query(pid,QOP_FINISH,ptr(4096),ptr(4),ptr(0),ptr(0))).toBe(-22);
+    expect(imports.env.host_gl_query(pid,QOP_FINISH,ptr(0),ptr(0),ptr(8192),ptr(4))).toBe(-22);
+  }
+  expect([...output]).toEqual([0xa5,0xa5,0xa5,0xa5]);
+  expect(native).not.toHaveBeenCalled(); expect(forwarded).not.toHaveBeenCalled();
+  expect(imports.env.host_gl_query(8,QOP_FINISH,ptr(0),ptr(0),ptr(0),ptr(0))).toBe(0);
+  forwarded.mockReturnValue({rc:-5,bytes:new Uint8Array()});
+  expect(imports.env.host_gl_query(8,QOP_FINISH,ptr(0),ptr(0),ptr(0),ptr(0))).toBe(-5);
+});
+
+it.each([4, 8] as const)("forwarded GL queries preflight and copy replies at wasm%d boundaries", (width) => {
+  const { kernel, memory } = fullKernelHarness({}, {}, width);
+  kernel.gl.bind({ pid: 7, cmdbufAddr: 4096, cmdbufLen: 4096 });
+  const output = new Uint8Array(memory.buffer, memory.buffer.byteLength - 4, 4);
+  const reply = vi.fn(() => ({ rc: 4, bytes: new Uint8Array([1,2,3,4]) }));
+  kernel.gl.attachMainForward(7, {
+    onCreateContext() { return 0; }, onDestroyContext() {}, onSubmit() {}, onQuery: reply,
+  });
+  const imports = kernel.testAuthority.buildImportObject(memory) as {
+    env: Record<string, (...args: any[]) => any>;
+  };
+  const ptr = (value: number) => width === 8 ? BigInt(value) : value;
+  const query = (address: number) => imports.env.host_gl_query(
+    7, QOP_GET_ERROR, ptr(0), ptr(0), ptr(address), ptr(4),
+  );
+  expect(query(memory.buffer.byteLength - 2)).toBe(-14);
+  expect(reply).not.toHaveBeenCalled();
+  expect(query(memory.buffer.byteLength - 4)).toBe(4);
+  expect([...output]).toEqual([1,2,3,4]);
+  for (const invalid of [
+    { rc: 5, bytes: new Uint8Array(5) },
+    { rc: 4, bytes: new Uint8Array(3) },
+    { rc: 0.5, bytes: new Uint8Array(4) },
+  ]) {
+    output.fill(0xa5);
+    reply.mockReturnValue(invalid);
+    expect(query(memory.buffer.byteLength - 4)).toBe(-5);
+    expect([...output]).toEqual([0xa5,0xa5,0xa5,0xa5]);
+  }
+  reply.mockImplementation(() => { throw new Error("forwarder stopped"); });
+  expect(query(memory.buffer.byteLength - 4)).toBe(-5);
+  expect([...output]).toEqual([0xa5,0xa5,0xa5,0xa5]);
 });

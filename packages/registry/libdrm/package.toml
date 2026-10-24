@@ -20,18 +20,18 @@
 kind = "library"
 
 name = "libdrm"
-version = "2.4.120"
+version = "2.4.134"
 kernel_abi = 43
 depends_on = []
 
 [source]
-url = "https://dri.freedesktop.org/libdrm/libdrm-2.4.120.tar.xz"
-sha256 = "3bf55363f76c7250946441ab51d3a6cc0ae518055c0ff017324ab76cdefb327a"
+url = "https://dri.freedesktop.org/libdrm/libdrm-2.4.134.tar.xz"
+sha256 = "ac5e74d157830eb8bee44c6a6bf3ad49774ef0dd2a72bdad74a8f20308b52a95"
 provider = "archive"
 
 [license]
 spdx = "MIT"
-url = "https://gitlab.freedesktop.org/mesa/drm/-/blob/libdrm-2.4.120/README"
+url = "https://gitlab.freedesktop.org/mesa/drm/-/blob/libdrm-2.4.134/README"
 
 [build]
 script_path = "packages/registry/libdrm/build-libdrm.sh"

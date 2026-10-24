@@ -22,6 +22,7 @@ export interface GlShadowState {
   clearColor: [number, number, number, number];
   colorMask: [boolean, boolean, boolean, boolean];
 
+  ditherEnabled: boolean;
   depthTestEnabled: boolean;
   depthFunc: number;
   depthMask: boolean;
@@ -50,10 +51,16 @@ export interface GlShadowState {
    *  the binding; bound whenever the program has vertex array 0 bound. */
   defaultVao: WebGLVertexArrayObject | null;
   fbo: WebGLFramebuffer | null;
+  readFbo: WebGLFramebuffer | null;
   vertexAttribValues: Map<number, [number, number, number, number]>;
 
   activeTexture: number;
+  /** Private native stand-ins for the two context-owned GLES texture-zero
+   * objects. Null unit entries continue to mean logical name zero. */
+  defaultTextures: Map<number, WebGLTexture>;
   textureUnits: (WebGLTexture | null)[];
+  cubeTextureUnits: (WebGLTexture | null)[];
+  pixelStore: Map<number, number>;
 
   unpackAlignment: number;
   packAlignment: number;
@@ -97,6 +104,7 @@ export function defaultShadow(): GlShadowState {
     renderbuffer: null,
     clearColor: [0, 0, 0, 0],
     colorMask: [true, true, true, true],
+    ditherEnabled: true,
     depthTestEnabled: false,
     depthFunc: 0x0201,   // GL_LESS
     depthMask: true,
@@ -117,9 +125,13 @@ export function defaultShadow(): GlShadowState {
     vao: null,
     defaultVao: null,
     fbo: null,
+    readFbo: null,
     vertexAttribValues: new Map(),
     activeTexture: 0,
+    defaultTextures: new Map(),
     textureUnits: new Array(32).fill(null),
+    cubeTextureUnits: new Array(32).fill(null),
+    pixelStore: new Map(EXTRA_PIXEL_STORE_DEFAULTS),
     unpackAlignment: 4,
     packAlignment: 4,
   };
@@ -145,6 +157,7 @@ export const GL_TEXTURE_2D       = 0x0DE1;
 
 export function setCap(s: GlShadowState, cap: number, enabled: boolean): void {
   switch (cap) {
+    case 0x0bd0: s.ditherEnabled = enabled; return;
     case 0x809e: s.sampleAlphaToCoverageEnabled = enabled; return;
     case 0x80a0: s.sampleCoverageEnabled = enabled; return;
     case GL_DEPTH_TEST:          s.depthTestEnabled = enabled; return;
@@ -157,3 +170,11 @@ export function setCap(s: GlShadowState, cap: number, enabled: boolean): void {
       return;
   }
 }
+
+// WebGL2 unpack/pack state can be changed through the bridge and by device
+// uploads even when the guest encoder gathers GLES rows itself.
+export const EXTRA_PIXEL_STORE_DEFAULTS: readonly (readonly [number, number])[] = [
+  [0x0cf2, 0], [0x0cf3, 0], [0x0cf4, 0], // unpack row length, skip rows/pixels
+  [0x806e, 0], [0x806d, 0], // unpack image height, skip images
+  [0x0d02, 0], [0x0d03, 0], [0x0d04, 0], // pack row length, skip rows/pixels
+];

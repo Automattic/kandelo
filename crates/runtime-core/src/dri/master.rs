@@ -53,7 +53,6 @@ pub fn release_if_held(
     }
 }
 
-#[cfg(test)]
 pub fn current() -> Option<MasterHolder> {
     with_master(|m| *m)
 }

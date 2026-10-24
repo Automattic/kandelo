@@ -2079,10 +2079,10 @@ This is syscall-boundary coherence, not shared physical memory. A process that
 only performs direct loads/stores does not publish or import peer changes until
 it crosses into the kernel. Futex waits and wakes also target the caller's own
 process `SharedArrayBuffer`, so process-shared pthread mutexes/futexes remain
-unsupported across PIDs. Shared mappings of in-kernel memfds return `ENOTSUP`,
-as do file mappings on any backend that cannot provide stable identity;
-`MAP_PRIVATE` is unaffected. File bytes past
-the current EOF are zero-filled or discarded on refresh/writeback rather than
+unsupported across PIDs. In-kernel memfd shared mappings converge the same
+way, backed by the memfd's kernel pages. File mappings on any backend that
+cannot provide stable identity return `ENOTSUP`; `MAP_PRIVATE` is unaffected.
+File bytes past the current EOF are zero-filled or discarded on refresh/writeback rather than
 raising Linux's `SIGBUS`, and writes made outside Kandelo's file syscall paths
 are not detected. The boundary scans are on the syscall hot path; no performance
 claim is made without before/after Node and browser benchmarks.
@@ -3399,11 +3399,36 @@ and canvas sizing for subsequent applications.
 
 This section is the implementation walk-through; [Linux-compatible graphics devices](#linux-compatible-graphics-devices) states the device-level contract.
 
-`crates/runtime-core/src/syscalls.rs` (with the buffer registry in `crates/runtime-core/src/dri/`) handles DRM_IOCTL_VERSION, GET_CAP (`DUMB_BUFFER`, `PRIME`, and 64×64 cursor dimensions report support after host negotiation; every other capability reads 0), SET_MASTER / DROP_MASTER, MODE_GETRESOURCES, MODE_GETCONNECTOR, MODE_GETENCODER, MODE_GETCRTC, MODE_SETCRTC, MODE_ADDFB2 / RMFB, MODE_PAGE_FLIP, WAIT_VBLANK, GEM_CLOSE, PRIME_HANDLE_TO_FD / FD_TO_HANDLE, and the dumb-buffer create / map / destroy path. `MODE_CURSOR` / `MODE_CURSOR2` provide one virtual cursor plane. There is no general plane, property or atomic interface (no MODE_GETPLANERESOURCES, OBJ_GETPROPERTIES or ATOMIC), no legacy ADDFB or DIRTYFB, and any other DRM request fails with `ENOSYS`; `docs/plans/2026-09-30-real-hyprland-port-inventory.md` lists what a Hyprland- or wlroots-class compositor would need beyond this. Programs compiled against the upstream `libdrm` (vendored under `packages/registry/libdrm/`) link cleanly; SDL2's KMSDRM backend uses the same DRM interfaces. `host_kms_mode_info` returns a mode flagged PREFERRED so KMSDRM's mode-selection loop picks it up. When the embedder has reported the display pane's device-pixel size (`setKmsDisplaySize`, fed by the Modeset pane's ResizeObserver), the mode follows the reported pixel dimensions, even-aligned and clamped to [640, 3840] × [480, 2160], so a mode-picking client (wlcompositor, SDL2 KMSDRM) fills the pane with no letterbox; without a reported size (Node hosts, headless) it stays the historical 1920×1080@60. The preferred mode is sampled per GETCONNECTOR call and clients generally cache it at startup; resizing the pane afterwards changes presentation rather than switching the guest mode. The kernel also advertises 17 standard 60 Hz modes from 640×480 through 3840×2160, deduplicating the preferred size. Only the host-provided first mode is preferred. Both hosts expose this same catalog through the existing DRM ioctl, without a new host import or ABI layout. A count query reports the full list length; an undersized modes buffer is left untouched so libdrm can retry. The guest can switch modes using ordinary SDL or libdrm APIs, and the browser fits the selected scanout with letterboxing. The connector-id parameter is plumbed through but v1 advertises a single connector. `libc/glue/libgbm_stub.c` implements a 2-BO scanout ring (lock_front_buffer / release_buffer / has_free_buffers / destroy) on top of the dumb-buffer surface so KMSDRM's swap chain has somewhere to hand off frames. The `libEGL.a` / `libGLESv2.a` stubs (in `libc/glue/`) route GLES commands through the `/dev/dri/renderD128` cmdbuf to the host's WebGL2 bridge.
+`crates/runtime-core/src/syscalls.rs` (with the buffer registry in `crates/runtime-core/src/dri/`) handles DRM_IOCTL_VERSION, GET_CAP, SET_CLIENT_CAP, GET_MAGIC / AUTH_MAGIC, SET_MASTER / DROP_MASTER, MODE_GETRESOURCES, MODE_GETCONNECTOR, MODE_GETENCODER, MODE_GETCRTC, MODE_SETCRTC, MODE_GETPLANERESOURCES, MODE_GETPLANE, MODE_OBJ_GETPROPERTIES, MODE_GETPROPERTY, MODE_GETPROPBLOB, MODE_OBJ_SETPROPERTY / MODE_SETPROPERTY, MODE_CURSOR / CURSOR2, MODE_ADDFB2 / RMFB / CLOSEFB, MODE_PAGE_FLIP, WAIT_VBLANK, GEM_CLOSE, PRIME_HANDLE_TO_FD / FD_TO_HANDLE, and the dumb-buffer create / map / destroy path. This is the legacy (non-atomic) KMS interface a wlroots compositor such as cage drives:
+
+- **Mode objects.** One CRTC (id 1), one virtual encoder (2), one virtual connector (3) and one primary plane (4). Linux allocates every mode object and property from one id space, and libdrm clients read properties with `DRM_MODE_OBJECT_ANY`, so no two objects share an id (`crates/runtime-core/src/dri/kms.rs`). The primary plane is listed by MODE_GETPLANERESOURCES only after `DRM_CLIENT_CAP_UNIVERSAL_PLANES`, and reports the formats ADDFB2 accepts (XRGB8888, ARGB8888, RGB565). The legacy cursor ioctl is available separately; the general plane list contains the primary plane.
+- **Capabilities.** GET_CAP answers every capability Linux defines and fails with `EINVAL` for an unknown one, as `drm_getcap` does. `CRTC_IN_VBLANK_EVENT` and `TIMESTAMP_MONOTONIC` are 1 (flip events carry the CRTC id and a `CLOCK_MONOTONIC` timestamp); `ADDFB2_MODIFIERS`, `ASYNC_PAGE_FLIP`, `SYNCOBJ` and `SYNCOBJ_TIMELINE` are 0. SET_CLIENT_CAP accepts `STEREO_3D`, `UNIVERSAL_PLANES` and `ASPECT_RATIO`; `ATOMIC` fails with `EOPNOTSUPP` because the card has no atomic interface.
+- **Properties.** The plane carries the immutable `type` enum (Primary). The connector carries `EDID` (an immutable blob with no value: the virtual display has no EDID, so MODE_GETPROPBLOB finds no blob), `DPMS`, `link-status` (Good) and `non-desktop` (0). Through the legacy interface only `DPMS` is settable, and only by the master; the value is recorded and reported back, and the virtual display has no power state to change. Properties Linux marks atomic-only are not listed.
+- **Scanout state.** SETCRTC validates its connector list as Linux does and records the mode and framebuffer, which MODE_GETCRTC and MODE_GETPLANE report.
+- **Framebuffers.** RMFB of the framebuffer on the CRTC disables the CRTC, as on Linux. CLOSEFB drops the fd's framebuffer id but leaves a scanned-out framebuffer on the CRTC until the next SETCRTC or PAGE_FLIP replaces it; wlroots closes its framebuffers this way. Framebuffer ids are device-wide. Framebuffers belong to the open file: a child that inherits it through `fork()` or `posix_spawn()` shares the parent's framebuffers, and they are removed only when the last process closes the open file, as Linux does with a `drm_file`. A compositor's child that closes its inherited `O_CLOEXEC` `card0` fd at `exec` leaves the compositor's scanout framebuffer on the CRTC.
+- **Cursor.** MODE_CURSOR and MODE_CURSOR2 retain main's negotiated 64×64 ARGB cursor implementation and BO references. Hosts without that transport report zero cursor capacity and reject cursor operations with ENOTSUP.
+- **Master.** The first open of `card0` while no file is master becomes master, as Linux's `drm_master_open` does, so a compositor that never calls SET_MASTER (wlroots over libseat's noop backend) can modeset. DROP_MASTER and the master's last close release it; a later SET_MASTER from another file then succeeds.
+- **Authentication and leases.** GET_MAGIC issues a per-open-file token and AUTH_MAGIC lets the master accept it (`EACCES` from a non-master, `EINVAL` for an unknown token such as the 0 that libdrm's `drmIsMaster` probes with). Kandelo does not gate primary-node ioctls on authentication. MODE_CREATE_LEASE fails with `EOPNOTSUPP`: DRM leases are not implemented.
+
+Nested KMS query outputs are preprobed together before any write. Atomic
+modesetting and DRM leases remain outside the legacy baseline. The DRM
+nodes report char devices 226:0 and 226:128 and are described by sysfs.
+CPU-tier PRIME fds map their BO at offset zero; GPU-tier mappings fail
+with EINVAL. PRIME fstat reports the BO size and anonymous-inode mode.
+
+`host_kms_mode_info` returns a mode flagged PREFERRED so KMSDRM's mode-selection loop picks it up. When the embedder has reported the display pane's device-pixel size (`setKmsDisplaySize`, fed by the Modeset pane's ResizeObserver), the mode follows the reported pixel dimensions, even-aligned and clamped to [640, 3840] × [480, 2160], so a mode-picking client (wlcompositor, SDL2 KMSDRM) fills the pane with no letterbox; without a reported size (Node hosts, headless) it stays the historical 1920×1080@60. The preferred mode is sampled per GETCONNECTOR call and clients generally cache it at startup; resizing the pane afterwards changes presentation rather than switching the guest mode. The kernel also advertises 17 standard 60 Hz modes from 640×480 through 3840×2160, deduplicating the preferred size. Only the host-provided first mode is preferred. Both hosts expose this same catalog through the existing DRM ioctl, without a new host import or ABI layout. A count query reports the full list length; an undersized modes buffer is left untouched so libdrm can retry. The guest can switch modes using ordinary SDL or libdrm APIs, and the browser fits the selected scanout with letterboxing. The connector-id parameter is plumbed through but v1 advertises a single connector. `libc/glue/libgbm_stub.c` implements a 2-BO scanout ring (lock_front_buffer / release_buffer / has_free_buffers / destroy) on top of the dumb-buffer surface so KMSDRM's swap chain has somewhere to hand off frames. The `libEGL.a` / `libGLESv2.a` stubs (in `libc/glue/`) route GLES commands through the `/dev/dri/renderD128` cmdbuf to the host's WebGL2 bridge.
+
+
+The EGL library imports single-plane linear dma-buf images and the GLES
+library binds them to textures or renderbuffers. The image handle and its
+GL siblings have independent lifetimes. The implementation and evidence
+ledger is [graphics compatibility v1](graphics/compatibility-v1.md);
+these interfaces do not establish complete EGL1.5 or GLES2 conformance.
+
 
 `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` (a WPK extension, `'d'` nr `0xE1`) bridges the two tiers: it (re)uploads a CPU-tier bo's current pixels into a `WebGLTexture` in the calling fd's GL context — the host reads the bo's canonical SAB storage directly, so window-sized textures never squeeze through the 64 KB-capped cmdbuf TLV records. The bo handle and the GL session must live on the same fd; `libEGL` exposes the flow as `wpkEglImportDmabufHandle(prime_fd)` (PRIME import on the EGL fd) + `wpkEglBindBoTexture(handle, GL_TEXTURE_2D)` (idempotent per bo; re-call to refresh after the producer commits). Texture lifetime is tied to the bo: the last GEM_CLOSE deletes it.
 
-`DRM_IOCTL_WPK_CREATE_GPU_BO` (`'d'` nr `0xE0`) is the fully GPU-backed tier: the bo is a host `WebGLTexture` plus a color-attachment FBO — no SAB, unmappable on the CPU. WebGL textures are not shareable across contexts, so all GPU-tier bos and every GL client that touches them live on **one** shared multiplexer context: the DRM-master compositor's scanout WebGL2 context. A non-master GL client (which has no display canvas of its own) is routed onto that shared context at `host_gl_create_context`; the existing `GlMuxer` (keyed by the WebGL2 context) multiplexes the compositor and its clients by replaying each binding's shadow state on `switchTo`. A client renders into the bo by targeting its FBO: the bo handle reaches the next `eglCreateWindowSurface`'s `GLIO_CREATE_SURFACE` either explicitly (`libEGL`'s `wpkEglSetWindowSurfaceTarget(handle)`) or, for a libwayland-egl `wl_egl_window`, from the bo that window allocated; the kernel translates the per-fd handle to a global bo id and the host redirects the client's "bind default framebuffer 0" to the bo's FBO (sizing the viewport to the bo). Because a toolkit may create the window surface *before* the GL context, the redirect target is captured at surface creation and (re)applied at whichever of context-creation or surface-creation runs last, since it needs both `b.gl` and the resolved bo. A `wl_egl_window_resize` (a tiling compositor resizes every window it maps) gives the window a new bo at the new size and has `libEGL` destroy and re-create the window surface against it, flushing first so commands already queued land in the old bo; the old buffer is destroyed only after the next `eglSwapBuffers` has attached and committed its successor. As in Mesa, the resize takes effect from the next frame. `eglSwapBuffers` flushes the shared context as the buffer-ready fence before `wl_surface.commit`; command order through the one submit queue gives render-before-sample ordering for free (no explicit sync object in v1). `BIND_FOREIGN_TEXTURE` on a GPU-tier bo then degenerates to returning the texture id — true zero-copy, no upload. Allocation degrades to a CPU-tier dumb bo whenever no shared context exists — headless Node has no WebGL2, and in the browser the compositor must have created its context first — so `libgbm` only requests the GPU tier for render-only bos (RENDERING set, none of SCANOUT/CURSOR/WRITE/LINEAR) and falls back to CREATE_DUMB on any error. This producer path is browser-only. Each GPU-tier bo's FBO has color, 24-bit depth, and 8-bit stencil storage, so default-framebuffer depth testing and stencil clipping work for Wayland clients as well as canvas-backed sessions.
+`DRM_IOCTL_WPK_CREATE_GPU_BO` (`'d'` nr `0xE0`) is the fully GPU-backed tier: the bo is a host `WebGLTexture` plus a color-attachment FBO — no SAB, unmappable on the CPU. WebGL textures are not shareable across contexts, so all GPU-tier bos and every GL client that touches them live on **one** shared multiplexer context: the DRM-master compositor's scanout WebGL2 context. A non-master GL client (which has no display canvas of its own) is routed onto that shared context at `host_gl_create_context`; the existing `GlMuxer` (keyed by the WebGL2 context) multiplexes the compositor and its clients by replaying each binding's shadow state on `switchTo`. A client renders into the bo by targeting its FBO: the bo handle reaches the next `eglCreateWindowSurface`'s `GLIO_CREATE_SURFACE` either explicitly (`libEGL`'s `wpkEglSetWindowSurfaceTarget(handle)`) or, for a libwayland-egl `wl_egl_window`, from the bo that window allocated; the kernel translates the per-fd handle to a global bo id and the host redirects the client's "bind default framebuffer 0" to the bo's FBO (sizing the viewport to the bo). Because a toolkit may create the window surface *before* the GL context, the redirect target is captured at surface creation and (re)applied at whichever of context-creation or surface-creation runs last, since it needs both `b.gl` and the resolved bo. A `wl_egl_window_resize` (a tiling compositor resizes every window it maps) gives the window a new bo at the new size and has `libEGL` destroy and re-create the window surface against it, flushing first so commands already queued land in the old bo; the old buffer is destroyed only after the next `eglSwapBuffers` has attached and committed its successor. As in Mesa, the resize takes effect from the next frame. `eglSwapBuffers` flushes the shared context as the buffer-ready fence before `wl_surface.commit`; command order through the one submit queue gives render-before-sample ordering for free (no explicit sync object in v1). `BIND_FOREIGN_TEXTURE` on a GPU-tier bo then degenerates to returning the texture id — true zero-copy, no upload. Allocation degrades to a CPU-tier dumb bo whenever no shared context exists — headless Node has no WebGL2, and in the browser the compositor must have created its context first — so `libgbm` requests the GPU tier only for bos that GL renders into and falls back to CREATE_DUMB on any error. `gbm_bo_create` treats SCANOUT as CPU-facing (RENDERING set, none of SCANOUT/CURSOR/WRITE/LINEAR), because its scanout callers — the `gbm_surface` ring, a compositor's CPU blit — read or write the bytes. `gbm_bo_create_with_modifiers[2]` is the entry point of a renderer that draws its own scanout buffers (wlroots' gbm allocator), so its SCANOUT|RENDERING bos are GPU-tier. A PAGE_FLIP or SETCRTC that latches a GPU-tier bo on a CRTC whose canvas the same context claimed blits the bo's FBO onto that canvas (`blitGpuScanout`, flipping Y because KMS buffers hold the top row first); the vblank pump has no CPU bytes to show for it. This producer path is browser-only. Each GPU-tier bo's FBO has color, 24-bit depth, and 8-bit stencil storage, so default-framebuffer depth testing and stencil clipping work for Wayland clients as well as canvas-backed sessions.
 
 The absolute pointer defaults to a fixed 0–65535 device range on both hosts.
 Display pixels are converted to these device units by the KMS session
@@ -3508,9 +3533,106 @@ stats buffer layout, and ABI 50 are unchanged.
 
 `MODE_PAGE_FLIP` latches the new framebuffer as the host-side scanout immediately (`host_kms_set_fb`, same call `MODE_SETCRTC` makes) and queues a flip-complete event that `kernel_vblank` — driven by the host's 60 Hz vblank pump — retires into the fd's event ring at the next tick. Two consequences: libdrm's `drmModePageFlip → poll → drmHandleEvent` loop runs at refresh rate rather than ioctl rate, and any host-side consumer of the current scanout (the vblank pump's WebGL2 scanout presenter or the legacy 2D canvas blit used by CPU-rendered demos) always reads the most recently flipped buffer, never a double-buffered client's back buffer. The immediate latch is race-free because a well-behaved client fully paints a bo before flipping to it and only reuses the old bo after the flip-complete event.
 
+## Wayland kiosk compositor (`cage`)
+
+`packages/registry/cage/` builds upstream cage 0.3.1 on upstream wlroots
+0.20.2. cage runs one application as its whole session: it forks and execs
+the client, shows its toplevel fullscreen on the one output, and exits with
+the client's status. It reaches the platform the way a Linux compositor does:
+
+- **Seat.** libseat's `noop` backend (`LIBSEAT_BACKEND=noop`) opens
+  `/dev/dri/card0` and the evdev nodes directly. The first open of `card0`
+  takes DRM master, so wlroots can modeset without SET_MASTER.
+- **Device discovery.** libudev-zero walks `/sys` (see "Sysfs" in
+  `docs/posix-status.md`) to find the card and the input devices, and
+  watches an `AF_NETLINK` `NETLINK_KOBJECT_UEVENT` socket that never
+  reports a hotplug.
+- **Display.** The wlroots DRM backend drives the legacy KMS interface
+  described above: properties, SETCRTC, PAGE_FLIP and CLOSEFB.
+- **Rendering.** The card has a render node, so wlroots chooses its GLES2
+  renderer. It opens `/dev/dri/renderD128`, creates a gbm device on it, and
+  reaches EGL through the GBM platform (`EGL_KHR_platform_gbm`). The gbm
+  allocator gives it GPU-tier scanout buffers
+  (`gbm_bo_create_with_modifiers`); wlroots binds each one as an EGLImage
+  renderbuffer and renders into it, and the page flip that scans it out
+  blits it onto the display canvas, which cage's GL context claimed. A
+  client's `wl_shm` buffer is uploaded as a texture with
+  `GL_EXT_texture_format_BGRA8888` and `GL_EXT_unpack_subimage`; a
+  `linux-dmabuf` buffer is imported with `EGL_EXT_image_dma_buf_import`,
+  zero-copy for a GPU-tier buffer (a GL client's) and copied from the
+  dma-buf mapping for a CPU-tier one. The Node host has no WebGL2, so the
+  GLES2 renderer cannot start there and a session must ask for the pixman
+  renderer with `WLR_RENDERER=pixman`; pixman composites into DRM dumb
+  buffers and reads a client's `wl_shm` pool by mapping the pool fd, a
+  PRIME fd or a memfd.
+- **Input.** libinput's udev backend reads the evdev devices, and cage
+  routes keys and buttons to the focused toplevel.
+
+cage offers no layer shell, data-control, tiling or multi-window layout, so
+the desktops (`wldesktop`, `omarchydesktop`, `hyprdesktop`) and their shell
+clients (Waybar, mako, quickshell, kclipd, qtgallery) stay on `wlcompositor`.
+
+The browser shell image carries cage as a lazy file, and its `cage` machine
+runs `cage -- wlterm`. The machine declares `kms-gl-scanout`, so the vblank
+pump's WebGL2 scanout presenter shows the CRTC whenever no GL context owns
+the canvas: before cage's GLES2 context claims it, after that context ends,
+and for a session on the pixman renderer. The connector mode follows the
+pane's device pixels.
+
+Gates: `host/test/cage-smoke.test.ts` (a raw libwayland client gets a
+configure, a presentation feedback after a real page flip, the keymap, a key
+and a button), and foot, GTK3, libkwl and wlterm as session clients
+(`host/test/{foot,gtk3,libkwl,wlterm}-smoke.test.ts`), all on the pixman
+renderer. The tests share the session root in `host/test/wlroots-session.ts`.
+`apps/browser-demos/test/kandelo-cage.spec.ts` gates the GLES2 renderer in
+the browser.
+
+## Wayland tiling compositor (`sway`)
+
+`packages/registry/sway/` builds upstream sway 1.12 on the same wlroots
+0.20.2 and seat, discovery, display and input path as cage, plus json-c for
+its IPC. The package also ships `swaymsg`, `swaybar`, `swaynag` and the
+upstream default config at `/etc/sway/config`; it is built without the tray
+(no sd-bus provider), gdk-pixbuf or man pages.
+
+On top of cage's path, sway forks and runs each config `exec` through
+`/bin/sh`, tiles toplevels, and serves i3 IPC on a Unix socket
+(`$SWAYSOCK`). It sets `SIGCHLD` to `SIG_IGN` and relies on the kernel
+reaping its children.
+
+Static linking puts sway's own `expand_path` and `list_insert` in the same
+module as libxkbcommon's and libinput's internal functions of those names.
+`wasm-ld` links such a signature mismatch with only a warning and replaces
+the library's calls with traps, so the build renames sway's two symbols.
+
+sway starts `swaybar` and `swaynag` itself: it forks, keeps one end of a
+`socketpair` open across `exec`, and passes its number in
+`WAYLAND_SOCKET`. Each client maps a layer-shell surface that reserves an
+edge of the output. swaybar forks the bar's `status_command` through
+`/bin/sh` and reads its stdout; a swaynag button runs its action through
+`/bin/sh`. Upstream swaynag fills its unused Wayland listener slots with one
+unprototyped function, and a WebAssembly indirect call traps on the type
+mismatch, so `patches/0001-*` gives each slot a function of its event's
+prototype.
+
+Gate: `host/test/sway-smoke.test.ts`, on the pixman renderer in Node: two
+clients from the config tile side by side in `swaymsg -t get_tree`, a click
+focuses each and it receives a button and a key, and `swaymsg exit` ends the
+session with status 0. A config `bar` block starts swaybar, which reserves
+the bottom of the workspace and runs its `status_command`. A config error
+starts swaynag, which reserves the top of the workspace, and a click on its
+"Exit sway" button ends the session with status 0.
+
+The browser shell image carries sway, swaybar, swaynag, swaymsg and swaybg as
+lazy files, and its `sway` machine runs sway on the GLES2 renderer. Like the
+`cage` machine it declares `kms-gl-scanout`, so a sway started again from
+the machine's shell on the pixman renderer still reaches the canvas.
+`apps/browser-demos/test/kandelo-sway.spec.ts` gates the GLES2 renderer,
+swaybar, workspaces, tiling, swaynag's exit button and that restart.
+
 ## Wayland compositor (`wlcompositor`, `wlterm`)
 
-On top of the DRM/KMS + evdev surfaces above sits a real Wayland stack that runs entirely in-kernel — no host-side Wayland. `programs/wlcompositor/` is a Wayland server (a desktop machine's launcher script, `wldesktop` or `omarchydesktop`, starts it in the background and waits for its socket) built against a wasm32 port of `libwayland-server`: it owns the `card0` scanout (via the same KMSDRM/`libgbm` path SDL2 uses), reads input from `/dev/input/event0` (keyboard) and `event1` (pointer) through a real `libinput` 1.25.0 port, and exports the core protocol plus `wl_shm`, `xdg_shell`, `wl_seat`, `wl_output`, `zwp_linux_dmabuf_v1`, and `wp_presentation` (clock_id `CLOCK_MONOTONIC`; `presented` feedback carries the PAGE_FLIP timestamp, refresh interval, and flip sequence — the frame-pacing signal `foot` and other upstream clients consume), plus the logical-output/scale surface GTK3, Waybar and mako query: `wl_output` at v4 (`name`/`description` — mako binds v4 unconditionally), `zxdg_output_manager_v1` (v3; the single virtual output at (0,0), logical size = the mode), `wp_fractional_scale_manager_v1` (fixed `preferred_scale` 120 = scale 1), and `wp_viewporter` (per-surface crop + scale, honored by both compositing paths — nearest-sampled in the CPU blit, a uv sub-rect on the GPU quad; gated by `host/test/wlcompositor-protocols-smoke.test.ts`). Clients connect over a Unix socket at `/tmp/wayland-0` (`/` is a read-only rootfs and `/var/run` is `EACCES` for non-root, so the well-known runtime dir is `/tmp`). Buffer sharing is zero-copy: clients allocate `wl_shm` pools backed by `gbm` dumb BOs and pass the prime-fd to the compositor via `SCM_RIGHTS`. The same prime-fd can also arrive over `zwp_linux_dmabuf_v1` (advertised at version 3, `XRGB8888`/`ARGB8888`/`XBGR8888`/`ABGR8888` + `LINEAR` only, no feedback; a GL client's buffer from `libwayland-egl` is `XBGR8888`, because a WebGL RGBA texture stores `[R,G,B,A]` bytes, and the compositor samples it without the red/blue swizzle it applies to `XRGB8888` `[B,G,R,X]` buffers): `zwp_linux_buffer_params_v1.add`/`create[_immed]` wrap the plane fd in a synthetic single-ref `shm_pool` so the resulting `wl_buffer` reuses the exact `shm_buffer` import/composite/destroy path — for a GPU-tier bo the downstream `BIND_FOREIGN_TEXTURE` is zero-copy. Compositing is GPU-first: at boot the compositor probes the renderD128 GLES bridge (shader compile via sync queries — they fail cleanly on hosts without WebGL2) and, when available, imports each client bo as a texture (`wpkEglImportDmabufHandle` + `wpkEglBindBoTexture`, re-bound only for buffers dirtied by a commit) and renders wallpaper + z-ordered window quads + focus border in a single cmdbuf flush per frame; its GL context claims the CRTC canvas and the vblank pump's presenter stands down. Without GL (Node smokes, `WLC_NO_GPU=1`, or a runtime failure — which also terminates EGL so the pump presenter resumes), it falls back to importing with `gbm_bo_import` and CPU-blitting into the scanout buffer. A lost WebGL2 context (a browser GPU-process crash) enters the same degrade chain through the present path: `host_gl_present` returns `-EIO` when the canvas context reports `isContextLost()`, `GLIO_PRESENT` propagates the errno, the guest's `eglSwapBuffers` fails, and the compositor's repaint falls through to the CPU path and terminates EGL — no guest-side context-loss API is needed. Either way it keeps committing PAGE_FLIPs as the frame clock. Keymaps are compiled with a wasm32 `libxkbcommon` port and handed to clients as an mmap'd fd over `wl_keyboard.keymap`.
+On top of the DRM/KMS + evdev surfaces above sits a real Wayland stack that runs entirely in-kernel — no host-side Wayland. `programs/wlcompositor/` is a Wayland server (a desktop machine's launcher script, `wldesktop` or `omarchydesktop`, starts it in the background and waits for its socket) built against a wasm32 port of `libwayland-server`: it owns the `card0` scanout (via the same KMSDRM/`libgbm` path SDL2 uses), reads input from `/dev/input/event0` (keyboard) and `event1` (pointer) through a real `libinput` 1.28.1 port, and exports the core protocol plus `wl_shm`, `xdg_shell`, `wl_seat`, `wl_output`, `zwp_linux_dmabuf_v1`, and `wp_presentation` (clock_id `CLOCK_MONOTONIC`; `presented` feedback carries the PAGE_FLIP timestamp, refresh interval, and flip sequence — the frame-pacing signal `foot` and other upstream clients consume), plus the logical-output/scale surface GTK3, Waybar and mako query: `wl_output` at v4 (`name`/`description` — mako binds v4 unconditionally), `zxdg_output_manager_v1` (v3; the single virtual output at (0,0), logical size = the mode), `wp_fractional_scale_manager_v1` (fixed `preferred_scale` 120 = scale 1), and `wp_viewporter` (per-surface crop + scale, honored by both compositing paths — nearest-sampled in the CPU blit, a uv sub-rect on the GPU quad; gated by `host/test/wlcompositor-protocols-smoke.test.ts`). Clients connect over a Unix socket at `/tmp/wayland-0` (`/` is a read-only rootfs and `/var/run` is `EACCES` for non-root, so the well-known runtime dir is `/tmp`). Buffer sharing is zero-copy: clients allocate `wl_shm` pools backed by `gbm` dumb BOs and pass the prime-fd to the compositor via `SCM_RIGHTS`. The same prime-fd can also arrive over `zwp_linux_dmabuf_v1` (advertised at version 3, `XRGB8888`/`ARGB8888`/`XBGR8888`/`ABGR8888` + `LINEAR` only, no feedback; a GL client's buffer from `libwayland-egl` is `XBGR8888`, because a WebGL RGBA texture stores `[R,G,B,A]` bytes, and the compositor samples it without the red/blue swizzle it applies to `XRGB8888` `[B,G,R,X]` buffers): `zwp_linux_buffer_params_v1.add`/`create[_immed]` wrap the plane fd in a synthetic single-ref `shm_pool` so the resulting `wl_buffer` reuses the exact `shm_buffer` import/composite/destroy path — for a GPU-tier bo the downstream `BIND_FOREIGN_TEXTURE` is zero-copy. Compositing is GPU-first: at boot the compositor probes the renderD128 GLES bridge (shader compile via sync queries — they fail cleanly on hosts without WebGL2) and, when available, imports each client bo as a texture (`wpkEglImportDmabufHandle` + `wpkEglBindBoTexture`, re-bound only for buffers dirtied by a commit) and renders wallpaper + z-ordered window quads + focus border in a single cmdbuf flush per frame; its GL context claims the CRTC canvas and the vblank pump's presenter stands down. Without GL (Node smokes, `WLC_NO_GPU=1`, or a runtime failure — which also terminates EGL so the pump presenter resumes), it falls back to importing with `gbm_bo_import` and CPU-blitting into the scanout buffer. A lost WebGL2 context (a browser GPU-process crash) enters the same degrade chain through the present path: `host_gl_present` returns `-EIO` when the canvas context reports `isContextLost()`, `GLIO_PRESENT` propagates the errno, the guest's `eglSwapBuffers` fails, and the compositor's repaint falls through to the CPU path and terminates EGL — no guest-side context-loss API is needed. Either way it keeps committing PAGE_FLIPs as the frame clock. Keymaps are compiled with a wasm32 `libxkbcommon` port and handed to clients as an mmap'd fd over `wl_keyboard.keymap`.
 
 Kandelo-authored clients build on `libkwl` (`examples/libs/libkwl/`), a small toolkit over `libwayland-client` that wraps registry bind, an `xdg` CSD toplevel, double-buffered `wl_shm` back buffers, xkb keysym/UTF-8 translation, and a `kwl_dispatch` event loop; it exposes `kwl_display_fd()` so an app can `poll` the Wayland connection alongside its own fds. Drawing goes through `libwpkdraw` (`examples/libs/wpkdraw/`), a CPU rasterizer (alpha-blended clear/pixel/rect + an `stb_truetype` font engine over a bundled Inconsolata) that renders into a caller-owned ARGB buffer. `programs/wlterm/` is the first real client: a terminal that `forkpty()`s `sh` (bash, which every Kandelo image binds to `/bin/sh`), runs an in-tree VT100 core (`vt100.c`), and multiplexes the Wayland display fd and the PTY master fd in one `poll` loop — Wayland key events become PTY writes, PTY output feeds the VT100 grid and is rendered back into the libkwl window. Because `wlterm` forks, its wasm is mandatorily processed by `wasm-fork-instrument` (see [fork-instrumentation.md](fork-instrumentation.md)).
 
@@ -3522,7 +3644,7 @@ ignored, and resizing restores full-screen margins. This is terminal behavior,
 independent of the child program or package. The existing limited terminal
 subset (including no alternate screen or VT100 line-drawing set) is unchanged.
 
-The stack is dual-host: the Node smoke gates (`host/test/{wpkdraw,libkwl,wlcompositor,wlterm,wldesktop,wldesktop-liveness}-smoke.test.ts`) drive compositor+client harnesses (two-process for the single-client gates, compositor + wlclock + wlpaint for the desktop gates), and the browser demo (the `wayland` machine in the shell image, declared in `packages/registry/shell/source-rootfs-shell-demo.json`, listed in `apps/browser-demos/pages/kandelo/gallery-roster.json`, and gated by `apps/browser-demos/test/kandelo-wayland.spec.ts`) boots the compositor plus three clients — `wlclock` (animated clock), `wlpaint` (pointer painting), and `wlterm` — against `card0` mirrored to an `OffscreenCanvas`, with DOM keyboard input injected as evdev events and the pane's pointer bridge feeding `event1`. This is the same KMS-to-canvas + `BrowserInputSource` path the `modeset` and `sdl2` demos use. The pane opts into the vblank pump's WebGL2 scanout presenter (`mode: "webgl2-scanout"`: scanout-to-texture upload with shader-side XRGB→RGB swizzle, change-driven presents gated on the kernel commit count plus a ~15 Hz content-probe backstop, and GPU scaling at the pane's device-pixel resolution); in the browser the compositor's own GLES context then claims the canvas for GPU compositing (`markKmsCanvasGlOwned` — the presenter stands down, stats slot 7 flips to 3/`webgl2-gl`), while headless/Node runs stay on the CPU-composite + presenter pipeline. A legacy `mode: "2d"` putImageData blit remains available. See [browser-support.md](browser-support.md#wayland-desktop-demo).
+The stack is dual-host: the Node smoke gates (`host/test/{wpkdraw,wlcompositor,wldesktop,wldesktop-liveness}-smoke.test.ts`) drive compositor+client harnesses (two-process for the single-client gates, compositor + wlclock + wlpaint for the desktop gates; `libkwl` and `wlterm` are gated under cage), and the browser demo (the `wayland` machine in the shell image, declared in `packages/registry/shell/source-rootfs-shell-demo.json`, listed in `apps/browser-demos/pages/kandelo/gallery-roster.json`, and gated by `apps/browser-demos/test/kandelo-wayland.spec.ts`) boots the compositor plus three clients — `wlclock` (animated clock), `wlpaint` (pointer painting), and `wlterm` — against `card0` mirrored to an `OffscreenCanvas`, with DOM keyboard input injected as evdev events and the pane's pointer bridge feeding `event1`. This is the same KMS-to-canvas + `BrowserInputSource` path the `modeset` and `sdl2` demos use. The pane opts into the vblank pump's WebGL2 scanout presenter (`mode: "webgl2-scanout"`: scanout-to-texture upload with shader-side XRGB→RGB swizzle, change-driven presents gated on the kernel commit count plus a ~15 Hz content-probe backstop, and GPU scaling at the pane's device-pixel resolution); in the browser the compositor's own GLES context then claims the canvas for GPU compositing (`markKmsCanvasGlOwned` — the presenter stands down, stats slot 7 flips to 3/`webgl2-gl`), while headless/Node runs stay on the CPU-composite + presenter pipeline. A legacy `mode: "2d"` putImageData blit remains available. See [browser-support.md](browser-support.md#wayland-desktop-demo).
 
 ### Tiling window manager (`WLC_LAYOUT`, workspaces, `kwlctl`, keybinds)
 
@@ -3547,9 +3669,9 @@ theme. Those are ordinary Wayland clients, but they need a protocol that lets a
 surface anchor to an output edge and reserve space from the windows — which is
 what `zwlr_layer_shell_v1` is, and what Quickshell, Waybar, mako and every
 other shell component speak. The compositor implements it (protocol XML
-vendored at
-`packages/registry/wayland-protocols/xml/wlr-layer-shell-unstable-v1.xml`),
-and the in-tree clients below consume it. This is the **O1** milestone of
+from the `wlr-protocols` package,
+`share/wlr-protocols/unstable/wlr-layer-shell-unstable-v1.xml`), and the
+in-tree clients below consume it. This is the **O1** milestone of
 [docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md](plans/2026-07-14-build-hyprland-class-compositor-plan.md).
 The Omarchy machine runs Quickshell in every one of these slots instead
 (see [browser-support.md](browser-support.md#omarchy-desktop-demo)); the
@@ -3658,11 +3780,8 @@ client: stock `wl_display_connect()` (via `XDG_RUNTIME_DIR`), stock
 xdg-shell/SSD negotiation, and a real font pipeline. Two declared patches are
 the entire delta, both kernel-model boundaries rather than feature edits:
 `0001` allocates its `wl_shm` pools as `gbm` prime-fd dumb-bos instead of
-memfds (written when a memfd `MAP_SHARED` mapping never converged across
-processes, so the compositor would have composited stale bytes; the kernel
-now keeps memfd mappings coherent at syscall boundaries, so this patch is a
-candidate for removal), and `0002` serializes
-its font loading (concurrent `FcFontMatch` garbles pattern doubles under the
+memfds (wlcompositor imports every pool with `gbm_bo_import`), and `0002`
+serializes its font loading (concurrent `FcFontMatch` garbles pattern doubles under the
 kernel's thread model — any future threaded font consumer hits the same wall).
 foot forks its shell (`slave.c`), so its wasm is mandatorily
 fork-instrumented; it runs with `--term=vt100` because no foot terminfo is
@@ -3694,10 +3813,10 @@ What it took, on each side of the protocol:
   deliverable. A kernel without those exports is refused, not run with the
   mask silently ignored.
 
-Gated end-to-end by `host/test/foot-smoke.test.ts` (foot on wlcompositor:
-connect, fontconfig+fcft startup, first composited frame through the gbm pool
-path, keys typed into its forked `dash`, clean exit). In the browser, foot is
-a launcher entry of the Omarchy machine — a lazy binary at
+Gated end-to-end by `host/test/foot-smoke.test.ts` (foot as the session
+client of cage: connect, fontconfig+fcft startup, a mapped toplevel through
+the gbm pool path, keys typed into its forked `dash`, clean exit). In the
+browser, foot is a launcher entry of the Omarchy machine — a lazy binary at
 `/usr/local/bin/foot`, with the desktop's `fonts.conf` and Inconsolata under
 `/usr/share/kandelo/fonts` — gated by
 `apps/browser-demos/test/kandelo-omarchy.spec.ts`.
@@ -3860,6 +3979,13 @@ devices:
 - `/dev/fb0` remains the simpler framebuffer path for software that writes a
   linear BGRA buffer directly.
 
+KMS now uses device-wide object IDs and framebuffer IDs. Inherited open
+file descriptions share their framebuffer table; the last reference removes
+its entries. Connector and property queries preprobe every nested output
+before writing any of them. The full dynamic mode catalog and cursor path
+remain available. See [the compatibility inventory](graphics/compatibility-v1.md)
+for implementation and validation status.
+
 The kernel owns the device ABI, fd-local GEM handles, DRM-master ownership,
 KMS framebuffer refcounts, BO mmap authorization, and process lifecycle
 cleanup. User programs cannot mmap an arbitrary BO id: the mmap offset must
@@ -3874,15 +4000,229 @@ TLV commands, the kernel validates the submitted range, and the host decodes
 the commands against a browser `WebGL2RenderingContext` or a test double in
 Node.js. The kernel does not contain GL rendering code.
 
+The combined graphics branch uses ABI 59, joining main's ABI 53 xattr and
+exchange contracts with the graphics interfaces developed through ABI 58.
+Operation table 16 remains independently versioned. Generated source metadata
+is coherent; normal SDK/program/package/image and compositor validation still
+requires rebuilding the combined artifacts.
+
+EGL's single ES2 config uses one attribute table for enumeration,
+selection and queries. Selection honors size minima, masks, exact values,
+defaults and explicit config IDs. Config operations require an initialized
+display and publish outputs only after validation. The config's renderable
+mask remains ES2-only; EGL's default ES1 selection filter consequently matches
+none. Tools enumerating all configurations use eglGetConfigs. The source
+facade supports independent window and pbuffer surfaces. Other EGL core
+gaps and normal rebuilt-guest validation remain tracked in the graphics
+compatibility inventory.
+
+Operation-table version 16 adds an immutable surface-capability query to
+initialized, mapped object sessions in a live display generation. It requires
+no context or current binding and grants no authority to inspect ordinary
+context-local state. The exact zero-byte input and 16-byte output carry
+width, height, maximum pixel count and the completion marker. The renderer
+uses the smaller texture/renderbuffer dimension and caps the pixel count
+only at the representable EGLint maximum. C caches the accepted limits per
+display generation; a malformed reply leaves caller output unchanged.
+Native and main-forwarded paths preserve outgoing GLES errors before
+querying, without selecting a logical context, changing drawable bindings,
+resizing a canvas or claiming KMS presentation. A host without an available
+renderer reports failure.
+
+The config now advertises PBUFFER_BIT. Pbuffer creation validates attributes,
+uses generation-owned offscreen storage and preserves the pending native
+window target. It stores accepted dimensions and query attributes. Largest
+requests obey native dimensions/pixel limits and search smaller pixel budgets
+only after definite allocation rejection; unknown completion stops the search.
+A context created after its pbuffer reuses its existing offscreen renderer
+without resizing or claiming KMS scanout. Context-first KMS ordering and
+pump coexistence remain in the lifecycle audit. Texture binding
+capabilities remain false, so texture-bound requests fail
+with BAD_MATCH. Logical zero dimensions use minimal private native storage;
+viewport/scissor initialization honors those logical dimensions. Pbuffer swaps
+still validate the current draw surface and flush, without posting. Native and
+forwarded raw presentation also recognize the surface kind and avoid blitting
+its private target to the visible canvas.
+
+Core and EXT platform-window constructors validate live GBM dimensions,
+format and rendering usage before allocating a backend surface. GBM lookup
+uses its locked live registry without dereferencing foreign pointers. The
+config's native visual is ABGR8888, matching its RGBA8 storage. The core
+attribute parser checks pointer-width EGLAttrib keys/values before narrowing;
+EXT attributes retain their EGLint layout. Requested render buffer and GL
+colorspace are stored separately from actual rendering: QueryContext reports
+BACK_BUFFER even for a SINGLE_BUFFER request. Public ES2 contexts do not
+support sRGB rendering, so both windows and pbuffers retain the requested
+colorspace but render linearly as permitted by EGL 1.5 section 3.5.1.
+
+Surface setters support default resolve/destroyed behavior and the no-effect
+NO_TEXTURE mipmap level. Unsupported config capabilities return BAD_MATCH.
+Texture bind/release, pixmap creation/copy and OpenVG client-buffer creation
+now expose entry points and the specific errors required by the current
+configuration and GBM platform. They preserve queued GL work and thread
+ownership. Implemented EGL functions resolve through GetProcAddress; core
+sync objects, GL-source images and broader wait/lifecycle semantics remain
+inventory gaps.
+
+Core EGL image creation reads pointer-width EGLAttrib lists, while the KHR
+entry point reads EGLint lists. Both use one retained-image registry and
+support the existing dma-buf import target; either destruction spelling
+invalidates the same public handle without releasing surviving siblings.
+Attribute keys and values are checked before narrowing or importing.
+Required plane offset presence is distinct from zero. Validated YUV hints
+have no effect on supported RGB images. GL-source image creation and full
+CPU/storage metadata conformance remain open compatibility work.
+
+Surface allocation reserves native deletion receipts and every selector update
+before creating texture/renderbuffer/framebuffer objects. Checked storage and
+read/draw/texture/renderbuffer inverses keep failed setup or finalization owned
+after creator retirement. Dependent operations stop until restoration and
+cleanup finish. Accepted replacement storage stays committed if retiring an old
+target fails. Surface destruction and abandoned forwarded requests retire the
+same receipts, preserving the distinction between owned native targets and
+borrowed BO framebuffers. Broader resource factories, context loss and unknown
+transport completion remain in the compatibility inventory.
+
+EGL client/GL waits flush pending commands and require successful native
+finish through the existing empty QOP_FINISH query. The host preserves earlier
+GL errors and rejects failed completion or renderer loss; native and forwarded
+paths acknowledge only after acceptance. The C wait keeps current ownership
+and reports failure without holding the EGL metadata mutex during completion.
+GLES glFinish also exposes failed completion instead of discarding it. Swap
+interval validates display/context/draw ownership; every request clamps to the
+single config's zero bounds. EGL fence objects and native wait semantics remain
+separate compatibility work.
+
+EGL error status and bound client API are thread-local; an unsupported API
+bind reports BAD_PARAMETER while preserving the calling thread's prior API.
+Current bindings use heap-backed pthread-key records with exclusive context
+ownership. Release and thread exit flush before dropping current references;
+destroy-current and terminate-current defer backend retirement until release.
+Each created EGL context also owns an opaque heap encoder record. The
+current thread binding selects that record; it contains the cursor, client
+arrays, upload layout, errors, image siblings and returned strings. An
+unbound thread cannot mutate another context's client state. Release preserves the record for transfer
+to another thread; final destruction retires its image references and
+frees it without selecting it or emitting into another command stream.
+Allocation failure precedes backend creation and leaves no published
+context. C encoders retain a separate reference-counted name owner. Metadata-only
+locks serialize whole-batch buffer/texture/renderbuffer reservations and
+shader/program name allocation, including implicit binds. Array bindings
+and every VAO's element/attribute capture retain actual buffer records;
+namespace deletion does not erase an inactive container's old identity.
+Texture 2D/cube units, the renderbuffer binding and framebuffer attachments
+also retain explicit C records. First bind fixes texture dimensionality;
+wrong-target binds and unrealized/wrong-type attachments preserve old
+client references. Inactive FBOs keep an unnamed old record through name
+reuse. Binding queries retain logical names; the host canonicalizes native
+image views to their logical objects. Ordinary/raw WPK queries retain native
+authority. Public
+WPK BO texture names are registered after acknowledged creation, and checked
+liveness reconciles owner-revoked names before C bind/attachment validation.
+Private EGLImage source tokens use a separate registry and never enter the
+public GLuint namespace. The inline 32-unit
+capacity grows to the queried renderer limit,
+with failed growth preserving selection and final teardown releasing it.
+Public C texture/renderbuffer binds now wait for a checked renderer reply
+before replacing binding references or fixing a texture's dimensionality.
+The query and queued paths share native candidate creation and validation;
+namespace bookkeeping is reserved before native binding and a rejected
+candidate is removed. Accepted query binds also collect retired images.
+This establishes definite bind acceptance, while an indeterminate transport
+failure still needs lifecycle reconciliation or context-loss handling.
+GPU image targets now retain distinct logical texture/RBO identities while
+sharing canonical source pixels. Texture views preserve independent sampling
+parameters; FBO attachments target canonical storage and retain their logical
+query identity. Sampling views copy current source pixels before drawing.
+Respecification stages an owned view and retargets all referencing group
+FBOs before replacement. C image holds release old backing only after checked
+orphaning. Confirmed holds belong to retained shared object records;
+ambiguous imports retain candidate object/image references until final group
+retirement. Association revisions prevent older completions from replacing
+newer holds. Final reference and replacement cleanup release images outside
+the metadata mutex. CPU coherence, concurrent C/native namespace ordering
+and indeterminate multi-failure recovery remain open. Public C contexts
+now join these object groups; this is not complete image conformance.
+
+Client staging retains a separate buffer-record reference, restores its
+pointer/name/serial directly and keeps any pending capture encoder-owned.
+The host saves the actual native ARRAY view in a context-local slot across
+submit boundaries; buffer collection includes that pin across group
+members, including separate index/vertex views. Empty BEGIN/END commands
+restore identity independently of public names. Failed native restoration
+keeps the pin and rejects dependent draws until a successful END retry;
+context destruction releases it. Full indeterminate-submit recovery and
+interrupted temporary-name cleanup remain open.
+Name reservation is separate from GPU realization for buffers, textures
+and renderbuffers. Their Gen records do not allocate or mutate host object
+maps; the first accepted Bind publishes the native object. Delayed shared
+reservations cannot replace a peer's realized storage or revive a deleted
+name. The C owner still reserves complete batches before returning names.
+Local reference cleanup precedes releasing the common owner. The private
+shared-owner constructor supplies public C shared-context creation. A
+separate group dispatch mutex spans standard buffer/texture/RBO name lookup,
+native binding/deletion/attachment and C publication. Metadata locks stay
+outside device IO; general indeterminate failure recovery remains open.
+User-visible context/surface handles are monotonic. Each backend
+session admits one context and surface. The public EGL facade allocates
+additional sessions for independent context/surface records within a
+generation. Each context has its own encoder and command mapping; current
+bindings can select separate draw/read surfaces from other sessions in the
+same generation. A surface can survive its session's context destruction.
+A retained current old generation can overlap a newly initialized one.
+Public C shared contexts join the retained C owner and native/kernel group;
+the full API/error and lifecycle audit remains open.
+
+ABI 57 surface creation uses a 36-byte input/output GlSurfaceCreateInfo:
+32 attribute bytes followed by a zero-on-input surface identity. The
+kernel returns a fresh identity and accepted dimensions only after the
+renderer acknowledges creation. A private copy translates the caller's
+GEM handle for the host; the successful guest reply preserves that handle.
+Failure leaves caller bytes, context/current state and previous backing
+unchanged, with ordered candidate cleanup. The C library stores the
+returned ID and uses it for make-current; it no longer assumes ID 1.
+
+The host stages private surface storage before publishing it. Explicit
+storage retains its accepted size independently of a shared canvas. The
+main-thread fallback receives only reviewed scalar metadata and reuses the
+existing bounded mailbox for an eight-byte dimension reply. A retired
+request frees its unpublished candidate. Identity-checked destruction
+cannot remove a later surface. Ordinary canvas swap blits private storage
+to the visible default target; forwarded swap selects, blits and flushes
+before acknowledging through that same mailbox. Source tests exercise
+accepted dimensions, retained pixels and stale cleanup across all three browser engines; full
+guest marshalling and the public C cross-context facade remain unvalidated.
+
 The GLES bridge exposes a GLES2 API over WebGL2. Operation-table version 2
 adds commands while preserving version 1 tags and payloads. `GLIO_INIT`
-accepts versions 1 and 2, and rejects zero or newer versions with `ENOSYS`.
+accepts versions 1 through 16, and rejects zero or newer versions with `ENOSYS`.
 Its version and extension strings describe that API. Extension queries carry
 an optional operation-table version: legacy requests retain their empty list,
 while version 2 advertises bridged capabilities. Optional float rendering and
 filtering extensions appear only when the host enables them. Uniform
 reflection, vector/matrix uploads, indexed draws, texture updates and
 depth/stencil operations use the same command/query path as other programs.
+A submitted command batch is structurally validated in full before dispatch;
+an invalid trailing TLV record cannot execute earlier records in that batch.
+This does not roll back valid commands that report ordinary GL errors.
+The source-only host gate is `cd host && npx vitest run --config
+vitest.graphics.config.ts`; rendered and guest integration checks are separate.
+Uniform getters use one checked, fixed-size renderer reply carrying count
+and values. They do not depend on an earlier reflection call or a C width
+cache. Shared program/location associations validate ownership and link
+state before reading without changing the current program. C publishes
+only a completed successful reply; failed or malformed results preserve
+caller output. Table 7 adds this query within ABI 58, preserving all older
+tags/layouts. Table 8 adds checked active-uniform chunks and context-owned
+name lookup transfers in the existing 64 KiB query messages. Public
+locations are stable across repeated names, array aliases and sharing
+peers until successful relink/final deletion; allocation failure rolls
+back maps before publication. Lookup transfers are token-checked, replaced
+or cancelled independently per context and released on retirement. C
+publishes reflected metadata/names only after accumulating every requested
+chunk. Fixed C name/reflection buffers are removed. Shader-name translation
+beyond WebGL limits and the full setter/link audit remain open.
+See [the graphics compatibility inventory](graphics/compatibility-v1.md).
 Texture uploads copy shared and
 possibly unaligned guest bytes into the typed views WebGL requires. GLES2's
 unsized float, red/green and depth formats map to equivalent sized WebGL2
@@ -3895,10 +4235,424 @@ GPU-backed Wayland window buffers also own 24-bit depth and 8-bit stencil
 attachments. Allocation checks framebuffer completeness and restores the
 shared context's texture, renderbuffer, and separate read/draw framebuffer
 bindings. Destroying the buffer releases all three GL objects.
-The multiplexer restores masks, stencil operations, clear values, constant
-vertex attributes and texture bindings when switching guest contexts. Node
+Host surface records own presentation allocations independently of context
+state. An explicit live surface keeps its target when its context is
+destroyed and recreated. Draw/read selectors retain their surface records;
+retiring the owner description defers target deletion until both kinds of
+reference end. Framebuffer zero resolves the selected draw and read targets
+separately, including a combined `GL_FRAMEBUFFER` bind. A candidate resize
+allocates a complete replacement before changing the surface or any of its
+selectors. Failed allocation preserves the previous target and pixels;
+successful replacement preserves user FBOs and updates selecting contexts.
+Kernel and host selectors now resolve independent draw/read surfaces across
+object sessions within a live display generation. The kernel checks PID,
+generation and validated current TID before backend entry. Retired owners
+cannot grant new selection. Explicit destruction is busy while selected;
+owner close, unmap or termination retires its ownership while existing
+current selectors retain storage. One canonical surface record owns its BO
+hold, independent of the number of owner/draw/read references. The public C
+facade now owns separate context/surface records and exposes independent
+draw/read selection and shared object-group creation. C image holds belong
+to retained group records and program metadata belongs to the host group.
+Kernel surfaces hold their target BO independently of GEM handles. An acknowledged update transfers that hold only after acceptance;
+rejection releases its candidate and preserves the previous hold. Native
+surface destruction/unbind precedes the final host BO destruction effect.
+
+Graphics cleanup identity and surface BO holds are shared across inherited
+open descriptions; command mappings and current-thread authority remain
+local to the creating image. Closing or execing a child cannot retire the
+parent's renderer. Final description close releases it once. The creating
+image also keeps weak cleanup references, so exec, exit, forced removal or
+command-memory unmap revokes its native binding even after its last local
+fd closes while a child retains the description. Weak references do not
+extend description or storage lifetime. They carry mapping bounds for
+revocation, never submission authority in the child. General forked GEM
+handle-map sharing remains an open part of the full OFD model. Current
+cleanup reachability also survives closing a context's last local fd while
+a child retains that description: replacement or thread retirement releases
+its former selectors before their final BO destruction. Backend rejection
+preserves the prior current references.
+
+Host surface lookup grants new selection only through a live owner on the
+same process and renderer. Both direct and main-forward paths select the
+actual records; framebuffer zero and swap use the selected draw/read
+resources. GPU retargeting prepares all affected default references and
+drawable metadata before publication, then changes the canonical record
+without native calls or allocation during commit. User FBOs, independent
+read targets and viewport/scissor state are preserved. The BO registry now
+keeps original width/height separately from padded stride, so accepted
+kernel retargets retain actual geometry.
+The multiplexer restores masks, stencil operations, clear values, dither,
+constant vertex attributes, independent 2D/cube texture bindings and pixel
+storage state when switching guest contexts. Synchronous native-state queries
+select the caller through that same multiplexer after destination preflight.
+The main-thread fallback supports synchronous queries through one reusable
+65,556-byte device mailbox per channel, matching the kernel's 64 KiB query
+limit. Input and command bytes are copied out of guest memory. A timed-out
+mailbox is retired permanently; a late reply cannot satisfy a later query.
+Forwarded owners sharing a native context also use the multiplexer. The
+persistent browser realm receives no guest memory or guest-backed view.
+Context creation uses this mailbox for a synchronous acknowledgement too.
+The host import returns success only after a live renderer accepts creation;
+the kernel publishes its context identity afterwards. Missing, lost or
+throwing renderers leave creation retryable and do not claim the KMS canvas.
+Timed-out creation requests retire their mailbox and cannot allocate a
+context on late delivery. EGL exposes backend allocation failure as
+`EGL_NO_CONTEXT` and `EGL_BAD_ALLOC`. A Node host without a rendering
+backend follows the same failure path as a browser without a usable context.
+Each GL open description has a distinct kernel-issued session identity.
+Initialization distinguishes display roots from object sessions. A root
+returns a fresh generation identity; an object session must join a live
+same-process root using its descriptor and generation. Duplicated root
+descriptors retain authority until the last alias closes. Revocation or
+final close prevents new contexts, surfaces and positive binds, while
+already-current children retain submit/query/release/destruction paths.
+Descriptor reuse cannot revive an old generation. Roots have no command
+mapping or renderer and therefore send no renderer unbind on cleanup.
+The EGL library retains one heap record per display generation. Public
+lookups use the active generation; thread bindings retain their actual
+generation's descriptor, mapping and encoder after termination. A new
+initialization can therefore overlap old current resources. Successful
+replacement releases the old generation after backend acceptance; a failed
+bind preserves it. Images retain their importing generation so cleanup
+cannot close a reused numeric GEM handle on a newer description. Image
+lookup acquires a temporary reference before a GL sibling is installed,
+and termination revokes public image handles under the same reference lock.
+Public image tokens are monotonic, independent of heap addresses, so a
+recycled allocation cannot revive a deleted or prior-generation handle.
+Command buffers, native object maps, shadow state, queries, forwarding and
+retirement are selected by process plus session. Process-only registry
+lookups refuse ambiguity. Closing or unmapping one session leaves sibling
+sessions intact, while process memory growth invalidates every cached view.
+KMS canvas ownership is retained until its last claiming session releases.
+GL context identities are also kernel-issued and returned by creation;
+foreign texture imports select the exact context. Cross-process inherited
+descriptions cannot operate another process's renderer or invalidate its
+command mapping; final cleanup retains the renderer's original process.
+ABI 58 context creation can name a live source context in the same process
+and display generation. The kernel validates authority before backend
+entry; the host joins the new context to its source's object maps before
+acknowledgement. Native compatibility and forwarded source-session lookup
+preserve local bindings, errors, default textures and FBO/VAO containers.
+Cancelled creation removes only its unpublished member. Source destruction
+leaves surviving members and their shared storage usable. The C facade
+still rejects sharing until its own client object/reference layer can join
+that group safely; see the graphics compatibility ledger.
+The kernel owns each session's current thread identity. Bind requests name
+the context and both draw/read surfaces; zero surfaces bind surfaceless,
+while an all-zero request releases the caller's bindings. Submit, query and
+foreign-texture operations require that authoritative thread identity.
+Another thread cannot acquire a live binding. A replacement is acknowledged
+before displacing the caller's prior binding, and thread exit revokes it.
+The first accepted bind initializes viewport/scissor from the drawable,
+including zero dimensions for surfaceless; later binds preserve client state.
+The forwarded renderer prepares native default storage without publishing
+current state, then commits only after its reply mailbox accepts the bind.
+A cancelled or expired acknowledgement retires the candidate allocation.
+Native Wayland window resizing updates an existing GPU target atomically
+without destroying its current EGL surface. Failed updates preserve the old
+target and attached size. This path currently requires an existing GPU
+window target on the same native renderer; forwarded GPU and mixed canvas
+targets still need the full surface model. Native Wayland buffers own
+independent render descriptors rather than borrowing a current context's
+fd. EGL transfers BO names into context/surface sessions through PRIME,
+closes export capabilities and temporary imported names after the operation,
+and preserves names already owned by images on the generation descriptor.
+Resize queries update only after accepted retargeting. Public surface
+queries report stored accepted dimensions and attributes; deleted handles
+remain invalid while current bindings retain storage. Native/source-browser
+checks cover multiple public contexts, independent surfaces and generation
+overlap. Share groups, the full lifecycle/error audit, normal guest-artifact
+and conformance validation remain pending.
+
+Surfaceless bindings use a context-owned native framebuffer with no
+attachments to represent the absent default framebuffer. It has no guest
+name, cannot accept guest attachments, and is retired with its context.
+Native completeness checks therefore reject clear/draw/copy/read commands;
+the status query exposes `GL_FRAMEBUFFER_UNDEFINED_OES`. The GLES extension
+list includes `GL_OES_surfaceless_context` for this host behavior. First-bind
+allocation failure preserves the prior drawable and reports failure to EGL.
+User framebuffer objects remain usable. Read/draw framebuffer state is
+retained independently through native context switches; deleting a bound
+user FBO restores the appropriate default target. Native readback errors
+are retained for glGetError and return no output bytes, so libc does not
+overwrite the caller's buffer with an unsuccessful reply. These source
+semantics still require guest CTS and combined-artifact validation.
+Native GL errors are drained into the outgoing session's error flags before
+renderer switching or invalidation. Error queries merge native and retained flags before
+consumption, so another session cannot consume them or repeat a duplicate.
+A failed drain preserves the outgoing flags for a later retry and does not
+prevent cleanup. Queue dispatch reports renderer exceptions as EIO and
+releases the consumed frame. Complete GL negative-API coverage remains open.
+Host object groups now own shareable name maps, shader/program metadata,
+uniform-location allocation and imported textures. Each binding initially
+has its own group. An internal construction operation can join unused
+contexts on the same native renderer; guest EGL sharing is not wired to it
+yet. Context state, errors, VAOs and FBO containers stay local. Group
+resources survive member retirement until the last owner ends; pending
+program deletion and retained link executables consider every member.
+Deleted texture/renderbuffer names now retain their native objects while
+another context binding or FBO attachment still refers to them. Deletion
+unbinds only the caller and detaches only its bound FBO attachments;
+unbound FBOs retain storage. Reusing a name creates a distinct object, while
+surviving bindings still query their original name. Packed depth/stencil
+attachments retain each point independently. Native retirement follows the
+last reference; BO-owned textures retain their separate canonical owner.
+Deleted buffer names likewise retain native objects referenced by other
+contexts or unbound VAOs. Array bindings stay context-local; element bindings
+and attribute definitions belong to each VAO. Caller deletion clears only its
+active VAO references, using a private empty native buffer to clear attribute
+references without deleting shared storage. Retirement scans every group
+member and container. The C encoder mirrors VAO ownership, reserves buffer
+names and distinguishes reused-name generations; failed client staging drops
+temporary names and suppresses the draw. Logical buffer stores track size,
+usage and one authoritative native view; separate stable vertex/index views
+synchronize before binding, partial updates and draws. Transfers use bounded
+independent 64 KiB readback chunks, preserve native copy bindings and avoid a
+full CPU mirror. Queries and retirement resolve each view to the logical
+identity, including old references after name reuse. Failed synchronization
+keeps the view invalid and suppresses drawing until a successful retry.
+Fixed-point and wide-stride attributes use stable packed derived views.
+Raw source updates invalidate them; conversion uses bounded independent
+source/output chunks and preserves native copy bindings. Logical VAOs retain
+GLES formats, strides and offsets while native pointers use packed data.
+Disabled/unbound attributes retain views; replacement and container teardown
+release unused views. Client staging likewise packs only referenced elements,
+avoiding unreadable prefixes, stride gaps and sparse-index holes, with bounded
+scratch/masks and signed size checks. Indexed draws widen byte/short values into private native index buffers,
+using bounded chunks and one draw to preserve complete primitive topology.
+This keeps GLES2 maximum indices from becoming WebGL restart markers.
+Native element/copy bindings are restored and private handles deleted on
+all exits. Core draw enums are checked before client reads. Bound index
+buffers can also drive client attributes: a checked synchronous query reads
+the authoritative index storage and returns its maximum and an 8192-byte
+presence bitset. The encoder stages only referenced client vertices. New
+operation-table v3 queries use a status/payload/completion envelope; GL
+failures remain owned by the host error flags, and malformed/incomplete
+replies preserve caller outputs. Existing operation layouts remain valid;
+the global ABI stays 55. Buffer queries read logical size/usage rather than
+stale native views. Vertex queries preserve original client pointers,
+formats and strides despite private draw staging. Object and enable
+predicates use the appropriate logical namespace and context state.
+Operation-table v4 adds core attribute/source/attached-shader and image
+parameter queries plus program validation. Original source bytes belong to
+the shared shader object; attachment queries retain old names through
+namespace reuse. String/list replies use bounded chunks, with private C
+accumulation before caller outputs change. EGLImage attachment queries
+translate matching native storage back to its public sibling type/name.
+Each GLES context also owns separate unnamed 2D and cube textures. Private
+native stand-ins materialize on storage/parameter use and bind to every
+unit whose logical name is zero, including unselected units. Muxer replay,
+named-object deletion and explicit zero binding restore those stand-ins;
+queries still return name zero. They do not enter shared name maps and
+retire with their individual context. Failed allocation/binding rolls back
+partial installation and suppresses the dependent texture operation.
+Operation-table v5 removes the single-record shader source upload limit.
+Large source calls concatenate into bounded acknowledged chunks and commit
+only a complete upload. Pending bytes belong to one context; replacement,
+abort, shader deletion and context teardown retire that ownership. Source
+bytes belong to the shared shader only after native installation succeeds.
+Failed submissions are observable and stop dependent queries/uploads.
+All 142 GLES2 core symbols are defined and resolved. Full conformance,
+complete query/negative/limit coverage, device-failure propagation, image sibling
+sampler identity, kernel display-generation authority and C group routing
+remain open.
+Shader/program attachment records retain deleted shaders and current
+programs until their last logical reference releases. Native program deletion
+is deferred while the program is current in its owner, allowing muxer replay
+after another owner temporarily uses the shared WebGL context. Rejected
+program switches and attachments preserve the prior ownership state and keep
+the driver's error observable. Destroying a context unbinds its physically
+current program before deleting objects, without unbinding another owner.
+The logical current program name is distinct from its installed native
+executable. Relinking a current program uses a separate native link target:
+failure updates link status/logs while keeping the installed executable;
+success installs the replacement and retires old uniform handles. Shader
+attachments and explicit attribute bindings seed replacement targets. Native
+shader deletion is deferred while these logical attachments retain it.
+Context teardown releases both the latest link target and any older installed
+executable. This shared model also applies to main-thread forwarding.
+Foreign BO uploads save the physical context's alignment and unpack skips,
+neutralize them for the upload, and restore them even on failure. A failed
+new upload does not publish a texture name. Node
 hosts without WebGL2 cannot render these sessions; no software simulation
 stands in for the native LÖVE renderer.
+
+Operation-table v11 adds checked implicit-bound image target/state queries.
+They address the retained logical object rather than resolving its public
+number again after peer deletion/reuse. A shared per-object image-association
+revision advances on accepted import/orphaning, remains unchanged after
+definite replacement failure and is removed at final native collection.
+Unsigned revision exhaustion fails before publication. The v10 explicit-name
+queries keep their original request/reply layouts. C imports and orphan-state
+reads use the implicit-bound queries. Shared retained C records own confirmed
+image/source/revision state; bindings and containers retain those records
+instead of separate image/query mirrors. Publication accepts newer revisions
+and discards stale candidates. Older owned-state replies cannot clear a
+newer import or authorize dependent texture rows. Standard C name-based
+transactions now serialize lookup through publication across peers. Raw WPK
+publication uses the same group scope. Its retained group also reserves one
+pending unpublished texture name before native allocation can occur. Rejected
+or unknown candidate deletion keeps that slot; subsequent name transactions
+and object-existence queries must reconcile it before proceeding. No new raw
+allocation or ordinary realization can reuse the name while cleanup is pending.
+Deletion is safely repeatable here because the candidate was never published
+and group dispatch prevents reuse; general opaque mutations are not retried.
+The slot survives submitting-encoder retirement, and final acknowledged native
+group teardown owns remaining candidate destruction. General failure
+reconciliation and full error validation remain open.
+Indeterminate import candidates already belong to the group: submitting
+encoder retirement cannot release backing a peer might retain. Final group
+retirement releases these candidates outside the metadata mutex.
+
+Operation-table v12 adds checked image attachment/deletion and allocation.
+C container and namespace references publish only after accepted native
+mutation. Uncertain attachments pin the candidate object in the shared
+group's quarantine, preserving the old C attachment until reconciliation or
+retirement. Confirmed backing follows the retained object itself. Texture
+allocation is acknowledged before C emits pixel rows, so a failed allocation
+cannot overwrite existing storage through later rows.
+Queued/checked paths share host ownership transactions and storage dispatch.
+Metadata allocation precedes native effects; definite deletion failure restores
+attempted active attachments and bindings. FBO deletion preserves separate
+read/draw defaults. General transport and context-loss recovery remain incomplete.
+
+Operation-table v13 adds an exact checked framebuffer-bind query. C updates
+its attachment-container selection only after native acceptance. Host queued
+and checked binds share candidate realization, namespace staging and rollback,
+including independent EGL read/draw defaults. Indeterminate completion still
+needs general native/client reconciliation before full sharing is supported.
+
+Operation-table v14 adds a checked buffer-bind query (target/name, eight-byte
+input, 12-byte acceptance reply). C changes its ARRAY/ELEMENT object record,
+name and serial only after acceptance, preserving pointer interpretation on
+definite rejection. Queued and checked host binds share native realization,
+view synchronization and rollback. Namespace/store/view metadata is reserved
+before binding; failed candidates and their metadata are removed and prior
+native selection restored. Standard name transactions use group dispatch
+serialization. Indeterminate completion still requires general reconciliation.
+
+Operation-table v15 adds checked single-name buffer deletion (four-byte
+input, 12-byte acceptance reply). C pins the selected record through native
+acceptance before releasing namespace, active ARRAY/ELEMENT and active-VAO
+attribute references. Host queued/batched and checked deletion share staged
+namespace/retired/attribute metadata. Native clearing uses a temporary buffer,
+then checks individual attribute, ARRAY and ELEMENT changes. A definite
+failure restores attempted steps in reverse, including original converted
+vertex views and the separate native index view. Metadata publishes after
+all native changes accept; final storage collection follows logical retirement.
+Inactive containers, other contexts and saved client-array identities keep
+retired storage. Failed native restoration now retains typed inverse calls for
+buffer deletion, image deletion and framebuffer selection/deletion. The repair
+record is reserved before mutation and belongs to the physical native context,
+so neither the same logical context nor another group can run over dirty state.
+Recovery replays all attempted inverses, including the rejected step. Selector
+failure suppresses dependent calls; independent restorations are still attempted.
+Only native handles, scalars, error flags and context-local shadow lifetime enter
+the journal. Callbacks and guest bindings are excluded. Queries preserve output
+when restoration remains blocked, command batches stop before dependent records,
+and muxer switching repairs before its cached-owner shortcut. Surface/current/
+GPU allocation and raw BO revocation also respect pending repairs. Image
+import/orphan/retarget utility work and buffer binding/copy-view synchronization
+use the same journal. Nested plans restore copy selectors before the outer
+binding can complete. Image retargeting stages each affected peer container and
+the selected native bindings, restoring utility selectors on success or failure.
+Its shared inverse survives submitter retirement; retiring a native container
+prunes that target instead of reviving it. Context-local plans retire with their
+owner. Neither path destroys shared peer objects.
+
+Native candidate and retired-view ownership is reserved before allocation or
+publication. Cleanup receipts retain handles across failed deletion, clear each
+accepted delete independently and retry the remainder without repeating accepted
+calls. Image destruction retains its receipt until collection completes. Pending
+cleanup gates native work and delays canonical GPU BO retirement. Native cleanup
+keeps the retired error owner; a reused session receives a fresh error array.
+These native inverse and cleanup records retain no full guest binding or
+address space. Vertex pointer installation stages its attribute map, converted
+view maps and view field before native effects. Both normal and converted formats
+retain the prior native pointer and ARRAY selection through rejection. Restoring
+an initially unbound attribute allocates an owned private buffer only if inverse
+repair needs one, then retires it after restoration. Native GLES2 format/size/
+index/stride preflight uses the actual attribute limit.
+
+Private client-array END records retain a native completion ticket. Native repair
+sets the ticket; query, decoder and muxer admission publish the saved ARRAY
+identity and release the capture pin before using or replaying state. Reservation
+failure preserves the end request, and failed decoded batches request restoration
+for an active capture. Neither path requires another private END record. Local
+retirement cancels the ticket without publishing into a reused context. Tickets
+contain only native identity/scalar completion, with no guest-binding callback.
+
+Promoted-index and deletion temporaries use reserved ownership and retained
+selectors. Recovery never repeats the already accepted draw. Converted cache
+retirement and final buffer collection share cleanup dependencies, preventing
+duplicate accepted deletes. Reusing a layout after completed retirement creates
+a new native view rather than reviving the old handle.
+
+Raw CPU uploads and GPU carrier initialization also reserve native ownership
+before creating their texture. Namespace or native failure leaves cleanup owned
+until deletion accepts. CPU uploads journal selection of unit zero before
+querying its binding, then reserve a nested texture/unpack finalizer before
+upload effects. GPU initialization retains its actual active-unit binding.
+Failed utility restoration fences queries and subsequent uploads; repair and
+candidate cleanup survive retirement of the submitting context. Pixel-store
+inverses contain only scalar state, with no upload bytes or guest address space.
+Accepted uploads are not replayed by native repair. CPU image coherence, other
+resources and the full staging/error audit remain open. Indeterminate transport,
+context loss/recreation and general failed resource deletion remain open.
+
+Raw BO revocation stages retired-name and peer-container metadata before native
+detachment. It captures actual unit bindings in a separate retained utility
+transaction, completing active-unit restoration before attachment/binding
+mutations. A shared mutation plan snapshots native image attachment identities,
+sampling views and separate draw/read selectors. Failed detach or utility
+finalization retains every attempted inverse and fences dependent work before
+logical retirement commits. Repair survives submitting-context and final-member
+retirement; native container retirement prunes dead targets. BO canonical
+storage remains owned until shared repairs and native view cleanup complete.
+These records contain native handles/scalars rather than callbacks, logical
+bindings or guest memory.
+
+Public `eglCreateContext` sharing validates a live source handle in the active
+display generation, joins its retained C object owner, and sends the source
+backend identity through the existing ABI-58 creation request. Native failure
+unwinds the unpublished encoder/session without disturbing the source. Source
+retirement does not retire objects retained by peers. Standard name-based C
+operations hold a separate group dispatch mutex across lookup, checked native
+mutation and client publication. Scoped cleanup releases it on every return;
+cancellation is disabled during the transaction and the caller's state restored
+after unlocking. Metadata reservation remains independent, allowing final image
+cleanup to reenter the allocator without holding its mutex. This establishes
+ordinary shared creation and tested name ordering, not complete sharing
+conformance: indeterminate transport, multiple native restoration failures and
+worker/process crash recovery still need their full audit and normal guest
+lifecycle validation.
+
+Raw WPK BO texture publication holds the C group dispatch scope across the
+checked command flush, native candidate allocation and C namespace adoption.
+Native allocation skips realized names; C rejects candidates that collide with
+reserved or ordinary names, deletes only the unpublished candidate through the
+existing checked image-delete query and retries. A rejected flush cannot publish
+a raw name. The private cross-archive guard changes no device/wire layout.
+
+GPU raw imports own distinct logical texture views of private canonical BO
+pixels. Parameters and respecification belong to the logical object. Explicit
+refresh can reimport canonical pixels into the same live object; delete and
+reimport creates a new identity, preserving peers' retained deleted views.
+CPU raw imports still upload snapshots; full CPU canonical coherence is open.
+
+BO ownership tracks every raw view by object identity, including deleted names
+retained by peer bindings or containers. BO retirement clears those references
+without deleting an unrelated replacement using the same public number. Native
+detachment and utility state restoration precede logical publication. Definite
+failure keeps a cleanup journal and canonical GPU storage for retry, including
+after the last member retires. Journal owners hold only shared object metadata,
+native context and error state, never guest memory authority. Dependent submit,
+query, present and raw-bind operations retry pending retirement and reject an
+affected group while its raw views remain. Invalid query destinations and
+malformed command spans are rejected before cleanup is attempted. Native view
+and canonical deletion failures remain reachable for retry. This does not
+establish general recovery after repeated rollback failure or context loss.
 
 The user-space libraries are sysroot libraries, not kernel build outputs:
 `scripts/build-musl.sh` installs the headers, resolves the `libdrm` package

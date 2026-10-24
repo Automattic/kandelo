@@ -18,10 +18,10 @@
  *
  * Design decisions (see docs/plans/2026-07-08-dri-wayland-compositor-plan.md
  * §7.1 and the step-12 handoff):
- *   - The bo is created on the EGL session's OWN renderD128 fd (_wpk_gl_fd())
- *     so its per-fd handle is the one eglCreateWindowSurface can target
- *     (GLIO_CREATE_SURFACE.reserved[0]). gbm_device_destroy does not close the
- *     fd, so tearing a window down never disturbs the live EGL session.
+ *   - Each buffer owns a render descriptor independent of EGL's sessions.
+ *     EGL transfers its per-fd BO name into the surface session through
+ *     PRIME. The native window can outlive an EGL generation without
+ *     retaining a stale descriptor or revoking another owner's GEM names.
  *   - SINGLE reusable buffer (one bo / one wl_buffer, re-attached every frame).
  *     The GPU-tier bo is a persistent host WebGLTexture+FBO and the compositor
  *     re-binds the foreign texture per commit; the one shared GL submit queue
@@ -44,6 +44,7 @@
  * dmabuf wl_buffer, but rendered content requires the GPU tier.
  */
 
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -64,7 +65,7 @@
 struct wpk_wlegl {
     struct gbm_device            *gbm;
     struct gbm_bo                *bo;
-    uint32_t                      bo_handle;   /* per-fd handle on _wpk_gl_fd() */
+    uint32_t bo_handle;                        /* per-fd handle on gbm's device */
     struct wl_event_queue        *queue;       /* private queue for the bind */
     struct zwp_linux_dmabuf_v1   *dmabuf;
     struct wl_buffer             *buffer;      /* the single reusable buffer */
@@ -76,7 +77,7 @@ struct wpk_wlegl {
 };
 
 /* libEGL re-targets the live window surface at the window's current bo. */
-__attribute__((weak)) void _wpk_egl_window_retarget(void *egl_window);
+__attribute__((weak)) int _wpk_egl_window_retarget(void *egl_window);
 
 /* ---- zwp_linux_dmabuf_v1 bind (private-queue registry roundtrip) --------- */
 
@@ -139,11 +140,15 @@ static struct zwp_linux_dmabuf_v1 *bind_dmabuf(struct wl_display *dpy,
  * On success fills w->bo/gbm/bo_handle/buffer and returns 0. */
 static int alloc_buffer(struct wpk_wlegl *w, struct wl_egl_window *win,
                         int width, int height) {
-    int fd = _wpk_gl_fd();
-    if (fd < 0) return -1;   /* EGL not initialized yet — no session fd */
+    int fd = open(WPK_GL_DEVICE, O_RDWR | O_CLOEXEC);
+    if (fd < 0)
+        return -1;
 
     w->gbm = gbm_create_device(fd);
-    if (!w->gbm) return -1;
+    if (!w->gbm) {
+        close(fd);
+        return -1;
+    }
 
     /* GPU tier: RENDERING only (no CPU-facing usage) so gbm issues
      * WPK_CREATE_GPU_BO — a host WebGLTexture+FBO we render into and sample
@@ -180,17 +185,29 @@ static int alloc_buffer(struct wpk_wlegl *w, struct wl_egl_window *win,
     return w->buffer ? 0 : -1;
 }
 
+static void free_device(struct gbm_device *device) {
+    int fd = gbm_device_get_fd(device);
+    gbm_device_destroy(device);
+    close(fd);
+}
+
 static void free_retired(struct wpk_wlegl *w) {
     if (w->retired_buffer) { wl_buffer_destroy(w->retired_buffer); w->retired_buffer = NULL; }
     if (w->retired_bo)     { gbm_bo_destroy(w->retired_bo); w->retired_bo = NULL; }
-    if (w->retired_gbm)    { gbm_device_destroy(w->retired_gbm); w->retired_gbm = NULL; }
+    if (w->retired_gbm) {
+        free_device(w->retired_gbm);
+        w->retired_gbm = NULL;
+    }
 }
 
 static void free_buffer(struct wpk_wlegl *w) {
     free_retired(w);
     if (w->buffer) { wl_buffer_destroy(w->buffer); w->buffer = NULL; }
     if (w->bo)     { gbm_bo_destroy(w->bo); w->bo = NULL; }
-    if (w->gbm)    { gbm_device_destroy(w->gbm); w->gbm = NULL; } /* no fd close */
+    if (w->gbm) {
+        free_device(w->gbm);
+        w->gbm = NULL;
+    }
     w->bo_handle = 0;
 }
 
@@ -249,7 +266,7 @@ void wl_egl_window_destroy(struct wl_egl_window *win) {
  * bo at the new size now, and libEGL re-targets the live window surface at
  * it, so the frame the client draws next lands in a buffer of the size it
  * draws at. The replaced buffer stays alive until the next present has
- * attached its successor. If the new bo cannot be allocated the window
+ * attached its successor. If allocation or backend retargeting fails the window
  * keeps rendering into the old one at the old size, and the attached size
  * (which SDL can read back) still reports it. */
 void wl_egl_window_resize(struct wl_egl_window *win, int width, int height,
@@ -278,13 +295,16 @@ void wl_egl_window_resize(struct wl_egl_window *win, int width, int height,
         w->bo_handle = old.bo_handle;
         return;
     }
+    if (_wpk_egl_window_retarget && !_wpk_egl_window_retarget(win)) {
+        free_buffer(w);
+        *w = old;
+        return;
+    }
     w->retired_gbm = old.gbm;
     w->retired_bo = old.bo;
     w->retired_buffer = old.buffer;
     win->attached_width = win->width;
     win->attached_height = win->height;
-    if (_wpk_egl_window_retarget)
-        _wpk_egl_window_retarget(win);
 }
 
 void wl_egl_window_get_attached_size(struct wl_egl_window *win,
@@ -303,6 +323,21 @@ uint32_t _wpk_wlegl_bo_handle(void *egl_window) {
     struct wl_egl_window *win = egl_window;
     struct wpk_wlegl *w = win->driver_private;
     return w ? w->bo_handle : 0;
+}
+
+int _wpk_wlegl_device_fd(void *egl_window) {
+    struct wl_egl_window *win = egl_window;
+    struct wpk_wlegl *w = win ? win->driver_private : NULL;
+    return w && w->gbm ? gbm_device_get_fd(w->gbm) : -1;
+}
+
+int _wpk_wlegl_dimensions(void *egl_window, uint32_t *width, uint32_t *height) {
+    struct wl_egl_window *win = egl_window;
+    if (!win || win->width <= 0 || win->height <= 0)
+        return 0;
+    *width = (uint32_t)win->width;
+    *height = (uint32_t)win->height;
+    return 1;
 }
 
 /* Present: attach the (already-rendered, already-flushed) buffer to the

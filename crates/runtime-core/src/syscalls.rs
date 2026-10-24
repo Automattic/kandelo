@@ -20,6 +20,7 @@ use wasm_posix_shared::{
 };
 
 use crate::blocked_retry::{BlockingRetryOperation, BlockingRetryTarget, StableOfdTarget};
+use crate::dri::kms;
 use crate::exchange::device::ExchangeDevice;
 use crate::fd::OpenFileDescRef;
 use crate::lock::{
@@ -227,19 +228,22 @@ impl VirtualDevice {
     }
 
     /// `st_rdev` for the device node — a Linux-encoded `dev_t`
-    /// (`makedev`). Only the evdev nodes carry one today: they are the
-    /// single input surface a userspace consumer identifies purely by
-    /// devnum. libinput's path backend `stat()`s the node, keeps only
-    /// `st_rdev`, and calls `udev_device_new_from_devnum(rdev)`, so
-    /// `/dev/input/event{N}` must be uniquely stat-identifiable. Linux
-    /// puts evdev on char major 13, minor 64+N. The clipboard device is a
-    /// Kandelo misc device: Linux's misc major 10, with a minor from the
-    /// range Linux leaves to dynamically registered misc drivers. Other
-    /// virtual nodes report 0 until a consumer needs to distinguish them by
-    /// devnum.
+    /// (`makedev`). The evdev and DRI nodes carry one because userspace
+    /// identifies them by devnum: libinput's path backend `stat()`s the
+    /// node, keeps only `st_rdev`, and calls
+    /// `udev_device_new_from_devnum(rdev)`, and libdrm's
+    /// `drmGetNodeTypeFromFd` and `drmGetDeviceNameFromFd2` look the fd's
+    /// devnum up under `/sys/dev/char`. Linux puts evdev on char major 13,
+    /// minor 64+N, and DRM on major 226: primary nodes from minor 0,
+    /// render nodes from minor 128. The clipboard device is a Kandelo misc
+    /// device: Linux's misc major 10, with a minor from the range Linux
+    /// leaves to dynamically registered misc drivers. Other virtual nodes
+    /// report 0 until a consumer needs to distinguish them by devnum.
     pub fn rdev(self) -> u64 {
         match self {
             VirtualDevice::InputEvent { device } => makedev(13, 64 + device as u32),
+            VirtualDevice::DriCard0 => makedev(226, 0),
+            VirtualDevice::DriRenderD128 => makedev(226, 128),
             VirtualDevice::Clipboard => makedev(10, 250),
             _ => 0,
         }
@@ -762,15 +766,33 @@ fn handle_fb_ioctl(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
 /// `/dev/dri/*` open. No-op for non-DRI virtual devices, so
 /// `sys_open` / `sys_openat` can call this unconditionally with
 /// whichever `VirtualDevice` matched.
-fn install_dri_state_on_open(proc: &mut Process, ofd_idx: usize, dev: VirtualDevice) {
+///
+/// As Linux's `drm_master_open` does, the first open of the primary node
+/// while no file is master makes this open file the master. Compositors
+/// that do not call `drmSetMaster` (wlroots under a libseat session)
+/// rely on it.
+fn install_dri_state_on_open(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    ofd_idx: usize,
+    dev: VirtualDevice,
+) {
     let state = match dev {
         VirtualDevice::DriRenderD128 => Some(crate::ofd::DriOfdState::RenderNode(
             crate::ofd::DriFdState::default(),
         )),
-        VirtualDevice::DriCard0 => Some(crate::ofd::DriOfdState::Card {
-            dri: crate::ofd::DriFdState::default(),
-            kms: crate::ofd::KmsFdState::default(),
-        }),
+        VirtualDevice::DriCard0 => {
+            let pid = proc.pid as i32;
+            let holds_master = crate::dri::master::current().is_none()
+                && crate::dri::master::try_set_master(pid, ofd_idx).is_ok();
+            if holds_master {
+                host.kms_set_master(pid);
+            }
+            Some(crate::ofd::DriOfdState::Card {
+                dri: crate::ofd::DriFdState::default(),
+                kms: crate::ofd::KmsFdState { holds_master, ..Default::default() },
+            })
+        }
         _ => None,
     };
     if let Some(s) = state {
@@ -825,6 +847,262 @@ fn kms_state_mut(proc: &mut Process, ofd_idx: usize) -> Result<&mut crate::ofd::
         .ok_or(Errno::EBADF)
 }
 
+fn gl_session_id(proc: &Process, ofd_idx: usize) -> Result<u32, Errno> {
+    dri_state(proc, ofd_idx)?
+        .gl
+        .as_ref()
+        .map(|gl| gl.session_id)
+        .ok_or(Errno::EINVAL)
+}
+
+fn require_gl_current(proc: &Process, ofd_idx: usize) -> Result<(), Errno> {
+    let gl = dri_state(proc, ofd_idx)?.gl.as_ref().ok_or(Errno::EINVAL)?;
+    if gl
+        .current
+        .is_some_and(|binding| binding.owner_tid == current_tid_for_process(proc))
+    {
+        Ok(())
+    } else {
+        Err(Errno::EACCES)
+    }
+}
+
+/// A root may be closed/revoked while a current child retains its resources.
+/// Only creation and new bindings require live display authority; submit,
+/// query and release continue to use the child's current ownership.
+fn require_gl_display_live(proc: &Process, ofd_idx: usize) -> Result<(), Errno> {
+    use wasm_posix_shared::gl;
+    let object = dri_state(proc, ofd_idx)?.gl.as_ref().ok_or(Errno::EINVAL)?;
+    if !object.initialized || object.role != gl::SESSION_OBJECTS { return Err(Errno::EINVAL); }
+    let live = proc.ofd_table.iter().any(|(_, ofd)| ofd.dri().and_then(|dri| dri.gl.as_ref()).is_some_and(|root| {
+        root.owner_pid == proc.pid as i32 && root.initialized && root.role == gl::SESSION_DISPLAY
+            && root.display_id == object.display_id
+    }));
+    if live { Ok(()) } else { Err(Errno::EINVAL) }
+}
+
+fn release_gl_current_for_tid(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    tid: u32,
+    except_session: Option<u32>,
+) {
+    let pid = proc.pid as i32;
+    // A still-live inherited description may be reachable only through the
+    // image's weak registry after its last local descriptor has closed.
+    for weak in &proc.gl_resource_owners {
+        let Some(shared) = weak.upgrade() else {
+            continue;
+        };
+        let (session, draw, read) = {
+            let mut resources = shared.borrow_mut();
+            let Some(owner) = resources.owner else {
+                continue;
+            };
+            if owner.pid != pid
+                || except_session == Some(owner.session_id)
+                || resources.current_tid != Some(tid)
+            {
+                continue;
+            }
+            resources.current_tid = None;
+            (
+                owner.session_id,
+                resources.draw_surface.take(),
+                resources.read_surface.take(),
+            )
+        };
+        let _ = host.gl_make_current(pid, 0, 0, 0, session);
+        apply_dri_release_effects(pid, collect_gl_surface_releases([draw, read]), host);
+    }
+    for (_, ofd) in proc.ofd_table.iter_mut() {
+        let Some(gl) = ofd.dri_mut().and_then(|dri| dri.gl.as_mut()) else {
+            continue;
+        };
+        if gl.owner_pid == pid
+            && except_session != Some(gl.session_id)
+            && gl.current.is_some_and(|binding| binding.owner_tid == tid)
+        {
+            gl.current = None;
+        }
+    }
+}
+
+fn find_gl_surface(
+    proc: &Process,
+    display_id: u32,
+    id: u32,
+) -> Result<crate::ofd::SharedGlSurface, Errno> {
+    let pid = proc.pid as i32;
+    for weak in &proc.gl_resource_owners {
+        let Some(shared) = weak.upgrade() else {
+            continue;
+        };
+        let resources = shared.borrow();
+        if !resources.owner.is_some_and(|owner| owner.pid == pid) {
+            continue;
+        }
+        let Some(surface) = resources.surface.as_ref() else {
+            continue;
+        };
+        let state = surface.borrow();
+        if state.id == id && state.pid == pid && state.display_id == display_id && state.owner_alive
+        {
+            return Ok(surface.clone());
+        }
+    }
+    Err(Errno::EINVAL)
+}
+
+fn gl_surface_is_current(proc: &Process, ids: [u32; 2], except_tid: Option<u32>) -> bool {
+    let pid = proc.pid as i32;
+    proc.gl_resource_owners.iter().any(|weak| {
+        let Some(shared) = weak.upgrade() else {
+            return false;
+        };
+        let resources = shared.borrow();
+        if !resources.owner.is_some_and(|owner| owner.pid == pid)
+            || resources.current_tid.is_none()
+            || resources.current_tid == except_tid
+        {
+            return false;
+        }
+        [&resources.draw_surface, &resources.read_surface]
+            .into_iter()
+            .flatten()
+            .any(|surface| ids.contains(&surface.borrow().id))
+    })
+}
+
+fn retain_gl_surface_bo(bo: u32) -> Result<(), Errno> {
+    crate::dri::with_registry(|registry| {
+        if registry.get(bo).is_none() {
+            return Err(Errno::ENOENT);
+        }
+        registry.incref(bo).ok_or(Errno::ENOMEM).map(|_| ())
+    })
+}
+
+fn collect_gl_bo_releases(ids: [Option<u32>; 2]) -> Vec<DriReleaseEffect> {
+    let mut effects = Vec::new();
+    for bo in ids.into_iter().flatten() {
+        if crate::dri::with_registry(|r| r.decref(bo)) == Some(0) {
+            effects.push(DriReleaseEffect::DestroyBo(bo));
+        }
+    }
+    effects
+}
+
+fn collect_gl_surface_releases(
+    surfaces: [Option<crate::ofd::SharedGlSurface>; 2],
+) -> Vec<DriReleaseEffect> {
+    let mut effects = Vec::new();
+    for shared in surfaces.into_iter().flatten() {
+        if let Some(surface) = shared.into_last() {
+            effects.extend(collect_gl_bo_releases([
+                surface.target_bo,
+                surface.pending_target_bo,
+            ]));
+        }
+    }
+    effects
+}
+
+fn collect_gl_resource_releases(mut resources: crate::ofd::GlResources) -> Vec<DriReleaseEffect> {
+    let mut effects = Vec::new();
+    if let Some(owner) = resources.owner.take() {
+        if owner.native_live && owner.role == wasm_posix_shared::gl::SESSION_OBJECTS {
+            effects.push(DriReleaseEffect::UnbindGl {
+                owner_pid: owner.pid,
+                session_id: owner.session_id,
+            });
+        }
+    }
+    if let Some(surface) = resources.surface.as_ref() {
+        surface.borrow_mut().owner_alive = false;
+    }
+    // Native unbind retires owner and selector references first. Only the
+    // last canonical surface reference may then destroy its BO backing.
+    effects.extend(collect_gl_surface_releases([
+        resources.surface.take(),
+        None,
+    ]));
+    effects.extend(collect_gl_surface_releases([
+        resources.draw_surface.take(),
+        resources.read_surface.take(),
+    ]));
+    effects.extend(collect_gl_bo_releases([
+        resources.pending_surface_bo.take(),
+        None,
+    ]));
+    effects
+}
+
+/// Owner image teardown revokes its renderer even when another process still
+/// holds an inherited descriptor. Foreign child teardown must leave it live.
+fn take_owned_gl_resources(
+    dri: &mut crate::ofd::DriFdState,
+    pid: i32,
+    clear_owner: bool,
+) -> crate::ofd::GlResources {
+    take_owned_shared_gl_resources(&dri.gl_resources, pid, clear_owner)
+}
+
+fn take_owned_shared_gl_resources(
+    shared: &crate::ofd::SharedGlResources,
+    pid: i32,
+    clear_owner: bool,
+) -> crate::ofd::GlResources {
+    let mut resources = shared.borrow_mut();
+    if !resources.owner.is_some_and(|owner| owner.pid == pid) {
+        return Default::default();
+    }
+    let owner = if clear_owner {
+        resources.owner.take()
+    } else {
+        let owner = resources.owner;
+        if let Some(stored) = resources.owner.as_mut() {
+            stored.native_live = false;
+            stored.cmdbuf_range = None;
+        }
+        owner
+    };
+    crate::ofd::GlResources {
+        owner,
+        surface: resources.surface.take(),
+        draw_surface: resources.draw_surface.take(),
+        read_surface: resources.read_surface.take(),
+        current_tid: resources.current_tid.take(),
+        pending_surface_bo: resources.pending_surface_bo.take(),
+    }
+}
+
+pub fn collect_owned_gl_image_release_effects(
+    pid: i32,
+    state: &mut crate::ofd::DriOfdState,
+) -> Vec<DriReleaseEffect> {
+    let dri = match state {
+        crate::ofd::DriOfdState::RenderNode(dri) | crate::ofd::DriOfdState::Card { dri, .. } => dri,
+        crate::ofd::DriOfdState::PrimeBo(_) => return Vec::new(),
+    };
+    collect_gl_resource_releases(take_owned_gl_resources(dri, pid, true))
+}
+
+/// Revoke image-owned renderers before discarding guest memory, even when
+/// every local descriptor has closed and only a child retains the description.
+pub fn collect_process_gl_image_release_effects(proc: &mut Process) -> Vec<DriReleaseEffect> {
+    let pid = proc.pid as i32;
+    let mut effects = Vec::new();
+    for weak in core::mem::take(&mut proc.gl_resource_owners) {
+        if let Some(shared) = weak.upgrade() {
+            effects.extend(collect_gl_resource_releases(
+                take_owned_shared_gl_resources(&shared, pid, true),
+            ));
+        }
+    }
+    effects
+}
+
 fn ranges_overlap(a_addr: usize, a_len: usize, b_addr: usize, b_len: usize) -> bool {
     let a_end = a_addr.saturating_add(a_len);
     let b_end = b_addr.saturating_add(b_len);
@@ -835,35 +1113,54 @@ fn dri_fd_has_bo_handle(dri: &crate::ofd::DriFdState, bo_id: crate::dri::BoId) -
     dri.handles.values().any(|&candidate| candidate == bo_id)
 }
 
-fn clear_dri_fd_cmdbuf_in_range(dri: &mut crate::ofd::DriFdState, addr: usize, len: usize) -> bool {
-    let Some(gl) = dri.gl.as_mut() else {
-        return false;
-    };
-    let Some(cmdbuf) = gl.cmdbuf else {
-        return false;
-    };
+fn clear_dri_fd_cmdbuf_in_range(
+    dri: &mut crate::ofd::DriFdState,
+    owner_pid: i32,
+    addr: usize,
+    len: usize,
+) -> Option<u32> {
+    let gl = dri.gl.as_mut()?;
+    if gl.owner_pid != owner_pid {
+        return None;
+    }
+    let cmdbuf = gl.cmdbuf?;
     if !ranges_overlap(addr, len, cmdbuf.addr, cmdbuf.len) {
-        return false;
+        return None;
     }
     gl.cmdbuf = None;
-    true
+    gl.context_id = None;
+    gl.surface_id = None;
+    gl.current = None;
+    Some(gl.session_id)
 }
 
 fn unbind_gl_cmdbufs_in_range(proc: &mut Process, host: &mut dyn HostIO, addr: usize, len: usize) {
-    let mut released = false;
-    for (_ofd_idx, ofd) in proc.ofd_table.iter_mut() {
-        match ofd.dri_state.as_deref_mut() {
-            Some(crate::ofd::DriOfdState::RenderNode(dri)) => {
-                released |= clear_dri_fd_cmdbuf_in_range(dri, addr, len);
-            }
-            Some(crate::ofd::DriOfdState::Card { dri, .. }) => {
-                released |= clear_dri_fd_cmdbuf_in_range(dri, addr, len);
-            }
-            _ => {}
+    let pid = proc.pid as i32;
+    for (_, ofd) in proc.ofd_table.iter_mut() {
+        let Some(dri) = ofd.dri_mut() else { continue };
+        if clear_dri_fd_cmdbuf_in_range(dri, pid, addr, len).is_some() {
+            let effects = collect_gl_resource_releases(take_owned_gl_resources(dri, pid, false));
+            apply_dri_release_effects(pid, effects, host);
         }
     }
-    if released {
-        host.gl_unbind(proc.pid as i32);
+    // The owner may have closed every local fd while a child or an in-flight
+    // descriptor still holds the open description. Revoke that lease before
+    // any part of its old command memory is discarded or replaced.
+    for weak in &proc.gl_resource_owners {
+        let Some(shared) = weak.upgrade() else {
+            continue;
+        };
+        let overlaps = shared.borrow().owner.is_some_and(|owner| {
+            owner.pid == pid
+                && owner
+                    .cmdbuf_range
+                    .is_some_and(|(base, size)| ranges_overlap(base, size, addr, len))
+        });
+        if overlaps {
+            let effects =
+                collect_gl_resource_releases(take_owned_shared_gl_resources(&shared, pid, false));
+            apply_dri_release_effects(pid, effects, host);
+        }
     }
 }
 
@@ -873,21 +1170,15 @@ fn release_process_dri_mappings(proc: &mut Process, host: &mut dyn HostIO) {
     for b in bindings {
         host.gbm_bo_unbind(pid, b.bo_id, b.addr, b.len);
     }
-
-    let mut released_gl = false;
-    for (_ofd_idx, ofd) in proc.ofd_table.iter_mut() {
-        match ofd.dri_state.as_deref_mut() {
-            Some(crate::ofd::DriOfdState::RenderNode(dri)) => {
-                released_gl |= dri.gl.take().is_some();
-            }
-            Some(crate::ofd::DriOfdState::Card { dri, .. }) => {
-                released_gl |= dri.gl.take().is_some();
-            }
-            _ => {}
+    let effects = collect_process_gl_image_release_effects(proc);
+    apply_dri_release_effects(pid, effects, host);
+    for (_, ofd) in proc.ofd_table.iter_mut() {
+        let Some(dri) = ofd.dri_mut() else { continue };
+        if dri.gl.as_ref().is_some_and(|gl| gl.owner_pid == pid) {
+            let effects = collect_gl_resource_releases(take_owned_gl_resources(dri, pid, true));
+            apply_dri_release_effects(pid, effects, host);
+            dri.gl = None;
         }
-    }
-    if released_gl {
-        host.gl_unbind(pid);
     }
 }
 
@@ -1146,11 +1437,64 @@ fn probe_dri_process_pointer(
     pointer: u64,
     len: usize,
 ) -> Result<u64, Errno> {
+    if len != 0 && pointer == 0 {
+        return Err(Errno::EFAULT);
+    }
     let mut probe: alloc::vec::Vec<u8> = alloc::vec![0u8; len];
     if host.proc_read_bytes(pid, pointer, &mut probe) < 0 {
         return Err(Errno::EFAULT);
     }
     Ok(pointer)
+}
+
+fn write_dri_bytes(host: &mut dyn HostIO, pid: i32, pointer: u64, bytes: &[u8]) -> Result<(), Errno> {
+    if bytes.is_empty() { return Ok(()); }
+    if pointer == 0 {
+        return Err(Errno::EFAULT);
+    }
+    if host.proc_write_bytes(pid, pointer, bytes) < 0 {
+        return Err(Errno::EFAULT);
+    }
+    Ok(())
+}
+
+fn write_dri_u32s(host: &mut dyn HostIO, pid: i32, pointer: u64, values: &[u32]) -> Result<(), Errno> {
+    let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    write_dri_bytes(host, pid, pointer, &bytes)
+}
+
+fn write_dri_u64s(host: &mut dyn HostIO, pid: i32, pointer: u64, values: &[u64]) -> Result<(), Errno> {
+    let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    write_dri_bytes(host, pid, pointer, &bytes)
+}
+
+/// Validate the complete pair even when called by a query with other outputs.
+fn probe_dri_properties(
+    host: &mut dyn HostIO, pid: i32, count: usize, ids: u64, values: u64,
+) -> Result<(), Errno> {
+    if count != 0 {
+        probe_dri_process_pointer(host, pid, ids, count * 4)?;
+        probe_dri_process_pointer(host, pid, values, count * 8)?;
+    }
+    Ok(())
+}
+
+/// Copy property ids and values as `drm_mode_object_get_properties` does:
+/// as many as the caller's `capacity` holds, while the caller learns the
+/// full count from the returned struct.
+fn write_dri_properties(
+    host: &mut dyn HostIO,
+    pid: i32,
+    props: &[u32],
+    capacity: u32,
+    ids_pointer: u64,
+    values_pointer: u64,
+) -> Result<(), Errno> {
+    let copied = &props[..props.len().min(capacity as usize)];
+    probe_dri_properties(host, pid, copied.len(), ids_pointer, values_pointer)?;
+    let values: Vec<u64> = copied.iter().map(|&id| kms::property_value(id)).collect();
+    write_dri_u32s(host, pid, ids_pointer, copied)?;
+    write_dri_u64s(host, pid, values_pointer, &values)
 }
 
 /// Shared render-node ioctls: probe (VERSION / GET_CAP), the dumb-buffer
@@ -1167,6 +1511,18 @@ fn handle_dri_ioctl(
     use wasm_posix_shared::dri::*;
     use wasm_posix_shared::gl;
     let pid = proc.pid as i32;
+    // GEM/PRIME descriptions can cross process boundaries; a renderer and
+    // its command memory belong to their creator's address-space generation.
+    if (gl::GLIO_INIT..=gl::GLIO_UPDATE_SURFACE).contains(&request)
+        || request == DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE
+    {
+        let dri = dri_state(proc, ofd_idx)?;
+        if dri.gl.as_ref().is_some_and(|gl| gl.owner_pid != pid)
+            || dri.gl_resources.borrow().owner.is_some_and(|owner| owner.pid != pid)
+        {
+            return Err(Errno::EACCES);
+        }
+    }
     match request {
         DRM_IOCTL_VERSION | DRM_IOCTL_VERSION_WASM64 => handle_drm_version(request, buf),
         DRM_IOCTL_GET_CAP => {
@@ -1176,10 +1532,21 @@ fn handle_dri_ioctl(
             let mut cap: WpkDrmGetCap =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
             cap.value = match cap.capability {
-                DRM_CAP_DUMB_BUFFER => 1,
-                0x8 | 0x9 => if host.kms_cursor_supported() { 64 } else { 0 },
+                DRM_CAP_DUMB_BUFFER
+                | DRM_CAP_VBLANK_HIGH_CRTC
+                | DRM_CAP_TIMESTAMP_MONOTONIC
+                | DRM_CAP_CRTC_IN_VBLANK_EVENT => 1,
                 DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT,
-                _ => 0,
+                DRM_CAP_DUMB_PREFERRED_DEPTH => 24,
+                DRM_CAP_CURSOR_WIDTH | DRM_CAP_CURSOR_HEIGHT => if host.kms_cursor_supported() { 64 } else { 0 },
+                DRM_CAP_DUMB_PREFER_SHADOW
+                | DRM_CAP_ASYNC_PAGE_FLIP
+                | DRM_CAP_ADDFB2_MODIFIERS
+                | DRM_CAP_PAGE_FLIP_TARGET
+                | DRM_CAP_SYNCOBJ
+                | DRM_CAP_SYNCOBJ_TIMELINE
+                | DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP => 0,
+                _ => return Err(Errno::EINVAL),
             };
             unsafe {
                 core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, cap);
@@ -1488,6 +1855,7 @@ fn handle_dri_ioctl(
             // returns the stable guest-visible texture id. Negative =
             // no GL backing (headless host) or upload failure — the
             // caller degrades to its CPU path.
+            require_gl_current(proc, ofd_idx)?;
             let tex = host.gl_bind_foreign_texture(pid, req.ctx_id, bo_id, req.gl_target);
             if tex <= 0 {
                 return Err(Errno::EIO);
@@ -1504,43 +1872,138 @@ fn handle_dri_ioctl(
         // sys_mmap renderD128 block when offset==0; everything below is
         // pure state-machine + host bridge forwarding.
         gl::GLIO_INIT => {
-            if buf.len() < 4 {
+            if buf.len() < core::mem::size_of::<gl::GlInitInfo>() {
                 return Err(Errno::EINVAL);
             }
-            let client_version = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-            if client_version == 0 || client_version > gl::OP_VERSION {
+            let mut info: gl::GlInitInfo =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if info.op_version == 0 || info.op_version > gl::OP_VERSION {
                 return Err(Errno::ENOSYS);
             }
-            let dri = dri_state_mut(proc, ofd_idx)?;
-            if dri.gl.is_some() {
+            if let Some(owner) = dri_state(proc, ofd_idx)?.gl_resources.borrow().owner {
+                return Err(if owner.pid == pid {
+                    Errno::EBUSY
+                } else {
+                    Errno::EACCES
+                });
+            }
+            if dri_state(proc, ofd_idx)?.gl.is_some() {
                 return Err(Errno::EBUSY);
             }
-            dri.gl = Some(crate::ofd::GlState {
+            match info.role {
+                gl::SESSION_DISPLAY => {
+                    if info.display_fd != -1 || info.display_id != 0 {
+                        return Err(Errno::EINVAL);
+                    }
+                }
+                gl::SESSION_OBJECTS => {
+                    let root_ofd = proc.fd_table.get(info.display_fd)?.ofd_ref.0;
+                    let root = dri_state(proc, root_ofd)?
+                        .gl
+                        .as_ref()
+                        .ok_or(Errno::EINVAL)?;
+                    if root.owner_pid != pid {
+                        return Err(Errno::EACCES);
+                    }
+                    if !root.initialized
+                        || root.role != gl::SESSION_DISPLAY
+                        || info.display_id == 0
+                        || root.display_id != info.display_id
+                    {
+                        return Err(Errno::EINVAL);
+                    }
+                }
+                _ => return Err(Errno::EINVAL),
+            }
+            let session_id = crate::ofd::allocate_gl_id()?;
+            if info.role == gl::SESSION_DISPLAY {
+                info.display_id = session_id;
+            }
+            dri_state_mut(proc, ofd_idx)?.gl = Some(crate::ofd::GlState {
+                session_id,
+                owner_pid: pid,
                 initialized: true,
+                role: info.role,
+                display_id: info.display_id,
                 ..Default::default()
             });
+            dri_state_mut(proc, ofd_idx)?
+                .gl_resources
+                .borrow_mut()
+                .owner = Some(crate::ofd::GlResourceOwner {
+                native_live: true,
+                cmdbuf_range: None,
+                pid,
+                session_id,
+                role: info.role,
+            });
+            let weak = dri_state(proc, ofd_idx)?.gl_resources.downgrade();
+            proc.gl_resource_owners.retain(|entry| {
+                entry.upgrade().is_some_and(|shared| {
+                    shared.borrow().owner.is_some_and(|owner| owner.pid == pid)
+                })
+            });
+            if !proc
+                .gl_resource_owners
+                .iter()
+                .any(|entry| entry.ptr_eq(&weak))
+            {
+                proc.gl_resource_owners.push(weak);
+            }
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, info);
+            }
             Ok(())
         }
         gl::GLIO_TERMINATE => {
             let dri = dri_state_mut(proc, ofd_idx)?;
+            if dri.gl.as_ref().is_some_and(|gl| gl.current.is_some()) {
+                return Err(Errno::EBUSY);
+            }
             if dri.gl.is_none() {
                 return Err(Errno::EINVAL);
             }
+            let effects = collect_gl_resource_releases(take_owned_gl_resources(dri, pid, true));
+            apply_dri_release_effects(pid, effects, host);
             dri.gl = None;
-            host.gl_unbind(pid);
             Ok(())
         }
         gl::GLIO_CREATE_CONTEXT => {
+            require_gl_display_live(proc, ofd_idx)?;
             if buf.len() < core::mem::size_of::<gl::GlContextAttrs>() {
                 return Err(Errno::EINVAL);
             }
             let attrs_bytes = &buf[..core::mem::size_of::<gl::GlContextAttrs>()];
             let attrs: gl::GlContextAttrs =
                 unsafe { core::ptr::read_unaligned(attrs_bytes.as_ptr() as *const _) };
-            if attrs.client_version != 2 && attrs.client_version != 3 {
+            if (attrs.client_version != 2 && attrs.client_version != 3)
+                || attrs.context_id != 0
+                || attrs.reserved != 0
+            {
                 return Err(Errno::EINVAL);
             }
-            let ctx_id;
+            if attrs.share_context_id != 0 {
+                let display_id = dri_state(proc, ofd_idx)?
+                    .gl
+                    .as_ref()
+                    .ok_or(Errno::EINVAL)?
+                    .display_id;
+                let source_live = proc.ofd_table.iter().any(|(_, ofd)| {
+                    ofd.dri()
+                        .and_then(|dri| dri.gl.as_ref())
+                        .is_some_and(|source| {
+                            source.owner_pid == pid
+                                && source.initialized
+                                && source.role == gl::SESSION_OBJECTS
+                                && source.display_id == display_id
+                                && source.context_id == Some(attrs.share_context_id)
+                        })
+                });
+                if !source_live {
+                    return Err(Errno::EINVAL);
+                }
+            }
+            let (ctx_id, session_id);
             {
                 let dri = dri_state_mut(proc, ofd_idx)?;
                 let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
@@ -1550,10 +2013,25 @@ fn handle_dri_ioctl(
                 if gls.context_id.is_some() {
                     return Err(Errno::EBUSY);
                 }
-                ctx_id = 1u32;
-                gls.context_id = Some(ctx_id);
+                ctx_id = crate::ofd::allocate_gl_id()?;
+                session_id = gls.session_id;
             }
-            host.gl_create_context(pid, ctx_id, attrs_bytes);
+            // Do not publish a context the host could not actually create.
+            // In particular, a renderer-less host must not turn GL calls
+            // into successful no-ops behind a live EGL context handle.
+            let rc = host.gl_create_context(pid, ctx_id, attrs_bytes, session_id);
+            if rc != 0 {
+                return Err(rc
+                    .checked_neg()
+                    .and_then(|n| Errno::from_u32(n as u32))
+                    .unwrap_or(Errno::EIO));
+            }
+            dri_state_mut(proc, ofd_idx)?
+                .gl
+                .as_mut()
+                .ok_or(Errno::EINVAL)?
+                .context_id = Some(ctx_id);
+            buf[12..16].copy_from_slice(&ctx_id.to_le_bytes());
             Ok(())
         }
         gl::GLIO_DESTROY_CONTEXT => {
@@ -1561,82 +2039,274 @@ fn handle_dri_ioctl(
             {
                 let dri = dri_state_mut(proc, ofd_idx)?;
                 let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
+                if gls.current.is_some() {
+                    return Err(Errno::EBUSY);
+                }
                 ctx_id = gls.context_id.ok_or(Errno::EINVAL)?;
                 gls.context_id = None;
-                gls.current = false;
             }
             host.gl_destroy_context(pid, ctx_id);
             Ok(())
         }
         gl::GLIO_CREATE_SURFACE => {
-            let attrs_size = core::mem::size_of::<gl::GlSurfaceAttrs>();
-            if buf.len() < attrs_size {
+            require_gl_display_live(proc, ofd_idx)?;
+            let size = core::mem::size_of::<gl::GlSurfaceCreateInfo>();
+            if buf.len() < size {
+                return Err(Errno::EINVAL);
+            }
+            let mut info: gl::GlSurfaceCreateInfo =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            let attrs = info.attrs;
+            if info.surface_id != 0
+                || attrs.config_id != 1
+                || attrs.reserved[1..] != [0; 3]
+                || attrs.width > i32::MAX as u32
+                || attrs.height > i32::MAX as u32
+                || ![gl::WPK_SURFACE_DEFAULT, gl::WPK_SURFACE_PBUFFER].contains(&attrs.kind)
+                || (attrs.kind == gl::WPK_SURFACE_PBUFFER && attrs.reserved[0] != 0)
+            {
+                return Err(Errno::EINVAL);
+            }
+            let dri = dri_state(proc, ofd_idx)?;
+            let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
+            if !gls.initialized {
+                return Err(Errno::EINVAL);
+            }
+            if gls.surface_id.is_some() {
+                return Err(Errno::EBUSY);
+            }
+            let session_id = gls.session_id;
+            let display_id = gls.display_id;
+            let target = if attrs.reserved[0] == 0 {
+                None
+            } else {
+                Some(*dri.handles.get(&attrs.reserved[0]).ok_or(Errno::ENOENT)?)
+            };
+            let surface_id = crate::ofd::allocate_gl_id()?;
+            {
+                let mut resources = dri.gl_resources.borrow_mut();
+                if resources.surface.is_some() || resources.pending_surface_bo.is_some() {
+                    return Err(Errno::EBUSY);
+                }
+                if let Some(bo) = target {
+                    retain_gl_surface_bo(bo)?;
+                    resources.pending_surface_bo = Some(bo);
+                }
+            }
+            let mut native = buf[..size].to_vec();
+            native[16..20].copy_from_slice(&target.unwrap_or(0).to_le_bytes());
+            let mut rc = host.gl_create_surface(pid, surface_id, &mut native, session_id);
+            let width = u32::from_le_bytes(native[4..8].try_into().unwrap());
+            let height = u32::from_le_bytes(native[8..12].try_into().unwrap());
+            if rc == 0 && (width > i32::MAX as u32 || height > i32::MAX as u32) {
+                rc = -(Errno::EIO as i32);
+            }
+            if rc != 0 {
+                // Ordered candidate cleanup also covers a lost acknowledgement.
+                host.gl_destroy_surface(pid, surface_id, session_id);
+                let candidate = dri_state_mut(proc, ofd_idx)?
+                    .gl_resources
+                    .borrow_mut()
+                    .pending_surface_bo
+                    .take();
+                apply_dri_release_effects(pid, collect_gl_bo_releases([candidate, None]), host);
+                return Err(rc
+                    .checked_neg()
+                    .and_then(|n| Errno::from_u32(n as u32))
+                    .unwrap_or(Errno::EIO));
+            }
+            let dri = dri_state_mut(proc, ofd_idx)?;
+            {
+                let mut resources = dri.gl_resources.borrow_mut();
+                resources.surface = Some(crate::ofd::SharedGlSurface::new(crate::ofd::GlSurface {
+                    id: surface_id,
+                    pid,
+                    display_id,
+                    owner_alive: true,
+                    width,
+                    height,
+                    target_bo: resources.pending_surface_bo.take(),
+                    pending_target_bo: None,
+                }));
+            }
+            dri.gl.as_mut().ok_or(Errno::EINVAL)?.surface_id = Some(surface_id);
+            info.attrs.width = width;
+            info.attrs.height = height;
+            info.surface_id = surface_id;
+            unsafe {
+                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, info);
+            }
+            Ok(())
+        }
+        gl::GLIO_UPDATE_SURFACE => {
+            let size = core::mem::size_of::<gl::GlSurfaceAttrs>();
+            if buf.len() < size {
                 return Err(Errno::EINVAL);
             }
             let attrs: gl::GlSurfaceAttrs =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            if attrs.kind != gl::WPK_SURFACE_DEFAULT && attrs.kind != gl::WPK_SURFACE_PBUFFER {
+            if attrs.kind != gl::WPK_SURFACE_DEFAULT
+                || attrs.config_id != 1
+                || attrs.reserved[0] == 0
+                || attrs.reserved[1..] != [0; 3]
+            {
                 return Err(Errno::EINVAL);
             }
-            // GPU-tier producer targeting (PR10 §7.1): `reserved[0]` carries
-            // the target bo HANDLE (eglCreateWindowSurface's
-            // EGL_WPK_TARGET_BO attrib) — the bo whose FBO this window
-            // surface renders into. Translate it to the global bo_id here
-            // (the host can't resolve a per-fd handle), exactly as
-            // BIND_FOREIGN_TEXTURE does. 0 = no target (an ordinary canvas
-            // / scanout surface), the common case.
-            let target_bo_id: u32 = if attrs.reserved[0] != 0 {
-                let dri = dri_state(proc, ofd_idx)?;
-                *dri.handles.get(&attrs.reserved[0]).ok_or(Errno::ENOENT)?
-            } else {
-                0
-            };
-            let surface_id;
-            {
-                let dri = dri_state_mut(proc, ofd_idx)?;
-                let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
-                if !gls.initialized {
-                    return Err(Errno::EINVAL);
-                }
-                if gls.surface_id.is_some() {
+            let dri = dri_state(proc, ofd_idx)?;
+            let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
+            let surface = gls.surface_id.ok_or(Errno::EINVAL)?;
+            let target = *dri.handles.get(&attrs.reserved[0]).ok_or(Errno::ENOENT)?;
+            let session = gls.session_id;
+            let record = dri
+                .gl_resources
+                .borrow()
+                .surface
+                .clone()
+                .ok_or(Errno::EINVAL)?;
+            let mut host_attrs = buf[..size].to_vec();
+            host_attrs[16..20].copy_from_slice(&target.to_le_bytes());
+            let changed = {
+                let mut resources = record.borrow_mut();
+                if resources.pending_target_bo.is_some() {
                     return Err(Errno::EBUSY);
                 }
-                surface_id = 1u32;
-                gls.surface_id = Some(surface_id);
+                if resources.target_bo == Some(target) {
+                    false
+                } else {
+                    retain_gl_surface_bo(target)?;
+                    resources.pending_target_bo = Some(target);
+                    true
+                }
+            };
+            let rc = host.gl_update_surface(pid, surface, &host_attrs, session);
+            let release = if changed {
+                let mut resources = record.borrow_mut();
+                let candidate = resources.pending_target_bo.take();
+                if rc == 0 {
+                    core::mem::replace(&mut resources.target_bo, candidate)
+                } else {
+                    candidate
+                }
+            } else {
+                None
+            };
+            if rc == 0 {
+                if let Some((width, height)) =
+                    crate::dri::with_registry(|r| r.get(target).map(|bo| (bo.width, bo.height)))
+                {
+                    let mut state = record.borrow_mut();
+                    state.width = width;
+                    state.height = height;
+                }
             }
-            // Overwrite `reserved[0]` in place with the resolved global
-            // bo_id so the host — which reads these bytes by pointer —
-            // sees an id it can look up, not the per-fd handle. reserved[0]
-            // is at byte offset 16 in the 32-byte GlSurfaceAttrs.
-            buf[16..20].copy_from_slice(&target_bo_id.to_le_bytes());
-            let attrs_bytes = &buf[..attrs_size];
-            host.gl_create_surface(pid, surface_id, attrs_bytes);
+            apply_dri_release_effects(pid, collect_gl_bo_releases([release, None]), host);
+            if rc != 0 {
+                return Err(rc
+                    .checked_neg()
+                    .and_then(|n| Errno::from_u32(n as u32))
+                    .unwrap_or(Errno::EIO));
+            }
             Ok(())
         }
         gl::GLIO_DESTROY_SURFACE => {
-            let surface_id;
-            {
-                let dri = dri_state_mut(proc, ofd_idx)?;
-                let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
-                surface_id = gls.surface_id.ok_or(Errno::EINVAL)?;
-                gls.surface_id = None;
-                gls.current = false;
+            let surface_id = dri_state(proc, ofd_idx)?
+                .gl
+                .as_ref()
+                .and_then(|gl| gl.surface_id)
+                .ok_or(Errno::EINVAL)?;
+            if gl_surface_is_current(proc, [surface_id, surface_id], None) {
+                return Err(Errno::EBUSY);
             }
-            host.gl_destroy_surface(pid, surface_id);
+            let session = gl_session_id(proc, ofd_idx)?;
+            host.gl_destroy_surface(pid, surface_id, session);
+            let dri = dri_state_mut(proc, ofd_idx)?;
+            dri.gl.as_mut().ok_or(Errno::EINVAL)?.surface_id = None;
+            let surface = dri.gl_resources.borrow_mut().surface.take();
+            if let Some(record) = surface.as_ref() {
+                record.borrow_mut().owner_alive = false;
+            }
+            apply_dri_release_effects(pid, collect_gl_surface_releases([surface, None]), host);
             Ok(())
         }
         gl::GLIO_MAKE_CURRENT => {
-            let (ctx_id, surface_id);
-            {
-                let dri = dri_state_mut(proc, ofd_idx)?;
-                let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
-                ctx_id = gls.context_id.ok_or(Errno::EINVAL)?;
-                surface_id = gls.surface_id.ok_or(Errno::EINVAL)?;
-                gls.current = true;
+            if buf.len() < core::mem::size_of::<gl::GlMakeCurrent>() {
+                return Err(Errno::EINVAL);
             }
-            host.gl_make_current(pid, ctx_id, surface_id);
+            let binding: gl::GlMakeCurrent =
+                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            let tid = current_tid_for_process(proc);
+            if binding.context_id == 0 {
+                if binding.draw_surface_id != 0 || binding.read_surface_id != 0 {
+                    return Err(Errno::EINVAL);
+                }
+                release_gl_current_for_tid(proc, host, tid, None);
+                return Ok(());
+            }
+            require_gl_display_live(proc, ofd_idx)?;
+            let session_id;
+            let display_id;
+            {
+                let gls = dri_state(proc, ofd_idx)?.gl.as_ref().ok_or(Errno::EINVAL)?;
+                if gls.context_id != Some(binding.context_id) {
+                    return Err(Errno::EINVAL);
+                }
+                if (binding.draw_surface_id == 0) != (binding.read_surface_id == 0) {
+                    return Err(Errno::EINVAL);
+                }
+                if gls.current.is_some_and(|current| current.owner_tid != tid) {
+                    return Err(Errno::EACCES);
+                }
+                session_id = gls.session_id;
+                display_id = gls.display_id;
+            }
+            let (draw, read) = if binding.draw_surface_id == 0 {
+                (None, None)
+            } else {
+                let draw = find_gl_surface(proc, display_id, binding.draw_surface_id)?;
+                let read = find_gl_surface(proc, display_id, binding.read_surface_id)?;
+                if gl_surface_is_current(
+                    proc,
+                    [binding.draw_surface_id, binding.read_surface_id],
+                    Some(tid),
+                ) {
+                    return Err(Errno::EACCES);
+                }
+                (Some(draw), Some(read))
+            };
+            let rc = host.gl_make_current(
+                pid,
+                binding.context_id,
+                binding.draw_surface_id,
+                binding.read_surface_id,
+                session_id,
+            );
+            if rc != 0 {
+                return Err(rc
+                    .checked_neg()
+                    .and_then(|n| Errno::from_u32(n as u32))
+                    .unwrap_or(Errno::EIO));
+            }
+            // A rejected replacement leaves the old binding intact. Only an
+            // accepted bind may displace this task's current context elsewhere.
+            release_gl_current_for_tid(proc, host, tid, Some(session_id));
+            let dri = dri_state_mut(proc, ofd_idx)?;
+            dri.gl.as_mut().ok_or(Errno::EINVAL)?.current = Some(crate::ofd::GlCurrentState {
+                owner_tid: tid,
+                draw_surface_id: binding.draw_surface_id,
+                read_surface_id: binding.read_surface_id,
+            });
+            let previous = {
+                let mut resources = dri.gl_resources.borrow_mut();
+                resources.current_tid = Some(tid);
+                [
+                    core::mem::replace(&mut resources.draw_surface, draw),
+                    core::mem::replace(&mut resources.read_surface, read),
+                ]
+            };
+            apply_dri_release_effects(pid, collect_gl_surface_releases(previous), host);
             Ok(())
         }
+
         gl::GLIO_SUBMIT => {
             if buf.len() < core::mem::size_of::<gl::GlSubmitInfo>() {
                 return Err(Errno::EINVAL);
@@ -1657,7 +2327,8 @@ fn handle_dri_ioctl(
                 offset = info.offset as usize;
                 length = info.length as usize;
             }
-            let submit_rc = host.gl_submit(pid, offset, length);
+            require_gl_current(proc, ofd_idx)?;
+            let submit_rc = host.gl_submit(pid, offset, length, gl_session_id(proc, ofd_idx)?);
             if submit_rc < 0 {
                 return Err(Errno::from_u32((-submit_rc) as u32).unwrap_or(Errno::EIO));
             }
@@ -1675,7 +2346,7 @@ fn handle_dri_ioctl(
                     return Err(Errno::EINVAL);
                 }
             }
-            let present_rc = host.gl_present(pid);
+            let present_rc = host.gl_present(pid, gl_session_id(proc, ofd_idx)?);
             if present_rc < 0 {
                 return Err(Errno::from_u32((-present_rc) as u32).unwrap_or(Errno::EIO));
             }
@@ -1697,6 +2368,25 @@ fn handle_dri_ioctl(
                     return Err(Errno::EINVAL);
                 }
             }
+            if info.op == gl::QOP_SURFACE_CAPABILITIES {
+                // Immutable limits do not expose context-local state and must
+                // be available to EGL configuration queries before MakeCurrent.
+                require_gl_display_live(proc, ofd_idx)?;
+                if dri_state(proc, ofd_idx)?
+                    .gl_resources
+                    .borrow()
+                    .owner
+                    .is_none_or(|owner| owner.cmdbuf_range.is_none())
+                {
+                    return Err(Errno::EINVAL);
+                }
+                if info.in_buf_len != 0 || info.out_buf_len != 16 || info.reserved != 0 {
+                    return Err(Errno::EINVAL);
+                }
+                probe_dri_process_pointer(host, pid, u64::from(info.out_buf_ptr), 16)?;
+            } else {
+                require_gl_current(proc, ofd_idx)?;
+            }
             // Copy input from process memory through the host bridge,
             // forward to host.gl_query, then copy the result back. The
             // kernel never decodes the bytes — `op` is the only thing
@@ -1709,7 +2399,7 @@ fn handle_dri_ioctl(
                 }
             }
             let mut out_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; info.out_buf_len as usize];
-            let written = host.gl_query(pid, info.op, &in_buf, &mut out_buf);
+            let written = host.gl_query(pid, info.op, &in_buf, &mut out_buf, gl_session_id(proc, ofd_idx)?);
             if written < 0 {
                 return Err(Errno::EIO);
             }
@@ -1723,6 +2413,32 @@ fn handle_dri_ioctl(
             Ok(())
         }
         _ => Err(Errno::ENOSYS),
+    }
+}
+
+fn release_kms_fb(host: &mut dyn HostIO, pid: i32, fb_id: u32, bo_id: crate::dri::BoId) {
+    if crate::dri::with_registry(|r| r.decref(bo_id)) == Some(0) {
+        host.gbm_bo_destroy(pid, bo_id);
+    }
+    host.kms_rmfb(pid, fb_id);
+}
+
+/// Linux disables the CRTC that scans out a removed fb.
+fn disable_crtc_scanning(fb_id: u32) {
+    if kms::crtc_fb() != fb_id {
+        return;
+    }
+    kms::set_crtc_fb(0);
+    kms::set_crtc_mode(None);
+}
+
+/// Put `fb_id` on the CRTC. An fb that `CLOSEFB` left on the CRTC is no
+/// longer referenced once another fb replaces it.
+fn latch_crtc_fb(host: &mut dyn HostIO, pid: i32, crtc_id: u32, fb_id: u32) {
+    host.kms_set_fb(pid, crtc_id, fb_id);
+    kms::set_crtc_fb(fb_id);
+    if let Some(closed) = kms::replace_closed_scanout(None) {
+        release_kms_fb(host, closed.pid, closed.fb_id, closed.bo_id);
     }
 }
 
@@ -1782,22 +2498,13 @@ fn handle_dri_card_ioctl(
                 .then(|| probe_dri_process_pointer(host, pid, req.encoder_id_ptr, 4))
                 .transpose()?;
             if let Some(pointer) = crtc_id_ptr {
-                let rc = host.proc_write_bytes(pid, pointer, &1u32.to_le_bytes());
-                if rc < 0 {
-                    return Err(Errno::EFAULT);
-                }
+                write_dri_u32s(host, pid, pointer, &[kms::CRTC_ID])?;
             }
             if let Some(pointer) = connector_id_ptr {
-                let rc = host.proc_write_bytes(pid, pointer, &1u32.to_le_bytes());
-                if rc < 0 {
-                    return Err(Errno::EFAULT);
-                }
+                write_dri_u32s(host, pid, pointer, &[kms::CONNECTOR_ID])?;
             }
             if let Some(pointer) = encoder_id_ptr {
-                let rc = host.proc_write_bytes(pid, pointer, &1u32.to_le_bytes());
-                if rc < 0 {
-                    return Err(Errno::EFAULT);
-                }
+                write_dri_u32s(host, pid, pointer, &[kms::ENCODER_ID])?;
             }
             let resp = WpkDrmModeCardRes {
                 count_fbs: 0,
@@ -1821,11 +2528,15 @@ fn handle_dri_card_ioctl(
             }
             let req: WpkDrmModeGetCrtc =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            if req.crtc_id != 1 {
+            if req.crtc_id != kms::CRTC_ID {
                 return Err(Errno::ENOENT);
             }
+            let mode = kms::crtc_mode();
             let resp = WpkDrmModeGetCrtc {
-                crtc_id: 1,
+                crtc_id: kms::CRTC_ID,
+                fb_id: kms::crtc_fb(),
+                mode_valid: mode.is_some() as u32,
+                mode: mode.unwrap_or_default(),
                 ..Default::default()
             };
             unsafe {
@@ -1839,12 +2550,13 @@ fn handle_dri_card_ioctl(
             }
             let req: WpkDrmModeGetEncoder =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            if req.encoder_id != 1 {
+            if req.encoder_id != kms::ENCODER_ID {
                 return Err(Errno::ENOENT);
             }
             let resp = WpkDrmModeGetEncoder {
-                encoder_id: 1,
-                crtc_id: 1,
+                encoder_id: kms::ENCODER_ID,
+                encoder_type: DRM_MODE_ENCODER_VIRTUAL,
+                crtc_id: kms::CRTC_ID,
                 possible_crtcs: 0b1,
                 ..Default::default()
             };
@@ -1859,15 +2571,16 @@ fn handle_dri_card_ioctl(
             }
             let req: WpkDrmModeGetConnector =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            if req.connector_id != 1 {
+            if req.connector_id != kms::CONNECTOR_ID {
                 return Err(Errno::ENOENT);
             }
+            let props = kms::object_properties(kms::CONNECTOR_ID, DRM_MODE_OBJECT_CONNECTOR)?;
             let modes = crate::dri::modes::connector_modes(host.kms_mode_info(1));
             let mode_count = modes.len() as u32;
             // Linux reports the available count on both calls, but copies
             // the list only if the caller supplied enough capacity. A resize
             // between the count and fill calls can therefore be retried.
-            let modes_ptr = (req.count_modes >= mode_count && req.modes_ptr != 0)
+            let modes_ptr = (req.count_modes >= mode_count)
                 .then(|| {
                     probe_dri_process_pointer(
                         host,
@@ -1877,9 +2590,11 @@ fn handle_dri_card_ioctl(
                     )
                 })
                 .transpose()?;
-            let encoders_ptr = (req.count_encoders >= 1 && req.encoders_ptr != 0)
+            let encoders_ptr = (req.count_encoders >= 1)
                 .then(|| probe_dri_process_pointer(host, pid, req.encoders_ptr, 4))
                 .transpose()?;
+            let property_count = props.len().min(req.count_props as usize);
+            probe_dri_properties(host, pid, property_count, req.props_ptr, req.prop_values_ptr)?;
             if let Some(pointer) = modes_ptr {
                 let mode_bytes = unsafe {
                     core::slice::from_raw_parts(
@@ -1893,24 +2608,26 @@ fn handle_dri_card_ioctl(
                 }
             }
             if let Some(pointer) = encoders_ptr {
-                let rc = host.proc_write_bytes(pid, pointer, &1u32.to_le_bytes());
-                if rc < 0 {
-                    return Err(Errno::EFAULT);
-                }
+                write_dri_u32s(host, pid, pointer, &[kms::ENCODER_ID])?;
+            }
+            if property_count != 0 {
+                write_dri_properties(host, pid, props, req.count_props,
+                    req.props_ptr, req.prop_values_ptr)?;
             }
             // The display's physical size is what a client derives its
             // output scale (DPI) from; the host knows it, the kernel reports
             // it here as a real connector does.
-            let (mm_width, mm_height) = host.kms_connector_mm(1);
+            let (mm_width, mm_height) = host.kms_connector_mm(kms::CONNECTOR_ID);
             let resp = WpkDrmModeGetConnector {
                 encoders_ptr: req.encoders_ptr,
                 modes_ptr: req.modes_ptr,
                 props_ptr: req.props_ptr,
                 prop_values_ptr: req.prop_values_ptr,
                 count_modes: mode_count,
+                count_props: props.len() as u32,
                 count_encoders: 1,
-                encoder_id: 1,
-                connector_id: 1,
+                encoder_id: kms::ENCODER_ID,
+                connector_id: kms::CONNECTOR_ID,
                 connector_type: DRM_MODE_CONNECTOR_VIRTUAL,
                 connector_type_id: 1,
                 connection: DRM_MODE_CONNECTED,
@@ -1953,9 +2670,8 @@ fn handle_dri_card_ioctl(
             }
             let fb_id = {
                 let kms = kms_state_mut(proc, ofd_idx)?;
-                let id = kms.next_fb_id.checked_add(1).ok_or(Errno::ENOMEM)?;
-                kms.next_fb_id = id;
-                kms.fbs.insert(
+                let id = kms::allocate_fb_id()?;
+                kms.fbs.borrow_mut().insert(
                     id,
                     crate::ofd::KmsFb {
                         bo_id,
@@ -1979,7 +2695,7 @@ fn handle_dri_card_ioctl(
             );
             if rc < 0 {
                 if let Ok(kms) = kms_state_mut(proc, ofd_idx) {
-                    kms.fbs.remove(&fb_id);
+                    kms.fbs.borrow_mut().remove(&fb_id);
                 }
                 let _ = crate::dri::with_registry(|r| r.decref(bo_id));
                 return Err(Errno::ENOMEM);
@@ -1997,14 +2713,37 @@ fn handle_dri_card_ioctl(
             let fb_id = u32::from_le_bytes(buf[..4].try_into().unwrap());
             let bo_id = kms_state_mut(proc, ofd_idx)?
                 .fbs
+                .borrow_mut()
                 .remove(&fb_id)
                 .map(|fb| fb.bo_id)
                 .ok_or(Errno::ENOENT)?;
-            let new_rc = crate::dri::with_registry(|r| r.decref(bo_id));
-            if new_rc == Some(0) {
-                host.gbm_bo_destroy(pid, bo_id);
+            disable_crtc_scanning(fb_id);
+            release_kms_fb(host, pid, fb_id, bo_id);
+            Ok(())
+        }
+        DRM_IOCTL_MODE_CLOSEFB => {
+            if buf.len() < 8 {
+                return Err(Errno::EINVAL);
             }
-            host.kms_rmfb(pid, fb_id);
+            let fb_id = u32::from_le_bytes(buf[..4].try_into().unwrap());
+            let pad = u32::from_le_bytes(buf[4..8].try_into().unwrap());
+            if pad != 0 {
+                return Err(Errno::EINVAL);
+            }
+            let bo_id = kms_state_mut(proc, ofd_idx)?
+                .fbs
+                .borrow_mut()
+                .remove(&fb_id)
+                .map(|fb| fb.bo_id)
+                .ok_or(Errno::ENOENT)?;
+            if kms::crtc_fb() != fb_id {
+                release_kms_fb(host, pid, fb_id, bo_id);
+                return Ok(());
+            }
+            let closed = kms::ClosedScanout { pid, fb_id, bo_id };
+            if let Some(previous) = kms::replace_closed_scanout(Some(closed)) {
+                release_kms_fb(host, previous.pid, previous.fb_id, previous.bo_id);
+            }
             Ok(())
         }
         DRM_IOCTL_MODE_CURSOR | DRM_IOCTL_MODE_CURSOR2 => {
@@ -2084,13 +2823,37 @@ fn handle_dri_card_ioctl(
             if !kms.holds_master {
                 return Err(Errno::EACCES);
             }
-            if req.crtc_id != 1 {
+            if req.crtc_id != kms::CRTC_ID {
                 return Err(Errno::ENOENT);
             }
-            if req.fb_id != 0 && !kms.fbs.contains_key(&req.fb_id) {
+            let mode_set = req.mode_valid != 0;
+            if mode_set && !kms.fbs.borrow().contains_key(&req.fb_id) {
                 return Err(Errno::ENOENT);
             }
-            host.kms_set_fb(pid, req.crtc_id, req.fb_id);
+            if mode_set != (req.count_connectors > 0) {
+                return Err(Errno::EINVAL);
+            }
+            if req.count_connectors > 1 {
+                return Err(Errno::EINVAL);
+            }
+            if req.count_connectors > 0 {
+                let pointer = req.set_connectors_ptr;
+                let mut ids = alloc::vec![0u8; req.count_connectors as usize * 4];
+                if host.proc_read_bytes(pid, pointer, &mut ids) < 0 {
+                    return Err(Errno::EFAULT);
+                }
+                if ids
+                    .chunks_exact(4)
+                    .any(|id| u32::from_le_bytes(id.try_into().unwrap()) != kms::CONNECTOR_ID)
+                {
+                    return Err(Errno::ENOENT);
+                }
+            }
+            // Linux ignores the fb of a SETCRTC without a mode: it disables
+            // the CRTC.
+            let fb_id = if mode_set { req.fb_id } else { 0 };
+            kms::set_crtc_mode(mode_set.then_some(req.mode));
+            latch_crtc_fb(host, pid, req.crtc_id, fb_id);
             Ok(())
         }
         DRM_IOCTL_MODE_PAGE_FLIP => {
@@ -2108,7 +2871,7 @@ fn handle_dri_card_ioctl(
                 if !kms.holds_master {
                     return Err(Errno::EACCES);
                 }
-                if !kms.fbs.contains_key(&req.fb_id) {
+                if !kms.fbs.borrow().contains_key(&req.fb_id) {
                     return Err(Errno::ENOENT);
                 }
                 if kms.pending_flips.iter().any(|p| p.crtc_id == req.crtc_id) {
@@ -2135,7 +2898,7 @@ fn handle_dri_card_ioctl(
             // half the time, so the 60 Hz pump samples frames
             // mid-composite (wallpaper painted, windows not yet) and
             // the desktop flickers randomly.
-            host.kms_set_fb(pid, req.crtc_id, req.fb_id);
+            latch_crtc_fb(host, pid, req.crtc_id, req.fb_id);
             // Queue the flip but do NOT synthesize the completion
             // event here. `dri::drain_pending_flips`, called from
             // `kernel_vblank` on each host vblank tick (16.67 ms),
@@ -2168,8 +2931,165 @@ fn handle_dri_card_ioctl(
             }
             Ok(())
         }
+        DRM_IOCTL_SET_CLIENT_CAP => {
+            let req: WpkDrmSetClientCap = read_dri_struct(buf)?;
+            match req.capability {
+                DRM_CLIENT_CAP_STEREO_3D | DRM_CLIENT_CAP_ASPECT_RATIO if req.value <= 1 => Ok(()),
+                DRM_CLIENT_CAP_UNIVERSAL_PLANES if req.value <= 1 => {
+                    kms_state_mut(proc, ofd_idx)?.universal_planes = req.value == 1;
+                    Ok(())
+                }
+                DRM_CLIENT_CAP_ATOMIC => Err(Errno::EOPNOTSUPP),
+                DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT => Err(Errno::EOPNOTSUPP),
+                _ => Err(Errno::EINVAL),
+            }
+        }
+        DRM_IOCTL_MODE_GETPLANERESOURCES => {
+            let mut req: WpkDrmModeGetPlaneRes = read_dri_struct(buf)?;
+            let planes: &[u32] = if kms_state(proc, ofd_idx)?.universal_planes {
+                &[kms::PRIMARY_PLANE_ID]
+            } else {
+                &[]
+            };
+            if !planes.is_empty() && req.count_planes as usize >= planes.len() {
+                let pointer = req.plane_id_ptr;
+                write_dri_u32s(host, pid, pointer, planes)?;
+            }
+            req.count_planes = planes.len() as u32;
+            write_dri_struct(buf, req);
+            Ok(())
+        }
+        DRM_IOCTL_MODE_GETPLANE => {
+            let mut req: WpkDrmModeGetPlane = read_dri_struct(buf)?;
+            if req.plane_id != kms::PRIMARY_PLANE_ID {
+                return Err(Errno::ENOENT);
+            }
+            let formats = &kms::PRIMARY_PLANE_FORMATS;
+            if req.count_format_types as usize >= formats.len() {
+                let pointer = req.format_type_ptr;
+                write_dri_u32s(host, pid, pointer, formats)?;
+            }
+            let fb_id = kms::crtc_fb();
+            req.crtc_id = if fb_id != 0 { kms::CRTC_ID } else { 0 };
+            req.fb_id = fb_id;
+            req.possible_crtcs = 0b1;
+            req.gamma_size = 0;
+            req.count_format_types = formats.len() as u32;
+            write_dri_struct(buf, req);
+            Ok(())
+        }
+        DRM_IOCTL_MODE_OBJ_GETPROPERTIES => {
+            let mut req: WpkDrmModeObjGetProperties = read_dri_struct(buf)?;
+            let props = kms::object_properties(req.obj_id, req.obj_type)?;
+            if req.count_props > 0 && !props.is_empty() {
+                let ids = req.props_ptr;
+                let values = req.prop_values_ptr;
+                write_dri_properties(host, pid, props, req.count_props, ids, values)?;
+            }
+            req.count_props = props.len() as u32;
+            write_dri_struct(buf, req);
+            Ok(())
+        }
+        DRM_IOCTL_MODE_GETPROPERTY => {
+            let mut req: WpkDrmModeGetProperty = read_dri_struct(buf)?;
+            let prop = kms::property(req.prop_id).ok_or(Errno::ENOENT)?;
+            let values = prop.values();
+            let copied = values.len().min(req.count_values as usize);
+            let enum_count = match prop.kind {
+                kms::PropertyKind::Enum(entries) => entries.len().min(req.count_enum_blobs as usize),
+                _ => 0,
+            };
+            if copied != 0 {
+                probe_dri_process_pointer(host, pid, req.values_ptr, copied * 8)?;
+            }
+            if enum_count != 0 {
+                probe_dri_process_pointer(host, pid, req.enum_blob_ptr, enum_count * 40)?;
+            }
+            if copied > 0 {
+                let pointer = req.values_ptr;
+                write_dri_u64s(host, pid, pointer, &values[..copied])?;
+            }
+            req.count_values = values.len() as u32;
+            match prop.kind {
+                kms::PropertyKind::Enum(entries) => {
+                    let copied = entries.len().min(req.count_enum_blobs as usize);
+                    if copied > 0 {
+                        let pointer = req.enum_blob_ptr;
+                        let mut bytes = Vec::with_capacity(copied * 40);
+                        for &(value, name) in &entries[..copied] {
+                            bytes.extend_from_slice(&value.to_le_bytes());
+                            bytes.extend_from_slice(&dri_property_name(name));
+                        }
+                        write_dri_bytes(host, pid, pointer, &bytes)?;
+                    }
+                    req.count_enum_blobs = entries.len() as u32;
+                }
+                kms::PropertyKind::Blob => req.count_enum_blobs = 0,
+                kms::PropertyKind::Range(..) => {}
+            }
+            req.flags = prop.flags();
+            req.name = dri_property_name(prop.name);
+            write_dri_struct(buf, req);
+            Ok(())
+        }
+        DRM_IOCTL_MODE_GETPROPBLOB => {
+            read_dri_struct::<WpkDrmModeGetBlob>(buf)?;
+            Err(Errno::ENOENT)
+        }
+        DRM_IOCTL_MODE_OBJ_SETPROPERTY => {
+            let req: WpkDrmModeObjSetProperty = read_dri_struct(buf)?;
+            if !kms_state(proc, ofd_idx)?.holds_master {
+                return Err(Errno::EACCES);
+            }
+            kms::set_property(req.obj_id, req.obj_type, req.prop_id, req.value)
+        }
+        DRM_IOCTL_MODE_SETPROPERTY => {
+            let req: WpkDrmModeConnectorSetProperty = read_dri_struct(buf)?;
+            if !kms_state(proc, ofd_idx)?.holds_master {
+                return Err(Errno::EACCES);
+            }
+            kms::set_property(req.connector_id, DRM_MODE_OBJECT_CONNECTOR, req.prop_id, req.value)
+        }
+        DRM_IOCTL_GET_MAGIC => {
+            let kms = kms_state_mut(proc, ofd_idx)?;
+            if kms.magic == 0 {
+                kms.magic = kms::issue_magic();
+            }
+            buf.get_mut(..4).ok_or(Errno::EINVAL)?.copy_from_slice(&kms.magic.to_le_bytes());
+            Ok(())
+        }
+        DRM_IOCTL_AUTH_MAGIC => {
+            let magic = u32::from_le_bytes(buf.get(..4).ok_or(Errno::EINVAL)?.try_into().unwrap());
+            if !kms_state(proc, ofd_idx)?.holds_master {
+                return Err(Errno::EACCES);
+            }
+            // Kandelo does not gate primary-node ioctls on authentication,
+            // so a valid token has nothing further to unlock.
+            if !kms::magic_was_issued(magic) {
+                return Err(Errno::EINVAL);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_MODE_CREATE_LEASE => Err(Errno::EOPNOTSUPP),
         _ => handle_dri_ioctl(proc, host, ofd_idx, request, buf),
     }
+}
+
+fn read_dri_struct<T: Copy>(buf: &[u8]) -> Result<T, Errno> {
+    if buf.len() < core::mem::size_of::<T>() {
+        return Err(Errno::EINVAL);
+    }
+    Ok(unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const T) })
+}
+
+fn write_dri_struct<T: Copy>(buf: &mut [u8], value: T) {
+    unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut T, value) };
+}
+
+fn dri_property_name(name: &str) -> [u8; wasm_posix_shared::dri::DRM_PROP_NAME_LEN] {
+    let mut out = [0u8; wasm_posix_shared::dri::DRM_PROP_NAME_LEN];
+    out[..name.len()].copy_from_slice(name.as_bytes());
+    out
 }
 
 /// `EVIOCG*` ioctl surface for `/dev/input/event{0,1}`. Unknown
@@ -2205,27 +3125,18 @@ fn handle_input_ioctl(
             if buf.len() < core::mem::size_of::<WpkInputId>() {
                 return Err(Errno::EINVAL);
             }
-            let device = input_state(proc, ofd_idx)?.device;
-            let id = WpkInputId {
-                bustype: BUS_VIRTUAL,
-                vendor: 0x1209,
-                product: if device == 0 { 0x0001 } else { 0x0002 },
-                version: 0x0001,
-            };
+            let id = crate::input::device_id(input_state(proc, ofd_idx)?.device);
             unsafe {
                 core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkInputId, id);
             }
             Ok(())
         }
         n if n == EVIOCGNAME_NR && dir == 2 => {
-            let device = input_state(proc, ofd_idx)?.device;
-            let name: &[u8] = if device == 0 {
-                b"wpk virtual keyboard\0"
-            } else {
-                b"wpk virtual pointer\0"
-            };
-            let copy_len = name.len().min(size).min(buf.len());
-            buf[..copy_len].copy_from_slice(&name[..copy_len]);
+            let name = crate::input::device_name(input_state(proc, ofd_idx)?.device).as_bytes();
+            let copy_len = (name.len() + 1).min(size).min(buf.len());
+            let name_len = copy_len.min(name.len());
+            buf[..name_len].copy_from_slice(&name[..name_len]);
+            buf[name_len..copy_len].fill(0);
             Ok(())
         }
         n if (EVIOCGBIT_NR_BASE..EVIOCGBIT_NR_BASE + 32).contains(&n) && dir == 2 => {
@@ -2358,7 +3269,7 @@ pub enum DriReleaseEffect {
     DestroyBo(u32),
     RemoveFramebuffer(u32),
     DropMaster,
-    UnbindGl,
+    UnbindGl { owner_pid: i32, session_id: u32 },
 }
 
 pub fn apply_dri_release_effects(pid: i32, effects: Vec<DriReleaseEffect>, host: &mut dyn HostIO) {
@@ -2367,7 +3278,7 @@ pub fn apply_dri_release_effects(pid: i32, effects: Vec<DriReleaseEffect>, host:
             DriReleaseEffect::DestroyBo(bo) => host.gbm_bo_destroy(pid, bo),
             DriReleaseEffect::RemoveFramebuffer(fb) => host.kms_rmfb(pid, fb),
             DriReleaseEffect::DropMaster => host.kms_drop_master(pid),
-            DriReleaseEffect::UnbindGl => host.gl_unbind(pid),
+            DriReleaseEffect::UnbindGl { owner_pid, session_id } => host.gl_unbind(owner_pid, session_id),
         }
     }
 }
@@ -2393,8 +3304,8 @@ pub fn collect_dri_release_effects(
             release_bo(&mut effects, p.bo_id);
         }
         crate::ofd::DriOfdState::RenderNode(dri) => {
-            if dri.gl.is_some() {
-                effects.push(DriReleaseEffect::UnbindGl);
+            if let Some(resources) = dri.gl_resources.into_last() {
+                effects.extend(collect_gl_resource_releases(resources));
             }
             for (_handle, bo_id) in dri.handles.into_iter() {
                 release_bo(&mut effects, bo_id);
@@ -2402,10 +3313,9 @@ pub fn collect_dri_release_effects(
         }
         crate::ofd::DriOfdState::Card { dri, kms } => {
             if let Some(bo_id) = kms.cursor_bo { release_bo(&mut effects, bo_id); }
-            // KMS-side cleanup first: release framebuffers (each
-            // holds an extra bo refcount) and notify the host so it
-            // can drop GL textures / canvases bound to those fbs.
-            for (fb_id, fb) in kms.fbs.into_iter() {
+            // Framebuffers retain one BO reference per shared table entry.
+            for (fb_id, fb) in kms.fbs.into_last().into_iter().flatten() {
+                disable_crtc_scanning(fb_id);
                 release_bo(&mut effects, fb.bo_id);
                 effects.push(DriReleaseEffect::RemoveFramebuffer(fb_id));
             }
@@ -2415,8 +3325,8 @@ pub fn collect_dri_release_effects(
             if kms.holds_master && crate::dri::master::drop_master(pid, ofd_idx) {
                 effects.push(DriReleaseEffect::DropMaster);
             }
-            if dri.gl.is_some() {
-                effects.push(DriReleaseEffect::UnbindGl);
+            if let Some(resources) = dri.gl_resources.into_last() {
+                effects.extend(collect_gl_resource_releases(resources));
             }
             for (_handle, bo_id) in dri.handles.into_iter() {
                 release_bo(&mut effects, bo_id);
@@ -2620,6 +3530,11 @@ fn namespace_lstat_raw(
     if is_procfs_namespace_path(path) {
         return Err(Errno::ENOENT);
     }
+    if crate::sysfs::is_namespace_path(path) {
+        return crate::sysfs::lookup(path)
+            .map(|node| crate::sysfs::stat(&node))
+            .ok_or(Errno::ENOENT);
+    }
     // `/dev/shm` is a higher-priority writable host mount on both Node and
     // browser. Its root metadata must come from that mount rather than the
     // synthetic devfs directory fallback.
@@ -2687,6 +3602,8 @@ fn namespace_readlink_raw(
             return Err(Errno::EINVAL);
         }
         crate::procfs::procfs_readlink(proc, &entry, &mut target)?
+    } else if crate::sysfs::is_namespace_path(path) {
+        sysfs_readlink(path, &mut target)?
     } else if crate::tmpfs::claims_path(path) {
         crate::tmpfs::readlink(path, &mut target)?
     } else if crate::rootfs::claims_path(path) {
@@ -2702,6 +3619,18 @@ fn namespace_readlink_raw(
         return Err(Errno::ENOENT);
     }
     Ok(target)
+}
+
+/// Copy a sysfs symlink's target into `buf` as readlink(2) does: truncated
+/// to the buffer, returning the copied length.
+fn sysfs_readlink(path: &[u8], buf: &mut [u8]) -> Result<usize, Errno> {
+    let node = crate::sysfs::lookup(path).ok_or(Errno::ENOENT)?;
+    if node.kind != crate::sysfs::SysfsKind::Symlink {
+        return Err(Errno::EINVAL);
+    }
+    let len = node.content.len().min(buf.len());
+    buf[..len].copy_from_slice(&node.content[..len]);
+    Ok(len)
 }
 
 fn append_path_component(path: &mut Vec<u8>, component: &[u8]) {
@@ -2833,6 +3762,7 @@ fn resolve_namespace_path_from(
             Ok(stat) => stat,
             Err(Errno::ENOENT) if is_final && options.allow_missing_final => {
                 if is_procfs_namespace_path(&candidate)
+                    || crate::sysfs::is_namespace_path(&candidate)
                     || (is_devfs_namespace_path(&candidate)
                         && !is_delegated_devfs_path(&candidate))
                 {
@@ -3186,6 +4116,7 @@ fn inspect_directory_entry(
 
 fn ensure_host_mutable_namespace_path(path: &[u8]) -> Result<(), Errno> {
     if is_procfs_namespace_path(path)
+        || crate::sysfs::is_namespace_path(path)
         || (is_devfs_namespace_path(path) && !is_delegated_devfs_path(path))
         || synthetic_file_content(path).is_some()
     {
@@ -4023,11 +4954,17 @@ pub fn sys_open(
             dev.host_handle(),
             resolved,
         );
-        install_dri_state_on_open(proc, ofd_idx, dev);
+        install_dri_state_on_open(proc, host, ofd_idx, dev);
         install_input_state_on_open(proc, ofd_idx, dev);
         let fd_flags = oflags_to_fd_flags(oflags);
-        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-        return Ok(fd);
+        return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+            Ok(fd) => Ok(fd),
+            Err(error) => {
+                let cleanup = release_ofd_reference_impl(proc, None, host, ofd_idx);
+                debug_assert!(cleanup.is_ok(), "device open rollback failed");
+                Err(error)
+            }
+        };
     }
 
     // /dev/ptmx — allocate a new PTY master
@@ -4113,6 +5050,9 @@ pub fn sys_open(
     // Procfs (/proc/...) — in-kernel virtual filesystem
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return crate::procfs::procfs_open(proc, &entry, resolved, oflags);
+    }
+    if crate::sysfs::is_namespace_path(&resolved) {
+        return crate::sysfs::open(proc, resolved, oflags);
     }
 
     // Devfs (/dev, /dev/pts, etc.) — in-kernel directory listing
@@ -4557,6 +5497,7 @@ pub fn validate_scm_rights_transfer_metadata(
                 | crate::devfs::DEVFS_DIR_HANDLE
                 | crate::tmpfs::TMPFS_DIR_SENTINEL
                 | crate::rootfs::ROOTFS_DIR_SENTINEL
+                | crate::sysfs::SYSFS_DIR_HANDLE
         )
         .then_some(())
         .ok_or(Errno::EOPNOTSUPP),
@@ -5145,8 +6086,9 @@ fn release_ofd_reference_impl(
                     || host_handle == crate::devfs::DEVFS_DIR_HANDLE
                     || host_handle == crate::tmpfs::TMPFS_DIR_SENTINEL
                     || host_handle == crate::rootfs::ROOTFS_DIR_SENTINEL
+                    || host_handle == crate::sysfs::SYSFS_DIR_HANDLE
                 {
-                    // Procfs/devfs/tmpfs/rootfs directory: nothing to clean up
+                    // Procfs/devfs/tmpfs/rootfs/sysfs directory: nothing to clean up
                 } else if file_type == FileType::CharDevice
                     && crate::exchange::is_exchange_handle(host_handle)
                 {
@@ -5560,6 +6502,7 @@ pub fn cleanup_exiting_thread_with_state(
     let release_result = release_blocking_retry_bindings_for_tid(proc, locks, host, tid);
     let owner = ((proc.pid as u64) << 32) | tid as u64;
     cancel_fifo_open_for_owner(proc, owner);
+    release_gl_current_for_tid(proc, host, tid, None);
     let thread = proc.remove_thread(tid).ok_or(Errno::ESRCH)?;
     release_result?;
     Ok(thread)
@@ -5807,7 +6750,7 @@ pub fn sys_read(
             if shut_rd {
                 return Ok(0);
             }
-            if sock_type == SocketType::Dgram {
+            if sock_type != SocketType::Stream {
                 return sys_recv(proc, host, fd, buf, 0);
             }
             match domain {
@@ -5849,6 +6792,7 @@ pub fn sys_read(
                         return Err(Errno::EAGAIN);
                     }
                 }
+                SocketDomain::Netlink => Err(Errno::EOPNOTSUPP),
             }
         }
         FileType::TimerFd => {
@@ -6367,7 +7311,7 @@ pub fn sys_write(
                 proc.signals.raise(wasm_posix_shared::signal::SIGPIPE);
                 return Err(Errno::EPIPE);
             }
-            if sock_type == SocketType::Dgram {
+            if sock_type != SocketType::Stream {
                 return sys_send(proc, host, fd, buf, 0);
             }
             match domain {
@@ -6421,6 +7365,7 @@ pub fn sys_write(
                         return Err(Errno::EAGAIN);
                     }
                 }
+                SocketDomain::Netlink => Err(Errno::EOPNOTSUPP),
             }
         }
         FileType::EventFd => {
@@ -6776,6 +7721,7 @@ pub fn sys_lseek(
             || backing_handle == crate::devfs::DEVFS_DIR_HANDLE
             || backing_handle == crate::tmpfs::TMPFS_DIR_SENTINEL
             || backing_handle == crate::rootfs::ROOTFS_DIR_SENTINEL
+            || backing_handle == crate::sysfs::SYSFS_DIR_HANDLE
         {
             let sentinel = backing_handle;
             let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
@@ -8110,6 +9056,29 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
                 proc.effective_gid(),
             ));
         }
+        // A PRIME fd is a dma-buf: Linux backs it with an anonymous inode,
+        // which has no file type bits, and reports the buffer size.
+        if let Some(prime) = ofd.prime_bo() {
+            let size = crate::dri::with_registry(|r| r.get(prime.bo_id).map(|b| b.size as u64))
+                .ok_or(Errno::EBADF)?;
+            return Ok(WasmStat {
+                st_dev: 0,
+                st_ino: 0x50524D00 + prime.bo_id as u64, // "PRM\0" + bo id
+                st_mode: 0o600,
+                st_nlink: 1,
+                st_uid: proc.effective_uid(),
+                st_gid: proc.effective_gid(),
+                st_size: size,
+                st_atime_sec: 0,
+                st_atime_nsec: 0,
+                st_mtime_sec: 0,
+                st_mtime_nsec: 0,
+                st_ctime_sec: 0,
+                st_ctime_nsec: 0,
+                _pad: 0,
+                st_rdev: 0,
+            });
+        }
         // Standard streams (0=stdin, 1=stdout, 2=stderr) — handle in-kernel
         // so browser hosts without real file descriptors still work.
         if ofd.host_handle >= 0 && ofd.host_handle <= 2 {
@@ -8168,6 +9137,12 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
         })
     } else if crate::descriptor_backing::is_synthetic_regular_handle(ofd.host_handle) {
         synthetic_file_stat(&ofd.path, proc.effective_uid(), proc.effective_gid())
+            .ok_or(Errno::EBADF)
+    } else if matches!(ofd.file_id, Some(FileId::Kernel { kind: KernelFileKind::SysFsRegular, .. }))
+        || ofd.host_handle == crate::sysfs::SYSFS_DIR_HANDLE
+    {
+        crate::sysfs::lookup(&ofd.path)
+            .map(|node| crate::sysfs::stat(&node))
             .ok_or(Errno::EBADF)
     } else if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) {
         crate::tmpfs::fstat(ofd.host_handle)
@@ -8839,6 +9814,9 @@ pub fn sys_stat(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Resul
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return procfs_entry_stat(proc, host, &entry, true);
     }
+    if let Some(node) = crate::sysfs::lookup(&resolved) {
+        return Ok(crate::sysfs::stat(&node));
+    }
     if !is_delegated_devfs_path(&resolved) {
         if let Some(st) = crate::devfs::match_devfs_stat(
             &resolved,
@@ -8884,6 +9862,9 @@ pub fn sys_lstat(
     }
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return procfs_entry_stat(proc, host, &entry, false);
+    }
+    if let Some(node) = crate::sysfs::lookup(&resolved) {
+        return Ok(crate::sysfs::stat(&node));
     }
     if !is_delegated_devfs_path(&resolved) {
         if let Some(st) = crate::devfs::match_devfs_stat(
@@ -9449,6 +10430,9 @@ pub fn sys_readlink(
         // Not a symlink — EINVAL per POSIX
         return Err(Errno::EINVAL);
     }
+    if crate::sysfs::is_namespace_path(&resolved) {
+        return sysfs_readlink(&resolved, buf);
+    }
 
     if let Some(target_fd) = match_dev_fd(&resolved) {
         let target = dev_fd_link_target(proc, &resolved, target_fd)?;
@@ -9642,6 +10626,7 @@ pub fn sys_access(
     )?;
     if amode & W_OK != 0
         && (is_procfs_namespace_path(&resolved.path)
+            || crate::sysfs::is_namespace_path(&resolved.path)
             || synthetic_file_content(&resolved.path).is_some())
     {
         return Err(Errno::EACCES);
@@ -9710,9 +10695,10 @@ pub fn sys_opendir(proc: &mut Process, host: &mut dyn HostIO, path: &[u8]) -> Re
     }
     check_access(proc, &st, R_OK | X_OK)?;
     if is_procfs_namespace_path(&resolved.path)
+        || crate::sysfs::is_namespace_path(&resolved.path)
         || (is_devfs_namespace_path(&resolved.path) && !is_delegated_devfs_path(&resolved.path))
     {
-        // Kernel-owned procfs/devfs directory iteration is implemented by
+        // Kernel-owned procfs/devfs/sysfs directory iteration is implemented by
         // open(O_DIRECTORY)+getdents64. This legacy directory-stream API has
         // no synthetic-stream sentinel, so fail truthfully instead of routing
         // the name into a hidden host directory.
@@ -10007,6 +10993,29 @@ pub fn sys_getdents64(
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
         ofd.dir_host_handle
     };
+
+    if dir_handle == crate::sysfs::SYSFS_DIR_HANDLE
+        || dir_handle == -2 && crate::sysfs::is_namespace_path(&path)
+    {
+        if dir_handle == -2 {
+            return Ok(0);
+        }
+        let entry_offset = proc
+            .ofd_table
+            .get(ofd_idx)
+            .ok_or(Errno::EBADF)?
+            .dir_entry_offset;
+        let (bytes, new_offset, exhausted) =
+            crate::sysfs::getdents64(&path, buf, entry_offset)?;
+        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
+            ofd.dir_entry_offset = new_offset;
+            ofd.set_directory_offset(new_offset);
+            if exhausted {
+                ofd.dir_host_handle = -2;
+            }
+        }
+        return Ok(bytes);
+    }
 
     // Devfs directories: generate entries in-kernel
     if dir_handle == crate::devfs::DEVFS_DIR_HANDLE
@@ -11624,6 +12633,39 @@ pub fn sys_mmap(
             return Ok(addr_out);
         }
 
+        // A PRIME fd maps its buffer from offset 0, as a dma-buf does on
+        // Linux.
+        if let Some(crate::ofd::DriOfdState::PrimeBo(prime)) = ofd.dri_state.as_deref() {
+            let bo_id = prime.bo_id;
+            if offset != 0 || len == 0 {
+                return Err(Errno::EINVAL);
+            }
+            let (bo_size, bo_tier) =
+                crate::dri::with_registry(|r| r.get(bo_id).map(|b| (b.size, b.tier)))
+                    .ok_or(Errno::EINVAL)?;
+            if bo_tier == crate::dri::BoTier::GpuTexture {
+                return Err(Errno::EINVAL);
+            }
+            let aligned_bo_size = (bo_size as usize)
+                .checked_add(0xFFFF)
+                .ok_or(Errno::EINVAL)?
+                & !0xFFFF;
+            if len > aligned_bo_size {
+                return Err(Errno::EINVAL);
+            }
+            let addr_out = proc.memory.mmap_anonymous(addr, len, prot, flags | MAP_ANONYMOUS);
+            if addr_out == MAP_FAILED {
+                return Err(Errno::ENOMEM);
+            }
+            let bind_len = len.min(bo_size as usize);
+            if host.gbm_bo_bind(proc.pid as i32, bo_id, addr_out, bind_len) < 0 {
+                proc.memory.munmap(addr_out, len);
+                return Err(Errno::ENOMEM);
+            }
+            proc.dri_bindings.push(crate::process::DriBoBinding { addr: addr_out, len, bo_id });
+            return Ok(addr_out);
+        }
+
         // /dev/dri/{renderD128,card0}: the caller obtained `offset` from
         // `DRM_IOCTL_MODE_MAP_DUMB`, which encodes the target bo id as
         // `(bo_id as u64) << 12`. Decode, validate the bo is live and
@@ -11649,7 +12691,7 @@ pub fn sys_mmap(
                 && ofd
                     .dri()
                     .and_then(|d| d.gl.as_ref())
-                    .map(|g| g.initialized && g.cmdbuf.is_none())
+                    .map(|g| g.owner_pid == proc.pid as i32 && g.initialized && g.role == wasm_posix_shared::gl::SESSION_OBJECTS && g.cmdbuf.is_none())
                     .unwrap_or(false);
             if needs_cmdbuf {
                 if len != wasm_posix_shared::gl::CMDBUF_LEN {
@@ -11679,7 +12721,14 @@ pub fn sys_mmap(
                         }
                     }
                 }
-                host.gl_bind(proc.pid as i32, addr_out, len);
+                let ofd_idx = proc.fd_table.get(fd)?.ofd_ref.0;
+                if let Some(owner) = dri_state_mut(proc, ofd_idx)?
+                    .gl_resources.borrow_mut().owner.as_mut()
+                {
+                    owner.native_live = true;
+                    owner.cmdbuf_range = Some((addr_out, len));
+                }
+                host.gl_bind(proc.pid as i32, addr_out, len, gl_session_id(proc, ofd_idx)?);
                 return Ok(addr_out);
             }
             if (offset as u64) & 0xFFF != 0 {
@@ -11882,6 +12931,24 @@ pub fn find_listener_fd_by_accept_wake(proc: &Process, wake_idx: u32) -> Option<
     })
 }
 
+fn is_netlink_socket(proc: &Process, fd: i32) -> bool {
+    let Some(ofd) = proc
+        .fd_table
+        .get(fd)
+        .ok()
+        .and_then(|entry| proc.ofd_table.get(entry.ofd_ref.0))
+    else {
+        return false;
+    };
+    if ofd.file_type != FileType::Socket {
+        return false;
+    }
+    let sock_idx = (-(ofd.host_handle + 1)) as usize;
+    proc.sockets
+        .get(sock_idx)
+        .is_some_and(|sock| sock.domain == crate::socket::SocketDomain::Netlink)
+}
+
 /// Create a socket, returning the new fd.
 pub fn sys_socket(
     proc: &mut Process,
@@ -11897,15 +12964,22 @@ pub fn sys_socket(
         AF_UNIX => SocketDomain::Unix,
         AF_INET => SocketDomain::Inet,
         AF_INET6 => SocketDomain::Inet6,
+        AF_NETLINK => SocketDomain::Netlink,
         _ => return Err(Errno::EAFNOSUPPORT),
     };
 
     let base_type = sock_type & !(SOCK_NONBLOCK | SOCK_CLOEXEC);
-    let stype = match base_type {
-        SOCK_STREAM => SocketType::Stream,
-        SOCK_DGRAM => SocketType::Dgram,
+    let stype = match (dom, base_type) {
+        (SocketDomain::Netlink, SOCK_DGRAM) => SocketType::Dgram,
+        (SocketDomain::Netlink, SOCK_RAW) => SocketType::Raw,
+        (SocketDomain::Netlink, _) => return Err(Errno::ESOCKTNOSUPPORT),
+        (_, SOCK_STREAM) => SocketType::Stream,
+        (_, SOCK_DGRAM) => SocketType::Dgram,
         _ => return Err(Errno::EPROTOTYPE),
     };
+    if dom == SocketDomain::Netlink && protocol != crate::netlink::NETLINK_KOBJECT_UEVENT {
+        return Err(Errno::EPROTONOSUPPORT);
+    }
 
     let sock = SocketInfo::new(dom, stype, protocol);
     let sock_idx = proc.sockets.alloc(sock);
@@ -13091,6 +14165,7 @@ fn dgram_matches_connected_peer(
         SocketDomain::Unix => sock
             .peer_idx
             .is_some_and(|peer| unix_dgram_matches_peer(owner_pid, peer, datagram)),
+        SocketDomain::Netlink => false,
     }
 }
 
@@ -13488,6 +14563,11 @@ pub fn sys_getsockname(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
                 Ok(path_offset)
             }
         }
+        SocketDomain::Netlink => Ok(crate::netlink::write_sockaddr(
+            buf,
+            sock.netlink_port,
+            sock.netlink_groups,
+        )),
     }
 }
 
@@ -13517,6 +14597,7 @@ pub fn sys_getpeername(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
                 return Err(Errno::ENOTCONN);
             }
         }
+        SocketDomain::Netlink => {}
     }
     match sock.domain {
         SocketDomain::Inet => Ok(write_sockaddr_in(buf, sock.peer_addr, sock.peer_port)),
@@ -13528,6 +14609,7 @@ pub fn sys_getpeername(proc: &Process, fd: i32, buf: &mut [u8]) -> Result<usize,
                     as usize,
             )
         }
+        SocketDomain::Netlink => Ok(crate::netlink::write_sockaddr(buf, 0, 0)),
     }
 }
 
@@ -13543,6 +14625,9 @@ pub fn sys_shutdown(
 ) -> Result<(), Errno> {
     use wasm_posix_shared::socket::*;
 
+    if is_netlink_socket(proc, fd) {
+        return Err(Errno::EOPNOTSUPP);
+    }
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
 
@@ -13687,6 +14772,9 @@ pub fn sys_send(
     use crate::socket::{SocketDomain, SocketState, SocketType};
     use wasm_posix_shared::socket::{MSG_NOSIGNAL, MSG_OOB};
 
+    if is_netlink_socket(proc, fd) {
+        return Err(Errno::EOPNOTSUPP);
+    }
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
@@ -13723,6 +14811,7 @@ pub fn sys_send(
                 return Err(Errno::ECONNREFUSED);
             }
             SocketDomain::Unix => {}
+            SocketDomain::Netlink => return Err(Errno::EOPNOTSUPP),
         }
     }
     if sock.state != SocketState::Connected {
@@ -13801,6 +14890,7 @@ pub fn sys_send(
             }
             result
         }
+        SocketDomain::Netlink => Err(Errno::EOPNOTSUPP),
     }
 }
 
@@ -13819,6 +14909,9 @@ pub fn sys_recv(
     use wasm_posix_shared::socket::{MSG_OOB, MSG_PEEK};
     const MSG_WAITALL: u32 = 0x100;
 
+    if is_netlink_socket(proc, fd) {
+        return Err(Errno::EAGAIN);
+    }
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
@@ -13913,11 +15006,13 @@ pub fn sys_getsockopt(proc: &mut Process, fd: i32, level: u32, optname: u32) -> 
             SO_TYPE => Ok(match sock.sock_type {
                 SocketType::Stream => SOCK_STREAM,
                 SocketType::Dgram => SOCK_DGRAM,
+                SocketType::Raw => SOCK_RAW,
             }),
             SO_DOMAIN => Ok(match sock.domain {
                 SocketDomain::Unix => AF_UNIX,
                 SocketDomain::Inet => AF_INET,
                 SocketDomain::Inet6 => AF_INET6,
+                SocketDomain::Netlink => AF_NETLINK,
             }),
             // Linux semantics: return cached errno and clear it.
             SO_ERROR => {
@@ -14657,6 +15752,15 @@ pub fn sys_bind(
             sock.state = SocketState::Bound;
             Ok(())
         }
+        SocketDomain::Netlink => {
+            let (port, groups) = crate::netlink::parse_sockaddr(addr)?;
+            let pid = proc.pid;
+            let sock = proc.sockets.get_mut(sock_idx).ok_or(Errno::EBADF)?;
+            sock.netlink_port = if port == 0 { pid } else { port };
+            sock.netlink_groups = groups;
+            sock.state = SocketState::Bound;
+            Ok(())
+        }
     }
 }
 
@@ -14722,6 +15826,7 @@ fn sys_listen_impl(
                 sys_bind(proc, host, fd, &wildcard)?;
             }
             SocketDomain::Unix => return Err(Errno::EINVAL),
+            SocketDomain::Netlink => return Err(Errno::EOPNOTSUPP),
         }
     } else if state != SocketState::Bound && state != SocketState::Listening {
         return Err(Errno::EINVAL);
@@ -14783,6 +15888,7 @@ fn sys_listen_impl(
             }
         }
         SocketDomain::Unix => {}
+        SocketDomain::Netlink => {}
     }
     Ok(())
 }
@@ -14871,6 +15977,7 @@ pub fn sys_accept(proc: &mut Process, _host: &mut dyn HostIO, fd: i32) -> Result
                 SocketDomain::Unix => {
                     accepted.bind_path = bind_path;
                 }
+                SocketDomain::Netlink => {}
             }
             accepted.peer_port = pc.peer_port;
             accepted.peer_cred = pc.peer_cred;
@@ -15236,7 +16343,7 @@ fn sys_connect_impl(
                                 SocketDomain::Inet6 => {
                                     is_unspecified_addr6(s.bind_addr6) && !ipv6_v6only(s)
                                 }
-                                SocketDomain::Unix => false,
+                                SocketDomain::Unix | SocketDomain::Netlink => false,
                             }
                         {
                             listener_idx = Some(i);
@@ -15543,6 +16650,7 @@ fn sys_connect_impl(
 
             Ok(())
         }
+        SocketDomain::Netlink => Err(Errno::EOPNOTSUPP),
     }
 }
 
@@ -15617,6 +16725,9 @@ pub fn sys_sendto(
 ) -> Result<usize, Errno> {
     use crate::socket::{SocketDomain, SocketState, SocketType};
 
+    if is_netlink_socket(proc, fd) {
+        return Err(Errno::EOPNOTSUPP);
+    }
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
@@ -15649,6 +16760,7 @@ pub fn sys_sendto(
             let peer_idx = resolve_unix_datagram_destination(proc, host, addr)?;
             unix_dgram_send_to_sock(proc, sock_idx, peer_idx, buf, Vec::new())
         }
+        SocketDomain::Netlink => Err(Errno::EOPNOTSUPP),
     };
     finish_datagram_send(proc, flags, result)
 }
@@ -15797,6 +16909,7 @@ fn recv_datagram_message(
             );
             wasm_posix_shared::kernel_scratch_wire::SOCKADDR_UNIX_PATH_OFFSET_BYTES as usize
         }
+        SocketDomain::Netlink => crate::netlink::write_sockaddr(addr_buf, 0, 0),
     };
 
     Ok(MessageReceive {
@@ -15820,6 +16933,9 @@ pub fn sys_recvfrom(
 ) -> Result<(usize, usize), Errno> {
     use crate::socket::SocketType;
 
+    if is_netlink_socket(proc, fd) {
+        return Err(Errno::EAGAIN);
+    }
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
@@ -16224,9 +17340,16 @@ fn poll_check_depth(
                             revents |= POLLIN;
                         }
                     }
+                    if sock.domain == crate::socket::SocketDomain::Netlink
+                        && pollfd.events & POLLOUT != 0
+                    {
+                        revents |= POLLOUT;
+                    }
                     // DGRAM socket readiness is datagram-queue based for reads
                     // and generally writable unless the write side is shut down.
-                    if sock.sock_type == SocketType::Dgram {
+                    if sock.sock_type == SocketType::Dgram
+                        && sock.domain != crate::socket::SocketDomain::Netlink
+                    {
                         if sock.connect_error != 0 {
                             revents |= POLLERR;
                         }
@@ -16585,11 +17708,17 @@ pub fn sys_openat(
             dev.host_handle(),
             resolved,
         );
-        install_dri_state_on_open(proc, ofd_idx, dev);
+        install_dri_state_on_open(proc, host, ofd_idx, dev);
         install_input_state_on_open(proc, ofd_idx, dev);
         let fd_flags = oflags_to_fd_flags(oflags);
-        let fd = proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags)?;
-        return Ok(fd);
+        return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
+            Ok(fd) => Ok(fd),
+            Err(error) => {
+                let cleanup = release_ofd_reference_impl(proc, None, host, ofd_idx);
+                debug_assert!(cleanup.is_ok(), "device open rollback failed");
+                Err(error)
+            }
+        };
     }
 
     // /dev/ptmx — allocate a new PTY master
@@ -16673,6 +17802,9 @@ pub fn sys_openat(
     // Procfs (/proc/...) — in-kernel virtual filesystem
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         return crate::procfs::procfs_open(proc, &entry, resolved, oflags);
+    }
+    if crate::sysfs::is_namespace_path(&resolved) {
+        return crate::sysfs::open(proc, resolved, oflags);
     }
 
     // Devfs (/dev, /dev/pts, etc.) — in-kernel directory listing
@@ -16852,6 +17984,9 @@ pub fn sys_fstatat(
     if let Some(entry) = crate::procfs::match_procfs(&resolved, proc.pid) {
         let follow = flags & AT_SYMLINK_NOFOLLOW == 0;
         return procfs_entry_stat(proc, host, &entry, follow);
+    }
+    if let Some(node) = crate::sysfs::lookup(&resolved) {
+        return Ok(crate::sysfs::stat(&node));
     }
     if !is_delegated_devfs_path(&resolved) {
         if let Some(st) = crate::devfs::match_devfs_stat(
@@ -19578,6 +20713,7 @@ pub fn sys_pathconf(
         return terminal_pathconf_value(name);
     }
     if is_procfs_namespace_path(&resolved)
+        || crate::sysfs::is_namespace_path(&resolved)
         || (is_devfs_namespace_path(&resolved) && !is_delegated_devfs_path(&resolved))
     {
         return virtual_filesystem_pathconf_value(name);
@@ -19663,6 +20799,7 @@ pub fn sys_fpathconf(
             if is_terminal {
                 terminal_pathconf_value(name)
             } else if is_procfs_namespace_path(&path)
+                || crate::sysfs::is_namespace_path(&path)
                 || (is_devfs_namespace_path(&path) && !is_delegated_devfs_path(&path))
             {
                 virtual_filesystem_pathconf_value(name)
@@ -20242,6 +21379,7 @@ pub fn sys_faccessat(
     let resolved = resolve_at_path(proc, host, dirfd, path, options)?;
     if amode & W_OK != 0
         && (is_procfs_namespace_path(&resolved.path)
+            || crate::sysfs::is_namespace_path(&resolved.path)
             || synthetic_file_content(&resolved.path).is_some())
     {
         return Err(Errno::EACCES);
@@ -20449,6 +21587,9 @@ pub fn sys_readlinkat(
             return crate::procfs::procfs_readlink(proc, &entry, buf);
         }
         return Err(Errno::EINVAL);
+    }
+    if crate::sysfs::is_namespace_path(&resolved) {
+        return sysfs_readlink(&resolved, buf);
     }
 
     if let Some(target_fd) = match_dev_fd(&resolved) {
@@ -20779,6 +21920,24 @@ fn procfs_statfs() -> WasmStatfs {
     }
 }
 
+fn sysfs_statfs() -> WasmStatfs {
+    WasmStatfs {
+        f_type: 0x6265_6572, // SYSFS_MAGIC
+        f_bsize: 4096,
+        f_blocks: 0,
+        f_bfree: 0,
+        f_bavail: 0,
+        f_files: 0,
+        f_ffree: 0,
+        f_fsid: 0,
+        f_namelen: 255,
+        f_frsize: 4096,
+        f_flags: wasm_posix_shared::statfs_flags::ST_RDONLY
+            | wasm_posix_shared::statfs_flags::ST_NOSUID,
+        _pad: 0,
+    }
+}
+
 fn devfs_statfs() -> WasmStatfs {
     WasmStatfs {
         f_type: 0x1373, // DEVFS_SUPER_MAGIC
@@ -20827,6 +21986,9 @@ fn virtual_statfs_for_path(resolved: &[u8], pid: u32) -> Option<WasmStatfs> {
         || resolved.starts_with(b"/proc/")
     {
         return Some(procfs_statfs());
+    }
+    if crate::sysfs::is_namespace_path(resolved) {
+        return Some(sysfs_statfs());
     }
     if (!is_delegated_devfs_path(resolved) && crate::devfs::match_devfs_dir(resolved).is_some())
         || match_virtual_device(resolved).is_some()
@@ -21028,6 +22190,9 @@ pub fn sys_sendmsg(
     use crate::socket::{SocketDomain, SocketState, SocketType};
     use wasm_posix_shared::socket::{MSG_NOSIGNAL, MSG_OOB};
 
+    if is_netlink_socket(proc, fd) {
+        return Err(Errno::EOPNOTSUPP);
+    }
     if ancillary_fds.is_empty() {
         return if let Some(addr) = addr {
             sys_sendto(proc, host, fd, iov_base, flags, addr)
@@ -21126,6 +22291,7 @@ pub fn sys_sendmsg(
                 Ok(written)
             }
         }
+        SocketType::Raw => Err(Errno::EOPNOTSUPP),
     }
 }
 
@@ -21142,6 +22308,9 @@ pub fn sys_recvmsg(
     use wasm_posix_shared::socket::{MSG_CMSG_CLOEXEC, MSG_OOB, MSG_PEEK};
     const MSG_WAITALL: u32 = 0x100;
 
+    if is_netlink_socket(proc, fd) {
+        return Err(Errno::EAGAIN);
+    }
     let ofd_idx = resolve_io_ofd(proc, fd)?;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     if ofd.file_type != FileType::Socket {
@@ -22754,6 +23923,12 @@ mod tests {
         gbm_bo_unbind_calls: Vec<(i32, u32, usize, usize)>,
         /// Recorded pid for every `gl_unbind` call.
         gl_unbind_calls: Vec<i32>,
+        gl_unbind_sessions: Vec<u32>,
+        gl_submit_sessions: Vec<u32>,
+        gl_query_sessions: Vec<u32>,
+        gl_create_context_sessions: Vec<u32>,
+        gl_create_context_attrs: Vec<Vec<u8>>,
+        gl_bind_sessions: Vec<u32>,
         proc_write_calls: Vec<(i32, u64, Vec<u8>)>,
         cursor_supported: bool,
         /// Simulated guest linear memory for `proc_read_bytes` /
@@ -22767,6 +23942,11 @@ mod tests {
         /// Override for `gl_submit`'s return value (0 = success, negative
         /// = errno). Defaults to 0.
         gl_submit_rc: i32,
+        gl_create_context_rc: i32,
+        gl_make_current_rc: i32,
+        gl_update_surface_rc: i32,
+        gl_update_surface_calls: Vec<(u32, Vec<u8>, u32)>,
+        gl_make_current_calls: Vec<(u32, u32, u32, u32)>,
         net_connect_result: Result<(), Errno>,
         net_connect_status_result: Result<(), Errno>,
         net_shutdown_calls: Vec<(i32,u32)>,
@@ -22836,10 +24016,13 @@ mod tests {
         gbm_gpu_bo_create_rc: i32,
         /// Recorded `(pid, bo_id)` for every `gbm_bo_destroy` call.
         gbm_bo_destroy_calls: Vec<(i32, u32)>,
+        gl_surface_release_events: Vec<(u8,u32)>,
         /// Recorded `(pid, surface_id, attrs_bytes)` for every
         /// `gl_create_surface` call — lets tests assert the kernel handed
         /// the host a resolved target bo_id in `attrs.reserved[0]`.
         gl_create_surface_calls: Vec<(i32, u32, Vec<u8>)>,
+        gl_create_surface_rc: i32,
+        gl_create_surface_dimensions: Option<(u32,u32)>,
     }
 
     impl MockHostIO {
@@ -22906,6 +24089,12 @@ mod tests {
                 gbm_bo_bind_calls: Vec::new(),
                 gbm_bo_unbind_calls: Vec::new(),
                 gl_unbind_calls: Vec::new(),
+                gl_unbind_sessions: Vec::new(),
+                gl_submit_sessions: Vec::new(),
+                gl_query_sessions: Vec::new(),
+                gl_create_context_sessions: Vec::new(),
+                gl_create_context_attrs: Vec::new(),
+                gl_bind_sessions: Vec::new(),
                 proc_write_calls: Vec::new(),
                 cursor_supported: false,
                 // 64 KiB — one wasm page, enough for every address these
@@ -22914,6 +24103,11 @@ mod tests {
                 proc_memory: alloc::vec![0u8; 65536],
                 gbm_bo_bind_rc: 0,
                 gl_submit_rc: 0,
+                gl_create_context_rc: 0,
+                gl_make_current_rc: 0,
+                gl_update_surface_rc: 0,
+                gl_update_surface_calls: Vec::new(),
+                gl_make_current_calls: Vec::new(),
                 net_connect_result: Err(Errno::ECONNREFUSED),
                 net_connect_status_result: Err(Errno::ECONNREFUSED),
                 net_shutdown_calls: Vec::new(),
@@ -22964,7 +24158,10 @@ mod tests {
                 gbm_gpu_bo_create_calls: Vec::new(),
                 gbm_gpu_bo_create_rc: 0,
                 gbm_bo_destroy_calls: Vec::new(),
+                gl_surface_release_events: Vec::new(),
                 gl_create_surface_calls: Vec::new(),
+                gl_create_surface_rc: 0,
+                gl_create_surface_dimensions: None,
             }
         }
 
@@ -23762,6 +24959,7 @@ mod tests {
         }
         fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {
             self.gbm_bo_destroy_calls.push((pid, bo_id));
+            self.gl_surface_release_events.push((2,bo_id));
         }
         fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
             self.gbm_bo_bind_calls.push((pid, bo_id, addr, len));
@@ -23770,11 +24968,33 @@ mod tests {
         fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {
             self.gbm_bo_unbind_calls.push((pid, bo_id, addr, len));
         }
-        fn gl_unbind(&mut self, pid: i32) {
-            self.gl_unbind_calls.push(pid);
+        fn gl_bind(&mut self, _pid: i32, _addr: usize, _len: usize, session_id: u32) {
+            self.gl_bind_sessions.push(session_id);
         }
-        fn gl_submit(&mut self, _pid: i32, _offset: usize, _length: usize) -> i32 {
+        fn gl_unbind(&mut self, pid: i32, session_id: u32) {
+            self.gl_unbind_calls.push(pid);
+            self.gl_unbind_sessions.push(session_id);
+            self.gl_surface_release_events.push((1,session_id));
+        }
+        fn gl_submit(&mut self, _pid: i32, _offset: usize, _length: usize, session_id: u32) -> i32 {
+            self.gl_submit_sessions.push(session_id);
             self.gl_submit_rc
+        }
+        fn gl_query(&mut self, _pid: i32, _op: u32, _input: &[u8], out: &mut [u8], session_id: u32) -> i32 {
+            self.gl_query_sessions.push(session_id); out.fill(0); out.len() as i32
+        }
+        fn gl_update_surface(&mut self, _pid: i32, surface: u32, attrs: &[u8], session: u32) -> i32 {
+            self.gl_update_surface_calls.push((surface, attrs.to_vec(), session));
+            self.gl_update_surface_rc
+        }
+        fn gl_make_current(&mut self, _pid: i32, ctx: u32, draw: u32, read: u32, session: u32) -> i32 {
+            self.gl_make_current_calls.push((ctx, draw, read, session));
+            if ctx == 0 { 0 } else { self.gl_make_current_rc }
+        }
+        fn gl_create_context(&mut self, _pid: i32, _ctx_id: u32, attrs: &[u8], session_id: u32) -> i32 {
+            self.gl_create_context_sessions.push(session_id);
+            self.gl_create_context_attrs.push(attrs.to_vec());
+            self.gl_create_context_rc
         }
         fn proc_write_bytes(&mut self, pid: i32, ptr: u64, bytes: &[u8]) -> i32 {
             let Some(offset) = Self::proc_range(&self.proc_memory, ptr, bytes.len()) else {
@@ -23807,9 +25027,20 @@ mod tests {
                 .push((pid, ctx_id, bo_id, gl_target));
             self.gl_bind_foreign_texture_rc
         }
-        fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &[u8]) {
-            self.gl_create_surface_calls
-                .push((pid, surface_id, attrs.to_vec()));
+        fn gl_destroy_surface(&mut self, _pid: i32, surface: u32, _session: u32) {
+            self.gl_surface_release_events.push((3,surface));
+        }
+        fn gl_create_surface(&mut self, pid: i32, surface_id: u32, attrs: &mut [u8], _session_id: u32) -> i32 {
+            self.gl_create_surface_calls.push((pid, surface_id, attrs.to_vec()));
+            if self.gl_create_surface_rc == 0 {
+                for offset in [4,8] {
+                    if attrs[offset..offset+4] == [0;4] { attrs[offset..offset+4].copy_from_slice(&16u32.to_le_bytes()); }
+                }
+            }
+            if let Some((w,h)) = self.gl_create_surface_dimensions {
+                attrs[4..8].copy_from_slice(&w.to_le_bytes()); attrs[8..12].copy_from_slice(&h.to_le_bytes());
+            }
+            self.gl_create_surface_rc
         }
     
         mock_hostio_at_over_paths!();
@@ -31898,6 +33129,7 @@ mod tests {
 
     #[test]
     fn test_virtual_character_devices_reject_terminal_operations() {
+        let _g_master = crate::dri::master::lock_for_test();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let devices: &[(&[u8], i64)] = &[
@@ -48300,6 +49532,7 @@ impl HostIO for RelSymlinkMock {
 
     #[test]
     fn dri_card_is_multi_process_no_busy() {
+        let _g_master = crate::dri::master::lock_for_test();
         let mut proc1 = Process::new(201);
         let mut proc2 = Process::new(202);
         let mut host = MockHostIO::new();
@@ -48555,6 +49788,7 @@ impl HostIO for RelSymlinkMock {
             WpkDrmModeCardRes, WpkDrmModeGetConnector, DRM_IOCTL_MODE_GETCONNECTOR,
             DRM_IOCTL_MODE_GETRESOURCES,
         };
+        let _g_master = crate::dri::master::lock_for_test();
 
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -48589,7 +49823,7 @@ impl HostIO for RelSymlinkMock {
         let connector = WpkDrmModeGetConnector {
             modes_ptr: 0x0000_0001_0000_5678,
             count_modes: u32::MAX,
-            connector_id: 1,
+            connector_id: crate::dri::kms::CONNECTOR_ID,
             ..Default::default()
         };
         let mut connector_buf = [0u8; core::mem::size_of::<WpkDrmModeGetConnector>()];
@@ -48623,7 +49857,7 @@ impl HostIO for RelSymlinkMock {
             unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req); }
             sys_ioctl(proc, host, fd, DRM_IOCTL_MODE_GETCONNECTOR, buf)
         };
-        let request = WpkDrmModeGetConnector { connector_id: 1, ..Default::default() };
+        let request = WpkDrmModeGetConnector { connector_id: crate::dri::kms::CONNECTOR_ID, ..Default::default() };
         query(&mut proc, &mut host, &mut buf, request).unwrap();
         let response: WpkDrmModeGetConnector = unsafe {
             core::ptr::read_unaligned(buf.as_ptr() as *const _)
@@ -48695,15 +49929,15 @@ impl HostIO for RelSymlinkMock {
             value: 0,
         };
         unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmGetCap, cap_in) };
-        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_GET_CAP, &mut buf).unwrap();
-        let cap_out: WpkDrmGetCap =
-            unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmGetCap) };
-        // Unknown capabilities return value=0, errno=0 — matches Linux.
-        assert_eq!(cap_out.value, 0);
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_GET_CAP, &mut buf),
+            Err(Errno::EINVAL),
+        );
     }
 
     #[test]
     fn dri_ioctl_unknown_returns_enosys() {
+        let _g_master = crate::dri::master::lock_for_test();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
@@ -48714,6 +49948,495 @@ impl HostIO for RelSymlinkMock {
         let mut buf = [0u8; 64];
         let err = sys_ioctl(&mut proc, &mut host, fd, 0xdead_beef, &mut buf).unwrap_err();
         assert_eq!(err, Errno::ENOSYS);
+    }
+
+    fn assert_kms_output_fault<T: Copy>(
+        proc: &mut Process, host: &mut MockHostIO, fd: i32, request: u32, value: T,
+    ) {
+        let mut argument = alloc::vec![0; core::mem::size_of::<T>()];
+        unsafe { core::ptr::write_unaligned(argument.as_mut_ptr() as *mut T, value); }
+        let before_argument = argument.clone();
+        host.proc_memory.fill(0xa5);
+        let before_memory = host.proc_memory.clone();
+        host.proc_write_calls.clear();
+        assert_eq!(sys_ioctl(proc, host, fd, request, &mut argument), Err(Errno::EFAULT));
+        assert_eq!(argument, before_argument, "top-level request changed on EFAULT");
+        assert!(host.proc_write_calls.is_empty(), "nested writes before complete validation");
+        assert_eq!(host.proc_memory, before_memory, "nested output changed on EFAULT");
+    }
+
+    #[test]
+    fn kms_property_outputs_are_probed_before_any_write() {
+        use wasm_posix_shared::dri::*;
+        use crate::dri::kms;
+        let _g_master = crate::dri::master::lock_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        for invalid in [0, u64::MAX, 65535] {
+            for invalid_ids in [false, true] {
+                assert_kms_output_fault(&mut proc, &mut host, fd,
+                    DRM_IOCTL_MODE_OBJ_GETPROPERTIES, WpkDrmModeObjGetProperties {
+                        props_ptr: if invalid_ids { invalid } else { 0x1000 },
+                        prop_values_ptr: if invalid_ids { 0x2000 } else { invalid },
+                        count_props: 4, obj_id: kms::CONNECTOR_ID,
+                        obj_type: DRM_MODE_OBJECT_CONNECTOR, pad: 0,
+                    });
+            }
+        }
+    }
+
+    #[test]
+    fn kms_property_enum_outputs_are_probed_before_any_write() {
+        use wasm_posix_shared::dri::*;
+        use crate::dri::kms;
+        let _g_master = crate::dri::master::lock_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        for invalid in [0, u64::MAX, 65535] {
+            for invalid_values in [false, true] {
+                assert_kms_output_fault(&mut proc, &mut host, fd,
+                    DRM_IOCTL_MODE_GETPROPERTY, WpkDrmModeGetProperty {
+                        values_ptr: if invalid_values { invalid } else { 0x1000 },
+                        enum_blob_ptr: if invalid_values { 0x2000 } else { invalid },
+                        prop_id: kms::PROP_DPMS, count_values: 4,
+                        count_enum_blobs: 4, ..Default::default()
+                    });
+            }
+        }
+    }
+
+    #[test]
+    fn kms_connector_all_outputs_are_probed_before_any_write() {
+        use wasm_posix_shared::dri::*;
+        use crate::dri::kms;
+        let _g_master = crate::dri::master::lock_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        for invalid in [0, u64::MAX, 65535] {
+            for index in 0..4 {
+                let mut pointers = [0x1000, 0x2000, 0x3000, 0x4000];
+                pointers[index] = invalid;
+                assert_kms_output_fault(&mut proc, &mut host, fd,
+                    DRM_IOCTL_MODE_GETCONNECTOR, WpkDrmModeGetConnector {
+                        modes_ptr: pointers[0], encoders_ptr: pointers[1],
+                        props_ptr: pointers[2], prop_values_ptr: pointers[3],
+                        count_modes: u32::MAX, count_encoders: 1, count_props: 4,
+                        connector_id: kms::CONNECTOR_ID, ..Default::default()
+                    });
+            }
+        }
+    }
+
+    fn kms_ioctl<T: Copy>(
+        proc: &mut Process,
+        host: &mut MockHostIO,
+        fd: i32,
+        request: u32,
+        value: T,
+    ) -> Result<T, Errno> {
+        let mut buf = alloc::vec![0u8; core::mem::size_of::<T>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut T, value) };
+        sys_ioctl(proc, host, fd, request, &mut buf)?;
+        Ok(unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const T) })
+    }
+
+    fn kms_master_card0(proc: &mut Process, host: &mut MockHostIO) -> i32 {
+        let fd = sys_open(proc, host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; 16];
+        sys_ioctl(proc, host, fd, wasm_posix_shared::dri::DRM_IOCTL_SET_MASTER, &mut buf).unwrap();
+        fd
+    }
+
+    const KMS_TEST_CONNECTORS_PTR: u32 = 0x1000;
+
+    fn kms_modeset(host: &mut MockHostIO, fb_id: u32) -> wasm_posix_shared::dri::WpkDrmModeGetCrtc {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let at = KMS_TEST_CONNECTORS_PTR as usize;
+        host.proc_memory[at..at + 4].copy_from_slice(&kms::CONNECTOR_ID.to_le_bytes());
+        WpkDrmModeGetCrtc {
+            set_connectors_ptr: KMS_TEST_CONNECTORS_PTR as u64,
+            count_connectors: 1,
+            crtc_id: kms::CRTC_ID,
+            fb_id,
+            mode_valid: 1,
+            mode: WpkDrmModeModeinfo { hdisplay: 640, vdisplay: 480, vrefresh: 60, ..Default::default() },
+            ..Default::default()
+        }
+    }
+
+    fn last_written_u32s(host: &MockHostIO) -> Vec<u32> {
+        let (_, _, bytes) = host.proc_write_calls.last().unwrap();
+        bytes.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect()
+    }
+
+    #[test]
+    fn kms_reports_the_caps_a_legacy_compositor_requires() {
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.cursor_supported = true;
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        for (capability, expected) in [
+            (DRM_CAP_CRTC_IN_VBLANK_EVENT, 1),
+            (DRM_CAP_TIMESTAMP_MONOTONIC, 1),
+            (DRM_CAP_ADDFB2_MODIFIERS, 0),
+            (DRM_CAP_SYNCOBJ_TIMELINE, 0),
+            (DRM_CAP_CURSOR_WIDTH, 64),
+            (DRM_CAP_DUMB_PREFERRED_DEPTH, 24),
+        ] {
+            let cap = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_GET_CAP, WpkDrmGetCap { capability, value: 9 })
+                .unwrap();
+            assert_eq!(cap.value, expected, "capability {capability:#x}");
+        }
+        assert_eq!(
+            kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_GET_CAP, WpkDrmGetCap { capability: 0xdead, value: 9 })
+                .map(|_| ()),
+            Err(Errno::EINVAL)
+        );
+    }
+
+    #[test]
+    fn kms_client_caps_follow_linux() {
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let set = |proc: &mut Process, host: &mut MockHostIO, capability, value| {
+            kms_ioctl(proc, host, fd, DRM_IOCTL_SET_CLIENT_CAP, WpkDrmSetClientCap { capability, value })
+                .map(|_| ())
+        };
+        assert_eq!(set(&mut proc, &mut host, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1), Ok(()));
+        assert_eq!(set(&mut proc, &mut host, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 2), Err(Errno::EINVAL));
+        assert_eq!(set(&mut proc, &mut host, DRM_CLIENT_CAP_ATOMIC, 1), Err(Errno::EOPNOTSUPP));
+        assert_eq!(set(&mut proc, &mut host, DRM_CLIENT_CAP_STEREO_3D, 1), Ok(()));
+        assert_eq!(set(&mut proc, &mut host, DRM_CLIENT_CAP_ASPECT_RATIO, 1), Ok(()));
+        assert_eq!(set(&mut proc, &mut host, DRM_CLIENT_CAP_ASPECT_RATIO, 2), Err(Errno::EINVAL));
+        assert_eq!(set(&mut proc, &mut host, DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT, 1), Err(Errno::EOPNOTSUPP));
+        assert_eq!(set(&mut proc, &mut host, 0xdead, 1), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn kms_lists_the_primary_plane_only_with_universal_planes() {
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let query = WpkDrmModeGetPlaneRes { plane_id_ptr: 0x1000, count_planes: 4, pad: 0 };
+        let res = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETPLANERESOURCES, query).unwrap();
+        assert_eq!(res.count_planes, 0);
+
+        kms_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_SET_CLIENT_CAP,
+            WpkDrmSetClientCap { capability: DRM_CLIENT_CAP_UNIVERSAL_PLANES, value: 1 },
+        )
+        .unwrap();
+        let res = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETPLANERESOURCES, query).unwrap();
+        assert_eq!(res.count_planes, 1);
+        assert_eq!(last_written_u32s(&host), [crate::dri::kms::PRIMARY_PLANE_ID]);
+
+        let plane = kms_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_MODE_GETPLANE,
+            WpkDrmModeGetPlane {
+                plane_id: crate::dri::kms::PRIMARY_PLANE_ID,
+                count_format_types: 8,
+                format_type_ptr: 0x2000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(plane.possible_crtcs, 0b1);
+        assert_eq!(plane.count_format_types, 3);
+        assert_eq!(last_written_u32s(&host), crate::dri::kms::PRIMARY_PLANE_FORMATS);
+    }
+
+    #[test]
+    fn kms_properties_resolve_through_object_any() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let props = kms_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_MODE_OBJ_GETPROPERTIES,
+            WpkDrmModeObjGetProperties {
+                props_ptr: 0x1000,
+                prop_values_ptr: 0x2000,
+                count_props: 4,
+                obj_id: kms::PRIMARY_PLANE_ID,
+                obj_type: DRM_MODE_OBJECT_ANY,
+                pad: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(props.count_props, 1);
+        let writes = &host.proc_write_calls;
+        assert_eq!(writes[writes.len() - 2].2, kms::PROP_PLANE_TYPE.to_le_bytes());
+        assert_eq!(writes[writes.len() - 1].2, DRM_PLANE_TYPE_PRIMARY.to_le_bytes());
+
+        let prop = kms_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_MODE_GETPROPERTY,
+            WpkDrmModeGetProperty { prop_id: kms::PROP_PLANE_TYPE, ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(&prop.name[..5], b"type\0");
+        assert_eq!(prop.flags, DRM_MODE_PROP_ENUM | DRM_MODE_PROP_IMMUTABLE);
+        assert_eq!(prop.count_values, 3);
+        assert_eq!(prop.count_enum_blobs, 3);
+
+        let encoder = kms_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_MODE_OBJ_GETPROPERTIES,
+            WpkDrmModeObjGetProperties { obj_id: kms::ENCODER_ID, ..Default::default() },
+        );
+        assert_eq!(encoder.map(|_| ()), Err(Errno::EINVAL));
+        let mismatched = kms_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_MODE_OBJ_GETPROPERTIES,
+            WpkDrmModeObjGetProperties {
+                obj_id: kms::CONNECTOR_ID,
+                obj_type: DRM_MODE_OBJECT_PLANE,
+                ..Default::default()
+            },
+        );
+        assert_eq!(mismatched.map(|_| ()), Err(Errno::ENOENT));
+    }
+
+    #[test]
+    fn kms_dpms_and_cursor_require_master_and_validate_handles() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.cursor_supported = true;
+        let dpms_off = WpkDrmModeConnectorSetProperty {
+            value: DRM_MODE_DPMS_OFF,
+            prop_id: kms::PROP_DPMS,
+            connector_id: kms::CONNECTOR_ID,
+        };
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let plain = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        assert_eq!(
+            kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_SETPROPERTY, dpms_off).map(|_| ()),
+            Err(Errno::EACCES)
+        );
+
+        kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETPROPERTY, dpms_off).unwrap();
+        assert_eq!(kms::property_value(kms::PROP_DPMS), DRM_MODE_DPMS_OFF);
+
+        let cursor = |handle| WpkDrmModeCursor {
+            flags: DRM_MODE_CURSOR_BO,
+            crtc_id: kms::CRTC_ID,
+            width: 64,
+            height: 64,
+            handle,
+            ..Default::default()
+        };
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CURSOR, cursor(0)).map(|_| ()), Ok(()));
+        assert_eq!(
+            kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CURSOR, cursor(7)).map(|_| ()),
+            Err(Errno::ENOENT)
+        );
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_obj_setproperty_cursor2_and_propblob_follow_linux() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        host.cursor_supported = true;
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let plain = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let dpms = |value| WpkDrmModeObjSetProperty {
+            value,
+            prop_id: kms::PROP_DPMS,
+            obj_id: kms::CONNECTOR_ID,
+            obj_type: DRM_MODE_OBJECT_CONNECTOR,
+            pad: 0,
+        };
+        let set = |proc: &mut Process, host: &mut MockHostIO, fd, req| {
+            kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_OBJ_SETPROPERTY, req).map(|_| ())
+        };
+        assert_eq!(set(&mut proc, &mut host, plain, dpms(DRM_MODE_DPMS_STANDBY)), Err(Errno::EACCES));
+        assert_eq!(set(&mut proc, &mut host, fd, dpms(DRM_MODE_DPMS_STANDBY)), Ok(()));
+        assert_eq!(kms::property_value(kms::PROP_DPMS), DRM_MODE_DPMS_STANDBY);
+        assert_eq!(set(&mut proc, &mut host, fd, dpms(9)), Err(Errno::EINVAL));
+        assert_eq!(kms::property_value(kms::PROP_DPMS), DRM_MODE_DPMS_STANDBY);
+
+        let cursor2 = |proc: &mut Process, host: &mut MockHostIO, req: WpkDrmModeCursor| {
+            let mut buf = [0u8; 36];
+            unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCursor, req) };
+            sys_ioctl(proc, host, fd, DRM_IOCTL_MODE_CURSOR2, &mut buf)
+        };
+        let hide = WpkDrmModeCursor { flags: DRM_MODE_CURSOR_BO, crtc_id: kms::CRTC_ID, ..Default::default() };
+        assert_eq!(cursor2(&mut proc, &mut host, hide), Ok(()));
+        assert_eq!(cursor2(&mut proc, &mut host, WpkDrmModeCursor { flags: 0, ..hide }), Err(Errno::EINVAL));
+        assert_eq!(cursor2(&mut proc, &mut host, WpkDrmModeCursor { flags: 0x4, ..hide }), Err(Errno::EINVAL));
+        assert_eq!(
+            cursor2(&mut proc, &mut host, WpkDrmModeCursor { crtc_id: kms::CRTC_ID + 1, ..hide }),
+            Err(Errno::ENOENT)
+        );
+        assert_eq!(
+            cursor2(&mut proc, &mut host, WpkDrmModeCursor { flags: DRM_MODE_CURSOR_MOVE, ..hide }),
+            Ok(())
+        );
+
+        assert_eq!(
+            kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETPROPBLOB, WpkDrmModeGetBlob { blob_id: 1, ..Default::default() })
+                .map(|_| ()),
+            Err(Errno::ENOENT)
+        );
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_master_authenticates_a_reopened_node_and_rejects_magic_zero() {
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let master = kms_master_card0(&mut proc, &mut host);
+        let reopened = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let auth = |proc: &mut Process, host: &mut MockHostIO, fd, magic: u32| {
+            sys_ioctl(proc, host, fd, DRM_IOCTL_AUTH_MAGIC, &mut magic.to_le_bytes())
+        };
+        assert_eq!(auth(&mut proc, &mut host, reopened, 0), Err(Errno::EACCES));
+        assert_eq!(auth(&mut proc, &mut host, master, 0), Err(Errno::EINVAL));
+
+        let mut magic = [0u8; 4];
+        sys_ioctl(&mut proc, &mut host, reopened, DRM_IOCTL_GET_MAGIC, &mut magic).unwrap();
+        let mut again = [0u8; 4];
+        sys_ioctl(&mut proc, &mut host, reopened, DRM_IOCTL_GET_MAGIC, &mut again).unwrap();
+        assert_eq!(magic, again);
+        assert_eq!(auth(&mut proc, &mut host, master, u32::from_le_bytes(magic)), Ok(()));
+
+        let mut lease = [0u8; 24];
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, master, DRM_IOCTL_MODE_CREATE_LEASE, &mut lease),
+            Err(Errno::EOPNOTSUPP)
+        );
+    }
+
+    #[test]
+    fn kms_setcrtc_needs_a_known_fb_and_getcrtc_reports_the_mode() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let mode = WpkDrmModeModeinfo { hdisplay: 640, vdisplay: 480, vrefresh: 60, ..Default::default() };
+        let without_connectors = WpkDrmModeGetCrtc {
+            crtc_id: kms::CRTC_ID,
+            fb_id: 0,
+            mode_valid: 1,
+            mode,
+            ..Default::default()
+        };
+        assert_eq!(
+            kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETCRTC, without_connectors).map(|_| ()),
+            Err(Errno::ENOENT)
+        );
+
+        let crtc = kms_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_MODE_GETCRTC,
+            WpkDrmModeGetCrtc { crtc_id: kms::CRTC_ID, ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(crtc.mode_valid, 0);
+
+        kms::set_crtc_mode(Some(mode));
+        kms::set_crtc_fb(11);
+        let crtc = kms_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_MODE_GETCRTC,
+            WpkDrmModeGetCrtc { crtc_id: kms::CRTC_ID, ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!((crtc.mode_valid, crtc.fb_id, crtc.mode.hdisplay), (1, 11, 640));
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_setcrtc_rejects_a_bad_connector_list() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let created = kms_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_MODE_CREATE_DUMB,
+            WpkDrmModeCreateDumb { width: 64, height: 32, bpp: 32, ..Default::default() },
+        )
+        .unwrap();
+        let mut fb_req = WpkDrmModeFbCmd2 {
+            width: 64,
+            height: 32,
+            pixel_format: DRM_FORMAT_ARGB8888,
+            ..Default::default()
+        };
+        fb_req.handles[0] = created.handle;
+        fb_req.pitches[0] = created.pitch;
+        let fb_id = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, fb_req).unwrap().fb_id;
+        let setcrtc = |proc: &mut Process, host: &mut MockHostIO, req| {
+            kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_SETCRTC, req).map(|_| ())
+        };
+
+        let valid = kms_modeset(&mut host, fb_id);
+        let no_connector = WpkDrmModeGetCrtc { count_connectors: 0, ..valid };
+        assert_eq!(setcrtc(&mut proc, &mut host, no_connector), Err(Errno::EINVAL));
+        let no_mode = WpkDrmModeGetCrtc { mode_valid: 0, ..valid };
+        assert_eq!(setcrtc(&mut proc, &mut host, no_mode), Err(Errno::EINVAL));
+        let unmapped = WpkDrmModeGetCrtc { set_connectors_ptr: 1 << 32, ..valid };
+        assert_eq!(setcrtc(&mut proc, &mut host, unmapped), Err(Errno::EFAULT));
+        let at = KMS_TEST_CONNECTORS_PTR as usize;
+        host.proc_memory[at..at + 4].copy_from_slice(&(kms::CONNECTOR_ID + 1).to_le_bytes());
+        assert_eq!(setcrtc(&mut proc, &mut host, valid), Err(Errno::ENOENT));
+        assert!(host.kms_set_fb_calls.is_empty());
+        kms::reset_for_test();
     }
 
     #[test]
@@ -48730,6 +50453,7 @@ impl HostIO for RelSymlinkMock {
 
     #[test]
     fn dri_open_installs_card_state_with_kms() {
+        let _g_master = crate::dri::master::lock_for_test();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
@@ -48737,7 +50461,27 @@ impl HostIO for RelSymlinkMock {
         let ofd = proc.ofd_table.get(ofd_idx).unwrap();
         assert!(ofd.dri().is_some());
         assert!(ofd.kms().is_some());
-        assert!(!ofd.kms().unwrap().holds_master);
+    }
+
+    #[test]
+    fn dri_first_card0_open_becomes_master_until_it_closes() {
+        let _g_master = crate::dri::master::lock_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let holds_master = |proc: &Process, fd: i32| {
+            let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap().holds_master
+        };
+        let first = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let second = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        assert!(holds_master(&proc, first));
+        assert!(!holds_master(&proc, second));
+
+        sys_close(&mut proc, &mut host, first).unwrap();
+        assert!(crate::dri::master::current().is_none());
+        let third = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        assert!(holds_master(&proc, third));
+        assert!(!holds_master(&proc, second));
     }
 
     #[test]
@@ -49406,6 +51150,37 @@ impl HostIO for RelSymlinkMock {
         let _ = created;
     }
 
+    #[test]
+    fn fstat_of_a_prime_fd_reports_an_untyped_inode_of_the_buffer_size() {
+        use wasm_posix_shared::dri::*;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let created = kms_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_MODE_CREATE_DUMB,
+            WpkDrmModeCreateDumb { width: 8, height: 8, bpp: 32, ..Default::default() },
+        )
+        .unwrap();
+        let exported = kms_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_PRIME_HANDLE_TO_FD,
+            WpkDrmPrimeHandle { handle: created.handle, flags: 0, fd: -1 },
+        )
+        .unwrap();
+
+        let st = sys_fstat(&proc, &mut host, exported.fd).unwrap();
+        assert_eq!(st.st_mode, 0o600);
+        assert_eq!(st.st_size, created.size);
+    }
+
     /// SCM_RIGHTS explicitly lets a sender close its fd the instant
     /// sendmsg() returns. The queued entry therefore cannot borrow the
     /// sender's bo reference: it must take one of its own at retain time.
@@ -49622,6 +51397,7 @@ impl HostIO for RelSymlinkMock {
     #[test]
     fn kms_getresources_reports_one_crtc_one_connector_one_encoder() {
         use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
         let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -49656,6 +51432,7 @@ impl HostIO for RelSymlinkMock {
     #[test]
     fn kms_getcrtc_only_id_one_else_enoent() {
         use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
         let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -49704,6 +51481,8 @@ impl HostIO for RelSymlinkMock {
                     chunk.copy_from_slice(&word.to_le_bytes());
                 }
             };
+            // card0 auto-acquires master; explicitly drop it for this denial.
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_DROP_MASTER, &mut []).unwrap();
             fill(&mut request, [1, 1, 0, 0, 64, 64, 1, 0, 0]);
             assert_eq!(
                 sys_ioctl(
@@ -49889,11 +51668,7 @@ impl HostIO for RelSymlinkMock {
         assert_ne!(fb_out.fb_id, 0);
 
         // SETCRTC.
-        let crtc_req = WpkDrmModeGetCrtc {
-            crtc_id: 1,
-            fb_id: fb_out.fb_id,
-            ..Default::default()
-        };
+        let crtc_req = kms_modeset(&mut host, fb_out.fb_id);
         let mut crtcbuf = [0u8; core::mem::size_of::<WpkDrmModeGetCrtc>()];
         unsafe {
             core::ptr::write_unaligned(crtcbuf.as_mut_ptr() as *mut WpkDrmModeGetCrtc, crtc_req)
@@ -50051,11 +51826,7 @@ impl HostIO for RelSymlinkMock {
         assert_ne!(fb_ids[0], fb_ids[1]);
 
         // SETCRTC to fb A latches the initial scanout.
-        let crtc_req = WpkDrmModeGetCrtc {
-            crtc_id: 1,
-            fb_id: fb_ids[0],
-            ..Default::default()
-        };
+        let crtc_req = kms_modeset(&mut host, fb_ids[0]);
         let mut crtcbuf = [0u8; core::mem::size_of::<WpkDrmModeGetCrtc>()];
         unsafe { core::ptr::write_unaligned(crtcbuf.as_mut_ptr() as *mut WpkDrmModeGetCrtc, crtc_req) };
         sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETCRTC, &mut crtcbuf).unwrap();
@@ -50104,6 +51875,7 @@ impl HostIO for RelSymlinkMock {
             .unwrap_or_else(|e| e.into_inner());
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
+        kms_master_card0(&mut proc, &mut host);
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
 
         let crtc_req = WpkDrmModeGetCrtc {
@@ -50125,6 +51897,200 @@ impl HostIO for RelSymlinkMock {
             .unwrap_err(),
             Errno::EACCES
         );
+    }
+
+    fn kms_dumb_fb(proc: &mut Process, host: &mut MockHostIO, fd: i32) -> (u32, crate::dri::BoId) {
+        use wasm_posix_shared::dri::*;
+        let created = kms_ioctl(
+            proc,
+            host,
+            fd,
+            DRM_IOCTL_MODE_CREATE_DUMB,
+            WpkDrmModeCreateDumb { width: 8, height: 8, bpp: 32, ..Default::default() },
+        )
+        .unwrap();
+        let mut fb = WpkDrmModeFbCmd2 { width: 8, height: 8, pixel_format: DRM_FORMAT_ARGB8888, ..Default::default() };
+        fb.handles[0] = created.handle;
+        fb.pitches[0] = created.pitch;
+        let fb = kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_ADDFB2, fb).unwrap();
+        (fb.fb_id, crate::dri::bo::next_id_for_test() - 1)
+    }
+
+    fn kms_scan_out(proc: &mut Process, host: &mut MockHostIO, fd: i32, fb_id: u32) {
+        use wasm_posix_shared::dri::*;
+        let crtc = kms_modeset(host, fb_id);
+        kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_SETCRTC, crtc).unwrap();
+    }
+
+    fn bo_refcount(bo_id: crate::dri::BoId) -> Option<u32> {
+        crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.refcount))
+    }
+
+    #[test]
+    fn kms_closefb_keeps_the_scanout_fb_until_the_crtc_replaces_it() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let (shown, shown_bo) = kms_dumb_fb(&mut proc, &mut host, fd);
+        let (hidden, hidden_bo) = kms_dumb_fb(&mut proc, &mut host, fd);
+        kms_scan_out(&mut proc, &mut host, fd, shown);
+        let closefb = |proc: &mut Process, host: &mut MockHostIO, fb_id: u32, pad: u32| {
+            let mut buf = [fb_id.to_le_bytes(), pad.to_le_bytes()].concat();
+            sys_ioctl(proc, host, fd, DRM_IOCTL_MODE_CLOSEFB, &mut buf)
+        };
+
+        assert_eq!(closefb(&mut proc, &mut host, hidden, 1), Err(Errno::EINVAL));
+        closefb(&mut proc, &mut host, hidden, 0).unwrap();
+        assert_eq!(bo_refcount(hidden_bo), Some(1));
+        closefb(&mut proc, &mut host, shown, 0).unwrap();
+        assert_eq!(bo_refcount(shown_bo), Some(2));
+        assert_eq!(kms::crtc_fb(), shown);
+        assert_eq!(closefb(&mut proc, &mut host, shown, 0), Err(Errno::ENOENT));
+
+        let (next, _) = kms_dumb_fb(&mut proc, &mut host, fd);
+        kms_scan_out(&mut proc, &mut host, fd, next);
+        assert_eq!(bo_refcount(shown_bo), Some(1));
+        assert_eq!(kms::crtc_fb(), next);
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_rmfb_of_the_scanout_fb_disables_the_crtc() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let (fb_id, bo_id) = kms_dumb_fb(&mut proc, &mut host, fd);
+        kms_scan_out(&mut proc, &mut host, fd, fb_id);
+
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_RMFB, &mut fb_id.to_le_bytes()).unwrap();
+        assert_eq!(bo_refcount(bo_id), Some(1));
+        assert_eq!(kms::crtc_fb(), 0);
+        assert!(kms::crtc_mode().is_none());
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_fb_ids_are_unique_across_card_files() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let master = kms_master_card0(&mut proc, &mut host);
+        let other = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let (shown, _) = kms_dumb_fb(&mut proc, &mut host, master);
+        let (other_fb, _) = kms_dumb_fb(&mut proc, &mut host, other);
+        assert_ne!(shown, other_fb);
+        assert!(shown > kms::PROP_NON_DESKTOP);
+        kms_scan_out(&mut proc, &mut host, master, shown);
+
+        sys_ioctl(&mut proc, &mut host, other, DRM_IOCTL_MODE_RMFB, &mut other_fb.to_le_bytes()).unwrap();
+        assert_eq!(kms::crtc_fb(), shown);
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, other, DRM_IOCTL_MODE_RMFB, &mut shown.to_le_bytes()),
+            Err(Errno::ENOENT)
+        );
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_closing_the_card_file_disables_the_crtc_it_scans_out() {
+        use crate::dri::kms;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let (fb_id, bo_id) = kms_dumb_fb(&mut proc, &mut host, fd);
+        kms_scan_out(&mut proc, &mut host, fd, fb_id);
+
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(kms::crtc_fb(), 0);
+        assert!(kms::crtc_mode().is_none());
+        assert_eq!(bo_refcount(bo_id), None);
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_setcrtc_without_a_mode_disables_the_crtc() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let (fb_id, _) = kms_dumb_fb(&mut proc, &mut host, fd);
+        kms_scan_out(&mut proc, &mut host, fd, fb_id);
+
+        let mut two_connectors = kms_modeset(&mut host, fb_id);
+        two_connectors.count_connectors = 2;
+        assert_eq!(
+            kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETCRTC, two_connectors).map(|_| ()),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(kms::crtc_fb(), fb_id);
+
+        let without_mode = WpkDrmModeGetCrtc { crtc_id: kms::CRTC_ID, fb_id, ..Default::default() };
+        kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETCRTC, without_mode).unwrap();
+        assert_eq!(kms::crtc_fb(), 0);
+        assert!(kms::crtc_mode().is_none());
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_getplane_with_a_null_format_pointer_fails_with_efault() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let plane = WpkDrmModeGetPlane {
+            plane_id: kms::PRIMARY_PLANE_ID,
+            count_format_types: kms::PRIMARY_PLANE_FORMATS.len() as u32,
+            ..Default::default()
+        };
+        assert_eq!(
+            kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETPLANE, plane).map(|_| ()),
+            Err(Errno::EFAULT)
+        );
+        assert!(host.proc_write_calls.is_empty());
+    }
+
+    #[test]
+    fn dri_card0_open_failing_with_emfile_leaves_no_master() {
+        let _g_master = crate::dri::master::lock_for_test();
+        for use_openat in [false, true] {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            sys_setrlimit(&mut proc, 7, 3, 4096).unwrap();
+
+            assert_eq!(
+                open_test_path(&mut proc, &mut host, b"/dev/dri/card0", use_openat),
+                Err(Errno::EMFILE)
+            );
+            assert!(crate::dri::master::current().is_none());
+        }
     }
 
     #[test]
@@ -50199,6 +52165,7 @@ impl HostIO for RelSymlinkMock {
             .kms()
             .unwrap()
             .fbs
+            .borrow()
             .is_empty());
 
         // Second RMFB on the same id → ENOENT.
@@ -50353,6 +52320,50 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(proc.dri_bindings[0].addr, addr);
         assert_eq!(proc.dri_bindings[0].len, aligned_len);
         assert_eq!(proc.dri_bindings[0].bo_id, bo_id);
+    }
+
+    #[test]
+    fn mmap_prime_fd_binds_its_bo_from_offset_zero() {
+        use wasm_posix_shared::dri::*;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, offset, size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+        let bo_id = (offset >> 12) as u32;
+        let handle = *dri_state(&proc, proc.fd_table.get(fd).unwrap().ofd_ref.0)
+            .unwrap()
+            .handles
+            .iter()
+            .find(|(_, id)| **id == bo_id)
+            .unwrap()
+            .0;
+        let exported = kms_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_PRIME_HANDLE_TO_FD,
+            WpkDrmPrimeHandle { handle, flags: 0, fd: -1 },
+        )
+        .unwrap();
+
+        assert_eq!(
+            sys_mmap(&mut proc, &mut host, 0, size, PROT_READ, MAP_SHARED, exported.fd, 4096),
+            Err(Errno::EINVAL)
+        );
+        let past_aligned_size = ((size + 0xFFFF) & !0xFFFF) + 0x10000;
+        assert_eq!(
+            sys_mmap(&mut proc, &mut host, 0, past_aligned_size, PROT_READ, MAP_SHARED, exported.fd, 0),
+            Err(Errno::EINVAL)
+        );
+        let addr =
+            sys_mmap(&mut proc, &mut host, 0, size, PROT_READ, MAP_SHARED, exported.fd, 0).unwrap();
+        assert_eq!(host.gbm_bo_bind_calls, vec![(proc.pid as i32, bo_id, addr, size)]);
+        assert_eq!(proc.dri_bindings.last().map(|b| b.bo_id), Some(bo_id));
     }
 
     #[test]
@@ -50631,6 +52642,7 @@ impl HostIO for RelSymlinkMock {
     fn mmap_dri_works_for_card0_too() {
         use wasm_posix_shared::dri::*;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g_master = crate::dri::master::lock_for_test();
         let _g = crate::dri::bo::TEST_REGISTRY_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -50690,6 +52702,164 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(proc.dri_bindings[0].addr, addr);
     }
 
+    fn glio_init_bytes(info: wasm_posix_shared::gl::GlInitInfo) -> [u8; 16] {
+        let mut bytes = [0; 16];
+        unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, info); }
+        bytes
+    }
+    fn glio_display_test(proc: &mut Process, host: &mut MockHostIO, version: u32) -> Result<(i32,u32),Errno> {
+        use wasm_posix_shared::gl;
+        let fd = sys_open(proc,host,b"/dev/dri/renderD128",O_RDWR,0)?;
+        let mut bytes = glio_init_bytes(gl::GlInitInfo {op_version:version,role:gl::SESSION_DISPLAY,display_fd:-1,display_id:0});
+        if let Err(error) = sys_ioctl(proc,host,fd,gl::GLIO_INIT,&mut bytes) { sys_close(proc,host,fd).unwrap(); return Err(error); }
+        Ok((fd,u32::from_le_bytes(bytes[12..16].try_into().unwrap())))
+    }
+    fn glio_init_objects_test(proc: &mut Process, host: &mut MockHostIO, fd: i32, version: u32) -> Result<(),Errno> {
+        use wasm_posix_shared::gl;
+        let (root,id) = glio_display_test(proc,host,version)?;
+        let mut bytes = glio_init_bytes(gl::GlInitInfo {op_version:version,role:gl::SESSION_OBJECTS,display_fd:root,display_id:id});
+        let result = sys_ioctl(proc,host,fd,gl::GLIO_INIT,&mut bytes);
+        if result.is_err() { sys_close(proc,host,root).unwrap(); }
+        result
+    }
+
+    fn glio_map_test(proc: &mut Process, host: &mut MockHostIO, fd: i32) {
+        use wasm_posix_shared::mmap::{PROT_READ,PROT_WRITE,MAP_SHARED};
+        sys_mmap(proc,host,0,wasm_posix_shared::gl::CMDBUF_LEN,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0).unwrap();
+    }
+
+    #[test]
+    fn glio_display_roles_validate_generation_and_owner_without_publishing_failed_joins() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1); let mut host = MockHostIO::new();
+        let (root,id) = glio_display_test(&mut proc,&mut host,gl::OP_VERSION).unwrap();
+        let child = sys_open(&mut proc,&mut host,b"/dev/dri/renderD128",O_RDWR,0).unwrap();
+        for (role, display_fd, display_id, error) in [
+            (0,root,id,Errno::EINVAL), (gl::SESSION_OBJECTS,-1,id,Errno::EBADF),
+            (gl::SESSION_OBJECTS,root,id+1000,Errno::EINVAL),
+            (gl::SESSION_DISPLAY,root,0,Errno::EINVAL),
+        ] {
+            let mut bytes = glio_init_bytes(gl::GlInitInfo {op_version:gl::OP_VERSION,role,display_fd,display_id}); let before = bytes;
+            assert_eq!(sys_ioctl(&mut proc,&mut host,child,gl::GLIO_INIT,&mut bytes),Err(error)); assert_eq!(bytes,before);
+            assert!(dri_state(&proc,proc.fd_table.get(child).unwrap().ofd_ref.0).unwrap().gl.is_none());
+        }
+        let root_ofd = proc.fd_table.get(root).unwrap().ofd_ref.0;
+        dri_state_mut(&mut proc,root_ofd).unwrap().gl.as_mut().unwrap().owner_pid = 7;
+        let mut bytes = glio_init_bytes(gl::GlInitInfo {op_version:gl::OP_VERSION,role:gl::SESSION_OBJECTS,display_fd:root,display_id:id});
+        assert_eq!(sys_ioctl(&mut proc,&mut host,child,gl::GLIO_INIT,&mut bytes),Err(Errno::EACCES));
+        assert!(host.gl_bind_sessions.is_empty()); assert!(host.gl_create_context_sessions.is_empty());
+    }
+
+    #[test]
+    fn glio_op_table_growth_preserves_legacy_sessions_and_rejects_future_tables() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        for version in [1, 5, 6, 7, gl::OP_VERSION] {
+            let (root, generation) = glio_display_test(&mut proc, &mut host, version).unwrap();
+            let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+            let mut info = glio_init_bytes(gl::GlInitInfo {
+                op_version: version,
+                role: gl::SESSION_OBJECTS,
+                display_fd: root,
+                display_id: generation,
+            });
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut info).unwrap();
+            let mut context = [0u8; 16];
+            context[..4].copy_from_slice(&2u32.to_le_bytes());
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                gl::GLIO_CREATE_CONTEXT,
+                &mut context,
+            )
+            .unwrap();
+            assert_ne!(&context[12..16], &[0; 4]);
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            sys_close(&mut proc, &mut host, root).unwrap();
+        }
+        assert_eq!(
+            glio_display_test(&mut proc, &mut host, 0),
+            Err(Errno::ENOSYS)
+        );
+        assert_eq!(
+            glio_display_test(&mut proc, &mut host, gl::OP_VERSION + 1),
+            Err(Errno::ENOSYS)
+        );
+    }
+
+    #[test]
+    fn glio_display_root_cannot_map_or_create_renderer_objects() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{PROT_READ,PROT_WRITE,MAP_SHARED};
+        let mut proc = Process::new(1); let mut host = MockHostIO::new();
+        let (root,_) = glio_display_test(&mut proc,&mut host,gl::OP_VERSION).unwrap();
+        assert_eq!(sys_mmap(&mut proc,&mut host,0,gl::CMDBUF_LEN,PROT_READ|PROT_WRITE,MAP_SHARED,root,0),Err(Errno::EINVAL));
+        assert_eq!(sys_ioctl(&mut proc,&mut host,root,gl::GLIO_CREATE_CONTEXT,&mut [0;16]),Err(Errno::EINVAL));
+        assert_eq!(sys_ioctl(&mut proc,&mut host,root,gl::GLIO_CREATE_SURFACE,&mut [0;32]),Err(Errno::EINVAL));
+        sys_close(&mut proc,&mut host,root).unwrap();
+        assert!(host.gl_bind_sessions.is_empty()); assert!(host.gl_unbind_sessions.is_empty());
+    }
+
+    #[test]
+    fn glio_revoked_generation_preserves_current_resources_but_rejects_new_bindings_and_objects() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1); let mut host = MockHostIO::new();
+        let (root,id) = glio_display_test(&mut proc,&mut host,gl::OP_VERSION).unwrap();
+        let mut children = [0;2];
+        for fd in &mut children {
+            *fd = sys_open(&mut proc,&mut host,b"/dev/dri/renderD128",O_RDWR,0).unwrap();
+            let mut bytes = glio_init_bytes(gl::GlInitInfo {op_version:gl::OP_VERSION,role:gl::SESSION_OBJECTS,display_fd:root,display_id:id});
+            sys_ioctl(&mut proc,&mut host,*fd,gl::GLIO_INIT,&mut bytes).unwrap();
+        }
+        glio_map_test(&mut proc,&mut host,children[0]);
+        let ctx = glio_test_bind(&mut proc,&mut host,children[0]);
+        sys_ioctl(&mut proc,&mut host,root,gl::GLIO_TERMINATE,&mut []).unwrap();
+        assert!(host.gl_unbind_sessions.is_empty());
+        assert_eq!(sys_ioctl(&mut proc,&mut host,children[1],gl::GLIO_CREATE_CONTEXT,&mut [0;16]),Err(Errno::EINVAL));
+        assert_eq!(sys_ioctl(&mut proc,&mut host,children[1],gl::GLIO_CREATE_SURFACE,&mut [0;32]),Err(Errno::EINVAL));
+        let mut bind = [0;12]; bind[..4].copy_from_slice(&ctx.to_le_bytes());
+        assert_eq!(sys_ioctl(&mut proc,&mut host,children[0],gl::GLIO_MAKE_CURRENT,&mut bind),Err(Errno::EINVAL));
+        let mut submit = [0;8]; submit[4..8].copy_from_slice(&8u32.to_le_bytes());
+        sys_ioctl(&mut proc,&mut host,children[0],gl::GLIO_SUBMIT,&mut submit).unwrap();
+        let mut query = [0;24]; query[..4].copy_from_slice(&gl::QOP_FINISH.to_le_bytes());
+        sys_ioctl(&mut proc,&mut host,children[0],gl::GLIO_QUERY,&mut query).unwrap();
+        assert_eq!(host.gl_query_sessions,host.gl_submit_sessions);
+        sys_ioctl(&mut proc,&mut host,children[0],gl::GLIO_MAKE_CURRENT,&mut [0;12]).unwrap();
+        sys_ioctl(&mut proc,&mut host,children[0],gl::GLIO_DESTROY_CONTEXT,&mut []).unwrap();
+        sys_close(&mut proc,&mut host,root).unwrap();
+        let (reused,new_id) = glio_display_test(&mut proc,&mut host,gl::OP_VERSION).unwrap();
+        assert_eq!(reused,root); assert_ne!(id,new_id);
+        let fresh = sys_open(&mut proc,&mut host,b"/dev/dri/renderD128",O_RDWR,0).unwrap();
+        let mut stale = glio_init_bytes(gl::GlInitInfo {op_version:gl::OP_VERSION,role:gl::SESSION_OBJECTS,display_fd:reused,display_id:id});
+        assert_eq!(sys_ioctl(&mut proc,&mut host,fresh,gl::GLIO_INIT,&mut stale),Err(Errno::EINVAL));
+        assert_eq!(sys_ioctl(&mut proc,&mut host,children[1],gl::GLIO_CREATE_CONTEXT,&mut [0;16]),Err(Errno::EINVAL));
+        let mut valid = glio_init_bytes(gl::GlInitInfo {op_version:gl::OP_VERSION,role:gl::SESSION_OBJECTS,display_fd:reused,display_id:new_id});
+        sys_ioctl(&mut proc,&mut host,fresh,gl::GLIO_INIT,&mut valid).unwrap();
+        glio_map_test(&mut proc,&mut host,fresh);
+        assert_ne!(glio_test_bind(&mut proc,&mut host,fresh),ctx);
+    }
+
+    #[test]
+    fn glio_display_authority_follows_the_open_description_until_last_duplicate_closes() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1); let mut host = MockHostIO::new();
+        let (root,id) = glio_display_test(&mut proc,&mut host,gl::OP_VERSION).unwrap();
+        let duplicate = sys_dup(&mut proc,root).unwrap(); sys_close(&mut proc,&mut host,root).unwrap();
+        let child = sys_open(&mut proc,&mut host,b"/dev/dri/renderD128",O_RDWR,0).unwrap();
+        assert_eq!(child,root);
+        let mut bytes = glio_init_bytes(gl::GlInitInfo {op_version:gl::OP_VERSION,role:gl::SESSION_OBJECTS,display_fd:duplicate,display_id:id});
+        sys_ioctl(&mut proc,&mut host,child,gl::GLIO_INIT,&mut bytes).unwrap();
+        glio_map_test(&mut proc,&mut host,child);
+        glio_test_bind(&mut proc,&mut host,child);
+        sys_close(&mut proc,&mut host,duplicate).unwrap(); assert!(host.gl_unbind_sessions.is_empty());
+        let mut submit = [0;8]; submit[4..8].copy_from_slice(&8u32.to_le_bytes());
+        sys_ioctl(&mut proc,&mut host,child,gl::GLIO_SUBMIT,&mut submit).unwrap();
+        sys_ioctl(&mut proc,&mut host,child,gl::GLIO_MAKE_CURRENT,&mut [0;12]).unwrap();
+        sys_close(&mut proc,&mut host,child).unwrap(); assert_eq!(host.gl_unbind_sessions.len(),1);
+    }
+
     #[test]
     fn glio_init_rejects_version_skew() {
         use wasm_posix_shared::gl;
@@ -50700,8 +52870,8 @@ impl HostIO for RelSymlinkMock {
         // newer kernel must be caught at first contact, not later as a
         // silent decode error.
         for bad_version in [0u32, gl::OP_VERSION + 1] {
-            let mut buf = bad_version.to_le_bytes();
-            let err = sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap_err();
+            let buf = bad_version.to_le_bytes();
+            let err = glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(buf[..4].try_into().unwrap())).unwrap_err();
             assert_eq!(err, Errno::ENOSYS);
             let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
             assert!(
@@ -50724,8 +52894,8 @@ impl HostIO for RelSymlinkMock {
             let mut proc = Process::new(1);
             let mut host = MockHostIO::new();
             let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
-            let mut buf = version.to_le_bytes();
-            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap();
+            let buf = version.to_le_bytes();
+            glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(buf[..4].try_into().unwrap())).unwrap();
             let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
             assert!(
                 proc.ofd_table
@@ -50750,7 +52920,7 @@ impl HostIO for RelSymlinkMock {
         let ver = gl::OP_VERSION;
         let mut buf = [0u8; 4];
         buf.copy_from_slice(&ver.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(buf[..4].try_into().unwrap())).unwrap();
         let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
         let gls = proc
             .ofd_table
@@ -50766,9 +52936,716 @@ impl HostIO for RelSymlinkMock {
         assert!(gls.context_id.is_none());
         // Second GLIO_INIT on the same fd must be rejected with EBUSY.
         assert_eq!(
-            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap_err(),
+            glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(buf[..4].try_into().unwrap())).unwrap_err(),
             Errno::EBUSY,
         );
+    }
+
+    fn glio_test_bind(proc: &mut Process, host: &mut MockHostIO, fd: i32) -> u32 {
+        use wasm_posix_shared::gl;
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let context = dri_state(proc, ofd)
+            .unwrap()
+            .gl
+            .as_ref()
+            .unwrap()
+            .context_id;
+        let context = context.unwrap_or_else(|| {
+            let mut attrs = [0u8; 16];
+            attrs[..4].copy_from_slice(&2u32.to_le_bytes());
+            sys_ioctl(proc, host, fd, gl::GLIO_CREATE_CONTEXT, &mut attrs).unwrap();
+            u32::from_le_bytes(attrs[12..16].try_into().unwrap())
+        });
+        let mut binding = [0u8; 12];
+        binding[..4].copy_from_slice(&context.to_le_bytes());
+        sys_ioctl(proc, host, fd, gl::GLIO_MAKE_CURRENT, &mut binding).unwrap();
+        context
+    }
+
+    #[test]
+    fn glio_rejected_thread_switch_preserves_prior_current_context() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        proc.add_thread(crate::process::ThreadInfo::new(2, 0, 0, 0));
+        proc.blocked_retries.bind_task(1);
+        let mut host = MockHostIO::new();
+        let mut fds = Vec::new();
+        let mut contexts = Vec::new();
+        let mut ofds = Vec::new();
+        for _ in 0..2 {
+            let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+            glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION)
+            .unwrap();
+            contexts.push(glio_test_bind(&mut proc, &mut host, fd));
+            ofds.push(proc.fd_table.get(fd).unwrap().ofd_ref.0);
+            fds.push(fd);
+        }
+        glio_test_bind(&mut proc, &mut host, fds[0]);
+        let state = |proc: &Process, index: usize| {
+            dri_state(proc, ofds[index])
+                .unwrap()
+                .gl
+                .as_ref()
+                .unwrap()
+                .current
+        };
+        let mut replacement = [0u8; 12];
+        replacement[..4].copy_from_slice(&contexts[1].to_le_bytes());
+        for (rc, error) in [
+            (-(Errno::ENOMEM as i32), Errno::ENOMEM),
+            (1, Errno::EIO),
+            (i32::MIN, Errno::EIO),
+        ] {
+            host.gl_make_current_rc = rc;
+            assert_eq!(
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    fds[1],
+                    gl::GLIO_MAKE_CURRENT,
+                    &mut replacement
+                ),
+                Err(error)
+            );
+            assert_eq!(state(&proc, 0).unwrap().owner_tid, 1);
+            assert!(state(&proc, 1).is_none());
+        }
+        host.gl_make_current_rc = 0;
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fds[1],
+            gl::GLIO_MAKE_CURRENT,
+            &mut replacement,
+        )
+        .unwrap();
+        assert!(state(&proc, 0).is_none());
+        assert_eq!(state(&proc, 1).unwrap().owner_tid, 1);
+        proc.blocked_retries.bind_task(2);
+        glio_test_bind(&mut proc, &mut host, fds[0]);
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fds[1],
+                gl::GLIO_MAKE_CURRENT,
+                &mut replacement
+            ),
+            Err(Errno::EACCES)
+        );
+        assert_eq!(state(&proc, 0).unwrap().owner_tid, 2);
+        proc.blocked_retries.bind_task(1);
+        // Releasing through a different fd only releases this caller's
+        // context; it must leave the other thread's current context intact.
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fds[0],
+            gl::GLIO_MAKE_CURRENT,
+            &mut [0u8; 12],
+        )
+        .unwrap();
+        assert_eq!(state(&proc, 0).unwrap().owner_tid, 2);
+        assert!(state(&proc, 1).is_none());
+    }
+
+    #[test]
+    fn glio_surface_update_preserves_current_and_rejects_failed_replacement() {
+        use wasm_posix_shared::gl;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        proc.blocked_retries.bind_task(1);
+        let mut host = MockHostIO::new();
+        let (other, _, _) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 32);
+        let (fd, offset, _) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 32);
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION)
+        .unwrap();
+        let context = glio_test_bind(&mut proc, &mut host, fd);
+        let mut surface = [0u8; 36];
+        surface[..4].copy_from_slice(&gl::WPK_SURFACE_DEFAULT.to_le_bytes());
+        surface[12..16].copy_from_slice(&1u32.to_le_bytes());
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_CREATE_SURFACE,
+            &mut surface,
+        )
+        .unwrap();
+        let mut binding = [0u8; 12];
+        for (word, value) in binding.chunks_exact_mut(4).zip([context, surface_id_for_test(&proc, fd), surface_id_for_test(&proc, fd)]) {
+            word.copy_from_slice(&value.to_le_bytes());
+        }
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_MAKE_CURRENT,
+            &mut binding,
+        )
+        .unwrap();
+        surface[16..20].copy_from_slice(&1u32.to_le_bytes()); // local handle; global BO differs
+        let original = surface;
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_UPDATE_SURFACE,
+            &mut surface,
+        )
+        .unwrap();
+        assert_eq!(surface, original);
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let gls = dri_state(&proc, ofd).unwrap().gl.as_ref().unwrap();
+        assert_eq!(gls.current.unwrap().draw_surface_id, gls.surface_id.unwrap());
+        assert_eq!(host.gl_update_surface_calls[0].0, gls.surface_id.unwrap());
+        assert_eq!(host.gl_update_surface_calls[0].2, gls.session_id);
+        assert_eq!(
+            u32::from_le_bytes(
+                host.gl_update_surface_calls[0].1[16..20]
+                    .try_into()
+                    .unwrap()
+            ),
+            (offset >> 12) as u32
+        );
+        host.gl_update_surface_rc = -(Errno::ENOMEM as i32);
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                gl::GLIO_UPDATE_SURFACE,
+                &mut surface
+            ),
+            Err(Errno::ENOMEM)
+        );
+        assert_eq!(surface, original);
+        assert_eq!(
+            dri_state(&proc, ofd)
+                .unwrap()
+                .gl
+                .as_ref()
+                .unwrap()
+                .current
+                .unwrap()
+                .owner_tid,
+            1
+        );
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        sys_close(&mut proc, &mut host, other).unwrap();
+    }
+
+    #[test]
+    fn glio_surface_destroy_preserves_a_surfaceless_current_context() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        proc.blocked_retries.bind_task(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION)
+        .unwrap();
+        let context = glio_test_bind(&mut proc, &mut host, fd);
+        let mut surface = [0u8; 36]; // default window surface
+        surface[..4].copy_from_slice(&gl::WPK_SURFACE_DEFAULT.to_le_bytes());
+        surface[12..16].copy_from_slice(&1u32.to_le_bytes());
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_CREATE_SURFACE,
+            &mut surface,
+        )
+        .unwrap();
+        let mut binding = [0u8; 12];
+        for (word, value) in binding.chunks_exact_mut(4).zip([context, surface_id_for_test(&proc, fd), surface_id_for_test(&proc, fd)]) {
+            word.copy_from_slice(&value.to_le_bytes());
+        }
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_MAKE_CURRENT,
+            &mut binding,
+        )
+        .unwrap();
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_CONTEXT, &mut []),
+            Err(Errno::EBUSY)
+        );
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut []),
+            Err(Errno::EBUSY)
+        );
+        glio_test_bind(&mut proc, &mut host, fd);
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut []).unwrap();
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let current = dri_state(&proc, ofd)
+            .unwrap()
+            .gl
+            .as_ref()
+            .unwrap()
+            .current
+            .unwrap();
+        assert_eq!(
+            (
+                current.owner_tid,
+                current.draw_surface_id,
+                current.read_surface_id
+            ),
+            (1, 0, 0)
+        );
+    }
+
+    #[test]
+    fn glio_current_context_belongs_to_the_authoritative_caller() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let mut proc = Process::new(1);
+        proc.add_thread(crate::process::ThreadInfo::new(2, 0, 0, 0));
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION)
+        .unwrap();
+        sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            gl::CMDBUF_LEN,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd,
+            0,
+        )
+        .unwrap();
+        let mut attrs = [0u8; 16];
+        attrs[..4].copy_from_slice(&2u32.to_le_bytes());
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_CREATE_CONTEXT,
+            &mut attrs,
+        )
+        .unwrap();
+        let mut binding = [0u8; 12];
+        binding[..4].copy_from_slice(&attrs[12..16]);
+        proc.blocked_retries.bind_task(1);
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_MAKE_CURRENT,
+            &mut binding,
+        )
+        .unwrap();
+        proc.blocked_retries.bind_task(2);
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                gl::GLIO_MAKE_CURRENT,
+                &mut binding
+            ),
+            Err(Errno::EACCES)
+        );
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_SUBMIT, &mut [0u8; 8]),
+            Err(Errno::EACCES)
+        );
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut [0u8; 24]),
+            Err(Errno::EACCES)
+        );
+        proc.blocked_retries.bind_task(1);
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_SUBMIT, &mut [0u8; 8]).unwrap();
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_MAKE_CURRENT,
+            &mut [0u8; 12],
+        )
+        .unwrap();
+        proc.blocked_retries.bind_task(2);
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_MAKE_CURRENT,
+            &mut binding,
+        )
+        .unwrap();
+        let mut locks = AdvisoryLockManager::new();
+        cleanup_exiting_thread_with_state(&mut proc, &mut locks, &mut host, 2).unwrap();
+        proc.blocked_retries.bind_task(1);
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_MAKE_CURRENT,
+            &mut binding,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn glio_inherited_description_preserves_renderer_owner_during_cleanup() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let mut proc = Process::new(2);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+        let address = sys_mmap(&mut proc, &mut host, 0, gl::CMDBUF_LEN, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0).unwrap();
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        // Model the same open-description state arriving from process 1.
+        // The mapping address is relative to that owner, not process 2.
+        let gls = dri_state_mut(&mut proc, ofd).unwrap().gl.as_mut().unwrap();
+        gls.owner_pid = 1;
+        let session_id = gls.session_id;
+        dri_state_mut(&mut proc,ofd).unwrap().gl_resources.borrow_mut().owner.as_mut().unwrap().pid = 1;
+        for (request, size) in [
+            (gl::GLIO_INIT, 16), (gl::GLIO_CREATE_CONTEXT, 16),
+            (gl::GLIO_SUBMIT, 8), (gl::GLIO_QUERY, 24), (gl::GLIO_TERMINATE, 0),
+        ] {
+            let mut bytes = alloc::vec![0x5a; size];
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, request, &mut bytes), Err(Errno::EACCES));
+            assert!(bytes.iter().all(|byte| *byte == 0x5a));
+        }
+        unbind_gl_cmdbufs_in_range(&mut proc, &mut host, address, gl::CMDBUF_LEN);
+        release_process_dri_mappings(&mut proc, &mut host);
+        assert!(host.gl_unbind_sessions.is_empty());
+        assert!(dri_state(&proc, ofd).unwrap().gl.as_ref().unwrap().cmdbuf.is_some());
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(host.gl_unbind_calls, [1]);
+        assert_eq!(host.gl_unbind_sessions, [session_id]);
+    }
+
+    #[test]
+    fn glio_sessions_route_and_retire_by_open_description() {
+        use wasm_posix_shared::gl;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut sessions = Vec::new();
+        let mut contexts = Vec::new();
+        let mut fds = Vec::new();
+        for _ in 0..2 {
+            let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+            glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+            sys_mmap(&mut proc, &mut host, 0, gl::CMDBUF_LEN, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0).unwrap();
+            let mut attrs = [0u8; 16];
+            attrs[..4].copy_from_slice(&2u32.to_le_bytes());
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut attrs).unwrap();
+            let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            let gls = dri_state(&proc, ofd).unwrap().gl.as_ref().unwrap();
+            sessions.push(gls.session_id);
+            contexts.push(u32::from_le_bytes(attrs[12..16].try_into().unwrap()));
+            assert_eq!(gls.context_id, contexts.last().copied());
+            assert_eq!(attrs[..12], [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            fds.push(fd);
+        }
+        assert_ne!(sessions[0], sessions[1]);
+        assert!(sessions.iter().all(|id| *id != 0));
+        assert_ne!(contexts[0], contexts[1]);
+        assert!(contexts.iter().all(|id| *id != 0));
+        assert_eq!(host.gl_bind_sessions, sessions);
+        assert_eq!(host.gl_create_context_sessions, sessions);
+        for &fd in &fds {
+            glio_test_bind(&mut proc, &mut host, fd);
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_SUBMIT, &mut [0u8; 8]).unwrap();
+        }
+        assert_eq!(host.gl_submit_sessions, sessions);
+        let duplicate = sys_dup(&mut proc, fds[0]).unwrap();
+        sys_close(&mut proc, &mut host, fds[0]).unwrap();
+        assert!(host.gl_unbind_sessions.is_empty());
+        sys_close(&mut proc, &mut host, duplicate).unwrap();
+        assert_eq!(host.gl_unbind_sessions, [sessions[0]]);
+        let other = proc.fd_table.get(fds[1]).unwrap().ofd_ref.0;
+        assert_eq!(dri_state(&proc, other).unwrap().gl.as_ref().unwrap().context_id, Some(contexts[1]));
+        sys_ioctl(&mut proc, &mut host, fds[1], gl::GLIO_SUBMIT, &mut [0u8; 8]).unwrap();
+        assert_eq!(host.gl_submit_sessions.last(), Some(&sessions[1]));
+        release_process_dri_mappings(&mut proc, &mut host);
+        assert_eq!(host.gl_unbind_sessions, sessions);
+    }
+
+    fn glio_share_join(proc: &mut Process, host: &mut MockHostIO, root: i32, generation: u32) -> i32 {
+        use wasm_posix_shared::gl;
+        let fd = sys_open(proc, host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut info = glio_init_bytes(gl::GlInitInfo {
+            op_version: gl::OP_VERSION,
+            role: gl::SESSION_OBJECTS,
+            display_fd: root,
+            display_id: generation,
+        });
+        sys_ioctl(proc, host, fd, gl::GLIO_INIT, &mut info).unwrap();
+        fd
+    }
+    fn glio_share_attrs(source: u32) -> [u8; 16] {
+        let mut attrs = [0; 16];
+        attrs[..4].copy_from_slice(&2u32.to_le_bytes());
+        attrs[4..8].copy_from_slice(&source.to_le_bytes());
+        attrs
+    }
+    #[test]
+    fn glio_shared_context_creation_validates_and_forwards_live_source_identity() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (root, generation) = glio_display_test(&mut proc, &mut host, gl::OP_VERSION).unwrap();
+        let source = glio_share_join(&mut proc, &mut host, root, generation);
+        let mut original = glio_share_attrs(0);
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            source,
+            gl::GLIO_CREATE_CONTEXT,
+            &mut original,
+        )
+        .unwrap();
+        let source_id = u32::from_le_bytes(original[12..16].try_into().unwrap());
+        glio_map_test(&mut proc, &mut host, source);
+        glio_test_bind(&mut proc, &mut host, source);
+        proc.add_thread(crate::process::ThreadInfo::new(2, 0, 0, 0));
+        proc.blocked_retries.bind_task(2);
+        let target = glio_share_join(&mut proc, &mut host, root, generation);
+        let mut joined = glio_share_attrs(source_id);
+        let unchanged = joined;
+        host.gl_create_context_rc = -(Errno::ENOMEM as i32);
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                target,
+                gl::GLIO_CREATE_CONTEXT,
+                &mut joined
+            ),
+            Err(Errno::ENOMEM)
+        );
+        assert_eq!(joined, unchanged);
+        let target_ofd = proc.fd_table.get(target).unwrap().ofd_ref.0;
+        assert!(
+            dri_state(&proc, target_ofd)
+                .unwrap()
+                .gl
+                .as_ref()
+                .unwrap()
+                .context_id
+                .is_none()
+        );
+        let source_ofd = proc.fd_table.get(source).unwrap().ofd_ref.0;
+        assert!(
+            dri_state(&proc, source_ofd)
+                .unwrap()
+                .gl
+                .as_ref()
+                .unwrap()
+                .current
+                .is_some()
+        );
+        host.gl_create_context_rc = 0;
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            target,
+            gl::GLIO_CREATE_CONTEXT,
+            &mut joined,
+        )
+        .unwrap();
+        let target_id = u32::from_le_bytes(joined[12..16].try_into().unwrap());
+        assert_ne!(target_id, source_id);
+        assert_ne!(target_id, 0);
+        assert_eq!(&joined[..12], &unchanged[..12]);
+        assert_eq!(
+            host.gl_create_context_attrs.last(),
+            Some(&unchanged.to_vec())
+        );
+        // Retiring the original source does not prevent joining a surviving peer.
+        proc.blocked_retries.bind_task(1);
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            source,
+            gl::GLIO_MAKE_CURRENT,
+            &mut [0; 12],
+        )
+        .unwrap();
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            source,
+            gl::GLIO_DESTROY_CONTEXT,
+            &mut [],
+        )
+        .unwrap();
+        let third = glio_share_join(&mut proc, &mut host, root, generation);
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            third,
+            gl::GLIO_CREATE_CONTEXT,
+            &mut glio_share_attrs(target_id),
+        )
+        .unwrap();
+    }
+    #[test]
+    fn glio_shared_context_creation_rejects_unknown_foreign_generation_and_dead_sources_before_host_entry()
+     {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (root, generation) = glio_display_test(&mut proc, &mut host, gl::OP_VERSION).unwrap();
+        let source = glio_share_join(&mut proc, &mut host, root, generation);
+        let mut attrs = glio_share_attrs(0);
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            source,
+            gl::GLIO_CREATE_CONTEXT,
+            &mut attrs,
+        )
+        .unwrap();
+        let id = u32::from_le_bytes(attrs[12..16].try_into().unwrap());
+        let target = glio_share_join(&mut proc, &mut host, root, generation);
+        let (other_root, other_generation) =
+            glio_display_test(&mut proc, &mut host, gl::OP_VERSION).unwrap();
+        let other = glio_share_join(&mut proc, &mut host, other_root, other_generation);
+        let calls = host.gl_create_context_sessions.len();
+        for (fd, source_id) in [(target, u32::MAX), (other, id)] {
+            let mut request = glio_share_attrs(source_id);
+            let unchanged = request;
+            assert_eq!(
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    fd,
+                    gl::GLIO_CREATE_CONTEXT,
+                    &mut request
+                ),
+                Err(Errno::EINVAL)
+            );
+            assert_eq!(request, unchanged);
+        }
+        let source_ofd = proc.fd_table.get(source).unwrap().ofd_ref.0;
+        dri_state_mut(&mut proc, source_ofd)
+            .unwrap()
+            .gl
+            .as_mut()
+            .unwrap()
+            .owner_pid = 2;
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                target,
+                gl::GLIO_CREATE_CONTEXT,
+                &mut glio_share_attrs(id)
+            ),
+            Err(Errno::EINVAL)
+        );
+        dri_state_mut(&mut proc, source_ofd)
+            .unwrap()
+            .gl
+            .as_mut()
+            .unwrap()
+            .owner_pid = 1;
+        let mut reserved = glio_share_attrs(id);
+        reserved[8] = 1;
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                target,
+                gl::GLIO_CREATE_CONTEXT,
+                &mut reserved
+            ),
+            Err(Errno::EINVAL)
+        );
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            source,
+            gl::GLIO_DESTROY_CONTEXT,
+            &mut [],
+        )
+        .unwrap();
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                target,
+                gl::GLIO_CREATE_CONTEXT,
+                &mut glio_share_attrs(id)
+            ),
+            Err(Errno::EINVAL)
+        );
+        sys_close(&mut proc, &mut host, source).unwrap();
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                target,
+                gl::GLIO_CREATE_CONTEXT,
+                &mut glio_share_attrs(id)
+            ),
+            Err(Errno::EINVAL)
+        );
+        sys_ioctl(&mut proc, &mut host, root, gl::GLIO_TERMINATE, &mut []).unwrap();
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                target,
+                gl::GLIO_CREATE_CONTEXT,
+                &mut glio_share_attrs(id)
+            ),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(host.gl_create_context_sessions.len(), calls);
+    }
+
+    #[test]
+    fn glio_create_context_preserves_backend_failure_and_allows_retry() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let version = gl::OP_VERSION.to_le_bytes();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(version[..4].try_into().unwrap())).unwrap();
+        let mut attrs = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
+        attrs[..4].copy_from_slice(&2u32.to_le_bytes());
+        let ofd_idx = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        for (rc, expected) in [
+            (-(Errno::ENOMEM as i32), Errno::ENOMEM),
+            (-(Errno::ENODEV as i32), Errno::ENODEV),
+            (1, Errno::EIO),
+            (i32::MIN, Errno::EIO),
+        ] {
+            host.gl_create_context_rc = rc;
+            assert_eq!(
+                sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut attrs),
+                Err(expected),
+            );
+            let gls = dri_state(&proc, ofd_idx).unwrap().gl.as_ref().unwrap();
+            assert_eq!(gls.context_id, None);
+            assert!(gls.current.is_none());
+        }
+        host.gl_create_context_rc = 0;
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut attrs).unwrap();
+        assert_eq!(
+            dri_state(&proc, ofd_idx)
+                .unwrap()
+                .gl
+                .as_ref()
+                .unwrap()
+                .context_id,
+            Some(u32::from_le_bytes(attrs[12..16].try_into().unwrap())),
+        );
+        assert_ne!(attrs[12..16], [0; 4]);
     }
 
     #[test]
@@ -50779,11 +53656,12 @@ impl HostIO for RelSymlinkMock {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
 
         let attrs = gl::GlContextAttrs {
             client_version: 2,
-            reserved: [0; 3],
+            share_context_id: 0, reserved: 0,
+            context_id: 0,
         };
         let mut buf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
         unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
@@ -50799,7 +53677,9 @@ impl HostIO for RelSymlinkMock {
             .gl
             .as_ref()
             .unwrap();
-        assert_eq!(gls.context_id, Some(1));
+        let first_id = u32::from_le_bytes(buf[12..16].try_into().unwrap());
+        assert_ne!(first_id, 0);
+        assert_eq!(gls.context_id, Some(first_id));
 
         // Second CREATE_CONTEXT on the same fd must fail until the
         // first is destroyed.
@@ -50821,6 +53701,7 @@ impl HostIO for RelSymlinkMock {
         .unwrap();
         unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut buf).unwrap();
+        assert!(u32::from_le_bytes(buf[12..16].try_into().unwrap()) > first_id);
     }
 
     #[test]
@@ -50881,11 +53762,13 @@ impl HostIO for RelSymlinkMock {
         // Bring up the GL session + context on the same fd.
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
-        let attrs = gl::GlContextAttrs { client_version: 3, reserved: [0; 3] };
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
+        let attrs = gl::GlContextAttrs { client_version: 3, share_context_id: 0, reserved: 0, context_id: 0 };
         let mut abuf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
         unsafe { core::ptr::write_unaligned(abuf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut abuf).unwrap();
+        let context_id = u32::from_le_bytes(abuf[12..16].try_into().unwrap());
+        glio_test_bind(&mut proc, &mut host, fd);
 
         // Unknown handle → ENOENT.
         req.bo_handle = 999;
@@ -50898,7 +53781,7 @@ impl HostIO for RelSymlinkMock {
 
         // Wrong ctx_id → EINVAL.
         req.bo_handle = dumb_out.handle;
-        req.ctx_id = 2;
+        req.ctx_id = 0;
         unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req) };
         assert_eq!(
             sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, &mut buf)
@@ -50909,7 +53792,7 @@ impl HostIO for RelSymlinkMock {
         // Happy path: the host's texture id round-trips into the struct,
         // and the host saw the resolved kernel-global bo id (2 — second
         // bo in the reset registry), not this fd's local handle (1).
-        req.ctx_id = 1;
+        req.ctx_id = context_id;
         unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req) };
         sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, &mut buf).unwrap();
         let out: WpkDrmBindForeignTexture =
@@ -50917,7 +53800,7 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(out.gl_texture_id, 7);
         assert_eq!(
             host.gl_bind_foreign_texture_calls[0],
-            (1, 1, 2, 0x0DE1),
+            (1, context_id, 2, 0x0DE1),
         );
 
         // Host failure (headless: no WebGL backing) → EIO.
@@ -50928,6 +53811,1230 @@ impl HostIO for RelSymlinkMock {
                 .unwrap_err(),
             Errno::EIO,
         );
+    }
+
+    fn surface_id_for_test(proc: &Process, fd: i32) -> u32 {
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        dri_state(proc, ofd).unwrap().gl.as_ref().unwrap().surface_id.unwrap()
+    }
+
+    fn glio_surface_bo_setup(proc: &mut Process, host: &mut MockHostIO, gpu: bool) -> (i32, u32) {
+        use wasm_posix_shared::{dri::*, gl};
+        let (fd, bo) = if gpu {
+            let fd = sys_open(proc, host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+            let mut bytes = [0u8; 16];
+            for (word, value) in bytes.chunks_exact_mut(4).zip([64u32, 32, 0x34325258, 5]) {
+                word.copy_from_slice(&value.to_le_bytes());
+            }
+            sys_ioctl(proc, host, fd, DRM_IOCTL_WPK_CREATE_GPU_BO, &mut bytes).unwrap();
+            let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            (fd, *dri_state(proc, ofd).unwrap().handles.get(&1).unwrap())
+        } else {
+            let (fd, offset, _) = dri_alloc_dumb_for_mmap(proc, host, 64, 32);
+            (fd, (offset >> 12) as u32)
+        };
+        glio_init_objects_test(proc, host, fd, gl::OP_VERSION).unwrap();
+        let mut bytes = [0u8; 36];
+        for (word, value) in
+            bytes
+                .chunks_exact_mut(4)
+                .zip([gl::WPK_SURFACE_DEFAULT, 64, 32, 1, 1, 0, 0, 0])
+        {
+            word.copy_from_slice(&value.to_le_bytes());
+        }
+        sys_ioctl(proc, host, fd, gl::GLIO_CREATE_SURFACE, &mut bytes).unwrap();
+        (fd, bo)
+    }
+    fn glio_surface_bo_close_handle(proc: &mut Process, host: &mut MockHostIO, fd: i32, handle: u32) {
+        let mut bytes = [0u8; 8];
+        bytes[..4].copy_from_slice(&handle.to_le_bytes());
+        sys_ioctl(
+            proc,
+            host,
+            fd,
+            wasm_posix_shared::dri::DRM_IOCTL_GEM_CLOSE,
+            &mut bytes,
+        )
+        .unwrap();
+    }
+    fn glio_surface_bo_count(bo: u32) -> Option<u32> {
+        crate::dri::with_registry(|r| r.get(bo).map(|b| b.refcount))
+    }
+
+    #[test]
+    fn glio_surface_bo_survives_handle_close_for_cpu_and_gpu_until_destroy() {
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for gpu in [false, true] {
+            crate::dri::bo::reset_registry();
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let (fd, bo) = glio_surface_bo_setup(&mut proc, &mut host, gpu);
+            glio_surface_bo_close_handle(&mut proc, &mut host, fd, 1);
+            assert_eq!(glio_surface_bo_count(bo), Some(1));
+            assert!(host.gbm_bo_destroy_calls.is_empty());
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                wasm_posix_shared::gl::GLIO_DESTROY_SURFACE,
+                &mut [],
+            )
+            .unwrap();
+            assert_eq!(glio_surface_bo_count(bo), None);
+            assert_eq!(host.gbm_bo_destroy_calls, [(1, bo)]);
+            assert_eq!(host.gl_surface_release_events, [(3, host.gl_create_surface_calls[0].1), (2, bo)]);
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            assert_eq!(host.gbm_bo_destroy_calls.len(), 1);
+        }
+    }
+
+    fn check_glio_surface_bo_teardown(mode: &str) {
+        use wasm_posix_shared::gl;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, bo) = glio_surface_bo_setup(&mut proc, &mut host, true);
+        glio_map_test(&mut proc, &mut host, fd);
+        glio_surface_bo_close_handle(&mut proc, &mut host, fd, 1);
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+        assert!(host.gbm_bo_destroy_calls.is_empty());
+        match mode {
+            "terminate" => sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_TERMINATE, &mut []).unwrap(),
+            "unmap" => {
+                let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+                let address = dri_state(&proc, ofd)
+                    .unwrap()
+                    .gl
+                    .as_ref()
+                    .unwrap()
+                    .cmdbuf
+                    .unwrap()
+                    .addr;
+                sys_munmap(&mut proc, &mut host, address + 0x10000, 0x10000).unwrap();
+            }
+            "exec" => {
+                commit_exec_state(&mut proc, &mut host, 0).unwrap();
+            }
+            "exit" => sys_exit(&mut proc, &mut host, 0),
+            "close" => {
+                let alias = sys_dup(&mut proc, fd).unwrap();
+                sys_close(&mut proc, &mut host, fd).unwrap();
+                assert_eq!(glio_surface_bo_count(bo), Some(1));
+                assert!(host.gl_unbind_calls.is_empty());
+                sys_close(&mut proc, &mut host, alias).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(glio_surface_bo_count(bo), None);
+        assert_eq!(host.gbm_bo_destroy_calls, [(1, bo)]);
+        assert_eq!(host.gl_surface_release_events.len(), 2);
+        assert_eq!(host.gl_surface_release_events[0].0, 1);
+        assert_eq!(host.gl_surface_release_events[1], (2, bo));
+        if mode != "exit" && mode != "close" {
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
+        assert_eq!(host.gbm_bo_destroy_calls.len(), 1);
+        assert_eq!(host.gl_surface_release_events.len(), 2);
+    }
+    #[test]
+    fn glio_surface_bo_terminate_releases_after_native_unbind() {
+        check_glio_surface_bo_teardown("terminate");
+    }
+    #[test]
+    fn glio_surface_bo_partial_unmap_releases_after_native_unbind() {
+        check_glio_surface_bo_teardown("unmap");
+    }
+    #[test]
+    fn glio_surface_bo_exec_releases_after_native_unbind() {
+        check_glio_surface_bo_teardown("exec");
+    }
+    #[test]
+    fn glio_surface_bo_exit_releases_after_native_unbind() {
+        check_glio_surface_bo_teardown("exit");
+    }
+    #[test]
+    fn glio_surface_bo_final_duplicate_close_releases_after_native_unbind() {
+        check_glio_surface_bo_teardown("close");
+    }
+
+    #[test]
+    fn glio_surface_bo_update_preserves_old_storage_on_failure_and_transfers_after_acceptance() {
+        use wasm_posix_shared::{dri::*, gl};
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, old) = glio_surface_bo_setup(&mut proc, &mut host, true);
+        let mut bytes = [0u8; 16];
+        for (word, value) in bytes.chunks_exact_mut(4).zip([64u32, 32, 0x34325258, 5]) {
+            word.copy_from_slice(&value.to_le_bytes());
+        }
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            DRM_IOCTL_WPK_CREATE_GPU_BO,
+            &mut bytes,
+        )
+        .unwrap();
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let next = *dri_state(&proc, ofd).unwrap().handles.get(&2).unwrap();
+        let mut surface = [0u8; 32];
+        for (word, value) in
+            surface
+                .chunks_exact_mut(4)
+                .zip([gl::WPK_SURFACE_DEFAULT, 64, 32, 1, 1, 0, 0, 0])
+        {
+            word.copy_from_slice(&value.to_le_bytes());
+        }
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_UPDATE_SURFACE,
+            &mut surface,
+        )
+        .unwrap();
+        assert_eq!(glio_surface_bo_count(old), Some(2)); // Same target holds exactly one surface reference.
+        glio_surface_bo_close_handle(&mut proc, &mut host, fd, 1);
+        surface[16..20].copy_from_slice(&2u32.to_le_bytes());
+        let input = surface;
+        host.gl_update_surface_rc = -(Errno::ENOMEM as i32);
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                gl::GLIO_UPDATE_SURFACE,
+                &mut surface
+            ),
+            Err(Errno::ENOMEM)
+        );
+        assert_eq!(surface, input);
+        assert_eq!(glio_surface_bo_count(old), Some(1));
+        assert_eq!(glio_surface_bo_count(next), Some(1));
+        assert!(host.gbm_bo_destroy_calls.is_empty());
+        host.gl_update_surface_rc = 0;
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_UPDATE_SURFACE,
+            &mut surface,
+        )
+        .unwrap();
+        assert_eq!(glio_surface_bo_count(old), None);
+        assert_eq!(glio_surface_bo_count(next), Some(2));
+        assert_eq!(host.gbm_bo_destroy_calls, [(1, old)]);
+        glio_surface_bo_close_handle(&mut proc, &mut host, fd, 2);
+        assert_eq!(glio_surface_bo_count(next), Some(1));
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(host.gbm_bo_destroy_calls, [(1, old), (1, next)]);
+    }
+
+    #[test]
+    fn glio_surface_bo_fork_keeps_one_open_description_hold_until_final_child_close() {
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut table = crate::process_table::ProcessTable::new();
+        let mut host = MockHostIO::new();
+        let parent = table.create_process().unwrap();
+        let (fd, bo) = glio_surface_bo_setup(table.get_mut(parent).unwrap(), &mut host, true);
+        glio_surface_bo_close_handle(table.get_mut(parent).unwrap(), &mut host, fd, 1);
+        let child = table.fork_process_for_caller(parent, parent).unwrap();
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+        sys_close(table.get_mut(parent).unwrap(), &mut host, fd).unwrap();
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+        assert!(host.gl_unbind_calls.is_empty());
+        sys_close(table.get_mut(child).unwrap(), &mut host, fd).unwrap();
+        assert_eq!(glio_surface_bo_count(bo), None);
+        assert_eq!(host.gl_unbind_calls, [parent as i32]);
+        assert_eq!(host.gbm_bo_destroy_calls.len(), 1);
+    }
+
+    #[test]
+    fn glio_surface_bo_forced_removal_collects_one_final_hold_and_ordered_host_effects() {
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut table = crate::process_table::ProcessTable::new();
+        let mut host = MockHostIO::new();
+        let pid = table.create_process().unwrap();
+        let (fd, bo) = glio_surface_bo_setup(table.get_mut(pid).unwrap(), &mut host, true);
+        glio_surface_bo_close_handle(table.get_mut(pid).unwrap(), &mut host, fd, 1);
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+        let removed = table.remove_process(pid).unwrap();
+        assert_eq!(glio_surface_bo_count(bo), None);
+        assert_eq!(removed.dri_effects.len(), 2);
+        assert!(
+            matches!(removed.dri_effects[0],DriReleaseEffect::UnbindGl {owner_pid,..} if owner_pid == pid as i32)
+        );
+        assert_eq!(removed.dri_effects[1], DriReleaseEffect::DestroyBo(bo));
+        apply_dri_release_effects(pid as i32, removed.dri_effects, &mut host);
+        assert_eq!(host.gl_surface_release_events.len(), 2);
+        assert_eq!(host.gl_surface_release_events[0].0, 1);
+        assert_eq!(host.gl_surface_release_events[1], (2, bo));
+    }
+
+    #[test]
+    fn glio_surface_bo_busy_destroy_preserves_current_storage_until_release() {
+        use wasm_posix_shared::gl;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, bo) = glio_surface_bo_setup(&mut proc, &mut host, true);
+        let context = glio_test_bind(&mut proc, &mut host, fd);
+        let mut binding = [0u8; 12];
+        for (word, value) in binding.chunks_exact_mut(4).zip([context, surface_id_for_test(&proc, fd), surface_id_for_test(&proc, fd)]) {
+            word.copy_from_slice(&value.to_le_bytes());
+        }
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_MAKE_CURRENT,
+            &mut binding,
+        )
+        .unwrap();
+        glio_surface_bo_close_handle(&mut proc, &mut host, fd, 1);
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut []),
+            Err(Errno::EBUSY)
+        );
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+        assert!(host.gl_surface_release_events.is_empty());
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_MAKE_CURRENT,
+            &mut [0; 12],
+        )
+        .unwrap();
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut []).unwrap();
+        assert_eq!(glio_surface_bo_count(bo), None);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn glio_surface_bo_child_cleanup_and_foreign_init_preserve_parent_ownership() {
+        use wasm_posix_shared::gl;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for mode in [
+            "fork close",
+            "fork exec",
+            "fork remove",
+            "spawn cloexec",
+            "failed spawn",
+        ] {
+            crate::dri::bo::reset_registry();
+            let mut table = crate::process_table::ProcessTable::new();
+            let mut host = MockHostIO::new();
+            let parent = table.create_process().unwrap();
+            let (fd, bo) = glio_surface_bo_setup(table.get_mut(parent).unwrap(), &mut host, true);
+            glio_surface_bo_close_handle(table.get_mut(parent).unwrap(), &mut host, fd, 1);
+            if mode == "failed spawn" {
+                let error = table.spawn_child_for_caller(
+                    parent,
+                    parent,
+                    &[],
+                    &[],
+                    &[crate::spawn::FileAction::Dup2 { srcfd: 999, fd: 1 }],
+                    &crate::spawn::SpawnAttrs::empty(),
+                    &mut host,
+                );
+                assert_eq!(error, Err(Errno::EBADF));
+            } else {
+                let child = if mode == "spawn cloexec" {
+                    sys_fcntl(table.get_mut(parent).unwrap(), fd, F_SETFD, FD_CLOEXEC).unwrap();
+                    table
+                        .spawn_child_for_caller(
+                            parent,
+                            parent,
+                            &[],
+                            &[],
+                            &[],
+                            &crate::spawn::SpawnAttrs::empty(),
+                            &mut host,
+                        )
+                        .unwrap()
+                } else {
+                    table.fork_process_for_caller(parent, parent).unwrap()
+                };
+                let mut bytes = glio_init_bytes(gl::GlInitInfo {
+                    op_version: gl::OP_VERSION,
+                    role: gl::SESSION_DISPLAY,
+                    display_fd: -1,
+                    display_id: 0,
+                });
+                let input = bytes;
+                assert_eq!(
+                    sys_ioctl(
+                        table.get_mut(child).unwrap(),
+                        &mut host,
+                        fd,
+                        gl::GLIO_INIT,
+                        &mut bytes
+                    ),
+                    Err(Errno::EACCES)
+                );
+                assert_eq!(bytes, input);
+                match mode {
+                    "fork close" => sys_close(table.get_mut(child).unwrap(), &mut host, fd).unwrap(),
+                    "fork exec" | "spawn cloexec" => {
+                        commit_exec_state(table.get_mut(child).unwrap(), &mut host, 0).unwrap();
+                        if mode == "fork exec" {
+                            sys_close(table.get_mut(child).unwrap(), &mut host, fd).unwrap();
+                        } else {
+                            assert!(table.get(child).unwrap().fd_table.get(fd).is_err());
+                        }
+                    }
+                    "fork remove" => {
+                        let removed = table.remove_process(child).unwrap();
+                        apply_dri_release_effects(child as i32, removed.dri_effects, &mut host);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            assert_eq!(glio_surface_bo_count(bo), Some(1));
+            assert!(host.gl_unbind_calls.is_empty());
+            assert!(host.gbm_bo_destroy_calls.is_empty());
+            sys_close(table.get_mut(parent).unwrap(), &mut host, fd).unwrap();
+            assert_eq!(glio_surface_bo_count(bo), None);
+            assert_eq!(host.gl_unbind_calls, [parent as i32]);
+            assert_eq!(host.gbm_bo_destroy_calls.len(), 1);
+        }
+    }
+
+    #[test]
+    fn glio_surface_bo_owner_image_end_revokes_shared_resources_before_child_close() {
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for (mode, close_parent) in ["exec", "exit", "forced"]
+            .into_iter()
+            .flat_map(|mode| [false, true].map(|closed| (mode, closed)))
+        {
+            crate::dri::bo::reset_registry();
+            let mut table = crate::process_table::ProcessTable::new();
+            let mut host = MockHostIO::new();
+            let parent = table.create_process().unwrap();
+            let (fd, bo) = glio_surface_bo_setup(table.get_mut(parent).unwrap(), &mut host, true);
+            glio_surface_bo_close_handle(table.get_mut(parent).unwrap(), &mut host, fd, 1);
+            let child = table.fork_process_for_caller(parent, parent).unwrap();
+            if close_parent {
+                sys_close(table.get_mut(parent).unwrap(), &mut host, fd).unwrap();
+            }
+            match mode {
+                "exec" => commit_exec_state(table.get_mut(parent).unwrap(), &mut host, 0).unwrap(),
+                "exit" => sys_exit(table.get_mut(parent).unwrap(), &mut host, 0),
+                "forced" => {
+                    let removed = table.remove_process(parent).unwrap();
+                    apply_dri_release_effects(parent as i32, removed.dri_effects, &mut host);
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(glio_surface_bo_count(bo), None);
+            assert_eq!(host.gl_unbind_calls, [parent as i32]);
+            assert_eq!(host.gbm_bo_destroy_calls.len(), 1);
+            sys_close(table.get_mut(child).unwrap(), &mut host, fd).unwrap();
+            assert_eq!(host.gl_unbind_calls, [parent as i32]);
+            assert_eq!(host.gbm_bo_destroy_calls.len(), 1);
+        }
+    }
+
+    #[test]
+    fn glio_surface_bo_owner_unmap_after_local_close_revokes_shared_renderer_once() {
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut table = crate::process_table::ProcessTable::new();
+        let mut host = MockHostIO::new();
+        let parent = table.create_process().unwrap();
+        let (fd, bo) = glio_surface_bo_setup(table.get_mut(parent).unwrap(), &mut host, true);
+        glio_map_test(table.get_mut(parent).unwrap(), &mut host, fd);
+        let proc = table.get(parent).unwrap();
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let address = dri_state(proc, ofd)
+            .unwrap()
+            .gl
+            .as_ref()
+            .unwrap()
+            .cmdbuf
+            .unwrap()
+            .addr;
+        glio_surface_bo_close_handle(table.get_mut(parent).unwrap(), &mut host, fd, 1);
+        let child = table.fork_process_for_caller(parent, parent).unwrap();
+        sys_close(table.get_mut(parent).unwrap(), &mut host, fd).unwrap();
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+        sys_munmap(
+            table.get_mut(parent).unwrap(),
+            &mut host,
+            address + 0x10000,
+            0x10000,
+        )
+        .unwrap();
+        assert_eq!(glio_surface_bo_count(bo), None);
+        assert_eq!(host.gl_unbind_calls, [parent as i32]);
+        assert_eq!(host.gl_surface_release_events.len(), 2);
+        assert_eq!(host.gl_surface_release_events[0].0, 1);
+        assert_eq!(host.gl_surface_release_events[1], (2, bo));
+        commit_exec_state(table.get_mut(parent).unwrap(), &mut host, 0).unwrap();
+        sys_close(table.get_mut(child).unwrap(), &mut host, fd).unwrap();
+        assert_eq!(host.gl_surface_release_events.len(), 2);
+    }
+
+    #[test]
+    fn glio_surface_bo_reference_overflow_leaves_surface_and_input_unpublished() {
+        use wasm_posix_shared::gl;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+        let bo = crate::dri::with_registry(|r| {
+            let b = r.try_alloc(64, 32, 32).unwrap();
+            b.refcount = u32::MAX;
+            b.id
+        });
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        dri_state_mut(&mut proc, ofd).unwrap().handles.insert(1, bo);
+        let mut bytes = [0u8; 36];
+        for (word, value) in
+            bytes
+                .chunks_exact_mut(4)
+                .zip([gl::WPK_SURFACE_DEFAULT, 64, 32, 1, 1, 0, 0, 0])
+        {
+            word.copy_from_slice(&value.to_le_bytes());
+        }
+        let input = bytes;
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                gl::GLIO_CREATE_SURFACE,
+                &mut bytes
+            ),
+            Err(Errno::ENOMEM)
+        );
+        assert_eq!(bytes, input);
+        assert!(host.gl_create_surface_calls.is_empty());
+        assert_eq!(
+            dri_state(&proc, ofd)
+                .unwrap()
+                .gl
+                .as_ref()
+                .unwrap()
+                .surface_id,
+            None
+        );
+        assert_eq!(glio_surface_bo_count(bo), Some(u32::MAX));
+    }
+
+    fn glio_cross_surface_setup(
+        proc: &mut Process,
+        host: &mut MockHostIO,
+    ) -> (i32, [i32; 2], i32, [u32; 2], [u32; 2], u32) {
+        use wasm_posix_shared::{dri::*, gl};
+        let root = sys_open(proc, host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut info = glio_init_bytes(gl::GlInitInfo {
+            op_version: gl::OP_VERSION,
+            role: gl::SESSION_DISPLAY,
+            display_fd: -1,
+            display_id: 0,
+        });
+        sys_ioctl(proc, host, root, gl::GLIO_INIT, &mut info).unwrap();
+        let generation = u32::from_le_bytes(info[12..16].try_into().unwrap());
+        let mut owners = [0; 2];
+        let mut surfaces = [0; 2];
+        let mut bos = [0; 2];
+        let mut context_fd = 0;
+        for i in 0..3 {
+            let fd = sys_open(proc, host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+            let mut info = glio_init_bytes(gl::GlInitInfo {
+                op_version: gl::OP_VERSION,
+                role: gl::SESSION_OBJECTS,
+                display_fd: root,
+                display_id: generation,
+            });
+            sys_ioctl(proc, host, fd, gl::GLIO_INIT, &mut info).unwrap();
+            if i == 2 {
+                context_fd = fd;
+                break;
+            }
+            owners[i] = fd;
+            glio_map_test(proc, host, fd);
+            let mut bo = [0u8; 16];
+            for (word, n) in bo.chunks_exact_mut(4).zip([64u32, 32, 0x34325258, 5]) {
+                word.copy_from_slice(&n.to_le_bytes());
+            }
+            sys_ioctl(proc, host, fd, DRM_IOCTL_WPK_CREATE_GPU_BO, &mut bo).unwrap();
+            let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            bos[i] = *dri_state(proc, ofd).unwrap().handles.get(&1).unwrap();
+            let mut attrs = [0u8; 36];
+            for (word, n) in attrs
+                .chunks_exact_mut(4)
+                .zip([1u32, 64, 32, 1, 1, 0, 0, 0, 0])
+            {
+                word.copy_from_slice(&n.to_le_bytes());
+            }
+            sys_ioctl(proc, host, fd, gl::GLIO_CREATE_SURFACE, &mut attrs).unwrap();
+            surfaces[i] = u32::from_le_bytes(attrs[32..36].try_into().unwrap());
+            glio_surface_bo_close_handle(proc, host, fd, 1);
+        }
+        glio_map_test(proc, host, context_fd);
+        let context = glio_test_bind(proc, host, context_fd);
+        (root, owners, context_fd, surfaces, bos, context)
+    }
+    fn glio_cross_bind(
+        proc: &mut Process,
+        host: &mut MockHostIO,
+        fd: i32,
+        ctx: u32,
+        draw: u32,
+        read: u32,
+    ) -> Result<(), Errno> {
+        let mut bytes = [0u8; 12];
+        for (word, n) in bytes.chunks_exact_mut(4).zip([ctx, draw, read]) {
+            word.copy_from_slice(&n.to_le_bytes());
+        }
+        sys_ioctl(
+            proc,
+            host,
+            fd,
+            wasm_posix_shared::gl::GLIO_MAKE_CURRENT,
+            &mut bytes,
+        )
+    }
+
+    #[test]
+    fn glio_cross_surface_draw_read_storage_survives_both_owner_closes() {
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_, owners, fd, surfaces, bos, ctx) = glio_cross_surface_setup(&mut proc, &mut host);
+        glio_cross_bind(&mut proc, &mut host, fd, ctx, surfaces[0], surfaces[1]).unwrap();
+        for i in 0..2 {
+            assert_eq!(glio_surface_bo_count(bos[i]), Some(1));
+            sys_close(&mut proc, &mut host, owners[i]).unwrap();
+            assert_eq!(glio_surface_bo_count(bos[i]), Some(1));
+        }
+        assert!(host.gbm_bo_destroy_calls.is_empty());
+        // Retired handles grant no new binding, but the existing current
+        // context still owns both targets until release.
+        assert_eq!(
+            glio_cross_bind(&mut proc, &mut host, fd, ctx, surfaces[0], surfaces[1]),
+            Err(Errno::EINVAL)
+        );
+        glio_cross_bind(&mut proc, &mut host, fd, 0, 0, 0).unwrap();
+        for bo in bos {
+            assert_eq!(glio_surface_bo_count(bo), None);
+        }
+        assert_eq!(host.gbm_bo_destroy_calls.len(), 2);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(host.gbm_bo_destroy_calls.len(), 2);
+    }
+
+    #[test]
+    fn glio_cross_surface_failed_replacement_preserves_current_references() {
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_, owners, fd, surfaces, bos, ctx) = glio_cross_surface_setup(&mut proc, &mut host);
+        glio_cross_bind(&mut proc, &mut host, fd, ctx, surfaces[0], surfaces[0]).unwrap();
+        host.gl_make_current_rc = -(Errno::ENOMEM as i32);
+        assert_eq!(
+            glio_cross_bind(&mut proc, &mut host, fd, ctx, surfaces[1], surfaces[1]),
+            Err(Errno::ENOMEM)
+        );
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        assert_eq!(
+            dri_state(&proc, ofd)
+                .unwrap()
+                .gl
+                .as_ref()
+                .unwrap()
+                .current
+                .unwrap()
+                .draw_surface_id,
+            surfaces[0]
+        );
+        sys_close(&mut proc, &mut host, owners[0]).unwrap();
+        sys_close(&mut proc, &mut host, owners[1]).unwrap();
+        assert_eq!(glio_surface_bo_count(bos[0]), Some(1));
+        assert_eq!(glio_surface_bo_count(bos[1]), None);
+        glio_cross_bind(&mut proc, &mut host, fd, 0, 0, 0).unwrap();
+        assert_eq!(glio_surface_bo_count(bos[0]), None);
+    }
+
+    #[test]
+    fn glio_cross_surface_foreign_generation_unknown_and_other_thread_rejected_before_backend() {
+        use wasm_posix_shared::gl;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        proc.blocked_retries.bind_task(1);
+        let mut host = MockHostIO::new();
+        let (root, owners, fd, surfaces, _, ctx) = glio_cross_surface_setup(&mut proc, &mut host);
+        glio_cross_bind(&mut proc, &mut host, fd, ctx, surfaces[0], surfaces[1]).unwrap();
+        let (foreign, _) = glio_surface_bo_setup(&mut proc, &mut host, true);
+        let foreign_id = surface_id_for_test(&proc, foreign);
+        let calls = host.gl_make_current_calls.len();
+        for (draw, read) in [
+            (foreign_id, surfaces[0]),
+            (surfaces[0], u32::MAX),
+            (0, surfaces[0]),
+        ] {
+            assert_eq!(
+                glio_cross_bind(&mut proc, &mut host, fd, ctx, draw, read),
+                Err(Errno::EINVAL)
+            );
+        }
+        assert_eq!(host.gl_make_current_calls.len(), calls);
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                owners[0],
+                gl::GLIO_DESTROY_SURFACE,
+                &mut []
+            ),
+            Err(Errno::EBUSY)
+        );
+        // Another context may not select either current surface on a
+        // different thread, even when its own context is otherwise idle.
+        let other_ctx = glio_test_bind(&mut proc, &mut host, owners[0]);
+        glio_cross_bind(&mut proc, &mut host, fd, ctx, surfaces[0], surfaces[1]).unwrap();
+        proc.blocked_retries.bind_task(2);
+        let calls = host.gl_make_current_calls.len();
+        assert_eq!(
+            glio_cross_bind(
+                &mut proc,
+                &mut host,
+                owners[0],
+                other_ctx,
+                surfaces[0],
+                surfaces[0]
+            ),
+            Err(Errno::EACCES)
+        );
+        assert_eq!(host.gl_make_current_calls.len(), calls);
+        proc.blocked_retries.bind_task(1);
+        sys_ioctl(&mut proc, &mut host, root, gl::GLIO_TERMINATE, &mut []).unwrap();
+        assert_eq!(
+            glio_cross_bind(&mut proc, &mut host, fd, ctx, surfaces[0], surfaces[1]),
+            Err(Errno::EINVAL)
+        );
+        glio_cross_bind(&mut proc, &mut host, fd, 0, 0, 0).unwrap();
+    }
+
+    fn glio_cross_new_context(proc: &mut Process, host: &mut MockHostIO, root: i32) -> (i32, u32) {
+        use wasm_posix_shared::gl;
+        let root_ofd = proc.fd_table.get(root).unwrap().ofd_ref.0;
+        let generation = dri_state(proc, root_ofd)
+            .unwrap()
+            .gl
+            .as_ref()
+            .unwrap()
+            .display_id;
+        let fd = sys_open(proc, host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut info = glio_init_bytes(gl::GlInitInfo {
+            op_version: gl::OP_VERSION,
+            role: gl::SESSION_OBJECTS,
+            display_fd: root,
+            display_id: generation,
+        });
+        sys_ioctl(proc, host, fd, gl::GLIO_INIT, &mut info).unwrap();
+        glio_map_test(proc, host, fd);
+        let mut attrs = [0u8; 16];
+        attrs[..4].copy_from_slice(&2u32.to_le_bytes());
+        sys_ioctl(proc, host, fd, gl::GLIO_CREATE_CONTEXT, &mut attrs).unwrap();
+        (fd, u32::from_le_bytes(attrs[12..16].try_into().unwrap()))
+    }
+
+    #[test]
+    fn glio_cross_surface_context_replacement_transfers_references_on_the_same_thread() {
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (root, owners, fd, surfaces, bos, ctx) = glio_cross_surface_setup(&mut proc, &mut host);
+        let (next, next_ctx) = glio_cross_new_context(&mut proc, &mut host, root);
+        glio_cross_bind(&mut proc, &mut host, fd, ctx, surfaces[0], surfaces[1]).unwrap();
+        glio_cross_bind(
+            &mut proc,
+            &mut host,
+            next,
+            next_ctx,
+            surfaces[0],
+            surfaces[1],
+        )
+        .unwrap();
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        assert!(
+            dri_state(&proc, ofd)
+                .unwrap()
+                .gl
+                .as_ref()
+                .unwrap()
+                .current
+                .is_none()
+        );
+        sys_close(&mut proc, &mut host, owners[0]).unwrap();
+        sys_close(&mut proc, &mut host, owners[1]).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        for bo in bos {
+            assert_eq!(glio_surface_bo_count(bo), Some(1));
+        }
+        glio_cross_bind(&mut proc, &mut host, next, 0, 0, 0).unwrap();
+        for bo in bos {
+            assert_eq!(glio_surface_bo_count(bo), None);
+        }
+        assert_eq!(host.gbm_bo_destroy_calls.len(), 2);
+    }
+
+    #[test]
+    fn glio_cross_surface_closed_current_description_releases_on_owner_rebind_or_thread_cleanup() {
+        for release in [false, true] {
+            let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            crate::dri::bo::reset_registry();
+            let mut table = crate::process_table::ProcessTable::new();
+            let mut host = MockHostIO::new();
+            let parent = table.create_process().unwrap();
+            let (root, owners, fd, surfaces, bos, ctx) =
+                glio_cross_surface_setup(table.get_mut(parent).unwrap(), &mut host);
+            glio_cross_bind(
+                table.get_mut(parent).unwrap(),
+                &mut host,
+                fd,
+                ctx,
+                surfaces[0],
+                surfaces[1],
+            )
+            .unwrap();
+            for owner in owners {
+                sys_close(table.get_mut(parent).unwrap(), &mut host, owner).unwrap();
+            }
+            let child = table.fork_process_for_caller(parent, parent).unwrap();
+            sys_close(table.get_mut(parent).unwrap(), &mut host, fd).unwrap();
+            for bo in bos {
+                assert_eq!(glio_surface_bo_count(bo), Some(1));
+            }
+            if release {
+                release_gl_current_for_tid(table.get_mut(parent).unwrap(), &mut host, parent, None);
+            } else {
+                let (next, next_ctx) =
+                    glio_cross_new_context(table.get_mut(parent).unwrap(), &mut host, root);
+                host.gl_make_current_rc = -(Errno::ENOMEM as i32);
+                assert_eq!(
+                    glio_cross_bind(
+                        table.get_mut(parent).unwrap(),
+                        &mut host,
+                        next,
+                        next_ctx,
+                        0,
+                        0
+                    ),
+                    Err(Errno::ENOMEM)
+                );
+                for bo in bos {
+                    assert_eq!(glio_surface_bo_count(bo), Some(1));
+                }
+                host.gl_make_current_rc = 0;
+                glio_cross_bind(
+                    table.get_mut(parent).unwrap(),
+                    &mut host,
+                    next,
+                    next_ctx,
+                    0,
+                    0,
+                )
+                .unwrap();
+            }
+            for bo in bos {
+                assert_eq!(glio_surface_bo_count(bo), None);
+            }
+            assert_eq!(host.gbm_bo_destroy_calls.len(), 2);
+            sys_close(table.get_mut(child).unwrap(), &mut host, fd).unwrap();
+            assert_eq!(host.gbm_bo_destroy_calls.len(), 2);
+        }
+    }
+
+    #[test]
+    fn glio_cross_surface_retarget_changes_one_canonical_backing_hold_for_all_selectors() {
+        use wasm_posix_shared::{dri::*, gl};
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (_, owners, fd, surfaces, bos, ctx) = glio_cross_surface_setup(&mut proc, &mut host);
+        glio_cross_bind(&mut proc, &mut host, fd, ctx, surfaces[0], surfaces[0]).unwrap();
+        let mut bo = [0u8; 16];
+        for (word, n) in bo.chunks_exact_mut(4).zip([96u32, 48, 0x34325258, 5]) {
+            word.copy_from_slice(&n.to_le_bytes());
+        }
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            owners[0],
+            DRM_IOCTL_WPK_CREATE_GPU_BO,
+            &mut bo,
+        )
+        .unwrap();
+        let owner_ofd = proc.fd_table.get(owners[0]).unwrap().ofd_ref.0;
+        let next_bo = *dri_state(&proc, owner_ofd)
+            .unwrap()
+            .handles
+            .get(&2)
+            .unwrap();
+        let mut attrs = [0u8; 32];
+        for (word, n) in attrs.chunks_exact_mut(4).zip([1u32, 0, 0, 1, 2, 0, 0, 0]) {
+            word.copy_from_slice(&n.to_le_bytes());
+        }
+        let original = attrs;
+        host.gl_update_surface_rc = -(Errno::ENOMEM as i32);
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                owners[0],
+                gl::GLIO_UPDATE_SURFACE,
+                &mut attrs
+            ),
+            Err(Errno::ENOMEM)
+        );
+        assert_eq!(attrs, original);
+        assert_eq!(glio_surface_bo_count(bos[0]), Some(1));
+        assert_eq!(glio_surface_bo_count(next_bo), Some(1));
+        host.gl_update_surface_rc = 0;
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            owners[0],
+            gl::GLIO_UPDATE_SURFACE,
+            &mut attrs,
+        )
+        .unwrap();
+        assert_eq!(attrs, original);
+        assert_eq!(glio_surface_bo_count(bos[0]), None);
+        assert_eq!(glio_surface_bo_count(next_bo), Some(2));
+        glio_surface_bo_close_handle(&mut proc, &mut host, owners[0], 2);
+        for owner in owners {
+            sys_close(&mut proc, &mut host, owner).unwrap();
+        }
+        assert_eq!(glio_surface_bo_count(next_bo), Some(1));
+        glio_cross_bind(&mut proc, &mut host, fd, 0, 0, 0).unwrap();
+        assert_eq!(glio_surface_bo_count(next_bo), None);
+        assert_eq!(host.gbm_bo_destroy_calls.len(), 3);
+    }
+
+    #[test]
+    fn glio_cross_surface_owner_termination_or_unmap_retains_storage_until_selector_teardown() {
+        use wasm_posix_shared::gl;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for owner_end in ["terminate", "unmap"] {
+            for selector_end in ["close", "unmap", "exec", "exit", "forced", "thread"] {
+                crate::dri::bo::reset_registry();
+                let mut table = crate::process_table::ProcessTable::new();
+                let mut host = MockHostIO::new();
+                let pid = table.create_process().unwrap();
+                let (_, owners, fd, surfaces, bos, ctx) =
+                    glio_cross_surface_setup(table.get_mut(pid).unwrap(), &mut host);
+                glio_cross_bind(
+                    table.get_mut(pid).unwrap(),
+                    &mut host,
+                    fd,
+                    ctx,
+                    surfaces[0],
+                    surfaces[1],
+                )
+                .unwrap();
+                for owner in owners {
+                    let proc = table.get_mut(pid).unwrap();
+                    if owner_end == "terminate" {
+                        sys_ioctl(proc, &mut host, owner, gl::GLIO_TERMINATE, &mut []).unwrap();
+                    } else {
+                        let ofd = proc.fd_table.get(owner).unwrap().ofd_ref.0;
+                        let address = dri_state(proc, ofd)
+                            .unwrap()
+                            .gl
+                            .as_ref()
+                            .unwrap()
+                            .cmdbuf
+                            .unwrap()
+                            .addr;
+                        sys_munmap(proc, &mut host, address + 0x10000, 0x10000).unwrap();
+                    }
+                }
+                for bo in bos {
+                    assert_eq!(
+                        glio_surface_bo_count(bo),
+                        Some(1),
+                        "{owner_end}/{selector_end}"
+                    );
+                }
+                assert!(host.gbm_bo_destroy_calls.is_empty());
+                match selector_end {
+                    "close" => sys_close(table.get_mut(pid).unwrap(), &mut host, fd).unwrap(),
+                    "unmap" => {
+                        let proc = table.get_mut(pid).unwrap();
+                        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+                        let address = dri_state(proc, ofd)
+                            .unwrap()
+                            .gl
+                            .as_ref()
+                            .unwrap()
+                            .cmdbuf
+                            .unwrap()
+                            .addr;
+                        sys_munmap(proc, &mut host, address + 0x10000, 0x10000).unwrap();
+                    }
+                    "exec" => commit_exec_state(table.get_mut(pid).unwrap(), &mut host, 0).unwrap(),
+                    "exit" => sys_exit(table.get_mut(pid).unwrap(), &mut host, 0),
+                    "thread" => {
+                        release_gl_current_for_tid(table.get_mut(pid).unwrap(), &mut host, pid, None)
+                    }
+                    "forced" => {
+                        let removed = table.remove_process(pid).unwrap();
+                        apply_dri_release_effects(pid as i32, removed.dri_effects, &mut host);
+                    }
+                    _ => unreachable!(),
+                }
+                for bo in bos {
+                    assert_eq!(
+                        glio_surface_bo_count(bo),
+                        None,
+                        "{owner_end}/{selector_end}"
+                    );
+                }
+                assert_eq!(host.gbm_bo_destroy_calls.len(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn glio_cross_surface_process_isolation_and_inherited_descriptions_cannot_grant_parent_authority() {
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut table = crate::process_table::ProcessTable::new();
+        let mut host = MockHostIO::new();
+        let first = table.create_process().unwrap();
+        let second = table.create_process().unwrap();
+        let (_, _, fd_a, surfaces_a, bos_a, ctx_a) =
+            glio_cross_surface_setup(table.get_mut(first).unwrap(), &mut host);
+        let (_, _, fd_b, surfaces_b, bos_b, ctx_b) =
+            glio_cross_surface_setup(table.get_mut(second).unwrap(), &mut host);
+        let calls = host.gl_make_current_calls.len();
+        assert_eq!(
+            glio_cross_bind(
+                table.get_mut(first).unwrap(),
+                &mut host,
+                fd_a,
+                ctx_a,
+                surfaces_b[0],
+                surfaces_a[1]
+            ),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            glio_cross_bind(
+                table.get_mut(second).unwrap(),
+                &mut host,
+                fd_b,
+                ctx_b,
+                surfaces_b[0],
+                surfaces_a[1]
+            ),
+            Err(Errno::EINVAL)
+        );
+        let child = table.fork_process_for_caller(first, first).unwrap();
+        assert_eq!(
+            glio_cross_bind(
+                table.get_mut(child).unwrap(),
+                &mut host,
+                fd_a,
+                ctx_a,
+                surfaces_a[0],
+                surfaces_a[1]
+            ),
+            Err(Errno::EACCES)
+        );
+        assert_eq!(host.gl_make_current_calls.len(), calls);
+        for pid in [first, child, second] {
+            let removed = table.remove_process(pid).unwrap();
+            apply_dri_release_effects(pid as i32, removed.dri_effects, &mut host);
+        }
+        for bo in bos_a.into_iter().chain(bos_b) {
+            assert_eq!(glio_surface_bo_count(bo), None);
+        }
+        assert_eq!(host.gbm_bo_destroy_calls.len(), 4);
+    }
+
+    #[test]
+    fn glio_surface_creation_ack_rejects_without_publishing_or_losing_backing() {
+        use wasm_posix_shared::gl;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, bo) = glio_surface_bo_setup(&mut proc, &mut host, true);
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut []).unwrap();
+        let context = glio_test_bind(&mut proc, &mut host, fd);
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+        for (rc, dimensions, expected) in [
+            (-(Errno::ENOMEM as i32), None, Errno::ENOMEM),
+            (-(Errno::ENODEV as i32), None, Errno::ENODEV),
+            (1, None, Errno::EIO),
+            (0, Some((u32::MAX, 1)), Errno::EIO),
+        ] {
+            let mut attrs = [0u8; 36];
+            for (word, value) in attrs
+                .chunks_exact_mut(4)
+                .zip([1u32, 0, 0, 1, 1, 0, 0, 0, 0])
+            {
+                word.copy_from_slice(&value.to_le_bytes());
+            }
+            let input = attrs;
+            host.gl_create_surface_rc = rc;
+            host.gl_create_surface_dimensions = dimensions;
+            assert_eq!(
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    fd,
+                    gl::GLIO_CREATE_SURFACE,
+                    &mut attrs
+                ),
+                Err(expected)
+            );
+            assert_eq!(attrs, input);
+            assert_eq!(glio_surface_bo_count(bo), Some(1));
+            let dri = dri_state(&proc, ofd).unwrap();
+            assert!(dri.gl.as_ref().unwrap().surface_id.is_none());
+            assert_eq!(dri.gl.as_ref().unwrap().context_id, Some(context));
+            assert_eq!(dri.gl.as_ref().unwrap().current.unwrap().draw_surface_id, 0);
+            assert!(dri.gl_resources.borrow().surface.is_none());
+            assert!(dri.gl_resources.borrow().pending_surface_bo.is_none());
+        }
+        host.gl_create_surface_rc = 0;
+        host.gl_create_surface_dimensions = Some((48, 27));
+        let mut attrs = [0u8; 36];
+        for (word, value) in attrs
+            .chunks_exact_mut(4)
+            .zip([1u32, 0, 0, 1, 1, 0, 0, 0, 0])
+        {
+            word.copy_from_slice(&value.to_le_bytes());
+        }
+        sys_ioctl(
+            &mut proc,
+            &mut host,
+            fd,
+            gl::GLIO_CREATE_SURFACE,
+            &mut attrs,
+        )
+        .unwrap();
+        assert_eq!(u32::from_le_bytes(attrs[4..8].try_into().unwrap()), 48);
+        assert_eq!(u32::from_le_bytes(attrs[8..12].try_into().unwrap()), 27);
+        assert_eq!(u32::from_le_bytes(attrs[16..20].try_into().unwrap()), 1); // Caller handle stays local.
+        assert_eq!(
+            u32::from_le_bytes(attrs[32..36].try_into().unwrap()),
+            surface_id_for_test(&proc, fd)
+        );
+        assert_eq!(glio_surface_bo_count(bo), Some(2));
+        let reply = attrs;
+        let calls = host.gl_create_surface_calls.len();
+        assert_eq!(
+            sys_ioctl(
+                &mut proc,
+                &mut host,
+                fd,
+                gl::GLIO_CREATE_SURFACE,
+                &mut attrs
+            ),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(attrs, reply);
+        assert_eq!(host.gl_create_surface_calls.len(), calls);
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut []).unwrap();
+        assert_eq!(glio_surface_bo_count(bo), Some(1));
+    }
+
+    #[test]
+    fn glio_surface_identities_are_fresh_across_sessions_and_recreation() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let mut ids = alloc::collections::BTreeSet::new();
+        for _ in 0..2 {
+            let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+            glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+            for _ in 0..2 {
+                let mut attrs = [0u8; 36];
+                attrs[..4].copy_from_slice(&gl::WPK_SURFACE_DEFAULT.to_le_bytes());
+                attrs[12..16].copy_from_slice(&1u32.to_le_bytes());
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    fd,
+                    gl::GLIO_CREATE_SURFACE,
+                    &mut attrs,
+                )
+                .unwrap();
+                let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+                let id = dri_state(&proc, ofd)
+                    .unwrap()
+                    .gl
+                    .as_ref()
+                    .unwrap()
+                    .surface_id
+                    .unwrap();
+                assert_ne!(id, 0);
+                assert!(ids.insert(id), "surface identity was reused");
+                sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut []).unwrap();
+            }
+        }
     }
 
     #[test]
@@ -50963,13 +55070,13 @@ impl HostIO for RelSymlinkMock {
         // Bring up the GL session + context on `fd`.
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
-        let cattrs = gl::GlContextAttrs { client_version: 3, reserved: [0; 3] };
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
+        let cattrs = gl::GlContextAttrs { client_version: 3, share_context_id: 0, reserved: 0, context_id: 0 };
         let mut abuf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
         unsafe { core::ptr::write_unaligned(abuf.as_mut_ptr() as *mut gl::GlContextAttrs, cattrs) };
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut abuf).unwrap();
 
-        let sz = core::mem::size_of::<gl::GlSurfaceAttrs>();
+        let sz = core::mem::size_of::<gl::GlSurfaceCreateInfo>();
         let mut sbuf = vec![0u8; sz];
         let mut nullbuf = [0u8; 0];
         let read_reserved0 =
@@ -50980,6 +55087,7 @@ impl HostIO for RelSymlinkMock {
             kind: gl::WPK_SURFACE_DEFAULT, width: 64, height: 32, config_id: 1, reserved: [0; 4],
         };
         unsafe { core::ptr::write_unaligned(sbuf.as_mut_ptr() as *mut gl::GlSurfaceAttrs, s0) };
+        sbuf[32..36].fill(0);
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_SURFACE, &mut sbuf).unwrap();
         assert_eq!(read_reserved0(&host.gl_create_surface_calls[0].2), 0);
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut nullbuf).unwrap();
@@ -50989,8 +55097,11 @@ impl HostIO for RelSymlinkMock {
             kind: gl::WPK_SURFACE_DEFAULT, width: 64, height: 32, config_id: 1, reserved: [1, 0, 0, 0],
         };
         unsafe { core::ptr::write_unaligned(sbuf.as_mut_ptr() as *mut gl::GlSurfaceAttrs, s1) };
+        sbuf[32..36].fill(0);
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_SURFACE, &mut sbuf).unwrap();
         assert_eq!(read_reserved0(&host.gl_create_surface_calls[1].2), 2);
+        assert_eq!(read_reserved0(&sbuf), 1); // Successful reply preserves the caller's handle.
+        assert_ne!(u32::from_le_bytes(sbuf[32..36].try_into().unwrap()),0);
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut nullbuf).unwrap();
 
         // (3) Unknown target handle → ENOENT, and the host is NOT called.
@@ -50998,6 +55109,7 @@ impl HostIO for RelSymlinkMock {
             kind: gl::WPK_SURFACE_DEFAULT, width: 64, height: 32, config_id: 1, reserved: [999, 0, 0, 0],
         };
         unsafe { core::ptr::write_unaligned(sbuf.as_mut_ptr() as *mut gl::GlSurfaceAttrs, s2) };
+        sbuf[32..36].fill(0);
         assert_eq!(
             sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_SURFACE, &mut sbuf).unwrap_err(),
             Errno::ENOENT,
@@ -51014,7 +55126,7 @@ impl HostIO for RelSymlinkMock {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
 
         // Map the cmdbuf at offset==0 so submit has a binding to
         // validate against.
@@ -51029,6 +55141,7 @@ impl HostIO for RelSymlinkMock {
             0,
         )
         .unwrap();
+        glio_test_bind(&mut proc, &mut host, fd);
 
         // offset + length > CMDBUF_LEN must EINVAL.
         let info = gl::GlSubmitInfo {
@@ -51072,7 +55185,7 @@ impl HostIO for RelSymlinkMock {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
         sys_mmap(
             &mut proc,
             &mut host,
@@ -51085,6 +55198,7 @@ impl HostIO for RelSymlinkMock {
         )
         .unwrap();
 
+        glio_test_bind(&mut proc, &mut host, fd);
         host.gl_submit_rc = -(Errno::EINVAL as i32);
         let info = gl::GlSubmitInfo {
             offset: 0,
@@ -51119,7 +55233,7 @@ impl HostIO for RelSymlinkMock {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
 
         // Wrong length is rejected.
         let err = sys_mmap(
@@ -51189,7 +55303,7 @@ impl HostIO for RelSymlinkMock {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
         let addr = sys_mmap(
             &mut proc,
             &mut host,
@@ -51227,7 +55341,7 @@ impl HostIO for RelSymlinkMock {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
         sys_mmap(
             &mut proc,
             &mut host,
@@ -51272,7 +55386,7 @@ impl HostIO for RelSymlinkMock {
         let gl_fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, gl_fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, gl_fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
         sys_mmap(
             &mut proc,
             &mut host,
@@ -51332,7 +55446,7 @@ impl HostIO for RelSymlinkMock {
         let gl_fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, gl_fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, gl_fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
         sys_mmap(
             &mut proc,
             &mut host,
@@ -51356,6 +55470,188 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
+    fn glio_surface_limits_before_current_do_not_grant_state_query_authority() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+        glio_map_test(&mut proc, &mut host, fd);
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let session = gl_session_id(&proc, ofd).unwrap();
+        let mut info = gl::GlQueryInfo {
+            op: gl::QOP_SURFACE_CAPABILITIES,
+            out_buf_ptr: 32,
+            out_buf_len: 16,
+            ..Default::default()
+        };
+        let mut bytes = [0u8; core::mem::size_of::<gl::GlQueryInfo>()];
+        unsafe {
+            core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, info);
+        }
+        host.proc_memory.fill(0xa5);
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut bytes).unwrap();
+        assert_eq!(host.gl_query_sessions, vec![session]);
+        assert_eq!(&host.proc_memory[32..48], &[0; 16]);
+        assert!(host.proc_memory[..32]
+            .iter()
+            .chain(host.proc_memory[48..].iter())
+            .all(|value| *value == 0xa5));
+        let state = dri_state(&proc, ofd).unwrap().gl.as_ref().unwrap();
+        assert!(state.context_id.is_none() && state.current.is_none());
+        info.op = gl::QOP_GET_ERROR;
+        info.out_buf_len = 4;
+        unsafe {
+            core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, info);
+        }
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut bytes),
+            Err(Errno::EACCES)
+        );
+        assert_eq!(host.gl_query_sessions, vec![session]);
+    }
+
+    #[test]
+    fn glio_surface_limits_preflight_exact_shape_destination_and_live_root() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (root, id) = glio_display_test(&mut proc, &mut host, gl::OP_VERSION).unwrap();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut init = glio_init_bytes(gl::GlInitInfo {
+            op_version: gl::OP_VERSION,
+            role: gl::SESSION_OBJECTS,
+            display_fd: root,
+            display_id: id,
+        });
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut init).unwrap();
+        let valid = gl::GlQueryInfo {
+            op: gl::QOP_SURFACE_CAPABILITIES,
+            out_buf_ptr: 32,
+            out_buf_len: 16,
+            ..Default::default()
+        };
+        let mut bytes = [0u8; core::mem::size_of::<gl::GlQueryInfo>()];
+        unsafe {
+            core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, valid);
+        }
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut bytes),
+            Err(Errno::EINVAL)
+        );
+        glio_map_test(&mut proc, &mut host, fd);
+        host.proc_memory.fill(0xa5);
+        let before = host.proc_memory.clone();
+        for (info, error) in [
+            (
+                gl::GlQueryInfo {
+                    in_buf_len: 1,
+                    ..valid
+                },
+                Errno::EINVAL,
+            ),
+            (
+                gl::GlQueryInfo {
+                    out_buf_len: 12,
+                    ..valid
+                },
+                Errno::EINVAL,
+            ),
+            (
+                gl::GlQueryInfo {
+                    out_buf_len: 20,
+                    ..valid
+                },
+                Errno::EINVAL,
+            ),
+            (
+                gl::GlQueryInfo {
+                    reserved: 1,
+                    ..valid
+                },
+                Errno::EINVAL,
+            ),
+            (
+                gl::GlQueryInfo {
+                    out_buf_ptr: 0,
+                    ..valid
+                },
+                Errno::EFAULT,
+            ),
+            (
+                gl::GlQueryInfo {
+                    out_buf_ptr: host.proc_memory.len() as u32 - 8,
+                    ..valid
+                },
+                Errno::EFAULT,
+            ),
+        ] {
+            unsafe {
+                core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, info);
+            }
+            assert_eq!(
+                sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut bytes),
+                Err(error)
+            );
+            assert!(host.gl_query_sessions.is_empty());
+            assert_eq!(host.proc_memory, before);
+        }
+        unsafe {
+            core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, valid);
+        }
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, root, gl::GLIO_QUERY, &mut bytes),
+            Err(Errno::EINVAL)
+        );
+        sys_close(&mut proc, &mut host, root).unwrap();
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut bytes),
+            Err(Errno::EINVAL)
+        );
+        assert!(host.gl_query_sessions.is_empty());
+        assert_eq!(host.proc_memory, before);
+    }
+
+    #[test]
+    fn glio_surface_limits_from_another_thread_preserve_current_ownership() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.add_thread(crate::process::ThreadInfo::new(2, 0, 0, 0));
+        proc.blocked_retries.bind_task(1);
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+        glio_map_test(&mut proc, &mut host, fd);
+        let context = glio_test_bind(&mut proc, &mut host, fd);
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        proc.blocked_retries.bind_task(2);
+        let mut info = gl::GlQueryInfo {
+            op: gl::QOP_SURFACE_CAPABILITIES,
+            out_buf_ptr: 32,
+            out_buf_len: 16,
+            ..Default::default()
+        };
+        let mut bytes = [0u8; core::mem::size_of::<gl::GlQueryInfo>()];
+        unsafe {
+            core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, info);
+        }
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut bytes).unwrap();
+        let state = dri_state(&proc, ofd).unwrap().gl.as_ref().unwrap();
+        assert_eq!(state.context_id, Some(context));
+        assert_eq!(state.current.unwrap().owner_tid, 1);
+        info.op = gl::QOP_GET_ERROR;
+        info.out_buf_len = 4;
+        unsafe {
+            core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, info);
+        }
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut bytes),
+            Err(Errno::EACCES)
+        );
+        assert_eq!(host.gl_query_sessions.len(), 1);
+    }
+
+    #[test]
     fn glio_query_rejects_unbounded_input_len() {
         use wasm_posix_shared::gl;
 
@@ -51364,7 +55660,7 @@ impl HostIO for RelSymlinkMock {
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
-        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
 
         let info = gl::GlQueryInfo {
             op: gl::QOP_GET_STRING,
@@ -53656,6 +57952,249 @@ impl HostIO for RelSymlinkMock {
                 .unwrap_err();
             assert_eq!(err, Errno::ENOTTY, "EVIOCGRAB(0) must be rejected too");
         }
+    }
+
+    fn uevent_monitor(proc: &mut Process, host: &mut MockHostIO, sock_type: u32) -> i32 {
+        use wasm_posix_shared::socket::*;
+        sys_socket(
+            proc,
+            host,
+            AF_NETLINK,
+            sock_type | SOCK_NONBLOCK,
+            crate::netlink::NETLINK_KOBJECT_UEVENT,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn netlink_accepts_only_uevent_datagram_or_raw_sockets() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        assert_eq!(
+            sys_socket(&mut proc, &mut host, AF_NETLINK, SOCK_DGRAM, 0),
+            Err(Errno::EPROTONOSUPPORT)
+        );
+        assert_eq!(
+            sys_socket(&mut proc, &mut host, AF_NETLINK, SOCK_STREAM, crate::netlink::NETLINK_KOBJECT_UEVENT),
+            Err(Errno::ESOCKTNOSUPPORT)
+        );
+        let raw = uevent_monitor(&mut proc, &mut host, SOCK_RAW);
+        assert_eq!(sys_getsockopt(&mut proc, raw, SOL_SOCKET, SO_TYPE), Ok(SOCK_RAW));
+        assert_eq!(sys_getsockopt(&mut proc, raw, SOL_SOCKET, SO_DOMAIN), Ok(AF_NETLINK));
+    }
+
+    #[test]
+    fn netlink_monitor_binds_to_its_pid_and_never_receives() {
+        use wasm_posix_shared::poll::*;
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(42);
+        let mut host = MockHostIO::new();
+        let fd = uevent_monitor(&mut proc, &mut host, SOCK_DGRAM);
+        let mut addr = [0u8; 12];
+        addr[0] = AF_NETLINK as u8;
+        addr[8] = 4;
+        sys_bind(&mut proc, &mut host, fd, &addr).unwrap();
+
+        let mut name = [0u8; 12];
+        assert_eq!(sys_getsockname(&proc, fd, &mut name), Ok(12));
+        assert_eq!(crate::netlink::parse_sockaddr(&name), Ok((42, 4)));
+
+        let mut buf = [0u8; 64];
+        assert_eq!(sys_recv(&mut proc, &mut host, fd, &mut buf, 0), Err(Errno::EAGAIN));
+        assert_eq!(sys_read(&mut proc, &mut host, fd, &mut buf), Err(Errno::EAGAIN));
+        assert_eq!(sys_send(&mut proc, &mut host, fd, b"add@/", 0), Err(Errno::EOPNOTSUPP));
+
+        let mut fds = [WasmPollFd { fd, events: (POLLIN | POLLOUT) as i16, revents: 0 }];
+        assert_eq!(sys_poll(&mut proc, &mut host, &mut fds, 0), Ok(1));
+        assert_eq!(fds[0].revents, POLLOUT as i16);
+    }
+
+    #[test]
+    fn netlink_rejects_foreign_addresses_and_connection_operations() {
+        use wasm_posix_shared::socket::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = uevent_monitor(&mut proc, &mut host, SOCK_RAW);
+        let mut addr = [0u8; 12];
+        addr[0] = AF_NETLINK as u8;
+        assert_eq!(sys_bind(&mut proc, &mut host, fd, &addr[..8]), Err(Errno::EINVAL));
+        let mut inet = addr;
+        inet[0] = AF_INET as u8;
+        assert_eq!(sys_bind(&mut proc, &mut host, fd, &inet), Err(Errno::EINVAL));
+
+        assert_eq!(sys_connect(&mut proc, &mut host, fd, &addr), Err(Errno::EOPNOTSUPP));
+        assert_eq!(sys_listen(&mut proc, &mut host, fd, 1), Err(Errno::EOPNOTSUPP));
+        assert_eq!(sys_shutdown(&mut proc, &mut host, fd, SHUT_RDWR), Err(Errno::EOPNOTSUPP));
+        assert_eq!(sys_sendto(&mut proc, &mut host, fd, b"add@/", 0, &addr), Err(Errno::EOPNOTSUPP));
+        let mut buf = [0u8; 64];
+        let mut from = [0u8; 12];
+        assert_eq!(
+            sys_recvfrom(&mut proc, &mut host, fd, &mut buf, 0, &mut from),
+            Err(Errno::EAGAIN)
+        );
+    }
+
+    #[test]
+    fn sysfs_resolves_a_drm_devnum_the_way_libdrm_does() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let drm_dir = sys_stat(&mut proc, &mut host, b"/sys/dev/char/226:0/device/drm").unwrap();
+        assert_eq!(drm_dir.st_mode & S_IFMT, S_IFDIR);
+
+        let link = sys_lstat(&mut proc, &mut host, b"/sys/dev/char/226:0").unwrap();
+        assert_eq!(link.st_mode & S_IFMT, S_IFLNK);
+        let mut target = [0u8; 128];
+        let len = sys_readlink(&mut proc, &mut host, b"/sys/dev/char/226:0", &mut target).unwrap();
+        assert_eq!(&target[..len], b"../../devices/platform/kandelo-drm/drm/card0");
+
+        let fd = sys_open(&mut proc, &mut host, b"/sys/dev/char/226:128/uevent", O_RDONLY, 0).unwrap();
+        let mut uevent = [0u8; 128];
+        let len = sys_read(&mut proc, &mut host, fd, &mut uevent).unwrap();
+        assert_eq!(
+            &uevent[..len],
+            b"MAJOR=226\nMINOR=128\nDEVNAME=dri/renderD128\nDEVTYPE=drm_minor\n"
+        );
+        assert_eq!(sys_fstat(&proc, &mut host, fd).unwrap().st_size, len as u64);
+    }
+
+    #[test]
+    fn sysfs_is_read_only_and_owns_its_namespace() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        assert_eq!(
+            sys_open(&mut proc, &mut host, b"/sys/class/drm/card0/uevent", O_WRONLY, 0),
+            Err(Errno::EACCES)
+        );
+        assert_eq!(sys_stat(&mut proc, &mut host, b"/sys/missing").unwrap_err(), Errno::ENOENT);
+        assert_eq!(sys_mkdir(&mut proc, &mut host, b"/sys/missing", 0o755), Err(Errno::EROFS));
+    }
+
+    #[test]
+    fn sysfs_is_a_read_only_mount_of_existing_files() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let st = sys_statfs(&mut proc, &mut host, b"/sys").unwrap();
+        assert_eq!(st.f_type, 0x6265_6572);
+        assert_ne!(st.f_flags & wasm_posix_shared::statfs_flags::ST_RDONLY, 0);
+
+        let uevent = b"/sys/class/drm/card0/uevent";
+        assert_eq!(
+            sys_open(&mut proc, &mut host, uevent, O_RDONLY | O_DIRECTORY, 0),
+            Err(Errno::ENOTDIR)
+        );
+        assert_eq!(
+            sys_open(&mut proc, &mut host, uevent, O_RDONLY | O_CREAT | O_EXCL, 0o644),
+            Err(Errno::EEXIST)
+        );
+    }
+
+    #[test]
+    fn sysfs_stays_read_only_beside_the_in_kernel_rootfs() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        crate::rootfs::insert_base_dir(b"/sys", 0o555, 0, 0, 2).unwrap();
+        crate::rootfs::insert_base_dir(b"/data", 0o777, 0, 0, 3).unwrap();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        assert_eq!(sys_mkdir(&mut proc, &mut host, b"/sys/x", 0o755), Err(Errno::EROFS));
+        assert_eq!(
+            sys_open(&mut proc, &mut host, b"/sys/x", O_WRONLY | O_CREAT, 0o644),
+            Err(Errno::EROFS)
+        );
+        assert_eq!(
+            sys_unlink(&mut proc, &mut host, b"/sys/class/drm/card0/uevent"),
+            Err(Errno::EROFS)
+        );
+        let fd = sys_open(&mut proc, &mut host, b"/data/f", O_WRONLY | O_CREAT, 0o644).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(sys_rename(&mut proc, &mut host, b"/data/f", b"/sys/f"), Err(Errno::EROFS));
+        assert!(sys_stat(&mut proc, &mut host, b"/sys/class/drm/card0").is_ok());
+    }
+
+    #[test]
+    fn a_rootfs_directory_lists_its_entries_beside_sysfs() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        crate::rootfs::insert_base_dir(b"/data", 0o777, 0, 0, 2).unwrap();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        for name in [&b"/data/foo"[..], &b"/data/bar"[..]] {
+            let fd = sys_open(&mut proc, &mut host, name, O_WRONLY | O_CREAT, 0o644).unwrap();
+            sys_close(&mut proc, &mut host, fd).unwrap();
+        }
+        let fd = sys_open(&mut proc, &mut host, b"/data", O_RDONLY | O_DIRECTORY, 0).unwrap();
+        let mut buf = [0u8; 512];
+        let len = sys_getdents64(&mut proc, &mut host, fd, &mut buf).unwrap();
+        let mut names = Vec::new();
+        let mut pos = 0;
+        while pos < len {
+            let reclen = u16::from_le_bytes([buf[pos + 16], buf[pos + 17]]) as usize;
+            let name = &buf[pos + 19..pos + reclen];
+            names.push(name[..name.iter().position(|&b| b == 0).unwrap()].to_vec());
+            pos += reclen;
+        }
+        names.sort();
+        assert_eq!(names, [b".".to_vec(), b"..".to_vec(), b"bar".to_vec(), b"foo".to_vec()]);
+    }
+
+    #[test]
+    fn sysfs_file_stays_readable_in_a_forked_child() {
+        use crate::process_table::ProcessTable;
+
+        const PARENT: u32 = 100;
+        const FORK_CHILD: u32 = 101;
+        let mut table = ProcessTable::new();
+        let mut host = MockHostIO::new();
+        assert_eq!(table.create_process().unwrap(), PARENT);
+        let fd = sys_open(
+            table.get_mut(PARENT).unwrap(),
+            &mut host,
+            b"/sys/dev/char/226:0/uevent",
+            O_RDONLY,
+            0,
+        )
+        .unwrap();
+        let mut first = [0u8; 10];
+        sys_read(table.get_mut(PARENT).unwrap(), &mut host, fd, &mut first).unwrap();
+        assert_eq!(&first, b"MAJOR=226\n");
+
+        assert_eq!(table.fork_process_for_caller(PARENT, PARENT).unwrap(), FORK_CHILD);
+        let mut rest = [0u8; 64];
+        let len = sys_read(table.get_mut(FORK_CHILD).unwrap(), &mut host, fd, &mut rest).unwrap();
+        assert_eq!(&rest[..len], b"MINOR=0\nDEVNAME=dri/card0\nDEVTYPE=drm_minor\n");
+
+        table.remove_process(PARENT).unwrap();
+        table.remove_process(FORK_CHILD).unwrap();
+    }
+
+    #[test]
+    fn sysfs_lists_a_directory() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/sys/class/drm", O_RDONLY | O_DIRECTORY, 0).unwrap();
+        let mut buf = [0u8; 512];
+        let len = sys_getdents64(&mut proc, &mut host, fd, &mut buf).unwrap();
+        let mut names = Vec::new();
+        let mut pos = 0;
+        while pos < len {
+            let reclen = u16::from_le_bytes([buf[pos + 16], buf[pos + 17]]) as usize;
+            let name = &buf[pos + 19..pos + reclen];
+            names.push(name[..name.iter().position(|&b| b == 0).unwrap()].to_vec());
+            pos += reclen;
+        }
+        assert_eq!(names, [b".".to_vec(), b"..".to_vec(), b"card0".to_vec(), b"renderD128".to_vec()]);
+    }
+
+    #[test]
+    fn dri_nodes_stat_with_drm_major_226_rdev() {
+        let card = virtual_device_stat(VirtualDevice::DriCard0, 0, 0);
+        let render = virtual_device_stat(VirtualDevice::DriRenderD128, 0, 0);
+        assert_eq!(card.st_rdev, makedev(226, 0));
+        assert_eq!(render.st_rdev, makedev(226, 128));
     }
 
     #[test]

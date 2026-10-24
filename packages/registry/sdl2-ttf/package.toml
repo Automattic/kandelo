@@ -4,7 +4,7 @@ version = "2.24.0"
 kernel_abi = 50
 arches = ["wasm32"]
 # SDL's static .pc uses -l names for its Wayland dependencies.
-depends_on = ["sdl2@2.32.10","libwayland@1.24.0","libxkbcommon@1.7.0","libffi@0.1.0","freetype@2.13.3","zlib@1.3.1"]
+depends_on = ["sdl2@2.32.10","libwayland@1.24.0","libxkbcommon@1.13.2","libffi@0.1.0","freetype@2.13.3","zlib@1.3.1"]
 
 [source]
 provider = "archive"

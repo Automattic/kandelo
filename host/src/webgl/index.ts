@@ -8,5 +8,5 @@ export type {
   GlForwardChannel,
   GlSurfaceHandle,
 } from "./registry.js";
-export { setupMainForward } from "./main-forward.js";
+export { setupMainForward, createMainForwardChannel } from "./main-forward.js";
 export type { ForwardWorkerLike, GlForwardMessage } from "./main-forward.js";

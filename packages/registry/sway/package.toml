@@ -1,0 +1,99 @@
+kind = "program"
+
+# sway, an i3-compatible tiling Wayland compositor, with its IPC client
+# swaymsg, its status bar swaybar and its message bar swaynag. Built
+# through upstream's meson build with the SDK cross file against the
+# wlroots package. Without the tray (no sd-bus provider), gdk-pixbuf,
+# man pages or shell completions. sway, swaybar and swaynag
+# fork the programs they start, so those three are fork-instrumented.
+name = "sway"
+version = "1.12"
+kernel_abi = 55
+depends_on = [
+  "wlroots@0.20.2",
+  "libwayland@1.24.0",
+  "wayland-protocols@1.47",
+  "libdrm@2.4.134",
+  "libxkbcommon@1.13.2",
+  "pixman@0.46.4",
+  "libudev-zero@1.0.5",
+  "libseat@0.9.3",
+  "libinput@1.28.1",
+  "libevdev@1.13.3",
+  "libdisplay-info@0.3.0",
+  "json-c@0.19",
+  "pcre2@10.44",
+  "cairo@1.18.6",
+  "pango@1.56.4",
+  "xkeyboard-config@2.48",
+]
+
+[[host_tools]]
+name = "meson"
+version_constraint = ">=1.3.0"
+install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "ninja"
+version_constraint = ">=1.8"
+install_hints = { darwin = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "wayland-scanner"
+version_constraint = ">=1.24"
+probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh" }
+
+# meson resolves the native wayland-scanner with the build machine's
+# pkg-config, so the probe asks that pkg-config for it.
+[[host_tools]]
+name = "pkg-config"
+version_constraint = ">=1.20.0"
+probe = { args = ["--modversion", "wayland-scanner"], version_regex = "(?m)^(\\d+\\.\\d+(?:\\.\\d+)?)$" }
+install_hints = { darwin = "wayland-scanner is provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "wayland-scanner is provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh" }
+
+[source]
+url = "https://github.com/swaywm/sway/releases/download/1.12/sway-1.12.tar.gz"
+sha256 = "a7b1becc217433c11c6284d36bcea0687b87b77b0ed26a384565292ec321f2b1"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/swaywm/sway/blob/1.12/LICENSE"
+
+[build]
+script_path = "packages/registry/sway/build-sway.sh"
+
+[[outputs]]
+name = "sway"
+wasm = "sway.wasm"
+
+[[outputs]]
+name = "swaymsg"
+wasm = "swaymsg.wasm"
+
+[[outputs]]
+name = "swaybar"
+wasm = "swaybar.wasm"
+
+[[outputs]]
+name = "swaynag"
+wasm = "swaynag.wasm"
+
+# The default configuration sway reads from /etc/sway/config.
+[[runtime_files]]
+artifact = "sway.conf"
+guest_path = "/etc/sway/config"
+
+# The wallpaper the default configuration's `output * bg` names.
+[[runtime_files]]
+artifact = "Sway_Wallpaper_Blue_1920x1080.png"
+guest_path = "/usr/share/backgrounds/sway/Sway_Wallpaper_Blue_1920x1080.png"
+
+[[runtime_files]]
+artifact = "xkeyboard-config.zip"
+guest_path = "/usr/share/sway/xkeyboard-config.zip"
+
+[[runtime_files]]
+artifact = "libinput-quirks.zip"
+guest_path = "/usr/share/sway/libinput-quirks.zip"

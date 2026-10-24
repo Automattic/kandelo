@@ -28,6 +28,22 @@ function fakeMuxer(): FakeMuxer {
 }
 
 describe("drainSubmitQueue", () => {
+  it.each(["switch", "dispatch"])("contains a failing renderer during %s without retaining its consumed frame", stage => {
+    const q = new SubmitQueue();
+    const binding = mkBinding(10);
+    q.enqueue(binding, mkFrame(1));
+    const fail = () => { throw new Error("renderer failed"); };
+    const dispatch = vi.fn<GlDispatch>(stage === "dispatch" ? fail : () => 0);
+    const muxer = { switchTo: stage === "switch" ? fail : () => {} } as unknown as GlMuxer;
+    expect(drainSubmitQueue(q, () => muxer, dispatch)).toBe(-5);
+    expect(dispatch).toHaveBeenCalledTimes(stage === "switch" ? 0 : 1);
+    expect(q.isEmpty()).toBe(true);
+    q.enqueue(binding, mkFrame(2));
+    const retry = vi.fn<GlDispatch>();
+    expect(drainSubmitQueue(q, () => null, retry)).toBe(0);
+    expect(retry).toHaveBeenCalledWith(binding, 2, 1);
+  });
+
   it("drives switchTo once per distinct binding then dispatches each frame", () => {
     const q = new SubmitQueue();
     const a = mkBinding(10);

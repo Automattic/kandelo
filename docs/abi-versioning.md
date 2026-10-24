@@ -1776,6 +1776,306 @@ Semantic changes:
   `NGROUPS_MAX` entries of the caller's buffer, since no list is longer.
   `setgroups` still refuses more than `NGROUPS_MAX` groups with `EINVAL`.
 
+The graphics ABI 53-58 entries below record unreleased development
+checkpoints on the compatibility branch. They do not replace main's
+ABI 53 above. ABI 59 combines both contracts; normal artifacts must be
+rebuilt from that combined source and snapshot.
+
+### Development ABI 53 graphics ownership and renderer acknowledgement
+
+ABI 53 changes the meaning of existing DRM ioctls so an unmodified wlroots
+compositor (cage) can drive `/dev/dri/card0`:
+
+- **The first open of `card0` becomes the DRM master.** While no open file
+  is master, `open("/dev/dri/card0")` makes the new open file the master,
+  as Linux's `drm_master_open` does. Before ABI 53 a process had to call
+  `DRM_IOCTL_SET_MASTER`. A second process that opens `card0` while the
+  first still holds it now gets `EBUSY` from `SET_MASTER` and `EACCES`
+  from the master-only ioctls (SETCRTC, PAGE_FLIP, cursor, property
+  writes, `AUTH_MAGIC`).
+- **RMFB of the scanout framebuffer disables the CRTC**, as on Linux. The
+  new `DRM_IOCTL_MODE_CLOSEFB` releases a framebuffer but keeps the
+  scanout one on screen until SETCRTC or PAGE_FLIP latches another.
+- **fstat of a PRIME fd succeeds.** It reports mode `0600` with no file
+  type bits, `st_size` equal to the buffer size, like Linux's anonymous
+  inode. Before ABI 53 it failed with `EBADF`, so a host `MAP_SHARED`
+  mapping of a PRIME fd failed.
+- **Framebuffer ids are device-wide.** `ADDFB2` takes ids from one
+  counter that starts after the fixed mode objects, so two open files
+  never share an fb id. Before ABI 53 each open file counted from 1.
+- **Framebuffers belong to the open file, not to each process holding
+  it.** A `fork()` or `posix_spawn()` child shares its parent's
+  framebuffers, and only the last close of the open file in any process
+  removes them. Before, the child had a copy, and its close -- the
+  `O_CLOEXEC` close at `exec` -- removed the parent's framebuffers and
+  disabled the CRTC under a running compositor.
+- **SETCRTC without a mode disables the CRTC**, as on Linux: the request's
+  `fb_id` is ignored. More than one connector fails with `EINVAL`.
+- **`DRM_IOCTL_GET_CAP` of an unknown capability fails with `EINVAL`**, as
+  on Linux. Before ABI 53 it reported 0.
+- **A null array pointer with a nonzero count fails with `EFAULT`** in the
+  KMS queries that copy arrays out.
+- **`/dev/dri/card0` and `/dev/dri/renderD128` report `st_rdev` 226:0 and
+  226:128**, the Linux DRM numbers.
+- **`socket(AF_NETLINK, SOCK_RAW or SOCK_DGRAM, NETLINK_KOBJECT_UEVENT)`
+  succeeds.** Other netlink socket types fail with the new errno
+  `ESOCKTNOSUPPORT` (94).
+- **A read-only `sysfs` is mounted at `/sys`**, and `/proc/mounts` lists it.
+
+The KMS ioctls the port added (plane and property queries, `SET_CLIENT_CAP`,
+`GET_MAGIC`/`AUTH_MAGIC`, cursor, `CREATE_LEASE`, `CLOSEFB`) each have an
+ioctl contract in `crates/shared/src/ioctl_contract.rs`.
+
+The kernel fork/exec state record moves from `FORK_VERSION` 19 to 20: it
+carries each card0 open file's `DRM_CLIENT_CAP_UNIVERSAL_PLANES` and magic
+token and each AF_NETLINK socket's port id and groups, and no longer
+serializes a card0 file's framebuffers or framebuffer id counter.
+
+ABI-bound artifacts require rebuilding for ABI 53; the strict
+`__abi_version` equality check rejects earlier programs. Validation of the
+combined implementation is tracked in the graphics compatibility inventory.
+
+The kernel's `host_gl_create_context` import now returns `i32`: zero
+acknowledges a live native or forwarded renderer, and a negative errno
+rejects creation without publishing a context in the kernel. This replaces
+the old void result, under which renderer-less hosts and failed WebGL
+allocations appeared to create a context successfully. The host rolls back
+partial device ownership and permits a subsequent attempt. EGL reports
+`EGL_NO_CONTEXT` with `EGL_BAD_ALLOC` when this allocation fails.
+
+### ABI 54 independent graphics sessions
+
+Every initialized GL open file description receives a nonzero kernel-owned
+session identity. The `host_gl_bind`, `host_gl_unbind`,
+`host_gl_create_context`, `host_gl_create_surface`,
+`host_gl_destroy_surface`, `host_gl_submit`, `host_gl_present` and
+`host_gl_query` imports append this `u32` identity to their parameters.
+This replaces process-only routing, under which a second open overwrote
+the first command buffer and either close could retire the other renderer.
+Host registries, forwarding messages, queues and KMS canvas claims now
+retain independent sessions within a process. Unsigned identities remain
+unsigned when Wasm passes them to JavaScript as signed `i32` arguments.
+
+`GlContextAttrs` stays 16 bytes: `client_version` at offset 0, two reserved
+zero words at offset 4 and an output `context_id` at offset 12. Context
+creation is now an `InOut` ioctl so the ordinary marshaller validates the
+result destination before allocation. Input `context_id` must be zero;
+successful acknowledged creation returns a fresh nonzero kernel identity.
+Destroy/recreate never reuses it. EGL uses that returned identity for
+foreign texture imports instead of assuming context 1.
+
+A GL renderer and its command memory belong to their creating process.
+Inherited or transferred file descriptions retain that ownership: GL
+operations from another process fail with `EACCES`, that process's mapping
+cleanup leaves the owner's renderer intact, and final open-description
+cleanup names the original owner. GEM/PRIME sharing keeps its existing
+open-description semantics. This does not implement EGL share groups or
+claim complete graphics fork/exec validation.
+
+All ABI-bound programs, SDK libraries, package archives and images require
+the normal ABI 54 rebuild. There is still one backend context and surface
+per session, and the EGL facade still exposes one context; multiple EGL
+contexts, context-specific encoders and shared objects remain open work.
+
+### ABI 55 thread-current authority and window retargeting
+
+`GLIO_MAKE_CURRENT` now takes an input-only 12-byte `GlMakeCurrent`:
+`context_id`, `draw_surface_id`, `read_surface_id` (three `u32` words).
+All zero releases the caller's current bindings. A nonzero context with
+zero surfaces binds surfaceless. The kernel uses the authoritative caller
+TID, rejects another thread's live ownership, and publishes a replacement
+only after host acknowledgement. Submit, query and foreign-texture access
+require that current thread; thread exit releases it. Destroying a current
+context or attached surface reports `EBUSY`.
+
+The host import is now
+`host_gl_make_current(pid, ctx, draw, read, session) -> i32`. Zero means
+accepted; negative errno leaves the old binding intact. Release is an
+idempotent metadata operation that succeeds without waiting for a renderer.
+Forwarded binds use an independent bounded acknowledgement mailbox and
+copied drawable scalars, preserving the guest-memory ownership contract.
+
+`GLIO_UPDATE_SURFACE` (`0x4A`, input-only 32-byte `GlSurfaceAttrs`) replaces
+an existing GPU window target without destroying the surface or its current
+references. The kernel resolves its handle to a global BO identity before
+calling `host_gl_update_surface(pid, surface, attrs, len, session) -> i32`.
+Failure preserves the old target. Wayland-EGL only publishes its replacement
+buffer after acceptance. This currently supports existing GPU window
+targets on the same native renderer; the full surface model remains open.
+
+Regenerated declarations, snapshot, resolver and graphics package floors
+match ABI 55. All kernels, hosts, SDK archives, programs, packages and images
+require the normal rebuild; prior artifacts must not be restamped. Focused
+source checks do not constitute that deferred combined-artifact validation.
+
+### ABI 56 display-generation authority
+
+`GLIO_INIT` changes from an input-only four-byte operation version to a
+16-byte input/output `GlInitInfo`: `op_version`, `role`, signed
+`display_fd`, and `display_id`. Display role 1 requires fd -1 and ID 0;
+the kernel returns a fresh generation identity. Object role 2 requires
+a live display descriptor owned by the same process and its matching
+generation. Duplicated descriptors retain the same authority; reusing
+a descriptor number for a later generation does not revive old sessions.
+
+Display roots cannot map command memory or create renderer objects.
+Termination or final root close revokes new object creation and positive
+make-current requests. Existing current object sessions retain submit,
+query, release and destruction paths. Closing a root sends no renderer
+unbind because the root never allocated a renderer.
+
+The EGL library now opens separate display and object descriptions,
+rolls both back on failed initialization, and revokes the root when
+terminated. Subsequent C generation records permit reinitialization while
+old current resources remain retained, using this existing wire contract.
+Public multiple contexts within one generation and independent surfaces
+remain incomplete. Normal guest-artifact validation is still pending.
+
+The snapshot, ioctl marshalling, generated constants and standalone
+resolver are regenerated for ABI 56; graphics operation version stays 5.
+Prior ABI-bound artifacts require the normal rebuild. Full SDK, program,
+package and image provisioning and combined integration validation remain
+deferred; focused source checks do not establish artifact compatibility.
+
+### ABI 57 acknowledged surface creation
+
+`GLIO_CREATE_SURFACE` changes from 32-byte input attributes to a 36-byte
+input/output `GlSurfaceCreateInfo`: the existing attributes followed by
+`surface_id`. The ID must be zero on input and is fresh and nonzero on
+success. Width and height return the backend-accepted dimensions. The
+caller receives its original local target GEM handle; only a private
+kernel copy carries the translated host BO ID. Failed creation preserves
+caller bytes, current/context state and backing ownership.
+
+`host_gl_create_surface(pid, surface, attrs_ptr, attrs_len, session)` now
+returns an i32 status. Its mutable attributes span is the 36-byte private
+kernel argument. Zero acknowledges accepted native storage and dimensions;
+negative errno rejects it. Candidate destruction is identity checked and
+ordered before backing release, covering lost acknowledgement cleanup.
+Surface IDs are no longer scoped magic values of 1. The C client consumes
+the returned identity when binding. `GLIO_UPDATE_SURFACE` retains its
+32-byte input wire; command operation version remains 5.
+
+The main-thread fallback uses copied creation scalars and the same fixed
+independent query mailbox, with eight reply bytes for dimensions. It never
+receives guest memory. Native allocation remains private until accepted
+completion; cancellation frees it. Forwarded swap reuses that mailbox for
+an acknowledged owner selection, visible-target blit and flush. Generated constants, ioctl marshalling,
+snapshot and standalone resolver move together to ABI 57. Old product
+artifacts must be rebuilt through the normal graph. Focused source/native
+checks do not prove the deferred combined guest artifact closure or full
+public cross-session surface routing; see the compatibility ledger.
+
+
+
+The subsequent cross-session binding work retains ABI 57 and the existing
+12-byte make-current wire. Live same-process/same-generation surface IDs
+may now come from other object sessions. Kernel-private surface records
+retain BO storage for current selectors after owner retirement; existing
+valid own-surface and surfaceless requests retain their protocol behavior.
+The host resolves those identities on the same renderer. No host import,
+message layout or serialized fork field changes in that additive step.
+
+
+### ABI 58 shared context construction
+
+`GlContextAttrs` remains 16 bytes, with client version at offset 0,
+`share_context_id` at 4, reserved u32 at 8 and returned context ID at 12.
+A zero share identity requests an independent object group. A nonzero
+identity must name a live context of the same process/display generation.
+The kernel rejects invalid authority before host entry and publishes the
+new context only after native or forwarded group creation acknowledges it.
+The source may remain current on another thread. Its later destruction
+does not revoke a surviving peer's object group.
+
+The host import signature and command operation version 5 are unchanged.
+Native construction joins shared object maps on one renderer. Main-thread
+fallback receives only a reviewed source session ID in the existing fixed
+creation mailbox; cancellation retires the unpublished member. Context
+bindings, errors, framebuffer/vertex-array containers and default textures
+remain local. Snapshot field metadata, generated constants and the
+standalone resolver move to ABI 58 together. Normal SDK/program/package/
+image artifacts must be rebuilt; focused source checks are not evidence
+for that deferred closure. The public C shared-object layer remains open.
+
+
+### Additive graphics operation table 6 within ABI 58
+
+The private client-array upload commands add `OP_BEGIN_CLIENT_ARRAY`
+(0x0105) and `OP_END_CLIENT_ARRAY` (0x0106), both with empty payloads. They
+retain and restore the actual context-local ARRAY binding, including an
+unnamed buffer kept alive after another context deletes its public name.
+Existing operation tags/payloads, imports, ioctls and query layouts retain
+their meanings. The kernel forwards command bytes without decoding them.
+
+`shared::gl::OP_VERSION` therefore advances independently from 5 to 6;
+`ABI_VERSION` stays 58. GLIO_INIT accepts compatible tables 1 through 6
+and rejects zero/future tables with ENOSYS. Rust, C and TypeScript table
+constants change together. The source/snapshot check confirms the ABI
+snapshot and generated outputs remain unchanged. This additive command
+policy does not cover incompatible payload or syscall semantic changes.
+
+
+### Additive graphics operation table 7 within ABI 58
+
+`QOP_GET_UNIFORM_VALUES` (0x001F) adds a 12-byte input containing program,
+signed location and a 0/1 integer-result selector. Its fixed 76-byte output
+contains status, value count, sixteen value words with zero padding and
+the checked completion marker at offset 72. The renderer supplies count
+and values in one read; C validates the envelope before publishing output.
+Existing query tags/layouts, syscalls and imports retain their meanings.
+
+`OP_VERSION` advances from 6 to 7 under the independent command-table
+policy. Global ABI stays 58, with unchanged snapshot/generated outputs.
+INIT accepts compatible tables 1 through 7; the focused kernel regression
+includes 1/5/6/7 and rejects zero/future tables. This addition removes the
+C uniform-width cache; it does not promise compatibility for an older host
+that cannot decode the new tag.
+
+
+### Additive graphics operation table 8 within ABI 58
+
+`QOP_GET_ACTIVE_UNIFORM_INFO` (0x0020) adds the checked active-attribute
+chunk layout for uniform reflection: program/index/offset/capacity input,
+then status, total length, size, type, capacity bytes and completion.
+`QOP_LOOKUP_UNIFORM` (0x0021) adds bounded inline or token-checked name
+transfers: action/program/token/length-or-offset plus optional bytes.
+Its checked 16-byte reply contains status, token, signed location and
+completion magic. INLINE/BEGIN/CHUNK/COMMIT/ABORT are 0/1/2/3/4; each
+message fits the existing independent 64 KiB query transport.
+
+Existing tags/layouts/imports/syscalls retain their contracts. Repeated
+legacy location lookups now return a stable opaque index, correcting the
+GLES semantics without changing its wire. New queries independently
+advance `OP_VERSION` to 8; ABI stays 58 and snapshot/generated outputs are
+unchanged. INIT accepts compatible 1..8, with explicit 1/5/6/7/8 coverage
+and zero/future rejection. This does not establish shader-name translation
+beyond WebGL's limits or full uniform conformance.
+
+
+### ABI 59 combined main and graphics interfaces
+
+For this unpublished graphics effort, the user requested on 2026-10-24
+that subsequent implementation increments keep ABI 59. Regenerate the
+outputs as their source contracts change, then build and validate one
+coherent artifact set. Prior graphics version numbers are historical
+development checkpoints, not a request to keep bumping each increment.
+This sequencing applies to this effort, not unrelated released ABIs.
+
+ABI 59 combines main's ABI 53 xattr marshalling, scalar contracts and
+exchange imports/exports with the graphics session, thread-current,
+display-generation, independent-surface and shared-context contracts
+developed through ABI 58. Operation table 16 remains independently
+versioned. Generated declarations and the full snapshot must describe
+both sets of interfaces. Rebuild normal SDK/kernel/program/package/image
+artifacts through the existing build graph; prior artifacts cannot be
+restamped or reused across the changed ABI.
+
+Kernel-only export inspection is sufficient to regenerate the snapshot,
+not to establish runtime or compositor compatibility. The compatibility
+ledger records exact integration evidence and unrun normal build gates.
+
+
 ## The snapshot
 
 `abi/snapshot.json` is generated by `cargo xtask dump-abi` from the

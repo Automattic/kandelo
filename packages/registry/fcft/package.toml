@@ -6,7 +6,7 @@ kind = "library"
 name = "fcft"
 version = "3.1.9"
 kernel_abi = 17
-depends_on = ["freetype@2.13.3", "fontconfig@2.15.0", "pixman@0.42.2", "tllist@1.1.0"]
+depends_on = ["freetype@2.13.3", "fontconfig@2.15.0", "pixman@0.46.4", "tllist@1.1.0"]
 
 [source]
 url = "https://codeberg.org/dnkl/fcft/releases/download/3.1.9/fcft-3.1.9.tar.gz"

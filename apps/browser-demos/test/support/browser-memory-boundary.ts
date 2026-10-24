@@ -16,12 +16,18 @@ export function persistentRealmMemoryFailures(
       return;
     }
     if (value instanceof SharedArrayBuffer) {
-      // The sole shared worker→main payload is an independent pixel mirror.
-      // Checking length alone cannot prove provenance; mirror unit tests also
-      // assert that this allocation is independent of the guest's buffer.
-      if (root?.type !== "fb_bind" || path !== "message.pixels"
-        || value.byteLength !== root.len
-        || (value as SharedArrayBuffer & { growable?: boolean }).growable) {
+      // Independently allocated device storage only: the pixel mirror and
+      // the fixed query/creation mailbox. The latter is 20 header + 65536 payload
+      // bytes, which cannot be a page-aligned Wasm memory backing buffer.
+      // Provenance/reuse are also covered by the real forwarded-query test.
+      const pixels = root?.type === "fb_bind" && path === "message.pixels"
+        && value.byteLength === root.len;
+      const query = (root?.type === "gl_forward_query" || root?.type === "gl_forward_create_context"
+        || root?.type === "gl_forward_make_current" || root?.type === "gl_forward_create_surface" || root?.type === "gl_forward_present")
+        && path === "message.mailbox"
+        && value.byteLength === 20 + 65536;
+      if ((!pixels && !query)
+          || (value as SharedArrayBuffer & { growable?: boolean }).growable) {
         failures.push(`${path}: unreviewed shared backing reached browser main`);
       }
       return;

@@ -1,0 +1,70 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# The wlroots compositor library (libwlroots-0.20.a) that cage and other
+# upstream Wayland compositors are built on. Built through upstream's meson
+# build with the SDK cross file: the DRM and libinput backends over a
+# libseat session, the GLES2 renderer over the sysroot's libEGL/libGLESv2
+# (the host's WebGL2 bridge) with the gbm allocator, and the pixman
+# renderer with the DRM dumb-buffer allocator. wlroots picks GLES2 because
+# the card has a render node; a host without WebGL2 (Node) has no GL, so a
+# compositor there must ask for pixman with WLR_RENDERER=pixman. The
+# Vulkan renderer, the udmabuf allocator, the X11 backend and Xwayland are
+# off.
+name = "wlroots"
+version = "0.20.2"
+kernel_abi = 55
+depends_on = [
+  "libwayland@1.24.0",
+  "wayland-protocols@1.47",
+  "libdrm@2.4.134",
+  "libxkbcommon@1.13.2",
+  "pixman@0.46.4",
+  "libudev-zero@1.0.5",
+  "libseat@0.9.3",
+  "libinput@1.28.1",
+  "libdisplay-info@0.3.0",
+]
+
+[[host_tools]]
+name = "meson"
+version_constraint = ">=1.3.0"
+install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "ninja"
+version_constraint = ">=1.8"
+install_hints = { darwin = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "wayland-scanner"
+version_constraint = ">=1.24"
+probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh" }
+
+# The DRM backend generates its PNP vendor table from the build machine's
+# hwdata, which meson finds as a native dependency.
+[[host_tools]]
+name = "pkg-config"
+version_constraint = ">=0.300"
+probe = { args = ["--modversion", "hwdata"], version_regex = "(?m)^(\\d+\\.\\d+)$" }
+install_hints = { darwin = "hwdata is provided by flake.nix (pkgs.hwdata); enter scripts/dev-shell.sh", linux = "hwdata is provided by flake.nix (pkgs.hwdata); enter scripts/dev-shell.sh" }
+
+[source]
+url = "https://gitlab.freedesktop.org/wlroots/wlroots/-/releases/0.20.2/downloads/wlroots-0.20.2.tar.gz"
+sha256 = "80c567d2ed4efb2cfa6b077f22c7a710d9c78ba4e185a75e8694001114af0733"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://gitlab.freedesktop.org/wlroots/wlroots/-/blob/0.20.2/LICENSE"
+
+[build]
+script_path = "packages/registry/wlroots/build-wlroots.sh"
+
+[outputs]
+libs = ["lib/libwlroots-0.20.a"]
+headers = ["include/wlroots-0.20"]
+pkgconfig = ["lib/pkgconfig/wlroots-0.20.pc"]

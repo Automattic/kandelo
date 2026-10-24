@@ -3,44 +3,44 @@
  * PR7 stack. A libkwl window (Phase 2) hosts an in-tree VT100 core
  * (programs/wlterm/vt100.c) that renders with libwpkdraw (Phase 1), and a
  * forkpty()'d shell drives the grid. This is the end-to-end wayland demo:
- * compositor server + toolkit client + terminal + child process, all under
- * one NodeKernelHost, talking over the AF_UNIX socket at /tmp/wayland-0.
+ * cage (the wlroots kiosk compositor) + toolkit client + terminal + child
+ * process, all under one NodeKernelHost, talking over the AF_UNIX socket
+ * at /tmp/wayland-0.
  *
  * The flow, and what each step proves:
  *
  *   - wlterm maps its toplevel via libkwl and commits a first frame, then
  *     prints WLTERM_READY — the compositor imported + presented it;
- *   - wlterm forkpty()'s a bash `-c` script (the wasm bash, exec'd by its
- *     absolute host path — exec reads its target from the kernel VFS, and
- *     the raw NodePlatformIO VFS reaches the resolver cache directly). bash
- *     because it is the shell every Kandelo image binds to /bin/sh, so the
- *     smoke drives the same shell the Wayland desktop's wlterm runs
- *     that prints "READY", reads a line, then echoes it back as "GOT[<x>]";
+ *   - wlterm forkpty()'s a bash `-c` script — bash because it is the shell
+ *     every Kandelo image binds to /bin/sh, so the smoke drives the same
+ *     shell the Wayland desktop's wlterm runs — that prints "READY", reads
+ *     a line, then echoes it back as "GOT[<x>]";
  *   - the shell's "READY" reaches the PTY master → vt100_feed() → the cell grid,
  *     and wlterm's --watch reports WLTERM_GRID "READY" once it is visible;
- *   - a host-injected key A + Return is routed compositor → libkwl (KWL_KEY)
+ *   - a host-injected key A + Return is routed cage → libkwl (KWL_KEY)
  *     → vt100_input_key() → write(master), so the shell's `read x` returns "a"
  *     (Return → "\r", the tty's ICRNL makes it the newline) and prints
  *     "GOT[a]" → WLTERM_GRID "GOT[a]";
  *   - the shell exits, the PTY master hangs up, wlterm reaps it and prints
  *     WLTERM_EXIT code=0.
  *
- * wlterm and the compositor both exit 0. Skips if any binary is missing
- * (bare checkout — bash comes from the package cache / binaries tree).
+ * wlterm exits 0, and cage exits with its status. Skips if any binary is
+ * missing (bare checkout — bash comes from the package cache / binaries
+ * tree).
  */
 import { describe, expect, it } from "vitest";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { resolveBinary } from "../src/binary-resolver";
+import { WLROOTS_ENV, compositorBytes, requireSession, sessionRootfs } from "./wlroots-session";
 
-const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
-const wltermBin = tryResolveBinary("programs/wayland-demo/wlterm.wasm");
-const shellBin = tryResolveBinary("programs/bash.wasm");
-const hasBinaries = !!compositorBin && !!wltermBin && !!shellBin && existsSync(shellBin!);
+const wltermBin = resolveBinary("programs/wayland-demo/wlterm.wasm");
+const shellBin = resolveBinary("programs/bash.wasm");
+requireSession("cage");
 
 // Input canvas dims are arbitrary here — wlterm is keyboard-driven, and the
 // compositor routes keys by keycode independent of the pointer scale. We match
-// the compositor's card0 output anyway for consistency with the other smokes.
+// the card0 output anyway for consistency with the other smokes.
 const CANVAS_W = 1920;
 const CANVAS_H = 1080;
 
@@ -54,9 +54,11 @@ const KEY_ENTER = 28;
 // signal.h
 const SIGKILL = 9;
 
-function loadBytes(path: string): ArrayBuffer {
-  const buf = readFileSync(path);
-  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+function wltermRootfs(): Promise<Uint8Array> {
+  return sessionRootfs("cage", [
+    { path: "/usr/bin/wlterm", bytes: new Uint8Array(readFileSync(wltermBin!)), mode: 0o755 },
+    { path: "/bin/bash", bytes: new Uint8Array(readFileSync(shellBin!)), mode: 0o755 },
+  ]);
 }
 
 async function waitFor(
@@ -74,15 +76,13 @@ async function waitFor(
 }
 
 describe("wlterm — libkwl terminal renders shell output and routes typed input", () => {
-  it.skipIf(!hasBinaries)(
+  it(
     "shell output reaches the grid; a typed line round-trips back through it",
     async () => {
-      const compositorBytes = loadBytes(compositorBin!);
-      const wltermBytes = loadBytes(wltermBin!);
-
       const out = { value: "" };
       const err = { value: "" };
       const host = new NodeKernelHost({
+        rootfsImage: await wltermRootfs(),
         onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
         onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
       });
@@ -94,27 +94,20 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
         await host.init();
         host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
-        // --- compositor (server) ---
-        const compExit = host.spawn(compositorBytes, ["wlcompositor"], {});
-        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
-
-        // --- wlterm (libkwl terminal) + forkpty'd shell script ---
+        // cage runs wlterm (libkwl terminal) + a forkpty'd shell script.
         // The shell prints READY, reads one line, echoes it back as GOT[<line>].
         // wlterm watches the grid for both markers and reports each once seen.
-        // The forkpty'd child execs the wasm bash by its absolute host path:
-        // exec reads its target from the kernel VFS, and the raw
-        // NodePlatformIO VFS reaches the resolver cache directly. A bare
-        // "bash" would PATH-walk into the host's native /bin/bash (ENOEXEC).
-        const wltermExit = host.spawn(
-          wltermBytes,
+        const cageExit = host.spawn(
+          compositorBytes("cage"),
           [
-            "wlterm",
+            "cage", "--",
+            "/usr/bin/wlterm",
             "--watch", "READY",
             "--watch", "GOT[a]",
-            shellBin!, "-c",
+            "/bin/bash", "-c",
             "printf 'READY\\n'; read x; printf 'GOT[%s]\\n' \"$x\"",
           ],
-          { env: ["PATH=/usr/bin:/bin", "HOME=/root", "TERM=vt100"] },
+          { env: [...WLROOTS_ENV, "PATH=/usr/bin:/bin", "HOME=/root", "TERM=vt100"] },
         );
 
         // The window mapped and committed its first frame.
@@ -122,8 +115,8 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
         // The shell's "READY" flowed PTY → vt100_feed → grid.
         await waitFor(out, 'WLTERM_GRID "READY"', 20_000, dump);
 
-        // Type "a" then Return on the keyboard (device 0). The compositor
-        // routes each to the focused wlterm surface; libkwl compiles the
+        // Type "a" then Return on the keyboard (device 0). cage routes each
+        // to the focused wlterm surface; libkwl compiles the
         // keycode to a keysym; vt100 maps it to bytes written to the PTY.
         host.injectInputEvent(0, EV_KEY, KEY_A, 1);
         host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
@@ -140,20 +133,13 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
         // The shell exits → PTY HUP → wlterm reaps it and shuts down cleanly.
         await waitFor(out, "WLTERM_EXIT code=0", 20_000, dump);
 
-        const wltermCode = await Promise.race([
-          wltermExit,
+        // cage exits with wlterm's status.
+        const cageCode = await Promise.race([
+          cageExit,
           new Promise<number>((_, reject) =>
-            setTimeout(() => reject(new Error(`wlterm timed out.\n${dump()}`)), 25_000)),
+            setTimeout(() => reject(new Error(`cage timed out.\n${dump()}`)), 25_000)),
         ]);
-        expect(wltermCode, `wlterm exit.\n${dump()}`).toBe(0);
-
-        // The compositor exits once its last client disconnects.
-        const compCode = await Promise.race([
-          compExit,
-          new Promise<number>((_, reject) =>
-            setTimeout(() => reject(new Error(`compositor timed out.\n${dump()}`)), 10_000)),
-        ]);
-        expect(compCode, `compositor exit.\n${dump()}`).toBe(0);
+        expect(cageCode, `cage exit.\n${dump()}`).toBe(0);
       } finally {
         await host.destroy().catch(() => {});
       }
@@ -161,15 +147,13 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
     60_000,
   );
 
-  it.skipIf(!hasBinaries)(
+  it(
     "a shell killed by a signal is reported as a signal death, not a clean exit",
     async () => {
-      const compositorBytes = loadBytes(compositorBin!);
-      const wltermBytes = loadBytes(wltermBin!);
-
       const out = { value: "" };
       const err = { value: "" };
       const host = new NodeKernelHost({
+        rootfsImage: await wltermRootfs(),
         onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
         onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
       });
@@ -181,15 +165,12 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
         await host.init();
         host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
-        const compExit = host.spawn(compositorBytes, ["wlcompositor"], {});
-        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
-
         // WEXITSTATUS is undefined for a signal death, so the status must not
         // reach the grid as a code=.
-        const wltermExit = host.spawn(
-          wltermBytes,
-          ["wlterm", shellBin!, "-c", `kill -${SIGKILL} $$`],
-          { env: ["PATH=/usr/bin:/bin", "HOME=/root", "TERM=vt100"] },
+        const cageExit = host.spawn(
+          compositorBytes("cage"),
+          ["cage", "--", "/usr/bin/wlterm", "/bin/bash", "-c", `kill -${SIGKILL} $$`],
+          { env: [...WLROOTS_ENV, "PATH=/usr/bin:/bin", "HOME=/root", "TERM=vt100"] },
         );
 
         await waitFor(out, "WLTERM_READY", 20_000, dump);
@@ -197,19 +178,12 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
         expect(out.value, `signal death reported as an exit code.\n${dump()}`)
           .not.toContain("WLTERM_EXIT code=");
 
-        const wltermCode = await Promise.race([
-          wltermExit,
+        const cageCode = await Promise.race([
+          cageExit,
           new Promise<number>((_, reject) =>
-            setTimeout(() => reject(new Error(`wlterm timed out.\n${dump()}`)), 25_000)),
+            setTimeout(() => reject(new Error(`cage timed out.\n${dump()}`)), 25_000)),
         ]);
-        expect(wltermCode, `wlterm exit.\n${dump()}`).toBe(0);
-
-        const compCode = await Promise.race([
-          compExit,
-          new Promise<number>((_, reject) =>
-            setTimeout(() => reject(new Error(`compositor timed out.\n${dump()}`)), 10_000)),
-        ]);
-        expect(compCode, `compositor exit.\n${dump()}`).toBe(0);
+        expect(cageCode, `cage exit.\n${dump()}`).toBe(0);
       } finally {
         await host.destroy().catch(() => {});
       }

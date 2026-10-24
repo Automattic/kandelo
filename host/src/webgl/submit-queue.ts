@@ -45,7 +45,7 @@ export class SubmitQueue {
   ) {}
 
   enqueue(binding: GlBinding, frame: SubmitFrame): void {
-    const key = `${binding.pid}:${binding.contextId ?? "_"}`;
+    const key = `${binding.pid}:${binding.sessionId}:${binding.contextId ?? "_"}`;
     let entry = this.byKey.get(key);
     if (!entry) {
       entry = { key, binding, frames: [] };
@@ -96,9 +96,12 @@ export class SubmitQueue {
    * or future deferred drain from retaining a `SubmitFrame.memorySab` after
    * the process generation is gone.
    */
-  removePid(pid: number): void {
+  removePid(pid: number): void { this.removeSession(pid); }
+
+  removeSession(pid: number, sessionId?: number): void {
+    if (sessionId !== undefined) sessionId >>>= 0;
     for (const [key, entry] of Array.from(this.byKey)) {
-      if (entry.binding.pid !== pid) continue;
+      if (entry.binding.pid !== pid || (sessionId !== undefined && entry.binding.sessionId !== sessionId)) continue;
       entry.frames.length = 0;
       this.byKey.delete(key);
       const compositorIndex = this.compositor.indexOf(entry);

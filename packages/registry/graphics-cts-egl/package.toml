@@ -1,0 +1,22 @@
+kind = "program"
+name = "graphics-cts-egl"
+version = "1.0.0"
+kernel_abi = 55
+arches = ["wasm32"]
+depends_on = ["libcxx@21.1.7"]
+
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "Apache-2.0 AND GPL-2.0-or-later"
+url = "https://github.com/KhronosGroup/VK-GL-CTS/blob/a119e62de3bb38dae67f05abee8acd011e0c729c/LICENSE"
+
+[build]
+script_path = "packages/registry/graphics-cts-egl/build-graphics-cts-egl.sh"
+
+[[outputs]]
+name = "graphics-cts-egl"
+wasm = "graphics-cts-egl.wasm"

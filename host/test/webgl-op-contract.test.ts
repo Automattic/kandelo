@@ -1,12 +1,15 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, it } from "vitest";
+import { WPK_IMAGE_SOURCE_TARGET } from "../src/webgl/image-storage.js";
 import * as hostOps from "../src/webgl/ops.js";
 
 it("keeps GLES command and query tags identical in Rust, C and TypeScript", () => {
   const root = resolve(import.meta.dirname, "../..");
   const rust = readFileSync(resolve(root, "crates/shared/src/lib.rs"), "utf8");
   const c = readFileSync(resolve(root, "libc/glue/gl_abi.h"), "utf8");
+  expect(Number(rust.match(/pub const IMAGE_SOURCE_TARGET: u32 = (0x[0-9a-fA-F_]+);/)![1].replaceAll("_",""))).toBe(WPK_IMAGE_SOURCE_TARGET);
+  expect(Number(c.match(/^#define WPK_GL_IMAGE_SOURCE_TARGET (0x[0-9a-fA-F]+)/m)![1])).toBe(WPK_IMAGE_SOURCE_TARGET);
   const rustOps = Object.fromEntries([...rust.matchAll(/pub const ((?:Q?OP)_[A-Z0-9_]+): u(?:16|32) = (0x[0-9a-fA-F]+|\d+);/g)]
     .map(match => [match[1], Number(match[2])]));
   const cOps = Object.fromEntries([...c.matchAll(/^#define ((?:Q?OP)_[A-Z0-9_]+)\s+(0x[0-9a-fA-F]+|\d+)/gm)]

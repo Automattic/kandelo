@@ -1,5 +1,10 @@
-// Texture-unit replay assumes TEXTURE_2D (no cube/3D targets in the
-// current op set).
+// Replay each GLES2 texture target independently on the shared context.
+import { renderbufferNative } from "./image-storage.js";
+import { reconcileClientArrayRestore, type GlClientArrayFields } from "./client-array.js";
+import { hasNativeRepair, repairNativeState } from "./native-recovery.js";
+import { knownTextureUnitLimit } from "./limits.js";
+import { nativeTextureBinding } from "./texture-bindings.js";
+import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
 import {
   GL_BLEND,
   GL_BACK,
@@ -18,18 +23,31 @@ import {
 } from "./shadow.js";
 
 export class GlMuxer {
-  private current: { shadow: GlShadowState } | null = null;
+  private current: ({ shadow: GlShadowState } & GlErrorState & GlClientArrayFields) | null = null;
+  private errorOwner: GlErrorState | null = null;
+  private textureUnitCount = 32;
 
   constructor(private gl: WebGL2RenderingContext) {}
 
-  switchTo(target: { shadow: GlShadowState }): void {
+  switchTo(target: { shadow: GlShadowState } & GlErrorState & GlClientArrayFields): void {
+    if (hasNativeRepair(this.gl)) {
+      this.invalidateCurrent();
+      if (!repairNativeState(this.gl)) throw new Error("Native GL restoration remains pending");
+    }
+    if (target.clientArrayEndRequested) {
+      this.invalidateCurrent();
+      if (!reconcileClientArrayRestore(target,this.gl)) throw new Error("Client-array restoration remains pending");
+    }
     if (this.current === target) return;
+    captureNativeGlErrors(this.gl, this.errorOwner);
+    this.errorOwner = null;
     const s = target.shadow;
     const gl = this.gl;
 
     if (s.vao === null && s.defaultVao === null) s.defaultVao = gl.createVertexArray();
     gl.bindVertexArray(s.vao ?? s.defaultVao);
     gl.bindFramebuffer(GL_FRAMEBUFFER, s.fbo);
+    if (s.readFbo !== s.fbo) gl.bindFramebuffer(0x8ca8, s.readFbo);
     gl.viewport(...s.viewport);
 
     if (s.scissor.enabled) gl.enable(GL_SCISSOR_TEST); else gl.disable(GL_SCISSOR_TEST);
@@ -45,9 +63,10 @@ export class GlMuxer {
     if (s.sampleCoverageEnabled) gl.enable(0x80a0); else gl.disable(0x80a0);
     if (s.sampleAlphaToCoverageEnabled) gl.enable(0x809e); else gl.disable(0x809e);
     gl.bindBuffer(0x8892, s.arrayBuffer);
-    gl.bindRenderbuffer(0x8d41, s.renderbuffer);
+    gl.bindRenderbuffer(0x8d41, s.renderbuffer ? renderbufferNative(target,s.renderbuffer) : null);
     gl.colorMask(...s.colorMask);
 
+    if (s.ditherEnabled) gl.enable(0x0bd0); else gl.disable(0x0bd0);
     if (s.depthTestEnabled) gl.enable(GL_DEPTH_TEST); else gl.disable(GL_DEPTH_TEST);
     gl.depthMask(s.depthMask);
     gl.depthFunc(s.depthFunc);
@@ -86,19 +105,50 @@ export class GlMuxer {
       gl.vertexAttrib4f(index, value[0], value[1], value[2], value[3]);
     }
 
-    for (let i = 0; i < s.textureUnits.length; i++) {
+    // Clear units used by the outgoing owner even if the incoming owner
+    // has never selected them. Native WebGL2 implementations may expose
+    // more units than the 32 initially allocated in the guest shadow.
+    const units = this.textureUnitCount = Math.max(this.textureUnitCount,
+      knownTextureUnitLimit(gl),
+      s.textureUnits.length, s.cubeTextureUnits.length,
+      this.current?.shadow.textureUnits.length ?? 0,
+      this.current?.shadow.cubeTextureUnits.length ?? 0);
+    for (let i = 0; i < units; i++) {
       gl.activeTexture(GL_TEXTURE0 + i);
-      gl.bindTexture(GL_TEXTURE_2D, s.textureUnits[i]);
+      gl.bindTexture(GL_TEXTURE_2D, nativeTextureBinding(s,GL_TEXTURE_2D,i,target.textureViews));
+      gl.bindTexture(0x8513, nativeTextureBinding(s,0x8513,i,target.textureViews));
     }
     gl.activeTexture(GL_TEXTURE0 + s.activeTexture);
 
     gl.pixelStorei(GL_UNPACK_ALIGNMENT, s.unpackAlignment);
     gl.pixelStorei(GL_PACK_ALIGNMENT, s.packAlignment);
+    for (const [pname, value] of s.pixelStore) gl.pixelStorei(pname, value);
 
     this.current = target;
+    // Retain only the error flags across invalidation, not a guest binding.
+    this.errorOwner = { errors: target.errors };
+  }
+
+  /** Immutable device queries must preserve the selected owner and must stop
+   * if its pending flags cannot be captured. Cleanup invalidation, in
+   * contrast, must continue even when the renderer's error read fails. */
+  captureCurrentErrors(): void {
+    captureNativeGlErrors(this.gl, this.errorOwner);
   }
 
   invalidateCurrent(): void {
+    try {
+      captureNativeGlErrors(this.gl, this.errorOwner);
+      this.errorOwner = null;
+    } catch {
+      // Cleanup must still retire native objects. Keep the outgoing error
+      // flags so a later switch must drain them before executing a new owner.
+    }
+    // Commands can grow the selected owner's shadow between switches.
+    // Invalidation loses its identity, but must retain the clearing range.
+    this.textureUnitCount = Math.max(this.textureUnitCount,
+      this.current?.shadow.textureUnits.length ?? 0,
+      this.current?.shadow.cubeTextureUnits.length ?? 0);
     this.current = null;
   }
 }

@@ -1,0 +1,55 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# EDID and DisplayID parser (libdisplay-info.a). wlroots >= 0.20 requires
+# it (>= 0.2.0) for its DRM backend. Built through upstream's meson build
+# with the SDK cross file; the PNP vendor-name table is generated from the
+# build machine's hwdata.
+name = "libdisplay-info"
+version = "0.3.0"
+kernel_abi = 52
+
+[[host_tools]]
+name = "meson"
+version_constraint = ">=0.57.0"
+install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "ninja"
+version_constraint = ">=1.8"
+install_hints = { darwin = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh" }
+
+# tool/gen-search-table.py turns pnp.ids into the vendor-name C table.
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.6"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.python3); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.python3); enter scripts/dev-shell.sh" }
+
+# hwdata is data, not an executable, so the probe asks the build
+# machine's pkg-config for it: the same lookup meson's native
+# dependency('hwdata') performs.
+[[host_tools]]
+name = "pkg-config"
+version_constraint = ">=0.300"
+probe = { args = ["--modversion", "hwdata"], version_regex = "(?m)^(\\d+\\.\\d+)$" }
+install_hints = { darwin = "hwdata is provided by flake.nix (pkgs.hwdata); enter scripts/dev-shell.sh", linux = "hwdata is provided by flake.nix (pkgs.hwdata); enter scripts/dev-shell.sh" }
+
+[source]
+url = "https://gitlab.freedesktop.org/emersion/libdisplay-info/-/releases/0.3.0/downloads/libdisplay-info-0.3.0.tar.xz"
+sha256 = "6ae77cd937f9cf7d1321d35c116062c4911e8447010a6a713ac4286f7a9d5987"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://gitlab.freedesktop.org/emersion/libdisplay-info/-/blob/0.3.0/LICENSE"
+
+[build]
+script_path = "packages/registry/libdisplay-info/build-libdisplay-info.sh"
+
+[outputs]
+libs = ["lib/libdisplay-info.a"]
+headers = ["include/libdisplay-info"]
+pkgconfig = ["lib/pkgconfig/libdisplay-info.pc"]

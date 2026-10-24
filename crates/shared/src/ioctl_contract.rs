@@ -300,18 +300,19 @@ pub const IOCTL_REQUEST_FAMILIES: &[IoctlRequestFamily] = &[
 /// `SIOCGIF*` constants for the buffer it nests.
 pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     // Kandelo GLES requests use small private request numbers.
-    pointer!(crate::gl::GLIO_INIT, In, 4),
+    pointer!(crate::gl::GLIO_INIT, InOut, 16),
     no_arg!(crate::gl::GLIO_TERMINATE),
-    pointer!(crate::gl::GLIO_CREATE_CONTEXT, In, 16),
+    pointer!(crate::gl::GLIO_CREATE_CONTEXT, InOut, 16),
     no_arg!(crate::gl::GLIO_DESTROY_CONTEXT),
-    pointer!(crate::gl::GLIO_CREATE_SURFACE, In, 32),
+    pointer!(crate::gl::GLIO_CREATE_SURFACE, InOut, 36),
     no_arg!(crate::gl::GLIO_DESTROY_SURFACE),
-    no_arg!(crate::gl::GLIO_MAKE_CURRENT),
+    pointer!(crate::gl::GLIO_MAKE_CURRENT, In, 12),
     pointer!(crate::gl::GLIO_SUBMIT, In, 8),
     no_arg!(crate::gl::GLIO_PRESENT),
     // WHY: GlQueryInfo contains wasm32 pointers. Until a native wasm64 wire
     // structure exists, rejecting the known request is safer than truncating.
     pointer!(crate::gl::GLIO_QUERY, In, wasm32 24),
+    pointer!(crate::gl::GLIO_UPDATE_SURFACE, In, 32),
     pointer!(crate::fbdev::FBIOGET_VSCREENINFO, Out, 160),
     pointer!(crate::fbdev::FBIOPUT_VSCREENINFO, In, 160),
     pointer!(crate::fbdev::FBIOGET_FSCREENINFO, Out, 80),
@@ -366,7 +367,9 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::oss::SNDCTL_DSP_SETBLKSIZE, In, 4),
     pointer!(crate::oss::SNDCTL_DSP_SETTRIGGER, In, 4),
     pointer!(TIOCSPTLCK, In, 4),
+    pointer!(crate::dri::DRM_IOCTL_AUTH_MAGIC, In, 4),
     pointer!(crate::dri::DRM_IOCTL_GEM_CLOSE, In, 8),
+    pointer!(crate::dri::DRM_IOCTL_SET_CLIENT_CAP, In, 16),
     pointer!(crate::input::EVIOCGVERSION, Out, 4),
     pointer!(crate::oss::SOUND_PCM_READ_RATE, Out, 4),
     pointer!(crate::oss::SOUND_PCM_READ_BITS, Out, 4),
@@ -377,6 +380,7 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::oss::SNDCTL_DSP_GETTRIGGER, Out, 4),
     pointer!(crate::oss::SNDCTL_DSP_GETODELAY, Out, 4),
     pointer!(TIOCGPTN, Out, 4),
+    pointer!(crate::dri::DRM_IOCTL_GET_MAGIC, Out, 4),
     pointer!(
         crate::input::EVIOCGID,
         Out,
@@ -398,11 +402,15 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::oss::SNDCTL_DSP_SETFRAGMENT, InOut, 4),
     pointer!(crate::dri::DRM_IOCTL_MODE_RMFB, In, 4),
     pointer!(crate::dri::DRM_IOCTL_MODE_DESTROY_DUMB, In, 4),
+    pointer!(crate::dri::DRM_IOCTL_MODE_CLOSEFB, In, 8),
     pointer!(crate::dri::DRM_IOCTL_PRIME_HANDLE_TO_FD, InOut, 12),
     pointer!(crate::dri::DRM_IOCTL_PRIME_FD_TO_HANDLE, InOut, 12),
     pointer!(crate::dri::DRM_IOCTL_GET_CAP, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_WAIT_VBLANK, InOut, 16),
+    pointer!(crate::dri::DRM_IOCTL_MODE_SETPROPERTY, In, 16),
+    pointer!(crate::dri::DRM_IOCTL_MODE_GETPROPBLOB, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_MAP_DUMB, InOut, 16),
+    pointer!(crate::dri::DRM_IOCTL_MODE_GETPLANERESOURCES, InOut, 16),
     // width / height / format / usage in; handle and stride out in the
     // format/usage slots (WpkDrmGpuBoCreate). Without an entry
     // the host stages a zero-length buffer and the kernel handler rejects
@@ -415,13 +423,18 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETENCODER, InOut, 20),
     pointer!(crate::dri::DRM_IOCTL_MODE_PAGE_FLIP, In, 24),
+    pointer!(crate::dri::DRM_IOCTL_MODE_OBJ_SETPROPERTY, In, 24),
+    pointer!(crate::dri::DRM_IOCTL_MODE_CREATE_LEASE, InOut, 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_CURSOR, In, 28),
     pointer!(crate::dri::DRM_IOCTL_MODE_CREATE_DUMB, InOut, 32),
+    pointer!(crate::dri::DRM_IOCTL_MODE_GETPLANE, InOut, 32),
+    pointer!(crate::dri::DRM_IOCTL_MODE_OBJ_GETPROPERTIES, InOut, 32),
     // Linux encodes pointer-sized fields into DRM_IOCTL_VERSION itself.
     pointer!(crate::dri::DRM_IOCTL_VERSION, InOut, wasm32 36),
     pointer!(crate::dri::DRM_IOCTL_MODE_CURSOR2, In, 36),
     pointer!(crate::dri::DRM_IOCTL_VERSION_WASM64, InOut, wasm64 64),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETRESOURCES, InOut, 64),
+    pointer!(crate::dri::DRM_IOCTL_MODE_GETPROPERTY, InOut, 64),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETCONNECTOR, InOut, 80),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETCRTC, InOut, 104),
     pointer!(crate::dri::DRM_IOCTL_MODE_SETCRTC, In, 104),
@@ -497,6 +510,17 @@ mod tests {
     }
 
     #[test]
+    fn surface_creation_returns_identity_without_changing_update_wire() {
+        let create = request_contract(crate::gl::GLIO_CREATE_SURFACE).unwrap();
+        let update = request_contract(crate::gl::GLIO_UPDATE_SURFACE).unwrap();
+        assert_eq!(create.direction, IoctlDirection::InOut);
+        assert_eq!(create.size_for_pointer_width(4),Some(36));
+        assert_eq!(create.size_for_pointer_width(8),Some(36));
+        assert_eq!(update.direction, IoctlDirection::In);
+        assert_eq!(update.size_for_pointer_width(4),Some(32));
+    }
+
+    #[test]
     fn gl_query_refuses_wasm64_until_it_has_a_native_wire() {
         let query = request_contract(crate::gl::GLIO_QUERY).unwrap();
         assert_eq!(query.size_for_pointer_width(4), Some(24));
@@ -556,6 +580,28 @@ mod tests {
         // The sibling prime-import ioctl, so a regression that drops the
         // whole DRM block is caught too.
         assert!(request_contract(crate::dri::DRM_IOCTL_PRIME_FD_TO_HANDLE).is_some());
+
+        // The KMS object, property, cursor and authentication requests a
+        // wlroots compositor issues through libdrm.
+        for request in [
+            crate::dri::DRM_IOCTL_SET_CLIENT_CAP,
+            crate::dri::DRM_IOCTL_GET_MAGIC,
+            crate::dri::DRM_IOCTL_AUTH_MAGIC,
+            crate::dri::DRM_IOCTL_MODE_CURSOR,
+            crate::dri::DRM_IOCTL_MODE_CURSOR2,
+            crate::dri::DRM_IOCTL_MODE_GETPROPERTY,
+            crate::dri::DRM_IOCTL_MODE_SETPROPERTY,
+            crate::dri::DRM_IOCTL_MODE_GETPROPBLOB,
+            crate::dri::DRM_IOCTL_MODE_GETPLANERESOURCES,
+            crate::dri::DRM_IOCTL_MODE_GETPLANE,
+            crate::dri::DRM_IOCTL_MODE_OBJ_GETPROPERTIES,
+            crate::dri::DRM_IOCTL_MODE_OBJ_SETPROPERTY,
+            crate::dri::DRM_IOCTL_MODE_CREATE_LEASE,
+        ] {
+            let contract = request_contract(request).expect("KMS ioctl must have a contract");
+            let encoded = (request >> 16) & 0x3fff;
+            assert_eq!(contract.size_for_pointer_width(4), Some(encoded), "{request:#x}");
+        }
     }
 
     #[test]

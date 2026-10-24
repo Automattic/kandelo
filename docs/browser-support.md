@@ -501,8 +501,9 @@ The Wayland desktop machine (launched from the gallery, or directly with
 The Modeset pane bridges card0 to an OffscreenCanvas.
 
 **GPU compositing (default in the browser).** At boot wlcompositor
-probes the `/dev/dri/renderD128` GLES bridge (shader compile via sync
-queries, which fail cleanly on headless hosts) and, when available,
+probes the `/dev/dri/renderD128` GLES bridge (context creation requires a
+live renderer acknowledgement and fails cleanly on renderer-less hosts;
+shader compilation uses synchronous queries) and, when available,
 composites with GLES3: each client `wl_shm` buffer — a gbm dumb bo
 whose prime-fd arrived over `SCM_RIGHTS` — is imported on the EGL fd
 and bound as a `WebGLTexture` through the
@@ -974,15 +975,17 @@ follow-ups, not as the end state.
   is behaviour real Hyprland has (popups and tooltips, window swapping
   beyond `swapwindow`, animations, the full dispatcher set). **Deferred:
   port real Hyprland.** It needs platform work first: Hyprland renders
-  only with OpenGL ES 3 through its `aquamarine` backend, so Kandelo's EGL
-  must import dmabufs as EGLImages and provide fence/explicit sync over
-  the WebGL2 bridge; aquamarine expects KMS properties, planes and an
-  EDID blob from the kernel's connector; and it opens devices through
-  libseat and enumerates them through libudev, which here is a stand-in
-  with no `/sys` device tree behind it. A wlroots-based compositor with
-  its pixman software renderer is the fallback if the EGL work proves
-  too large. The dependency graph, each platform gap and a build order
-  are in `docs/plans/2026-09-30-real-hyprland-port-inventory.md`.
+  only with OpenGL ES 3 through its `aquamarine` backend, and Kandelo's
+  GLES bridge is ES 2.0 with no fence or explicit sync; aquamarine also
+  expects an EDID blob from the kernel's connector. The device side is in
+  place: the kernel reports KMS properties and the primary plane, `/sys`
+  describes the card and the input devices, and upstream libseat and
+  libudev-zero use them. Kandelo's EGL imports dmabufs as EGLImages, and
+  upstream wlroots renders with its GLES2 renderer under cage in the
+  browser's `cage` machine (see "Wayland kiosk compositor" in
+  `docs/architecture.md`). cage hosts one application, not a desktop.
+  The dependency graph, each platform gap and a build order are in
+  `docs/plans/2026-09-30-real-hyprland-port-inventory.md`.
 - **The shell is this repository's QML, not Omarchy's.** Omarchy v4's
   Quickshell configuration is written against real Hyprland and against
   services this machine does not run (PipeWire, UPower, NetworkManager,
@@ -1223,10 +1226,9 @@ resolves every function it imports against it; the package build fails if
 any plugin import has no export to bind to. The machine's command is
 `/usr/local/bin/scummvm`, a small wrapper in the image that:
 
-- names SDL's backends in the environment. Kandelo has no libudev, so
-  SDL's evdev layer only finds the kernel's keyboard and pointer when
-  `SDL_EVDEV_DEVICES` lists them (the libudev gap is in the register in
-  [package-management.md](package-management.md#packages-that-are-not-real-upstream-builds-yet)).
+- names SDL's backends in the environment. The `sdl2` package is built
+  with `--disable-libudev`, so SDL's evdev layer only finds the kernel's
+  keyboard and pointer when `SDL_EVDEV_DEVICES` lists them.
 - seeds `~/scummvm.ini` on first launch. ScummVM rewrites its config
   whenever the user adds a game, so it lives in the writable home rather
   than in image content. `gui_scale` stays at ScummVM's default of 100%;
@@ -1846,8 +1848,8 @@ alone is therefore enough to boot a first-party machine or a stranger's image,
 and both travel one code path.
 
 An image may declare several profiles — the shell image carries `shell`,
-`node`, `doom`, `quake`, `modeset`, `sdl2`, `scummvm`, `wayland`, and
-`omarchy` — so one channel selects one:
+`node`, `doom`, `quake`, `freeciv`, `modeset`, `sdl2`, `scummvm`, `love`,
+`cage`, `sway`, `wayland`, and `omarchy` — so one channel selects one:
 
 1. `&profile=<id>` on the page URL.
 2. else the image's own `defaultProfile`.
@@ -1865,6 +1867,13 @@ An id no profile in the image declares is a **loud boot error** naming the
 profiles the image does declare — never a silent fall back to its default. An
 image with no `/etc/kandelo/demo.json`, or a malformed one, fails the boot
 with that reason; nothing synthesizes a fallback machine.
+
+The gallery roster includes the cage kiosk and sway desktop profiles from
+the shell image. Their browser tests resolve that image through the current
+`?vfs=...&profile=...` launch path and require built products. The repeated
+browser-memory sequence includes cage with a live terminal, then switches
+away through ordinary machine teardown. The graphics inventory records which
+combined-tree integration checks have actually run.
 
 The older `?demo=<id>` parameter is **removed**. It named one of a dozen ids
 the app held, which is exactly what image-owned machine definitions delete. It
@@ -3190,6 +3199,16 @@ thread-patching export scans (`host/src/worker-main.ts`) share one
 Other host code still constructs decoders per call. A recurrence elsewhere
 would be evidence for the hypothesis and a reason to build the standalone
 reduction, not a reason to avoid `TextDecoder` as a rule.
+
+### Chromium texture respecification after a copy
+
+On Playwright Chromium 153.0.8010.12 on macOS, using the `chromium` channel,
+a WebGL2 texture populated by CopyTexSubImage2D can retain those pixels
+after TexImage2D replaces that image. A standalone, self-judging reproduction
+is recorded as [the runtime workaround entry](../tests/runtime-workarounds/CHROMIUM-COPY-TEX-RESPEC/entry.md).
+The image-view path avoids copying a base image that the next command
+replaces. Stable Chrome and other backends have not been established as
+affected; the default Playwright headless shell did not reproduce it.
 
 ### Compiler engine limits
 
