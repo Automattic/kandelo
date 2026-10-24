@@ -3373,11 +3373,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_rootfs_load_manifest",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_rootfs_mkdir_parents",
       "signature": "(i32,i32,i32) -> (i32)"
     },

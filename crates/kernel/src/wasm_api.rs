@@ -2095,31 +2095,18 @@ pub extern "C" fn kernel_wait_queue_stats(out_ptr: *mut u8, len: u32) -> i32 {
     BYTES as i32
 }
 
-/// Load the in-kernel rootfs overlay's base tree from an RTFS manifest buffer in
-/// kernel Wasm memory: a whole tree handed over in a single crossing. Not the
-/// boot path — hosts boot through `kernel_rootfs_load_image` — this remains for
-/// tests that place small trees directly. Returns the number of entries loaded
-/// (>=0) or a negative errno. See `rootfs::load_manifest`.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_rootfs_load_manifest(ptr: *const u8, len: u32) -> i32 {
-    let buf = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
-    match crate::rootfs::load_manifest(buf) {
-        Ok(count) => i32::try_from(count).unwrap_or(i32::MAX),
-        Err(error) => -(error as i32),
-    }
-}
-
 /// Load the in-kernel rootfs overlay's base tree by parsing the `/` VFS image
 /// itself, instead of consuming a tree the host walked and re-encoded.
 ///
 /// `image_len` is the byte length of the whole VFSI container; the kernel pulls
 /// the bytes it needs through `env.host_image_read` as it walks. It reads far
 /// less than the whole image (a superblock, the inode-table blocks it touches,
-/// directory data blocks, indirect blocks, and the `KLZY` section), so a large
+/// directory data blocks, indirect blocks, and the `SDEF` section), so a large
 /// image is never made resident in kernel memory.
 ///
-/// This is the boot path both hosts use, and the image-authoritative
-/// alternative to `kernel_rootfs_load_manifest`. Returns the number of entries loaded
+/// This is the only way a host loads the base tree (the RTFS manifest export,
+/// `kernel_rootfs_load_manifest`, was removed on 2026-10-02 with no host
+/// caller left). Returns the number of entries loaded
 /// (>=0) or a negative errno — in particular `-ENOSYS` when the host has not
 /// installed an image source, which is what keeps the path dormant. See
 /// `rootfs::load_image`.

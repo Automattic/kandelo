@@ -2223,10 +2223,10 @@ At boot the worker entry hands the kernel worker the decoded image bytes
 kernel parses the image itself: it mounts the image's KIFS filesystem
 (`crates/runtime-core/src/kandelo_image_fs.rs`), walks it, and reads the
 image's own description of its deferred files (the in-body `SDEF` section,
-`sdef.rs`, or the container's `KLZY` section, `klzy.rs`). An image without
-either description, or whose metadata declares a different `kernelAbi`, is
-refused (`EINVAL` / `EPROTO`), and the boot fails at that cause; there is no
-host-side fallback.
+`sdef.rs`). An image without that description, one that still carries the
+retired `KLZY` section, or one whose metadata declares a different
+`kernelAbi`, is refused (`EINVAL` / `EPROTO`), and the boot fails at that
+cause; there is no host-side fallback.
 
 The kernel keeps the tree's metadata, every guest change, and every file the
 guest creates in its own memory. Unmodified file content stays in the image:
@@ -2587,14 +2587,31 @@ Offset   Size   Field
 0        4      Magic: 0x56465349 ("VFSI")
 4        4      Version: 1
 8        4      Flags: bit 0 = lazy files, bit 1 = lazy archives, bit 2 = metadata,
-                bit 3 = typed lazy archives, bit 4 = kernel lazy linkage (KLZY)
+                bit 3 = typed lazy archives, bit 4 = retired kernel lazy linkage (KLZY)
 12       4      Filesystem body length (N)
 16       N      KIFS filesystem body (superblock magic "KIFS"); deferred-file
                 records live inside it in the SDEF section
 16+N     ...    Optional trailing sections, each a 4-byte length and bytes:
                 lazy-file JSON (bit 0), lazy-archive JSON (bit 1), image-metadata
-                JSON (bit 2), and the KLZY section (bit 4)
+                JSON (bit 2), and the retired KLZY section (bit 4, refused at load)
 ```
+
+### The retired kernel lazy-linkage section ("KLZY")
+
+`KLZY` was a binary copy, in the container, of the two facts in the JSON
+sections the kernel needs: a lazy file's real size, and an archive member's
+`(archive_id, source_path, size)`. It was written by the TypeScript image
+writer, which was deleted on 2026-09-17. Image builders now describe deferred
+files with an `SDEF` section in the image body (`crates/runtime-core/src/sdef.rs`),
+which carries the same linkage plus each file's address and digest.
+
+The kernel no longer reads `KLZY`. Its decoder was removed on 2026-10-02, and
+`rootfs::load_image` refuses an image whose container still carries the
+section (header bit 4) with `EINVAL`: such an image can only have been built
+before that change, so it is a stale artifact to
+rebuild rather than a format to keep reading. The bit and the section's
+structural constants (`VFS_IMAGE_KERNEL_LAZY_*` in `crates/shared/src/lib.rs`)
+remain defined so the refusal can name what it found.
 
 ## Networking
 

@@ -2821,11 +2821,11 @@ export class CentralizedKernelWorker {
    * `#maybeLoadKernelRootfs` installs a positioned window onto these bytes and
    * asks the kernel to parse the image itself (`kernel_rootfs_load_image`). The
    * host resolves no names: the kernel mounts the image's own filesystem, walks
-   * it, and reads the image's own deferred-file section (`SDEF`, or the older
-   * kernel-lazy `KLZY`). What the host still supplies is bytes the image does not carry — a URL-backed lazy file's
+   * it, and reads the image's own deferred-file section (`SDEF`; an image
+   * still carrying the retired `KLZY` section is refused). What the host still supplies is bytes the image does not carry — a URL-backed lazy file's
    * and a lazy archive's — through `#rootfsDeferredProvider`.
    *
-   * An image that declares neither section is refused by the kernel, which
+   * An image that declares no `SDEF` section is refused by the kernel, which
    * cannot tell "no lazy files" from "lazy files recorded only in the host-side
    * JSON I cannot read". That failure is loud and the fix is to rebuild the
    * image; there is no host-walked fallback to absorb it.
@@ -5097,15 +5097,15 @@ export class CentralizedKernelWorker {
     const imageLenHi = Math.floor(image.byteLength / 0x1_0000_0000);
     const loaded = loadImage(imageLenLo, imageLenHi);
     if (loaded < 0) {
-      // `-EINVAL` here is most often an image that declares neither deferred-
-      // file section (`SDEF` or the older `KLZY`), which the kernel refuses
-      // rather than reading best-effort into a tree where every deferred file
-      // reports size 0. Say
+      // `-EINVAL` here is most often a stale image: one whose body declares no
+      // `SDEF` deferred-file section, which the kernel refuses rather than
+      // reading best-effort into a tree where every deferred file reports
+      // size 0, or one that still carries the retired `KLZY` section. Say
       // so, because "rebuild the image" is the fix and a bare errno is not a
       // hint. Every other code is a real image or transport defect.
       throw new Error(
         `kernel refused the \`/\` VFS image (errno ${-loaded}); `
-        + "an image with neither an SDEF nor a KLZY deferred-file section must be rebuilt",
+        + "an image without an SDEF deferred-file section, or with the retired KLZY section, must be rebuilt",
       );
     }
     this.#kernel.setRootfsDeferredProvider(provider);

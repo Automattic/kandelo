@@ -250,7 +250,9 @@ pub fn metadata_section(image: &[u8]) -> Result<Option<&[u8]>, Errno> {
 /// The section sits after the three JSON sections, whose lengths must be
 /// walked to find it: `u32 lazyLen | lazyJson` (always present), then
 /// `u32 archiveLen | archiveJson` and `u32 metadataLen | metadataJson` when
-/// their flags are set. See [`crate::klzy`] for the section's own contents.
+/// their flags are set. The kernel no longer decodes the section's contents
+/// (its reader was removed on 2026-10-02); `rootfs::load_image` uses this
+/// span only to refuse an image that carries one.
 pub fn kernel_lazy_span(source: &impl BlockSource) -> Result<Option<(u64, u64)>, Errno> {
     let (sab_offset, sab_len) = kandelo_image_span(source)?;
     let flags = source_u32(source, 8).map_err(container_errno)?;
