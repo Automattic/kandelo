@@ -61,7 +61,7 @@ async function leaveDetachedTmuxSession(page: Page, cycle: number): Promise<void
   // must release them through normal host teardown in this same page realm.
 }
 
-test("@slow games, cage, tmux and WordPress survive repeated constrained-budget switches", async ({ page }) => {
+test("@slow games, cage, sway, tmux and WordPress survive repeated constrained-budget switches", async ({ page }) => {
   test.setTimeout(1_200_000);
   const required = process.env.KANDELO_MEMORY_SWITCH_REQUIRED === "1";
   // This follows the same external-data boundary as the Quake demo spec.
@@ -127,6 +127,35 @@ test("@slow games, cage, tmux and WordPress survive repeated constrained-budget 
       { timeout: 60_000 }).toBe(false);
     // Leave the compositor and terminal alive. The next launch must retire
     // their pending flips, GL context, imported buffers and process memories.
+    await launch(page, "sway tiling desktop", "sway");
+    const swayCanvas = page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
+    await expect(swayCanvas).toBeVisible({ timeout: 180_000 });
+    await expect.poll(() => page.locator(".kdemo-surface-controls").allInnerTexts()
+      .then(text => text.join(" ")), { timeout: 180_000 }).toMatch(/webgl2-gl/);
+    // Wait for the actual foot tile, rather than accepting sway's wallpaper
+    // before its client loads. The full sway consumer spec checks tiling,
+    // input and bar behavior; here the live session must survive teardown.
+    await expect.poll(async () => {
+      const png = await swayCanvas.screenshot();
+      return page.evaluate(async encoded => {
+        const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
+        const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+        const surface = new OffscreenCanvas(bitmap.width, bitmap.height);
+        const context = surface.getContext("2d")!;
+        context.drawImage(bitmap, 0, 0);
+        const { data } = context.getImageData(Math.floor(bitmap.width / 4),
+          Math.floor(bitmap.height / 4), Math.floor(bitmap.width / 2), Math.floor(bitmap.height / 2));
+        bitmap.close();
+        const mean = [0, 0, 0];
+        for (let i = 0; i < data.length; i += 4) {
+          for (let channel = 0; channel < 3; channel++) mean[channel] += data[i + channel];
+        }
+        const [r, g, b] = mean.map(value => value / (data.length / 4));
+        return r > 20 && r < 60 && Math.abs(r - g) < 8 && Math.abs(r - b) < 8;
+      }, png.toString("base64"));
+    }, { timeout: 180_000 }).toBe(true);
+    // Leave sway, foot and the status-command/bar children alive too, so the
+    // next switch must retire the whole session in the same browser realm.
     await launch(page, "Bare shell", "shell");
     await leaveDetachedTmuxSession(page, cycle);
     await launch(page, "WordPress MariaDB", "wordpress-mariadb");
