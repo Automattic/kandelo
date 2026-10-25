@@ -106,3 +106,8 @@ not establish full workspace, full application benchmark or conformance
 coverage. The latest original 284.6 MB Codex capacity rerun and full
 workspace/conformance reruns remain pending; earlier revision-specific
 results are retained in their historical reports. The PR remains a draft.
+
+Subsequent [native-default rollout validation](2026-10-25-native-default-rollout.md)
+completed the current workspace, selected conformance, fresh package execution
+and original Codex capacity checks at a later recorded source. The measurements
+and candidate-specific evidence above remain unchanged.

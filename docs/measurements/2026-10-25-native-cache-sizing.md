@@ -85,3 +85,8 @@ Reproduce with `memory_comparison generate-cache-pressure OUTPUT`, then
 `scripts/profile-fork-instrument-cache.py --binary BINARY --output-dir DIR
 --cache-mib 4 16 64 INPUT`. The same tool accepts real original SDK-link
 inputs; it never executes them during measurement.
+
+Subsequent [native-default rollout validation](2026-10-25-native-default-rollout.md)
+completed the current workspace, selected conformance, fresh package execution
+and original Codex capacity checks at a later recorded source. The measurements
+and candidate-specific evidence above remain unchanged.

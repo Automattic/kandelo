@@ -10,8 +10,8 @@ artifact; the production CLI retains file-backed output.
 The production change is `1db42bf6f56b77d79e6ced707d188eb6d543cbe0`.
 `f74fd96b85` refreshes the detached fuzz workspace lockfile without changing
 production code. All commands below ran through `scripts/dev-shell.sh`, with
-two Cargo build jobs. This report distinguishes completed checks from the
-remaining rollout work.
+two Cargo build jobs. This report records the completed rollout checks and
+their scope.
 
 ## Completed checks
 
@@ -29,6 +29,7 @@ remaining rollout work.
 | Real-package execution | All four probes below passed through the new source-only rootfs |
 | Selected libc conformance | All seven selected cases passed |
 | Selected Open POSIX conformance | All eighteen signal, raise and kill cases passed |
+| Selected Sortix conformance | 113 passed; no failures, build errors or timeouts; two documented upstream skips |
 
 Workspace tests used one test thread; the instrumenter-only preparation checks
 used two. The Node selection covers default SDK-built process probes, native
@@ -82,7 +83,7 @@ Private evidence lives under `.context/native-default-runtime/`,
 `.context/native-default-closures.json.log` and the recorded `scripts/agent-job`
 workspace, fuzz, rootfs and kernel jobs.
 
-## Pinned transform and remaining checks
+## Pinned transform and original Codex capacity
 
 The immutable source snapshot contains 208 files with an empty source patch.
 The host compilation profile is `instrumenter`:
@@ -92,10 +93,45 @@ The host compilation profile is `instrumenter`:
 | Raw transform measurement executable | `57b22a4dfaa72a595c3ffbacc8ff0ddeec5a54ec645be861cf09bfc507d58006` |
 | Installed/default CLI | `021f22d9cc097ea3c52092d0232520fac4e1c586301938f338f70af346cc9f47` |
 
-Sortix process, signal and I/O conformance is still running. The current-source original
-284.6 MB Codex capacity check remains pending. It will run serially after other
-builds/tests finish, with the authorized 16 GiB physical-memory guard and
-30-minute deadline, without Binaryen, browser or guest execution.
+The selected conformance run passed 138 cases in total, with two existing
+Sortix upstream skips concerning the implementation-defined `signal()`
+`SA_RESTART` choice. Guest deadlines and expected results were unchanged.
+These selected groups do not establish complete conformance-suite coverage.
+
+On the 18-core Apple M5 Max Mac with 48 GiB memory and macOS 27.0.1, the
+exact original 284,605,220-byte Codex input completed with compiler facts,
+serial WebAssembly validation and atomic publication. The result is
+byte-for-byte identical to the [previous successful native output](2026-10-24-native-codex-lexical-transform.md),
+including its ABI descriptor and unchanged-data fingerprints.
+
+| Original-input transform | Elapsed | Peak physical memory | Outcome |
+|---|---:|---:|---|
+| Historical Walrus attempt | Did not complete | Exceeded 16 GiB guard | Stopped during analysis |
+| Current native | 517.623 s (8m38s) | 518.59 MiB | Validated and published |
+
+Requested Rust allocations peaked at 430.94 MiB. The automatic specialization
+cache reached its 64 MiB allowance: 1,114,850 hits, 362,066 misses and 86,862
+evictions. Its allowance is allocated on demand and is not a reservation.
+The complete output is 246,465,071 bytes with SHA-256
+`a0310b790bb90acc1661cff69bc75fbf138ce5675da780e8e29d1d9db1188e0f`.
+
+The [machine-readable capacity record](2026-10-25-native-default-codex-capacity.json)
+includes input, executable, output and contract fingerprints, guard settings
+and exact counters. Raw traces, input/output and the copied runner remain in
+`.context/native-codex-default-20261025/`.
+
+The run used the authorized 16 GiB physical-memory guard and 30-minute deadline
+without a guard event. It ran after the other builds/tests, with no Binaryen,
+independent Node compilation, browser or guest/Codex execution. Ordinary
+apps/services remained active; macOS indexing used about 1.2 CPU cores at
+preflight. This is a capacity observation, not a paired throughput benchmark.
+The earlier successful native run recorded 1,029.337 seconds and 484.97 MiB
+physical peak in a separate source/profile session. These observations do not
+isolate a causal effect of cache sizing or establish a completed-transform
+Walrus timing ratio. Physical footprint differs from RSS; requested Rust
+allocations exclude SQLite/C allocations, stacks and allocator overhead.
+Temporary disk storage is additional. The output remains a private diagnostic
+artifact and was not executed, admitted or shipped as a Codex package.
 
 The [paired package measurements](2026-10-25-native-instrumentation-comparison.md)
 and [cache-sizing measurements](2026-10-25-native-cache-sizing.md) precede this
