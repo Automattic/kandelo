@@ -4366,8 +4366,27 @@ captures selected-owner errors before private deletion. Failed error
 capture keeps the reference; failed deletion ends use but keeps a retry
 token and checked native receipt. Successful deletion members do not replay,
 and native inverses retain old handles until deletion really accepts.
-These leases currently cover owned surface targets. Borrowed BO storage,
-retained context execution and deferred wait integration remain work.
+These leases currently cover owned surface targets. Borrowed BO storage
+and deferred wait integration remain work.
+
+Context execution leases separately retain a native execution owner after
+public context destruction or session removal. Acquisition reserves a fresh
+public slot before work can be accepted. Destruction revokes lookup and
+clears the old guest command view and forwarding transport; the session may
+create a replacement context with fresh local state while existing leases
+continue to use the old native identities. Public fence ownership remains
+session-scoped. Existing execution references may clone after revocation;
+fresh lookups cannot revive the retired context.
+
+Final execution release captures selected-peer errors before forgetting
+the muxer's current state. Failed capture or native cleanup retains a
+renderer-scoped retirement record. Admission retries failed unreferenced
+records before new native work, while intentionally retained executions
+remain usable. Native cleanup receipts retain local containers, shaders,
+programs and default textures; checked image/buffer retirement preserves
+rejected ownership without replaying accepted members. Live share-group
+peers continue owning their shared objects. These are source ownership
+models; normal submits still drain synchronously.
 
 GL submission now captures only the requested command span into an owned
 SubmitFrame before validation. Native worker dispatch and main forwarding
@@ -4381,9 +4400,10 @@ During synchronous dispatch the binding temporarily exposes the owned bytes
 to the existing decoder. Finally restores its cached guest view only if a
 memory rebind or teardown has not replaced it. Main forwarding does not
 retain the last delivered command message as a cached binding view. Drain
-remains synchronous: deferred server waits still need retained execution
-and drawable lifetimes, query/presentation barriers and asynchronous
-retirement. Owning command bytes supplies a prerequisite, not server ordering.
+remains synchronous: deferred server waits still need per-work drawable
+selection, borrowed BO allocation holds, dependency ownership,
+query/presentation barriers and asynchronous retirement. Command snapshots
+and execution leases do not yet implement server ordering.
 
 The main-thread fallback supports synchronous queries through one reusable
 65,556-byte device mailbox per channel, matching the kernel's 64 KiB query

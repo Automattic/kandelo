@@ -164,7 +164,10 @@ export function setupMainForward(
           if (reg.getSurface(pid,msg.surface.surfaceId)) {
             completeGlForwardQuery(msg.mailbox,-16,new Uint8Array()); return;
           }
-          const result = prepareSurfaceCreation(b,msg.surface,undefined,canvas,gl => muxers.get(gl)?.captureCurrentErrors());
+          const result = prepareSurfaceCreation(b,msg.surface,undefined,canvas,gl => {
+            if (!reg.retryExecutionRetirements(gl)) throw new Error("Execution retirement remains pending");
+            muxers.get(gl)?.captureCurrentErrors();
+          });
           const prepared = result.prepared;
           if (!prepared) { completeGlForwardQuery(msg.mailbox,result.rc,new Uint8Array()); return; }
           try {
@@ -186,7 +189,7 @@ export function setupMainForward(
         try {
           if (!glForwardRequestPending(msg.mailbox)) return;
           if (glForwardQueryCapacity(msg.mailbox) !== 0) { completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return; }
-          if (!b.gl || b.gl.isContextLost()) { completeGlForwardQuery(msg.mailbox,-5,new Uint8Array()); return; }
+          if (!b.gl || b.gl.isContextLost() || !reg.retryExecutionRetirements(b.gl)) { completeGlForwardQuery(msg.mailbox,-5,new Uint8Array()); return; }
           muxer(b.gl).switchTo(b);
           if ((b.drawSurface ?? b.surface).kind !== 2 && (b.drawSurface ?? b.surface).presentTarget) blitPresentTarget(b);
           b.gl.flush();
@@ -211,6 +214,9 @@ export function setupMainForward(
             completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return;
           }
           if (!glForwardRequestPending(msg.mailbox)) return;
+          if (!reg.retryExecutionRetirements(b.gl)) {
+            completeGlForwardQuery(msg.mailbox,-5,new Uint8Array()); return;
+          }
           muxer(b.gl).invalidateCurrent();
           const prepared = prepareCurrentDrawable(b, msg.drawable, surfaces ?? undefined);
           if (!prepared) {
@@ -253,6 +259,9 @@ export function setupMainForward(
             completeGlForwardQuery(msg.mailbox, -19, new Uint8Array());
             return;
           }
+          if (!reg.retryExecutionRetirements(gl)) {
+            completeGlForwardQuery(msg.mailbox,-5,new Uint8Array()); return;
+          }
           // Pavel's fluid sim renders the velocity/dye/pressure passes
           // into RGBA16F framebuffers and samples them with LINEAR
           // filtering during advection. Both require explicit extension
@@ -294,6 +303,7 @@ export function setupMainForward(
         try {
           const frame = new SubmitFrame(msg.bytes,0,msg.bytes.byteLength);
           if (frame.validate(validateCommandBuffer) < 0) { frame.discard(); recordGlError(b,0x502); return; }
+          if (!reg.retryExecutionRetirements(b.gl)) { frame.discard(); recordGlError(b,0x502); return; }
           frame.run(b, () => {
             muxer(b.gl!).switchTo(b);
             if (decodeAndDispatch(b,0,frame.byteLength) < 0) recordGlError(b,0x502);
@@ -312,6 +322,9 @@ export function setupMainForward(
           }
           if ((msg.op === QOP_FINISH || msg.op === QOP_FLUSH) && (msg.input.byteLength !== 0 || output.byteLength !== 0)) {
             completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return;
+          }
+          if (b.gl && !reg.retryExecutionRetirements(b.gl)) {
+            completeGlForwardQuery(msg.mailbox,-5,new Uint8Array()); return;
           }
           let rc: number;
           if (isFenceQuery(msg.op)) {

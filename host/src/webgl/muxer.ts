@@ -1,5 +1,5 @@
 // Replay each GLES2 texture target independently on the shared context.
-import { renderbufferNative } from "./image-storage.js";
+import { renderbufferNative, type GlTextureView } from "./image-storage.js";
 import { reconcileClientArrayRestore, type GlClientArrayFields } from "./client-array.js";
 import { hasNativeRepair, repairNativeState } from "./native-recovery.js";
 import { knownTextureUnitLimit } from "./limits.js";
@@ -22,14 +22,19 @@ import {
   type GlShadowState,
 } from "./shadow.js";
 
+type GlMuxerOwner = {shadow: GlShadowState; textureViews?: Map<WebGLTexture,GlTextureView>}
+  & GlErrorState & GlClientArrayFields;
+
 export class GlMuxer {
-  private current: ({ shadow: GlShadowState } & GlErrorState & GlClientArrayFields) | null = null;
+  private current: GlMuxerOwner | null = null;
   private errorOwner: GlErrorState | null = null;
   private textureUnitCount = 32;
 
   constructor(private gl: WebGL2RenderingContext) {}
 
-  switchTo(target: { shadow: GlShadowState } & GlErrorState & GlClientArrayFields): void {
+  get context(): WebGL2RenderingContext { return this.gl; }
+
+  switchTo(target: GlMuxerOwner): void {
     if (hasNativeRepair(this.gl)) {
       this.invalidateCurrent();
       if (!repairNativeState(this.gl)) throw new Error("Native GL restoration remains pending");
@@ -136,6 +141,16 @@ export class GlMuxer {
     captureNativeGlErrors(this.gl, this.errorOwner);
   }
 
+  /** Deferred cleanup must leave an unread peer error owned and retryable.
+   * Unlike unconditional teardown, refusal performs no native cleanup. */
+  prepareRetirement(): boolean {
+    try { this.captureCurrentErrors(); }
+    catch { return false; }
+    this.errorOwner = null;
+    this.forgetCurrent();
+    return true;
+  }
+
   invalidateCurrent(): void {
     try {
       captureNativeGlErrors(this.gl, this.errorOwner);
@@ -144,6 +159,10 @@ export class GlMuxer {
       // Cleanup must still retire native objects. Keep the outgoing error
       // flags so a later switch must drain them before executing a new owner.
     }
+    this.forgetCurrent();
+  }
+
+  private forgetCurrent(): void {
     // Commands can grow the selected owner's shadow between switches.
     // Invalidation loses its identity, but must retain the clearing range.
     this.textureUnitCount = Math.max(this.textureUnitCount,

@@ -999,6 +999,7 @@ export class WasmPosixKernel {
 
   private prepareForeignRetirements(b: GlBinding): boolean {
     if (b.gl) {
+      if (!this.gl.retryExecutionRetirements(b.gl)) return false;
       try {
         // Cleanup may belong to an already retired owner. Preserve the
         // currently selected peer's flags before replaying that cleanup.
@@ -2624,8 +2625,9 @@ export class WasmPosixKernel {
             b.contextId = ctxId;
             this.tryAttachKmsGlCanvas(b);
             if (b.gl && !b.gl.isContextLost() && (!b.surface.gl || b.surface.gl === b.gl)) {
-              if (!source) return 0;
-              if (b.gl === source.gl) {
+              if (!this.gl.retryExecutionRetirements(b.gl)) failure = -5;
+              else if (!source) return 0;
+              else if (b.gl === source.gl) {
                 if (this.gl.shareObjects(pid,b.sessionId,source.sessionId)) return 0;
                 failure = -22;
               }
@@ -2684,7 +2686,10 @@ export class WasmPosixKernel {
               const crtc = this.kms.masterCrtcForPid(pid) ?? this.callbacks.getKmsCrtcIds?.()[0];
               if (crtc !== undefined && crtc !== null) canvas = this.callbacks.getKmsCanvas?.(crtc) ?? null;
             }
-            const result = prepareSurfaceCreation(b, creation, this.gl.gpuBo(creation.targetBoId) ?? undefined, canvas, gl => this.gl_muxers.get(gl)?.captureCurrentErrors());
+            const result = prepareSurfaceCreation(b, creation, this.gl.gpuBo(creation.targetBoId) ?? undefined, canvas, gl => {
+              if (!this.gl.retryExecutionRetirements(gl)) throw new Error("Execution retirement remains pending");
+              this.gl_muxers.get(gl)?.captureCurrentErrors();
+            });
             const prepared = result.prepared;
             if (!prepared) return result.rc;
             try {

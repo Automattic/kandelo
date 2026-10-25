@@ -1,8 +1,9 @@
 import { revokeForeignBo } from "./foreign-retirement.js";
 import { GlFenceOwner } from "./fences.js";
 import type { GlClientArrayFields } from "./client-array.js";
-import { hasNativeRepair, repairNativeState, retireNativeRepair, retireNativeObject } from "./native-recovery.js";
+import { hasNativeRepair, repairNativeState, retireNativeRepair, retireNativeObject, reserveNativeRetirement, retireNativeRetirement, type NativeRetirement, type NativeDeletion } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
+import { captureNativeGlErrors } from "./errors.js";
 import { destroyTextureView, destroyRenderbufferView } from "./image-storage.js";
 import type { GlUniformLookup } from "./uniform-queries.js";
 import type { GlSurfaceCreation } from "./surface-create.js";
@@ -156,8 +157,118 @@ export type GpuBo = {
   h: number;
 };
 
+export type GlExecutionRetirementGuard = {
+  readonly context: WebGL2RenderingContext;
+  prepareRetirement(): boolean;
+};
+
+type ExecutionRecord = {
+  binding: GlBinding;
+  replacement: GlBinding;
+  key: string;
+  gl: WebGL2RenderingContext;
+  canvas: GlBinding["canvas"];
+  muxer: WeakRef<GlExecutionRetirementGuard>;
+  references: number;
+  retired: boolean;
+  cleaned: boolean;
+  cleanup: NativeRetirement | null;
+  gpuBos: ReadonlyMap<number,GpuBo>;
+  records: Set<ExecutionRecord>;
+  contexts: WeakMap<GlBinding,ExecutionRecord>;
+};
+
+/** A public slot can be revoked/reused while accepted work owns its old
+ * execution. No strong registry, kernel callback or retired guest view is
+ * retained. Drawable allocation holds are separate per-work ownership. */
+export class GlContextExecutionLease {
+  #record: ExecutionRecord | null;
+  #released = false;
+  private constructor(record: ExecutionRecord) { this.#record = record; }
+  static acquire(record: ExecutionRecord): GlContextExecutionLease | null {
+    if (record.references >= Number.MAX_SAFE_INTEGER) return null;
+    try { const lease = new GlContextExecutionLease(record); record.references++; return lease; }
+    catch { return null; }
+  }
+  get context(): WebGL2RenderingContext | null { return this.#record?.gl ?? null; }
+  get binding(): GlBinding {
+    if (!this.#record || this.#released) throw new Error("Context execution lease is released");
+    return this.#record.binding;
+  }
+  clone(): GlContextExecutionLease | null {
+    return this.#record && !this.#released ? GlContextExecutionLease.acquire(this.#record) : null;
+  }
+  release(): boolean {
+    const record = this.#record;
+    if (!record) return true;
+    if (!this.#released) { this.#released = true; record.references--; }
+    if (record.retired && record.references === 0) {
+      if (!collectExecution(record)) return false;
+    } else if (!record.retired && record.references === 0) {
+      record.records.delete(record); record.contexts.delete(record.binding);
+    }
+    this.#record = null;
+    return true;
+  }
+}
+
+function reserveExecutionCleanup(record: ExecutionRecord): NativeRetirement | null {
+  const b = record.binding, calls: NativeDeletion[] = [];
+  const seen = new Set<object>();
+  const add = (call: NativeDeletion) => { if (call[1] && !seen.has(call[1])) { seen.add(call[1]); calls.push(call); } };
+  const finalGroup = b.objects.members.size === 0 || (b.objects.members.size === 1 && b.objects.members.has(b));
+  if (finalGroup) {
+    for (const object of b.shaders.values()) add(["deleteShader",object]);
+    for (const object of b.programs.values()) add(["deleteProgram",object]);
+    add(["deleteProgram",b.currentProgram]);
+  } else if (b.currentProgram && ![...b.programs.values()].includes(b.currentProgram) &&
+      ![...b.objects.members].some(member => member !== b && member.currentProgram === b.currentProgram)) {
+    add(["deleteProgram",b.currentProgram]);
+  }
+  for (const object of b.vaos.values()) add(["deleteVertexArray",object]);
+  add(["deleteVertexArray",b.shadow.defaultVao]);
+  for (const object of b.fbos.values()) add(["deleteFramebuffer",object]);
+  add(["deleteFramebuffer",b.undefinedDefaultFbo]);
+  for (const object of b.shadow.defaultTextures.values()) add(["deleteTexture",object]);
+  return reserveNativeRetirement({gl:record.gl,errors:[]},calls);
+}
+
+function collectExecution(record: ExecutionRecord): boolean {
+  if (!record.retired || record.references !== 0) return true;
+  // A registry retry may already have completed this lease's cleanup.
+  // Releasing its old token must not recapture or invalidate a new owner.
+  if (record.cleaned && record.cleanup?.complete) {
+    record.records.delete(record); record.contexts.delete(record.binding);
+    return true;
+  }
+  try {
+    const muxer = record.muxer.deref();
+    if (muxer) { if (!muxer.prepareRetirement()) return false; }
+    else captureNativeGlErrors(record.gl,null);
+    if (!record.cleaned) {
+      record.cleanup ??= reserveExecutionCleanup(record);
+      if (!record.cleanup) return false;
+      retireNativeRepair(record.gl,record.binding.shadow);
+      if (!repairNativeState(record.gl)) return false;
+      destroyContextResources(record.binding,record.gpuBos,record.cleanup);
+      record.cleaned = true;
+    }
+    const cleanup = record.cleanup!;
+    const installed = record.gl.getParameter(0x8b8d) as WebGLProgram | null;
+    if (installed && cleanup.calls.some(call => call[0] === "deleteProgram" && call[1] === installed) &&
+        !checkedGlCall(cleanup.owner,()=>record.gl.useProgram(null))) return false;
+    if (!cleanup.pending) {
+      if (!retireNativeRetirement(cleanup)) return false;
+    } else if (!repairNativeState(record.gl) || !cleanup.complete) return false;
+    record.records.delete(record); record.contexts.delete(record.binding);
+    return true;
+  } catch { return false; }
+}
+
 export class GlContextRegistry {
   private bindings = new Map<string, GlBinding>();
+  private executions = new WeakMap<GlBinding, ExecutionRecord>();
+  private executionRecords = new Set<ExecutionRecord>();
   private listeners = new Set<GlChangeListener>();
   /** GPU-tier bos keyed by bo_id. Registry-scoped (NOT per-binding):
    *  the texture is owned by the bo and shared across every session that
@@ -185,10 +296,17 @@ export class GlContextRegistry {
     this.pendingCanvases.delete(b.pid);
     const sessionId = (b.sessionId ?? 0) >>> 0;
     if (this.get(b.pid, sessionId)) throw new Error("GL session is already bound");
+    const binding = this.newBinding(b,canvas,forward);
+    this.bindings.set(`${binding.pid}:${sessionId}`, binding);
+    for (const l of this.listeners) l(b.pid, "bind");
+  }
+
+  private newBinding(b: GlBindingInput, canvas: GlBinding["canvas"], forward: GlForwardChannel | null): GlBinding {
+    const sessionId = (b.sessionId ?? 0) >>> 0;
     const binding: GlBinding = exposeSurfaceResources(exposeGlSharedObjects({
       surface: createSurfaceResources(b.pid), drawSurface: null, readSurface: null,
       objects: createGlObjectGroup(),
-      ...b,
+      pid: b.pid, cmdbufAddr: b.cmdbufAddr, cmdbufLen: b.cmdbufLen,
       sessionId,
       currentDrawable: null,
       hasBeenCurrent: false,
@@ -216,8 +334,41 @@ export class GlContextRegistry {
       forward,
     }));
     binding.objects.members.add(binding);
-    this.bindings.set(`${binding.pid}:${sessionId}`, binding);
-    for (const l of this.listeners) l(b.pid, "bind");
+    return binding;
+  }
+
+  /** Reserve the replacement public slot and retirement bookkeeping before a
+   * caller acknowledges work that can outlive this public context. */
+  retainContextExecution(pid: number, sessionId: number, muxer: GlExecutionRetirementGuard): GlContextExecutionLease | null {
+    const b = this.get(pid,sessionId);
+    if (!b?.gl || b.contextId === null || b.forward || muxer.context !== b.gl) return null;
+    let record = this.executions.get(b);
+    try {
+      if (!record) {
+        const replacement = this.newBinding({pid:b.pid,sessionId:b.sessionId,cmdbufAddr:b.cmdbufAddr,
+          cmdbufLen:b.cmdbufLen},b.canvas,b.forward);
+        record = {binding:b,replacement,key:`${b.pid}:${b.sessionId}`,gl:b.gl,canvas:b.canvas,muxer:new WeakRef(muxer),
+          references:0,retired:false,cleaned:false,cleanup:null,records:this.executionRecords,
+          contexts:this.executions,gpuBos:this.gpuBos};
+        this.executionRecords.add(record);
+        try { this.executions.set(b,record); }
+        catch (error) { this.executionRecords.delete(record); throw error; }
+      } else if (record.retired || record.muxer.deref() !== muxer) return null;
+      const lease = GlContextExecutionLease.acquire(record);
+      if (!lease && record.references === 0) {
+        this.executionRecords.delete(record); this.executions.delete(b);
+      }
+      return lease;
+    } catch { return null; }
+  }
+
+  /** Only failed, unreferenced retirement blocks admission on its physical
+   * context. Retained execution is deliberate ownership, not a repair error. */
+  retryExecutionRetirements(gl?: WebGL2RenderingContext): boolean {
+    let complete = true;
+    for (const record of this.executionRecords) if (record.retired && record.references === 0 && (!gl || record.gl === gl))
+      complete = collectExecution(record) && complete;
+    return complete;
   }
 
   unbind(pid: number, sessionId?: number): void {
@@ -226,10 +377,11 @@ export class GlContextRegistry {
     for (const b of this.list()) {
       if (b.pid !== pid || (sessionId !== undefined && b.sessionId !== sessionId)) continue;
       b.cmdbufView = null;
+      const forward = b.forward;
       try {
-        this.destroyContext(pid, b.sessionId);
+        this.retireContextBinding(b,false);
         retireSurface(b.surface);
-        b.forward?.onUnbind?.(b.sessionId);
+        forward?.onUnbind?.(b.sessionId);
       } catch (error) {
         failure ??= error;
       } finally {
@@ -245,87 +397,33 @@ export class GlContextRegistry {
     if (failure) throw failure;
   }
 
-  /** The native WebGL context is shared and survives guest EGL contexts.
-   * Retire local state immediately and shared resources at the final owner. */
+  /** Public lookup ends immediately. Accepted work may retain old execution;
+   * shared objects survive until their final execution/group owner retires. */
   destroyContext(pid: number, sessionId?: number): void {
     const b = this.get(pid, sessionId);
     if (!b) return;
-    const gl = b.gl;
-    if (gl) retireNativeRepair(gl, b.shadow);
-    b.uniformLookup = null;
-    b.uniformLookupSerial = 0;
-    b.shaderUpload = null;
-    b.shaderUploadSerial = 0;
-    b.savedClientArrayBuffer = undefined;
-    b.clientArrayRestore = undefined;
-    b.clientArrayEndRequested = false;
-    const objects = b.objects;
-    const installed = b.currentProgram;
-    const installedName = b.currentProgramId;
-    const retained = installed !== null && b.programs.get(installedName) !== installed;
-    objects.members.delete(b);
-    b.currentProgram = b.shadow.currentProgram = null;
-    b.currentProgramId = 0;
-    if (objects.members.size === 0) {
-      const programs = new Set(b.programs.values());
-      if (installed) programs.add(installed);
-      if (gl && programs.size && programs.has(gl.getParameter(0x8b8d) as WebGLProgram)) gl.useProgram(null);
-      const boTextures = new Set([...this.gpuBos.values()].map(bo => bo.tex));
-      const textures = new Set([
-        ...b.textures.values(), ...[...b.foreignTextures.values()].map(entry => entry.tex),
-      ]);
-      for (const texture of textures) if (gl && (!boTextures.has(texture)||b.textureViews.has(texture))) destroyTextureView(b,texture);
-      for (const object of b.buffers.values()) if (gl) destroyBufferStorage(b,object);
-      for (const object of b.shaders.values()) gl?.deleteShader(object);
-      for (const object of programs) gl?.deleteProgram(object);
-      for (const object of b.rbos.values()) if(gl)destroyRenderbufferView(b,object);
-      for (const map of [b.buffers,b.textures,b.shaders,b.programs,b.rbos,b.uniformLocations,
-        b.uniformLocationPrograms,b.uniformLocationNames,b.programShaders,b.programAttributeBindings,b.foreignTextures,b.shaderSources]) map.clear();
-      b.imageSources.clear();
-      b.shaderDeletePending.clear(); b.programDeletePending.clear();
-    } else {
-      if (installedName) finalizeProgram(b, installedName);
-      if (retained) releaseRetainedExecutable(b, installed);
+    this.retireContextBinding(b,true);
+  }
+
+  private retireContextBinding(b: GlBinding, replace: boolean): void {
+    const record = this.executions.get(b);
+    if (record && record.references > 0) {
+      const next = record.replacement;
+      next.canvas = b.canvas;
+      next.forward = b.forward;
+      if (b.surfaceId !== null) next.surface = b.surface;
+      next.fences = b.fences;
+      next.objects.nextUniformLoc = b.objects.nextUniformLoc;
+      next.objects.nextForeignTexId = b.objects.nextForeignTexId;
+      next.objects.nextImageSource = b.objects.nextImageSource;
+      if (replace) this.bindings.set(record.key,next);
+      // The retired execution owns native/scalar state, never the session's
+      // borrowed guest cache or its forwarding transport.
+      b.cmdbufView = null; b.forward = null; b.canvas = record.canvas;
+      record.retired = true;
+      return;
     }
-    for (const object of b.vaos.values()) gl?.deleteVertexArray(object);
-    for (const object of b.fbos.values()) if (gl) { retireNativeObject(gl,object); gl.deleteFramebuffer(object); }
-    b.vaos.clear(); b.fbos.clear();
-    b.framebufferAttachments.clear();
-    b.vertexArrays.clear();
-    collectRetiredImages(b);
-    collectRetiredBuffers(b);
-    b.objects = createGlObjectGroup();
-    b.objects.nextUniformLoc = objects.nextUniformLoc;
-    b.objects.nextForeignTexId = objects.nextForeignTexId;
-    b.objects.nextImageSource = objects.nextImageSource;
-    b.objects.members.add(b);
-    // Late native cleanup still owns the retired error flags. A reused
-    // session must receive a fresh owner rather than inheriting those errors.
-    b.errors = [];
-    if (gl && b.undefinedDefaultFbo) { retireNativeObject(gl,b.undefinedDefaultFbo); gl.deleteFramebuffer(b.undefinedDefaultFbo); }
-    b.undefinedDefaultFbo = null;
-    if (b.shadow.defaultVao) {
-      b.gl?.deleteVertexArray(b.shadow.defaultVao);
-      b.shadow.defaultVao = null;
-    }
-    for (const texture of b.shadow.defaultTextures.values()) gl?.deleteTexture(texture);
-    b.shadow.defaultTextures.clear();
-    releaseSurfaceResources(b);
-    // An explicit surface outlives context destruction. An unpublished
-    // staging target has no EGL owner and can be reclaimed immediately.
-    if (b.surfaceId === null) {
-      retireSurface(b.surface);
-      b.surface = createSurfaceResources(b.pid);
-    }
-    b.currentProgram = null;
-    b.currentProgramId = 0;
-    b.currentDrawable = null;
-    b.hasBeenCurrent = false;
-    b.shadow = defaultShadow();
-    b.vertexArrayId = 0;
-    b.vertexArrays.set(0,defaultVertexArray());
-    b.contextId = null;
-    b.gl = null;
+    destroyContextResources(b,this.gpuBos);
     this.retryForeignRetirements();
   }
 
@@ -597,4 +695,100 @@ export class GlContextRegistry {
       this.listeners.delete(fn);
     };
   }
+}
+
+function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>, cleanup?: NativeRetirement): void {
+  const gl = b.gl;
+  if (gl) retireNativeRepair(gl, b.shadow);
+  b.uniformLookup = null;
+  b.uniformLookupSerial = 0;
+  b.shaderUpload = null;
+  b.shaderUploadSerial = 0;
+  b.savedClientArrayBuffer = undefined;
+  b.clientArrayRestore = undefined;
+  b.clientArrayEndRequested = false;
+  const objects = b.objects;
+  const installed = b.currentProgram;
+  const installedName = b.currentProgramId;
+  const retained = installed !== null && b.programs.get(installedName) !== installed;
+  objects.members.delete(b);
+  b.currentProgram = b.shadow.currentProgram = null;
+  b.currentProgramId = 0;
+  if (objects.members.size === 0) {
+    const programs = new Set(b.programs.values());
+    if (installed) programs.add(installed);
+    if (gl && programs.size && programs.has(gl.getParameter(0x8b8d) as WebGLProgram)) gl.useProgram(null);
+    const boTextures = new Set([...gpuBos.values()].map(bo => bo.tex));
+    const textures = new Set([
+      ...b.textures.values(), ...[...b.foreignTextures.values()].map(entry => entry.tex),
+    ]);
+    for (const texture of textures) {
+      if (gl && (!boTextures.has(texture)||b.textureViews.has(texture))) {
+        const accepted = destroyTextureView(b,texture);
+        if (cleanup && !accepted) throw new Error("Texture retirement remains pending");
+      }
+      if (cleanup) {
+        for (const [name,value] of b.textures) if (value === texture) b.textures.delete(name);
+        for (const [name,value] of b.foreignTextures) if (value.tex === texture) b.foreignTextures.delete(name);
+      }
+    }
+    for (const object of new Set(b.buffers.values())) if (gl) {
+      const accepted = destroyBufferStorage(b,object);
+      if (cleanup && !accepted) throw new Error("Buffer retirement remains pending");
+      if (cleanup) for (const [name,value] of b.buffers) if (value === object) b.buffers.delete(name);
+    }
+    if (!cleanup) for (const object of b.shaders.values()) gl?.deleteShader(object);
+    if (!cleanup) for (const object of programs) gl?.deleteProgram(object);
+    for (const object of new Set(b.rbos.values())) if (gl) {
+      const accepted = destroyRenderbufferView(b,object);
+      if (cleanup && !accepted) throw new Error("Renderbuffer retirement remains pending");
+      if (cleanup) for (const [name,value] of b.rbos) if (value === object) b.rbos.delete(name);
+    }
+    for (const map of [b.buffers,b.textures,b.shaders,b.programs,b.rbos,b.uniformLocations,
+      b.uniformLocationPrograms,b.uniformLocationNames,b.programShaders,b.programAttributeBindings,b.foreignTextures,b.shaderSources]) map.clear();
+    b.imageSources.clear();
+    b.shaderDeletePending.clear(); b.programDeletePending.clear();
+  } else {
+    if (installedName) finalizeProgram(b, installedName);
+    if (retained && !cleanup) releaseRetainedExecutable(b, installed);
+  }
+  if (!cleanup) for (const object of b.vaos.values()) gl?.deleteVertexArray(object);
+  for (const object of b.fbos.values()) if (gl && !cleanup) { retireNativeObject(gl,object); gl.deleteFramebuffer(object); }
+  b.vaos.clear(); b.fbos.clear();
+  b.framebufferAttachments.clear();
+  b.vertexArrays.clear();
+  collectRetiredImages(b);
+  collectRetiredBuffers(b);
+  b.objects = createGlObjectGroup();
+  b.objects.nextUniformLoc = objects.nextUniformLoc;
+  b.objects.nextForeignTexId = objects.nextForeignTexId;
+  b.objects.nextImageSource = objects.nextImageSource;
+  b.objects.members.add(b);
+  // Late native cleanup still owns the retired error flags. A reused
+  // session must receive a fresh owner rather than inheriting those errors.
+  b.errors = [];
+  if (gl && b.undefinedDefaultFbo && !cleanup) { retireNativeObject(gl,b.undefinedDefaultFbo); gl.deleteFramebuffer(b.undefinedDefaultFbo); }
+  b.undefinedDefaultFbo = null;
+  if (b.shadow.defaultVao) {
+    if (!cleanup) b.gl?.deleteVertexArray(b.shadow.defaultVao);
+    b.shadow.defaultVao = null;
+  }
+  if (!cleanup) for (const texture of b.shadow.defaultTextures.values()) gl?.deleteTexture(texture);
+  b.shadow.defaultTextures.clear();
+  releaseSurfaceResources(b);
+  // An explicit surface outlives context destruction. An unpublished
+  // staging target has no EGL owner and can be reclaimed immediately.
+  if (b.surfaceId === null) {
+    retireSurface(b.surface);
+    b.surface = createSurfaceResources(b.pid);
+  }
+  b.currentProgram = null;
+  b.currentProgramId = 0;
+  b.currentDrawable = null;
+  b.hasBeenCurrent = false;
+  b.shadow = defaultShadow();
+  b.vertexArrayId = 0;
+  b.vertexArrays.set(0,defaultVertexArray());
+  b.contextId = null;
+  b.gl = null;
 }

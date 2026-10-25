@@ -2405,3 +2405,76 @@ for(const partial of [false,true]) {
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
+
+for(const partial of [false,true]) {
+  test(`retained context execution stays independent of a replacement session${partial?" while cleanup retries":""}`,async({page})=>{
+    await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
+    const root=fileURLToPath(new URL("../../../",import.meta.url));
+    const result=await page.evaluate(async({root,partial})=>{
+      const base=new URL(`/@fs${root}host/src/webgl/`,location.href).href;
+      const {GlContextRegistry}=await import(base+"registry.ts"),{GlMuxer}=await import(base+"muxer.ts");
+      const {resizeSurfaceTarget}=await import(base+"present-target.ts"),{applyCurrentDrawable}=await import(base+"current.ts");
+      const {retainSurfaceStorage}=await import(base+"surface-resources.ts"),{SubmitFrame}=await import(base+"submit-queue.ts");
+      const {decodeAndDispatch,validateCommandBuffer}=await import(base+"bridge.ts"),{runGlQuery}=await import(base+"query.ts"),O=await import(base+"ops.ts");
+      const canvas=document.createElement("canvas");canvas.width=4;canvas.height=3;document.body.replaceChildren(canvas);
+      const gl=canvas.getContext("webgl2",{antialias:false,preserveDrawingBuffer:true})!;if(!gl)throw new Error("no WebGL2");
+      const live:Array<()=>boolean>=[],deleted:object[]=[];
+      let rejectVao:WebGLVertexArrayObject|null=null;
+      for(const [createName,deleteName,isName] of [["createTexture","deleteTexture","isTexture"],
+        ["createFramebuffer","deleteFramebuffer","isFramebuffer"],["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],
+        ["createVertexArray","deleteVertexArray","isVertexArray"]]) {
+        const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
+        api[createName]=(...args:unknown[])=>{const object=create(...args);if(object)live.push(()=>isLive(object));return object;};
+        api[deleteName]=(object:object|null)=>{if(object && object===rejectVao){rejectVao=null;throw new Error("VAO deletion rejected");}destroy(object);if(object)deleted.push(object);};
+      }
+      const reg=new GlContextRegistry(),muxer=new GlMuxer(gl);
+      reg.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:48});
+      const old=reg.get(7,11)!;old.gl=gl;old.contextId=1;old.surfaceId=31;old.canvas=canvas;
+      const select=(binding:typeof old,id:number)=>{
+        binding.surfaceId=id;
+        if(!resizeSurfaceTarget(binding,4,3)||!applyCurrentDrawable(binding,{drawSurfaceId:id,readSurfaceId:id,width:4,height:3}))throw new Error("drawable");
+      };
+      const texture=(binding:typeof old)=>{
+        const object=gl.createTexture()!;gl.bindTexture(gl.TEXTURE_2D,object);
+        gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,new Uint8Array([255,0,0,255]));
+        binding.textures.set(1,object);return object;
+      };
+      const send=(binding:typeof old,color:number[])=>{
+        const bytes=new Uint8Array(28),view=new DataView(bytes.buffer);
+        view.setUint16(0,O.OP_CLEAR_COLOR,true);view.setUint16(2,16,true);
+        color.forEach((value,index)=>view.setFloat32(4+index*4,value,true));
+        view.setUint16(20,O.OP_CLEAR,true);view.setUint16(22,4,true);view.setUint32(24,gl.COLOR_BUFFER_BIT,true);
+        const frame=new SubmitFrame(bytes,0,28);if(frame.validate(validateCommandBuffer)!==0)throw new Error("preflight");
+        frame.run(binding,()=>{muxer.switchTo(binding);if(decodeAndDispatch(binding,0,28)!==0)throw new Error("dispatch");});
+      };
+      const read=(fbo:WebGLFramebuffer)=>{gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);const pixel=new Uint8Array(4);gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);return [...pixel];};
+      select(old,31);const oldTexture=texture(old);send(old,[1,0,0,1]);
+      const storage=retainSurfaceStorage(old.surface)!,first=reg.retainContextExecution(7,11,muxer)!;
+      if(!storage||!first)throw new Error("lease");const second=first.clone()!;
+      const oldVao=old.shadow.defaultVao!;let output:any;
+      try {
+        muxer.invalidateCurrent();reg.destroyContext(7,11);
+        const next=reg.get(7,11)!;if(next===old||reg.getContext(7,1))throw new Error("public identity revived");
+        reg.destroySurface(7,11);next.gl=gl;next.contextId=2;select(next,32);
+        const fresh=texture(next);send(next,[0,0,1,1]);const blue=read(next.renderTargetFbo!);
+        send(first.binding,[0,1,0,1]);const green=read(storage.framebuffer);
+        send(next,[0,0,1,1]);gl.enable(0xdead);
+        if(!first.release())throw new Error("first release");const retained=gl.isTexture(oldTexture);
+        if(partial)rejectVao=oldVao;
+        const accepted=second.release();if(!second.release())throw new Error("retry");
+        const out=new Uint8Array(4),errors:number[]=[];
+        muxer.switchTo(next);
+        for(let i=0;i<2;i++){if(runGlQuery(next,O.QOP_GET_ERROR,new Uint8Array(),out)!==4)throw new Error("error query");errors.push(new DataView(out.buffer).getUint32(0,true));}
+        const preserved=read(next.renderTargetFbo!);
+        if(!storage.release(null))throw new Error("storage retirement");
+        output={blue,green,preserved,retained,accepted,errors,oldGuestCleared:old.cmdbufView===null,
+          oldDeleted:!gl.isTexture(oldTexture)&&!gl.isVertexArray(oldVao),freshAlive:gl.isTexture(fresh),
+          oldTextureDeletes:deleted.filter(value=>value===oldTexture).length,oldVaoDeletes:deleted.filter(value=>value===oldVao).length};
+      } finally {rejectVao=null;first.release();second.release();storage.release(null);muxer.invalidateCurrent();reg.unbind(7);}
+      return {...output,clean:live.every(test=>!test()),error:gl.getError()};
+    },{root,partial});
+    expect(result).toEqual({blue:[0,0,255,255],green:[0,255,0,255],preserved:[0,0,255,255],retained:true,
+      accepted:!partial,errors:[0x500,0],oldGuestCleared:true,oldDeleted:true,freshAlive:true,oldTextureDeletes:1,oldVaoDeletes:1,clean:true,error:0});
+    expect(await memoryBoundaryFailures(page)).toEqual([]);
+  });
+}
