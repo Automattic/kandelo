@@ -57,6 +57,55 @@ update a GitHub Check, create or protect an ABI branch, or deploy Pages. Those
 operations require the later staging layers and their hosted evidence.
 Existing ABI release and VFS behavior is unchanged.
 
+## ABI 52 futex deadlines and multicast delivery
+
+The termchat changes join the same ABI 52 batch as the heap safepoint
+process import described below. Regenerate the complete snapshot and
+rebuild artifacts against the combined contract; sharing the version does
+not make artifacts from an earlier ABI 52 snapshot interchangeable.
+
+This batch also corrects `FUTEX_WAIT_BITSET` to interpret its timeout as an
+absolute deadline in `CLOCK_MONOTONIC`, or `CLOCK_REALTIME` when requested.
+`FUTEX_WAIT` retains a relative timeout. Rust's timed thread parking uses
+the absolute form; treating it as relative could make short waits last
+far longer than requested. Timeout values retain the existing time64 layout.
+
+IPv4 multicast now reaches matching sockets in other local processes and
+machines on a connected virtual network session. The kernel remains the
+authority for group membership, interface and source filtering. Disabling
+multicast loopback suppresses local copies while retaining remote delivery.
+Virtual TCP bindings no longer also reserve a physical Node listener port.
+
+These corrections change existing blocking and networking semantics, so
+artifacts must be rebuilt through the ordinary ABI-bound build path. The
+termchat changes introduce no further syscall numbers, channel layouts, or
+public Wasm import/export signatures.
+
+## ABI 51 epoll delivery and stream readiness
+
+ABI 51 changes existing observable semantics: edge and one-shot delivery,
+rearming, stream read-half-close, unsupported-object rejection, nested-epoll
+validation, fair batching, original-description lifetime, raw create size
+validation, and DEL's ignored event pointer. These require a new ABI even
+where the event layout itself remains unchanged. Both guest targets retain
+the 16-byte event stride and data at offset eight.
+
+The host adapter requires `kernel_epoll_wait_token` and
+`kernel_epoll_wait_finish(pid, tid, token)` for exact parked-wait lifetime.
+The kernel additionally requires the host import
+`host_net_readiness_generation(handle, direction) -> i64`; negative means
+that a backend cannot provide notification history, in which case
+edge/exclusive waits report EOPNOTSUPP. This import is required for kernel
+instantiation and must be supplied on both hosts, even when networking is
+unavailable. The snapshot includes the expanded event constants and wait
+exports. ABI 51 also reaches the existing scheduled promotion of the KMS
+cursor exports; their implementation is unchanged.
+
+Rebuild kernels, hosts, libc, programs, package archives and VFS products
+through the ordinary ABI-bound build path. Prior-ABI artifacts must not be
+restamped or admitted as ABI 51. See the [epoll contract](epoll.md) for the
+behavior matrix and remaining boundaries.
+
 ## What counts as an ABI change
 
 ### Scheduled optional kernel exports
@@ -104,6 +153,18 @@ and `kernel_kms_cursor_read` are optional in ABI 50 and required from ABI
 capability disabled. No cursor host import is required. See
 [the cursor transport contract](architecture.md) for the record layout and
 ownership rules.
+
+Exit acknowledgement uses it too. `kernel_publish_process_exit` is
+optional in ABI 53 and required from ABI 54. Orphan adoption itself
+happens inside the kernel; the export only lets init reap once the host
+has seen an exit. A new host that loads an ABI-53 kernel built without
+the export keeps that kernel's old behavior, with no adoption.
+Reparenting changes what `getppid()` and `wait()` observe for orphans,
+but no existing program depends on the old observations: they were the
+unreapable-zombie gap, not a contract. The syscall numbers, marshalling,
+and status encodings are unchanged, so existing binaries remain valid
+and no `ABI_VERSION` bump is needed. See [orphan
+adoption](architecture.md#orphan-adoption).
 
 Host compatibility and local artifact admission are separate checks. The
 local build stamps kernels and programs with a digest of the complete ABI
@@ -1625,6 +1686,95 @@ added before anything shipped under the number:
   address, and a null `ifa_addr` for an interface without an address. It
   reports no `AF_PACKET` or IPv6 entries, because the kernel models neither
   on these interfaces.
+
+### ABI 52 heap safepoints in the syscall wait
+
+ABI 52 gives every process a new required host import so a process blocked
+in a syscall does not deadlock JavaScriptCore's garbage collector. The
+suspected cause (not a confirmed WebKit defect) is that JavaScriptCore keeps
+a blocked worker's heap access, so a collection that began in a blocked
+process's VM can finish only when that thread allocates from JavaScript; until
+then it would pin the engine's shared GC helper threads, which stalled the
+kernel and kept exited processes' memory from being released. The stall and
+the effect of the safepoint are measured (see
+[the browser boundary](browser-support.md#javascriptcore-garbage-collection-and-blocked-workers)).
+`__abi_version` equality is exact, so every program, package archive and VFS
+image is rebuilt for 52.
+
+Structural changes (recorded in the snapshot):
+
+- **`kernel.kernel_heap_safepoint() -> i64`** is a new process import, declared
+  once as `shared::abi::HEAP_SAFEPOINT_PROCESS_IMPORT` and recorded under
+  `program_artifact.heap_safepoint_import`. `libc/glue/channel_syscall.c` bounds
+  its channel wait (first bound 100 ms) and calls the import after each
+  timeout; the host allocates from JavaScript and returns the next bound in
+  nanoseconds, or a negative value for an unbounded wait. The host answers
+  100 ms on JavaScriptCore (WebKit, Bun) and -1 on V8 and SpiderMonkey. The
+  glue declares the import outside `libc.a`, so the package import audit adds
+  it to the SDK contract from the shared declaration, as it does for
+  `kernel_fork`. A host built for ABI 51 rejects a new program at
+  instantiation (`Unsupported kernel import kernel.kernel_heap_safepoint`).
+
+Semantic changes: none visible to programs. A timed-out wait keeps waiting on
+the same request, so syscall results, blocking behaviour, signals and errno
+values are unchanged.
+
+### ABI 53 extended attributes, Kandelo exchange and getgroups
+
+ABI 53 makes the twelve extended-attribute syscalls (`getxattr`, `setxattr`,
+`listxattr`, `removexattr`, and their `l` and `f` variants, numbers 350-361)
+report what Kandelo actually supports. Until now the kernel answered them
+without reading their arguments: the set calls returned success and stored
+nothing, and the get and remove calls returned `ENODATA`, which claims the
+filesystem supports attributes. `__abi_version` equality is exact, so every
+program, package archive and VFS image is rebuilt for 53.
+
+Structural changes (recorded in the snapshot):
+
+- **Syscall numbers and marshalling.** `SYS_FGETXATTR` through `SYS_SETXATTR`
+  join the extended syscall table with argument descriptors: paths as
+  `PATH_MAX` C strings, names as C strings bounded by `XATTR_NAME_MAX` (255
+  bytes plus the NUL, `ERANGE` when longer), and value and list buffers sized
+  by their `size` argument and nullable when it is 0.
+- **Channel scalar contract.** Every `size` argument is a `ProcessSize`, so a
+  wasm64 caller's `size_t` crosses the channel at its full width. This is the
+  change the compatibility classifier treats as breaking: on wasm64 the glue
+  and the host must agree on how these slots are encoded.
+- **Platform limits.** `XATTR_NAME_MAX_BYTES` (256) and `XATTR_SIZE_MAX_BYTES`
+  (65536) join `platform_limits`; the host gets `XATTR_SIZE_MAX_BYTES` in
+  `host/src/generated/abi.ts`.
+
+- **Kandelo exchange.** Twenty required kernel exports,
+  `kernel_exchange_*`: init, configure (quota and activation), offers
+  (begin, add_entry, commit, cancel), notifications (take_pending,
+  drain_notifications), outputs (read_output, release_output,
+  output_end), streams (stream_push, stream_end, stream_start,
+  stream_read), and activation (activate, agent_failed), plus
+  set_listener and consumer_present. Every pointer is followed by its byte
+  length and travels through a kernel scratch lease. One new host import,
+  `host_exchange_source_read`, serves input bytes. The entry-record and
+  notification layouts are documented in
+  `crates/runtime-core/src/exchange/wire.rs`.
+
+Semantic changes:
+
+- **Kandelo exchange.** Every machine booted from a kernel rootfs image has
+  the exchange filesystem at `/run/kandelo/exchange` (`f_type`
+  `0x4B584348`), which stores `user.*` extended attributes. The virtual
+  init (pid 1) ignores SIGCHLD, so its children (the exchange agent the
+  kernel starts) are reaped as they exit.
+- **Truthful results.** Following Linux for a filesystem without xattr
+  support, get, set, and remove fail with `ENOTSUP`, and list succeeds with an
+  empty list. Path errors (`ENOENT`, `ENOTDIR`, `ELOOP`, `ENAMETOOLONG`,
+  `EACCES`) and descriptor errors (`EBADF`, including `O_PATH`) come first.
+  `setxattr` checks its flags (`EINVAL`), name (`ERANGE`), and size (`E2BIG`
+  above 64 KiB) before the path, as Linux does. Get and list buffers are
+  clamped to 64 KiB.
+- **`getgroups` with a large buffer.** A `gidsetsize` above `NGROUPS_MAX`
+  (32) now succeeds, as POSIX and Linux require; only a nonzero size
+  smaller than the group count is `EINVAL`. The host lends at most
+  `NGROUPS_MAX` entries of the caller's buffer, since no list is longer.
+  `setgroups` still refuses more than `NGROUPS_MAX` groups with `EINVAL`.
 
 ## The snapshot
 

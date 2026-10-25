@@ -3,9 +3,10 @@ import { absolutePointerValue } from "../../../host/src/input/input-source.js";
 import type {
   DemoDockActionConfig,
   DemoGuideConfig,
-  DemoIngestConfig,
+  DemoExchangeConfig,
 } from "./demo-config";
 import type { ClipboardPasteFailure } from "./clipboard-paste";
+import { ExchangeSession, type ExchangeLike } from "./exchange-session";
 import { advanceLazyDownloadSummary } from "./lazy-download";
 import type { RemoteSegmentPeer } from "../../../host/src/networking/remote-segment-port";
 import type { RemoteSessionSnapshot } from "../../../host/src/networking/remote-segment-runtime";
@@ -210,7 +211,7 @@ export type KernelOwnedJobRead =
     };
 
 export interface KernelOwnedJobOptions {
-  /** Cancel the family after this many milliseconds. The worker enforces it. */
+  /** Worker-enforced deadline; zero keeps the family until exit or cancellation. */
   timeoutMs: number;
   env?: string[];
   cwd?: string;
@@ -233,6 +234,8 @@ export interface KernelLike {
   statVfsPath?(path: string): Promise<KernelVfsPathStat | null>;
   /** /dev/fb0 binding registry. Used by attachFramebuffer. */
   readonly framebuffers?: FramebufferRegistryLike;
+  /** Kandelo exchange: moving files into and out of the machine. */
+  readonly exchange?: ExchangeLike;
   /**
    * Per-pid wasm Memory accessor. Needed for mmap-based framebuffer
    * bindings; write-based bindings (fbDOOM) don't reach into this.
@@ -719,9 +722,18 @@ export type WebPreviewStatus =
   | "offline"
   | "reconnecting";
 
+export interface WebPreviewTarget {
+  /** localhost/127.0.0.1 select this machine; host or a session address select its Kandelo network. */
+  hostname: string;
+  port: number;
+  path?: string;
+  label?: string;
+}
 export interface WebPreviewState {
   label: string;
   url: string;
+  initialPath?: string;
+  destination?: { hostname: string; port: number };
   status: WebPreviewStatus;
   message?: string;
   pendingRequests?: number;
@@ -950,12 +962,20 @@ export interface KernelHost {
    * boot-link scripts, demo actions, output followers — omit `opts` and
    * leave the winsize alone; a full-screen program they launch (vim, nano)
    * then sizes itself to the visible terminal rather than to a guess.
+   * `ownedJob` is only allowed on a fresh path: the login/shell and every
+   * descendant then belong to that family. A normal UI attach does not own
+   * or cancel the terminal merely by opening/closing a rendering handle.
    */
-  attachPty(path?: string, opts?: PtySize): Promise<PtyHandle>;
+  attachPty(path?: string, opts?: PtySize, ownedJob?: { id: string; timeoutMs: number }): Promise<PtyHandle>;
   /** Remove the logical PTY, including its process and pending restart. */
   removePty(path: string): void;
   /** Resolve after a command has been written, without waiting for a prompt. */
-  dispatchShellCommand(command: string): Promise<void>;
+  dispatchShellCommand(command: string, opts?: {
+    /** Explicit logical terminal; activity launches allocate a fresh one. */
+    path?: string;
+    /** Awaited after queue/prompt readiness, immediately before writing. */
+    beforeWrite?: () => void | Promise<void>;
+  }): Promise<void>;
   runShellCommand(command: string): Promise<void>;
   /**
    * Show `text` on the terminal attached at `path` without sending anything
@@ -1078,6 +1098,11 @@ export interface KernelHost {
   // arrives first. Returns null when the wrapped kernel does not yet
   // expose `kmsAttachCanvas` (older ABI, Node host without an
   // OffscreenCanvas polyfill, etc.).
+  setKmsDisplayMode?(mode: "auto" | "2d" | "webgl2" | "webgl2-scanout" | null): void;
+  /** Override the image's KMS bitmap scale for a launch; null restores it.
+   * Applied on a fresh measured size report, before the client selects a mode. */
+  setKmsDisplayScale?(scale: number | null): void;
+  whenKmsDisplaySized?(crtcId: number, timeoutMs: number): Promise<{ width: number; height: number } | undefined>;
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
     crtcId?: number,
@@ -1096,6 +1121,8 @@ export interface KernelHost {
   kmsCursorCanvas(crtcId?: number): HTMLCanvasElement;
 
   // web preview — service demos can expose an HTTP bridge endpoint.
+  openWebPreview?(target: WebPreviewTarget): Promise<void>;
+  closeNetworkWebPreview?(): void;
   getWebPreview(): WebPreviewState | null;
   subscribeWebPreview(cb: (state: WebPreviewState | null) => void): () => void;
 
@@ -1106,14 +1133,20 @@ export interface KernelHost {
   subscribeSurfaceAvailability(cb: (state: SurfaceAvailability) => void): () => void;
   getDemoGuide(): DemoGuideConfig | null;
   subscribeDemoGuide(cb: (state: DemoGuideConfig | null) => void): () => void;
-  /** File-ingest capability declared by the current VFS image, if any. */
-  getDemoIngest(): DemoIngestConfig | null;
-  subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void;
+  /** Kandelo exchange presentation hints declared by the current VFS image. */
+  getDemoExchange(): DemoExchangeConfig | null;
+  subscribeDemoExchange(cb: (state: DemoExchangeConfig | null) => void): () => void;
   /** Dock buttons declared by the current VFS image; empty when none. */
   getDemoDockActions(): DemoDockActionConfig[];
   subscribeDemoDockActions(cb: (state: DemoDockActionConfig[]) => void): () => void;
   /** Paste gestures that could not reach the guest (`clipboard` feature). */
   subscribeClipboardPasteFailures(cb: (failure: ClipboardPasteFailure) => void): () => void;
+  /**
+   * Kandelo exchange for the attached machine: its consumer state, offered
+   * batches and the output tray. Follows the kernel: empty until one is
+   * attached, and reset when it is replaced or detached.
+   */
+  getExchange(): ExchangeSession;
 
   // sharing
   snapshot(opts?: SnapshotOptions): Promise<Snapshot>;
@@ -1156,6 +1189,7 @@ interface LivePtySession {
   cols: number;
   rows: number;
   supervised: boolean;
+  ownedJob?: { id: string; timeoutMs: number };
 }
 
 function clampPendingRequestCount(count: number): number {
@@ -1208,7 +1242,10 @@ function waitForPtyReadiness(
     off = pty.onData((bytes) => {
       if (!includeHistory && replayingHistory) return;
       buffer += decoder.decode(bytes, { stream: true });
-      if (ptyBufferEndsWithPrompt(buffer, prompt)) finish();
+      // Only the end of the complete replay describes the current terminal.
+      // An older chunk can end in a prompt followed by a running program.
+      // Finishing after registration also lets finish remove this listener.
+      if (!replayingHistory && ptyBufferEndsWithPrompt(buffer, prompt)) finish();
     });
     replayingHistory = false;
     if (includeHistory && ptyBufferEndsWithPrompt(buffer, prompt)) finish();
@@ -1353,6 +1390,7 @@ const NOT_IMPLEMENTED = (m: string) =>
   );
 
 export class LiveKernelHost implements KernelHost {
+  private readonly exchange = new ExchangeSession();
   private _status: MachineStatus;
   private statusListeners = new ListenerSet<MachineStatus>();
 
@@ -1372,7 +1410,7 @@ export class LiveKernelHost implements KernelHost {
   private surfaceListeners = new ListenerSet<SurfaceAvailability>();
   private galleryListeners = new ListenerSet<void>();
   private demoGuideListeners = new ListenerSet<DemoGuideConfig | null>();
-  private demoIngestListeners = new ListenerSet<DemoIngestConfig | null>();
+  private demoExchangeListeners = new ListenerSet<DemoExchangeConfig | null>();
   private demoDockActionListeners = new ListenerSet<DemoDockActionConfig[]>();
   private clipboardPasteFailureListeners = new ListenerSet<ClipboardPasteFailure>();
   private audioStateListeners = new ListenerSet<MachineAudioState>();
@@ -1383,8 +1421,19 @@ export class LiveKernelHost implements KernelHost {
   private applyBootDescriptorImpl?: NonNullable<LiveKernelHostOptions["applyBootDescriptor"]>;
   private galleryItems: GalleryItem[];
   private webPreview: WebPreviewState | null = null;
+  private webPreviewHandler?: { open: (target: WebPreviewTarget) => Promise<void>; closeNetwork: () => void; dispose: () => void };
+  setWebPreviewHandler(handler: NonNullable<LiveKernelHost["webPreviewHandler"]>): void {
+    this.webPreviewHandler?.dispose();
+    this.webPreviewHandler = handler;
+  }
+  async openWebPreview(target: WebPreviewTarget): Promise<void> {
+    if (!this.webPreviewHandler) throw new Error("This computer cannot open a web preview");
+    await this.webPreviewHandler.open(target);
+  }
+  closeNetworkWebPreview(): void { this.webPreviewHandler?.closeNetwork(); }
+
   private demoGuide: DemoGuideConfig | null = null;
-  private demoIngest: DemoIngestConfig | null = null;
+  private demoExchange: DemoExchangeConfig | null = null;
   private demoDockActions: DemoDockActionConfig[] = [];
   private surfaceAvailability: SurfaceAvailability = { ...DEFAULT_SURFACE_AVAILABILITY };
   private offFramebufferAvailability: (() => void) | null = null;
@@ -1423,6 +1472,8 @@ export class LiveKernelHost implements KernelHost {
    *  the pane closes its handle, reconnected when the cached handle is
    *  reused (StrictMode's mount → cleanup → mount). */
   private kmsResizeObservers = new WeakMap<HTMLCanvasElement, ResizeObserver>();
+  private kmsObservedCanvases = new Set<HTMLCanvasElement>();
+  private kmsDisplayScale: number | null = null;
   /**
    * Default paint mode for `attachKmsDisplay` when the caller passes no
    * explicit `opts.mode`. The wayland boot flow sets `"webgl2-scanout"`
@@ -1456,6 +1507,7 @@ export class LiveKernelHost implements KernelHost {
     this._descriptor = opts.descriptor ?? DEFAULT_DESCRIPTOR;
     this.presentation = opts.presentation ?? DEFAULT_PRESENTATION;
     this.kernel = undefined;
+    this.exchange.detach();
     this.shell = opts.shell;
     this.applyBootDescriptorImpl = opts.applyBootDescriptor;
     this.galleryItems = opts.galleryItems ?? [];
@@ -1474,6 +1526,8 @@ export class LiveKernelHost implements KernelHost {
   /** Replace the wrapped KernelLike. Used after `boot` resolves. */
   attachKernel(kernel: KernelLike): void {
     const previousKernel = this.kernel;
+    this.webPreviewHandler?.dispose();
+    this.webPreviewHandler = undefined;
     this.cancelLazyDownloads("kernel replaced");
     this.clearLazyDownloadState();
     this.offFramebufferAvailability?.();
@@ -1486,6 +1540,7 @@ export class LiveKernelHost implements KernelHost {
     this.offAudioActivity = null;
     this.invalidatePtySessions(previousKernel);
     this.kernel = kernel;
+    this.exchange.attach(kernel.exchange);
     if (kernel.framebuffers) {
       this.offFramebufferAvailability = kernel.framebuffers.onChange(() => {
         this.refreshFramebufferAvailability();
@@ -1516,6 +1571,8 @@ export class LiveKernelHost implements KernelHost {
   /** Clear the wrapped kernel after a failed boot without changing status. */
   detachKernel(): void {
     const detachedKernel = this.kernel;
+    this.webPreviewHandler?.dispose();
+    this.webPreviewHandler = undefined;
     this.cancelLazyDownloads("kernel detached");
     this.clearLazyDownloadState();
     this.offFramebufferAvailability?.();
@@ -1528,6 +1585,7 @@ export class LiveKernelHost implements KernelHost {
     this.offAudioActivity = null;
     this.invalidatePtySessions(detachedKernel);
     this.kernel = undefined;
+    this.exchange.detach();
     this.audioStateListeners.emit("unavailable");
     this.audioActivityListeners.emit(false);
     // The sizes describe the DETACHED kernel's panes. Left in place, the
@@ -1535,6 +1593,9 @@ export class LiveKernelHost implements KernelHost {
     // previous session's size, before the new pane has pushed a real size
     // to the new kernel — the desktop falls back to a 1920×1080 letterbox.
     // Waiters on the detached kernel will never see a report: release them.
+    for (const canvas of this.kmsObservedCanvases) this.kmsResizeObservers.get(canvas)?.disconnect();
+    this.kmsObservedCanvases.clear();
+    this.kmsDisplayScale = null;
     this.kmsDisplaySizes.clear();
     this.settleKmsDisplaySizeWaiters(undefined, undefined);
     // Each canvas's control was transferred to the detached kernel's worker;
@@ -1545,7 +1606,7 @@ export class LiveKernelHost implements KernelHost {
     this.refreshFramebufferAvailability();
     this.setSurfaceAvailability({ web: false, kms: false });
     this.setDemoGuide(null);
-    this.setDemoIngest(null);
+    this.setDemoExchange(null);
     this.setDemoDockActions([]);
   }
 
@@ -1593,15 +1654,19 @@ export class LiveKernelHost implements KernelHost {
     this.demoGuideListeners.emit(this.getDemoGuide());
   }
 
+  getExchange(): ExchangeSession {
+    return this.exchange;
+  }
+
   /** Report a paste gesture the guest never received (see clipboard-paste). */
   reportClipboardPasteFailure(failure: ClipboardPasteFailure): void {
     this.clipboardPasteFailureListeners.emit({ ...failure });
   }
 
-  /** Update the optional file-ingest capability exposed by the current image. */
-  setDemoIngest(ingest: DemoIngestConfig | null): void {
-    this.demoIngest = ingest ? structuredClone(ingest) : null;
-    this.demoIngestListeners.emit(this.getDemoIngest());
+  /** Update the exchange presentation hints exposed by the current image. */
+  setDemoExchange(hints: DemoExchangeConfig | null): void {
+    this.demoExchange = hints ? structuredClone(hints) : null;
+    this.demoExchangeListeners.emit(this.getDemoExchange());
   }
 
   /** Update the dock buttons exposed by the current image. */
@@ -1612,8 +1677,10 @@ export class LiveKernelHost implements KernelHost {
 
   private async startShellCommand(
     command: string,
+    beforeWrite?: () => void | Promise<void>,
+    path = "/dev/pts/0",
   ): Promise<{ completion: Promise<void> }> {
-    const sessionKey = "/dev/pts/0";
+    const sessionKey = path || "/dev/pts/0";
     const previousCommandDone =
       this.ptyCommandQueues.get(sessionKey) ?? Promise.resolve();
     let resolveCommandDone!: () => void;
@@ -1640,6 +1707,9 @@ export class LiveKernelHost implements KernelHost {
         timeoutMs: 1200,
         prompt,
       }).catch(() => {});
+      // Output followers must attach after the previous command's prompt,
+      // or they can mistake that prompt for the new command exiting.
+      await beforeWrite?.();
       const completion = waitForPtyReadiness(pty, {
         includeHistory: false,
         timeoutMs: 300_000,
@@ -1659,8 +1729,11 @@ export class LiveKernelHost implements KernelHost {
    * write has succeeded. This is the truthful dispatch surface for long-lived
    * foreground programs that intentionally do not return to a shell prompt.
    */
-  async dispatchShellCommand(command: string): Promise<void> {
-    await this.startShellCommand(command);
+  async dispatchShellCommand(command: string, opts: {
+    path?: string;
+    beforeWrite?: () => void | Promise<void>;
+  } = {}): Promise<void> {
+    await this.startShellCommand(command, opts.beforeWrite, opts.path);
   }
 
   /** Write a command and wait until the shell presents its next prompt. */
@@ -1917,6 +1990,8 @@ export class LiveKernelHost implements KernelHost {
   }
 
   async halt(): Promise<void> {
+    this.webPreviewHandler?.dispose();
+    this.webPreviewHandler = undefined;
     this.setStatus("halted");
     this.cancelLazyDownloads("kernel halted");
     this.offFramebufferAvailability?.();
@@ -1929,11 +2004,12 @@ export class LiveKernelHost implements KernelHost {
     this.offAudioActivity = null;
     this.setSurfaceAvailability({ terminal: false, framebuffer: false, web: false, kms: false });
     this.setDemoGuide(null);
-    this.setDemoIngest(null);
+    this.setDemoExchange(null);
     this.setDemoDockActions([]);
     const kernel = this.kernel;
     this.invalidatePtySessions(kernel);
     this.kernel = undefined;
+    this.exchange.detach();
     await kernel?.destroy?.();
   }
 
@@ -1980,6 +2056,7 @@ export class LiveKernelHost implements KernelHost {
   async attachPty(
     path: string = "/dev/pts/0",
     opts?: PtySize,
+    ownedJob?: { id: string; timeoutMs: number },
   ): Promise<PtyHandle> {
     if (!this.kernel) {
       throw new Error(
@@ -1995,6 +2072,7 @@ export class LiveKernelHost implements KernelHost {
       );
     }
     const kernel = this.kernel;
+    if (ownedJob && (!kernel.spawnFromVfs || !kernel.readOwnedJob || !kernel.releaseOwnedJob)) throw new Error("The attached kernel cannot own a terminal family");
     const sessionKey = path || "/dev/pts/0";
     const session = await this.withPtyAttachLock(sessionKey, () =>
       this.ensurePtySession(
@@ -2003,6 +2081,7 @@ export class LiveKernelHost implements KernelHost {
         this.shell,
         this.terminalSessions,
         opts,
+        ownedJob,
       ),
     );
 
@@ -2091,8 +2170,10 @@ export class LiveKernelHost implements KernelHost {
     shell: LiveKernelHostOptions["shell"],
     policy: TerminalSessionPolicy | undefined,
     opts: PtySize | undefined,
+    ownedJob?: { id: string; timeoutMs: number },
   ): Promise<LivePtySession> {
     let session = this.ptySessions.get(sessionKey);
+    if (ownedJob && session) throw new Error("An owned terminal must use a fresh PTY path");
     if (session && !session.closed && !(await this.isPtySessionAlive(session.pid))) {
       if (session.supervised) {
         this.handlePtyProcessExit(
@@ -2128,6 +2209,7 @@ export class LiveKernelHost implements KernelHost {
         cols: (opts ?? DEFAULT_PTY_SIZE).cols,
         rows: (opts ?? DEFAULT_PTY_SIZE).rows,
         supervised: policy !== undefined,
+        ...(ownedJob ? { ownedJob } : {}),
       };
       this.ptySessions.set(sessionKey, session);
     } else if (opts) {
@@ -2136,19 +2218,22 @@ export class LiveKernelHost implements KernelHost {
     }
 
     if (!session.closed) return session;
+    // An owned root's exit ends that terminal family. Restarting a login
+    // without the original job ledger would let descendants escape cleanup.
+    if (session.ownedJob && session.processGeneration > 0) return session;
     if (session.restartTimer !== null) return session;
 
     if (session.supervised) {
       if (session.autologinConsumed || !policy) return session;
       session.autologinConsumed = true;
       try {
-        await this.startPtyProgram(sessionKey, session, kernel, policy.initial);
+        await this.startPtyProgram(sessionKey, session, kernel, policy.initial, ownedJob);
       } catch (error) {
         this.reportPtyStartFailure(sessionKey, session, error);
         throw error;
       }
     } else if (shell) {
-      await this.startPtyProgram(sessionKey, session, kernel, shell);
+      await this.startPtyProgram(sessionKey, session, kernel, shell, ownedJob);
     }
     return session;
   }
@@ -2158,6 +2243,7 @@ export class LiveKernelHost implements KernelHost {
     session: LivePtySession,
     kernel: KernelLike,
     program: NonNullable<LiveKernelHostOptions["shell"]>,
+    ownedJob?: { id: string; timeoutMs: number },
   ): Promise<void> {
     const logicalGeneration = session.logicalGeneration;
     const processGeneration = ++session.processGeneration;
@@ -2166,6 +2252,7 @@ export class LiveKernelHost implements KernelHost {
     if (program.programPath && kernel.spawnFromVfs) {
       const spawned = await kernel.spawnFromVfs(program.programPath, program.argv, {
         pty: true,
+        ...(ownedJob ? { ownedJob } : {}),
         env: program.env,
         cwd: program.cwd,
         uid: program.uid,
@@ -2176,6 +2263,7 @@ export class LiveKernelHost implements KernelHost {
       pid = spawned.pid;
       exitPromise = spawned.exit;
     } else {
+      if (ownedJob) throw new Error("Owned terminals require VFS process-family support");
       if (!program.programBytes) {
         throw new Error(
           "LiveKernelHost.attachPty: the configured terminal program is VFS-only, " +
@@ -2273,7 +2361,7 @@ export class LiveKernelHost implements KernelHost {
         `kandelo: terminal process failed: ${String(exitError)}`,
       );
     }
-    if (!session.supervised || !this.terminalSessions || this.kernel !== kernel) {
+    if (session.ownedJob || !session.supervised || !this.terminalSessions || this.kernel !== kernel) {
       return;
     }
 
@@ -2999,6 +3087,20 @@ export class LiveKernelHost implements KernelHost {
     this.kmsDisplayModeDefault = mode;
   }
 
+  setKmsDisplayScale(scale: number | null): void {
+    if (scale !== null && (!Number.isFinite(scale) || scale < 0.5 || scale > 4)) throw new Error("KMS display scale must be between 0.5 and 4");
+    if (this.kmsDisplayScale === scale) return;
+    this.kmsDisplayScale = scale;
+    // A preserved pane may already have a native-density size. Invalidate
+    // that report and request a fresh measurement before another client starts.
+    this.kmsDisplaySizes.clear();
+    for (const canvas of this.kmsObservedCanvases) {
+      const observer = this.kmsResizeObservers.get(canvas)!;
+      observer.disconnect();
+      observer.observe(canvas);
+    }
+  }
+
   /** Last reported guest monitor size (virtual when displayScale is set),
    * or undefined before the pane's first ResizeObserver delivery. */
   getKmsDisplaySize(crtcId: number = KMS_PRIMARY_CRTC): { width: number; height: number } | undefined {
@@ -3114,7 +3216,8 @@ export class LiveKernelHost implements KernelHost {
     if (cached) {
       // The earlier close() disconnected the observer; the reused handle
       // must keep feeding display sizes.
-      this.kmsResizeObservers.get(canvas)?.observe(canvas);
+      const observer = this.kmsResizeObservers.get(canvas);
+      if (observer) { observer.observe(canvas); this.kmsObservedCanvases.add(canvas); }
       return cached;
     }
     // Reserve 64 bytes for bounded display counters and ownership metadata.
@@ -3147,7 +3250,7 @@ export class LiveKernelHost implements KernelHost {
         }
         const entry = entries[entries.length - 1];
         const dp = entry.devicePixelContentBoxSize?.[0];
-        const scale = this.getPresentation().displayScale;
+        const scale = this.kmsDisplayScale ?? this.getPresentation().displayScale;
         // WHY: bitmap clients must see one readable pixel grid, including
         // hit testing and device state. Enlarging only fonts breaks their
         // theme geometry. Compositors keep native output when unset.
@@ -3175,6 +3278,7 @@ export class LiveKernelHost implements KernelHost {
       });
       resizeObserver.observe(canvas);
       this.kmsResizeObservers.set(canvas, resizeObserver);
+      this.kmsObservedCanvases.add(canvas);
     }
     // evdev codes for the pointer path (struct input_event).
     const EV_SYN = 0x00, EV_KEY = 0x01, EV_ABS = 0x03;
@@ -3235,6 +3339,7 @@ export class LiveKernelHost implements KernelHost {
         // (an observer on a removed element need not fire again to notice).
         // A remount reuses the cached handle and reconnects it.
         this.kmsResizeObservers.get(canvas)?.disconnect();
+        this.kmsObservedCanvases.delete(canvas);
       },
     };
     this.kmsHandles.set(canvas, handle);
@@ -3269,12 +3374,12 @@ export class LiveKernelHost implements KernelHost {
     return this.demoGuide ? structuredClone(this.demoGuide) : null;
   }
 
-  getDemoIngest(): DemoIngestConfig | null {
-    return this.demoIngest ? structuredClone(this.demoIngest) : null;
+  getDemoExchange(): DemoExchangeConfig | null {
+    return this.demoExchange ? structuredClone(this.demoExchange) : null;
   }
 
-  subscribeDemoIngest(cb: (state: DemoIngestConfig | null) => void): () => void {
-    return this.demoIngestListeners.add(cb);
+  subscribeDemoExchange(cb: (state: DemoExchangeConfig | null) => void): () => void {
+    return this.demoExchangeListeners.add(cb);
   }
 
   getDemoDockActions(): DemoDockActionConfig[] {

@@ -812,6 +812,40 @@ afterEach(() => {
 
 describe("blocking retry request snapshots", () => {
   it.each(WIDTHS)(
+    "%s interprets futex bitset deadlines in the selected guest clock",
+    async (_name, pointerWidth) => {
+      for (const realtime of [false, true]) {
+        const harness = createRetryHarness(pointerWidth);
+        const now = { sec: realtime ? 1_800_000_000 : 123_456, nsec: 500_000_000 };
+        harness.worker.io.clockGettime = vi.fn(() => now);
+        const remaining = vi.fn((_channel, ms) => Date.now() + ms);
+        harness.worker.testAuthority.configureScratchBoundaryHooksForTest({
+          getReadinessDeadline: remaining,
+        });
+        const view = new DataView(harness.processMemory.buffer);
+        view.setBigInt64(0x1800, BigInt(now.sec), true);
+        view.setBigInt64(0x1808, BigInt(now.nsec + 100_000), true);
+        writeRequest(harness, ABI_SYSCALLS.Futex, [
+          0x1000n, BigInt(9 | 128 | (realtime ? 256 : 0)), 0n, 0x1800n, 0n, 0xffffffffn,
+        ]);
+        harness.worker.handleSyscall(harness.channel);
+        expect(harness.worker.io.clockGettime).toHaveBeenCalledWith(realtime ? 0 : 1);
+        expect(remaining.mock.calls[0]?.[1]).toBe(1);
+        harness.worker.pendingFutexWaits.get(harness.channel)?.retire();
+        // An expired absolute deadline must time out immediately.
+        view.setBigInt64(0x1800, BigInt(now.sec - 1), true);
+        writeRequest(harness, ABI_SYSCALLS.Futex, [
+          0x1000n, BigInt(9 | (realtime ? 256 : 0)), 0n, 0x1800n, 0n, 0xffffffffn,
+        ]);
+        harness.worker.handleSyscall(harness.channel);
+        expect(requestResult(harness)).toEqual({
+          status: CHANNEL_STATUS_COMPLETE, returnValue: -110, errno: 110,
+        });
+      }
+    },
+  );
+
+  it.each(WIDTHS)(
     "%s retains a scalar write's fd, source range, length, and payload",
     async (_name, pointerWidth) => {
       vi.useFakeTimers();

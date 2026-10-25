@@ -1,10 +1,14 @@
+import { DEPENDENCY_CHANNEL } from "../../../web-libs/kandelo-session/src/session-dependency-peer";
+import { ACTIVITY_CHANNEL } from "../../../web-libs/kandelo-session/src/session-activity-peer";
 import { createPeerConnectionInvite, answerPeerConnectionInvite, parseIceServers, type PeerConnectionDeclaration, type PeerConnection } from "../../../web-libs/kandelo-session/src/peer-connection";
 import { bridgeRemoteSegmentChannels } from "@host/networking/remote-segment-browser";
 
 /** Independent machines use ordinary UDP and TCP; sharing keeps its migration declaration. */
 const declaration: PeerConnectionDeclaration = {
-  purpose: "network",
+  purpose: "network-activities-v2",
   channels: [
+    { label: DEPENDENCY_CHANNEL, options: { ordered: true } },
+    { label: ACTIVITY_CHANNEL, options: { ordered: true } },
     { label: "udp", options: { ordered: false, maxRetransmits: 0 } },
     { label: "network-control-v2", options: { ordered: true } },
   ],

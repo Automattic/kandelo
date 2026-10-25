@@ -28,28 +28,13 @@ activate_ci_test_workspace
 
 suite="${1:-}"
 if [ -z "$suite" ]; then
-    echo "usage: $0 <cargo-workspace|cargo-xtask|vitest|browser|libc|posix|sortix> [group]" >&2
+    echo "usage: $0 <cargo-workspace|cargo-xtask|runtime-workarounds|vitest|browser|libc|posix|sortix> [group]" >&2
     exit 2
 fi
 group="${2:-${TEST_GROUP:-all}}"
-disabled_software_vitest_excludes=(
-    # Vitest is invoked from host/. Its ordinary file list includes both
-    # host-local paths (test/**) and repository siblings (../tests/**), so
-    # every disabled-software marker needs both spellings.
-    "--exclude=**/*brew*"
-    "--exclude=../**/*brew*"
-    "--exclude=**/*bottle*"
-    "--exclude=../**/*bottle*"
-    "--exclude=**/*formula*"
-    "--exclude=../**/*formula*"
-    "--exclude=**/*tap*"
-    "--exclude=../**/*tap*"
-    # Erlang is deferred while its package/runtime validation is unstable.
-    "--exclude=../packages/registry/erlang/test/**"
-    "--exclude=test/abi-staging-mini-vfs.test.ts"
-    "--exclude=test/abi-staging-product-builders.test.ts"
-    "--exclude=test/shell-vfs-build.test.ts"
-)
+# Defines disabled_software_vitest_excludes and the evidence-class registry
+# reader and coverage check used by every Vitest group.
+source "$REPO_ROOT/scripts/check-vitest-evidence-classes.sh"
 disabled_software_cargo_test_args=(
     "--skip" "formula"
     "--skip" "bottle"
@@ -79,16 +64,17 @@ invalid_group() {
     exit 2
 }
 
+# run_exact_abi_source_vitest <inventory-root>
+# Runs only source-only evidence. <inventory-root>/evidence holds the
+# registry lists from read_vitest_evidence_classes, already checked against
+# Vitest's live inventory by the caller.
 run_exact_abi_source_vitest() {
-    local classes="$REPO_ROOT/scripts/ci-vitest-evidence-classes.tsv"
-    local inventory_root
-    local declared="$REPO_ROOT/.ci-exact-abi-vitest-declared"
-    local live="$REPO_ROOT/.ci-exact-abi-vitest-live"
-    local live_raw="$REPO_ROOT/.ci-exact-abi-vitest-live-raw"
-    local source_declared
-    local source_shared_declared
-    local selected
-    local selected_raw
+    local inventory_root="$1"
+    local classes="$REPO_ROOT/$vitest_evidence_classes_registry"
+    local source_declared="$inventory_root/evidence/source-only"
+    local source_shared_declared="$inventory_root/source-shared-declared"
+    local selected="$inventory_root/selected"
+    local selected_raw="$inventory_root/selected-raw"
     local resource_cases
     local resource_line
     local resource_file_number
@@ -102,12 +88,7 @@ run_exact_abi_source_vitest() {
     local excluded_arg
     local index
     local path
-    local class
-    local extra
-    local previous=""
     local line_number=0
-    local source_count=0
-    local prepared_count=0
     local selected_path
     local -a prepared_excludes=()
     local -a source_resource_files=()
@@ -115,90 +96,14 @@ run_exact_abi_source_vitest() {
     local -a source_resource_excludes=()
     local seen_source_resource_files="|"
 
-    if [ ! -f "$classes" ] || [ -L "$classes" ] ||
-       [ "$(wc -c < "$classes" | tr -d '[:space:]')" -gt 1048576 ]; then
-        echo "ci-run-test-suite: Vitest evidence classes must be one bounded regular file" >&2
-        exit 2
-    fi
-    inventory_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/kandelo-exact-abi-vitest.XXXXXX")"
-    EXACT_ABI_VITEST_INVENTORY_ROOT="$inventory_root"
-    cleanup_exact_abi_vitest_inventory() {
-        if [ -n "${EXACT_ABI_VITEST_INVENTORY_ROOT:-}" ]; then
-            rm -rf -- "$EXACT_ABI_VITEST_INVENTORY_ROOT"
-            EXACT_ABI_VITEST_INVENTORY_ROOT=""
-        fi
-    }
-    trap cleanup_exact_abi_vitest_inventory EXIT
-    declared="$inventory_root/declared"
-    live="$inventory_root/live"
-    live_raw="$inventory_root/live-raw"
-    source_declared="$inventory_root/source-declared"
-    source_shared_declared="$inventory_root/source-shared-declared"
-    selected="$inventory_root/selected"
-    selected_raw="$inventory_root/selected-raw"
-    : > "$declared"
-    : > "$source_declared"
-    while IFS=$'\t' read -r path class extra ||
-          [ -n "${path:-}${class:-}${extra:-}" ]; do
-        line_number=$((line_number + 1))
-        case "${path:-}" in
-            ""|\#*) continue ;;
-        esac
-        if [ -z "${class:-}" ] || [ -n "${extra:-}" ]; then
-            echo "ci-run-test-suite: invalid Vitest evidence class at $classes:$line_number" >&2
-            exit 2
-        fi
+    while IFS= read -r path; do
         case "$path" in
-            /*|*//*|../*|*/../*|*/..|./*|*/./*|*/.)
-                echo "ci-run-test-suite: invalid Vitest evidence path at $classes:$line_number" >&2
-                exit 2
-                ;;
+            host/*) selected_path="${path#host/}" ;;
+            *) selected_path="../$path" ;;
         esac
-        case "$path" in
-            host/test/*.test.ts|host/test/*/*.test.ts|\
-            web-libs/*/test/*.test.ts|packages/registry/*/test/*.test.ts|\
-            tests/package-system/*.test.ts|examples/dlopen/*.test.ts)
-                ;;
-            *)
-                echo "ci-run-test-suite: unsupported Vitest evidence path at $classes:$line_number" >&2
-                exit 2
-                ;;
-        esac
-        if [ -n "$previous" ] && [[ "$previous" > "$path" || "$previous" = "$path" ]]; then
-            echo "ci-run-test-suite: Vitest evidence classes must be sorted and duplicate-free" >&2
-            exit 2
-        fi
-        previous="$path"
-        if [ ! -f "$REPO_ROOT/$path" ] || [ -L "$REPO_ROOT/$path" ]; then
-            echo "ci-run-test-suite: classified Vitest evidence is not a regular file: $path" >&2
-            exit 2
-        fi
-        case "$class" in
-            source-only)
-                source_count=$((source_count + 1))
-                printf '%s\n' "$path" >> "$source_declared"
-                ;;
-            prepared-product)
-                prepared_count=$((prepared_count + 1))
-                case "$path" in
-                    host/*) selected_path="${path#host/}" ;;
-                    *) selected_path="../$path" ;;
-                esac
-                prepared_excludes+=("--exclude=$selected_path")
-                ;;
-            *)
-                echo "ci-run-test-suite: unknown Vitest evidence class at $classes:$line_number" >&2
-                exit 2
-                ;;
-        esac
-        printf '%s\n' "$path" >> "$declared"
-    done < "$classes"
-    if [ "$source_count" -eq 0 ] || [ "$prepared_count" -eq 0 ] ||
-       [ "$((source_count + prepared_count))" -gt 1024 ]; then
-        echo "ci-run-test-suite: Vitest evidence classes must contain a bounded two-class inventory" >&2
-        exit 2
-    fi
-    cp "$source_declared" "$source_shared_declared"
+        prepared_excludes+=("--exclude=$selected_path")
+    done < "$inventory_root/evidence/prepared-product"
+    LC_ALL=C sort "$source_declared" > "$source_shared_declared"
 
     # Resource-isolated tests retain their fresh-process boundary even when
     # they are source-only. Exclude each such file from the shared exact run,
@@ -329,30 +234,6 @@ run_exact_abi_source_vitest() {
             exit 2
         fi
     done
-
-    (
-        cd host
-        npx vitest list --filesOnly "${disabled_software_vitest_excludes[@]}"
-    ) > "$live_raw"
-    : > "$live"
-    while IFS= read -r path || [ -n "${path:-}" ]; do
-        case "$path" in
-            test/*) printf 'host/%s\n' "$path" >> "$live" ;;
-            ../*) printf '%s\n' "${path#../}" >> "$live" ;;
-            "$REPO_ROOT"/*) printf '%s\n' "${path#"$REPO_ROOT"/}" >> "$live" ;;
-            *)
-                echo "ci-run-test-suite: Vitest returned an invalid evidence path: $path" >&2
-                exit 2
-                ;;
-        esac
-    done < "$live_raw"
-    LC_ALL=C sort -o "$live" "$live"
-    if [ ! -s "$live" ] || [ -n "$(LC_ALL=C uniq -d "$live")" ] ||
-       ! cmp -s "$declared" "$live"; then
-        echo "ci-run-test-suite: Vitest evidence classes do not exactly cover the live file inventory" >&2
-        diff -u "$declared" "$live" >&2 || true
-        exit 2
-    fi
 
     node --input-type=module - "$REPO_ROOT" "$classes" <<'NODE'
 import {
@@ -533,18 +414,7 @@ NODE
     else
         : > "$selected_raw"
     fi
-    : > "$selected"
-    while IFS= read -r path || [ -n "${path:-}" ]; do
-        case "$path" in
-            test/*) printf 'host/%s\n' "$path" >> "$selected" ;;
-            ../*) printf '%s\n' "${path#../}" >> "$selected" ;;
-            "$REPO_ROOT"/*) printf '%s\n' "${path#"$REPO_ROOT"/}" >> "$selected" ;;
-            *)
-                echo "ci-run-test-suite: Vitest returned an invalid source-only path: $path" >&2
-                exit 2
-                ;;
-        esac
-    done < "$selected_raw"
+    vitest_relative_paths "$REPO_ROOT" < "$selected_raw" > "$selected"
     LC_ALL=C sort -o "$selected" "$selected"
     if [ -n "$(LC_ALL=C uniq -d "$selected")" ] ||
        ! cmp -s "$source_shared_declared" "$selected"; then
@@ -576,8 +446,6 @@ NODE
                 --testNamePattern="$test_pattern"
         )
     done
-    cleanup_exact_abi_vitest_inventory
-    trap - EXIT
 }
 
 install_node_deps() {
@@ -670,10 +538,52 @@ case "$suite" in
         cargo test -p xtask --target "$HOST_TARGET" -- \
             "${disabled_software_cargo_test_args[@]}"
         ;;
+    runtime-workarounds)
+        # Does each confirmed outside-runtime defect still reproduce? Runs
+        # the registry's standalone reproductions (tests/runtime-workarounds/)
+        # in the runtimes installed on this machine and compares each verdict
+        # with its entry.toml. The driver imports Playwright from
+        # apps/browser-demos and needs its browsers installed.
+        install_node_deps
+        (
+            cd apps/browser-demos
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+            # chromium is what driver.test.mjs drives; firefox and webkit are
+            # the other engines registry entries target. An engine that is
+            # missing would otherwise surface as "could not launch" verdicts.
+            if [ "$(uname -s)" = "Linux" ]; then
+                run_timed 30m "Install Playwright browsers" \
+                    env PATH="/usr/bin:/bin:$PATH" \
+                    npx playwright install --with-deps chromium firefox webkit
+            else
+                run_timed 30m "Install Playwright browsers" \
+                    npx playwright install chromium firefox webkit
+            fi
+        )
+        node --test tests/runtime-workarounds/driver.test.mjs
+        cargo run -p xtask --target "$(host_target)" --quiet -- runtime-workarounds run
+        ;;
     vitest)
+        case "$group" in
+            all|1/2|2/2|resource-isolated|exact-abi-source) ;;
+            *) invalid_group ;;
+        esac
+        vitest_inventory_dir="$(
+            mktemp -d \
+                "${RUNNER_TEMP:-/tmp}/kandelo-vitest-inventory.XXXXXX"
+        )"
+        cleanup_vitest_inventory() {
+            rm -rf -- "$vitest_inventory_dir"
+        }
+        trap cleanup_vitest_inventory EXIT
+        # WHY: every group, not only exact-abi-source, proves that the
+        # evidence-class registry and Vitest's file inventory agree before any
+        # test runs. Stale rows fail before dependency installation.
+        read_vitest_evidence_classes "$REPO_ROOT" "$vitest_inventory_dir/evidence"
+        install_node_deps
+        check_vitest_evidence_coverage "$REPO_ROOT" "$vitest_inventory_dir/evidence"
         if [ "$group" = "exact-abi-source" ]; then
-            install_node_deps
-            run_exact_abi_source_vitest
+            run_exact_abi_source_vitest "$vitest_inventory_dir"
             exit 0
         fi
         resource_cases="$REPO_ROOT/scripts/ci-vitest-resource-isolated-cases.tsv"
@@ -743,20 +653,12 @@ case "$suite" in
             resource-isolated) vitest_args=() ;;
             *) invalid_group ;;
         esac
-        install_node_deps
 
         # The ordinary shards exclude each whole declared file. Prove that the
         # manifest is a bijection with the file's live Vitest inventory before
         # doing so: a new, removed, misspelled, or duplicate case must fail
         # loudly rather than silently losing or multiplying coverage.
-        vitest_resource_inventory_dir="$(
-            mktemp -d \
-                "${RUNNER_TEMP:-/tmp}/kandelo-vitest-resource.XXXXXX"
-        )"
-        cleanup_vitest_resource_inventory() {
-            rm -rf -- "$vitest_resource_inventory_dir"
-        }
-        trap cleanup_vitest_resource_inventory EXIT
+        vitest_resource_inventory_dir="$vitest_inventory_dir"
         resource_file_number=0
         for excluded_arg in "${resource_excludes[@]}"; do
             resource_file_number=$((resource_file_number + 1))
@@ -846,10 +748,14 @@ case "$suite" in
                 )
             done
         fi
-        # [JSC-TERMINATE-ATOMICS-WAIT-LEAK] Re-run the teardown-reclamation tests
-        # on JSC (Bun) as well as V8, since the workaround exists for JSC (Safari
-        # and Bun) and is a no-op on V8. `bun` comes from the flake dev shell.
+        # [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+        # Re-run the teardown-reclamation tests on JSC (Bun) as well as V8,
+        # since the workaround exists for JSC (Safari and Bun) and is a no-op
+        # on V8. `bun` comes from the flake dev shell.
         # See docs/jsc-terminate-atomics-wait-workaround.md.
+        # The heap-safepoint test runs here too: only JSC receives repeated
+        # bounded waits (docs/browser-support.md, "JavaScriptCore garbage
+        # collection and blocked workers").
         # WHY: this is a separate cross-runtime check, not part of Vitest's V8
         # partition. Run it on one shard so CI retains the check exactly once.
         if [ "$group" = "all" ] || [ "$group" = "1/2" ]; then
@@ -857,7 +763,8 @@ case "$suite" in
                 cd host
                 KANDELO_VITEST_RUNTIME=bun bun x --bun vitest run \
                     test/teardown-reclaim.test.ts \
-                    test/pthread.test.ts
+                    test/pthread.test.ts \
+                    test/heap-safepoint.test.ts
             )
         fi
         ;;

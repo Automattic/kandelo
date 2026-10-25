@@ -1,0 +1,36 @@
+kind = "program"
+name = "kandelo-exchange"
+version = "0.1.0"
+kernel_abi = 53
+depends_on = []
+arches = ["wasm32"]
+
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/kandelo-exchange/build-kandelo-exchange.sh"
+
+# The exchange agent, installed at /usr/libexec/kandelo/exchange-agent.
+[[outputs]]
+name = "kxchgd"
+wasm = "kxchgd.wasm"
+
+[[outputs]]
+name = "kandelo-exchange"
+wasm = "kandelo-exchange.wasm"
+
+[[outputs]]
+name = "kandelo-publish"
+wasm = "kandelo-publish.wasm"
+
+# The catch-all `99-save` handler.
+[[outputs]]
+name = "exchange-save"
+wasm = "exchange-save.wasm"

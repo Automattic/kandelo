@@ -1,3 +1,4 @@
+import { WebPreviewConnection } from "./web-preview-connection";
 import { observePreviewRequest } from "../panes/preview-progress";
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
@@ -22,7 +23,7 @@ import {
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import {
-  imageOwnedRuntimeUrlTable,
+  imageOwnedLazyAssetDirectory,
   type ImageOwnedRuntimeLazyAssets,
 } from "../../../lib/init/image-owned-runtime-urls";
 import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
@@ -53,7 +54,7 @@ import {
   resolveDemoDockActions,
   resolveDemoGuide,
   resolveDemoIdentity,
-  resolveDemoIngest,
+  resolveDemoExchange,
   resolveDemoInit,
   resolveDemoPresentation,
   type DemoInitConfig,
@@ -120,6 +121,9 @@ const CANONICAL_PAGES_VFS_LOADER = CANONICAL_PAGES_VFS_PRODUCTS === null
   );
 
 const OPTIONAL_BINARY_URLS = {
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/redis-vfs.vfs.zst", { query: "?url", import: "default" }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/redis-vfs.vfs.zst", { query: "?url", import: "default" }),
+
   ...import.meta.glob(
     "../../../../../local-binaries/programs/wasm32/fbtest.wasm",
     {
@@ -293,7 +297,8 @@ type PagesVfsProductId =
   | "browser-nginx-python"
   | "browser-wordpress"
   | "browser-lamp"
-  | "browser-ruby-todo";
+  | "browser-ruby-todo"
+  | "browser-redis";
 
 /** Every product the gallery can list, i.e. every one except the kernel's
  *  own platform rootfs. */
@@ -326,6 +331,10 @@ const VFS_PRODUCTS: Record<GalleryProductId, VfsProductSource> = {
     kind: "url",
     productId: "browser-main-shell",
     url: shellVfsUrl,
+  },
+  "browser-redis": {
+    kind: "optional-binary", label: "redis-vfs.vfs.zst", productId: "browser-redis",
+    relPaths: ["../../../../../local-binaries/programs/wasm32/redis-vfs.vfs.zst", "../../../../../binaries/programs/wasm32/redis-vfs.vfs.zst"],
   },
   "browser-nginx": {
     kind: "optional-binary",
@@ -544,6 +553,8 @@ const FBTEST_ENV: string[] = [
 export type FbDemo = "none" | "test";
 
 export interface CreateLiveHostOptions {
+  /** Prepare the image, then wait for explicit Join and open consent. */
+  deferActivityLaunch?: boolean;
   /**
    * `&profile=<id>` — which machine inside the image to boot. The app knows
    * no profile names; an id the image does not declare is a loud boot error,
@@ -710,6 +721,7 @@ export async function createLiveHost(
       profileForDescriptor(initialDescriptor, opts.fb, opts.profile ?? null),
       initialDescriptor,
       opts.legacyScriptIgnored ?? false,
+      opts.deferActivityLaunch ?? false,
     );
   } else if (candidateVfsPlacement!.pagesLoad === null) {
     void activateProtectedProfile();
@@ -727,6 +739,7 @@ export async function createLiveHost(
     profile: LiveProfile,
     descriptor: BootDescriptor,
     legacyScriptIgnored = false,
+    deferActivityLaunch = false,
   ): Promise<void> {
     const seq = ++bootSeq;
     const previousKernel = currentKernel;
@@ -768,6 +781,7 @@ export async function createLiveHost(
         () => seq === bootSeq,
         requireServiceWorker,
         legacyScriptIgnored,
+        deferActivityLaunch,
       );
       if (seq !== bootSeq) {
         await kernel.destroy().catch(() => {});
@@ -1175,6 +1189,7 @@ async function bootProfile(
     tick?: (msg: string) => void,
   ) => Promise<ServiceWorker>,
   legacyScriptIgnored = false,
+  deferActivityLaunch = false,
 ): Promise<BrowserKernel> {
   const assertCurrent = () => {
     if (!isCurrent()) throw new BootSuperseded();
@@ -1337,10 +1352,13 @@ async function bootProfile(
     composed;
   const vfsImageBytes = composed.imageBytes;
   // The image keeps its canonical lazy addresses: nothing rewrites them. WHERE
-  // this deployment serves them is transport policy, which travels beside the
-  // image as a table for the kernel worker's lazy fetcher, so the deferred
-  // entries the image writer sealed reach the kernel exactly as built.
-  const lazyUrlMap = imageOwnedRuntimeUrlTable(loadedVfs.lazyAssets);
+  // this deployment serves them is transport policy: the kernel worker's lazy
+  // fetcher resolves each address to its package member under this directory,
+  // so the deferred entries the image writer sealed reach the kernel exactly
+  // as built.
+  const lazyAssetDirectory = imageOwnedLazyAssetDirectory(
+    loadedVfs.lazyAssets ?? CANONICAL_PAGES_VFS_LOADER?.deploymentLazyAssets(),
+  );
   // ── The machine, read from the image it lives in ────────────────────────
   //
   // The composer already failed the boot if the image declares no machine
@@ -1352,16 +1370,17 @@ async function bootProfile(
     ?? (profile.vfsUrl ? titleFromVfsImageUrl(profile.vfsUrl) : profileId);
   const rawPresentation = resolveDemoPresentation(imageConfig, profileId)
     ?? genericPresentationForMachine(machine, profile.framebufferTest);
-  const presentation = presentationForWebMachine(machine.web, rawPresentation);
+  const web = deferActivityLaunch ? null : machine.web;
+  const presentation = deferActivityLaunch ? genericDemoPresentation("terminal") : presentationForWebMachine(web, rawPresentation);
   host.setPresentation(presentation);
   host.setDemoGuide(resolveDemoGuide(imageConfig, profileId));
-  // Ingest is an image-owned capability. Absence is valid and must not be
-  // replaced with a package- or profile-name-specific UI promise.
-  host.setDemoIngest(resolveDemoIngest(imageConfig, profileId));
+  // Exchange hints are image-owned presentation (the picker's label and
+  // filter). Absence is valid: the machine still accepts dropped files.
+  host.setDemoExchange(resolveDemoExchange(imageConfig, profileId));
   host.setDemoDockActions(resolveDemoDockActions(imageConfig, profileId));
   // The one command this machine asked its login shell to run, if any. Read
   // once here: `init` is the single block that says what a machine runs.
-  const machineShellCommand = shellCommandForMachine(machine.init);
+  const machineShellCommand = deferActivityLaunch ? null : shellCommandForMachine(machine.init);
 
   // Present the KMS canvas through the vblank pump's WebGL2 scanout
   // presenter (texture upload, shader-side swizzle, GPU scaling at display
@@ -1376,7 +1395,7 @@ async function bootProfile(
   host.setKmsDisplayMode(
     machine.runtime.features.includes("kms-gl-scanout") ? "webgl2-scanout" : null,
   );
-  const initLaunch = machine.init === null
+  const initLaunch = deferActivityLaunch || machine.init === null
     ? null
     : profile.candidateEvidence === undefined
     ? initLaunchForMachine(machine.init)
@@ -1395,7 +1414,7 @@ async function bootProfile(
   for (const service of composed.requiredServices) {
     requiredServices.add(service);
   }
-  if (machine.web !== null) webPaneLabel = machineTitle;
+  if (web !== null) webPaneLabel = machineTitle;
   host.setDescriptor(
     descriptorForMachine(profile, machine, machineTitle, requestedDescriptor),
   );
@@ -1414,7 +1433,7 @@ async function bootProfile(
   maybeUpdateWebReadiness = () => {
     maybeMarkWebReady(
       host,
-      machine.web,
+      web,
       machineTitle,
       requiredServices,
       seenPorts,
@@ -1481,14 +1500,14 @@ async function bootProfile(
       },
     });
     // Typed against the host's own init contract, so an option the host does
-    // not accept (the lazy URL table above) is a type error, never a field the
+    // not accept (the lazy-asset directory above) is a type error, never a field the
     // host silently drops.
     const kernelInitOptions: Parameters<BrowserKernel["initFromImage"]>[0] =
       profile.candidateEvidence === undefined
       ? {
         kernelWasm: kernelBytes,
         vfsImage: vfsImageBytes,
-        lazyUrlMap,
+        lazyAssetDirectory,
       }
       : candidateEvidenceKernelInitOptions(
         profile.candidateEvidence,
@@ -1498,12 +1517,16 @@ async function bootProfile(
     await kernel.initFromImage(kernelInitOptions);
     assertCurrent();
     host.attachKernel(kernel);
+    let disposeLocalWebBridge = () => {};
+    const previewConnection = new WebPreviewConnection(host, kernel, SW_URL, SW_SCOPE, isCurrent);
+    host.setWebPreviewHandler({ open: target => previewConnection.open(target), closeNetwork: () => previewConnection.closeNetwork(),
+      dispose: () => { previewConnection.dispose(); disposeLocalWebBridge(); } });
     setWebMcpSession(host, agentIdentity());
     host.setTerminalSessionPolicy(
       experimentalTerminalSessionPolicy(terminalSession),
     );
 
-    if (machine.web !== null) {
+    if (web !== null) {
       tick("initializing HTTP bridge...");
       try {
         // Unique id for this machine instance. Scopes the service worker's
@@ -1514,7 +1537,7 @@ async function bootProfile(
         // The service worker mints the machine name and app prefix; the
         // web-preview URL comes from the returned prefix, not a static
         // constant, so this tab addresses its own machine.
-        const { name, appPrefix } = await setupServiceWorkerFetchBridge(
+        const { name, appPrefix, dispose } = await setupServiceWorkerFetchBridge(
           SW_URL,
           SW_SCOPE,
           kernel,
@@ -1530,6 +1553,7 @@ async function bootProfile(
           },
         );
         assertCurrent();
+        disposeLocalWebBridge = dispose;
         // Every later web-preview update (readiness "running", probe URL) must
         // address this machine's minted prefix, not the bare /computer/ constant.
         machineAppPrefix = appPrefix;
@@ -1548,7 +1572,7 @@ async function bootProfile(
         // mapping decide whether the pane should change — it enforces the
         // strict name match, the isCurrent() supersession guard, and preserves
         // the preview identity while switching status/message.
-        navigator.serviceWorker.addEventListener("message", (event) => {
+        const onMachineMessage = (event: MessageEvent) => {
           const next = webPreviewForMachineChromeMessage({
             data: (event as MessageEvent).data,
             mintedName: name,
@@ -1556,7 +1580,12 @@ async function bootProfile(
             isCurrent,
           });
           if (next !== null) host.setWebPreview(next);
-        });
+        };
+        navigator.serviceWorker.addEventListener("message", onMachineMessage);
+        disposeLocalWebBridge = () => {
+          navigator.serviceWorker.removeEventListener("message", onMachineMessage);
+          dispose();
+        };
       } catch (err) {
         if (!isCurrent()) throw err;
         const message = err instanceof Error ? err.message : String(err);
@@ -1657,6 +1686,10 @@ async function bootProfile(
     // /dev/input/event{0,1} misses everything delivered before it starts.
     if (machine.runtime.features.includes("evdev-input")) {
       attachDeclaredInputSource(kernel, machine, tick, host);
+    } else {
+      // A package activity may open KMS after booting a terminal-only image.
+      // Capture only over its real canvas, using the same evdev input path.
+      attachDeclaredInputSource(kernel, machine, tick, host, ".kmodeset-canvas");
     }
 
     if (profile.framebufferTest) {
@@ -1803,12 +1836,13 @@ function attachDeclaredInputSource(
   machine: ImageMachine,
   tick: (msg: string) => void,
   host: Pick<LiveKernelHost, "reportClipboardPasteFailure">,
+  activityDisplaySelector?: string,
 ): void {
-  const displaySelector = machine.runtime.features.includes("kms")
+  const displaySelector = activityDisplaySelector ?? ( machine.runtime.features.includes("kms")
     ? ".kmodeset-canvas"
     : machine.runtime.features.includes("framebuffer")
     ? ".kframebuffer-surface"
-    : null;
+    : null);
   // KMS uses a stable virtual-tablet range, independent of display pixels.
   // Consumers cache absinfo at open; changing it on resize breaks input.
   const kms = displaySelector === ".kmodeset-canvas";
@@ -2367,7 +2401,7 @@ function localProductArtifactExists(source: VfsProductSource): boolean {
 function localProductBuildCommand(source: VfsProductSource): string | undefined {
   if (source.kind === "url") return undefined;
   return source.kind === "optional-demo"
-    ? "./run.sh fetch"
+    ? "./run.sh local-build"
     : "./run.sh build programs";
 }
 

@@ -1,0 +1,36 @@
+{
+  "kind": "kandelo-package-sessions",
+  "version": 1,
+  "package": "nginx-python-vfs",
+  "packageVersion": "0.1.0",
+  "offers": [
+    {
+      "id": "service",
+      "title": "nginx and Python website",
+      "description": "Invite people to browse this image’s running website. Files, posts, forms and other changes stay on the hosting computer.",
+      "join": "client",
+      "attachExisting": true,
+      "requiresHost": true,
+      "hostRequires": [
+        "/etc/kandelo/demo.json",
+        "/usr/sbin/nginx"
+      ],
+      "fields": []
+    }
+  ],
+  "joins": [
+    {
+      "id": "client",
+      "title": "Open nginx and Python website",
+      "description": "Join this network and connect to the existing host service. This computer does not start a duplicate server.",
+      "fields": [],
+      "launch": {
+        "surface": "web",
+        "host": "network.host",
+        "port": 8080,
+        "path": "/"
+      },
+      "computer": "default"
+    }
+  ]
+}

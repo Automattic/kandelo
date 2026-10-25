@@ -13,11 +13,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
-
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
+import { gotoApp } from "./support/kandelo-machine";
 
 /** The [[runtime_files]] packages/registry/scummvm/package.toml declares. */
 const RUNTIME_FILE_NAMES = [
@@ -32,9 +28,9 @@ let zipDir = "";
 let zipPath = "";
 
 test.beforeAll(() => {
-  // Metasyntactic payload: the chain under test is upload → write → extract,
+  // Metasyntactic payload: the chain under test is offer → handler → extract,
   // and nothing in it reads what the bytes mean.
-  zipDir = mkdtempSync(join(tmpdir(), "kandelo-scummvm-ingest-"));
+  zipDir = mkdtempSync(join(tmpdir(), "kandelo-scummvm-exchange-"));
   const gameDir = join(zipDir, "foo");
   execFileSync("mkdir", ["-p", gameDir]);
   writeFileSync(join(gameDir, "bar.000"), "baz\n");
@@ -79,11 +75,7 @@ const canvasLocator = (page: Page) =>
  * execs the engine once SDL's environment and the user's config are set.
  */
 async function bootScummvm(page: Page) {
-  await page.goto(appUrl("/"), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
+  await gotoApp(page, "/");
   await page
     .getByRole("button", { name: /^(New|Launch new computer)$/ })
     .first()
@@ -113,6 +105,41 @@ async function terminalText(page: Page): Promise<string> {
   return page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows").evaluate(
     (node) => node.textContent ?? "",
   );
+}
+
+/** Observe the owner's real quit without selecting or repairing the view. */
+async function expectTerminalAfterQuit(page: Page) {
+  const views = page.getByLabel("Computer views");
+  await expect(views.getByRole("button", { name: "Terminal", exact: true }))
+    .toHaveAttribute("aria-current", "true", { timeout: 60_000 });
+  await expect(views.getByRole("button", { name: "Demo", exact: true })).toBeDisabled();
+  await expect(page.locator(".kmodeset-surface")).toHaveAttribute("data-kms-owner-pid", "0");
+  await expect(page.getByTestId("kms-dock-action-freeware")).toHaveCount(0);
+  await expect(page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows")).toBeVisible();
+}
+
+/** The new owner must restore Demo itself before its controls are inspected. */
+async function expectReplacementDisplay(page: Page, previousOwner: string | null) {
+  try {
+    await expect.poll(async () => {
+      const owner = await page.locator(".kmodeset-surface").getAttribute("data-kms-owner-pid");
+      return Number(owner) > 0 && owner !== previousOwner;
+    }, { timeout: 300_000 }).toBe(true);
+  } catch (error) {
+    const terminal = page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows");
+    const output = await terminal.isVisible() ? await terminal.innerText() : "Terminal is not visible";
+    await test.info().attach("replacement-terminal", { body: output, contentType: "text/plain" });
+    console.error(`Replacement did not acquire the display:\n${output}`);
+    throw error;
+  }
+  await expect(page.getByLabel("Computer views").getByRole("button", { name: "Demo", exact: true }))
+    .toHaveAttribute("aria-current", "true");
+  await expect(page.getByTestId("kms-dock-action-progress")).toHaveCount(0, { timeout: 60_000 });
+  const play = page.getByTestId("kms-dock-action-freeware");
+  await expect(play).toHaveText("Play a freeware game ▾");
+  await expect(play).toBeVisible();
+  await expect(play).toBeEnabled();
+  await expect(page.getByTestId("kms-dock-action-error")).toHaveCount(0);
 }
 
 /**
@@ -187,22 +214,22 @@ test("the packaged GUI data reaches the guest and the guest owns the pointer", a
     .toContain("CONFIG_WRITABLE");
 });
 
-test("Load game data extracts an upload into the directory the launcher browses", async ({ page }) => {
+test("Load game data extracts the archive into the directory the launcher browses", async ({ page }) => {
   test.setTimeout(300_000);
   await bootScummvm(page);
 
   await openSurface(page, "Demo");
-  const button = page.getByTestId("kms-ingest-button");
+  const button = page.getByTestId("kms-exchange-button");
   await expect(button).toBeVisible();
   await expect(button).toHaveText(/load game data/i);
 
-  await page.getByTestId("kms-ingest-input").setInputFiles(zipPath);
-  await page.getByTestId("kms-ingest-busy")
-    .waitFor({ state: "detached", timeout: 90_000 })
-    .catch(() => { /* the write may finish before we look */ });
-  await expect(page.getByTestId("kms-ingest-error")).toHaveCount(0);
+  // The machine's scummvm zip rule extracts it while ScummVM keeps running.
+  await page.getByTestId("kms-exchange-input").setInputFiles(zipPath);
+  await expect.poll(
+    () => page.getByTestId("exchange-batch-status").last().textContent(),
+    { timeout: 90_000 },
+  ).toBe("extracted into /usr/share/scummvm-games; add it from the launcher");
 
-  // The extraction runs in the demo's shell after the write lands, so poll.
   await expect.poll(async () => {
     await runInShell(
       page,
@@ -213,17 +240,17 @@ test("Load game data extracts an upload into the directory the launcher browses"
   }, { timeout: 90_000, intervals: [2_000, 3_000, 5_000] })
     .toContain("EXTRACTED_OK");
 
-  // The archive itself is gone, so the launcher's browser shows a game
-  // directory rather than a zip it cannot open.
+  // Only the extracted game is there: the archive stayed in the exchange
+  // inbox and went with its batch, so the launcher shows no zip.
   await runInShell(
     page,
-    `test -e /usr/share/scummvm-games/upload.zip || ${marker("ARCHIVE", "REMOVED")}`,
+    `test -e /usr/share/scummvm-games/foo.zip || ${marker("ARCHIVE", "ABSENT")}`,
   );
   await expect.poll(() => terminalText(page), { timeout: 60_000 })
-    .toContain("ARCHIVE_REMOVED");
+    .toContain("ARCHIVE_ABSENT");
 });
 
-// The freeware menu's Beneath a Steel Sky: Ctrl+C ends the running ScummVM,
+// The freeware menu's Beneath a Steel Sky: stop its actual display owner,
 // and the in-machine `scummvm-play` fetches the game through the guest's
 // normal HTTPS path (the CORS proxy in a browser), verifies its pinned
 // SHA-256, and starts it, loading the Sky engine plugin. @slow: it downloads
@@ -238,21 +265,16 @@ test("Beneath a Steel Sky from the freeware menu fetches the game and starts it 
   // The image's action comes before the generic upload control.
   await expect(page.locator(".kdemo-surface-action").first())
     .toHaveAttribute("data-testid", "kms-dock-action-freeware");
+  const previousOwner = await page.locator(".kmodeset-surface").getAttribute("data-kms-owner-pid");
 
   await play.click();
   await page.getByTestId("kms-dock-menu-entry-steel-sky").click();
-  // While the display is dark the stage shows what the script says it is
-  // doing, then clears once the replacement engine is presenting frames.
-  // A failure to stop ScummVM, or a script that exits, is an error toast.
-  await expect(page.getByTestId("kms-dock-action-status"))
-    .toHaveText(/Downloading Beneath a Steel Sky/, { timeout: 60_000 });
-  // The script reports the download against the archive's catalog size.
-  await expect(page.getByTestId("kms-dock-action-status"))
-    .toHaveText(/Downloading Beneath a Steel Sky.* \d+%/, { timeout: 120_000 });
-  await expect(page.getByTestId("kms-dock-action-progress"))
-    .toBeHidden({ timeout: 300_000 });
-  await expect(page.getByTestId("kms-dock-action-error")).toHaveCount(0);
-  await expect(play).toHaveText("Play a freeware game ▾");
+  // A replacement really quits the old engine. Its terminal carries the
+  // script's progress until a new process owns the display again.
+  await expectTerminalAfterQuit(page);
+  await expect.poll(() => terminalText(page), { timeout: 120_000 })
+    .toMatch(/scummvm-play: Downloading Beneath a Steel Sky[\s\S]*\d+%/);
+  await expectReplacementDisplay(page, previousOwner);
 
   // The machine's own terminal carries the script's progress.
   await openSurface(page, "Terminal");
@@ -321,14 +343,16 @@ test("Flight of the Amazon Queen runs from its single MP3 talkie ZIP @slow", asy
   await bootScummvm(page);
 
   await openSurface(page, "Demo");
+  const previousOwner = await page.locator(".kmodeset-surface").getAttribute("data-kms-owner-pid");
   await page.getByTestId("kms-dock-action-freeware").click();
   await page.evaluate(() => {
     (window as Window & { queenAudioSawSignal?: boolean }).queenAudioSawSignal = false;
   });
   await page.getByTestId("kms-dock-menu-entry-fotaq").click();
-  await expect(page.getByTestId("kms-dock-action-status"))
-    .toHaveText(/Downloading Flight of the Amazon Queen.* \d+%/, { timeout: 120_000 });
-  await expect(page.getByTestId("kms-dock-action-error")).toHaveCount(0);
+  await expectTerminalAfterQuit(page);
+  await expect.poll(() => terminalText(page), { timeout: 120_000 })
+    .toMatch(/scummvm-play: Downloading Flight of the Amazon Queen[\s\S]*\d+%/);
+  await expectReplacementDisplay(page, previousOwner);
 
   await openSurface(page, "Terminal");
   await expect.poll(() => terminalText(page), { timeout: 300_000 })
@@ -386,11 +410,10 @@ test("a freeware menu entry fetches its game and starts it on its engine plugin 
   await bootScummvm(page);
 
   await openSurface(page, "Demo");
+  const previousOwner = await page.locator(".kmodeset-surface").getAttribute("data-kms-owner-pid");
   await page.getByTestId("kms-dock-action-freeware").click();
   await page.getByTestId("kms-dock-menu-entry-mystery-house").click();
-  await expect(page.getByTestId("kms-dock-action-progress"))
-    .toBeHidden({ timeout: 300_000 });
-  await expect(page.getByTestId("kms-dock-action-error")).toHaveCount(0);
+  await expectReplacementDisplay(page, previousOwner);
 
   await openSurface(page, "Terminal");
   await expect

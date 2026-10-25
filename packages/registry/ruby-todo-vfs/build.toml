@@ -1,5 +1,10 @@
 script_path = "images/vfs/scripts/build-ruby-todo-vfs-image.sh"
 inputs = [
+  "web-libs/kandelo-session/src/session-dependencies.ts",
+  "web-libs/kandelo-session/src/package-sessions.ts",
+  "web-libs/kandelo-session/src/game-levels.ts",
+  "images/vfs/scripts/image-session-files.ts",
+  "packages/registry/ruby-todo-vfs/sessions.json",
   # The script itself is listed literally (the closure contract requires the
   # exact script_path entry) …
   "images/vfs/scripts/build-ruby-todo-vfs-image.sh",
@@ -25,4 +30,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 8
+revision = 10

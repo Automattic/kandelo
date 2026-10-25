@@ -62,6 +62,18 @@ impl FifoTable {
         self.map.remove(path)
     }
 
+    /// Remove every FIFO name at or below `prefix` (a directory tree the
+    /// kernel removes on its own), returning their backing pipe indexes.
+    pub fn remove_under(&mut self, prefix: &[u8]) -> Vec<usize> {
+        let names: Vec<Vec<u8>> = self
+            .map
+            .keys()
+            .filter(|path| rebase_path(path, prefix, prefix).is_some())
+            .cloned()
+            .collect();
+        names.into_iter().filter_map(|name| self.map.remove(&name)).collect()
+    }
+
     /// Re-key FIFO names after a successful VFS rename. Directory renames move
     /// every registered descendant. Any destination registration replaced by
     /// the VFS operation is returned so its backing pipe can drop one name.
@@ -155,6 +167,18 @@ mod tests {
         assert_eq!(table.lookup(b"/old/a"), None);
         assert_eq!(table.lookup(b"/new/a"), Some(1));
         assert_eq!(table.lookup(b"/new/nested/b"), Some(2));
+    }
+
+    #[test]
+    fn remove_under_takes_a_whole_tree_and_nothing_beside_it() {
+        let mut table = FifoTable::new();
+        assert!(table.register(b"/w/1/a".to_vec(), 1));
+        assert!(table.register(b"/w/1/d/b".to_vec(), 2));
+        assert!(table.register(b"/w/10/c".to_vec(), 3));
+        let mut removed = table.remove_under(b"/w/1");
+        removed.sort();
+        assert_eq!(removed, alloc::vec![1, 2]);
+        assert_eq!(table.lookup(b"/w/10/c"), Some(3));
     }
 
     #[test]

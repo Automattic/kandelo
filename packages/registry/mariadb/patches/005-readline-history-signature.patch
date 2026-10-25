@@ -1,0 +1,10 @@
+The bundled line editor defines _rl_free_history_entry with a void return
+in misc.c, but search.c declares int. Match its definition so WebAssembly
+callers use the same function signature. This corrects an upstream C
+prototype inconsistency without changing history behavior.
+
+--- a/extra/readline/search.c
++++ b/extra/readline/search.c
+@@ -61 +61 @@
+-extern int _rl_free_history_entry PARAMS((HIST_ENTRY *));
++extern void _rl_free_history_entry PARAMS((HIST_ENTRY *));

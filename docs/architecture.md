@@ -985,6 +985,16 @@ Process Worker                          Kernel Worker (host)
 15. Return to caller
 ```
 
+Step 4 is a bounded wait on JavaScriptCore, a workaround for a suspected
+engine behavior (not a confirmed WebKit defect). When it times out with the
+request still pending, the glue calls the host import
+`kernel.kernel_heap_safepoint`, which allocates from JavaScript so the
+worker's VM can finish a garbage collection that is suspected to have been
+handed to the blocked thread, and waits again on the same request. The host
+answers V8 and SpiderMonkey with an unbounded wait, so there the step is a
+single wait. The program observes the same result either way. See
+[the browser boundary](browser-support.md#javascriptcore-garbage-collection-and-blocked-workers).
+
 Steps 10–15 normally include caught-signal publication and libc handler
 dispatch. A request marked `REQUEST_FLAG_DEFER_SIGNAL_DELIVERY` deliberately
 omits that publication because JavaScript owns its completion and has no
@@ -1175,7 +1185,25 @@ generic wake event without implementing advisory-lock storage.
 
 **Finite-timeout waits keep one kernel-owned deadline across retries.** Each retry re-enters the handler (`handleBlockingRetry`, `handleSelect`, `handlePselect6`, `handleEpollPwait`) from scratch, so a handler that recomputed `deadline = now + timeout` on every wake would never time out on a busy system — broad wakes arrive every ~10 ms and each one used to push the deadline out again. The deadline is kernel state on `CLOCK_MONOTONIC` (`crates/runtime-core/src/wait_queue.rs`): the first time a call is known to block, the host opens a wait with `kernel_wait_deadline_open(pid, tid, kind, timeout_ms)` and keeps only the returned handle on the channel (`ChannelInfo.waitHandle`); every re-entry asks `kernel_wait_deadline_remaining_ns`, and `clearReadinessWait` closes the handle when the call completes or is abandoned. A handle is an execution generation and is never reused, so a timer armed before an `exec` cannot complete a request issued after it. Because the clock is monotonic, a wall-clock step (an NTP correction, a DST change, a user setting the date) no longer moves pending timeouts. A call that finds its descriptor ready, fails, or is non-blocking never opens a deadline. The host still owns the park itself — the timer and the wake routing — and refuses to boot a kernel that lacks the deadline exports rather than falling back to wall-clock arithmetic.
 
-**epoll interest lists live in the kernel, on the epoll open file description.** An epoll instance is a kernel-global backing keyed by the open file description `epoll_create1` returned, beside eventfd, timerfd and signalfd, so `dup`, `fork` and a non-CLOEXEC `exec` all reach the same instance and either process's `epoll_ctl` is visible to the other. Each interest is keyed on (registered descriptor number, open file description), as Linux keys it on `(struct file *, fd)`. The host keeps no copy of any interest list: `epoll_ctl` travels as an ordinary opaque record, and a parked `epoll_pwait` asks `kernel_epoll_wake_indices(pid, epfd, kind, ...)` for the pipe and accept wake tokens its interests resolve to, so targeted readiness wakeups still reach it.
+**epoll interests and delivery state belong to open file descriptions.**
+Instances live in the kernel-global backing table. Interests use Linux's
+`(registered fd, OFD identity)` key and carry notification candidates and
+one-shot disablement. Backing mutations publish candidates independently of
+the host wake buffer; delivery rechecks actual readiness, consumes edges and
+one-shot state, and rotates bounded batches. Nested epoll peeks do not consume
+child events; ctl rejects cycles and excessive nesting. A final target OFD
+release removes its interests. A caller that closed its target alias can
+still observe that description while a sibling process holds it.
+
+A parked wait owns the exact epoll description and a unique kernel token,
+so fd reuse and late retirement after exec cannot redirect or cancel another
+wait. The shared Node/browser host retains only this token, the signal scope
+and the deadline; it keeps no interest-list mirror. Targeted pipe/accept
+wake tokens are latency hints, with bounded yielding retries for other
+sources and concurrent registration. Host network notification counters,
+signal queue generations, and the independent PCM consumer clock retain
+activity that happens between attempts. See the [epoll matrix](epoll.md) for
+interfaces, event bits, ownership details and explicit compatibility limits.
 
 ## Multi-Process Model
 
@@ -1200,8 +1228,10 @@ allocated rather than accepting a second PID source.
 PID 1 is outside that sequence. The kernel creates it as a synthetic root-owned
 init reservation with no user Wasm worker, so PID-addressed existence and
 permission checks have a real kernel target. The first user process is therefore
-PID 100, not PID 1. This synthetic record is not a user-space init program or
-an active wait-loop reaper.
+PID 100, not PID 1. This synthetic record is not a user-space init program and
+runs no wait loop. It is, however, the parent that orphaned processes are
+reparented to, and the kernel reaps those children on its behalf (see
+"Orphan adoption" below).
 
 Callers never choose an ID or advance a watermark. The host helper
 `CentralizedKernelWorker.createProcess(...)` asks the Rust kernel to create a
@@ -1752,10 +1782,95 @@ process during host teardown. A process with a guest parent does not satisfy the
 `ppid=0` check and remains an exited zombie until that parent consumes its
 status through `wait()`/`waitpid()`.
 
-This cleanup also does not implement orphan adoption. Kandelo does not yet
-reparent a guest descendant when its parent exits, so such a descendant can
-still become an unreapable zombie after it exits. That existing process-
-lifecycle gap is separate from reaping direct host-owned launches.
+Children of the virtual init (pid 1) are the one other case: init ignores
+SIGCHLD, so the kernel reaps them as they exit, as a Linux init does. They
+are the kernel-started Kandelo exchange agent and every orphan adopted as
+described next.
+
+### Orphan adoption
+
+POSIX requires that when a process terminates, each of its children,
+including children that are already zombies, gets an
+implementation-defined system process as its new parent. Kandelo uses
+synthetic init, PID 1. Without this, a program that daemonizes with the
+usual double fork would leave its grandchild with a parent that no longer
+exists. Nothing could ever wait for that grandchild, so once it exited it
+would stay a zombie for the life of the machine.
+
+Reparenting is kernel behavior that happens at the Exited transition, not
+when the host notices the exit. A process becomes Exited wherever a syscall
+or a default signal action ends it, and those code paths hold only that one
+`Process`. Recording the exit therefore also queues its PID. The kernel
+applies the queue through the whole process table at the boundary of the
+outermost kernel scope (the `GklGuard`), both on entry and before the kernel
+call returns, once no reference into a single process is still in use. For
+each queued exit, in one table transaction, Rust:
+
+1. Gives every child to init (`ppid = 1`). A `posix_spawn` child whose
+   result is still unpublished stays with its exact parent, because the
+   host's spawn rollback must still find it there.
+2. Sends SIGHUP and then SIGCONT to every member of a process group that
+   the exit left orphaned while one of its members is stopped. An orphaned
+   group is one in which no member's parent is in a different group of the
+   same session. Init and the `ppid=0` host-parent sentinel never count as
+   such a parent. As in Linux's `exit_notify()`, the groups of the
+   reparented children are checked first, then the exiting process's own
+   group. A member that the default SIGHUP action terminates queues its own
+   exit, which the same pass applies.
+3. Reaps, for init, each adopted zombie whose exit the host has already
+   published (see below).
+
+An exit that an unguarded export produces is applied when the next guarded
+scope begins. Every guest observation of a parent (`getppid()`, `wait()`,
+`/proc`) is a guarded syscall, so no guest can see the dead parent.
+
+Only reaping waits for the host. The host discovers a death by finding the
+zombie record, then retires the process's Workers, so init must not reap a
+zombie before the host has seen it. Every host exit path (normal `exit`,
+signal death, Worker crash, exec-handoff death, and a spawn child that exits
+before its spawn result is published) goes through one host function, and
+that function first calls `kernel_publish_process_exit(pid)`. The call
+acknowledges the exit. If init is already `pid`'s parent, init reaps `pid`
+now; the host's parent lookup then finds no process, so no SIGCHLD is sent
+and no wait is woken. The former parent of an adopted child is never
+signalled. The call also returns how many processes applied exits have hung
+up since the previous acknowledgement. When that is positive, the host
+applies the same follow-up as a guest group `kill()`: it resumes the
+continued members, retries their blocked syscalls, and retires any member
+that the default SIGHUP action terminated.
+
+Reaping on init's behalf uses the same Rust removal and host-cleanup path as a
+`waitpid()` reap, including the resource-free `Limbo` record kept for a
+group leader that still has group members. That `Limbo` record is not a
+process, so `kernel_get_parent_pid` reports `ESRCH` for it, as
+`kernel_get_process_state` does. Only the first acknowledgement of an exit
+has effects; a repeat, such as the second arrival for a spawn child that
+exited before its spawn result was published, changes nothing. Removing a
+process record for any other reason (for example forced teardown) also
+reparents that process's remaining children to init.
+
+Host launches follow the same rule. A process launched directly by the host
+has the `ppid=0` sentinel as its parent, but its own children are ordinary
+orphans when it exits. They are reparented to init rather than to the host,
+and the host's `ppid=0` reap still covers only the launched process itself.
+
+`kernel_publish_process_exit` is declared
+`optional_until(..., 53, 54)`. An ABI-53 kernel built before this change
+lacks both the export and the reparenting; a new host loads it and keeps
+the previous behavior rather than failing to boot.
+
+Linux's `PR_SET_CHILD_SUBREAPER` is not implemented. Orphans always go to
+init, never to the nearest subreaper ancestor, and `prctl()` fails that
+option and `PR_GET_CHILD_SUBREAPER` with `EINVAL`, as Linux did before 3.4.
+A supervisor therefore learns that it will not adopt its descendants,
+rather than believing it will. The dinit supervisor calls
+`PR_SET_CHILD_SUBREAPER` only when built for `__linux__`, which Kandelo
+never defines, so its build does not depend on the missing feature.
+
+POSIX has two more orphaned-group rules that Kandelo does not apply yet. A
+member of an orphaned group is not stopped by a default-action SIGTSTP,
+SIGTTIN, or SIGTTOU, and its background terminal reads and writes fail
+with `EIO`. `docs/posix-status.md` lists this gap under `exit()`.
 
 ### Owned command families (jobs)
 
@@ -1788,6 +1903,21 @@ Owned jobs are a host primitive, not a browser feature. `BrowserKernel` and
 `NodeKernelHost` both accept `spawnFromVfs(..., { ownedJob })` and both expose
 `readOwnedJob(id, offset, limit, cancel)` and `releaseOwnedJob(id)`. The WebMCP
 `kandelo_run_command` tool is one consumer; see `docs/webmcp.md`.
+
+### Activity terminal ownership
+
+Browser activity launches allocate a fresh logical PTY and attach the normal
+configured login/shell with an owned-job identifier before it can fork.
+The shared Node/browser `OwnedJobs` ledger already follows fork, exec and
+reparenting; a zero timeout now expresses an interactive family with no
+scheduled deadline. Cancellation still drains the entire family, observes
+all exits and exact worker detachments, reaps the family and requires explicit
+record release. If the original owned login/shell exits, the logical PTY
+remains ended instead of restarting an unowned login outside that family.
+Replacing an activity closes that dedicated terminal only
+after those fences; other terminals remain separate. Raw terminal input is
+not a process-control API, so graphical games are cancelled through ownership
+rather than simulated Ctrl+C input. No guest ABI or syscall changed.
 
 ### clone() (threads)
 
@@ -2500,6 +2630,28 @@ Offset   Size   Field
 
 ## Networking
 
+IPv4 multicast can also cross local virtual links and remote Kandelo network
+sessions. The kernel selects the outgoing interface and owns multicast group
+membership, connected-peer/source filters, and local loopback delivery.
+Disabling `IP_MULTICAST_LOOP` suppresses the local copy without suppressing
+remote transmission. Virtual fabrics exclude the source machine and deliver
+one copy per kernel receive domain; a kernel fans out to its matching sockets.
+The session's existing bounded datagram transport forwards multicast through
+its host, with the same source-ownership checks and group-traffic budget used
+for broadcasts. Physical LAN UDP remains a host-backend boundary.
+
+This remains partial IPv4 multicast support. The default interface follows
+the active backend, including `10.89.*` sessions; explicit interface-address
+validation still recognizes only loopback and the `10.88.*` virtual range.
+Bind receivers to the wildcard address: binding a multicast group address
+is not implemented. `IP_MULTICAST_TTL` is stored but is not propagated or
+enforced by virtual transports. IPv6 multicast remains unsupported.
+
+A network backend may declare `ownsTcpListener(addr)` for a virtual binding.
+The host runtime then registers only the virtual listener: separate Kandelo
+machines may listen on identical ports without opening or contending for
+physical host sockets. Other Node listeners retain the native bridge.
+
 User-visible networking is POSIX-first. Guest programs call normal AF_UNIX, AF_INET, and partial AF_INET6 socket syscalls (`socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv`, `sendto`, `recvfrom`, `poll`, and `select`). The Rust kernel owns the socket file descriptors, datagram queues, stream listener state, loopback routing, and errno behavior. Host transports plug in below that layer through `NetworkIO`; they are backends, not the userspace-visible abstraction.
 
 ### Readiness is a kernel decision; backends report facts
@@ -2535,14 +2687,21 @@ backend determined — a Node socket error's `code`, or an explicit POSIX
 `errno` — via `negErrno`, with `EIO` for a failure nothing classified.
 The transport does not choose an errno on a backend's behalf.
 
-Known divergence, not yet closed: the kernel's own pipe-backed socket
-path (AF_UNIX and loopback AF_INET) still raises `POLLHUP` when a peer
-closes its write end and never reports end-of-file as `POLLIN`, so
-`POLLHUP` doubles as the reader's EOF wakeup and can accompany
-`POLLOUT`. Linux treats that state as `RCV_SHUTDOWN` —
-`EPOLLIN | EPOLLRDHUP` with `EPOLLOUT` intact — and reserves `EPOLLHUP`
-for both directions down. Correcting it changes wakeups for every
-AF_UNIX and loopback socket and needs conformance-suite validation.
+Pipe-backed AF_UNIX and loopback streams use the same half-close contract:
+receive EOF is readable and is EPOLLRDHUP when requested. A peer FIN alone
+preserves the local write half. EPOLLHUP denotes a full shutdown/hangup,
+and EPOLLERR denotes a transport error rather than orderly shutdown.
+Forked stream copies consult shared connection-half shutdown state.
+
+Epoll applies Linux-specific socket masks to the common object readiness
+facts. It reports requested writable events for immediate shutdown failures,
+allows OUT alongside HUP, and reports HUP for an unconnected stream. Unix
+sockets and datagrams expose WRBAND; TCP streams do not. Local datagram read
+shutdown is IN/RDNORM/RDHUP, and datagram write shutdown alone is not HUP.
+Queue-capacity subscriptions are keyed to the receiver's open description;
+dequeue, receive shutdown and final receiver closure notify blocked epoll
+writers, including write-band-only interests. These rules are distinct from
+the POSIX poll policy described above.
 
 AF_INET and AF_INET6 receive queues are currently bounded at 128 datagrams per
 socket. Once that fixed internal queue is full, a newly arriving UDP datagram
@@ -2574,11 +2733,26 @@ prefix length or the full datagram length. `MSG_CMSG_CLOEXEC` installs every
 received descriptor with `FD_CLOEXEC`, and that reflected flag is published
 atomically with the returned control data.
 
-Loopback addresses are scoped to one Kandelo machine, but not every socket path is machine-wide yet. IPv4 and IPv6 loopback TCP and AF_UNIX streams have explicit cross-process paths. Current in-kernel IPv4/IPv6 loopback datagrams, AF_UNIX datagrams, and IPv4 multicast delivery are confined to the sending process. Forked sockets retain their kernel-local bind reservations and local lookup targets, but host-backed UDP endpoint registrations are not yet shared or transferred between processes. AF_INET6 represents `sockaddr_in6`, supports `::`/`::1`, and models dual-stack wildcard stream-port reservation, but it has no external or virtual-network IPv6 transport and no IPv6 multicast delivery. AF_INET6 datagrams therefore report `IPV6_V6ONLY=1`; disabling it fails until dual-stack datagram routing exists.
+Loopback addresses are scoped to one Kandelo machine, but not every socket path is machine-wide yet. IPv4 and IPv6 loopback TCP and AF_UNIX streams have explicit cross-process paths. IPv4 loopback unicast and IPv4 multicast have machine-wide cross-process delivery paths. IPv6 loopback datagrams and AF_UNIX datagrams remain process-local. Forked sockets retain their kernel-local bind reservations and local lookup targets, but host-backed UDP endpoint registrations are not yet shared or transferred between processes. AF_INET6 represents `sockaddr_in6`, supports `::`/`::1`, and models dual-stack wildcard stream-port reservation, but it has no external or virtual-network IPv6 transport and no IPv6 multicast delivery. AF_INET6 datagrams therefore report `IPV6_V6ONLY=1`; disabling it fails until dual-stack datagram routing exists.
 
 Routed virtual IPv4 addresses are explicit backend addresses. For example, the browser network lab attaches separate machines to addresses such as `10.88.0.2`, `10.88.0.3`, and `10.88.0.4`; traffic to `127.0.0.1` stays inside one machine, while traffic to those virtual addresses can cross machines through the backend.
 
 ### Local Virtual Network
+
+Package-owned [session procedures](package-sessions.md) describe optional
+offer setup and participant join forms above the network layer. The browser
+discovers their bounded manifests in the machine's VFS, connects an ordinary
+network room, and dispatches the declared program as the configured guest
+account. Invitations select a locally installed, digest-matched procedure;
+they do not carry program code or replace guest socket behavior. Room
+ownership remains with the hosting machine. The unified invitation form can
+create a room with or without an activity, preserve or replace an existing
+room, and leave it. Package-declared dependencies carry bounded content
+identities and can be acquired from declared sources, selected locally or
+transferred over the separate `activity-data-v1` WebRTC channel. Content is
+verified before it is written to the package-declared temporary destination
+and the application starts. This channel serves only explicitly published
+bytes and is retired with its network connection.
 
 `LocalVirtualNetwork` (`host/src/networking/virtual-network.ts`) is an in-memory `NetworkIO` backend for multiple Kandelo machines in the same JS session. Each machine receives a `VirtualNetworkBackend` with a stable virtual IPv4 address and optional hostnames. The backend delivers UDP datagrams as bounded message queues and creates paired TCP streams for accepted connections. When a machine detaches, its listeners and endpoints are removed. Direct virtual endpoints observe an explicit connection reset; an accepted pipe-bridged endpoint currently maps that reset to EOF/EPIPE because the pipe ABI has no pending-socket-error channel.
 
@@ -2609,6 +2783,17 @@ Browsers cannot create external raw TCP or UDP sockets. Local loopback and `Loca
    unaffected.
 
 3. **Service Worker HTTP Bridge**: For server demos (nginx, WordPress), a service worker intercepts browser `fetch()` requests to a configurable URL prefix (e.g., `/app/`) and forwards them to the kernel via a MessagePort connection pump. The kernel injects the request as a TCP connection to nginx's listening socket, and nginx's response flows back through the pipe to the service worker.
+
+The preview also supports HTTP servers on the computer's connected Kandelo
+network. Both Node and browser `fetchInKernel(port, request, { hostname })`
+route an explicit destination through `RemoteSegmentRuntime` and its actual
+`SessionNetwork` TCP backend. This path accepts only destinations within the
+Kandelo subnet, uses a separate host handle range above the guest i32 ABI,
+and closes pending requests on session leave or machine teardown. The shared
+client handles short writes, EAGAIN, response limits and a bounded deadline.
+Omitting `hostname` preserves the existing local injected-listener path.
+The preview service-worker bridge is retired when its destination or machine
+is replaced; its ports and event listeners do not retain a retired kernel.
 
 `TcpNetworkBackend`, `FetchNetworkBackend`, `TlsNetworkBackend`, and `LocalVirtualNetwork` share one numeric-address and hostname validator. It accepts decimal one-, two-, three-, and four-component IPv4 forms within their component widths, rejects malformed or overflowing numeric forms, enforces ASCII host-label syntax and DNS length limits, and preserves one trailing root dot. The Node TCP backend resolves validated names through the host resolver. The browser HTTP fetch/TLS bridges synthesize IPv4 mappings for syntactically acceptable DNS names; `LocalVirtualNetwork` resolves only aliases registered by attached machines. None of the browser paths adds browser DNS resolution or AF_INET6 transport.
 
@@ -2653,8 +2838,11 @@ copy and sends one to the host, which delivers to every other member and never
 back to the sender. Because the host copies each broadcast up to 31 times, it
 meters what each member may originate (a burst of 64, refilled at 64 per
 second); excess broadcasts are dropped and counted in the snapshot. The kernel
-requires `SO_BROADCAST` for both addresses. Multicast and external raw UDP
-delivery are outside this segment's contract.
+requires `SO_BROADCAST` for both addresses. IPv4 multicast uses the same
+bounded forwarding and shared traffic budget, excluding the source computer;
+the kernel owns its optional local loopback and membership filtering.
+Multicast does not require `SO_BROADCAST`. External raw UDP delivery remains
+outside this segment's contract.
 
 The interface the kernel reports follows the host's assignment. A `NetworkIO`
 that reports `localAddress` also reports `localNetmask`, and every
@@ -2907,6 +3095,148 @@ it is never a file, so it cannot reach a persisted mount or a shared snapshot.
 - **Latest copy wins for keyboard copies.** A successful copy-out records
   the text as the one the guest already holds, so the next host paste of
   anything else is offered and the same text is not re-offered.
+
+## Kandelo exchange (`/run/kandelo/exchange`)
+
+Kandelo exchange moves files into and out of a running machine: a dropped or
+picked file arrives as an ordinary file a guest program reads, and a file a
+guest publishes reaches the host as an output the embedding app decides what
+to do with. It is independent of drag and drop; the design is
+`docs/superpowers/specs/2026-10-21-kandelo-exchange-design.md`.
+
+```text
+ host.exchange.offer(items)       NodeKernelHost / BrowserKernel (same API)
+        │  Blobs stay on the main thread; the kernel holds source numbers
+        ▼
+ kernel_exchange_begin / _add_entry / _commit   one kernel entry, scratch lease
+        │
+        ▼
+ inbox/<batch-id>/…  ◄── consumer holding `events` reads `batch <id>`
+        │                 reads files (bytes fetched from the Blob on demand)
+        │                 rmdir inbox/<batch-id>  → settled
+ work/clone → work/<n>/ ──rename──► outbox/<name>  (frozen, gets an ID)
+                                        │ output-published
+                                        ▼
+ host.exchange.onOutput(listener)  lease until the listener settles and its
+                                   streams close, then the kernel removes it
+```
+
+- **The filesystem** is a kernel tmpfs mount at `/run/kandelo/exchange`
+  (`crates/runtime-core/src/exchange/`), present on every machine that boots
+  from a kernel rootfs image: the kernel creates the mount point when it loads
+  the image. `statfs` reports `f_type` `0x4B584348` ("KXCH") and the real
+  quota. The fixed layout is `events` and `work/clone` (character devices,
+  `root:exchange`, 0440), `inbox/` and `outbox/` (0770) and `work/` (0750),
+  with the `exchange` group GID 120. The legacy raw host-root Node mode (no
+  rootfs image, the host's `/` as the root) has no exchange mount, so its
+  paths fail with `ENOENT`.
+- **Inputs.** `events` has a single consumer (a second open is `EBUSY`). Its
+  first line says whether a host output listener exists (`outputs accepting`
+  or `outputs none`), and each committed batch adds `batch <id>`. An empty
+  device returns `EAGAIN`, which parks a blocking reader until the next line.
+  A batch offered with no consumer waits, and becomes visible when a consumer
+  opens `events`. Input files are owned by the consumer with group 120, mode
+  0440, and are read-only to everyone (`EPERM` on a write open). Their bytes
+  stay in the host's Blob until a read asks for them: the kernel returns
+  `EAGAIN`, the worker fetches the range from the main thread, and the read
+  is retried. Metadata is extended attributes (`user.kandelo.id`,
+  `user.kandelo.source`, `user.mime_type`, `user.xdg.origin.url`,
+  `user.kandelo.original_name`, `user.kandelo.index`). Removing the batch
+  directory settles the batch with its last `user.kandelo.status`. A source
+  is released when no name or open description holds its file any longer;
+  the host learns of it after the settlement that caused it.
+- **Stream inputs.** A host `ReadableStream` becomes a FIFO in the batch
+  (`crates/runtime-core/src/exchange/streams.rs`): `st_size` 0, `lseek`
+  ESPIPE, read once. The host holds its writer from the moment the batch
+  appears, so opening it never blocks, and no guest may open it for
+  writing (EPERM, root included). The host writes only what the 64 KiB
+  FIFO has room for and is told of more room as readers drain it, which is
+  the backpressure. The end of the host stream is end-of-file; a host
+  stream error makes reads fail with EIO once the buffered bytes are read,
+  so a truncated input never looks complete. When no name and no reader
+  remain, the host cancels its stream.
+- **Outputs.** Opening `work/clone` creates a session directory `work/<n>/`
+  owned by the opener, removed with everything unpublished in it when the
+  description's last reference goes. Renaming a regular file from a session
+  to a direct child of `outbox/` publishes it. Publishing fails with `ENXIO`
+  without a host output listener, `EBUSY` while anything has the file open or
+  mapped, `EEXIST` for a name already in `outbox/`, `ENOSPC` beyond 64
+  outputs (or beyond 8 unfinished streams), and `EPERM` for directories and
+  symlinks. A published output is frozen (`EPERM` on any change) and gets its
+  own `user.kandelo.id`; its `user.kandelo.derived_from` lists the input IDs
+  it came from. Unlinking it withdraws it.
+- **Streamed outputs.** A FIFO published from a session is read by the host
+  once, as it is written. Its writer opens it only after publishing; the
+  open blocks until the host starts reading (`O_NONBLOCK`: ENXIO), as for
+  any FIFO without a reader. Before closing, the writer declares how it
+  ended by setting `user.kandelo.end` once, to `complete` or
+  `aborted <reason>`; later writes fail with EPERM. The host's stream closes
+  only for `complete`; `aborted` and no declaration at all are errors, so a
+  crashed writer never looks finished. If the host's lease ends first,
+  writers get EPIPE and SIGPIPE.
+- **The host interface** (`host/src/exchange-controller.ts`) is the same on
+  Node and in the browser. `offer()` resolves once the batch is visible to
+  the guest, or rejects with a reason (`consumer-timeout` after 30 s by
+  default, `quota`, `invalid-name`, `aborted`, `failed`); its batch exposes
+  `settled`, `released`, status changes and `cancel()`. `onOutput()`
+  registers the single output listener for as long as its `AbortSignal` is
+  live. An output's lease lasts until the listener's promise settles and
+  every stream from `read()` has closed, so an ignored output is released at
+  once. A stored output may be read any number of times, by range; a
+  streamed one once. Nothing in the platform turns an output into a file or
+  a download.
+- **Quotas.** `work/` and `outbox/` together hold at most min(256 MiB, a
+  quarter of the kernel's maximum memory), because those bytes live in
+  kernel memory; past it writes fail with `ENOSPC`. The kernel stages at
+  most 16 batches of at most 1,024 entries, 16 directories deep, and 32
+  work sessions.
+- **Activation.** The kernel starts the image's agent,
+  `/usr/libexec/kandelo/exchange-agent`, when a batch waits for a consumer
+  and nothing holds `events` (`crates/runtime-core/src/exchange/activation.rs`).
+  It checks the path by ordinary resolution and exec permission at every
+  offer. It creates the agent's process record itself: a child of init, root
+  with no supplementary groups, cwd `/`, its own session, stdio on
+  `/dev/null`, environment `PATH` and `KANDELO_EXCHANGE`. The host launches
+  it through the same exec-target and Worker path as a `posix_spawn` child.
+  The kernel asks for that by queueing an activation-check notification; the
+  host answers by calling `kernel_exchange_activate` with the time, which
+  returns the pid to launch. The agent is `starting` until it opens `events`
+  and `ready` after. Exiting first, or an exec failure, is a failure: the
+  kernel backs off 250 ms, doubling to 5 s, and resets once a consumer has
+  been ready for 2 s. Init reaps the agent and reports how it ended. With no
+  executable at the path and no consumer, an offer fails at once as
+  `unavailable`. The embedder option `exchange: { activation: "off" }`
+  (default `"on-demand"`) stops the kernel from ever starting it; batches
+  then wait for whatever consumer comes. `host.exchange.consumer`,
+  `consumerState()` and `onConsumer()` report the state, the activation
+  setting and the last failure.
+- **Guest userland** (`kandelo-exchange` package, sources in
+  `programs/kandelo-exchange/`, part of the base rootfs). `kxchgd` is the
+  agent at the agent path. It switches to the account named in
+  `/etc/kandelo/exchange.conf` (`user maker`; it must be in the `exchange`
+  group, GID 120) before it opens `events`, because batches belong to the
+  consumer's credentials as of that open. For each batch it re-reads the
+  rules in `/etc/kandelo/exchange-handlers.d/` (owned by the handler
+  account) over `/usr/share/kandelo/exchange-handlers.d/` (vendor), merged
+  by file name, an empty file masking. A rule owned by anyone else, or that
+  others may write, is ignored. The first rule, in file-name order, that
+  matches every top-level entry runs in a fresh work session with the batch
+  directory as `argv[1]`. Its outcome becomes the batch status (`done`,
+  `failed: exit N`, `no handler: NAME`, or the handler's own), and the
+  batch is removed. `kxchgd` exits after 60 s idle. The vendor catch-all
+  `99-save` (`exchange-save`) copies entries into `~/Downloads`, reads
+  streams to end-of-file, and names collisions `name (2).ext`.
+  `kandelo-exchange` runs a command in a session, acknowledges batches and
+  manages rules; `kandelo-publish` publishes stored and streamed outputs.
+  `<kandelo/exchange.h>` spells the paths, attribute names and session and
+  publish helpers, and the `attr` package's `getfattr` and `setfattr` let
+  shell handlers read and set attributes.
+
+Gated by `host/test/exchange-node.test.ts` with
+`programs/exchange-consumer.c`, `host/test/exchange-agent.test.ts` (the
+userland), `host/test/exchange-controller.test.ts`,
+`host/test/exchange-host.test.ts` and the `exchange` tests in
+`crates/runtime-core`.
 
 ## Audio output (`/dev/dsp`)
 
@@ -3554,7 +3884,7 @@ The remaining methods (`pipeRead`/`pipeWrite`, `injectConnection`, stdin/PTY rou
 
 **Browser kernel worker** (`host/src/browser-kernel-worker-entry.ts`): Dedicated web worker that hosts `CentralizedKernelWorker`, following the standard architecture requirement. Process workers are sub-workers created by the kernel worker. Syscall notification remains event-driven through `Atomics.waitAsync`, not channel polling. The browser config uses batch size 1 so every relisten and already-`PENDING` dispatch is deferred through the MessageChannel-backed `setImmediate` queue; this keeps syscall handling and worker messages progressing together under multi-process bridge load. Node.js retains its native/default batching unchanged.
 
-**dinit service supervisor** (`packages/registry/dinit/`): Service-supervised demos boot dinit v0.19.4 (cross-compiled to wasm32) as the first user process via `kernel.boot({ argv: ["/sbin/dinit", "--container", ...] })`. It receives the first kernel-allocated user PID (100); PID 1 remains the kernel's synthetic init reservation. The service tree is baked into `/etc/dinit.d/*` at image-build time via `addDinitInit()` in `dinit-image-helpers.ts`. Service types in use: `process` (long-running daemons), `scripted` (one-shot bootstraps that exit cleanly), and `internal` (dependency-only nodes used to express "boot the whole tree" or "pick this engine"). dinit reaps its directly supervised children, leaves reparented-orphan reaping unsupported because synthetic PID 1 has no wait loop, disables restarts by default, and enforces inter-service `depends-on` ordering.
+**dinit service supervisor** (`packages/registry/dinit/`): Service-supervised demos boot dinit v0.19.4 (cross-compiled to wasm32) as the first user process via `kernel.boot({ argv: ["/sbin/dinit", "--container", ...] })`. It receives the first kernel-allocated user PID (100); PID 1 remains the kernel's synthetic init reservation. The service tree is baked into `/etc/dinit.d/*` at image-build time via `addDinitInit()` in `dinit-image-helpers.ts`. Service types in use: `process` (long-running daemons), `scripted` (one-shot bootstraps that exit cleanly), and `internal` (dependency-only nodes used to express "boot the whole tree" or "pick this engine"). dinit reaps its directly supervised children. A service that daemonizes by double fork leaves its grandchild to synthetic init, which the kernel reaps (see "Orphan adoption"); dinit is not a subreaper here because it requests `PR_SET_CHILD_SUBREAPER` only under `__linux__`. dinit disables restarts by default and enforces inter-service `depends-on` ordering.
 
 **Service Worker** (`apps/browser-demos/public/service-worker.js`): Dual-mode file that acts as both a page bootstrap script (registers itself, enables cross-origin isolation) and a service worker (adds COOP/COEP headers, handles HTTP bridge routing).
 

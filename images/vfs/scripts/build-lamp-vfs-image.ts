@@ -1,3 +1,4 @@
+import { installImageSessions } from "./image-session-files";
 import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 /**
  * Build a fully-bootable VFS image for the WordPress + MariaDB (LAMP)
@@ -347,7 +348,7 @@ function buildServices(fs: VfsImageFilesystem): DinitService[] {
         `--innodb-log-buffer-size=${MARIADB_INNODB_LOG_BUFFER_SIZE} ` +
         `--innodb-buffer-pool-size=${MARIADB_INNODB_BUFFER_POOL_SIZE} ` +
         "--skip-grant-tables --key-buffer-size=1048576 --table-open-cache=10 " +
-        "--sort-buffer-size=262144 --skip-networking " +
+        "--sort-buffer-size=262144 --bind-address=0.0.0.0 --port=3306 " +
         `--socket=${MARIADB_SOCKET_PATH} --max-connections=10 ` +
         "--log-error=/data/error.log",
       logfile: "/var/log/mariadb.log",
@@ -503,6 +504,7 @@ export async function buildLampVfsImage(
   });
   writeTrackedDemoConfig(fs, "packages/registry/wordpress/lamp-demo.json");
 
+  installImageSessions(fs, "lamp");
   await saveShellDerivedVfsImage(fs, inputs.outputPath);
   console.log(`${wpCount} WordPress files total`);
 }

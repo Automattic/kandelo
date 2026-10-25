@@ -1167,6 +1167,95 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         extra_syscalls::SYS_SHMCTL,
         [desc!(2, InOut, kernel_dereferenced!(), nullable)]
     ),
+    // Extended attributes. Names are bounded like Linux XATTR_NAME_MAX, with
+    // ERANGE for an over-long name. Value and list buffers may be null when
+    // their size is 0, which asks for the size alone.
+    entry!(
+        extra_syscalls::SYS_FGETXATTR,
+        [
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+            desc!(2, Out, arg!(3), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_FLISTXATTR,
+        [
+            desc!(1, Out, arg!(2), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_FREMOVEXATTR,
+        [
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_FSETXATTR,
+        [
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+            desc!(2, In, arg!(3), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_GETXATTR,
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+            desc!(2, Out, arg!(3), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_LISTXATTR,
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, Out, arg!(2), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_LGETXATTR,
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+            desc!(2, Out, arg!(3), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_LLISTXATTR,
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, Out, arg!(2), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_LREMOVEXATTR,
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_LSETXATTR,
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+            desc!(2, In, arg!(3), nullable),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_REMOVEXATTR,
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+        ]
+    ),
+    entry!(
+        extra_syscalls::SYS_SETXATTR,
+        [
+            desc!(0, In, cstring!(), required),
+            desc!(1, In, cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE), required),
+            desc!(2, In, arg!(3), nullable),
+        ]
+    ),
     entry!(
         extra_syscalls::SYS_SIGNALFD,
         [desc!(
@@ -1289,6 +1378,74 @@ mod tests {
     }
 
     #[test]
+    fn xattr_syscalls_marshal_paths_names_values_and_lists() {
+        use extra_syscalls::*;
+        let name = cstring!(platform_limits::XATTR_NAME_MAX_BYTES, ERANGE);
+        for nr in [
+            SYS_GETXATTR,
+            SYS_LGETXATTR,
+            SYS_SETXATTR,
+            SYS_LSETXATTR,
+            SYS_REMOVEXATTR,
+            SYS_LREMOVEXATTR,
+            SYS_LISTXATTR,
+            SYS_LLISTXATTR,
+        ] {
+            let path = find(nr).args[0];
+            assert_eq!((path.arg_index, path.size), (0, cstring!()), "path of {nr}");
+            assert!(path.required);
+        }
+        for (nr, index) in [
+            (SYS_GETXATTR, 1),
+            (SYS_LGETXATTR, 1),
+            (SYS_FGETXATTR, 1),
+            (SYS_SETXATTR, 1),
+            (SYS_LSETXATTR, 1),
+            (SYS_FSETXATTR, 1),
+            (SYS_REMOVEXATTR, 1),
+            (SYS_LREMOVEXATTR, 1),
+            (SYS_FREMOVEXATTR, 1),
+        ] {
+            let arg = find(nr)
+                .args
+                .iter()
+                .find(|arg| arg.arg_index == index)
+                .expect("xattr name descriptor");
+            assert_eq!(arg.size, name, "name of {nr}");
+            assert!(arg.required);
+        }
+        for (nr, direction) in [
+            (SYS_GETXATTR, SyscallArgDirection::Out),
+            (SYS_LGETXATTR, SyscallArgDirection::Out),
+            (SYS_FGETXATTR, SyscallArgDirection::Out),
+            (SYS_SETXATTR, SyscallArgDirection::In),
+            (SYS_LSETXATTR, SyscallArgDirection::In),
+            (SYS_FSETXATTR, SyscallArgDirection::In),
+        ] {
+            let value = find(nr)
+                .args
+                .iter()
+                .find(|arg| arg.arg_index == 2)
+                .expect("xattr value descriptor");
+            assert_eq!((value.direction, value.size), (direction, arg!(3)), "value of {nr}");
+            assert!(value.nullable);
+        }
+        for (nr, index) in [(SYS_LISTXATTR, 1), (SYS_LLISTXATTR, 1), (SYS_FLISTXATTR, 1)] {
+            let list = find(nr)
+                .args
+                .iter()
+                .find(|arg| arg.arg_index == index)
+                .expect("xattr list descriptor");
+            assert_eq!(
+                (list.direction, list.size),
+                (SyscallArgDirection::Out, arg!(index + 1)),
+                "list of {nr}"
+            );
+            assert!(list.nullable);
+        }
+    }
+
+    #[test]
     fn pointer_nullability_is_explicit_and_exhaustive() {
         let mut actual_nullable = Vec::new();
         for entry in SYSCALL_ARG_DESCRIPTORS {
@@ -1403,6 +1560,16 @@ mod tests {
             (extra_syscalls::SYS_MSGCTL, 2),
             (extra_syscalls::SYS_SEMCTL, 3),
             (extra_syscalls::SYS_SHMCTL, 2),
+            // An xattr value or list buffer is legally null with size 0.
+            (extra_syscalls::SYS_FGETXATTR, 2),
+            (extra_syscalls::SYS_FLISTXATTR, 1),
+            (extra_syscalls::SYS_FSETXATTR, 2),
+            (extra_syscalls::SYS_GETXATTR, 2),
+            (extra_syscalls::SYS_LISTXATTR, 1),
+            (extra_syscalls::SYS_LGETXATTR, 2),
+            (extra_syscalls::SYS_LLISTXATTR, 1),
+            (extra_syscalls::SYS_LSETXATTR, 2),
+            (extra_syscalls::SYS_SETXATTR, 2),
             (Syscall::Sendmsg as u32, 1),
             (Syscall::Recvmsg as u32, 1),
             (Syscall::Writev as u32, 1),

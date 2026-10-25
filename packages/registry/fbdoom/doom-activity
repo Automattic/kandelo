@@ -1,0 +1,27 @@
+#!/bin/sh
+# Package-owned preparation: inputs were size/hash checked by the invitation
+# flow. Keep the upstream license and credits alongside extracted free data.
+# The downloaded input can be read-only; prepare a separate guest-owned WAD.
+set -eu
+source_id="$1"
+shift
+DATA=/tmp/kandelo-doom-data.bin
+WAD=/tmp/kandelo-doom.wad
+case "$source_id" in
+    shareware|file) cp "$DATA" "$WAD" ;;
+    freedoom1|freedoom2|freedm)
+        case "$source_id" in
+            freedoom1|freedoom2) archive=freedoom-0.13.0 ;;
+            freedm) archive=freedm-0.13.0 ;;
+        esac
+        notices=/tmp/kandelo-doom-notices
+        mkdir -p "$notices"
+        for notice in COPYING.txt CREDITS.txt CREDITS-MUSIC.txt; do
+            unzip -p "$DATA" "$archive/$notice" > "$notices/$notice"
+        done
+        unzip -p "$DATA" "$archive/$source_id.wad" > /tmp/kandelo-doom-prepared.wad
+        mv -f /tmp/kandelo-doom-prepared.wad "$WAD"
+        ;;
+    *) echo 'doom-activity: unknown game data source' >&2; exit 2 ;;
+esac
+exec /usr/local/bin/fbdoom "$@"

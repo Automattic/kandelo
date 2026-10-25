@@ -2587,6 +2587,14 @@ fn render_ts_module() -> String {
         render_ts_program_artifact_types(process_fork_import.params),
         render_ts_program_artifact_types(process_fork_import.results),
     ));
+    let heap_safepoint_import = shared::abi::HEAP_SAFEPOINT_PROCESS_IMPORT;
+    out.push_str(&format!(
+        "export const HEAP_SAFEPOINT_PROCESS_IMPORT = {{ module: {:?}, name: {:?}, params: {}, results: {} }} as const;\n",
+        heap_safepoint_import.module,
+        heap_safepoint_import.name,
+        render_ts_program_artifact_types(heap_safepoint_import.params),
+        render_ts_program_artifact_types(heap_safepoint_import.results),
+    ));
     out.push_str(
         "/** The `env` imports the host supplies to user programs (besides the fork runtime's). */\n",
     );
@@ -2861,6 +2869,10 @@ fn render_ts_module() -> String {
     out.push_str(&format!(
         "export const POSIX_NAME_MAX_BYTES = {} as const;\n",
         shared::platform_limits::NAME_MAX_BYTES
+    ));
+    out.push_str(&format!(
+        "export const XATTR_SIZE_MAX_BYTES = {} as const;\n",
+        shared::platform_limits::XATTR_SIZE_MAX_BYTES
     ));
     out.push_str(&format!(
         "export const PROCESS_METADATA_ENTRY_MAX_BYTES = {} as const;\n",
@@ -4497,7 +4509,7 @@ fn wakeup_event_wire() -> Value {
     })
 }
 
-fn poll_events() -> [(&'static str, i16); 6] {
+fn poll_events() -> [(&'static str, i16); 11] {
     use shared::poll::*;
 
     [
@@ -4507,10 +4519,15 @@ fn poll_events() -> [(&'static str, i16); 6] {
         ("POLLERR", POLLERR),
         ("POLLHUP", POLLHUP),
         ("POLLNVAL", POLLNVAL),
+        ("POLLRDNORM", POLLRDNORM),
+        ("POLLRDBAND", POLLRDBAND),
+        ("POLLWRNORM", POLLWRNORM),
+        ("POLLWRBAND", POLLWRBAND),
+        ("POLLRDHUP", POLLRDHUP),
     ]
 }
 
-fn epoll_events() -> [(&'static str, u32); 4] {
+fn epoll_events() -> [(&'static str, u32); 14] {
     use shared::epoll::*;
 
     [
@@ -4518,6 +4535,16 @@ fn epoll_events() -> [(&'static str, u32); 4] {
         ("EPOLLOUT", EPOLLOUT),
         ("EPOLLERR", EPOLLERR),
         ("EPOLLHUP", EPOLLHUP),
+        ("EPOLLPRI", EPOLLPRI),
+        ("EPOLLRDNORM", EPOLLRDNORM),
+        ("EPOLLRDBAND", EPOLLRDBAND),
+        ("EPOLLWRNORM", EPOLLWRNORM),
+        ("EPOLLWRBAND", EPOLLWRBAND),
+        ("EPOLLRDHUP", EPOLLRDHUP),
+        ("EPOLLEXCLUSIVE", EPOLLEXCLUSIVE),
+        ("EPOLLWAKEUP", EPOLLWAKEUP),
+        ("EPOLLONESHOT", EPOLLONESHOT),
+        ("EPOLLET", EPOLLET),
     ]
 }
 
@@ -7482,10 +7509,22 @@ fn program_artifact() -> Value {
     fork.insert("required_exports".into(), Value::Array(exports));
     fork.insert("required_imports".into(), Value::Array(imports));
 
+    let heap_safepoint = shared::abi::HEAP_SAFEPOINT_PROCESS_IMPORT;
+    let mut heap_safepoint_import: JsonMap = BTreeMap::new();
+    heap_safepoint_import.insert("kind".into(), json!("func"));
+    heap_safepoint_import.insert("module".into(), json!(heap_safepoint.module));
+    heap_safepoint_import.insert("name".into(), json!(heap_safepoint.name));
+    heap_safepoint_import.insert("params".into(), value_types(heap_safepoint.params));
+    heap_safepoint_import.insert("results".into(), value_types(heap_safepoint.results));
+
     let mut artifact: JsonMap = BTreeMap::new();
     artifact.insert(
         "fork_instrumentation".into(),
         Value::Object(fork.into_iter().collect()),
+    );
+    artifact.insert(
+        "heap_safepoint_import".into(),
+        Value::Object(heap_safepoint_import.into_iter().collect()),
     );
     Value::Object(artifact.into_iter().collect())
 }
@@ -8307,12 +8346,27 @@ mod tests {
                     { "name": "POLLERR", "value": 8 },
                     { "name": "POLLHUP", "value": 16 },
                     { "name": "POLLNVAL", "value": 32 },
+                    { "name": "POLLRDNORM", "value": 64 },
+                    { "name": "POLLRDBAND", "value": 128 },
+                    { "name": "POLLWRNORM", "value": 256 },
+                    { "name": "POLLWRBAND", "value": 512 },
+                    { "name": "POLLRDHUP", "value": 8192 },
                 ],
                 "epoll_events": [
                     { "name": "EPOLLIN", "value": 1 },
                     { "name": "EPOLLOUT", "value": 4 },
                     { "name": "EPOLLERR", "value": 8 },
                     { "name": "EPOLLHUP", "value": 16 },
+                    { "name": "EPOLLPRI", "value": 2 },
+                    { "name": "EPOLLRDNORM", "value": 64 },
+                    { "name": "EPOLLRDBAND", "value": 128 },
+                    { "name": "EPOLLWRNORM", "value": 256 },
+                    { "name": "EPOLLWRBAND", "value": 512 },
+                    { "name": "EPOLLRDHUP", "value": 8192 },
+                    { "name": "EPOLLEXCLUSIVE", "value": 268435456 },
+                    { "name": "EPOLLWAKEUP", "value": 536870912 },
+                    { "name": "EPOLLONESHOT", "value": 1073741824 },
+                    { "name": "EPOLLET", "value": 2147483648_u32 },
                 ],
                 "select": {
                     "fd_setsize": 1024,
@@ -8760,6 +8814,16 @@ mod tests {
             })
         );
         assert_eq!(fork["process_modes"], json!({"fork": 0, "vfork": 1}));
+        assert_eq!(
+            artifact["heap_safepoint_import"],
+            json!({
+                "kind": "func",
+                "module": "kernel",
+                "name": "kernel_heap_safepoint",
+                "params": [],
+                "results": ["i64"]
+            })
+        );
         let descriptor = &fork["linked_frame_descriptor"];
         assert_eq!(
             descriptor["section"],

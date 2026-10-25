@@ -142,6 +142,7 @@ import {
 } from "./fork-reference-broker";
 import { ForkHostImportWorkerRuntime } from "./fork-host-import-runtime";
 import { trapProcessWorker } from "./fork-worker-import-exceptions";
+import { createHeapSafepointImport } from "./heap-safepoint";
 import {
   ForkImportedGlobalCapture,
   ForkImportedGlobalPlanner,
@@ -494,6 +495,12 @@ function buildKernelImports(
     // Sticky kernel-owned state captured for this exact process image.
     kernel_get_secure_exec: (): number => secureExec ? 1 : 0,
 
+    // [RUNTIME-WORKAROUND: JSC-BLOCKED-WAIT-GC-STARVATION] Called by the
+    // syscall wait after a bounded wait times out; lets a JavaScriptCore VM
+    // finish a collection begun before the thread blocked (suspected cause;
+    // see docs/browser-support.md).
+    kernel_heap_safepoint: createHeapSafepointImport(),
+
     // Fork/exec state — not a fork child.
     kernel_is_fork_child: (): number => 0,
     kernel_apply_fork_fd_actions: (): number => 0,
@@ -538,7 +545,8 @@ function buildKernelImports(
       onKernelExit?.(status);
       // Execute unreachable inside Wasm: a RuntimeError thrown by JavaScript
       // is catchable by guest noexcept handlers, which can issue writev on
-      // this now-retired channel and leave the Worker blocked forever on JSC.
+      // this now-retired channel and leave the Worker blocked forever where
+      // terminate() cannot reclaim a blocked Worker (Bun today; older WebKit).
       // This disposable Worker trap also enforces `_Noreturn` for callers
       // without a trailing unreachable; the reusable kernel never traps.
       return trapProcessWorker();
@@ -1989,6 +1997,8 @@ export function buildDlopenImports(
       nameRange.offset,
       nameRange.length,
     );
+    // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
+    // The copy also guards against memory grow/detach, so it stays even if the engine is fixed.
     // WHY: compilation may grow/detach memory, and Firefox/Chrome reject
     // TextDecoder views backed directly by SharedArrayBuffer.
     return {
@@ -2192,6 +2202,7 @@ export function buildDlopenImports(
         );
         // Copy bytes since memory.buffer may detach during Wasm instantiation
         const bytesCopy = new Uint8Array(bytes);
+        // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
         // TextDecoder.decode() rejects views backed by SharedArrayBuffer
         // in Firefox (and recent Chrome), so copy the name bytes through
         // a non-shared Uint8Array before decoding. Same shape as
@@ -4415,6 +4426,15 @@ export async function centralizedWorkerMain(
   }
 }
 
+// [RUNTIME-WORKAROUND: WEBKIT-TEXTDECODER-WRAPPER-CRASH] One decoder for
+// every export name: a PHP binary has about 22,000 exports. Constructing a
+// TextDecoder per name made each process start create thousands of DOM
+// wrappers, and WebKit's page process crashed in cacheWrapper<TextDecoder>
+// during those bursts. The cause is suspected, not a confirmed WebKit
+// defect: there is no standalone reduction (docs/browser-support.md,
+// "WebKit page-process crash while creating TextDecoders").
+const EXPORT_NAME_DECODER = new TextDecoder();
+
 /**
  * Set up __channel_base in TLS so __do_syscall knows the channel offset.
  */
@@ -4519,7 +4539,7 @@ function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
       for (let i = 0; i < exportCount; i++) {
         const [nameLen, nameLenBytes] = readLEB128(src, pos);
         pos += nameLenBytes;
-        const name = new TextDecoder().decode(src.subarray(pos, pos + nameLen));
+        const name = EXPORT_NAME_DECODER.decode(src.subarray(pos, pos + nameLen));
         pos += nameLen;
         const kind = src[pos++];
         const [idx, idxBytes] = readLEB128(src, pos);
@@ -4863,7 +4883,7 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
       for (let i = 0; i < exportCount; i++) {
         const [nameLen, nameLenBytes] = readLEB128(src, pos);
         pos += nameLenBytes;
-        const name = new TextDecoder().decode(src.subarray(pos, pos + nameLen));
+        const name = EXPORT_NAME_DECODER.decode(src.subarray(pos, pos + nameLen));
         pos += nameLen;
         const kind = src[pos++];
         const [idx, idxBytes] = readLEB128(src, pos);

@@ -48,9 +48,9 @@ pub(crate) fn ensure_root_js_dependencies(repo: &Path) -> Result<(), String> {
     let status = Command::new("npm")
         .args(["ci", "--no-audit", "--no-fund"])
         .current_dir(repo)
-        // stdout is the engine's machine-readable result channel (see
-        // scripts/run-local-build.sh); npm's progress output belongs on
-        // stderr with the rest of the build log.
+        // stdout is the engine's machine-readable result channel (the
+        // local-build run result `./run.sh local-build` parses); npm's
+        // progress output belongs on stderr with the rest of the build log.
         .stdout(std::io::stderr())
         .status()
         .map_err(|error| format!("spawn npm ci in {}: {error}", repo.display()))?;

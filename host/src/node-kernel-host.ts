@@ -1,3 +1,5 @@
+import { DEFAULT_KERNEL_MAX_PAGES } from "./constants";
+import { ExchangeController, exchangeByteLimit } from "./exchange-controller";
 import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-segment-port";
 import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
@@ -29,6 +31,7 @@ import {
 } from "node:worker_threads";
 import { resolveBinary } from "./binary-resolver";
 import { maybeDecompressImage } from "./vfs/vfs-image-transport";
+import { resolveImageOwnedLazyAsset } from "./vfs/vfs-asset-group-reference";
 import type {
   HostDiagnostic,
   MainToKernelMessage,
@@ -176,6 +179,14 @@ export interface NodeKernelHostOptions {
    *     to a VFS-only world yet.
    */
   rootfsImage?: "default" | ArrayBuffer | Uint8Array;
+  /**
+   * Kandelo exchange: whether the platform may start the image's agent
+   * (`/usr/libexec/kandelo/exchange-agent`) when a batch needs a consumer.
+   * `"on-demand"` (the default) or `"off"`, fixed for the machine's
+   * lifetime. Embedder code only: never derived from a boot descriptor,
+   * shared URL, or image file.
+   */
+  exchange?: { activation?: "on-demand" | "off" };
   /** Exact image/scratch mount contract. Requires `rootfsImage`. */
   rootfsMountSpec?: readonly MountSpec[];
   /**
@@ -183,6 +194,14 @@ export interface NodeKernelHostOptions {
    * This is the Node peer of BrowserKernel's lazyUrlBase contract.
    */
   rootfsLazyUrlBase?: string;
+  /**
+   * Resolve every image-owned lazy address (`binaries/programs/...`,
+   * `kandelo-lazy:programs/...`) to its package member under this absolute
+   * directory URL before transport. The Node peer of BrowserKernel's
+   * lazyAssetDirectory contract; useful with `rootfsLazyAssets`, whose
+   * entries are keyed by canonical HTTPS URLs.
+   */
+  rootfsLazyAssetDirectory?: string;
   /**
    * Exhaustive exact URL-to-byte transport for lazy entries in rootfsImage.
    * Intended for offline and pre-publication acceptance: when set, unbound
@@ -258,6 +277,18 @@ export class NodeKernelHost {
   private unclaimedExitStatuses = new Map<number, { status: number; sequence: number }>();
   private exitSequence = 0;
   private _nextRequestId = 1;
+  /**
+   * Kandelo exchange: offer files to the guest and receive what it
+   * publishes. The same interface on Node.js and in the browser.
+   */
+  readonly exchange: ExchangeController = new ExchangeController({
+    request: (request) => {
+      const requestId = this._nextRequestId++;
+      return this.request(requestId, { type: "exchange_request", requestId, request });
+    },
+    // ArrayBuffers are transferable under both the DOM and worker_threads types.
+    sendRange: (message, transfer) => this.sendToWorker(message, transfer as unknown as Parameters<NodeKernelHost["sendToWorker"]>[1]),
+  });
   private options: NodeKernelHostOptions;
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
   private destroyProgress = createDestroyProgressFanout();
@@ -292,6 +323,13 @@ export class NodeKernelHost {
     }
     if (this.options.rootfsLazyUrlBase === "") {
       throw new Error("rootfsLazyUrlBase must not be empty");
+    }
+    if (this.options.rootfsLazyAssetDirectory !== undefined) {
+      if (rootfsImage === null) {
+        throw new Error("rootfsLazyAssetDirectory requires rootfsImage");
+      }
+      // Validates an absolute directory URL, as the worker will use it.
+      resolveImageOwnedLazyAsset(this.options.rootfsLazyAssetDirectory, "kandelo-lazy:programs/probe");
     }
     const execProgramBytes = snapshotExecProgramBytes(
       this.options.execProgramBytes,
@@ -450,6 +488,8 @@ export class NodeKernelHost {
             imageBuildDeterminism: validImageBuildDeterminism(
               this.options.imageBuildDeterminism,
             ),
+            exchangeByteLimit: exchangeByteLimit(DEFAULT_KERNEL_MAX_PAGES),
+            exchangeActivation: this.options.exchange?.activation ?? "on-demand",
           },
           execPrograms: this.options.execPrograms,
           execProgramBytes,
@@ -458,6 +498,7 @@ export class NodeKernelHost {
             ? undefined
             : this.options.rootfsMountSpec.map((mount) => ({ ...mount })),
           rootfsLazyUrlBase: this.options.rootfsLazyUrlBase,
+          rootfsLazyAssetDirectory: this.options.rootfsLazyAssetDirectory,
           rootfsLazyAssets,
           rootfsLazyAssetSources,
           extraMounts: this.options.extraMounts,
@@ -800,13 +841,16 @@ export class NodeKernelHost {
    * the parsed response. Bypasses real TCP by using the kernel's injected
    * connection path directly. Prototype API.
    *
+   * With `options.hostname`, use this machine's Kandelo session TCP network
+   * instead. External physical-host destinations are not accepted by that path.
+   *
    * The in-kernel server must already be listening on `port`. Each call
    * opens a fresh injected connection.
    */
   async fetchInKernel(
     port: number,
     request: HttpRequest,
-    options?: { timeoutMs?: number; maxResponseBytes?: number },
+    options?: { timeoutMs?: number; maxResponseBytes?: number; hostname?: string },
   ): Promise<HttpResponse> {
     const requestId = this._nextRequestId++;
     return this.request(requestId, {
@@ -816,6 +860,7 @@ export class NodeKernelHost {
       request,
       timeoutMs: options?.timeoutMs,
       maxResponseBytes: options?.maxResponseBytes,
+      hostname: options?.hostname,
     }) as Promise<HttpResponse>;
   }
 
@@ -1361,6 +1406,12 @@ export class NodeKernelHost {
 
   private handleWorkerMessage(msg: KernelToMainMessage): void {
     switch (msg.type) {
+      case "exchange_range_request":
+        this.exchange.handleRangeRequest(msg.source, msg.offset, msg.length);
+        break;
+      case "exchange_notifications":
+        this.exchange.handleNotifications(msg.notifications);
+        break;
       case "ready":
       case "init_error":
         // The temporary init listener resolves readiness. The permanent

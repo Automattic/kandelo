@@ -256,10 +256,12 @@ const NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS = 2000;
 const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;
 const EXEC_WORKER_RETIREMENT_WAIT_MS = 5000;
 const FRAMEBUFFER_RELEASE_ACK_WAIT_MS = 2000;
-// [JSC-TERMINATE-ATOMICS-WAIT-LEAK] On destroy we wake every Atomics.wait-blocked
-// worker so it cooperatively exits (on JSC — Safari and Bun — Worker.terminate()
-// can't free a blocked worker). These bound the wait for those workers to run
-// their exit path and drain. See docs/jsc-terminate-atomics-wait-workaround.md.
+// [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+// On destroy we wake every Atomics.wait-blocked worker so it cooperatively
+// exits, because on runtimes with this defect (Bun today; WebKit builds up to
+// at least webkit-2311 and the Safari of July 2026) Worker.terminate() can't
+// free a blocked worker. These bound the wait for those workers to run their
+// exit path and drain. See docs/jsc-terminate-atomics-wait-workaround.md.
 const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
 const DESTROY_KILL_DRAIN_POLL_MS = 15;
 const PCM_DESTROY_DRAIN_TIMEOUT_MS = 2000;
@@ -1169,9 +1171,26 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       lazyFetcher: rootfsLazyFetcher,
       lazyUrlBase: msg.lazyUrlBase,
       lazyUrlMap: msg.lazyUrlMap,
+      lazyAssetDirectory: msg.lazyAssetDirectory,
     });
   }
 
+  // Kandelo exchange: range requests for offered sources and the kernel's
+  // notifications go to the main thread, which owns the sources and leases.
+  kernelWorker.setExchangeHandlers({
+    requestRange: (source, offset, length) => {
+      post({ type: "exchange_range_request", source, offset, length });
+    },
+    onNotifications: (notifications) => {
+      post({ type: "exchange_notifications", notifications });
+    },
+  });
+  if (msg.config.exchangeActivation !== undefined) {
+    kernelWorker.setExchangeActivation(msg.config.exchangeActivation);
+  }
+  if (msg.config.exchangeByteLimit !== undefined) {
+    kernelWorker.setExchangeByteLimit(msg.config.exchangeByteLimit);
+  }
   await kernelWorker.init(msg.kernelWasmBytes);
   finalizeRootfsTransport?.();
 
@@ -3791,6 +3810,29 @@ async function handleClipboardGuestWait(
   }
 }
 
+async function handleExchangeRequest(
+  msg: Extract<MainToKernelMessage, { type: "exchange_request" }>,
+) {
+  if (!initReady) {
+    respondError(msg.requestId, "exchange requires an initialized kernel");
+    return;
+  }
+  try {
+    respond(msg.requestId, await kernelWorker.exchangeRequest(msg.request));
+  } catch (error) {
+    respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  }
+}
+
+function handleExchangeRange(msg: Extract<MainToKernelMessage, { type: "exchange_range" }>) {
+  if (!initReady) return;
+  if (msg.bytes !== undefined) {
+    kernelWorker.exchangeFulfillRange(msg.source, msg.offset, msg.requested, msg.bytes);
+  } else {
+    kernelWorker.exchangeFailRange(msg.source, msg.errno);
+  }
+}
+
 async function handleClipboardOffer(
   msg: Extract<MainToKernelMessage, { type: "clipboard_offer" }>,
 ) {
@@ -3845,32 +3887,35 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
   const info = processes.get(pid);
   if (info) vmInterruptTimers.clear(pid, info);
 
-  // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] Wake the target to a cooperative exit
-  // before any hard `Worker.terminate()` below. WHY: a live process worker is
-  // never idle in its JS event loop — it is parked in an in-wasm `Atomics.wait`
-  // on its syscall channel (a blocked read/accept/wait, or musl's
-  // post-exit_group `_Exit` loop). On JavaScriptCore (Safari, and Bun),
-  // `Worker.terminate()` cannot reap a worker parked in `Atomics.wait`: its OS
-  // thread and committed working set survive the call. `terminate_process` is
-  // how a terminal session's process is torn down, so every machine switch that
-  // went straight to `terminateTrackedWorker` leaked one `WebCore: Worker`
-  // thread (measured +1 per switch, non-decaying) until Safari/iOS threw "Out
-  // of memory". Delivering SIGKILL through the normal kernel signal path
-  // completes each parked channel with EINTR and queues SIGKILL so the guest
-  // glue runs `kernel_exit`; worker-main then returns to its JS event loop and
-  // posts `{exit}`, whose `finishProcessExit` terminates the now-idle worker — a
-  // state JSC *can* reclaim. This mirrors `performDestroy`'s Phase-1 wake, but
-  // scoped to a single pid so sibling processes (e.g. php-test tearing down
-  // several servers) keep running. Delivering SIGKILL through the ordinary
-  // signal path is not enough: it wakes only *registered* blockers (signal
-  // waits, futex, wait4, pipe readers), never a channel merely parked at
-  // CH_PENDING on a blocked read/accept, which is where an idle shell sits. See
+  // [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+  // Wake the target to a cooperative exit before any hard `Worker.terminate()`
+  // below. WHY: a live process worker is never idle in its JS event loop — it
+  // is parked in an in-wasm `Atomics.wait` on its syscall channel (a blocked
+  // read/accept/wait, or musl's post-exit_group `_Exit` loop). Where the defect
+  // is present (Bun today; older WebKit and Safari builds, see the registry
+  // entry), `Worker.terminate()` cannot reap a worker parked in `Atomics.wait`:
+  // its OS thread and committed working set survive the call.
+  // `terminate_process` is how a terminal session's process is torn down, so
+  // every machine switch that went straight to `terminateTrackedWorker` leaked
+  // one `WebCore: Worker` thread (measured +1 per switch, non-decaying) until
+  // Safari/iOS threw "Out of memory". Delivering SIGKILL through the normal
+  // kernel signal path completes each parked channel with EINTR and queues
+  // SIGKILL so the guest glue runs `kernel_exit`; worker-main then returns to
+  // its JS event loop and posts `{exit}`, whose `finishProcessExit` terminates
+  // the now-idle worker — a state every runtime *can* reclaim. This mirrors
+  // `performDestroy`'s Phase-1 wake, but scoped to a single pid so sibling
+  // processes (e.g. php-test tearing down several servers) keep running.
+  // Delivering SIGKILL through the ordinary signal path is not enough: it wakes
+  // only *registered* blockers (signal waits, futex, wait4, pipe readers),
+  // never a channel merely parked at CH_PENDING on a blocked read/accept, which
+  // is where an idle shell sits. See
   // docs/jsc-terminate-atomics-wait-workaround.md.
   //
   // A bounded drain, not an unbounded wait: a guest wedged in a non-syscalling
   // wasm loop never reaches a checkpoint to observe the wake, so after the
   // deadline we fall through to the force-terminate path below. That path still
-  // leaks the one worker on JSC — the truthful cost of an unresponsive guest,
+  // leaks the one worker where the defect is present — the truthful cost of an
+  // unresponsive guest,
   // not the common case this fix addresses.
   if (info?.worker && processes.get(pid) === info) {
     try {
@@ -4079,16 +4124,18 @@ function handlePickListenerTarget(
 
 async function performDestroy() {
   // Phase 1 — wake every Atomics.wait-blocked worker so it cooperatively exits.
-  // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug is
-  // fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
-  // On JSC (Safari, and Bun), `Worker.terminate()` cannot kill (or free the
-  // memory of) a worker parked in `Atomics.wait` on its syscall channel — the
-  // state every idle/blocked process worker sits in — so terminating them
-  // directly leaks their threads + committed working set and each image switch
-  // OOMs Safari. killAllBlockedForTeardown completes each blocked syscall with
-  // EINTR + a queued SIGKILL; the guest glue then runs kernel_exit, the worker
-  // returns to its JS event loop (via {exit}), and it becomes reclaimable. A
-  // no-op cost on V8 (Chrome), so it runs unconditionally.
+  // [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+  // WORKAROUND, remove when the engine bug is fixed; see
+  // docs/jsc-terminate-atomics-wait-workaround.md. Where the defect is present
+  // (Bun today; older WebKit and Safari builds, see the registry entry),
+  // `Worker.terminate()` cannot kill (or free the memory of) a worker parked in
+  // `Atomics.wait` on its syscall channel — the state every idle/blocked
+  // process worker sits in — so terminating them directly leaks their threads +
+  // committed working set; in July 2026 each image switch OOMed Safari.
+  // killAllBlockedForTeardown completes each blocked syscall with EINTR + a
+  // queued SIGKILL; the guest glue then runs kernel_exit, the worker returns to
+  // its JS event loop (via {exit}), and it becomes reclaimable. A no-op cost on
+  // V8 (Chrome), so it runs unconditionally.
   const destroyProgress = createDestroyProgressReporter((event) =>
     post({ type: "destroy_progress", event }),
   );
@@ -4371,13 +4418,16 @@ async function handleHttpRequestMessage(msg: {
   request: any;
   timeoutMs?: number;
   maxResponseBytes?: number;
+  hostname?: string;
 }) {
   if (!kernelWorker.isKernelInitialized()) {
     respondError(msg.requestId, "Kernel not initialized");
     return;
   }
   try {
-    const response = await kernelWorker.sendHttpRequest(
+    const response = await (msg.hostname === undefined
+      ? kernelWorker.sendHttpRequest.bind(kernelWorker)
+      : remoteSegmentRuntime.fetchHttp.bind(remoteSegmentRuntime, msg.hostname))(
       msg.port,
       msg.request,
       {
@@ -4480,6 +4530,8 @@ sw.onmessage = (e: MessageEvent) => {
     case "unlink_vfs_file": handleUnlinkVfsFile(msg); break;
     case "export_rootfs_image": void handleExportRootfsImage(msg); break;
     case "clipboard_offer": void handleClipboardOffer(msg); break;
+    case "exchange_request": void handleExchangeRequest(msg); break;
+    case "exchange_range": handleExchangeRange(msg); break;
     case "clipboard_guest_wait": void handleClipboardGuestWait(msg); break;
     case "append_stdin_data": kernelWorker.appendStdinData(msg.pid, msg.data); break;
     case "set_stdin_data": kernelWorker.setStdinData(msg.pid, msg.data); break;

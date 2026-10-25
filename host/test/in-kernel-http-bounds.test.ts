@@ -1,3 +1,5 @@
+import { SessionHttpClient } from "../src/networking/session-http";
+import type { NetworkIO } from "../src/types";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -69,5 +71,46 @@ describe("in-kernel HTTP response bounds", () => {
     expect(() => parseRawHttpResponse(new TextEncoder().encode(
       "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc",
     ), "HEAD")).toThrow(/must not contain a body/);
+  });
+});
+
+describe("session HTTP ownership and backpressure", () => {
+  function network(response: string) {
+    let position = 0;
+    const writes: number[] = [], closed: number[] = [];
+    let received = "";
+    const io: NetworkIO = {
+      connect: () => {}, connectStatus: () => 0,
+      send: (_handle, bytes) => { writes.push(Math.min(3, bytes.length)); received += new TextDecoder().decode(bytes.subarray(0, 3)); return Math.min(3, bytes.length); },
+      recv: () => { if (!received.includes("\r\n\r\n")) throw Object.assign(new Error("EAGAIN"), { errno: 11 });
+        if (position++) return new Uint8Array(0); return new TextEncoder().encode(response); },
+      close: handle => { closed.push(handle); }, getaddrinfo: () => new Uint8Array([10, 89, 0, 1]),
+    };
+    return { io, writes, closed };
+  }
+  it("closes the exact connection after short writes and a decoded response", async () => {
+    const { io, writes, closed } = network("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    const response = await new SessionHttpClient().fetch(io, new Uint8Array([10, 89, 0, 1]), 8080,
+      { method: "GET", url: "/", headers: { Host: "host" }, body: null });
+    expect(new TextDecoder().decode(response.body)).toBe("ok");
+    expect(writes.length).toBeGreaterThan(1);
+    expect(closed).toHaveLength(1);
+    expect(closed[0]).toBeGreaterThan(0xffffffff);
+  });
+  it("closes the connection when a response exceeds its byte ceiling", async () => {
+    const { io, closed } = network("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    await expect(new SessionHttpClient().fetch(io, new Uint8Array([10, 89, 0, 1]), 8080,
+      { method: "GET", url: "/", headers: { Host: "host" }, body: null }, { maxResponseBytes: 10 })).rejects.toThrow(/bound/);
+    expect(closed).toHaveLength(1);
+  });
+  it("cancels a stalled request and releases its timer and handle on leave", async () => {
+    const { io, closed } = network("");
+    io.connectStatus = () => -11;
+    const client = new SessionHttpClient();
+    const result = client.fetch(io, new Uint8Array([10, 89, 0, 1]), 8080,
+      { method: "GET", url: "/", headers: {}, body: null });
+    const rejected = expect(result).rejects.toThrow(/session ended/);
+    client.close(); await rejected;
+    expect(closed).toHaveLength(1);
   });
 });

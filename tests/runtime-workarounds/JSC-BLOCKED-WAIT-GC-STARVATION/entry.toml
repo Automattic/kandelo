@@ -1,0 +1,33 @@
+id = "JSC-BLOCKED-WAIT-GC-STARVATION"
+kind = "bug"
+status = "suspected"
+runtimes = ["webkit", "bun"]
+summary = "Suspected: a JavaScriptCore worker blocked in memory.atomic.wait32 keeps heap access, so a collection begun in its VM never finishes and pins the shared GC helper threads"
+reports = "human-only"
+
+# Evidence page only: the defect shows in a stack sample, not on the page.
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["webkit"]
+self_judging = false
+timeout_seconds = 120
+
+# Stack sample of the WebKit page process, mode B (see entry.md): all six
+# Heap Helper Threads in SlotVisitor::drainFromShared.
+[[observed]]
+runtime = "webkit"
+version = "26.6"
+os = "macos"
+reproduced = true
+date = 2026-10-22
+source = "manual"
+released = false
+
+[[sites_without_tags]]
+path = "abi/snapshot.json"
+note = "Generated ABI snapshot; records the kernel.kernel_heap_safepoint process import (ABI 52) that the workaround added."
+
+[[sites_without_tags]]
+path = "host/src/generated/abi.ts"
+note = "Generated TypeScript ABI constants; HEAP_SAFEPOINT_PROCESS_IMPORT describes the safepoint import the host provides."

@@ -31,6 +31,30 @@ Run it under the normal suite environment as well as in isolation. A legacy
 mirror fixture and a source-only fixture intentionally admit different
 files; inherited settings must not change which contract a test exercises.
 
+SourceOnly admits only its selected package projection. Standalone local
+fixtures such as `fbtest.wasm` and `epoll-pwait-sigmask.wasm` can therefore
+be present on disk yet unavailable through `tryResolveBinary` under that
+policy. Run the broad host inventory with its normal resolver environment,
+and run SourceOnly consumer checks separately. If a targeted SourceOnly run
+skips a local fixture, rerun it under the normal policy; the skip is not
+evidence for the fixture's runtime behavior.
+
+Also check the canonical image when switching back to the ordinary Node
+runner. `resolveRootfsArtifact()` tries `rootfs.vfs.zst` before the program
+package request, so an older `host/wasm/rootfs.vfs.zst` can take precedence
+over a fresh SourceOnly projection. Refresh it with
+`scripts/dev-shell.sh bash scripts/build-rootfs.sh` before the broad host
+run. For a lazy artifact size mismatch, check the selected image and
+executable identities and repair stale inputs. Do not relax size checks
+or substitute unrelated executable bytes.
+
+A spec must not skip because a binary or image the supported build produces
+is missing. Missing supported output is a build defect: fail with the reason,
+as `gotoMachineOrSkip` and `gotoApp` in
+`apps/browser-demos/test/support/kandelo-machine.ts` do. Keep skips for
+documented optional content, such as network-fetched data or a product
+outside `packages/sets/local-supported.toml`.
+
 Keep authored-source audits separate from generated reports and private
 worktrees. Exclude those evidence directories explicitly while retaining
 production source. Report authorized deferred tests and unsupported cases
@@ -56,6 +80,7 @@ Core validation surface:
 |---|---|---|
 | Workspace Rust tests | `cargo test --workspace --exclude xtask --target <host-target>` | Any change under `crates/`: kernel, fork-instrument, shared, wasm-local-root-spill, and future workspace crates. `--target` is required because the default wasm32 target has no host runner; xtask has its own always-run suite. |
 | Package-system automation tests | `cargo test -p xtask --target <host-target>` | `tools/xtask/**` changes: package resolver, binaries-dir placement, cache/output artifact validation, archive staging + canonical filename |
+| Runtime workaround repros | `scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh runtime-workarounds` | Whether each confirmed outside defect still reproduces (registry: `tests/runtime-workarounds/`). Run it in the dev shell: the Bun repros judge the dev shell's pinned Bun version. |
 | Host integration tests | `cd host && npx vitest run` | Host/runtime behavior |
 | Browser app/runtime tests | `cd apps/browser-demos && npx playwright test --grep-invert "@slow" --project=chromium` | Browser host, UI, demo, service worker, VFS image behavior |
 | Browser native filesystem contracts | `cd apps/browser-demos && npx playwright test test/native-rootfs-lazy.spec.ts test/rootfs-inspection.spec.ts --project=chromium --project=firefox --project=webkit` | Native lazy fetch/read/exec and live filesystem inspection, including Safari/WebKit |
@@ -68,15 +93,26 @@ Core validation surface:
 For CI-shaped local runs, prefer:
 
 ```bash
-bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh <cargo-workspace|cargo-xtask|vitest|browser|libc|posix|sortix> [group]
+bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh <cargo-workspace|cargo-xtask|runtime-workarounds|vitest|browser|libc|posix|sortix> [group]
 ```
 
-When adding a Vitest file, update `scripts/ci-vitest-evidence-classes.tsv`.
-The runner checks that every enabled file appears exactly once before it
-starts the suite. Mark tests that need built package programs or images as
-`prepared-product`; use `source-only` only when source and the current ABI
-test fixtures are sufficient. This keeps a passing source check from being
-mistaken for validation of an older package binary.
+When adding, deleting, or renaming a Vitest file, update
+`scripts/ci-vitest-evidence-classes.tsv` in the same change: add a row, delete
+the row, or move the row to the new path and keep its class. Rows stay in byte
+order (`LC_ALL=C sort`). Mark tests that need built package programs or images
+as `prepared-product`; use `source-only` only when source and the current ABI
+test fixtures are sufficient. A `source-only` test must not import
+`host/src/binary-resolver.ts` or a `prepared-product` test, even indirectly.
+This keeps a passing source check from being mistaken for validation of an
+older package binary.
+
+`bash scripts/check-vitest-evidence-classes.sh` checks the registry in both
+directions: every row names an existing test file, and every file a
+CI-shaped Vitest run collects has exactly one row. Each failure names the file
+and says whether to delete, move, or add a row. Every `ci-run-test-suite.sh
+vitest` group runs this check before any test, and
+`tests/package-system/vitest-evidence-classes.test.ts` runs it inside a plain
+`npx vitest run`.
 
 The optional group reproduces CI's deterministic suite partitions. Vitest
 accepts `1/2`, `2/2`, or `resource-isolated`; libc accepts
@@ -111,11 +147,12 @@ builds the host, and runs:
 - The host memory-authority audit, memory budgets, bounded device buffers,
   futex retirement, exit-trap, generation, and teardown regressions;
   blocked-worker/pthread lifecycle checks on Node/V8 and Bun/JavaScriptCore.
-- Four Doom → Quake → Freeciv → LÖVE → WordPress cycles in each of Chromium,
-  Firefox, and WebKit, in one page per engine with the constrained memory
-  profile. Games must render and reach running audio through trusted
-  activation. WordPress must serve Hello world. Reloads, runtime errors,
-  forced teardown, unreviewed shared worker messages, and main-thread
+- Four Doom → Quake → Freeciv → LÖVE → tmux → WordPress cycles in each of
+  Chromium, Firefox, and WebKit, in one page per engine with the constrained
+  memory profile. Games must render and reach running audio through trusted
+  activation. Tmux must run two pane shells and leave a detached server
+  alive for machine teardown. WordPress must serve Hello world. Reloads,
+  runtime errors, forced teardown, unreviewed shared worker messages, and main-thread
   shared Wasm allocations fail the test.
 
 This gate owns its browser server; set `KANDELO_PLAYWRIGHT_PORT` if the
@@ -317,17 +354,21 @@ part of the task. Build or fetch what is missing:
    If `libc/musl` exists but is not a valid checkout (a stray dir from a partial
    build blocks the clone), reset it: `rm -rf libc/musl && git submodule update
    --init libc/musl`.
-2. **Kernel wasm + host + rootfs + musl sysroot** — `./run.sh setup`
+2. **Kernel wasm + host + rootfs + musl sysroot** — `./run.sh setup --all`
    checks both musl sysroots, rebuilding missing, stale, or altered core
    outputs and refreshing the graphics archives, then builds the
-   kernel, every package, and the rootfs, producing
+   kernel, every supported package, and the rootfs, producing
    `local-binaries/source-only-v1/kernel.wasm` (the binary resolver prefers
    the published tree over `binaries/`) and `host/wasm/rootfs.vfs.zst`.
    The default rootfs records lazy-file sizes from that same published
    tree, including the programs' ABI-contract stamps:
    ```bash
-   scripts/dev-shell.sh ./run.sh setup
+   scripts/dev-shell.sh ./run.sh setup --all
    ```
+   Without `--all`, setup builds only what the VFS products and the browser
+   app demand, which is enough for `./run.sh browser` but leaves out the
+   test-only packages the suites load (wasm64 libraries, the libevent and
+   MariaDB test programs, `dash`, ...). `./run.sh test` builds `--all` itself.
    To check just the wasm32 core SDK after editing libc inputs:
    ```bash
    scripts/dev-shell.sh bash scripts/build-musl.sh --ensure --core-only
@@ -343,8 +384,8 @@ part of the task. Build or fetch what is missing:
    (cd host && npm ci)
    ```
 4. **Package artifacts the suites load** — the MariaDB and Perl VFS images, the
-   program `.wasm` files, and the browser VFS products. `./run.sh setup` builds
-   all of them from source into `local-binaries/`; there is no separate fetch
+   program `.wasm` files, and the browser VFS products. `./run.sh setup --all`
+   builds all of them from source into `local-binaries/`; there is no separate fetch
    step. (`scripts/fetch-binaries.sh` was deleted when binary resolution became
    local-first; do not look for it. A single package can be resolved on demand
    with `cargo xtask build-deps resolve <name>`, which prefers the per-user

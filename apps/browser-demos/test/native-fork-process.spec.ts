@@ -99,8 +99,7 @@ for (const arch of ["wasm32", "wasm64"] as const) {
           test.info().annotations.push({
             type: "engine-boundary",
             description: "WebKit exhausts its native stack at 4,096 source calls. "
-              + "The unchanged wasm32 Walrus oracle reproduces this boundary; "
-              + "the wide-frame cases check allocation recovery.",
+              + "The wide-frame cases check allocation recovery.",
           });
           await test.step("checks the 4,096-call WebKit stack boundary", async () => {
             expect(result.exitCode, diagnostic).toBe(139);

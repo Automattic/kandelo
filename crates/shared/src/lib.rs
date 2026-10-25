@@ -206,7 +206,16 @@ pub mod process_layout;
 ///     a host-backed shutdown keeps its
 ///     connection handle until close, and accepted connections report the
 ///     routed local address. docs/abi-versioning.md ("ABI 50") lists each.
-pub const ABI_VERSION: u32 = 50;
+/// 51: epoll notification delivery, edge/one-shot rearming, registration
+///     lifetime, nesting validation, fairness, and stream half-close readiness.
+/// 52: processes import `kernel_heap_safepoint`. The syscall glue bounds its
+///     channel wait and calls it after a timeout so a JavaScriptCore VM can
+///     finish a collection that is suspected to be handed to a blocked thread
+///     and to starve other workers' collections. docs/abi-versioning.md
+///     ("ABI 52").
+/// 53: the extended-attribute syscalls marshal their arguments and carry
+///     channel scalar contracts. docs/abi-versioning.md ("ABI 53") lists each.
+pub const ABI_VERSION: u32 = 53;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -259,6 +268,10 @@ pub mod platform_limits {
     pub const HOST_NAME_MAX_BYTES: usize = 256;
     /// Linux memfd name content is limited to 249 bytes, plus its NUL.
     pub const MEMFD_NAME_MAX_BYTES: usize = 250;
+    /// Linux XATTR_NAME_MAX (255 bytes of name) plus its terminating NUL.
+    pub const XATTR_NAME_MAX_BYTES: usize = 256;
+    /// Linux XATTR_SIZE_MAX: the largest value one xattr call accepts.
+    pub const XATTR_SIZE_MAX_BYTES: usize = 65_536;
     /// Largest one-entry argv/environment transport admitted by the host.
     ///
     /// This is not POSIX ARG_MAX; complete argv+env representation remains
@@ -1408,6 +1421,11 @@ pub mod poll {
     pub const POLLERR: i16 = 0x0008;
     pub const POLLHUP: i16 = 0x0010;
     pub const POLLNVAL: i16 = 0x0020;
+    pub const POLLRDNORM: i16 = 0x0040;
+    pub const POLLRDBAND: i16 = 0x0080;
+    pub const POLLWRNORM: i16 = 0x0100;
+    pub const POLLWRBAND: i16 = 0x0200;
+    pub const POLLRDHUP: i16 = 0x2000;
 }
 
 /// Host-observable readiness facts for a host-delegated network connection.
@@ -1474,6 +1492,17 @@ pub mod net_readiness {
 
 /// Epoll event constants.
 pub mod epoll {
+    pub const EPOLLPRI: u32 = 0x0002;
+    pub const EPOLLRDNORM: u32 = 0x0040;
+    pub const EPOLLRDBAND: u32 = 0x0080;
+    pub const EPOLLWRNORM: u32 = 0x0100;
+    pub const EPOLLWRBAND: u32 = 0x0200;
+    pub const EPOLLRDHUP: u32 = 0x2000;
+    pub const EPOLLEXCLUSIVE: u32 = 1 << 28;
+    pub const EPOLLWAKEUP: u32 = 1 << 29;
+    pub const EPOLLONESHOT: u32 = 1 << 30;
+    pub const EPOLLET: u32 = 1 << 31;
+    pub const MAX_EVENTS: i32 = i32::MAX / 16;
     pub const EPOLLIN: u32 = 0x0001;
     pub const EPOLLOUT: u32 = 0x0004;
     pub const EPOLLERR: u32 = 0x0008;
@@ -2868,6 +2897,25 @@ pub mod abi {
         results: &[I32],
     };
 
+    /// Process-worker import the syscall glue calls after a bounded wait
+    /// times out (ABI 52).
+    ///
+    /// JavaScriptCore is suspected to keep a blocked worker's heap access, so
+    /// a collection that began in its VM could finish only when that thread
+    /// allocates from JavaScript (suspected cause, not a confirmed WebKit
+    /// defect; see docs/browser-support.md). The host import allocates, then
+    /// returns the next wait bound in nanoseconds, or a negative value when
+    /// its engine needs no bound.
+    /// `libc/glue/channel_syscall.c` declares it outside `libc.a`, so the
+    /// package import audit adds it to the SDK contract from this
+    /// declaration.
+    pub const HEAP_SAFEPOINT_PROCESS_IMPORT: ProgramArtifactImport = ProgramArtifactImport {
+        module: "kernel",
+        name: "kernel_heap_safepoint",
+        params: &[],
+        results: &[I64],
+    };
+
     pub const WPK_FORK_REQUIRED_IMPORTS: &[ProgramArtifactImport] = &[
         ProgramArtifactImport {
             module: WPK_FORK_FRAME_IMPORT_MODULE,
@@ -3539,6 +3587,28 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_create_process"),
         HostAdapterKernelExport::required("kernel_create_process_with_stdio"),
         HostAdapterKernelExport::required("kernel_dequeue_signal"),
+        HostAdapterKernelExport::required("kernel_epoll_wait_finish"),
+        HostAdapterKernelExport::required("kernel_epoll_wait_token"),
+        HostAdapterKernelExport::required("kernel_exchange_activate"),
+        HostAdapterKernelExport::required("kernel_exchange_add_entry"),
+        HostAdapterKernelExport::required("kernel_exchange_agent_failed"),
+        HostAdapterKernelExport::required("kernel_exchange_begin"),
+        HostAdapterKernelExport::required("kernel_exchange_cancel"),
+        HostAdapterKernelExport::required("kernel_exchange_commit"),
+        HostAdapterKernelExport::required("kernel_exchange_configure"),
+        HostAdapterKernelExport::required("kernel_exchange_configure_activation"),
+        HostAdapterKernelExport::required("kernel_exchange_consumer_present"),
+        HostAdapterKernelExport::required("kernel_exchange_drain_notifications"),
+        HostAdapterKernelExport::required("kernel_exchange_init"),
+        HostAdapterKernelExport::required("kernel_exchange_output_end"),
+        HostAdapterKernelExport::required("kernel_exchange_read_output"),
+        HostAdapterKernelExport::required("kernel_exchange_release_output"),
+        HostAdapterKernelExport::required("kernel_exchange_set_listener"),
+        HostAdapterKernelExport::required("kernel_exchange_stream_end"),
+        HostAdapterKernelExport::required("kernel_exchange_stream_push"),
+        HostAdapterKernelExport::required("kernel_exchange_stream_read"),
+        HostAdapterKernelExport::required("kernel_exchange_stream_start"),
+        HostAdapterKernelExport::required("kernel_exchange_take_pending"),
         HostAdapterKernelExport::required("kernel_exec_commit"),
         HostAdapterKernelExport::required("kernel_exec_target_cancel"),
         HostAdapterKernelExport::required("kernel_exec_target_prepare"),
@@ -3585,6 +3655,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_process_metadata_commit"),
         HostAdapterKernelExport::required("kernel_process_metadata_stage"),
         HostAdapterKernelExport::required("kernel_process_secure_exec"),
+        HostAdapterKernelExport::optional_until("kernel_publish_process_exit", 53, 54),
         HostAdapterKernelExport::required("kernel_publish_spawn_child"),
         HostAdapterKernelExport::required("kernel_reap_exited_child"),
         HostAdapterKernelExport::required("kernel_remove_process"),
@@ -3788,6 +3859,18 @@ pub mod abi {
         pub const SYS_SHMAT: u32 = 345;
         pub const SYS_SHMDT: u32 = 346;
         pub const SYS_SHMCTL: u32 = 347;
+        pub const SYS_FGETXATTR: u32 = 350;
+        pub const SYS_FLISTXATTR: u32 = 351;
+        pub const SYS_FREMOVEXATTR: u32 = 352;
+        pub const SYS_FSETXATTR: u32 = 353;
+        pub const SYS_GETXATTR: u32 = 354;
+        pub const SYS_LISTXATTR: u32 = 355;
+        pub const SYS_LGETXATTR: u32 = 356;
+        pub const SYS_LLISTXATTR: u32 = 357;
+        pub const SYS_LREMOVEXATTR: u32 = 358;
+        pub const SYS_LSETXATTR: u32 = 359;
+        pub const SYS_REMOVEXATTR: u32 = 360;
+        pub const SYS_SETXATTR: u32 = 361;
         pub const SYS_SIGNALFD: u32 = 377;
         pub const SYS_EPOLL_CREATE: u32 = 378;
         pub const SYS_EPOLL_WAIT: u32 = 379;
@@ -4129,6 +4212,54 @@ pub mod abi {
             AbiSyscallNumber {
                 name: "Shmctl",
                 number: SYS_SHMCTL,
+            },
+            AbiSyscallNumber {
+                name: "Fgetxattr",
+                number: SYS_FGETXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Flistxattr",
+                number: SYS_FLISTXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Fremovexattr",
+                number: SYS_FREMOVEXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Fsetxattr",
+                number: SYS_FSETXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Getxattr",
+                number: SYS_GETXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Listxattr",
+                number: SYS_LISTXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Lgetxattr",
+                number: SYS_LGETXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Llistxattr",
+                number: SYS_LLISTXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Lremovexattr",
+                number: SYS_LREMOVEXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Lsetxattr",
+                number: SYS_LSETXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Removexattr",
+                number: SYS_REMOVEXATTR,
+            },
+            AbiSyscallNumber {
+                name: "Setxattr",
+                number: SYS_SETXATTR,
             },
             AbiSyscallNumber {
                 name: "Signalfd",

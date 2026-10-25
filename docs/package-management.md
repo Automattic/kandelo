@@ -68,18 +68,26 @@ programs, we need:
 
 ## Local DAG build
 
-From the repository root, build all seven local VFS products and their
-transitive package dependencies with:
+From the repository root, build what the supported products demand with:
 
 ```bash
-./run.sh local-build
+./run.sh local-build         # what the VFS products and the browser app need
+./run.sh local-build --all   # every package the supported set declares
 ```
 
-The wrapper uses an active direnv/Nix development shell when available and
-enters the repository dev shell only when necessary. It selects every active
-product, uses 16 concurrent jobs, stores verified sources below
-`$HOME/.cache/kandelo/source-only`, and publishes the validated projection to
-`local-binaries/source-only-v1`.
+By default the build selects the closure of every active product in
+`packages/sets/local-supported.toml`, plus the packages that own the browser
+app's own `@binaries` imports (the `demanded` selection). Packages that only
+tests use, such as wasm64 libraries and the libevent and MariaDB test
+programs, are left out. `--all` builds every declared package; `./run.sh
+test` does that itself before running suites, and a direct Vitest or
+conformance run needs `./run.sh local-build --all` (or `./run.sh setup
+--all`) first. A default build after an `--all` build keeps the extra
+packages published while they are still current.
+
+The wrapper enters the repository dev shell, uses 16 concurrent jobs, stores
+verified sources below `$HOME/.cache/kandelo/source-only`, and publishes the
+validated projection to `local-binaries/source-only-v1`.
 
 Before planning, the engine (every `local-build run` and `xtask bootstrap`,
 so `./run.sh setup` too) checks the repository's root `node_modules/`
@@ -89,6 +97,27 @@ package builds (rootfs, shell, coreutils-docs, and others) execute
 `node_modules/tsx` from the checkout but must not install it themselves, so
 the caller provisions the locked tree. A tree that already matches, such as
 one CI installed, is left untouched.
+
+`./run.sh setup` builds this same graph. `./run.sh local-build` runs `xtask
+bootstrap packages`, the SDK prerequisites and the same engine step setup's
+`xtask bootstrap` runs, and both take their selection from one function
+(`supported_tree_products`), so setup publishes every node local-build would
+for the same checkout; `--all` works the same way for both. Neither notices a
+later checkout change: after switching branches or pulling, the published
+projection still reflects the tree it was built from, so run `./run.sh
+local-build` (or `./run.sh local-build --plan` to see what is stale) again.
+
+A supported-tree build also checks the binaries its consumers name
+(`scripts/check-browser-binary-supply.ts`). Right after planning, before any
+node builds, every binary the browser app imports must be an output of a
+package the supported set builds; what images need is their products'
+dependency closure, which the planner already enforces. After publication,
+each browser import, the kernel, rootfs and image-writer artifacts the
+browser loads through virtual modules, and every lazy body each active
+product's published image references must be a regular file of the
+declared size in `local-binaries/source-only-v1`. Either failure ends the
+run, naming the path and what needs it. Narrower selections and custom
+output roots skip both checks.
 
 The default output ends with a concise node, cache, build, and product
 summary. Pass `--json` to print the canonical machine-readable result instead:
@@ -742,6 +771,12 @@ requires regular non-symlink runtime files after fresh builds and cache
 hits. It mirrors them at
 `{local-,}binaries/programs/<arch>/<package>/<artifact>` independently of the
 number of `[[outputs]]` entries.
+
+Optional [package session procedures](package-sessions.md) use this same
+runtime-file contract. Packages declare offer setup forms, participant join
+forms, and launch arguments; images install their manifests for runtime
+discovery even when the executables remain lazy. They are package capabilities
+and do not require adding demo profiles.
 
 Build scripts install declared artifacts through
 `scripts/install-local-binary.sh`. When
@@ -1738,10 +1773,15 @@ extracts in-place into
 `<cache_root>/sources/pcre2-source-10.44-rev1-<sha>/`. No
 `<arch>` segment because source trees are arch-agnostic.
 
-The MariaDB manifest (`packages/registry/mariadb/package.toml`):
+The MariaDB package (`packages/registry/mariadb/package.toml`) ships `mariadbd.wasm`, the upstream interactive client
+`mariadb.wasm` (with its bundled GPLv2-compatible line editor), and the
+`mysqltest.wasm` test runner. The shell exposes the interactive client as `mariadb` and `mysql`;
+the test runner remains available in MariaDB test images. The recipe builds
+target terminfo privately from the declared `ncurses-source` dependency on both
+architectures; it does not substitute libc or a host library for curses.
 
 ```toml
-depends_on = ["pcre2-source@10.44"]
+depends_on = ["pcre2-source@10.44", "ncurses-source@6.5", "libcxx@21.1.7"]
 ```
 
 The MariaDB build script (`packages/registry/mariadb/build-mariadb.sh`,
@@ -1836,24 +1876,32 @@ Real issues encountered during D.1–D.5 and how to avoid them.
 
 ### 5. Optimization-level workarounds
 
-A few cross-compiles trip LLVM 21 wasm32 codegen bugs at higher
-`-O` levels. The migration pattern doesn't change this — these
-are pre-existing issues that surface independent of the cache —
-but consumers must keep the per-file workaround in place when
-porting their build script:
+A few cross-compiles use a lower `-O` level for specific files
+because of a suspected LLVM 21 wasm32 codegen bug at higher levels.
+None of these has a standalone reduction yet, so the compiler bug
+is unverified; the per-file rules stay until one exists or the
+fault is found elsewhere. The migration pattern doesn't change
+this — these are pre-existing issues that surface independent of
+the cache — but consumers must keep the per-file workaround in
+place when porting their build script:
 
 - **Erlang `erl_unicode.c`** — compiled at `-O1` (rest of OTP
-  builds at `-O2`). At `-O2`, LLVM miscompiles aggregate
-  initialization of structs that hold shadow-stack pointers,
+  builds at `-O2`). At `-O2`, aggregate initialization of structs
+  that hold shadow-stack pointers appears to be miscompiled,
   breaking ESTACK iodata traversal. Adding `fprintf` inside the
-  function changes code layout enough to mask the bug, hence the
-  Heisenbug character. See `packages/registry/erlang/build-erlang.sh`
-  comments.
-- **Redis `tls.c`** — at `-O1` and above, LLVM 21.1.8 crashes
-  inside `llvm::AsmPrinter::emitGlobalVariable`. Currently the
-  file is stubbed out to dodge the issue; re-enabling TLS for
-  the Redis build would require a per-target Makefile rule that
-  compiles just `tls.c` at `-O0`.
+  function changes code layout enough to mask the failure, hence
+  the Heisenbug character. Suspected, not verified: see the
+  registry entry
+  [`LLVM-WASM32-O2-ERLANG-MISCOMPILE`](../tests/runtime-workarounds/LLVM-WASM32-O2-ERLANG-MISCOMPILE/entry.md)
+  and the `packages/registry/erlang/build-erlang.sh` comments.
+- **Redis `tls.c`** — the build notes record LLVM 21.1.8 crashing
+  inside `llvm::AsmPrinter::emitGlobalVariable` at `-O1` and above.
+  That crash claim is unverified and has no registry entry: the
+  Redis build has TLS turned off, and stubbing `tls.c` out is a
+  configuration choice that follows from that, not a workaround
+  tied to a measured compiler defect. Re-enabling TLS would first
+  need the crash reproduced; if it holds, a per-target Makefile
+  rule could compile just `tls.c` at `-O0`.
 
 The general pattern: identify the offending file, give it a
 per-target rule in the consumer's Makefile (or invoke `clang`
@@ -2119,7 +2167,7 @@ Rejected at parse time (the parser surfaces a clear error):
 
 When `[build].script_path` is absent, the resolver fetches `source.url`,
 verifies `source.sha256`, and extracts in-place. Format detection
-is by URL extension: `.tar.gz` / `.tgz`, `.tar.xz` / `.txz`,
+is by URL extension: `.tar.gz` / `.tgz` / `.crate`, `.tar.xz` / `.txz`,
 `.tar.bz2` / `.tbz2` / `.tbz`, `.tar.zst` / `.tzst`, `.zip`, and
 plain `.tar`. Unrecognized extensions fail loudly rather than
 guessing.

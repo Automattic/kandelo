@@ -90,6 +90,21 @@ import {
   type PreparedExecKernel,
 } from "./exec-target";
 import type { DeferredFetchSettled } from "./vfs/rootfs-lazy-archives";
+import {
+  decodeNotifications,
+  encodeEntryRecord,
+  EXCHANGE_ID_BYTES,
+  ExchangeSourceCache,
+  EXCHANGE_AGENT_ENV,
+  EXCHANGE_AGENT_PATH,
+  runExchangeRequest,
+  type ExchangeActivation,
+  type ExchangeConsumerState,
+  type ExchangeEntryRecord,
+  type ExchangeNotification,
+  type ExchangeRangeRequester,
+  type ExchangeWorkerRequest,
+} from "./exchange-host";
 import { WasmModuleCache } from "./wasm-module-cache";
 import {
   buildRawHttpRequest,
@@ -152,6 +167,7 @@ import {
   PROCESS_STATE_STOPPED,
   POSIX_ARG_MAX_BYTES,
   POSIX_NAME_MAX_BYTES,
+  XATTR_SIZE_MAX_BYTES,
   POSIX_NGROUPS_MAX,
   POSIX_PATH_MAX_BYTES,
   PROCESS_FORK_MODE_FORK,
@@ -620,6 +636,33 @@ function boundedChannelArgumentSize(
   if (syscallNr === ABI_SYSCALLS.GetEnv && argIndex === 1) {
     return PROCESS_METADATA_ENTRY_MAX_BYTES;
   }
+  // No process has more than NGROUPS_MAX supplementary groups, so a larger
+  // getgroups buffer is valid (POSIX) and needs only that many entries.
+  if (syscallNr === ABI_SYSCALLS.Getgroups && argIndex === 1) {
+    return POSIX_NGROUPS_MAX * 4;
+  }
+  // Linux clamps an xattr value or name-list buffer to XATTR_SIZE_MAX
+  // (XATTR_LIST_MAX for lists, the same 64 KiB): no result can be longer.
+  if (
+    (
+      (
+        syscallNr === ABI_SYSCALLS.Getxattr
+        || syscallNr === ABI_SYSCALLS.Lgetxattr
+        || syscallNr === ABI_SYSCALLS.Fgetxattr
+      )
+      && argIndex === 2
+    )
+    || (
+      (
+        syscallNr === ABI_SYSCALLS.Listxattr
+        || syscallNr === ABI_SYSCALLS.Llistxattr
+        || syscallNr === ABI_SYSCALLS.Flistxattr
+      )
+      && argIndex === 1
+    )
+  ) {
+    return XATTR_SIZE_MAX_BYTES;
+  }
   if (
     (
       syscallNr === ABI_SYSCALLS.Recv
@@ -767,6 +810,19 @@ function validateCompleteChannelInputSize(
     || syscallNr === SYS_SENDTO && argIndex === 4;
   if (isSocketAddress) validateSocketAddressInputSize(size);
   if (
+    (
+      syscallNr === ABI_SYSCALLS.Setxattr
+      || syscallNr === ABI_SYSCALLS.Lsetxattr
+      || syscallNr === ABI_SYSCALLS.Fsetxattr
+    )
+    && argIndex === 2
+    && size > XATTR_SIZE_MAX_BYTES
+  ) {
+    // Linux XATTR_SIZE_MAX. Refusing here avoids copying a value no
+    // filesystem could accept.
+    throw new KernelScratchError("xattr value exceeds XATTR_SIZE_MAX", E2BIG);
+  }
+  if (
     syscallNr === ABI_SYSCALLS.Setsockopt
     && argIndex === 3
     && size > KERNEL_SCRATCH_SOCKET_OPTION_INPUT_MAX_BYTES
@@ -776,11 +832,10 @@ function validateCompleteChannelInputSize(
       EINVAL,
     );
   }
+  // setgroups must refuse a list longer than NGROUPS_MAX (EINVAL);
+  // getgroups instead bounds its buffer (see boundedChannelArgumentSize).
   if (
-    (
-      syscallNr === ABI_SYSCALLS.Getgroups
-      || syscallNr === ABI_SYSCALLS.Setgroups
-    )
+    syscallNr === ABI_SYSCALLS.Setgroups
     && argIndex === 1
     && size > POSIX_NGROUPS_MAX * 4
   ) {
@@ -986,8 +1041,8 @@ const SIGSEGV = 11;
  *  glue after Rust has already committed process death (see
  *  killAllBlockedForTeardown and borrowed-process completion below). It is never
  *  delivered as a catchable guest signal, so the glue treats it unambiguously.
- *  [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — part of the workaround; see
- *  docs/jsc-terminate-atomics-wait-workaround.md. */
+ *  [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+ *  Part of the workaround; see docs/jsc-terminate-atomics-wait-workaround.md. */
 const SIGKILL = 9;
 
 /** Ioctl syscall number */
@@ -1117,6 +1172,9 @@ const F_OFD_GETLK = 36;
 const F_OFD_SETLK = 37;
 const F_OFD_SETLKW = 38;
 const LOCK_NB = 4;
+
+/** The kernel's synthetic init (`process_table::SYNTHETIC_INIT_PID`). */
+const SYNTHETIC_INIT_PID = 1;
 
 /** Retry interval for EAGAIN polling (ms) */
 const EAGAIN_RETRY_MS = 1;
@@ -1732,6 +1790,7 @@ interface ChannelInfo {
   readinessFinalCheck?: boolean;
   /** A temporary epoll_pwait sigmask swap is active for this parked wait. */
   pollSigmaskSwapped?: boolean;
+  epollWaitToken?: bigint;
 }
 
 /**
@@ -3882,6 +3941,7 @@ export class CentralizedKernelWorker {
           new Uint8Array(addr),
           port,
           {
+            kernelReceiver: String(pid),
             receive: (datagram) => this.injectUdpDatagram(pid, datagram),
           },
         );
@@ -6373,6 +6433,7 @@ export class CentralizedKernelWorker {
         // tree to the in-kernel rootfs, before any guest filesystem op runs.
         enableKernelTmpfs(instance);
         this.#maybeLoadKernelRootfs(instance);
+        this.#initExchange(instance);
 
         // Blocking-wait deadlines are kernel state on CLOCK_MONOTONIC, not
         // host wall-clock arithmetic. Hand that authority over before any
@@ -10544,6 +10605,15 @@ export class CentralizedKernelWorker {
     this.pendingSelectRetries?.delete(channel);
     this.closeWaitDeadline(channel, entry);
     channel.readinessFinalCheck = undefined;
+    if (channel.epollWaitToken !== undefined) {
+      const token = channel.epollWaitToken;
+      channel.epollWaitToken = undefined;
+      const instance = this.#kernelInstanceIfAvailableForEntry(entry);
+      const finish = instance?.exports.kernel_epoll_wait_finish as
+        ((pid: number, tid: number, token: bigint) => number) | undefined;
+      if (instance && !finish) throw new Error("kernel lacks kernel_epoll_wait_finish");
+      finish?.(channel.pid, this.guestTidForChannel(channel), token);
+    }
 
     this.removePendingPipeReader(channel);
     this.removePendingPipeWriter(channel);
@@ -11322,6 +11392,7 @@ export class CentralizedKernelWorker {
     const mem = new Uint8Array(memory.buffer);
     let len = 0;
     while (len < maxLen && ptr + len < mem.length && mem[ptr + len] !== 0) len++;
+    // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
     // TextDecoder.decode() rejects views over SharedArrayBuffer in Chrome;
     // copy into a non-shared scratch first.
     const copy = new Uint8Array(len);
@@ -12152,14 +12223,14 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Execute one synchronous MAP_SHARED backend operation under a real entry
+   * Execute one synchronous backend operation under a real entry
    * lease, or only while the gate is completely idle for host-only teardown.
    *
    * WHY: PlatformIO implementations can synchronously call back into public
    * worker roots. The exact scope keeps void ingress queued and result-bearing
    * ingress rejected until the caller validates its staged result and commits.
    */
-  #invokeSharedMmapHostOperation<T>(
+  #invokeSerializedHostOperation<T>(
     entry: KernelWorkerEntryContext | undefined,
     operation: () => T,
   ): T {
@@ -12167,7 +12238,7 @@ export class CentralizedKernelWorker {
       return entry.invokeSerializedHostOperation(operation);
     }
     return this.#kernelEntryGate.runSerializedHostOperation(
-      "MAP_SHARED host operation",
+      "serialized host operation",
       operation,
     );
   }
@@ -13311,20 +13382,24 @@ export class CentralizedKernelWorker {
         }
 
         if (desc.size.type === "arg") {
-          const simpleCount =
-            (desc.size.multiplier ?? 1) === 1
-            && (desc.size.add ?? 0) === 0;
+          const multiplier = desc.size.multiplier ?? 1;
+          const simpleCount = multiplier === 1 && (desc.size.add ?? 0) === 0;
+          // An entry count (getgroups' gid_t count) may carry a bounded
+          // complete-result maximum too, in bytes.
+          const entryCount = multiplier > 1 && (desc.size.add ?? 0) === 0;
           const semanticCeiling = simpleCount
             ? shortChannelArgumentSize(syscallNr, desc.argIndex)
               ?? boundedChannelArgumentSize(syscallNr, desc.argIndex)
-            : undefined;
+            : entryCount
+              ? boundedChannelArgumentSize(syscallNr, desc.argIndex)
+              : undefined;
           if (semanticCeiling !== undefined && size > semanticCeiling) {
             // Only the two short-safe calls or a separately generated
             // complete-result maximum may rewrite a caller count. Every other
             // variable extent retains its exact operation semantics and uses a
             // Rust-owned large channel below.
             size = semanticCeiling;
-            adjustedArgs[desc.size.argIndex] = size;
+            adjustedArgs[desc.size.argIndex] = Math.floor(size / multiplier);
           }
         }
 
@@ -15549,17 +15624,19 @@ export class CentralizedKernelWorker {
   /**
    * Host-teardown reclamation.
    *
-   * [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug
-   * is fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
+   * [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+   * WORKAROUND, remove when the engine bug is fixed; see
+   * docs/jsc-terminate-atomics-wait-workaround.md.
    *
-   * On JSC (Safari, and Bun via `bun`'s JavaScriptCore), `Worker.terminate()`
-   * cannot kill (or free the memory of) a worker parked in `Atomics.wait` on
-   * its syscall channel — which is where every idle/blocked process worker sits
-   * (accept, read, poll, select, sleep, futex, the channel round-trip).
-   * Terminating them directly leaks their threads + committed working set, so
-   * each image switch accumulates a whole machine and the tab OOMs. V8 (Chrome,
-   * Node) interrupts the wait on terminate and reclaims, so this is a no-op cost
-   * there and is invoked unconditionally by both host entries for parity.
+   * Where the defect is present (Bun today; older WebKit and Safari builds, see
+   * the registry entry), `Worker.terminate()` cannot kill (or free the memory
+   * of) a worker parked in `Atomics.wait` on its syscall channel — which is
+   * where every idle/blocked process worker sits (accept, read, poll, select,
+   * sleep, futex, the channel round-trip). Terminating them directly leaks
+   * their threads + committed working set, so each image switch accumulates a
+   * whole machine and the tab OOMs. V8 (Chrome, Node) interrupts the wait on
+   * terminate and reclaims, so this is a no-op cost there and is invoked
+   * unconditionally by both host entries for parity.
    *
    * For every worker currently parked at CH_PENDING we complete its syscall
    * with EINTR AND queue a SIGKILL into the channel signal slot. The glue's
@@ -15680,20 +15757,24 @@ export class CentralizedKernelWorker {
    * so it runs the guest glue's cooperative `kernel_exit` and returns to its JS
    * event loop, where a subsequent `Worker.terminate()` can actually reclaim it.
    *
-   * [JSC-TERMINATE-ATOMICS-WAIT-LEAK] `terminate_process` (host force-kill; how
-   * a terminal session's process is torn down on every machine switch) used to
-   * hard-terminate the worker while it was still parked in `Atomics.wait`. On
-   * JavaScriptCore (Safari, Bun) `Worker.terminate()` cannot reap an
-   * `Atomics.wait`-parked worker, so its OS thread + committed working set
-   * leaked — one per switch, until Safari/iOS OOMed. `killAllBlockedForTeardown`
-   * fixes the same class at whole-machine destroy, but is unusable for a single
-   * `kill(pid)` because it wakes (and thus exits) *every* live process. This
-   * variant is scoped so sibling processes keep running (e.g. tearing down one
-   * of several servers). Delivering SIGKILL through the ordinary signal path is
-   * not sufficient: it only wakes *registered* blockers (signal-waits, futex,
-   * wait4, pipe readers), never a channel merely parked at `CH_PENDING` on a
-   * blocked `read`/`accept`. The wake must be driven off `CH_STATUS`, exactly as
-   * the global method does. See docs/jsc-terminate-atomics-wait-workaround.md.
+   * [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+   * `terminate_process` (host force-kill; how a terminal session's process is
+   * torn down on every machine switch) used to hard-terminate the worker while
+   * it was still parked in `Atomics.wait`. On Playwright webkit-2336
+   * (2026-09) the app then leaked one `WebCore: Worker` thread per switch,
+   * sampled in `operationMemoryAtomicWait32`, until this per-process wake was
+   * added. The standalone reduction was flat on that same build, so whether
+   * that leak was this engine defect or had another cause is unresolved (see
+   * the entry). Bun 1.3.3 reproduces the reduction today.
+   * `killAllBlockedForTeardown` fixes the same class at whole-machine destroy,
+   * but is unusable for a single `kill(pid)` because it wakes (and thus exits)
+   * *every* live process. This variant is scoped so sibling processes keep
+   * running (e.g. tearing down one of several servers). Delivering SIGKILL
+   * through the ordinary signal path is not sufficient: it only wakes
+   * *registered* blockers (signal-waits, futex, wait4, pipe readers), never a
+   * channel merely parked at `CH_PENDING` on a blocked `read`/`accept`. The
+   * wake must be driven off `CH_STATUS`, exactly as the global method does. See
+   * docs/jsc-terminate-atomics-wait-workaround.md.
    */
   killBlockedProcessForTeardown(pid: number): Promise<Set<number>> {
     if (this.#kernelFatalError !== null) {
@@ -15910,7 +15991,7 @@ export class CentralizedKernelWorker {
 
   /** Complete a blocked channel with EINTR and queue SIGKILL so the guest glue
    *  runs its cooperative exit. See {@link killAllBlockedForTeardown}.
-   *  [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — see
+   *  [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK] — see
    *  docs/jsc-terminate-atomics-wait-workaround.md. */
   private wakeChannelForTeardownExit(
     channel: ChannelInfo,
@@ -16556,6 +16637,13 @@ export class CentralizedKernelWorker {
         this.wakeAllBlockedRetries(true);
       });
     }
+    // Kandelo exchange: only while the host has exchange activity, so idle
+    // machines add no export call per syscall.
+    if (this.#exchangeActive()) {
+      const takePending = this.#kernelInstanceForEntry(entry).exports
+        .kernel_exchange_take_pending as (() => number) | undefined;
+      if (takePending?.() === 1) this.#drainExchangeNotificationsWithinKernelEntry(entry);
+    }
     const drainFn = this.#kernelInstanceForEntry(entry).exports.kernel_drain_wakeup_events as
       | ((outPtr: KernelPointer, outLen: number, maxEvents: number) => number)
       | undefined;
@@ -17181,6 +17269,15 @@ export class CentralizedKernelWorker {
   ): void {
     this.closeWaitDeadline(channel, entry);
     channel.readinessFinalCheck = undefined;
+    if (channel.epollWaitToken !== undefined) {
+      const token = channel.epollWaitToken;
+      channel.epollWaitToken = undefined;
+      const instance = this.#kernelInstanceIfAvailableForEntry(entry);
+      const finish = instance?.exports.kernel_epoll_wait_finish as
+        ((pid: number, tid: number, token: bigint) => number) | undefined;
+      if (instance && !finish) throw new Error("kernel lacks kernel_epoll_wait_finish");
+      finish?.(channel.pid, this.guestTidForChannel(channel), token);
+    }
 
     if (channel.pollSigmaskSwapped) {
       channel.pollSigmaskSwapped = undefined;
@@ -19630,6 +19727,7 @@ export class CentralizedKernelWorker {
     interruptCaughtSignal: boolean,
     entry: KernelWorkerEntryContext,
   ): boolean {
+    if (this.#finishSignalTermination(channel, entry)) return true;
     const deliveredSignal = this.#dequeueSignalForDelivery(channel, entry);
     if (this.#finishSignalTermination(channel, entry)) return true;
     if (interruptCaughtSignal && deliveredSignal > 0) {
@@ -20411,10 +20509,12 @@ export class CentralizedKernelWorker {
   private completeEpollSignalOutcome(
     channel: ChannelInfo,
     entry: KernelWorkerEntryContext,
+    eventsReady = false,
   ): boolean {
+    if (this.#finishSignalTermination(channel, entry)) return true;
     const deliveredSignal = this.#dequeueSignalForDelivery(channel, entry);
     if (this.#finishSignalTermination(channel, entry)) return true;
-    if (deliveredSignal > 0) {
+    if (deliveredSignal > 0 && !eventsReady) {
       this.completeChannelRawAndRelisten(
         channel,
         -EINTR_ERRNO,
@@ -20428,9 +20528,8 @@ export class CentralizedKernelWorker {
 
   /**
    * Handle epoll_pwait / epoll_wait entirely on the host side.
-   * Converts the epoll interest list to a poll syscall, calls
-   * kernel_handle_channel with SYS_POLL, then maps results back
-   * to epoll_event format and writes to process memory.
+   * The kernel computes and consumes a readiness batch. This shared Node and
+   * browser path owns only the deadline, signal scope, parking, and copyout.
    */
   private handleEpollPwait(
     channel: ChannelInfo,
@@ -20447,7 +20546,7 @@ export class CentralizedKernelWorker {
     const timeoutMs = origArgs[3];
     // origArgs[4] = sigmask ptr (process-space), origArgs[5] = sigset size
 
-    if (maxevents <= 0) {
+    if (maxevents <= 0 || maxevents > Math.floor(0x7fffffff / STRUCT_SIZE_WASM_EPOLL_EVENT)) {
       this.completeChannelRawAndRelisten(channel, -22, 22, entry); // -EINVAL
       return;
     }
@@ -20456,6 +20555,14 @@ export class CentralizedKernelWorker {
       return;
     }
     try {
+      // Reject an invalid output range before installing a mask whose signal
+      // delivery scope belongs to a kernel wait that has not started yet.
+      eventsPtr = this.checkedProcessRange(
+        channel,
+        rawEventsPtr,
+        maxevents * STRUCT_SIZE_WASM_EPOLL_EVENT,
+        "epoll output events",
+      ).pointer;
       if (syscallNr === SYS_EPOLL_PWAIT) {
         const rawMaskPointer = rawArgs?.[4] ?? BigInt(origArgs[4]);
         if (rawMaskPointer !== 0n) {
@@ -20482,8 +20589,9 @@ export class CentralizedKernelWorker {
           // it swapped while parked, so a signal arriving mid-wait (foot's
           // SIGCHLD reaper) passes sendSignalToProcess's blocked check and
           // wakes the retry. kernel_dequeue_signal restores the saved mask
-          // after delivering the signal that ended the wait;
-          // clearReadinessWait restores it on every other completion.
+          // after delivering the signal that interrupted the wait. Completed
+          // kernel attempts restore it before the signal boundary;
+          // clearReadinessWait handles host deadlines and cancellation.
           const swapMask = this.#kernelInstanceForEntry(entry).exports
             .kernel_swap_poll_sigmask as
             | ((pid: number, tid: number, mask: bigint) => number)
@@ -20504,20 +20612,15 @@ export class CentralizedKernelWorker {
           channel.pollSigmaskSwapped = true;
         }
       }
-      eventsPtr = this.checkedProcessRange(
-        channel,
-        rawEventsPtr,
-        maxevents * STRUCT_SIZE_WASM_EPOLL_EVENT,
-        "epoll output events",
-      ).pointer;
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
       this.#rejectScratchTransfer(channel, error, entry);
       return;
     }
 
-    // Dispatch epoll_pwait through the kernel as a non-blocking readiness check
-    // (timeout 0). This host still owns the wait/retry loop below; the kernel
+    // Dispatch one readiness attempt. A nonzero timeout lets the kernel retain
+    // an exact wait lease on EAGAIN; Rust never sleeps here. This host owns the
+    // wait/retry loop below; the kernel
     // owns the interest list, validates `epfd` (EBADF for a descriptor that is
     // not open, EINVAL for one that is not an epoll instance), computes
     // readiness (sys_epoll_pwait), and writes the ready epoll_events into the
@@ -20548,9 +20651,9 @@ export class CentralizedKernelWorker {
           "u64-le",
         );
         kernelView.setBigInt64(CH_ARGS + 2 * CH_ARG_SIZE, BigInt(maxKernelEvents), true);
-        // timeout 0: this host owns the blocking wait, so the kernel does a
-        // single non-blocking readiness evaluation each dispatch.
-        kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, 0n, true);
+        // Zero is a probe; -1 permits an EAGAIN lease for this host-owned
+        // wait. Both perform exactly one readiness evaluation.
+        kernelView.setBigInt64(CH_ARGS + 3 * CH_ARG_SIZE, timeoutMs === 0 ? 0n : -1n, true);
         for (let i = 4; i < CH_ARGS_COUNT; i++) {
           kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
         }
@@ -20590,11 +20693,18 @@ export class CentralizedKernelWorker {
 
     const { retVal, errVal, events } = epollResult;
 
-    // This host owns the wait/retry loop, so it must preserve the
-    // syscall-boundary signal outcome that kernel_handle_channel would normally
-    // return to the guest: a default terminating action reaps the worker; a
-    // caught handler interrupts epoll with EINTR.
-    if (this.completeEpollSignalOutcome(channel, entry)) return;
+    // Signal death can retire the kernel lease at this syscall boundary.
+    // Settle that outcome before asking a live task for its wait identity.
+    if (this.completeEpollSignalOutcome(channel, entry, retVal > 0)) return;
+
+    if (retVal < 0 && errVal === EAGAIN && timeoutMs !== 0) {
+      const queryToken = this.#kernelInstanceForEntry(entry).exports.kernel_epoll_wait_token as
+        ((pid: number, tid: number) => bigint) | undefined;
+      if (!queryToken) throw new Error("kernel lacks kernel_epoll_wait_token");
+      const token = queryToken(channel.pid, this.guestTidForChannel(channel));
+      if (token <= 0n) throw new Error("blocking epoll retry has no kernel wait token");
+      channel.epollWaitToken = token;
+    }
 
     // Propagate a real error (anything other than the would-block EAGAIN).
     if (retVal < 0 && errVal !== EAGAIN) {
@@ -22100,6 +22210,7 @@ export class CentralizedKernelWorker {
       path = resolvedPath.value;
     }
 
+    // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
     // .slice copies into a regular ArrayBuffer (TextDecoder rejects SAB views).
     const blobBytes = processMem.slice(
       checkedBlobPtr,
@@ -23008,6 +23119,7 @@ export class CentralizedKernelWorker {
     while (ptr + len < mem.length && mem[ptr + len] !== 0 && len < maxLen) {
       len++;
     }
+    // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
     // .slice() copies from SharedArrayBuffer into a regular ArrayBuffer
     // because TextDecoder.decode() doesn't accept SharedArrayBuffer views.
     return new TextDecoder().decode(mem.slice(ptr, ptr + len));
@@ -23037,6 +23149,7 @@ export class CentralizedKernelWorker {
     }
 
     return {
+      // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
       // .slice() copies from SharedArrayBuffer for TextDecoder compatibility.
       value: new TextDecoder().decode(mem.slice(ptr, ptr + byteLength)),
     };
@@ -23104,6 +23217,7 @@ export class CentralizedKernelWorker {
         return { errno: E2BIG };
       }
 
+      // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
       // .slice() copies from SharedArrayBuffer for TextDecoder compatibility.
       values.push(new TextDecoder().decode(mem.slice(strPtr, strPtr + byteLength)));
     }
@@ -23141,7 +23255,7 @@ export class CentralizedKernelWorker {
     childPid: number,
     authorityPath: string,
     diagnosticPath: string,
-    candidate: ResolvedSpawnProgram,
+    candidate: ResolvedSpawnProgram | null,
     originalArgv: string[],
     envp: string[],
   ): Promise<number> {
@@ -23173,7 +23287,7 @@ export class CentralizedKernelWorker {
             markTargetConsumed,
           ),
         compileModule: (bytes) => this.wasmModules.programModule(bytes),
-        preflightModule: candidate.programModule,
+        ...(candidate ? { preflightModule: candidate.programModule } : {}),
       }, async (request) => ({
         // onSpawn owns no replacement image before commit. If a future host
         // adds staged resources, they must remain bounded to this hook.
@@ -24811,6 +24925,31 @@ export class CentralizedKernelWorker {
     return result > 0 ? result : undefined;
   }
 
+  /**
+   * Acknowledge one observed exit to Rust. Returns how many processes
+   * applied exits have sent SIGHUP and SIGCONT since the last
+   * acknowledgement. A kernel built before this optional export existed
+   * does not reparent orphans; publication is then a no-op.
+   */
+  #publishKernelProcessExit(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+  ): number {
+    const publish = this.#kernelInstanceForEntry(entry).exports
+      .kernel_publish_process_exit as ((pid: number) => number) | undefined;
+    if (typeof publish !== "function") return 0;
+    const result = publish(pid);
+    // ESRCH: a guest wait or init already consumed this zombie. Any other
+    // failure means the host published an exit Rust does not hold.
+    if (result === -ESRCH) return 0;
+    if (result < 0) {
+      throw new Error(
+        `Kernel rejected exit publication for process ${pid}: errno ${-result}`,
+      );
+    }
+    return result;
+  }
+
   private consumeExitedChild(
     parentPid: number,
     childPid: number,
@@ -24827,6 +24966,23 @@ export class CentralizedKernelWorker {
     pid: number,
     entry: KernelWorkerEntryContext,
   ): void {
+    // Rust reparented this process's children to synthetic init when it
+    // became Exited. Publishing acknowledges that the host has seen the
+    // exit, which is when init may reap: its adopted children were waiting
+    // for this, and so is this process if init is its parent (the parent
+    // lookup below then finds no process). Every exit path publishes through
+    // here; Rust publication is idempotent, so a spawn child that exited
+    // before its spawn result was published may safely arrive twice.
+    if (this.#publishKernelProcessExit(pid, entry) > 0) {
+      // An applied exit made the kernel send SIGHUP and SIGCONT to a newly
+      // orphaned stopped group. Apply the same follow-up as a guest group
+      // kill(): resume continued members, retry their blocked syscalls, and
+      // retire any member the default SIGHUP action terminated.
+      this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+      this.scheduleWakeBlockedRetries(entry);
+      this.reapKilledProcessesAfterSyscall(entry);
+    }
+
     const parentPid = this.getParentPid(pid, entry);
     if (parentPid === undefined) return;
 
@@ -25464,8 +25620,23 @@ export class CentralizedKernelWorker {
           // WHY: validate and cap in bigint before converting to Number.
           // Otherwise a large signed timespec can round to a different wait,
           // while an invalid nanosecond field can silently carry into seconds.
-          const requestedMs =
-            sec * 1000n + (nsec + 999_999n) / 1_000_000n;
+          let remainingNs = sec * 1_000_000_000n + nsec;
+          if (baseOp === FUTEX_WAIT_BITSET) {
+            // WAIT_BITSET takes an absolute deadline, unlike WAIT's
+            // relative duration. Use the same provider as clock_gettime:
+            // worker-local performance.now() has a different epoch on Node.
+            const clockId = (op & FUTEX_CLOCK_REALTIME) !== 0 ? 0 : 1;
+            // PlatformIO can call back into the worker. Keep that callback
+            // serialized without lending it Wasm authority, and consume its
+            // result fields before returning to the scoped syscall handler.
+            const nowNs = this.#invokeSerializedHostOperation(entry, () => {
+              const now = this.io.clockGettime(clockId);
+              return BigInt(now.sec) * 1_000_000_000n + BigInt(now.nsec);
+            });
+            remainingNs -= nowNs;
+            if (remainingNs < 0n) remainingNs = 0n;
+          }
+          const requestedMs = (remainingNs + 999_999n) / 1_000_000n;
           const cappedMs =
             requestedMs > 2_147_483_647n
               ? 2_147_483_647n
@@ -25489,6 +25660,7 @@ export class CentralizedKernelWorker {
         }
       }
     } catch (error) {
+      this.#rethrowKernelEntryFatal(error);
       this.#rejectScratchTransfer(channel, error, entry);
       return;
     }
@@ -27169,7 +27341,7 @@ export class CentralizedKernelWorker {
     entry?: KernelWorkerEntryContext,
   ): SharedMmapHostResult<string> {
     try {
-      const key = this.#invokeSharedMmapHostOperation(
+      const key = this.#invokeSerializedHostOperation(
         entry,
         () => this.io.fileHandleIdentity?.(
           handle,
@@ -27429,7 +27601,7 @@ export class CentralizedKernelWorker {
     const expectedHandle = backing.handle;
     const expectedKey = backing.key;
     try {
-      const snapshot = this.#invokeSharedMmapHostOperation(entry, () => {
+      const snapshot = this.#invokeSerializedHostOperation(entry, () => {
         const stat = this.io.fstat(expectedHandle);
         const dev = BigInt(stat.dev);
         const ino = BigInt(stat.ino);
@@ -27543,7 +27715,7 @@ export class CentralizedKernelWorker {
       0,
       Math.min(FILE_PAGE_SIZE, expectedSize - pageOffset),
     );
-    const staged = this.#invokeSharedMmapHostOperation(entry, () => {
+    const staged = this.#invokeSerializedHostOperation(entry, () => {
       const bytes = new Uint8Array(FILE_PAGE_SIZE);
       let total = 0;
       while (total < readable) {
@@ -27826,7 +27998,7 @@ export class CentralizedKernelWorker {
     const expectedKey = backing.key;
     const ownedSource = new Uint8Array(source);
     try {
-      const success = this.#invokeSharedMmapHostOperation(entry, () => {
+      const success = this.#invokeSerializedHostOperation(entry, () => {
         let written = 0;
         while (written < ownedSource.length) {
           const remaining = ownedSource.length - written;
@@ -27989,6 +28161,7 @@ export class CentralizedKernelWorker {
       let end = pathPtr;
       while (end < limit && memory[end] !== 0) end++;
       if (end === limit) return { kind: "error", errno: ENAMETOOLONG };
+      // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
       // Chrome's TextDecoder rejects views backed by SharedArrayBuffer. Copy
       // the guest pathname into ordinary host memory before decoding.
       const pathBytes = new Uint8Array(end - pathPtr);
@@ -28043,7 +28216,7 @@ export class CentralizedKernelWorker {
   ): SharedMmapBacking | null {
     if (this.sharedMmapBackings.size === 0) return null;
     try {
-      const snapshot = this.#invokeSharedMmapHostOperation(entry, () => {
+      const snapshot = this.#invokeSerializedHostOperation(entry, () => {
         const stat = this.io.stat(path);
         const dev = BigInt(stat.dev);
         const ino = BigInt(stat.ino);
@@ -30382,6 +30555,546 @@ export class CentralizedKernelWorker {
     });
   }
 
+  // ---- Kandelo exchange (see crates/runtime-core/src/exchange) ----------
+
+  readonly #exchangeSources = new ExchangeSourceCache((source, offset, length) => {
+    this.#exchangeRangeRequester?.(source, offset, length);
+  });
+  #exchangeRangeRequester: ExchangeRangeRequester | null = null;
+  #exchangeNotificationListener: ((notifications: ExchangeNotification[]) => void) | null = null;
+  /** Reasons the host wants notifications: listener, offers, leases, watchers. */
+  #exchangeInterest = 0;
+  #exchangeByteLimit: number | null = null;
+  #exchangeActivation: ExchangeActivation = "on-demand";
+  /** The kernel's last consumer report. */
+  #exchangeConsumerState: ExchangeConsumerState | null = null;
+
+  #exchangeActive(): boolean {
+    return this.#exchangeInterest > 0;
+  }
+
+  /**
+   * Route exchange traffic: range requests go to the side that offered the
+   * source, decoded notifications to the host's exchange state.
+   */
+  setExchangeHandlers(handlers: {
+    requestRange: ExchangeRangeRequester;
+    onNotifications: (notifications: ExchangeNotification[]) => void;
+  }): void {
+    this.#exchangeRangeRequester = handlers.requestRange;
+    this.#exchangeNotificationListener = handlers.onNotifications;
+  }
+
+  /** The embedder's `exchange.activation`, applied at boot. */
+  setExchangeActivation(mode: ExchangeActivation): void {
+    this.#exchangeActivation = mode;
+  }
+
+  /** The quota for `work/` and `outbox/`, applied at boot. */
+  setExchangeByteLimit(bytes: number): void {
+    this.#exchangeByteLimit = bytes;
+  }
+
+  /** Count (+1) or uncount (-1) a reason to receive exchange notifications. */
+  adjustExchangeInterest(delta: 1 | -1): void {
+    this.#exchangeInterest = Math.max(0, this.#exchangeInterest + delta);
+  }
+
+  #initExchange(instance: WebAssembly.Instance): void {
+    const init = instance.exports.kernel_exchange_init as
+      | ((lo: number, hi: number) => number)
+      | undefined;
+    if (typeof init !== "function") {
+      throw new Error("kernel lacks kernel_exchange_init; rebuild the kernel for this ABI");
+    }
+    const nonce = new Uint32Array(2);
+    globalThis.crypto.getRandomValues(nonce);
+    init(nonce[0]!, nonce[1]!);
+    if (this.#exchangeByteLimit !== null) {
+      const configure = instance.exports.kernel_exchange_configure as
+        (lo: number, hi: number) => number;
+      const limit = this.#exchangeByteLimit;
+      const result = configure(limit >>> 0, Math.floor(limit / 0x1_0000_0000));
+      if (result < 0) throw new Error(`kernel_exchange_configure failed with errno ${-result}`);
+    }
+    const configureActivation = instance.exports.kernel_exchange_configure_activation as
+      (mode: number) => number;
+    const configured = configureActivation(this.#exchangeActivation === "on-demand" ? 1 : 0);
+    if (configured < 0) throw new Error(`kernel_exchange_configure_activation failed with errno ${-configured}`);
+    this.#kernel.setExchangeSourceProvider((source, offset, dest) =>
+      this.#exchangeSources.read(source, offset, dest));
+  }
+
+  /** The side that offered `source` answered a range request. */
+  exchangeFulfillRange(source: bigint, offset: bigint, requested: number, bytes: Uint8Array): void {
+    this.#exchangeSources.fulfill(source, offset, requested, bytes);
+    this.#runOrDeferKernelEntry("exchange source bytes and wake", (entry) => {
+      this.scheduleWakeBlockedRetries(entry);
+      return undefined;
+    });
+  }
+
+  /** The side that offered `source` can no longer read it (EIO by default). */
+  exchangeFailRange(source: bigint, errno?: number): void {
+    this.#exchangeSources.fail(source, errno);
+    this.#runOrDeferKernelEntry("exchange source failure and wake", (entry) => {
+      this.scheduleWakeBlockedRetries(entry);
+      return undefined;
+    });
+  }
+
+  /**
+   * Run one exchange request from the main thread. Both worker entries call
+   * this public ingress rather than handing the worker to a helper.
+   */
+  exchangeRequest(request: ExchangeWorkerRequest): Promise<unknown> {
+    return runExchangeRequest(this, request);
+  }
+
+  /** Tell the kernel whether a host output listener exists. */
+  exchangeSetListener(present: boolean): Promise<void> {
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange listener", (entry) => {
+        // Required exports: kernel instantiation already proved they exist.
+        const setListener = entry.instance.exports.kernel_exchange_set_listener as (present: number) => number;
+        setListener(present ? 1 : 0);
+        // The consumer may be parked reading `events`; the new line wakes it.
+        this.scheduleWakeBlockedRetries(entry);
+        resolve();
+        return undefined;
+      });
+    });
+  }
+
+  /**
+   * The kernel's consumer state, current as of this call: the kernel decides
+   * about activation first, so the answer reflects the agent path now.
+   */
+  exchangeConsumerState(): Promise<ExchangeConsumerState | null> {
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange consumer state", (entry) => {
+        this.#activateExchangeAgentWithinKernelEntry(entry);
+        this.#drainExchangeNotificationsWithinKernelEntry(entry);
+        resolve(this.#exchangeConsumerState);
+        return undefined;
+      });
+    });
+  }
+
+  /** Whether a consumer holds `events`. */
+  exchangeConsumerPresent(): Promise<boolean> {
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange consumer", (entry) => {
+        const consumerPresent = entry.instance.exports.kernel_exchange_consumer_present as () => number;
+        resolve(consumerPresent() === 1);
+        return undefined;
+      });
+    });
+  }
+
+  /**
+   * Stage a batch and commit it, in one kernel entry. Resolves with the IDs
+   * and whether the batch is visible now or waits for a consumer; on any
+   * failure the partly staged batch is cancelled.
+   */
+  exchangeOffer(offer: {
+    label: string;
+    entries: readonly Omit<ExchangeEntryRecord, "batch">[];
+  }): Promise<
+    | { ok: true; batch: Uint8Array; entries: Uint8Array[]; committed: boolean }
+    | { ok: false; errno: number; stage: "begin" | "entry" | "commit"; index?: number }
+  > {
+    const label = new TextEncoder().encode(offer.label);
+    // Encode every record before entering the kernel: a throw inside a
+    // kernel entry fails the whole machine, while a malformed offer (an
+    // oversized name, a non-finite time) is just a refused offer (EINVAL).
+    // The batch ID is patched into each record's first 16 bytes later.
+    let records: Uint8Array[];
+    try {
+      if (label.byteLength > 64) throw new RangeError("exchange source label too long");
+      records = offer.entries.map((entry) => {
+        if (!Number.isFinite(entry.mtimeMs)) throw new RangeError("exchange mtime is not finite");
+        return encodeEntryRecord({ ...entry, batch: new Uint8Array(EXCHANGE_ID_BYTES) });
+      });
+    } catch {
+      return Promise.resolve({ ok: false as const, errno: EINVAL, stage: "entry" as const });
+    }
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange offer", (entry) => {
+        const scratch = this.#requireMainScratchRegion();
+        const now = Date.now();
+        const nowLo = now >>> 0;
+        const nowHi = Math.floor(now / 0x1_0000_0000);
+        const result = scratch.withLease((lease) => {
+          const idOffset = 0;
+          const dataOffset = EXCHANGE_ID_BYTES * 2;
+          lease.copyFrom(label, dataOffset);
+          const begun = this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_begin", [
+            lease.exportPointer(dataOffset, label.byteLength), label.byteLength,
+            lease.exportPointer(idOffset, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES, nowLo, nowHi,
+          ]);
+          if (begun !== 0) return { ok: false as const, errno: -begun, stage: "begin" as const };
+          const batch = lease.copyOut(idOffset, EXCHANGE_ID_BYTES);
+          const ids: Uint8Array[] = [];
+          let failure: { ok: false; errno: number; stage: "entry" | "commit"; index?: number } | null = null;
+          for (let index = 0; index < records.length; index++) {
+            const record = records[index]!;
+            record.set(batch, 0);
+            if (dataOffset + record.byteLength > scratch.capacity) {
+              failure = { ok: false, errno: 7, stage: "entry", index }; // E2BIG
+              break;
+            }
+            lease.copyFrom(record, dataOffset);
+            const added = this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_add_entry", [
+              lease.exportPointer(dataOffset, record.byteLength), record.byteLength,
+              lease.exportPointer(EXCHANGE_ID_BYTES, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES, nowLo, nowHi,
+            ]);
+            if (added !== 0) {
+              failure = { ok: false, errno: -added, stage: "entry", index };
+              break;
+            }
+            ids.push(lease.copyOut(EXCHANGE_ID_BYTES, EXCHANGE_ID_BYTES));
+          }
+          if (failure === null) {
+            lease.copyFrom(batch, 0);
+            const committed = this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_commit", [
+              lease.exportPointer(0, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES,
+            ]);
+            if (committed >= 0) {
+              return { ok: true as const, batch, entries: ids, committed: committed === 0 };
+            }
+            failure = { ok: false, errno: -committed, stage: "commit" };
+          }
+          // Nothing of a failed offer stays staged.
+          lease.copyFrom(batch, 0);
+          this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_cancel", [
+            lease.exportPointer(0, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES,
+          ]);
+          return failure;
+        });
+        if (result.ok) {
+          // A consumer parked on `events` must see the new line.
+          this.scheduleWakeBlockedRetries(entry);
+          this.#drainExchangeNotificationsWithinKernelEntry(entry);
+        }
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  /** Cancel a batch at any stage; resolves with 0 or a negative errno. */
+  exchangeCancel(batch: Uint8Array): Promise<number> {
+    const id = batch.slice();
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange cancel", (entry) => {
+        const result = this.#requireMainScratchRegion().withLease((lease) => {
+          lease.copyFrom(id, 0);
+          return this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_cancel", [
+            lease.exportPointer(0, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES,
+          ]);
+        });
+        this.#drainExchangeNotificationsWithinKernelEntry(entry);
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  /** Read up to `length` bytes of a published output; a negative errno on failure. */
+  exchangeReadOutput(output: Uint8Array, offset: number, length: number): Promise<Uint8Array | number> {
+    const id = output.slice();
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange output read", (entry) => {
+        const scratch = this.#requireMainScratchRegion();
+        const capacity = Math.min(length, scratch.capacity - EXCHANGE_ID_BYTES);
+        const result = scratch.withLease((lease) => {
+          lease.copyFrom(id, 0);
+          const count = this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_read_output", [
+            lease.exportPointer(0, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES, offset >>> 0, Math.floor(offset / 0x1_0000_0000),
+            lease.exportPointer(EXCHANGE_ID_BYTES, capacity), capacity,
+          ]);
+          return count < 0 ? count : lease.copyOut(EXCHANGE_ID_BYTES, count);
+        });
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  /** End the host's lease on an output; resolves with 0 or a negative errno. */
+  exchangeReleaseOutput(output: Uint8Array): Promise<number> {
+    const id = output.slice();
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange output release", (entry) => {
+        const result = this.#requireMainScratchRegion().withLease((lease) => {
+          lease.copyFrom(id, 0);
+          return this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_release_output", [
+            lease.exportPointer(0, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES,
+          ]);
+        });
+        // A stream's writers parked on a full FIFO now get EPIPE.
+        this.scheduleWakeBlockedRetries(entry);
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  /**
+   * Write host bytes into an input stream's FIFO; resolves with how many fit
+   * (possibly 0) or a negative errno. Readers parked on it are woken.
+   */
+  exchangeStreamPush(source: bigint, bytes: Uint8Array): Promise<number> {
+    const data = bytes.slice();
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange stream push", (entry) => {
+        const scratch = this.#requireMainScratchRegion();
+        const length = Math.min(data.byteLength, scratch.capacity);
+        const result = scratch.withLease((lease) => {
+          lease.copyFrom(data.subarray(0, length), 0);
+          return this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_stream_push", [
+            lease.exportPointer(0, length), length,
+            Number(source & 0xffff_ffffn), Number(source >> 32n),
+          ]);
+        });
+        if (result > 0) this.scheduleWakeBlockedRetries(entry);
+        this.#drainExchangeIfPendingWithinKernelEntry(entry);
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  /** The host stream behind an input ended, cleanly or not. */
+  exchangeStreamEnd(source: bigint, failed: boolean): Promise<number> {
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange stream end", (entry) => {
+        // Required export: kernel instantiation already proved it exists.
+        const end = entry.instance.exports.kernel_exchange_stream_end as
+          (sourceLo: number, sourceHi: number, failed: number) => number;
+        const result = end(Number(source & 0xffff_ffffn), Number(source >> 32n), failed ? 1 : 0);
+        this.scheduleWakeBlockedRetries(entry);
+        this.#drainExchangeIfPendingWithinKernelEntry(entry);
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  /** Become a streamed output's reader; a writer waiting in open proceeds. */
+  exchangeStreamStart(output: Uint8Array): Promise<number> {
+    const id = output.slice();
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange stream start", (entry) => {
+        const result = this.#requireMainScratchRegion().withLease((lease) => {
+          lease.copyFrom(id, 0);
+          return this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_stream_start", [
+            lease.exportPointer(0, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES,
+          ]);
+        });
+        this.scheduleWakeBlockedRetries(entry);
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  /**
+   * Read a streamed output: bytes, an empty array at its end, or a negative
+   * errno (`-EAGAIN` while a writer may still write). Writers parked on a
+   * full FIFO are woken.
+   */
+  exchangeStreamRead(output: Uint8Array, length: number): Promise<Uint8Array | number> {
+    const id = output.slice();
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange stream read", (entry) => {
+        const scratch = this.#requireMainScratchRegion();
+        const capacity = Math.max(1, Math.min(length, scratch.capacity - EXCHANGE_ID_BYTES));
+        const result = scratch.withLease((lease) => {
+          lease.copyFrom(id, 0);
+          const count = this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_stream_read", [
+            lease.exportPointer(0, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES,
+            lease.exportPointer(EXCHANGE_ID_BYTES, capacity), capacity,
+          ]);
+          return count < 0 ? count : lease.copyOut(EXCHANGE_ID_BYTES, count);
+        });
+        if (result instanceof Uint8Array && result.byteLength > 0) this.scheduleWakeBlockedRetries(entry);
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  /** A streamed output's `user.kandelo.end`, or a negative errno (`-ENODATA`: none). */
+  exchangeOutputEnd(output: Uint8Array): Promise<Uint8Array | number> {
+    const id = output.slice();
+    return new Promise((resolve) => {
+      this.#runOrDeferKernelEntry("exchange output end", (entry) => {
+        const scratch = this.#requireMainScratchRegion();
+        const capacity = Math.min(1024, scratch.capacity - EXCHANGE_ID_BYTES);
+        const result = scratch.withLease((lease) => {
+          lease.copyFrom(id, 0);
+          const count = this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_output_end", [
+            lease.exportPointer(0, EXCHANGE_ID_BYTES), EXCHANGE_ID_BYTES,
+            lease.exportPointer(EXCHANGE_ID_BYTES, capacity), capacity,
+          ]);
+          return count < 0 ? count : lease.copyOut(EXCHANGE_ID_BYTES, count);
+        });
+        resolve(result);
+        return undefined;
+      });
+    });
+  }
+
+  #drainExchangeIfPendingWithinKernelEntry(entry: KernelWorkerEntryContext): void {
+    const takePending = entry.instance.exports.kernel_exchange_take_pending as () => number;
+    if (takePending() === 1) this.#drainExchangeNotificationsWithinKernelEntry(entry);
+  }
+
+  #drainExchangeNotificationsWithinKernelEntry(entry: KernelWorkerEntryContext): void {
+    const scratch = this.#requireMainScratchRegion();
+    const notifications: ExchangeNotification[] = [];
+    // Activation can queue more notifications (its state, a backoff timer);
+    // each round decides at most once, so this ends.
+    for (let round = 0; round < 8; round++) {
+      const start = notifications.length;
+      for (;;) {
+        const bytes = scratch.withLease((lease) => {
+          const written = this.#invokeEntryScratchExport(entry, lease, "kernel_exchange_drain_notifications", [
+            lease.exportPointer(0, scratch.capacity), scratch.capacity,
+          ]);
+          return written > 0 ? lease.copyOut(0, written) : null;
+        });
+        if (bytes === null) break;
+        notifications.push(...decodeNotifications(bytes));
+      }
+      if (!notifications.slice(start).some((n) => n.kind === "activation-check")) break;
+      this.#activateExchangeAgentWithinKernelEntry(entry);
+    }
+    const forwarded: ExchangeNotification[] = [];
+    for (const notification of notifications) {
+      switch (notification.kind) {
+        case "source-released":
+          this.#exchangeSources.release(notification.source);
+          forwarded.push(notification);
+          break;
+        case "activation-check":
+          break;
+        case "activation-timer":
+          setTimeout(() => {
+            this.#runOrDeferKernelEntry("exchange activation backoff", (timerEntry) => {
+              this.#activateExchangeAgentWithinKernelEntry(timerEntry);
+              this.#drainExchangeIfPendingWithinKernelEntry(timerEntry);
+              return undefined;
+            });
+          }, notification.delayMs);
+          break;
+        case "consumer-state":
+          this.#exchangeConsumerState = notification.consumer;
+          forwarded.push(notification);
+          break;
+        default:
+          forwarded.push(notification);
+      }
+    }
+    if (forwarded.length > 0) this.#exchangeNotificationListener?.(forwarded);
+  }
+
+  /**
+   * Ask the kernel to decide about activation now. The kernel creates the
+   * agent's process record when it decides to activate; the host launches
+   * it through the same exec-target and Worker path as a posix_spawn child,
+   * with init as the parent.
+   */
+  #activateExchangeAgentWithinKernelEntry(entry: KernelWorkerEntryContext): void {
+    const activate = entry.instance.exports.kernel_exchange_activate as
+      (nowLo: number, nowHi: number) => number;
+    const now = Date.now();
+    const pid = activate(now >>> 0, Math.floor(now / 0x1_0000_0000));
+    if (pid > 0) this.#launchExchangeAgent(pid, entry);
+  }
+
+  #launchExchangeAgent(pid: number, entry: KernelWorkerEntryContext): void {
+    // Like a posix_spawn child: target preparation, validation, compilation,
+    // commit, and Worker launch form one detached pending-child transaction
+    // whose every outcome re-enters through the pending-spawn completion.
+    entry.deferProtocolTransactionStart(() => {
+      let launch: Promise<number>;
+      try {
+        launch = this.#resolvePromise(this.#launchPreparedSpawn(
+          SYNTHETIC_INIT_PID,
+          pid,
+          EXCHANGE_AGENT_PATH,
+          EXCHANGE_AGENT_PATH,
+          null,
+          [EXCHANGE_AGENT_PATH],
+          [...EXCHANGE_AGENT_ENV],
+        ));
+      } catch (cause) {
+        this.#runOrDeferPendingSpawnCompletionKernelEntry(pid, "exchange agent launch failure", (completion) => {
+          this.#finishExchangeAgentLaunchWithinKernelEntry(pid, -EIO, cause, completion);
+          return undefined;
+        });
+        return undefined;
+      }
+      this.#continuePromise(launch, (rc) => {
+        this.#runOrDeferPendingSpawnCompletionKernelEntry(pid, "exchange agent launch completion", (completion) => {
+          this.#finishExchangeAgentLaunchWithinKernelEntry(pid, rc, undefined, completion);
+          return undefined;
+        });
+      }, (cause) => {
+        this.#runOrDeferPendingSpawnCompletionKernelEntry(pid, "exchange agent launch rejection", (completion) => {
+          this.#finishExchangeAgentLaunchWithinKernelEntry(pid, -EIO, cause, completion);
+          return undefined;
+        });
+      });
+      return undefined;
+    });
+  }
+
+  #finishExchangeAgentLaunchWithinKernelEntry(
+    pid: number,
+    rc: number,
+    cause: unknown,
+    entry: KernelWorkerEntryContext,
+  ): void {
+    const exitSignal = this.#finalizePendingChildTerminationWithinKernelEntry(pid, entry);
+    const launched = exitSignal < -1 || exitSignal > 0 || rc >= 0;
+    if (!launched) {
+      // Exec failed (ENOENT, EACCES, ENOEXEC, an ABI mismatch): retire the
+      // hidden child and report the errno as an activation failure.
+      if (cause !== undefined) {
+        entry.deferObserverEffect(() => {
+          console.error("[kernel] exchange agent launch failed:", cause);
+          return undefined;
+        });
+      }
+      try {
+        this.#rollbackChildHostRegistrationWithinKernelEntry(pid, entry);
+      } catch (error) {
+        this.#rethrowKernelEntryFatal(error);
+      }
+      this.#removeFromKernelProcessTableWithinKernelEntry(pid, entry);
+      const failed = entry.instance.exports.kernel_exchange_agent_failed as
+        (pid: number, errno: number) => number;
+      failed(pid, (-rc) >>> 0);
+      this.#drainExchangeIfPendingWithinKernelEntry(entry);
+      return;
+    }
+    if (exitSignal < -1) {
+      // The child is already gone; nothing remains to publish.
+      this.#rollbackChildHostRegistrationWithinKernelEntry(pid, entry);
+      this.#drainExchangeIfPendingWithinKernelEntry(entry);
+      return;
+    }
+    const publish = entry.instance.exports.kernel_publish_spawn_child as
+      (parentPid: number, childPid: number) => number;
+    // Init reaps its children, so an agent that already exited goes now.
+    if (publish(SYNTHETIC_INIT_PID, pid) >= 0) this.notifyParentOfExitedProcess(pid, entry);
+    this.#drainExchangeIfPendingWithinKernelEntry(entry);
+  }
+
   /**
    * Copy-out: resolve with the next desktop selection the guest's clipboard
    * agent reports, or `timeout`. The generation is sampled when this
@@ -31074,6 +31787,10 @@ export class CentralizedKernelWorker {
       }
     }
 
+    // A guest virtual link has its own TCP namespace. Opening a physical
+    // listener here would make independent machines contend for the same
+    // host port and expose a virtual-only service outside its link.
+    if (this.io.network?.ownsTcpListener?.(new Uint8Array(addr))) return;
     if (!this.netModule) return; // Not in Node.js environment — no real TCP server
     if (reusableListener) {
       this.tcpListeners.set(key, {

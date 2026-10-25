@@ -90,3 +90,63 @@ fn run(output: &[u8], wide: bool, table64: bool, native: bool) -> Result<(), Str
         Err(String::from_utf8_lossy(&result.stderr).into_owned())
     }
 }
+
+#[test]
+fn public_pthread_resume_supports_independent_memory_and_table_widths() {
+    use fork_instrument::{Options, instrument};
+    use wasmparser::{ExternalKind, Operator, ValType};
+
+    for memory64 in [false, true] {
+        for table64 in [false, true] {
+            let pointer = if memory64 { "i64" } else { "i32" };
+            let index = if table64 { "i64" } else { "i32" };
+            let input = wat::parse_str(format!(
+                r#"(module
+                  (import "kernel" "kernel_fork" (func $fork (result i32)))
+                  (type $thread_ty (func (param {pointer}) (result {pointer})))
+                  (table (export "__indirect_function_table") {table_width}1 1 funcref)
+                  (elem ({index}.const 0) $thread)
+                  (func $thread (type $thread_ty) (param $arg {pointer}) (result {pointer})
+                    call $fork drop local.get $arg)
+                  (func (export "_start") call $fork drop)
+                  (memory {memory_width}1))"#,
+                table_width = if table64 { "i64 " } else { "" },
+                memory_width = if memory64 { "i64 " } else { "" },
+            ))
+            .unwrap();
+            let output = instrument(&input, &Options::default()).unwrap();
+            fork_instrument::native::validate(&output).unwrap();
+            let scan = scan(&output).unwrap();
+            let wrapper = scan
+                .exports
+                .iter()
+                .find_map(|(name, kind, index)| {
+                    (name == "wpk_fork_resume_thread" && *kind == ExternalKind::Func)
+                        .then_some(*index)
+                })
+                .expect("public pthread resume export");
+            let types = scan.types.as_ref();
+            let signature = types
+                .get(types.core_type_at_in_module(scan.functions[wrapper as usize].ty))
+                .unwrap()
+                .composite_type
+                .unwrap_func();
+            let pointer = if memory64 { ValType::I64 } else { ValType::I32 };
+            assert_eq!(signature.params(), &[ValType::I32, pointer]);
+            assert_eq!(signature.results(), &[pointer]);
+
+            // The host index ABI is always i32. Only table64 needs unsigned
+            // widening; following memory width here breaks mixed-width modules.
+            let body = scan
+                .body_provider(Default::default())
+                .load(wrapper)
+                .unwrap();
+            assert_eq!(
+                body.instructions
+                    .iter()
+                    .any(|instruction| matches!(instruction.operation, Operator::I64ExtendI32U)),
+                table64
+            );
+        }
+    }
+}

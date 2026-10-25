@@ -1,0 +1,8 @@
+id = "CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS"
+kind = "bug"
+status = "suspected"
+runtimes = ["chromium", "firefox"]
+summary = "Suspected: TextDecoder.decode() throws for views over a SharedArrayBuffer although the Encoding Standard accepts them"
+reports = "human-only"
+
+# No [[repro]]: no standalone reduction exists yet (see entry.md).

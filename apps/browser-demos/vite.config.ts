@@ -16,6 +16,7 @@ import {
   sourceOnlyBinaryRoot,
   tryResolveBinary,
   tryResolveBinaries,
+  withProgramIndexFreshness,
 } from "../../host/src/binary-resolver";
 import { browserBinariesImports } from "./browser-binary-imports.mjs";
 import {
@@ -42,6 +43,7 @@ import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "./lib/browser-cors-proxy";
 import { createProxySessionTransport } from "../../host/src/networking/cors-proxy-session";
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 import { devSignallingServer } from "./vite/dev-signalling";
+import { batchedFsServePath, devLazyAssets } from "./vite/dev-lazy-assets";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
   createVfsProductDeploymentPlugin,
@@ -652,7 +654,9 @@ function resolveBinariesAlias(
       this.error(
         `Browser binary ${request.relPath} not found, or every candidate is stale. ` +
           `Looked at:\n  ${local}\n  ${fetched}\n` +
-          `Run \`./run.sh fetch\` to install release archives, or build the artifact locally.`,
+          `./run.sh local-build publishes every output of the packages in ` +
+          `packages/sets/local-supported.toml; local test fixtures come from ` +
+          `scripts/build-programs.sh.`,
       );
     },
     transform(code, id) {
@@ -975,6 +979,35 @@ export default defineConfig(() => {
     plugins: [
       vfsProductsPlugin(base),
       react(),
+      // Before the SourceOnly store, and like it `enforce: "pre"`: the
+      // store's middleware answers the pinned path this route rewrites a
+      // lazy-asset request to, so this one must run first.
+      devLazyAssets({
+        servePath: sourceOnlyViteAssets === null
+          ? batchedFsServePath({
+            projectionPath: path.resolve(
+              repoRoot,
+              "local-binaries/source-only-v1/.kandelo/source-only-program-projection-v1.json",
+            ),
+            identity: (file) => {
+              try {
+                const metadata = fs.statSync(file);
+                return `${metadata.size}:${metadata.mtimeMs}`;
+              } catch {
+                return null;
+              }
+            },
+            listMembers: (file) =>
+              (JSON.parse(fs.readFileSync(file, "utf8")) as {
+                nodes: { members: { mirrorPath: string }[] }[];
+              }).nodes.flatMap((node) => node.members.map((member) => member.mirrorPath)),
+            resolveBatch: (relPaths) =>
+              withProgramIndexFreshness(() => tryResolveBinaries(relPaths)),
+            resolveOne: tryResolveBinary,
+            approve: (file) => binaryDevAccess.approve(file),
+          })
+          : (relPath) => sourceOnlyViteAssets.servePath(relPath),
+      }),
       ...(sourceOnlyViteAssets === null
         ? []
         : [sourceOnlyViteAssets.plugin()]),

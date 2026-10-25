@@ -1,0 +1,280 @@
+{
+  "kind": "kandelo-package-sessions",
+  "version": 1,
+  "package": "fbdoom",
+  "packageVersion": "0.1.0",
+  "offers": [
+    {
+      "id": "game",
+      "title": "Doom game",
+      "description": "Start a private Doom game.",
+      "join": "player",
+      "attachExisting": false,
+      "fields": [
+        {
+          "id": "mode",
+          "label": "Game type",
+          "type": "choice",
+          "default": "cooperative",
+          "options": [
+            {
+              "value": "cooperative",
+              "label": "Cooperative",
+              "args": []
+            },
+            {
+              "value": "deathmatch",
+              "label": "Deathmatch",
+              "args": [
+                "-deathmatch"
+              ]
+            },
+            {
+              "value": "altdeath",
+              "label": "Deathmatch with item respawn",
+              "args": [
+                "-altdeath"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "players",
+          "label": "Players",
+          "type": "integer",
+          "default": 2,
+          "min": 2,
+          "max": 4
+        },
+        {
+          "id": "level",
+          "label": "Starting level",
+          "type": "level",
+          "default": "E1M1",
+          "dependency": "iwad",
+          "format": "doom-wad",
+          "sources": {
+            "shareware": [
+              "E1M1",
+              "E1M2",
+              "E1M3",
+              "E1M4",
+              "E1M5",
+              "E1M6",
+              "E1M7",
+              "E1M8",
+              "E1M9"
+            ],
+            "freedoom1": [
+              "E1M1",
+              "E1M2",
+              "E1M3",
+              "E1M4",
+              "E1M5",
+              "E1M6",
+              "E1M7",
+              "E1M8",
+              "E1M9",
+              "E2M1",
+              "E2M2",
+              "E2M3",
+              "E2M4",
+              "E2M5",
+              "E2M6",
+              "E2M7",
+              "E2M8",
+              "E2M9",
+              "E3M1",
+              "E3M2",
+              "E3M3",
+              "E3M4",
+              "E3M5",
+              "E3M6",
+              "E3M7",
+              "E3M8",
+              "E3M9",
+              "E4M1",
+              "E4M2",
+              "E4M3",
+              "E4M4",
+              "E4M5",
+              "E4M6",
+              "E4M7",
+              "E4M8",
+              "E4M9"
+            ],
+            "freedoom2": [
+              "MAP01",
+              "MAP02",
+              "MAP03",
+              "MAP04",
+              "MAP05",
+              "MAP06",
+              "MAP07",
+              "MAP08",
+              "MAP09",
+              "MAP10",
+              "MAP11",
+              "MAP12",
+              "MAP13",
+              "MAP14",
+              "MAP15",
+              "MAP16",
+              "MAP17",
+              "MAP18",
+              "MAP19",
+              "MAP20",
+              "MAP21",
+              "MAP22",
+              "MAP23",
+              "MAP24",
+              "MAP25",
+              "MAP26",
+              "MAP27",
+              "MAP28",
+              "MAP29",
+              "MAP30",
+              "MAP31",
+              "MAP32"
+            ],
+            "freedm": [
+              "MAP01",
+              "MAP02",
+              "MAP03",
+              "MAP04",
+              "MAP05",
+              "MAP06",
+              "MAP07",
+              "MAP08",
+              "MAP09",
+              "MAP10",
+              "MAP11",
+              "MAP12",
+              "MAP13",
+              "MAP14",
+              "MAP15",
+              "MAP16",
+              "MAP17",
+              "MAP18",
+              "MAP19",
+              "MAP20",
+              "MAP21",
+              "MAP22",
+              "MAP23",
+              "MAP24",
+              "MAP25",
+              "MAP26",
+              "MAP27",
+              "MAP28",
+              "MAP29",
+              "MAP30",
+              "MAP31",
+              "MAP32"
+            ]
+          }
+        }
+      ],
+      "launch": {
+        "executable": "/usr/local/bin/doom-activity",
+        "cwd": "/",
+        "args": [
+          {
+            "field": "dependency.iwad.source"
+          },
+          "-iwad",
+          "/tmp/kandelo-doom.wad",
+          "-server",
+          "-privateserver",
+          "-nodes",
+          {
+            "field": "offer.players"
+          },
+          {
+            "options": "offer.mode"
+          },
+          {
+            "options": "offer.level"
+          }
+        ],
+        "requires": [
+          "/tmp/kandelo-doom-data.bin"
+        ],
+        "surface": "display"
+      }
+    }
+  ],
+  "joins": [
+    {
+      "id": "player",
+      "title": "Play Doom",
+      "fields": [],
+      "launch": {
+        "executable": "/usr/local/bin/doom-activity",
+        "cwd": "/",
+        "args": [
+          {
+            "field": "dependency.iwad.source"
+          },
+          "-iwad",
+          "/tmp/kandelo-doom.wad",
+          "-connect",
+          {
+            "field": "network.host"
+          }
+        ],
+        "requires": [
+          "/tmp/kandelo-doom-data.bin"
+        ],
+        "surface": "display"
+      },
+      "description": "Join the host\u2019s game using the same WAD."
+    }
+  ],
+  "dependencies": [
+    {
+      "id": "iwad",
+      "title": "Game WAD",
+      "path": "/tmp/kandelo-doom-data.bin",
+      "allowFile": true,
+      "hint": "Choose an IWAD (.wad).",
+      "sources": [
+        {
+          "id": "shareware",
+          "title": "Doom shareware (Episode 1)",
+          "url": "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad",
+          "sha256": "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
+          "size": 4196020,
+          "installedPath": "/doom1.wad"
+        },
+        {
+          "id": "freedoom1",
+          "title": "Freedoom: Phase 1 (0.13.0)",
+          "url": "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip",
+          "size": 24143781,
+          "sha256": "3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59",
+          "informationUrl": "https://freedoom.github.io/about.html"
+        },
+        {
+          "id": "freedoom2",
+          "title": "Freedoom: Phase 2 (0.13.0)",
+          "url": "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip",
+          "size": 24143781,
+          "sha256": "3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59",
+          "informationUrl": "https://freedoom.github.io/about.html"
+        },
+        {
+          "id": "freedm",
+          "title": "FreeDM 0.13.0",
+          "url": "https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedm-0.13.0.zip",
+          "size": 11331651,
+          "sha256": "b420f13508ef745d7b38e83d15e55e0fc0b09d9a503c96741cddd9773d43f7c9",
+          "informationUrl": "https://freedoom.github.io/about.html",
+          "offerDefaults": {
+            "mode": "deathmatch"
+          },
+          "warning": "Designed for deathmatch."
+        }
+      ]
+    }
+  ]
+}

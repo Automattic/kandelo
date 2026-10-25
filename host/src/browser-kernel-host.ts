@@ -1,3 +1,4 @@
+import { ExchangeController, exchangeByteLimit } from "./exchange-controller";
 import type { PcmTransportSnapshot } from "./audio/pcm-transport";
 import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-segment-port";
 import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
@@ -55,6 +56,7 @@ import type { MountSpec } from "./vfs/default-mounts";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { FILE_MODES } from "./generated/abi";
 import { maybeDecompressImage } from "./vfs/vfs-image-transport";
+import { resolveImageOwnedLazyAsset } from "./vfs/vfs-asset-group-reference";
 import {
   encodeClipboardText,
   type ClipboardOfferResult,
@@ -65,7 +67,8 @@ import type { PcmOutputState } from "./audio/pcm-driver";
 
 // Allow the worker to drain exec retirement (5s), blocked guests (1.5s),
 // framebuffer acknowledgements and PCM (2s each) before terminating its realm.
-// Cutting cleanup short can strand Atomics.wait-blocked children on JSC.
+// Cutting cleanup short can strand Atomics.wait-blocked children on runtimes
+// whose terminate() cannot reclaim them (older WebKit and Safari builds).
 const DESTROY_REQUEST_TIMEOUT_MS = 15_000;
 const MAX_PENDING_PTY_OUTPUT_BYTES = 64 * 1024;
 const MAX_PENDING_PTY_OUTPUT_CHUNKS = 4_096;
@@ -75,6 +78,14 @@ const defaultPcmWorkletUrl = new URL(
 );
 
 export interface BrowserKernelOptions {
+  /**
+   * Kandelo exchange: whether the platform may start the image's agent
+   * (`/usr/libexec/kandelo/exchange-agent`) when a batch needs a consumer.
+   * `"on-demand"` (the default) or `"off"`, fixed for the machine's
+   * lifetime. Embedder code only: never derived from a boot descriptor,
+   * shared URL, or image file.
+   */
+  exchange?: { activation?: "on-demand" | "off" };
   /** Worker-owned remote UDP segment; a joiner transfers its native peer port. */
   remoteNetwork?: RemoteSegmentInit;
   /** Maximum concurrent workers (default: 4) */
@@ -311,6 +322,17 @@ export class BrowserKernel {
   private exitSequence = 0;
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
   private nextRequestId = 1;
+  /**
+   * Kandelo exchange: offer files to the guest and receive what it
+   * publishes. The same interface on Node.js and in the browser.
+   */
+  readonly exchange: ExchangeController = new ExchangeController({
+    request: (request) => {
+      const requestId = this.nextRequestId++;
+      return this.request(requestId, { type: "exchange_request", requestId, request });
+    },
+    sendRange: (message, transfer) => this.sendToKernel(message, transfer),
+  });
   private ptyOutputCallbacks = new Map<number, (data: Uint8Array) => void>();
   /**
    * Mirror of the kernel-worker's FramebufferRegistry, populated by
@@ -465,6 +487,8 @@ export class BrowserKernel {
     lazyUrlBase?: string;
     /** See `lazyUrlMap` on the init message: the image is never rewritten. */
     lazyUrlMap?: Readonly<Record<string, string>>;
+    /** See `lazyAssetDirectory` on the init message. */
+    lazyAssetDirectory?: string;
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
   }): Promise<void> {
@@ -482,6 +506,7 @@ export class BrowserKernel {
       vfsImage,
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
       lazyUrlMap: options.lazyUrlMap,
+      lazyAssetDirectory: options.lazyAssetDirectory,
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
       takeVfsImageOwnership: false,
@@ -527,6 +552,7 @@ export class BrowserKernel {
     vfsImage: Uint8Array;
     lazyUrlBase?: string;
     lazyUrlMap?: Readonly<Record<string, string>>;
+    lazyAssetDirectory?: string;
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
     takeVfsImageOwnership: boolean;
@@ -542,6 +568,11 @@ export class BrowserKernel {
       throw new Error(
         "owned VFS image must be one whole ordinary ArrayBuffer",
       );
+    }
+    if (opts.lazyAssetDirectory !== undefined) {
+      // Reject a malformed directory here, as NodeKernelHost does, rather
+      // than on the first lazy read inside the worker.
+      resolveImageOwnedLazyAsset(opts.lazyAssetDirectory, "kandelo-lazy:programs/probe");
     }
     this.kernelFatalError = null;
     const closedLazyAssets = opts.closedLazyAssets === undefined
@@ -627,6 +658,7 @@ export class BrowserKernel {
           lazyUrlMap: opts.lazyUrlMap === undefined
             ? undefined
             : { ...opts.lazyUrlMap },
+          lazyAssetDirectory: opts.lazyAssetDirectory,
           closedLazyAssets,
           rootfsMountSpec: opts.rootfsMountSpec === undefined
             ? undefined
@@ -636,6 +668,8 @@ export class BrowserKernel {
             maxWorkers: this.options.maxWorkers,
             maxMemoryPages: this.maxPages,
             kernelMaxPages: this.memoryProfile.kernelMaxPages,
+            exchangeByteLimit: exchangeByteLimit(this.memoryProfile.kernelMaxPages),
+            exchangeActivation: this.options.exchange?.activation ?? "on-demand",
             memoryProfileId: this.memoryProfile.id,
             maxProcessMemoryBytes:
               this.options.maxProcessMemoryBytes
@@ -1126,13 +1160,16 @@ export class BrowserKernel {
    * the parsed response. Bypasses real TCP — uses the kernel's
    * `kernel_inject_connection` path directly. Prototype API.
    *
+   * With `options.hostname`, use this machine's Kandelo session TCP network
+   * instead. External physical-host destinations are not accepted by that path.
+   *
    * The in-kernel server must already be listening on `port`. Each call
    * opens a fresh injected connection (no pipelining).
    */
   async fetchInKernel(
     port: number,
     request: HttpRequest,
-    options?: { timeoutMs?: number; maxResponseBytes?: number },
+    options?: { timeoutMs?: number; maxResponseBytes?: number; hostname?: string },
   ): Promise<HttpResponse> {
     const requestId = this.nextRequestId++;
     return this.request(requestId, {
@@ -1142,6 +1179,7 @@ export class BrowserKernel {
       request,
       timeoutMs: options?.timeoutMs,
       maxResponseBytes: options?.maxResponseBytes,
+      hostname: options?.hostname,
     }) as Promise<HttpResponse>;
   }
 
@@ -1864,6 +1902,12 @@ export class BrowserKernel {
 
   private handleWorkerMessage(msg: KernelToMainMessage): void {
     switch (msg.type) {
+      case "exchange_range_request":
+        this.exchange.handleRangeRequest(msg.source, msg.offset, msg.length);
+        break;
+      case "exchange_notifications":
+        this.exchange.handleNotifications(msg.notifications);
+        break;
       case "ready": {
         if (msg.pcmPort) {
           this.pcmPort = msg.pcmPort;

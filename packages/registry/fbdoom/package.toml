@@ -9,7 +9,7 @@ version = "0.1.0"
 # atexit_func_t cast. rev3 dropped the bundled IWAD; the browser demo fetches
 # the DOOM shareware `doom1.wad` at page load from a Linux-distro mirror and
 # caches it via the Cache API. The archive carries only `fbdoom.wasm`.
-kernel_abi = 43
+kernel_abi = 52
 depends_on = []
 
 # Upstream has no release tarball, so this package pins an exact commit archive.
@@ -28,3 +28,12 @@ script_path = "packages/registry/fbdoom/build-fbdoom.sh"
 [[outputs]]
 name = "fbdoom"
 wasm = "fbdoom.wasm"
+
+[[runtime_files]]
+artifact = "sessions.json"
+guest_path = "/usr/share/kandelo/sessions/fbdoom.json"
+
+[[runtime_files]]
+artifact = "doom-activity"
+guest_path = "/usr/local/bin/doom-activity"
+mode = 493

@@ -603,10 +603,20 @@ function hasWasmMagic(src: Uint8Array): boolean {
     src[3] === 0x6d;
 }
 
+// [RUNTIME-WORKAROUND: WEBKIT-TEXTDECODER-WRAPPER-CRASH] One decoder for
+// every Wasm name: binaries such as PHP export about 22,000 names, and a
+// TextDecoder per name made each process start create thousands of DOM
+// wrappers. WebKit's page process crashed in cacheWrapper<TextDecoder>
+// during those bursts. The cause is suspected, not a confirmed WebKit
+// defect: there is no standalone reduction (docs/browser-support.md, "WebKit
+// page-process crash while creating TextDecoders"). decode() without
+// `stream` keeps no state.
+const WASM_NAME_DECODER = new TextDecoder();
+
 function readName(src: Uint8Array, pos: number): [string, number] {
   const [len, lenBytes] = readULEB128(src, pos);
   pos += lenBytes;
-  const name = new TextDecoder().decode(src.subarray(pos, pos + len));
+  const name = WASM_NAME_DECODER.decode(src.subarray(pos, pos + len));
   return [name, pos + len];
 }
 
@@ -2760,7 +2770,7 @@ export function extractHeapBase(programBytes: ArrayBuffer): bigint | null {
       const [exportCount, countBytes] = readULEB128(src, pos); pos += countBytes;
       for (let i = 0; i < exportCount; i++) {
         const [nameLen, nameLenBytes] = readULEB128(src, pos); pos += nameLenBytes;
-        const name = new TextDecoder().decode(src.subarray(pos, pos + nameLen)); pos += nameLen;
+        const name = WASM_NAME_DECODER.decode(src.subarray(pos, pos + nameLen)); pos += nameLen;
         const kind = src[pos++];
         const [idx, idxBytes] = readULEB128(src, pos); pos += idxBytes;
         if (kind === 3 && name === "__heap_base") {
@@ -2840,7 +2850,7 @@ function extractI32ConstFunctionExport(
       const [exportCount, countBytes] = readULEB128(src, pos); pos += countBytes;
       for (let i = 0; i < exportCount; i++) {
         const [nameLen, nameLenBytes] = readULEB128(src, pos); pos += nameLenBytes;
-        const name = new TextDecoder().decode(src.subarray(pos, pos + nameLen)); pos += nameLen;
+        const name = WASM_NAME_DECODER.decode(src.subarray(pos, pos + nameLen)); pos += nameLen;
         const kind = src[pos++];
         const [idx, idxBytes] = readULEB128(src, pos); pos += idxBytes;
         if (kind === 0 && name === exportName) {

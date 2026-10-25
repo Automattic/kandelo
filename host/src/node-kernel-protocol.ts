@@ -1,3 +1,9 @@
+import type {
+  ExchangeNotificationsMessage,
+  ExchangeRangeMessage,
+  ExchangeRangeRequestMessage,
+  ExchangeRequestMessage,
+} from "./exchange-host";
 import type { RemoteSegmentInit } from "./networking/remote-segment-port";
 import type { VfsChangeEvent } from "./vfs/types";
 // Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
@@ -140,6 +146,9 @@ export interface InitMessage {
     useSharedMemory?: boolean;
     /** See `NodeKernelHostOptions.imageBuildDeterminism`. */
     imageBuildDeterminism?: ImageBuildDeterminism;
+    /** Bytes Kandelo exchange's `work/` and `outbox/` may hold. */
+    exchangeByteLimit?: number;
+    exchangeActivation?: "on-demand" | "off";
   };
   /**
    * Virtual path → immutable host file for spawn-only preflight. Exec never
@@ -163,6 +172,8 @@ export interface InitMessage {
   rootfsMountSpec?: MountSpec[];
   /** Base used to resolve relative lazy URLs embedded in rootfsImage. */
   rootfsLazyUrlBase?: string;
+  /** Where package members are served; image-owned addresses resolve under it. */
+  rootfsLazyAssetDirectory?: string;
   /** Exhaustive exact-byte lazy transport for this rootfs; no network fallback. */
   rootfsLazyAssets?: ClosedLazyAsset[];
   /** Exhaustive verified sources fetched only on first use of their exact URL. */
@@ -326,6 +337,8 @@ export interface ClipboardGuestWaitMessage {
 
 export type MainToKernelMessage =
   | InitMessage
+  | ExchangeRequestMessage
+  | ExchangeRangeMessage
   | AttachRemotePeerMessage
   | RemoteNetworkSnapshotMessage
   | RemoteNetworkHostMessage
@@ -416,6 +429,8 @@ export interface DestroyProgressMessage {
 
 export type KernelToMainMessage =
   | ReadyMessage
+  | ExchangeRangeRequestMessage
+  | ExchangeNotificationsMessage
   | InitErrorMessage
   | KernelFatalMessage
   | ResponseMessage

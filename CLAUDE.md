@@ -143,6 +143,16 @@ Process state is authoritative. `fork`, `exec`, `posix_spawn`, `clone`, `exit`,
 `waitpid`, fd tables, OFDs, locks, sockets, PTYs, memory layout, and
 zombie/reaping state must remain coherent across transitions.
 
+A workaround for a defect in an outside runtime or toolchain (a browser
+engine, Node.js, Bun, LLVM, wasm-ld, wasm-opt, Rust) needs a registry entry
+in `tests/runtime-workarounds/` and a `[RUNTIME-WORKAROUND: <ID>]` tag at
+every code site. Blaming a runtime needs a standalone reproduction that
+contains no Kandelo code and judges its own result; until one exists the
+defect is "suspected", and docs, comments and PRs must say so. Agents
+never file, comment on, or vote on upstream trackers unless the entry has
+`reports = "agents-allowed"` with a named channel. See
+`tests/runtime-workarounds/README.md`.
+
 See `docs/agent-guidance/debugging-and-posix.md` before changing syscall,
 process, VFS, memory, device, or root-cause debugging behavior.
 
@@ -319,7 +329,7 @@ wasm, program and test-fixture binaries (`local-binaries/`), rootfs image, or
 package artifacts, and a fresh checkout or `git worktree` inherits none of
 them. When a goal — running a suite, reproducing a failure, validating before
 a merge — needs an artifact that is missing, build it and continue. A missing
-artifact is a `./run.sh setup` / `build-musl.sh` / `build-programs.sh` step
+artifact is a `./run.sh setup --all` / `build-musl.sh` / `build-programs.sh` step
 away (under `scripts/dev-shell.sh`), not a "cannot proceed" boundary and not a
 reason to hand the task back. Distinguish this
 from a genuine platform defect: a missing artifact you can produce is

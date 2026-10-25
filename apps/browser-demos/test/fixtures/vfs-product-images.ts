@@ -31,6 +31,9 @@ type OptionalBinaryImporters = Record<string, () => Promise<string>>;
 // rewrites `import.meta.glob` by its literal specifier and importer, so the
 // specifier cannot be shared through a variable or a helper.
 const OPTIONAL_BINARY_VFS_URLS = {
+  ...import.meta.glob("../../../../local-binaries/programs/wasm32/redis-vfs.vfs.zst", { query: "?url", import: "default" }),
+  ...import.meta.glob("../../../../binaries/programs/wasm32/redis-vfs.vfs.zst", { query: "?url", import: "default" }),
+
   ...import.meta.glob(
     "../../../../local-binaries/programs/wasm32/nginx-vfs.vfs.zst",
     { query: "?url", import: "default" },
@@ -69,6 +72,7 @@ const OPTIONAL_BINARY_PRODUCTS: Record<
   string,
   { label: string; relPaths: readonly string[] }
 > = {
+  "browser-redis": { label: "redis-vfs.vfs.zst", relPaths: ["../../../../local-binaries/programs/wasm32/redis-vfs.vfs.zst", "../../../../binaries/programs/wasm32/redis-vfs.vfs.zst"] },
   "browser-nginx": {
     label: "nginx-vfs.vfs.zst",
     relPaths: [

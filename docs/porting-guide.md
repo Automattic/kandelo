@@ -257,10 +257,15 @@ Any time a ported program needs more than a handful of runtime files that togeth
 
 At image-build time, `KandeloImageFs.registerLazyArchive({ url, entries, mountPrefix })` (`images/vfs/lib/kandelo-image-fs.ts`) validates every member path of a zip's central directory, then creates deferred inodes for each file under `mountPrefix` and records the archive URL in the image. At runtime the kernel owns those inodes: on first read of any member it asks the host for the archive through `host_fetch_deferred`, keeps the archive and the members it extracts in kernel memory, and serves later reads from there. `stat` alone never downloads content. The fetch happens once per booted machine; nothing is evicted while the machine runs, which is why large archives count against the kernel's memory budget (see `docs/agent-guidance/host-runtime.md`).
 
-At runtime the URL stored in the image is usually bare — a plain filename
-like `vim.zip`. The host resolves it when the kernel asks for it: a URL in
-`lazyUrlMap` uses the mapped address, and any other relative URL resolves
-against `lazyUrlBase` (the deployment's base URL by default). The image itself
+The URL a shell archive records is its package-mirror path in the
+`kandelo-lazy:` grammar, such as `kandelo-lazy:programs/wasm32/vim.zip`,
+derived from the spec's `resolverPath` (`shellLazyArchiveAddress`). The host
+resolves it when the kernel asks for it: an address in the image-owned
+grammar resolves to its package member under the
+deployment's lazy-asset directory (`resolveImageOwnedLazyAsset` in
+`host/src/vfs/vfs-asset-group-reference.ts`), a URL in `lazyUrlMap` uses the
+mapped address, and any other relative URL resolves against `lazyUrlBase`
+(the deployment's base URL by default). The image itself
 is never rewritten. When the image records a digest for the fetched bytes, the
 kernel checks it before the bytes become file contents, and a failed fetch surfaces as an I/O error on the read that needed
 it rather than as a zero-byte file.
@@ -304,7 +309,11 @@ The call resolves `vim-browser-bundle`'s declared `vim.zip`, reads those bytes
 once for central-directory indexing and hashing, and creates `/usr/bin/vim`
 and `/usr/share/vim/vim91/...` as stubs inside the shell VFS. The Kandelo UI
 does **not** need a matching `registerLazyFiles` entry for the binary - the
-stub from the archive is enough.
+stub from the archive is enough, and the browser app needs no entry either:
+deployments serve whatever the built image references. The archive's address
+is derived from its `resolverPath`, so a new archive needs no entry anywhere
+else; `tests/package-system/shell-lazy-url-resolution.test.ts` checks that
+every declared address resolves to its package member.
 
 ### When you also want `/bin/<program>` symlinks
 

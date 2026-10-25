@@ -139,6 +139,13 @@ impl UnixSocketRegistry {
         self.entries.remove(path).is_some()
     }
 
+    /// Remove every registration at or below `prefix`: a directory tree the
+    /// kernel removes on its own.
+    pub fn unregister_under(&mut self, prefix: &[u8]) {
+        self.entries
+            .retain(|path, _| crate::fifo::rebase_path(path, prefix, prefix).is_none());
+    }
+
     /// Remove all registrations for a given pid (process cleanup).
     pub fn cleanup_process(&mut self, pid: u32) {
         self.entries.retain(|path, entry| {

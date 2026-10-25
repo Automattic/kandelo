@@ -118,7 +118,8 @@ When already inside `scripts/dev-shell.sh bash`, run the build commands
 directly:
 
 ```bash
-./run.sh setup                # Provision sysroot(s)/SDK, then build fork-instrument tool, kernel wasm, every package, rootfs, and TypeScript host
+./run.sh setup                # Provision sysroot(s)/SDK, then build fork-instrument tool, kernel wasm, the packages the VFS products and browser app demand, rootfs, and TypeScript host
+./run.sh setup --all          # The same, building every supported package (test-suite fixtures included)
 bash scripts/build-musl.sh --ensure  # Check wasm32 musl inputs and installed core outputs
 scripts/build-programs.sh    # Rebuild test/example C programs
 ```

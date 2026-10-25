@@ -1,3 +1,5 @@
+import { SessionHttpClient } from "./session-http";
+import type { HttpRequest, HttpResponse, SendHttpRequestOptions } from "./in-kernel-http";
 import type {
   NetworkAddress,
   NetworkIO,
@@ -7,6 +9,7 @@ import type {
 } from "../types";
 import { NET_READINESS } from "../generated/abi";
 import { RemoteVirtualNetwork, type RemoteSegmentSnapshot } from "./remote-segment";
+import { isIpv4Multicast } from "./virtual-network";
 import { RemoteSegmentPortTransport, type RemoteSegmentInit, type RemoteSegmentPeer } from "./remote-segment-port";
 
 const ENOENT = 2;
@@ -111,7 +114,7 @@ export class SessionNetwork implements NetworkIO {
   }
 
   udpSourceAddress(destination: Uint8Array): Uint8Array | number {
-    if (this.segment && (RemoteVirtualNetwork.routes(destination) || limitedBroadcast(destination))) {
+    if (this.segment && (RemoteVirtualNetwork.routes(destination) || limitedBroadcast(destination) || isIpv4Multicast(destination))) {
       return this.segment.udpSourceAddress(destination);
     }
     return this.fallback?.udpSourceAddress?.(destination) ?? ENETUNREACH;
@@ -146,6 +149,12 @@ export class SessionNetwork implements NetworkIO {
     if (this.segmentHandles.has(handle)) return this.segment!.recv(handle, maxLen, flags);
     if (!this.fallback) fail(ENOTCONN);
     return this.fallback!.recv(handle, maxLen, flags);
+  }
+
+  readinessGeneration(handle: number, direction: number): bigint {
+    if (this.resetHandles.has(handle)) return 0x7fffffffffffffffn;
+    if (this.segmentHandles.has(handle)) return this.segment?.readinessGeneration(handle, direction) ?? -1n;
+    return this.fallback?.readinessGeneration?.(handle, direction) ?? -1n;
   }
 
   readiness(handle: number): number {
@@ -220,7 +229,7 @@ export class SessionNetwork implements NetworkIO {
   }
 
   sendDatagram(datagram: UdpDatagram): number {
-    if (this.segment && (RemoteVirtualNetwork.routes(datagram.dstAddr) || limitedBroadcast(datagram.dstAddr))) {
+    if (this.segment && (RemoteVirtualNetwork.routes(datagram.dstAddr) || limitedBroadcast(datagram.dstAddr) || isIpv4Multicast(datagram.dstAddr))) {
       return this.segment.sendDatagram(datagram);
     }
     return this.fallback?.sendDatagram?.(datagram) ?? ENETUNREACH;
@@ -246,6 +255,11 @@ export class SessionNetwork implements NetworkIO {
     return 0;
   }
 
+  ownsTcpListener(addr: Uint8Array): boolean {
+    return !!this.segment && (wildcard(addr) || RemoteVirtualNetwork.routes(addr))
+      || this.fallback?.ownsTcpListener?.(addr) === true;
+  }
+
   closeTcpListener(id: string): void {
     const listener = this.tcp.get(id);
     this.tcp.delete(id);
@@ -263,6 +277,18 @@ export class SessionNetwork implements NetworkIO {
  */
 export class RemoteSegmentRuntime {
   private session?: SessionNetwork;
+  private http = new SessionHttpClient();
+
+  /** HTTP over this computer’s actual Kandelo network, never the physical host network. */
+  fetchHttp(hostname: string, port: number, request: HttpRequest, options?: SendHttpRequestOptions): Promise<HttpResponse> {
+    const session = this.requireSession();
+    if (!session.attached) return Promise.reject(new Error("No Kandelo network session is connected"));
+    const numeric = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(hostname) ? hostname.split(".").map(Number) : null;
+    if (numeric?.some(octet => octet > 255)) return Promise.reject(new Error("Invalid Kandelo network address"));
+    const address = numeric ? new Uint8Array(numeric) : session.getaddrinfo(hostname);
+    if (!RemoteVirtualNetwork.routes(address)) return Promise.reject(new Error("HTTP destination is outside the Kandelo network"));
+    return this.http.fetch(session, address, port, request, options);
+  }
   private state: RemoteSessionState = "offline";
   private lastDisconnect: string | null = null;
   private generation = 0;
@@ -355,6 +381,7 @@ export class RemoteSegmentRuntime {
 
   /** Leave the session. A host leaving ends it for every member. */
   leave(): void {
+    this.http.close();
     this.generation++;
     this.session?.detach();
     this.state = "offline";

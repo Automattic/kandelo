@@ -229,7 +229,8 @@ let injectedExecWorkerConstructionFailure = false;
  *  worker constructs a `VirtualPlatformIO` from the default mount spec. */
 let sessionDir: string | null = null;
 const ENOEXEC = 8;
-// [JSC-TERMINATE-ATOMICS-WAIT-LEAK] destroy-time drain bounds; see handleDestroy.
+// [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+// Destroy-time drain bounds; see handleDestroy.
 const DESTROY_KILL_DRAIN_TIMEOUT_MS = 1500;
 const DESTROY_KILL_DRAIN_POLL_MS = 15;
 const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;
@@ -1226,9 +1227,26 @@ async function handleInit(msg: InitMessage) {
       nosuid: rootImage.nosuid(),
       lazyFetcher: rootfsLazyFetcher,
       lazyUrlBase: msg.rootfsLazyUrlBase,
+      lazyAssetDirectory: msg.rootfsLazyAssetDirectory,
     });
   }
 
+  // Kandelo exchange: range requests for offered sources and the kernel's
+  // notifications go to the main thread, which owns the sources and leases.
+  kernelWorker.setExchangeHandlers({
+    requestRange: (source, offset, length) => {
+      post({ type: "exchange_range_request", source, offset, length });
+    },
+    onNotifications: (notifications) => {
+      post({ type: "exchange_notifications", notifications });
+    },
+  });
+  if (msg.config.exchangeActivation !== undefined) {
+    kernelWorker.setExchangeActivation(msg.config.exchangeActivation);
+  }
+  if (msg.config.exchangeByteLimit !== undefined) {
+    kernelWorker.setExchangeByteLimit(msg.config.exchangeByteLimit);
+  }
   await kernelWorker.init(msg.kernelWasmBytes);
   finalizeRootfsTransport?.();
   if (rootImage.has() && msg.rootfsLazyAssets === undefined && msg.rootfsLazyAssetSources === undefined) {
@@ -3261,8 +3279,9 @@ async function finishProcessExit(
     // termination is in flight those duplicate exits still need channel
     // completions, otherwise the worker can park in Atomics.wait with no
     // registered listener left to wake it.
-    // Required by JSC/Bun as well as Safari; V8 benefits from the same exact
-    // terminal fence instead of relying on forced Worker termination.
+    // Required where the terminate leak is present (Bun today); V8 benefits
+    // from the same exact terminal fence instead of relying on forced Worker
+    // termination.
     try {
       await kernelWorker.killBlockedProcessForTeardown(pid);
     } catch (error) {
@@ -3361,11 +3380,14 @@ async function handleTerminate(msg: TerminateProcessMessage) {
 
   // Parity note: the browser host wakes the target to a cooperative exit
   // before this hard terminate (killBlockedProcessForTeardown in
-  // browser-kernel-worker-entry.ts's handleTerminateProcess). Node does not
-  // need it — on V8 `Worker.terminate()` reaps a worker parked in
-  // `Atomics.wait`, so terminating a blocked process worker directly frees its
-  // thread. That reap is the real platform boundary: only JavaScriptCore
-  // (Safari, Bun) leaks the thread, which is why the wake is browser-only. See
+  // browser-kernel-worker-entry.ts's handleTerminateProcess). This handler
+  // does not: it terminates the process's workers directly. On Node.js (V8)
+  // `Worker.terminate()` reaps a worker parked in `Atomics.wait`, so that
+  // frees the thread. Under Bun, which reproduces the
+  // JSC-TERMINATE-ATOMICS-WAIT-LEAK defect, a blocked process killed here
+  // still leaks its worker: a known gap in this host, not covered by the
+  // workaround. Destroy and normal process-exit teardown in this file do
+  // wake blocked workers first. See
   // docs/jsc-terminate-atomics-wait-workaround.md.
 
   // Terminate thread workers
@@ -3444,19 +3466,21 @@ async function handleTerminate(msg: TerminateProcessMessage) {
 
 async function performDestroy() {
   await repoLazyAssetResolver?.close();
-  // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug
-  // is fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
+  // [RUNTIME-WORKAROUND: JSC-TERMINATE-ATOMICS-WAIT-LEAK]
+  // WORKAROUND, remove when the engine bug is fixed; see
+  // docs/jsc-terminate-atomics-wait-workaround.md.
   //
-  // On JSC-based runtimes, `Worker.terminate()` cannot free a worker parked in
-  // Atomics.wait on its syscall channel — the state every blocked process/thread
-  // worker sits in — so terminating them directly leaks their threads + committed
-  // memory. This host entry backs BOTH Node.js (V8) and Bun (JSC); on Bun the
-  // leak is live, so we must first wake every blocked worker into a cooperative
-  // exit (killAllBlockedForTeardown queues SIGKILL + EINTR; the guest glue runs
-  // kernel_exit → wasm trap → the worker idles → terminate() reclaims it). This
-  // is harmless on V8, so we do it unconditionally rather than sniff the engine,
-  // matching the browser host (which does the same and is likewise a no-op cost
-  // on Chrome/V8). Phases mirror browser-kernel-worker-entry.ts performDestroy.
+  // Where the defect is present, `Worker.terminate()` cannot free a worker
+  // parked in Atomics.wait on its syscall channel — the state every blocked
+  // process/thread worker sits in — so terminating them directly leaks their
+  // threads + committed memory. This host entry backs BOTH Node.js (V8) and
+  // Bun; on Bun 1.3.3 the leak reproduces, so we must first wake every blocked
+  // worker into a cooperative exit (killAllBlockedForTeardown queues SIGKILL +
+  // EINTR; the guest glue runs kernel_exit → wasm trap → the worker idles →
+  // terminate() reclaims it). This is harmless on V8, so we do it
+  // unconditionally rather than sniff the engine, matching the browser host
+  // (which does the same and is likewise a no-op cost on Chrome/V8). Phases
+  // mirror browser-kernel-worker-entry.ts performDestroy.
   const destroyProgress = createDestroyProgressReporter((event) =>
     post({ type: "destroy_progress", event }),
   );
@@ -3670,7 +3694,9 @@ function handleInjectConnection(
 
 async function handleHttpRequest(msg: HttpRequestMessage) {
   try {
-    const response = await kernelWorker.sendHttpRequest(
+    const response = await (msg.hostname === undefined
+      ? kernelWorker.sendHttpRequest.bind(kernelWorker)
+      : remoteSegmentRuntime.fetchHttp.bind(remoteSegmentRuntime, msg.hostname))(
       msg.port,
       msg.request,
       {
@@ -3698,6 +3724,29 @@ async function handleClipboardGuestWait(
     );
   } catch (error) {
     respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function handleExchangeRequest(
+  msg: Extract<MainToKernelMessage, { type: "exchange_request" }>,
+) {
+  if (!initReady) {
+    respondError(msg.requestId, "exchange requires an initialized kernel");
+    return;
+  }
+  try {
+    respond(msg.requestId, await kernelWorker.exchangeRequest(msg.request));
+  } catch (error) {
+    respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  }
+}
+
+function handleExchangeRange(msg: Extract<MainToKernelMessage, { type: "exchange_range" }>) {
+  if (!initReady) return;
+  if (msg.bytes !== undefined) {
+    kernelWorker.exchangeFulfillRange(msg.source, msg.offset, msg.requested, msg.bytes);
+  } else {
+    kernelWorker.exchangeFailRange(msg.source, msg.errno);
   }
 }
 
@@ -3954,6 +4003,12 @@ port.on("message", (msg: MainToKernelMessage) => {
       break;
     case "clipboard_offer":
       void handleClipboardOffer(msg);
+      break;
+    case "exchange_request":
+      void handleExchangeRequest(msg);
+      break;
+    case "exchange_range":
+      handleExchangeRange(msg);
       break;
     case "clipboard_guest_wait":
       void handleClipboardGuestWait(msg);

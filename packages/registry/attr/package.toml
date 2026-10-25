@@ -1,0 +1,30 @@
+kind = "program"
+name = "attr"
+version = "2.5.2"
+# getfattr and setfattr: read and write extended attributes from the shell.
+# Kandelo stores user.* attributes on its exchange filesystem
+# (/run/kandelo/exchange), where handler scripts use them for MIME types,
+# provenance and batch status.
+kernel_abi = 53
+depends_on = []
+arches = ["wasm32"]
+
+[source]
+url = "https://download.savannah.nongnu.org/releases/attr/attr-2.5.2.tar.xz"
+sha256 = "f2e97b0ab7ce293681ab701915766190d607a1dba7fae8a718138150b700a70b"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://git.savannah.nongnu.org/cgit/attr.git/tree/doc/COPYING"
+
+[build]
+script_path = "packages/registry/attr/build-attr.sh"
+
+[[outputs]]
+name = "getfattr"
+wasm = "getfattr.wasm"
+
+[[outputs]]
+name = "setfattr"
+wasm = "setfattr.wasm"

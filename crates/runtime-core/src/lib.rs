@@ -18,8 +18,10 @@ pub mod channel_scratch;
 pub mod clipboard;
 pub mod credentials;
 pub mod descriptor_backing;
+pub mod exchange;
 pub mod devfs;
 pub mod dri;
+pub mod epoll;
 pub mod exec_target;
 pub mod fd;
 pub mod fifo;
@@ -70,6 +72,7 @@ pub mod vfsi_container;
 pub mod wait_queue;
 pub mod wait_shadow;
 pub mod wakeup;
+pub mod xattr;
 pub mod writeback_loss;
 pub mod zip;
 

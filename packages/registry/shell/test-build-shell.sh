@@ -47,6 +47,9 @@ for canonical_input in \
     packages/registry/shell/source-rootfs-shell-dependency-contract.mjs \
     images/vfs/scripts/build-source-rootfs-shell-image.ts \
     images/vfs/scripts/source-rootfs-shell-overlay.ts \
+    images/vfs/scripts/package-session-files.ts \
+    scripts/package-runtime-file.ts \
+    web-libs/kandelo-session/src/package-sessions.ts \
     images/vfs/scripts/shell-lazy-archives.ts \
     images/vfs/scripts/vfs-image-helpers.ts \
     images/vfs/lib/init/shell-binaries.ts \
@@ -91,8 +94,10 @@ mapfile -t declared_dependencies <<<"$declared_dependency_names"
     fail "canonical shell must publish exactly one output"
 grep -Fq 'wasm = "shell.vfs.zst"' "$PACKAGE_TOML" ||
     fail "canonical shell output must be shell.vfs.zst"
-[ "$(grep -Fc '[[host_tools]]' "$PACKAGE_TOML")" -eq 1 ] ||
-    fail "canonical shell must declare only its actual Node host tool"
+[ "$(grep -Fc '[[host_tools]]' "$PACKAGE_TOML")" -eq 2 ] ||
+    fail "canonical shell must declare Node and the Cargo metadata tool"
+grep -Fq 'name = "cargo"' "$PACKAGE_TOML" ||
+    fail "canonical shell omits the Cargo package-metadata tool"
 grep -Fq 'name = "node"' "$PACKAGE_TOML" ||
     fail "canonical shell omits Node"
 
@@ -134,7 +139,7 @@ printf '%s\n' "$*" >>"$FAKE_LOG"
 out=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --rootfs|--bash|--fbdoom|--modeset|--demo-config|\
+        --rootfs|--ca-bundle|--bash|--fbdoom|--modeset|--demo-config|\
         --demo-profile-overlay|--dependency-contract|--wldesktop|\
         --omarchydesktop|--omarchy-theme-hook|--desktop-data|\
         --libinput-quirks|--espeak-ng-data)
@@ -176,6 +181,7 @@ make_fixture() {
         printf 'desktop runtime\n' >"$root/dependencies/wayland-demo/$runtime_file"
     done
     printf 'speech data\n' >"$root/dependencies/espeak-ng/espeak-ng-data.zip"
+    printf 'CA bundle\n' >"$root/dependencies/ca-certificates/ca-certificates.zip"
 }
 
 run_fixture() {

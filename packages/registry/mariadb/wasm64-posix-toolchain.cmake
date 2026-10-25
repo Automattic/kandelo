@@ -272,12 +272,10 @@ set(GNUTLS_LIBRARY "GNUTLS_LIBRARY-NOTFOUND" CACHE FILEPATH "" FORCE)
 set(GNUTLS_INCLUDE_DIR "GNUTLS_INCLUDE_DIR-NOTFOUND" CACHE PATH "" FORCE)
 set(OPENSSL_FOUND FALSE CACHE BOOL "" FORCE)
 
-# --- Curses/terminfo stubs ---
-set(CURSES_FOUND TRUE CACHE BOOL "Curses found (stub)" FORCE)
-set(CURSES_LIBRARY "${WASM_POSIX_SYSROOT}/lib/libc.a" CACHE FILEPATH "Curses library (stub)" FORCE)
-set(CURSES_INCLUDE_PATH "${WASM_POSIX_SYSROOT}/include" CACHE PATH "Curses include path" FORCE)
-set(CURSES_HAVE_CURSES_H FALSE CACHE BOOL "" FORCE)
-set(CURSES_HAVE_NCURSES_H FALSE CACHE BOOL "" FORCE)
+# Keep terminal-library selection identical to wasm32: a real target library,
+# compiled from the declared ncurses-source dependency under this recipe's roots.
+set(CURSES_LIBRARY "$ENV{WASM_POSIX_MARIADB_TERMINFO_PREFIX}/lib/libtinfow.a" CACHE FILEPATH "Target terminfo" FORCE)
+set(CURSES_INCLUDE_PATH "$ENV{WASM_POSIX_MARIADB_TERMINFO_PREFIX}/include/ncursesw" CACHE PATH "Target curses headers" FORCE)
 
 # --- PCRE2 paths ---
 set(PCRE2_INCLUDE_DIR "${WASM_POSIX_SYSROOT}/include" CACHE PATH "PCRE2 include dir" FORCE)

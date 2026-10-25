@@ -1,0 +1,5 @@
+# The catch-all: save whatever no other rule takes to ~/Downloads.
+# Disable it with an empty /etc/kandelo/exchange-handlers.d/99-save.handler
+# (`kandelo-exchange handler mask 99-save`).
+kind any
+run /usr/libexec/kandelo/exchange-save

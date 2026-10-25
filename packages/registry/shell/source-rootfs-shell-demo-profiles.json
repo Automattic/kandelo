@@ -82,7 +82,7 @@
         ]
       },
       "init": {
-        "shellCommand": "/usr/local/bin/fbdoom -iwad /doom1.wad"
+        "shellCommand": "/usr/local/bin/doom-launch"
       },
       "presentation": {
         "bootPrimary": "syslog",
@@ -116,15 +116,7 @@
           ]
         }
       ],
-      "ingest": {
-        "accept": [".wad"],
-        "targetPath": "/user.wad",
-        "maxBytes": 33554432,
-        "label": "Load WAD",
-        "onLoad": {
-          "restart": "/usr/local/bin/fbdoom -iwad /user.wad"
-        }
-      }
+      "exchange": {"label": "Load WAD", "accept": [".wad"]}
     },
     "quake": {
       "identity": {
@@ -163,15 +155,7 @@
           "mode": 420
         }
       ],
-      "ingest": {
-        "accept": [".pak"],
-        "targetPath": "/usr/share/quake/id1/pak0.pak",
-        "maxBytes": 33554432,
-        "label": "Load pak0.pak",
-        "onLoad": {
-          "restart": "/usr/local/bin/quake"
-        }
-      }
+      "exchange": {"label": "Load pak0.pak", "accept": [".pak"]}
     },
     "ffmpeg-fbdev": {
       "identity": {
@@ -457,12 +441,7 @@
           ]
         }
       ],
-      "ingest": {
-        "accept": [".zip"],
-        "targetPath": "/usr/share/scummvm-games/upload.zip",
-        "maxBytes": 536870912,
-        "label": "Load game data"
-      }
+      "exchange": {"label": "Load game data", "accept": [".zip"]}
     },
     "love": {
       "identity": {

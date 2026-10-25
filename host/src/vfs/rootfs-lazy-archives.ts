@@ -124,9 +124,10 @@ function report(
  *
  * `fetcher` is the exact transport already wired for lazy assets (closed-asset
  * fetcher, CORS-proxy fetcher, etc.); this module never invents its own. A
- * deployment that serves an image's addresses from hashed paths maps them
- * THERE, in the fetcher, which is where `imageOwnedRuntimeUrlTable` already
- * does it.
+ * deployment that serves an image's addresses from another location maps
+ * them before this pipe, where the kernel worker's address resolution
+ * (`resolveImageOwnedLazyAsset` under the lazy-asset directory) already does
+ * it.
  *
  * A fetch in flight is `EAGAIN` — the same answer the kernel's own byte source
  * gives, and the guest retry loop is already built for it. The fetcher applies bounded retries for transient transport failures.

@@ -153,8 +153,8 @@ Images consumed by the Kandelo UI can include:
 ```
 
 This file lets the image declare presentation preferences, guide actions,
-companion HTML, assets, what the machine runs (`init`), an optional
-fixed-path file ingest, and whether the demo wants an on-screen touch
+companion HTML, assets, what the machine runs (`init`), optional hints for
+the file picker (`exchange`), and whether the demo wants an on-screen touch
 control overlay on coarse-pointer devices (`presentation.touchControls`).
 
 The file is not generated at build time. Commit the JSON next to the
@@ -203,13 +203,7 @@ bytes you review are the bytes that ship. The tracked file looks like this:
           }
         ]
       },
-      "ingest": {
-        "accept": [".rom"],
-        "targetPath": "/inputs/game.rom",
-        "maxBytes": 8388608,
-        "label": "Load ROM",
-        "onLoad": { "restart": "emulator /inputs/game.rom" }
-      }
+      "exchange": { "label": "Load ROM", "accept": [".rom"] }
     }
   }
 }

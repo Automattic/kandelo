@@ -26,15 +26,18 @@ export interface BrowserPcmDriverOptions {
 /**
  * One AudioContext for every machine this page ever boots.
  *
- * [WEBKIT-AUDIOWORKLET-CLOSE-LEAK] On WebKit, closing an AudioContext that
- * loaded an AudioWorklet module does not reap the worklet's rendering thread:
- * the context reaches "closed" and one "WebCore: AudioWorklet" thread stays
- * parked in the content process anyway. One machine per context therefore
- * leaks one realtime audio thread per machine switch, measured 1 -> 2 -> 3 ->
- * 4 threads across three switches with `close()` observed completing each
- * time. V8/Chromium reaps the thread.
+ * [RUNTIME-WORKAROUND: WEBKIT-AUDIOWORKLET-CLOSE-LEAK]
+ * Suspected WebKit defect, see the registry entry in
+ * tests/runtime-workarounds/WEBKIT-AUDIOWORKLET-CLOSE-LEAK/: closing an
+ * AudioContext that loaded an AudioWorklet module does not reap the
+ * worklet's rendering thread. The context reaches "closed" and one
+ * "WebCore: AudioWorklet" thread stays in the content process anyway. One
+ * machine per context therefore leaked one realtime audio thread per machine
+ * switch, measured 1 -> 2 -> 3 -> 4 threads across three switches with
+ * `close()` observed completing each time. V8/Chromium reaps the thread. It
+ * stays "suspected" because only a thread listing shows it.
  *
- * Sharing one context sidesteps the engine bug deterministically: the worklet
+ * Sharing one context sidesteps the leak deterministically: the worklet
  * module is registered once, each machine creates and tears down only its
  * AudioWorkletNode, and the single rendering thread is a fixed cost instead
  * of a per-switch leak. It also preserves the user's audio activation across
@@ -268,9 +271,10 @@ export class BrowserPcmDriver implements PcmOutputDriver {
         context = this.options.createContext();
         this.ownsContext = true;
       } else {
-        // [WEBKIT-AUDIOWORKLET-CLOSE-LEAK] reuse the page-wide context; see
-        // the sharedAudioContext declaration for why closing per-machine
-        // contexts leaks a rendering thread on WebKit.
+        // [RUNTIME-WORKAROUND: WEBKIT-AUDIOWORKLET-CLOSE-LEAK]
+        // Reuse the page-wide context; see the sharedAudioContext
+        // declaration for why closing per-machine contexts leaks a rendering
+        // thread on WebKit.
         if (!sharedAudioContext || sharedAudioContext.state === "closed") {
           sharedAudioContext = new (AudioContextCtor as typeof AudioContext)({
             latencyHint: "interactive",

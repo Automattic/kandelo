@@ -329,8 +329,8 @@ export async function composeKandeloImage(
   }
 
   // The image's lazy URLs are NOT rewritten here: the image keeps its
-  // canonical addresses and the page hands the deployment's URL table to the
-  // kernel worker beside the image (see `imageOwnedRuntimeUrlTable`).
+  // canonical addresses and the page hands the deployment's lazy-asset directory to the
+  // kernel worker beside the image (see `imageOwnedLazyAssetDirectory`).
   tick("assembling kernel-owned VFS image...");
   // `saveImage()` emits plain bytes the kernel worker restores directly;
   // buildFs and its module memory die with this realm.

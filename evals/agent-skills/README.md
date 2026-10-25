@@ -6,20 +6,21 @@ day can use them too.
 
 ## 1. Does the skill help at all? (`run.py`)
 
-`run.py` gives Claude the same read-only porting tasks twice:
+`run.py` gives Claude the same read-only tasks (porting a package, registering
+a runtime workaround, preparing the weekly upstream filing pass) twice:
 once with the skills on, and once with them off. It then scores each answer
 against a short checklist in `tasks.json` of facts a correct answer must
 mention.
 
 ```bash
-python3 evals/agent-skills/run.py              # 2 tasks x 2 arms x 3 reps, Sonnet
+python3 evals/agent-skills/run.py              # 4 tasks x 2 arms x 3 reps, Sonnet
 python3 evals/agent-skills/run.py --reps 1     # quick check
 ```
 
 - **Isolation:** only project settings load, so your personal hooks and plugins don't skew the result.
 - **Read the score first, then the cost.** A cheaper answer that misses checks is not a win.
 - **Read the saved answers** (the path is printed) before trusting a score. A regex match is not proof the advice is right.
-- **When to run it:** a full run is 12 sessions, about $2 on Sonnet. Run it when a skill changes, not in CI.
+- **When to run it:** a full run is 24 sessions, about $4 on Sonnet. Run it when a skill changes, not in CI.
 - **Adding a skill?** Add tasks for it to `tasks.json` and its name to `SKILLS` in `run.py`. Keep it only if it wins here.
 
 ## 2. Is it helping me? (`skill-impact.py`)
@@ -68,3 +69,17 @@ found the first error just as well.
 
 The porting skill stayed: $0.13 versus $0.24 per run, half the turns, and a
 checklist score of 1.00 versus 0.97.
+
+The runtime-workaround skill (`tracking-runtime-workarounds`) stayed after
+its first eval. Two runs of one rep each, on the registry already in the
+repo, scored 1.00 versus 1.00 and 1.00 versus 1.00 on registering a
+workaround, and 1.00 versus 0.00 and 0.75 versus 0.00 on preparing the
+weekly filing pass. Without the skill, the agent described the pass from
+`CLAUDE.md` and never opened the registry README, so it named none of the
+real commands; with the skill, it named all of them. The porting tasks
+stayed at 1.00 with the skill on. The one missed check with the skill on
+was a regex miss: the answer said not to file in other words. The
+registration task shows no score difference because `CLAUDE.md` already
+carries the rule; the skill's answers were more concrete (template path,
+an existing entry to extend, the cache-key consequence of editing libc
+glue). This is a small sample, so rerun it when the skill changes.

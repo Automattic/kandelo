@@ -1,3 +1,4 @@
+import { notifyReadiness, readinessGeneration } from "./readiness-generation";
 import * as net from "net";
 import type { NetworkAddress, NetworkIO, UdpReceiveTarget } from "../types";
 import { EgressLink } from "./egress-link";
@@ -94,19 +95,24 @@ export class TcpNetworkBackend implements NetworkIO {
 
     socket.on("connect", () => {
       conn.connected = true;
+      notifyReadiness(conn, 1);
     });
     socket.on("data", (data: Buffer) => {
-      if (!conn.readShutdown) conn.recvBuf = Buffer.concat([conn.recvBuf, data]);
+      if (!conn.readShutdown) { conn.recvBuf = Buffer.concat([conn.recvBuf, data]); notifyReadiness(conn, 0); }
     });
     socket.on("end", () => {
       conn.readEnded = true;
+      notifyReadiness(conn, 0);
     });
     socket.on("error", (err: Error) => {
       conn.error = err;
+      notifyReadiness(conn);
     });
     socket.on("close", () => {
       conn.closed = true;
+      notifyReadiness(conn);
       conn.readEnded = true;
+      notifyReadiness(conn, 0);
     });
 
     // A bound guest port is kept on the host side of the NAT; the guest's
@@ -179,6 +185,11 @@ export class TcpNetworkBackend implements NetworkIO {
    * Report the OS-level facts `net.Socket` exposes. No POSIX readiness
    * decision is made here — `runtime_core::net_readiness` makes it.
    */
+  readinessGeneration(handle: number, direction: number): bigint {
+    const conn = this.connections.get(handle);
+    return conn ? readinessGeneration(conn, direction) : -1n;
+  }
+
   readiness(handle: number): number {
     const conn = this.connections.get(handle);
     if (!conn) throw Object.assign(new Error("ENOTCONN"), { errno: 107 });

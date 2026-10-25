@@ -465,6 +465,9 @@ assert_matches kernel_runtime_changed_files \
 assert_matches kernel_runtime_changed_files \
   "scripts/ci-run-test-suite.sh" \
   "scripts/ci-run-test-suite.sh"
+assert_matches kernel_runtime_changed_files \
+  "scripts/check-vitest-evidence-classes.sh" \
+  "scripts/check-vitest-evidence-classes.sh"
 for browser_memory64_fixture_input in \
   scripts/browser-memory64-example-fixtures.sh \
   scripts/browser-memory64-example-fixtures.txt \

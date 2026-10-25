@@ -1,3 +1,4 @@
+import { installImageSessions } from "./image-session-files";
 /**
  * Build a fully-bootable VFS image for the nginx + Python (wsgiref) Notes
  * API demo. The image starts from shell.vfs.zst, then dinit, the first user
@@ -297,6 +298,7 @@ export async function buildNginxPythonVfsImage(
     );
   }
 
+  installImageSessions(fs, "nginx-python-vfs");
   await saveShellDerivedVfsImage(fs, inputs.outputPath);
   console.log(
     `nginx-python VFS: interpreter + ${stdlibCount} stdlib files + ${appCount} app files ` +

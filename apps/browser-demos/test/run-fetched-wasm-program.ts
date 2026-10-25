@@ -3,6 +3,8 @@ export interface FetchedWasmProgram {
   argv: string[];
   timeoutMs: number;
   wasmByteDataFiles?: string[];
+  seedEtc?: boolean;
+  env?: string[];
 }
 
 /**
@@ -14,6 +16,8 @@ export async function runFetchedWasmProgram({
   argv,
   timeoutMs,
   wasmByteDataFiles = [],
+  seedEtc,
+  env,
 }: FetchedWasmProgram) {
   const response = await fetch(programUrl);
   if (!response.ok) {
@@ -47,8 +51,10 @@ export async function runFetchedWasmProgram({
     wasmBytes,
     argv,
     timeoutMs,
-    wasmByteDataFiles.length > 0
+    wasmByteDataFiles.length > 0 || seedEtc !== undefined || env !== undefined
       ? {
+          seedEtc,
+          env,
           dataFiles: wasmByteDataFiles.map((path) => ({
             path,
             useWasmBytes: true,

@@ -104,6 +104,13 @@ pub trait HostIO {
     /// Forget a deferred resource rejected by the kernel's integrity checks.
     /// Hosts without a transport cache have nothing to discard.
     fn discard_deferred(&mut self, _uri: &[u8]) {}
+    /// Read bytes of a Kandelo exchange input at `offset` from the host that
+    /// offered it. EAGAIN while the host is fetching them: the blocked syscall
+    /// is retried when they arrive. A host that never offers inputs has no
+    /// sources, so a read is an I/O error rather than empty bytes.
+    fn exchange_source_read(&mut self, _source: u64, _offset: u64, _buf: &mut [u8]) -> Result<usize, Errno> {
+        Err(Errno::EIO)
+    }
     /// Read up to `buf.len()` bytes at `offset` from the raw bytes of the VFS
     /// image this kernel booted from. This is the seam that lets the kernel
     /// parse its own image (`rootfs::load_image`) rather than consume a tree the
@@ -312,6 +319,11 @@ pub trait HostIO {
     fn host_net_readiness(&mut self, handle: i32) -> Result<u32, Errno> {
         let _ = handle;
         Ok(wasm_posix_shared::net_readiness::UNOBSERVABLE)
+    }
+    /// Notification counter for the transport's receive (0) or send (1) side.
+    /// None means that edge/exclusive polling cannot be provided faithfully.
+    fn host_net_readiness_generation(&mut self, _handle: i32, _direction: u32) -> Option<u64> {
+        None
     }
     fn host_net_local_endpoint(&mut self, handle: i32) -> Result<([u8; 4], u16), Errno> {
         let _ = handle;
@@ -871,6 +883,12 @@ pub struct EpollInterest {
     pub ofd_id: crate::lock::OfdId,
     pub events: u32,
     pub data: u64,
+    /// Readiness callbacks enqueue a candidate; delivery rechecks the backing.
+    pub pending: bool,
+    pub disabled: bool,
+    pub sources: Vec<crate::epoll::Source>,
+    pub network_generations: [Option<u64>; 2],
+    pub device_generation: Option<(u64, u32)>,
 }
 
 /// An epoll instance: a set of monitored open file descriptions.
@@ -883,12 +901,16 @@ pub struct EpollInterest {
 #[derive(Debug, Clone)]
 pub struct EpollInstance {
     pub interests: Vec<EpollInterest>,
+    pub cursor: usize,
+    pub waiters: u32,
 }
 
 impl EpollInstance {
     pub fn new() -> Self {
         EpollInstance {
             interests: Vec::new(),
+            cursor: 0,
+            waiters: 0,
         }
     }
 }
@@ -1058,6 +1080,12 @@ pub struct Process {
     /// pending, but it is not yet part of the parent's waitable child set.
     /// Only the parent-bound spawn publication transaction may clear this.
     pub spawn_publication_pending: bool,
+    /// The host has published this process's exit: it observed the Exited
+    /// transition, began retiring the process's workers, and handed the exit
+    /// to `ProcessTable::publish_process_exit`. Synthetic init reaps an
+    /// adopted zombie only after this point, because until then the host
+    /// still needs the zombie record to discover the death.
+    pub exit_published: bool,
     pub pgid: u32,
     pub sid: u32,
     /// True iff this process is the session leader of its session (i.e. the
@@ -1083,6 +1111,7 @@ pub struct Process {
     pub blocked_retries: crate::blocked_retry::BlockingRetryState,
     pub pipes: Vec<Option<PipeBuffer>>,
     pub sockets: SocketTable,
+    pub epoll_waits: Vec<(u32, crate::epoll::WaitLease)>,
     pub cwd: Vec<u8>,
     pub dir_streams: Vec<Option<DirStream>>,
     /// Process-directed pending signals and process-wide dispositions. The
@@ -1381,6 +1410,7 @@ impl Process {
             exec_generation: 0,
             prepared_exec_targets: PreparedExecLedger::new(),
             spawn_publication_pending: false,
+            exit_published: false,
             pgid: pid,
             sid: 0,
             is_session_leader: false,
@@ -1393,6 +1423,7 @@ impl Process {
             blocked_retries: crate::blocked_retry::BlockingRetryState::new(),
             pipes: Vec::new(),
             sockets: SocketTable::new(),
+            epoll_waits: Vec::new(),
             cwd: alloc::vec![b'/'],
             dir_streams: Vec::new(),
             signals: SignalState::new(),
@@ -1621,6 +1652,7 @@ impl Process {
             wasm_posix_shared::wait::CLD_EXITED,
             status,
         );
+        crate::process_table::queue_process_exit(self.pid);
         true
     }
 
@@ -1639,6 +1671,7 @@ impl Process {
             wasm_posix_shared::wait::CLD_KILLED,
             signum as i32,
         );
+        crate::process_table::queue_process_exit(self.pid);
         true
     }
 
@@ -1749,6 +1782,7 @@ impl Process {
 
     /// Remove a thread by TID.
     pub fn remove_thread(&mut self, tid: u32) -> Option<ThreadState> {
+        crate::epoll::finish_wait(self, tid);
         if let Some(idx) = self.identity.threads.iter().position(|t| t.tid == tid) {
             Some(self.identity.threads.swap_remove(idx).into_state())
         } else {
@@ -1922,6 +1956,17 @@ impl Process {
         } else {
             false
         }
+    }
+
+    pub fn signal_readiness_generations(&self, tid: u32) -> [Option<u64>; 2] {
+        let directed = if self.is_main_thread(tid) {
+            self.main_thread_signals.readiness_generation
+        } else {
+            self.get_thread(tid)
+                .map(|t| t.signals.readiness_generation)
+                .unwrap_or(0)
+        };
+        [Some(self.signals.readiness_generation), Some(directed)]
     }
 
     /// Union of the process's shared pending bits and TID's directed pending

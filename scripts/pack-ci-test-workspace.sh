@@ -70,6 +70,7 @@ required_items=(
     examples/gencat.wasm
     examples/pthread_channel_reuse_test.wasm
     examples/wait_lifecycle_test.wasm
+    examples/orphan_reparent_test.wasm
     benchmarks/wasm/pipe-throughput.wasm
     benchmarks/wasm/file-throughput.wasm
     benchmarks/wasm/syscall-latency.wasm

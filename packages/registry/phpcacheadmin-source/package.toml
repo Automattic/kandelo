@@ -1,0 +1,14 @@
+kind = "source"
+name = "phpcacheadmin-source"
+version = "2.7.3"
+
+[source]
+url = "https://github.com/RobiNN1/phpCacheAdmin/archive/refs/tags/2.7.3.tar.gz"
+sha256 = "33f0a8e201923f8508233a1a47f4afe42b75c1b4d507c3aa7ab2e13fd087bde2"
+provider = "archive"
+
+[license]
+spdx = "MIT AND BSD-3-Clause AND Apache-2.0"
+# Upstream bundles Predis (MIT), Twig (BSD-3-Clause), and ECharts
+# (Apache-2.0 with BSD-3-Clause components).
+url = "https://github.com/RobiNN1/phpCacheAdmin/blob/2.7.3/LICENSE"

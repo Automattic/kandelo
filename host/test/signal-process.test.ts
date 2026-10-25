@@ -2,7 +2,7 @@
  * Host-initiated signal delivery: `NodeKernelHost.signalProcess`.
  *
  * This is the Node half of a capability the browser host exposes identically
- * (`BrowserKernel.signalProcess`), used by the browser demos' file-ingest flow
+ * (`BrowserKernel.signalProcess`), used by the browser demos' dock actions
  * to stop the process holding a single-owner device before relaunching it.
  *
  * Unlike `terminateProcess`, which tears the wasm worker down from the host,

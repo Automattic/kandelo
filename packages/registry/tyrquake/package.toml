@@ -8,7 +8,7 @@ version = "0.71.0"
 # vid_fbdev/in_fbdev backends and the engine's existing snd_oss backend. The
 # playable pak0.pak is not bundled: the browser demo fetches id's intact
 # shareware archive (quake106.zip) and extracts it inside Kandelo.
-kernel_abi = 43
+kernel_abi = 52
 depends_on = []
 
 # Upstream publishes tags, not release tarballs. Pin the exact commit archive
@@ -28,3 +28,17 @@ script_path = "packages/registry/tyrquake/build-tyrquake.sh"
 [[outputs]]
 name = "quake"
 wasm = "quake.wasm"
+
+[[runtime_files]]
+artifact = "sessions.json"
+guest_path = "/usr/share/kandelo/sessions/tyrquake.json"
+
+[[runtime_files]]
+artifact = "quake-data"
+guest_path = "/usr/local/bin/quake-data"
+mode = 493
+
+[[runtime_files]]
+artifact = "quake-activity"
+guest_path = "/usr/local/bin/quake-activity"
+mode = 493

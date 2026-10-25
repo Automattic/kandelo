@@ -1501,8 +1501,23 @@ describe("kernel scratch transfer capacity regressions", () => {
     });
   });
 
+  // POSIX lets getgroups take a buffer larger than NGROUPS_MAX: no group
+  // list is longer, so the host lends at most NGROUPS_MAX entries and the
+  // kernel answers. Only an unrepresentable size or a null buffer fails here.
+  it("dispatches a getgroups count above NGROUPS_MAX to the kernel", () => {
+    const harness = makeScratchHarness(8);
+    prepareGenericSyscallHarness(harness, 8);
+    writeChannelSyscall(harness, ABI_SYSCALLS.Getgroups, [
+      BigInt(POSIX_NGROUPS_MAX + 1),
+      1n,
+    ]);
+    dispatchScratchBoundarySyscall(harness);
+
+    expect(harness.handleChannel).toHaveBeenCalledOnce();
+    expect(harness.completeChannelRaw).not.toHaveBeenCalled();
+  });
+
   it.each([
-    ["oversized count", BigInt(POSIX_NGROUPS_MAX + 1), 1n, EINVAL],
     ["multiplication overflow", BigInt(Number.MAX_SAFE_INTEGER), 1n, EINVAL],
     ["null output", 1n, 0n, EFAULT],
   ] as const)(
@@ -1517,23 +1532,14 @@ describe("kernel scratch transfer capacity regressions", () => {
       dispatchScratchBoundarySyscall(harness);
 
       expect(harness.handleChannel).not.toHaveBeenCalled();
-      if (_name === "oversized count") {
-        expect(harness.completeChannel).not.toHaveBeenCalled();
-        expect(harness.completeChannelRaw).toHaveBeenCalledWith(
-          harness.channel,
-          -1,
-          errno,
-        );
-      } else {
-        expect(harness.completeChannel).toHaveBeenCalledWith(
-          harness.channel,
-          ABI_SYSCALLS.Getgroups,
-          expect.any(Array),
-          undefined,
-          -1,
-          errno,
-        );
-      }
+      expect(harness.completeChannel).toHaveBeenCalledWith(
+        harness.channel,
+        ABI_SYSCALLS.Getgroups,
+        expect.any(Array),
+        undefined,
+        -1,
+        errno,
+      );
       expectScratchTailUntouched(harness);
     },
   );
