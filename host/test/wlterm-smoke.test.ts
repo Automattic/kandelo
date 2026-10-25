@@ -24,9 +24,9 @@
  *   - the shell exits, the PTY master hangs up, wlterm reaps it and prints
  *     WLTERM_EXIT code=0.
  *
- * wlterm exits 0, and cage exits with its status. Skips if any binary is
- * missing (bare checkout — bash comes from the package cache / binaries
- * tree).
+ * The same input path runs under sway's configured WAYLAND_DISPLAY.
+ * wlterm exits 0; cage forwards its status and sway is stopped through IPC.
+ * Normal compositor and shell artifacts are required, never skipped.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
@@ -37,6 +37,9 @@ import { WLROOTS_ENV, compositorBytes, requireSession, sessionRootfs } from "./w
 const wltermBin = resolveBinary("programs/wayland-demo/wlterm.wasm");
 const shellBin = resolveBinary("programs/bash.wasm");
 requireSession("cage");
+requireSession("sway");
+const dashBin = resolveBinary("programs/dash.wasm");
+const swaymsgBin = resolveBinary("programs/sway/swaymsg.wasm");
 
 // Input canvas dims are arbitrary here — wlterm is keyboard-driven, and the
 // compositor routes keys by keycode independent of the pointer scale. We match
@@ -54,10 +57,20 @@ const KEY_ENTER = 28;
 // signal.h
 const SIGKILL = 9;
 
-function wltermRootfs(): Promise<Uint8Array> {
-  return sessionRootfs("cage", [
+function wltermRootfs(compositor: "cage" | "sway" = "cage"): Promise<Uint8Array> {
+  return sessionRootfs(compositor, [
     { path: "/usr/bin/wlterm", bytes: new Uint8Array(readFileSync(wltermBin!)), mode: 0o755 },
     { path: "/bin/bash", bytes: new Uint8Array(readFileSync(shellBin!)), mode: 0o755 },
+    { path: "/bin/sh", bytes: new Uint8Array(readFileSync(dashBin)), mode: 0o755 },
+    { path: "/usr/bin/swaymsg", bytes: new Uint8Array(readFileSync(swaymsgBin)), mode: 0o755 },
+    { path: "/usr/share/fonts/Inconsolata-Regular.ttf", bytes: new Uint8Array(
+      readFileSync(new URL("../../third_party/Inconsolata-Regular.ttf", import.meta.url))), mode: 0o644 },
+    { path: "/etc/fonts/fonts.conf", bytes: new TextEncoder().encode(
+      '<fontconfig><dir>/usr/share/fonts</dir><cachedir>/tmp/fontconfig</cachedir></fontconfig>'), mode: 0o644 },
+    { path: "/etc/sway/config", bytes: new TextEncoder().encode(
+      "exec /usr/bin/wlterm --watch READY --watch 'GOT[a]' /bin/bash /usr/bin/session\n"), mode: 0o644 },
+    { path: "/usr/bin/session", bytes: new TextEncoder().encode(
+      "printf 'READY\\n'; read x; printf 'GOT[%s]\\n' \"$x\"\n"), mode: 0o755 },
   ]);
 }
 
@@ -76,13 +89,13 @@ async function waitFor(
 }
 
 describe("wlterm — libkwl terminal renders shell output and routes typed input", () => {
-  it(
-    "shell output reaches the grid; a typed line round-trips back through it",
-    async () => {
+  it.each(["cage", "sway"] as const)(
+    "%s: shell output reaches the grid; a typed line round-trips back through it",
+    async (compositor) => {
       const out = { value: "" };
       const err = { value: "" };
       const host = new NodeKernelHost({
-        rootfsImage: await wltermRootfs(),
+        rootfsImage: await wltermRootfs(compositor),
         onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
         onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
       });
@@ -94,21 +107,12 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
         await host.init();
         host.setInputCanvasDims(CANVAS_W, CANVAS_H);
 
-        // cage runs wlterm (libkwl terminal) + a forkpty'd shell script.
-        // The shell prints READY, reads one line, echoes it back as GOT[<line>].
-        // wlterm watches the grid for both markers and reports each once seen.
-        const cageExit = host.spawn(
-          compositorBytes("cage"),
-          [
-            "cage", "--",
-            "/usr/bin/wlterm",
-            "--watch", "READY",
-            "--watch", "GOT[a]",
-            "/bin/bash", "-c",
-            "printf 'READY\\n'; read x; printf 'GOT[%s]\\n' \"$x\"",
-          ],
-          { env: [...WLROOTS_ENV, "PATH=/usr/bin:/bin", "HOME=/root", "TERM=vt100"] },
-        );
+        const env = [...WLROOTS_ENV, "PATH=/usr/bin:/bin", "HOME=/root",
+          "TERM=vt100", "SWAYSOCK=/tmp/sway-ipc.sock"];
+        const args = compositor === "cage" ? ["cage", "--",
+          "/usr/bin/wlterm", "--watch", "READY", "--watch", "GOT[a]",
+          "/bin/bash", "/usr/bin/session"] : ["sway"];
+        const compositorExit = host.spawn(compositorBytes(compositor), args, { env });
 
         // The window mapped and committed its first frame.
         await waitFor(out, "WLTERM_READY", 20_000, dump);
@@ -133,13 +137,18 @@ describe("wlterm — libkwl terminal renders shell output and routes typed input
         // The shell exits → PTY HUP → wlterm reaps it and shuts down cleanly.
         await waitFor(out, "WLTERM_EXIT code=0", 20_000, dump);
 
-        // cage exits with wlterm's status.
-        const cageCode = await Promise.race([
-          cageExit,
+        // sway stays alive after its configured terminal exits.
+        if (compositor === "sway") {
+          const control = readFileSync(swaymsgBin);
+          await host.spawn(control.buffer.slice(control.byteOffset,
+            control.byteOffset + control.byteLength), ["swaymsg", "exit"], { env });
+        }
+        const compositorCode = await Promise.race([
+          compositorExit,
           new Promise<number>((_, reject) =>
             setTimeout(() => reject(new Error(`cage timed out.\n${dump()}`)), 25_000)),
         ]);
-        expect(cageCode, `cage exit.\n${dump()}`).toBe(0);
+        expect(compositorCode, `${compositor} exit.\n${dump()}`).toBe(0);
       } finally {
         await host.destroy().catch(() => {});
       }

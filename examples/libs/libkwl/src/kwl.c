@@ -633,10 +633,22 @@ static struct kwl_window *kwl_open(void) {
     if (!win) { errno = ENOMEM; return NULL; }
     win->scale = 1;   /* until wl_output says otherwise */
 
-    int fd = connect_socket();
-    if (fd < 0) goto fail;
-    win->display = wl_display_connect_to_fd(fd);
-    if (!win->display) { close(fd); goto fail; }
+    /* A parent compositor chooses the endpoint through the standard
+     * Wayland environment. Delegate socket ownership, inherited descriptor
+     * handling and relative/absolute display names to libwayland. Never
+     * fall back to another compositor when an explicit endpoint fails.
+     * The in-tree desktop also supports its original environment-free
+     * /tmp socket and startup-order retry contract. */
+    if (getenv("WAYLAND_DISPLAY") || getenv("WAYLAND_SOCKET") ||
+            getenv("XDG_RUNTIME_DIR")) {
+        win->display = wl_display_connect(NULL);
+        if (!win->display) goto fail;
+    } else {
+        int fd = connect_socket();
+        if (fd < 0) goto fail;
+        win->display = wl_display_connect_to_fd(fd);
+        if (!win->display) { close(fd); goto fail; }
+    }
 
     win->registry = wl_display_get_registry(win->display);
     wl_registry_add_listener(win->registry, &registry_listener, win);

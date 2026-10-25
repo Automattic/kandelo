@@ -3636,6 +3636,14 @@ On top of the DRM/KMS + evdev surfaces above sits a real Wayland stack that runs
 
 Kandelo-authored clients build on `libkwl` (`examples/libs/libkwl/`), a small toolkit over `libwayland-client` that wraps registry bind, an `xdg` CSD toplevel, double-buffered `wl_shm` back buffers, xkb keysym/UTF-8 translation, and a `kwl_dispatch` event loop; it exposes `kwl_display_fd()` so an app can `poll` the Wayland connection alongside its own fds. Drawing goes through `libwpkdraw` (`examples/libs/wpkdraw/`), a CPU rasterizer (alpha-blended clear/pixel/rect + an `stb_truetype` font engine over a bundled Inconsolata) that renders into a caller-owned ARGB buffer. `programs/wlterm/` is the first real client: a terminal that `forkpty()`s `sh` (bash, which every Kandelo image binds to `/bin/sh`), runs an in-tree VT100 core (`vt100.c`), and multiplexes the Wayland display fd and the PTY master fd in one `poll` loop — Wayland key events become PTY writes, PTY output feeds the VT100 grid and is rendered back into the libkwl window. Because `wlterm` forks, its wasm is mandatorily processed by `wasm-fork-instrument` (see [fork-instrumentation.md](fork-instrumentation.md)).
 
+Libkwl uses libwayland's connection selection whenever `WAYLAND_DISPLAY`,
+`WAYLAND_SOCKET` or `XDG_RUNTIME_DIR` is present. This lets a compositor
+select a relative or absolute socket name or pass an inherited descriptor.
+An explicit endpoint failure is returned to the caller; it does not connect
+to another compositor. With all three variables absent, the original
+in-tree desktop connection at `/tmp/wayland-0` retains its startup retry.
+
+
 The terminal core honors VT100 scrolling margins (`CSI top;bottom r`),
 including line feeds, delayed wraps, index, next line, and reverse index.
 Only the selected region moves; fixed rows such as an editor's status line

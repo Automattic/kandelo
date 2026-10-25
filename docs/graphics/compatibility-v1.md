@@ -5179,3 +5179,54 @@ package-owned wayland-demo path exposed the actual consumer results.
 Neither this minimal test image nor the passing cage case replaces the
 full normal gallery-image, other-engine, memory and POSIX gates. Both
 larger build jobs remain live while these earlier checks run.
+
+### Rebuilt compositor endpoint repair and three-engine evidence
+
+The failing sway child did fork and exec successfully, then exited one
+with `kwl_window_create failed`. Kernel process events and the final
+process table are in `.context/sway-chromium-final-state.json`. Sway uses
+its normal `WAYLAND_DISPLAY=wayland-1`, while libkwl unconditionally tried
+`/tmp/wayland-0`. This is an in-tree toolkit endpoint-selection defect,
+not a fork failure or demonstrated platform boundary.
+
+Libkwl now delegates endpoint selection to libwayland when any of
+WAYLAND_DISPLAY, WAYLAND_SOCKET or XDG_RUNTIME_DIR is present. Explicit
+endpoint failure does not fall back to another compositor. The original
+environment-free desktop connection and startup retry remain. No sway
+socket name is embedded in the implementation. The normal wayland-demo
+package includes this declared source input and was rebuilt through SDK,
+private sysroot, fork instrumentation and SourceOnly publication.
+
+The first rebuild's finalization rejected a package/identity key mismatch.
+A header documentation edit briefly changed a declared input during that
+run; it was undone. Holding inputs stable, the normal retry succeeded:
+`graphics-libkwl-stable-rebuild-1024-212538-2368`. No cache entry was
+hand-deleted or artifact restamped to bypass the rejection. The full shell
+image started before this source change must be refreshed afterward.
+
+All six standalone consumer tests now pass, each with two sessions in one
+kernel, for twelve real GLES2 sessions across Chromium 153.0.8010.12,
+Firefox 155.0 and WebKit 26.6. Exact job:
+`graphics-libkwl-three-engine-consumers-1024-212720-b9e0`;
+`.context/graphics-rebuilt-consumers-browser.log`. Each session requires
+native GLES2/program-owned scanout, actual rendered input updates, exit
+zero and KMS master release. The first cycle also rejects a deliberately
+missing explicit Wayland endpoint while the valid compositor is live.
+There are no page errors or memory-message boundary violations. The image
+stages normal swaybg and coreutils/uname dependencies for sway startup.
+
+Per-compositor/engine JSON evidence is in
+`.context/{cage,sway}-{chromium,firefox,webkit}-guest.json`; matching PNGs
+are retained for both cycles. Cage renders 130 distinct pixel colors;
+sway renders 269. Rebuilt wlterm SHA256:
+`b425d3013b03d3a71870882fb41e8ea195151a06bcd0ead027523fdf9ff3cd1d`.
+The kernel SHA256 remains the rebuilt ABI 54 identity recorded above.
+The prepared-product Node check now also covers sway's configured libkwl
+terminal: all four cases in two files pass with no skips,
+`graphics-libkwl-early-node-1024-212842-8109`,
+`.context/graphics-libkwl-early-node.log`. This still omits unrelated global
+fixture compilation; the full default-config consumer run remains next.
+
+These passing normal-package tests are substantial compositor evidence,
+but do not establish full gallery foot/bar/tiling behavior, complete
+browser-memory, POSIX conformance or the complete graphics inventory.

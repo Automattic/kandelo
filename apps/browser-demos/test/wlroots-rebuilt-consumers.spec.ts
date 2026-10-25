@@ -13,7 +13,7 @@ const program = (path: string) => new Uint8Array(readFileSync(resolveBinary(path
 // This is an earlier consumer gate over the normal packages, kernel and image
 // builder. The gallery's complete shell image and UI gates remain separate.
 for (const compositor of ["cage", "sway"] as const) {
-  test(`rebuilt ${compositor} renders, routes input and restarts with GLES2`, async ({ page, baseURL, browserName }) => {
+  test(`rebuilt ${compositor} renders, routes input and restarts with GLES2`, async ({ page, baseURL, browserName, browser }) => {
     test.setTimeout(180_000);
     const shell = "printf 'READY\\n'; read x; printf 'GOT[%s]\\n' \"$x\"; read y\n";
     const files = [
@@ -27,6 +27,8 @@ for (const compositor of ["cage", "sway"] as const) {
     ];
     if (compositor === "sway") files.push(
       { path: "/usr/bin/swaymsg", bytes: program("programs/sway/swaymsg.wasm"), mode: 0o755 },
+      { path: "/usr/bin/swaybg", bytes: program("programs/swaybg.wasm"), mode: 0o755 },
+      { path: "/usr/bin/uname", bytes: program("programs/coreutils.wasm"), mode: 0o755 },
       { path: "/etc/sway/config", bytes: text("font pango:monospace 10\nexec /usr/bin/wlterm --watch READY --watch GOT[a] /bin/bash /usr/bin/session\n"), mode: 0o644 },
     );
     const imageBytes = await sessionRootfs(compositor, files);
@@ -81,6 +83,20 @@ for (const compositor of ["cage", "sway"] as const) {
         }, {timeout:45_000}).toContain('WLTERM_GRID "READY"');
         expect((await state()).output).toContain("Creating GLES2 renderer");
         await expect.poll(() => page.evaluate(() => Atomics.load((globalThis as any).__wlrootsStats,7))).toBe(3);
+        if (cycle === 0) {
+          // An explicit failed endpoint must not silently connect to the
+          // live compositor at the legacy default socket instead.
+          const rejectedEndpoint = await page.evaluate(async () => {
+            const scope = globalThis as any;
+            const child = await scope.__wlrootsKernel.spawnFromVfs(
+              "/usr/bin/wlterm", ["wlterm", "/bin/bash", "-c", "exit 0"], {
+                uid: 1000, gid: 1000,
+                env: [...scope.__wlrootsEnv, "WAYLAND_DISPLAY=/tmp/no-such-wayland-display"],
+              });
+            return await child.exit;
+          });
+          expect(rejectedEndpoint).toBe(1);
+        }
         const screen = page.locator("#wlroots-screen"), before = await screen.screenshot();
         await tap(30);await tap(28);
         await expect.poll(async () => (await state()).output, {timeout:30_000}).toContain('WLTERM_GRID "GOT[a]"');
@@ -114,7 +130,7 @@ for (const compositor of ["cage", "sway"] as const) {
       await page.evaluate(() => (globalThis as any).__wlrootsKernel?.destroy());
     }
     writeFileSync(new URL(`../../../.context/${compositor}-${browserName}-guest.json`, import.meta.url), JSON.stringify({
-      compositor,engine:browserName,kernelSha256:createHash("sha256").update(kernelBytes).digest("hex"),evidence,
+      compositor,engine:browserName,version:browser.version(),programSha256:createHash("sha256").update(program(`programs/${compositor}/${compositor}.wasm`)).digest("hex"),clientSha256:createHash("sha256").update(program("programs/wayland-demo/wlterm.wasm")).digest("hex"),kernelSha256:createHash("sha256").update(kernelBytes).digest("hex"),evidence,
     },null,2)+"\n");
     expect(pageErrors).toEqual([]);expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
