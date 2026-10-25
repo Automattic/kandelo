@@ -5,6 +5,28 @@ Gawk, Coreutils and Bash. This report measures three targeted changes to
 the instrumenter. It does not measure package build time or application
 execution on Node or browsers.
 
+## Exact real-package inputs
+
+Every backend reads the same original SDK link output. Compiler facts remain
+bound to the original instruction offsets; no Binaryen pass runs before
+instrumentation. Bash uses the untouched link before its recipe optimizes a
+separate copy. Archive/input hashes and build provenance are preserved in the
+[quiet baseline](2026-10-24-native-package-instrumentation-idle.json).
+
+| Package | Input bytes | Functions including imports | Operators | Work |
+|---|---:|---:|---:|---|
+| sed 4.9 | 329,303 | 695 | 126,556 | no-op |
+| grep 3.11 | 386,499 | 820 | 150,137 | no-op |
+| make 4.4.1 | 428,883 | 752 | 162,074 | no-op |
+| gawk 5.3.0 | 2,384,170 | 1,598 | 336,873 | fork rewrite |
+| coreutils 9.6 | 6,431,132 | 3,484 | 700,637 | fork rewrite |
+| bash 5.2.37 | 5,244,315 | 2,496 | 448,419 | fork rewrite |
+
+Each timed run is a fresh process. Both raw backends use two Rayon threads
+where applicable; native body processing remains serial. CLI Binaryen uses
+its normal default concurrency. All fork-using native runs report compiler
+facts as their analysis source, without fallback.
+
 ## What the profile found
 
 Separate macOS stack-sampling runs used a symbolized release executable
@@ -104,6 +126,17 @@ Seconds, median (range). CPU includes waited-for Binaryen descendants.
 Sed, grep and make remain byte-identical no-op controls. Their installers
 normally bypass instrumentation, so these times do not imply faster builds.
 Fork-using outputs retain exactly their previous sizes and hashes.
+
+## Optimized output sizes
+
+These are final production CLI outputs after the same `Os` pass. Their bytes
+and hashes are unchanged by the three native performance fixes.
+
+| Package | Walrus bytes | Native bytes | Native growth |
+|---|---:|---:|---:|
+| gawk | 1,417,765 | 1,491,007 | 5.17% |
+| coreutils | 1,773,842 | 1,776,533 | 0.15% |
+| bash | 1,892,830 | 2,093,021 | 10.58% |
 
 ## Controlled shapes
 

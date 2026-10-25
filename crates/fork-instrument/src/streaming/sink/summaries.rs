@@ -5,7 +5,63 @@ use std::collections::{BTreeSet, VecDeque};
 use anyhow::{Context, Result, ensure};
 
 use super::{ALL_TAGS, Evaluation, Program, Tags};
-use crate::streaming::{FunctionIr, IrLimits};
+use crate::streaming::{CallTarget, FunctionIr, IrLimits};
+
+/// Visit direct callees before their callers without loading instruction IR.
+/// Cycles and indirect dependencies still converge through the normal queue.
+fn initial_order(program: &Program<'_, '_>) -> Result<VecDeque<u32>> {
+    let scan = program.original_scan();
+    let n = program.functions.len();
+    ensure!(
+        n == scan.functions.len(),
+        "sink summary catalog differs from source"
+    );
+    let mut visited = vec![false; n];
+    let mut pending = Vec::new();
+    let mut order = VecDeque::new();
+    for root in 0..n as u32 {
+        if visited[root as usize] || program.functions[root as usize].imported {
+            continue;
+        }
+        visited[root as usize] = true;
+        pending.push((
+            root,
+            scan.functions[root as usize]
+                .body
+                .as_ref()
+                .context("local sink function has no source body")?
+                .calls
+                .iter(),
+        ));
+        while let Some((function, calls)) = pending.last_mut() {
+            let next = calls.find_map(|call| match call {
+                CallTarget::Direct(callee)
+                    if !visited[*callee as usize]
+                        && !program.functions[*callee as usize].imported =>
+                {
+                    Some(*callee)
+                }
+                _ => None,
+            });
+            if let Some(callee) = next {
+                visited[callee as usize] = true;
+                pending.push((
+                    callee,
+                    scan.functions[callee as usize]
+                        .body
+                        .as_ref()
+                        .context("local sink function has no source body")?
+                        .calls
+                        .iter(),
+                ));
+            } else {
+                order.push_back(*function);
+                pending.pop();
+            }
+        }
+    }
+    Ok(order)
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Summary {
@@ -80,15 +136,17 @@ pub fn solve_summaries<'a>(
         work_steps: 0,
     };
     let mut queued = vec![false; n];
-    let mut queue = VecDeque::new();
     for (function, info) in program.functions.iter().enumerate() {
         if info.imported {
             output.functions[function].may_return = true;
         } else {
-            queue.push_back(function as u32);
             queued[function] = true;
         }
     }
+    // WHY: an arbitrary source order needlessly revisits acyclic callers while
+    // their callees' initial summaries are still empty. This compact header
+    // walk settles those dependencies first; no module instruction arena grows.
+    let mut queue = initial_order(program)?;
     let mut provider = program.original_scan().body_provider(ir_limits);
     while let Some(function) = queue.pop_front() {
         let index = function as usize;

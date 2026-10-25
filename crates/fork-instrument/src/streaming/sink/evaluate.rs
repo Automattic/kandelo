@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, ensure};
+use smallvec::SmallVec;
 use wasmparser::{BlockType, Operator, ValType};
 
 use super::*;
@@ -280,16 +281,20 @@ impl<E: Environment> Walk<'_, '_, E> {
         Ok(())
     }
 
-    fn pop(&mut self, state: &mut State, n: usize) -> Vec<Value> {
+    fn pop(&mut self, state: &mut State, n: usize) -> SmallVec<[Value; 4]> {
+        let mut values = SmallVec::new();
         if state.stack.len() < n {
             if state.live {
                 self.output.unsupported = true;
             }
             state.stack.clear();
-            vec![Value::Unknown; n]
+            values.resize(n, Value::Unknown);
         } else {
-            state.stack.split_off(state.stack.len() - n)
+            let start = state.stack.len() - n;
+            values.extend_from_slice(&state.stack[start..]);
+            state.stack.truncate(start);
         }
+        values
     }
 
     fn escape(&mut self, values: &[Value]) {
@@ -458,7 +463,12 @@ impl<E: Environment> Walk<'_, '_, E> {
                 source.locals.len() + source.stack.len() + 3 * source.memory.len() + 1,
             ))?;
             self.labels.insert(region, None);
-            out = self.run(start, end, ent.as_ref().unwrap().clone())?;
+            let state = if is_loop {
+                ent.as_ref().unwrap().clone()
+            } else {
+                ent.take().unwrap()
+            };
+            out = self.run(start, end, state)?;
             let branch = self.labels.remove(&region).unwrap();
             if !is_loop {
                 let mut joined = Some(out);
@@ -508,6 +518,11 @@ impl<E: Environment> Walk<'_, '_, E> {
     fn run(&mut self, start: usize, end: usize, mut state: State) -> Result<State> {
         let mut i = start;
         while i < end {
+            // WHY: without injections, normal control can revive only at the
+            // enclosing region's join. Injected landings must still be visited.
+            if !state.live && !self.options.child && self.options.injections.is_none() {
+                break;
+            }
             self.charge(1)?;
             let mut next = i + 1;
             if let Some(region) = self.body.instructions[i].opens {
@@ -533,7 +548,7 @@ impl<E: Environment> Walk<'_, '_, E> {
                 let inner = State {
                     live: state.live,
                     locals: std::mem::take(&mut state.locals),
-                    stack: args,
+                    stack: args.into_vec(),
                     memory: std::mem::take(&mut state.memory),
                     stack_pointer: state.stack_pointer,
                 };

@@ -4,12 +4,13 @@ use std::collections::{BTreeMap, VecDeque};
 
 use anyhow::{Result, ensure};
 
+use super::cached_bodies::CachedBodies;
 use super::resolved_targets::ResolvedTargetCache;
 use super::{
     ALL_TAGS, CallEffect, Environment, Evaluation, Invocation, Limits, Options, PolicyPlan,
     Summaries, Summary, SummaryLimits, Tags, Value, evaluate, solve_summaries,
 };
-use crate::streaming::{BodyProvider, FunctionIr, IrLimits, ProgramPoint};
+use crate::streaming::{FunctionIr, IrLimits, ProgramPoint};
 
 #[derive(Clone, Copy, Debug)]
 pub struct InterpreterLimits {
@@ -20,6 +21,8 @@ pub struct InterpreterLimits {
     pub specialization_cache_bytes: usize,
     /// Call selection under the frozen policy, independent of summary changes.
     pub resolved_target_cache_bytes: usize,
+    /// Estimated retained payload of decoded specialization callees.
+    pub decoded_body_cache_bytes: usize,
 }
 
 impl Default for InterpreterLimits {
@@ -30,6 +33,7 @@ impl Default for InterpreterLimits {
             specialization_depth: 3,
             specialization_cache_bytes: 4 * 1024 * 1024,
             resolved_target_cache_bytes: 2 * 1024 * 1024,
+            decoded_body_cache_bytes: 8 * 1024 * 1024,
         }
     }
 }
@@ -89,7 +93,7 @@ impl Cache {
 /// as long as the frozen policy and never contain summary-dependent effects.
 pub struct SinkInterpreter<'p, 's, 'a> {
     plan: &'p PolicyPlan<'p, 's, 'a>,
-    bodies: BodyProvider<'p, 'a>,
+    bodies: CachedBodies<'p, 'a>,
     limits: InterpreterLimits,
     remaining: usize,
     escaped: Vec<bool>,
@@ -106,7 +110,11 @@ impl<'p, 's, 'a> SinkInterpreter<'p, 's, 'a> {
         let program = plan.original_program();
         Ok(Self {
             plan,
-            bodies: program.original_scan().body_provider(limits.ir),
+            bodies: CachedBodies::new(
+                program.original_scan(),
+                limits.ir,
+                limits.decoded_body_cache_bytes,
+            ),
             limits,
             remaining: 0,
             escaped: vec![false; program.functions.len()],

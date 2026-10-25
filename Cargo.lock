@@ -362,6 +362,7 @@ dependencies = [
  "memmap2",
  "rusqlite",
  "sha2",
+ "smallvec",
  "stacker",
  "tempfile",
  "walrus",

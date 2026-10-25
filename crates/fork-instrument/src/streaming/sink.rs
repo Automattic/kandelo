@@ -4,6 +4,7 @@
 //! This evaluator owns no module instruction cache or whole-module target map.
 //! It is a building block, not yet the production sink planner.
 
+mod cached_bodies;
 mod engine;
 mod evaluate;
 mod jmp;

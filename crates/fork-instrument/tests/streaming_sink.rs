@@ -639,7 +639,10 @@ fn native_summary_fixed_point_propagates_exceptions_and_applies_named_contracts(
             }
         ]
     );
-    assert!(result.evaluations > 3);
+    assert_eq!(
+        result.evaluations, 3,
+        "direct callees settle before callers"
+    );
 }
 
 #[test]

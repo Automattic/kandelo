@@ -139,6 +139,46 @@ pub struct FunctionIr<'a> {
 }
 
 impl FunctionIr<'_> {
+    /// Owned payload only; source bytes and validator header resources are
+    /// borrowed. Include vector capacity and nested operator-owned buffers.
+    pub(crate) fn retained_bytes(&self) -> usize {
+        fn heap<T>(values: &Vec<T>) -> usize {
+            values.capacity().saturating_mul(std::mem::size_of::<T>())
+        }
+        let mut bytes = std::mem::size_of::<Self>();
+        for amount in [
+            heap(&self.locals),
+            heap(&self.instructions),
+            heap(&self.regions),
+            heap(&self.transfers),
+            heap(&self.calls),
+        ] {
+            bytes = bytes.saturating_add(amount);
+        }
+        for instruction in &self.instructions {
+            bytes = bytes.saturating_add(match &instruction.operation {
+                Operator::TryTable { try_table } => heap(&try_table.catches),
+                Operator::TypedSelectMulti { tys } => heap(tys),
+                Operator::Resume { resume_table, .. }
+                | Operator::ResumeThrow { resume_table, .. }
+                | Operator::ResumeThrowRef { resume_table, .. } => heap(&resume_table.handlers),
+                _ => 0,
+            });
+        }
+        for region in &self.regions {
+            bytes = bytes
+                .saturating_add(heap(&region.handlers))
+                .saturating_add(heap(&region.input_stack));
+        }
+        for transfer in &self.transfers {
+            bytes = bytes.saturating_add(heap(&transfer.targets));
+        }
+        for call in &self.calls {
+            bytes = bytes.saturating_add(heap(&call.operand_stack));
+        }
+        bytes
+    }
+
     /// Lossless operator re-encoding, with all original index references sent
     /// through the supplied frozen mapping, including unreachable operators.
     pub fn emit<T: Reencode + ?Sized>(

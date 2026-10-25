@@ -49,6 +49,8 @@ memmap2 = "0.9.10"
 # Deep compiler-generated structured control grows only the current native
 # walk's stack, on the same thread as its borrowed analysis environment.
 stacker = "0.1.25"
+# Keep common interpreter operand groups inline instead of allocating per op.
+smallvec = "1"
 # Private, disposable compiler-facts relations. Bundled SQLite keeps native
 # builds independent of host libraries; page caches/work/disk are bounded.
 rusqlite = { version = "0.37", features = ["bundled", "hooks", "limits"] }

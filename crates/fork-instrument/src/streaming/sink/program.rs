@@ -134,6 +134,10 @@ impl<'s, 'a> Program<'s, 'a> {
             charge <= limits.metadata_bytes,
             "sink metadata exceeds resident budget"
         );
+        // WHY: this private phase has no readers until construction returns.
+        // Batch its writes while the configured page cache still spills, so
+        // each relation row does not force its own database-page writeback.
+        let transaction = store.write_batch()?;
         store.db.execute_batch(include_str!("program.sql"))?;
         let mut keys = HashMap::new();
         let mut signatures = vec![None; ntypes];
@@ -427,6 +431,9 @@ impl<'s, 'a> Program<'s, 'a> {
         while let Some(row) = rows.next()? {
             functions[row.get::<_, usize>(0)?].escaping = row.get(1)?;
         }
+        drop(rows);
+        drop(query);
+        transaction.commit()?;
         let dynamic_linking =
             scan.functions
                 .iter()

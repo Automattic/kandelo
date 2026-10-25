@@ -7,7 +7,7 @@ use super::{
     target_cache::TargetCache,
 };
 use anyhow::{Context, Result, ensure};
-use rusqlite::{Connection, OptionalExtension, Params, limits::Limit, params};
+use rusqlite::{Connection, OptionalExtension, Params, Transaction, limits::Limit, params};
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
@@ -53,6 +53,31 @@ struct Cache {
     bytes: usize,
 }
 
+/// Keep resident name IDs consistent with a failed private write batch.
+pub(crate) struct WriteBatch<'s> {
+    transaction: Option<Transaction<'s>>,
+    cache: &'s RefCell<Cache>,
+}
+
+impl WriteBatch<'_> {
+    pub(crate) fn commit(mut self) -> Result<()> {
+        self.transaction.take().unwrap().commit().map_err(|error| {
+            *self.cache.borrow_mut() = Cache::default();
+            error.into()
+        })
+    }
+}
+
+impl Drop for WriteBatch<'_> {
+    fn drop(&mut self) {
+        if self.transaction.is_some() {
+            // WHY: SQLite can reuse rolled-back IDs for different names.
+            // A cache entry must never outlive the row it describes.
+            *self.cache.borrow_mut() = Cache::default();
+        }
+    }
+}
+
 /// The connection is dropped before the private file, including on parse or
 /// solver errors. No partially parsed store is returned to a caller.
 pub struct FactsStore {
@@ -80,6 +105,12 @@ pub struct StorageReport {
 }
 
 impl FactsStore {
+    pub(crate) fn write_batch(&self) -> Result<WriteBatch<'_>> {
+        Ok(WriteBatch {
+            transaction: Some(self.db.unchecked_transaction()?),
+            cache: &self.cache,
+        })
+    }
     /// Private bounded relation storage for native planning without compiler
     /// facts. No facts/call solution is marked ready by this constructor.
     pub fn empty(limits: StorageLimits) -> Result<Self> {
@@ -700,4 +731,33 @@ fn number(text: &str) -> Result<i64> {
         i64::try_from(text.parse::<usize>().context("bad facts number")?)
             .context("facts number exceeds storage range")?,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rolled_back_names_cannot_reuse_stale_cached_ids() {
+        let store = FactsStore::empty(Default::default()).unwrap();
+        // The production store is disposable with journaling disabled. Use
+        // a rollback journal here to make row-ID reuse deterministic.
+        store
+            .db
+            .pragma_update(None, "journal_mode", "DELETE")
+            .unwrap();
+        let saved = store.atom("saved").unwrap();
+        let batch = store.write_batch().unwrap();
+        let rolled_back = store.atom("rolled-back").unwrap();
+        drop(batch);
+        let replacement = store.atom("replacement").unwrap();
+        assert_eq!(replacement, rolled_back);
+        assert_ne!(store.atom("rolled-back").unwrap(), replacement);
+        assert_eq!(store.atom("saved").unwrap(), saved);
+        let batch = store.write_batch().unwrap();
+        let committed = store.atom("committed").unwrap();
+        batch.commit().unwrap();
+        assert_eq!(store.atom("committed").unwrap(), committed);
+        assert_eq!(store.name(committed).unwrap(), "committed");
+    }
 }

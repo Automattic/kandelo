@@ -120,8 +120,10 @@ hard process-memory ceiling. Row/work/disk failures are explicit, the private
 store is discarded on failed construction, and no unbounded Walrus fallback
 is introduced. Physical-footprint guards remain a separate validation layer.
 The private SQLite connection retains its exclusive file lock between
-queries, avoiding repeated filesystem lock checks. Transactions still end
-normally and dirty pages still spill. Frozen plans compare content hashes
+queries, avoiding repeated filesystem lock checks. Program metadata and
+parameter recording batch their writes within each private phase transaction;
+the configured page caches still spill dirty pages. Ready flags prevent using
+incomplete parameter proofs after failure. Frozen plans compare content hashes
 against the original scan; its immutable source fingerprint is computed once
 and reused, without retaining decoded function bodies.
 
@@ -151,8 +153,21 @@ its frozen policy with a 2 MiB estimated payload allowance. Keys include the
 original call point, invocation, selector and tail-call status. Eviction or an
 oversized group returns to database queries; a zero allowance disables the
 cache. Return/throw effects are always read from current summaries, and
-specialized effects still expire at each root evaluation. No function IR is
-cached.
+specialized effects still expire at each root evaluation. Target-selection
+entries contain no function IR.
+
+A separate 8 MiB estimated payload cache reuses original decoded bodies for
+small specialized callees. It counts vector capacities, nested call/control
+metadata and operator-owned buffers, including exception/resume tables.
+FIFO eviction drops the cache ownership while active interpreters retain
+safe shared borrows. Zero disables reuse; an oversized body is decoded and
+used transiently. Ordinary normal-summary and emission bodies still load
+serially. Cache storage stays independent of total module instruction count.
+Normal summaries start with direct callees before callers using only compact
+source headers; cyclic and indirect dependencies retain the existing workqueue.
+Common operand groups stay inline, and nonloop control transfers move their
+state instead of copying it. Dead normal suffixes stop only when no later
+injected landing can revive them.
 
 The state limit reserves a conservative bound for structured-control scratch
 and recorded states before evaluation; it is not a physical-memory ceiling.

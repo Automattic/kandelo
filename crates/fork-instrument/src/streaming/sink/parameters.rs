@@ -51,16 +51,16 @@ impl Program<'_, '_> {
             self.parameters_ready.set(true);
             return Ok(report);
         }
+        // One private phase transaction batches page writes across functions.
+        // Dirty pages still spill under the existing cache allowance; the
+        // ready flag prevents using incomplete proofs after any failure.
+        let transaction = self.store.write_batch()?;
         let mut provider = self.original_scan().body_provider(ir_limits);
         for (index, function) in self.functions.iter().enumerate() {
             if function.imported {
                 continue;
             }
             let body = provider.load(index as u32)?;
-            // Batch argument writes for this body. The private connection is
-            // serial, so runtime nesting checks suffice; Drop releases a failed
-            // transaction and the ready flag still prevents partial proofs.
-            let transaction = self.store.db.unchecked_transaction()?;
             let mut disable_frame_tracking = false;
             loop {
                 self.store
@@ -98,7 +98,6 @@ impl Program<'_, '_> {
                 )?;
                 break;
             }
-            transaction.commit()?;
             report.functions += 1;
             if report.functions % 10_000 == 0 {
                 progress.note(format_args!(
@@ -107,6 +106,7 @@ impl Program<'_, '_> {
                 ));
             }
         }
+        transaction.commit()?;
         self.parameters_ready.set(true);
         progress.note(format_args!(
             "complete, {} functions, {} work units",
