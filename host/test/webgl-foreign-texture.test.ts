@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 import { foreignTextureGl } from "./support/foreign-texture-gl.js";
 import { runGlQuery } from "../src/webgl/query.js";
+import { reserveNativeRetirement, retireNativeRetirement } from "../src/webgl/native-recovery.js";
 import { textureNative } from "../src/webgl/image-storage.js";
 import * as O from "../src/webgl/ops.js";
 import { bindGpuForeignTexture, bindForeignTexture } from "../src/webgl/foreign-texture.js";
@@ -645,4 +646,34 @@ it("completes raw BO repair and deletion after the final member retires", () => 
   block = false; reg.retryForeignRetirements();
   expect(reg.hasForeignRetirements()).toBe(false); expect(deadBinds).toBe(0); expect(alive.has(gpu.tex)).toBe(false);
   gl.deleteTexture(unrelated); expect(alive.size).toBe(0);
+});
+
+
+it("retains canonical BO containers while an unnamed native view awaits cleanup", () => {
+  const {gl, alive, control} = foreignTextureGl();
+  const reg = new GlContextRegistry();
+  reg.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:64});
+  const binding = reg.get(7,11)!; binding.gl = gl; binding.contextId = 21;
+  expect(reg.createGpuBo(41,gl,2,2)).toBeGreaterThan(0);
+  const allocation = reg.gpuBo(41)!;
+  const oldView = gl.createTexture()!;
+  const deleted = gl.deleteTexture.bind(gl);
+  gl.deleteTexture = texture => {
+    if (texture === oldView) control.fault = "deleteTexture";
+    deleted(texture);
+  };
+  const cleanup = reserveNativeRetirement(binding, [["deleteTexture",oldView]])!;
+  expect(retireNativeRetirement(cleanup)).toBe(false);
+  expect(binding.foreignTextureBos.size).toBe(0);
+  reg.retireForeignBo(41);
+  expect(reg.hasForeignRetirements()).toBe(true);
+  expect(alive.has(allocation.fbo)).toBe(true);
+  expect(alive.has(allocation.tex)).toBe(true);
+  gl.deleteTexture = deleted;
+  reg.retryForeignRetirements();
+  expect(reg.hasForeignRetirements()).toBe(false);
+  expect(alive.has(oldView)).toBe(false);
+  expect(alive.has(allocation.fbo)).toBe(false);
+  expect(alive.has(allocation.tex)).toBe(false);
+  reg.unbind(7,11);
 });

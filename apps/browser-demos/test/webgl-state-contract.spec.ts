@@ -2183,7 +2183,7 @@ test(`raw BO revocation retains failed ${fault} inverses and shared native pixel
 // normal guest ioctl marshalling are separate validation phases.
 test("logical image views preserve sibling parameters, pixels and retained identity",async({page})=>{
   await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
-  const root=fileURLToPath(new URL("../../../",import.meta.url));
+  const root=process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
   const result=await page.evaluate(async(root)=>{
     const canvas=document.createElement("canvas");canvas.width=canvas.height=4;document.body.replaceChildren(canvas);
     const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/image-storage-worker.ts`,location.href),{type:"module"});

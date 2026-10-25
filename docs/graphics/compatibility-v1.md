@@ -5256,3 +5256,78 @@ are under `.context/graphics-rebuilt-{libc,posix,sortix}.log` and
 of pinned commit `7e8f0082ab0b58ad3383a8abbf47dc4b40dcf25d` on the existing
 case-sensitive volume at `/Volumes/KandeloCaseBuild/moscow-graphics-os-test`.
 The worktree's pre-existing Sortix submodule state remains untouched.
+
+### GPU retirement and completed pre-integration validation
+
+The kernel's last-reference BO destroy callback now retires native GPU
+storage directly. GPU allocations have no CPU BO registry entry, so the
+previous CPU-registry event listener never received their destruction.
+The focused callback regression fails before this repair and passes
+afterward, including duplicate-destroy protection:
+`graphics-gpu-destroy-before-fix-1024-215251-3d26` and
+`graphics-gpu-destroy-fix-checks-1024-215342-00de`.
+
+Canonical BO retirement also waits for pending native-view cleanup when
+storage redefinition has already removed the last public view name.
+The three-engine before comparison fails at the canonical-backing
+retention assertion, independently of the callback regression. With both
+repairs, all 39 rendered source-contract cases pass across Chromium,
+Firefox and WebKit, including the complete logical-image worker and its
+final destruction through the real host callback:
+`graphics-gpu-destroy-browser-after-1024-215948-35d3`;
+`.context/graphics-gpu-destroy-browser-after.log`. These are native WebGL
+source-harness tests, not complete guest CTS or gallery-image evidence.
+The corresponding source run passes 683 tests in 29 files, declaration
+checks and the 600-file evidence registry:
+`graphics-gpu-destroy-final-source-1024-220109-89b3`.
+
+The corrected normal Node consumer run passes all 30 cases in 16 files,
+with no load failures or skips:
+`graphics-gpu-final-canonical-node-1024-220659-8de0`;
+`.context/graphics-compositor-node.log`. Earlier failures exposed invalid
+fixture requests: connector IDs must come from GETRESOURCES, a modeset
+requires its connector list, an import producer must release DRM master,
+and a native-window test must request the advertised ES2 configuration.
+The fixtures now make those valid requests and retain negative cases.
+Stateful GL doubles preserve native allocation/ownership assertions;
+the dma-buf guest now compiles and links shaders before looking up its
+uniform. Normal package resolution remains unchanged. Developer fixtures
+use the default resolver policy; explicit SourceOnly policy excludes
+those unowned fixtures and was an incorrect runner selection.
+
+Corrected full conformance results, before integration of PR #1581:
+
+| Suite | Pass | Expected failure | Skip | Other expected result | Unexpected failure/build/timeout |
+|---|---:|---:|---:|---|---:|
+| libc-test | 306 | 17 | 0 | 1 known FLAKE-PASS | 0 |
+| Open POSIX | 174 | 3 | 2 | none | 0 |
+| Sortix, all declared suites | 5065 | 23 | 50 | none | 0 |
+
+Exact jobs are `graphics-libc-full-stable-1024-213955-009a` and
+`graphics-rebuilt-posix-1024-212000-0516`; logs are
+`.context/graphics-libc-full-stable.log`,
+`.context/graphics-rebuilt-posix.log` and
+`.context/graphics-rebuilt-sortix.log`. The earlier libc attempt remains
+invalid: its stale ABI helper failed, and editing its running shell
+script caused a later syntax error. The separate stable full run supplies
+the corrected libc result; the outer job still records its earlier
+nonzero libc status. These selected suites do not prove all POSIX.
+
+Sway's Node semantics pass, but a focused public syscall/lifecycle trace
+still reproduces an intermittent swaybar worker forced drain. Its last
+observed operation is a status-pipe read. This remains an ordinary
+lifecycle investigation, not a demonstrated runtime boundary:
+`graphics-swaybar-syscall-teardown-trace-1024-220659-e38e` and
+`.context/sway-node-teardown-e0e65e179945.json`. The full browser-memory
+gate now includes a rendered sway/foot cycle; only its nine-case
+collection has been checked so far.
+
+The user requested a quiet performance window, so the remaining normal
+browser-main-shell build was stopped in place. PR #1581 subsequently
+merged as `7dfe4b501e93448aa6da8151d3ee1948cf1e1e2b` on October 25.
+Before integrating that main revision, the old paused build was cancelled
+with SIGTERM (recorded exit 143), preserving managed cache entries.
+All results above describe the pre-integration implementation. The
+combined main/graphics implementation still needs regenerated ABI
+outputs, normal artifacts, guest compositor/CTS reruns and the full
+gallery/memory gates. The complete baseline inventory remains open.

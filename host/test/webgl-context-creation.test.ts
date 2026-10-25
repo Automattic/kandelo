@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
 import { ensurePresentTarget } from "../src/webgl/present-target.js";
 import { querySurfaceCapabilities } from "../src/webgl/surface-capabilities.js";
+import { foreignTextureGl } from "./support/foreign-texture-gl";
 import * as O from "../src/webgl/ops.js";
 
 function harness(callbacks = {}) {
@@ -24,6 +25,29 @@ function harness(callbacks = {}) {
       imports.env.host_gl_create_context(pid, id, 0, 0, sessionId),
   };
 }
+
+it("retires a GPU BO through the kernel destroy callback without CPU metadata", () => {
+  const {kernel, imports, setMaster} = harness();
+  const {gl, alive} = foreignTextureGl();
+  const deleted = vi.spyOn(gl, "deleteTexture");
+  kernel.gl.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
+  const binding = kernel.gl.get(7,11)!;
+  binding.gl = gl; binding.contextId = 21; setMaster(7);
+  expect(imports.host_gbm_gpu_bo_create(7,41,2,2,0,0)).toBe(0);
+  const allocation = kernel.gl.gpuBo(41)!;
+  expect(allocation).toBeDefined();
+  expect(kernel.bos.get(7,41)).toBeUndefined();
+  expect(alive.has(allocation.tex)).toBe(true);
+  imports.host_gbm_bo_destroy(7,41);
+  expect(kernel.gl.gpuBo(41)).toBeUndefined();
+  expect(alive.has(allocation.tex)).toBe(false);
+  expect(alive.has(allocation.fbo)).toBe(false);
+  expect(alive.has(allocation.depthStencil)).toBe(false);
+  expect(deleted).toHaveBeenCalledExactlyOnceWith(allocation.tex);
+  imports.host_gbm_bo_destroy(7,41);
+  expect(deleted).toHaveBeenCalledTimes(1);
+  kernel.releaseProcessViews(7);
+});
 
 it("preserves selected-owner errors before GPU BO allocation and refuses unread flags",()=>{
   const {kernel,imports,setMaster}=harness(),errors:number[]=[];

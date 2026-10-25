@@ -14,13 +14,16 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
     for (const [object, owner] of b.foreignTextureBos) if (owner === bo) objects.add(object);
     if (cached) objects.add(cached.tex);
   } catch { recordGlError(b,0x505); return false; }
+  // Storage redefinition can remove the last public view while its old
+  // native container still awaits cleanup. That pending renderer repair
+  // must finish before its canonical BO backing can retire too.
+  if (b.gl && !repairNativeState(b.gl)) return false;
   if (!objects.size) {
     for (const [token,source] of b.imageSources) if (source.bo === bo) b.imageSources.delete(token);
     return true;
   }
   if (!b.gl) return false;
   const gl = b.gl;
-  if (!repairNativeState(gl)) return false;
   let retired: GlBinding["retiredTextures"];
   let changes: NativeChange[];
   let points: {owner: GlBinding; framebuffer: WebGLFramebuffer; point: number}[];

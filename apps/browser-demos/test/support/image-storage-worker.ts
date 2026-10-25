@@ -620,7 +620,7 @@ self.onmessage = ({ data }) => {
     api.host_gl_destroy_context(7, 22);
     api.host_gl_unbind(7, 11);
     api.host_gl_unbind(7, 12);
-    kernel.gl.destroyGpuBo(41);
+    api.host_gbm_bo_destroy(7, 41);
     const clean = made.length === deleted.length && made.every(value => deleted.includes(value)) && live.every(check => !check());
     postMessage({ type: "image_storage_result", namespace, firstParam, secondParam, red, rboName, green, sampledGreen, orphan, aSource, bSource, mipOrphan, reimport, rboSource, rboOrphan, rejected, retargetRejected, reused, retained, retainedState, retainedImport, retainedImported, reusedAfterPeerImport, afterSourceRetirement, mutationRollback, storageReject, ownedStorageRetry, framebufferBindReject, framebufferBindRetry, bufferBindReject, bufferBindRetry, bufferDeleteRollback, bufferDeleteCleared, bufferDeleteRetry, captureEnd, captureBlocked, captureOutput, captureState, capturePixels, promotionSubmit, promotionBlocked, promotionDraws, promotionPixels, pointerSubmit, pointerBlocked, pointerOutput, pointerPixels, convertedRetryPixels, repairBlocked, repairBlockedOutput, repairPeerBlocked, repairBatchBlocked, repairRestored, storageBlocked, storageBlockedOutput, storageRestored, storageState, storageCommit, storageCleanupBlocked, storageOwned, rawNamespace, rawParams, rawGreen, rawOrphan, rawRefresh, rawInvalid, rawBlocked, rawBlockedOutput, rawRevoked, rawReplacement, rawMissing, errors, clean, error: gl.getError() });
   }

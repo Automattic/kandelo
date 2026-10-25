@@ -971,21 +971,6 @@ export class WasmPosixKernel {
    */
   readonly gl = new GlContextRegistry();
   /**
-   * A bo owns the foreign textures bound from it (see shared's
-   * BIND_FOREIGN_TEXTURE doc), so they die with the bo however it goes:
-   * the guest's GEM_CLOSE (`host_gbm_bo_destroy`) or a process teardown that
-   * releases the kernel's last reference. Forced removal drains the same
-   * DRI close effects; host mapping retirement must never infer BO lifetime.
-   */
-  private readonly offBoTextureCleanup = this.bos.onChange((_pid, bo_id, event) => {
-    if (event !== "destroy") return;
-    // A bo owns the foreign textures bound from it, and a GPU-tier bo owns
-    // a texture+FBO on the shared context; drop both before its storage
-    // goes away, on the guest destroy path and the teardown path alike.
-    for (const b of this.gl.list()) if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
-    this.gl.retireForeignBo(bo_id);
-  });
-  /**
    * Worker-side submit lanes. The compositor (current DRM_MASTER on
    * card0) jumps ahead of clients; clients round-robin. Drain runs
    * synchronously inside `host_gl_submit`. Frames own their validated bytes;
@@ -2519,10 +2504,12 @@ export class WasmPosixKernel {
           return 0;
         },
         host_gbm_bo_destroy: (pid: number, bo_id: number): void => {
-          // Its foreign textures and any GPU-tier texture+FBO are dropped by
-          // the bos "destroy" listener (offBoTextureCleanup), shared with the
-          // teardown path.
+          // Rust's last-reference callback is the lifetime authority for
+          // both tiers. GPU allocations have no CPU registry entry, so a
+          // CPU mirror's destroy event cannot drive native retirement.
           this.bos.destroy(pid, bo_id);
+          for (const b of this.gl.list()) if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
+          this.gl.retireForeignBo(bo_id);
         },
         host_gbm_bo_bind: (
           pid: number,
