@@ -5359,3 +5359,7 @@ The combined native Rust workspace selection, excluding xtask, passes
 `graphics-main-rust-1025-195316-2b6d`, `.context/graphics-main-rust.log`.
 These results do not validate normal ABI 55 guest artifacts or rendered
 compositor/memory behavior. Those rebuilds and gates remain next.
+
+The five graphics package ABI floors (cage, sway, wlroots, libwayland
+and graphics-cts-egl) now require the combined ABI 55 contract. Their
+normal resolver rebuild is starting from this integrated source.
