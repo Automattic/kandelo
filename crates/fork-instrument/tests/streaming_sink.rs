@@ -1079,6 +1079,30 @@ fn native_parameter_proofs_skip_mutable_slots_and_reject_partial_recording() {
     );
 }
 
+// These policy fixtures represent original SDK output, before any optimizer
+// can inline registry writers. A verified facts section admits source-shape
+// rules; final-Wasm fixtures deliberately use an empty store instead.
+fn original_policy_input(mut input: Vec<u8>) -> Vec<u8> {
+    use fork_instrument::facts;
+    use wasm_encoder::Encode;
+    let hash = facts::code_sha256(&input).unwrap();
+    for (name, data) in [
+        (
+            facts::SECTION,
+            b"#kandelo-calltypes\t5\nM\tpolicy-fixture.c\n".as_slice(),
+        ),
+        (facts::CODE_HASH_SECTION, hash.as_slice()),
+    ] {
+        input.push(0);
+        wasm_encoder::CustomSection {
+            name: name.into(),
+            data: data.into(),
+        }
+        .encode(&mut input);
+    }
+    input
+}
+
 #[test]
 fn native_registry_policy_unions_atfork_callbacks_and_preserves_literal_slot_priority() {
     let input = wat::parse_str(r#"(module (type $v (func)) (table 3 funcref)
@@ -1087,9 +1111,11 @@ fn native_registry_policy_unions_atfork_callbacks_and_preserves_literal_slot_pri
       (func $__fork_handler (param i32) local.get 0 call_indirect (type $v))
       (func $root (export "run") (param i32)
         i32.const 0 i32.const 1 i32.const 1 call $pthread_atfork local.get 0 call $__fork_handler))"#).unwrap();
+    let input = original_policy_input(input);
     let scan = scan(&input).unwrap();
     let hub = named(&scan, "__fork_handler");
-    let mut store = FactsStore::empty(Default::default()).unwrap();
+    let mut store = FactsStore::from_scan(&scan, Default::default()).unwrap();
+    store.resolve_calls(&scan, Default::default()).unwrap();
     let mut program = Program::build(&scan, &mut store, Default::default()).unwrap();
     let key = program.signature(0).unwrap();
     let plan = PolicyPlan::build(&mut program, Default::default(), Default::default()).unwrap();
@@ -1130,9 +1156,11 @@ fn native_registry_policy_keeps_unknown_atexit_slots_conservative() {
           (func $root (export "run") i32.const 1 call $atexit) {mutate})"#
         ))
         .unwrap();
+        let input = original_policy_input(input);
         let scan = scan(&input).unwrap();
         let hub = named(&scan, "__funcs_on_exit");
-        let mut store = FactsStore::empty(Default::default()).unwrap();
+        let mut store = FactsStore::from_scan(&scan, Default::default()).unwrap();
+        store.resolve_calls(&scan, Default::default()).unwrap();
         let mut program = Program::build(&scan, &mut store, Default::default()).unwrap();
         let (void, dtor) = (program.signature(0).unwrap(), program.signature(1).unwrap());
         let plan = PolicyPlan::build(&mut program, Default::default(), Default::default()).unwrap();
@@ -1159,9 +1187,11 @@ fn native_cancellation_policy_requires_absence_of_local_writers() {
             "(module {writer} (func $__testcancel call $pthread_exit) (func $pthread_exit))"
         ))
         .unwrap();
+        let input = original_policy_input(input);
         let scan = scan(&input).unwrap();
         let (caller, callee) = (named(&scan, "__testcancel"), named(&scan, "pthread_exit"));
-        let mut store = FactsStore::empty(Default::default()).unwrap();
+        let mut store = FactsStore::from_scan(&scan, Default::default()).unwrap();
+        store.resolve_calls(&scan, Default::default()).unwrap();
         let mut program = Program::build(&scan, &mut store, Default::default()).unwrap();
         let plan = PolicyPlan::build(&mut program, Default::default(), Default::default()).unwrap();
         assert_eq!(plan.cancel_cut(caller, callee), cut, "{writer}");
@@ -1481,6 +1511,8 @@ fn native_policy_interpreter_never_specializes_past_unknown_side_targets() {
         (result.returned, result.thrown),
         (Some(Value::Unknown), ALL_TAGS)
     );
+    // A dynamic loader can replace even a literal slot; static initialization
+    // is not proof that only the local target can return or throw.
     let body = scan
         .body_provider(Default::default())
         .load(named(&scan, "literal"))
@@ -1496,7 +1528,7 @@ fn native_policy_interpreter_never_specializes_past_unknown_side_targets() {
         .unwrap();
     assert_eq!(
         (result.returned, result.thrown),
-        (Some(Value::Constant(42)), 0)
+        (Some(Value::Unknown), ALL_TAGS)
     );
 }
 
