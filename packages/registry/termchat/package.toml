@@ -22,3 +22,7 @@ script_path = "packages/registry/termchat/build-termchat.sh"
 [[outputs]]
 name = "termchat"
 wasm = "termchat.wasm"
+
+[[runtime_files]]
+artifact = "sessions.json"
+guest_path = "/usr/share/kandelo/sessions/termchat.json"

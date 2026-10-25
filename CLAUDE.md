@@ -329,7 +329,7 @@ wasm, program and test-fixture binaries (`local-binaries/`), rootfs image, or
 package artifacts, and a fresh checkout or `git worktree` inherits none of
 them. When a goal — running a suite, reproducing a failure, validating before
 a merge — needs an artifact that is missing, build it and continue. A missing
-artifact is a `./run.sh setup` / `build-musl.sh` / `build-programs.sh` step
+artifact is a `./run.sh setup --all` / `build-musl.sh` / `build-programs.sh` step
 away (under `scripts/dev-shell.sh`), not a "cannot proceed" boundary and not a
 reason to hand the task back. Distinguish this
 from a genuine platform defect: a missing artifact you can produce is

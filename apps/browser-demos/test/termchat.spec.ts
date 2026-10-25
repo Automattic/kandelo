@@ -22,7 +22,7 @@ test("termchat discovers, chats, transfers a file and restores browser terminals
       const data = await (window as any).__termchatHarness.kernels[1].readFileFromVfs("/tmp/termchat/alice/probe.bin");
       return data ? Array.from(data) : null;
     }), { timeout: 30_000 }).toEqual(Array.from(transferBytes));
-    await page.evaluate(() => { const h = (window as any).__termchatHarness; h.resize(0); h.resize(1); h.send(1, "after-resize"); });
+    await page.evaluate(async () => { const h = (window as any).__termchatHarness; await h.resize(0); await h.resize(1); h.send(1, "after-resize"); });
     await expect.poll(() => page.evaluate(() => (window as any).__termchatHarness.text(0))).toContain("after-resize");
     await page.screenshot({ path: resolve(`../../.context/termchat-browser-${browserName}.png`), fullPage: true });
     expect(await page.evaluate(() => (window as any).__termchatHarness.stop(1))).toBe(0);

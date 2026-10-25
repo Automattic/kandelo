@@ -60,6 +60,12 @@ regex = "1"
 rustix = { version = "1", features = ["fs", "process"] }
 
 [dev-dependencies]
+# Assembles the small fixture modules the `kernel_imports` generator
+# tests parse, so the import-section round-trip is checked against
+# known bytes rather than whatever the current kernel artifact holds.
+# `wat = "1"` matches fork-instrument, host-native, fork-codec and
+# wasm-local-root-spill.
+wat = "1"
 # Used by source_extract + build_deps integration tests for ergonomic
 # tempdirs. Not promoted to a runtime dep: the source_extract zip path
 # uses std::io::Cursor instead of NamedTempFile.

@@ -177,7 +177,6 @@ const ASYNC_CONSTRUCTOR_CALLBACK_OBJECTS = new Map([
           "onUdpBind",
           "onUdpUnbind",
           "onUnmapHostFile",
-          "onWaitpid",
           "teardown",
         ]),
       ],

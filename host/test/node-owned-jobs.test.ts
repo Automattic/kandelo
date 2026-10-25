@@ -130,6 +130,22 @@ describe.skipIf(!haveKernel || !havePrograms)("NodeKernelHost owned jobs", () =>
     }
   }, 60_000);
 
+  it("owns and cancels an interactive PTY family with no deadline", async () => {
+    const host = await bootedHost();
+    try {
+      await host.spawnFromVfs("/bin/spawn-smoke", ["spawn-smoke", "/bin/block-forever"], {
+        pty: true, ownedJob: { id: "interactive", timeoutMs: 0 }, uid: 1000, gid: 1000,
+      });
+      const before = await host.readOwnedJob("interactive", 0, 4096);
+      expect(before).toMatchObject({ status: "running", terminationObserved: false });
+      await host.readOwnedJob("interactive", 0, 4096, true);
+      const after = await awaitTermination(host, "interactive");
+      expect(after.status).toBe("cancelled");
+      await host.releaseOwnedJob("interactive");
+      await expect(host.readOwnedJob("interactive")).rejects.toThrow("UNKNOWN_JOB");
+    } finally { await host.destroy(); }
+  }, 60_000);
+
   it("enforces the timeout even when nothing reads the job", async () => {
     const host = await bootedHost();
     try {

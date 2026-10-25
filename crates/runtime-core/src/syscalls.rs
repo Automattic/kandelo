@@ -1252,6 +1252,10 @@ fn commit_exec_state_impl(
             return Err(Errno::ESRCH);
         }
     }
+    // Sibling threads parked in the kernel belong to the old image. Exec keeps
+    // the pid, so their parks must be dropped here, before any decision could
+    // be published into the replacement image's channels.
+    crate::wait_park::retire_process(proc.pid);
     // The old image owns every blocked request snapshot. Release its stable
     // kernel targets before closing CLOEXEC descriptors or discarding sibling
     // threads, so no retry can survive into the replacement program.
@@ -3840,7 +3844,17 @@ fn resolve_namespace_path_from(
             // Preserve final fd-link metadata for procfs handling instead of
             // feeding its descriptive OFD path to a filesystem backend.
             // Directory-fd traversal through procfs remains a documented gap.
-            if matches!(procfs_entry, Some(crate::procfs::ProcfsEntry::FdLink(_, _))) {
+            // `/proc/<pid>/exe` is the same kind of magic link: it names the
+            // executable the image runs (`Process::exe`), which may have no
+            // path left at all, so it is opened as itself, never re-resolved
+            // through the text `readlink` reports.
+            if matches!(
+                procfs_entry,
+                Some(
+                    crate::procfs::ProcfsEntry::FdLink(_, _)
+                        | crate::procfs::ProcfsEntry::Exe(_)
+                )
+            ) {
                 if !is_final || require_directory {
                     return Err(Errno::ENOTDIR);
                 }
@@ -4326,6 +4340,49 @@ pub struct PreparedExecOpen {
 /// guest descriptor. The resulting reference is owned by the prepared-target
 /// ledger, so RLIMIT_NOFILE and POSIX close-any-fd lock semantics do not enter
 /// this internal authority path.
+/// The exec target behind `/proc/<pid>/exe`: a fresh description of the
+/// running image's executable, judged like any other target.
+fn open_prepared_exec_target_exe(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    pid: u32,
+) -> Result<PreparedExecOpen, Errno> {
+    let stat = process_exe_stat(proc, host, pid)?;
+    if stat.st_mode & S_IFMT != S_IFREG {
+        return Err(Errno::EACCES);
+    }
+    check_access(proc, &stat, X_OK)?;
+    let (ofd_index, _) = reopen_process_exe(proc, host, pid, O_RDONLY)?;
+    let (ofd_ref, ofd_id, host_handle, diagnostic_path) = {
+        let ofd = proc.ofd_table.get(ofd_index).ok_or(Errno::EIO)?;
+        (OpenFileDescRef(ofd_index), ofd.ofd_id, ofd.host_handle, ofd.path.clone())
+    };
+    let statfs = if crate::rootfs::is_rootfs_file_handle(host_handle) {
+        crate::rootfs::statfs(&diagnostic_path)
+    } else {
+        host_fstatfs_or_default(host, host_handle)
+    };
+    let statfs = match statfs {
+        Ok(statfs) => statfs,
+        Err(error) => {
+            let _ = release_ofd_reference_impl(proc, None, host, ofd_index);
+            return Err(error);
+        }
+    };
+    let file_id = (stat.st_ino != 0).then_some(FileId::Host {
+        dev: stat.st_dev,
+        ino: stat.st_ino,
+    });
+    Ok(PreparedExecOpen {
+        ofd_ref,
+        ofd_id,
+        file_id,
+        stat,
+        statfs,
+        diagnostic_path,
+    })
+}
+
 pub fn open_prepared_exec_target(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -4360,6 +4417,15 @@ pub fn open_prepared_exec_target(
     // reports the truthful EACCES rather than pretending the name is unknown.
     if is_devfs_namespace_path(&resolved) && !is_delegated_devfs_path(&resolved) {
         return Err(Errno::EACCES);
+    }
+
+    // `execve("/proc/self/exe")` re-runs the image's own executable -- the
+    // object that was executed, even if its path is gone or now names
+    // something else.
+    if let Some(crate::procfs::ProcfsEntry::Exe(pid)) =
+        crate::procfs::match_procfs(&resolved, proc.pid)
+    {
+        return open_prepared_exec_target_exe(proc, host, pid);
     }
 
     if crate::tmpfs::claims_path(&resolved) {
@@ -4584,6 +4650,10 @@ pub fn cancel_host_owned_wait_for_live_tid(
         return Err(Errno::ESRCH);
     }
     cancel_host_owned_wait_for_tid(proc, tid);
+    // A wait the kernel owns ends here too, with EINTR, and the host
+    // publishes that decision like any other. Hosts call this only for a
+    // wakeable cancellation point, so a plain syscall's park is untouched.
+    crate::wait_park::cancel_task(proc.pid, tid);
     Ok(())
 }
 
@@ -5080,6 +5150,13 @@ pub fn sys_open(
 
     if let Some(fd) = try_open_fifo(proc, host, &resolved, oflags, exclusive_create)? {
         return Ok(fd);
+    }
+
+    // `/proc/<pid>/exe` opens the executable the image runs, not a path.
+    if let Some(crate::procfs::ProcfsEntry::Exe(pid)) =
+        crate::procfs::match_procfs(&resolved, proc.pid)
+    {
+        return open_process_exe(proc, host, pid, oflags);
     }
 
     // Procfs (/proc/...) — in-kernel virtual filesystem
@@ -6116,6 +6193,10 @@ fn release_ofd_reference_impl(
                 {
                     if crate::descriptor_backing::release_for_ofd(file_type, host_handle) {
                         release_final_ofd_locks(locks.as_deref_mut(), ofd_id);
+                    } else {
+                        // Another open of the same file keeps the backing
+                        // alive, which says nothing about this description.
+                        crate::ofd::note_possibly_orphaned_ofd_locks();
                     }
                 } else if host_handle == crate::procfs::PROCFS_DIR_HANDLE
                     || host_handle == crate::devfs::DEVFS_DIR_HANDLE
@@ -6537,6 +6618,7 @@ pub fn cleanup_exiting_thread_with_state(
     let release_result = release_blocking_retry_bindings_for_tid(proc, locks, host, tid);
     let owner = ((proc.pid as u64) << 32) | tid as u64;
     cancel_fifo_open_for_owner(proc, owner);
+    crate::wait_park::retire_task(proc.pid, tid);
     release_gl_current_for_tid(proc, host, tid, None);
     let thread = proc.remove_thread(tid).ok_or(Errno::ESRCH)?;
     release_result?;
@@ -9251,6 +9333,101 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
 /// Return the same live OFD metadata through a procfs fd link as `fstat(fd)`.
 /// A numeric procfs fd name that is not open is absent, not an EBADF syscall
 /// argument owned by the caller.
+/// The metadata of the regular file behind an executable's description:
+/// served by the in-kernel filesystem that owns the handle, or the host.
+fn exe_backing_fstat(host: &mut dyn HostIO, host_handle: i64) -> Result<WasmStat, Errno> {
+    if crate::rootfs::is_rootfs_file_handle(host_handle) {
+        crate::rootfs::fstat(host_handle)
+    } else if crate::tmpfs::is_tmpfs_file_handle(host_handle) {
+        crate::tmpfs::fstat(host_handle)
+    } else if host_handle >= 0 {
+        host.host_fstat(host_handle)
+    } else {
+        Err(Errno::EBADF)
+    }
+}
+
+/// The metadata `/proc/<pid>/exe` follows to: the running image's file.
+pub(crate) fn process_exe_stat(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    pid: u32,
+) -> Result<WasmStat, Errno> {
+    if pid != proc.pid {
+        return Err(Errno::EACCES);
+    }
+    let exe = proc.exe.ok_or(Errno::ENOENT)?;
+    let host_handle = proc.ofd_table.get(exe.0).ok_or(Errno::ENOENT)?.host_handle;
+    exe_backing_fstat(host, host_handle)
+}
+
+/// A NEW open file description of the executable the image runs
+/// (`Process::exe`), at offset 0, sharing its backing -- what Linux gives an
+/// open of `/proc/self/exe`: the object that was executed, even after its
+/// path was unlinked or now names a different file. Returns the description's
+/// index (one reference, no descriptor yet) and the file's metadata.
+///
+/// Only the caller's own image. Linux lets a process open another's `exe`
+/// with ptrace access, which Kandelo does not model, so another pid is
+/// `EACCES` -- the errno Linux gives a caller without that access.
+fn reopen_process_exe(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    pid: u32,
+    status_flags: u32,
+) -> Result<(usize, WasmStat), Errno> {
+    if pid != proc.pid {
+        return Err(Errno::EACCES);
+    }
+    let exe = proc.exe.ok_or(Errno::ENOENT)?;
+    let (file_type, host_handle, path, file_id) = {
+        let ofd = proc.ofd_table.get(exe.0).ok_or(Errno::ENOENT)?;
+        (ofd.file_type, ofd.host_handle, ofd.path.clone(), ofd.file_id)
+    };
+    let stat = exe_backing_fstat(host, host_handle)?;
+    // One more owner of the backing, exactly as an inherited description is.
+    if !crate::descriptor_backing::add_ref_for_ofd(file_type, host_handle)? {
+        if host_handle < 0 {
+            return Err(Errno::EBADF);
+        }
+        crate::ofd::host_handle_fork_ref(host_handle);
+    }
+    let index = proc.ofd_table.create(file_type, status_flags, host_handle, path);
+    if let Some(ofd) = proc.ofd_table.get_mut(index) {
+        ofd.file_id = file_id;
+    }
+    Ok((index, stat))
+}
+
+/// `open("/proc/<pid>/exe")`: a descriptor for the running image's file.
+///
+/// Read-only: writing to a file a process is executing is `ETXTBSY` on Linux,
+/// and an open of the exe link for writing asks exactly that. The file's own
+/// read permission still applies.
+fn open_process_exe(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    pid: u32,
+    oflags: u32,
+) -> Result<i32, Errno> {
+    if oflags & O_ACCMODE != O_RDONLY {
+        return Err(Errno::ETXTBSY);
+    }
+    if oflags & O_DIRECTORY != 0 {
+        return Err(Errno::ENOTDIR);
+    }
+    let stat = process_exe_stat(proc, host, pid)?;
+    check_access(proc, &stat, R_OK)?;
+    let (index, _) = reopen_process_exe(proc, host, pid, oflags & !CREATION_FLAGS)?;
+    match proc.fd_table.alloc(OpenFileDescRef(index), oflags_to_fd_flags(oflags)) {
+        Ok(fd) => Ok(fd),
+        Err(error) => {
+            let _ = release_ofd_reference_impl(proc, None, host, index);
+            Err(error)
+        }
+    }
+}
+
 pub fn procfs_fd_target_stat(
     proc: &Process,
     host: &mut dyn HostIO,
@@ -9814,6 +9991,9 @@ fn procfs_entry_stat(
 ) -> Result<WasmStat, Errno> {
     crate::procfs::validate_entry(proc, entry)?;
     if follow {
+        if let crate::procfs::ProcfsEntry::Exe(pid) = entry {
+            return process_exe_stat(proc, host, *pid);
+        }
         if let crate::procfs::ProcfsEntry::FdLink(pid, fd) = entry {
             if *pid == proc.pid {
                 return procfs_fd_target_stat(proc, host, *fd);
@@ -11511,6 +11691,8 @@ pub fn sys_setpgid(proc: &mut Process, pid: u32, pgid: u32) -> Result<(), Errno>
     }
     let new_pgid = if pgid == 0 { proc.pid } else { pgid };
     proc.pgid = new_pgid;
+    // A parent's `waitpid(-pgid)` may have gained or lost this child.
+    crate::wait_park::note_children_changed();
     Ok(())
 }
 
@@ -11537,6 +11719,7 @@ pub fn sys_setsid(proc: &mut Process) -> Result<u32, Errno> {
     proc.sid = proc.pid;
     proc.pgid = proc.pid;
     proc.is_session_leader = true;
+    crate::wait_park::note_children_changed();
     Ok(proc.sid)
 }
 
@@ -11730,28 +11913,11 @@ pub fn sys_sigtimedwait(
     mask: u64,
     _timeout_ms: i32,
 ) -> Result<(u32, u64, i32, i32, i32), Errno> {
-    use wasm_posix_shared::signal::NSIG;
-
     let tid = current_tid_for_process(proc);
-
-    // Scan the calling thread's pending set (shared + directed) for a match.
-    let pending_in_mask = proc.pending_for(tid) & mask;
-    if pending_in_mask != 0 {
-        let signum = pending_in_mask.trailing_zeros() + 1;
-        if signum < NSIG {
-            let info = proc.consume_signal_for(tid, signum).ok_or(Errno::EAGAIN)?;
-            let (word_1, word_2) = match info.timer_id {
-                Some(timer_id) => (
-                    timer_id as i32,
-                    proc.accept_posix_timer_notification(timer_id).unwrap_or(0),
-                ),
-                None => (info.sender_pid as i32, info.sender_uid as i32),
-            };
-            return Ok((signum, info.si_value_bits, info.si_code, word_1, word_2));
-        }
+    match crate::wait_signal::take_signal_for(proc, tid, mask) {
+        Some(t) => Ok((t.signum, t.value_bits, t.code, t.word_1, t.word_2)),
+        None => Err(Errno::EAGAIN),
     }
-
-    Err(Errno::EAGAIN)
 }
 
 /// sigsuspend -- temporarily replace the signal mask and suspend until a signal is delivered.
@@ -11918,11 +12084,15 @@ fn cleanup_process_for_exit(
     // Prepared executable tokens are exact OFD leases owned by this image,
     // not guest descriptors. Retire them before the ordinary fd walk so exit,
     // signal death, and trap cleanup cannot leave host-visible authority alive.
+    // The executable the image ran goes with it (`Process::exe`): a zombie
+    // runs nothing, so it holds no executable resident.
     if let Some(machine_locks) = locks.as_deref_mut() {
         crate::exec_target::drain_prepared_exec_targets(proc, machine_locks, host);
+        crate::exec_target::release_process_exe(proc, machine_locks, host);
     } else {
         let mut isolated_locks = AdvisoryLockManager::new();
         crate::exec_target::drain_prepared_exec_targets(proc, &mut isolated_locks, host);
+        crate::exec_target::release_process_exe(proc, &mut isolated_locks, host);
     }
 
     // The exiting image owns every blocked request. Consume its stable
@@ -12088,26 +12258,18 @@ fn guest_clock_now(host: &mut dyn HostIO, host_clock_id: u32) -> Result<(i64, i6
     host.host_clock_gettime(host_clock_id)
 }
 
-/// Sleep for the specified duration.
-pub fn sys_nanosleep(
-    _proc: &Process,
-    _host: &mut dyn HostIO,
-    req: &WasmTimespec,
-) -> Result<(), Errno> {
-    if req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1_000_000_000 {
-        return Err(Errno::EINVAL);
-    }
-    credit_image_build_sleep(req.tv_sec, req.tv_nsec);
-    Ok(())
+/// An image-build kernel's realtime clock advances by the time a task sleeps
+/// (`image_build_determinism`): the full requested duration, credited when
+/// the sleep begins, so the credit depends on the task's history and not on
+/// when a signal happened to end it. A no-op otherwise.
+fn credit_image_build_sleep_ns(ns: i64) {
+    crate::image_build_determinism::credit_current_task_sleep(ns.max(0) as u64);
 }
 
-/// An image-build kernel's realtime clock advances by the time a task sleeps
-/// (`image_build_determinism`); a no-op otherwise.
-fn credit_image_build_sleep(sec: i64, nsec: i64) {
-    let ns = (sec.max(0) as u64)
-        .saturating_mul(1_000_000_000)
-        .saturating_add(nsec.max(0) as u64);
-    crate::image_build_determinism::credit_current_task_sleep(ns);
+/// [`guest_clock_now`] in nanoseconds.
+fn guest_clock_ns(host: &mut dyn HostIO, clock_id: u32) -> Result<i64, Errno> {
+    let (sec, nsec) = guest_clock_now(host, clock_id)?;
+    Ok(sec.saturating_mul(1_000_000_000).saturating_add(nsec))
 }
 
 /// Get clock resolution. Returns hardcoded values since Wasm doesn't
@@ -12133,53 +12295,6 @@ pub fn sys_clock_getres(_proc: &Process, clock_id: u32) -> Result<WasmTimespec, 
             })
         }
         _ => Err(Errno::EINVAL),
-    }
-}
-
-/// Sleep using a specific clock. For TIMER_ABSTIME, rewrite the requested
-/// deadline to the relative duration consumed by the host channel.
-pub fn sys_clock_nanosleep(
-    _proc: &Process,
-    host: &mut dyn HostIO,
-    clock_id: u32,
-    flags: u32,
-    req: &WasmTimespec,
-    req_ptr: *const u8,
-) -> Result<(), Errno> {
-    use wasm_posix_shared::clock::*;
-    // Validate clock_id
-    if clock_id != CLOCK_REALTIME && clock_id != CLOCK_MONOTONIC && clock_id != CLOCK_BOOTTIME {
-        return Err(Errno::EINVAL);
-    }
-    // Validate timespec
-    if req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1_000_000_000 {
-        return Err(Errno::EINVAL);
-    }
-    const TIMER_ABSTIME: u32 = 1;
-    if flags & TIMER_ABSTIME != 0 {
-        // Absolute sleep: compute relative delay from the clock the guest
-        // computed its deadline on.
-        let (now_sec, now_nsec) = guest_clock_now(host, clock_id)?;
-        let mut sec = req.tv_sec - now_sec;
-        let mut nsec = req.tv_nsec - now_nsec;
-        if nsec < 0 {
-            sec -= 1;
-            nsec += 1_000_000_000;
-        }
-        // Write relative delay to scratch and return immediately; the host
-        // reads it from CH_DATA and sets up the timer.
-        let out = unsafe { core::slice::from_raw_parts_mut(req_ptr as *mut u8, 16) };
-        if sec < 0 {
-            out[0..16].fill(0);
-        } else {
-            out[0..8].copy_from_slice(&sec.to_le_bytes());
-            out[8..16].copy_from_slice(&nsec.to_le_bytes());
-            credit_image_build_sleep(sec, nsec);
-        }
-        Ok(())
-    } else {
-        credit_image_build_sleep(req.tv_sec, req.tv_nsec);
-        Ok(())
     }
 }
 
@@ -17602,18 +17717,6 @@ pub fn sys_gettimeofday(_proc: &mut Process, host: &mut dyn HostIO) -> Result<(i
     Ok((sec, usec))
 }
 
-/// Sleep for a specified number of microseconds.
-///
-/// Like [`sys_nanosleep`], this validates and returns; it does not sleep. The
-/// duration is the caller's `usec` argument, which the runtime reads from the
-/// channel and parks on. Sleeping here would block the single kernel thread
-/// that multiplexes every process in the machine, so a `usleep(500000)` in one
-/// process would stall all of them for half a second.
-pub fn sys_usleep(_proc: &mut Process, _host: &mut dyn HostIO, usec: u32) -> Result<(), Errno> {
-    credit_image_build_sleep(i64::from(usec / 1_000_000), i64::from(usec % 1_000_000) * 1_000);
-    Ok(())
-}
-
 /// Resolve a path relative to a directory fd through the global namespace.
 /// Absolute paths ignore `dirfd`; relative paths use either cwd or the
 /// canonical path captured by the directory OFD.
@@ -17832,6 +17935,13 @@ pub fn sys_openat(
 
     if let Some(fd) = try_open_fifo(proc, host, &resolved, oflags, exclusive_create)? {
         return Ok(fd);
+    }
+
+    // `/proc/<pid>/exe` opens the executable the image runs, not a path.
+    if let Some(crate::procfs::ProcfsEntry::Exe(pid)) =
+        crate::procfs::match_procfs(&resolved, proc.pid)
+    {
+        return open_process_exe(proc, host, pid, oflags);
     }
 
     // Procfs (/proc/...) — in-kernel virtual filesystem
@@ -18955,7 +19065,7 @@ pub fn sys_ioctl(
             };
             // POSIX: TIOCSWINSZ sends SIGWINCH to the foreground process group
             if fg_pgid > 0 {
-                proc.signals.raise(wasm_posix_shared::signal::SIGWINCH);
+                proc.raise_signal(wasm_posix_shared::signal::SIGWINCH);
             }
             Ok(())
         }
@@ -19137,20 +19247,202 @@ pub fn sys_set_robust_list() -> Result<(), Errno> {
     Ok(())
 }
 
-/// futex — real implementation using host Atomics.wait/notify.
+/// The task a waiting syscall acts for: whose memory holds its arguments and
+/// who parks. `pointer_width` decides how a guest `struct timespec`'s
+/// `tv_nsec` is read (a wasm32 `long` is four bytes plus padding).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GuestTask {
+    pub pid: u32,
+    pub tid: u32,
+    pub pointer_width: u8,
+}
+
+impl GuestTask {
+    pub const fn wasm32(pid: u32, tid: u32) -> Self {
+        Self { pid, tid, pointer_width: 4 }
+    }
+}
+
+/// Read a guest `struct timespec` (16 bytes on both caller widths: an `i64`
+/// `tv_sec` and a `tv_nsec` in the next eight bytes) and return it as
+/// nanoseconds. `EFAULT` if unreadable, `EINVAL` if not a valid duration;
+/// a value too large for `i64` nanoseconds saturates (it is a deadline no
+/// machine will reach).
+pub fn read_guest_timespec_ns(host: &mut dyn HostIO, task: GuestTask, addr: u64) -> Result<i64, Errno> {
+    let mut raw = [0u8; 16];
+    if addr == 0 || host.proc_read_bytes(task.pid as i32, addr, &mut raw) < 0 {
+        return Err(Errno::EFAULT);
+    }
+    let sec = i64::from_le_bytes(raw[0..8].try_into().expect("8 bytes"));
+    // WHY by width: a wasm32 caller's `long tv_nsec` is four bytes followed
+    // by padding musl does not initialise, so only the low half is the value.
+    let nsec = if task.pointer_width == 4 {
+        i64::from(i32::from_le_bytes(raw[8..12].try_into().expect("4 bytes")))
+    } else {
+        i64::from_le_bytes(raw[8..16].try_into().expect("8 bytes"))
+    };
+    if sec < 0 || !(0..1_000_000_000).contains(&nsec) {
+        return Err(Errno::EINVAL);
+    }
+    Ok(sec
+        .checked_mul(1_000_000_000)
+        .and_then(|ns| ns.checked_add(nsec))
+        .unwrap_or(i64::MAX))
+}
+
+/// Park the caller until `deadline` (kernel `CLOCK_MONOTONIC` ns), or answer
+/// at once if it has already passed. `remainder` is the guest `rem` address a
+/// signal interruption fills with the unslept time (relative sleeps only).
+fn park_sleep(
+    task: GuestTask,
+    now: i64,
+    deadline: i64,
+    remainder: Option<u64>,
+) -> Result<ParkOutcome, Errno> {
+    if deadline <= now {
+        return Ok(ParkOutcome::Done(0));
+    }
+    let generation = crate::wait_park::with(|parks| {
+        parks.park(
+            task.pid,
+            task.tid,
+            crate::wait_queue::WaitKind::Sleep,
+            alloc::vec::Vec::new(),
+            Some(deadline),
+            crate::wait_park::Resume::Sleep {
+                remainder,
+                deadline,
+            },
+        )
+    })?;
+    Ok(ParkOutcome::Parked(generation))
+}
+
+/// nanosleep(2), owned by the kernel: the caller parks in
+/// [`crate::wait_park`] with a `CLOCK_MONOTONIC` deadline.
+///
+/// # Why the kernel owns the sleep
+///
+/// The host used to take the kernel's "success", start a JavaScript timer
+/// for the duration it re-read from the marshalled request, and publish the
+/// result when the timer fired -- unless one of four separate host arms (a
+/// signal, a pthread_cancel, a PTY resize, a SIGCONT) got there first. The
+/// native host had no such timer at all, so its sleeps returned at once.
+/// Parking here makes the deadline and every early end one kernel decision,
+/// visible to a deterministic scheduler through the same clock read as every
+/// other park.
+///
+/// `rem` is written only when a signal ends the sleep early, as POSIX
+/// requires; it was never written before. The write happens when the
+/// decision is drained, which is the moment before the guest observes it.
+///
+/// Linux answers a sleep interrupted by a caught signal with `EINTR` even
+/// under `SA_RESTART`; the park's resume rule says so.
+pub fn sys_nanosleep(
+    host: &mut dyn HostIO,
+    task: GuestTask,
+    req: u64,
+    rem: u64,
+) -> Result<ParkOutcome, Errno> {
+    let span = read_guest_timespec_ns(host, task, req)?;
+    let now = crate::wait_park::now_ns(host)?;
+    credit_image_build_sleep_ns(span);
+    park_sleep(task, now, now.saturating_add(span), (rem != 0).then_some(rem))
+}
+
+/// clock_nanosleep(2), owned by the kernel. See [`sys_nanosleep`].
+///
+/// A relative request parks for its duration on the monotonic clock whatever
+/// the named clock, because the two advance together here. An absolute
+/// (`TIMER_ABSTIME`) request is converted to a monotonic deadline once, at
+/// park time, by reading the named clock. Known gap: a later
+/// `clock_settime(CLOCK_REALTIME)` does not move a parked absolute realtime
+/// sleep, as Linux would; Kandelo does not let guests set the realtime clock.
+/// `rem` is never written for an absolute sleep (POSIX).
+pub fn sys_clock_nanosleep(
+    host: &mut dyn HostIO,
+    task: GuestTask,
+    clock_id: u32,
+    flags: u32,
+    req: u64,
+    rem: u64,
+) -> Result<ParkOutcome, Errno> {
+    use wasm_posix_shared::clock::*;
+    const TIMER_ABSTIME: u32 = 1;
+    if clock_id != CLOCK_REALTIME && clock_id != CLOCK_MONOTONIC && clock_id != CLOCK_BOOTTIME {
+        return Err(Errno::EINVAL);
+    }
+    let span = read_guest_timespec_ns(host, task, req)?;
+    let now = crate::wait_park::now_ns(host)?;
+    if flags & TIMER_ABSTIME == 0 {
+        credit_image_build_sleep_ns(span);
+        return park_sleep(task, now, now.saturating_add(span), (rem != 0).then_some(rem));
+    }
+    // Measured against the clock the guest computed its deadline on: an
+    // image-build kernel's guest clocks are logical, not the kernel's.
+    let left = span.saturating_sub(guest_clock_ns(host, clock_id)?);
+    if left > 0 {
+        credit_image_build_sleep_ns(left);
+    }
+    park_sleep(task, now, now.saturating_add(left.max(0)), None)
+}
+
+/// Kandelo's `usleep` syscall: a relative sleep with no remainder.
+/// See [`sys_nanosleep`].
+pub fn sys_usleep(host: &mut dyn HostIO, task: GuestTask, usec: u32) -> Result<ParkOutcome, Errno> {
+    let now = crate::wait_park::now_ns(host)?;
+    credit_image_build_sleep_ns(i64::from(usec) * 1_000);
+    park_sleep(task, now, now.saturating_add(i64::from(usec) * 1_000), None)
+}
+
+
+/// What a waiting syscall did: answered now, or parked the caller in the
+/// kernel (`futex`, `nanosleep`, `clock_nanosleep`, `usleep`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParkOutcome {
+    /// The syscall's result.
+    Done(i32),
+    /// The caller is parked in [`crate::wait_park`] under this generation;
+    /// its result will arrive as a completion record.
+    Parked(u64),
+}
+
+/// futex(2), owned by the kernel.
+///
+/// # Why the kernel owns the wait
+///
+/// Every futex operation that matters is a syscall, and every syscall is
+/// serialized through the kernel. A compare-and-park performed here is
+/// therefore atomic with respect to every `FUTEX_WAKE`: if the wake is handled
+/// first, the later wait reads the new word and answers `EAGAIN`; if the wait
+/// is handled first, the wake finds it parked. No host-side `Atomics.waitAsync`
+/// on the guest word is involved, which is also Linux's model -- the wait
+/// queue is kernel state, not a property of the memory word.
+///
+/// The futex word is read through [`HostIO::proc_read_bytes`], the kernel's
+/// cross-memory primitive, and compared once on that copy.
+///
+/// `FUTEX_PRIVATE_FLAG` is accepted and ignored: waits are keyed by
+/// `(pid, address)`, and Kandelo processes never share a linear memory, so a
+/// shared futex and a private one name the same queue.
+///
+/// Known gap: `FUTEX_WAKE_OP` does not perform its atomic read-modify-write of
+/// `*uaddr2` (the cross-memory primitive is a copy, not an atomic RMW); it
+/// wakes `val` waiters on `uaddr` and `val2` on `uaddr2`, as the host did
+/// before. musl never issues it.
+#[allow(clippy::too_many_arguments)]
 pub fn sys_futex(
     host: &mut dyn HostIO,
-    uaddr: usize,
+    task: GuestTask,
+    uaddr: u64,
     op: u32,
     val: u32,
-    timeout: u32,
-    uaddr2: usize,
+    timeout: u64,
+    uaddr2: u64,
     val3: u32,
-) -> Result<i32, Errno> {
+) -> Result<ParkOutcome, Errno> {
     const FUTEX_WAIT: u32 = 0;
     const FUTEX_WAKE: u32 = 1;
-    #[allow(dead_code)]
-    const FUTEX_FD: u32 = 2;
     const FUTEX_REQUEUE: u32 = 3;
     const FUTEX_CMP_REQUEUE: u32 = 4;
     const FUTEX_WAKE_OP: u32 = 5;
@@ -19158,41 +19450,125 @@ pub fn sys_futex(
     const FUTEX_WAKE_BITSET: u32 = 10;
     const FUTEX_PRIVATE_FLAG: u32 = 128;
     const FUTEX_CLOCK_REALTIME: u32 = 256;
+    const FUTEX_BITSET_MATCH_ANY: u32 = u32::MAX;
+    let GuestTask { pid, tid, .. } = task;
 
-    let base_op = op & !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
-
-    match base_op {
-        FUTEX_WAIT | FUTEX_WAIT_BITSET => Err(Errno::EAGAIN),
-        FUTEX_WAKE | FUTEX_WAKE_BITSET => host.host_futex_wake(uaddr, val),
-        FUTEX_REQUEUE => {
-            // Wake val waiters on uaddr, requeue up to val2 waiters to uaddr2.
-            // We can't truly requeue across futex addresses with Atomics, so
-            // wake val + val2 on uaddr instead — woken threads will re-check
-            // their conditions and re-wait on the correct address if needed.
-            let val2 = timeout; // timeout param repurposed as val2 for REQUEUE
-            host.host_futex_wake(uaddr, val + val2)
+    let command = op & !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+    if uaddr & 3 != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let read_word = |host: &mut dyn HostIO, addr: u64| -> Result<u32, Errno> {
+        let mut word = [0u8; 4];
+        if host.proc_read_bytes(pid as i32, addr, &mut word) < 0 {
+            return Err(Errno::EFAULT);
         }
-        FUTEX_CMP_REQUEUE => {
-            // Like REQUEUE but check *uaddr == val3 first
-            let val2 = timeout;
-            let actual = unsafe { core::ptr::read_volatile(uaddr as *const u32) };
-            if actual != val3 {
+        Ok(u32::from_le_bytes(word))
+    };
+    let check_uaddr2 = || -> Result<(), Errno> {
+        if uaddr2 & 3 != 0 {
+            Err(Errno::EINVAL)
+        } else {
+            Ok(())
+        }
+    };
+    // Linux passes REQUEUE/CMP_REQUEUE/WAKE_OP's second count in the timeout
+    // argument slot, as an integer.
+    let val2 = timeout as u32;
+    let wake = |addr: u64, max: u32, bitset: u32| -> usize {
+        crate::wait_park::with(|parks| parks.futex_wake(pid, addr, max as usize, bitset))
+    };
+
+    match command {
+        FUTEX_WAIT | FUTEX_WAIT_BITSET => {
+            let bitset = if command == FUTEX_WAIT {
+                FUTEX_BITSET_MATCH_ANY
+            } else {
+                val3
+            };
+            if bitset == 0 {
+                return Err(Errno::EINVAL);
+            }
+            if read_word(host, uaddr)? != val {
                 return Err(Errno::EAGAIN);
             }
-            host.host_futex_wake(uaddr, val + val2)
+            let now = crate::wait_park::now_ns(host)?;
+            // The wait's length, relative, on the guest's own clock.
+            let timeout_ns = if timeout == 0 {
+                None
+            } else {
+                let span = read_guest_timespec_ns(host, task, timeout)?;
+                Some(if command == FUTEX_WAIT {
+                    // FUTEX_WAIT's timeout is relative.
+                    span
+                } else {
+                    // FUTEX_WAIT_BITSET's is absolute, on CLOCK_REALTIME with
+                    // FUTEX_CLOCK_REALTIME and CLOCK_MONOTONIC otherwise.
+                    // Measure it against the clock the guest computed it on
+                    // (an image-build kernel's guest clocks are logical) once,
+                    // at park time.
+                    let clock = if op & FUTEX_CLOCK_REALTIME != 0 {
+                        wasm_posix_shared::clock::CLOCK_REALTIME
+                    } else {
+                        wasm_posix_shared::clock::CLOCK_MONOTONIC
+                    };
+                    span.saturating_sub(guest_clock_ns(host, clock)?)
+                })
+            };
+            if timeout_ns.is_some_and(|ns| ns <= 0) {
+                return Err(Errno::ETIMEDOUT);
+            }
+            let deadline = timeout_ns.map(|ns| now.saturating_add(ns));
+            let generation = crate::wait_park::with(|parks| {
+                parks.park(
+                    pid,
+                    tid,
+                    crate::wait_queue::WaitKind::Futex,
+                    alloc::vec![crate::wait_queue::WakeSource::Futex { pid, addr: uaddr }],
+                    deadline,
+                    crate::wait_park::Resume::Futex {
+                        bitset,
+                        timeout_ns: timeout_ns.map(|ns| ns as u64),
+                    },
+                )
+            })?;
+            Ok(ParkOutcome::Parked(generation))
+        }
+        FUTEX_WAKE | FUTEX_WAKE_BITSET => {
+            let bitset = if command == FUTEX_WAKE {
+                FUTEX_BITSET_MATCH_ANY
+            } else {
+                val3
+            };
+            if bitset == 0 {
+                return Err(Errno::EINVAL);
+            }
+            Ok(ParkOutcome::Done(wake(uaddr, val, bitset) as i32))
+        }
+        FUTEX_REQUEUE | FUTEX_CMP_REQUEUE => {
+            check_uaddr2()?;
+            if command == FUTEX_CMP_REQUEUE && read_word(host, uaddr)? != val3 {
+                return Err(Errno::EAGAIN);
+            }
+            let woken = wake(uaddr, val, FUTEX_BITSET_MATCH_ANY);
+            let moved = crate::wait_park::with(|parks| {
+                parks.futex_requeue(pid, uaddr, uaddr2, val2 as usize)
+            });
+            // Linux: REQUEUE returns the number woken; CMP_REQUEUE the number
+            // woken or requeued.
+            let total = if command == FUTEX_CMP_REQUEUE {
+                woken + moved
+            } else {
+                woken
+            };
+            Ok(ParkOutcome::Done(i32::try_from(total).unwrap_or(i32::MAX)))
         }
         FUTEX_WAKE_OP => {
-            // Wake val waiters on uaddr, then conditionally wake val3 on uaddr2
-            // Simplified: wake val on uaddr + val3 on uaddr2
-            let woken1 = host.host_futex_wake(uaddr, val)?;
-            let woken2 = if uaddr2 != 0 && val3 > 0 {
-                host.host_futex_wake(uaddr2, val3)?
-            } else {
-                0
-            };
-            Ok(woken1 + woken2)
+            check_uaddr2()?;
+            let woken = wake(uaddr, val, FUTEX_BITSET_MATCH_ANY)
+                + wake(uaddr2, val2, FUTEX_BITSET_MATCH_ANY);
+            Ok(ParkOutcome::Done(i32::try_from(woken).unwrap_or(i32::MAX)))
         }
-        _ => Ok(0), // no-op for unrecognized ops
+        _ => Err(Errno::ENOSYS),
     }
 }
 
@@ -22429,16 +22805,6 @@ pub fn sys_recvmsg(
     }
 }
 
-/// wait4 — wait for a child process. Delegates to host.
-pub fn sys_waitpid(
-    _proc: &mut Process,
-    host: &mut dyn HostIO,
-    pid: i32,
-    options: u32,
-) -> Result<(i32, i32), Errno> {
-    host.host_waitpid(pid, options)
-}
-
 /// Width-independent system information serialized at the Wasm boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KernelSysinfo {
@@ -23943,6 +24309,9 @@ mod tests {
         freeze_exec_handles: bool,
         frozen_handle_stats: std::collections::HashMap<i64, WasmStat>,
         frozen_handle_bytes: std::collections::HashMap<i64, Vec<u8>>,
+        /// Per-path content a frozen exec handle snapshots in preference to
+        /// `prepared_exec_bytes`, for tests that open several targets.
+        path_exec_bytes: std::collections::HashMap<Vec<u8>, Vec<u8>>,
         path_inodes: std::collections::HashMap<Vec<u8>, u64>,
         next_inode: u64,
         missing_paths: std::collections::HashSet<Vec<u8>>,
@@ -24118,6 +24487,7 @@ mod tests {
                 freeze_exec_handles: false,
                 frozen_handle_stats: std::collections::HashMap::new(),
                 frozen_handle_bytes: std::collections::HashMap::new(),
+                path_exec_bytes: std::collections::HashMap::new(),
                 path_inodes: std::collections::HashMap::new(),
                 next_inode: 1,
                 missing_paths: std::collections::HashSet::new(),
@@ -24288,7 +24658,12 @@ mod tests {
             if self.freeze_exec_handles {
                 let snapshot = self.host_fstat(handle)?;
                 self.frozen_handle_stats.insert(handle, snapshot);
-                if let Some(bytes) = self.prepared_exec_bytes.clone() {
+                if let Some(bytes) = self
+                    .path_exec_bytes
+                    .get(path)
+                    .cloned()
+                    .or_else(|| self.prepared_exec_bytes.clone())
+                {
                     self.frozen_handle_bytes.insert(handle, bytes);
                 }
             }
@@ -24910,9 +25285,6 @@ mod tests {
             }
             Ok(buf.len())
         }
-        fn host_waitpid(&mut self, _pid: i32, _options: u32) -> Result<(i32, i32), Errno> {
-            Err(Errno::ECHILD)
-        }
         fn host_net_connect(&mut self, handle: i32, addr: &[u8], port: u16) -> Result<(), Errno> {
             self.net_connect_calls.push((handle, addr.to_vec(), port));
             self.net_connect_result
@@ -24955,9 +25327,6 @@ mod tests {
             let copied = bytes.len().min(result.len());
             result[..copied].copy_from_slice(&bytes[..copied]);
             Ok(self.getaddrinfo_reported)
-        }
-        fn host_futex_wake(&mut self, _addr: usize, _count: u32) -> Result<i32, Errno> {
-            Ok(0)
         }
         fn bind_framebuffer(
             &mut self,
@@ -25130,6 +25499,147 @@ mod tests {
             }
         }
         table_addr
+    }
+
+    // --- futex: the kernel owns the wait (crate::wait_park) ----------------
+    //
+    // These replace host-side checks that lived in kernel-worker.ts's
+    // handleFutex before the wait moved into the kernel: every one of them is
+    // now a kernel decision, made once for every host.
+
+    const FUTEX_WAIT_OP: u32 = 0;
+    const FUTEX_WAKE_OP_WAKE: u32 = 1;
+    const FUTEX_WAKE_OP_CODE: u32 = 5;
+
+    #[test]
+    fn futex_wait_answers_eagain_when_the_word_already_changed() {
+        let mut host = MockHostIO::new();
+        host.proc_memory[0x100..0x104].copy_from_slice(&7u32.to_le_bytes());
+        assert_eq!(
+            sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x100, FUTEX_WAIT_OP, 6, 0, 0, 0),
+            Err(Errno::EAGAIN)
+        );
+        assert_eq!(crate::wait_park::with(|p| p.len()), 0, "a mismatch must not park");
+    }
+
+    #[test]
+    fn futex_wait_parks_in_the_kernel_and_a_wake_decides_zero() {
+        let mut host = MockHostIO::new();
+        let outcome = sys_futex(&mut host, GuestTask::wasm32(5, 6), 0x100, FUTEX_WAIT_OP, 0, 0, 0, 0).unwrap();
+        let ParkOutcome::Parked(generation) = outcome else {
+            panic!("a matching word must park, got {outcome:?}");
+        };
+        assert_eq!(
+            sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x100, FUTEX_WAKE_OP_WAKE, 1, 0, 0, 0),
+            Ok(ParkOutcome::Done(1))
+        );
+        let done = crate::wait_park::with(|p| p.take_completions());
+        assert_eq!(done.len(), 1);
+        assert_eq!((done[0].generation, done[0].tid, done[0].value), (generation, 6, 0));
+    }
+
+    #[test]
+    fn futex_rejects_a_misaligned_or_unreadable_word() {
+        let mut host = MockHostIO::new();
+        assert_eq!(
+            sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x102, FUTEX_WAIT_OP, 0, 0, 0, 0),
+            Err(Errno::EINVAL)
+        );
+        // The last aligned word of guest memory is readable; one past it is not.
+        let last = host.proc_memory.len() as u64 - 4;
+        assert_eq!(
+            sys_futex(&mut host, GuestTask::wasm32(5, 5), last, FUTEX_WAIT_OP, 0, 0, 0, 0).map(|_| ()),
+            Ok(()),
+            "an aligned word inside memory is readable"
+        );
+        crate::wait_park::retire_process(5);
+        let end = host.proc_memory.len() as u64;
+        assert_eq!(
+            sys_futex(&mut host, GuestTask::wasm32(5, 5), end, FUTEX_WAIT_OP, 0, 0, 0, 0),
+            Err(Errno::EFAULT)
+        );
+    }
+
+    #[test]
+    fn futex_rejects_a_non_normalized_timeout_before_parking() {
+        for (sec, nsec) in [(-1i64, 0i64), (0, -1), (0, 1_000_000_000)] {
+            let mut host = MockHostIO::new();
+            host.proc_memory[0x200..0x208].copy_from_slice(&sec.to_le_bytes());
+            host.proc_memory[0x208..0x210].copy_from_slice(&nsec.to_le_bytes());
+            assert_eq!(
+                sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x100, FUTEX_WAIT_OP, 0, 0x200, 0, 0),
+                Err(Errno::EINVAL),
+                "({sec}, {nsec})"
+            );
+            assert_eq!(crate::wait_park::with(|p| p.len()), 0);
+        }
+    }
+
+    #[test]
+    fn futex_wait_bitset_measures_its_absolute_deadline_on_the_selected_clock() {
+        // FUTEX_WAIT_BITSET's timeout is an absolute deadline on
+        // CLOCK_MONOTONIC, or CLOCK_REALTIME with FUTEX_CLOCK_REALTIME (ABI
+        // 52). Give the two clocks very different readings so measuring the
+        // deadline against the wrong one cannot pass by accident.
+        const FUTEX_WAIT_BITSET: u32 = 9;
+        const FUTEX_PRIVATE_FLAG: u32 = 128;
+        const FUTEX_CLOCK_REALTIME: u32 = 256;
+        for realtime in [false, true] {
+            let mut host = MockHostIO::new();
+            host.monotonic_time = Some((123_456, 500_000_000));
+            host.clock_time = (1_800_000_000, 500_000_000);
+            let (now_sec, now_nsec) = if realtime {
+                host.clock_time
+            } else {
+                host.monotonic_time.unwrap()
+            };
+            let op = FUTEX_WAIT_BITSET
+                | FUTEX_PRIVATE_FLAG
+                | if realtime { FUTEX_CLOCK_REALTIME } else { 0 };
+            host.proc_memory[0x200..0x208].copy_from_slice(&now_sec.to_le_bytes());
+            host.proc_memory[0x208..0x210]
+                .copy_from_slice(&(now_nsec + 100_000).to_le_bytes());
+            let outcome =
+                sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x100, op, 0, 0x200, 0, u32::MAX).unwrap();
+            assert!(matches!(outcome, ParkOutcome::Parked(_)), "realtime={realtime}");
+            let monotonic_now = 123_456i64 * 1_000_000_000 + 500_000_000;
+            assert_eq!(
+                crate::wait_park::with(|p| p.next_timeout_ns(monotonic_now)),
+                Some(100_000),
+                "a deadline 100 us ahead on the selected clock (realtime={realtime})"
+            );
+            crate::wait_park::retire_process(5);
+
+            // An absolute deadline already passed times out without parking.
+            host.proc_memory[0x200..0x208].copy_from_slice(&(now_sec - 1).to_le_bytes());
+            assert_eq!(
+                sys_futex(&mut host, GuestTask::wasm32(5, 5), 0x100, op, 0, 0x200, 0, u32::MAX),
+                Err(Errno::ETIMEDOUT),
+                "realtime={realtime}"
+            );
+            assert_eq!(crate::wait_park::with(|p| p.len()), 0);
+        }
+    }
+
+    #[test]
+    fn a_high_wasm64_futex_address_never_aliases_a_low_one() {
+        // Waits are keyed on the full 64-bit guest address. A wasm64 wake at
+        // 4 GiB + 0x100 must not reach a waiter at 0x100 -- the aliasing the
+        // host's width checks used to guard against, now impossible by type.
+        let mut host = MockHostIO::new();
+        let waiter = GuestTask { pid: 5, tid: 6, pointer_width: 8 };
+        let waker = GuestTask { pid: 5, tid: 5, pointer_width: 8 };
+        let outcome = sys_futex(&mut host, waiter, 0x100, FUTEX_WAIT_OP, 0, 0, 0, 0).unwrap();
+        assert!(matches!(outcome, ParkOutcome::Parked(_)));
+        assert_eq!(
+            sys_futex(&mut host, waker, 0x1_0000_0100, FUTEX_WAKE_OP_WAKE, 1, 0, 0, 0),
+            Ok(ParkOutcome::Done(0))
+        );
+        assert_eq!(
+            sys_futex(&mut host, waker, 0x200, FUTEX_WAKE_OP_CODE, 0, 1, 0x1_0000_0100, 0),
+            Ok(ParkOutcome::Done(0))
+        );
+        crate::wait_park::retire_process(5);
     }
 
     /// Read back the bytes one staged iovec entry names.
@@ -29919,6 +30429,117 @@ mod tests {
         sys_close_with_locks(&mut proc, &mut locks, &mut host, second).unwrap();
     }
 
+    // PR #1538's cases (mho22): an OFD or flock lock belongs to the open
+    // file description, so the holder's close must release it and wake the
+    // waiters even while an independent open keeps the same tmpfs or rootfs
+    // file (the same inode) open. The kernel runs
+    // `ProcessTable::release_orphaned_ofd_locks` after every channel syscall;
+    // these tests run it where the kernel would.
+    fn table_open(
+        table: &mut crate::process_table::ProcessTable,
+        host: &mut MockHostIO,
+        pid: u32,
+        path: &[u8],
+        flags: u32,
+    ) -> i32 {
+        let (proc, _) = table.process_and_advisory_locks(pid).unwrap();
+        sys_open(proc, host, path, flags, 0o644).unwrap()
+    }
+
+    fn table_flock(
+        table: &mut crate::process_table::ProcessTable,
+        host: &mut MockHostIO,
+        pid: u32,
+        fd: i32,
+        operation: u32,
+    ) -> Result<(), Errno> {
+        let (proc, locks) = table.process_and_advisory_locks(pid).unwrap();
+        sys_flock(proc, locks, fd, operation, host)
+    }
+
+    fn table_close(
+        table: &mut crate::process_table::ProcessTable,
+        host: &mut MockHostIO,
+        pid: u32,
+        fd: i32,
+    ) {
+        let (proc, locks) = table.process_and_advisory_locks(pid).unwrap();
+        sys_close_with_locks(proc, locks, host, fd).unwrap();
+        table.release_orphaned_ofd_locks();
+    }
+
+    fn assert_flock_released_and_waiters_woken_when_holder_closes(path: &[u8]) {
+        let mut table = crate::process_table::ProcessTable::new();
+        let holder = table.create_process().unwrap();
+        let waiter = table.create_process().unwrap();
+        let mut host = MockHostIO::new();
+        let holder_fd = table_open(&mut table, &mut host, holder, path, O_RDWR | O_CREAT);
+        let waiter_fd = table_open(&mut table, &mut host, waiter, path, O_RDWR);
+
+        table_flock(&mut table, &mut host, holder, holder_fd, LOCK_EX).unwrap();
+        assert_eq!(
+            table_flock(&mut table, &mut host, waiter, waiter_fd, LOCK_EX),
+            Err(Errno::EAGAIN)
+        );
+        let mut wake_buf = [0u8; 40];
+        crate::wakeup::drain(&mut wake_buf, 8);
+
+        // The waiter's open keeps the inode open; the holder's description
+        // still dies with its last descriptor.
+        table_close(&mut table, &mut host, holder, holder_fd);
+
+        assert!(table.advisory_locks().is_empty());
+        assert_eq!(crate::wakeup::drain(&mut wake_buf, 8), 1);
+        assert_eq!(wake_buf[4], crate::wakeup::WAKE_ADVISORY_LOCK);
+        table_flock(&mut table, &mut host, waiter, waiter_fd, LOCK_EX).unwrap();
+        table_close(&mut table, &mut host, waiter, waiter_fd);
+        let (proc, _) = table.process_and_advisory_locks(waiter).unwrap();
+        sys_unlink(proc, &mut host, path).unwrap();
+    }
+
+    #[test]
+    fn tmpfs_flock_is_released_and_wakes_waiters_when_holder_closes() {
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        assert_flock_released_and_waiters_woken_when_holder_closes(b"/tmp/flock-close-wake");
+    }
+
+    #[test]
+    fn rootfs_flock_is_released_and_wakes_waiters_when_holder_closes() {
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        assert_flock_released_and_waiters_woken_when_holder_closes(b"/flock-close-wake");
+    }
+
+    #[test]
+    fn tmpfs_flock_survives_fork_until_final_close() {
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        let path = b"/tmp/flock-fork-close";
+        let mut table = crate::process_table::ProcessTable::new();
+        let parent = table.create_process().unwrap();
+        let peer = table.create_process().unwrap();
+        let mut host = MockHostIO::new();
+        let fd = table_open(&mut table, &mut host, parent, path, O_RDWR | O_CREAT);
+        let peer_fd = table_open(&mut table, &mut host, peer, path, O_RDWR);
+        table_flock(&mut table, &mut host, parent, fd, LOCK_EX).unwrap();
+
+        let child = table.fork_process_for_caller(parent, parent).unwrap();
+
+        // The child's copy of the descriptor shares the description, so the
+        // parent's close leaves the lock in place.
+        table_close(&mut table, &mut host, parent, fd);
+        assert_eq!(
+            table_flock(&mut table, &mut host, peer, peer_fd, LOCK_EX | LOCK_NB),
+            Err(Errno::EAGAIN)
+        );
+        table_close(&mut table, &mut host, child, fd);
+        table_flock(&mut table, &mut host, peer, peer_fd, LOCK_EX | LOCK_NB).unwrap();
+
+        table_close(&mut table, &mut host, peer, peer_fd);
+        let (proc, _) = table.process_and_advisory_locks(peer).unwrap();
+        sys_unlink(proc, &mut host, path).unwrap();
+    }
+
     #[test]
     fn seek_end_negative_locks_work_on_synthetic_and_procfs_regular_files() {
         let mut proc = Process::new(1);
@@ -33068,62 +33689,145 @@ mod tests {
         assert!(matches!(sys_clock_getres(&proc, 10), Err(Errno::EINVAL),));
     }
 
+    /// Write a guest timespec at `addr` in the mock's process memory.
+    fn put_timespec(host: &mut MockHostIO, addr: usize, sec: i64, nsec_bytes: [u8; 8]) {
+        host.proc_memory[addr..addr + 8].copy_from_slice(&sec.to_le_bytes());
+        host.proc_memory[addr + 8..addr + 16].copy_from_slice(&nsec_bytes);
+    }
+
+    const MOCK_NOW_NS: i64 = 1_234_567_890 * 1_000_000_000 + 123_456_789;
+
     #[test]
-    fn test_nanosleep_rejects_negative() {
-        let proc = Process::new(1);
+    fn nanosleep_rejects_an_invalid_or_unreadable_request_without_parking() {
+        for (sec, nsec) in [(-1i64, 0i64), (0, -1), (0, 1_000_000_000)] {
+            let mut host = MockHostIO::new();
+            put_timespec(&mut host, 0x200, sec, nsec.to_le_bytes());
+            assert_eq!(
+                sys_nanosleep(&mut host, GuestTask::wasm32(1, 1), 0x200, 0),
+                Err(Errno::EINVAL),
+                "({sec}, {nsec})"
+            );
+        }
         let mut host = MockHostIO::new();
-        let req = WasmTimespec {
-            tv_sec: -1,
-            tv_nsec: 0,
-        };
-        assert_eq!(sys_nanosleep(&proc, &mut host, &req), Err(Errno::EINVAL));
+        assert_eq!(sys_nanosleep(&mut host, GuestTask::wasm32(1, 1), 0, 0), Err(Errno::EFAULT));
+        let end = host.proc_memory.len() as u64;
+        assert_eq!(
+            sys_nanosleep(&mut host, GuestTask::wasm32(1, 1), end, 0),
+            Err(Errno::EFAULT)
+        );
+        assert_eq!(crate::wait_park::with(|p| p.len()), 0);
     }
 
     #[test]
-    fn test_nanosleep_rejects_invalid_nsec() {
-        let proc = Process::new(1);
+    fn nanosleep_parks_until_its_monotonic_deadline() {
         let mut host = MockHostIO::new();
-        let req = WasmTimespec {
-            tv_sec: 0,
-            tv_nsec: 1_000_000_000,
+        put_timespec(&mut host, 0x200, 1, 500_000_000i64.to_le_bytes());
+        let ParkOutcome::Parked(generation) =
+            sys_nanosleep(&mut host, GuestTask::wasm32(1, 2), 0x200, 0x300).unwrap()
+        else {
+            panic!("a positive sleep must park");
         };
-        assert_eq!(sys_nanosleep(&proc, &mut host, &req), Err(Errno::EINVAL));
+        crate::wait_park::with(|p| {
+            assert_eq!(p.next_timeout_ns(MOCK_NOW_NS), Some(1_500_000_000));
+            p.expire(MOCK_NOW_NS + 1_499_999_999);
+            assert!(p.take_completions().is_empty(), "not due yet");
+            p.expire(MOCK_NOW_NS + 1_500_000_000);
+            let done = p.take_completions();
+            assert_eq!((done[0].generation, done[0].tid, done[0].value), (generation, 2, 0));
+            assert_eq!(done[0].remainder, None, "a sleep that ran out leaves rem alone");
+        });
     }
 
     #[test]
-    fn test_nanosleep_valid() {
-        let proc = Process::new(1);
+    fn a_zero_sleep_answers_at_once() {
         let mut host = MockHostIO::new();
-        let req = WasmTimespec {
-            tv_sec: 1,
-            tv_nsec: 500_000_000,
-        };
-        assert_eq!(sys_nanosleep(&proc, &mut host, &req), Ok(()));
+        assert_eq!(
+            sys_nanosleep(&mut host, GuestTask::wasm32(1, 1), 0x200, 0),
+            Ok(ParkOutcome::Done(0))
+        );
+        assert_eq!(
+            sys_usleep(&mut host, GuestTask::wasm32(1, 1), 0),
+            Ok(ParkOutcome::Done(0))
+        );
+        assert_eq!(crate::wait_park::with(|p| p.len()), 0);
     }
 
     #[test]
-    fn test_clock_nanosleep_boottime_absolute_uses_monotonic_equivalent() {
-        let proc = Process::new(1);
+    fn a_wasm32_timespec_ignores_the_padding_after_tv_nsec() {
+        // musl's wasm32 `struct timespec` is `{ i64 tv_sec; long tv_nsec;
+        // int :32; }`; the padding is not initialised by designated
+        // initialisers, so it must not reach validation.
+        let mut garbage_high = [0u8; 8];
+        garbage_high[0..4].copy_from_slice(&5i32.to_le_bytes());
+        garbage_high[4..8].copy_from_slice(&0x7eadbeefu32.to_le_bytes());
         let mut host = MockHostIO::new();
-        let req = WasmTimespec {
-            tv_sec: 1_234_567_891,
-            tv_nsec: 123_456_789,
-        };
-        let mut relative = [0_u8; 16];
+        put_timespec(&mut host, 0x200, 0, garbage_high);
+        assert!(matches!(
+            sys_nanosleep(&mut host, GuestTask::wasm32(1, 1), 0x200, 0),
+            Ok(ParkOutcome::Parked(_))
+        ));
+        crate::wait_park::retire_process(1);
+        let wasm64 = GuestTask { pid: 1, tid: 1, pointer_width: 8 };
+        assert_eq!(
+            sys_nanosleep(&mut host, wasm64, 0x200, 0),
+            Err(Errno::EINVAL),
+            "a wasm64 long is all eight bytes"
+        );
+    }
 
+    #[test]
+    fn clock_nanosleep_converts_an_absolute_deadline_once() {
+        use wasm_posix_shared::clock::{CLOCK_BOOTTIME, CLOCK_MONOTONIC, CLOCK_REALTIME};
+        const TIMER_ABSTIME: u32 = 1;
+        for clock in [CLOCK_REALTIME, CLOCK_BOOTTIME, CLOCK_MONOTONIC] {
+            let mut host = MockHostIO::new();
+            // One second after the mock's "now" on every clock.
+            put_timespec(&mut host, 0x200, 1_234_567_891, 123_456_789i64.to_le_bytes());
+            assert!(matches!(
+                sys_clock_nanosleep(&mut host, GuestTask::wasm32(1, 1), clock, TIMER_ABSTIME, 0x200, 0),
+                Ok(ParkOutcome::Parked(_))
+            ));
+            assert_eq!(
+                crate::wait_park::with(|p| p.next_timeout_ns(MOCK_NOW_NS)),
+                Some(1_000_000_000),
+                "clock {clock}"
+            );
+            crate::wait_park::retire_process(1);
+            // A deadline already behind the clock answers at once.
+            put_timespec(&mut host, 0x200, 1_000, 0i64.to_le_bytes());
+            assert_eq!(
+                sys_clock_nanosleep(&mut host, GuestTask::wasm32(1, 1), clock, TIMER_ABSTIME, 0x200, 0),
+                Ok(ParkOutcome::Done(0)),
+                "clock {clock}"
+            );
+        }
+        let mut host = MockHostIO::new();
+        put_timespec(&mut host, 0x200, 1, 0i64.to_le_bytes());
         assert_eq!(
             sys_clock_nanosleep(
-                &proc,
                 &mut host,
-                wasm_posix_shared::clock::CLOCK_BOOTTIME,
-                1,
-                &req,
-                relative.as_mut_ptr(),
+                GuestTask::wasm32(1, 1),
+                wasm_posix_shared::clock::CLOCK_PROCESS_CPUTIME_ID,
+                0,
+                0x200,
+                0
             ),
-            Ok(()),
+            Err(Errno::EINVAL)
         );
-        assert_eq!(i64::from_le_bytes(relative[0..8].try_into().unwrap()), 1);
-        assert_eq!(i64::from_le_bytes(relative[8..16].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn usleep_parks_for_its_microseconds() {
+        let mut host = MockHostIO::new();
+        assert!(matches!(
+            sys_usleep(&mut host, GuestTask::wasm32(1, 1), 2_500),
+            Ok(ParkOutcome::Parked(_))
+        ));
+        assert_eq!(
+            crate::wait_park::with(|p| p.next_timeout_ns(MOCK_NOW_NS)),
+            Some(2_500_000)
+        );
+        crate::wait_park::retire_process(1);
     }
 
     #[test]
@@ -35839,14 +36543,6 @@ mod tests {
         let (sec, usec) = sys_gettimeofday(&mut proc, &mut host).unwrap();
         assert_eq!(sec, 1234567890);
         assert_eq!(usec, 123456); // 123456789 nsec / 1000 = 123456 usec
-    }
-
-    #[test]
-    fn test_usleep() {
-        let mut proc = Process::new(1);
-        let mut host = MockHostIO::new();
-        // MockHostIO nanosleep is a no-op, so this should succeed
-        sys_usleep(&mut proc, &mut host, 1000).unwrap();
     }
 
     #[test]
@@ -40583,9 +41279,6 @@ impl HostIO for TrackingHostIO {
             }
             Ok(buf.len())
         }
-        fn host_waitpid(&mut self, _pid: i32, _options: u32) -> Result<(i32, i32), Errno> {
-            Err(Errno::ECHILD)
-        }
         fn host_net_connect(
             &mut self,
             _handle: i32,
@@ -40622,9 +41315,6 @@ impl HostIO for TrackingHostIO {
         }
         fn host_getaddrinfo(&mut self, _name: &[u8], _result: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::ENOENT)
-        }
-        fn host_futex_wake(&mut self, _addr: usize, _count: u32) -> Result<i32, Errno> {
-            Ok(0)
         }
         fn bind_framebuffer(
             &mut self,
@@ -41751,9 +42441,6 @@ impl HostIO for NetMock {
                 }
                 Ok(b.len())
             }
-            fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
-                Err(Errno::ECHILD)
-            }
             fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> {
                 Ok(())
             }
@@ -41780,9 +42467,6 @@ impl HostIO for NetMock {
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
                 Err(Errno::ENOENT)
-            }
-            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
-                Ok(0)
             }
             fn bind_framebuffer(
                 &mut self,
@@ -46734,9 +47418,6 @@ impl HostIO for SymlinkMock {
                 }
                 Ok(b.len())
             }
-            fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
-                Err(Errno::ECHILD)
-            }
             fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> {
                 Ok(())
             }
@@ -46762,9 +47443,6 @@ impl HostIO for SymlinkMock {
                 Ok(())
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
                 Ok(0)
             }
             fn bind_framebuffer(
@@ -46946,9 +47624,6 @@ impl HostIO for LoopMock {
                 }
                 Ok(b.len())
             }
-            fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
-                Err(Errno::ECHILD)
-            }
             fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> {
                 Ok(())
             }
@@ -46974,9 +47649,6 @@ impl HostIO for LoopMock {
                 Ok(())
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
                 Ok(0)
             }
             fn bind_framebuffer(
@@ -47155,9 +47827,6 @@ impl HostIO for RelSymlinkMock {
                 }
                 Ok(b.len())
             }
-            fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
-                Err(Errno::ECHILD)
-            }
             fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> {
                 Ok(())
             }
@@ -47183,9 +47852,6 @@ impl HostIO for RelSymlinkMock {
                 Ok(())
             }
             fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
-                Ok(0)
-            }
-            fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
                 Ok(0)
             }
             fn bind_framebuffer(
@@ -56280,6 +56946,51 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
+    fn a_parked_lock_re_execution_acts_on_the_pinned_file_not_a_reused_number() {
+        use crate::wait_retry::RetryOp;
+        use wasm_posix_shared::flock_op::{LOCK_EX, LOCK_NB};
+
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let mut holder = Process::new(30);
+        let held = sys_open(&mut holder, &mut host, b"/pinned", O_RDWR, 0).unwrap();
+        sys_flock(&mut holder, &mut locks, held, LOCK_EX, &mut host).unwrap();
+
+        let mut proc = Process::new(31);
+        let tid = proc.pid;
+        let fd = sys_open(&mut proc, &mut host, b"/pinned", O_RDWR, 0).unwrap();
+        let token = ensure_blocking_retry_ofd_binding(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            tid,
+            wasm_posix_shared::abi::extended_syscalls::SYS_FLOCK,
+            fd,
+            None,
+        )
+        .unwrap();
+        let op = RetryOp::Flock { fd, operation: LOCK_EX, token };
+        sys_close_with_locks(&mut proc, &mut locks, &mut host, fd).unwrap();
+        let reused = sys_open(&mut proc, &mut host, b"/elsewhere", O_RDONLY, 0).unwrap();
+        assert_eq!(reused, fd);
+
+        // Still conflicts on the pinned file, although the number now names
+        // an unlocked one.
+        assert_eq!(op.attempt(&mut proc, &mut locks, &mut host, tid), Err(Errno::EAGAIN));
+        assert_eq!(
+            sys_flock(&mut proc, &mut locks, reused, LOCK_EX | LOCK_NB, &mut host),
+            Ok(()),
+            "the reused number names a different, unlocked file",
+        );
+
+        // Once the holder lets go, the same re-execution takes the lock on
+        // the pinned file.
+        let _ = held;
+        sys_exit_with_locks(&mut holder, &mut locks, &mut host, 0);
+        assert_eq!(op.attempt(&mut proc, &mut locks, &mut host, tid), Ok(0));
+    }
+
+    #[test]
     fn blocked_advisory_lock_seek_end_does_not_follow_reused_descriptor_numbers() {
         use wasm_posix_shared::fcntl_cmd::F_OFD_SETLKW;
 
@@ -56845,6 +57556,328 @@ impl HostIO for RelSymlinkMock {
         0x05, 0x03, 0x01, 0x00, 0x00, //
     ];
 
+    fn prepare_test_exec_with_bytes(
+        proc: &mut Process,
+        locks: &mut AdvisoryLockManager,
+        host: &mut MockHostIO,
+        path: &[u8],
+        bytes: &[u8],
+    ) -> u32 {
+        host.stat_size = bytes.len() as u64;
+        host.prepared_exec_bytes = Some(bytes.to_vec());
+        host.set_file_with_owner(path, 0, 0, S_IFREG | 0o755, bytes);
+        crate::exec_target::prepare(
+            proc,
+            locks,
+            host,
+            crate::exec_target::PreparedExecOwner::Process {
+                pid: proc.pid,
+                caller_tid: proc.pid,
+                generation: proc.exec_generation,
+            },
+            AT_FDCWD,
+            path,
+            0,
+        )
+        .unwrap()
+    }
+
+    /// Prepare `bytes` as an exec target and observe all of them, which is
+    /// what the host does before it may commit: the artifact-policy gate
+    /// already refuses to judge a target that is not fully read.
+    fn prepare_and_observe(
+        proc: &mut Process,
+        locks: &mut AdvisoryLockManager,
+        host: &mut MockHostIO,
+        path: &[u8],
+        bytes: &[u8],
+    ) -> u32 {
+        let pid = proc.pid;
+        let token = prepare_test_exec_with_bytes(proc, locks, host, path, bytes);
+        let mut image = alloc::vec![0u8; bytes.len()];
+        crate::exec_target::read(proc, host, pid, token, 0, &mut image).unwrap();
+        assert_eq!(image.as_slice(), bytes);
+        token
+    }
+
+    #[test]
+    fn exec_replaces_the_registered_pointer_width_when_the_image_changes_it() {
+        // An exec replaces the address space, and the replacement may have a
+        // different data model than the image that called it. The width must
+        // be replaced at the commit and nowhere else: before it, the outgoing
+        // image is still the one running; after it, the guest may already be
+        // executing under the new one.
+        let mut proc = Process::new(77);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        assert_eq!(proc.pointer_width, 4);
+
+        let token = prepare_and_observe(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/bin/wide",
+            WASM64_IMAGE,
+        );
+        // Preparing and reading the target does not touch the running image's
+        // width. Only the commit does.
+        assert_eq!(proc.pointer_width, 4);
+
+        crate::exec_target::commit_process(
+            &mut proc, &mut locks, &mut host, pid, pid, token,
+        )
+        .unwrap();
+
+        assert_eq!(proc.exec_generation, 1);
+        assert_eq!(proc.pointer_width, 8);
+
+        // And back again: a wasm64 image exec'ing a wasm32 one is the same
+        // transition in the other direction, not a one-way widening.
+        let narrow = prepare_and_observe(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/bin/narrow",
+            WASM32_IMAGE,
+        );
+        assert_eq!(proc.pointer_width, 8);
+        crate::exec_target::commit_process(
+            &mut proc, &mut locks, &mut host, pid, pid, narrow,
+        )
+        .unwrap();
+        assert_eq!(proc.pointer_width, 4);
+    }
+
+    #[test]
+    fn a_failed_exec_leaves_the_running_image_pointer_width_alone() {
+        // A commit that is refused must not have moved the width: the image
+        // that is still running is the one whose data model applies.
+        let mut proc = Process::new(78);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        proc.pointer_width = 8;
+
+        let token = prepare_and_observe(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/bin/narrow",
+            WASM32_IMAGE,
+        );
+        // A stale generation is exactly the race the owner check exists for.
+        proc.exec_generation += 1;
+
+        assert!(
+            crate::exec_target::commit_process(
+                &mut proc, &mut locks, &mut host, pid, pid, token,
+            )
+            .is_err()
+        );
+        assert_eq!(proc.pointer_width, 8);
+    }
+
+    #[test]
+    fn exec_target_artifact_bytes_are_only_the_completely_observed_target() {
+        // The artifact policy is judged over the bytes the target committed
+        // to, so a target the host has not finished reading has none to judge.
+        let mut proc = Process::new(80);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        let token = prepare_test_exec_with_bytes(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            b"/bin/program",
+            WASM32_IMAGE,
+        );
+        assert_eq!(
+            crate::exec_target::artifact_bytes(&proc, pid, token),
+            Err(Errno::EINVAL),
+        );
+        let mut image = alloc::vec![0u8; WASM32_IMAGE.len()];
+        crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut image).unwrap();
+        assert_eq!(
+            crate::exec_target::artifact_bytes(&proc, pid, token),
+            Ok(WASM32_IMAGE),
+        );
+        assert!(crate::exec_target::artifact_bytes(&proc, pid + 1, token).is_err());
+    }
+
+    /// A host-mount file the spawn probe can open, executable unless `mode`
+    /// says otherwise, holding `bytes`.
+    fn probe_file(host: &mut MockHostIO, path: &[u8], mode: u32, bytes: &[u8]) {
+        host.set_file_with_owner(path, 0, 0, S_IFREG | mode, bytes);
+        host.path_exec_bytes.insert(path.to_vec(), bytes.to_vec());
+    }
+
+    fn probe_host() -> MockHostIO {
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        host.stat_size = 64;
+        host
+    }
+
+    #[test]
+    fn spawn_probe_admits_a_program_and_a_one_level_script_retaining_nothing() {
+        let mut proc = Process::new(161);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = probe_host();
+        probe_file(&mut host, b"/bin/prog", 0o755, WASM32_IMAGE);
+        probe_file(&mut host, b"/bin/script", 0o755, b"#!/bin/prog -x\n");
+        for path in [&b"/bin/prog"[..], b"/bin/script"] {
+            assert_eq!(
+                crate::exec_target::probe_spawn_target(&mut proc, &mut locks, &mut host, path),
+                Ok(())
+            );
+        }
+        // Every handle the probe opened was released again.
+        assert_eq!(host.closed_handles.len(), 3);
+        assert!(proc.prepared_exec_targets.is_empty());
+    }
+
+    #[test]
+    fn spawn_probe_refuses_what_a_launch_could_not_run() {
+        let mut proc = Process::new(162);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = probe_host();
+        host.missing_paths.insert(b"/bin/missing".to_vec());
+        probe_file(&mut host, b"/bin/text", 0o755, b"echo hi\n");
+        probe_file(&mut host, b"/bin/noexec", 0o644, WASM32_IMAGE);
+        probe_file(&mut host, b"/bin/orphan", 0o755, b"#!/bin/missing\n");
+        probe_file(&mut host, b"/bin/inner", 0o755, b"#!/bin/prog\n");
+        probe_file(&mut host, b"/bin/nested", 0o755, b"#!/bin/inner\n");
+        let mut probe = |path: &[u8]| {
+            crate::exec_target::probe_spawn_target(&mut proc, &mut locks, &mut host, path)
+        };
+        assert_eq!(probe(b"/bin/missing"), Err(Errno::ENOENT));
+        assert_eq!(probe(b"/bin/text"), Err(Errno::ENOEXEC));
+        assert_eq!(probe(b"/bin/noexec"), Err(Errno::EACCES));
+        assert_eq!(probe(b"/bin/orphan"), Err(Errno::ENOENT));
+        assert_eq!(probe(b"/bin/nested"), Err(Errno::ENOEXEC));
+    }
+
+    #[test]
+    fn spawn_request_is_read_from_the_caller_and_bounded_like_startup() {
+        fn blob(argv: &[&[u8]]) -> Vec<u8> {
+            let mut strings = Vec::new();
+            let mut offsets = Vec::new();
+            for arg in argv {
+                offsets.push(strings.len() as u32);
+                strings.extend_from_slice(arg);
+                strings.push(0);
+            }
+            let mut out = Vec::new();
+            out.extend_from_slice(&(argv.len() as u32).to_le_bytes());
+            out.extend_from_slice(&[0; 4]); // envc
+            out.extend_from_slice(&[0; 4]); // actions
+            out.extend_from_slice(&[0; 4]); // attr flags
+            out.extend_from_slice(&[0; 4]); // pgrp
+            out.extend_from_slice(&[0; 4]); // pad
+            out.extend_from_slice(&[0; 16]); // sigdef + sigmask
+            for offset in offsets {
+                out.extend_from_slice(&offset.to_le_bytes());
+            }
+            out.extend_from_slice(&strings);
+            out
+        }
+        let mut host = MockHostIO::new();
+        host.proc_memory = alloc::vec![0u8; 0x20000];
+        host.proc_memory[0x100..0x10a].copy_from_slice(b"/bin/prog\0");
+        let small = blob(&[b"prog", b"arg"]);
+        host.proc_memory[0x200..0x200 + small.len()].copy_from_slice(&small);
+        let (path, parsed) =
+            crate::spawn::read_request(&mut host, 7, 4, 0x100, 10, 0x200, small.len()).unwrap();
+        assert_eq!(path, b"/bin/prog");
+        assert_eq!(parsed.argv, alloc::vec![b"prog".to_vec(), b"arg".to_vec()]);
+
+        // Outside the caller's memory is EFAULT, not a kernel fault.
+        assert_eq!(
+            crate::spawn::read_request(&mut host, 7, 4, 0x100, 10, 0x1ffff, small.len()).err(),
+            Some(Errno::EFAULT)
+        );
+        // One entry above the per-entry transport limit is E2BIG.
+        let long = alloc::vec![b'a'; wasm_posix_shared::platform_limits::PROCESS_METADATA_ENTRY_MAX_BYTES + 1];
+        let big = blob(&[b"prog", &long]);
+        host.proc_memory.resize(0x200 + big.len(), 0);
+        host.proc_memory[0x200..0x200 + big.len()].copy_from_slice(&big);
+        assert_eq!(
+            crate::spawn::read_request(&mut host, 7, 4, 0x100, 10, 0x200, big.len()).err(),
+            Some(Errno::E2BIG)
+        );
+        assert_eq!(
+            crate::spawn::read_request(&mut host, 7, 4, 0x100, 4096, 0x200, small.len()).err(),
+            Some(Errno::ENAMETOOLONG)
+        );
+
+        // ARG_MAX counts one pointer per entry at the caller's width: 4,096
+        // entries of 1,016 bytes fit a wasm32 caller and not a wasm64 one.
+        let entry = alloc::vec![b'e'; 1016];
+        let many: Vec<&[u8]> = (0..4096).map(|_| entry.as_slice()).collect();
+        let wide = blob(&many);
+        host.proc_memory.resize(0x200 + wide.len(), 0);
+        host.proc_memory[0x200..0x200 + wide.len()].copy_from_slice(&wide);
+        assert!(crate::spawn::read_request(&mut host, 7, 4, 0x100, 10, 0x200, wide.len()).is_ok());
+        assert_eq!(
+            crate::spawn::read_request(&mut host, 7, 8, 0x100, 10, 0x200, wide.len()).err(),
+            Some(Errno::E2BIG)
+        );
+    }
+
+    #[test]
+    fn exec_admission_names_a_script_a_program_or_the_refusal() {
+        let mut proc = Process::new(163);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        let admit = |proc: &Process, token| {
+            crate::exec_target::admit(proc, pid, token, wasm_posix_shared::ABI_VERSION)
+        };
+        let observe = |proc: &mut Process, host: &mut MockHostIO, token, len| {
+            let mut bytes = alloc::vec![0u8; len];
+            crate::exec_target::read(proc, host, pid, token, 0, &mut bytes).unwrap();
+        };
+
+        let script = prepare_test_exec_with_bytes(
+            &mut proc, &mut locks, &mut host, b"/bin/s", b"#!/bin/sh -e\n",
+        );
+        // Decided only from the bytes the target committed to, so not before
+        // the host has read them.
+        assert!(admit(&proc, script).is_err());
+        observe(&mut proc, &mut host, script, 13);
+        match admit(&proc, script).unwrap() {
+            crate::exec_target::Admission::Script(s) => {
+                assert_eq!(s.interpreter, "/bin/sh");
+                assert_eq!(s.argument.as_deref(), Some("-e"));
+            }
+            _ => panic!("a #! target is a script"),
+        }
+
+        let program = prepare_test_exec_with_bytes(
+            &mut proc, &mut locks, &mut host, b"/bin/p", WASM32_IMAGE,
+        );
+        observe(&mut proc, &mut host, program, WASM32_IMAGE.len());
+        assert!(matches!(
+            admit(&proc, program).unwrap(),
+            crate::exec_target::Admission::Program
+        ));
+
+        let text = prepare_test_exec_with_bytes(
+            &mut proc, &mut locks, &mut host, b"/bin/t", b"plain text",
+        );
+        observe(&mut proc, &mut host, text, 10);
+        assert!(matches!(
+            admit(&proc, text).unwrap(),
+            crate::exec_target::Admission::Refused(reasons) if !reasons.is_empty()
+        ));
+    }
+
     #[test]
     fn exec_target_pathname_execveat_resolves_relative_to_live_dirfd() {
         let mut proc = Process::new(101);
@@ -56934,7 +57967,142 @@ impl HostIO for RelSymlinkMock {
         )
         .unwrap();
         assert_eq!(proc.exec_generation, 1);
-        assert_eq!(host.closed_handles, vec![100]);
+        // The image keeps the object it executed even though its path was
+        // renamed away, unlinked and replaced: `/proc/self/exe` names it by
+        // the path it was executed through, not by what that path names now.
+        assert!(host.closed_handles.is_empty());
+        let mut link = [0u8; 64];
+        let n = crate::procfs::procfs_readlink(
+            &proc,
+            &crate::procfs::ProcfsEntry::Exe(pid),
+            &mut link,
+        )
+        .unwrap();
+        assert_eq!(&link[..n], b"/bin/original");
+        // Exit releases it.
+        sys_exit_with_locks(&mut proc, &mut locks, &mut host, 0);
+        assert!(proc.exe.is_none());
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![100]);
+    }
+
+    /// `/proc/self/exe` names and opens the file the image was executed
+    /// through. It used to be `argv[0]` -- the caller's choice, here `sh` --
+    /// which named a different file or none.
+    #[test]
+    fn proc_self_exe_is_the_executed_file_not_argv0() {
+        let mut proc = Process::new(186);
+        let pid = proc.pid;
+        proc.argv = vec![b"sh".to_vec()];
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.freeze_exec_handles = true;
+        let mut link = [0u8; 64];
+
+        // No executable attached yet: the truthful answer is ENOENT, not argv.
+        assert_eq!(
+            sys_readlink(&mut proc, &mut host, b"/proc/self/exe", &mut link),
+            Err(Errno::ENOENT),
+        );
+
+        let token = prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/real-shell");
+        let mut image = [0u8; 5];
+        crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut image).unwrap();
+        crate::exec_target::commit_process(&mut proc, &mut locks, &mut host, pid, pid, token)
+            .unwrap();
+        let n = sys_readlink(&mut proc, &mut host, b"/proc/self/exe", &mut link).unwrap();
+        assert_eq!(&link[..n], b"/bin/real-shell");
+
+        // Replace the file the path names; the image still reads its own.
+        host.set_file_with_owner(b"/bin/real-shell", 0, 0, S_IFREG | 0o755, b"world");
+        host.prepared_exec_bytes = Some(b"world".to_vec());
+        let fd = sys_open(&mut proc, &mut host, b"/proc/self/exe", O_RDONLY, 0).unwrap();
+        let mut bytes = [0u8; 5];
+        assert_eq!(sys_pread(&mut proc, &mut host, fd, &mut bytes, 0), Ok(5));
+        assert_eq!(&bytes, b"hello");
+        assert_eq!(sys_fstat(&proc, &mut host, fd).unwrap().st_size, 5);
+        assert_eq!(sys_stat(&mut proc, &mut host, b"/proc/self/exe").unwrap().st_size, 5);
+        // Writing to a running executable is ETXTBSY, as on Linux.
+        assert_eq!(
+            sys_open(&mut proc, &mut host, b"/proc/self/exe", O_RDWR, 0),
+            Err(Errno::ETXTBSY),
+        );
+
+        // The opened description is its own owner of the backing: closing it
+        // leaves the image's, and exit releases the last.
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert!(host.closed_handles.is_empty());
+        sys_exit_with_locks(&mut proc, &mut locks, &mut host, 0);
+        // Exit also closes the process's stdio handles; the executable's
+        // backing (handle 100) is released exactly once.
+        assert_eq!(host.closed_handles.iter().filter(|&&h| h == 100).count(), 1);
+    }
+
+    /// A fork child runs its parent's image, so it inherits the executable:
+    /// one more owner of the same description, released by its own exit.
+    #[test]
+    fn fork_child_inherits_the_executable() {
+        let mut proc = Process::new(187);
+        let pid = proc.pid;
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        let token = prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/forker");
+        let mut image = [0u8; 5];
+        crate::exec_target::read(&mut proc, &mut host, pid, token, 0, &mut image).unwrap();
+        crate::exec_target::commit_process(&mut proc, &mut locks, &mut host, pid, pid, token)
+            .unwrap();
+        let exe = proc.exe.unwrap();
+
+        let mut buf = vec![0u8; 64 * 1024];
+        let written = crate::fork::serialize_fork_state(&proc, &mut buf).unwrap();
+        let child = crate::fork::deserialize_fork_state(&buf[..written], 188).unwrap();
+        assert_eq!(child.exe, Some(exe));
+        let inherited = child.ofd_table.get(exe.0).unwrap();
+        assert_eq!(inherited.ref_count, 1);
+        assert_eq!(inherited.path, b"/bin/forker");
+    }
+
+    /// A host-supplied program is a host handle onto the host's own bytes: it
+    /// has no name in the namespace, so its link carries ` (deleted)` from the
+    /// start, and the kernel owns the handle -- closing it when the image ends,
+    /// or at once when it refuses it.
+    #[test]
+    fn host_supplied_executable_is_a_handle_the_kernel_releases() {
+        let mut proc = Process::new(189);
+        let mut locks = AdvisoryLockManager::new();
+        let mut host = MockHostIO::new();
+        host.set_file_with_owner(b"/host/program", 0, 0, S_IFREG | 0o755, b"hello");
+        let handle = crate::hostdir::open(&mut host, b"/host/program", O_RDONLY, 0).unwrap();
+
+        crate::exec_target::attach_exe_host_handle(
+            &mut proc,
+            &mut locks,
+            &mut host,
+            handle,
+            b"hello.wasm",
+        )
+        .unwrap();
+        let mut link = [0u8; 64];
+        let n = sys_readlink(&mut proc, &mut host, b"/proc/self/exe", &mut link).unwrap();
+        assert_eq!(&link[..n], b"hello.wasm (deleted)");
+        assert!(host.closed_handles.is_empty());
+        sys_exit_with_locks(&mut proc, &mut locks, &mut host, 0);
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![handle]);
+
+        // A refused handle is closed by the refusal.
+        let mut other = Process::new(190);
+        let refused = crate::hostdir::open(&mut host, b"/host/program", O_RDONLY, 0).unwrap();
+        assert_eq!(
+            crate::exec_target::attach_exe_host_handle(
+                &mut other,
+                &mut locks,
+                &mut host,
+                refused,
+                b"",
+            ),
+            Err(Errno::EINVAL),
+        );
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![handle, refused]);
+        assert!(other.exe.is_none());
     }
 
     #[test]
@@ -56966,7 +58134,7 @@ impl HostIO for RelSymlinkMock {
             ),
             Err(Errno::EINVAL),
         );
-        assert_eq!(host.closed_handles, vec![100]);
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![100]);
 
         let stale_generation =
             prepare_test_exec(&mut proc, &mut locks, &mut host, b"/bin/generation");
@@ -56991,7 +58159,7 @@ impl HostIO for RelSymlinkMock {
             ),
             Err(Errno::EINVAL),
         );
-        assert_eq!(host.closed_handles, vec![100, 101]);
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![100, 101]);
 
         proc.exec_generation = 0;
         let wrong_process =
@@ -57007,7 +58175,7 @@ impl HostIO for RelSymlinkMock {
             ),
             Err(Errno::ESRCH),
         );
-        assert_eq!(host.closed_handles, vec![100, 101, 102]);
+        assert_eq!(host.closed_handles.iter().copied().filter(|&h| h > 2).collect::<Vec<_>>(), vec![100, 101, 102]);
         assert_eq!(proc.exec_generation, 0);
     }
 
@@ -57086,7 +58254,18 @@ impl HostIO for RelSymlinkMock {
                 assert!(proc.fd_table.get(cloexec_fd).is_err());
                 assert_eq!(proc.exec_generation, 1);
             }
-            assert_eq!(host.closed_handles, vec![100]);
+            // A refused commit gives its lease up; a committed image keeps
+            // the one it was executed through (`Process::exe`).
+            if make_stale {
+                assert_eq!(host.closed_handles, vec![100]);
+                assert!(proc.exe.is_none());
+            } else {
+                assert!(host.closed_handles.is_empty());
+                assert_eq!(
+                    proc.ofd_table.get(proc.exe.unwrap().0).unwrap().host_handle,
+                    100,
+                );
+            }
             assert_eq!(
                 crate::exec_target::commit_spawn(
                     &mut proc,
@@ -57098,7 +58277,9 @@ impl HostIO for RelSymlinkMock {
                 ),
                 Err(Errno::EINVAL),
             );
-            assert_eq!(host.closed_handles, vec![100]);
+            // A repeated commit releases nothing more.
+            let expected: &[i64] = if make_stale { &[100] } else { &[] };
+            assert_eq!(host.closed_handles, expected);
         }
     }
 
@@ -57556,7 +58737,10 @@ impl HostIO for RelSymlinkMock {
             assert!(proc.has_exec);
             assert!(proc.threads.is_empty());
             assert!(proc.prepared_exec_targets.is_empty());
-            assert_eq!(host.closed_handles.len(), 2);
+            // The loser's lease is released; the winner's is the image's
+            // executable now (`Process::exe`).
+            assert_eq!(host.closed_handles.len(), 1);
+            assert!(proc.exe.is_some());
 
             assert_eq!(
                 crate::exec_target::commit_process(
@@ -57570,7 +58754,7 @@ impl HostIO for RelSymlinkMock {
                 Err(Errno::EINVAL),
             );
             assert_eq!(proc.exec_generation, 1);
-            assert_eq!(host.closed_handles.len(), 2);
+            assert_eq!(host.closed_handles.len(), 1);
         }
     }
 
@@ -57824,7 +59008,10 @@ impl HostIO for RelSymlinkMock {
             crate::exec_target::cancel(&mut proc, &mut locks, &mut host, pid, second),
             Err(Errno::EINVAL),
         );
-        assert_eq!(host.closed_handles, vec![101, 100]);
+        // The competitor is released at the commit; the winner stays held as
+        // the image's executable (`Process::exe`).
+        assert_eq!(host.closed_handles, vec![101]);
+        assert!(proc.exe.is_some());
     }
 
     #[test]

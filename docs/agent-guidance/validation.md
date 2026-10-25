@@ -48,6 +48,13 @@ run. For a lazy artifact size mismatch, check the selected image and
 executable identities and repair stale inputs. Do not relax size checks
 or substitute unrelated executable bytes.
 
+A spec must not skip because a binary or image the supported build produces
+is missing. Missing supported output is a build defect: fail with the reason,
+as `gotoMachineOrSkip` and `gotoApp` in
+`apps/browser-demos/test/support/kandelo-machine.ts` do. Keep skips for
+documented optional content, such as network-fetched data or a product
+outside `packages/sets/local-supported.toml`.
+
 Keep authored-source audits separate from generated reports and private
 worktrees. Exclude those evidence directories explicitly while retaining
 production source. Report authorized deferred tests and unsupported cases
@@ -348,17 +355,21 @@ part of the task. Build or fetch what is missing:
    If `libc/musl` exists but is not a valid checkout (a stray dir from a partial
    build blocks the clone), reset it: `rm -rf libc/musl && git submodule update
    --init libc/musl`.
-2. **Kernel wasm + host + rootfs + musl sysroot** — `./run.sh setup`
+2. **Kernel wasm + host + rootfs + musl sysroot** — `./run.sh setup --all`
    checks both musl sysroots, rebuilding missing, stale, or altered core
    outputs and refreshing the graphics archives, then builds the
-   kernel, every package, and the rootfs, producing
+   kernel, every supported package, and the rootfs, producing
    `local-binaries/source-only-v1/kernel.wasm` (the binary resolver prefers
    the published tree over `binaries/`) and `host/wasm/rootfs.vfs.zst`.
    The default rootfs records lazy-file sizes from that same published
    tree, including the programs' ABI-contract stamps:
    ```bash
-   scripts/dev-shell.sh ./run.sh setup
+   scripts/dev-shell.sh ./run.sh setup --all
    ```
+   Without `--all`, setup builds only what the VFS products and the browser
+   app demand, which is enough for `./run.sh browser` but leaves out the
+   test-only packages the suites load (wasm64 libraries, the libevent and
+   MariaDB test programs, `dash`, ...). `./run.sh test` builds `--all` itself.
    To check just the wasm32 core SDK after editing libc inputs:
    ```bash
    scripts/dev-shell.sh bash scripts/build-musl.sh --ensure --core-only
@@ -374,8 +385,8 @@ part of the task. Build or fetch what is missing:
    (cd host && npm ci)
    ```
 4. **Package artifacts the suites load** — the MariaDB and Perl VFS images, the
-   program `.wasm` files, and the browser VFS products. `./run.sh setup` builds
-   all of them from source into `local-binaries/`; there is no separate fetch
+   program `.wasm` files, and the browser VFS products. `./run.sh setup --all`
+   builds all of them from source into `local-binaries/`; there is no separate fetch
    step. (`scripts/fetch-binaries.sh` was deleted when binary resolution became
    local-first; do not look for it. A single package can be resolved on demand
    with `cargo xtask build-deps resolve <name>`, which prefers the per-user

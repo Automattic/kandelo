@@ -1,5 +1,5 @@
 {
-  "abi_version": 54,
+  "abi_version": 55,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -129,6 +129,21 @@
         ],
         "musl_name": "readdir",
         "number": 26,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "nanosleep",
+        "number": 41,
         "result": "i32"
       },
       {
@@ -447,6 +462,21 @@
       {
         "arguments": [
           {
+            "index": 2,
+            "kind": "process-address"
+          },
+          {
+            "index": 3,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "clock_nanosleep",
+        "number": 124,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
             "index": 0,
             "kind": "process-address"
           },
@@ -525,6 +555,21 @@
       {
         "arguments": [
           {
+            "index": 1,
+            "kind": "process-address"
+          },
+          {
+            "index": 3,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "wait4",
+        "number": 139,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
             "index": 0,
             "kind": "process-address"
           }
@@ -542,6 +587,25 @@
         ],
         "musl_name": "set_tid_address",
         "number": 203,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-address"
+          },
+          {
+            "index": 2,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "rt_sigtimedwait",
+        "number": 207,
         "result": "i32"
       },
       {
@@ -691,6 +755,21 @@
         ],
         "musl_name": "munlock",
         "number": 281,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-address"
+          },
+          {
+            "index": 4,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "waitid",
+        "number": 288,
         "result": "i32"
       },
       {
@@ -1268,7 +1347,7 @@
       }
     ],
     "manifest": {
-      "abi_version": 54,
+      "abi_version": 55,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -1358,6 +1437,7 @@
       "kernel_create_process",
       "kernel_create_process_with_stdio",
       "kernel_dequeue_signal",
+      "kernel_drain_wait_completions",
       "kernel_epoll_wait_finish",
       "kernel_epoll_wait_token",
       "kernel_exchange_activate",
@@ -1381,6 +1461,7 @@
       "kernel_exchange_stream_start",
       "kernel_exchange_take_pending",
       "kernel_exec_commit",
+      "kernel_exec_target_admit",
       "kernel_exec_target_cancel",
       "kernel_exec_target_prepare",
       "kernel_exec_target_read",
@@ -1421,9 +1502,12 @@
       "kernel_pick_tcp_listener_target",
       "kernel_pipe_has_readers",
       "kernel_posix_timer_fire",
+      "kernel_process_attach_exe_handle",
+      "kernel_process_attach_exe_path",
       "kernel_process_metadata_begin",
       "kernel_process_metadata_cancel",
       "kernel_process_metadata_commit",
+      "kernel_process_metadata_read",
       "kernel_process_metadata_stage",
       "kernel_process_secure_exec",
       "kernel_publish_process_exit",
@@ -1433,15 +1517,10 @@
       "kernel_reset_tcp_connection",
       "kernel_set_current_tid",
       "kernel_set_cwd",
+      "kernel_set_main_channel_addr",
       "kernel_spawn_exec_commit",
       "kernel_spawn_exec_target_prepare",
       "kernel_spawn_process",
-      "kernel_spawn_reserved_process",
-      "kernel_spawn_scratch_begin",
-      "kernel_spawn_scratch_cancel",
-      "kernel_spawn_scratch_capacity",
-      "kernel_spawn_scratch_pointer",
-      "kernel_spawn_scratch_retained_capacity",
       "kernel_take_process_timer_cleanup",
       "kernel_tcp_connection_id",
       "kernel_thread_exit",
@@ -1453,7 +1532,7 @@
       "kernel_transfer_scratch_capacity",
       "kernel_transfer_scratch_pointer",
       "kernel_validate_task",
-      "kernel_wait_child_poll"
+      "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
     "version": 1,
@@ -2592,6 +2671,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_drain_wait_completions",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_drain_wakeup_events",
       "signature": "(i32,i32,i32) -> (i32)"
     },
@@ -2744,6 +2828,11 @@
       "kind": "func",
       "name": "kernel_exec_commit",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_exec_target_admit",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -2958,11 +3047,6 @@
     {
       "kind": "func",
       "name": "kernel_has_sa_nocldstop",
-      "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_has_sa_nocldwait",
       "signature": "(i32) -> (i32)"
     },
     {
@@ -3212,6 +3296,16 @@
     },
     {
       "kind": "func",
+      "name": "kernel_process_attach_exe_handle",
+      "signature": "(i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_process_attach_exe_path",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_process_metadata_begin",
       "signature": "(i32) -> (i32)"
     },
@@ -3224,6 +3318,11 @@
       "kind": "func",
       "name": "kernel_process_metadata_commit",
       "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_process_metadata_read",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3352,11 +3451,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_rootfs_load_manifest",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_rootfs_mkdir_parents",
       "signature": "(i32,i32,i32) -> (i32)"
     },
@@ -3429,6 +3523,11 @@
       "kind": "func",
       "name": "kernel_set_input_canvas_dims",
       "signature": "(i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_main_channel_addr",
+      "signature": "(i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -3613,37 +3712,7 @@
     {
       "kind": "func",
       "name": "kernel_spawn_process",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_spawn_reserved_process",
-      "signature": "(i32,i32,i64,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_spawn_scratch_begin",
-      "signature": "(i32) -> (i64)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_spawn_scratch_cancel",
-      "signature": "(i64) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_spawn_scratch_capacity",
-      "signature": "(i64) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_spawn_scratch_pointer",
-      "signature": "(i64) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_spawn_scratch_retained_capacity",
-      "signature": "() -> (i32)"
+      "signature": "(i32,i32,i64,i32,i64,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3683,7 +3752,7 @@
     {
       "kind": "func",
       "name": "kernel_thread_exit",
-      "signature": "(i32,i32) -> (i64)"
+      "signature": "(i32,i32,i32) -> (i64)"
     },
     {
       "kind": "func",
@@ -3747,11 +3816,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_wait_child_poll",
-      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_wait_deadline_close",
       "signature": "(i64) -> (i32)"
     },
@@ -3764,6 +3828,11 @@
       "kind": "func",
       "name": "kernel_wait_deadline_remaining_ns",
       "signature": "(i64) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait_next_timeout_ns",
+      "signature": "() -> (i64)"
     },
     {
       "kind": "func",
@@ -3788,6 +3857,515 @@
     {
       "kind": "memory",
       "name": "memory"
+    }
+  ],
+  "kernel_imports": [
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_append",
+      "signature": "(i64,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_append_position",
+      "signature": "(i64,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_bind_framebuffer",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_clock_gettime",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_close",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_discard_deferred",
+      "signature": "(i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_exchange_source_read",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_fb_write",
+      "signature": "(i32,i32,i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_fchmod",
+      "signature": "(i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_fchmodat",
+      "signature": "(i64,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_fchown",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_fchownat",
+      "signature": "(i64,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_fetch_deferred",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_fpathconf",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_fstat",
+      "signature": "(i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_fstatat",
+      "signature": "(i64,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_fstatfs",
+      "signature": "(i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_fsync",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_ftruncate",
+      "signature": "(i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gbm_bo_bind",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gbm_bo_create",
+      "signature": "(i32,i32,i64,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gbm_bo_destroy",
+      "signature": "(i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gbm_bo_unbind",
+      "signature": "(i32,i32,i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gbm_gpu_bo_create",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_getaddrinfo",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_getrandom",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gl_bind",
+      "signature": "(i32,i32,i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gl_bind_foreign_texture",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gl_create_context",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gl_create_surface",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gl_destroy_context",
+      "signature": "(i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gl_destroy_surface",
+      "signature": "(i32,i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gl_make_current",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gl_present",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gl_query",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gl_submit",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gl_unbind",
+      "signature": "(i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gl_update_surface",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_image_read",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_is_thread_worker",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_kms_addfb",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_kms_connector_mm",
+      "signature": "(i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_kms_drop_master",
+      "signature": "(i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_kms_mode_info",
+      "signature": "(i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_kms_rmfb",
+      "signature": "(i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_kms_set_fb",
+      "signature": "(i32,i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_kms_set_master",
+      "signature": "(i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_linkat",
+      "signature": "(i64,i32,i32,i64,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_mkdirat",
+      "signature": "(i64,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_net_close",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_net_connect",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_net_connect_from",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_net_connect_status",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_net_listen",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_net_local_endpoint",
+      "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_net_readiness",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_net_readiness_generation",
+      "signature": "(i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_net_recv",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_net_send",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_net_shutdown",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_network_interface",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_openat",
+      "signature": "(i64,i32,i32,i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_pread",
+      "signature": "(i64,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_proc_read_bytes",
+      "signature": "(i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_proc_write_bytes",
+      "signature": "(i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_publish_wait_completion",
+      "signature": "(i32,i64,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_pwrite",
+      "signature": "(i64,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_read",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_readdir",
+      "signature": "(i64,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_readlinkat",
+      "signature": "(i64,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_renameat",
+      "signature": "(i64,i32,i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_seek",
+      "signature": "(i64,i32,i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_set_alarm",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_set_posix_timer",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_symlinkat",
+      "signature": "(i32,i32,i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_udp_bind",
+      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_udp_send",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_udp_source_address",
+      "signature": "(i32,i32,i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_udp_unbind",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_unbind_framebuffer",
+      "signature": "(i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_unlinkat",
+      "signature": "(i64,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_utimensat",
+      "signature": "(i64,i32,i32,i64,i64,i64,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_write",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "memory",
+      "maximum_pages": 16384,
+      "memory64": false,
+      "minimum_pages": 18,
+      "module": "env",
+      "name": "memory",
+      "shared": true
     }
   ],
   "marshalled_structs": {
@@ -4254,36 +4832,6 @@
         }
       ],
       "size": 32
-    },
-    "KernelWaitResult": {
-      "fields": [
-        {
-          "name": "wait_status",
-          "offset": 0,
-          "span": 4
-        },
-        {
-          "name": "si_code",
-          "offset": 4,
-          "span": 4
-        },
-        {
-          "name": "si_status",
-          "offset": 8,
-          "span": 4
-        },
-        {
-          "name": "child_uid",
-          "offset": 12,
-          "span": 4
-        },
-        {
-          "name": "rusage",
-          "offset": 16,
-          "span": 144
-        }
-      ],
-      "size": 160
     },
     "PcmSharedControl": {
       "align": 4,
@@ -7780,17 +8328,6 @@
         }
       }
     ],
-    "124": [
-      {
-        "argIndex": 2,
-        "direction": "in",
-        "required": true,
-        "size": {
-          "size": 16,
-          "type": "fixed"
-        }
-      }
-    ],
     "125": [
       {
         "argIndex": 1,
@@ -7965,26 +8502,6 @@
         }
       }
     ],
-    "139": [
-      {
-        "argIndex": 1,
-        "direction": "out",
-        "nullable": true,
-        "size": {
-          "size": 4,
-          "type": "fixed"
-        }
-      },
-      {
-        "argIndex": 3,
-        "direction": "out",
-        "nullable": true,
-        "size": {
-          "size": 144,
-          "type": "fixed"
-        }
-      }
-    ],
     "14": [
       {
         "argIndex": 0,
@@ -8148,36 +8665,6 @@
         "required": true,
         "size": {
           "size": 8,
-          "type": "fixed"
-        }
-      }
-    ],
-    "207": [
-      {
-        "argIndex": 0,
-        "direction": "in",
-        "required": true,
-        "size": {
-          "size": 8,
-          "type": "fixed"
-        }
-      },
-      {
-        "argIndex": 1,
-        "direction": "out",
-        "nullable": true,
-        "size": {
-          "type": "process-layout",
-          "wasm32Size": 128,
-          "wasm64Size": 128
-        }
-      },
-      {
-        "argIndex": 2,
-        "direction": "in",
-        "nullable": true,
-        "size": {
-          "size": 16,
           "type": "fixed"
         }
       }
@@ -8540,27 +9027,6 @@
           "maxBytes": 4096,
           "tooLongErrno": 36,
           "type": "cstring"
-        }
-      }
-    ],
-    "288": [
-      {
-        "argIndex": 2,
-        "direction": "out",
-        "required": true,
-        "size": {
-          "type": "process-layout",
-          "wasm32Size": 128,
-          "wasm64Size": 128
-        }
-      },
-      {
-        "argIndex": 4,
-        "direction": "out",
-        "nullable": true,
-        "size": {
-          "size": 144,
-          "type": "fixed"
         }
       }
     ],
@@ -9334,17 +9800,6 @@
       {
         "argIndex": 1,
         "direction": "out",
-        "required": true,
-        "size": {
-          "size": 16,
-          "type": "fixed"
-        }
-      }
-    ],
-    "41": [
-      {
-        "argIndex": 0,
-        "direction": "in",
         "required": true,
         "size": {
           "size": 16,
@@ -11122,6 +11577,47 @@
       }
     ]
   },
+  "wait_completion_wire": {
+    "fields": [
+      {
+        "name": "generation",
+        "offset": 0,
+        "size": 8,
+        "type": "u64"
+      },
+      {
+        "name": "pid",
+        "offset": 8,
+        "size": 4,
+        "type": "u32"
+      },
+      {
+        "name": "tid",
+        "offset": 12,
+        "size": 4,
+        "type": "u32"
+      },
+      {
+        "name": "value",
+        "offset": 16,
+        "size": 4,
+        "type": "i32"
+      },
+      {
+        "name": "flags",
+        "offset": 20,
+        "size": 4,
+        "type": "u32"
+      }
+    ],
+    "flags": {
+      "cancelled": 2,
+      "published": 4,
+      "suppressRestart": 1
+    },
+    "parked_errno": 65536,
+    "record_size": 24
+  },
   "wait_contract": {
     "PROCESS_STATE_EXITED": 2,
     "PROCESS_STATE_RUNNING": 0,
@@ -11186,6 +11682,10 @@
       {
         "bit": 64,
         "name": "advisoryLock"
+      },
+      {
+        "bit": 128,
+        "name": "waitComplete"
       }
     ]
   }

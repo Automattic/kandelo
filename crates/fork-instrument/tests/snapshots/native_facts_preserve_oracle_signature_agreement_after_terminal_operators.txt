@@ -1,0 +1,123 @@
+=== effective 348bdd9119a9 ===
+(
+    CallFacts {
+        itargets: [],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 1,
+    },
+)
+
+=== effective 54821b71e15b ===
+(
+    CallFacts {
+        itargets: [],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 1,
+    },
+)
+
+=== effective a2e69298bf09 ===
+(
+    CallFacts {
+        itargets: [
+            (
+                3,
+                "i32->i32",
+                [
+                    2,
+                ],
+            ),
+        ],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 0,
+    },
+)
+
+=== untyped 348bdd9119a9 ===
+(
+    CallFacts {
+        itargets: [],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 1,
+    },
+)
+
+=== untyped 54821b71e15b ===
+(
+    CallFacts {
+        itargets: [],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 1,
+    },
+)
+
+=== untyped a2e69298bf09 ===
+(
+    CallFacts {
+        itargets: [
+            (
+                3,
+                "i32->i32",
+                [
+                    2,
+                ],
+            ),
+        ],
+        cleanup: [],
+        jmp: [],
+        assume_dlopen_contract: false,
+    },
+    FactsReport {
+        chunks: 1,
+        definitions: 4,
+        defined: 4,
+        bound: 4,
+        bound_to_union: 0,
+        signature_mismatch: 0,
+    },
+)

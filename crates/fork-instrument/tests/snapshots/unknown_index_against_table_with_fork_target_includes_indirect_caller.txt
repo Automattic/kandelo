@@ -1,0 +1,29 @@
+=== closed cbed56b3926d ===
+ReachingPlan {
+    activations: {
+        0,
+        2,
+        3,
+    },
+    control_reachable: {
+        0,
+        2,
+        3,
+    },
+    tail_sites: {},
+}
+
+=== external cbed56b3926d ===
+ReachingPlan {
+    activations: {
+        0,
+        2,
+        3,
+    },
+    control_reachable: {
+        0,
+        2,
+        3,
+    },
+    tail_sites: {},
+}

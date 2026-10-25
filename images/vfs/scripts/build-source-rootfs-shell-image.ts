@@ -417,18 +417,7 @@ BASE=/usr/share/quake
 PAK="$BASE/id1/pak0.pak"
 ZIP="$BASE/quake106.zip"
 if [ ! -f "$PAK" ] && [ -f "$ZIP" ]; then
-    echo "quake: extracting shareware data from quake106.zip..." >&2
-    mkdir -p "$BASE/id1"
-    cd "$BASE"
-    unzip -o "$ZIP" >/dev/null
-    lha xf resource.1 >/dev/null 2>&1 || true
-    src="$(find "$BASE" -iname 'pak0.pak' 2>/dev/null | head -n1)"
-    if [ -n "$src" ] && [ "$src" != "$PAK" ]; then cp "$src" "$PAK"; fi
-    if [ -f "$PAK" ]; then
-        echo "quake: extracted id1/pak0.pak" >&2
-    else
-        echo "quake: extraction failed; no pak0.pak produced" >&2
-    fi
+    /usr/local/bin/quake-data shareware "$ZIP" "$BASE"
 fi
 ${SUPERVISE_FUNCTION}
 start_engine() {

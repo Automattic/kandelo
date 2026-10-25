@@ -394,6 +394,14 @@ pub fn credit_current_task_sleep(ns: u64) {
     }
 }
 
+/// Credit task `(pid, tid)`'s clock with a timed wait that ran to its
+/// timeout. No-op when the mode is off.
+pub fn credit_task_wait(pid: u32, tid: u32, ns: u64) {
+    if let Some(state) = global().as_mut() {
+        state.credit_wait(pid, tid, ns);
+    }
+}
+
 /// See [`Determinism::process_created`]. No-op when the mode is off.
 pub fn process_created(pid: u32) {
     if let Some(state) = global().as_mut() {

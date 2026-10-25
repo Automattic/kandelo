@@ -14,7 +14,7 @@ source "$REPO_ROOT/scripts/fork-instrument-tool-input-hash.sh"
 echo "==> Building wasm-fork-instrument for $HOST_TARGET..."
 cargo build \
     --manifest-path "$REPO_ROOT/Cargo.toml" \
-    --release \
+    --profile instrumenter \
     -p fork-instrument \
     --target "$HOST_TARGET"
 
@@ -23,7 +23,7 @@ BIN_STAGE="$OUT_DIR/.wasm-fork-instrument.$$.tmp"
 STAMP_STAGE="$OUT_DIR/.wasm-fork-instrument.$$.input-hash.tmp"
 trap 'rm -f "$BIN_STAGE" "$STAMP_STAGE"' EXIT
 install -m 0755 \
-    "$TARGET_DIR/$HOST_TARGET/release/wasm-fork-instrument" \
+    "$TARGET_DIR/$HOST_TARGET/instrumenter/wasm-fork-instrument" \
     "$BIN_STAGE"
 
 "$BIN_STAGE" --help >/dev/null

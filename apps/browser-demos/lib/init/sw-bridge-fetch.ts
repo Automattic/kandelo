@@ -17,6 +17,7 @@ import { initServiceWorkerBridge } from "./service-worker-bridge";
 
 interface ServiceWorkerFetchBridgeOptions {
   timeoutMs?: number;
+  hostname?: string;
   debugLog?: (line: string) => void;
   onRequestStart?: (request: HttpRequest) => ((status: number | null, error?: string) => void) | undefined;
   onPendingRequests?: (count: number) => void;
@@ -41,6 +42,7 @@ export function attachBridgeToKernel(
     try {
       const response = await kernel.fetchInKernel(port, request, {
         timeoutMs: options?.timeoutMs,
+        hostname: options?.hostname,
       });
       completed?.(response.status);
       bridge.respond(requestId, response);
@@ -79,7 +81,7 @@ export async function setupServiceWorkerFetchBridge(
   port: number,
   sessionId: string,
   options?: ServiceWorkerFetchBridgeOptions,
-): Promise<{ bridge: HttpBridgeHost; name: string; appPrefix: string }> {
+): Promise<{ bridge: HttpBridgeHost; name: string; appPrefix: string; dispose: () => void }> {
   const created = await initServiceWorkerBridge(swUrl, scopePath, sessionId);
   if (!created) {
     throw new Error("Service workers unavailable — HTTP bridge not initialized");
@@ -87,38 +89,51 @@ export async function setupServiceWorkerFetchBridge(
   const { bridge, name, appPrefix } = created;
   attachBridgeToKernel(bridge, kernel, port, options);
 
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.addEventListener("message", (event) => {
-      if (event.data?.type !== "need-bridge") return;
-      const replyPort = event.ports[0];
-      if (!replyPort) return;
-      const fresh = new HttpBridgeHost();
-      attachBridgeToKernel(fresh, kernel, port, options);
-      // Re-assert this machine's SW-minted name so only its hosting tab answers
-      // the SW's restart handshake for that name.
-      replyPort.postMessage(
-        { type: "bridge-restored", name, appPrefix, sessionId },
-        [fresh.getSwPort()],
-      );
-      options?.debugLog?.("Bridge restored after service worker restart");
-    });
+  const bridges = new Set([bridge]);
+  let disposed = false;
+  const restore = (event: MessageEvent) => {
+    if (disposed || event.data?.type !== "need-bridge" || (event.data.name !== undefined && event.data.name !== name)) return;
+    const replyPort = event.ports[0];
+    if (!replyPort) return;
+    for (const previous of bridges) previous.close();
+    bridges.clear();
+    const fresh = new HttpBridgeHost();
+    bridges.add(fresh);
+    attachBridgeToKernel(fresh, kernel, port, options);
+    // Re-assert this machine's SW-minted name so only its hosting tab answers
+    // the SW's restart handshake for that name.
+    replyPort.postMessage(
+      { type: "bridge-restored", name, appPrefix, sessionId },
+      [fresh.getSwPort()],
+    );
+    options?.debugLog?.("Bridge restored after service worker restart");
+  };
 
-    // Announce this machine's departure when the hosting tab goes away, so the
-    // SW can immediately mark it offline and push machine-offline to any viewer
-    // tabs instead of waiting for lazy owner reconciliation on a later request.
-    // pagehide (not unload) fires reliably on bfcache and mobile tab teardown.
-    // Only announce when the page is truly being discarded: a bfcache
-    // suspension fires pagehide with event.persisted === true and the tab is
-    // still alive (it can be restored), so offlining + GC'ing the machine then
-    // would kill a live tab's machine on every back/forward navigation.
-    window.addEventListener("pagehide", (event) => {
-      if (event.persisted) return;
-      navigator.serviceWorker.controller?.postMessage({
-        type: "instance-closing",
-        name,
-      });
+  // Announce this machine's departure when the hosting tab goes away, so the
+  // SW can immediately mark it offline and push machine-offline to any viewer
+  // tabs instead of waiting for lazy owner reconciliation on a later request.
+  // pagehide (not unload) fires reliably on bfcache and mobile tab teardown.
+  // Only announce when the page is truly being discarded: a bfcache
+  // suspension fires pagehide with event.persisted === true and the tab is
+  // still alive (it can be restored), so offlining + GC'ing the machine then
+  // would kill a live tab's machine on every back/forward navigation.
+  const pagehide = (event: PageTransitionEvent) => {
+    if (event.persisted) return;
+    navigator.serviceWorker.controller?.postMessage({
+      type: "instance-closing",
+      name,
     });
-  }
+  };
+  navigator.serviceWorker.addEventListener("message", restore);
+  window.addEventListener("pagehide", pagehide);
+  return { bridge, name, appPrefix, dispose: () => {
+    if (disposed) return;
+    disposed = true;
+    navigator.serviceWorker.removeEventListener("message", restore);
+    window.removeEventListener("pagehide", pagehide);
+    navigator.serviceWorker.controller?.postMessage({ type: "instance-closing", name });
+    for (const item of bridges) item.close();
+    bridges.clear();
+  } };
 
-  return { bridge, name, appPrefix };
 }

@@ -103,7 +103,7 @@ EOF
 printf '%s\\n' "$@" > "$CARGO_RECORD"
 printf '%s\\n' "$PATH" > "$CARGO_PATH_RECORD"
 # Prerequisites succeed; only the graph runner owns the failed graph result.
-if [[ " $* " == *" bootstrap "* ]]; then exit 0; fi
+if [[ " $* " == *" bootstrap sdk "* || " $* " == *" bootstrap sysroot64 "* ]]; then exit 0; fi
 printf '%s\\n' "$FAKE_LOCAL_BUILD_RESULT"
 exit "$FAKE_CARGO_STATUS"
 `,
@@ -201,7 +201,9 @@ function successfulSummary(): string {
   ].join("\n");
 }
 
-function expectedCargoArgs(home: string): string[] {
+// `./run.sh local-build` builds through setup's runner: `bootstrap packages`
+// is the same engine step setup runs, so the two always build the same tree.
+function expectedCargoArgs(...selection: string[]): string[] {
   return [
     "run",
     "-p",
@@ -209,18 +211,11 @@ function expectedCargoArgs(home: string): string[] {
     "--target",
     "fixture-host-target",
     "--",
-    "local-build",
-    "run",
-    "--set",
-    join(repoRoot, "packages/sets/local-supported.toml"),
-    "--source-cache-root",
-    join(home, ".cache/kandelo/source-only"),
-    "--output-root",
-    join(repoRoot, "local-binaries/source-only-v1"),
-    "--product",
-    "all",
+    "bootstrap",
+    "packages",
     "--jobs",
     "16",
+    ...selection,
   ];
 }
 
@@ -300,7 +295,7 @@ exit 92
     expect(result.stdout).toBe(successfulSummary());
     expect(
       readFileSync(fixture.cargoRecord, "utf8").trim().split("\n"),
-    ).toEqual(expectedCargoArgs(fixture.env.HOME));
+    ).toEqual(expectedCargoArgs());
     expect(readFileSync(fixture.nixRecord, "utf8")).toBe("call\ncall\n");
   });
 
@@ -323,8 +318,27 @@ exit 92
     expect(result.stdout).toBe(successfulSummary());
     expect(
       readFileSync(fixture.cargoRecord, "utf8").trim().split("\n"),
-    ).toEqual(expectedCargoArgs(fixture.env.HOME));
+    ).toEqual(expectedCargoArgs());
     expect(readFileSync(fixture.nixRecord, "utf8")).toBe("call\ncall\n");
+  });
+
+  it("builds every supported package with --all", () => {
+    const fixture = makeFixture();
+    const result = spawnSync(
+      "/bin/bash",
+      [join(repoRoot, "run.sh"), "local-build", "--all"],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: { ...fixture.env, KANDELO_DEV_SHELL_TOOL_PATH: "" },
+      },
+    );
+
+    expect(result.status, result.stderr || result.stdout).toBe(0);
+    expect(result.stdout).toBe(successfulSummary());
+    expect(
+      readFileSync(fixture.cargoRecord, "utf8").trim().split("\n"),
+    ).toEqual(expectedCargoArgs("--all-packages"));
   });
 
   it("preserves the canonical machine result with --json", () => {
@@ -400,7 +414,7 @@ describe("run.sh browser", () => {
     expect(result.stdout).toContain(successfulSummary());
     expect(
       readFileSync(fixture.cargoRecord, "utf8").trim().split("\n"),
-    ).toEqual(expectedCargoArgs(fixture.env.HOME));
+    ).toEqual(expectedCargoArgs());
     expect(readFileSync(fixture.npxRecord, "utf8")).toBe(
       [
         "policy=source-only-v1",

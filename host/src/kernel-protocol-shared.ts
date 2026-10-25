@@ -56,12 +56,6 @@ export interface GetWasmModuleCacheStatsRequestMessage {
   requestId: number;
 }
 
-/** Read the retained capacity of the kernel-owned large-spawn region. */
-export interface GetSpawnScratchCapacityRequestMessage {
-  type: "get_spawn_scratch_capacity";
-  requestId: number;
-}
-
 /** Snapshot the kernel's process table. The kernel-worker forwards to
  * `CentralizedKernelWorker.enumProcs()`; the response carries `ProcessSnapshot[]`.
  * Used by Kandelo's Inspector → Procs tab. */
@@ -271,7 +265,9 @@ export interface WakeBlockedWritersMessage {
 export interface HttpRequestMessage {
   type: "http_request";
   requestId: number;
-  /** Port the in-kernel server is listening on. */
+  /** Omit hostname for a local injected listener; otherwise use the Kandelo session network. */
+  hostname?: string;
+  /** Port the server is listening on. */
   port: number;
   request: HttpRequest;
   /** Optional timeout in ms (default 60_000). */

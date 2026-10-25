@@ -43,6 +43,7 @@ wasm_require_exports "$OUT" \
     kernel_create_process \
     kernel_create_process_with_stdio \
     kernel_dequeue_signal \
+    kernel_drain_wait_completions \
     kernel_epoll_wait_finish \
     kernel_epoll_wait_token \
     kernel_exchange_activate \
@@ -66,6 +67,7 @@ wasm_require_exports "$OUT" \
     kernel_exchange_stream_start \
     kernel_exchange_take_pending \
     kernel_exec_commit \
+    kernel_exec_target_admit \
     kernel_exec_target_cancel \
     kernel_exec_target_prepare \
     kernel_exec_target_read \
@@ -106,26 +108,25 @@ wasm_require_exports "$OUT" \
     kernel_pick_tcp_listener_target \
     kernel_pipe_has_readers \
     kernel_posix_timer_fire \
+    kernel_process_attach_exe_handle \
+    kernel_process_attach_exe_path \
     kernel_process_metadata_begin \
     kernel_process_metadata_cancel \
     kernel_process_metadata_commit \
+    kernel_process_metadata_read \
     kernel_process_metadata_stage \
     kernel_process_secure_exec \
+    kernel_publish_process_exit \
     kernel_publish_spawn_child \
     kernel_reap_exited_child \
     kernel_remove_process \
     kernel_reset_tcp_connection \
     kernel_set_current_tid \
     kernel_set_cwd \
+    kernel_set_main_channel_addr \
     kernel_spawn_exec_commit \
     kernel_spawn_exec_target_prepare \
     kernel_spawn_process \
-    kernel_spawn_reserved_process \
-    kernel_spawn_scratch_begin \
-    kernel_spawn_scratch_cancel \
-    kernel_spawn_scratch_capacity \
-    kernel_spawn_scratch_pointer \
-    kernel_spawn_scratch_retained_capacity \
     kernel_take_process_timer_cleanup \
     kernel_tcp_connection_id \
     kernel_thread_exit \
@@ -137,7 +138,7 @@ wasm_require_exports "$OUT" \
     kernel_transfer_scratch_capacity \
     kernel_transfer_scratch_pointer \
     kernel_validate_task \
-    kernel_wait_child_poll
+    kernel_wait_next_timeout_ns
 
 wasm_require_target_aware_exec_authority "$OUT"
 

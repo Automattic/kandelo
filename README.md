@@ -139,7 +139,7 @@ that is all you need:
 
 | Command | What it does |
 |---|---|
-| `./run.sh setup` | One command to get a working repo: provisions the musl sysroot/SDK and builds the fork-instrument tool, every package, the rootfs image, and the TypeScript host. Run this first, and again after pulling upstream changes. |
+| `./run.sh setup` | One command to get a working repo: provisions the musl sysroot/SDK and builds the fork-instrument tool, the packages the VFS products and browser app demand, the rootfs image, and the TypeScript host. Add `--all` to build every supported package, which the test suites need. Run this first, and again after pulling upstream changes. |
 | `./run.sh build <target>` | Build one thing: the kernel, the host, the rootfs, a package (e.g. `php`), or a VFS product (e.g. `shell-vfs`). |
 | `./run.sh rebuild <target>` | Force a rebuild of one target, bypassing the cache. |
 | `./run.sh clean <target>` | Remove a target's build outputs, plus any products that embed it. |
@@ -278,6 +278,14 @@ fetches a prebuilt browser binary selection. Subsequent launches reuse
 unchanged nodes.
 
 Open `http://127.0.0.1:5401` to use the Kandelo UI. The network lab at `http://127.0.0.1:5401/pages/network/` boots multiple local Kandelo machines in one browser session and exercises POSIX UDP/TCP with GNU Netcat (`nc`) and `curl`.
+
+The network button creates an invitation in one step, with an optional
+package-declared activity such as termchat, Doom, Quake or Freeciv. Keep or replace an
+existing room, or leave it from the same panel. Doom and Quake offer known
+shareware/free data or a local file; required data can travel over WebRTC or be
+supplied through acquisition hints and matching-file choices. Websites and
+databases can invite a separate client computer to their running service. See
+[package-declared sessions](docs/package-sessions.md).
 
 To build the deployable static site, run:
 

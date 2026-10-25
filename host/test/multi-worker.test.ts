@@ -156,6 +156,7 @@ function createGatedLifecycleHarness(options: {
     kernel_set_current_tid: vi.fn(() => 0),
     kernel_set_max_addr: vi.fn(() => 0),
     kernel_set_process_pointer_width: vi.fn(() => 0),
+    kernel_set_main_channel_addr: vi.fn(() => 0),
     kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(kernelMemory),
     kernel_thread_exit: vi.fn(() => 0),
     kernel_validate_task: vi.fn(() => 0),
@@ -1078,7 +1079,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       value: 0,
       errno: 0,
     });
-    expect(threadExit).toHaveBeenCalledWith(pid, tid);
+    expect(threadExit).toHaveBeenCalledWith(pid, tid, 1);
   });
 
   it("keeps completing pthread SYS_EXIT channels when no host terminator is installed", async () => {
@@ -1143,7 +1144,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       value: 0,
       errno: 0,
     });
-    expect(threadExit).toHaveBeenCalledWith(pid, tid);
+    expect(threadExit).toHaveBeenCalledWith(pid, tid, 1);
   });
 
   it("rejects pthread exit when the channel lost its kernel-allocated TID", () => {
@@ -1355,8 +1356,11 @@ describe("CentralizedKernelWorker Process Management", () => {
 
     harness.worker.finalizeThreadExit(pid, tid, threadChannelOffset);
 
-    expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(0);
-    expect(threadExit).toHaveBeenCalledWith(pid, tid);
+    // The kernel performs CLONE_CHILD_CLEARTID (the store and the wake of a
+    // joiner parked in its futex queue); the host states only that the thread
+    // really ran. This mocked kernel does not store, so the word is untouched.
+    expect(threadExit).toHaveBeenCalledWith(pid, tid, 1);
+    expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(tid);
 
     // Reusing the exact channel offset proves forced cleanup released the
     // transport attachment as well as the guest clear-TID word.
@@ -1447,8 +1451,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       tid,
       2 * WASM_PAGE_SIZE,
     );
-    expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(0);
-    expect(threadExit).toHaveBeenCalledWith(pid, tid);
+    expect(threadExit).toHaveBeenCalledWith(pid, tid, 1);
 
     resolveClone();
     await waitForMailboxCompletion(memory, mainChannelOffset);
@@ -1556,9 +1559,8 @@ describe("CentralizedKernelWorker Process Management", () => {
       tid,
       threadChannelOffset,
     );
-    expect(new DataView(newMemory.buffer).getInt32(newCtidPtr, true)).toBe(0);
     expect(threadExit).toHaveBeenCalledTimes(1);
-    expect(threadExit).toHaveBeenCalledWith(pid, tid);
+    expect(threadExit).toHaveBeenCalledWith(pid, tid, 1);
     expect(
       Atomics.load(
         new Int32Array(oldMemory.buffer, channelOffset),
@@ -1601,6 +1603,7 @@ describe("CentralizedKernelWorker Process Management", () => {
           kernel_set_max_addr: setMaxAddr,
           kernel_set_mmap_base: vi.fn(() => 0),
           kernel_set_process_pointer_width: vi.fn(() => 0),
+          kernel_set_main_channel_addr: vi.fn(() => 0),
           kernel_validate_task: vi.fn(() => 0),
         },
         kernelExportNames: [
@@ -1613,6 +1616,7 @@ describe("CentralizedKernelWorker Process Management", () => {
           "kernel_set_max_addr",
           "kernel_set_mmap_base",
           "kernel_set_process_pointer_width",
+          "kernel_set_main_channel_addr",
           "kernel_validate_task",
         ],
       },

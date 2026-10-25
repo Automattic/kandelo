@@ -1776,9 +1776,221 @@ Semantic changes:
   `NGROUPS_MAX` entries of the caller's buffer, since no list is longer.
   `setgroups` still refuses more than `NGROUPS_MAX` groups with `EINVAL`.
 
+
+### ABI 54 the rust-first kernel batch
+
+ABI 54 is one unreleased epoch for the whole rust-first kernel batch PR.
+Each change the batch makes is recorded under its own heading here; the
+number is a single entry so it can be renumbered if another PR takes 54
+first. ABI 54 also reaches the scheduled promotion of
+`kernel_publish_process_exit` (optional in ABI 53, required from 54; see
+above); its implementation is unchanged.
+
+#### The kernel decides what an exec or spawn runs
+
+The kernel now takes the host out of deciding what an `exec` or `posix_spawn` runs.
+Before it, the host copied each spawn request into kernel scratch (or a
+tokenized reservation for a large one), re-parsed it for argv and envp, and
+read and parsed the target itself in a side-effect-free "preflight" to find
+the program and follow a `#!` line; on `exec` it decided from the bytes it had
+read whether the target was a script and whether the program was runnable.
+Each was a second reader of a format the kernel owns. Now the kernel reads the
+spawn request from the caller's memory, decides the target from its own copy,
+and the host moves bytes and starts the Worker. The guest syscall ABI and the
+libc glue are unchanged, but `__abi_version` equality is exact, so every
+program, package archive and VFS image is rebuilt for 54.
+
+Structural changes (recorded in the snapshot):
+
+- **Kernel exports.**
+  - Changed: `kernel_spawn_process(parent_pid, caller_tid, path_addr: u64,
+    path_len, blob_addr: u64, blob_len) -> i32` reads the path and blob from
+    the caller's memory (`spawn::read_request`), enforces the startup
+    vector limits (per-entry transport limit, `ARG_MAX` at the caller's
+    pointer width), and refuses before any change a target a launch could
+    not run (`exec_target::probe_spawn_target`: path from the caller's CWD,
+    execute permission, a WebAssembly or `#!` header, one `#!` level whose
+    interpreter passes the same checks). `EAGAIN` means a lazily fetched
+    target is still arriving and nothing changed.
+  - Removed: `kernel_spawn_reserved_process` and the spawn scratch
+    reservation exports `kernel_spawn_scratch_begin`, `_pointer`,
+    `_capacity`, `_retained_capacity` and `_cancel`. The hosts'
+    `getSpawnScratchCapacity()` goes with them.
+  - Added, both required by the host-adapter manifest:
+    `kernel_exec_target_admit(owner_pid, token, expected_abi, out, out_len)`
+    writes `[kind: u8]` then, for a script (1),
+    `[has_arg: u8][interp_len: u32][arg_len: u32][interp][arg]`, or for a
+    refusal (2), the reasons as text; kind 0 is a runnable program. Both
+    answers come from the bytes the target committed to (the `#!` line, or
+    the `crates/wasm-artifact` policy: a module, no legacy Asyncify, the
+    expected `__abi_version`), so it fails `EINVAL` until the host has read
+    the whole target and `ETXTBSY` if a re-read saw different bytes.
+    `kernel_process_metadata_read(pid, kind, index, out, out_len)` copies one
+    argv or environment entry, complete or `-ERANGE`, `-EINVAL` past the end.
+
+Semantic changes (not visible to the snapshot):
+
+- **An exec commit sets the process pointer width** from the committed bytes;
+  the host no longer re-registers it after an exec.
+- **A spawn target that is a WebAssembly file of the wrong ABI** now fails
+  `ENOEXEC` after the child's file actions ran (the kernel's pre-check reads
+  only the header), as on Linux, where `exec` after `vfork` fails the same
+  way. Targets a `posix_spawnp` PATH walk would retry (`ENOENT`, `EACCES`)
+  are still refused before any file action.
+- **The fork-instrumentation contract** is still checked by the host's
+  TypeScript (`describeWasmArtifactPolicyFailures`), because
+  `crates/wasm-artifact` does not yet carry the `wpk_fork` decoders.
+- **The Node host's `execPrograms`, `execProgramBytes` and `onResolveExec`
+  options are gone.** They fed only the spawn preflight; no launch ever ran
+  their bytes.
+
+#### The kernel keeps each image's executable open (`Process::exe`)
+
+An exec or `posix_spawn` commit keeps the target it resolved instead of
+releasing it; a `fork` child inherits it (fork state v20), a
+`posix_spawn` child gets the target its own commit resolved, and exit
+releases it. `/proc/<pid>/exe` reads as the path the image was
+executed through (Linux's ` (deleted)` when the in-kernel filesystem shows
+no names left) rather than `argv[0]`, and is `ENOENT` for a process with
+none attached. Opening `/proc/self/exe` gives a new open file description
+of that object (read-only; `ETXTBSY` for write), `stat` follows it, and
+`execve("/proc/self/exe")` re-runs it.
+
+A host-launched process is attached by two new kernel exports, both
+required by the host-adapter manifest:
+`kernel_process_attach_exe_path(pid, path_ptr, path_len)` for a program in
+the VFS, and `kernel_process_attach_exe_handle(pid, handle: i64, name_ptr,
+name_len)` for a program the host supplied as bytes -- a host file handle
+onto bytes the host already holds (`WasmPosixKernel.registerProgramImage`),
+read through `host_pread` and never copied into kernel memory, which the
+kernel owns from the call and closes when the last description of it goes.
+The cost is Linux's: an executable replaced or unlinked while a process runs
+it stays resident until the last process running it exits or execs.
+
+#### The kernel owns the futex wait queue (`wait_park`)
+
+`futex` waits are kernel state (`runtime_core::wait_park`) instead of a
+host `Atomics.waitAsync` on the guest's word. A parked syscall answers
+the host with errno `PARKED_ERRNO` (0x1_0000) and its park generation in
+the return value; the guest still blocks on its own channel. When the
+kernel decides how a park ends (a wake, a requeue, the deadline, a
+signal aimed at that thread, `pthread_cancel`, thread exit, exec or
+process exit) it queues a 24-byte `wait_completion_wire` record and
+raises the new wake-event type `TYPE_WAIT_COMPLETE` (128, on the
+existing one-byte wake-event wire). The host drains records with the new
+required export `kernel_drain_wait_completions` and publishes each only
+into the channel that still holds that generation; the new required
+export `kernel_wait_next_timeout_ns` gives the next deadline as a
+relative interval, so the host never computes in the kernel's clock
+domain. `FUTEX_WAIT_BITSET` keeps ABI 52's absolute-deadline meaning,
+now measured by the kernel (against the guest's logical clock in the
+image-build determinism mode, where a wait that times out credits the
+task's clock).
+
+The kernel import `host_futex_wake` is removed. `kernel_thread_exit`
+gains a third argument: nonzero when the thread really ran, in which
+case the kernel performs `CLONE_CHILD_CLEARTID` itself (the zero store
+and the futex wake) instead of the host.
+
+#### Sleeps are kernel parks
+
+`nanosleep`, `clock_nanosleep` and the `usleep` syscall park in the kernel
+like a futex wait, so the host no longer holds a sleeping channel on its
+own timer. Their timespec arguments change transport: `nanosleep(req, rem)`
+and `clock_nanosleep(clock, flags, req, rem)` now pass both timespecs as
+raw process addresses (channel scalar `ProcessAddress`) instead of a
+staged `req` record, because the kernel reads `req` at park time and writes
+`rem` when an interrupted sleep's completion is drained, long after any
+per-call staging is gone. The generated musl marshal and channel-scalar
+headers change with them, so guest libc and every program must be rebuilt.
+A caught signal ends a sleep with `EINTR` even under `SA_RESTART`, as on
+Linux, and writes the unslept time to `rem`. For wasm32 callers the futex
+timeout and second-address slots are narrowed to 32 bits.
+
+#### The kernel owns `wait4` and `waitid`, and announces child exits
+
+`wait4` and `waitid` reach the kernel like any other syscall and park
+there when no child is ready. Their status, `siginfo_t` and `rusage`
+pointers become raw process addresses (channel scalar contract), so the
+generated musl headers change again. The host-side wait is gone with its
+contract: the `kernel_wait_child_poll` and `kernel_has_sa_nocldwait`
+exports, the `KernelWaitResult` record, and the `host_waitpid` kernel
+import are removed. The kernel generates SIGCHLD when it records a
+child's exit, or reaps the child itself when the parent set
+`SA_NOCLDWAIT` or ignores SIGCHLD; hosts no longer generate it.
+
+Because a parked parent can now reap a zombie before the host's exit path
+publishes that exit, `kernel_publish_process_exit` treats an absent pid as
+already published: it returns the orphaned-group hang-up count instead of
+`-ESRCH`, so that count is never held back until a later exit. Children of
+synthetic init are still reaped only by publication.
+
+#### Signal waits are kernel parks
+
+`sigsuspend`, `pause` and `rt_sigtimedwait` park in the kernel. The
+`rt_sigtimedwait` set, `siginfo_t` and timeout pointers become raw
+process addresses (channel scalar contract), so its musl marshal
+descriptors are gone and the generated headers change. Semantics change
+too: a caught signal outside a `sigtimedwait` set now ends the wait with
+`EINTR` (it used to keep waiting), and an ignored signal (`SIG_IGN`, or a
+default action of ignore or continue) no longer ends any park, as on
+Linux.
+
+#### Blocking locks are kernel parks
+
+A conflicting `F_SETLKW`, `F_SETLKW64`, `F_OFD_SETLKW` or blocking
+`flock()` parks in the kernel and is re-executed there when advisory-lock
+state changes; an `EAGAIN` from either call is now the caller's final
+answer, never a host retry request. The kernel reads the caller's
+`struct flock` itself and no longer accepts a host-staged copy (the special
+scratch layout for it is gone). Guest libc is unchanged by this step.
+Closing the last reference to an open file description now releases its
+OFD and `flock` locks even while another open of the same tmpfs or rootfs
+file remains.
+
+#### Blocking pipe transfers are kernel parks
+
+A blocking `read`, `write`, `recv`, `send`, `recvfrom` or `sendto` (with no
+address) on a kernel pipe or pipe-backed socket that cannot proceed parks
+in the kernel and re-runs on the caller's own buffer when the pipe's
+readiness changes. To find that buffer the kernel reads the caller's
+request from its channel, so hosts must register each address space's
+main-thread channel with the new required export
+`kernel_set_main_channel_addr(pid, addr)` before the image issues a
+syscall. A pthread's channel is still placed by the host and not
+registered, so a pthread's transfer stays on the host's retry path, as do
+`MSG_DONTWAIT`, `O_NONBLOCK`, addressed datagrams, and endpoints whose
+readiness the kernel cannot see.
+
+The kernel can also publish a parked transfer's result itself. The new
+host import `env.host_publish_wait_completion(pid, channel_addr, ret,
+errno) -> i32` writes `ret` and `errno` into the task's channel, stores
+COMPLETE and wakes the task; it returns a negated errno when it cannot
+reach the process, and the kernel then queues the result as before. The
+kernel publishes directly only for a successful transfer with no signal
+targeting the task, a running process, and no `MAP_SHARED` mapping or
+SysV attachment (`publish_transfer_directly`). A directly published
+completion is still queued, with the new flag
+`wait_completion_wire::FLAG_PUBLISHED` (4): the host retires its
+bookkeeping for the request and must not publish it again. Adding a host
+import is a breaking change for kernels (see "Imports classify in
+reverse").
+
+#### Dead image readers removed
+
+The kernel export `kernel_rootfs_load_manifest` is removed with the RTFS
+boot-manifest loader behind it: neither host called it (both load the base
+tree with `kernel_rootfs_load_image`, the kernel parsing the image
+itself). Separately, an image whose container carries the `KLZY` kernel
+lazy-linkage section is now refused at load (`EINVAL`) instead of decoded:
+nothing has written `KLZY` since the TypeScript image writer was deleted,
+and every builder describes deferred files with an `SDEF` section in the
+image body, so an image still carrying `KLZY` is a stale artifact to
+rebuild.
+
 The graphics ABI 53-58 entries below record unreleased development
-checkpoints on the compatibility branch. They do not replace main's
-ABI 53 above. The consolidated ABI 54 combines both contracts; normal
+checkpoints on the compatibility branch. At that checkpoint main used
+ABI 53; the earlier consolidated ABI 54 combined both contracts. Normal
 artifacts must be rebuilt from that combined source and snapshot.
 
 ### Development ABI 53 graphics ownership and renderer acknowledgement
@@ -2083,7 +2295,7 @@ all graphics interfaces developed under the earlier provisional numbers
 52-59. Those numbers remain historical evidence only. No old artifact is
 made compatible by renumbering or restamping it.
 
-Keep ABI 54 across implementation increments. Regenerate the full snapshot,
+This earlier ABI 54 consolidation is superseded by ABI 55 below. Regenerate the full snapshot,
 C/TypeScript declarations and standalone resolver from the combined source.
 Normal SDK/kernel/program/package/image artifacts must be rebuilt together
 before the complete consumer/conformance phase. The independent GL
@@ -2094,9 +2306,23 @@ and a flush acknowledgement. Fence requests carry a client-known nonzero
 u32 token and return four u32 words (status, echoed token, signaled bit,
 reply magic). Status/release authorize retained object sessions without a
 current context; creation retains live-display/current-thread checks. No
-marshalled structure or kernel-import signature changes. ABI 54 remains
-fixed for this unpublished combined effort as requested by the user.
+marshalled structure or kernel-import signature changes. The combined
+effort now uses ABI 55 after integration of main ABI 54.
 
+
+### ABI 55 graphics compatibility combined with main
+
+ABI 55 combines the graphics interfaces above with main ABI 54, including
+the kernel-owned wait and executable-admission changes in PR #1581. Keep
+55 across implementation increments of this unpublished graphics effort.
+The independent GL operation table remains 17. Fork-state version 21
+combines graphics inheritance with main's executable OFD inheritance;
+both preceding branches independently used fork-state version 20.
+
+Regenerate the complete snapshot, C/TypeScript declarations and standalone
+resolver, then rebuild normal SDK, kernel, program, package and image
+artifacts. Previous ABI 54 test results remain historical evidence and
+do not validate this combined implementation.
 
 ## The snapshot
 
@@ -2180,6 +2406,15 @@ captures:
   globals whose name matches `ABI_VALUE_CAPTURE_PREFIXES` (today
   `__abi_*`), the initial value is captured as well — so a change to
   an ABI-flag constant moves the snapshot directly.
+- `kernel_imports` — every entry of the built kernel's import section:
+  each `env.host_*` function with its rendered signature, and the shared
+  `env.memory` with its page limits. This is the contract every host
+  (Node.js, browser, the native test host) must satisfy before the
+  kernel can be instantiated. It is read from the artifact, not from the
+  `extern` block in `crates/kernel/src/wasm_api.rs`: an import nothing
+  calls is dead-code-eliminated, and a host is not required to supply an
+  import the module does not have. See [Imports classify in
+  reverse](#imports-classify-in-reverse).
 - `export_deny` — the filter lists themselves (`deny_prefixes`,
   `deny_exact`, `value_capture_prefixes`). Making the filter part of
   the snapshot means adding or removing a pattern is itself an
@@ -2259,8 +2494,38 @@ Fails if the committed snapshot drifts from the source. If the snapshot
 changed versus `origin/main` without a matching `ABI_VERSION` bump, CI
 classifies the diff and accepts only the additive cases listed above.
 
+### Imports classify in reverse
+
+`kernel_imports` is the one section where adding an entry is **breaking**
+and removing one is **compatible**. That is the direction of the
+dependency, not a special case. An export is something the kernel
+*offers*: a host may use it or not, so a new one harms nobody and a
+deleted one breaks whoever used it. An import is a requirement the kernel
+*places on the host*: a host built against the old contract has no
+implementation for a newly added one, so instantiation fails outright,
+while a host still offering an import the kernel no longer asks for is
+unaffected, because WebAssembly resolves imports by name. Changing an
+import's signature, or the imported memory's shape, is breaking.
+
+So **adding an `env.host_*` import fails the ABI check** unless
+`ABI_VERSION` is bumped in the same change. That is deliberate: growing
+the host surface is what the Rust-first migration is trying not to do, and
+it should cost a conversation rather than depend on a reviewer noticing a
+new line. Before this section existed, widening `host_proc_read_bytes` /
+`host_proc_write_bytes` from a 32-bit to a 64-bit address produced no
+snapshot diff at all. The section's first appearance is a pure addition
+and does not itself change the ABI.
+
 ## What the check does **not** catch
 
+- **wasm64 import signatures.** `kernel_imports` is recorded from the
+  wasm32 kernel, the only one `scripts/check-abi-version.sh` builds.
+  Imports declared with a pointer-width type (`usize`, `isize`, or a raw
+  pointer) render as `i32` there and would render as `i64` on a wasm64
+  kernel, so a drift only a wasm64 kernel would show is invisible.
+- **Imports the kernel declares but never calls.** They are not in the
+  artifact, so adding a *declaration* is invisible until something calls
+  it.
 - **Semantic changes with the same signature.** Reinterpreting a
   syscall argument, changing blocking behavior, or changing an errno
   value will not show up in the snapshot. Reviewers must catch these.

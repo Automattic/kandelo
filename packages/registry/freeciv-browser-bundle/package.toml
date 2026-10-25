@@ -1,7 +1,7 @@
 kind = "program"
 name = "freeciv-browser-bundle"
 version = "3.2.6"
-kernel_abi = 50
+kernel_abi = 52
 arches = ["wasm32"]
 depends_on = ["freeciv@3.2.6"]
 
@@ -31,3 +31,7 @@ install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run thro
 name = "freeciv"
 wasm = "freeciv.zip"
 fork_instrumentation = "disabled"
+
+[[runtime_files]]
+artifact = "sessions.json"
+guest_path = "/usr/share/kandelo/sessions/freeciv-browser-bundle.json"

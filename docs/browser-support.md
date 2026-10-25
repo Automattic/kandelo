@@ -125,11 +125,27 @@ Service Worker ──MessagePort──> Kernel Worker       │
 - **Signal-wait engine matrix**: the real BrowserKernel worker path runs the
   wasm32 ppoll/pselect interruption matrix and wait4 unknown-option rejection
   on Chromium, Firefox, and WebKit. Chromium and Firefox also run its wasm64
-  counterpart. The current Playwright WebKit engine rejects the Memory64
-  module at `WebAssembly.validate`, so WebKit's truthful boundary is wasm32
-  rather than a skipped or simulated wasm64 success. Browser injection waits
+  counterpart. That recorded signal-wait scope is not a current WebKit
+  Memory64 capability limit: Playwright WebKit 26.6 validates Memory64 and
+  passes the native memory64 fork-process cases described below. WebKit's
+  memory64 signal-wait matrix remains a separate coverage gap. Browser injection waits
   on guest-published atomic gates in the real process memory, so acceptance
   does not depend on a fixed event-loop delay.
+- **Native fork process matrix**: the native instrumenter runs the
+  same SDK/libc fixtures on memory32 and memory64 through real BrowserKernel
+  workers in Chromium 153, Firefox 155 and Playwright WebKit 26.6. The matrix
+  checks direct/indirect and loop forks, stack carryovers, recursive children,
+  signals, pthread entry and allocation-failure recovery. At ABI 53 integration
+  commit `d2aaebe3a4`, all 57 checks passed:
+  52 positive guest scenarios, three Memory64 probes and two explicit WebKit
+  stack-boundary checks, with no skips. WebKit exhausts its native stack on
+  this fixture's 4,096-call shape. The test requires the exact stack diagnostic
+  and checks root allocation recovery first. A separate 256-call shape retains sixteen live
+  128-bit values per activation, forcing another 64 KiB continuation allocation
+  while fitting the engine stack. It checks later ENOMEM, parent usability,
+  absence of phantom children, page reuse, recovery fork and carry-value
+  preservation on every engine and pointer width. This is Playwright coverage,
+  not a claim of native Safari testing or Codex execution.
 - **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel's filesystem. Programs are baked into the VFS image at build time, or are lazy files the image names and the host fetches on first exec. Symlinks are used for multicall binaries (e.g., coreutils).
 - **dinit for service supervision**: Multi-process demos (nginx, redis,
   mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and
@@ -459,9 +475,9 @@ Located in `apps/browser-demos/pages/`:
 | nginx-php | nginx + PHP-FPM | dinit | FastCGI, fork workers |
 | nginx-python | nginx + Python (wsgiref) | dinit | Reverse proxy to a standard-library WSGI JSON API over SQLite |
 | mariadb | MariaDB 10.5 | dinit | SQL database with threads (Aria/InnoDB) |
-| redis | Redis 7.2 | dinit | In-memory store with threads |
+| redis | Redis 7.2 + PHP CLI | dinit | Shared voting board plus phpCacheAdmin command console/key browser on 8080, backed by Redis on 6379; share through activity invitations |
 | wordpress | nginx + PHP-FPM + WP | dinit | Full stack with SQLite |
-| lamp | MariaDB + nginx + PHP-FPM + WP | dinit | Full LAMP stack |
+| lamp | MariaDB + nginx + PHP-FPM + WP | dinit | Full LAMP stack; website and interactive MySQL connection invitations to the same WordPress database |
 | mariadb-test | MariaDB + mysqltest | dinit + spawn | Playwright-driven mysql-test runner |
 | benchmark | (per-suite) | legacy spawn | Micro-benchmarks + WordPress + Erlang ring |
 | network | bash + GNU Netcat + curl | `kernel.boot` x 3 | Boots multiple local Kandelo machines and verifies UDP datagrams, TCP streams, and HTTP over virtual TCP |
@@ -1695,8 +1711,13 @@ neutralizes this class of issue. It hooks `Blob`/`URL.createObjectURL` and the
 document, which the service worker *does* control). It is idempotent and a no-op
 unless a text/html blob URL is used as an iframe src. The service worker inlines
 it (via the `"__BLOB_IFRAME_INTERCEPTOR__"` build-time placeholder, mirroring
-`"__CORS_PROXY_CONFIG__"`) into the `<head>` of every bridged HTML document, so it
-applies to all app demos, not just WordPress.
+`"__CORS_PROXY_CONFIG__"`) into the `<head>` of bridged HTML documents without
+a Content Security Policy, so it applies to app demos, not just WordPress.
+Documents carrying a
+`Content-Security-Policy` response header retain their declared script policy:
+the bridge does not inject the inline helper or change that header. The
+blob-iframe adapter is therefore unavailable in those documents; ordinary
+HTML, assets, requests and same-origin iframes still use the bridge.
 
 ## VFS Images
 
@@ -1792,16 +1813,65 @@ Browser demos use pre-built **VFS images** — binary snapshots of a filesystem 
    loads it with `kernel_rootfs_load_image`, refusing an image whose ABI,
    seals or deferred-file sections it cannot verify. Files the image only
    names (lazy files and lazy archives) are fetched by the host on first
-   read through `host_fetch_deferred`; relative URLs resolve against
-   `lazyUrlBase`, and `lazyUrlMap` replaces individual URLs without
-   rewriting the image.
+   read through `host_fetch_deferred`. The image is never rewritten: an
+   address in the image-owned grammar (`binaries/programs/...` or
+   `kandelo-lazy:programs/...`, each naming its package-mirror path)
+   resolves to its package member under `lazyAssetDirectory`, `lazyUrlMap` can still pin an
+   individual address, and any other relative address resolves against
+   `lazyUrlBase`.
 
-Static browser asset tables stay within the package closure they represent.
-The canonical rootfs table follows `images/rootfs/PACKAGES.toml`; optional
-utilities belong to their owning image's table. An unrelated static import
-can prevent a SourceOnly deployment from loading its browser modules before
-the selected image even boots, regardless of whether that image executes
-the optional program.
+A deployment serves exactly what its images reference, and the browser app
+keeps no list of lazy files. Each address an image records names its
+package member (`normalizeImageOwnedLazyReference` in
+`host/src/vfs/vfs-asset-group-reference.ts`), and the kernel worker
+resolves it under the lazy-asset directory the page passes
+(`imageOwnedLazyAssetDirectory` in
+`apps/browser-demos/lib/init/image-owned-runtime-urls.ts`):
+
+- In a production deployment that directory is the authenticated asset
+  group. `scripts/build-local-vfs-asset-group.ts` opens each shipped image,
+  lists its lazy entries, and stages exactly those bodies, checked by size
+  and SHA-256.
+- On the Vite dev server it is the `@kandelo-lazy/` route
+  (`apps/browser-demos/vite/dev-lazy-assets.ts`). The route passes the
+  member path to the same binary resolver the Node host uses for lazy
+  assets (the pinned SourceOnly store under `./run.sh browser`), and only
+  that exact answer is served.
+- An image that is not a product activation, such as a `?vfs=` URL image,
+  resolves its lazy bodies under the deployment's own asset group, when
+  there is one; the image's digests still decide whether bytes are
+  accepted.
+- A production build without an asset group has no lazy-asset directory.
+  Addresses then resolve against the deployment base as written, so a body
+  it does not serve fails as an I/O error on the read that needs it. Use
+  `./run.sh build-browser`, which builds the group.
+- The Node host resolves lazy assets through the binary resolver, which
+  applies the same rule. `NodeKernelHost` also accepts the directory as
+  `rootfsLazyAssetDirectory`, the peer of the browser option, for
+  transports keyed by URL such as `rootfsLazyAssets`.
+
+The image records each body's size and digest, and the kernel checks them
+on fetch, so where the deployment serves a body from is transport, not
+trust. Adding a package to an image needs only the image recipe and the
+package's entry in the supported set.
+
+Binaries the browser app imports directly (`@binaries/...`) are the other
+consumer. Each must be an output of a package in
+`packages/sets/local-supported.toml`;
+`scripts/check-browser-binary-supply.ts` enforces this, and
+`tests/package-system/browser-binary-supply.test.ts` runs it in CI. A
+default `./run.sh local-build` selects the owners of those imports beside
+the active products. After every supported-tree build the engine also
+checks the published projection: each browser import, the kernel, rootfs
+and image-writer artifacts, and every lazy body each product image
+references must be present at its declared size, or setup fails naming the
+path and its consumer. Optional gallery globs are outside this rule; their
+artifacts are optional by design.
+
+Machine-booting Playwright specs treat a missing image the same way.
+`gotoMachineOrSkip` fails when the machine's product is one the supported set
+declares, and any Vite error overlay fails the spec with its message. Only a
+product outside the supported set is skipped as optional content.
 
 The canonical package shell has a 512 MiB filesystem ceiling. Products that
 copy that shell and add their own application tree use a separate 768 MiB
@@ -2413,7 +2483,7 @@ Node, WordPress, and LAMP are optional demo profiles. Their VFS asset imports
 are resolved only after that profile is requested; loading the main shell does
 not require or fetch those image bytes. If the selected profile's local or
 resolver-managed artifact is absent, the browser reports that exact missing
-image and asks the user to run `./run.sh fetch`.
+image and asks the user to run `./run.sh local-build`.
 
 Normal Vite development resolves exact optional binary URL globs through
 the verified binary resolver, including the implicit SourceOnly tree.
@@ -2661,11 +2731,13 @@ Never move a group within an already completed build. Its complete group must
 remain beneath the owning prefix; moving only an image or asset also breaks
 the authenticated inventory.
 
-The shell's lazy SDK archive maps to
-`assets/programs/wasm32/kandelo-sdk.zip`. Its LÖVE examples archive maps to
+Every lazy address names its package-mirror path, so it maps to an asset
+by rule: the shell's SDK archive, `kandelo-lazy:programs/wasm32/kandelo-sdk.zip`,
+maps to `assets/programs/wasm32/kandelo-sdk.zip`, and its LÖVE examples
+archive, `kandelo-lazy:programs/love/share/love-examples.zip`, maps to
 `assets/programs/wasm32/love/share/love-examples.zip`, preserving the
-package's runtime-file location. Both names are accepted by the grouped
-reference grammar; other unknown archive names remain invalid.
+package's runtime-file location. An address outside that grammar is
+invalid.
 
 Each output places `service-worker.js` at its prefix root. The bootstrap
 registers that exact script with its own script-directory scope (`/a/` or
@@ -2783,6 +2855,45 @@ Outbound internet traffic leaves through the fetch and TLS bridges, which the gu
 
 ### Purpose-checked browser peer connections
 
+The network panel can also consume optional
+[package-declared offer and join procedures](package-sessions.md). Hosts choose
+an optional activity and its setup, then create a typed invitation in the
+same form that creates a room. Existing rooms can be kept or replaced, and
+the panel also offers Leave. Rooms suggest editable, playful random names.
+Creating an invitation opens a separate active-session dialog and attempts
+to copy its final link; Copy link and Change activity remain available there.
+The dialogs keep a stable responsive frame with a scrolling body. The
+session name precedes activity and status, with vertical space around
+prominent status cards. Descriptions
+and package details are collapsed under About this activity. Package-declared
+warnings appear only for the selected activity, data source, menu choice or
+level; selecting a different option removes the old warning. The
+invitation preview applies the same stored/system theme before host setup,
+so it does not change palettes when the app mounts. New
+invitations include bounded display details so recipients see activity and
+host settings, participant prompts and acquisition hints even before host
+initialization finishes. Controls remain disabled until those details match
+the installed package. Older links populate their prompts after boot. A
+prominent readiness card explains the wait before joining. Copy confirmation
+and data-transfer progress use the same card, with actual received bytes,
+a percentage and a progress bar during transfers. A replacement prepares its data before cancelling the
+previous activity's owned terminal family and awaiting its workers; other terminals still require
+their own shutdown. Declared data dependencies can be sent over
+WebRTC or supplied as acquisition hints and verified local-file choices.
+Doom and Quake offer pinned shareware/free data or a file picker even on a
+bare shell. Their starting-level pickers use catalogs from pinned data or
+bounded directory inspection of an uploaded WAD/PAK. Freeciv uses its bundled data and native pregame lobby. Service
+images can share their running website or database; those invitations select
+the standard shell client image and omit the server’s demo profile.
+An actual framebuffer owner also enables the Demo view on a shell-only
+profile, so these activities can display their output without a game profile. Recipients provide
+their own participant settings and explicitly join before their copy starts
+in a fresh terminal. These declarations are installed package runtime files;
+the browser does not hardcode termchat or Doom launch commands. Activity links
+defer the selected image's shell auto-command and init target while preparing
+its resources. KMS activities mount and measure a real scanout before launch;
+they become visible when the guest acquires the display device.
+
 Network sessions carry IPv4 multicast as well as unicast and broadcast, so
 [termchat](termchat.md) can discover other running instances and exchange
 messages/files through ordinary guest sockets. Membership and filtering stay
@@ -2806,7 +2917,14 @@ machine profiles. The machine-identity source guard admits only the named
 `PeerNetworkGame` selector type; image-owned machine definitions still belong
 in `/etc/kandelo/demo.json`.
 
-Both use `purpose: "network"` peer connections. The main thread transfers
+Both use `purpose: "network-activities-v2"` peer connections, including a
+separate reliable `activity-data-v1` channel for explicitly offered data
+and `activity-offers-v1` for bounded host activity discovery. A joined
+client’s Change activity menu uses only alternative host offers, omitting
+its current activity and hiding the button when none remain. New session
+separately opens local hosting choices and replaces the client’s room. See
+[invitation compatibility and discovery](package-sessions.md#invitation-compatibility-and-discovery).
+This channel never exposes a general guest-file read service. The main thread transfers
 framed bytes between RTC channels and bounded native MessagePorts. Guest
 programs use ordinary IPv4 UDP and TCP sockets; DNS names `host` and
 `peer-N` resolve through the worker's segment membership, and broadcasts

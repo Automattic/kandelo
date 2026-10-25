@@ -1,0 +1,56 @@
+{
+  "kind": "kandelo-package-sessions",
+  "version": 1,
+  "package": "python-browser-bundle",
+  "packageVersion": "3.13.3",
+  "offers": [
+    {
+      "id": "server",
+      "title": "Python file server",
+      "description": "Serve the selected directory to people in this room on port 8080. Guests open it in the Kandelo web preview.",
+      "join": "participant",
+      "attachExisting": true,
+      "fields": [
+        {
+          "id": "directory",
+          "label": "Directory to serve",
+          "type": "text",
+          "default": "/home/maker",
+          "maxLength": 128
+        }
+      ],
+      "launch": {
+        "executable": "/usr/bin/python3",
+        "cwd": "/",
+        "args": [
+          "-m",
+          "http.server",
+          "8080",
+          "--bind",
+          "0.0.0.0",
+          "--directory",
+          {
+            "field": "offer.directory"
+          }
+        ],
+        "requires": [],
+        "surface": "terminal"
+      },
+      "requiresHost": true
+    }
+  ],
+  "joins": [
+    {
+      "id": "participant",
+      "title": "Open Python file server",
+      "description": "Connect to the host on this network.",
+      "fields": [],
+      "launch": {
+        "surface": "web",
+        "host": "network.host",
+        "port": 8080,
+        "path": "/"
+      }
+    }
+  ]
+}

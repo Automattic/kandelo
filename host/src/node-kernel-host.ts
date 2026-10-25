@@ -31,11 +31,11 @@ import {
 } from "node:worker_threads";
 import { resolveBinary } from "./binary-resolver";
 import { maybeDecompressImage } from "./vfs/vfs-image-transport";
+import { resolveImageOwnedLazyAsset } from "./vfs/vfs-asset-group-reference";
 import type {
   HostDiagnostic,
   MainToKernelMessage,
   KernelToMainMessage,
-  ResolveExecRequestMessage,
   DestroyProgressEvent,
 } from "./node-kernel-protocol";
 import type { OwnedJobRead } from "./owned-jobs";
@@ -109,25 +109,6 @@ export interface NodeKernelHostOptions {
   /** Size of the data buffer for syscall data transfer (default: 65536).
    *  Increase for programs that do large pwrite() calls (e.g. InnoDB). */
   dataBufferSize?: number;
-  /**
-   * Virtual path → immutable host filesystem generation for the Task 12 spawn
-   * preflight. Exec does not consult this map; its authority is an executable
-   * already present in the kernel-owned VFS.
-   */
-  execPrograms?: Record<string, string>;
-  /**
-   * Virtual path → exact program bytes for the Task 12 spawn preflight. Exec
-   * does not consult this map; its authority is an executable already present
-   * in the kernel-owned VFS.
-   *
-   * Ordinary ArrayBuffer-backed bytes are copied during init and owned by the
-   * worker for its complete lifetime; concurrently mutable SharedArrayBuffer
-   * views are rejected. Use this for mutable build outputs; `execPrograms` is
-   * suitable only when its host path names a generation that remains immutable.
-   */
-  execProgramBytes?: Readonly<
-    Record<string, ArrayBuffer | Uint8Array<ArrayBuffer>>
-  >;
   /** Attach a real-TCP backend in the worker so wasm programs can dial
    *  external hosts via Node `net.Socket`. */
   enableTcpNetwork?: boolean;
@@ -156,11 +137,6 @@ export interface NodeKernelHostOptions {
    *  polling. Kernel-internal fork and posix_spawn events carry `ppid`;
    *  the synthetic root spawn does not. */
   onProcessEvent?: (event: { kind: "spawn" | "exec" | "exit"; pid: number; ppid?: number; exitStatus?: number }) => void;
-  /**
-   * Called when the worker can't resolve an exec path locally.
-   * Return the program bytes or null if not found.
-   */
-  onResolveExec?: (path: string) => ArrayBuffer | null | Promise<ArrayBuffer | null>;
   /**
    * Opt in to mount-based VFS for this kernel boot.
    *
@@ -193,6 +169,14 @@ export interface NodeKernelHostOptions {
    * This is the Node peer of BrowserKernel's lazyUrlBase contract.
    */
   rootfsLazyUrlBase?: string;
+  /**
+   * Resolve every image-owned lazy address (`binaries/programs/...`,
+   * `kandelo-lazy:programs/...`) to its package member under this absolute
+   * directory URL before transport. The Node peer of BrowserKernel's
+   * lazyAssetDirectory contract; useful with `rootfsLazyAssets`, whose
+   * entries are keyed by canonical HTTPS URLs.
+   */
+  rootfsLazyAssetDirectory?: string;
   /**
    * Exhaustive exact URL-to-byte transport for lazy entries in rootfsImage.
    * Intended for offline and pre-publication acceptance: when set, unbound
@@ -315,20 +299,12 @@ export class NodeKernelHost {
     if (this.options.rootfsLazyUrlBase === "") {
       throw new Error("rootfsLazyUrlBase must not be empty");
     }
-    const execProgramBytes = snapshotExecProgramBytes(
-      this.options.execProgramBytes,
-    );
-    for (const path of Object.keys(execProgramBytes ?? {})) {
-      if (
-        Object.prototype.hasOwnProperty.call(
-          this.options.execPrograms ?? {},
-          path,
-        )
-      ) {
-        throw new Error(
-          `exec program ${JSON.stringify(path)} has both path and byte sources`,
-        );
+    if (this.options.rootfsLazyAssetDirectory !== undefined) {
+      if (rootfsImage === null) {
+        throw new Error("rootfsLazyAssetDirectory requires rootfsImage");
       }
+      // Validates an absolute directory URL, as the worker will use it.
+      resolveImageOwnedLazyAsset(this.options.rootfsLazyAssetDirectory, "kandelo-lazy:programs/probe");
     }
     const rootfsLazyAssets = this.options.rootfsLazyAssets === undefined
       ? undefined
@@ -475,13 +451,12 @@ export class NodeKernelHost {
             exchangeByteLimit: exchangeByteLimit(DEFAULT_KERNEL_MAX_PAGES),
             exchangeActivation: this.options.exchange?.activation ?? "on-demand",
           },
-          execPrograms: this.options.execPrograms,
-          execProgramBytes,
           rootfsImage: rootfsImage ?? undefined,
           rootfsMountSpec: this.options.rootfsMountSpec === undefined
             ? undefined
             : this.options.rootfsMountSpec.map((mount) => ({ ...mount })),
           rootfsLazyUrlBase: this.options.rootfsLazyUrlBase,
+          rootfsLazyAssetDirectory: this.options.rootfsLazyAssetDirectory,
           rootfsLazyAssets,
           rootfsLazyAssetSources,
           extraMounts: this.options.extraMounts,
@@ -495,7 +470,6 @@ export class NodeKernelHost {
           ...(rootfsLazyAssets ?? []).map(
             (asset) => asset.bytes.buffer as ArrayBuffer,
           ),
-          ...new Set(Object.values(execProgramBytes ?? {})),
         ];
         this.worker.postMessage(initMsg, transfer);
       });
@@ -824,13 +798,16 @@ export class NodeKernelHost {
    * the parsed response. Bypasses real TCP by using the kernel's injected
    * connection path directly. Prototype API.
    *
+   * With `options.hostname`, use this machine's Kandelo session TCP network
+   * instead. External physical-host destinations are not accepted by that path.
+   *
    * The in-kernel server must already be listening on `port`. Each call
    * opens a fresh injected connection.
    */
   async fetchInKernel(
     port: number,
     request: HttpRequest,
-    options?: { timeoutMs?: number; maxResponseBytes?: number },
+    options?: { timeoutMs?: number; maxResponseBytes?: number; hostname?: string },
   ): Promise<HttpResponse> {
     const requestId = this._nextRequestId++;
     return this.request(requestId, {
@@ -840,6 +817,7 @@ export class NodeKernelHost {
       request,
       timeoutMs: options?.timeoutMs,
       maxResponseBytes: options?.maxResponseBytes,
+      hostname: options?.hostname,
     }) as Promise<HttpResponse>;
   }
 
@@ -889,24 +867,6 @@ export class NodeKernelHost {
       type: "get_wasm_module_cache_stats",
       requestId,
     }) as WasmModuleCacheStats;
-  }
-
-  /**
-   * Return the retained capacity of the kernel-owned large-spawn region.
-   * Zero means no spawn has exceeded the ordinary channel-sized scratch.
-   */
-  async getSpawnScratchCapacity(): Promise<number> {
-    const requestId = this._nextRequestId++;
-    const result = await this.request(requestId, {
-      type: "get_spawn_scratch_capacity",
-      requestId,
-    });
-    if (!Number.isSafeInteger(result) || result < 0) {
-      throw new Error(
-        `kernel worker returned an invalid spawn scratch capacity: ${String(result)}`,
-      );
-    }
-    return result;
   }
 
   /**
@@ -1466,9 +1426,6 @@ export class NodeKernelHost {
       case "pty_output":
         this.options.onPtyOutput?.(msg.pid, msg.data);
         break;
-      case "resolve_exec":
-        this.handleResolveExec(msg);
-        break;
       case "lazy_download":
         this.emitLazyDownload(msg.event);
         break;
@@ -1519,18 +1476,6 @@ export class NodeKernelHost {
       }
     }
   }
-
-  private async handleResolveExec(msg: ResolveExecRequestMessage): Promise<void> {
-    let programBytes: ArrayBuffer | null = null;
-    if (this.options.onResolveExec) {
-      programBytes = await this.options.onResolveExec(msg.path);
-    }
-    this.sendToWorker({
-      type: "resolve_exec_response",
-      requestId: msg.requestId,
-      programBytes,
-    });
-  }
 }
 
 // ── Module-level helpers ──
@@ -1549,36 +1494,6 @@ function mergeEnv(env: string[]): string[] {
 function loadKernelWasm(): ArrayBuffer {
   const buf = readFileSync(resolveBinary("kernel.wasm"));
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-}
-
-function snapshotExecProgramBytes(
-  sources: NodeKernelHostOptions["execProgramBytes"],
-): Record<string, ArrayBuffer> | undefined {
-  if (sources === undefined) return undefined;
-  const snapshots: Record<string, ArrayBuffer> = Object.create(null);
-  const copies = new WeakMap<object, ArrayBuffer>();
-  for (const [path, source] of Object.entries(sources)) {
-    if (
-      !(source instanceof ArrayBuffer)
-      && (!(source instanceof Uint8Array)
-        || !(source.buffer instanceof ArrayBuffer))
-    ) {
-      throw new Error(
-        `exec program ${JSON.stringify(path)} bytes must use an ordinary ArrayBuffer`,
-      );
-    }
-    let snapshot = copies.get(source);
-    if (snapshot === undefined) {
-      const bytes = source instanceof ArrayBuffer
-        ? new Uint8Array(source)
-        : source;
-      snapshot = new ArrayBuffer(bytes.byteLength);
-      new Uint8Array(snapshot).set(bytes);
-      copies.set(source, snapshot);
-    }
-    snapshots[path] = snapshot;
-  }
-  return snapshots;
 }
 
 /**

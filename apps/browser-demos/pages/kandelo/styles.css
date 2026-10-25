@@ -4687,9 +4687,19 @@
 .knetwork-button[data-state="hosting"]::after,
 .knetwork-button[data-state="joining"]::after { background: var(--k-warn); }
 .knetwork-button[data-state="error"]::after { background: var(--k-err); }
-.knetwork { width: min(520px, 100%); }
+/* Keep the frame anchored while fields, progress, and session state change. */
+.knetwork { width: min(520px, 100%); height: min(680px, calc(100dvh - 80px)); }
+.knetwork .kshare-hd { flex-shrink: 0; }
+.knetwork .kshare-body { flex: 1; scrollbar-gutter: stable; }
+@media (max-width: 600px), (max-height: 500px) {
+  .kshare-backdrop:has(.knetwork) { padding: 12px; }
+  .knetwork { height: min(680px, calc(100dvh - 24px)); max-height: calc(100dvh - 24px); }
+}
+.knetwork .kshare-actions { flex-wrap: wrap; }
+.knetwork-status strong { min-width: 0; overflow-wrap: anywhere; }
 .knetwork form { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
 .knetwork form .kshare-btn-primary { margin-left: 0; }
+.knetwork-client-activity { display: flex; flex-direction: column; align-items: flex-start; gap: 16px; }
 .knetwork-actions { display: flex; gap: 8px; }
 .knetwork-status {
   display: flex;
@@ -4712,8 +4722,40 @@
 .knetwork-hint { margin-top: 6px; color: var(--k-text-muted); line-height: 1.45; }
 .knetwork-detail { margin-top: 4px; color: var(--k-text-faint); font-family: var(--k-font-mono); font-size: 11px; }
 .knetwork-note { margin: 0; color: var(--k-text-muted); font-size: 12px; line-height: 1.45; }
+.knetwork-summary { flex-shrink: 0; padding: 16px 22px 0; }
+.knetwork-summary strong { font-size: 16px; }
+.knetwork-notice-slot { flex-shrink: 0; padding: 16px 22px; }
+.knetwork-notice {
+  padding: 16px;
+  border: 1px solid color-mix(in oklch, var(--k-accent) 45%, var(--k-border));
+  border-inline-start: 4px solid var(--k-accent);
+  border-radius: var(--k-radius-sm);
+  background: color-mix(in oklch, var(--k-accent) 10%, var(--k-surface));
+  color: var(--k-accent-ink);
+}
+.knetwork-notice[data-tone="success"] {
+  border-color: color-mix(in oklch, var(--k-ok) 45%, var(--k-border));
+  border-inline-start-color: var(--k-ok);
+  background: color-mix(in oklch, var(--k-ok) 10%, var(--k-surface));
+  color: var(--k-ok-ink);
+}
+.knetwork-notice[data-tone="error"] {
+  border-color: color-mix(in oklch, var(--k-err) 45%, var(--k-border));
+  border-inline-start-color: var(--k-err);
+  background: color-mix(in oklch, var(--k-err) 10%, var(--k-surface));
+  color: var(--k-err-ink);
+}
+.knetwork-notice-message { display: flex; gap: 10px; align-items: baseline; font-size: 18px; line-height: 1.4; }
+.knetwork-notice-icon { flex-shrink: 0; font-weight: 700; }
+.knetwork-notice-detail { margin: 6px 0 0 28px; color: var(--k-text); font-size: 13px; line-height: 1.4; }
+.knetwork-transfer { margin-top: 12px; }
+.knetwork-transfer-values { display: flex; align-items: baseline; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.knetwork-transfer-values strong { font-size: 22px; font-variant-numeric: tabular-nums; }
+.knetwork-transfer-values span { color: var(--k-text); font-size: 13px; font-variant-numeric: tabular-nums; }
+.knetwork-transfer progress { display: block; width: 100%; height: 12px; accent-color: var(--k-accent); }
 .knetwork-field { display: flex; flex-direction: column; gap: 4px; width: 100%; color: var(--k-text-muted); font-size: 12px; }
-.knetwork-field input {
+.knetwork-field input:not([type="checkbox"]),
+.knetwork-field select {
   box-sizing: border-box;
   width: 100%;
   padding: 8px 10px;
@@ -4723,6 +4765,19 @@
   color: var(--k-text);
   font: 13px var(--k-font-ui);
 }
+.knetwork-field input[type="checkbox"] { width: auto; margin: 0 6px 0 0; accent-color: var(--k-accent); }
+.knetwork-field select {
+  appearance: none;
+  padding-inline-end: 36px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='m4 6 4 4 4-4' fill='none' stroke='%23877b69' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+}
+.knetwork-metadata { display: grid; gap: 6px; }
+.knetwork-details { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 4px 16px; margin: 0; font-size: 12px; }
+.knetwork-details dt { color: var(--k-text-muted); }
+.knetwork-details dd { margin: 0; overflow-wrap: anywhere; }
+@media (forced-colors: active) { .knetwork-field select { appearance: auto; background-image: none; } }
 .knetwork-members { list-style: none; margin: 0; padding: 0; }
 .knetwork-members li {
   display: flex;

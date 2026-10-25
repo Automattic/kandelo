@@ -1,3 +1,5 @@
+import { SessionHttpClient } from "./session-http";
+import type { HttpRequest, HttpResponse, SendHttpRequestOptions } from "./in-kernel-http";
 import type {
   NetworkAddress,
   NetworkIO,
@@ -275,6 +277,18 @@ export class SessionNetwork implements NetworkIO {
  */
 export class RemoteSegmentRuntime {
   private session?: SessionNetwork;
+  private http = new SessionHttpClient();
+
+  /** HTTP over this computer’s actual Kandelo network, never the physical host network. */
+  fetchHttp(hostname: string, port: number, request: HttpRequest, options?: SendHttpRequestOptions): Promise<HttpResponse> {
+    const session = this.requireSession();
+    if (!session.attached) return Promise.reject(new Error("No Kandelo network session is connected"));
+    const numeric = /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(hostname) ? hostname.split(".").map(Number) : null;
+    if (numeric?.some(octet => octet > 255)) return Promise.reject(new Error("Invalid Kandelo network address"));
+    const address = numeric ? new Uint8Array(numeric) : session.getaddrinfo(hostname);
+    if (!RemoteVirtualNetwork.routes(address)) return Promise.reject(new Error("HTTP destination is outside the Kandelo network"));
+    return this.http.fetch(session, address, port, request, options);
+  }
   private state: RemoteSessionState = "offline";
   private lastDisconnect: string | null = null;
   private generation = 0;
@@ -367,6 +381,7 @@ export class RemoteSegmentRuntime {
 
   /** Leave the session. A host leaving ends it for every member. */
   leave(): void {
+    this.http.close();
     this.generation++;
     this.session?.detach();
     this.state = "offline";

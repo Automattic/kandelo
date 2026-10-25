@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { zipSync } from "fflate";
 import { afterEach, describe, expect, it } from "vitest";
@@ -30,6 +30,7 @@ import {
   SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES,
 } from "../../images/vfs/scripts/build-source-rootfs-shell-image";
 import { SHELL_LAZY_BINARY_SPECS, shellLazySpecDependency } from "../../images/vfs/lib/init/shell-binaries";
+import { SHELL_SESSION_PACKAGES, SHELL_SESSION_HELPERS } from "../../images/vfs/scripts/package-session-files";
 import {
   NCURSES_TERMINFO_RUNTIME_FILE,
   SHELL_CA_BUNDLE,
@@ -328,12 +329,17 @@ function fixturePaths(root: string) {
     mkdirSync(dirname(artifact), { recursive: true });
     writeFileSync(artifact, `${spec.id} fixture`);
   }
+  for (const name of SHELL_SESSION_PACKAGES) {
+    for (const artifact of ["sessions.json", ...SHELL_SESSION_HELPERS[name] ?? []]) {
+      writeFileSync(join(dependencyRoots.get(name)!, artifact), readFileSync(join(repoRoot, "packages/registry", name, artifact)));
+    }
+  }
   for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {
     const prefix = `programs/${spec.dependency}/`;
     const artifact = join(dependencyRoots.get(spec.dependency)!,
       spec.resolverPath.startsWith(prefix)
         ? spec.resolverPath.slice(prefix.length)
-        : spec.archiveUrl);
+        : basename(spec.resolverPath));
     mkdirSync(dirname(artifact), { recursive: true });
     writeFileSync(
       artifact,
@@ -459,6 +465,7 @@ describe("canonical source-rootfs shell", () => {
     expect(manifest.match(/^name = "[^"]+"$/gm)).toEqual([
       'name = "shell"',
       'name = "shell"',
+      'name = "cargo"',
       'name = "node"',
     ]);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
@@ -714,7 +721,7 @@ describe("canonical source-rootfs shell", () => {
     // (sdl2 and espeak-ng were once fetched by the page and written into the
     // image at browser boot; the image must not depend on that.)
     for (const [guest, url] of [
-      ["/usr/bin/fbdoom", "kandelo-lazy:programs/fbdoom.wasm"],
+      ["/usr/bin/fbdoom", "kandelo-lazy:programs/fbdoom/fbdoom.wasm"],
       ["/usr/local/bin/modeset", "kandelo-lazy:programs/modeset.wasm"],
       ["/usr/local/bin/sdl2", "kandelo-lazy:programs/sdl2.wasm"],
       ["/usr/bin/espeak-ng", "kandelo-lazy:programs/espeak-ng/espeak-ng.wasm"],
@@ -963,7 +970,7 @@ describe("canonical source-rootfs shell", () => {
     expect(composed.files.find((file) => file.path === "/usr/local/bin/love")?.uri)
       .toContain("programs/love/love.wasm");
     const loveArchive = composed.archives.find(
-      (archive) => archive.uri === "love-examples.zip",
+      (archive) => archive.uri === "kandelo-lazy:programs/love/share/love-examples.zip",
     );
     expect(loveArchive).toBeDefined();
     expect(composed.files).toContainEqual(expect.objectContaining({

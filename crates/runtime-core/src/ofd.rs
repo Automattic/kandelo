@@ -83,6 +83,30 @@ pub fn release_in_flight_ofd(id: OfdId) -> bool {
     }
 }
 
+/// Set when a descriptor close freed a process's open file description but
+/// could not tell whether that was the description's last reference on the
+/// machine (see `note_possibly_orphaned_ofd_locks`).
+static ORPHANED_OFD_LOCK_CHECK: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// A close freed this process's reference to an open file description whose
+/// backing is shared by every open of the same file (a tmpfs or rootfs
+/// inode, a procfs buffer, a synthetic file). The backing's own count says
+/// when the *file* is no longer open, not when this *description* is, so it
+/// cannot decide whether the description's OFD and flock locks must go: a
+/// fork-shared copy may still hold it, or an unrelated open of the same file
+/// may keep the backing alive long after this description is gone. The
+/// process table, which sees every process, decides
+/// (`ProcessTable::release_orphaned_ofd_locks`).
+pub fn note_possibly_orphaned_ofd_locks() {
+    ORPHANED_OFD_LOCK_CHECK.store(true, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Take the pending check, if a close asked for one since the last call.
+pub fn take_orphaned_ofd_lock_check() -> bool {
+    ORPHANED_OFD_LOCK_CHECK.swap(false, core::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn has_in_flight_ofd(id: OfdId) -> bool {
     in_flight_ofd_refs()
         .binary_search_by_key(&id, |(candidate, _)| *candidate)

@@ -24,7 +24,7 @@ use wasm_posix_shared::{
     abi,
     abi::extended_syscalls as syscall_numbers,
     channel_scalar::{self, ChannelResultKind},
-    process_snapshot_wire, Errno, KernelWaitResult, WasmDirent, WasmStat,
+    process_snapshot_wire, Errno, WasmDirent, WasmStat,
     WasmStatfs, WasmTimespec,
 };
 
@@ -222,7 +222,6 @@ unsafe extern "C" {
         mtime_nsec: i64,
         flags: u32,
     ) -> i32;
-    fn host_waitpid(pid: i32, options: u32, status_ptr: *mut i32) -> i32;
     fn host_net_connect(handle: i32, addr_ptr: *const u8, addr_len: u32, port: u32) -> i32;
     fn host_net_connect_from(
         handle: i32,
@@ -286,7 +285,6 @@ unsafe extern "C" {
     /// (Workstream H4: the interface table, MAC, flags, and struct layout
     /// are kernel-owned; the assignment is the one fact only the host knows).
     fn host_network_interface(buf_ptr: *mut u8) -> i32;
-    fn host_futex_wake(addr: usize, count: u32) -> i32;
     fn host_is_thread_worker() -> i32;
     fn host_bind_framebuffer(
         pid: i32,
@@ -341,6 +339,15 @@ unsafe extern "C" {
     fn host_kms_set_master(pid: i32);
     fn host_kms_drop_master(pid: i32);
     fn host_proc_write_bytes(pid: i32, addr: u64, src_ptr: *const u8, len: u32) -> i32;
+    /// Publish a parked request's decided result into the channel at
+    /// `channel_addr` of process `pid`: write `ret` and `errno`, store
+    /// COMPLETE, and wake the waiting task -- what a host does when it
+    /// publishes a drained completion. 0 on success, a negated errno when the
+    /// process or channel cannot be reached, or the host declines (a cancel
+    /// pending for that channel, or a channel it does not hold as parked);
+    /// the kernel then queues the result for the host as usual. See
+    /// `publish_transfer_directly`.
+    fn host_publish_wait_completion(pid: i32, channel_addr: u64, ret: i64, errno: u32) -> i32;
     fn host_proc_read_bytes(pid: i32, addr: u64, dst_ptr: *mut u8, len: u32) -> i32;
     fn host_kms_mode_info(connector_id: u32, out_ptr: *mut u8);
     /// Writes the connector's physical size, two u32s (width, height) in
@@ -861,21 +868,6 @@ impl HostIO for WasmHostIO {
         }
     }
 
-    fn host_waitpid(&mut self, pid: i32, options: u32) -> Result<(i32, i32), Errno> {
-        let mut status: i32 = 0;
-        gkl_release();
-        let result = unsafe { host_waitpid(pid, options, &mut status) };
-        gkl_acquire();
-        if result < 0 {
-            match Errno::from_u32((-result) as u32) {
-                Some(e) => Err(e),
-                None => Err(Errno::EIO),
-            }
-        } else {
-            Ok((result, status))
-        }
-    }
-
     fn host_net_connect(&mut self, handle: i32, addr: &[u8], port: u16) -> Result<(), Errno> {
         let result =
             unsafe { host_net_connect(handle, addr.as_ptr(), addr.len() as u32, port as u32) };
@@ -1077,18 +1069,6 @@ impl HostIO for WasmHostIO {
             [buf[0], buf[1], buf[2], buf[3]],
             [buf[4], buf[5], buf[6], buf[7]],
         )
-    }
-
-    fn host_futex_wake(&mut self, addr: usize, count: u32) -> Result<i32, Errno> {
-        let result = unsafe { host_futex_wake(addr, count) };
-        if result < 0 {
-            match Errno::from_u32((-result) as u32) {
-                Some(e) => Err(e),
-                None => Err(Errno::EIO),
-            }
-        } else {
-            Ok(result)
-        }
     }
 
     fn bind_framebuffer(
@@ -1569,9 +1549,12 @@ unsafe fn get_process() -> (GklGuard, &'static mut Process) {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.current_process() {
         Some(p) => (guard, p),
-        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-        None => core::hint::unreachable_unchecked(),
-        #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+        // A defined trap (with `panic=immediate-abort`, a Wasm `unreachable`
+        // instruction), never `unreachable_unchecked()`. Reaching this without
+        // a bound task is a host protocol defect, not guest input (the
+        // channel dispatcher refuses an unbound request with ESRCH before any
+        // arm runs), but if it is ever reached it must trap, not be undefined
+        // behaviour the optimiser may assume away.
         None => panic!("no current process in table"),
     }
 }
@@ -1590,9 +1573,12 @@ unsafe fn get_process_and_advisory_locks() -> (
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.current_process_and_advisory_locks() {
         Some((process, locks)) => (guard, process, locks),
-        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-        None => unsafe { core::hint::unreachable_unchecked() },
-        #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+        // A defined trap (with `panic=immediate-abort`, a Wasm `unreachable`
+        // instruction), never `unreachable_unchecked()`. Reaching this without
+        // a bound task is a host protocol defect, not guest input (the
+        // channel dispatcher refuses an unbound request with ESRCH before any
+        // arm runs), but if it is ever reached it must trap, not be undefined
+        // behaviour the optimiser may assume away.
         None => panic!("no current process in table"),
     }
 }
@@ -1629,9 +1615,12 @@ unsafe fn get_process_tid_and_advisory_locks() -> (
     let tid = table.current_tid();
     match table.current_process_and_advisory_locks() {
         Some((process, locks)) => (guard, tid, process, locks),
-        #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-        None => unsafe { core::hint::unreachable_unchecked() },
-        #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
+        // A defined trap (with `panic=immediate-abort`, a Wasm `unreachable`
+        // instruction), never `unreachable_unchecked()`. Reaching this without
+        // a bound task is a host protocol defect, not guest input (the
+        // channel dispatcher refuses an unbound request with ESRCH before any
+        // arm runs), but if it is ever reached it must trap, not be undefined
+        // behaviour the optimiser may assume away.
         None => panic!("no current process in table"),
     }
 }
@@ -1644,6 +1633,17 @@ unsafe fn get_process_tid_and_advisory_locks() -> (
 /// The pending check keeps ordinary channel dispatches and host-TCP pipe
 /// operations to one empty-queue branch and avoids walking an empty release
 /// queue.
+/// Release OFD/flock locks a close left without an owner
+/// (`ProcessTable::release_orphaned_ofd_locks`); one flag read when no close
+/// asked for it. Runs after every channel dispatch and exit commit, and at
+/// the start of both drains, so a parked lock request sees the release on the
+/// same drain that announces it.
+fn release_orphaned_ofd_locks() {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.release_orphaned_ofd_locks();
+}
+
 fn finish_machine_scm_rights_cleanup_if_pending() {
     syscalls::finish_scm_rights_cleanup_if_pending(|| {
         let _gkl = GklGuard::acquire();
@@ -1791,53 +1791,6 @@ pub extern "C" fn kernel_transfer_scratch_capacity(token: i64) -> usize {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_transfer_scratch_cancel(token: i64) -> i32 {
     match crate::transfer::cancel_transfer_scratch(token) {
-        Ok(()) => 0,
-        Err(error) => -(error as i32),
-    }
-}
-
-/// Begin one exclusive host-write reservation for a complete SYS_SPAWN blob.
-///
-/// Returns a positive opaque token on success or a negated errno on failure.
-/// The host must read the pointer and capacity after this call, then either
-/// consume the token with `kernel_spawn_reserved_process` or cancel it.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_spawn_scratch_begin(minimum_capacity: usize) -> i64 {
-    match crate::spawn::begin_spawn_scratch(minimum_capacity) {
-        Ok(token) => token,
-        Err(error) => -(error as i64),
-    }
-}
-
-/// Pointer owned by exactly the SYS_SPAWN reservation named by `token`, or
-/// zero for a stale token or if a reentrant query cannot acquire the mutex.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_spawn_scratch_pointer(token: i64) -> usize {
-    crate::spawn::spawn_scratch_pointer(token).unwrap_or(0)
-}
-
-/// Writable byte capacity of exactly the SYS_SPAWN reservation named by
-/// `token`, or zero for a stale token or lock contention.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_spawn_scratch_capacity(token: i64) -> usize {
-    crate::spawn::spawn_scratch_capacity(token).unwrap_or(0)
-}
-
-/// Retained allocation capacity for diagnostics. This export reveals no
-/// pointer and grants no authority to modify an active reservation.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_spawn_scratch_retained_capacity() -> usize {
-    crate::spawn::spawn_scratch_retained_capacity().unwrap_or(0)
-}
-
-/// Cancel exactly the current SYS_SPAWN reservation.
-///
-/// Cancellation waits for the reservation mutex instead of returning a
-/// transient EBUSY. The guarded Rust path performs no host imports, so the
-/// matching token cannot be stranded by contention.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_spawn_scratch_cancel(token: i64) -> i32 {
-    match crate::spawn::cancel_spawn_scratch(token) {
         Ok(()) => 0,
         Err(error) => -(error as i32),
     }
@@ -2149,31 +2102,18 @@ pub extern "C" fn kernel_wait_queue_stats(out_ptr: *mut u8, len: u32) -> i32 {
     BYTES as i32
 }
 
-/// Load the in-kernel rootfs overlay's base tree from an RTFS manifest buffer in
-/// kernel Wasm memory: a whole tree handed over in a single crossing. Not the
-/// boot path — hosts boot through `kernel_rootfs_load_image` — this remains for
-/// tests that place small trees directly. Returns the number of entries loaded
-/// (>=0) or a negative errno. See `rootfs::load_manifest`.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_rootfs_load_manifest(ptr: *const u8, len: u32) -> i32 {
-    let buf = unsafe { core::slice::from_raw_parts(ptr, len as usize) };
-    match crate::rootfs::load_manifest(buf) {
-        Ok(count) => i32::try_from(count).unwrap_or(i32::MAX),
-        Err(error) => -(error as i32),
-    }
-}
-
 /// Load the in-kernel rootfs overlay's base tree by parsing the `/` VFS image
 /// itself, instead of consuming a tree the host walked and re-encoded.
 ///
 /// `image_len` is the byte length of the whole VFSI container; the kernel pulls
 /// the bytes it needs through `env.host_image_read` as it walks. It reads far
 /// less than the whole image (a superblock, the inode-table blocks it touches,
-/// directory data blocks, indirect blocks, and the `KLZY` section), so a large
+/// directory data blocks, indirect blocks, and the `SDEF` section), so a large
 /// image is never made resident in kernel memory.
 ///
-/// This is the boot path both hosts use, and the image-authoritative
-/// alternative to `kernel_rootfs_load_manifest`. Returns the number of entries loaded
+/// This is the only way a host loads the base tree (the RTFS manifest export,
+/// `kernel_rootfs_load_manifest`, was removed on 2026-10-02 with no host
+/// caller left). Returns the number of entries loaded
 /// (>=0) or a negative errno — in particular `-ENOSYS` when the host has not
 /// installed an image source, which is what keeps the path dormant. See
 /// `rootfs::load_image`.
@@ -2788,6 +2728,23 @@ pub extern "C" fn kernel_rootfs_export_container_read(
     }
 }
 
+/// Register where the host placed process `pid`'s main-thread syscall
+/// channel (`Process::main_channel_addr`). Hosts call it at every
+/// registration of an address space -- a fresh process, a fork child, the
+/// image after an exec -- before that image issues a syscall. 0 on success,
+/// -ESRCH for an unknown process.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_main_channel_addr(pid: u32, addr: u64) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.get_mut(pid) {
+        Some(proc) => {
+            proc.main_channel_addr = addr;
+            0
+        }
+        None => -(Errno::ESRCH as i32),
+    }
+}
+
 /// `brk(0)` returns a value above the program's data section and stack
 /// region. Returns 0 on success, -ESRCH if pid not found.
 #[unsafe(no_mangle)]
@@ -3030,6 +2987,33 @@ pub extern "C" fn kernel_process_metadata_cancel(pid: u32, token: u32) -> i32 {
     }
 }
 
+/// Copy entry `index` of `pid`'s argv (`kind` 0) or environment (`kind` 1)
+/// into `out`, complete or `-ERANGE` (a zero capacity queries the length);
+/// `-EINVAL` past the last entry. The host reads a spawned child's vectors
+/// here, because the kernel decoded them from the caller's request.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_process_metadata_read(
+    pid: u32,
+    kind: u32,
+    index: u32,
+    out_ptr: *mut u8,
+    out_len: u32,
+) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let entries = match kind {
+        wasm_posix_shared::process_metadata_contract::KIND_ARGV => &proc.argv,
+        wasm_posix_shared::process_metadata_contract::KIND_ENVIRONMENT => &proc.environ,
+        _ => return -(Errno::EINVAL as i32),
+    };
+    match entries.get(index as usize) {
+        Some(entry) => unsafe { crate::complete_copy::copy_complete_bytes(entry, out_ptr, out_len) },
+        None => -(Errno::EINVAL as i32),
+    }
+}
+
 fn finish_removed_process(pid: u32, result: crate::process_table::RemoveProcessResult) {
     use core::sync::atomic::Ordering;
 
@@ -3142,17 +3126,24 @@ fn reap_process_and_cleanup(pid: u32) -> i32 {
 ///
 /// Returns how many processes applied exits have sent SIGHUP and SIGCONT
 /// since the previous call; when positive, the host applies the same
-/// follow-up as a group `kill()`. Returns `-EINVAL` when `pid` has not exited
-/// and `-ESRCH` when it is absent.
+/// follow-up as a group `kill()`. Returns `-EINVAL` when `pid` has not exited.
+///
+/// An absent `pid` counts as already published and still returns the count.
+/// The kernel decides parked `wait4`/`waitid` calls itself
+/// (`runtime_core::wait_child`), so a waiting parent, or the SA_NOCLDWAIT
+/// auto-reap, can consume a zombie before the host's exit path reaches this
+/// call. Failing then would leave an orphaned group's SIGHUP/SIGCONT
+/// follow-up unreported until some later exit.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_publish_process_exit(pid: u32) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let publication = match table.publish_process_exit(pid) {
-        Ok(publication) => publication,
+        Ok(publication) => Some(publication),
+        Err(Errno::ESRCH) => None,
         Err(error) => return -(error as i32),
     };
-    if let Some(reap) = publication.reaped_by_init {
+    if let Some(reap) = publication.and_then(|publication| publication.reaped_by_init) {
         finish_init_reap(reap);
     }
     let signaled = unsafe { core::mem::take(&mut *ORPHANED_GROUP_SIGNALS.0.get()) };
@@ -3196,66 +3187,47 @@ pub extern "C" fn kernel_fork_process(parent_pid: u32, caller_tid: u32, mode: u3
     }
 }
 
-/// Non-forking `posix_spawn`. Parses the SYS_SPAWN
-/// blob (already copied from caller memory into the kernel's address
-/// space by the host), allocates a child pid, builds the child Process
-/// with attrs and file actions applied, and inserts it into the
-/// `ProcessTable`.
+/// Handle SYS_SPAWN for `caller_tid` in `parent_pid`: read the target path
+/// and request blob from the caller's memory, refuse a target a launch could
+/// not run before anything changes (`exec_target::probe_spawn_target`), then
+/// build the child, applying its attributes and file actions exactly once.
 ///
-/// Returns the allocated child pid on success (positive), or a negated
-/// errno on failure. The host (`handleSpawn` in `kernel-worker.ts`) is
-/// responsible for actually launching the new process worker after this
-/// call returns success — see Task 11.
-///
-/// SAFETY: this ordinary-size entry point is only for the host's checked
-/// channel-scratch lease. The caller must prove independently that `blob_ptr`
-/// names that kernel-owned allocation, `blob_len` is within its explicit
-/// capacity, the complete range is inside current kernel linear memory, and no
-/// reentrant operation can replace the bytes for the duration of this call.
-/// Merely fitting somewhere in total linear memory is not sufficient. Larger
-/// blobs must use the tokenized reservation entry point below.
+/// Returns the child pid, or a negated errno. `EAGAIN` means a lazily fetched
+/// target is still arriving; nothing has changed, so the host retries.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_spawn_process(
     parent_pid: u32,
     caller_tid: u32,
-    blob_ptr: usize,
-    blob_len: usize,
+    path_addr: u64,
+    path_len: u32,
+    blob_addr: u64,
+    blob_len: u32,
 ) -> i32 {
-    if blob_len == 0 {
-        return -(Errno::EINVAL as i32);
-    }
-    if blob_len > wasm_posix_shared::channel::MIN_CHANNEL_SIZE {
-        return -(Errno::E2BIG as i32);
-    }
-    if blob_ptr == 0 || blob_ptr.checked_add(blob_len).is_none() {
-        return -(Errno::EFAULT as i32);
-    }
-    let bytes = unsafe { core::slice::from_raw_parts(blob_ptr as *const u8, blob_len) };
-    let parsed = match crate::spawn::parse_blob(bytes) {
-        Ok(p) => p,
-        Err(e) => return -(e as i32),
-    };
-    spawn_parsed_for_caller(parent_pid, caller_tid, parsed)
-}
-
-/// Consume one tokenized kernel-owned SYS_SPAWN reservation.
-///
-/// Unlike `kernel_spawn_process`, this entry point never accepts a host-chosen
-/// pointer. The reservation validates its token and byte count, parses into an
-/// owned representation, restores its Idle state even on malformed input, and
-/// releases its mutex before this function enters the process table. Commit
-/// waits through mutex contention; no host import occurs while that lock is
-/// held, so every matching token is consumed before this export returns.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_spawn_reserved_process(
-    parent_pid: u32,
-    caller_tid: u32,
-    token: i64,
-    blob_len: usize,
-) -> i32 {
-    let parsed = match crate::spawn::parse_reserved_spawn_blob(token, blob_len) {
-        Ok(parsed) => parsed,
-        Err(error) => return -(error as i32),
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let mut host = WasmHostIO;
+    let parsed = {
+        let Some((proc, locks)) = table.process_and_advisory_locks(parent_pid) else {
+            return -(Errno::ESRCH as i32);
+        };
+        if !proc.is_live_explicit_tid(caller_tid) {
+            return -(Errno::ESRCH as i32);
+        }
+        let request = crate::spawn::read_request(
+            &mut host,
+            parent_pid,
+            proc.pointer_width,
+            path_addr,
+            path_len as usize,
+            blob_addr,
+            blob_len as usize,
+        )
+        .and_then(|(path, parsed)| {
+            crate::exec_target::probe_spawn_target(proc, locks, &mut host, &path).map(|()| parsed)
+        });
+        match request {
+            Ok(parsed) => parsed,
+            Err(error) => return -(error as i32),
+        }
     };
     spawn_parsed_for_caller(parent_pid, caller_tid, parsed)
 }
@@ -3493,62 +3465,6 @@ pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32) -> i32 {
     }
 }
 
-/// Atomically select and optionally consume one child status record. A
-/// consuming exit selection also reaps the child in this serialized kernel
-/// operation; WNOWAIT peeks without consuming or reaping.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_wait_child_poll(
-    parent_pid: u32,
-    caller_tid: u32,
-    target_pid: i32,
-    event_mask: u32,
-    flags: u32,
-    out_ptr: *mut KernelWaitResult,
-    out_capacity: u32,
-) -> i32 {
-    if out_ptr.is_null() {
-        return -(Errno::EFAULT as i32);
-    }
-    if out_capacity != wasm_posix_shared::KERNEL_WAIT_RESULT_SIZE {
-        return -(Errno::EINVAL as i32);
-    }
-
-    let selected = {
-        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-        if table.validate_task(parent_pid, caller_tid).is_err() {
-            return -(Errno::ESRCH as i32);
-        }
-        table.poll_wait_event(parent_pid, target_pid, event_mask, flags)
-    };
-
-    match selected {
-        Ok(Some((child_pid, event))) => {
-            let result = KernelWaitResult {
-                wait_status: event.wait_status,
-                si_code: event.si_code,
-                si_status: event.si_status,
-                child_uid: event.child_uid,
-                rusage: event.rusage,
-            };
-            unsafe {
-                core::ptr::write_unaligned(out_ptr, result);
-            }
-
-            if flags & wasm_posix_shared::wait::WNOWAIT == 0
-                && event.event_mask == wasm_posix_shared::wait::EVENT_EXITED
-            {
-                let reaped = reap_process_and_cleanup(child_pid);
-                if reaped < 0 {
-                    return reaped;
-                }
-            }
-            child_pid as i32
-        }
-        Ok(None) => 0,
-        Err(e) => -(e as i32),
-    }
-}
-
 /// Reap an exited direct child after wait/waitid consumes it.
 ///
 /// This keeps the parent/child/exited invariant in Rust instead of allowing
@@ -3565,28 +3481,6 @@ pub extern "C" fn kernel_reap_exited_child(parent_pid: u32, child_pid: u32) -> i
         return reap_for_init_and_cleanup(child_pid);
     }
     reap_process_and_cleanup(child_pid)
-}
-
-/// Check if a process has SA_NOCLDWAIT set for SIGCHLD.
-/// Returns 1 if SA_NOCLDWAIT is set, 0 if not, -ESRCH if process not found.
-#[unsafe(no_mangle)]
-pub extern "C" fn kernel_has_sa_nocldwait(pid: u32) -> i32 {
-    let table = unsafe { &*PROCESS_TABLE.0.get() };
-    match table.get(pid) {
-        Some(proc) => {
-            let action = proc.signals.get_action(wasm_posix_shared::signal::SIGCHLD);
-            if action.flags & wasm_posix_shared::signal::SA_NOCLDWAIT != 0 {
-                1
-            } else {
-                // POSIX: setting SIGCHLD to SIG_IGN also implies SA_NOCLDWAIT
-                match action.handler {
-                    crate::signal::SignalHandler::Ignore => 1,
-                    _ => 0,
-                }
-            }
-        }
-        None => -(Errno::ESRCH as i32),
-    }
 }
 
 /// Check whether SIGCHLD stop/continue notifications are suppressed.
@@ -4217,6 +4111,70 @@ pub extern "C" fn kernel_exec_target_prepare(
     }
 }
 
+/// Attach the executable a host launched `pid` from, named by a path in that
+/// process's namespace (`exec_target::attach_exe_path`). Returns 0 or a
+/// negative errno.
+///
+/// A host calls this once, after it creates a process and before the process
+/// runs, for a launch the kernel did not resolve itself; an exec and a
+/// `posix_spawn` keep the target their commit already resolved.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_process_attach_exe_path(
+    pid: u32,
+    path_ptr: usize,
+    path_len: usize,
+) -> i32 {
+    let path = match checked_exec_path(path_ptr, path_len) {
+        Ok(path) => path,
+        Err(error) => return -(error as i32),
+    };
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some((proc, advisory_locks)) = table.process_and_advisory_locks(pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let mut host = WasmHostIO;
+    match crate::exec_target::attach_exe_path(proc, advisory_locks, &mut host, path) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
+/// Attach the executable a host launched `pid` from when the host supplied
+/// the program's bytes and no file holds them: `handle` is a host file handle
+/// onto those bytes (`exec_target::attach_exe_host_handle`), and the kernel
+/// owns it from this call on -- a refusal closes it. `name_ptr`/`name_len` is
+/// the name the host launched it under. Returns 0 or a negative errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_process_attach_exe_handle(
+    pid: u32,
+    handle: i64,
+    name_ptr: usize,
+    name_len: usize,
+) -> i32 {
+    let mut host = WasmHostIO;
+    let name = match checked_exec_path(name_ptr, name_len) {
+        Ok(name) => name,
+        Err(error) => {
+            if handle >= 0 {
+                let _ = host.host_close(handle);
+            }
+            return -(error as i32);
+        }
+    };
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some((proc, advisory_locks)) = table.process_and_advisory_locks(pid) else {
+        if handle >= 0 {
+            let _ = host.host_close(handle);
+        }
+        return -(Errno::ESRCH as i32);
+    };
+    match crate::exec_target::attach_exe_host_handle(proc, advisory_locks, &mut host, handle, name)
+    {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Prepare the exact initial executable for a newly allocated spawn child.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_spawn_exec_target_prepare(
@@ -4297,6 +4255,69 @@ pub extern "C" fn kernel_exec_target_read(
     match crate::exec_target::read(proc, &mut host, owner_pid, target, offset, buffer) {
         Ok(read) => read as i32,
         Err(error) => -(error as i32),
+    }
+}
+
+/// Decide what the retained target is (`exec_target::admit`) and write the
+/// answer to `out`: `[kind: u8]`, then for a script (kind 1)
+/// `[has_arg: u8][interp_len: u32][arg_len: u32][interp][arg]`, or for a
+/// refusal (kind 2) the reasons joined by `"; "`, cut at a UTF-8 boundary if
+/// `out` is short. Kind 0 is a runnable program. Returns the record length or
+/// a negated errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_exec_target_admit(
+    owner_pid: u32,
+    token: u32,
+    expected_abi: u32,
+    out_ptr: usize,
+    out_len: usize,
+) -> i32 {
+    if out_len == 0
+        || out_len > i32::MAX as usize
+        || out_ptr == 0
+        || out_ptr.checked_add(out_len).is_none()
+    {
+        return -(Errno::EFAULT as i32);
+    }
+    let out: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(out_ptr as *mut u8, out_len) };
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(owner_pid) else {
+        return -(Errno::ESRCH as i32);
+    };
+    let admission = match crate::exec_target::admit(proc, owner_pid, token, expected_abi) {
+        Ok(admission) => admission,
+        Err(error) => return -(error as i32),
+    };
+    match admission {
+        crate::exec_target::Admission::Program => {
+            out[0] = 0;
+            1
+        }
+        crate::exec_target::Admission::Script(script) => {
+            let interpreter = script.interpreter.as_bytes();
+            let argument = script.argument.as_deref().unwrap_or("").as_bytes();
+            let total = 10 + interpreter.len() + argument.len();
+            if total > out.len() {
+                return -(Errno::EOVERFLOW as i32);
+            }
+            out[0] = 1;
+            out[1] = u8::from(script.argument.is_some());
+            out[2..6].copy_from_slice(&(interpreter.len() as u32).to_le_bytes());
+            out[6..10].copy_from_slice(&(argument.len() as u32).to_le_bytes());
+            out[10..10 + interpreter.len()].copy_from_slice(interpreter);
+            out[10 + interpreter.len()..total].copy_from_slice(argument);
+            total as i32
+        }
+        crate::exec_target::Admission::Refused(reasons) => {
+            out[0] = 2;
+            let text = reasons.join("; ");
+            let mut take = text.len().min(out.len() - 1);
+            while !text.is_char_boundary(take) {
+                take -= 1;
+            }
+            out[1..1 + take].copy_from_slice(&text.as_bytes()[..take]);
+            (1 + take) as i32
+        }
     }
 }
 
@@ -4417,7 +4438,13 @@ fn activate_blocking_retry_for_current_task(
     let proc = table.current_process().ok_or(Errno::ESRCH)?;
     proc.blocked_retries.begin_dispatch(tid)?;
     let activation = if retry_token == 0 {
-        if proc.blocked_retries.has_binding_for_tid(tid) {
+        // A task holding a binding is blocked in a retried call, so it issues
+        // no other syscall. The one request a host sends on its behalf is the
+        // cancellation that ends a kernel-parked call (whose binding the
+        // park owns and releases when the cancellation completes it).
+        if proc.blocked_retries.has_binding_for_tid(tid)
+            && syscall_nr != syscall_numbers::SYS_THREAD_CANCEL
+        {
             Err(Errno::EBUSY)
         } else {
             Ok(())
@@ -4448,9 +4475,14 @@ fn retain_blocking_retry_target(syscall_nr: u32, args: &[i64; 6]) -> Result<(), 
         .ok_or(Errno::ESRCH)?;
     let mut host = WasmHostIO;
     match operation {
+        // A blocking advisory lock parks in the kernel and pins its own
+        // target (`channel_fcntl_lock`, `channel_flock`); the EAGAIN that
+        // reaches here is a non-blocking caller's answer, which no host
+        // retries, so a pin taken now would never be released.
+        crate::blocked_retry::BlockingRetryOperation::Fcntl
+        | crate::blocked_retry::BlockingRetryOperation::Flock => {}
         crate::blocked_retry::BlockingRetryOperation::Read
         | crate::blocked_retry::BlockingRetryOperation::Write
-        | crate::blocked_retry::BlockingRetryOperation::Fcntl
         | crate::blocked_retry::BlockingRetryOperation::Pread
         | crate::blocked_retry::BlockingRetryOperation::Pwrite
         | crate::blocked_retry::BlockingRetryOperation::Accept
@@ -4459,8 +4491,7 @@ fn retain_blocking_retry_target(syscall_nr: u32, args: &[i64; 6]) -> Result<(), 
         | crate::blocked_retry::BlockingRetryOperation::Recv
         | crate::blocked_retry::BlockingRetryOperation::Sendto
         | crate::blocked_retry::BlockingRetryOperation::Recvfrom
-        | crate::blocked_retry::BlockingRetryOperation::Recvmsg
-        | crate::blocked_retry::BlockingRetryOperation::Flock => {
+        | crate::blocked_retry::BlockingRetryOperation::Recvmsg => {
             syscalls::ensure_blocking_retry_ofd_binding(
                 proc,
                 locks,
@@ -4701,6 +4732,36 @@ fn handle_owned_channel_allocation(
             )),
         }
     };
+    // A blocking transfer on a kernel pipe that would block parks here, after
+    // the first attempt ran on the host-staged buffer (the hot path is
+    // unchanged); see `park_blocked_transfer`.
+    if has_task_binding
+        && retry_token == 0
+        && outcome.channel_errno == Errno::EAGAIN as u32
+        && matches!(
+            syscall_nr,
+            crate::wait_retry::SYS_READ
+                | crate::wait_retry::SYS_WRITE
+                | crate::wait_retry::SYS_SEND
+                | crate::wait_retry::SYS_RECV
+                | crate::wait_retry::SYS_SENDTO
+                | crate::wait_retry::SYS_RECVFROM
+        )
+    {
+        if let Some(result) = park_blocked_transfer(syscall_nr, &args) {
+            outcome = ChannelDispatchOutcome::narrow(result);
+        }
+    }
+    // A kernel-owned park answers `ret = generation, errno = PARKED_ERRNO`
+    // (see `wasm_posix_shared::wait_completion_wire`). Always consume the
+    // cell so a generation can never leak into a later entry's result.
+    let parked_generation = crate::wait_park::take_parked_result();
+    if outcome.channel_errno == wasm_posix_shared::wait_completion_wire::PARKED_ERRNO {
+        match parked_generation.and_then(|g| i64::try_from(g).ok()) {
+            Some(generation) => outcome.channel_result = generation,
+            None => outcome = ChannelDispatchOutcome::narrow(-(Errno::EIO as i32)),
+        }
+    }
     if crate::blocked_retry::result_needs_target(syscall_nr, outcome.channel_errno) {
         // connect(2) exposes EINPROGRESS/EALREADY while a host TCP handshake
         // is pending instead of leaking HostIO's internal EAGAIN sentinel.
@@ -4726,6 +4787,7 @@ fn handle_owned_channel_allocation(
     // channel syscall fail-safe against a newly introduced ancillary drop,
     // while the ordinary hot path pays only an empty-queue check.
     finish_machine_scm_rights_cleanup_if_pending();
+    release_orphaned_ofd_locks();
 
     // Write result back to channel
     let out = unsafe {
@@ -5243,13 +5305,28 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                 // Lock commands: arg is a pointer to struct flock
                 // POSIX: 5=F_GETLK, 6=F_SETLK, 7=F_SETLKW; 12-14=64-bit variants
                 // OFD:   36=F_OFD_GETLK, 37=F_OFD_SETLK, 38=F_OFD_SETLKW
+                // The kernel owns a blocking lock request (see
+                // `channel_fcntl_lock`); `arg` is the caller's own address.
                 5 | 6 | 7 | 12 | 13 | 14 | 36 | 37 | 38 => {
-                    kernel_fcntl_lock(a1, a2 as u32, channel_mut_ptr!(2, u8))
+                    {
+                        // `arg` is the caller's own address (no host stages
+                        // the flock any more). It travels as the caller's
+                        // `long`, so a wasm32 address may arrive
+                        // sign-extended; keep its low 32 bits, as
+                        // `channel_futex` does for its pointer slots.
+                        let raw = args[2] as u64;
+                        let flock_addr = if caller_pointer_width!() == 4 {
+                            raw as u32 as u64
+                        } else {
+                            raw
+                        };
+                        channel_fcntl_lock(a1, a2 as u32, flock_addr)
+                    }
                 }
                 _ => kernel_fcntl(a1, a2 as u32, a3 as u32),
             }
         }
-        121 => kernel_flock(a1, a2 as u32), // SYS_FLOCK
+        121 => channel_flock(a1, a2 as u32), // SYS_FLOCK
 
         // Stat — musl: (path, stat_buf) / (path, stat_buf) / (dirfd, path, stat_buf, flags)
         11 => {
@@ -5359,14 +5436,10 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         122 => kernel_getdents64(a1, channel_mut_ptr!(1, u8), process_size_u32!(2)), // SYS_GETDENTS64
 
         // Process control
-        34 => {
-            kernel_exit(a1);
-            0
-        } // SYS_EXIT (thread exit)
-        387 => {
-            kernel_exit(a1);
-            0
-        } // SYS_EXIT_GROUP (process exit)
+        // Both RETURN once the exit is committed: a channel request is never
+        // allowed to end in a trap. See `dispatch_channel_exit`.
+        34 => dispatch_channel_exit(a1), // SYS_EXIT (thread exit)
+        387 => dispatch_channel_exit(a1), // SYS_EXIT_GROUP (process exit)
         35 => kernel_kill(a1, a2 as u32), // SYS_KILL
         38 => kernel_raise(a1 as u32),    // SYS_RAISE
 
@@ -5458,86 +5531,30 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             }
             0
         }
-        207 => {
-            // SYS_RT_SIGTIMEDWAIT: (mask_ptr, info_ptr, timeout_ptr, sigsetsize)
-            let model = match crate::process_wire::ProcessDataModel::from_width(i64::from(caller_pointer_width)) {
-                Ok(model) => model,
-                Err(error) => return -(error as i32),
-            };
-            let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-            let mut host = WasmHostIO;
-            // Read the 64-bit signal mask from the pointer
-            let mask = if args[0] != 0 {
-                let p = channel_const_ptr!(0, u8);
-                let mut bytes = [0u8; 8];
-                unsafe {
-                    for i in 0..8 {
-                        bytes[i] = *p.add(i);
-                    }
-                }
-                u64::from_le_bytes(bytes)
-            } else {
-                0
-            };
-            // Read timeout from timespec pointer (time64: i64 sec + i64 nsec)
-            let timeout_ms = if args[2] != 0 {
-                let p = channel_const_ptr!(2, u8);
-                let mut sec_bytes = [0u8; 8];
-                let mut nsec_bytes = [0u8; 8];
-                unsafe {
-                    for i in 0..8 {
-                        sec_bytes[i] = *p.add(i);
-                    }
-                    for i in 0..8 {
-                        nsec_bytes[i] = *p.add(8 + i);
-                    }
-                }
-                let sec = i64::from_le_bytes(sec_bytes);
-                let nsec = i64::from_le_bytes(nsec_bytes);
-                (sec * 1000 + nsec / 1_000_000) as i32
-            } else {
-                -1 // NULL timeout = wait indefinitely
-            };
-            let result = match syscalls::sys_sigtimedwait(proc, &mut host, mask, timeout_ms) {
-                Ok((sig, si_value, si_code, siginfo_word_1, siginfo_word_2)) => {
-                    // Write siginfo_t if pointer is non-null
-                    if args[1] != 0 {
-                        let p = channel_mut_ptr!(1, u8);
-                        let mut encoded = alloc::vec![0; model.siginfo_size()];
-                        if let Err(error) = crate::process_wire::write_siginfo(
-                            &mut encoded,
-                            crate::process_wire::NativeSiginfo {
-                                signo: sig as i32,
-                                code: si_code,
-                                word_1: siginfo_word_1,
-                                // Keep uid/timer-overrun bits lossless across
-                                // the signed/unsigned siginfo union views.
-                                word_2_bits: siginfo_word_2 as u32,
-                                value_bits: si_value,
-                            },
-                            model,
-                        ) {
-                            return -(error as i32);
-                        }
-                        // WHY: encode the complete native object before
-                        // replacing the capacity-checked scratch destination.
-                        // The host holds one exclusive synchronous lease.
-                        let output = unsafe { slice::from_raw_parts_mut(p, model.siginfo_size()) };
-                        output.copy_from_slice(&encoded);
-                    }
-                    sig as i32
-                }
-                Err(e) => -(e as i32),
-            };
-            deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-            result
-        }
+        // SYS_RT_SIGTIMEDWAIT: (set, info, timeout, sigsetsize). The kernel
+        // owns the wait (see `channel_sigtimedwait`); all three pointers are
+        // caller addresses, and `info` is written when the wait is decided.
+        207 => channel_sigtimedwait(guest_address!(0), guest_address!(1), guest_address!(2)),
 
         // Time
         40 => kernel_clock_gettime(a1 as u32, channel_mut_ptr!(1, u8)), // SYS_CLOCK_GETTIME
-        41 => kernel_nanosleep(channel_const_ptr!(0, u8)),              // SYS_NANOSLEEP
+        // Sleeps park in the kernel (see `channel_sleep`). Both timespecs
+        // are guest addresses the kernel reads and, for `rem`, writes
+        // through the cross-memory primitive when the decision is drained.
+        41 => channel_sleep(|host, task| {
+            syscalls::sys_nanosleep(host, task, guest_address!(0), guest_address!(1))
+        }), // SYS_NANOSLEEP
         123 => kernel_clock_getres(a1 as u32, channel_mut_ptr!(1, u8)), // SYS_CLOCK_GETRES
-        124 => kernel_clock_nanosleep(a1 as u32, a2 as u32, channel_const_ptr!(2, u8)), // SYS_CLOCK_NANOSLEEP
+        124 => channel_sleep(|host, task| {
+            syscalls::sys_clock_nanosleep(
+                host,
+                task,
+                a1 as u32,
+                a2 as u32,
+                guest_address!(2),
+                guest_address!(3),
+            )
+        }), // SYS_CLOCK_NANOSLEEP
         125 => {
             // SYS_UTIMENSAT: (dirfd, path, times, flags)
             // path can be NULL (0) for futimens(fd, times) → utimensat(fd, NULL, times, 0)
@@ -5549,7 +5566,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
             };
             kernel_utimensat(a1, p, len, channel_const_ptr!(2, u8), a4 as u32)
         }
-        68 => kernel_usleep(a1 as u32), // SYS_USLEEP
+        68 => channel_sleep(|host, task| syscalls::sys_usleep(host, task, a1 as u32)), // SYS_USLEEP
 
         // Memory
         47 => kernel_munmap(process_address!(0), process_size!(1)), // SYS_MUNMAP
@@ -5984,6 +6001,7 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
                         } else {
                             target.pgid = new_pgid;
                             table.prune_empty_limbo_groups();
+                            crate::wait_park::note_children_changed();
                             0
                         }
                     }
@@ -6034,13 +6052,23 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         } // SYS_GETGROUPS
         136 => kernel_setgroups(process_size_u32!(0), channel_const_ptr!(1, u32)), // SYS_SETGROUPS
 
-        // Wait
-        139 => kernel_wait4(
+        // Wait. The kernel owns both (see `wait_child`): the output pointers
+        // are caller addresses written when the wait is decided, which for a
+        // parked caller is after any per-call staging is gone.
+        139 => channel_wait_child(crate::wait_child::ChildWait::wait4(
             a1,
-            channel_mut_ptr!(1, i32),
+            guest_address!(1),
             a3 as u32,
-            channel_mut_ptr!(3, u8),
-        ), // SYS_WAIT4
+            guest_address!(3),
+        )), // SYS_WAIT4
+        288 => channel_wait_child(crate::wait_child::ChildWait::waitid(
+            a1 as u32,
+            // `id_t` is a 32-bit unsigned type on both widths.
+            i64::from(a2 as u32),
+            args[3] as u32,
+            guest_address!(2),
+            guest_address!(4),
+        )), // SYS_WAITID
 
         // Fork/exec/clone
         // Exec launch is a host-orchestrated exact-target transaction. Direct
@@ -6062,12 +6090,17 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         ), // SYS_CLONE
 
         // Futex
-        200 => kernel_futex(
-            process_address!(0),
+        // All three pointers are guest addresses the kernel reads through the
+        // cross-memory primitive; none is borrowed as kernel memory. Slots 3
+        // and 4 are raw bits because their meaning is per-command (slot 3 is
+        // the REQUEUE count, not a pointer); `channel_futex` narrows them to
+        // the caller's width.
+        200 => channel_futex(
+            guest_address!(0),
             a2 as u32,
             a3 as u32,
-            a4 as u32,
-            conditional_process_address!(4),
+            args[3] as u64,
+            args[4] as u64,
             a6 as u32,
         ), // SYS_FUTEX
 
@@ -9384,35 +9417,7 @@ pub fn kernel_fcntl(fd: i32, cmd: u32, arg: u32) -> i32 {
     result
 }
 
-/// fcntl lock operations. The flock struct is read from/written to the pointer.
-/// Returns 0 on success, or negative errno on error.
-pub fn kernel_fcntl_lock(fd: i32, cmd: u32, flock_ptr: *mut u8) -> i32 {
-    if flock_ptr.is_null() {
-        return -(Errno::EFAULT as i32);
-    }
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let flock = unsafe { &mut *(flock_ptr as *mut wasm_posix_shared::WasmFlock) };
-    let mut host = WasmHostIO;
-    let result = match syscalls::sys_fcntl_lock(proc, advisory_locks, fd, cmd, flock, &mut host) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
 
-/// BSD flock() — whole-file advisory locking.
-/// Returns 0 on success, or negative errno on error.
-pub fn kernel_flock(fd: i32, operation: u32) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let result = match syscalls::sys_flock(proc, advisory_locks, fd, operation, &mut host) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
 
 /// Stat a file by path. Writes a complete native musl `struct kstat`.
 /// Returns 0 on success, or negative errno on error.
@@ -10486,21 +10491,6 @@ pub fn kernel_clock_gettime(clock_id: u32, ts_ptr: *mut u8) -> i32 {
     result
 }
 
-/// Sleep for a specified duration.
-/// Reads a WasmTimespec struct from req_ptr.
-/// Returns 0 on success, or negative errno on error.
-pub fn kernel_nanosleep(req_ptr: *const u8) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let req = unsafe { &*(req_ptr as *const WasmTimespec) };
-    let result = match syscalls::sys_nanosleep(proc, &mut host, req) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
-
 /// Get clock resolution. Returns 0 or negative errno. Writes WasmTimespec to ts_ptr.
 pub fn kernel_clock_getres(clock_id: u32, ts_ptr: *mut u8) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
@@ -10520,20 +10510,6 @@ pub fn kernel_clock_getres(clock_id: u32, ts_ptr: *mut u8) -> i32 {
             }
             0
         }
-        Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
-
-/// Sleep with clock selection. Returns 0 or negative errno.
-pub fn kernel_clock_nanosleep(clock_id: u32, flags: u32, req_ptr: *const u8) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let req = unsafe { &*(req_ptr as *const WasmTimespec) };
-    let result = match syscalls::sys_clock_nanosleep(proc, &mut host, clock_id, flags, req, req_ptr)
-    {
-        Ok(()) => 0,
         Err(e) => -(e as i32),
     };
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
@@ -11309,31 +11285,6 @@ pub fn kernel_recvmsg(
     result
 }
 
-/// wait4 — wait for child process. Writes status to wstatus_ptr, ignores rusage.
-/// Returns child pid on success, negative errno on error.
-pub fn kernel_wait4(
-    pid: i32,
-    wstatus_ptr: *mut i32,
-    options: u32,
-    _rusage_ptr: *mut u8,
-) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let result = match syscalls::sys_waitpid(proc, &mut host, pid, options) {
-        Ok((child_pid, status)) => {
-            if !wstatus_ptr.is_null() {
-                unsafe {
-                    *wstatus_ptr = status;
-                }
-            }
-            child_pid
-        }
-        Err(e) => -(e as i32),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
-
 /// Check if a file descriptor refers to a terminal.
 /// Returns 1 if terminal, or negative errno on error (ENOTTY if not a terminal).
 pub fn kernel_isatty(fd: i32) -> i32 {
@@ -11539,7 +11490,26 @@ fn commit_current_task_exit(status: i32) -> i32 {
     // must not leave the exited task available to a later dispatch.
     unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
     finish_machine_scm_rights_cleanup_if_pending();
+    release_orphaned_ofd_locks();
     committed_status
+}
+
+/// `SYS_EXIT`/`SYS_EXIT_GROUP` arriving through `kernel_handle_channel`.
+///
+/// Commits the exit and RETURNS 0. The channel dispatcher must answer every
+/// request; it used to call `kernel_exit`, a `-> !` wrapper ending in
+/// `unreachable_unchecked()`, so an exit forwarded to the channel trapped the
+/// kernel mid-dispatch, skipping the dispatcher's own retry-state and
+/// SCM_RIGHTS cleanup. The JavaScript hosts intercept both syscalls before
+/// the channel and call `kernel_commit_process_exit`, which shares this
+/// transition.
+///
+/// The exited thread must not run on: that is the host's to enforce (it
+/// unwinds the thread rather than completing the channel), exactly as it is
+/// after the returning `kernel_commit_process_exit` export.
+fn dispatch_channel_exit(status: i32) -> i32 {
+    let _ = commit_current_task_exit(status);
+    0
 }
 
 /// Host-adapter exit boundary that returns after committing process state.
@@ -11557,13 +11527,13 @@ pub extern "C" fn kernel_commit_process_exit(status: i32) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_exit(status: i32) -> ! {
     let _ = commit_current_task_exit(status);
-    // Halt execution — musl's _exit loops forever if we just return.
-    #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-    unsafe {
-        core::hint::unreachable_unchecked();
-    }
-    #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-    unreachable!("kernel_exit should not return");
+    // Halt execution — musl's _exit loops forever if we just return. The trap
+    // is this guest-facing `_Noreturn` export's contract, so it is a defined
+    // `panic!` (with `panic=immediate-abort`, a Wasm `unreachable`
+    // instruction), never `unreachable_unchecked()`, whose reachability would
+    // be undefined behaviour. Channel requests never come here; see
+    // [`dispatch_channel_exit`].
+    panic!("kernel_exit should not return");
 }
 
 // ---------------------------------------------------------------------------
@@ -12873,19 +12843,6 @@ pub fn kernel_time() -> i64 {
     let result = match syscalls::sys_time(proc, &mut host) {
         Ok(t) => t,
         Err(e) => -(e as i64),
-    };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
-    result
-}
-
-/// usleep() - sleep for usec microseconds.
-/// Returns 0 on success, negative errno on error.
-pub fn kernel_usleep(usec: u32) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-    let mut host = WasmHostIO;
-    let result = match syscalls::sys_usleep(proc, &mut host, usec) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
     };
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
@@ -14341,7 +14298,7 @@ fn queue_posix_timer_fire(proc: &mut Process, timer_id: u32) -> i32 {
 
     match notify {
         SIGEV_SIGNAL => {
-            proc.signals.raise_timer(signo, value, timer_id);
+            proc.raise_process_timer(signo, value, timer_id);
             0
         }
         SIGEV_THREAD_ID => {
@@ -14510,12 +14467,39 @@ pub fn kernel_sigsuspend(mask_lo: u32, mask_hi: u32) -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let mask = ((mask_hi as u64) << 32) | (mask_lo as u64);
-    let result = match syscalls::sys_sigsuspend(proc, &mut host, mask) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
-    };
+    let suspended = syscalls::sys_sigsuspend(proc, &mut host, mask);
+    let result = park_suspend(proc, suspended);
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
+}
+
+/// sigsuspend/pause: the temporary mask is installed and no signal can end
+/// the wait yet (`EAGAIN`), so park the caller; the signal sweep ends it with
+/// `EINTR` (see `runtime_core::wait_signal`).
+fn park_suspend(proc: &Process, outcome: Result<(), Errno>) -> i32 {
+    match outcome {
+        Ok(()) => 0,
+        Err(Errno::EAGAIN) => {
+            let task = channel_guest_task(proc);
+            report_park(
+                crate::wait_park::with(|parks| {
+                    parks.park(
+                        task.pid,
+                        task.tid,
+                        crate::wait_queue::WaitKind::SigTimedWait { mask: 0 },
+                        alloc::vec![crate::wait_queue::WakeSource::Signal {
+                            pid: task.pid,
+                            tid: task.tid,
+                        }],
+                        None,
+                        crate::wait_park::Resume::Suspend,
+                    )
+                })
+                .map(syscalls::ParkOutcome::Parked),
+            )
+        }
+        Err(e) => -(e as i32),
+    }
 }
 
 /// pause -- suspend until a signal is delivered.
@@ -14523,10 +14507,8 @@ pub fn kernel_sigsuspend(mask_lo: u32, mask_hi: u32) -> i32 {
 pub fn kernel_pause() -> i32 {
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
-    let result = match syscalls::sys_pause(proc, &mut host) {
-        Ok(()) => 0,
-        Err(e) => -(e as i32),
-    };
+    let paused = syscalls::sys_pause(proc, &mut host);
+    let result = park_suspend(proc, paused);
     deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
@@ -14703,18 +14685,36 @@ pub fn kernel_get_robust_list(_pid: u32, _head_ptr: usize, _len_ptr: usize) -> i
 /// thread_exit — clean up thread state in the kernel.
 /// Called by the host when a thread Worker exits.
 /// Removes the thread from the process's thread table and returns the
-/// CLONE_CHILD_CLEARTID pointer recorded in ThreadInfo, or 0 if no clear-tid
-/// wake is needed. Errors are returned as negative errno values.
+/// CLONE_CHILD_CLEARTID pointer recorded in ThreadInfo, or 0 if there is
+/// none. Errors are returned as negative errno values.
+///
+/// `clear_child_tid` states a fact only the host knows: the thread really ran
+/// and has now ended (nonzero), as opposed to a rollback of a thread whose
+/// Worker never started or a whole-process teardown (zero). When it is set,
+/// the kernel performs `CLONE_CHILD_CLEARTID` itself: it stores 0 at the
+/// pointer and wakes one futex waiter there. It must be the kernel, because
+/// the futex wait queue is kernel state (`wait_park`); a host-side
+/// `Atomics.notify` on the word would wake nobody. A failed store is ignored,
+/// as Linux ignores a faulting `put_user` of the clear-TID word.
 ///
 /// WHY: an i64 keeps every wasm32 `usize` pointer nonnegative while reserving
 /// negative results for errno; narrowing to i32 would make high pointers
 /// indistinguishable from failures.
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32) -> i64 {
+pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32, clear_child_tid: u32) -> i64 {
     let _gkl = GklGuard::acquire();
     let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
     match kernel_thread_exit_in_table(pt, pid, tid) {
-        Ok(ctid_ptr) => ctid_ptr as i64,
+        Ok(ctid_ptr) => {
+            if clear_child_tid != 0 && ctid_ptr != 0 {
+                let ctid = ctid_ptr as u64;
+                let mut host = WasmHostIO;
+                if host.proc_write_bytes(pid as i32, ctid, &0u32.to_le_bytes()) == 0 {
+                    crate::wait_park::with(|parks| parks.futex_wake(pid, ctid, 1, u32::MAX));
+                }
+            }
+            ctid_ptr as i64
+        }
         Err(e) => -(e as i64),
     }
 }
@@ -14759,21 +14759,683 @@ mod thread_exit_tests {
     }
 }
 
-/// futex — real implementation via host Atomics.wait/notify.
-pub fn kernel_futex(
-    uaddr: usize,
-    op: u32,
-    val: u32,
-    timeout: u32,
-    uaddr2: usize,
-    val3: u32,
-) -> i32 {
-    let _gkl = GklGuard::acquire();
+/// futex(2) from a channel: the kernel owns the wait (see `wait_park`).
+///
+/// A park is reported as `-PARKED_ERRNO`; the generation it minted is picked
+/// up by `handle_owned_channel_allocation` for the channel's return slot.
+fn channel_futex(uaddr: u64, op: u32, val: u32, timeout: u64, uaddr2: u64, val3: u32) -> i32 {
+    let (_gkl, proc, _locks) = unsafe { get_process_and_advisory_locks() };
+    let task = channel_guest_task(proc);
+    // WHY: slots 3 and 4 carry no generated scalar kind (their meaning is
+    // per-command), so a wasm32 caller's `long` may arrive sign-extended.
+    // Only the low word is the caller's value.
+    let narrow = |raw: u64| if task.pointer_width == 4 { raw as u32 as u64 } else { raw };
     let mut host = WasmHostIO;
-    match syscalls::sys_futex(&mut host, uaddr, op, val, timeout, uaddr2, val3) {
-        Ok(n) => n,
+    report_park(syscalls::sys_futex(
+        &mut host,
+        task,
+        uaddr,
+        op,
+        val,
+        narrow(timeout),
+        narrow(uaddr2),
+        val3,
+    ))
+}
+
+/// The calling task, as the waiting syscalls name it.
+fn channel_guest_task(proc: &Process) -> syscalls::GuestTask {
+    let pid = proc.pid;
+    let tid = match syscalls::current_tid_for_process(proc) {
+        0 => pid,
+        tid => tid,
+    };
+    syscalls::GuestTask {
+        pid,
+        tid,
+        pointer_width: proc.pointer_width,
+    }
+}
+
+/// Turn a waiting syscall's outcome into the channel dispatcher's `i32`.
+///
+/// A park is reported as `-PARKED_ERRNO`; the generation it minted is picked
+/// up by `handle_owned_channel_allocation` for the channel's return slot.
+fn report_park(outcome: Result<syscalls::ParkOutcome, Errno>) -> i32 {
+    match outcome {
+        Ok(syscalls::ParkOutcome::Done(n)) => n,
+        Ok(syscalls::ParkOutcome::Parked(generation)) => {
+            crate::wait_park::note_parked_result(generation);
+            -(wasm_posix_shared::wait_completion_wire::PARKED_ERRNO as i32)
+        }
         Err(e) => -(e as i32),
     }
+}
+
+/// wait4 / waitid from a channel: the kernel owns the wait (see
+/// `runtime_core::wait_child`). Answers now when a child is ready (or under
+/// `WNOHANG`), otherwise parks the caller until [`settle_child_waits`]
+/// decides it.
+fn channel_wait_child(wait: Result<crate::wait_child::ChildWait, Errno>) -> i32 {
+    // WHY scoped: reaping a child removes a ProcessTable entry, which may move
+    // other entries, so no `&mut Process` may live across the decision.
+    let (task, caller_pgid) = {
+        let (_gkl, proc) = unsafe { get_process() };
+        (channel_guest_task(proc), proc.pgid)
+    };
+    let mut host = WasmHostIO;
+    announce_exits();
+    let outcome = wait.and_then(|wait| {
+        let wait = wait.freeze_caller_group(caller_pgid);
+        wait.probe(&mut host, task)?;
+        if let Some(value) = decide_child_wait(&mut host, task, &wait)? {
+            return Ok(syscalls::ParkOutcome::Done(value));
+        }
+        if wait.nohang {
+            return wait.report_nothing(&mut host, task).map(syscalls::ParkOutcome::Done);
+        }
+        let generation = crate::wait_park::with(|parks| {
+            parks.park(
+                task.pid,
+                task.tid,
+                crate::wait_queue::WaitKind::ChildWait { options: 0 },
+                alloc::vec![crate::wait_queue::WakeSource::ChildEvent { parent: task.pid }],
+                None,
+                crate::wait_park::Resume::Child(wait),
+            )
+        })?;
+        Ok(syscalls::ParkOutcome::Parked(generation))
+    });
+    let result = report_park(outcome);
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
+/// Poll `wait` for `task` once: `Ok(Some(value))` when a child reported
+/// (its answer is already written to the caller, and an exited child that was
+/// consumed is reaped), `Ok(None)` when a matching child has nothing yet.
+fn decide_child_wait(
+    host: &mut WasmHostIO,
+    task: syscalls::GuestTask,
+    wait: &crate::wait_child::ChildWait,
+) -> Result<Option<i32>, Errno> {
+    let selected = {
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        wait.poll(table, task)?
+    };
+    let Some((child, event)) = selected else {
+        return Ok(None);
+    };
+    let value = wait.report(host, task, child, &event);
+    if wait.reaps(&event) {
+        let reaped = reap_process_and_cleanup(child);
+        if reaped < 0 {
+            return Err(Errno::from_u32(reaped.unsigned_abs()).unwrap_or(Errno::EIO));
+        }
+    }
+    value.map(Some)
+}
+
+/// Tell each parent about its children's recorded exits: SIGCHLD, or the
+/// SA_NOCLDWAIT/SIG_IGN auto-reap (`runtime_core::wait_child::announce_exit`).
+///
+/// Runs before any wait is decided -- at the start of every settle and of
+/// every wait4/waitid -- so a wait can never report an exit whose SIGCHLD the
+/// parent has not been sent. A reap here marks the children changed, so a
+/// waiter parked on the reaped child is then decided ECHILD.
+fn announce_exits() {
+    let notices = crate::wait_park::take_exit_notices();
+    if notices.is_empty() {
+        return;
+    }
+    let mut deferred = Vec::new();
+    for child in notices {
+        // A default-ignored SIGCHLD is never queued (the generation discards
+        // it, `SignalState::raise_internal`), so it cannot linger as a
+        // reason to interrupt the parent's parked waits; a caught one stays
+        // pending for the guest glue to run its handler.
+        let notice = {
+            let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+            crate::wait_child::announce_exit(table, child)
+        };
+        match notice {
+            crate::wait_child::ExitNotice::Done => {}
+            crate::wait_child::ExitNotice::AutoReap => {
+                let _ = reap_process_and_cleanup(child);
+            }
+            crate::wait_child::ExitNotice::Defer => deferred.push(child),
+        }
+    }
+    crate::wait_park::requeue_exit_notices(deferred);
+}
+
+/// Re-decide every parked `wait4`/`waitid` once a child's waitable state has
+/// changed (`wait_park::note_children_changed`). Runs at the start of every
+/// wake-event and completion drain; with no change since the last pass it is
+/// one flag read. A pass that reaps a child marks the state changed again,
+/// so the loop ends only when a pass decided nothing new.
+fn settle_child_waits() {
+    announce_exits();
+    while let Some(waiters) = crate::wait_park::with(|p| p.take_dirty_child_waiters()) {
+        let mut host = WasmHostIO;
+        for (id, pid, tid, wait) in waiters {
+            let pointer_width = {
+                let table = unsafe { &*PROCESS_TABLE.0.get() };
+                match table.get(pid) {
+                    Some(proc) => proc.pointer_width,
+                    // The signal sweep retires parks of vanished processes.
+                    None => continue,
+                }
+            };
+            let task = syscalls::GuestTask { pid, tid, pointer_width };
+            let value = match decide_child_wait(&mut host, task, &wait) {
+                Ok(None) => continue,
+                Ok(Some(value)) => value,
+                Err(error) => -(error as i32),
+            };
+            crate::wait_park::with(|p| p.finish_child_waiter(id, pid, value));
+        }
+    }
+}
+
+/// rt_sigtimedwait from a channel: the kernel owns the wait (see
+/// `runtime_core::wait_signal`). A signal in the set already pending is taken
+/// now; otherwise the caller parks until [`settle_signal_waits`] takes one,
+/// a caught signal outside the set interrupts it, or the timeout passes.
+fn channel_sigtimedwait(set: u64, info: u64, timeout: u64) -> i32 {
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let task = channel_guest_task(proc);
+    let mut host = WasmHostIO;
+    let outcome = (|| -> Result<syscalls::ParkOutcome, Errno> {
+        let mut raw = [0u8; 8];
+        if set == 0 || host.proc_read_bytes(task.pid as i32, set, &mut raw) < 0 {
+            return Err(Errno::EFAULT);
+        }
+        let timeout_ns = if timeout == 0 {
+            None
+        } else {
+            Some(syscalls::read_guest_timespec_ns(&mut host, task, timeout)?)
+        };
+        let wait = crate::wait_signal::SigWait {
+            mask: u64::from_le_bytes(raw),
+            info,
+            timeout_ns: timeout_ns.map(|ns| ns as u64),
+        };
+        wait.probe(&mut host, task)?;
+        if let Some(taken) = crate::wait_signal::take_signal_for(proc, task.tid, wait.mask) {
+            return wait.report(&mut host, task, &taken).map(syscalls::ParkOutcome::Done);
+        }
+        if timeout_ns == Some(0) {
+            return Err(Errno::EAGAIN);
+        }
+        let deadline = match timeout_ns {
+            Some(ns) => Some(crate::wait_park::now_ns(&mut host)?.saturating_add(ns)),
+            None => None,
+        };
+        let generation = crate::wait_park::with(|parks| {
+            parks.park(
+                task.pid,
+                task.tid,
+                crate::wait_queue::WaitKind::SigTimedWait { mask: wait.mask },
+                alloc::vec![crate::wait_queue::WakeSource::Signal { pid: task.pid, tid: task.tid }],
+                deadline,
+                crate::wait_park::Resume::SigTimed(wait),
+            )
+        })?;
+        Ok(syscalls::ParkOutcome::Parked(generation))
+    })();
+    let result = report_park(outcome);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
+/// fcntl lock commands from a channel. The `struct flock` is the caller's
+/// address: read once at entry, written back for F_GETLK. A blocking set-lock
+/// that conflicts parks the caller with the request; the kernel re-executes
+/// it whenever advisory-lock state changes (`settle_retry_waits`).
+fn channel_fcntl_lock(fd: i32, cmd: u32, flock_addr: u64) -> i32 {
+    const FLOCK_BYTES: usize = core::mem::size_of::<wasm_posix_shared::WasmFlock>();
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let task = channel_guest_task(proc);
+    let mut host = WasmHostIO;
+    let outcome = (|| -> Result<syscalls::ParkOutcome, Errno> {
+        let mut raw = [0u8; FLOCK_BYTES];
+        if flock_addr == 0 || host.proc_read_bytes(task.pid as i32, flock_addr, &mut raw) < 0 {
+            return Err(Errno::EFAULT);
+        }
+        // SAFETY: WasmFlock is repr(C), plain integers, exactly FLOCK_BYTES.
+        let mut flock: wasm_posix_shared::WasmFlock =
+            unsafe { core::ptr::read_unaligned(raw.as_ptr().cast()) };
+        match syscalls::sys_fcntl_lock(proc, advisory_locks, fd, cmd, &mut flock, &mut host) {
+            Ok(()) => {
+                // F_GETLK reports through the same struct; set-locks never
+                // change it, so writing it back is harmless and uniform.
+                let out: [u8; FLOCK_BYTES] = unsafe { core::mem::transmute(flock) };
+                if host.proc_write_bytes(task.pid as i32, flock_addr, &out) < 0 {
+                    return Err(Errno::EFAULT);
+                }
+                Ok(syscalls::ParkOutcome::Done(0))
+            }
+            Err(Errno::EAGAIN) if crate::wait_retry::fcntl_lock_blocks(cmd) => {
+                let token = syscalls::ensure_blocking_retry_ofd_binding(
+                    proc, advisory_locks, &mut host, task.tid, 10, fd, None,
+                )?;
+                park_retry_pinned(
+                    proc,
+                    advisory_locks,
+                    task,
+                    crate::wait_retry::RetryOp::FcntlLock { fd, cmd, flock, token },
+                )
+            }
+            Err(error) => Err(error),
+        }
+    })();
+    let result = report_park(outcome);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
+/// flock(2) from a channel; a blocking request that conflicts parks like
+/// `channel_fcntl_lock`.
+fn channel_flock(fd: i32, operation: u32) -> i32 {
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let task = channel_guest_task(proc);
+    let mut host = WasmHostIO;
+    let outcome = match syscalls::sys_flock(proc, advisory_locks, fd, operation, &mut host) {
+        Ok(()) => Ok(syscalls::ParkOutcome::Done(0)),
+        Err(Errno::EAGAIN) if crate::wait_retry::flock_blocks(operation) => {
+            syscalls::ensure_blocking_retry_ofd_binding(
+                proc,
+                advisory_locks,
+                &mut host,
+                task.tid,
+                wasm_posix_shared::abi::extended_syscalls::SYS_FLOCK,
+                fd,
+                None,
+            )
+            .and_then(|token| {
+                park_retry_pinned(
+                    proc,
+                    advisory_locks,
+                    task,
+                    crate::wait_retry::RetryOp::Flock { fd, operation, token },
+                )
+            })
+        }
+        Err(error) => Err(error),
+    };
+    let result = report_park(outcome);
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
+}
+
+/// Park a re-executable call whose target `op.token()` already pins. If the
+/// park itself fails, the pin is released here: nothing else owns it yet.
+fn park_retry_pinned(
+    proc: &mut Process,
+    advisory_locks: &mut crate::lock::AdvisoryLockManager,
+    task: syscalls::GuestTask,
+    op: crate::wait_retry::RetryOp,
+) -> Result<syscalls::ParkOutcome, Errno> {
+    let parked = crate::wait_park::with(|parks| {
+        parks.park(
+            task.pid,
+            task.tid,
+            crate::wait_queue::WaitKind::AdvisoryLock,
+            alloc::vec![op.source()],
+            None,
+            crate::wait_park::Resume::Retry(op),
+        )
+    });
+    match parked {
+        Ok(generation) => Ok(syscalls::ParkOutcome::Parked(generation)),
+        Err(error) => {
+            let _ = syscalls::release_blocking_retry_binding(
+                proc,
+                advisory_locks,
+                &mut WasmHostIO,
+                task.tid,
+                op.token(),
+            );
+            Err(error)
+        }
+    }
+}
+
+/// Release the blocked-retry binding of every re-executable park that
+/// completed (`wait_retry`). Runs before completions are published, so a
+/// guest never resumes while its finished call still pins a file.
+fn release_completed_retry_bindings() {
+    let released = crate::wait_park::with(|p| p.take_released_retry_bindings());
+    if released.is_empty() {
+        return;
+    }
+    let mut host = WasmHostIO;
+    for (pid, tid, token) in released {
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        if let Some((proc, locks)) = table.process_and_advisory_locks(pid) {
+            // ENOENT: exec or thread exit already released it.
+            let _ = syscalls::release_blocking_retry_binding(proc, locks, &mut host, tid, token);
+        }
+    }
+}
+
+/// The kernel pipe whose readiness decides a blocking receive on `fd`: a
+/// kernel pipe's read end, or a socket's receive buffer.
+fn transfer_recv_pipe(proc: &Process, fd: i32) -> Option<u32> {
+    use crate::ofd::FileType;
+    let entry = proc.fd_table.get(fd).ok()?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
+    match ofd.file_type {
+        FileType::Pipe if ofd.host_handle < 0 => Some((-(ofd.host_handle + 1)) as u32),
+        FileType::Socket => proc
+            .sockets
+            .get((-(ofd.host_handle + 1)) as usize)
+            .and_then(|sock| sock.recv_buf_idx)
+            .map(|idx| idx as u32),
+        _ => None,
+    }
+}
+
+/// The kernel pipe whose readiness decides a blocking send on `fd`.
+fn transfer_send_pipe(proc: &Process, fd: i32) -> Option<u32> {
+    use crate::ofd::FileType;
+    let entry = proc.fd_table.get(fd).ok()?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
+    match ofd.file_type {
+        FileType::Pipe if ofd.host_handle < 0 => Some((-(ofd.host_handle + 1)) as u32),
+        FileType::Socket => proc
+            .sockets
+            .get((-(ofd.host_handle + 1)) as usize)
+            .and_then(|sock| sock.send_buf_idx)
+            .map(|idx| idx as u32),
+        _ => None,
+    }
+}
+
+/// Park a `read`/`write`/`recv`/`send` (or `recvfrom`/`sendto` with no
+/// address) that answered EAGAIN for a blocking caller on a kernel pipe or
+/// pipe-backed socket. Returns the dispatch result to publish instead (the
+/// park, or the error that prevented it), or `None` when the EAGAIN is the
+/// caller's own answer: a non-blocking descriptor, `MSG_DONTWAIT`, or an
+/// endpoint whose readiness the kernel does not see (a host-delegated
+/// socket, a PCM stream, a terminal), which stays on the host's retry path
+/// for now.
+///
+/// The first attempt ran on the host's staged copy of the buffer. The park
+/// keeps the caller's own buffer address instead, read from the caller's
+/// request in its channel (`Process::task_channel_addr`), so nothing staged
+/// outlives this call: the re-execution (`wait_retry::transfer_once`) reads
+/// or writes the caller's memory directly. The open file description is
+/// pinned, as for a parked lock.
+fn park_blocked_transfer(syscall_nr: u32, staged: &[i64; 6]) -> Option<i32> {
+    use crate::wait_retry::{
+        transfer_reads, MAX_PARKED_TRANSFER, SYS_READ, SYS_RECVFROM, SYS_SENDTO, SYS_WRITE,
+    };
+    use wasm_posix_shared::channel::{ARGS_COUNT, ARGS_OFFSET, ARG_SIZE};
+
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let tid = table.current_tid();
+    let (proc, locks) = table.current_process_and_advisory_locks()?;
+    let fd = staged[0] as i32;
+    let flags = if syscall_nr == SYS_READ || syscall_nr == SYS_WRITE {
+        0
+    } else {
+        staged[3] as u32
+    };
+    if flags & wasm_posix_shared::socket::MSG_DONTWAIT != 0 {
+        return None;
+    }
+    // An address argument (a datagram's peer) stays on the host's path; with
+    // none, sendto/recvfrom are send/recv.
+    let has_address = match syscall_nr {
+        SYS_RECVFROM => staged[4] != 0 || staged[5] != 0,
+        SYS_SENDTO => staged[4] != 0,
+        _ => false,
+    };
+    if has_address {
+        return None;
+    }
+    let ofd = proc
+        .fd_table
+        .get(fd)
+        .ok()
+        .and_then(|entry| proc.ofd_table.get(entry.ofd_ref.0))?;
+    if ofd.status_flags() & wasm_posix_shared::flags::O_NONBLOCK != 0 {
+        return None;
+    }
+    let reads = transfer_reads(syscall_nr);
+    // SO_RCVTIMEO / SO_SNDTIMEO, in nanoseconds; 0 when unset or not a socket.
+    let timeout_ns: u64 = if ofd.file_type == crate::ofd::FileType::Socket {
+        proc.sockets
+            .get((-(ofd.host_handle + 1)) as usize)
+            .map(|sock| if reads { sock.recv_timeout_us } else { sock.send_timeout_us })
+            .map(|us| (us as u64).saturating_mul(1_000))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let pipe = if reads {
+        transfer_recv_pipe(proc, fd)
+    } else {
+        transfer_send_pipe(proc, fd)
+    }?;
+    // The park re-reads the caller's request from its channel; a task whose
+    // channel the kernel does not know (a pthread, whose channel the host
+    // places) stays on the host's retry path.
+    let channel = proc.task_channel_addr(tid)?;
+
+    let mut host = WasmHostIO;
+    let task = channel_guest_task(proc);
+    let outcome = (|| -> Result<syscalls::ParkOutcome, Errno> {
+        // The caller's request as it wrote it. Its descriptor and count must
+        // be the ones the host staged; anything else is a broken channel.
+        let mut raw = [0u8; ARGS_COUNT * ARG_SIZE];
+        if host.proc_read_bytes(task.pid as i32, channel + ARGS_OFFSET as u64, &mut raw) < 0 {
+            return Err(Errno::EIO);
+        }
+        let arg = |i: usize| {
+            let v = u64::from_le_bytes(raw[i * ARG_SIZE..(i + 1) * ARG_SIZE].try_into().unwrap());
+            if task.pointer_width == 4 { v as u32 as u64 } else { v }
+        };
+        let (caller_fd, buf, count) = (arg(0) as u32 as i32, arg(1), arg(2));
+        if caller_fd != fd || count != staged[2] as u64 || count > MAX_PARKED_TRANSFER {
+            return Err(Errno::EIO);
+        }
+        let token = syscalls::ensure_blocking_retry_ofd_binding(
+            proc, locks, &mut host, tid, syscall_nr, fd, None,
+        )?;
+        let deadline = if timeout_ns > 0 {
+            Some(crate::wait_park::now_ns(&mut host)?.saturating_add(timeout_ns as i64))
+        } else {
+            None
+        };
+        let op = crate::wait_retry::RetryOp::Transfer {
+            syscall: syscall_nr,
+            fd,
+            buf,
+            count,
+            flags,
+            pipe,
+            token,
+            restartable: timeout_ns == 0,
+        };
+        let operation = crate::blocked_retry::BlockingRetryOperation::from_syscall(syscall_nr)?;
+        let parked = crate::wait_park::with(|parks| {
+            parks.park(
+                task.pid,
+                task.tid,
+                crate::wait_queue::WaitKind::Transfer { operation },
+                alloc::vec![op.source()],
+                deadline,
+                crate::wait_park::Resume::Retry(op),
+            )
+        });
+        match parked {
+            Ok(generation) => Ok(syscalls::ParkOutcome::Parked(generation)),
+            Err(error) => {
+                let _ = syscalls::release_blocking_retry_binding(proc, locks, &mut host, tid, token);
+                Err(error)
+            }
+        }
+    })();
+    Some(report_park(outcome))
+}
+
+/// Re-execute every parked call whose source fired (`wait_retry`). A call
+/// that would still block stays parked; anything else is its answer.
+fn settle_retry_waits() {
+    // A re-executed transfer can itself change a pipe's readiness (a read
+    // frees room a parked writer needs), so loop until a pass decides
+    // nothing new. Every pass that continues consumed a readiness change; a
+    // pass with nothing dirty ends it.
+    for _ in 0..64 {
+        if !settle_retry_waits_once() {
+            return;
+        }
+    }
+}
+
+/// One re-execution pass; returns whether anything was dirty.
+/// Publish a parked transfer's successful result straight into the task's
+/// channel, from inside the kernel entry that made it ready, and return the
+/// completion flags to queue (`FLAG_PUBLISHED`, or 0 when the host must
+/// publish it as for any other park).
+///
+/// WHY: a blocked reader or writer used to resume only after the host's
+/// completion drain ran and its deferred publication happened at the end of
+/// the entry -- two extra hops on every wake of a pipe that keeps filling
+/// and emptying. Measured on the pipe benchmark that is most of the cost a
+/// kernel park adds over a running transfer (docs/plans/
+/// 2026-09-27-guest-waits-into-rust.md, step 5b).
+///
+/// The result is published only when nothing later can change it or needs
+/// the host's publication path; otherwise this returns 0 and the queued path
+/// runs unchanged:
+/// - Final outcome. The transfer has happened: the bytes moved and the
+///   value is the count. Nothing later in this entry can undo that. A signal
+///   already pending for the task must ride with this completion (the host
+///   attaches it at publication), so one targeting it forces the queued
+///   path. A signal generated later in the entry is generated after the call
+///   completed and is delivered at the task's next syscall, exactly as one
+///   generated just after a host publication; and the task's next park sees
+///   it at once (its process is swept when it parks). A task has one park at
+///   a time and `finish` removes it, so no second completion can exist.
+/// - Cancellation, decided here without asking the host. A `pthread_cancel`
+///   of a request that came through `__syscall_cp` with cancellation wake
+///   allowed is applied to this park by the kernel's exact-task cleanup
+///   (SYS_THREAD_CANCEL on the target's channel), in the cancel's own entry,
+///   so the park is gone (`FLAG_CANCELLED`) before any completion can exist.
+///   Any other cancel -- a plain syscall, or cancellation disabled -- stays
+///   pending in the host for the thread's next cancellation point, and the
+///   queued path does nothing with it at completion either: the host acts
+///   on a pending cancel only before a request parks
+///   (`interruptPendingCancellationBeforeRegistration`) and in that cleanup.
+///   Publishing here therefore gives the same result and leaves the cancel
+///   armed exactly as the queued path does.
+/// - The park is the authority. The completion being decided belongs to
+///   the task's one live park; a channel the host retired (exit, exec,
+///   teardown) has no park, because those paths retire it here first.
+///   Stopped is the kernel's own process state, which the host mirrors.
+/// - Shared memory. A process with any `MAP_SHARED` mapping or SysV
+///   attachment needs the host's coherence step at the syscall boundary, so
+///   it takes the queued path.
+/// - A stopped process, a dead or unknown task, or an unregistered channel
+///   address takes the queued path.
+fn publish_transfer_directly(pid: u32, tid: u32, op: &crate::wait_retry::RetryOp, value: i32) -> u32 {
+    if !matches!(op, crate::wait_retry::RetryOp::Transfer { .. }) || value < 0 {
+        return 0;
+    }
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let Some(proc) = table.get(pid) else { return 0 };
+    if proc.state != crate::process::ProcessState::Running
+        || !proc.is_live_explicit_tid(tid)
+        || crate::wait_park::signal_targets_task(proc, tid)
+        || proc.memory.has_shared_mapping()
+        || unsafe { crate::memory::global_shared_mapping_table() }.sysv_mapping_count_for(pid) != 0
+    {
+        return 0;
+    }
+    let Some(channel) = proc.task_channel_addr(tid) else { return 0 };
+    if unsafe { host_publish_wait_completion(pid as i32, channel, value as i64, 0) } == 0 {
+        wasm_posix_shared::wait_completion_wire::FLAG_PUBLISHED
+    } else {
+        0
+    }
+}
+
+fn settle_retry_waits_once() -> bool {
+    let waiters = crate::wait_park::with(|p| p.take_dirty_retry_waiters());
+    if waiters.is_empty() {
+        return false;
+    }
+    let mut host = WasmHostIO;
+    for (id, pid, tid, op) in waiters {
+        let outcome = {
+            let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+            let Some((proc, locks)) = table.process_and_advisory_locks(pid) else { continue };
+            if !proc.is_live_explicit_tid(tid) {
+                continue;
+            }
+            let outcome = op.attempt(proc, locks, &mut host, tid);
+            syscalls::finish_scm_rights_cleanup(locks, &mut host);
+            outcome
+        };
+        let value = match outcome {
+            Err(Errno::EAGAIN) => continue,
+            Ok(value) => value,
+            Err(error) => -(error as i32),
+        };
+        let flags = match op {
+            crate::wait_retry::RetryOp::Transfer { .. } => publish_transfer_directly(pid, tid, &op, value),
+            _ => 0,
+        };
+        crate::wait_park::with(|p| p.finish_retry_waiter_with_flags(id, op, value, flags));
+    }
+    true
+}
+
+/// Offer every parked `rt_sigtimedwait` the signals in its set, after a signal
+/// generation and before the generic sweep (which would otherwise deliver a
+/// set member that happens to be unblocked). With no generation since the
+/// last sweep it is one flag read.
+fn settle_signal_waits() {
+    let waiters = crate::wait_park::with(|p| p.dirty_signal_waiters());
+    if waiters.is_empty() {
+        return;
+    }
+    let mut host = WasmHostIO;
+    for (id, pid, tid, wait) in waiters {
+        let (taken, pointer_width) = {
+            let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+            let Some(proc) = table.get_mut(pid) else { continue };
+            if !proc.is_live_explicit_tid(tid) {
+                continue;
+            }
+            (crate::wait_signal::take_signal_for(proc, tid, wait.mask), proc.pointer_width)
+        };
+        let Some(taken) = taken else { continue };
+        let task = syscalls::GuestTask { pid, tid, pointer_width };
+        let value = wait
+            .report(&mut host, task, &taken)
+            .unwrap_or_else(|error| -(error as i32));
+        crate::wait_park::with(|p| p.finish_signal_waiter(id, pid, tid, value));
+    }
+}
+
+/// nanosleep / clock_nanosleep / usleep from a channel: the kernel owns the
+/// sleep (see `syscalls::sys_nanosleep`). Pending default-action signals are
+/// still applied on the way out, as for every other syscall.
+fn channel_sleep(
+    sleep: impl FnOnce(&mut WasmHostIO, syscalls::GuestTask) -> Result<syscalls::ParkOutcome, Errno>,
+) -> i32 {
+    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let task = channel_guest_task(proc);
+    let mut host = WasmHostIO;
+    let result = report_park(sleep(&mut host, task));
+    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -15747,7 +16409,7 @@ pub extern "C" fn kernel_pty_set_winsize(pty_idx: u32, rows: u32, cols: u32) -> 
         let pids = table.pids_in_group(fg_pgid as u32);
         for pid in pids {
             if let Some(proc) = table.get_mut(pid) {
-                proc.signals.raise(wasm_posix_shared::signal::SIGWINCH);
+                proc.raise_signal(wasm_posix_shared::signal::SIGWINCH);
             }
         }
     }
@@ -15854,16 +16516,118 @@ pub extern "C" fn kernel_pcm_clock_update(frames: u32) -> u32 {
 
 /// Drain pending wakeup events into the output buffer.
 ///
-/// Each event is 5 bytes: wake index (u32 LE) + wake_type (u8).
-/// Returns the number of events written.
+/// Each event is `wakeup_event_wire::RECORD_BYTES`: wake index (u32 LE) +
+/// wake_type (u8). Returns the number of events written.
+///
+/// Before draining, kernel-owned parks are settled: if a signal was generated
+/// since the last settle, the parked set is swept, and if any parked task's
+/// result has been decided a `TYPE_WAIT_COMPLETE` event tells the host to
+/// collect it with [`kernel_drain_wait_completions`]. With no park and no
+/// signal this costs two field reads, which is why the host can keep calling
+/// this once per syscall and no second export sits on the hot path.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_drain_wakeup_events(
     out_ptr: *mut u8,
     out_len: u32,
     max_events: u32,
 ) -> u32 {
+    settle_child_waits();
+    settle_signal_waits();
+    release_orphaned_ofd_locks();
+    settle_retry_waits();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if crate::wait_park::settle(table) {
+        crate::wakeup::push(0, wasm_posix_shared::wakeup_event_wire::TYPE_WAIT_COMPLETE);
+    }
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
     crate::wakeup::drain(out, max_events)
+}
+
+/// Collect the results the kernel decided for parked tasks.
+///
+/// Expires every park whose deadline has passed (reading `CLOCK_MONOTONIC`
+/// once, in `wait_park::now_ns`), sweeps for signals, then writes whole
+/// `wait_completion_wire::RECORD_BYTES` records -- at most `max_records` and
+/// as many as fit in `out_len` -- and returns how many. Records that do not
+/// fit stay queued in order. Hosts call this on `TYPE_WAIT_COMPLETE` and when
+/// the timer armed from [`kernel_wait_next_timeout_ns`] fires; the native
+/// host calls it once per pump iteration.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_drain_wait_completions(
+    out_ptr: *mut u8,
+    out_len: u32,
+    max_records: u32,
+) -> i32 {
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    // The clock is a host call: read it only when a deadline could expire or
+    // a decision owes a `rem` (`Parks::needs_clock`). An untimed park -- a
+    // pipe transfer, a lock -- is decided without it.
+    let now = if crate::wait_park::with(|parks| parks.needs_clock()) {
+        match crate::wait_park::now_ns(&mut WasmHostIO) {
+            Ok(now) => Some(now),
+            Err(error) => return -(error as i32),
+        }
+    } else {
+        None
+    };
+    settle_child_waits();
+    settle_signal_waits();
+    release_orphaned_ofd_locks();
+    settle_retry_waits();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, out_len as usize) };
+    let drained = crate::wait_park::with(|parks| {
+        if let Some(now) = now {
+            for (pid, tid, ns) in parks.expire(now) {
+                crate::image_build_determinism::credit_task_wait(pid, tid, ns);
+            }
+        }
+        parks.sweep_signals(table);
+        // Nothing decided: no record to write and no pin to release.
+        if parks.pending_completions() == 0 {
+            return 0;
+        }
+        // A `rem` is owed only by a sleep, which had a deadline, so `now` was
+        // read above; read it here anyway rather than measure against 0.
+        let now = match now {
+            Some(now) => now,
+            None if parks.needs_clock() => {
+                crate::wait_park::now_ns(&mut WasmHostIO).unwrap_or(0)
+            }
+            None => 0,
+        };
+        // An interrupted sleep's `rem` is stored now, before the host can
+        // publish the result the guest will read it beside.
+        parks.drain(out, max_records, now, &mut |pid, addr, bytes| {
+            WasmHostIO.proc_write_bytes(pid as i32, addr, bytes) == 0
+        }) as i32
+    });
+    // Every decision above, the sweep's EINTRs included, is unpublished
+    // until this returns: release the finished calls' pins first.
+    release_completed_retry_bindings();
+    drained
+}
+
+/// Nanoseconds until the earliest kernel-owned park deadline, `0` if one has
+/// already passed, or `-1` if no park is timed.
+///
+/// Relative on purpose: a host sleeps this long and re-enters through
+/// [`kernel_drain_wait_completions`], and never computes in the kernel's clock
+/// domain -- which is what lets a deterministic scheduler replace that clock
+/// without touching any host.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_wait_next_timeout_ns() -> i64 {
+    // No timed park: answer without the clock read (a host call).
+    if !crate::wait_park::with(|parks| parks.has_deadline()) {
+        return -1;
+    }
+    let now = match crate::wait_park::now_ns(&mut WasmHostIO) {
+        Ok(now) => now,
+        Err(error) => return -(error as i64),
+    };
+    crate::wait_park::with(|parks| parks.next_timeout_ns(now)).unwrap_or(-1)
 }
 
 /// Consume the coalesced PTY readiness notification. PTY queues are not pipe

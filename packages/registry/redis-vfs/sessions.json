@@ -1,0 +1,37 @@
+{
+  "kind": "kandelo-package-sessions",
+  "version": 1,
+  "package": "redis-vfs",
+  "packageVersion": "0.1.0",
+  "offers": [
+    {
+      "id": "service",
+      "title": "Redis voting board",
+      "description": "Add ideas and vote together on a shared live board.",
+      "warning": "Explore Redis lets invited people edit or delete this temporary board’s data.",
+      "join": "client",
+      "attachExisting": true,
+      "requiresHost": true,
+      "hostRequires": [
+        "/usr/local/bin/redis-server",
+        "/var/www/redis-board/router.php"
+      ],
+      "fields": []
+    }
+  ],
+  "joins": [
+    {
+      "id": "client",
+      "title": "Open Redis voting board",
+      "description": "Join the host\u2019s live voting board.",
+      "fields": [],
+      "launch": {
+        "surface": "web",
+        "host": "network.host",
+        "port": 8080,
+        "path": "/"
+      },
+      "computer": "default"
+    }
+  ]
+}

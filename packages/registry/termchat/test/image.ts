@@ -10,7 +10,7 @@ export async function termchatImage(): Promise<Uint8Array> {
   image.writeFile("/etc/passwd", text.encode("root:x:0:0:Root:/root:/bin/sh\n"), 0o644);
   image.writeFile("/etc/group", text.encode("root:x:0:\n"), 0o644);
   image.writeFile("/etc/hosts", text.encode("127.0.0.1 localhost\n"), 0o644);
-  image.writeFile("/usr/bin/termchat", new Uint8Array(readFileSync(resolveBinary("programs/termchat.wasm"))), 0o755);
+  image.writeFile("/usr/bin/termchat", new Uint8Array(readFileSync(resolveBinary("programs/termchat/termchat.wasm"))), 0o755);
   image.writeFile("/usr/share/probe.bin", transferBytes, 0o644);
   return image.saveImage();
 }

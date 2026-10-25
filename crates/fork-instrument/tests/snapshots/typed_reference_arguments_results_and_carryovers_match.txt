@@ -1,0 +1,126 @@
+=== references 07669ff5f423 ===
+[
+    ReferenceAnalysis {
+        function: 0,
+        locals: {
+            0: externref,
+        },
+        landings: [],
+    },
+    ReferenceAnalysis {
+        function: 1,
+        locals: {},
+        landings: [],
+    },
+    ReferenceAnalysis {
+        function: 2,
+        locals: {
+            0: (ref (id 1)),
+        },
+        landings: [
+            ReferenceLanding {
+                point: ProgramPoint {
+                    function: 2,
+                    offset: 74,
+                },
+                kind: Direct(
+                    1,
+                ),
+                arguments: [],
+                results: [],
+                carryovers: [
+                    TypedReference {
+                        index: 0,
+                        ty: (ref null (id 0)),
+                    },
+                ],
+                carryovers_exact: true,
+                has_reference_callee: false,
+                live_on_normal_return: {},
+                live_on_any_successor: {},
+                definitely_null_before: {},
+                reachable: true,
+            },
+            ReferenceLanding {
+                point: ProgramPoint {
+                    function: 2,
+                    offset: 83,
+                },
+                kind: Direct(
+                    1,
+                ),
+                arguments: [],
+                results: [],
+                carryovers: [
+                    TypedReference {
+                        index: 0,
+                        ty: (ref (id 0)),
+                    },
+                ],
+                carryovers_exact: true,
+                has_reference_callee: false,
+                live_on_normal_return: {},
+                live_on_any_successor: {},
+                definitely_null_before: {},
+                reachable: true,
+            },
+            ReferenceLanding {
+                point: ProgramPoint {
+                    function: 2,
+                    offset: 91,
+                },
+                kind: Indirect {
+                    table: 0,
+                    ty: 2,
+                },
+                arguments: [
+                    TypedReference {
+                        index: 0,
+                        ty: externref,
+                    },
+                ],
+                results: [
+                    TypedReference {
+                        index: 0,
+                        ty: externref,
+                    },
+                ],
+                carryovers: [],
+                carryovers_exact: true,
+                has_reference_callee: false,
+                live_on_normal_return: {},
+                live_on_any_successor: {},
+                definitely_null_before: {},
+                reachable: true,
+            },
+            ReferenceLanding {
+                point: ProgramPoint {
+                    function: 2,
+                    offset: 99,
+                },
+                kind: Ref {
+                    ty: 2,
+                },
+                arguments: [
+                    TypedReference {
+                        index: 0,
+                        ty: externref,
+                    },
+                ],
+                results: [
+                    TypedReference {
+                        index: 0,
+                        ty: externref,
+                    },
+                ],
+                carryovers: [],
+                carryovers_exact: true,
+                has_reference_callee: true,
+                live_on_normal_return: {},
+                live_on_any_successor: {},
+                definitely_null_before: {},
+                reachable: true,
+            },
+        ],
+    },
+]

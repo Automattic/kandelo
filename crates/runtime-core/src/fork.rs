@@ -59,7 +59,9 @@ const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
 // Production fork serialization still clears and omits pending directed
 // signals; the exec-state fixture preserves them for replacement tests.
 // v19 retains the KMS cursor BO across exec; fork children own no cursor.
-const FORK_VERSION: u32 = 20;
+// v21 combines the graphics state above with the image executable
+// (`Process::exe`) inherited as an OFD; both branches independently used v20.
+const FORK_VERSION: u32 = 21;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -1020,6 +1022,15 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         let count = inherited_ofd_refs.entry(entry.ofd_ref.0).or_insert(0);
         *count = count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
     }
+    // The executable the image runs is one more reference the child inherits
+    // (`Process::exe`): the child runs the same image until it execs.
+    if let Some(exe) = proc.exe {
+        if proc.ofd_table.get(exe.0).is_none() {
+            return Err(Errno::EBADF);
+        }
+        let count = inherited_ofd_refs.entry(exe.0).or_insert(0);
+        *count = count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
+    }
     w.write_u32(fd_entries.len() as u32)?;
     for (fd_num, entry) in &fd_entries {
         w.write_u32(*fd_num as u32)?;
@@ -1054,6 +1065,8 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         // and the controlC0 card binding. The SAB registry is global by
         // `pcm_id` so no per-fork copy is needed.
     }
+    // `Process::exe`: the OFD index plus one, 0 for none.
+    w.write_u32(proc.exe.map_or(0, |exe| exe.0 as u32 + 1))?;
 
     // ── Environment ──
     w.write_u32(proc.environ.len() as u32)?;
@@ -1413,6 +1426,17 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
         ofd.reset_directory_iterator_for_reopen();
         ofd_entries[index] = Some(ofd);
     }
+    let exe_index = r.read_u32()?;
+    let exe = match exe_index {
+        0 => None,
+        n => {
+            let index = (n - 1) as usize;
+            if !ofd_entries.get(index).is_some_and(Option::is_some) {
+                return Err(Errno::EINVAL);
+            }
+            Some(OpenFileDescRef(index))
+        }
+    };
     let ofd_table = OfdTable::from_raw(ofd_entries);
 
     // ── Environment ──
@@ -1736,6 +1760,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     child.wait_event = None;
     child.fd_table = fd_table;
     child.ofd_table = ofd_table;
+    child.exe = exe;
     child.pipes.clear();
     child.sockets = sockets;
     child.cwd = cwd;

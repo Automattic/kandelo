@@ -13,6 +13,12 @@ case "$mode" in
 esac
 # A new screen name avoids collisions between the machines' maker accounts.
 player="${FREECIV_PLAYER:-Player-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')}"
+# The activity and terminal launcher share one explicit name option.
+if [ "${1:-}" = --name ]; then
+    [ "$#" -ge 2 ] || { echo 'freeciv-play: --name requires a value' >&2; exit 2; }
+    player="$2"
+    shift 2
+fi
 server_pid=
 client_pid=
 cleanup() {

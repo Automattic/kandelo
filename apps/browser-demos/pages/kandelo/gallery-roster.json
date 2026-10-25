@@ -72,6 +72,10 @@
     {
       "product": "browser-main-shell",
       "profile": "omarchy"
+    },
+    {
+      "product": "browser-redis",
+      "profile": "redis"
     }
   ]
 }

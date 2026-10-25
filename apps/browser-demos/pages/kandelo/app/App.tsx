@@ -1,3 +1,5 @@
+import { type ThemeFamily, type ResolvedThemeMode, type ThemeMode, type ThemePreference, type StoredThemePreference, THEME_STORAGE_KEY, THEME_STORAGE_VERSION, readThemePreference, getSystemThemeMode, applyTheme } from "./theme";
+import activityClientImageUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
 // Top-level Kandelo app. The machine remains the primary canvas; the dock
 // switches machine views and opens exploratory panes for gallery and overlays.
 
@@ -26,27 +28,13 @@ import { useWebMcp } from "../webmcp/use-webmcp";
 import type { DisplayHandle } from "../panes/Display";
 import { TerminalDockControls } from "./TerminalDockControls";
 import { useNetworkSession } from "./use-network-session";
+import { usePackageSessions } from "./use-package-sessions";
+import type { SessionLaunch } from "../../../../../web-libs/kandelo-session/src/package-sessions";
 import { NetworkPanel } from "./NetworkPanel";
 import { ExchangeToasts, useExchangePicker } from "./ExchangeToasts";
 import { useExchangeConsumer } from "../kernel-host/react";
 
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
-type ThemeFamily = "ubuntu" | "wordpress" | "kandelo";
-type ResolvedThemeMode = "light" | "dark";
-type ThemeMode = ResolvedThemeMode | "auto";
-type ThemePreference = {
-  family: ThemeFamily;
-  mode: ThemeMode;
-};
-
-const THEME_STORAGE_KEY = "kandelo.theme";
-const THEME_STORAGE_VERSION = 4;
-
-type StoredThemePreference = ThemePreference & {
-  version: typeof THEME_STORAGE_VERSION;
-};
-
-const DEFAULT_THEME: ThemePreference = { family: "kandelo", mode: "auto" };
 const THEME_FAMILIES: Array<{ family: ThemeFamily; label: string; description: string }> = [
   { family: "kandelo", label: "Kandelo", description: "Candlelit Kandelo surfaces with warm highlights and ink-dark contrast." },
   { family: "wordpress", label: "WordPress", description: "WordPress design-system grays with the modern blueberry accent." },
@@ -65,9 +53,9 @@ const PANE_META: Record<DockPaneId, { title: string; subtitle: string }> = {
   },
 };
 
-export const App: React.FC = () => {
+export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boolean }> = ({ invitationOpen = true, invitationDismissed = false }) => {
   const host = useKernelHost();
-  const networkSession = useNetworkSession(host);
+  const networkSession = useNetworkSession(host, invitationOpen, invitationDismissed);
   const exchangeConsumer = useExchangeConsumer();
   const exchangePicker = useExchangePicker();
   const demoGuide = useDemoGuide();
@@ -169,11 +157,7 @@ export const App: React.FC = () => {
   }, []);
 
   React.useEffect(() => {
-    const root = document.documentElement;
-    root.dataset.kTheme = theme.family;
-    root.dataset.kMode = resolvedThemeMode;
-    root.dataset.kModePreference = theme.mode;
-    root.style.colorScheme = resolvedThemeMode;
+    applyTheme(theme, resolvedThemeMode);
     try {
       window.localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify({
         ...theme,
@@ -305,6 +289,82 @@ export const App: React.FC = () => {
   }, []);
 
   const onAddTerminal = React.useCallback(() => { createTerminal(true); }, [createTerminal]);
+
+  const activityTerminal = React.useRef<{ job: string; terminal: ShellTerminal } | null>(null);
+  // A replacement awaits the old process's exit; the render which began
+  // preparation may still describe that process as the display owner.
+  const activityDisplayOccupied = React.useRef(surface.displayOccupied);
+  activityDisplayOccupied.current = surface.displayOccupied;
+  React.useEffect(() => host.subscribeStatus(status => { if (status !== "running") activityTerminal.current = null; }), [host]);
+  const replacement = {
+    available: () => activityTerminal.current !== null,
+    stop: async () => {
+      const activity = activityTerminal.current;
+      if (!activity) return;
+      const check = () => { if (activityTerminal.current !== activity) throw new Error("The activity's computer was replaced"); };
+      const deadline = Date.now() + 30_000;
+      try {
+        let result = await host.readOwnedJob(activity.job, undefined, 1, true); check();
+        while (result.expired || !result.terminationObserved) {
+          if (Date.now() >= deadline) throw new Error("The previous activity has not finished stopping. Try again to finish closing it.");
+          await new Promise(resolve => setTimeout(resolve, 25)); check();
+          result = await host.readOwnedJob(activity.job, undefined, 1); check();
+        }
+        await host.releaseOwnedJob(activity.job); check();
+      } catch (error) {
+        check();
+        // A refused spawn can abandon its unstarted job. Other failures keep
+        // the ID so a later attempt can still cancel/release the real family.
+        if (!String(error).includes("UNKNOWN_JOB")) throw error;
+      }
+      host.setKmsDisplayScale?.(null);
+      host.removePty(activity.terminal.path);
+      setTerminals(previous => previous.filter(terminal => terminal.id !== activity.terminal.id));
+      setActiveTerminalId(previous => previous === activity.terminal.id ? "tty-1" : previous);
+      activityTerminal.current = null;
+    },
+  };
+  const launchActivity = React.useCallback(async (command: string, title: string, assertCurrent: () => void, procedure: SessionLaunch) => {
+    assertCurrent();
+    if (procedure.surface === "web") {
+      if (!host.openWebPreview) throw new Error("This computer cannot open a web preview");
+      await host.openWebPreview({ hostname: procedure.host === "network.host" ? "host" : "localhost", port: procedure.port, path: procedure.path, label: title });
+      assertCurrent();
+      selectMachineView("demo");
+      return;
+    }
+    if (procedure.surface === "display" && activityDisplayOccupied.current) throw new Error("Quit the program using the display before starting a new activity.");
+    const terminal = { ...createShellTerminal(nextTerminalIndex.current++), label: title };
+    const activity = { job: `activity-${crypto.randomUUID()}`, terminal };
+    activityTerminal.current = activity;
+    // Own the fresh login/PTY before it can fork. The worker's existing job
+    // ledger follows every descendant across exec, reparenting and setsid.
+    const pty = await host.attachPty(terminal.path, undefined, { id: activity.job, timeoutMs: 0 });
+    pty.close(); assertCurrent();
+    flushSync(() => {
+      setTerminals(previous => [...previous, terminal]);
+      setActiveTerminalId(terminal.id);
+      selectMachineView("terminal");
+    });
+    if (procedure.display === "kms") {
+      if (!host.setKmsDisplayMode || !host.whenKmsDisplaySized || !host.getSurfaceAvailability().kms) throw new Error("This computer does not provide the required KMS display");
+      if (procedure.displayScale !== undefined && !host.setKmsDisplayScale) throw new Error("This computer cannot configure the activity display scale");
+      host.setKmsDisplayScale?.(procedure.displayScale ?? null);
+      host.setKmsDisplayMode("webgl2-scanout");
+      flushSync(() => surface.requestActivityDisplay("kms"));
+      if (!await host.whenKmsDisplaySized(1, 5000)) throw new Error("The activity display could not be prepared");
+      assertCurrent();
+    }
+    if (procedure.surface === "display" && procedure.display !== "kms") flushSync(() => surface.requestActivityDisplay("framebuffer"));
+    await host.dispatchShellCommand(command, { path: terminal.path, beforeWrite: () => {
+      assertCurrent();
+      if (procedure.surface === "display" && (host.getSurfaceAvailability().framebuffer || activityDisplayOccupied.current)) {
+        throw new Error("Quit the program using the display before starting a new activity.");
+      }
+    } });
+    assertCurrent();
+  }, [host, selectMachineView, surface]);
+  const packageSessions = usePackageSessions(host, networkSession, launchActivity, surface.displayOccupied, activityClientImageUrl, replacement);
 
   useWebMcp({
     host, terminals, activeTerminalId,
@@ -455,7 +515,7 @@ export const App: React.FC = () => {
 
         {shareOpen && <ShareDialog onClose={() => setShareOpen(false)} />}
 
-        {networkSession.open && <NetworkPanel session={networkSession} running={surface.status === "running"} />}
+        {networkSession.open && <NetworkPanel session={networkSession} activity={packageSessions} running={surface.status === "running"} failed={surface.status === "error"} />}
 
         <Dock
           onSendFiles={surface.status === "running" && exchangeConsumer && exchangeConsumer.state !== "unavailable"
@@ -726,52 +786,4 @@ function humanBytes(bytes: number): string {
   if (kib < 1024) return `${kib.toFixed(kib < 10 ? 1 : 0)} KiB`;
   const mib = kib / 1024;
   return `${mib.toFixed(mib < 10 ? 1 : 0)} MiB`;
-}
-
-function readThemePreference(): ThemePreference {
-  if (typeof window === "undefined") return DEFAULT_THEME;
-
-  try {
-    const raw = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (!raw) return DEFAULT_THEME;
-    const parsed = JSON.parse(raw) as Partial<StoredThemePreference>;
-    if (
-      parsed.version !== THEME_STORAGE_VERSION &&
-      parsed.version !== 2 &&
-      parsed.version !== 1
-    ) {
-      return DEFAULT_THEME;
-    }
-    const family = normalizeThemeFamily(parsed.family);
-    const mode = parsed.mode;
-    if (!family || !isThemeMode(mode)) return DEFAULT_THEME;
-    return { family, mode };
-  } catch {
-    return DEFAULT_THEME;
-  }
-}
-
-function normalizeThemeFamily(value: unknown): ThemeFamily | null {
-  switch (value) {
-    case "playground":
-      return "wordpress";
-    case "wordpress":
-    case "kandelo":
-    case "ubuntu":
-      return value;
-    case "balanced":
-    case "terminal":
-      return "kandelo";
-    default:
-      return null;
-  }
-}
-
-function isThemeMode(value: unknown): value is ThemeMode {
-  return value === "auto" || value === "light" || value === "dark";
-}
-
-function getSystemThemeMode(): ResolvedThemeMode {
-  if (typeof window === "undefined") return "light";
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }

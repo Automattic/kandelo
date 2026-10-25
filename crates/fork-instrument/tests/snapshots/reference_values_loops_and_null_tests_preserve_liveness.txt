@@ -1,0 +1,144 @@
+=== references 26006b466447 ===
+[
+    ReferenceAnalysis {
+        function: 1,
+        locals: {
+            0: externref,
+            2: externref,
+        },
+        landings: [
+            ReferenceLanding {
+                point: ProgramPoint {
+                    function: 1,
+                    offset: 79,
+                },
+                kind: Direct(
+                    0,
+                ),
+                arguments: [],
+                results: [],
+                carryovers: [],
+                carryovers_exact: true,
+                has_reference_callee: false,
+                live_on_normal_return: {
+                    0,
+                },
+                live_on_any_successor: {
+                    0,
+                },
+                definitely_null_before: {
+                    2,
+                },
+                reachable: true,
+            },
+            ReferenceLanding {
+                point: ProgramPoint {
+                    function: 1,
+                    offset: 85,
+                },
+                kind: Direct(
+                    0,
+                ),
+                arguments: [],
+                results: [],
+                carryovers: [],
+                carryovers_exact: true,
+                has_reference_callee: false,
+                live_on_normal_return: {
+                    0,
+                },
+                live_on_any_successor: {
+                    0,
+                },
+                definitely_null_before: {},
+                reachable: true,
+            },
+        ],
+    },
+    ReferenceAnalysis {
+        function: 2,
+        locals: {
+            0: externref,
+        },
+        landings: [
+            ReferenceLanding {
+                point: ProgramPoint {
+                    function: 2,
+                    offset: 104,
+                },
+                kind: Direct(
+                    0,
+                ),
+                arguments: [],
+                results: [],
+                carryovers: [],
+                carryovers_exact: true,
+                has_reference_callee: false,
+                live_on_normal_return: {
+                    0,
+                },
+                live_on_any_successor: {
+                    0,
+                },
+                definitely_null_before: {
+                    0,
+                },
+                reachable: true,
+            },
+        ],
+    },
+    ReferenceAnalysis {
+        function: 3,
+        locals: {
+            0: externref,
+        },
+        landings: [
+            ReferenceLanding {
+                point: ProgramPoint {
+                    function: 3,
+                    offset: 120,
+                },
+                kind: Direct(
+                    0,
+                ),
+                arguments: [],
+                results: [],
+                carryovers: [],
+                carryovers_exact: true,
+                has_reference_callee: false,
+                live_on_normal_return: {},
+                live_on_any_successor: {},
+                definitely_null_before: {},
+                reachable: true,
+            },
+        ],
+    },
+    ReferenceAnalysis {
+        function: 4,
+        locals: {
+            0: externref,
+        },
+        landings: [
+            ReferenceLanding {
+                point: ProgramPoint {
+                    function: 4,
+                    offset: 133,
+                },
+                kind: Direct(
+                    0,
+                ),
+                arguments: [],
+                results: [],
+                carryovers: [],
+                carryovers_exact: true,
+                has_reference_callee: false,
+                live_on_normal_return: {},
+                live_on_any_successor: {},
+                definitely_null_before: {
+                    0,
+                },
+                reachable: true,
+            },
+        ],
+    },
+]

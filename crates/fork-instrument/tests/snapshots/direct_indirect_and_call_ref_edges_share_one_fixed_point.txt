@@ -1,0 +1,37 @@
+=== closed cf5410b112c0 ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+        3,
+        4,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+        3,
+        4,
+    },
+    tail_sites: {},
+}
+
+=== external cf5410b112c0 ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+        3,
+        4,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+        3,
+        4,
+    },
+    tail_sites: {},
+}

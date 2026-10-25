@@ -1770,7 +1770,7 @@ if (typeof window !== "undefined") {
             });
           };
           try {
-            client.postMessage({ type: "need-bridge" }, [ch.port2]);
+            client.postMessage({ type: "need-bridge", name: record.name }, [ch.port2]);
           } catch (_error) {
             ch.port1.close();
           }
@@ -2116,7 +2116,10 @@ if (typeof window !== "undefined") {
           // subresource requests stay on the bridge instead of escaping to
           // the static origin. See injectBlobIframeInterceptor.
           var contentType = (respHeaders.get("Content-Type") || "").toLowerCase();
-          if (contentType.indexOf("text/html") === 0) {
+          // An application's CSP owns its script policy. Do not insert an
+          // undeclared inline helper or loosen that policy to accommodate it.
+          if (contentType.indexOf("text/html") === 0 &&
+              !respHeaders.has("Content-Security-Policy")) {
             rewritten = injectBlobIframeInterceptor(rewritten);
           }
           if (rewritten !== text) {

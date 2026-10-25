@@ -1,10 +1,11 @@
 script_path = "packages/registry/termchat/build-termchat.sh"
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 1
+revision = 2
 inputs = [
   "packages/registry/termchat/build-termchat.sh",
   "packages/registry/termchat/patches",
+  "packages/registry/termchat/sessions.json",
   "scripts/package-rust-build-env.sh",
   "scripts/build-rust-sysroot.sh",
   "scripts/package-build-roots.sh",

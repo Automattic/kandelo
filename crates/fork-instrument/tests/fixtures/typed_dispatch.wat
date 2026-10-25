@@ -1,0 +1,11 @@
+(module
+  (type $t (func (param i32) (result i32)))
+  (import "kernel" "kernel_fork" (func $kernel_fork (param i32) (result i32)))
+  (memory 1)
+  (table 2 funcref)
+  (elem (i32.const 0) $forker $other)
+  (func $forker (type $t) (call $kernel_fork (i32.const 0)))
+  (func $other (type $t) (local.get 0))
+  (func $main (param i32) (result i32)
+    (call_indirect (type $t) (local.get 0) (local.get 0)))
+  (func $_start (export "_start") (drop (call $main (i32.load (i32.const 0))))))

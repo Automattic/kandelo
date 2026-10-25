@@ -1,5 +1,10 @@
 script_path = "packages/registry/lamp/build-lamp.sh"
 inputs = [
+  "web-libs/kandelo-session/src/session-dependencies.ts",
+  "web-libs/kandelo-session/src/package-sessions.ts",
+  "web-libs/kandelo-session/src/game-levels.ts",
+  "images/vfs/scripts/image-session-files.ts",
+  "packages/registry/lamp/sessions.json",
   "packages/registry/lamp/build-lamp.sh",
   "packages/registry/lamp/package.toml",
   "packages/registry/mariadb/package.toml",
@@ -39,5 +44,5 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 21
+revision = 24
 publication_state = "pending"

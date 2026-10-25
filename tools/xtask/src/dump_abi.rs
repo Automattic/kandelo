@@ -2728,6 +2728,7 @@ fn render_ts_module() -> String {
         ));
     }
     out.push_str("} as const;\n\n");
+    out.push_str(&render_ts_wait_completion_wire());
     out.push_str("export const POLL_EVENTS = {\n");
     for (name, value) in poll_events() {
         out.push_str(&format!("  {}: {},\n", name, value));
@@ -3740,30 +3741,8 @@ fn render_ts_module() -> String {
         "export const STRUCT_SIZE_WASM_RUSAGE_WIRE = {} as const;\n",
         size_of::<shared::WasmRusageWire>()
     ));
-    out.push_str(&format!(
-        "export const STRUCT_SIZE_KERNEL_WAIT_RESULT = {} as const;\n",
-        size_of::<shared::KernelWaitResult>()
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelWaitResult, wait_status)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_WAIT_RESULT_SI_CODE_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelWaitResult, si_code)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_WAIT_RESULT_SI_STATUS_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelWaitResult, si_status)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_WAIT_RESULT_CHILD_UID_OFFSET = {} as const;\n",
-        offset_of!(shared::KernelWaitResult, child_uid)
-    ));
-    out.push_str(&format!(
-        "export const KERNEL_WAIT_RESULT_RUSAGE_OFFSET = {} as const;\n\n",
-        offset_of!(shared::KernelWaitResult, rusage)
-    ));
+    out.push_str("
+");
 
     out.push_str("export const HOST_INTERCEPTED_SYSCALLS = {\n");
     for syscall in host_intercepted_syscall_metadata() {
@@ -4315,6 +4294,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         process_snapshot_wire(),
     );
     root.insert("wakeup_event_wire".into(), wakeup_event_wire());
+    root.insert("wait_completion_wire".into(), wait_completion_wire());
     root.insert("io_multiplexing".into(), io_multiplexing());
     root.insert("vfs_metadata".into(), vfs_metadata());
     root.insert("spawn_contract".into(), spawn_contract());
@@ -4358,6 +4338,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     let exports = kernel_exports(&wasm)?;
     validate_host_adapter_export_lifecycles(&root["host_adapter"], &exports)?;
     root.insert("kernel_exports".into(), exports);
+    root.insert("kernel_imports".into(), kernel_imports(&wasm)?);
 
     Ok(root)
 }
@@ -4445,7 +4426,7 @@ struct WakeupEventType {
     bit: u8,
 }
 
-fn wakeup_event_types() -> [WakeupEventType; 7] {
+fn wakeup_event_types() -> [WakeupEventType; 8] {
     use shared::wakeup_event_wire as wire;
 
     [
@@ -4477,6 +4458,10 @@ fn wakeup_event_types() -> [WakeupEventType; 7] {
             name: "advisoryLock",
             bit: wire::TYPE_ADVISORY_LOCK,
         },
+        WakeupEventType {
+            name: "waitComplete",
+            bit: wire::TYPE_WAIT_COMPLETE,
+        },
     ]
 }
 
@@ -4507,6 +4492,98 @@ fn wakeup_event_wire() -> Value {
         "fields": fields,
         "types": types,
     })
+}
+
+fn wait_completion_fields() -> [WakeupEventField; 5] {
+    use shared::wait_completion_wire as wire;
+
+    [
+        WakeupEventField {
+            name: "generation",
+            offset: wire::GENERATION_OFFSET,
+            size: 8,
+            ty: "u64",
+        },
+        WakeupEventField {
+            name: "pid",
+            offset: wire::PID_OFFSET,
+            size: 4,
+            ty: "u32",
+        },
+        WakeupEventField {
+            name: "tid",
+            offset: wire::TID_OFFSET,
+            size: 4,
+            ty: "u32",
+        },
+        WakeupEventField {
+            name: "value",
+            offset: wire::VALUE_OFFSET,
+            size: 4,
+            ty: "i32",
+        },
+        WakeupEventField {
+            name: "flags",
+            offset: wire::FLAGS_OFFSET,
+            size: 4,
+            ty: "u32",
+        },
+    ]
+}
+
+fn wait_completion_wire() -> Value {
+    use shared::wait_completion_wire as wire;
+
+    let fields: Vec<Value> = wait_completion_fields()
+        .iter()
+        .map(|field| {
+            json!({
+                "name": field.name,
+                "offset": field.offset,
+                "size": field.size,
+                "type": field.ty,
+            })
+        })
+        .collect();
+    json!({
+        "record_size": wire::RECORD_BYTES,
+        "parked_errno": wire::PARKED_ERRNO,
+        "fields": fields,
+        "flags": {
+            "suppressRestart": wire::FLAG_SUPPRESS_RESTART,
+            "cancelled": wire::FLAG_CANCELLED,
+            "published": wire::FLAG_PUBLISHED,
+        },
+    })
+}
+
+fn render_ts_wait_completion_wire() -> String {
+    use shared::wait_completion_wire as wire;
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "export const WAIT_COMPLETION_RECORD_BYTES = {} as const;\n",
+        wire::RECORD_BYTES
+    ));
+    out.push_str(&format!(
+        "export const KERNEL_WAIT_PARKED_ERRNO = {} as const;\n",
+        wire::PARKED_ERRNO
+    ));
+    out.push_str("export const WAIT_COMPLETION_FIELDS = {\n");
+    for field in wait_completion_fields() {
+        out.push_str(&format!(
+            "  {}: {{ offset: {}, size: {}, type: {:?} }},\n",
+            field.name, field.offset, field.size, field.ty
+        ));
+    }
+    out.push_str("} as const;\n");
+    out.push_str(&format!(
+        "export const WAIT_COMPLETION_FLAGS = {{\n  suppressRestart: {},\n  cancelled: {},\n  published: {},\n}} as const;\n\n",
+        wire::FLAG_SUPPRESS_RESTART,
+        wire::FLAG_CANCELLED,
+        wire::FLAG_PUBLISHED
+    ));
+    out
 }
 
 fn poll_events() -> [(&'static str, i16); 11] {
@@ -5457,7 +5534,7 @@ fn marshalled_structs() -> Value {
     use shared::oss::{AudioBufInfo, CountInfo};
     use shared::pcm::PcmSharedControl;
     use shared::{
-        KernelWaitResult, WasmDirent,
+        WasmDirent,
         WasmEpollEvent, WasmFlock, WasmPollFd, WasmRusageWire, WasmStat, WasmStatfs,
         WasmSysvMessageHeader, WasmTimespec,
     };
@@ -5622,16 +5699,6 @@ fn marshalled_structs() -> Value {
             ru_nsignals,
             ru_nvcsw,
             ru_nivcsw,
-        }),
-    );
-    structs.insert(
-        "KernelWaitResult".into(),
-        struct_layout!(KernelWaitResult {
-            wait_status,
-            si_code,
-            si_status,
-            child_uid,
-            rusage,
         }),
     );
     structs.insert(
@@ -7720,6 +7787,147 @@ fn kernel_exports(bytes: &[u8]) -> Result<Value, String> {
     Ok(Value::Array(list))
 }
 
+/// Record the module's *import* section: the contract every host must
+/// satisfy to instantiate the kernel.
+///
+/// This is the mirror of `kernel_exports`, and the polarity of its
+/// compatibility rule is inverted (see
+/// `classify_removal_only_array_by_module_name`): an import is a
+/// *requirement placed on the host*, so adding one is breaking and
+/// removing one is compatible.
+///
+/// Recorded from the **built artifact**, not from the source-level
+/// extern block. Those differ: a declared-but-uncalled import is
+/// dead-code-eliminated by LLVM and never reaches the module, so the
+/// host is not in fact required to supply it. The artifact is the
+/// contract.
+///
+/// Known residual: the snapshot is built from the wasm32 kernel
+/// (`scripts/check-abi-version.sh` builds
+/// `target/wasm32-unknown-unknown/release/kandelo_kernel.wasm`), the only
+/// kernel any script builds. An import declared with a pointer-width type
+/// (`usize`, `isize`, or a raw pointer) renders as `i32` here and would
+/// render as `i64` on a wasm64 kernel, so a drift that only a wasm64 kernel
+/// would show is not covered. Count the pointer-width imports in the
+/// `extern` block of `crates/kernel/src/wasm_api.rs` rather than trusting
+/// a list here; such a list goes stale as imports are removed.
+/// Explicitly-sized parameters (the `u32 -> u64` widening of
+/// `host_proc_read_bytes` / `host_proc_write_bytes` that motivated this
+/// section) are covered on wasm32.
+fn kernel_imports(bytes: &[u8]) -> Result<Value, String> {
+    use wasmparser::{CompositeInnerType, FuncType, Imports, Parser, Payload, TypeRef};
+
+    let mut func_types: Vec<FuncType> = Vec::new();
+    let mut imports: Vec<(String, String, TypeRef)> = Vec::new();
+
+    for payload in Parser::new(0).parse_all(bytes) {
+        let p = payload.map_err(|e| format!("parse wasm: {e}"))?;
+        match p {
+            Payload::TypeSection(r) => {
+                for rec in r {
+                    let rec = rec.map_err(|e| format!("type section: {e}"))?;
+                    for st in rec.types() {
+                        match &st.composite_type.inner {
+                            CompositeInnerType::Func(f) => func_types.push(f.clone()),
+                            // Keep index arithmetic correct for
+                            // non-func composite types, exactly as
+                            // `kernel_exports` does.
+                            _ => func_types.push(FuncType::new([], [])),
+                        }
+                    }
+                }
+            }
+            Payload::ImportSection(r) => {
+                for group in r {
+                    let group = group.map_err(|e| format!("import section: {e}"))?;
+                    // Same three import-group encodings `kernel_exports`
+                    // handles. Only `Single` appears in stock LLVM
+                    // output; the compact-imports encodings are handled
+                    // so a toolchain change cannot silently empty this
+                    // section.
+                    match group {
+                        Imports::Single(_, imp) => {
+                            imports.push((imp.module.to_string(), imp.name.to_string(), imp.ty));
+                        }
+                        Imports::Compact1 { module, items } => {
+                            for item in items {
+                                let item = item.map_err(|e| format!("import section: {e}"))?;
+                                imports.push((module.to_string(), item.name.to_string(), item.ty));
+                            }
+                        }
+                        Imports::Compact2 { module, ty, names } => {
+                            for name in names {
+                                let name = name.map_err(|e| format!("import section: {e}"))?;
+                                imports.push((module.to_string(), name.to_string(), ty));
+                            }
+                        }
+                    }
+                }
+            }
+            // The import section precedes every section that could
+            // affect it, so stop as soon as one that follows appears.
+            Payload::FunctionSection(_) => break,
+            _ => {}
+        }
+    }
+
+    // Deterministic order, matching the export path. No filter: unlike
+    // exports (where `export_is_tracked` drops LLVM's toolchain noise)
+    // every import is by construction something a host must provide,
+    // so completeness is the point.
+    imports.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+
+    let mut list = Vec::new();
+    for (module, name, ty) in imports {
+        let mut m: JsonMap = BTreeMap::new();
+        m.insert("module".into(), json!(module));
+        m.insert("name".into(), json!(name));
+        match ty {
+            TypeRef::Func(ti) | TypeRef::FuncExact(ti) => {
+                m.insert("kind".into(), json!("func"));
+                let sig = func_types
+                    .get(ti as usize)
+                    .map(format_func_type)
+                    .unwrap_or_else(|| "<unknown>".into());
+                m.insert("signature".into(), json!(sig));
+            }
+            TypeRef::Memory(mt) => {
+                // Shared-ness and the limits are part of the channel
+                // handshake: `crates/host-native/src/lib.rs` reads the
+                // same three facts to size the guest memory. Recording
+                // them here stops that from being an independent
+                // second reading of one fact.
+                m.insert("kind".into(), json!("memory"));
+                m.insert("memory64".into(), json!(mt.memory64));
+                m.insert("shared".into(), json!(mt.shared));
+                m.insert("minimum_pages".into(), json!(mt.initial));
+                m.insert("maximum_pages".into(), json!(mt.maximum));
+            }
+            TypeRef::Global(gt) => {
+                m.insert("kind".into(), json!("global"));
+                m.insert("type".into(), json!(val_type_name(&gt.content_type)));
+                m.insert("mutable".into(), json!(gt.mutable));
+            }
+            TypeRef::Table(tt) => {
+                m.insert("kind".into(), json!("table"));
+                m.insert("table64".into(), json!(tt.table64));
+                m.insert("minimum".into(), json!(tt.initial));
+                m.insert("maximum".into(), json!(tt.maximum));
+            }
+            TypeRef::Tag(tag) => {
+                m.insert("kind".into(), json!("tag"));
+                let sig = func_types
+                    .get(tag.func_type_idx as usize)
+                    .map(format_func_type)
+                    .unwrap_or_else(|| "<unknown>".into());
+                m.insert("signature".into(), json!(sig));
+            }
+        }
+        list.push(Value::Object(m.into_iter().collect()));
+    }
+    Ok(Value::Array(list))
+}
+
 fn format_func_type(f: &wasmparser::FuncType) -> String {
     let params: Vec<String> = f.params().iter().map(val_type_name).collect();
     let results: Vec<String> = f.results().iter().map(val_type_name).collect();
@@ -7804,6 +8012,11 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
             "kernel_exports" => {
                 classify_additive_array_by_name(key, old_value, new_value, &mut report)?
             }
+            // Imports invert the export polarity: see
+            // `classify_removal_only_array_by_module_name`.
+            "kernel_imports" => classify_removal_only_array_by_module_name(
+                key, old_value, new_value, &mut report,
+            )?,
             "host_adapter" => classify_host_adapter(old_value, new_value, &mut report)?,
             "marshalled_structs" => {
                 classify_additive_object_by_key(key, old_value, new_value, &mut report)?
@@ -7871,10 +8084,17 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
 fn additive_top_level_section(section: &str) -> bool {
     matches!(
         section,
+        // `kernel_imports` is listed here for the one-time
+        // introduction of the section itself, which is pure added
+        // snapshot metadata. It does NOT make the section's *entries*
+        // additive: those are classified by
+        // `classify_removal_only_array_by_module_name`, under which an
+        // added import is breaking.
         "clipboard_device_abi"
             | "host_adapter"
             | "io_multiplexing"
             | "ioctl_request_families"
+            | "kernel_imports"
             | "syscall_arg_descriptors"
             | "vfs_metadata"
     )
@@ -7994,6 +8214,74 @@ fn classify_additive_array_by_name(
             .map(ToOwned::to_owned)
             .ok_or_else(|| format!("{section} entry missing string name: {entry}"))
     })
+}
+
+/// Classify a section whose entries are *requirements placed on the
+/// host*, keyed by `module.name`.
+///
+/// This is the mirror image of `classify_additive_array`, and the
+/// inversion is the point. For an **export**, the module offers
+/// something and the host may or may not use it, so adding one is
+/// additive and removing one is breaking. For an **import** the arrow
+/// points the other way — the module *demands* something the host must
+/// supply — so the polarity flips:
+///
+/// | change | classification | why |
+/// |---|---|---|
+/// | import added | **breaking** | a host built against the old contract has no such function; instantiation fails outright |
+/// | import removed | additive | WebAssembly resolves imports by name, so a host that still offers an unused one is unaffected |
+/// | signature changed | **breaking** | the host's implementation no longer matches what the module calls |
+///
+/// The practical consequence is that adding a host import fails
+/// `scripts/check-abi-version.sh` by default. Growing the host surface
+/// is a deliberate, gated act rather than something a reviewer has to
+/// notice.
+fn classify_removal_only_array_by_module_name(
+    section: &str,
+    old: &Value,
+    new: &Value,
+    report: &mut CompatReport,
+) -> Result<(), String> {
+    let key_for = |entry: &Value| -> Result<String, String> {
+        let module = entry
+            .get("module")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{section} entry missing string module: {entry}"))?;
+        let name = entry
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{section} entry missing string name: {entry}"))?;
+        Ok(format!("{module}.{name}"))
+    };
+    let old_entries = keyed_array(section, old, &key_for)?;
+    let new_entries = keyed_array(section, new, &key_for)?;
+
+    for (key, old_value) in &old_entries {
+        match new_entries.get(key) {
+            Some(new_value) if new_value == old_value => {}
+            // A changed signature is the case that motivated this
+            // section: widening a pointer parameter changes how the
+            // host must interpret a kernel-supplied address, and until
+            // imports were recorded it produced no snapshot diff.
+            Some(_) => report
+                .breaking
+                .push(format!("changed {section} entry {key:?}")),
+            // Dropping a requirement cannot break a host that still
+            // satisfies it.
+            None => report
+                .additive
+                .push(format!("removed {section} entry {key:?}")),
+        }
+    }
+    for key in new_entries.keys() {
+        if !old_entries.contains_key(key) {
+            report
+                .breaking
+                .push(format!("added {section} entry {key:?}"));
+        }
+    }
+
+    Ok(())
 }
 
 fn classify_additive_array_by_number_name(
@@ -8340,8 +8628,29 @@ mod tests {
                 { "name": "processStopped", "bit": 16 },
                 { "name": "processContinued", "bit": 32 },
                 { "name": "advisoryLock", "bit": 64 },
+                { "name": "waitComplete", "bit": 128 },
             ])
         );
+    }
+
+    #[test]
+    fn generated_wait_completion_wire_is_packed_and_complete() {
+        let wire = wait_completion_wire();
+        assert_eq!(wire["record_size"], json!(24));
+        assert_eq!(wire["parked_errno"], json!(65536));
+        assert_eq!(
+            wire["fields"],
+            json!([
+                { "name": "generation", "offset": 0, "size": 8, "type": "u64" },
+                { "name": "pid", "offset": 8, "size": 4, "type": "u32" },
+                { "name": "tid", "offset": 12, "size": 4, "type": "u32" },
+                { "name": "value", "offset": 16, "size": 4, "type": "i32" },
+                { "name": "flags", "offset": 20, "size": 4, "type": "u32" },
+            ])
+        );
+        let rendered = render_ts_wait_completion_wire();
+        assert!(rendered.contains("export const WAIT_COMPLETION_RECORD_BYTES = 24 as const;"));
+        assert!(rendered.contains("export const KERNEL_WAIT_PARKED_ERRNO = 65536 as const;"));
     }
 
     #[test]
@@ -9080,12 +9389,6 @@ mod tests {
         for expected in [
             "export const STRUCT_SIZE_WPK_DRM_MODE_MODEINFO = 68 as const;",
             "export const STRUCT_SIZE_WASM_RUSAGE_WIRE = 144 as const;",
-            "export const STRUCT_SIZE_KERNEL_WAIT_RESULT = 160 as const;",
-            "export const KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET = 0 as const;",
-            "export const KERNEL_WAIT_RESULT_SI_CODE_OFFSET = 4 as const;",
-            "export const KERNEL_WAIT_RESULT_SI_STATUS_OFFSET = 8 as const;",
-            "export const KERNEL_WAIT_RESULT_CHILD_UID_OFFSET = 12 as const;",
-            "export const KERNEL_WAIT_RESULT_RUSAGE_OFFSET = 16 as const;",
             "export const WAIT_EVENT_EXITED = 1 as const;",
             "export const WAIT_EVENT_STOPPED = 2 as const;",
             "export const WAIT_EVENT_CONTINUED = 4 as const;",
@@ -9097,7 +9400,6 @@ mod tests {
             "\"kernel_get_process_state\"",
             "\"kernel_has_sa_nocldstop\"",
             "\"kernel_process_secure_exec\"",
-            "\"kernel_wait_child_poll\"",
         ] {
             assert!(
                 rendered.contains(expected),
@@ -9110,7 +9412,6 @@ mod tests {
 
         let structs = marshalled_structs();
         assert_eq!(structs["WasmRusageWire"]["size"], json!(144));
-        assert_eq!(structs["KernelWaitResult"]["size"], json!(160));
         assert_eq!(structs["AudioBufInfo"]["size"], json!(16));
         assert_eq!(structs["AudioBufInfo"]["align"], json!(4));
         assert_eq!(
@@ -9120,10 +9421,6 @@ mod tests {
         assert_eq!(structs["CountInfo"]["size"], json!(12));
         assert_eq!(structs["PcmSharedControl"]["size"], json!(128));
         assert_eq!(structs["PcmSharedControl"]["align"], json!(4));
-        assert_eq!(
-            structs["KernelWaitResult"]["fields"][4],
-            json!({"name": "rusage", "offset": 16, "span": 144})
-        );
 
         let contract = wait_contract();
         assert_eq!(contract["WAIT_WNOWAIT"], json!(0x0100_0000));
@@ -9173,6 +9470,21 @@ mod tests {
             "kernel_exports": [
                 {"name": "__abi_version", "kind": "func", "signature": "() -> (i32)"},
                 {"name": "kernel_existing_helper", "kind": "func", "signature": "(i32) -> ()"}
+            ],
+            "kernel_imports": [
+                {
+                    "module": "env", "name": "host_proc_read_bytes",
+                    "kind": "func", "signature": "(i32,i32,i32,i32) -> (i32)"
+                },
+                {
+                    "module": "env", "name": "host_write",
+                    "kind": "func", "signature": "(i64,i32,i32) -> (i32)"
+                },
+                {
+                    "module": "env", "name": "memory", "kind": "memory",
+                    "memory64": false, "shared": true,
+                    "minimum_pages": 18, "maximum_pages": 16384
+                }
             ],
             "marshalled_structs": {
                 "WasmStat": {"size": 96, "fields": []}
@@ -9731,6 +10043,173 @@ mod tests {
         assert_eq!(
             report.breaking,
             vec!["changed top-level section \"channel_header\""]
+        );
+    }
+
+    // -- kernel_imports: the polarity of the host contract --------------
+    //
+    // These four tests exist because the section they cover is a gate,
+    // and a gate that cannot fail is not a gate. Each one asserts a
+    // classification that would have been WRONG under the export rule.
+
+    #[test]
+    fn changing_a_kernel_import_signature_is_breaking() {
+        // The K2 case, verbatim: widening a kernel-supplied address
+        // from 32 to 64 bits changes how the host must interpret the
+        // pointer. Before imports were recorded this produced no
+        // snapshot diff at all.
+        let old = base_snapshot();
+        let mut new = base_snapshot();
+        for entry in new["kernel_imports"].as_array_mut().unwrap() {
+            if entry["name"] == json!("host_proc_read_bytes") {
+                entry["signature"] = json!("(i32,i64,i32,i32) -> (i32)");
+            }
+        }
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.additive.is_empty(), "{report:?}");
+        assert_eq!(
+            report.breaking,
+            vec!["changed kernel_imports entry \"env.host_proc_read_bytes\""]
+        );
+    }
+
+    #[test]
+    fn adding_a_kernel_import_is_breaking() {
+        // Inverse of the export rule. A host built against the old
+        // contract cannot supply this function, so instantiation fails.
+        // This is the check that makes growing the host surface a
+        // deliberate, gated act.
+        let old = base_snapshot();
+        let mut new = base_snapshot();
+        new["kernel_imports"].as_array_mut().unwrap().push(json!({
+            "module": "env",
+            "name": "host_brand_new_capability",
+            "kind": "func",
+            "signature": "(i32) -> (i32)"
+        }));
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.additive.is_empty(), "{report:?}");
+        assert_eq!(
+            report.breaking,
+            vec!["added kernel_imports entry \"env.host_brand_new_capability\""]
+        );
+    }
+
+    #[test]
+    fn removing_a_kernel_import_is_compatible() {
+        // Also the inverse of the export rule. WebAssembly resolves
+        // imports by name, so a host that still offers one the module
+        // no longer asks for is unaffected. This is what lets the
+        // campaign shrink the host surface without an ABI bump.
+        let mut old = base_snapshot();
+        old["kernel_imports"].as_array_mut().unwrap().push(json!({
+            "module": "env",
+            "name": "host_retired_capability",
+            "kind": "func",
+            "signature": "(i32) -> (i32)"
+        }));
+        let new = base_snapshot();
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec!["removed kernel_imports entry \"env.host_retired_capability\""]
+        );
+    }
+
+    #[test]
+    fn changing_the_imported_memory_shape_is_breaking() {
+        // Shared-ness and the limits are part of the channel handshake,
+        // not incidental module metadata.
+        let old = base_snapshot();
+        let mut new = base_snapshot();
+        for entry in new["kernel_imports"].as_array_mut().unwrap() {
+            if entry["kind"] == json!("memory") {
+                entry["shared"] = json!(false);
+            }
+        }
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.additive.is_empty(), "{report:?}");
+        assert_eq!(
+            report.breaking,
+            vec!["changed kernel_imports entry \"env.memory\""]
+        );
+    }
+
+    #[test]
+    fn adding_the_kernel_imports_section_is_compatible() {
+        // The one-time introduction of the section itself. Without
+        // `kernel_imports` in `additive_top_level_section` the ABI gate
+        // fails on the very commit that adds the section, and the
+        // tempting wrong fix is a spurious ABI_VERSION bump.
+        let mut old = base_snapshot();
+        old.as_object_mut().unwrap().remove("kernel_imports");
+        let new = base_snapshot();
+
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(
+            report.additive,
+            vec!["added top-level section \"kernel_imports\""]
+        );
+    }
+
+    #[test]
+    fn kernel_imports_records_the_whole_import_section_of_a_module() {
+        // Round-trip the generator against a hand-built module so the
+        // parse is checked independently of whatever the current kernel
+        // artifact happens to contain.
+        let wat = r#"
+            (module
+              (import "env" "memory" (memory 18 16384 shared))
+              (import "env" "host_write" (func (param i64 i32 i32) (result i32)))
+              (import "env" "host_proc_read_bytes"
+                (func (param i32 i64 i32 i32) (result i32)))
+              (import "env" "host_epoch_millis" (func (result f64)))
+            )
+        "#;
+        let bytes = wat::parse_str(wat).expect("assemble fixture module");
+        let value = kernel_imports(&bytes).expect("record imports");
+        let entries = value.as_array().unwrap();
+
+        // Every import, in deterministic (module, name) order, with no
+        // filtering: completeness is the contract.
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| e["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "host_epoch_millis",
+                "host_proc_read_bytes",
+                "host_write",
+                "memory",
+            ]
+        );
+        assert_eq!(
+            entries[1],
+            json!({
+                "module": "env",
+                "name": "host_proc_read_bytes",
+                "kind": "func",
+                "signature": "(i32,i64,i32,i32) -> (i32)"
+            })
+        );
+        assert_eq!(
+            entries[3],
+            json!({
+                "module": "env",
+                "name": "memory",
+                "kind": "memory",
+                "memory64": false,
+                "shared": true,
+                "minimum_pages": 18,
+                "maximum_pages": 16384
+            })
         );
     }
 }

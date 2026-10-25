@@ -13,7 +13,7 @@ import {
   SHELL_LAZY_ARCHIVE_SPECS,
 } from "../../../../images/vfs/scripts/shell-lazy-archives";
 
-const bundle = tryResolveBinary("programs/wasm32/freeciv.zip");
+const bundle = tryResolveBinary("programs/wasm32/freeciv-browser-bundle/freeciv.zip");
 const encoder = new TextEncoder();
 const env = [
   "HOME=/home/maker", "USER=maker", "LANG=C.UTF-8", "TERM=dumb",
@@ -34,9 +34,12 @@ async function boot() {
   };
   const host = new NodeKernelHost({
     rootfsImage: await fs.saveImage(),
+    // The archive records its package-mirror path, which the lazy-asset
+    // directory resolves to `<directory>assets/programs/wasm32/freeciv.zip`.
     rootfsLazyUrlBase: "https://freeciv.test/",
+    rootfsLazyAssetDirectory: "https://freeciv.test/",
     rootfsLazyAssets: [{
-      url: "https://freeciv.test/freeciv.zip",
+      url: "https://freeciv.test/assets/programs/wasm32/freeciv.zip",
       bytes: archive.bytes,
       sha256: archive.integrity.sha256,
       size: archive.bytes.byteLength,

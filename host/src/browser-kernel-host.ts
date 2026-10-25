@@ -56,6 +56,7 @@ import type { MountSpec } from "./vfs/default-mounts";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { FILE_MODES } from "./generated/abi";
 import { maybeDecompressImage } from "./vfs/vfs-image-transport";
+import { resolveImageOwnedLazyAsset } from "./vfs/vfs-asset-group-reference";
 import {
   encodeClipboardText,
   type ClipboardOfferResult,
@@ -486,6 +487,8 @@ export class BrowserKernel {
     lazyUrlBase?: string;
     /** See `lazyUrlMap` on the init message: the image is never rewritten. */
     lazyUrlMap?: Readonly<Record<string, string>>;
+    /** See `lazyAssetDirectory` on the init message. */
+    lazyAssetDirectory?: string;
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
   }): Promise<void> {
@@ -503,6 +506,7 @@ export class BrowserKernel {
       vfsImage,
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
       lazyUrlMap: options.lazyUrlMap,
+      lazyAssetDirectory: options.lazyAssetDirectory,
       closedLazyAssets: options.closedLazyAssets,
       rootfsMountSpec: options.rootfsMountSpec,
       takeVfsImageOwnership: false,
@@ -548,6 +552,7 @@ export class BrowserKernel {
     vfsImage: Uint8Array;
     lazyUrlBase?: string;
     lazyUrlMap?: Readonly<Record<string, string>>;
+    lazyAssetDirectory?: string;
     closedLazyAssets?: readonly ClosedLazyAsset[];
     rootfsMountSpec?: readonly MountSpec[];
     takeVfsImageOwnership: boolean;
@@ -563,6 +568,11 @@ export class BrowserKernel {
       throw new Error(
         "owned VFS image must be one whole ordinary ArrayBuffer",
       );
+    }
+    if (opts.lazyAssetDirectory !== undefined) {
+      // Reject a malformed directory here, as NodeKernelHost does, rather
+      // than on the first lazy read inside the worker.
+      resolveImageOwnedLazyAsset(opts.lazyAssetDirectory, "kandelo-lazy:programs/probe");
     }
     this.kernelFatalError = null;
     const closedLazyAssets = opts.closedLazyAssets === undefined
@@ -648,6 +658,7 @@ export class BrowserKernel {
           lazyUrlMap: opts.lazyUrlMap === undefined
             ? undefined
             : { ...opts.lazyUrlMap },
+          lazyAssetDirectory: opts.lazyAssetDirectory,
           closedLazyAssets,
           rootfsMountSpec: opts.rootfsMountSpec === undefined
             ? undefined
@@ -922,24 +933,6 @@ export class BrowserKernel {
   }
 
   /**
-   * Return the retained capacity of the kernel-owned large-spawn region.
-   * Zero means no spawn has exceeded the ordinary channel-sized scratch.
-   */
-  async getSpawnScratchCapacity(): Promise<number> {
-    const requestId = this.nextRequestId++;
-    const result = await this.request(requestId, {
-      type: "get_spawn_scratch_capacity",
-      requestId,
-    });
-    if (!Number.isSafeInteger(result) || result < 0) {
-      throw new Error(
-        `kernel worker returned an invalid spawn scratch capacity: ${String(result)}`,
-      );
-    }
-    return result;
-  }
-
-  /**
    * Snapshot the kernel's process table — one row per live process. Used
    * by Kandelo's Inspector → Procs tab. Mirrors `NodeKernelHost.enumProcs`.
    */
@@ -1149,13 +1142,16 @@ export class BrowserKernel {
    * the parsed response. Bypasses real TCP — uses the kernel's
    * `kernel_inject_connection` path directly. Prototype API.
    *
+   * With `options.hostname`, use this machine's Kandelo session TCP network
+   * instead. External physical-host destinations are not accepted by that path.
+   *
    * The in-kernel server must already be listening on `port`. Each call
    * opens a fresh injected connection (no pipelining).
    */
   async fetchInKernel(
     port: number,
     request: HttpRequest,
-    options?: { timeoutMs?: number; maxResponseBytes?: number },
+    options?: { timeoutMs?: number; maxResponseBytes?: number; hostname?: string },
   ): Promise<HttpResponse> {
     const requestId = this.nextRequestId++;
     return this.request(requestId, {
@@ -1165,6 +1161,7 @@ export class BrowserKernel {
       request,
       timeoutMs: options?.timeoutMs,
       maxResponseBytes: options?.maxResponseBytes,
+      hostname: options?.hostname,
     }) as Promise<HttpResponse>;
   }
 

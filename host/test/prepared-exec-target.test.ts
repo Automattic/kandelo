@@ -9,6 +9,7 @@ const PREPARED_EXEC_EXPORTS = [
   "kernel_spawn_exec_target_prepare",
   "kernel_exec_target_size",
   "kernel_exec_target_read",
+  "kernel_exec_target_admit",
   "kernel_exec_target_cancel",
   "kernel_exec_commit",
   "kernel_publish_spawn_child",
@@ -71,6 +72,10 @@ describe("prepared exec target ABI", () => {
       .map(({ name, signature }) => ({ name, signature }));
     expect(execExports).toEqual([
       { name: "kernel_exec_commit", signature: "(i32,i32,i32) -> (i32)" },
+      {
+        name: "kernel_exec_target_admit",
+        signature: "(i32,i32,i32,i32,i32) -> (i32)",
+      },
       { name: "kernel_exec_target_cancel", signature: "(i32,i32) -> (i32)" },
       {
         name: "kernel_exec_target_prepare",
@@ -118,6 +123,7 @@ describe("prepared exec target ABI", () => {
       "kernel_exec_target_prepare",
       "kernel_exec_target_size",
       "kernel_exec_target_read",
+      "kernel_exec_target_admit",
       "kernel_exec_target_cancel",
       "kernel_exec_commit",
     ]) {

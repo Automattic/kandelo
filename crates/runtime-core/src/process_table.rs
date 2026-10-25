@@ -730,6 +730,9 @@ impl ProcessTable {
             return None;
         }
         let mut proc = self.processes.remove(&pid)?;
+        crate::wait_park::retire_process(pid);
+        // A waiter on this child may now have no matching child (ECHILD).
+        crate::wait_park::note_children_changed();
         // Whole-process teardown consumes the OFD table itself, but retry
         // bindings can also own machine-global MQ/IPC pins and SCM_RIGHTS
         // references. Drop those before the ordinary backing walk and its
@@ -1285,6 +1288,30 @@ impl ProcessTable {
         Some((process, advisory_locks))
     }
 
+    /// Release the OFD and flock locks of every open file description no
+    /// process references any more, when a close asked for the check
+    /// (`crate::ofd::note_possibly_orphaned_ofd_locks`). A description lives
+    /// while any process's table holds it or a descriptor carrying it is
+    /// queued in SCM_RIGHTS ancillary data, exactly the rule process removal
+    /// applies. Publishes the advisory-lock wake if anything was released.
+    pub fn release_orphaned_ofd_locks(&mut self) {
+        if !crate::ofd::take_orphaned_ofd_lock_check() {
+            return;
+        }
+        let mut live: Vec<crate::lock::OfdId> = self
+            .processes
+            .values()
+            .flat_map(|proc| proc.ofd_table.iter().map(|(_, ofd)| ofd.ofd_id))
+            .collect();
+        live.sort_unstable();
+        let mutation = self.advisory_locks.remove_dead_ofd_owners(|id| {
+            live.binary_search(&id).is_ok() || crate::ofd::has_in_flight_ofd(id)
+        });
+        if mutation.may_unblock {
+            crate::wakeup::push_advisory_lock();
+        }
+    }
+
     #[cfg(test)]
     pub fn advisory_locks(&self) -> &AdvisoryLockManager {
         &self.advisory_locks
@@ -1475,6 +1502,11 @@ impl ProcessTable {
         // bumped one.
         child.fd_table = inherit.fd_table;
         child.ofd_table = inherit.ofd_table;
+        // No executable yet: a spawn child does not run its parent's image,
+        // and its commit installs the target it resolved. Inheriting the
+        // parent's `exe` would name a slot of the parent's description table
+        // that `retain_fd_references` below drops (no descriptor names it).
+        child.exe = None;
         child.sockets = inherit.sockets;
         // An inherited epoll fd keeps naming the parent's live instance: the
         // instance belongs to the epoll open file description
@@ -1853,6 +1885,8 @@ impl ProcessTable {
             return Err(Errno::ECHILD);
         }
         child.spawn_publication_pending = false;
+        // Its status (it may already have exited) is now waitable.
+        crate::wait_park::note_children_changed();
         Ok(if child.state == ProcessState::Exited {
             child.exit_signal as i32
         } else {
@@ -2310,6 +2344,53 @@ mod wait_tests {
             .unwrap();
 
         assert_eq!(table.get(spawn_pid).unwrap().credentials(), &credentials);
+    }
+
+    /// A posix_spawn child does not run its parent's image, so it must not
+    /// keep the parent's executable (`Process::exe`). The child's copy of the
+    /// parent's description table keeps only what its descriptors name, so an
+    /// inherited `exe` would name a slot that no longer holds that
+    /// description; the spawn commit's release of it then hit whatever
+    /// description reused the slot, and a later `fork` of the child failed
+    /// `EBADF` (a shell started by PHP's `system()` could not fork).
+    #[test]
+    fn spawn_child_does_not_inherit_the_parents_executable() {
+        use crate::ofd::FileType;
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        {
+            let parent = table.get_mut(parent_pid).unwrap();
+            let idx = parent.ofd_table.create(
+                FileType::Regular,
+                wasm_posix_shared::flags::O_RDONLY,
+                -20,
+                b"/usr/bin/php".to_vec(),
+            );
+            parent.exe = Some(crate::fd::OpenFileDescRef(idx));
+        }
+        let mut host = NoopHost;
+        let child_pid = table
+            .spawn_child_for_caller(
+                parent_pid,
+                parent_pid,
+                &[b"/bin/sh".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+        let child = table.get(child_pid).unwrap();
+        if let Some(exe) = child.exe {
+            assert!(
+                child.ofd_table.get(exe.0).is_some(),
+                "the child's executable names a description it does not hold"
+            );
+        }
+        assert!(child.exe.is_none(), "the spawn commit installs the child's own executable");
     }
 
     /// posix_spawn inherits open fds, epoll fds included: the child's

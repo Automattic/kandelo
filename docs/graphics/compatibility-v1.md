@@ -10,8 +10,8 @@ validation cover it; a passing demo does not close an API family.
 ## Unpublished ABI policy
 
 Use one ABI above current main for the combined effort, as requested by
-the user on 2026-10-24. Main `5cd771bff8` uses ABI 53, so the combined
-source uses **ABI 54**. Keep this number across implementation increments
+the user on 2026-10-24. After PR #1581, main `7dfe4b501e` uses ABI 54,
+so the combined source uses **ABI 55**. Keep this number across increments
 and regenerate outputs when their inputs change. Rebuild normal artifacts
 from the final coherent source before relying on them. Earlier ABI 52-59
 references below record unpublished development history, not released
@@ -97,7 +97,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | H01 | Command framing, complete validation and bounded results | Owned bounded submission snapshots make structural validation and dispatch observe the same bytes in native and forwarded paths; one-shot frames restore cached views and discard on purge. Source execution leases retain revoked context owners and owned drawable allocations independently; borrowed GPU allocations also have independent source leases; drain remains synchronous pending per-work drawable selection and server-wait ordering. Kernel query dispatch preprobes nonempty guest destinations, rejects nonzero reserved fields/null inputs, and rejects oversized host replies without copying output. Focused Rust/host source evidence is recorded below; complete guest coverage remains open | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Canonical surface BO holds and image-owned renderer cleanup now survive descriptor inheritance/local close; focused native lifecycle checks pass. Raw BO retirement retains failed native cleanup across final member teardown and blocks affected operations until retry. Combined guest/memory-cycle validation remains pending | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
-| A01 | ABI and generated declarations match combined implementation | Current main `5cd771bff8` ABI 53 and graphics development contracts are consolidated under ABI 54. Regenerated snapshot, C/TS declarations and standalone resolver pass focused inspection; operation table stays 17. Normal artifacts and combined consumer/conformance gates remain pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
+| A01 | ABI and generated declarations match combined implementation | Main `7dfe4b501e` ABI 54 and graphics development contracts are consolidated under ABI 55. Regeneration and combined validation are in progress; operation table stays 17. Previous ABI 54 results remain historical evidence. Normal artifacts and combined consumer/conformance gates remain pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
 | P01 | Real upstream compositor integration | wlroots/cage/sway recipes and consumers integrated; combined artifacts and compositor validation pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
 
 ## Separate expansions
@@ -141,7 +141,7 @@ Rendered, guest, conformance and complete lifecycle validation remain open.
 
 The sysfs/netlink and KMS changes were adapted from mho22's `f758e3fe4b`
 and `ea2bae402f`, retaining that author on both derived commits. The
-current combined contract uses ABI 54 and fork record version 20. Main's cursor
+current combined contract uses ABI 55 and fork record version 21. Main's cursor
 references, complete mode catalog and deferred cleanup effects are retained.
 The first integrated DRI selection passed 50 Rust tests after migrating its
 connector lookup to the new device-wide object ID.
@@ -5331,3 +5331,31 @@ All results above describe the pre-integration implementation. The
 combined main/graphics implementation still needs regenerated ABI
 outputs, normal artifacts, guest compositor/CTS reruns and the full
 gallery/memory gates. The complete baseline inventory remains open.
+
+### Main integration after PR #1581
+
+The merged source now combines main `7dfe4b501e93448aa6da8151d3ee1948cf1e1e2b`
+with graphics under ABI 55 and fork-state version 21. Both thread-exit
+cleanup paths remain: Rust wait retirement and GL current-context release.
+Main's executable admission, signal/child wait semantics, lazy image
+ownership and newer resolver paths are retained. The deleted browser
+lazy-file table stays deleted; cage/sway remain in the image recipe.
+
+The initial host declaration build exposed an obsolete graphics-branch
+cleanup of the removed host `waitingForChild` list. The cleanup is now
+owned by main's actual Rust process-exit transitions. The three old host
+list regressions were migrated to a Rust matrix covering wait4/waitid,
+normal exit, SIGTERM and SIGKILL, with an unrelated live waiter preserved.
+
+ABI snapshot/C/TypeScript regeneration and standalone resolver tests pass:
+`.context/graphics-main-abi-update.log`,
+`.context/graphics-main-resolver-test.log`. The corrected canonical host
+build and 680 source graphics tests in 29 files pass:
+`graphics-main-host-checks-1025-195152-2a1e`. The current evidence registry
+agrees with all 612 inventoried files. The separate host lifecycle source
+selection passes 41 cases: `.context/graphics-main-lifecycle-source.log`.
+The combined native Rust workspace selection, excluding xtask, passes
+3,226 cases, including the migrated retirement matrix:
+`graphics-main-rust-1025-195316-2b6d`, `.context/graphics-main-rust.log`.
+These results do not validate normal ABI 55 guest artifacts or rendered
+compositor/memory behavior. Those rebuilds and gates remain next.

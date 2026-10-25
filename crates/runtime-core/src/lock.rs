@@ -498,6 +498,21 @@ impl AdvisoryLockManager {
         }
     }
 
+    /// Drop every OFD and flock record whose open file description `live`
+    /// says no longer exists.
+    pub fn remove_dead_ofd_owners(&mut self, live: impl Fn(OfdId) -> bool) -> LockMutation {
+        let before = self.records.len();
+        self.records.retain(|record| match record.owner {
+            LockOwner::OpenFileDescription(id) | LockOwner::Flock(id) => live(id),
+            LockOwner::Process(_) => true,
+        });
+        let changed = self.records.len() != before;
+        LockMutation {
+            changed,
+            may_unblock: changed,
+        }
+    }
+
     fn remove_owner(&mut self, owner: LockOwner) -> LockMutation {
         let before = self.records.len();
         self.records.retain(|record| record.owner != owner);
@@ -579,6 +594,26 @@ mod tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn dead_description_owners_release_only_their_own_locks() {
+        let mut manager = AdvisoryLockManager::new();
+        let live = OfdId(7);
+        let dead = OfdId(8);
+        set(&mut manager, host_file(1), LockOwner::Flock(dead), AdvisoryLockType::Write, 0, 0).unwrap();
+        set(&mut manager, host_file(2), LockOwner::Flock(live), AdvisoryLockType::Write, 0, 0).unwrap();
+        set(&mut manager, host_file(3), LockOwner::OpenFileDescription(dead), AdvisoryLockType::Read, 0, 1).unwrap();
+        set(&mut manager, host_file(4), process(9), AdvisoryLockType::Write, 0, 1).unwrap();
+
+        let mutation = manager.remove_dead_ofd_owners(|id| id == live);
+        assert!(mutation.changed && mutation.may_unblock);
+        // Process-owned and live-description records survive.
+        assert_eq!(manager.records.len(), 2);
+        assert!(manager.records.iter().all(|record| {
+            record.owner == LockOwner::Flock(live) || record.owner == process(9)
+        }));
+        assert!(!manager.remove_dead_ofd_owners(|id| id == live).changed);
     }
 
     #[test]

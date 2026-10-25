@@ -1,17 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
+import { gotoApp } from "./support/kandelo-machine";
 
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
-
-async function gotoOrSkip(page: Page, path: string) {
-  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
-}
 
 // `chrome.gpuBenchmarking.crashGpuProcess` is the only way to lose a real
 // WebGL context on demand. The flag replaces the config's launchOptions
@@ -59,7 +48,7 @@ test("the webgl2 scanout presenter survives a GPU process crash", async ({ page 
   // The Wayland desktop is not listed in the gallery (Omarchy is the
   // desktop shown there), but the shell image still declares it, so it
   // boots by profile.
-  await gotoOrSkip(page, "/?profile=wayland");
+  await gotoApp(page, "/?profile=wayland");
 
   await expect(canvasLocator(page)).toBeVisible({ timeout: 60_000 });
   await expect

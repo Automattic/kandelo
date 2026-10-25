@@ -361,10 +361,6 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(1, Out, fixed!(WASM_TIMESPEC_SIZE), required)]
     ),
     entry!(
-        Syscall::Nanosleep as u32,
-        [desc!(0, In, fixed!(WASM_TIMESPEC_SIZE), required)]
-    ),
-    entry!(
         Syscall::GetEnv as u32,
         [
             desc!(
@@ -627,10 +623,6 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(1, Out, fixed!(WASM_TIMESPEC_SIZE), nullable)]
     ),
     entry!(
-        Syscall::ClockNanosleep as u32,
-        [desc!(2, In, fixed!(WASM_TIMESPEC_SIZE), required)]
-    ),
-    entry!(
         Syscall::Utimensat as u32,
         [
             desc!(1, In, cstring!(), nullable),
@@ -709,13 +701,6 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
         [desc!(1, InOut, kernel_dereferenced!(), nullable)]
     ),
     entry!(
-        Syscall::Wait4 as u32,
-        [
-            desc!(1, Out, fixed!(4), nullable),
-            desc!(3, Out, fixed!(WASM_RUSAGE_WIRE_SIZE), nullable),
-        ]
-    ),
-    entry!(
         Syscall::Getaddrinfo as u32,
         [
             desc!(
@@ -750,27 +735,6 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
             fixed!(kernel_scratch_wire::SIGNAL_MASK_BYTES),
             required
         )]
-    ),
-    entry!(
-        extra_syscalls::SYS_RT_SIGTIMEDWAIT,
-        [
-            desc!(
-                0,
-                In,
-                fixed!(kernel_scratch_wire::SIGNAL_MASK_BYTES),
-                required
-            ),
-            desc!(
-                1,
-                Out,
-                process_layout!(
-                    process_layout::rt_sigqueueinfo::WASM32_SIZE,
-                    process_layout::rt_sigqueueinfo::WASM64_SIZE
-                ),
-                nullable
-            ),
-            desc!(2, In, fixed!(WASM_TIMESPEC_SIZE), nullable),
-        ]
     ),
     entry!(
         extra_syscalls::SYS_SIGALTSTACK,
@@ -944,21 +908,6 @@ pub const SYSCALL_ARG_DESCRIPTORS: &[SyscallArgDescriptor] = &[
     entry!(
         extra_syscalls::SYS_MKNODAT,
         [desc!(1, In, cstring!(), required)]
-    ),
-    entry!(
-        extra_syscalls::SYS_WAITID,
-        [
-            desc!(
-                2,
-                Out,
-                process_layout!(
-                    process_layout::rt_sigqueueinfo::WASM32_SIZE,
-                    process_layout::rt_sigqueueinfo::WASM64_SIZE
-                ),
-                required
-            ),
-            desc!(4, Out, fixed!(WASM_RUSAGE_WIRE_SIZE), nullable),
-        ]
     ),
     entry!(
         extra_syscalls::SYS_COPY_FILE_RANGE,
@@ -1514,17 +1463,12 @@ mod tests {
             (Syscall::ClockGetres as u32, 1),
             (Syscall::Utimensat as u32, 1),
             (Syscall::Utimensat as u32, 2),
-            (Syscall::Wait4 as u32, 1),
-            (Syscall::Wait4 as u32, 3),
-            (extra_syscalls::SYS_RT_SIGTIMEDWAIT, 1),
-            (extra_syscalls::SYS_RT_SIGTIMEDWAIT, 2),
             (extra_syscalls::SYS_SIGALTSTACK, 0),
             (extra_syscalls::SYS_SIGALTSTACK, 1),
             (extra_syscalls::SYS_SETITIMER, 2),
             (extra_syscalls::SYS_TIMERFD_SETTIME, 3),
             (extra_syscalls::SYS_PRLIMIT64, 2),
             (extra_syscalls::SYS_PRLIMIT64, 3),
-            (extra_syscalls::SYS_WAITID, 4),
             (extra_syscalls::SYS_COPY_FILE_RANGE, 1),
             (extra_syscalls::SYS_COPY_FILE_RANGE, 3),
             (extra_syscalls::SYS_SPLICE, 1),
@@ -1650,45 +1594,6 @@ mod tests {
             }
         );
         assert!(getrusage.required);
-
-        let wait4 = find(Syscall::Wait4 as u32).args;
-        assert_eq!(
-            wait4[1].size,
-            SyscallArgSize::Fixed {
-                size: WASM_RUSAGE_WIRE_SIZE,
-            }
-        );
-
-        let sigtimedwait = find(extra_syscalls::SYS_RT_SIGTIMEDWAIT).args;
-        assert_eq!(
-            sigtimedwait[1].size,
-            SyscallArgSize::ProcessLayout {
-                wasm32_size: process_layout::rt_sigqueueinfo::WASM32_SIZE,
-                wasm64_size: process_layout::rt_sigqueueinfo::WASM64_SIZE,
-            }
-        );
-        assert!(sigtimedwait[1].nullable);
-
-        let waitid = find(extra_syscalls::SYS_WAITID).args;
-        assert_eq!(waitid[0].arg_index, 2);
-        assert_eq!(waitid[0].direction, SyscallArgDirection::Out);
-        assert_eq!(
-            waitid[0].size,
-            SyscallArgSize::ProcessLayout {
-                wasm32_size: process_layout::rt_sigqueueinfo::WASM32_SIZE,
-                wasm64_size: process_layout::rt_sigqueueinfo::WASM64_SIZE,
-            }
-        );
-        assert!(waitid[0].required);
-        assert_eq!(waitid[1].arg_index, 4);
-        assert_eq!(waitid[1].direction, SyscallArgDirection::Out);
-        assert_eq!(
-            waitid[1].size,
-            SyscallArgSize::Fixed {
-                size: WASM_RUSAGE_WIRE_SIZE,
-            }
-        );
-        assert!(waitid[1].nullable);
 
         let getaddrinfo = find(Syscall::Getaddrinfo as u32).args;
         assert_eq!(getaddrinfo[1].arg_index, 1);

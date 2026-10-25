@@ -1,0 +1,33 @@
+=== closed 839c550aede3 ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+        3,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+        3,
+    },
+    tail_sites: {},
+}
+
+=== external 839c550aede3 ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+        3,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+        3,
+    },
+    tail_sites: {},
+}
