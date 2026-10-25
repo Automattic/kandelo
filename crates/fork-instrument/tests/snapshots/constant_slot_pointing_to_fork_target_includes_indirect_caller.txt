@@ -1,0 +1,29 @@
+=== closed e595d7c4bba9 ===
+ReachingPlan {
+    activations: {
+        0,
+        2,
+        3,
+    },
+    control_reachable: {
+        0,
+        2,
+        3,
+    },
+    tail_sites: {},
+}
+
+=== external e595d7c4bba9 ===
+ReachingPlan {
+    activations: {
+        0,
+        2,
+        3,
+    },
+    control_reachable: {
+        0,
+        2,
+        3,
+    },
+    tail_sites: {},
+}

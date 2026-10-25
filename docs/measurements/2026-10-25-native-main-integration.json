@@ -1,0 +1,131 @@
+{
+  "source_commit": "d2aaebe3a48919f52d6ee82f4b98690986d5de97",
+  "merge_commit": "77bda22b9009db3b36785ece81d8a3dd61eba691",
+  "main_parent": "f6b329f4d9621fe133207e16cda37a6306c1d879",
+  "native_only_parent": "89945d25cfe4a537d80307fc7e4c6f59a4423f8a",
+  "abi_version": 53,
+  "environment": {
+    "entrypoint": "scripts/dev-shell.sh",
+    "cargo_target": "aarch64-apple-darwin",
+    "cargo_build_jobs": 2,
+    "workspace_test_threads": 1,
+    "runtime_workers": 1
+  },
+  "results": {
+    "workspace_rust": {
+      "passed": 3089,
+      "groups": 87,
+      "failed": 0,
+      "ignored": 0
+    },
+    "xtask": {
+      "passed": 792,
+      "groups": 4,
+      "failed": 0,
+      "ignored": 0
+    },
+    "node": {
+      "passed": 25,
+      "files": 5,
+      "failed": 0,
+      "skipped": 0
+    },
+    "browser_matrix": {
+      "passed": 57,
+      "projects": [
+        "chromium",
+        "firefox",
+        "webkit"
+      ],
+      "failed": 0,
+      "skipped": 0
+    },
+    "browser_references": {
+      "passed": 3,
+      "project": "chromium",
+      "failed": 0,
+      "skipped": 0
+    },
+    "package_probes": {
+      "passed": 4
+    },
+    "conformance": {
+      "libc_passed": 7,
+      "posix_passed": 18,
+      "sortix_passed": 113,
+      "sortix_skipped": 2,
+      "failed": 0,
+      "build_errors": 0,
+      "timeouts": 0
+    },
+    "selected_rootfs_nodes": 20,
+    "vitest_inventory_files": 588,
+    "abi": "passed",
+    "resolver_bundle": "passed",
+    "normal_dependencies_include_walrus": false
+  },
+  "commands": {
+    "workspace": "cargo test --workspace --exclude xtask --target aarch64-apple-darwin -- --test-threads=1",
+    "xtask": "cargo test -p xtask --target aarch64-apple-darwin -- --test-threads=1",
+    "node": "cd host && node_modules/.bin/vitest run test/fork-native-file-pipeline.test.ts test/fork-native-process.test.ts test/catch-ref-fresh-worker.test.ts test/gc-reference-state-fresh-worker.test.ts test/fork-from-dlopen-side-module-e2e.test.ts --maxWorkers=1 --no-file-parallelism",
+    "browser_matrix": "cd apps/browser-demos && node_modules/.bin/playwright test test/native-fork-process.spec.ts --project=chromium --project=firefox --project=webkit --workers=1",
+    "browser_references": "cd apps/browser-demos && node_modules/.bin/playwright test test/fork-continuation.spec.ts --grep \"reconstructs|aliased\" --project=chromium --workers=1",
+    "libc": "scripts/run-libc-tests.sh functional setjmp vfork pthread_mutex pthread_cond pthread_robust pthread_tsd pthread_cancel-points",
+    "posix": "scripts/run-posix-tests.sh signal raise kill",
+    "sortix": "scripts/run-sortix-tests.sh process signal io",
+    "artifacts": "scripts/dev-shell.sh bash -c 'set -e; export CARGO_BUILD_JOBS=2; export KANDELO_CACHE_GC_AUTO=0; unset WASM_POSIX_FORK_INSTRUMENT; ./run.sh build sysroot sysroot64 kernel; target/aarch64-apple-darwin/release/xtask local-build run --set packages/sets/local-supported.toml --source-cache-root \"$HOME/.cache/kandelo/source-only\" --output-root \"$PWD/local-binaries/source-only-v1\" --product platform-rootfs --jobs 2; bash scripts/build-rootfs.sh'",
+    "abi": "bash scripts/check-abi-version.sh",
+    "resolver_bundle": "bash scripts/test-resolve-binary-bundle.sh",
+    "test_inventory": "bash scripts/check-vitest-evidence-classes.sh",
+    "normal_dependencies": "cargo tree -p fork-instrument --edges normal --target aarch64-apple-darwin"
+  },
+  "artifacts": {
+    "tools/bin/wasm-fork-instrument": {
+      "bytes": 5360048,
+      "sha256": "e1e5e3a6c0de06156edb14944f81048c899ce79cbf384c430e72d3662e0fc9b3"
+    },
+    "local-binaries/source-only-v1/kernel.wasm": {
+      "bytes": 1592214,
+      "sha256": "f215937031fb08d6fedbc23c2c459c760ba2eee25db47b7bc78679dbf15f2387"
+    },
+    "local-binaries/kandelo_image_module32.wasm": {
+      "bytes": 171623,
+      "sha256": "bc43e7d5f912aa2d5ef3e0d3be92999fc247d36bfdfe0ab3cca4f9b24b40b82d"
+    },
+    "host/wasm/rootfs.vfs.zst": {
+      "bytes": 172967,
+      "sha256": "dc8cce1ffb00b93ebb93f437e158e2013b351043eacfc613e48a680b1cf0ddcf"
+    },
+    "local-binaries/source-only-v1/programs/wasm32/rootfs.vfs.zst": {
+      "bytes": 172967,
+      "sha256": "dc8cce1ffb00b93ebb93f437e158e2013b351043eacfc613e48a680b1cf0ddcf"
+    },
+    "local-binaries/source-only-v1/programs/wasm32/bash.wasm": {
+      "bytes": 2062887,
+      "sha256": "65f9a31bb2879b21fcc44ffcacf63de7372fdab5f86fc198540c162bd6e608de"
+    },
+    "local-binaries/source-only-v1/programs/wasm32/gawk.wasm": {
+      "bytes": 1491765,
+      "sha256": "b86a6f87e7db191ab1008a7f782ee39ffc251e8e77782f6ba9fb3a3c44bdc878"
+    },
+    "local-binaries/source-only-v1/programs/wasm32/coreutils.wasm": {
+      "bytes": 1777290,
+      "sha256": "59363b273ce16677e72dad40b64476457f361f999bdb567964b672ab13582540"
+    }
+  },
+  "evidence_jobs": {
+    "rust": "native-main-merge-checks-1025-090913-9f8f",
+    "artifacts": "native-main-runtime-artifacts-1025-091851-298d",
+    "browser_matrix": "native-main-browser-1025-092618-6be9",
+    "node_packages_conformance": "native-main-runtime-retry-1025-093918-0585",
+    "browser_references": "native-main-reference-browser-retry-1025-094115-e7ef"
+  },
+  "notes": [
+    "Rust checks preceded the test-input-only ABI refresh; Rust production and test sources are unchanged.",
+    "Initial Node run: 22 passed, three refused stale ABI 52 fixture inputs. Rebuilt sources and reran all 25 successfully.",
+    "GC bytes regenerated from reviewed WAT using the pinned Rust wat crate; only offset 208 changes from 52 to 53.",
+    "Sortix skips ppoll-block-raise and ppoll-block-sleep-raise rely on implementation-defined signal() restart behavior.",
+    "Full package registry, full host-runtime inventory, full application benchmarks, fuzzing and original Codex capacity were not repeated.",
+    "Timing and memory were not remeasured."
+  ]
+}

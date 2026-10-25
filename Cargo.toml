@@ -25,3 +25,9 @@ description = "A POSIX-compliant kernel for WebAssembly"
 lto = true
 opt-level = "s"
 strip = true
+
+# The host instrumenter processes large inputs; favor throughput here while
+# keeping the guest kernel's release profile optimized for download size.
+[profile.instrumenter]
+inherits = "release"
+opt-level = 3

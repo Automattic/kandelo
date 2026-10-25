@@ -10,7 +10,6 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
-walrus = "0.26"
 wasmparser = "0.247"
 wat = "1"
 

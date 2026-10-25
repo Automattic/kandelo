@@ -2,6 +2,34 @@
 
 This document covers Kandelo's performance measurement tools: a runtime syscall profiler for detailed per-syscall analysis, and a benchmark suite for repeatable cross-host comparisons.
 
+## Fork instrumenter package comparisons
+
+Use the SDK's original linked Wasm, preserving compiler facts and instruction
+offsets. Capture it before instrumentation or any later Binaryen pass. Record
+package versions, source hashes and the link recipe. The current instrumenter
+has one native implementation; archived Walrus comparisons are recorded in
+[the package comparison report](measurements/2026-10-25-native-instrumentation-comparison.md).
+Reproducing those historical comparisons requires the source commit recorded
+in that report.
+
+For current memory and cache measurements, build the `memory_comparison`
+example with the host `instrumenter` profile through `scripts/dev-shell.sh`.
+Its native-only command measures immutable input snapshot, transform,
+validation, publication and checksums, excluding Binaryen and guest execution:
+
+```bash
+scripts/dev-shell.sh target/aarch64-apple-darwin/instrumenter/examples/memory_comparison \
+  measure instrument .context/package-inputs/bash.wasm .context/bash-native.wasm
+```
+
+`scripts/profile-fork-instrument-cache.py` compares cache budgets using fresh
+serial processes, separate cache diagnostics and independent Node compilation
+and artifact checks. Use a new output directory and an otherwise quiet macOS
+machine. Physical-memory measurements use the OS lifetime peak; requested Rust
+allocations are reported separately. The default guard is 16 GiB and the
+per-process deadline is 30 minutes. These subsystem measurements do not measure
+package build time or Node/browser application performance.
+
 ## Syscall Profiler
 
 The host runtime includes a built-in syscall profiler that measures every syscall handled by the kernel worker. It is zero-cost when disabled — no data structures are allocated and no timing code runs.

@@ -104,10 +104,18 @@ fn instrumented_output_is_optimized_and_valid() {
 
     let raw = dir.join("raw.wasm");
     let result = instrument(&input, &raw, &["--post-optimize", "none"], None);
-    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     let optimized = dir.join("optimized.wasm");
     let result = instrument(&input, &optimized, &[], None);
-    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
 
     let raw = fs::read(raw).unwrap();
     let optimized = fs::read(optimized).unwrap();
@@ -145,12 +153,27 @@ fn the_default_level_is_os() {
     fs::write(&input, wat::parse_str(FORK_WAT).unwrap()).unwrap();
     let arguments = dir.join("arguments.txt");
     let wasm_opt = dir.join("wasm-opt");
-    fs::write(&wasm_opt, format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", arguments.display())).unwrap();
+    fs::write(&wasm_opt, include_str!("fixtures/controlled_optimizer.sh")).unwrap();
     fs::set_permissions(&wasm_opt, fs::Permissions::from_mode(0o755)).unwrap();
     let output = dir.join("output.wasm");
-    let result = instrument(&input, &output, &[], wasm_opt.to_str());
-    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
-    assert_eq!(fs::read_to_string(arguments).unwrap().lines().nth(1), Some("-Os"));
+    let result = Command::new(env!("CARGO_BIN_EXE_wasm-fork-instrument"))
+        .arg(&input)
+        .arg("--output")
+        .arg(&output)
+        .env("WASM_OPT", &wasm_opt)
+        .env("FAKE_OPT_MODE", "copy")
+        .env("FAKE_OPT_ARGS", &arguments)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(arguments).unwrap().lines().nth(1),
+        Some("-Os")
+    );
 }
 
 #[test]
@@ -164,7 +187,11 @@ fn names_and_dwarf_are_dropped() {
     fs::write(&input, bytes).unwrap();
     let output = dir.join("output.wasm");
     let result = instrument(&input, &output, &[], None);
-    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     let output = fs::read(output).unwrap();
     assert!(!has_custom_section(&output, "name"));
     assert!(!has_custom_section(&output, ".debug_str"));
@@ -177,7 +204,11 @@ fn names_survive_with_keep_names() {
     fs::write(&input, wat::parse_str(FORK_WAT).unwrap()).unwrap();
     let output = dir.join("output.wasm");
     let result = instrument(&input, &output, &["--keep-names"], None);
-    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     assert!(has_custom_section(&fs::read(output).unwrap(), "name"));
 }
 
@@ -190,7 +221,11 @@ fn modules_outside_fork_are_written_back_unchanged() {
     let output = dir.join("output.wasm");
     // A wasm-opt that cannot run proves the pass was not attempted.
     let result = instrument(&input, &output, &[], Some("/nonexistent/wasm-opt"));
-    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     assert_eq!(fs::read(output).unwrap(), bytes);
 }
 

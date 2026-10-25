@@ -1,0 +1,38 @@
+{
+  "platform": "macOS 27.0.1 arm64",
+  "input_bytes": 284605220,
+  "input_sha256": "17b829246d2396cf73f60d3dee8fea1b64dbbae8b96b0825d7228ce288ef7e42",
+  "source_base_commit": "069020aa7d4e094f5107aab29b3317bac500c77c",
+  "source_manifest": ".context/native-target-groups-build/source-sha256.json",
+  "source_files": 204,
+  "binary_sha256": "7f9dd77356b566a1a78182b867a7f8ecc2899bf1cec0e0d7003fa13b038ab291",
+  "measurement": {
+    "backend": "stream",
+    "phase": "instrument",
+    "input_bytes": 284605220,
+    "output_bytes": 246465075,
+    "output_sha256": "4f2cf5e87a3a435e214ddee2506d22d25db1bfbb55d3fa1b07c6beda63030de3",
+    "contract_sha256": "8dc038bd00ac9c52072f0f0db1a2362f28094e5b408447c691c0d1006fcc07bc",
+    "data_sha256": "23dc62254d667427322745aa51b73682787e685d370665de878f8e4a174662ca",
+    "rust_requested_peak_bytes": 451872959,
+    "physical_lifetime_peak_bytes": 473302144
+  },
+  "guard_status": {
+    "returncode": 0,
+    "stop_reason": null,
+    "elapsed_s": 1073.4549911660142,
+    "sampled_physical_peak_bytes": 473302144
+  },
+  "maximum_sampled_rss_bytes": 867303424,
+  "guard_bytes": 17179869184,
+  "deadline_s": 1800,
+  "analysis": "facts",
+  "facts_fallback": false,
+  "scope": "Complete native transform, common bounded file I/O, serial Wasm validation, publication and checksums. No Binaryen, Node validator, browser, or guest execution.",
+  "normal_options": true,
+  "post_optimize": "none",
+  "guest_executed": false,
+  "evidence": ".context/native-codex-target-groups-20261024/",
+  "external_stack_sample_s": 1,
+  "limitation": "One successful complete transform and serial structural validation. No Codex execution, Binaryen, browser or completed Walrus comparison."
+}

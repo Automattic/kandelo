@@ -1,0 +1,21 @@
+=== sinks-true-facts-true-effective-true ab772dc402af ===
+(
+    [
+        "_start",
+        "forker",
+        "main",
+    ],
+    [],
+    Facts,
+    Some(
+        FactsReport {
+            chunks: 1,
+            definitions: 4,
+            defined: 4,
+            bound: 4,
+            bound_to_union: 0,
+            signature_mismatch: 0,
+        },
+    ),
+    false,
+)
