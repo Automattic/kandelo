@@ -67,6 +67,16 @@
       "role": "lazy-file"
     },
     {
+      "name": "redis",
+      "version": "7.2.5",
+      "role": "lazy-file"
+    },
+    {
+      "name": "mariadb",
+      "version": "10.5.28",
+      "role": "lazy-file"
+    },
+    {
       "name": "wget",
       "version": "1.25.0",
       "role": "lazy-file"

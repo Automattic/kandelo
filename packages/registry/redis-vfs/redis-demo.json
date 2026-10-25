@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "defaultProfile": "redis",
+  "profiles": {
+    "redis": {
+      "identity": {
+        "title": "Redis voting board",
+        "summary": "Pitch ideas and vote together. PHP serves a live board backed by Redis.",
+        "accent": "#a33c36",
+        "glyph": "\u2191"
+      },
+      "init": {
+        "target": "redis-board"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "web": {
+        "requiredPorts": [
+          8080,
+          6379
+        ],
+        "probeHttp": true,
+        "probePath": "/health"
+      }
+    }
+  }
+}

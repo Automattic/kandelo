@@ -671,6 +671,12 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#getProcessExitSignal::kernel-export-direct-use::getExitSignal(pid)",
   ),
+  // kernel_publish_process_exit takes a u32 process ID and returns an i32
+  // status/signal count. Reaping stays inside Rust; no host-staged kernel
+  // memory is borrowed. The scalar signature is checked below.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#publishKernelProcessExit::kernel-export-direct-use::publish(pid)",
+  ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#generateHostSignalWithinKernelEntry::kernel-export-direct-use::generateHostSignal(targetPid, signum)",
   ),
@@ -1754,6 +1760,17 @@ describe("kernel scratch static contract", () => {
         assertKernelScratchPointerRoleContract(kernelWasmApiSource, exportName),
       ).not.toThrow();
     }
+  });
+
+  it("keeps the reviewed process-exit publication scalar-only", () => {
+    expect(kernelExportSignatureFromSnapshot(
+      abiSnapshotSource,
+      "kernel_publish_process_exit",
+    )).toBe("(i32) -> (i32)");
+    expect(rustKernelExportParameters(
+      kernelWasmApiSource,
+      "kernel_publish_process_exit",
+    )).toEqual([{ name: "pid", type: "u32" }]);
   });
 
   it("rejects a same-Wasm-signature pointer-pair reorder", () => {

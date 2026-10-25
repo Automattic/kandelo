@@ -4417,13 +4417,16 @@ async function handleHttpRequestMessage(msg: {
   request: any;
   timeoutMs?: number;
   maxResponseBytes?: number;
+  hostname?: string;
 }) {
   if (!kernelWorker.isKernelInitialized()) {
     respondError(msg.requestId, "Kernel not initialized");
     return;
   }
   try {
-    const response = await kernelWorker.sendHttpRequest(
+    const response = await (msg.hostname === undefined
+      ? kernelWorker.sendHttpRequest.bind(kernelWorker)
+      : remoteSegmentRuntime.fetchHttp.bind(remoteSegmentRuntime, msg.hostname))(
       msg.port,
       msg.request,
       {

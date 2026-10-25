@@ -1507,22 +1507,7 @@ build_nginx_vfs() {
 }
 
 build_redis_vfs() {
-    # NOT folded: "redis-vfs" is an `[[exclusions]]` entry in
-    # packages/sets/local-supported.toml ("dormant browser product") — a
-    # pre-existing product decision predating this stage, not an engine
-    # limitation (its images/vfs/products/browser-redis.toml manifest
-    # already exists and validates fine; see
-    # run_sh_build_vfs_targets_are_folded_or_documented_bash_boundaries in
-    # tools/xtask/src/local_build.rs). Reactivating it is out of scope here.
-    build_dinit
-    build_redis
-    if ! has_redis_vfs; then
-        step "Building Redis VFS image"
-        bash "$REPO_ROOT/images/vfs/scripts/build-redis-vfs-image.sh"
-        info "Redis VFS image built"
-    else
-        info "Redis VFS image"
-    fi
+    bootstrap_target browser-redis
 }
 
 build_nginx_php_vfs() {
@@ -1992,7 +1977,7 @@ build_target() {
 # sysroot/sysroot64 are NOT listed: they're toolchain prerequisites for source
 # builds, and any `build_X` whose prebuilt is missing calls `need_sysroot`
 # lazily.
-BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs nginx-python-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node wp-vfs lamp-vfs ruby-todo-vfs dbus foot)
+BROWSER_DEPS=(kernel rootfs programs dash bash coreutils grep sed bc file less m4 make tar curl-cli wget gzip bzip2 xz zstd zip unzip nano lsof vim vim-zip nethack nethack-zip fbdoom git dinit msmtpd nginx nginx-vfs php php-fpm nginx-php-vfs nginx-python-vfs mariadb mariadb-vfs mariadb-test mariadb64 mariadb64-vfs shell-vfs spidermonkey-node node wp-vfs lamp-vfs ruby-todo-vfs redis-vfs dbus foot)
 
 build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
@@ -2370,7 +2355,7 @@ clean_target() {
                    "$REPO_ROOT/packages/registry/fbdoom/fbdoom-build" \
                    "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom"
             rm -f "$REPO_ROOT/packages/registry/fbdoom/fbdoom.wasm" \
-                  "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom.wasm" \
+                  "$REPO_ROOT/local-binaries/programs/wasm32/fbdoom/fbdoom.wasm" \
                   "$REPO_ROOT/packages/registry/fbdoom/doom1.wad" \
                   "$REPO_ROOT/packages/registry/fbdoom/COPYING.txt" \
                   "$REPO_ROOT/packages/registry/fbdoom/CREDITS.txt" \

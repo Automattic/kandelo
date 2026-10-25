@@ -459,9 +459,9 @@ Located in `apps/browser-demos/pages/`:
 | nginx-php | nginx + PHP-FPM | dinit | FastCGI, fork workers |
 | nginx-python | nginx + Python (wsgiref) | dinit | Reverse proxy to a standard-library WSGI JSON API over SQLite |
 | mariadb | MariaDB 10.5 | dinit | SQL database with threads (Aria/InnoDB) |
-| redis | Redis 7.2 | dinit | In-memory store with threads |
+| redis | Redis 7.2 + PHP CLI | dinit | Shared voting board plus phpCacheAdmin command console/key browser on 8080, backed by Redis on 6379; share through activity invitations |
 | wordpress | nginx + PHP-FPM + WP | dinit | Full stack with SQLite |
-| lamp | MariaDB + nginx + PHP-FPM + WP | dinit | Full LAMP stack |
+| lamp | MariaDB + nginx + PHP-FPM + WP | dinit | Full LAMP stack; website and interactive MySQL connection invitations to the same WordPress database |
 | mariadb-test | MariaDB + mysqltest | dinit + spawn | Playwright-driven mysql-test runner |
 | benchmark | (per-suite) | legacy spawn | Micro-benchmarks + WordPress + Erlang ring |
 | network | bash + GNU Netcat + curl | `kernel.boot` x 3 | Boots multiple local Kandelo machines and verifies UDP datagrams, TCP streams, and HTTP over virtual TCP |
@@ -1693,8 +1693,13 @@ neutralizes this class of issue. It hooks `Blob`/`URL.createObjectURL` and the
 document, which the service worker *does* control). It is idempotent and a no-op
 unless a text/html blob URL is used as an iframe src. The service worker inlines
 it (via the `"__BLOB_IFRAME_INTERCEPTOR__"` build-time placeholder, mirroring
-`"__CORS_PROXY_CONFIG__"`) into the `<head>` of every bridged HTML document, so it
-applies to all app demos, not just WordPress.
+`"__CORS_PROXY_CONFIG__"`) into the `<head>` of bridged HTML documents without
+a Content Security Policy, so it applies to app demos, not just WordPress.
+Documents carrying a
+`Content-Security-Policy` response header retain their declared script policy:
+the bridge does not inject the inline helper or change that header. The
+blob-iframe adapter is therefore unavailable in those documents; ordinary
+HTML, assets, requests and same-origin iframes still use the bridge.
 
 ## VFS Images
 
@@ -2774,6 +2779,45 @@ Outbound internet traffic leaves through the fetch and TLS bridges, which the gu
 
 ### Purpose-checked browser peer connections
 
+The network panel can also consume optional
+[package-declared offer and join procedures](package-sessions.md). Hosts choose
+an optional activity and its setup, then create a typed invitation in the
+same form that creates a room. Existing rooms can be kept or replaced, and
+the panel also offers Leave. Rooms suggest editable, playful random names.
+Creating an invitation opens a separate active-session dialog and attempts
+to copy its final link; Copy link and Change activity remain available there.
+The dialogs keep a stable responsive frame with a scrolling body. The
+session name precedes activity and status, with vertical space around
+prominent status cards. Descriptions
+and package details are collapsed under About this activity. Package-declared
+warnings appear only for the selected activity, data source, menu choice or
+level; selecting a different option removes the old warning. The
+invitation preview applies the same stored/system theme before host setup,
+so it does not change palettes when the app mounts. New
+invitations include bounded display details so recipients see activity and
+host settings, participant prompts and acquisition hints even before host
+initialization finishes. Controls remain disabled until those details match
+the installed package. Older links populate their prompts after boot. A
+prominent readiness card explains the wait before joining. Copy confirmation
+and data-transfer progress use the same card, with actual received bytes,
+a percentage and a progress bar during transfers. A replacement prepares its data before cancelling the
+previous activity's owned terminal family and awaiting its workers; other terminals still require
+their own shutdown. Declared data dependencies can be sent over
+WebRTC or supplied as acquisition hints and verified local-file choices.
+Doom and Quake offer pinned shareware/free data or a file picker even on a
+bare shell. Their starting-level pickers use catalogs from pinned data or
+bounded directory inspection of an uploaded WAD/PAK. Freeciv uses its bundled data and native pregame lobby. Service
+images can share their running website or database; those invitations select
+the standard shell client image and omit the server’s demo profile.
+An actual framebuffer owner also enables the Demo view on a shell-only
+profile, so these activities can display their output without a game profile. Recipients provide
+their own participant settings and explicitly join before their copy starts
+in a fresh terminal. These declarations are installed package runtime files;
+the browser does not hardcode termchat or Doom launch commands. Activity links
+defer the selected image's shell auto-command and init target while preparing
+its resources. KMS activities mount and measure a real scanout before launch;
+they become visible when the guest acquires the display device.
+
 Network sessions carry IPv4 multicast as well as unicast and broadcast, so
 [termchat](termchat.md) can discover other running instances and exchange
 messages/files through ordinary guest sockets. Membership and filtering stay
@@ -2797,7 +2841,14 @@ machine profiles. The machine-identity source guard admits only the named
 `PeerNetworkGame` selector type; image-owned machine definitions still belong
 in `/etc/kandelo/demo.json`.
 
-Both use `purpose: "network"` peer connections. The main thread transfers
+Both use `purpose: "network-activities-v2"` peer connections, including a
+separate reliable `activity-data-v1` channel for explicitly offered data
+and `activity-offers-v1` for bounded host activity discovery. A joined
+client’s Change activity menu uses only alternative host offers, omitting
+its current activity and hiding the button when none remain. New session
+separately opens local hosting choices and replaces the client’s room. See
+[invitation compatibility and discovery](package-sessions.md#invitation-compatibility-and-discovery).
+This channel never exposes a general guest-file read service. The main thread transfers
 framed bytes between RTC channels and bounded native MessagePorts. Guest
 programs use ordinary IPv4 UDP and TCP sockets; DNS names `host` and
 `peer-N` resolve through the worker's segment membership, and broadcasts

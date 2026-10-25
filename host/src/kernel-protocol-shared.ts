@@ -271,7 +271,9 @@ export interface WakeBlockedWritersMessage {
 export interface HttpRequestMessage {
   type: "http_request";
   requestId: number;
-  /** Port the in-kernel server is listening on. */
+  /** Omit hostname for a local injected listener; otherwise use the Kandelo session network. */
+  hostname?: string;
+  /** Port the server is listening on. */
   port: number;
   request: HttpRequest;
   /** Optional timeout in ms (default 60_000). */

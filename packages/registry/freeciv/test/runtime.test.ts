@@ -13,7 +13,7 @@ import {
   SHELL_LAZY_ARCHIVE_SPECS,
 } from "../../../../images/vfs/scripts/shell-lazy-archives";
 
-const bundle = tryResolveBinary("programs/wasm32/freeciv.zip");
+const bundle = tryResolveBinary("programs/wasm32/freeciv-browser-bundle/freeciv.zip");
 const encoder = new TextEncoder();
 const env = [
   "HOME=/home/maker", "USER=maker", "LANG=C.UTF-8", "TERM=dumb",

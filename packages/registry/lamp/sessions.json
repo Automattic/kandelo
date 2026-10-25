@@ -1,0 +1,77 @@
+{
+  "kind": "kandelo-package-sessions",
+  "version": 1,
+  "package": "lamp",
+  "packageVersion": "0.1.0",
+  "offers": [
+    {
+      "id": "service",
+      "title": "WordPress with MariaDB",
+      "description": "Invite people to browse this image\u2019s running website. Files, posts, forms and other changes stay on the hosting computer.",
+      "join": "client",
+      "attachExisting": true,
+      "requiresHost": true,
+      "hostRequires": [
+        "/etc/kandelo/demo.json",
+        "/usr/sbin/nginx"
+      ],
+      "fields": []
+    },
+    {
+      "id": "database",
+      "title": "WordPress MySQL connection",
+      "description": "Connect to the WordPress database with an interactive MariaDB SQL client.",
+      "warning": "Invited people can edit the host\u2019s WordPress database. This demo has no database password.",
+      "join": "database",
+      "attachExisting": true,
+      "requiresHost": true,
+      "hostRequires": [
+        "/usr/sbin/mariadbd",
+        "/var/www/html/wp-config.php"
+      ],
+      "fields": []
+    }
+  ],
+  "joins": [
+    {
+      "id": "client",
+      "title": "Open WordPress with MariaDB",
+      "description": "Join this network and connect to the existing host service. This computer does not start a duplicate server.",
+      "fields": [],
+      "launch": {
+        "surface": "web",
+        "host": "network.host",
+        "port": 8080,
+        "path": "/"
+      },
+      "computer": "default"
+    },
+    {
+      "id": "database",
+      "title": "Open WordPress MySQL connection",
+      "description": "Run SQL against the host\u2019s WordPress database. Try SHOW TABLES; or SELECT option_name, option_value FROM wp_options WHERE option_name = 'blogname';",
+      "fields": [],
+      "launch": {
+        "executable": "/usr/bin/mariadb",
+        "args": [
+          "--protocol",
+          "tcp",
+          "--host",
+          {
+            "field": "network.host"
+          },
+          "--port",
+          "3306",
+          "--user",
+          "root",
+          "--database",
+          "wordpress"
+        ],
+        "cwd": "/",
+        "requires": [],
+        "surface": "terminal"
+      },
+      "computer": "default"
+    }
+  ]
+}

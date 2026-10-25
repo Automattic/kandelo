@@ -7491,7 +7491,7 @@ mod tests {
             ("build_erlang_vfs", Expectation::DormantOrExcluded("erlang-vfs")),
             ("build_python_vfs", Expectation::DormantOrExcluded("python-vfs")),
             ("build_perl_vfs", Expectation::DormantOrExcluded("perl-vfs")),
-            ("build_redis_vfs", Expectation::DormantOrExcluded("redis-vfs")),
+            ("build_redis_vfs", Expectation::FoldedProduct("browser-redis")),
             // texlive-vfs has no `[[products]]`/`[[packages]]` entry AND no
             // manifest under images/vfs/products at all (unlike the other
             // dormant composites, which at least have a written manifest);
@@ -7534,14 +7534,15 @@ mod tests {
             }
         }
 
-        // images/vfs/products/*.toml manifests exist for every dormant
-        // composite except texlive (confirming Stage 4 left it bash for a
+        // images/vfs/products/*.toml manifests exist for these composites,
+        // including promoted Redis and the retired standalone MariaDB recipes.
+        // There is no manifest for texlive (confirming Stage 4 left it bash for a
         // different, more fundamental reason: no manifest, no product/package
         // declaration, and its bash builder has a host-tool-availability
         // skip that isn't itself expressible as a manifest dependency).
         for id in ["browser-mariadb-wasm32", "browser-mariadb-wasm64", "browser-erlang", "browser-python", "browser-perl", "browser-redis"] {
             let manifest = repo.join("images/vfs/products").join(format!("{id}.toml"));
-            assert!(manifest.is_file(), "expected dormant product manifest at {}", manifest.display());
+            assert!(manifest.is_file(), "expected product manifest at {}", manifest.display());
         }
         assert!(
             !repo.join("images/vfs/products/texlive-vfs.toml").exists()

@@ -105,19 +105,22 @@ define('WP_DEBUG_LOG', true);
 define('WP_DEBUG_DISPLAY', false);
 @ini_set('display_errors', '0');
 
-$kandelo_proto = '@@PROTO@@';
+$kandelo_is_forwarded = isset($_SERVER['HTTP_X_FORWARDED_HOST'])
+    || isset($_SERVER['HTTP_X_FORWARDED_PREFIX']);
+$kandelo_proto = $kandelo_is_forwarded ? '@@PROTO@@'
+    : ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http');
 // The service worker forwards this machine's public prefix
 // (e.g. /computer/humble-chestnut-cove) on every bridged request via
 // X-Forwarded-Prefix. Build WP_HOME/WP_SITEURL from it so WordPress emits links
-// under the machine's own prefix. The static @@APP_PATH@@ is only a fallback for
-// a direct, non-bridged request; using it while bridged would make WP_HOME
-// disagree with the routed prefix and double the segment
-// (/computer/<name>/app/).
+// under the machine’s own prefix. Configured path/protocol fallbacks apply
+// to forwarded requests. A direct client uses the server root and its actual
+// request scheme, independently of the browser preview’s HTTPS origin.
 $kandelo_forwarded_prefix = isset($_SERVER['HTTP_X_FORWARDED_PREFIX'])
     ? $_SERVER['HTTP_X_FORWARDED_PREFIX']
     : '';
 $kandelo_app_path = rtrim(
-    $kandelo_forwarded_prefix !== '' ? $kandelo_forwarded_prefix : '@@APP_PATH@@',
+    $kandelo_forwarded_prefix !== '' ? $kandelo_forwarded_prefix
+        : (isset($_SERVER['HTTP_X_FORWARDED_HOST']) ? '@@APP_PATH@@' : '/'),
     '/'
 );
 $kandelo_host = $_SERVER['HTTP_X_FORWARDED_HOST'] ?? $_SERVER['HTTP_HOST'] ?? 'localhost';

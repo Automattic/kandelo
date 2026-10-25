@@ -1446,3 +1446,10 @@ else
     install_local_binary php "$BIN_DIR/intl.so"
     install_local_runtime_file php "$BIN_DIR/icu.dat"
 fi
+
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    WASM_POSIX_INSTALL_LOCAL_MIRROR=0 install_local_runtime_file php "$SCRIPT_DIR/sessions.json" sessions.json
+else
+    install_local_runtime_file php "$SCRIPT_DIR/sessions.json" sessions.json
+fi

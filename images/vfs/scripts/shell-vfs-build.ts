@@ -692,7 +692,7 @@ function populateDemoExtendedBinaries(
     { relPath: "programs/less.wasm",                 vfsPath: "/usr/bin/less" },
     { relPath: "programs/tar.wasm",                  vfsPath: "/usr/bin/tar" },
     { relPath: "programs/curl.wasm",                 vfsPath: "/usr/bin/curl" },
-    { relPath: "programs/nc.wasm",                   vfsPath: "/usr/bin/nc" },
+    { relPath: "programs/netcat/nc.wasm",                   vfsPath: "/usr/bin/nc" },
     { relPath: "programs/wget.wasm",                 vfsPath: "/usr/bin/wget" },
     { relPath: "programs/git/git.wasm",              vfsPath: "/usr/bin/git" },
     { relPath: "programs/git/git-remote-http.wasm",  vfsPath: "/usr/bin/git-remote-http" },

@@ -1,7 +1,7 @@
 kind = "program"
 name = "netcat"
 version = "0.7.1"
-kernel_abi = 7
+kernel_abi = 52
 depends_on = []
 
 [source]
@@ -19,3 +19,7 @@ script_path = "packages/registry/netcat/build-netcat.sh"
 [[outputs]]
 name = "nc"
 wasm = "nc.wasm"
+
+[[runtime_files]]
+artifact = "sessions.json"
+guest_path = "/usr/share/kandelo/sessions/netcat.json"

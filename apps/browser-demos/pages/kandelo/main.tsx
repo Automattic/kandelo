@@ -3,10 +3,13 @@
 
 import * as React from "react";
 import * as ReactDOM from "react-dom/client";
+import { initializeTheme } from "./app/theme";
+import { SessionInvitationPreview } from "./app/SessionInvitationPreview";
 import { App } from "./app/App";
 import { KernelHostProvider } from "./kernel-host/react";
 import type { KernelHost } from "./kernel-host";
 import { readKandeloBootQuery } from "./url-state";
+import { sessionInvitation } from "../../lib/network-session";
 import {
   BootDescriptorError,
   decodeBootDescriptor,
@@ -24,18 +27,34 @@ const bootQuery = readKandeloBootQuery(location.search);
 // debugging the host, not to the machine.
 const fbDemo = qs.get("fb"); // "test" | null
 
+initializeTheme();
+const root = ReactDOM.createRoot(container);
+let invitationOpen = true;
+let invitationDismissed = false;
 const mount = (host: KernelHost) => {
-  ReactDOM.createRoot(container).render(
+  root.render(
     <React.StrictMode>
       <KernelHostProvider host={host}>
-        <App />
+        <App invitationOpen={invitationOpen} invitationDismissed={invitationDismissed} />
       </KernelHostProvider>
     </React.StrictMode>,
   );
 };
 
 void (async () => {
+  let invitation: ReturnType<typeof sessionInvitation> = null;
+  let setupError: string | undefined;
+  const renderStatus = () => root.render(<div style={{ padding: 32, maxWidth: 780 }}>
+    <strong>{setupError ? "LiveKernelHost setup failed" : "Preparing this computer…"}</strong>
+    {setupError && <pre role="alert" style={{ whiteSpace: "pre-wrap" }}>{setupError}</pre>}
+  </div>);
+  const closePreview = () => { invitationOpen = false; renderStatus(); };
+  const dismissPreview = () => { invitationDismissed = true; closePreview(); };
   try {
+    invitation = sessionInvitation(location.href);
+    // Show the invitation before host imports, image activation, or boot can wait.
+    if (invitation) root.render(<SessionInvitationPreview invitation={invitation} close={closePreview} dismiss={dismissPreview} />);
+    const activityInvitation = invitation?.offer;
     // URL fragments are untrusted input. A malformed or oversized #k1= boot
     // link must fail loudly here, not silently boot as if it were absent.
     const linkDescriptor = await decodeBootDescriptor(location.hash).catch(
@@ -73,24 +92,17 @@ void (async () => {
         inputs: linkDescriptor?.boot.inputs ?? null,
         parameters: linkDescriptor?.boot.parameters ?? null,
         legacyScriptIgnored,
+        deferActivityLaunch: activityInvitation !== undefined,
       }));
     mount(host);
   } catch (err) {
     // Surface fetch / instantiation failures in the page so the user
     // doesn't have to open devtools to find out why nothing rendered.
     const detail = err instanceof Error ? err.message : String(err);
-    container.innerHTML = `
-      <div style="padding:32px;font-family:var(--k-font-mono);color:var(--k-err-ink);max-width:780px;">
-        <div style="font-weight:600;margin-bottom:8px">LiveKernelHost setup failed</div>
-        <pre style="white-space:pre-wrap;font-size:12px;color:var(--k-text-muted)">${escapeHtml(detail)}</pre>
-        <div style="margin-top:12px;font-size:12px;color:var(--k-text-faint)">
-          See <code>apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts</code>.
-        </div>
-      </div>`;
+    setupError = detail;
+    if (invitation && invitationOpen) {
+      root.render(<SessionInvitationPreview invitation={invitation} close={closePreview} dismiss={dismissPreview} error={detail} />);
+    } else renderStatus();
     console.error(err);
   }
 })();
-
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
-}

@@ -229,7 +229,7 @@ describe("browser binary dependencies", () => {
       "@binaries/programs/wasm32/bash.wasm",
     );
     expect(sourceOnlySpecs).toContain(
-      "@binaries/programs/wasm32/nc.wasm",
+      "@binaries/programs/wasm32/netcat/nc.wasm",
     );
     expect(sourceOnlySpecs).not.toEqual(
       expect.arrayContaining(

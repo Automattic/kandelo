@@ -31,10 +31,12 @@ export function normalizeImageOwnedLazyReference(reference: string): string {
   if (reference === "love-examples.zip") {
     return "assets/programs/wasm32/love/share/love-examples.zip";
   }
+  if (reference === "freeciv.zip") return "assets/programs/wasm32/freeciv-browser-bundle/freeciv.zip";
+  if (reference === "python.zip") return "assets/programs/wasm32/python-browser-bundle/python.zip";
   if (
     reference === "ca-certificates.zip" ||
-    reference === "vim.zip" || reference === "freeciv.zip" || reference === "nethack.zip" ||
-    reference === "ruby.zip" || reference === "python.zip" ||
+    reference === "vim.zip" || reference === "nethack.zip" ||
+    reference === "ruby.zip" ||
     reference === "node.zip" || reference === "perl.zip" ||
     reference === "composer.zip" ||
     reference === "man.zip" || reference === "coreutils-docs.zip" ||

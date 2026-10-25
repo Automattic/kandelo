@@ -3,10 +3,10 @@ import espeakNgDataZipUrl from "@binaries/programs/wasm32/espeak-ng/espeak-ng-da
 import desktopDataZipUrl from "@binaries/programs/wasm32/wayland-demo/kandelo-desktop-data.zip?url";
 import loveExamplesZipUrl from "@binaries/programs/wasm32/love/share/love-examples.zip?url";
 import vimZipUrl from "@binaries/programs/vim.zip?url";
-import freecivZipUrl from "@binaries/programs/freeciv.zip?url";
+import freecivZipUrl from "@binaries/programs/freeciv-browser-bundle/freeciv.zip?url";
 import nethackZipUrl from "@binaries/programs/nethack.zip?url";
 import rubyZipUrl from "@binaries/programs/ruby.zip?url";
-import pythonZipUrl from "@binaries/programs/python.zip?url";
+import pythonZipUrl from "@binaries/programs/python-browser-bundle/python.zip?url";
 import nodeZipUrl from "@binaries/programs/node.zip?url";
 import perlZipUrl from "@binaries/programs/perl.zip?url";
 import composerZipUrl from "@binaries/programs/composer.zip?url";

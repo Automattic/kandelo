@@ -51,17 +51,17 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
 }>(({ preview, autoFocus = false, onDockControlsChange }, ref) => {
   const host = useKernelHost();
   const [loading, setLoading] = React.useState(true);
-  const [path, setPath] = React.useState("/");
-  const [iframeSrc, setIframeSrc] = React.useState(() => buildPreviewUrl(preview.url, "/"));
+  const [path, setPath] = React.useState(preview.initialPath ?? "/");
+  const [iframeSrc, setIframeSrc] = React.useState(() => buildPreviewUrl(preview.url, preview.initialPath ?? "/"));
   const ready = preview.status === "running";
   const pendingRequests = preview.pendingRequests ?? 0;
   const iframeRef = React.useRef<HTMLIFrameElement | null>(null);
 
   React.useEffect(() => {
-    beginPreviewNavigation(host, "/");
+    beginPreviewNavigation(host, preview.initialPath ?? "/");
     setLoading(true);
-    setPath("/");
-    setIframeSrc(buildPreviewUrl(preview.url, "/"));
+    setPath(preview.initialPath ?? "/");
+    setIframeSrc(buildPreviewUrl(preview.url, preview.initialPath ?? "/"));
   }, [host, preview.url]);
 
   React.useEffect(() => {
@@ -103,11 +103,22 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
     setIframeSrc(target);
   }, [host, preview.url]);
 
+  const [navigationError, setNavigationError] = React.useState<string | null>(null);
   const navigate = React.useCallback((raw: string) => {
+    setNavigationError(null);
+    if (/^https?:\/\//i.test(raw) && relativePathFromHref(preview.url, raw) === null) {
+      try {
+        const url = new URL(raw);
+        if (url.protocol !== "http:" || url.username || url.password || !host.openWebPreview) throw new Error("Use an HTTP address on this computer or its Kandelo network");
+        void host.openWebPreview({ hostname: url.hostname, port: Number(url.port || 80), path: url.pathname + url.search + url.hash })
+          .catch(error => setNavigationError(String(error instanceof Error ? error.message : error)));
+      } catch (error) { setNavigationError(String(error instanceof Error ? error.message : error)); }
+      return;
+    }
     const next = normalizePreviewPath(raw, preview.url);
     setPath(next);
     navigateFrame(buildPreviewUrl(preview.url, next));
-  }, [navigateFrame, preview.url]);
+  }, [host, navigateFrame, preview.url]);
 
   const navigateAndWait = React.useCallback(async (
     raw: string,
@@ -204,6 +215,7 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
 
   return (
     <div className="kdisplay-surface">
+      {navigationError && <div role="alert">{navigationError}</div>}
       {ready ? (
         <iframe
           ref={iframeRef}
@@ -302,7 +314,7 @@ const WebPreviewDockControls: React.FC<{
           event.preventDefault();
           if (ready) onNavigate(event.currentTarget.value);
         }}
-        onBlur={() => setDraftPath((value) => normalizePreviewPath(value, baseUrl))}
+        onBlur={() => setDraftPath((value) => /^https?:\/\//i.test(value) ? value : normalizePreviewPath(value, baseUrl))}
         disabled={!ready}
         spellCheck={false}
         enterKeyHint="go"

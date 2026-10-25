@@ -1,6 +1,10 @@
 // Re-exports for the Kandelo session surface. See kernel-host.ts for the
 // interface app UIs consume and the LiveKernelHost stub that wraps a kernel.
 export * from "./kernel-host";
+export * from "./package-sessions";
+export * from "./session-invitation";
+export * from "./session-dependencies";
+export * from "./session-dependency-peer";
 export type { TerminalProgram, TerminalSessionPolicy } from "./kernel-host";
 export * from "./lazy-download";
 export * from "./demo-config";

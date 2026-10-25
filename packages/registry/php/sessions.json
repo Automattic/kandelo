@@ -1,0 +1,53 @@
+{
+  "kind": "kandelo-package-sessions",
+  "version": 1,
+  "package": "php",
+  "packageVersion": "8.5.12",
+  "offers": [
+    {
+      "id": "server",
+      "title": "PHP web server",
+      "description": "Serve the selected directory to people in this room on port 8080. Guests open it in the Kandelo web preview.",
+      "join": "participant",
+      "attachExisting": true,
+      "fields": [
+        {
+          "id": "directory",
+          "label": "Directory to serve",
+          "type": "text",
+          "default": "/home/maker",
+          "maxLength": 128
+        }
+      ],
+      "launch": {
+        "executable": "/usr/bin/php",
+        "cwd": "/",
+        "args": [
+          "-S",
+          "0.0.0.0:8080",
+          "-t",
+          {
+            "field": "offer.directory"
+          }
+        ],
+        "requires": [],
+        "surface": "terminal"
+      },
+      "requiresHost": true
+    }
+  ],
+  "joins": [
+    {
+      "id": "participant",
+      "title": "Open PHP web server",
+      "description": "Connect to the host on this network.",
+      "fields": [],
+      "launch": {
+        "surface": "web",
+        "host": "network.host",
+        "port": 8080,
+        "path": "/"
+      }
+    }
+  ]
+}

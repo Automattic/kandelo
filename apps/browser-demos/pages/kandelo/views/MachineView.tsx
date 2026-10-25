@@ -44,15 +44,22 @@ export interface MachineSurfaceController {
   followDemoSurface: () => void;
   focusInternals: () => void;
   onKmsOwnerChange: (pid: number | null) => void;
+  requestActivityDisplay: (kind: "framebuffer" | "kms") => void;
+  displayOccupied: boolean;
 }
 
 export function useMachineSurfaceController(): MachineSurfaceController {
   const status = useStatus();
   const presentation = usePresentation();
   const rawAvailability = useSurfaceAvailability();
+  const [activityDisplay, setActivityDisplay] = React.useState<"framebuffer" | "kms" | null>(null);
+  const activityOwnerSeen = React.useRef(false);
   const [kmsOwnerPid, onKmsOwnerChange] = React.useState<number | null>(null);
   React.useEffect(() => {
-    if (!rawAvailability.kms) onKmsOwnerChange(null);
+    if (status !== "running") { setActivityDisplay(null); onKmsOwnerChange(null); }
+  }, [status]);
+  React.useEffect(() => {
+    if (!rawAvailability.kms) { onKmsOwnerChange(null); setActivityDisplay(null); }
   }, [rawAvailability.kms]);
   const webPreview = useWebPreview();
   const availability = React.useMemo<SurfaceAvailability>(() => ({
@@ -66,6 +73,17 @@ export function useMachineSurfaceController(): MachineSurfaceController {
         webPreview?.status === "reconnecting"),
   }), [rawAvailability, kmsOwnerPid, webPreview?.status]);
   const [activePrimary, setActivePrimary] = React.useState<PrimarySurface>(presentation.bootPrimary);
+  const [requestedDemo, setRequestedDemo] = React.useState(false);
+  const requestActivityDisplay = React.useCallback((kind: "framebuffer" | "kms") => {
+    activityOwnerSeen.current = false;
+    setActivityDisplay(kind); setRequestedDemo(true);
+  }, []);
+  React.useEffect(() => {
+    if (!activityDisplay) return;
+    const owned = activityDisplay === "kms" ? kmsOwnerPid !== null : availability.framebuffer;
+    if (owned) activityOwnerSeen.current = true;
+    else if (activityOwnerSeen.current) { setActivityDisplay(null); activityOwnerSeen.current = false; }
+  }, [activityDisplay, kmsOwnerPid, availability.framebuffer]);
   const [primaryMode, setPrimaryMode] = React.useState<"following-demo" | "pinned">("following-demo");
   const previousAvailability = React.useRef(availability);
   const canUseTerminal = status === "running" && availability.terminal;
@@ -103,6 +121,7 @@ export function useMachineSurfaceController(): MachineSurfaceController {
   }, [presentation.runningPrimary]);
 
   const choosePrimary = React.useCallback((surface: PrimarySurface) => {
+    setRequestedDemo(false);
     if (status !== "running" && surface !== "syslog") return;
     if (!isSurfaceAvailable(surface, availability)) return;
     setActivePrimary(surface);
@@ -110,8 +129,10 @@ export function useMachineSurfaceController(): MachineSurfaceController {
   }, [availability, defaultPrimary, status]);
 
   const demoSurface = React.useMemo(
-    () => resolveDemoSurface(presentation.runningPrimary),
-    [presentation.runningPrimary],
+    // Profiles choose the preferred layout; a real framebuffer owner can
+    // also create a display when a graphical program starts from a shell.
+    () => availability.framebuffer ? "framebuffer" : activityDisplay === "kms" ? "kms" : availability.web ? "web" : resolveDemoSurface(presentation.runningPrimary),
+    [presentation.runningPrimary, availability.framebuffer, availability.web, activityDisplay],
   );
   const canOpenDemo =
     demoSurface !== null &&
@@ -130,13 +151,24 @@ export function useMachineSurfaceController(): MachineSurfaceController {
     isSurfaceAvailable(demoSurface, demoSurface === "kms" ? rawAvailability : availability);
   const canUseInternals = status !== "idle" && isSurfaceAvailable("syslog", availability);
 
+  React.useEffect(() => {
+    if (status !== "running") { setRequestedDemo(false); return; }
+    if (!requestedDemo || !canOpenDemo || !demoSurface || (activityDisplay && demoSurface !== activityDisplay)) return;
+    setRequestedDemo(false);
+    setActivePrimary(demoSurface);
+    setPrimaryMode(demoSurface === defaultPrimary ? "following-demo" : "pinned");
+  }, [requestedDemo, canOpenDemo, demoSurface, defaultPrimary, status, activityDisplay]);
+
   const chooseView = React.useCallback((view: MachineSurfaceView) => {
     if (view === "demo") {
-      if (demoSurface) choosePrimary(demoSurface);
+      // A launch can finish dispatch before its process opens the device.
+      // Remember the person's choice until an actual surface is available.
+      if (demoSurface && isSurfaceAvailable(demoSurface, availability)) choosePrimary(demoSurface);
+      else setRequestedDemo(true);
       return;
     }
     choosePrimary(view === "terminal" ? "terminal" : "syslog");
-  }, [choosePrimary, demoSurface]);
+  }, [choosePrimary, demoSurface, availability]);
 
   const followDemoSurface = React.useCallback(() => {
     if (!demoSurface) return;
@@ -173,6 +205,8 @@ export function useMachineSurfaceController(): MachineSurfaceController {
     followDemoSurface,
     focusInternals,
     onKmsOwnerChange,
+    requestActivityDisplay,
+    displayOccupied: availability.framebuffer || kmsOwnerPid !== null,
   };
 }
 
