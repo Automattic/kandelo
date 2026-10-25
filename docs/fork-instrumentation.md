@@ -763,9 +763,11 @@ It seeds every matching fork import, every side-module function import, raw
 loader imports and conservative dynamic dispatch. It rejects previous private
 runtime imports, exports and metadata. Valid compiler facts use private SQLite
 relations with the requested effective-type policy; unreadable facts fall back
-to the bounded native baseline. Dlopen facts preserve the explicit side-module
-contract, including automatic full-entry planning for returning function
-pointers. No facts database survives into helper or source emission.
+to bounded final-Wasm analysis. Both plans preserve the explicit side-module
+loading contract, including automatic full-entry planning for returning
+function pointers. Unsupported interpretation retains the fork-reaching
+closure; exceeded budgets fail explicitly. No facts database survives into
+helper or source emission.
 
 The frozen assembly now includes host `_start` and thread resume boundaries,
 side-module constant ABI markers and sink replay selectors. Thread boundaries
