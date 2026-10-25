@@ -5230,3 +5230,29 @@ fixture compilation; the full default-config consumer run remains next.
 These passing normal-package tests are substantial compositor evidence,
 but do not establish full gallery foot/bar/tiling behavior, complete
 browser-memory, POSIX conformance or the complete graphics inventory.
+
+The first full libc run found `functional/spawn` returning ENOEXEC from
+posix_spawnp of its echo helper. Inspection proves the helper and its
+owned runner copy were ABI 56, while the rebuilt kernel is ABI 54:
+`.context/graphics-libc-echo-old-abi56.json`, exact inspection job
+`graphics-libc-echo-inspect-1024-212819-691b`. The runner skipped helper
+compilation solely because its wasm mtime exceeded echo.c's mtime. This
+is stale test provisioning, not a demonstrated kernel spawn defect.
+
+The libc runner now compiles that helper through the SDK on each run and
+stamps only the successfully linked output with the current ABI contract.
+The focused upstream spawn case passes after this repair:
+`graphics-libc-spawn-recheck-1024-212920-5b50`,
+`.context/graphics-libc-spawn-recheck.log`. Helper and copied fixture now
+both report ABI 54 without artifact-policy failures; their SHA256 is
+`d5f1215b386ab3a78d8f10cee94bf9eed3a49d75c5c2d0ddaf22d73d048cf9ec`.
+This does not relabel the earlier full run as passing. That run continues
+through its remaining cases; complete corrected libc evidence remains due.
+
+Full libc, Open POSIX and all Sortix suites are tracked sequentially in
+`graphics-rebuilt-posix-1024-212000-0516`; separate logs and exit statuses
+are under `.context/graphics-rebuilt-{libc,posix,sortix}.log` and
+`.context/graphics-rebuilt-posix-status.txt`. Sortix uses a pristine clone
+of pinned commit `7e8f0082ab0b58ad3383a8abbf47dc4b40dcf25d` on the existing
+case-sensitive volume at `/Volumes/KandeloCaseBuild/moscow-graphics-os-test`.
+The worktree's pre-existing Sortix submodule state remains untouched.
