@@ -869,9 +869,11 @@ follow-up work. See [Firefox executable-code limit](browser-support.md#firefox-e
 
 The bundled WebKit engine passes the C cases and small C++ programs,
 but reports native Wasm call-stack exhaustion while Clang instantiates
-the templates used by `<random>`. Compilation then exits with SIGSEGV;
-the worker diagnostic says `Maximum call stack size exceeded` inside
-`clang::Sema`. This engine stack is separate from the linear-memory C
+the templates used by `<random>`. The compile job (`clang -cc1`, which
+the clang driver runs as a child process when a command both compiles
+and links) dies with SIGSEGV, and the driver reports `unable to execute
+command: Segmentation fault` and exits 1; the worker diagnostic says
+`Maximum call stack size exceeded` inside `clang::Sema`. This engine stack is separate from the linear-memory C
 stack. Use Node, Chromium, or Firefox for this template-heavy case. The
 browser test checks the exact WebKit failure rather than accepting any
 compiler error or claiming that case compiled.
