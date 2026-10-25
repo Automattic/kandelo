@@ -7219,7 +7219,7 @@ const GLOBAL_PACKAGE_TOOLCHAIN_INPUTS: &[&str] = &[
     "flake.lock",
     "rust-toolchain.toml",
     "scripts/dev-shell.sh",
-    "scripts/run-local-build.sh",
+    "scripts/setup.sh",
     "scripts/install-local-binary.sh",
     "scripts/wasm-artifact-guards.sh",
     "scripts/build-musl.sh",
@@ -24305,7 +24305,7 @@ allow_uninitialized_gitlinks = true
             );
         }
         for input in [
-            "scripts/run-local-build.sh",
+            "scripts/setup.sh",
             "scripts/install-local-binary.sh",
             "scripts/wasm-artifact-guards.sh",
         ] {

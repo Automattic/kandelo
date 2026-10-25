@@ -225,11 +225,13 @@ describe("browser binary dependencies", () => {
     );
     const defaultSpecs = browserAssetImportsForPolicy(repoRoot, undefined);
 
-    expect(sourceOnlySpecs).toContain(
-      "@binaries/programs/wasm32/bash.wasm",
+    expect(sourceOnlySpecs).toEqual(
+      expect.arrayContaining(["@kernel-wasm", "@rootfs-vfs"]),
     );
-    expect(sourceOnlySpecs).toContain(
-      "@binaries/programs/wasm32/netcat/nc.wasm",
+    // The images' lazy programs are not browser imports: a deployment serves
+    // whatever the built images reference, from their own lazy entries.
+    expect(sourceOnlySpecs).not.toContain(
+      "@binaries/programs/wasm32/bash.wasm",
     );
     expect(sourceOnlySpecs).not.toEqual(
       expect.arrayContaining(

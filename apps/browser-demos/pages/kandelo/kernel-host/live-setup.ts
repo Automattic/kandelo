@@ -23,7 +23,7 @@ import {
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import {
-  imageOwnedRuntimeUrlTable,
+  imageOwnedLazyAssetDirectory,
   type ImageOwnedRuntimeLazyAssets,
 } from "../../../lib/init/image-owned-runtime-urls";
 import { BrowserInputSource } from "../../../../../host/src/input/browser-input-source";
@@ -1352,10 +1352,13 @@ async function bootProfile(
     composed;
   const vfsImageBytes = composed.imageBytes;
   // The image keeps its canonical lazy addresses: nothing rewrites them. WHERE
-  // this deployment serves them is transport policy, which travels beside the
-  // image as a table for the kernel worker's lazy fetcher, so the deferred
-  // entries the image writer sealed reach the kernel exactly as built.
-  const lazyUrlMap = imageOwnedRuntimeUrlTable(loadedVfs.lazyAssets);
+  // this deployment serves them is transport policy: the kernel worker's lazy
+  // fetcher resolves each address to its package member under this directory,
+  // so the deferred entries the image writer sealed reach the kernel exactly
+  // as built.
+  const lazyAssetDirectory = imageOwnedLazyAssetDirectory(
+    loadedVfs.lazyAssets ?? CANONICAL_PAGES_VFS_LOADER?.deploymentLazyAssets(),
+  );
   // ── The machine, read from the image it lives in ────────────────────────
   //
   // The composer already failed the boot if the image declares no machine
@@ -1497,14 +1500,14 @@ async function bootProfile(
       },
     });
     // Typed against the host's own init contract, so an option the host does
-    // not accept (the lazy URL table above) is a type error, never a field the
+    // not accept (the lazy-asset directory above) is a type error, never a field the
     // host silently drops.
     const kernelInitOptions: Parameters<BrowserKernel["initFromImage"]>[0] =
       profile.candidateEvidence === undefined
       ? {
         kernelWasm: kernelBytes,
         vfsImage: vfsImageBytes,
-        lazyUrlMap,
+        lazyAssetDirectory,
       }
       : candidateEvidenceKernelInitOptions(
         profile.candidateEvidence,
@@ -2398,7 +2401,7 @@ function localProductArtifactExists(source: VfsProductSource): boolean {
 function localProductBuildCommand(source: VfsProductSource): string | undefined {
   if (source.kind === "url") return undefined;
   return source.kind === "optional-demo"
-    ? "./run.sh fetch"
+    ? "./run.sh local-build"
     : "./run.sh build programs";
 }
 

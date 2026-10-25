@@ -19,9 +19,19 @@ const symlinkTargetDecoder = new TextDecoder("utf-8", {
 });
 const textEncoder = new TextEncoder();
 
+/**
+ * The address an image records for a lazy archive: its package-mirror path in
+ * the `kandelo-lazy:` grammar the shell's lazy files use. Deployments resolve
+ * it to the member by rule (`normalizeImageOwnedLazyReference`), so nothing
+ * keeps a list of archive names.
+ */
+export function shellLazyArchiveAddress(resolverPath: string): string {
+  return `kandelo-lazy:${resolverPath}`;
+}
+
 /** Shared guest paths whose trust roots are published by ca-certificates. */
 export const SHELL_CA_BUNDLE = {
-  uri: "ca-certificates.zip",
+  uri: shellLazyArchiveAddress("programs/ca-certificates.zip"),
   guestPaths: ["/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt"],
 } as const;
 
@@ -29,17 +39,23 @@ export interface ShellLazyArchiveSpec {
   id: string;
   dependency: string;
   resolverPath: string;
+  /** Derived from `resolverPath` by `shellLazyArchiveAddress`. */
   archiveUrl: string;
   mountPrefix: "/" | `/${string}/`;
   requiredMember: string;
 }
 
-export const SHELL_LAZY_ARCHIVE_SPECS = [
+function withArchiveAddresses<const T extends readonly Omit<ShellLazyArchiveSpec, "archiveUrl">[]>(
+  specs: T,
+): readonly (T[number] & { archiveUrl: string })[] {
+  return specs.map((spec) => ({ ...spec, archiveUrl: shellLazyArchiveAddress(spec.resolverPath) }));
+}
+
+export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
   {
     id: "composer",
     dependency: "composer",
     resolverPath: "programs/wasm32/composer.zip",
-    archiveUrl: "composer.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/composer",
   },
@@ -47,7 +63,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "freeciv",
     dependency: "freeciv-browser-bundle",
     resolverPath: "programs/wasm32/freeciv-browser-bundle/freeciv.zip",
-    archiveUrl: "freeciv.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/freeciv-play",
   },
@@ -55,7 +70,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "love-examples",
     dependency: "love",
     resolverPath: "programs/love/share/love-examples.zip",
-    archiveUrl: "love-examples.zip",
     mountPrefix: "/usr/",
     requiredMember: "share/love/examples/main.lua",
   },
@@ -63,7 +77,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "vim",
     dependency: "vim-browser-bundle",
     resolverPath: "programs/wasm32/vim.zip",
-    archiveUrl: "vim.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/vim",
   },
@@ -71,7 +84,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "nethack",
     dependency: "nethack-browser-bundle",
     resolverPath: "programs/wasm32/nethack.zip",
-    archiveUrl: "nethack.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/nethack",
   },
@@ -79,7 +91,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "ruby",
     dependency: "ruby-browser-bundle",
     resolverPath: "programs/wasm32/ruby.zip",
-    archiveUrl: "ruby.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/ruby",
   },
@@ -87,7 +98,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "python",
     dependency: "python-browser-bundle",
     resolverPath: "programs/wasm32/python-browser-bundle/python.zip",
-    archiveUrl: "python.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/python3",
   },
@@ -95,7 +105,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "node",
     dependency: "node-browser-bundle",
     resolverPath: "programs/wasm32/node.zip",
-    archiveUrl: "node.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/node",
   },
@@ -103,7 +112,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "perl",
     dependency: "perl-browser-bundle",
     resolverPath: "programs/wasm32/perl.zip",
-    archiveUrl: "perl.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/perl",
   },
@@ -111,7 +119,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "man",
     dependency: "mandoc-browser-bundle",
     resolverPath: "programs/wasm32/man.zip",
-    archiveUrl: "man.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/mandoc",
   },
@@ -119,7 +126,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "coreutils-docs",
     dependency: "coreutils-docs",
     resolverPath: "programs/wasm32/coreutils-docs.zip",
-    archiveUrl: "coreutils-docs.zip",
     mountPrefix: "/usr/",
     requiredMember: "share/man/man1/ls.1",
   },
@@ -127,7 +133,6 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "lsof-docs",
     dependency: "lsof-docs",
     resolverPath: "programs/wasm32/lsof-docs.zip",
-    archiveUrl: "lsof-docs.zip",
     mountPrefix: "/usr/",
     requiredMember: "share/man/man8/lsof.8",
   },
@@ -135,22 +140,20 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
     id: "kandelo-sdk",
     dependency: "kandelo-sdk-browser-bundle",
     resolverPath: "programs/wasm32/kandelo-sdk.zip",
-    archiveUrl: "kandelo-sdk.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/wasm32posix-cc",
   },
-] as const satisfies readonly ShellLazyArchiveSpec[];
+] as const);
 
 /** Data the canonical shell can load on first use: trust roots, speech and desktops.
  * Kept separate from the shared tool archives: service-image builders do not
  * declare espeak-ng or wayland-demo and must not acquire those dependencies.
  */
-export const SHELL_LAZY_DATA_ARCHIVE_SPECS = [
+export const SHELL_LAZY_DATA_ARCHIVE_SPECS = withArchiveAddresses([
   {
     id: "ca-certificates",
     dependency: "ca-certificates",
     resolverPath: "programs/ca-certificates.zip",
-    archiveUrl: SHELL_CA_BUNDLE.uri,
     mountPrefix: "/",
     requiredMember: "etc/ssl/cert.pem",
   },
@@ -158,7 +161,6 @@ export const SHELL_LAZY_DATA_ARCHIVE_SPECS = [
     id: "espeak-ng-data",
     dependency: "espeak-ng",
     resolverPath: "programs/espeak-ng/espeak-ng-data.zip",
-    archiveUrl: "espeak-ng-data.zip",
     mountPrefix: "/usr/share/espeak-ng-data/",
     requiredMember: "phondata",
   },
@@ -166,11 +168,10 @@ export const SHELL_LAZY_DATA_ARCHIVE_SPECS = [
     id: "desktop-data",
     dependency: "wayland-demo",
     resolverPath: "programs/wayland-demo/kandelo-desktop-data.zip",
-    archiveUrl: "kandelo-desktop-data.zip",
     mountPrefix: "/usr/share/kandelo/",
     requiredMember: "themes/tokyo-night/theme.conf",
   },
-] as const satisfies readonly ShellLazyArchiveSpec[];
+] as const);
 
 /**
  * Every `/etc/profile.d` script the shell image ships, in one call.

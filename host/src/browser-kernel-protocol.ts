@@ -184,9 +184,19 @@ export interface InitMessage {
    * transport policy, so it travels as data. A table rather than a resolver,
    * because the deployment knows every asset it serves without asking the
    * image what it contains. An address the table does not carry is resolved
-   * against `lazyUrlBase`, or fetched as written.
+   * through `lazyAssetDirectory`, then against `lazyUrlBase`, or fetched as
+   * written.
    */
   lazyUrlMap?: Readonly<Record<string, string>>;
+  /**
+   * Where this deployment serves package members (an absolute URL ending in
+   * `/`): an asset group's directory, or the dev server's lazy-asset route.
+   * Every address in the image-owned grammar (`binaries/programs/...` or
+   * `kandelo-lazy:programs/...`, each naming its package-mirror path)
+   * resolves to its member path under it, so the deployment needs no table listing what the
+   * image carries. The image itself records each body's size and SHA-256.
+   */
+  lazyAssetDirectory?: string;
   /** Exhaustive exact-byte lazy transport for this image; no network fallback. */
   closedLazyAssets?: ClosedLazyAsset[];
   workerEntryUrl: string;

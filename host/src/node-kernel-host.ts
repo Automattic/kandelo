@@ -31,6 +31,7 @@ import {
 } from "node:worker_threads";
 import { resolveBinary } from "./binary-resolver";
 import { maybeDecompressImage } from "./vfs/vfs-image-transport";
+import { resolveImageOwnedLazyAsset } from "./vfs/vfs-asset-group-reference";
 import type {
   HostDiagnostic,
   MainToKernelMessage,
@@ -194,6 +195,14 @@ export interface NodeKernelHostOptions {
    */
   rootfsLazyUrlBase?: string;
   /**
+   * Resolve every image-owned lazy address (`binaries/programs/...`,
+   * `kandelo-lazy:programs/...`) to its package member under this absolute
+   * directory URL before transport. The Node peer of BrowserKernel's
+   * lazyAssetDirectory contract; useful with `rootfsLazyAssets`, whose
+   * entries are keyed by canonical HTTPS URLs.
+   */
+  rootfsLazyAssetDirectory?: string;
+  /**
    * Exhaustive exact URL-to-byte transport for lazy entries in rootfsImage.
    * Intended for offline and pre-publication acceptance: when set, unbound
    * URLs fail instead of falling through to ambient network fetch.
@@ -314,6 +323,13 @@ export class NodeKernelHost {
     }
     if (this.options.rootfsLazyUrlBase === "") {
       throw new Error("rootfsLazyUrlBase must not be empty");
+    }
+    if (this.options.rootfsLazyAssetDirectory !== undefined) {
+      if (rootfsImage === null) {
+        throw new Error("rootfsLazyAssetDirectory requires rootfsImage");
+      }
+      // Validates an absolute directory URL, as the worker will use it.
+      resolveImageOwnedLazyAsset(this.options.rootfsLazyAssetDirectory, "kandelo-lazy:programs/probe");
     }
     const execProgramBytes = snapshotExecProgramBytes(
       this.options.execProgramBytes,
@@ -482,6 +498,7 @@ export class NodeKernelHost {
             ? undefined
             : this.options.rootfsMountSpec.map((mount) => ({ ...mount })),
           rootfsLazyUrlBase: this.options.rootfsLazyUrlBase,
+          rootfsLazyAssetDirectory: this.options.rootfsLazyAssetDirectory,
           rootfsLazyAssets,
           rootfsLazyAssetSources,
           extraMounts: this.options.extraMounts,

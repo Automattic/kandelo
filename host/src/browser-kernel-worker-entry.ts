@@ -1171,6 +1171,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       lazyFetcher: rootfsLazyFetcher,
       lazyUrlBase: msg.lazyUrlBase,
       lazyUrlMap: msg.lazyUrlMap,
+      lazyAssetDirectory: msg.lazyAssetDirectory,
     });
   }
 

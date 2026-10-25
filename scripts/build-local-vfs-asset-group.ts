@@ -31,9 +31,6 @@ import {
   type SourceOnlyBinarySnapshot,
 } from "../host/src/binary-resolver.ts";
 import { ABI_VERSION } from "../host/src/generated/abi.ts";
-import { createBaseImageFromContainer } from "../images/vfs/lib/module-base-image.ts";
-import { KandeloImageFs } from "../images/vfs/lib/kandelo-image-fs.ts";
-import { imageReadFromContainer } from "../host/src/vfs/rootfs-lazy-archives.ts";
 import {
   validateVfsAssetGroupManifest,
   type VfsAssetGroupManifestV1,
@@ -48,6 +45,7 @@ import {
   readGeneratedPagesRegistry,
 } from "./check-pages-vfs-product-registry.mjs";
 import { loadVfsProductCatalog } from "./vfs-product-catalog.mjs";
+import { imageLazyReferences } from "./vfs-image-lazy-references.ts";
 
 const MAX_CAPTURE_BYTES = 512 * 1024 * 1024;
 
@@ -176,45 +174,23 @@ export async function buildLocalVfsAssetGroup(
         sha256: snapshot.sha256,
       });
       writeExactFile(join(stagedGroup, "images", product.output), snapshot.bytes);
-      // READ the container to list the lazy bodies it references; no filesystem
-      // is needed for a listing. The module is asked for the entries because
-      // every builder under `images/` writes with `KandeloImageFs`, whose images
-      // describe their deferred files in the in-body `SDEF` section and carry no
-      // host-side JSON trailer. Without the fourth (`moduleLazyEntries`)
-      // argument the reader sees only a trailer, would answer "no deferred
-      // bodies" for a product image full of them, and this closure would stage
-      // nothing.
-      const reader = KandeloImageFs.create();
-      reader.loadImage(snapshot.bytes);
-      const { baseImage: fs } = createBaseImageFromContainer(
-        snapshot.bytes,
-        imageReadFromContainer(snapshot.bytes),
-        undefined,
-        () => reader.lazyEntries(),
-      );
-      for (const body of fs.deferredFiles()) {
-        if (body.bytes === undefined) {
-          throw new Error(
-            `product ${product.id} has a lazy file without a declared size`,
-          );
-        }
-        addExpectedAsset(expectedAssets, body.address, { bytes: body.bytes });
-      }
-      for (const body of fs.deferredArchives()) {
+      // READ the container to list the lazy bodies it references; no
+      // filesystem is needed for a listing (see imageLazyReferences).
+      for (const body of imageLazyReferences(snapshot.bytes)) {
         // A body with no declared length cannot be staged: the asset group
-        // records what each reference weighs, and an archive nobody sized is a
+        // records what each reference weighs, and a body nobody sized is a
         // reference this closure cannot account for.
         if (body.bytes === undefined) {
           throw new Error(
-            `product ${product.id} has an archive without byte integrity`,
+            body.kind === "file"
+              ? `product ${product.id} has a lazy file without a declared size`
+              : `product ${product.id} has an archive without byte integrity`,
           );
         }
-        // ONE ADDRESS, not a mirror list. `transports` was always `[address]` —
-        // no producer can express an alternate — so iterating it registered the
-        // same reference once and read as though more were possible.
+        // ONE ADDRESS, not a mirror list: no producer can express an alternate.
         addExpectedAsset(expectedAssets, body.address, {
           bytes: body.bytes,
-          sha256: body.sha256,
+          sha256: body.kind === "archive" ? body.sha256 : undefined,
         });
       }
     }

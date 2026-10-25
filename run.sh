@@ -6,8 +6,10 @@
 #   ./run.sh build [target...]    Build specific targets (or all)
 #   ./run.sh rebuild [target...]  Force-rebuild (clean + build)
 #   ./run.sh clean [target...]    Remove build artifacts
-#   ./run.sh local-build [--json] Build all local SourceOnly VFS products
-#   ./run.sh local-build --plan [--json]
+#   ./run.sh local-build [--all] [--json]
+#                                 Build what the VFS products and browser app
+#                                 demand (--all: every supported package)
+#   ./run.sh local-build --plan [--all] [--json]
 #                                 Preview it: cache hits, nodes to build, and
 #                                 an estimated duration
 #   ./run.sh cache-gc [args]      Garbage-collect the shared SourceOnly build
@@ -2528,6 +2530,17 @@ cmd_local_build() {
     # subagent loses the result and forces a full re-run. It uses the release
     # xtask binary because the debug build `cargo run` produces takes 6-15 s
     # to plan, against about 1 s here; see docs/package-management.md.
+    local selection=demanded bootstrap_selection=()
+    local arg plain_args=()
+    for arg in "$@"; do
+        if [ "$arg" = "--all" ]; then
+            selection=all
+            bootstrap_selection=(--all-packages)
+        else
+            plain_args+=("$arg")
+        fi
+    done
+    set -- ${plain_args[@]+"${plain_args[@]}"}
     if [ "${1:-}" = "--plan" ]; then
         shift
         local plan_json=()
@@ -2536,7 +2549,7 @@ cmd_local_build() {
             shift
         fi
         if [ $# -ne 0 ]; then
-            err "Usage: $0 local-build --plan [--json]"
+            err "Usage: $0 local-build --plan [--all] [--json]"
             exit 2
         fi
         # One dev-shell entry for both the freshness build and the plan: the
@@ -2560,7 +2573,7 @@ cmd_local_build() {
             "$REPO_ROOT/target/$host/release/xtask" local-build plan \
             --set "$REPO_ROOT/packages/sets/local-supported.toml" --status \
             --source-cache-root "${KANDELO_SOURCE_CACHE_ROOT:-$HOME/.cache/kandelo/source-only}" \
-            --output-root "$REPO_ROOT/local-binaries/source-only-v1" --product all --jobs 16 \
+            --output-root "$REPO_ROOT/local-binaries/source-only-v1" --product "$selection" --jobs 16 \
             "${plan_json[@]+"${plan_json[@]}"}" >&2 || status=$?
         command cat -- "$plan_out"
         rm -f -- "$plan_out"
@@ -2572,7 +2585,7 @@ cmd_local_build() {
         shift
     fi
     if [ $# -ne 0 ]; then
-        err "Usage: $0 local-build [--json]"
+        err "Usage: $0 local-build [--all] [--json]"
         err "Use xtask local-build directly for custom product selections."
         exit 2
     fi
@@ -2584,7 +2597,10 @@ cmd_local_build() {
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
-    local helper="$REPO_ROOT/scripts/run-local-build.sh"
+    # `bootstrap packages` builds the same tree as setup's engine step: what
+    # the VFS products and the browser app demand, or with --all every
+    # supported package. Setup's runner pins PATH to the declared tool set.
+    local helper="$REPO_ROOT/scripts/setup.sh"
     # A marker inherited from an older or reinitialized shell does not prove
     # that PATH matches this checkout's current flake. Package builds are the
     # reproducibility boundary, so always enter the declared shell again.
@@ -2595,7 +2611,10 @@ cmd_local_build() {
     local command=(
         bash "$REPO_ROOT/scripts/dev-shell.sh"
         ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"}
-        bash -c 'exec bash "$1" >"$2"' kandelo-local-build "$helper" "$result_file"
+        bash -c 'helper="$1" result="$2"; shift 2; exec bash "$helper" "$@" >"$result"' \
+        kandelo-local-build "$helper" "$result_file" \
+        packages --jobs "${WASM_POSIX_LOCAL_BUILD_JOBS:-16}" \
+        ${bootstrap_selection[@]+"${bootstrap_selection[@]}"}
     )
 
     local command_status
@@ -2660,6 +2679,9 @@ cmd_local_build() {
         ] +
         (if $failed > 0 then ["  Failed:     \($failed)"] else [] end) +
         (if $blocked > 0 then ["  Blocked:    \($blocked)"] else [] end) +
+        (if .outcome == "failed" and $failed == 0 and $blocked == 0
+         then ["  Publish:    failed after every node succeeded (see above)"]
+         else [] end) +
         ["  Output:     local-binaries/source-only-v1"] |
         .[]
     ' "$result_file"
@@ -2680,10 +2702,16 @@ cmd_local_build() {
 # build. Delegates to xtask bootstrap (scripts/setup.sh) inside the
 # repository dev shell; see docs/agent-guidance/packages-and-builds.md.
 cmd_setup() {
+    # --all builds every supported package, as `./run.sh local-build --all`
+    # does; by default setup builds what the VFS products and browser demand.
+    local arg args=()
+    for arg in "$@"; do
+        if [ "$arg" = "--all" ]; then args+=(--all-packages); else args+=("$arg"); fi
+    done
     local_build_events_env
     exec bash "$REPO_ROOT/scripts/dev-shell.sh" \
         ${LOCAL_BUILD_EVENTS_ENV[@]+"${LOCAL_BUILD_EVENTS_ENV[@]}"} \
-        bash "$REPO_ROOT/scripts/setup.sh" "$@"
+        bash "$REPO_ROOT/scripts/setup.sh" ${args[@]+"${args[@]}"}
 }
 
 cmd_run() {
@@ -2905,6 +2933,22 @@ cmd_test() {
         suites=(cargo vitest sdk libc posix)
     fi
 
+    # Suites load fixtures no VFS image carries (wasm64 libraries, libevent
+    # and MariaDB test programs, dash, ...), which a default build leaves
+    # out. Build every supported package first; when it is all cached this
+    # costs about a minute. The Rust suite alone needs none of them.
+    local suite needs_packages=0
+    for suite in "${suites[@]}"; do
+        [ "$suite" = "cargo" ] || needs_packages=1
+    done
+    if [ "$needs_packages" -eq 1 ]; then
+        step "Building every supported package for the test suites"
+        cmd_local_build --all || {
+            err "The full package build failed; test suites need its outputs"
+            exit 1
+        }
+    fi
+
     # Pre-test freshness check (not a divergence guard: Stage 2 collapsed
     # Node and browser binary resolution onto one hermetic kernel tier, so
     # there is exactly one kernel copy to go stale). Fails loud here so a
@@ -3039,13 +3083,18 @@ cmd_test() {
 
 cmd_list() {
     echo "${BOLD}One-command setup:${RESET}"
-    echo "  ./run.sh setup                       Hermetic build: fork-instrument tool,"
-    echo "                                        local-build engine (all packages),"
+    echo "  ./run.sh setup [--all]               Hermetic build: fork-instrument tool,"
+    echo "                                        local-build engine (what the VFS"
+    echo "                                        products and browser app demand;"
+    echo "                                        --all: every supported package),"
     echo "                                        then the TypeScript host"
     echo ""
     echo "${BOLD}Local SourceOnly build:${RESET}"
-    echo "  ./run.sh local-build                Build all seven local VFS products"
-    echo "                                        and their package dependencies"
+    echo "  ./run.sh local-build                Build the active VFS products, their"
+    echo "                                        package dependencies, and the"
+    echo "                                        packages the browser app imports"
+    echo "  ./run.sh local-build --all          Build every supported package, test"
+    echo "                                        fixtures included"
     echo "  ./run.sh local-build --json         Emit the canonical machine result"
     echo "  ./run.sh cache-gc                   Show what cache GC would remove (dry run)"
     echo "  ./run.sh cache-gc --apply           Remove unused SourceOnly cache entries"

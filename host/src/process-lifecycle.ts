@@ -59,6 +59,7 @@ import type { CentralizedKernelWorker } from "./kernel-worker";
 import { retryKernelEntryResult } from "./kernel-entry-retry";
 import type { LazyFetch } from "./vfs/lazy-download-event";
 import { resolveLazyUrl } from "./vfs/lazy-url";
+import { resolveImageOwnedLazyAsset } from "./vfs/vfs-asset-group-reference";
 import {
   buildRootfsLazyWiring,
   waitForDeferredFetch,
@@ -377,8 +378,9 @@ export type ProcessLifecycle<Info extends ProcessLifecycleInfo> =
  * kernel parses the image itself; the host supplies bytes, not a tree.
  *
  * `lazyUrlMap` maps an address the image records to the URL this deployment
- * serves it at, and `lazyUrlBase` resolves any other relative address against
- * the deployment, as the TypeScript filesystem's URL rewriting did before the
+ * serves it at, `lazyAssetDirectory` resolves any address in the image-owned
+ * grammar to its package member under that directory, and `lazyUrlBase`
+ * resolves any other relative address against the deployment, as the TypeScript filesystem's URL rewriting did before the
  * kernel owned `/`. The image is not rewritten: the address is resolved at
  * fetch time, so a closed-asset fetcher keyed by resolved URLs still finds its
  * bytes.
@@ -398,6 +400,9 @@ export function configureRootfsOverlayFromImage(
     /** Where the deployment serves an address the image records; consulted
      *  before `lazyUrlBase`. See `lazyUrlMap` in `browser-kernel-protocol.ts`. */
     lazyUrlMap?: Readonly<Record<string, string>>;
+    /** Where the deployment serves package members; consulted after
+     *  `lazyUrlMap`. See `lazyAssetDirectory` in `browser-kernel-protocol.ts`. */
+    lazyAssetDirectory?: string;
   },
 ): () => void {
   let resourceLimits: Map<string, number> | undefined;
@@ -405,6 +410,7 @@ export function configureRootfsOverlayFromImage(
   const onLazyProgress = options.onLazyProgress;
   const lazyUrlBase = options.lazyUrlBase;
   const lazyUrlMap = options.lazyUrlMap;
+  const lazyAssetDirectory = options.lazyAssetDirectory;
   const resolveAddress = (url: string): string => {
     if (
       lazyUrlMap !== undefined
@@ -412,6 +418,10 @@ export function configureRootfsOverlayFromImage(
     ) {
       return lazyUrlMap[url]!;
     }
+    const member = lazyAssetDirectory === undefined
+      ? null
+      : resolveImageOwnedLazyAsset(lazyAssetDirectory, url);
+    if (member !== null) return member;
     return lazyUrlBase ? resolveLazyUrl(lazyUrlBase, url) : url;
   };
   const fetchUrlBytes =

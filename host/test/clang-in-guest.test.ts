@@ -32,8 +32,10 @@ if (!available && (sourceOnly || process.env.KANDELO_REQUIRE_GUEST_COMPILER === 
   throw new Error("Build the current kernel and browser-main-shell product before compiler acceptance");
 }
 
+// The shell's lazy SDK archive records its package-mirror path, which the
+// lazy-asset directory resolves to `<directory>assets/programs/wasm32/...`.
 const lazyBase = "https://kandelo.invalid/";
-const sdkUrl = `${lazyBase}kandelo-sdk.zip`;
+const sdkUrl = `${lazyBase}assets/programs/wasm32/kandelo-sdk.zip`;
 
 function arrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
@@ -60,13 +62,14 @@ describe.skipIf(!available)("base shell in-guest compiler", () => {
     const host = new NodeKernelHost({
       rootfsImage: shell!,
       rootfsLazyUrlBase: lazyBase,
+      rootfsLazyAssetDirectory: lazyBase,
       rootfsLazyAssets: [{
         url: sdkUrl,
         sha256: createHash("sha256").update(sdk!).digest("hex"),
         size: sdk!.byteLength,
         bytes: sdk!,
       }, ...utilities.map((bytes, index) => ({
-        url: `${lazyBase}binaries/programs/wasm32/${utilityNames[index]}.wasm`,
+        url: `${lazyBase}assets/programs/wasm32/${utilityNames[index]}.wasm`,
         sha256: createHash("sha256").update(bytes).digest("hex"),
         size: bytes.byteLength,
         bytes,

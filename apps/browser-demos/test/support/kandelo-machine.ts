@@ -18,12 +18,22 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, type FrameLocator, type Page } from "@playwright/test";
 import { parseGalleryRoster } from "../../../../web-libs/kandelo-session/src/gallery-roster";
+import { readLocalSupportedSet } from "../../../../scripts/local-supported-set.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
 export const GALLERY_ROSTER = parseGalleryRoster(
   readFileSync(join(here, "../../pages/kandelo/gallery-roster.json"), "utf8"),
 );
+
+/**
+ * The `[[products]]` ids packages/sets/local-supported.toml declares active.
+ * `./run.sh setup` and `./run.sh local-build` build every one of them, so a
+ * missing image for one of these is a build defect, not optional content.
+ */
+export const SUPPORTED_PRODUCT_IDS: ReadonlySet<string> = readLocalSupportedSet(
+  readFileSync(join(here, "../../../../packages/sets/local-supported.toml"), "utf8"),
+).activeProducts;
 
 /** A page under the app, honouring an external deployment base URL. */
 export const appUrl = (path: string): string => {
@@ -150,9 +160,39 @@ export async function gotoMachine(
 }
 
 /**
- * `gotoMachine`, but skip the test when this worktree cannot serve the
- * machine at all — the replacement for the old `gotoOrSkip`, which could only
- * notice a missing binary after Vite had already failed to load the page.
+ * Fail the test when Vite could not build the page. The overlay means a
+ * module did not resolve, most often a `@binaries` import of a package output
+ * that is not published. That is a build defect the spec must report, not a
+ * reason to skip it.
+ */
+export async function expectNoViteErrorOverlay(page: Page): Promise<void> {
+  const overlay = page.locator("vite-error-overlay");
+  if ((await overlay.count()) === 0) return;
+  const message = await overlay
+    .locator(".message-body")
+    .first()
+    .textContent({ timeout: 1_000 })
+    .catch(() => null);
+  throw new Error(
+    `Vite could not build the page: ${message?.trim() || "see its error overlay"}\n` +
+      "If a binary is missing, the supported build did not publish it; run ./run.sh local-build.",
+  );
+}
+
+/** Navigate to an app path and fail if Vite could not build it. */
+export async function gotoApp(page: Page, path: string): Promise<void> {
+  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(2_000);
+  await expectNoViteErrorOverlay(page);
+}
+
+/**
+ * `gotoMachine`, but check that this worktree can serve the machine first.
+ *
+ * A machine whose product packages/sets/local-supported.toml declares is
+ * something `./run.sh setup` builds, so a missing image fails the test with
+ * the reason. Only a product outside that set is optional content here, and
+ * only then is the test skipped. A Vite build error always fails.
  */
 export async function gotoMachineOrSkip(
   page: Page,
@@ -164,16 +204,21 @@ export async function gotoMachineOrSkip(
     target = await machineUrl(page, profileId, options);
   } catch (error) {
     if (error instanceof VfsProductImageMissing) {
-      test.skip(true, `${profileId}: ${error.message}`);
+      const productId = galleryProductForProfile(profileId);
+      if (SUPPORTED_PRODUCT_IDS.has(productId)) {
+        throw new Error(
+          `${profileId}: the supported build produces ${productId}, but its image ` +
+            `is missing: ${error.message}\nRun ./run.sh local-build.`,
+        );
+      }
+      test.skip(true, `${profileId}: optional product ${productId} is not built: ${error.message}`);
       return;
     }
     throw error;
   }
   await page.goto(target, { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
+  await expectNoViteErrorOverlay(page);
 }
 
 /**

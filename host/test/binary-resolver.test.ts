@@ -1153,8 +1153,8 @@ describe("binary resolver policy selection (characterization)", () => {
     });
     // This archive is absent from the verified generation. That must stay a
     // per-asset resolution failure, without invoking another policy's checker.
-    const result = resolveLazyAssetPaths(["composer.zip"]);
-    expect(result.get("composer.zip")).toHaveProperty("error");
+    const result = resolveLazyAssetPaths(["kandelo-lazy:programs/wasm32/composer.zip"]);
+    expect(result.get("kandelo-lazy:programs/wasm32/composer.zip")).toHaveProperty("error");
   });
 
   it("throws when source-only policy is on but WASM_POSIX_SOURCE_ONLY_BINARY_ROOT is unset", () => {
@@ -1198,8 +1198,9 @@ describe("image-relative lazy asset paths", () => {
     process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = repo;
     for (const [url, artifact] of [
       ["kandelo-lazy:programs/php/php.dat", "programs/wasm32/php/php.dat"],
-      ["composer.zip", "programs/wasm32/composer.zip"],
-      ["love-examples.zip", "programs/wasm32/love/share/love-examples.zip"],
+      ["kandelo-lazy:programs/wasm32/composer.zip", "programs/wasm32/composer.zip"],
+      ["kandelo-lazy:programs/love/share/love-examples.zip", "programs/wasm32/love/share/love-examples.zip"],
+      ["binaries/programs/wasm32/qux.zip", "programs/wasm32/qux.zip"],
     ]) {
       const local = writeCandidate(join(repo, "local-binaries"), artifact!, new Uint8Array([1, 2, 3]));
       expect(resolveLazyAssetPath(url!)).toBe(local);
