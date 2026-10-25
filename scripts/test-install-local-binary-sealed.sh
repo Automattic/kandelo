@@ -25,6 +25,9 @@ probe_marker="$work/rust-probed"
 mkdir -p "$fake_repo/scripts" "$source_dir" "$out_dir" "$fake_bin"
 cp "$REPO_ROOT/scripts/install-local-binary.sh" "$fake_repo/scripts/"
 cp "$REPO_ROOT/scripts/wasm-artifact-guards.sh" "$fake_repo/scripts/"
+# The artifact guards admit only the host imports libc's glue declares.
+mkdir -p "$fake_repo/libc/glue"
+cp "$REPO_ROOT/libc/glue/kandelo-host-imports.txt" "$fake_repo/libc/glue/"
 
 # A valid empty Wasm module is enough to exercise the ordinary no-fork policy.
 printf '\000asm\001\000\000\000' > "$source_dir/python.wasm"
