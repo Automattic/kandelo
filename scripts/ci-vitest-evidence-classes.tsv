@@ -376,6 +376,7 @@ host/test/shell-demo-identity.test.ts	prepared-product
 host/test/shell-lazy-archive-inputs.test.ts	prepared-product
 host/test/shell-lazy-data.test.ts	prepared-product
 host/test/shm-mapping-coherence.test.ts	prepared-product
+host/test/sigchld-host-wait.test.ts	prepared-product
 host/test/signal-accept-livelock.test.ts	source-only
 host/test/signal-kernel-wait.test.ts	prepared-product
 host/test/signal-no-restart.test.ts	prepared-product
