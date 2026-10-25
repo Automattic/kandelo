@@ -136,7 +136,7 @@ impl NativeGcPlan {
     {
         let mut budget = Budget::new(limits);
         let original = types::OriginalGcTypes::read(scan, source_types, limits, &mut budget)?;
-        let source: [u8; 32] = Sha256::digest(scan.input()).into();
+        let source: [u8; 32] = scan.source_fingerprint();
         let mut plan = Self {
             layouts: Vec::new(),
             dispatch: Vec::new(),
@@ -211,7 +211,7 @@ impl NativeGcPlan {
     }
     pub(super) fn validate_source(&self, scan: &Scan<'_>) -> Result<()> {
         ensure!(
-            self.source == <[u8; 32]>::from(Sha256::digest(scan.input())),
+            self.source == scan.source_fingerprint(),
             "GC plan belongs to another source module"
         );
         Ok(())

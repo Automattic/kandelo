@@ -188,6 +188,15 @@ fn frozen_imports_reject_wrong_original_input_and_invalid_indices() {
     assert!(imports.memory_index(999).is_err());
     assert!(imports.global_index(999).is_err());
     assert!(imports.tag_index(999).is_err());
+    let mut expected = Vec::new();
+    emit_remapped(&scan, &mut imports, &mut expected, Default::default()).unwrap();
+    // Source identity is content-based, even after a plan has checked its
+    // original scan. A separate allocation of the same bytes is still valid.
+    let copied = input.clone();
+    let copied_scan = fork_instrument::streaming::scan(&copied).unwrap();
+    let mut output = Vec::new();
+    emit_remapped(&copied_scan, &mut imports, &mut output, Default::default()).unwrap();
+    assert_eq!(output, expected);
     let other = wat::parse_str(SOURCE.replace("i32.const 7", "i32.const 8")).unwrap();
     let other_scan = fork_instrument::streaming::scan(&other).unwrap();
     let mut output = Vec::new();

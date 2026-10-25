@@ -109,10 +109,9 @@ impl<'s, 'a> Program<'s, 'a> {
         store: &'s mut FactsStore,
         limits: ProgramLimits,
     ) -> Result<Self> {
-        use sha2::{Digest, Sha256};
         if let Some(bound) = store.source_fingerprint {
             ensure!(
-                bound == <[u8; 32]>::from(Sha256::digest(scan.input())),
+                bound == scan.source_fingerprint(),
                 "sink metadata store belongs to a different original module"
             );
         }

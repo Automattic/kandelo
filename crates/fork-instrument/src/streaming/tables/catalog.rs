@@ -84,7 +84,7 @@ pub(super) fn discover(
     }
     let kinds = FrozenReferenceKinds::new(scan, runtime, limits.metadata_bytes)?;
     let types = SourceTypes::new(scan);
-    let source: [u8; 32] = Sha256::digest(scan.input()).into();
+    let source: [u8; 32] = scan.source_fingerprint();
     let mut tables = Vec::new();
     let mut descriptor = Vec::new();
     descriptor.extend_from_slice(&abi::WPK_FORK_IMPORTED_TABLES_MAGIC);

@@ -2,7 +2,6 @@
 //! Segment indices and bytes stay original; only active segment modes change.
 use super::{FrozenDeclarations, FrozenImports, ModuleDeclarationBuilder, Scan};
 use anyhow::{Context, Result, ensure};
-use sha2::{Digest, Sha256};
 use wasm_encoder::{
     ConstExpr, ExportKind, FuncType, Function, GlobalType, ValType, reencode::Reencode,
 };
@@ -71,7 +70,7 @@ impl<'a> ModuleBootstrapPlan<'a> {
             element_dropped: Vec::new(),
             data_dropped: Vec::new(),
             start: scan.start,
-            source: Sha256::digest(scan.input()).into(),
+            source: scan.source_fingerprint(),
             limits,
         };
         let mut metadata = limits.metadata_bytes;
@@ -159,7 +158,7 @@ impl<'a> ModuleBootstrapPlan<'a> {
         T::Error: std::error::Error + Send + Sync + 'static,
     {
         ensure!(
-            self.source == <[u8; 32]>::from(Sha256::digest(scan.input())),
+            self.source == scan.source_fingerprint(),
             "bootstrap plan belongs to another source module"
         );
         if let Some(imports) = imports {
@@ -259,7 +258,7 @@ impl FrozenModuleBootstrap {
     }
     pub(super) fn validate_source(&self, scan: &Scan<'_>) -> Result<()> {
         ensure!(
-            self.source == <[u8; 32]>::from(Sha256::digest(scan.input())),
+            self.source == scan.source_fingerprint(),
             "frozen bootstrap belongs to another source module"
         );
         Ok(())

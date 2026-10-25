@@ -1,7 +1,6 @@
 //! Harvest already-instantiated roots without re-evaluating allocations or
 //! retaining them in permanent helper globals. Hosts clear the buffer at once.
 use super::*;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use wasm_encoder::{FuncType, Function, HeapType, Instruction};
 use wasm_posix_shared::abi;
@@ -61,7 +60,7 @@ impl StaticRootPlan {
         T::Error: std::error::Error + Send + Sync + 'static,
     {
         ensure!(
-            self.source == <[u8; 32]>::from(Sha256::digest(scan.input())),
+            self.source == scan.source_fingerprint(),
             "static roots belong to another source module"
         );
         if let Some(imports) = imports {

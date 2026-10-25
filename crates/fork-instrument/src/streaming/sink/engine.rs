@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 use anyhow::{Result, ensure};
 
+use super::resolved_targets::ResolvedTargetCache;
 use super::{
     ALL_TAGS, CallEffect, Environment, Evaluation, Invocation, Limits, Options, PolicyPlan,
     Summaries, Summary, SummaryLimits, Tags, Value, evaluate, solve_summaries,
@@ -17,6 +18,8 @@ pub struct InterpreterLimits {
     pub specialization_depth: u32,
     /// Estimated cache payload, including both copies of FIFO keys.
     pub specialization_cache_bytes: usize,
+    /// Call selection under the frozen policy, independent of summary changes.
+    pub resolved_target_cache_bytes: usize,
 }
 
 impl Default for InterpreterLimits {
@@ -26,6 +29,7 @@ impl Default for InterpreterLimits {
             evaluation: Limits::default(),
             specialization_depth: 3,
             specialization_cache_bytes: 4 * 1024 * 1024,
+            resolved_target_cache_bytes: 2 * 1024 * 1024,
         }
     }
 }
@@ -80,9 +84,9 @@ impl Cache {
     }
 }
 
-/// Holds shared body resources, compact frame-escape flags and one bounded
-/// specialization cache. The cache is cleared per root evaluation so it never
-/// reuses a result from an earlier whole-program summary revision.
+/// Holds shared body resources, compact frame-escape flags and bounded caches.
+/// Specialized effects are cleared per root evaluation; resolved targets live
+/// as long as the frozen policy and never contain summary-dependent effects.
 pub struct SinkInterpreter<'p, 's, 'a> {
     plan: &'p PolicyPlan<'p, 's, 'a>,
     bodies: BodyProvider<'p, 'a>,
@@ -90,6 +94,7 @@ pub struct SinkInterpreter<'p, 's, 'a> {
     remaining: usize,
     escaped: Vec<bool>,
     cache: Cache,
+    resolved_targets: ResolvedTargetCache,
 }
 
 impl<'p, 's, 'a> SinkInterpreter<'p, 's, 'a> {
@@ -106,6 +111,7 @@ impl<'p, 's, 'a> SinkInterpreter<'p, 's, 'a> {
             remaining: 0,
             escaped: vec![false; program.functions.len()],
             cache: Cache::default(),
+            resolved_targets: ResolvedTargetCache::default(),
         })
     }
 
@@ -332,7 +338,26 @@ impl Environment for Calls<'_, '_, '_, '_, '_> {
         tail: bool,
     ) -> Result<CallEffect> {
         let plan = self.interpreter.plan;
-        let selected = plan.resolve(point, invocation, selector, tail)?;
+        // WHY: call selection reads only the frozen policy and original source
+        // coordinates. Reuse it across summary revisions, but recompute effects
+        // and specialization below against the current return/throw summaries.
+        let key = (point, invocation, selector, tail);
+        let cacheable = !matches!(invocation, Invocation::Direct(_))
+            && self.interpreter.limits.resolved_target_cache_bytes != 0;
+        let selected =
+            if cacheable && let Some(targets) = self.interpreter.resolved_targets.get(&key) {
+                targets
+            } else {
+                let targets = plan.resolve(point, invocation, selector, tail)?;
+                if cacheable {
+                    self.interpreter.resolved_targets.insert(
+                        key,
+                        &targets,
+                        self.interpreter.limits.resolved_target_cache_bytes,
+                    );
+                }
+                targets
+            };
         if selected.cut {
             return Ok(CallEffect {
                 returned: None,

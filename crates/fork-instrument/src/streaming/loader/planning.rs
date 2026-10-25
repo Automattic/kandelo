@@ -65,7 +65,7 @@ pub(super) fn reserve(
         });
     }
     let mut output = LegacyLoaderPlan {
-        source: Sha256::digest(scan.input()).into(),
+        source: scan.source_fingerprint(),
         first_helper,
         adapters,
         protocol: None,

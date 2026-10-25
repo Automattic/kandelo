@@ -1,7 +1,6 @@
 //! Scalar record operations; their payload addresses name process memory.
 use super::super::PlannedImport;
 use super::*;
-use sha2::{Digest, Sha256};
 use wasm_encoder::{EntityType, FuncType, MemoryType};
 
 pub struct RootStateImports {
@@ -107,7 +106,7 @@ impl RootStateImports {
         Ok(Self {
             functions,
             memory,
-            source: Sha256::digest(scan.input()).into(),
+            source: scan.source_fingerprint(),
         })
     }
     pub(in crate::streaming) fn validate_memory(&self, runtime: &NativeRuntime) -> Result<()> {

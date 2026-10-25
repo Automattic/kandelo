@@ -11,6 +11,7 @@ mod parameters;
 mod planner;
 mod policy;
 mod program;
+mod resolved_targets;
 mod summaries;
 mod target_groups;
 mod target_sets;
@@ -62,7 +63,7 @@ pub struct State {
     pub stack_pointer: Option<i64>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Invocation {
     Direct(u32),
     Indirect { table: u32, ty: u32 },

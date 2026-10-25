@@ -243,7 +243,7 @@ impl FrozenImports {
             imported,
             source,
             total,
-            fingerprint: Sha256::digest(scan.input()).into(),
+            fingerprint: scan.source_fingerprint(),
             estimated_bytes: estimate,
             adapters,
         };
@@ -319,8 +319,7 @@ impl FrozenImports {
 
     pub(super) fn validate_source(&self, scan: &Scan<'_>) -> Result<()> {
         ensure!(
-            self.source == Counts::for_scan(scan)
-                && self.fingerprint == <[u8; 32]>::from(Sha256::digest(scan.input())),
+            self.source == Counts::for_scan(scan) && self.fingerprint == scan.source_fingerprint(),
             "frozen imports belong to a different original module"
         );
         Ok(())

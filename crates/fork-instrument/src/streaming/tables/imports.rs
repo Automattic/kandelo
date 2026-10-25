@@ -1,7 +1,6 @@
 //! Host calls contain only scalar table owners, page ranges and generations.
 use super::*;
 use crate::streaming::imports::{ImmutableGlobalImport, immutable_global_import};
-use sha2::{Digest, Sha256};
 use wasm_encoder::EntityType;
 
 pub struct TableStateImports {
@@ -132,7 +131,7 @@ impl TableStateImports {
             functions,
             memory,
             generation,
-            source: Sha256::digest(scan.input()).into(),
+            source: scan.source_fingerprint(),
             shared,
         })
     }

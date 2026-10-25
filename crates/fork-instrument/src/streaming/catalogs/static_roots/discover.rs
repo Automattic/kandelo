@@ -240,7 +240,7 @@ pub(super) fn plan(scan: &Scan<'_>, limits: StaticRootLimits) -> Result<StaticRo
     discovery.tables()?;
     discovery.elements()?;
     Ok(StaticRootPlan {
-        source: Sha256::digest(scan.input()).into(),
+        source: scan.source_fingerprint(),
         roots: discovery.roots,
         limits,
     })

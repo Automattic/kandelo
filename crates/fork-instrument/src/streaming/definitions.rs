@@ -3,7 +3,6 @@
 use std::collections::BTreeSet;
 
 use anyhow::{Context, Result, ensure};
-use sha2::{Digest, Sha256};
 use wasm_encoder::{
     ConstExpr, ElementSection, Elements, Encode, ExportKind, ExportSection, GlobalSection,
     GlobalType, MemorySection, MemoryType, RefType, TableSection, TableType, TagSection, TagType,
@@ -124,7 +123,7 @@ impl<'s, 'a> ModuleDeclarationBuilder<'s, 'a> {
         Ok(Self {
             scan,
             output: FrozenModuleDeclarations {
-                source: Sha256::digest(scan.input()).into(),
+                source: scan.source_fingerprint(),
                 imports: imports.and_then(FrozenImports::layout_identity),
                 ..Default::default()
             },
@@ -268,7 +267,7 @@ impl FrozenModuleDeclarations {
         budget: usize,
     ) -> Result<()> {
         ensure!(
-            self.source == <[u8; 32]>::from(Sha256::digest(scan.input())),
+            self.source == scan.source_fingerprint(),
             "module declarations belong to a different original module"
         );
         ensure!(

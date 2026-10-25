@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail, ensure};
 use wasmparser::{Encoding, ExternalKind, Operator, Parser, Payload, TypeRef, ValidPayload};
@@ -87,6 +88,7 @@ pub struct ElementSummary {
 /// encoded; callers may visit one decoded object chunk at a time.
 pub struct Scan<'a> {
     input: &'a [u8],
+    source_fingerprint: OnceLock<[u8; 32]>,
     pub(super) body_resources: Option<wasmparser::ValidatorResources>,
     pub functions: Vec<FunctionSummary>,
     pub imported_functions: u32,
@@ -265,6 +267,7 @@ pub fn scan(input: &[u8]) -> Result<Scan<'_>> {
     }
     Ok(Scan {
         input,
+        source_fingerprint: OnceLock::new(),
         body_resources,
         functions,
         imported_functions,
@@ -283,6 +286,16 @@ pub fn scan(input: &[u8]) -> Result<Scan<'_>> {
 impl<'a> Scan<'a> {
     pub fn input(&self) -> &'a [u8] {
         self.input
+    }
+
+    pub(crate) fn source_fingerprint(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        // WHY: frozen plans repeatedly check source identity. The borrowed
+        // input is immutable for this scan's lifetime, so hash it once while
+        // preserving content-based checks across independently created scans.
+        *self
+            .source_fingerprint
+            .get_or_init(|| Sha256::digest(self.input).into())
     }
 
     pub fn custom_data<'s>(&'s self, name: &'s str) -> impl Iterator<Item = &'a [u8]> + 's {

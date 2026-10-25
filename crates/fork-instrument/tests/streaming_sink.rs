@@ -4,6 +4,58 @@ use fork_instrument::facts::storage::{FactsStore, StorageLimits};
 use fork_instrument::streaming::{self, sink::*, *};
 
 struct Env;
+
+#[test]
+fn cached_call_selection_tracks_selectors_but_reads_current_effect_summaries() {
+    let input = wat::parse_str(
+        r#"(module (type $t (func (result i32)))
+          (table 2 funcref) (elem (i32.const 0) $one $two)
+          (func $one (type $t) i32.const 1)
+          (func $two (type $t) i32.const 2)
+          (func $caller (param i32) (result i32)
+            local.get 0 call_indirect (type $t)))"#,
+    )
+    .unwrap();
+    let scan = scan(&input).unwrap();
+    let mut store = FactsStore::empty(Default::default()).unwrap();
+    let mut program = Program::build(&scan, &mut store, Default::default()).unwrap();
+    let plan = PolicyPlan::build(&mut program, Default::default(), Default::default()).unwrap();
+    let body = scan.body_provider(Default::default()).load(2).unwrap();
+    // Disabled, too small, one entry (forcing eviction), and normal allowance.
+    for allowance in [0, 1, 196, 2 * 1024 * 1024] {
+        let mut interpreter = SinkInterpreter::new(
+            &plan,
+            InterpreterLimits {
+                resolved_target_cache_bytes: allowance,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for (selector, may_return, thrown) in
+            [(0, false, 1), (0, true, 2), (1, true, 4), (0, false, 8)]
+        {
+            let mut summaries = vec![Summary::default(); 3];
+            summaries[selector] = Summary { may_return, thrown };
+            let arguments = [Value::Constant(selector as i64)];
+            let result = interpreter
+                .evaluate(
+                    &body,
+                    &summaries,
+                    Options {
+                        entry_arguments: Some(&arguments),
+                        ..Default::default()
+                    },
+                    false,
+                    usize::MAX,
+                )
+                .unwrap();
+            assert!(!result.unsupported);
+            assert_eq!(result.returned.is_some(), may_return);
+            assert_eq!(result.thrown, thrown);
+        }
+    }
+}
+
 impl Environment for Env {
     fn call(
         &mut self,

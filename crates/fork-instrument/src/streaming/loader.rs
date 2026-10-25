@@ -5,7 +5,6 @@ use super::{
     RuntimeInputs, Scan,
 };
 use anyhow::{Context, Result, ensure};
-use sha2::{Digest, Sha256};
 use wasm_encoder::{
     EntityType, FuncType, Function, RefType, TableType, ValType, reencode::Reencode,
 };
@@ -121,7 +120,7 @@ impl LegacyLoaderPlan {
         module: &mut ModuleDeclarationBuilder<'_, '_>,
     ) -> Result<NativeLegacyLoader> {
         ensure!(
-            self.source == <[u8; 32]>::from(Sha256::digest(scan.input())),
+            self.source == scan.source_fingerprint(),
             "loader plan belongs to another original module"
         );
         imports.validate_source(scan)?;

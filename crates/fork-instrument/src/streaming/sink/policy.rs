@@ -21,7 +21,7 @@ pub struct PolicyLimits {
     pub parameters: ParameterLimits,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PolicyTargets {
     pub functions: Vec<u32>,
     pub external: bool,

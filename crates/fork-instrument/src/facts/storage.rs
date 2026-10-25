@@ -94,9 +94,8 @@ impl FactsStore {
     }
     pub fn from_scan(scan: &crate::streaming::Scan<'_>, limits: StorageLimits) -> Result<Self> {
         scan.verify_facts_hash()?;
-        use sha2::{Digest, Sha256};
         let mut store = Self::read_sections(scan.custom_data(super::SECTION), limits)?;
-        store.source_fingerprint = Some(Sha256::digest(scan.input()).into());
+        store.source_fingerprint = Some(scan.source_fingerprint());
         Ok(store)
     }
 
@@ -150,6 +149,10 @@ impl FactsStore {
         db.pragma_update(None, "cache_spill", true)?;
         db.execute_batch("PRAGMA page_size=4096; PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;
             PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA threads=1; PRAGMA trusted_schema=OFF;")?;
+        // WHY: this disposable file has one private connection. Retaining its
+        // lock avoids filesystem checks at every tiny analysis query, without
+        // holding a transaction open or preventing dirty pages from spilling.
+        db.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
         let cache_kib = i64::try_from(limits.page_cache_bytes / 1024)?;
         db.pragma_update(None, "cache_size", -cache_kib)?;
         db.pragma_update(Some("temp"), "cache_size", -cache_kib)?;

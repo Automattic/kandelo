@@ -119,6 +119,12 @@ space is additional to the main database limit. SQLite's page cache is a
 hard process-memory ceiling. Row/work/disk failures are explicit, the private
 store is discarded on failed construction, and no unbounded Walrus fallback
 is introduced. Physical-footprint guards remain a separate validation layer.
+The private SQLite connection retains its exclusive file lock between
+queries, avoiding repeated filesystem lock checks. Transactions still end
+normally and dirty pages still spill. Frozen plans compare content hashes
+against the original scan; its immutable source fingerprint is computed once
+and reused, without retaining decoded function bodies.
+
 The target-list cache holds only full-signature or unknown-only memberships;
 caller eligibility is checked before reuse, and typed refinements remain
 caller-specific. It stores no return/exception summaries or function IR.
@@ -140,6 +146,14 @@ regions, 4,096 frame slots and 1,048,576 memberships in distinct retained
 call-target sets per body. Equal sorted sets share storage across call sites;
 each site's union remains independent when later interpretation adds targets.
 Superseded sets are released when no site uses them.
+The sink interpreter also memoizes indirect/reference target selection under
+its frozen policy with a 2 MiB estimated payload allowance. Keys include the
+original call point, invocation, selector and tail-call status. Eviction or an
+oversized group returns to database queries; a zero allowance disables the
+cache. Return/throw effects are always read from current summaries, and
+specialized effects still expire at each root evaluation. No function IR is
+cached.
+
 The state limit reserves a conservative bound for structured-control scratch
 and recorded states before evaluation; it is not a physical-memory ceiling.
 It is deliberately a generous sanity check: the estimate reserves the full
