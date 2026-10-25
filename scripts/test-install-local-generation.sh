@@ -415,13 +415,6 @@ for packer_support in \
     browser-memory64-example-fixtures.txt; do
     cp "$REPO_ROOT/scripts/$packer_support" "$composed_repo/scripts/"
 done
-: >"$composed_repo/host/wasm/rootfs.vfs.zst"
-for required in \
-    gencat.wasm \
-    pthread_channel_reuse_test.wasm \
-    wait_lifecycle_test.wasm; do
-    : >"$composed_repo/examples/$required"
-done
 memory64_sources="$(
     BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
     BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
@@ -431,18 +424,20 @@ memory64_sources="$(
 )" || fail "could not read the browser memory64 fixture contract"
 while IFS= read -r source; do
     cp "$REPO_ROOT/$source" "$composed_repo/$source"
-    : >"$composed_repo/${source%.c}.wasm64.wasm"
 done <<<"$memory64_sources"
-for required in \
-    pipe-throughput.wasm \
-    file-throughput.wasm \
-    syscall-latency.wasm \
-    fork-bench.wasm \
-    clone-bench.wasm \
-    spawn-bench.wasm \
-    hello.wasm; do
-    : >"$composed_repo/benchmarks/wasm/$required"
-done
+# Placeholders for every artifact the packer requires that this test has not
+# installed for real, taken from the packer's own list so a newly required
+# artifact cannot be missed here.
+required_artifacts="$(
+    bash "$composed_repo/scripts/pack-ci-test-workspace.sh" \
+        --list-required-artifacts
+)" || fail "could not list the packer's required artifacts"
+[ -n "$required_artifacts" ] || fail "the packer listed no required artifacts"
+while IFS= read -r required; do
+    [ -e "$composed_repo/$required" ] && continue
+    mkdir -p "$(dirname "$composed_repo/$required")"
+    : >"$composed_repo/$required"
+done <<<"$required_artifacts"
 cp "$real_xtask" "$composed_repo/target/$HOST_TARGET/release/xtask"
 
 composed_archive="$work/composed-workspace.tar.zst"

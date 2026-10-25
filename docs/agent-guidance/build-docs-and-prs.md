@@ -153,6 +153,42 @@ every package artifact the suites load.
 A stale `local-binaries/kernel.wasm` silently runs OLD kernel code in
 Vitest/conformance, so rebuild with `./run.sh setup` after any kernel Rust edit.
 
+### Built files stay out of Git
+
+Never commit a built file: a compiled Wasm module, a native object or library,
+a package archive, or an image the build produces from tracked sources. Commit
+the source and the script that builds it, and build the file at build or test
+time. Test data is different. Input files, expected outputs, and format test
+vectors may be tracked.
+
+A committed build output is a second, unchecked copy of the truth. It keeps
+passing after the source, the SDK, or the kernel ABI that should have changed
+it has moved on, so a test can pass against bytes nothing in the tree can still
+produce.
+
+When a test needs a built binary:
+
+- Build it from tracked source at test time. Vitest's
+  `host/test/global-setup.ts` compiles C and WAT fixtures,
+  `scripts/build-programs.sh` builds `local-binaries/programs/` and
+  `local-binaries/test-fixtures/`, and the image builders produce VFS images.
+  Add new fixtures to one of these or have the test build its own.
+- If a test only needs a file to exist, write a placeholder into a temporary
+  directory during the test. Take the list of required files from the code
+  that requires them rather than a copy in the test. For example,
+  `tests/scripts/ci-run-test-suite-groups.test.sh` creates its placeholders
+  from `scripts/pack-ci-test-workspace.sh --list-required-artifacts`.
+- Never `git add -f` a build output past `.gitignore`. `*.wasm` and `*.vfs`
+  are ignored repository-wide; if a new build output path is not ignored, add
+  an ignore rule in the same change.
+
+Before committing, check that no build output is staged:
+
+```bash
+git diff --cached --stat
+git diff --cached --name-only | grep -E '\.(wasm|o|a|so|dylib)$'
+```
+
 ## Documentation And PRs
 
 PR titles and commit subjects must begin with a concise purpose prefix in the
