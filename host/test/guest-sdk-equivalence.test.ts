@@ -274,13 +274,14 @@ describe.skipIf(!available)("SDK equivalence: inside Kandelo and on the build ma
       const host = new NodeKernelHost({
         rootfsImage: shell!,
         rootfsLazyUrlBase: lazyBase,
+        rootfsLazyAssetDirectory: lazyBase,
         rootfsLazyAssets: [{
-          url: `${lazyBase}kandelo-sdk.zip`,
+          url: `${lazyBase}assets/programs/wasm32/kandelo-sdk.zip`,
           sha256: sha256(sdk!),
           size: sdk!.byteLength,
           bytes: sdk!,
         }, ...utilities.map((bytes, index) => ({
-          url: `${lazyBase}binaries/programs/wasm32/${utilityNames[index]}.wasm`,
+          url: `${lazyBase}assets/programs/wasm32/${utilityNames[index]}.wasm`,
           sha256: sha256(bytes),
           size: bytes.byteLength,
           bytes,
