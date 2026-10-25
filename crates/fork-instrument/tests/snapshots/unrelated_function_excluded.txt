@@ -1,0 +1,25 @@
+=== closed 6fb6abf5df4c ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+    },
+    control_reachable: {
+        0,
+        1,
+    },
+    tail_sites: {},
+}
+
+=== external 6fb6abf5df4c ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+    },
+    control_reachable: {
+        0,
+        1,
+    },
+    tail_sites: {},
+}

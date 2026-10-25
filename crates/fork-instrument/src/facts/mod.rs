@@ -1,26 +1,26 @@
-//! Precise fork sinks from compiler facts.
+//! Compiler facts bound to original Wasm coordinates and stored in private relations.
 //!
-//! The SDK's KandeloCallTypes clang plugin writes, for every object it
-//! compiles, a text description of the object's functions, call sites,
-//! function-pointer conversions and untyped-pointer flow into a Wasm custom
-//! section named [`SECTION`]. wasm-ld concatenates those sections in input
-//! order, so a linked module carries one section made of per-object chunks.
-//!
-//! [`call_facts`] binds the module's functions to their chunks by order
-//! ([`bind`]), applies the type rules (see `targets.rs`) and returns the
-//! indirect-call targets, cleanup pairs and `jmp_buf` identity that
-//! [`crate::sink::plan_with_facts`] uses in place of signature matching.
-//! Functions without facts keep signature matching. The research that
-//! derived these rules is `docs/plans/2026-10-02-fork-sinks.md`.
+//! The SDK Clang plugin writes per-object function, call, conversion and pointer
+//! flow records. wasm-ld concatenates those chunks. The linked code hash binds
+//! them to the exact source instructions; indexed file-backed relations resolve
+//! targets without retaining the expanded module or fact graph.
+
 use anyhow::{Context, Result};
-use walrus::Module;
 
 use crate::sink::CallFacts;
 
 pub mod bind;
+mod calls;
 mod codec;
+pub mod definitions;
+mod flow;
 mod side;
+pub mod storage;
+pub mod stream;
+mod target_cache;
 mod targets;
+
+pub(crate) use targets::visit_retained_operators;
 
 /// Name of the custom section that carries the facts.
 pub const SECTION: &str = "kandelo.calltypes";
@@ -33,15 +33,6 @@ pub const SECTION: &str = "kandelo.calltypes";
 /// changes the code, so the facts would describe the wrong functions; the
 /// hash makes that visible.
 pub const CODE_HASH_SECTION: &str = "kandelo.calltypes.code-sha256";
-
-/// The facts a module carried, removed from it.
-#[derive(Debug, Clone)]
-pub struct TakenFacts {
-    /// Concatenated payloads of every [`SECTION`].
-    pub section: Vec<u8>,
-    /// Payload of the [`CODE_HASH_SECTION`], if present.
-    pub code_hash: Option<Vec<u8>>,
-}
 
 /// SHA-256 of the code section payload of `bytes` (empty input when the
 /// module has no code section).
@@ -57,19 +48,6 @@ pub fn code_sha256(bytes: &[u8]) -> Result<[u8; 32]> {
     Ok(Sha256::digest([]).into())
 }
 
-/// Check that `taken` describes the code in `input` (the bytes the facts
-/// were removed from). The error says why the facts must be ignored.
-pub fn verify_code_hash(taken: &TakenFacts, input: &[u8]) -> Result<()> {
-    let Some(recorded) = &taken.code_hash else {
-        anyhow::bail!("facts ignored: the module has no {CODE_HASH_SECTION} section binding them to its code");
-    };
-    anyhow::ensure!(
-        recorded.as_slice() == code_sha256(input)?.as_slice(),
-        "facts ignored: the code changed after linking ({CODE_HASH_SECTION} does not match the code section)"
-    );
-    Ok(())
-}
-
 /// Rule switches.
 #[derive(Clone, Copy, Debug)]
 pub struct FactsOptions {
@@ -80,7 +58,9 @@ pub struct FactsOptions {
 
 impl Default for FactsOptions {
     fn default() -> Self {
-        Self { effective_types: true }
+        Self {
+            effective_types: true,
+        }
     }
 }
 
@@ -101,20 +81,6 @@ pub struct FactsReport {
     /// Bound functions whose indirect call sites disagree with the facts
     /// (analysed without facts).
     pub signature_mismatch: usize,
-}
-
-/// Remove every [`SECTION`] and [`CODE_HASH_SECTION`] from `module`. Returns
-/// the facts, or `None` when the module carries none.
-pub fn take_section(module: &mut Module) -> Option<TakenFacts> {
-    let mut section: Option<Vec<u8>> = None;
-    while let Some(raw) = module.customs.remove_raw(SECTION) {
-        section.get_or_insert_with(Vec::new).extend_from_slice(&raw.data);
-    }
-    let mut code_hash = None;
-    while let Some(raw) = module.customs.remove_raw(CODE_HASH_SECTION) {
-        code_hash = Some(raw.data);
-    }
-    section.map(|section| TakenFacts { section, code_hash })
 }
 
 /// `bytes` without any [`SECTION`] or [`CODE_HASH_SECTION`] custom section,
@@ -162,119 +128,17 @@ fn read_leb(b: &[u8]) -> Option<usize> {
     None
 }
 
-/// Bind `module`'s defined functions to the chunks in `section`.
-///
-/// Returns, per defined function in index order, its function index and
-/// `Some((chunk, definition index within the chunk))` when bound.
-pub fn binding(module: &Module, section: &[u8]) -> Result<Vec<(u32, Vec<(usize, usize)>)>> {
-    let mut sigs = side::Interner::default();
-    let parsed = parse(section, &mut sigs, true)?;
-    let defined = targets::defined_functions(module);
-    let bound = bind_defined(&defined, &parsed);
-    Ok(defined.iter().zip(bound).map(|((f, _, _), b)| (*f, b)).collect())
-}
-
-fn parse(section: &[u8], sigs: &mut side::Interner, effective_types: bool) -> Result<side::Side> {
-    let mut parsed = side::Side { effective_types, ..Default::default() };
-    let resolved = section.starts_with(crate::preopt::RESOLVED_PREFIX.as_bytes());
-    codec::visit_chunks(section, |i, chunk| {
-        if resolved {
-            anyhow::ensure!(i == 0, "resolved facts cannot be concatenated with object facts");
-            parsed.parse_resolved_chunk(chunk, sigs)?;
-        } else {
-            // The initial prototype used a format-5 comment to change cleanup
-            // semantics. Reject that experimental encoding; old readers could
-            // ignore the comment and apply an unsafe empty-handler override.
-            anyhow::ensure!(!chunk.lines().any(|line| line == "#kandelo-preinline-targets-v1"), "unversioned pre-inlining facts must be rebuilt");
-            parsed.parse_chunk(chunk, sigs).with_context(|| format!("facts chunk {i}"))?;
-        }
-        Ok(())
-    })?;
-    Ok(parsed)
-}
-
-fn bind_defined(defined: &[(u32, String, &[walrus::ValType])], parsed: &side::Side) -> Vec<Vec<(usize, usize)>> {
-    let module_items: Vec<bind::Item> = defined
-        .iter()
-        .map(|(_, name, params)| bind::Item {
-            name,
-            nparams: params.len(),
-            i64_params: params.iter().filter(|t| **t == walrus::ValType::I64).count(),
-            first_is_i32: params.first() == Some(&walrus::ValType::I32),
-            last_is_i32: params.last() == Some(&walrus::ValType::I32),
-        })
-        .collect();
-    let chunks: Vec<Vec<bind::Item>> = parsed
-        .chunks
-        .iter()
-        .map(|defs| defs.iter().map(|(name, f)| bind::Item { name, nparams: f.nparams, ..Default::default() }).collect())
-        .collect();
-    bind::bind(&module_items, &chunks)
-}
-
-/// Compute the facts-derived inputs of the sink analysis for `module` from
-/// the payload of its [`SECTION`]. Fails, so the caller can fall back to
-/// the analysis without facts, on anything this version cannot read.
-pub fn call_facts(module: &Module, section: &[u8], opts: FactsOptions) -> Result<(CallFacts, FactsReport)> {
-    call_facts_with_cleanup(module, section, opts, true)
-}
-
-/// Resolve targets before moving calls between functions. Lexical cleanup
-/// overrides cannot be transported as ordinary indirect-call restrictions:
-/// include every registered cleanup handler instead of clearing that dispatch.
-pub(crate) fn preopt_call_facts(module: &Module, section: &[u8], opts: FactsOptions) -> Result<(CallFacts, FactsReport)> {
-    call_facts_with_cleanup(module, section, opts, false)
-}
-
-fn call_facts_with_cleanup(module: &Module, section: &[u8], opts: FactsOptions, cleanup_lexical: bool) -> Result<(CallFacts, FactsReport)> {
-    let preinlined = section.starts_with(crate::preopt::RESOLVED_PREFIX.as_bytes());
-    let mut sigs = side::Interner::default();
-    let parsed = parse(section, &mut sigs, opts.effective_types)?;
-    let w = targets::load_wasm(module, &mut sigs);
-    let defined = targets::defined_functions(module);
-    let bound = bind_defined(&defined, &parsed);
-    let mut cands: Vec<Vec<&side::IrFn>> = vec![vec![]; w.names.len()];
-    for ((f, _, _), b) in defined.iter().zip(&bound) {
-        cands[*f as usize] = b.iter().map(|&(c, d)| &parsed.chunks[c][d].1).collect();
-    }
-    let rules = targets::Rules { cleanup_lexical: cleanup_lexical && !preinlined, casts: true, slots: true, sigaction_old: true };
-    let graph = targets::build_graph(&w, &parsed, &cands, &rules);
-    let mut seen = std::collections::HashSet::new();
-    let jmp: Vec<String> = parsed.jmp_facts.iter().filter(|l| seen.insert(l.as_str())).cloned().collect();
-    let cleanup = if preinlined { vec![] } else { graph.cleanup_pairs() };
-    let facts = CallFacts { linked_libc: !preinlined, itargets: graph.export_targets(&sigs), cleanup, jmp, assume_dlopen_contract: false };
-    let report = FactsReport {
-        chunks: parsed.chunks.len(),
-        definitions: parsed.chunks.iter().map(|c| c.len()).sum(),
-        defined: defined.len(),
-        bound: bound.iter().filter(|b| !b.is_empty()).count(),
-        bound_to_union: bound.iter().filter(|b| b.len() > 1).count(),
-        signature_mismatch: defined.iter().filter(|(f, _, _)| graph.view[*f as usize] == targets::View::Mismatch).count(),
-    };
+/// Resolve compiler call-target relations using native serial summaries and
+/// private file-backed relations. No expanded module instruction or facts graph is built.
+/// This compatibility projection has a resident-size limit; the native sink
+/// planner can use [`storage::FactsStore::targets_for`] without collecting
+/// the module's complete target matrix.
+pub fn call_facts_from_scan(
+    scan: &crate::streaming::Scan<'_>,
+    opts: FactsOptions,
+) -> Result<(CallFacts, FactsReport)> {
+    let store = storage::FactsStore::from_scan(scan, storage::StorageLimits::default())?;
+    let report = store.resolve_calls(scan, opts)?;
+    let facts = store.collect_call_facts()?;
     Ok((facts, report))
-}
-
-#[cfg(test)]
-mod resolved_format_tests {
-    use super::*;
-
-    #[test]
-    fn source_facts_reader_rejects_the_resolved_format() {
-        let mut side = side::Side::default();
-        let mut sigs = side::Interner::default();
-        let error = side.parse_chunk(crate::preopt::RESOLVED_PREFIX, &mut sigs).unwrap_err();
-        assert!(error.to_string().contains("expected 5"));
-    }
-
-    #[test]
-    fn mixed_and_unversioned_resolved_facts_are_rejected() {
-        let source = "#kandelo-calltypes\t5\nM\tordinary.c\n";
-        for section in [
-            format!("{}{source}", crate::preopt::RESOLVED_PREFIX),
-            format!("{source}{}", crate::preopt::RESOLVED_PREFIX),
-            "#kandelo-calltypes\t5\n#kandelo-preinline-targets-v1\n".into(),
-        ] {
-            assert!(parse(section.as_bytes(), &mut side::Interner::default(), true).is_err());
-        }
-    }
 }

@@ -1,0 +1,37 @@
+=== closed 201e99bfe7d7 ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+        3,
+        5,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+        3,
+        5,
+    },
+    tail_sites: {},
+}
+
+=== external 201e99bfe7d7 ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+        3,
+        5,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+        3,
+        5,
+    },
+    tail_sites: {},
+}

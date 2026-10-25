@@ -2,6 +2,10 @@
 use fork_instrument::{Options, PlanSource, SideModules, instrument, sink_report};
 
 fn check(wat: &str, mode: SideModules, required: &[&str]) {
+    check_plan(wat, mode, required, Some(PlanSource::Builtin));
+}
+
+fn check_plan(wat: &str, mode: SideModules, required: &[&str], expected: Option<PlanSource>) {
     let input = wat::parse_str(wat).unwrap();
     let opts = Options {
         facts: false,
@@ -9,12 +13,11 @@ fn check(wat: &str, mode: SideModules, required: &[&str]) {
         ..Options::default()
     };
     let report = sink_report(&input, &opts).unwrap();
-    assert_eq!(
-        report.source,
-        PlanSource::Builtin,
-        "{:?}",
-        report.facts_error
-    );
+    if let Some(expected) = expected {
+        assert_eq!(report.source, expected, "{:?}", report.facts_error);
+    } else {
+        assert_ne!(report.source, PlanSource::Facts);
+    }
     for name in required {
         assert!(
             report.instrumented.iter().any(|f| f == name),
@@ -55,7 +58,7 @@ fn one_local_target_does_not_exclude_a_returning_external_target() {
     ] {
         // Specializing only `never` with constant argument 7 would incorrectly
         // classify the entire indirect call as noreturn, losing the next fork.
-        check(
+        check_plan(
             r#"(module
           (type $t (func (param i32) (result i32)))
           (import "kernel" "kernel_fork" (func $fork (param i32) (result i32)))
@@ -68,6 +71,7 @@ fn one_local_target_does_not_exclude_a_returning_external_target() {
           (func (export "_start") (drop (call $main))))"#,
             mode,
             &["main"],
+            None, // Unsupported loop interpretation may retain the full closure.
         );
     }
 }
@@ -106,7 +110,7 @@ fn an_inlined_cancellation_writer_does_not_remove_the_exit_path() {
 }
 
 #[test]
-fn imported_tables_use_the_complete_closure() {
+fn imported_tables_keep_the_external_return_and_later_fork() {
     // The importer can supply a returning function even though no local
     // function has this signature. Its call must not hide the later fork.
     let input = wat::parse_str(
@@ -126,7 +130,7 @@ fn imported_tables_use_the_complete_closure() {
         ..Options::default()
     };
     let report = sink_report(&input, &opts).unwrap();
-    assert_eq!(report.source, PlanSource::Closure);
+    assert_eq!(report.source, PlanSource::Builtin);
     assert!(report.instrumented.iter().any(|f| f == "main"));
     let output = instrument(&input, &opts).unwrap();
     wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())

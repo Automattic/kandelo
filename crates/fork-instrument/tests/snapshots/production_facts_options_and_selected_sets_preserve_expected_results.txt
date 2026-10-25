@@ -1,0 +1,65 @@
+=== sinks-false-facts-true-effective-true 08f1338c335f ===
+(
+    [
+        "_start",
+        "forker",
+        "main",
+    ],
+    [],
+    Closure,
+    None,
+    false,
+)
+
+=== sinks-true-facts-false-effective-true 08f1338c335f ===
+(
+    [
+        "_start",
+        "forker",
+        "main",
+    ],
+    [],
+    Builtin,
+    None,
+    false,
+)
+
+=== sinks-true-facts-true-effective-false 08f1338c335f ===
+(
+    [
+        "forker",
+    ],
+    [],
+    Facts,
+    Some(
+        FactsReport {
+            chunks: 1,
+            definitions: 4,
+            defined: 4,
+            bound: 4,
+            bound_to_union: 0,
+            signature_mismatch: 0,
+        },
+    ),
+    false,
+)
+
+=== sinks-true-facts-true-effective-true 08f1338c335f ===
+(
+    [
+        "forker",
+    ],
+    [],
+    Facts,
+    Some(
+        FactsReport {
+            chunks: 1,
+            definitions: 4,
+            defined: 4,
+            bound: 4,
+            bound_to_union: 0,
+            signature_mismatch: 0,
+        },
+    ),
+    false,
+)

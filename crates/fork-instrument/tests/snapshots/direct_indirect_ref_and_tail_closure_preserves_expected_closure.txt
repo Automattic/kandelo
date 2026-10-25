@@ -1,0 +1,45 @@
+=== closed efcd36fba9d2 ===
+(
+    {
+        0,
+        3,
+        4,
+        6,
+    },
+    {
+        0,
+        2,
+        3,
+        4,
+        6,
+    },
+    {
+        ProgramPoint {
+            function: 2,
+            offset: 83,
+        },
+    },
+)
+
+=== external efcd36fba9d2 ===
+(
+    {
+        0,
+        3,
+        4,
+        6,
+    },
+    {
+        0,
+        2,
+        3,
+        4,
+        6,
+    },
+    {
+        ProgramPoint {
+            function: 2,
+            offset: 83,
+        },
+    },
+)

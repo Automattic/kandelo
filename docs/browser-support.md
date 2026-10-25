@@ -125,11 +125,27 @@ Service Worker ──MessagePort──> Kernel Worker       │
 - **Signal-wait engine matrix**: the real BrowserKernel worker path runs the
   wasm32 ppoll/pselect interruption matrix and wait4 unknown-option rejection
   on Chromium, Firefox, and WebKit. Chromium and Firefox also run its wasm64
-  counterpart. The current Playwright WebKit engine rejects the Memory64
-  module at `WebAssembly.validate`, so WebKit's truthful boundary is wasm32
-  rather than a skipped or simulated wasm64 success. Browser injection waits
+  counterpart. That recorded signal-wait scope is not a current WebKit
+  Memory64 capability limit: Playwright WebKit 26.6 validates Memory64 and
+  passes the native memory64 fork-process cases described below. WebKit's
+  memory64 signal-wait matrix remains a separate coverage gap. Browser injection waits
   on guest-published atomic gates in the real process memory, so acceptance
   does not depend on a fixed event-loop delay.
+- **Native fork process matrix**: the native instrumenter runs the
+  same SDK/libc fixtures on memory32 and memory64 through real BrowserKernel
+  workers in Chromium 153, Firefox 155 and Playwright WebKit 26.6. The matrix
+  checks direct/indirect and loop forks, stack carryovers, recursive children,
+  signals, pthread entry and allocation-failure recovery. At ABI 53 integration
+  commit `d2aaebe3a4`, all 57 checks passed:
+  52 positive guest scenarios, three Memory64 probes and two explicit WebKit
+  stack-boundary checks, with no skips. WebKit exhausts its native stack on
+  this fixture's 4,096-call shape. The test requires the exact stack diagnostic
+  and checks root allocation recovery first. A separate 256-call shape retains sixteen live
+  128-bit values per activation, forcing another 64 KiB continuation allocation
+  while fitting the engine stack. It checks later ENOMEM, parent usability,
+  absence of phantom children, page reuse, recovery fork and carry-value
+  preservation on every engine and pointer width. This is Playwright coverage,
+  not a claim of native Safari testing or Codex execution.
 - **Exec reads from filesystem**: Like a real OS, `exec()` reads binaries from the kernel's filesystem. Programs are baked into the VFS image at build time, or are lazy files the image names and the host fetches on first exec. Symlinks are used for multicall binaries (e.g., coreutils).
 - **dinit for service supervision**: Multi-process demos (nginx, redis,
   mariadb, nginx-php, wordpress, lamp, mariadb-test) bake `/sbin/dinit` and

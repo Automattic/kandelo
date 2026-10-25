@@ -375,15 +375,6 @@
         macosSdk = pkgs.lib.optionalString pkgs.stdenv.isDarwin
           "${pkgs.apple-sdk_15}";
       in {
-        # Experimental, explicitly selected facts-aware wasm-opt. Keep the
-        # default toolchain unchanged while the prototype is measured. Strict
-        # mode rejects unsupported transformations; broader modes invalidate
-        # their facts instead of treating correctness metadata as a hint.
-        packages.binaryen-fork-facts =
-          assert pkgs.binaryen.version == "126";
-          pkgs.binaryen.overrideAttrs (old: {
-            patches = (old.patches or [ ]) ++ [ ./sdk/binaryen/fork-target-annotations.patch ];
-          });
         devShells.default = pkgs.mkShell {
           packages = devShellPackages;
 

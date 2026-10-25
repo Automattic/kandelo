@@ -1,0 +1,55 @@
+=== closed e5199bddbd97 ===
+ReachingPlan {
+    activations: {
+        0,
+        2,
+        3,
+        5,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+    },
+    tail_sites: {
+        ProgramPoint {
+            function: 1,
+            offset: 171,
+        },
+        ProgramPoint {
+            function: 4,
+            offset: 188,
+        },
+    },
+}
+
+=== external e5199bddbd97 ===
+ReachingPlan {
+    activations: {
+        0,
+        2,
+        3,
+        5,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+    },
+    tail_sites: {
+        ProgramPoint {
+            function: 1,
+            offset: 171,
+        },
+        ProgramPoint {
+            function: 4,
+            offset: 188,
+        },
+    },
+}

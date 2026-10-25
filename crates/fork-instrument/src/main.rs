@@ -8,10 +8,9 @@
 //! ```
 //!
 //! After instrumenting, the CLI runs Binaryen's `wasm-opt` over the result
-//! (`$WASM_OPT`, else `wasm-opt` on PATH), at `-Os` by default. SDK links
-//! importing `kernel.kernel_fork` must reach instrumentation without a
-//! post-link code rewrite: their compiler facts bind to the linked code.
-//! This final pass optimizes both the input code and the added machinery.
+//! (`$WASM_OPT`, else `wasm-opt` on PATH), at Os by default. Linked compiler
+//! facts are consumed before any rewrite. Explicit pre-optimization profiles
+//! discard source facts and analyze the optimized Wasm instead.
 //!
 //! Exits non-zero with a human-readable error on any failure (parse,
 //! validation, or instrumentation). Errors include the input file path
@@ -19,11 +18,12 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::fs;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use fork_instrument::artifact_io::MappedArtifact;
+#[path = "cli/options.rs"]
+mod options;
+#[path = "cli/transform.rs"]
+mod transform;
+use options::Cli;
 
 use fork_instrument::{
     Options, analyze,
@@ -31,166 +31,46 @@ use fork_instrument::{
         artifact_identity, fork_capability_section_hex, fork_contract_inventory,
         linked_frame_descriptor_section_hex, reserved_env_imports,
     },
-    instrument, sink_report,
+    sink_report,
 };
-
-#[derive(Debug, Parser)]
-#[command(
-    name = "wasm-fork-instrument",
-    about = "Instrument a wasm module with save/restore machinery for POSIX fork()",
-    long_about = None,
-)]
-struct Cli {
-    /// Input wasm file to instrument.
-    input: PathBuf,
-
-    /// Output path for the instrumented wasm file. Required unless an
-    /// analysis or contract-inspection mode is set.
-    #[arg(short, long)]
-    output: Option<PathBuf>,
-
-    /// The fully-qualified name of the import that triggers unwind.
-    /// Format: `module.field`. Defaults to `kernel.kernel_fork`.
-    /// `env.fork` selects complete dynamically linked side-module boundary
-    /// coverage, including downstream fork in another side module.
-    #[arg(long, default_value = "kernel.kernel_fork")]
-    entry: String,
-
-    /// Instrument the full fork closure instead of stopping the unwind at
-    /// fork boundaries (sinks). For comparison and diagnosis.
-    #[arg(long)]
-    no_sinks: bool,
-
-    /// Ignore the compiler facts (`kandelo.calltypes` section) and use the
-    /// sink analysis without them. For diagnosis. The section is removed
-    /// from the output either way.
-    #[arg(long)]
-    no_facts: bool,
-
-    /// With compiler facts: do not apply C's effective-type rule anywhere.
-    /// By default it applies in each unit compiled with strict aliasing (the
-    /// C default) and nowhere else.
-    #[arg(long)]
-    no_effective_types: bool,
-
-    /// For a program that can dlopen: `traced-entries` (default) instruments
-    /// the main program as if no side module returns through a fork child
-    /// into its frames and records that contract so the host refuses side
-    /// modules that could; `assume-all-entries-fork-returning` instruments for
-    /// every side-module entry and loads any library.
-    #[arg(long, default_value = "traced-entries", value_parser = ["traced-entries", "assume-all-entries-fork-returning"])]
-    side_modules: String,
-
-    /// Diagnosis: print which analysis decided the instrumented set
-    /// (`source\t<closure|builtin|facts>`), then the set and its
-    /// boundaries as `A\t<name>` and `B\t<name>` rows. Emits no output
-    /// file.
-    #[arg(long, hide = true, conflicts_with = "output")]
-    sink_report: bool,
-
-    /// wasm-opt level to run over an instrumented output, or `none`.
-    ///
-    /// Runs only when instrumentation changed the module; a module outside
-    /// any fork transaction is written back byte-for-byte. The name section
-    /// is dropped unless `--keep-names` is given. `none` exists for
-    /// inspecting the instrumenter's raw output, not for shipping.
-    #[arg(long, default_value = "Os", value_parser = ["O1", "O2", "O3", "Os", "Oz", "none"])]
-    post_optimize: String,
-
-    /// Debugging: keep the name section through the post-optimize pass
-    /// (`wasm-opt -g`), so traps and profiles show function names.
-    #[arg(long)]
-    keep_names: bool,
-
-    /// Optimize before instrumentation. O2/Oz use ordinary wasm-opt, discard
-    /// compiler facts and analyze the optimized Wasm. transport/inlining modes
-    /// are experimental and require Kandelo's patched Binaryen.
-    #[arg(long, default_value = "none", value_parser = ["none", "transport", "inlining", "inlining-cleanup", "O2", "Oz"])]
-    pre_optimize: String,
-
-    /// Analyze the module and print the discovered fork-path function
-    /// set as JSON to stdout. Skips instrumentation and output emission.
-    /// Useful for validating call-graph discovery against
-    /// hand-maintained onlylists.
-    #[arg(long)]
-    discover_only: bool,
-
-    /// Print the fork-artifact structural inventory as one TSV row.
-    /// This mode performs no instrumentation and emits no output file.
-    #[arg(
-        long,
-        conflicts_with_all = [
-            "discover_only",
-            "artifact_identity",
-            "reserved_env_imports",
-            "output"
-        ]
-    )]
-    contract_inventory: bool,
-
-    /// Print relocatable, memory, and strict ABI-export identity as one TSV row.
-    /// This mode performs no instrumentation and emits no output file.
-    #[arg(
-        long,
-        conflicts_with_all = [
-            "discover_only",
-            "contract_inventory",
-            "fork_capability_hex",
-            "linked_frame_descriptor_hex",
-            "reserved_env_imports",
-            "output"
-        ]
-    )]
-    artifact_identity: bool,
-
-    /// Print the unique fork-capability custom section as lowercase hex.
-    #[arg(
-        long,
-        conflicts_with_all = [
-            "discover_only",
-            "contract_inventory",
-            "artifact_identity",
-            "linked_frame_descriptor_hex",
-            "reserved_env_imports",
-            "output"
-        ]
-    )]
-    fork_capability_hex: bool,
-
-    /// Print the unique linked-frame descriptor custom section as lowercase hex.
-    #[arg(
-        long,
-        conflicts_with_all = [
-            "discover_only",
-            "contract_inventory",
-            "artifact_identity",
-            "fork_capability_hex",
-            "reserved_env_imports",
-            "output"
-        ]
-    )]
-    linked_frame_descriptor_hex: bool,
-
-    /// Print reserved env imports as `<kind>\t<module>.<name>` rows.
-    #[arg(
-        long,
-        conflicts_with_all = [
-            "discover_only",
-            "contract_inventory",
-            "artifact_identity",
-            "fork_capability_hex",
-            "linked_frame_descriptor_hex",
-            "output"
-        ]
-    )]
-    reserved_env_imports: bool,
-}
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let input =
-        fs::read(&cli.input).with_context(|| format!("reading input: {}", cli.input.display()))?;
+    let (snapshot, permissions) = MappedArtifact::read(&cli.input, cli.max_input_bytes)?;
+    let input = snapshot.bytes();
+
+    if cli.streaming_scan {
+        let scan = fork_instrument::streaming::scan(&input)
+            .with_context(|| format!("scanning original module: {}", cli.input.display()))?;
+        println!("input-bytes\t{}", input.len());
+        println!("functions\t{}", scan.functions.len());
+        println!("operators\t{}", scan.operators);
+        println!(
+            "max-body-bytes\t{}",
+            scan.functions
+                .iter()
+                .filter_map(|f| f.body.as_ref())
+                .map(|b| b.range.len())
+                .max()
+                .unwrap_or(0)
+        );
+        if !cli.no_facts
+            && scan
+                .custom_data(fork_instrument::facts::SECTION)
+                .next()
+                .is_some()
+        {
+            match scan.bind_fact_definitions() {
+                Ok(bindings) => println!(
+                    "facts-definitions-bound\t{}",
+                    bindings.iter().filter(|(_, b)| !b.is_empty()).count()
+                ),
+                Err(error) => println!("facts-definitions-error\t{error:#}"),
+            }
+        }
+        return Ok(());
+    }
 
     if cli.contract_inventory {
         let inventory = fork_contract_inventory(&input)
@@ -228,7 +108,7 @@ fn main() -> Result<()> {
     let opts = Options {
         entry_import: cli.entry,
         sinks: !cli.no_sinks,
-        facts: !cli.no_facts && !matches!(cli.pre_optimize.as_str(), "O2" | "Oz"),
+        facts: !cli.no_facts && cli.pre_optimize == "none",
         effective_types: !cli.no_effective_types,
         side_modules: if cli.side_modules == "assume-all-entries-fork-returning" {
             fork_instrument::SideModules::AssumeAllEntriesForkReturning
@@ -239,14 +119,19 @@ fn main() -> Result<()> {
 
     let preoptimized;
     let input = if cli.pre_optimize != "none" {
-        preoptimized = pre_optimize(&input, &opts, &cli.pre_optimize)?;
-        &preoptimized
+        eprintln!(
+            "wasm-fork-instrument: pre-optimization {}; discarding compiler facts and analyzing final Wasm",
+            cli.pre_optimize
+        );
+        preoptimized =
+            fork_instrument::preopt::run(&snapshot, &cli.pre_optimize, cli.max_output_bytes)?;
+        preoptimized.bytes()
     } else {
-        &input
+        input
     };
 
     if cli.sink_report {
-        let report = sink_report(&input, &opts)
+        let report = sink_report(input, &opts)
             .with_context(|| format!("analyzing {}", cli.input.display()))?;
         println!("source\t{}", report.source.as_str());
         if let Some(f) = &report.facts {
@@ -269,7 +154,7 @@ fn main() -> Result<()> {
 
     if cli.discover_only {
         let analysis =
-            analyze(&input, &opts).with_context(|| format!("analyzing {}", cli.input.display()))?;
+            analyze(input, &opts).with_context(|| format!("analyzing {}", cli.input.display()))?;
         print_analysis_json(&analysis);
         return Ok(());
     }
@@ -279,175 +164,18 @@ fn main() -> Result<()> {
             "--output is required unless an analysis or contract-inspection mode is set"
         )
     })?;
-    // Capture this before writing: `--output` is allowed to name the input
-    // file, and output creation/truncation must not become the source of truth
-    // for the executable mode we are preserving.
-    let input_mode = input_mode(&cli.input)?;
-
-    let output = instrument(&input, &opts)
-        .with_context(|| format!("instrumenting {}", cli.input.display()))?;
-
-    fs::write(output_path, &output)
-        .with_context(|| format!("writing output: {}", output_path.display()))?;
-    // A module outside any fork transaction comes back as the input without
-    // its compiler facts; it was not transformed, so it is not optimized.
-    let untransformed = output == *input
-        || fork_instrument::facts::strip_section(&input)?
-            .is_some_and(|stripped| stripped == output);
-    if cli.post_optimize != "none" && !untransformed {
-        post_optimize(output_path, &cli.post_optimize, cli.keep_names)?;
-    }
-    preserve_input_mode(input_mode, output_path)?;
-
-    Ok(())
-}
-
-/// Temporary inputs are private and removed on every exit path. The optimizer
-/// runs once per invocation, including reports, so guards inspect the same
-/// pipeline and policy as actual instrumentation.
-fn pre_optimize(input: &[u8], opts: &Options, mode: &str) -> Result<Vec<u8>> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    struct Scratch(PathBuf);
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-    let path = std::env::temp_dir().join(format!(
-        "kandelo-fork-preinline-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
-    }
-    builder
-        .create(&path)
-        .context("creating private pre-inlining directory")?;
-    let scratch = Scratch(path);
-    let source = scratch.0.join("input.wasm");
-    let output = scratch.0.join("output.wasm");
-    let wasm_only = matches!(mode, "O2" | "Oz");
-    fs::write(
-        &source,
-        if wasm_only {
-            fork_instrument::preopt::prepare_wasm(input)?
-        } else {
-            fork_instrument::preopt::prepare(input, opts)?
+    transform::run(
+        input,
+        &opts,
+        output_path,
+        permissions,
+        transform::Settings {
+            optimize: &cli.post_optimize,
+            keep_names: cli.keep_names,
+            output_bytes: cli.max_output_bytes,
         },
-    )?;
-    let wasm_opt = std::env::var_os("WASM_OPT").unwrap_or_else(|| "wasm-opt".into());
-    let mut command = Command::new(wasm_opt);
-    command.arg(&source);
-    if wasm_only {
-        eprintln!(
-            "wasm-fork-instrument: pre-optimization {mode}; discarding compiler facts and analyzing final Wasm"
-        );
-    } else if mode == "inlining" {
-        command.arg("--kandelo-fork-facts");
-    } else {
-        command.arg("--kandelo-fork-facts-pipeline");
-    }
-    match mode {
-        "transport" => {}
-        "inlining" | "inlining-cleanup" => {
-            command.args(["--inlining", "--optimize-level=2", "--shrink-level=0"]);
-            if mode == "inlining-cleanup" {
-                command.args(["--dce", "--vacuum"]);
-            }
-        }
-        "O2" => {
-            command.arg("-O2");
-        }
-        "Oz" => {
-            command.arg("-Oz");
-        }
-        _ => anyhow::bail!("unsupported pre-optimization mode {mode}"),
-    }
-    let status = command
-        .args(["--partial-inlining-ifs=0", "--no-stack-ir", "-g"])
-        .arg("-o")
-        .arg(&output)
-        .status()
-        .context("running annotation-aware wasm-opt")?;
-    anyhow::ensure!(
-        status.success(),
-        "facts-aware pre-optimization failed: {status}"
-    );
-    let bytes = fs::read(output)?;
-    if wasm_only {
-        Ok(bytes)
-    } else {
-        fork_instrument::preopt::finish(&bytes)
-    }
-}
-
-/// Optimize the instrumented module in place.
-///
-/// WHY here and not in each build script: this is the one step every fork
-/// artifact passes through, and only it knows whether instrumentation changed
-/// the module. The instrumenter's metadata is position-independent (ABI 46),
-/// so wasm-opt may remove unused imports and renumber functions, globals and
-/// tables. A missing wasm-opt is an error, not a skipped step: the artifact
-/// would differ from what every other build of the same sources produces.
-///
-/// WHY `-g` only on request: the instrumenter does not carry DWARF through,
-/// so `-g` could only keep the name section. wasm-ld writes one into every
-/// link, the facts need it to bind (`facts/bind.rs`), and the runtime does
-/// not read it. Keeping it cost Quickshell 10 MB.
-fn post_optimize(path: &Path, level: &str, keep_names: bool) -> Result<()> {
-    let wasm_opt = std::env::var_os("WASM_OPT").unwrap_or_else(|| "wasm-opt".into());
-    let mut command = Command::new(&wasm_opt);
-    command.arg(path).arg(format!("-{level}"));
-    if keep_names {
-        command.arg("-g");
-    }
-    command.arg("-o").arg(path);
-    let status = command.status().with_context(|| {
-        format!(
-            "running {} after fork instrumentation (Binaryen is required; \
-             run inside scripts/dev-shell.sh or set WASM_OPT)",
-            Path::new(&wasm_opt).display()
-        )
-    })?;
-    anyhow::ensure!(
-        status.success(),
-        "{} -{level} failed on instrumented output {} ({status})",
-        Path::new(&wasm_opt).display(),
-        path.display()
-    );
-    Ok(())
-}
-
-#[cfg(unix)]
-fn input_mode(input_path: &Path) -> Result<u32> {
-    let mode = fs::metadata(input_path)
-        .with_context(|| format!("stat input for permissions: {}", input_path.display()))?
-        .permissions()
-        .mode();
-    Ok(mode)
-}
-
-#[cfg(not(unix))]
-fn input_mode(_input_path: &Path) -> Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn preserve_input_mode(input_mode: u32, output_path: &Path) -> Result<()> {
-    let permissions = fs::Permissions::from_mode(input_mode);
-    fs::set_permissions(output_path, permissions)
-        .with_context(|| format!("setting output permissions: {}", output_path.display()))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn preserve_input_mode(_input_mode: (), _output_path: &Path) -> Result<()> {
-    Ok(())
+    )
+    .with_context(|| format!("instrumenting {}", cli.input.display()))
 }
 
 fn print_analysis_json(analysis: &fork_instrument::Analysis) {

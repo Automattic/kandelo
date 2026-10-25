@@ -1,4 +1,4 @@
-/** Execute the SDK fork/jump fixture with and without pre-inlining on both hosts.
+/** Execute the SDK fork/jump fixture with and without pre-optimization on both hosts.
  * Usage: node --experimental-wasm-exnref --import tsx scripts/test-fork-preopt-runtime.ts normal.wasm inlined.wasm
  * Build the two inputs from crates/fork-instrument/tests/fixtures/preopt/fork-jump.c.
  */
@@ -13,7 +13,7 @@ import { runCentralizedProgram } from '../host/test/centralized-test-helper.ts';
 import { resolveBinary, tryResolveBinary } from '../host/src/binary-resolver.ts';
 
 const programs = process.argv.slice(2).map(p => resolve(p));
-assert.equal(programs.length, 2, 'provide the normal and pre-inlined fixture Wasm paths');
+assert.equal(programs.length, 2, 'provide the normal and pre-optimized fixture Wasm paths');
 const images: Uint8Array[] = [];
 for (const program of programs) {
   const fs = KandeloImageFs.create();
@@ -34,7 +34,7 @@ for (let index = 0; index < programs.length; index++) {
     programPath: programs[index], argv: ['/bench/program'], rootfsImage: images[index],
     env: ['HOME=/home', 'TMPDIR=/tmp'], captureForkCount: true, timeout: 30_000,
   });
-  const row = { host: 'Node', variant: index === 0 ? 'normal' : 'pre-inlined',
+  const row = { host: 'Node', variant: index === 0 ? 'normal' : 'pre-optimized',
     exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr,
     forkCounts: result.forkCountSamples?.map(String) ?? [] };
   check(row);
@@ -81,7 +81,7 @@ const server = await createServer({
         const path = req.url?.split('?')[0];
         if (path === '/') {
           res.setHeader('Content-Type', 'text/html');
-          res.end('<!doctype html><title>Fork pre-inlining runtime check</title><script type="module" src="' + entry + '"></script>');
+          res.end('<!doctype html><title>Fork pre-optimization runtime check</title><script type="module" src="' + entry + '"></script>');
         } else if (path === '/kernel.wasm') {
           res.setHeader('Content-Type', 'application/wasm'); res.end(readFileSync(kernel));
         } else if (path === '/input-0.vfs' || path === '/input-1.vfs') {
@@ -107,7 +107,7 @@ try {
         new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('browser fork/jump fixture timed out')), 30_000); }),
       ]).finally(() => clearTimeout(timer!));
       check(result);
-      console.log(JSON.stringify({ host: 'Chromium', variant: index === 0 ? 'normal' : 'pre-inlined', ...result }));
+      console.log(JSON.stringify({ host: 'Chromium', variant: index === 0 ? 'normal' : 'pre-optimized', ...result }));
     }
   } finally { await browser.close(); }
 } finally { await server.close(); }

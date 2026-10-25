@@ -1,0 +1,29 @@
+=== closed 5ad842934f17 ===
+ReachingPlan {
+    activations: {
+        0,
+        2,
+        3,
+    },
+    control_reachable: {
+        0,
+        2,
+        3,
+    },
+    tail_sites: {},
+}
+
+=== external 5ad842934f17 ===
+ReachingPlan {
+    activations: {
+        0,
+        2,
+        3,
+    },
+    control_reachable: {
+        0,
+        2,
+        3,
+    },
+    tail_sites: {},
+}

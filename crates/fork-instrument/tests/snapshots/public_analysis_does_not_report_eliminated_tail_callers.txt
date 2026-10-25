@@ -1,0 +1,33 @@
+=== closed d29cff8f698b ===
+ReachingPlan {
+    activations: {
+        0,
+    },
+    control_reachable: {
+        0,
+        1,
+    },
+    tail_sites: {
+        ProgramPoint {
+            function: 1,
+            offset: 65,
+        },
+    },
+}
+
+=== external d29cff8f698b ===
+ReachingPlan {
+    activations: {
+        0,
+    },
+    control_reachable: {
+        0,
+        1,
+    },
+    tail_sites: {
+        ProgramPoint {
+            function: 1,
+            offset: 65,
+        },
+    },
+}

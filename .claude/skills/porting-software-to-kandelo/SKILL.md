@@ -114,10 +114,9 @@ pre-instrumentation rewrites such as Ruby GC root spilling need an explicit
 explanation. The fork guide records the measured, deferred Bash/CPython/PHP
 migrations; new recipes use the facts-preserving order. Remove names only afterwards, retaining runtime custom sections.
 
-The experimental `--pre-optimize inlining` prototype is instrumenter-owned and
-requires a separately built annotation-aware Binaryen. It does not permit
-recipe-owned `wasm-opt` rewrites. See `sdk/binaryen/README.md` for its bounded
-pass contract and validation commands.
+The shipping native instrumenter supports stock pre-optimization only. The
+annotation-transport prototype is retained in branch history; its previous
+Walrus bridge is not part of the memory-bounded pipeline.
 
 ## Feedback
 

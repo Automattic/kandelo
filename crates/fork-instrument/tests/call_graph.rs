@@ -6,43 +6,99 @@
 
 use fork_instrument::{
     Options, analyze,
-    call_graph::{self, TailCallKind},
+    streaming::{self, CallTarget, Dispatch, ReachingPlan, Scan},
 };
 use std::collections::HashSet;
+#[path = "support/snapshot.rs"]
+mod snapshot;
 
-fn discover(wat_src: &str) -> HashSet<String> {
-    let bytes = wat::parse_str(wat_src).expect("wat parse");
-    let analysis = analyze(&bytes, &Options::default()).expect("analyze");
-    analysis.fork_path.iter().map(|e| e.name.clone()).collect()
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum TailCallKind {
+    Direct,
+    Indirect,
+    Ref,
 }
 
+fn closure(scan: &Scan<'_>, external: bool) -> ReachingPlan {
+    let seeds = scan
+        .functions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, function)| {
+            function
+                .import
+                .as_ref()
+                .filter(|(m, n)| m == "kernel" && n == "kernel_fork")
+                .map(|_| index as u32)
+        });
+    scan.reaching_from_seeds(seeds, external).unwrap()
+}
+fn name(scan: &Scan<'_>, index: u32) -> String {
+    scan.functions[index as usize]
+        .name
+        .clone()
+        .unwrap_or_else(|| format!("func#{index}"))
+}
+fn discover(wat_src: &str) -> HashSet<String> {
+    let bytes = wat::parse_str(wat_src).unwrap();
+    assert_streaming_closure(&bytes);
+    analyze(&bytes, &Options::default())
+        .unwrap()
+        .fork_path
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect()
+}
 fn discover_semantic_activations(wat_src: &str) -> HashSet<String> {
-    let bytes = wat::parse_str(wat_src).expect("wat parse");
-    let module = walrus::Module::from_buffer(&bytes).expect("walrus parse");
-    let seed =
-        call_graph::find_import_func(&module, "kernel.kernel_fork").expect("fork seed import");
-    call_graph::analyze_reaching_closure(&module, seed)
+    let bytes = wat::parse_str(wat_src).unwrap();
+    assert_streaming_closure(&bytes);
+    let scan = streaming::scan(&bytes).unwrap();
+    closure(&scan, false)
         .activations
         .into_iter()
-        .map(|id| call_graph::func_display_name(&module, id))
+        .map(|index| name(&scan, index))
         .collect()
 }
-
 fn discover_tail_landings(wat_src: &str) -> HashSet<(String, TailCallKind)> {
-    let bytes = wat::parse_str(wat_src).expect("wat parse");
-    let module = walrus::Module::from_buffer(&bytes).expect("walrus parse");
-    let seed =
-        call_graph::find_import_func(&module, "kernel.kernel_fork").expect("fork seed import");
-    call_graph::analyze_reaching_closure(&module, seed)
-        .tail_call_landings
-        .into_iter()
-        .map(|site| {
-            (
-                call_graph::func_display_name(&module, site.caller),
-                site.kind,
-            )
+    let bytes = wat::parse_str(wat_src).unwrap();
+    assert_streaming_closure(&bytes);
+    let scan = streaming::scan(&bytes).unwrap();
+    let reaching = closure(&scan, false);
+    scan.functions
+        .iter()
+        .enumerate()
+        .flat_map(|(index, function)| {
+            function
+                .body
+                .iter()
+                .flat_map(|body| body.tails.iter())
+                .filter_map(|site| {
+                    reaching.tail_sites.contains(&site.point).then(|| {
+                        (
+                            name(&scan, index as u32),
+                            match site.target {
+                                CallTarget::Direct(_) => TailCallKind::Direct,
+                                CallTarget::Dispatch(Dispatch::Table { .. }) => {
+                                    TailCallKind::Indirect
+                                }
+                                CallTarget::Dispatch(Dispatch::Ref { .. }) => TailCallKind::Ref,
+                            },
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
         })
         .collect()
+}
+fn assert_streaming_closure(bytes: &[u8]) {
+    let scanned = streaming::scan(bytes).unwrap();
+    for external in [false, true] {
+        snapshot::check(
+            bytes,
+            if external { "external" } else { "closed" },
+            closure(&scanned, external),
+        );
+    }
 }
 
 #[test]
@@ -159,7 +215,7 @@ fn missing_entry_import_is_an_error() {
 }
 
 #[test]
-fn lowered_legacy_loader_is_a_boundary_without_a_direct_fork_import() {
+fn legacy_loader_is_a_boundary_without_a_direct_fork_import() {
     let wat = r#"
         (module
           (import "env" "__wasm_dlopen"
@@ -176,9 +232,10 @@ fn lowered_legacy_loader_is_a_boundary_without_a_direct_fork_import() {
         found.contains("open_side"),
         "the caller remains live while the generated driver invokes a side initializer: {found:?}",
     );
-    assert!(
-        found.contains("__wpk_fork_legacy_dlopen_driver"),
-        "the staged driver's external call_indirect is the suspension boundary: {found:?}",
+    assert_eq!(
+        found,
+        HashSet::from(["legacy".to_owned(), "open_side".to_owned()]),
+        "native discovery reports original identities before generating loader helpers",
     );
 }
 
@@ -968,19 +1025,13 @@ fn semantic_control_closure_retains_tail_nodes_without_materializing_frames() {
             return_call_ref $ft))
     "#;
     let bytes = wat::parse_str(wat).expect("wat parse");
-    let module = walrus::Module::from_buffer(&bytes).expect("walrus parse");
-    let seed =
-        call_graph::find_import_func(&module, "kernel.kernel_fork").expect("fork seed import");
-    let after = call_graph::analyze_reaching_closure(&module, seed);
-    assert!(
-        after.tail_call_landings.len() == 3,
-        "all fork-reaching tail sites remain semantic tail edges: {:?}",
-        after.tail_call_landings
-    );
+    let scan = streaming::scan(&bytes).unwrap();
+    let after = closure(&scan, false);
+    assert_eq!(after.tail_sites.len(), 3);
     let activation_names: HashSet<_> = after
         .activations
         .iter()
-        .map(|&id| call_graph::func_display_name(&module, id))
+        .map(|&index| name(&scan, index))
         .collect();
     for name in ["tail_direct", "tail_indirect", "tail_ref"] {
         assert!(
@@ -988,15 +1039,12 @@ fn semantic_control_closure_retains_tail_nodes_without_materializing_frames() {
             "tail traversal must not materialize {name} as a real activation: \
              {activation_names:?}"
         );
-        let function = module
-            .funcs
+        let function = scan
+            .functions
             .iter()
-            .find(|function| function.name.as_deref() == Some(name))
-            .expect("named tail function");
-        assert!(
-            after.control_reachable.contains(&function.id()),
-            "{name} must remain in the semantic call-target closure"
-        );
+            .position(|function| function.name.as_deref() == Some(name))
+            .unwrap() as u32;
+        assert!(after.control_reachable.contains(&function));
     }
     assert!(!activation_names.contains("ordinary_tail"));
 }

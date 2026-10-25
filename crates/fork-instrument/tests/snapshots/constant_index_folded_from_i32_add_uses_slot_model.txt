@@ -1,0 +1,27 @@
+=== closed 10ec103971aa ===
+ReachingPlan {
+    activations: {
+        0,
+        3,
+    },
+    control_reachable: {
+        0,
+        3,
+    },
+    tail_sites: {},
+}
+
+=== external 10ec103971aa ===
+ReachingPlan {
+    activations: {
+        0,
+        3,
+        4,
+    },
+    control_reachable: {
+        0,
+        3,
+        4,
+    },
+    tail_sites: {},
+}
