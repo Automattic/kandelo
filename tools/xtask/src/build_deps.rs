@@ -57,7 +57,7 @@ use sha2::{Digest, Sha256};
 
 use crate::host_tool_probe::{self, ProbeFailure};
 use crate::pkg_manifest::{
-    BuildToml, DepRef, DepsManifest, ForkInstrumentationPolicy, GitBuildInput,
+    BuildToml, DepRef, DepsManifest, ForkInstrumentationPolicy, ForkPreOptimize, ForkPostOptimize, GitBuildInput,
     HostTool, MAX_CACHE_PROVENANCE_BYTES, ManifestKind, SourceProvider, TargetArch,
     cache_provenance_path, expected_cache_provenance_bytes, file_paths_conflict,
     remove_cache_provenance, validate_cache_provenance, write_cache_provenance,
@@ -7122,6 +7122,16 @@ fn compute_sha_with_identity_context_for_platform(
                 }
             }
             h.update(b"program_outputs:\n");
+            if target.fork_pre_optimize != ForkPreOptimize::None {
+                h.update(b"fork_pre_optimize=");
+                h.update(target.fork_pre_optimize.as_str().as_bytes());
+                h.update(b"\n");
+            }
+            if target.fork_post_optimize != ForkPostOptimize::Os {
+                h.update(b"fork_post_optimize=");
+                h.update(target.fork_post_optimize.as_str().as_bytes());
+                h.update(b"\n");
+            }
             for out in &target.program_outputs {
                 h.update(out.name.as_bytes());
                 h.update(b"|");
@@ -14157,6 +14167,10 @@ fn build_into_cache(
         cmd.env("WASM_POSIX_DEP_OUT_DIR", &tmp);
         cmd.env("WASM_POSIX_DEP_WORK_DIR", &work.recipe_work);
         cmd.env("WASM_POSIX_DEP_NAME", &target.name);
+        // Always overwrite ambient state, including the default, so nested
+        // recipes cannot inherit a consuming program's optimizer policy.
+        cmd.env("WASM_POSIX_DEP_FORK_PRE_OPTIMIZE", target.fork_pre_optimize.as_str());
+        cmd.env("WASM_POSIX_DEP_FORK_POST_OPTIMIZE", target.fork_post_optimize.as_str());
         cmd.env("WASM_POSIX_DEP_VERSION", &target.version);
         cmd.env("WASM_POSIX_DEP_REVISION", target.revision.to_string());
         cmd.env("WASM_POSIX_DEP_TARGET_ARCH", arch.as_str());
@@ -17699,6 +17713,8 @@ fn cmd_output_metadata(m: &DepsManifest, wasm_artifact: &str) -> Result<(), Stri
         "source_artifact": output.wasm,
         "mirror_path": m.output_dest_rel_for(output),
         "fork_instrumentation": output.fork_instrumentation.as_str(),
+        "fork_pre_optimize": m.fork_pre_optimize.as_str(),
+        "fork_post_optimize": m.fork_post_optimize.as_str(),
     });
     println!(
         "{}",
@@ -25115,6 +25131,41 @@ spdx = "TestLicense"
             sha_before, sha_after,
             "changing a program output's fork instrumentation policy must invalidate the cache key"
         );
+    }
+
+    #[test]
+    fn pre_optimization_policy_rekeys_only_nondefault_programs() {
+        let root = tempdir("sha-preopt-policy");
+        write_program_manifest(&root, "tool", "1.0", "[[outputs]]\nname = \"tool\"\nwasm = \"tool.wasm\"\n");
+        let reg = Registry { roots: vec![root.clone()] };
+        let path = root.join("tool/package.toml");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let reference = sha_of(&reg, "tool");
+        let mut seen = BTreeSet::new();
+        for mode in ["none", "O2", "Oz"] {
+            std::fs::write(&path, format!("fork_pre_optimize = {mode:?}\n{original}")).unwrap();
+            let sha = sha_of(&reg, "tool");
+            if mode == "none" { assert_eq!(sha, reference); } else { assert_ne!(sha, reference); }
+            assert!(seen.insert(sha));
+        }
+    }
+
+    #[test]
+    fn post_optimization_policy_rekeys_only_nondefault_programs() {
+        let root = tempdir("sha-postopt-policy");
+        write_program_manifest(&root, "tool", "1.0", "[[outputs]]\nname = \"tool\"\nwasm = \"tool.wasm\"\n");
+        let reg = Registry { roots: vec![root.clone()] };
+        let path = root.join("tool/package.toml");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let reference = sha_of(&reg, "tool");
+        for mode in ["Os", "Oz"] {
+            std::fs::write(&path, format!("fork_post_optimize = {mode:?}\n{original}")).unwrap();
+            let sha = sha_of(&reg, "tool");
+            if mode == "Os" { assert_eq!(sha, reference); } else { assert_ne!(sha, reference); }
+        }
+        let post = sha_of(&reg, "tool");
+        std::fs::write(&path, format!("fork_pre_optimize = \"Oz\"\n{original}")).unwrap();
+        assert_ne!(sha_of(&reg, "tool"), post);
     }
 
     #[test]

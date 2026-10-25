@@ -20,18 +20,18 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::fs;
-use std::process::Command;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use fork_instrument::{
-    Options, analyze, sink_report,
+    Options, analyze,
     contract_inventory::{
         artifact_identity, fork_capability_section_hex, fork_contract_inventory,
         linked_frame_descriptor_section_hex, reserved_env_imports,
     },
-    instrument,
+    instrument, sink_report,
 };
 
 #[derive(Debug, Parser)]
@@ -102,10 +102,10 @@ struct Cli {
     #[arg(long)]
     keep_names: bool,
 
-    /// Experimental: inline before instrumentation while preserving resolved
-    /// compiler facts. Requires Kandelo's patched Binaryen. Only the audited
-    /// inlining pass is allowed; the ordinary final optimization still runs.
-    #[arg(long, default_value = "none", value_parser = ["none", "inlining"])]
+    /// Optimize before instrumentation. O2/Oz use ordinary wasm-opt, discard
+    /// compiler facts and analyze the optimized Wasm. transport/inlining modes
+    /// are experimental and require Kandelo's patched Binaryen.
+    #[arg(long, default_value = "none", value_parser = ["none", "transport", "inlining", "inlining-cleanup", "O2", "Oz"])]
     pre_optimize: String,
 
     /// Analyze the module and print the discovered fork-path function
@@ -228,7 +228,7 @@ fn main() -> Result<()> {
     let opts = Options {
         entry_import: cli.entry,
         sinks: !cli.no_sinks,
-        facts: !cli.no_facts,
+        facts: !cli.no_facts && !matches!(cli.pre_optimize.as_str(), "O2" | "Oz"),
         effective_types: !cli.no_effective_types,
         side_modules: if cli.side_modules == "assume-all-entries-fork-returning" {
             fork_instrument::SideModules::AssumeAllEntriesForkReturning
@@ -238,8 +238,8 @@ fn main() -> Result<()> {
     };
 
     let preoptimized;
-    let input = if cli.pre_optimize == "inlining" {
-        preoptimized = pre_optimize(&input, &opts)?;
+    let input = if cli.pre_optimize != "none" {
+        preoptimized = pre_optimize(&input, &opts, &cli.pre_optimize)?;
         &preoptimized
     } else {
         &input
@@ -292,7 +292,8 @@ fn main() -> Result<()> {
     // A module outside any fork transaction comes back as the input without
     // its compiler facts; it was not transformed, so it is not optimized.
     let untransformed = output == *input
-        || fork_instrument::facts::strip_section(&input)?.is_some_and(|stripped| stripped == output);
+        || fork_instrument::facts::strip_section(&input)?
+            .is_some_and(|stripped| stripped == output);
     if cli.post_optimize != "none" && !untransformed {
         post_optimize(output_path, &cli.post_optimize, cli.keep_names)?;
     }
@@ -304,33 +305,85 @@ fn main() -> Result<()> {
 /// Temporary inputs are private and removed on every exit path. The optimizer
 /// runs once per invocation, including reports, so guards inspect the same
 /// pipeline and policy as actual instrumentation.
-fn pre_optimize(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
+fn pre_optimize(input: &[u8], opts: &Options, mode: &str) -> Result<Vec<u8>> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     struct Scratch(PathBuf);
     impl Drop for Scratch {
-        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
-    let path = std::env::temp_dir().join(format!("kandelo-fork-preinline-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let path = std::env::temp_dir().join(format!(
+        "kandelo-fork-preinline-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
         builder.mode(0o700);
     }
-    builder.create(&path).context("creating private pre-inlining directory")?;
+    builder
+        .create(&path)
+        .context("creating private pre-inlining directory")?;
     let scratch = Scratch(path);
     let source = scratch.0.join("input.wasm");
     let output = scratch.0.join("output.wasm");
-    fs::write(&source, fork_instrument::preopt::prepare(input, opts)?)?;
+    let wasm_only = matches!(mode, "O2" | "Oz");
+    fs::write(
+        &source,
+        if wasm_only {
+            fork_instrument::preopt::prepare_wasm(input)?
+        } else {
+            fork_instrument::preopt::prepare(input, opts)?
+        },
+    )?;
     let wasm_opt = std::env::var_os("WASM_OPT").unwrap_or_else(|| "wasm-opt".into());
-    let status = Command::new(wasm_opt)
-        .arg(&source)
-        .args(["--kandelo-fork-facts", "--inlining", "--optimize-level=2", "--shrink-level=0", "--partial-inlining-ifs=0", "--no-stack-ir", "-g"])
-        .arg("-o").arg(&output)
-        .status().context("running annotation-aware wasm-opt")?;
-    anyhow::ensure!(status.success(), "facts-preserving pre-inlining failed: {status}");
-    fork_instrument::preopt::finish(&fs::read(output)?)
+    let mut command = Command::new(wasm_opt);
+    command.arg(&source);
+    if wasm_only {
+        eprintln!(
+            "wasm-fork-instrument: pre-optimization {mode}; discarding compiler facts and analyzing final Wasm"
+        );
+    } else if mode == "inlining" {
+        command.arg("--kandelo-fork-facts");
+    } else {
+        command.arg("--kandelo-fork-facts-pipeline");
+    }
+    match mode {
+        "transport" => {}
+        "inlining" | "inlining-cleanup" => {
+            command.args(["--inlining", "--optimize-level=2", "--shrink-level=0"]);
+            if mode == "inlining-cleanup" {
+                command.args(["--dce", "--vacuum"]);
+            }
+        }
+        "O2" => {
+            command.arg("-O2");
+        }
+        "Oz" => {
+            command.arg("-Oz");
+        }
+        _ => anyhow::bail!("unsupported pre-optimization mode {mode}"),
+    }
+    let status = command
+        .args(["--partial-inlining-ifs=0", "--no-stack-ir", "-g"])
+        .arg("-o")
+        .arg(&output)
+        .status()
+        .context("running annotation-aware wasm-opt")?;
+    anyhow::ensure!(
+        status.success(),
+        "facts-aware pre-optimization failed: {status}"
+    );
+    let bytes = fs::read(output)?;
+    if wasm_only {
+        Ok(bytes)
+    } else {
+        fork_instrument::preopt::finish(&bytes)
+    }
 }
 
 /// Optimize the instrumented module in place.

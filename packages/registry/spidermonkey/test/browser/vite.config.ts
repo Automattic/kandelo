@@ -23,7 +23,8 @@ function resolveKernelArtifactsAlias(): Plugin {
         : pathPart === "@kandelo-image-module32-wasm" ? "kandelo_image_module32.wasm"
         : null;
       if (artifact) {
-        const file = tryResolveBinary(artifact);
+        const file = tryResolveBinary(artifact)
+          ?? (pathPart === ROOTFS ? tryResolveBinary("programs/rootfs.vfs.zst") : null);
         if (file) return file + query;
         this.error(`${artifact} is not materialized; run the normal setup/build path.`);
       }
@@ -64,6 +65,8 @@ function serveJsWasm(): Plugin {
 
 export default {
   root: __dirname,
+  // Shared boot helpers resolve host artifacts through the application alias.
+  resolve: { alias: { "@host": path.join(repoRoot, "host/src") } },
   plugins: [resolveKernelArtifactsAlias(), serveJsWasm()],
   server: {
     headers: {

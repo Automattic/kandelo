@@ -242,7 +242,7 @@ fn call_facts_with_cleanup(module: &Module, section: &[u8], opts: FactsOptions, 
     let mut seen = std::collections::HashSet::new();
     let jmp: Vec<String> = parsed.jmp_facts.iter().filter(|l| seen.insert(l.as_str())).cloned().collect();
     let cleanup = if preinlined { vec![] } else { graph.cleanup_pairs() };
-    let facts = CallFacts { itargets: graph.export_targets(&sigs), cleanup, jmp, assume_dlopen_contract: false };
+    let facts = CallFacts { linked_libc: !preinlined, itargets: graph.export_targets(&sigs), cleanup, jmp, assume_dlopen_contract: false };
     let report = FactsReport {
         chunks: parsed.chunks.len(),
         definitions: parsed.chunks.iter().map(|c| c.len()).sum(),

@@ -408,7 +408,12 @@ impl<'a> Prog<'a> {
         }
         let ntab = p.m.tables.iter().count();
         let mut slots: HashMap<i64, u32> = HashMap::new();
-        let mut slots_ok = true;
+        // Imported/exported tables and the dynamic linker can change entries
+        // outside this module's instructions. Static initializers alone do
+        // not prove that an index remains bound to the same function.
+        let table_exposed = p.m.tables.iter().any(|table| table.import.is_some())
+            || p.m.exports.iter().any(|export| matches!(export.item, ExportItem::Table(_)));
+        let mut slots_ok = !p.dyn_link && !table_exposed;
         let mut add = |p: &mut Prog, t: usize, f: u32| {
             p.members.entry((t, p.skey[f as usize])).or_default().push(f);
             p.escapes[f as usize] = true;
@@ -477,6 +482,17 @@ impl<'a> Prog<'a> {
         }
         if let Some(s) = p.m.start {
             p.escapes[s.index()] = true;
+        }
+        if table_exposed {
+            // External writers can insert an escaped in-module function even
+            // when it did not occur in this table's static element segment.
+            for f in 0..n as u32 {
+                if p.escapes[f as usize] {
+                    for table in 0..ntab {
+                        add(&mut p, table, f);
+                    }
+                }
+            }
         }
         for v in p.members.values_mut() {
             v.sort();
@@ -874,7 +890,7 @@ impl<'a, 'b> Walk<'a, 'b> {
         if st.live {
             if let Some(r) = self.rec_sites.as_mut() {
                 let e = r.entry(self.cur).or_default();
-                if !(targets.len() == 1 && self.cx.p.cut.contains(&(self.f, targets[0]))) {
+                if !(!external && !side && targets.len() == 1 && self.cx.p.cut.contains(&(self.f, targets[0]))) {
                     e.extend(targets.iter().copied().filter(|&t| t != u32::MAX));
                     if external {
                         e.insert(u32::MAX - 1);
@@ -883,7 +899,7 @@ impl<'a, 'b> Walk<'a, 'b> {
             }
         }
         self.esc(&args);
-        if targets.len() == 1 && self.cx.p.cut.contains(&(self.f, targets[0])) {
+        if !external && !side && targets.len() == 1 && self.cx.p.cut.contains(&(self.f, targets[0])) {
             st.live = false;
             for _ in 0..nres {
                 st.stk.push(V::Top);
@@ -892,7 +908,7 @@ impl<'a, 'b> Walk<'a, 'b> {
         }
         // Constant arguments to one small local callee: evaluate it for
         // exactly these arguments (memoized, depth-limited).
-        if st.live && !tail && self.cx.allow_spec && self.cx.depth < 3 && targets.len() == 1 && targets[0] != u32::MAX {
+        if st.live && !external && !side && !tail && self.cx.allow_spec && self.cx.depth < 3 && targets.len() == 1 && targets[0] != u32::MAX {
             let t = targets[0];
             if !self.cx.p.import[t as usize] && args.iter().any(|a| matches!(a, V::C(_))) && self.cx.p.small[t as usize] {
                 let key: Vec<V> = args.iter().map(|a| if matches!(a, V::C(_)) { *a } else { V::Top }).collect();
@@ -2097,6 +2113,11 @@ fn apply_cancel_rule(p: &mut Prog) {
 /// Indirect-call facts derived from compiler facts (see [`crate::facts`]).
 #[derive(Debug, Default, Clone)]
 pub struct CallFacts {
+    /// Source-level libc registry/cancellation rules require the original
+    /// linked code. Function names or their absence cannot establish these
+    /// rules after cross-function optimization. Empty/Wasm-only facts leave
+    /// this false; transported annotations do not restore this provenance.
+    pub linked_libc: bool,
     /// Per (function index, Wasm signature of a `call_indirect` in it): the
     /// functions those sites can call. The signature is written
     /// `params->results` with `i32`/`i64`/`f32`/`f64`/`v128`, and `ref` for
@@ -2142,6 +2163,19 @@ pub fn plan_with_facts(
     policy: SinkPolicy,
     facts: Option<&CallFacts>,
 ) -> Option<SinkPlan> {
+    // The importer does not define the table's complete target set. An
+    // unknown returning callee must not make a later fork look unreachable.
+    if module.tables.iter().any(|table| table.import.is_some()) {
+        return None;
+    }
+    // This interpreter keys calls by exact signatures, not GC/reference-type
+    // subtyping. The reaching-closure analyzer supports those modules; keep
+    // its full result until the sink interpreter models compatible targets.
+    if module.memories.iter().any(|memory| memory.memory64) || module.types.iter().filter(|ty| ty.is_function()).any(|ty| {
+        ty.params().iter().chain(ty.results()).any(|ty| matches!(ty, ValType::Ref(_)))
+    }) {
+        return None;
+    }
     let mut p = Prog::new(module);
     if p.dyn_link && facts.is_none() {
         // A side module may fork below any indirect call; boundaries across
@@ -2175,8 +2209,10 @@ pub fn plan_with_facts(
             }
         }
     }
-    apply_registries(&mut p);
-    apply_cancel_rule(&mut p);
+    if facts.is_some_and(|facts| facts.linked_libc) {
+        apply_registries(&mut p);
+        apply_cancel_rule(&mut p);
+    }
     let p = p;
     let n = p.n;
     let seed_i = seed.index() as u32;

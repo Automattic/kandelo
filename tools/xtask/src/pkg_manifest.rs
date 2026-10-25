@@ -135,6 +135,37 @@ pub struct ProgramOutput {
     pub fork_instrumentation: ForkInstrumentationPolicy,
 }
 
+/// Instrumenter-owned pre-optimization for a program package. Final
+/// post-instrumentation optimization still runs in every shipping mode.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum ForkPreOptimize {
+    #[default]
+    #[serde(rename = "none")]
+    None,
+    O2,
+    Oz,
+}
+
+impl ForkPreOptimize {
+    pub fn as_str(self) -> &'static str {
+        match self { Self::None => "none", Self::O2 => "O2", Self::Oz => "Oz" }
+    }
+}
+
+/// Measured final optimizer profiles; the default preserves existing output.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum ForkPostOptimize {
+    #[default]
+    Os,
+    Oz,
+}
+
+impl ForkPostOptimize {
+    pub fn as_str(self) -> &'static str {
+        match self { Self::Os => "Os", Self::Oz => "Oz" }
+    }
+}
+
 /// A non-Wasm file that a program package needs at runtime.
 ///
 /// `artifact` is produced in the package cache/archive; `guest_path` is where
@@ -372,6 +403,8 @@ struct RawHostToolProbe {
 #[derive(Debug, Clone)]
 pub struct DepsManifest {
     pub kind: ManifestKind,
+    pub fork_pre_optimize: ForkPreOptimize,
+    pub fork_post_optimize: ForkPostOptimize,
     pub name: String,
     pub version: String,
     pub revision: u32,
@@ -1280,6 +1313,10 @@ impl std::fmt::Display for DepRef {
 #[serde(deny_unknown_fields)]
 struct Raw {
     kind: ManifestKind,
+    #[serde(default)]
+    fork_pre_optimize: ForkPreOptimize,
+    #[serde(default)]
+    fork_post_optimize: ForkPostOptimize,
     name: String,
     version: String,
     /// Legacy publish-time counter. Required on `validate_archived`
@@ -1999,8 +2036,14 @@ impl DepsManifest {
             }
             raw.arches
         };
+        if (raw.fork_pre_optimize != ForkPreOptimize::None || raw.fork_post_optimize != ForkPostOptimize::Os)
+            && (raw.kind != ManifestKind::Program || target_arches != [TargetArch::Wasm32]) {
+            return Err("fork optimization profiles are supported only for wasm32 program packages".into());
+        }
         Ok(DepsManifest {
             kind: raw.kind,
+            fork_pre_optimize: raw.fork_pre_optimize,
+            fork_post_optimize: raw.fork_post_optimize,
             name: raw.name,
             version: raw.version,
             revision,
@@ -3394,6 +3437,40 @@ probe = { args = ["--version"], version_regex = "(unclosed" }
             err.contains("prerelease") || err.contains("suffix"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn fork_pre_optimization_is_explicit_and_program_only() {
+        let template = r#"kind = "program"
+name = "tool"
+version = "1.0"
+POLICY
+[source]
+url = "https://example.test/tool.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+[[outputs]]
+name = "tool"
+wasm = "tool.wasm"
+"#;
+        for (policy, expected) in [("", ForkPreOptimize::None), ("fork_pre_optimize = \"none\"", ForkPreOptimize::None), ("fork_pre_optimize = \"O2\"", ForkPreOptimize::O2), ("fork_pre_optimize = \"Oz\"", ForkPreOptimize::Oz)] {
+            let text = template.replace("POLICY", policy);
+            let manifest = DepsManifest::parse(&text, PathBuf::from("/x")).unwrap();
+            assert_eq!(manifest.fork_pre_optimize, expected);
+        }
+        for policy in ["O3", "before", "oz"] {
+            assert!(DepsManifest::parse(&template.replace("POLICY", &format!("fork_pre_optimize = {policy:?}")), PathBuf::from("/x")).is_err());
+        }
+        for (policy, expected) in [("", ForkPostOptimize::Os), ("fork_post_optimize = \"Os\"", ForkPostOptimize::Os), ("fork_post_optimize = \"Oz\"", ForkPostOptimize::Oz)] {
+            let manifest = DepsManifest::parse(&template.replace("POLICY", policy), PathBuf::from("/x")).unwrap();
+            assert_eq!(manifest.fork_post_optimize, expected);
+        }
+        assert!(DepsManifest::parse(&template.replace("POLICY", "fork_post_optimize = \"O3\""), PathBuf::from("/x")).is_err());
+        let text = template.replace("POLICY", "fork_post_optimize = \"Oz\"\narches = [\"wasm64\"]");
+        assert!(DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err().contains("wasm32 program"));
+        let text = template.replace("POLICY", "fork_pre_optimize = \"Oz\"\narches = [\"wasm64\"]");
+        assert!(DepsManifest::parse(&text, PathBuf::from("/x")).unwrap_err().contains("wasm32 program"));
     }
 
     // ── output_dest_rel ───────────────────────────────────────────

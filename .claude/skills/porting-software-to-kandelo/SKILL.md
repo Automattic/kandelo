@@ -94,8 +94,16 @@ When a build fails, fix the first error, not the last: later errors and `BLOCKED
 
 ## Preserve compiler facts for fork instrumentation
 
-Do not run `wasm-opt`, strip names, or rewrite code between the SDK link and
-fork instrumentation. Let the SDK/instrumenter optimize. Direct recipe calls
+Do not run recipe-owned `wasm-opt`, strip names, or rewrite code between the SDK link and
+fork instrumentation. Let the SDK/instrumenter optimize. A wasm32 program may
+select top-level `fork_pre_optimize = "O2"` or `"Oz"` in `package.toml` and
+use `install_local_binary`: the instrumenter discards LLVM facts, runs stock
+Binaryen, analyzes final Wasm conservatively, instruments, and runs its final
+optimization. The default `"none"` preserves the facts-first order. This
+policy is resolver-owned and cache-keyed; do not duplicate it in recipe shell.
+Use the independent `fork_post_optimize = "Os" | "Oz"` field to choose
+final optimization; selecting final `Oz` alone preserves the linked facts.
+Direct default-order recipe calls
 use `scripts/run-wasm-fork-instrument.sh --require-facts <input> -o <output>`;
 `install_local_binary` checks raw fork-using wasm32 executables automatically.
 The wrapper/installer require `--sink-report` to report `source\tfacts` and
@@ -106,7 +114,7 @@ pre-instrumentation rewrites such as Ruby GC root spilling need an explicit
 explanation. The fork guide records the measured, deferred Bash/CPython/PHP
 migrations; new recipes use the facts-preserving order. Remove names only afterwards, retaining runtime custom sections.
 
-The opt-in `--pre-optimize inlining` prototype is instrumenter-owned and
+The experimental `--pre-optimize inlining` prototype is instrumenter-owned and
 requires a separately built annotation-aware Binaryen. It does not permit
 recipe-owned `wasm-opt` rewrites. See `sdk/binaryen/README.md` for its bounded
 pass contract and validation commands.

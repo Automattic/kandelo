@@ -800,18 +800,61 @@ The SDK and instrumenter own optimization ordering:
    code, names and facts is safe beforehand, as with FFmpeg's
    `llvm-strip --strip-debug`.
 
+Program packages can select an instrumenter-owned pre-pass with the top-level
+`package.toml` field `fork_pre_optimize = "none" | "O2" | "Oz"`. The default
+`none` keeps the facts-first order above. `O2` and `Oz` run stock Binaryen
+before analysis, discard the original facts/hash and all transport annotations,
+and derive the plan from the optimized Wasm. Final optimization still runs
+at `fork_post_optimize = "Os"` (the package default) or `"Oz"`, independent
+of the pre-pass. Selecting final `Oz` alone keeps the original facts usable.
+Direct CLI calls can choose the broader `--post-optimize` level set. Names survive the
+pre-pass; no stale source facts receive a replacement hash.
+
+`install_local_binary` reads this package policy through resolver metadata,
+or its resolver-supplied `WASM_POSIX_DEP_FORK_PRE_OPTIMIZE` and
+`WASM_POSIX_DEP_FORK_POST_OPTIMIZE` environment in a sealed build. Recipes keep the raw SDK link intact and let the installer
+invoke the central tool. The policy applies to raw wasm32 main executables;
+side modules retain full boundary instrumentation and already instrumented
+dependency outputs are not processed a second time. Nondefault policies are
+limited to wasm32 program packages and participate in their cache keys.
+For direct diagnostics, use `--pre-optimize O2|Oz` without `--require-facts`.
+`--sink-report` reports `builtin`, or the full `closure` when the interpreter
+cannot model the module. Imported tables use the full closure because their
+external entries cannot be derived from the module alone. This path does not
+require patched Binaryen.
+
+SpiderMonkey selects `fork_pre_optimize = "Oz"` with final `Os`. In the
+2026-10-23 matched source-build comparison, this reduced final bytes from
+30,370,665 to 29,745,924 (2.06%). Twelve accepted paired rounds per host
+measured spawn/wait fork cycles 5.92% faster on Node and 6.88% faster on
+Chromium, with faster launch and a synthetic JSON/sort workload too. These
+are host-clock, fresh-worker measurements in persistent parents; browser
+asset fetching was outside timing. Other package policies retain their
+existing order.
+
+The facts-first/final-`Oz` control was smaller still (29,351,431 bytes), but
+its fork cycles were about 5% slower than pre-`Oz` on both hosts. The selected
+profile favors that runtime gain over a further 394,493-byte saving. This
+compares complete optimization profiles, not the isolated contribution of
+LLVM facts or whole-platform performance.
+
 An opt-in prototype, `--pre-optimize inlining`, resolves the original facts
 into conservative indirect-call target sets before moving code. It uses the
 separately built annotation-aware Binaryen to carry those sets with copied
-instructions and constructs fresh facts for the optimized module. Only the
-audited full-function inlining pass is allowed; other passes and StackIR
-optimization fail on annotated inputs. Missing annotations widen analysis;
-caller-specific cleanup and `jmp_buf` refinements fall back. This does not
+instructions and constructs fresh facts for the optimized module. Strict
+inlining rejects unsupported transformations. `--pre-optimize inlining-cleanup`
+also runs audited DCE and vacuum. These experimental modes use an extension
+compiled into `wasm-opt`, with explicit pass preservation contracts. Its
+summary reports retained annotations and invalidating passes; a completed
+pipeline or `source=facts` alone does not establish useful fact retention.
+The diagnostic `transport` mode isolates the bridge from optimizing passes.
+Missing annotations widen analysis;
+caller-specific cleanup, `jmp_buf`, and linked-libc refinements fall back. This does not
 permit a recipe-owned `wasm-opt -O2` pass or bypass the linked-code hash.
 The default pipeline is unchanged. See the
 [prototype's build, metadata contract and tests](../sdk/binaryen/README.md).
 
-Package builds use the wrapper's `--require-facts` flag first, immediately
+Default-order direct package builds use the wrapper's `--require-facts` flag first, immediately
 followed by the input:
 
 ```bash
@@ -1556,8 +1599,13 @@ The analysis resolves each `call_indirect` in one of two ways.
   example) keeps unknown custom sections but changes the code, and the facts
   would then describe the wrong functions. A mismatch or a missing hash
   prints one line and falls back to the analysis without facts.
-- **Without facts**, call sites match by Wasm signature (plus the musl
-  registry, parameter and constant-slot refinements).
+- **Without facts**, call sites match by Wasm signature, with parameter and
+  constant-slot refinements only where the final Wasm proves them. Imported,
+  exported and dynamically modified tables are not immutable slot maps.
+  Source-level libc registry/cancellation rules are disabled: an optimizer
+  can inline their registration APIs or combine unrelated call sites in a
+  named function. A single known local target also cannot exclude an external
+  target that returns or throws.
 
 Facts are bound to functions without a linker map. Objects keep their order
 on both sides, so each module function is matched, in index order, to a
@@ -1600,12 +1648,12 @@ Which analysis runs:
 
 | Module | Analysis |
 |---|---|
-| wasm32 main module, `kernel.kernel_fork` entry, facts with a matching hash | with facts |
-| main module that cannot dlopen, facts absent, unreadable, unhashed or stale, or wasm64 | without facts |
-| main module that can dlopen, no usable facts | none (full closure) |
+| supported wasm32 main module, `kernel.kernel_fork` entry, facts with a matching hash | with facts |
+| supported wasm32 main module, facts absent, unreadable, unhashed or stale | final-Wasm analysis, including the checked dlopen policy |
+| wasm64, reference-typed function signatures, or unsupported interpreter operations | full closure |
 | side module (`dylink.0` or `--entry env.fork`) | none (full closure) |
 
-A module that can dlopen is analysed with facts too. What it may assume
+A module that can dlopen is analysed with or without facts. What it may assume
 about side modules is chosen with `--side-modules`:
 
 - `traced-entries` (the default). The analysis treats a side module as

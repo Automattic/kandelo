@@ -749,6 +749,19 @@ whitespace are rejected. Historical archived manifests remain parseable for
 artifact compatibility; the source-build resolver never executes their legacy
 script field.
 
+Program packages may set the top-level `fork_pre_optimize` field to `none`
+(the default), `O2`, or `Oz`. The latter two select a stock `wasm-opt` pass
+inside the fork instrumenter, followed by analysis of the optimized Wasm,
+instrumentation, and the ordinary final optimization. They require a wasm32
+program package. Original LLVM facts are discarded before rewriting code;
+the default order instead uses the original linked facts. The top-level
+`fork_post_optimize` field independently selects final `Os`
+(the default) or `Oz`, including when the original LLVM facts are used.
+Both fields enter the package cache key when nondefault. Recipes leave the
+link intact and use
+`install_local_binary`; they do not implement the selected ordering themselves.
+See [fork instrumentation](fork-instrumentation.md#optimization-around-instrumentation).
+
 Program packages use `[[outputs]]` for executable/side-module artifacts. A
 non-Wasm file required at runtime is declared separately so it remains part of
 the same reproducible archive and cache key:
@@ -1380,6 +1393,14 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_DEP_<KEY>_SRC_DIR`       | SourceOnlyV1 direct source dependencies only: a fresh sealed per-consumer extraction below the same resolver-owned source-input root, disjoint from recipe work and output. `<KEY>` is exactly `K_` followed by the uppercase hexadecimal encoding of the package name's UTF-8 bytes (`foo-bar` → `K_666F6F2D626172`). Default source-kind dependencies retain the legacy uppercased-name spelling. |
 | `WASM_POSIX_BUILD_GIT_<NAME>_DIR`    | Read-only detached checkout for a `build.toml` `[[git_inputs]]` declaration. `<NAME>` is the injective uppercase form of the validated lowercase name.                                                                                                                                                                                           |
 | `WASM_POSIX_BUILD_GIT_<NAME>_COMMIT` | Exact declared commit corresponding to that checkout.                                                                                                                                                                                                                                                                                            |
+
+The resolver also sets `WASM_POSIX_DEP_FORK_PRE_OPTIMIZE` to the selected
+package's `none`, `O2`, or `Oz` policy on every source-build command. It
+overwrites inherited state, including for dependencies whose policy is
+`none`. It likewise sets `WASM_POSIX_DEP_FORK_POST_OPTIMIZE` to `Os` or `Oz`
+on every source build, overriding inherited state. The sealed installer
+consumes both values without requiring a Rust metadata query; mirrored
+installs obtain them through `build-deps output-metadata`.
 
 Scripts that accept the optional sealed-build roots should source
 `scripts/package-build-roots.sh`. Explicit source, work, and output roots must

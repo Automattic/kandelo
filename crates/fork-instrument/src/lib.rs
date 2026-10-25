@@ -166,7 +166,7 @@ pub struct Options {
     /// With facts: apply C's effective-type rule in units compiled with
     /// strict aliasing. `false` (`--no-effective-types`) applies it nowhere.
     pub effective_types: bool,
-    /// For a program that can dlopen (with facts): which side-module entries
+    /// For a program that can dlopen: which side-module entries
     /// the instrumented main program is prepared for. See [`SideModules`].
     pub side_modules: SideModules,
 }
@@ -245,8 +245,8 @@ struct SinkDecision {
 
 /// Reduce the fork closure with the sink analysis when the module is in its
 /// supported scope: a main module whose only fork seed is
-/// `kernel.kernel_fork`. With compiler facts ([`facts`]) the analysis also
-/// covers modules that can dlopen; without them it does not. Facts the
+/// `kernel.kernel_fork`. Dynamic-linking modules use the same checked loader
+/// policy with or without compiler facts. Facts the
 /// analysis cannot use fall back to the analysis without facts, never to
 /// anything less sound. Returns the boundary functions.
 fn apply_sink_plan(
@@ -332,6 +332,34 @@ fn apply_sink_plan(
         }
     }
     if external_dynamic_dispatch {
+        // No LLVM target, lexical-cleanup, buffer-identity, or linked-libc
+        // assumptions. The final Wasm supplies the in-module call graph;
+        // the emitted load-time contract governs external dispatch.
+        let run = |mode: SideModules| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let empty = sink::CallFacts {
+                    assume_dlopen_contract: mode == SideModules::TracedEntries,
+                    ..Default::default()
+                };
+                sink::plan_with_facts(
+                    module, entry_imports[0], reaching,
+                    sink::SinkPolicy::default(), Some(&empty),
+                )
+            })).ok().flatten()
+        };
+        let mut mode = opts.side_modules;
+        let Some(mut plan) = run(mode) else { return decision; };
+        if mode == SideModules::TracedEntries && fork_returning_address_taken(module, &plan) {
+            mode = SideModules::AssumeAllEntriesForkReturning;
+            let Some(permissive) = run(mode) else { return decision; };
+            plan = permissive;
+        }
+        decision.dlopen_contract = Some(dlopen_contract_text(module, &plan, mode));
+        decision.boundaries = apply_plan_sets(
+            module, &plan.activations, &plan.control_reachable,
+            plan.boundaries.into_iter().collect(), reaching,
+        );
+        decision.source = PlanSource::Builtin;
         return decision;
     }
     let Some(plan) = sink::plan(module, entry_imports[0], reaching, sink::SinkPolicy::default()) else {

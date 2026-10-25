@@ -16,6 +16,27 @@
             removableIfUnused == other.removableIfUnused &&
             jsCalled == other.jsCalled;
    }
+@@ -2532,8 +2538,20 @@
+   std::vector<char> tail;
+ };
+ 
++// Optional correctness-metadata extension. The runner reports pass contracts;
++// the writer requests final metadata only after transformations have finished.
++class PassMetadataObserver {
++public:
++  virtual ~PassMetadataObserver() = default;
++  virtual void beforePass(const std::string& name, bool preserves, Function* function = nullptr) = 0;
++  virtual bool canEmit(const std::string& section) const = 0;
++  virtual void finish(Module& module) = 0;
++};
++
+ class Module {
+ public:
++  std::shared_ptr<PassMetadataObserver> passMetadataObserver;
++
+   // wasm contents (generally you shouldn't access these from outside, except
+   // maybe for iterating; use add*() and the get() functions)
+   std::vector<std::unique_ptr<Export>> exports;
 --- a/src/wasm-binary.h
 +++ b/src/wasm-binary.h
 @@ -1439,6 +1439,7 @@
@@ -36,7 +57,26 @@
    void readRemovableIfUnusedHints(size_t payloadLen);
 --- a/src/wasm/wasm-binary.cpp
 +++ b/src/wasm/wasm-binary.cpp
-@@ -1625,6 +1625,7 @@
+@@ -48,6 +48,18 @@
+ }
+ 
+ void WasmBinaryWriter::write() {
++  if (!wasm->passMetadataObserver) {
++    for (auto& f : wasm->functions) {
++      for (auto& [expr, annotation] : f->codeAnnotations) {
++        if (!annotation.kandeloForkTargets.empty()) {
++          Fatal() << "Kandelo fork facts require an explicit capability pass\n";
++        }
++      }
++    }
++  }
++  if (wasm->passMetadataObserver) {
++    wasm->passMetadataObserver->finish(*wasm);
++  }
+   writeHeader();
+ 
+   writeDylinkSection();
+@@ -1625,6 +1637,7 @@
      }
    };
  
@@ -44,7 +84,7 @@
    append(getBranchHintsBuffer());
    append(getInlineHintsBuffer());
    append(getRemovableIfUnusedHintsBuffer());
-@@ -1734,6 +1735,21 @@
+@@ -1734,6 +1747,32 @@
    buffer.emitRetroactiveSectionSizeLEB(lebPos);
  
    return buffer;
@@ -52,6 +92,17 @@
 +
 +std::optional<BufferWithRandomAccess>
 +WasmBinaryWriter::getKandeloForkTargetsBuffer() {
++  if (wasm->passMetadataObserver && !wasm->passMetadataObserver->canEmit("metadata.code.kandelo.fork-targets")) {
++    // Presence with zero entries means transport succeeded but every restriction
++    // was invalidated. Do not serialize any stale function or call identities.
++    BufferWithRandomAccess empty;
++    empty << uint8_t(BinaryConsts::Custom);
++    auto size = empty.writeU32LEBPlaceholder();
++    empty.writeInlineString("metadata.code.kandelo.fork-targets");
++    empty << U32LEB(0);
++    empty.emitRetroactiveSectionSizeLEB(size);
++    return empty;
++  }
 +  return writeExpressionHints(
 +    Name("metadata.code.kandelo.fork-targets"),
 +    [](const CodeAnnotation& a) { return !a.kandeloForkTargets.empty(); },
@@ -66,7 +117,7 @@
  }
  
  std::optional<BufferWithRandomAccess> WasmBinaryWriter::getBranchHintsBuffer() {
-@@ -2065,7 +2081,8 @@
+@@ -2065,7 +2104,8 @@
      if (sectionCode == BinaryConsts::Section::Custom) {
        auto sectionName = getInlineString();
  
@@ -76,7 +127,7 @@
            sectionName == Annotations::InlineHint ||
            sectionName == Annotations::RemovableIfUnusedHint ||
            sectionName == Annotations::JSCalledHint) {
-@@ -2218,6 +2235,9 @@
+@@ -2218,6 +2258,9 @@
      readDylink(payloadLen);
    } else if (sectionName.equals(BinaryConsts::CustomSections::Dylink0)) {
      readDylink0(payloadLen);
@@ -86,7 +137,7 @@
    } else if (sectionName == Annotations::BranchHint) {
      // Deferred.
      deferredAnnotationSections.push_back(AnnotationSectionInfo{
-@@ -5509,6 +5529,25 @@
+@@ -5509,6 +5552,25 @@
    }
  }
  
@@ -114,51 +165,295 @@
      Annotations::BranchHint, payloadLen, [&](CodeAnnotation& annotation) {
 --- a/src/passes/pass.cpp
 +++ b/src/passes/pass.cpp
-@@ -89,7 +89,15 @@
+@@ -22,6 +22,7 @@
+ #endif
+ 
+ #include "ir/hashed.h"
++#include "ir/fork-target-metadata.h"
+ #include "ir/module-utils.h"
+ #include "ir/type-updating.h"
+ #include "pass.h"
+@@ -89,7 +90,18 @@
  
  // PassRunner
  
 +// An explicit capability flag: stock wasm-opt must reject this pipeline
 +// rather than carrying our unknown custom section with stale byte offsets.
 +struct KandeloForkFacts : Pass {
++  bool preservesCodeMetadata() override { return true; }
 +  void run(Module*) override {}
 +};
 +
  void PassRegistry::registerPasses() {
++  registerPass("kandelo-fork-facts-pipeline", "maintain or invalidate fork target metadata",
++               []() { return new KandeloForkFacts(); });
 +  registerPass("kandelo-fork-facts", "preserve Kandelo fork target annotations",
 +               []() { return new KandeloForkFacts(); });
    registerPass("alignment-lowering",
                 "lower unaligned loads and stores to smaller aligned ones",
                 createAlignmentLoweringPass);
-@@ -852,6 +860,31 @@
+@@ -852,6 +864,30 @@
  }
  
  void PassRunner::run() {
-+  bool hasKandeloFacts = false;
-+  for (auto& func : wasm->functions) {
-+    for (auto& [expr, a] : func->codeAnnotations) {
-+      hasKandeloFacts |= !a.kandeloForkTargets.empty();
-+    }
-+  }
-+  if (hasKandeloFacts) {
-+    // Advisory metadata may be discarded arbitrarily by folding passes.
-+    // Correctness metadata cannot: reject every unaudited transformation.
-+    // The anonymous nested pass is DoInlining, which uses the shared
-+    // metadata::copyBetweenFunctions path and never combines call sites.
-+    for (auto& pass : passes) {
-+      if (pass->name != "inlining" && pass->name != "kandelo-fork-facts" &&
-+          !(isNested && pass->name.empty())) {
-+        Fatal() << "Kandelo fork facts: unaudited pass " << pass->name
-+                << "; use --kandelo-fork-facts --inlining\n";
++  // Initialize once before function-parallel work. Nested runners share the
++  // observer; scanning other functions during parallel mutation would race.
++  if (!wasm->passMetadataObserver && !isNested && std::any_of(passes.begin(), passes.end(), [](auto& pass) { return pass->modifiesBinaryenIR(); })) {
++    bool annotated = false;
++    for (auto& func : wasm->functions) {
++      for (auto& [expr, annotation] : func->codeAnnotations) {
++        annotated |= !annotation.kandeloForkTargets.empty();
 +      }
 +    }
++    if (annotated) {
++      bool pipeline = std::any_of(passes.begin(), passes.end(), [](auto& pass) {
++        return pass->name == "kandelo-fork-facts-pipeline";
++      });
++      wasm->passMetadataObserver = std::make_shared<ForkTargetMetadata>(*wasm, !pipeline);
++    }
++  }
++  if (wasm->passMetadataObserver) {
 +    if (options.generateStackIR || options.optimizeStackIR) {
-+      Fatal() << "Kandelo fork facts do not support StackIR optimization\n";
++      wasm->passMetadataObserver->beforePass("StackIR", false);
 +    }
 +    if (options.inlining.partialInliningIfs != 0) {
-+      Fatal() << "Kandelo fork facts require --partial-inlining-ifs=0\n";
++      wasm->passMetadataObserver->beforePass("partial-inlining", false);
 +    }
 +  }
    static const int passDebug = getPassDebug();
    // Emit logging information when asked for. At passDebug level 1+ we log
    // the main passes, while in 2 we also log nested ones. Note that for
+@@ -1010,6 +1046,9 @@
+   // runner after running the pass, so there must not already be a runner here.
+   assert(!pass->getPassRunner());
+   pass->setPassRunner(this);
++  if (wasm->passMetadataObserver) {
++    wasm->passMetadataObserver->beforePass(pass->name, pass->preservesCodeMetadata());
++  }
+   pass->run(wasm);
+   handleAfterEffects(pass);
+ }
+@@ -1046,6 +1085,9 @@
+   // Function-parallel passes get a new instance per function
+   auto instance = pass->create();
+   instance->setPassRunner(this);
++  if (wasm->passMetadataObserver) {
++    wasm->passMetadataObserver->beforePass(pass->name, instance->preservesCodeMetadata(), func);
++  }
+   instance->runOnFunction(wasm, func);
+   handleAfterEffects(pass, func);
+ 
+--- a/src/pass.h
++++ b/src/pass.h
+@@ -459,6 +459,11 @@
+   // out any Stack IR - it would need to be regenerated and optimized.
+   virtual bool modifiesBinaryenIR() { return true; }
+ 
++  // Correctness annotations require an explicit preservation contract. A pass
++  // must keep call origins and target identities valid, including nested work.
++  // The metadata extension decides whether to reject or invalidate otherwise.
++  virtual bool preservesCodeMetadata() { return false; }
++
+   // Some passes modify the wasm in a way that we cannot update DWARF properly
+   // for. This is used to issue a proper warning about that.
+   virtual bool invalidatesDWARF() { return false; }
+--- a/src/passes/pass-utils.h
++++ b/src/passes/pass-utils.h
+@@ -59,6 +59,8 @@
+ 
+   bool modifiesBinaryenIR() override { return pass->modifiesBinaryenIR(); }
+ 
++  bool preservesCodeMetadata() override { return pass->preservesCodeMetadata(); }
++
+   bool invalidatesDWARF() override { return pass->invalidatesDWARF(); }
+ 
+   bool addsEffects() override { return pass->addsEffects(); }
+--- a/src/passes/Inlining.cpp
++++ b/src/passes/Inlining.cpp
+@@ -198,6 +198,8 @@
+ struct FunctionInfoScanner
+   : public WalkerPass<PostWalker<FunctionInfoScanner>> {
+   bool isFunctionParallel() override { return true; }
++
++  bool preservesCodeMetadata() override { return true; }
+ 
+   bool modifiesBinaryenIR() override { return false; }
+ 
+@@ -326,6 +328,8 @@
+ struct Planner : public WalkerPass<TryDepthWalker<Planner>> {
+   bool isFunctionParallel() override { return true; }
+ 
++  bool preservesCodeMetadata() override { return true; }
++
+   bool modifiesBinaryenIR() override { return false; }
+ 
+   Planner(InliningState* state) : state(state) {}
+@@ -714,6 +718,9 @@
+ // A pass that calls doInlining() on a bunch of actions that were chosen to
+ // perform.
+ struct DoInlining : public Pass {
++  // Full inlining copies call annotations through metadata::copyBetweenFunctions.
++  // Partial inlining is independently rejected or invalidated by the observer.
++  bool preservesCodeMetadata() override { return true; }
+   bool isFunctionParallel() override { return true; }
+ 
+   // We do this only where we inline, inside updateAfterInlining().
+@@ -1259,6 +1266,9 @@
+ };
+ 
+ struct Inlining : public Pass {
++  // Full inlining copies call annotations through metadata::copyBetweenFunctions.
++  // Partial inlining is independently rejected or invalidated by the observer.
++  bool preservesCodeMetadata() override { return true; }
+   // This pass changes locals and parameters.
+   // FIXME DWARF updating does not handle local changes yet.
+   bool invalidatesDWARF() override { return true; }
+--- a/src/passes/DeadCodeElimination.cpp
++++ b/src/passes/DeadCodeElimination.cpp
+@@ -43,6 +43,9 @@
+   : public WalkerPass<
+       PostWalker<DeadCodeElimination,
+                  UnifiedExpressionVisitor<DeadCodeElimination>>> {
++  // Eliminates dead instructions while keeping surviving call nodes and all
++  // function/table identities. It never combines two calls into one.
++  bool preservesCodeMetadata() override { return true; }
+   bool isFunctionParallel() override { return true; }
+ 
+   // This pass removes dead code, which can only help validation (a dead
+--- a/src/passes/Vacuum.cpp
++++ b/src/passes/Vacuum.cpp
+@@ -33,6 +33,9 @@
+ namespace wasm {
+ 
+ struct Vacuum : public WalkerPass<ExpressionStackWalker<Vacuum>> {
++  // Only removes instructions or retains existing child nodes; no call merges,
++  // target replacements, function signature changes, or table rewrites.
++  bool preservesCodeMetadata() override { return true; }
+   bool isFunctionParallel() override { return true; }
+ 
+   std::unique_ptr<Pass> create() override { return std::make_unique<Vacuum>(); }
+--- a/src/ir/module-utils.h
++++ b/src/ir/module-utils.h
+@@ -306,6 +306,7 @@
+     struct Mapper : public WalkerPass<PostWalker<Mapper>> {
+       bool isFunctionParallel() override { return true; }
+       bool modifiesBinaryenIR() override { return Mut; }
++      bool preservesCodeMetadata() override { return !Mut; }
+ 
+       Mapper(Module& module, Map& map, Func work)
+         : module(module), map(map), work(work) {}
+--- a/src/wasm/wasm-validator.cpp
++++ b/src/wasm/wasm-validator.cpp
+@@ -256,6 +256,7 @@
+ }
+ 
+ struct FunctionValidator : public WalkerPass<PostWalker<FunctionValidator>> {
++  bool preservesCodeMetadata() override { return true; }
+   bool isFunctionParallel() override { return true; }
+ 
+   std::unique_ptr<Pass> create() override {
+--- /dev/null
++++ b/src/ir/fork-target-metadata.h
+@@ -0,0 +1,102 @@
++// Kandelo's optional correctness-metadata extension for Binaryen 126.
++// Default-deny preservation: unsupported passes cannot emit stale restrictions.
++#ifndef wasm_ir_fork_target_metadata_h
++#define wasm_ir_fork_target_metadata_h
++#include "support/utilities.h"
++#include "wasm-traversal.h"
++#include "wasm.h"
++#include <atomic>
++#include <mutex>
++#include <set>
++#include <sstream>
++
++namespace wasm {
++class ForkTargetMetadata : public PassMetadataObserver {
++  Module& module;
++  bool strict;
++  std::atomic<bool> valid{true};
++  std::mutex mutex;
++  std::set<std::string> preserved, invalidated;
++
++  struct Count : PostWalker<Count> {
++    Function* func;
++    size_t calls = 0, known = 0;
++    Count(Function* func) : func(func) { walk(func->body); }
++    void visitCallIndirect(CallIndirect* curr) {
++      ++calls;
++      auto it = func->codeAnnotations.find(curr);
++      known += it != func->codeAnnotations.end() &&
++               !it->second.kandeloForkTargets.empty();
++    }
++  };
++
++public:
++  ForkTargetMetadata(Module& module, bool strict)
++    : module(module), strict(strict) {}
++  void beforePass(const std::string& name,
++                  bool preserves,
++                  Function* function = nullptr) override {
++    auto label = name.empty() ? std::string("anonymous-pass") : name;
++    if (!preserves && strict) {
++      Fatal() << "Kandelo fork facts: unaudited pass " << label << "\n";
++    }
++    std::lock_guard<std::mutex> lock(mutex);
++    (preserves ? preserved : invalidated).insert(label);
++    if (!preserves)
++      valid.store(false, std::memory_order_relaxed);
++    // Clear restrictions before unsupported rewrites, including module swaps
++    // that might otherwise discard the observer itself. Function-parallel
++    // callbacks mutate only their own function; module callbacks run serially.
++    if (!preserves || (!function && !valid.load(std::memory_order_relaxed))) {
++      auto clear = [](Function* f) {
++        for (auto& [expr, annotation] : f->codeAnnotations) {
++          annotation.kandeloForkTargets.clear();
++        }
++      };
++      if (function)
++        clear(function);
++      else
++        for (auto& f : module.functions)
++          clear(f.get());
++    }
++  }
++  bool canEmit(const std::string&) const override {
++    return valid.load(std::memory_order_relaxed);
++  }
++  void finish(Module& module) override {
++    size_t calls = 0, known = 0;
++    for (auto& func : module.functions) {
++      if (func->imported())
++        continue;
++      Count count(func.get());
++      calls += count.calls;
++      known += count.known;
++    }
++    if (!canEmit(""))
++      known = 0;
++    std::ostringstream report;
++    report << "v1\nvalid\t" << canEmit("") << "\ncurrent-calls\t" << calls
++           << "\nretained\t" << known << "\n";
++    // Sorted pass dispositions are deterministic under function parallelism.
++    // These summarize preservation decisions; they are not a rewrite history.
++    for (auto& name : preserved)
++      report << "preserves\t" << name << "\n";
++    for (auto& name : invalidated)
++      report << "invalidates-all\t" << name << "\n";
++    auto text = report.str();
++    module.customSections.erase(
++      std::remove_if(
++        module.customSections.begin(),
++        module.customSections.end(),
++        [](auto& s) { return s.name == "kandelo.fork-facts.report"; }),
++      module.customSections.end());
++    module.customSections.push_back(
++      CustomSection{"kandelo.fork-facts.report",
++                    std::vector<char>(text.begin(), text.end())});
++    std::cerr << "Kandelo fork facts: retained " << known << "/" << calls
++              << " call target annotations; preservation=" << canEmit("")
++              << "\n";
++  }
++};
++} // namespace wasm
++#endif

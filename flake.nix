@@ -375,10 +375,10 @@
         macosSdk = pkgs.lib.optionalString pkgs.stdenv.isDarwin
           "${pkgs.apple-sdk_15}";
       in {
-        # Experimental, explicitly selected optimizer for --pre-optimize
-        # inlining. Keep the default toolchain unchanged while the prototype
-        # is measured. The patch rejects transformations not yet audited for
-        # correctness metadata, rather than treating it as an advisory hint.
+        # Experimental, explicitly selected facts-aware wasm-opt. Keep the
+        # default toolchain unchanged while the prototype is measured. Strict
+        # mode rejects unsupported transformations; broader modes invalidate
+        # their facts instead of treating correctness metadata as a hint.
         packages.binaryen-fork-facts =
           assert pkgs.binaryen.version == "126";
           pkgs.binaryen.overrideAttrs (old: {

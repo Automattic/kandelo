@@ -1,9 +1,9 @@
-//! Opt-in bridge for facts-preserving Binaryen inlining.
+//! Opt-in bridge for facts-aware Binaryen optimization.
 //!
 //! Resolve source facts while they still bind, attach conservative target sets
 //! to actual call instructions, then rebuild facts from the optimizer's mapped
-//! annotations. The supported optimizer rejects unaudited passes. This does not
-//! authorize arbitrary code rewrites or restamping stale compiler facts.
+//! annotations. Unsupported passes reject or invalidate their restrictions;
+//! this does not authorize arbitrary rewrites or restamping stale facts.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
@@ -14,7 +14,39 @@ use wasmparser::{CompositeInnerType, FuncType, Operator, Parser, Payload, TypeRe
 use crate::{Options, facts};
 
 pub const SECTION: &str = "metadata.code.kandelo.fork-targets";
+/// Build-only pass-preservation summary emitted by the wasm-opt extension.
+pub const REPORT_SECTION: &str = "kandelo.fork-facts.report";
 pub(crate) const RESOLVED_PREFIX: &str = "#kandelo-calltypes\tresolved-1\n";
+
+/// Input to ordinary wasm-opt. No source facts or transported restrictions
+/// may survive a rewrite; names remain for ABI/library identification.
+pub fn prepare_wasm(input: &[u8]) -> Result<Vec<u8>> {
+    let identity = crate::contract_inventory::artifact_identity(input)?;
+    ensure!(
+        identity.relocatable == 0 && identity.dylink_section_count == 0,
+        "pre-optimization requires a main executable"
+    );
+    ensure!(
+        identity.memory64_count == 0,
+        "pre-optimization currently supports wasm32 only"
+    );
+    // Instrumented descriptors and private runtime hooks bind to the original
+    // code. Reject before running the optimizer, rather than damaging them.
+    let module = walrus::ModuleConfig::new().parse(input)?;
+    crate::reject_preinstrumented_artifact(&module)?;
+    crate::reject_reserved_unwind_import(&module)?;
+    strip_custom(input, |name| {
+        [
+            SECTION,
+            REPORT_SECTION,
+            facts::SECTION,
+            facts::CODE_HASH_SECTION,
+        ]
+        .iter()
+        .any(|s| name == s.as_bytes())
+            || name.starts_with(b".debug_")
+    })
+}
 
 #[derive(Debug)]
 struct Site {
@@ -385,6 +417,19 @@ pub fn finish(input: &[u8]) -> Result<Vec<u8>> {
     let module = walrus::ModuleConfig::new().parse(input)?;
     let layout = functions(input)?;
     let annotations = read_annotations(input, &layout)?;
+    for payload in Parser::new(0).parse_all(input) {
+        if let Payload::CustomSection(section) = payload? {
+            if section.name() == REPORT_SECTION {
+                let report =
+                    std::str::from_utf8(section.data()).context("invalid preservation report")?;
+                ensure!(
+                    report.starts_with("v1\n"),
+                    "unknown preservation report version"
+                );
+                eprintln!("wasm-fork-instrument: Binaryen preservation report:\n{report}");
+            }
+        }
+    }
     let names: Vec<_> = module
         .funcs
         .iter()
@@ -433,7 +478,7 @@ pub fn finish(input: &[u8]) -> Result<Vec<u8>> {
     }
     let total_sites: usize = layout.iter().map(|f| f.sites.len()).sum();
     eprintln!(
-        "wasm-fork-instrument: pre-inlining retained {}/{total_sites} call target sets; lexical cleanup and jmp_buf refinements use conservative fallback",
+        "wasm-fork-instrument: pre-optimization retained {}/{total_sites} call target sets; lexical cleanup and jmp_buf refinements use conservative fallback",
         sites.len()
     );
     let mut text = String::from(RESOLVED_PREFIX);
@@ -466,9 +511,14 @@ pub fn finish(input: &[u8]) -> Result<Vec<u8>> {
         )?;
     }
     let mut out = strip_custom(input, |name| {
-        [SECTION, facts::SECTION, facts::CODE_HASH_SECTION]
-            .iter()
-            .any(|s| name == s.as_bytes())
+        [
+            SECTION,
+            REPORT_SECTION,
+            facts::SECTION,
+            facts::CODE_HASH_SECTION,
+        ]
+        .iter()
+        .any(|s| name == s.as_bytes())
     })?;
     out.extend(custom(facts::SECTION, text.as_bytes())?);
     out.extend(custom(

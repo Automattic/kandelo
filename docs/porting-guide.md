@@ -78,8 +78,17 @@ make CC=wasm32posix-cc AR=wasm32posix-ar RANLIB=wasm32posix-ranlib [flags]
 `vfork()`, `_Fork()`, shell pipelines, command substitution, `system()`,
 `popen()`, and fork-backed helper processes.
 
-Do not rewrite code or strip names between the SDK link and instrumentation:
+Do not let recipes rewrite code or strip names between the SDK link and instrumentation:
 the compiler facts describe that exact linked code and bind through its names.
+For a measured optimization-first requirement, set the top-level package
+field `fork_pre_optimize = "O2"` or `"Oz"` and use `install_local_binary`.
+The central instrumenter discards original facts, optimizes with stock
+Binaryen, analyzes the resulting Wasm conservatively, then instruments and
+runs its final optimization. The default `"none"` keeps the facts-first
+order. The independent `fork_post_optimize = "Os" | "Oz"` field selects
+final optimization; choosing final `Oz` alone preserves LLVM facts.
+Select these policies through metadata rather than recipe-owned
+`wasm-opt` commands or an ambient compiler flag.
 Let the SDK and instrumenter optimize. The SDK holds back clang's post-link
 `wasm-opt` for fork-importing links; the instrumenter optimizes the transformed
 module at `-Os` by default (`--post-optimize` selects another level).
@@ -91,8 +100,8 @@ module at `-Os` by default (`--post-optimize` selects another level).
 
 The wrapper checks `--sink-report` and fails unless a fork-using wasm32
 executable's plan source is `facts` and its facts bind to linked functions.
-`install_local_binary` applies this
-policy when it instruments raw outputs. Non-forking modules, side modules
+`install_local_binary` applies this check to raw outputs in the default
+order; an explicit `fork_pre_optimize` policy uses final-Wasm analysis instead. Non-forking modules, side modules
 and wasm64 are exempt because facts-based sink analysis does not apply.
 Document necessary code-rewrite exceptions explicitly, as Ruby does for its
 GC root-spilling pass. The fork guide also records the measured, deferred

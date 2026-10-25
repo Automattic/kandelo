@@ -411,6 +411,8 @@ install_local_binary() {
     local mirror_path=""
     local declared_artifact="$requested_artifact"
     local declared_policy=""
+    local pre_optimize=none
+    local post_optimize=Os
     if [ "$install_local_mirror" = "1" ]; then
         host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
         if [ -z "$host_target" ]; then
@@ -429,20 +431,20 @@ install_local_binary() {
         local fields
         if ! fields="$(node -e '
             const value = JSON.parse(process.argv[1]);
-            for (const key of ["mirror_path", "fork_instrumentation", "source_artifact"]) {
+            for (const key of ["mirror_path", "fork_instrumentation", "source_artifact", "fork_pre_optimize", "fork_post_optimize"]) {
               if (typeof value[key] !== "string" || value[key].length === 0 ||
                   value[key].includes("\t") || value[key].includes("\n")) {
                 throw new Error(`invalid output metadata field ${key}`);
               }
             }
             process.stdout.write(
-              `${value.mirror_path}\t${value.fork_instrumentation}\t${value.source_artifact}`,
+              `${value.mirror_path}\t${value.fork_instrumentation}\t${value.source_artifact}\t${value.fork_pre_optimize}\t${value.fork_post_optimize}`,
             );
           ' "$metadata")"; then
             echo "install_local_binary: invalid output metadata for '$program:$requested_artifact'" >&2
             return 1
         fi
-        IFS=$'\t' read -r mirror_path declared_policy declared_artifact <<<"$fields"
+        IFS=$'\t' read -r mirror_path declared_policy declared_artifact pre_optimize post_optimize <<<"$fields"
         if ! _wasm_posix_require_portable_relative_path "$mirror_path" \
             || ! _wasm_posix_require_portable_relative_path "$declared_artifact"; then
             echo "install_local_binary: xtask returned an unsafe output path" >&2
@@ -450,11 +452,22 @@ install_local_binary() {
         fi
     else
         declared_policy="${WASM_POSIX_INSTALL_FORK_INSTRUMENTATION:-}"
+        pre_optimize="${WASM_POSIX_DEP_FORK_PRE_OPTIMIZE:-none}"
+        post_optimize="${WASM_POSIX_DEP_FORK_POST_OPTIMIZE:-Os}"
         if [ -z "$declared_policy" ]; then
             echo "install_local_binary: sealed installs require explicit WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto|disabled" >&2
             return 2
         fi
     fi
+
+    case "$pre_optimize" in
+        none|O2|Oz) ;;
+        *) echo "install_local_binary: invalid fork_pre_optimize policy '$pre_optimize'" >&2; return 2 ;;
+    esac
+    case "$post_optimize" in
+        Os|Oz) ;;
+        *) echo "install_local_binary: invalid fork_post_optimize policy '$post_optimize'" >&2; return 2 ;;
+    esac
 
     local requested_policy="${WASM_POSIX_INSTALL_FORK_INSTRUMENTATION:-}"
     if [ "$install_local_mirror" = "1" ] \
@@ -498,7 +511,16 @@ install_local_binary() {
                 echo "  applying wasm-fork-instrument to $(basename "$src")"
                 local instrumented
                 instrumented="$(mktemp "${TMPDIR:-/tmp}/wpk-fork-instrument.XXXXXX.wasm")"
-                if ! "$repo_root/scripts/run-wasm-fork-instrument.sh" --require-facts "$src" -o "$instrumented"; then
+                local instrument_args=()
+                if [ "$pre_optimize" = none ] || [ "$artifact_role" = side-module ]; then
+                    instrument_args+=(--require-facts "$src")
+                else
+                    instrument_args+=("$src" --pre-optimize "$pre_optimize")
+                fi
+                if [ "$artifact_role" != side-module ] && [ "$post_optimize" != Os ]; then
+                    instrument_args+=(--post-optimize "$post_optimize")
+                fi
+                if ! "$repo_root/scripts/run-wasm-fork-instrument.sh" "${instrument_args[@]}" -o "$instrumented"; then
                     rm -f "$instrumented"
                     return 1
                 fi
