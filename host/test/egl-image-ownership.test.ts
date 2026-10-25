@@ -1,23 +1,14 @@
 import { expect, it } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
+import { loggingGraphicsGl, allocatedTexture } from "./support/logging-graphics-gl";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
+const programPath = resolveBinary("programs/egl_image_ownership.wasm");
+
 it("retains imported storage through image, object, and framebuffer retirement", async () => {
-  const calls: [string, unknown[]][] = [];
-  let next = 0;
-  const gl = new Proxy({}, {
-    get(_target, key) {
-      if (typeof key !== "string" || /^[A-Z0-9_]+$/.test(key)) return undefined;
-      return (...args: unknown[]) => {
-        calls.push([key, args]);
-        if (key.startsWith("create")) return { id: ++next, kind: key };
-        if (key.startsWith("get")) return 0;
-        return undefined;
-      };
-    },
-  }) as WebGL2RenderingContext;
+  const { calls, gl } = loggingGraphicsGl();
   const result = await runCentralizedProgram({
-    programPath: resolveBinary("programs/egl_image_ownership.wasm"),
+    programPath,
     argv: ["egl_image_ownership"],
     timeout: 30_000,
     onKernelReady(kernel, pid) {
@@ -26,8 +17,9 @@ it("retains imported storage through image, object, and framebuffer retirement",
   });
   expect(result.exitCode, `${result.stdout}\n${result.stderr}`).toBe(0);
   expect(result.stdout.trim()).toBe("OK image ownership");
-  const gpuTexture = calls.find(([name, args]) =>
-    name === "framebufferTexture2D" && args[0] === undefined)?.[1][3];
+  const gpuTexture = allocatedTexture(calls, 64, 64);
+  expect(calls.some(([name, args]) => name === "framebufferTexture2D"
+    && args[0] === 0x8d40 && args[3] === gpuTexture)).toBe(true);
   expect(gpuTexture).toBeInstanceOf(Object);
   const markers = [0.125, 0.25, 0.375, 0.5, 0.625].map(value =>
     calls.findIndex(([name, args]) => name === "clearColor" && args[0] === value));

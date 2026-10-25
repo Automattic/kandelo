@@ -1,9 +1,15 @@
-import { describe, it, expect } from "vitest";
+import { afterAll, beforeAll, describe, it, expect } from "vitest";
 import { isDeepStrictEqual } from "node:util";
 import { runCentralizedProgram } from "./centralized-test-helper";
-import { resolveBinary } from "../src/binary-resolver";
+import { loggingGraphicsGl, allocatedTexture } from "./support/logging-graphics-gl";
+import { compileSdkFixture } from "./support/compile-sdk-fixture";
 
-const programBinary = resolveBinary("programs/egl_dmabuf_smoke.wasm");
+let fixture: ReturnType<typeof compileSdkFixture>;
+beforeAll(() => {
+  fixture = compileSdkFixture(new URL("../../programs/egl_dmabuf_smoke.c", import.meta.url),
+    ["-lEGL", "-lGLESv2", "-lgbm", "-ldrm"]);
+}, 120_000);
+afterAll(() => fixture?.cleanup());
 
 const GL_TEXTURE_2D = 0x0de1;
 const GL_UNSIGNED_BYTE = 0x1401;
@@ -15,33 +21,6 @@ const GL_COLOR_ATTACHMENT0 = 0x8ce0;
 const GL_FRAMEBUFFER = 0x8d40;
 
 type GlCall = [string, unknown[]];
-
-/** WebGL2 Proxy that logs every call. Typed-array arguments are copied
- *  because the bridge hands out views over the guest's command buffer,
- *  which later submissions overwrite. Constants read as undefined, so the
- *  host's own calls (GPU bo allocation) stay apart from guest calls,
- *  which carry numeric enums. */
-function makeLoggingGl(): { log: GlCall[]; gl: WebGL2RenderingContext } {
-  const log: GlCall[] = [];
-  const handler: ProxyHandler<object> = {
-    get(_t, prop) {
-      if (typeof prop !== "string" || /^[A-Z0-9_]+$/.test(prop)) return undefined;
-      return (...args: unknown[]) => {
-        log.push([
-          prop,
-          args.map((a) => (ArrayBuffer.isView(a) ? Array.from(a as Uint8Array) : a)),
-        ]);
-        if (prop.startsWith("create") || prop === "getUniformLocation") return {};
-        if (prop.startsWith("get")) return 0;
-        return undefined;
-      };
-    },
-  };
-  return {
-    log,
-    gl: new Proxy({}, handler) as unknown as WebGL2RenderingContext,
-  };
-}
 
 function makeFakeCanvas(gl: WebGL2RenderingContext) {
   return {
@@ -69,9 +48,9 @@ describe("EGL dma-buf import over the GLES stubs", () => {
   it(
     "validates dma-buf planes and forwards EGLImage and unpack uploads to WebGL",
     async () => {
-      const { log, gl } = makeLoggingGl();
+      const { calls: log, gl } = loggingGraphicsGl();
       const result = await runCentralizedProgram({
-        programPath: programBinary!,
+        programPath: fixture.programPath,
         argv: ["egl_dmabuf_smoke"],
         timeout: 30_000,
         onKernelReady: (kernel, pid) => kernel.gl.attachCanvas(pid, makeFakeCanvas(gl)),
@@ -107,10 +86,12 @@ describe("EGL dma-buf import over the GLES stubs", () => {
       ]);
       expect(unpackAllocation).toBeGreaterThan(-1);
       expect(unpackUpload).toBeGreaterThan(unpackAllocation);
-      const pixelStores = calls("pixelStorei").map(([pname]) => pname);
-      expect(pixelStores).not.toContain(GL_UNPACK_ROW_LENGTH);
-      expect(pixelStores).not.toContain(GL_UNPACK_SKIP_ROWS);
-      expect(pixelStores).not.toContain(GL_UNPACK_SKIP_PIXELS);
+      // The CPU shim already repacks these rows. Native state restoration
+      // may explicitly reset WebGL2's fields, but must not apply the guest's
+      // nonzero row/skip values a second time to the repacked upload.
+      expect(calls("pixelStorei").filter(([pname, value]) =>
+        [GL_UNPACK_ROW_LENGTH, GL_UNPACK_SKIP_ROWS, GL_UNPACK_SKIP_PIXELS].includes(Number(pname))
+          && value !== 0)).toEqual([]);
 
       const matrices = calls("uniformMatrix3fv");
       expect(matrices).toHaveLength(1);
@@ -118,16 +99,20 @@ describe("EGL dma-buf import over the GLES stubs", () => {
       expect(matrices[0].slice(1)).toEqual([false, [1, 2, 3, 4, 5, 6, 7, 8, 9]]);
 
       const attachments = calls("framebufferTexture2D");
-      const gpuBoTexture = attachments.find(([target]) => target === undefined)?.[3];
-      const guestAttachment = attachments.find(([target]) => target === GL_FRAMEBUFFER);
+      const gpuBoTexture = allocatedTexture(log, 64, 64);
+      const guestAttachment = attachments.findLast(([target, point, textureTarget, texture]) =>
+        target === GL_FRAMEBUFFER && point === GL_COLOR_ATTACHMENT0
+        && textureTarget === GL_TEXTURE_2D && texture === gpuBoTexture);
       expect(gpuBoTexture).toBeInstanceOf(Object);
+      expect(attachments.filter(([, , , texture]) => texture === gpuBoTexture).length).toBeGreaterThanOrEqual(2);
       expect(guestAttachment?.slice(0, 3)).toEqual([
         GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
       ]);
       expect(guestAttachment?.[3]).toBe(gpuBoTexture);
       expect(guestAttachment?.[4]).toBe(0);
       expect(
-        calls("framebufferRenderbuffer").filter(([target]) => target === GL_FRAMEBUFFER),
+        calls("framebufferRenderbuffer").filter(([target, point]) =>
+          target === GL_FRAMEBUFFER && point === GL_COLOR_ATTACHMENT0),
       ).toHaveLength(0);
     },
   );

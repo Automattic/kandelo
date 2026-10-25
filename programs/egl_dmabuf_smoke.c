@@ -320,7 +320,30 @@ int main(void)
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                               GL_RENDERBUFFER, renderbuffers[1]);
 
+    const char *vertex_source =
+        "attribute vec2 position; uniform mat3 foo;"
+        "void main() { gl_Position = vec4((foo * vec3(position, 1.0)).xy, 0.0, 1.0); }";
+    const char *fragment_source =
+        "precision mediump float; void main() { gl_FragColor = vec4(1.0); }";
+    GLuint vertex = glCreateShader(GL_VERTEX_SHADER);
+    GLuint fragment = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(vertex, 1, &vertex_source, NULL);
+    glShaderSource(fragment, 1, &fragment_source, NULL);
+    glCompileShader(vertex);
+    glCompileShader(fragment);
+    GLint compiled_vertex = 0, compiled_fragment = 0, linked = 0;
+    glGetShaderiv(vertex, GL_COMPILE_STATUS, &compiled_vertex);
+    glGetShaderiv(fragment, GL_COMPILE_STATUS, &compiled_fragment);
     GLuint program = glCreateProgram();
+    glAttachShader(program, vertex);
+    glAttachShader(program, fragment);
+    glLinkProgram(program);
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (!compiled_vertex || !compiled_fragment || !linked) {
+        fprintf(stderr, "FAIL: compiling/linking the matrix uniform program\n");
+        return 1;
+    }
+    glUseProgram(program);
     GLint location = glGetUniformLocation(program, "foo");
     if (location < 0) {
         fprintf(stderr, "FAIL: uniform location %d\n", location);

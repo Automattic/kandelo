@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { resolveBinary } from "../src/binary-resolver";
 
-const programBinary = tryResolveBinary("programs/gbm_surface_smoke.wasm");
+const programBinary = resolveBinary("programs/gbm_surface_smoke.wasm");
 
 describe("libgbm 2-BO surface ring", () => {
-  it.skipIf(!programBinary)(
+  it(
     "lock/release/has_free_buffers transitions match mesa semantics",
     async () => {
       const result = await runCentralizedProgram({

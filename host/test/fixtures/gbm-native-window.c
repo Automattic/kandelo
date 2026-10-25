@@ -14,7 +14,8 @@ int main(void) {
     struct gbm_device *device = gbm_create_device(fd);
     CHECK(device);
     struct gbm_surface *first = gbm_surface_create(device, 640, 480, GBM_FORMAT_XRGB8888, GBM_BO_USE_SCANOUT);
-    struct gbm_surface *second = gbm_surface_create(device, 800, 600, GBM_FORMAT_XRGB8888, GBM_BO_USE_SCANOUT);
+    struct gbm_surface *second = gbm_surface_create(device, 800, 600, GBM_FORMAT_ABGR8888,
+        GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
     CHECK(first && second);
     uint32_t width = 0, height = 0, foreign_window[2] = {1, 2};
     CHECK(!_wpk_gbm_surface_dimensions(foreign_window, &width, &height));
@@ -25,7 +26,14 @@ int main(void) {
     CHECK(eglInitialize(display, NULL, NULL));
     EGLConfig config;
     EGLint count;
-    CHECK(eglChooseConfig(display, NULL, &config, 1, &count) && count == 1);
+    const EGLint config_attributes[] = {
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_NONE,
+    };
+    CHECK(eglChooseConfig(display, config_attributes, &config, 1, &count) && count == 1);
+    EGLint native_visual;
+    CHECK(eglGetConfigAttrib(display, config, EGL_NATIVE_VISUAL_ID, &native_visual));
+    CHECK(native_visual == GBM_FORMAT_ABGR8888);
     EGLSurface surface = eglCreateWindowSurface(display, config, (EGLNativeWindowType)second, NULL);
     CHECK(surface != EGL_NO_SURFACE);
     CHECK(eglDestroySurface(display, surface));

@@ -19,7 +19,8 @@
  *     swaynag button runs its action through /bin/sh.
  */
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../src/node-kernel-host";
@@ -116,7 +117,9 @@ async function startSway(config: string) {
   const out = { value: "" };
   const err = { value: "" };
   const stdoutByPid = new Map<number, string>();
+  const events: unknown[] = [], progress: unknown[] = [], syscalls: unknown[] = [];
   const host = new NodeKernelHost({
+    onProcessEvent: event => events.push({time:Date.now(),...event}),
     rootfsImage: await sessionRootfs("sway", [
       { path: "/bin/sh", bytes: bytes(dashBin!), mode: 0o755 },
       { path: "/usr/bin/wlclient-test", bytes: bytes(clientBin!), mode: 0o755 },
@@ -169,6 +172,9 @@ async function startSway(config: string) {
   };
 
   await host.init();
+  const offSyscalls = process.env.KANDELO_SWAY_TRACE === "1" ? host.subscribeSyscalls(event => {
+    syscalls.push(event); if (syscalls.length > 256) syscalls.shift();
+  }) : undefined;
   host.setInputCanvasDims(CANVAS_W, CANVAS_H);
   const exited = host.spawn(compositorBytes("sway"), ["sway"], { env });
   const exitCode = () => Promise.race([
@@ -177,7 +183,19 @@ async function startSway(config: string) {
       setTimeout(() => reject(new Error(`sway timed out.\n${dump()}`)), 30_000)),
   ]);
 
-  return { host, out, err, dump, env, tiles, waitForWorkspace, press, click, exitCode };
+  const close = async () => {
+    if (process.env.KANDELO_SWAY_TRACE !== "1") return host.destroy();
+    const before = await host.enumProcs();
+    offSyscalls?.();
+    host.subscribeDestroyProgress(event => progress.push({time:Date.now(),...event}));
+    try { await host.destroy(); }
+    finally {
+      const id = createHash("sha256").update(config).digest("hex").slice(0,12);
+      writeFileSync(join(__dirname, `../../.context/sway-node-teardown-${id}.json`),
+        JSON.stringify({config,before,events,progress,syscalls,stdout:out.value,stderr:err.value},(_key,value) => typeof value === "bigint" ? value.toString() : value,2)+"\n");
+    }
+  };
+  return { host, out, err, dump, env, tiles, waitForWorkspace, press, click, exitCode, close };
 }
 
 describe("sway — a wlroots tiling compositor runs a client session", () => {
@@ -224,7 +242,7 @@ describe("sway — a wlroots tiling compositor runs a client session", () => {
         await sway.host.spawn(arrayBuffer(swaymsgBin!), ["swaymsg", "exit"], { env: sway.env });
         expect(await sway.exitCode(), `sway exit.\n${dump()}`).toBe(0);
       } finally {
-        await sway.host.destroy().catch(() => {});
+        await sway.close();
       }
     },
     180_000,
@@ -251,7 +269,7 @@ exec wlclient-test
         await sway.host.spawn(arrayBuffer(swaymsgBin!), ["swaymsg", "exit"], { env: sway.env });
         expect(await sway.exitCode(), `sway exit.\n${sway.dump()}`).toBe(0);
       } finally {
-        await sway.host.destroy().catch(() => {});
+        await sway.close();
       }
     },
     180_000,
@@ -275,7 +293,7 @@ exec wlclient-test
         sway.click(CANVAS_W - 90, Math.floor(nagHeight / 2));
         expect(await sway.exitCode(), `sway exit.\n${sway.dump()}`).toBe(0);
       } finally {
-        await sway.host.destroy().catch(() => {});
+        await sway.close();
       }
     },
     180_000,
