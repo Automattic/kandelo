@@ -155,8 +155,13 @@ oversized group returns to database queries; a zero allowance disables the
 cache. Return/throw effects are always read from current summaries, and
 specialized effects expire at each root evaluation while normal summaries are
 changing. After that fixed point, a private interpreter session owns the
-immutable summary vector and reuses specialized effects within the existing
-4 MiB allowance. Keys also distinguish recursion depth. A newly escaped frame
+immutable summary vector and reuses specialized effects within an allowance
+that scales with original code size: four times the function-body bytes,
+with a 16 MiB floor and 64 MiB cap. Data, debug and compiler-fact sections do
+not increase this allowance. It allocates entries on demand rather than
+reserving the maximum. `InterpreterLimits::specialization_cache_bytes` uses
+`None` for this automatic policy; `Some(bytes)` overrides it and `Some(0)`
+disables reuse. Keys also distinguish recursion depth. A newly escaped frame
 invalidates these effects and any pending insertions; a subtree that declined
 optional specialization for lack of work is not saved across roots. No session
 can rebind its summaries. Target-selection entries contain no function IR.
@@ -175,6 +180,17 @@ state instead of copying it. Dead normal suffixes stop only when no later
 injected landing can revive them. Active label joins use a nesting stack,
 and a label's first incoming branch transfers its owned state. Target-table
 writes batch across the private recording phase while dirty pages still spill.
+
+The repository's host-tool builder uses Cargo's `instrumenter` profile
+(`opt-level=3` for the tool and its host dependencies) for both backends.
+The guest kernel retains the size-optimized `release` profile. Direct manual
+`cargo build --release` uses that size profile; use
+`scripts/build-fork-instrument-tool.sh` to build and install the normal host tool.
+Opt-in `WPK_FORK_PROGRESS=1` diagnostics report specialization-cache hits,
+misses, FIFO evictions and peak estimated payload separately for each policy
+session. `scripts/profile-fork-instrument-cache.py` compares explicit budgets
+using fresh complete transforms, separate diagnostic runs and independent
+artifact checks. Its timings exclude Binaryen and guest execution.
 
 The state limit reserves a conservative bound for structured-control scratch
 and recorded states before evaluation; it is not a physical-memory ceiling.

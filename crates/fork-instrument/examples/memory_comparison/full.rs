@@ -11,11 +11,20 @@ use wasmparser::{Parser, Payload};
 
 const BYTE_LIMIT: u64 = 8 * 1024 * 1024 * 1024;
 
-pub(super) fn measure(backend: &str, input: &Path, destination: &Path) -> Result<()> {
+pub(super) fn measure(
+    backend: &str,
+    input: &Path,
+    destination: &Path,
+    specialization_cache_bytes: Option<usize>,
+) -> Result<()> {
     let (input, permissions) = MappedArtifact::read(input, BYTE_LIMIT)?;
     let options = Options::default();
     let output = match backend {
         "eager" => {
+            ensure!(
+                specialization_cache_bytes.is_none(),
+                "cache tuning requires the native backend"
+            );
             // Keep the production oracle algorithm and its Vec return value.
             // Copy/drop that Vec at exactly the boundary used by the CLI.
             let encoded = fork_instrument::instrument(input.bytes(), &options)?;
@@ -25,7 +34,11 @@ pub(super) fn measure(backend: &str, input: &Path, destination: &Path) -> Result
             artifact
         }
         "stream" => {
-            let output = native::instrument(input.bytes(), &options, Default::default())?;
+            let mut limits = native::Limits::default();
+            if let Some(bytes) = specialization_cache_bytes {
+                limits.analysis.sinks.interpreter.specialization_cache_bytes = Some(bytes);
+            }
+            let output = native::instrument(input.bytes(), &options, limits)?;
             eprintln!("native analysis: {}", output.decision.source.as_str());
             if let Some(error) = &output.decision.facts_error {
                 eprintln!("compiler facts unavailable: {error}");

@@ -12,6 +12,8 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 use wasm_encoder::reencode::Reencode;
+#[path = "memory_comparison/cache_pressure.rs"]
+mod cache_pressure;
 #[path = "memory_comparison/facts.rs"]
 mod facts_inspection;
 #[path = "memory_comparison/full.rs"]
@@ -458,6 +460,9 @@ fn main() -> Result<()> {
     match args.get(1).map(String::as_str) {
         Some("generate") if args.len() == 3 => generate(Path::new(&args[2])),
         Some("generate-sinks") if args.len() == 3 => generate_sinks(Path::new(&args[2])),
+        Some("generate-cache-pressure") if args.len() == 3 => {
+            cache_pressure::generate(Path::new(&args[2]))
+        }
         Some("facts") if args.len() == 4 => {
             let disk_bytes = args[3].parse::<u64>()?;
             facts_inspection::inspect(Path::new(&args[2]), disk_bytes)
@@ -470,17 +475,22 @@ fn main() -> Result<()> {
             );
             measure(&args[2], &args[3], Path::new(&args[4]))
         }
-        Some("measure") if args.len() == 6 && args[3] == "instrument" => {
-            full::measure(&args[2], Path::new(&args[4]), Path::new(&args[5]))
+        Some("measure") if (6..=7).contains(&args.len()) && args[3] == "instrument" => {
+            full::measure(
+                &args[2],
+                Path::new(&args[4]),
+                Path::new(&args[5]),
+                args.get(6).map(|s| s.parse()).transpose()?,
+            )
         }
         Some("validate") if args.len() == 3 => {
             scan(&std::fs::read(&args[2])?)?;
             Ok(())
         }
         _ => anyhow::bail!(concat!(
-            "usage: memory_comparison generate|generate-sinks DIR | shapes INPUT | ",
+            "usage: memory_comparison generate|generate-sinks DIR | generate-cache-pressure OUTPUT | shapes INPUT | ",
             "facts INPUT DB_BYTES | measure eager|stream frontend|roundtrip|sinks INPUT | ",
-            "measure eager|stream instrument INPUT OUTPUT | validate INPUT",
+            "measure eager|stream instrument INPUT OUTPUT [NATIVE_CACHE_BYTES] | validate INPUT",
         )),
     }
 }

@@ -1,6 +1,6 @@
 # Native branch joins and frozen specialization, 2026-10-24
 
-These three further host-instrumenter rounds follow the
+These four further host-instrumenter rounds follow the
 [earlier four rounds](2026-10-24-native-instrumentation-additional-rounds.md).
 All use the same speed-optimized compilation for both backends and their
 host dependencies (`CARGO_PROFILE_RELEASE_OPT_LEVEL=3`). At measurement
@@ -11,7 +11,7 @@ Each package/backend/phase has three fresh serial runs, alternating backend
 order, with no concurrent builds or suites. Ordinary desktop applications
 remained active. CLI includes Binaryen `Os`; raw physical footprint excludes
 Binaryen and its children. Inputs, versions, machine and validation match
-the preceding report. All 108 transforms and 108 independent Node
+the preceding report. All 144 transforms and 144 independent Node
 compilation/artifact-policy checks passed. Every output hash matches the
 preceding baseline within its backend, input and phase. Guest execution
 and full latest-source runtime/ABI verification remain separate gates.
@@ -65,3 +65,20 @@ Native raw medians versus the previous speed experiment are 21%, 11% and
 above are the authority for the remaining Walrus gap. Walrus remains
 unchanged and default. No source/registry modification, analysis weakening
 or Walrus fallback was used.
+
+## Scheduling experiment not retained
+
+A fourth round visited escaping functions and their direct dependencies
+before other roots, hoping to settle indirect targets earlier. Normal
+summary evaluations barely changed: Gawk 6,806 to 6,799; Coreutils remained
+6,202; Bash remained 6,996 and 3,540 across its two policy plans. This
+extra ordering policy was removed rather than retained on timing noise.
+
+| Package | Walrus CLI | Native CLI | Walrus raw | Native raw |
+|---|---:|---:|---:|---:|
+| Gawk | 1.697 s | 1.803 s | 0.857 s | 0.880 s |
+| Coreutils | 0.834 s | 1.175 s | 0.477 s | 0.815 s |
+| Bash | 2.431 s | 2.487 s | 1.804 s | 1.586 s |
+
+These 36 transforms and 36 artifact checks also passed with unchanged
+output hashes; their source/binary fingerprints remain in the JSON.

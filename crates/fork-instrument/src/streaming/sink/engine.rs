@@ -17,8 +17,9 @@ pub struct InterpreterLimits {
     pub ir: IrLimits,
     pub evaluation: Limits,
     pub specialization_depth: u32,
-    /// Estimated cache payload, including both copies of FIFO keys.
-    pub specialization_cache_bytes: usize,
+    /// Estimated payload including both FIFO key copies. None scales with
+    /// original code bytes (16–64 MiB); Some(0) disables caching.
+    pub specialization_cache_bytes: Option<usize>,
     /// Call selection under the frozen policy, independent of summary changes.
     pub resolved_target_cache_bytes: usize,
     /// Estimated retained payload of decoded specialization callees.
@@ -31,11 +32,17 @@ impl Default for InterpreterLimits {
             ir: IrLimits::default(),
             evaluation: Limits::default(),
             specialization_depth: 3,
-            specialization_cache_bytes: 4 * 1024 * 1024,
+            specialization_cache_bytes: None,
             resolved_target_cache_bytes: 2 * 1024 * 1024,
             decoded_body_cache_bytes: 8 * 1024 * 1024,
         }
     }
+}
+
+fn automatic_specialization_cache_bytes(code_bytes: usize) -> usize {
+    code_bytes
+        .saturating_mul(4)
+        .clamp(16 * 1024 * 1024, 64 * 1024 * 1024)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -57,9 +64,23 @@ struct Cache {
     values: BTreeMap<Key, Specialized>,
     fifo: VecDeque<Key>,
     bytes: usize,
+    hits: usize,
+    misses: usize,
+    evictions: usize,
+    peak_bytes: usize,
 }
 
 impl Cache {
+    fn get(&mut self, key: &Key) -> Option<Specialized> {
+        let value = self.values.get(key).copied();
+        if value.is_some() {
+            self.hits += 1;
+        } else {
+            self.misses += 1;
+        }
+        value
+    }
+
     fn clear(&mut self) {
         self.values.clear();
         self.fifo.clear();
@@ -77,6 +98,7 @@ impl Cache {
         while self.bytes > limit - value.charge {
             let oldest = self.fifo.pop_front().unwrap();
             self.bytes -= self.values.remove(&oldest).unwrap().charge;
+            self.evictions += 1;
         }
         // A recursive evaluation can have filled the same key while this
         // caller was running. Keep the first valid conservative result.
@@ -84,14 +106,16 @@ impl Cache {
             return;
         }
         self.bytes += value.charge;
+        self.peak_bytes = self.peak_bytes.max(self.bytes);
         self.fifo.push_back(key.clone());
         self.values.insert(key, value);
     }
 }
 
 /// Holds shared body resources, compact frame-escape flags and bounded caches.
-/// Specialized effects are cleared per root evaluation; resolved targets live
-/// as long as the frozen policy and never contain summary-dependent effects.
+/// Specialized effects are cleared per root until a private session takes
+/// ownership of immutable summaries. Resolved targets live as long as the
+/// frozen policy and never contain summary-dependent effects.
 pub struct SinkInterpreter<'p, 's, 'a> {
     plan: &'p PolicyPlan<'p, 's, 'a>,
     bodies: CachedBodies<'p, 'a>,
@@ -103,6 +127,20 @@ pub struct SinkInterpreter<'p, 's, 'a> {
     frozen_summaries: bool,
     escape_generation: usize,
     incomplete_specializations: usize,
+    specialization_cache_bytes: usize,
+}
+
+impl Drop for SinkInterpreter<'_, '_, '_> {
+    fn drop(&mut self) {
+        crate::progress::Progress::new("specialization cache").note(format_args!(
+            "{} hits, {} misses, {} evictions, {} peak bytes, {} allowed bytes",
+            self.cache.hits,
+            self.cache.misses,
+            self.cache.evictions,
+            self.cache.peak_bytes,
+            self.specialization_cache_bytes,
+        ));
+    }
 }
 
 /// Own the immutable summary context so effects cannot survive a rebind.
@@ -147,6 +185,17 @@ impl<'p, 's, 'a> SinkInterpreter<'p, 's, 'a> {
             "native specialization depth exceeds supported limit"
         );
         let program = plan.original_program();
+        // WHY: data and debug sections do not predict analysis working sets.
+        // Scale only with original code; the allowance is not preallocated.
+        let specialization_cache_bytes = limits.specialization_cache_bytes.unwrap_or_else(|| {
+            let code_bytes = program
+                .original_scan()
+                .functions
+                .iter()
+                .filter_map(|function| function.body.as_ref())
+                .fold(0usize, |bytes, body| bytes.saturating_add(body.range.len()));
+            automatic_specialization_cache_bytes(code_bytes)
+        });
         Ok(Self {
             plan,
             bodies: CachedBodies::new(
@@ -162,6 +211,7 @@ impl<'p, 's, 'a> SinkInterpreter<'p, 's, 'a> {
             frozen_summaries: false,
             escape_generation: 0,
             incomplete_specializations: 0,
+            specialization_cache_bytes,
         })
     }
 
@@ -334,8 +384,8 @@ impl<'p, 's, 'a> SinkInterpreter<'p, 's, 'a> {
                 })
                 .collect(),
         };
-        if let Some(value) = self.cache.values.get(&key) {
-            return Ok(Some(*value));
+        if let Some(value) = self.cache.get(&key) {
+            return Ok(Some(value));
         }
         if self.remaining == 0 {
             self.incomplete_specializations += 1;
@@ -408,7 +458,7 @@ impl<'p, 's, 'a> SinkInterpreter<'p, 's, 'a> {
                 && incomplete == self.incomplete_specializations)
         {
             self.cache
-                .insert(key, value, self.limits.specialization_cache_bytes);
+                .insert(key, value, self.specialization_cache_bytes);
         }
         Ok(Some(value))
     }
@@ -525,6 +575,19 @@ mod tests {
         facts::storage::FactsStore,
         streaming::{scan, sink::Program},
     };
+
+    #[test]
+    fn automatic_cache_budget_scales_and_caps_without_overflow() {
+        let mib = 1024 * 1024;
+        for (code, budget) in [
+            (0, 16 * mib),
+            (8 * mib, 32 * mib),
+            (32 * mib, 64 * mib),
+            (usize::MAX, 64 * mib),
+        ] {
+            assert_eq!(automatic_specialization_cache_bytes(code), budget);
+        }
+    }
 
     #[test]
     fn frozen_effects_reuse_roots_but_distinguish_depth_and_incomplete_work() {

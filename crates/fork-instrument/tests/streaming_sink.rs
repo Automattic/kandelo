@@ -1397,7 +1397,7 @@ fn native_policy_interpreter_specializes_constants_with_a_bounded_per_root_cache
         let mut interpreter = SinkInterpreter::new(
             &plan,
             InterpreterLimits {
-                specialization_cache_bytes: cache,
+                specialization_cache_bytes: Some(cache),
                 ..Default::default()
             },
         )
