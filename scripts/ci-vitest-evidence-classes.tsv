@@ -541,6 +541,7 @@ scripts/check-image-demo-config.test.mjs	prepared-product
 tests/package-system/bash-package.test.ts	prepared-product
 tests/package-system/binary-dev-access.test.ts	prepared-product
 tests/package-system/browser-binary-dependencies.test.ts	prepared-product
+tests/package-system/browser-binary-supply.test.ts	prepared-product
 tests/package-system/build-input-crate-closure.test.ts	source-only
 tests/package-system/build-input-import-closure.test.ts	prepared-product
 tests/package-system/composer-package.test.ts	source-only

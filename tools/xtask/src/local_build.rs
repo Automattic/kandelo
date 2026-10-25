@@ -35,6 +35,15 @@ use std::time::SystemTime;
 
 const LOCAL_SUPPORTED_SCHEMA: u32 = 1;
 const LOCAL_SUPPORTED_POLICY: &str = "source-only-v1";
+/// The supported set and output root that define the supported tree.
+/// `./run.sh setup` (`bootstrap`) and `./run.sh local-build` (`bootstrap
+/// packages`) both reach the engine step, which builds this with the
+/// selection `supported_tree_products` makes, so setup publishes every node
+/// local-build would for the same checkout. `./run.sh local-build --plan`
+/// cannot import these; `run_sh_setup_and_local_build_build_the_same_tree`
+/// checks that it previews the same values.
+const SUPPORTED_SET_REL: &str = "packages/sets/local-supported.toml";
+const SOURCE_ONLY_OUTPUT_REL: &str = "local-binaries/source-only-v1";
 const MAX_SET_BYTES: usize = 1024 * 1024;
 const MAX_GRAPH_MANIFEST_BYTES: usize = 1024 * 1024;
 const GRAPH_AUTHORITY_DOMAIN: &[u8] = b"kandelo-local-build-graph-authority-v1\0";
@@ -434,9 +443,10 @@ pub(crate) fn bootstrap_step_plan() -> Vec<BootstrapStep> {
     ]
 }
 
-/// Default `--source-cache-root` for `bootstrap`, matching
-/// `scripts/run-local-build.sh` so the engine step here and the
-/// `./run.sh local-build` front door share one persistent cache location.
+/// Default `--source-cache-root` for `bootstrap`, which `./run.sh setup` and
+/// `./run.sh local-build` both use, matching the default
+/// `./run.sh local-build --plan` passes, so all of them share one persistent
+/// cache location.
 ///
 /// The SourceOnly build cache is shared across every worktree on the
 /// machine by default (it is content-addressed, so identical inputs are
@@ -530,6 +540,9 @@ fn run_repo_script_with_env(
 pub(crate) enum Selection {
     /// The whole-tree build closure: `bootstrap_step_plan()` in order.
     All,
+    /// The SDK prerequisites and the engine's supported tree, without the
+    /// host steps: `./run.sh local-build`.
+    Packages,
     /// A single registry package or declared VFS product, built through the
     /// local-build engine's `--products`-style selection (which already
     /// resolves the transitive dependency closure and content-addressed
@@ -560,6 +573,7 @@ pub(crate) fn bootstrap_target_to_selection(target: &str) -> Selection {
         "sysroot" => Selection::HostStep("sysroot"),
         "sysroot64" => Selection::HostStep("sysroot64"),
         "sdk" => Selection::HostStep("sdk"),
+        "packages" => Selection::Packages,
         other => Selection::Package(other.to_string()),
     }
 }
@@ -742,6 +756,44 @@ fn verify_sysroot_abi_headers(repo: &Path, sysroot_path: &Path, arch: &str) -> R
     ))
 }
 
+/// The steps of `bootstrap packages` (`./run.sh local-build`), in order. The
+/// full SDK sysroots, graphics included, come first: every package build reads
+/// them, but the engine's graph does not model them, and the wasm64 sysroot
+/// builds against the wasm32 SDK. A failed step stops the run before the
+/// engine derives any cache key.
+fn bootstrap_packages_step_plan() -> [&'static str; 3] {
+    ["sdk", "sysroot64", "engine"]
+}
+
+/// The engine's product selection for a supported-tree build: what consumers
+/// demand by default, or every declared package with `--all-packages`.
+/// `./run.sh setup` and `./run.sh local-build` both reach the engine through
+/// this, so they always build the same tree.
+fn supported_tree_products(all_packages: bool) -> Vec<String> {
+    vec![if all_packages { "all" } else { DEMANDED_SELECTION }.to_string()]
+}
+
+/// The `local-build run` arguments bootstrap's `engine` step uses: the
+/// supported set, the SourceOnly output root, and the caller's products.
+fn supported_tree_run_args(
+    repo: &Path,
+    source_cache_root: PathBuf,
+    products: Vec<String>,
+    jobs: usize,
+    rebuild: bool,
+    verify_cache: bool,
+) -> LocalBuildRunArgsV1 {
+    LocalBuildRunArgsV1 {
+        set: repo.join(SUPPORTED_SET_REL),
+        source_cache_root,
+        output_root: repo.join(SOURCE_ONLY_OUTPUT_REL),
+        products,
+        jobs,
+        rebuild,
+        verify_cache,
+    }
+}
+
 /// Run one named bootstrap step. Shared by the whole-tree `Selection::All`
 /// loop and single-target selection, so a target built alone (e.g.
 /// `bootstrap kernel`) and the same step run as part of `bootstrap all` do
@@ -765,15 +817,14 @@ fn run_bootstrap_step(
             ] {
                 ensure_package_sysroot(repo, arch)?;
             }
-            run_aggregate(LocalBuildRunArgsV1 {
-                set: repo.join("packages/sets/local-supported.toml"),
-                source_cache_root: default_source_cache_root()?,
-                output_root: repo.join("local-binaries/source-only-v1"),
+            run_aggregate(supported_tree_run_args(
+                repo,
+                default_source_cache_root()?,
                 products,
                 jobs,
                 rebuild,
                 verify_cache,
-            })
+            ))
         }
         // `--rebuild` (`bootstrap --rebuild` / `./run.sh rebuild`) must force
         // these two scripts' own input-hash skip check, so a forced rebuild
@@ -813,17 +864,28 @@ fn run_bootstrap_step(
     }
 }
 
-/// `xtask bootstrap [<target>] [--jobs <n>] [--rebuild] [--verify-cache]` —
-/// the single engine-plus-host build closure behind `./run.sh setup` and
-/// `./run.sh build <target>`. An omitted target (or the explicit literal
-/// `all`) builds the whole tree via `bootstrap_step_plan()`; any other
-/// target selects one package/product (routed through the engine's own
-/// dependency-closure and cache-key selection) or one non-graph host step
-/// (see `bootstrap_target_to_selection`).
+/// `xtask bootstrap [<target>] [--all-packages] [--jobs <n>] [--rebuild] [--verify-cache]` —
+/// the single engine-plus-host build closure behind `./run.sh setup`,
+/// `./run.sh local-build` and `./run.sh build <target>`. An omitted target
+/// (or the explicit literal `all`) builds the whole tree via
+/// `bootstrap_step_plan()`; `packages` runs only the SDK prerequisites and
+/// the engine; any other target selects one package/product (routed through
+/// the engine's own dependency-closure and cache-key selection) or one
+/// non-graph host step (see `bootstrap_target_to_selection`).
+///
+/// The engine builds what consumers demand (`supported_tree_products`):
+/// every active product and the packages behind the browser app's imports.
+/// `--all-packages` builds every package the supported set declares, which
+/// test suites need for fixtures no image carries.
 pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
     let (selection, rest) = bootstrap_selection_from_args(&args)?;
     let repo = crate::repo_root();
-    let mut flags = parse_named_flags(&rest, &["--jobs"], &[], &["--rebuild", "--verify-cache"])?;
+    let mut flags = parse_named_flags(
+        &rest,
+        &["--jobs"],
+        &[],
+        &["--rebuild", "--verify-cache", "--all-packages"],
+    )?;
     let jobs = select_job_count(
         flags.values.remove("--jobs").as_deref(),
         std::env::var("WASM_POSIX_LOCAL_BUILD_JOBS").ok().as_deref(),
@@ -831,15 +893,30 @@ pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
     )?;
     let rebuild = flags.switches.contains("--rebuild");
     let verify_cache = flags.switches.contains("--verify-cache");
+    let all_packages = flags.switches.contains("--all-packages");
+    if all_packages && !matches!(selection, Selection::All | Selection::Packages) {
+        return Err("--all-packages applies only to `bootstrap [all]` and `bootstrap packages`".to_string());
+    }
     match selection {
         Selection::All => {
             for step in bootstrap_step_plan() {
                 let products = if step.name == "engine" {
-                    vec!["all".to_string()]
+                    supported_tree_products(all_packages)
                 } else {
                     Vec::new()
                 };
                 run_bootstrap_step(&repo, step.name, jobs, rebuild, verify_cache, products)?;
+            }
+            Ok(())
+        }
+        Selection::Packages => {
+            for step in bootstrap_packages_step_plan() {
+                let products = if step == "engine" {
+                    supported_tree_products(all_packages)
+                } else {
+                    Vec::new()
+                };
+                run_bootstrap_step(&repo, step, jobs, rebuild, verify_cache, products)?;
             }
             Ok(())
         }
@@ -1631,7 +1708,7 @@ pub(crate) fn run_clean(args: Vec<String>) -> Result<(), String> {
     };
 
     let repo = crate::repo_root();
-    let set = repo.join("packages/sets/local-supported.toml");
+    let set = repo.join(SUPPORTED_SET_REL);
     let registry = fixed_registry(&repo);
     let graph = load_and_plan(&repo, &set, &registry)?;
     let node = resolve_clean_target(&graph, &target)?;
@@ -1643,7 +1720,7 @@ pub(crate) fn run_clean(args: Vec<String>) -> Result<(), String> {
     let _cache_use =
         crate::cache_gc::CacheUseLock::acquire_shared_if_present(&planned_cache.base, "clean")?;
     let compiled_cache_root = planned_cache.compiled;
-    let output_root = repo.join("local-binaries/source-only-v1");
+    let output_root = repo.join(SOURCE_ONLY_OUTPUT_REL);
 
     let mut removed_paths = Vec::new();
     for cleaned in &removal {
@@ -1884,7 +1961,21 @@ fn run_plan_status(args: LocalBuildPlanStatusArgsV1) -> Result<(), String> {
         .map_err(|error| format!("canonicalize supported set {}: {error}", set.display()))?;
     let registry = fixed_registry(&repo);
     let graph = load_and_plan(&repo, &set, &registry)?;
-    let selected = select_graph_dependencies(&graph, &args.products)?;
+    // A dry run writes nothing: the demanded selection reads the program
+    // index and root node_modules a build already provisioned.
+    let demanded = if args.products.iter().any(|product| product == DEMANDED_SELECTION) {
+        Some(check_browser_binary_supply(&repo).map_err(|error| {
+            format!(
+                "{error}\npreviewing the default selection needs the root node_modules and the \
+                 program index a build provisions: run `./run.sh local-build` once, or preview \
+                 every package with `./run.sh local-build --plan --all`"
+            )
+        })?)
+    } else {
+        None
+    };
+    let product_filters = expand_product_filters(&graph, &args.products, demanded.as_deref())?;
+    let selected = select_graph_dependencies(&graph, &product_filters)?;
     let planned_cache = plan_canonical_source_only_cache_roots(&args.source_cache_root, None)?;
     // Not materialized: materializing would create cache directories, which a
     // dry run must not do. A missing cache simply makes every node "will run".
@@ -2541,6 +2632,132 @@ fn compute_skip_receipts(
     BTreeMap::new()
 }
 
+/// The product selection of a default build: every active product, plus the
+/// packages that own the browser app's own binary imports. What the images
+/// need is their product closures; what else the browser needs is its
+/// imports. `all` selects every node the supported set declares instead.
+const DEMANDED_SELECTION: &str = "demanded";
+
+/// Whether a run builds a supported tree (`all` or `demanded`) into this
+/// checkout's own SourceOnly root, as `./run.sh setup` and `./run.sh
+/// local-build` do. `set` and `output_root` are the run's canonical paths.
+fn is_supported_tree_run(repo: &Path, set: &Path, output_root: &Path, products: &[String]) -> bool {
+    let tree = products.is_empty()
+        || products
+            .iter()
+            .any(|product| product == "all" || product == DEMANDED_SELECTION);
+    tree
+        && fs::canonicalize(repo.join(SUPPORTED_SET_REL)).ok().as_deref() == Some(set)
+        && fs::canonicalize(repo.join(SOURCE_ONLY_OUTPUT_REL)).ok().as_deref() == Some(output_root)
+}
+
+/// Replace `demanded` with explicit filters: each active product id, and the
+/// package (`name`, or `name64` for a wasm64 node) owning each browser
+/// import. Explicit filters make the run a narrow selection, so the engine
+/// carries forward packages a wider `all` build published and are still
+/// current. Any other selection is returned unchanged.
+fn expand_product_filters(
+    graph: &PlannedGraphV1,
+    products: &[String],
+    demanded_packages: Option<&[String]>,
+) -> Result<Vec<String>, String> {
+    if !products.iter().any(|product| product == DEMANDED_SELECTION) {
+        return Ok(products.to_vec());
+    }
+    if products.len() != 1 {
+        return Err("product filter 'demanded' may not be mixed with other filters".to_string());
+    }
+    let mut filters = graph
+        .dependencies
+        .keys()
+        .filter_map(|node| match node {
+            PlanNodeV1::Product { id } => Some(id.clone()),
+            PlanNodeV1::Package { .. } => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let demanded_packages = demanded_packages.ok_or_else(|| {
+        "the demanded selection needs the browser binary check's package list".to_string()
+    })?;
+    for line in demanded_packages {
+        let (name, arch) = line
+            .split_once('/')
+            .ok_or_else(|| format!("invalid demanded package {line:?}"))?;
+        if !graph.dependencies.contains_key(&PlanNodeV1::package(name, arch)) {
+            return Err(format!(
+                "the browser app imports an output of {line}, which the supported set does not build"
+            ));
+        }
+        let filter = match arch {
+            "wasm32" => name.to_string(),
+            "wasm64" => {
+                let filter = format!("{name}64");
+                if graph
+                    .dependencies
+                    .contains_key(&PlanNodeV1::package(&filter, "wasm32"))
+                {
+                    return Err(format!(
+                        "cannot select {line}: package {filter} also names a wasm32 node"
+                    ));
+                }
+                filter
+            }
+            other => return Err(format!("demanded package {name} has unknown arch {other:?}")),
+        };
+        filters.insert(filter);
+    }
+    Ok(filters.into_iter().collect())
+}
+
+/// Run `scripts/check-browser-binary-supply.ts` against the package graph:
+/// every binary the browser app imports must be an output of a package the
+/// supported set builds. Returns `name/arch` of the package owning each
+/// import, which a default build selects beside the products. What images
+/// need is their products' dependency closure, which the planner enforces.
+/// The script's report goes to stderr.
+fn check_browser_binary_supply(repo: &Path) -> Result<Vec<String>, String> {
+    let output = Command::new("node")
+        .arg(repo.join("node_modules/tsx/dist/cli.mjs"))
+        .arg(repo.join("scripts/check-browser-binary-supply.ts"))
+        .current_dir(repo)
+        .stderr(Stdio::inherit())
+        .output()
+        .map_err(|error| format!("spawn check-browser-binary-supply.ts: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "the browser binary check failed ({}); a binary the browser app imports \
+             has no supported producer, or the check could not run (see above)",
+            output.status
+        ));
+    }
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|_| "check-browser-binary-supply.ts printed non-UTF-8".to_string())?;
+    Ok(stdout.lines().map(str::to_string).filter(|line| !line.is_empty()).collect())
+}
+
+/// Run `scripts/check-browser-binary-supply.ts --published <output_root>`:
+/// each browser import, the artifacts behind the browser's virtual modules,
+/// and every lazy body each active product's published image references
+/// must be a regular file of the declared size there. Its report goes to
+/// stderr; stdout carries the run's machine-readable result.
+fn check_published_binary_supply(repo: &Path, output_root: &Path) -> Result<(), String> {
+    let status = Command::new("node")
+        .arg(repo.join("node_modules/tsx/dist/cli.mjs"))
+        .arg(repo.join("scripts/check-browser-binary-supply.ts"))
+        .arg("--published")
+        .arg(output_root)
+        .current_dir(repo)
+        .stdout(Stdio::from(std::io::stderr()))
+        .status()
+        .map_err(|error| format!("spawn check-browser-binary-supply.ts: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("the build did not publish every binary its consumers need; \
+             the missing paths are listed above"
+            .to_string())
+    }
+}
+
 fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     // Started before dependency install and index generation, so the run's
     // recorded `actual_seconds` includes the fixed overhead a waiting agent
@@ -2561,11 +2778,6 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let graph = report_phase("Planning the build graph", || {
         load_and_plan(&repo, &set, &registry)
     })?;
-    let selected = select_graph_dependencies(&graph, &args.products)?;
-    // The first event carries the node total, so a reader such as
-    // `scripts/agent-job status` can report "N of M done" from the file alone.
-    let mut events = EventLog::from_env();
-    events.plan(selected.len());
 
     let planned_cache = plan_canonical_source_only_cache_roots(&args.source_cache_root, None)?;
     let output_intended = canonicalize_with_missing_tail(&args.output_root)?;
@@ -2585,6 +2797,25 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     })?;
     let output_root = exact_canonical_directory(&output_intended, "local-build output root")?;
     validate_run_roots(&repo, &set, &cache_roots.base, &output_root)?;
+    let supported_tree = is_supported_tree_run(&repo, &set, &output_root, &args.products);
+    // Needs only checked-in metadata and the program index generated above, so
+    // a consumer nothing in the supported set produces fails before any node
+    // builds rather than at the end of a long build.
+    let wants_demanded = args.products.iter().any(|product| product == DEMANDED_SELECTION);
+    let demanded = if supported_tree || wants_demanded {
+        Some(report_phase(
+            "Checking that the supported packages produce every needed binary",
+            || check_browser_binary_supply(&repo),
+        )?)
+    } else {
+        None
+    };
+    let product_filters = expand_product_filters(&graph, &args.products, demanded.as_deref())?;
+    let selected = select_graph_dependencies(&graph, &product_filters)?;
+    // The first event carries the node total, so a reader such as
+    // `scripts/agent-job status` can report "N of M done" from the file alone.
+    let mut events = EventLog::from_env();
+    events.plan(selected.len());
 
     // Build/refresh the co-resident side modules before any package node runs:
     // image-building recipes load the VFS image writer from `local-binaries/`
@@ -2838,7 +3069,7 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
         carry_forward_published_nodes(
             &registry,
             &graph,
-            &args.products,
+            &product_filters,
             &selected,
             &expected_receipt_nodes,
             &retained_receipts,
@@ -2926,7 +3157,7 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
                     &repo,
                     &set,
                     &registry,
-                    &args.products,
+                    &product_filters,
                     &publication.carried,
                     &publication.selected,
                     &graph.authority_sha256,
@@ -2967,10 +3198,28 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
         );
     }
 
+    let all_nodes_succeeded = results
+        .iter()
+        .all(|result| matches!(result, NodeRunResultV1::Succeeded { .. }));
+    // A whole supported-tree build (setup, `./run.sh local-build`) must leave
+    // every binary its consumers name in the published projection. Checked
+    // after publication, so a projection left by an older checkout, or a
+    // consumer no supported package feeds, fails here instead of as a
+    // skipped spec or a runtime 404.
+    let supply_error = if projection_finalization_error.is_none()
+        && all_nodes_succeeded
+        && supported_tree
+    {
+        report_phase("Checking published binaries against their consumers", || {
+            check_published_binary_supply(&repo, &output_root)
+        })
+        .err()
+    } else {
+        None
+    };
     let outcome = if projection_finalization_error.is_none()
-        && results
-            .iter()
-            .all(|result| matches!(result, NodeRunResultV1::Succeeded { .. }))
+        && supply_error.is_none()
+        && all_nodes_succeeded
     {
         AggregateOutcomeV1::Succeeded
     } else {
@@ -3042,7 +3291,9 @@ fn run_aggregate(args: LocalBuildRunArgsV1) -> Result<(), String> {
     let bytes = canonical_machine_json(&result)?;
     std::io::Write::write_all(&mut std::io::stdout().lock(), &bytes)
         .map_err(|error| format!("write local-build run result: {error}"))?;
-    if outcome == AggregateOutcomeV1::Failed {
+    if let Some(error) = supply_error {
+        Err(format!("every node succeeded, but {error}"))
+    } else if outcome == AggregateOutcomeV1::Failed {
         Err("aggregate build failed after independent work drained".to_string())
     } else {
         Ok(())
@@ -6235,7 +6486,7 @@ fn parse_local_build_args_with_jobs(
             };
             let output_root = match flags.values.remove("--output-root") {
                 Some(value) => absolute_authored_path(value, "--output-root")?,
-                None => crate::repo_root().join("local-binaries/source-only-v1"),
+                None => crate::repo_root().join(SOURCE_ONLY_OUTPUT_REL),
             };
             let products = flags.repeated.remove("--product").unwrap_or_default();
             for product in &products {
@@ -8150,6 +8401,120 @@ materialization = "lazy"
              rootfs image); host-dist must follow the engine (needs the regenerated \
              program index)"
         );
+    }
+
+    /// `./run.sh setup` must publish every node `./run.sh local-build` would
+    /// for the same checkout. Both reach bootstrap's engine step, whose
+    /// selection comes from `supported_tree_products`; this pins run.sh's
+    /// side: local-build runs `bootstrap packages` through setup's runner,
+    /// both map `--all` to `--all-packages`, and `--plan` previews the same
+    /// set, output root, selections, and cache root.
+    #[test]
+    fn run_sh_setup_and_local_build_build_the_same_tree() {
+        assert_eq!(supported_tree_products(false), vec![DEMANDED_SELECTION.to_string()]);
+        assert_eq!(supported_tree_products(true), vec!["all".to_string()]);
+        assert_eq!(bootstrap_target_to_selection("packages"), Selection::Packages);
+
+        let run_sh = fs::read_to_string(crate::repo_root().join("run.sh")).unwrap();
+        for expected in [
+            r#"local helper="$REPO_ROOT/scripts/setup.sh""#.to_string(),
+            "packages --jobs".to_string(),
+            "bootstrap_selection=(--all-packages)".to_string(),
+            r#"if [ "$arg" = "--all" ]; then args+=(--all-packages)"#.to_string(),
+            "local selection=demanded".to_string(),
+            "selection=all".to_string(),
+            format!(r#"--set "$REPO_ROOT/{SUPPORTED_SET_REL}" --status"#),
+            format!(r#"--output-root "$REPO_ROOT/{SOURCE_ONLY_OUTPUT_REL}" --product "$selection""#),
+            r#"--source-cache-root "${KANDELO_SOURCE_CACHE_ROOT:-$HOME/.cache/kandelo/source-only}""#
+                .to_string(),
+        ] {
+            assert!(run_sh.contains(&expected), "run.sh no longer contains {expected}");
+        }
+        // The plan's cache-root default must be the one
+        // `default_source_cache_root` resolves.
+        assert_eq!(
+            resolve_source_cache_root(None, Some("/home/u".into())).unwrap(),
+            PathBuf::from("/home/u/.cache/kandelo/source-only"),
+        );
+    }
+
+    #[test]
+    fn bootstrap_packages_provisions_both_sdks_before_the_engine() {
+        assert_eq!(bootstrap_packages_step_plan(), ["sdk", "sysroot64", "engine"]);
+        // The same steps `bootstrap all` runs before its engine, in the same order.
+        let all = bootstrap_step_plan().iter().map(|step| step.name).collect::<Vec<_>>();
+        let position = |name: &str| all.iter().position(|step| *step == name).unwrap();
+        assert!(position("sdk") < position("engine"));
+        assert!(position("sysroot64") < position("engine"));
+    }
+
+    #[test]
+    fn demanded_selection_is_exclusive_and_others_pass_through() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "base-a", &[], &[]);
+        let first = product(root, "first", &[]);
+        let set = authority(
+            root,
+            &[("base-a", "platform")],
+            &[("first", "base-a", first.as_path())],
+            &[],
+            &[],
+        );
+        let graph = load_and_plan(root, &set, &registry(root)).unwrap();
+        for products in [vec!["first".to_string()], vec!["all".to_string()], Vec::new()] {
+            assert_eq!(expand_product_filters(&graph, &products, None).unwrap(), products);
+        }
+        assert!(
+            expand_product_filters(
+                &graph,
+                &[DEMANDED_SELECTION.to_string(), "first".to_string()],
+                None,
+            )
+            .unwrap_err()
+            .contains("may not be mixed"),
+        );
+        // The products plus each demanded package, as explicit filters.
+        assert_eq!(
+            expand_product_filters(
+                &graph,
+                &[DEMANDED_SELECTION.to_string()],
+                Some(&["base-a/wasm32".to_string()]),
+            )
+            .unwrap(),
+            vec!["base-a".to_string(), "first".to_string()],
+        );
+        assert!(
+            expand_product_filters(
+                &graph,
+                &[DEMANDED_SELECTION.to_string()],
+                Some(&["missing/wasm32".to_string()]),
+            )
+            .unwrap_err()
+            .contains("does not build"),
+        );
+    }
+
+    /// The published-binary check runs only for the whole supported tree
+    /// published into this checkout's own root, which is what setup and
+    /// `./run.sh local-build` build. Narrow or relocated runs skip it.
+    #[test]
+    fn supply_check_runs_only_for_the_whole_supported_tree() {
+        let root = tempfile::tempdir().unwrap();
+        let repo = fs::canonicalize(root.path()).unwrap();
+        fs::create_dir_all(repo.join("packages/sets")).unwrap();
+        fs::write(repo.join(SUPPORTED_SET_REL), "").unwrap();
+        fs::create_dir_all(repo.join(SOURCE_ONLY_OUTPUT_REL)).unwrap();
+        fs::create_dir_all(repo.join("elsewhere")).unwrap();
+        let set = repo.join(SUPPORTED_SET_REL);
+        let output = repo.join(SOURCE_ONLY_OUTPUT_REL);
+        let all = vec!["all".to_string()];
+        assert!(is_supported_tree_run(&repo, &set, &output, &all));
+        assert!(is_supported_tree_run(&repo, &set, &output, &[]));
+        assert!(is_supported_tree_run(&repo, &set, &output, &[DEMANDED_SELECTION.to_string()]));
+        assert!(!is_supported_tree_run(&repo, &set, &output, &["kernel".to_string()]));
+        assert!(!is_supported_tree_run(&repo, &set, &repo.join("elsewhere"), &all));
+        assert!(!is_supported_tree_run(&repo, &repo.join("other.toml"), &output, &all));
     }
 
     #[test]
