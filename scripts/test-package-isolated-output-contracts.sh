@@ -32,17 +32,13 @@ php="$REPO_ROOT/packages/registry/php/build-php.sh"
 awk '/if \[ -n "\$\{WASM_POSIX_DEP_OUT_DIR:-\}" \]; then/,/else/' \
     "$php" | grep -F 'WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto' \
     >/dev/null || fail "PHP sealed install lacks explicit fork policy"
-php_fork_abi="$REPO_ROOT/packages/registry/php/fork-side-module-abi.c"
-[ -f "$php_fork_abi" ] ||
-    fail "PHP lacks the ABI identity source for its fork-instrumented side module"
-grep -F 'export_name("__abi_version")' "$php_fork_abi" >/dev/null ||
-    fail "PHP side-module ABI identity does not export __abi_version"
-grep -F 'return WASM_POSIX_ABI_VERSION;' "$php_fork_abi" >/dev/null ||
-    fail "PHP side-module ABI identity is not generated from the current ABI header"
-grep -F '"$SCRIPT_DIR/fork-side-module-abi.c"' "$php" >/dev/null ||
-    fail "PHP build does not compile its reviewed side-module ABI identity source"
-grep -F '"$FORK_SIDE_MODULE_ABI_OBJECT"' "$php" >/dev/null ||
-    fail "PHP opcache link omits its fork side-module ABI identity object"
+# PHP 8.5 builds OPcache in, so PHP fork-instruments only its two
+# executables. A fork-instrumented side module would also need its own
+# __abi_version export (host/src/dylink.ts rejects one without it).
+php_instrumented="$(grep -oE '"\$FORK_INSTRUMENT" "\$BIN_DIR/[^"]+"' "$php" |
+    sed -E 's#.*BIN_DIR/([^"]+)"$#\1#' | LC_ALL=C sort | tr '\n' ' ')"
+[ "$php_instrumented" = "php-fpm.wasm php.wasm " ] ||
+    fail "PHP fork-instruments something other than php.wasm and php-fpm.wasm: $php_instrumented"
 
 spidermonkey="$REPO_ROOT/packages/registry/spidermonkey/build-spidermonkey.sh"
 grep -F 'if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then' \
@@ -133,6 +129,7 @@ spidermonkey_valid_sysroot="$TEST_ROOT/spidermonkey-valid-sysroot"
 spidermonkey_valid_libcxx="$TEST_ROOT/spidermonkey-valid-libcxx"
 spidermonkey_valid_openssl="$TEST_ROOT/spidermonkey-valid-openssl"
 spidermonkey_valid_zlib="$TEST_ROOT/spidermonkey-valid-zlib"
+spidermonkey_valid_libzstd="$TEST_ROOT/spidermonkey-valid-libzstd"
 spidermonkey_valid_archive="$TEST_ROOT/spidermonkey-valid.source.tar.xz"
 spidermonkey_patch_marker="$TEST_ROOT/spidermonkey-valid-patch"
 spidermonkey_mach_marker="$TEST_ROOT/spidermonkey-valid-mach"
@@ -146,7 +143,9 @@ mkdir -p \
     "$spidermonkey_valid_openssl/lib" \
     "$spidermonkey_valid_openssl/include" \
     "$spidermonkey_valid_zlib/lib" \
-    "$spidermonkey_valid_zlib/include"
+    "$spidermonkey_valid_zlib/include" \
+    "$spidermonkey_valid_libzstd/lib" \
+    "$spidermonkey_valid_libzstd/include"
 printf 'sealed-source\n' >"$spidermonkey_valid_source/source-marker"
 cat >"$spidermonkey_valid_source/mach" <<'SH'
 #!/usr/bin/env bash
@@ -169,7 +168,8 @@ for file in \
     "$spidermonkey_valid_libcxx/lib/libc++abi.a" \
     "$spidermonkey_valid_openssl/lib/libssl.a" \
     "$spidermonkey_valid_openssl/lib/libcrypto.a" \
-    "$spidermonkey_valid_zlib/lib/libz.a"; do
+    "$spidermonkey_valid_zlib/lib/libz.a" \
+    "$spidermonkey_valid_libzstd/lib/libzstd.a"; do
     : >"$file"
 done
 spidermonkey_valid_sysroot_before="$(tree_digest "$spidermonkey_valid_sysroot")"
@@ -177,10 +177,13 @@ cat >"$fake_bin/patch" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 dest=""
+reverse=0
 while [ "$#" -gt 0 ]; do
     if [ "$1" = -d ]; then
         shift
         dest="${1:-}"
+    elif [ "$1" = -R ]; then
+        reverse=1
     fi
     shift || true
 done
@@ -188,8 +191,10 @@ done
 [ "$(cat "${KANDELO_EXPECTED_SEALED_SOURCE:?}/source-marker")" = sealed-source ] || exit 96
 printf 'staged-copy\n' >"$dest/source-marker"
 : >"${KANDELO_VALID_PATCH_MARKER:?}"
-# A failed dry run skips applying the real upstream patch in this tiny fixture.
-exit 1
+# Report every real upstream patch as already applied (the reverse dry run
+# succeeds), so this tiny fixture skips them. The recipe rejects a patch that
+# applies neither forward nor in reverse.
+[ "$reverse" = 1 ]
 SH
 chmod 0755 "$fake_bin/patch"
 env \
@@ -209,6 +214,7 @@ env \
     WASM_POSIX_DEP_LIBCXX_DIR="$spidermonkey_valid_libcxx" \
     WASM_POSIX_DEP_OPENSSL_DIR="$spidermonkey_valid_openssl" \
     WASM_POSIX_DEP_ZLIB_DIR="$spidermonkey_valid_zlib" \
+    WASM_POSIX_DEP_LIBZSTD_DIR="$spidermonkey_valid_libzstd" \
     bash "$spidermonkey" >"$TEST_ROOT/spidermonkey-valid.out" \
         2>"$TEST_ROOT/spidermonkey-valid.err" || {
         cat "$TEST_ROOT/spidermonkey-valid.err" >&2
@@ -238,6 +244,8 @@ spidermonkey_private_sysroot="$(find "$spidermonkey_valid_work" -mindepth 1 -max
     fail "SpiderMonkey private sysroot omitted the OpenSSL overlay"
 [ -L "$spidermonkey_private_sysroot/lib/libz.a" ] ||
     fail "SpiderMonkey private sysroot omitted the zlib overlay"
+[ -L "$spidermonkey_private_sysroot/lib/libzstd.a" ] ||
+    fail "SpiderMonkey private sysroot omitted the libzstd overlay"
 
 perl_work="$TEST_ROOT/perl-work"
 perl_out="$TEST_ROOT/perl-out"
