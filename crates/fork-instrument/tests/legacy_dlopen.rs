@@ -245,7 +245,7 @@ fn malformed_reserved_signature_fails_before_runtime() {
     assert!(
         error
             .to_string()
-            .contains("reserved env.__wasm_dlopen import has signature"),
+            .contains("reserved env.__wasm_dlopen must have"),
         "unexpected diagnostic: {error:#}",
     );
 }

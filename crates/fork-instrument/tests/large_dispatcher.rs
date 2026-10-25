@@ -404,7 +404,11 @@ fn leaf_unwind_br_targets_function_level_unwind_save() {
             ("direct", wat_direct_dispatcher(n)),
             ("indirect", wat_indirect_dispatcher(n)),
         ] {
-            let instrumented = instrument_wat(&wat);
+            // This assertion follows the oracle's exact restart-loop layout.
+            // The bounded-depth checks above use the native default.
+            let input = wat::parse_str(&wat).expect("wat parse");
+            let instrumented = fork_instrument::instrument_walrus(&input, &Options::default())
+                .expect("instrument oracle dispatcher");
             let module = Module::from_buffer(&instrumented).expect("parse instrumented");
             let func = module
                 .funcs

@@ -40,7 +40,7 @@ fn complete_native_artifacts_declare_the_same_abi_formats_and_capability_roles()
             };
             let native = native::instrument(&input, &options, Default::default()).unwrap();
             let output = native.bytes.bytes();
-            let oracle = fork_instrument::instrument(&input, &options).unwrap();
+            let oracle = fork_instrument::instrument_walrus(&input, &options).unwrap();
             for name in [
                 abi::WPK_FORK_CAPABILITIES_SECTION,
                 abi::WPK_FORK_MODULE_STATE_FORMAT_SECTION,

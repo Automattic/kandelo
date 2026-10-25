@@ -50,7 +50,7 @@ for (const arch of ["wasm32", "wasm64"] as const) {
       const program = compileSdkFixture(
         new URL(`../../../programs/${fixture.source}.c`, import.meta.url),
         fixture.linkArgs ?? [],
-        { forkInstrument: true, arch, backend: "native" },
+        { forkInstrument: true, arch },
       );
       try {
         await page.goto(new URL("/trap-signal-test.html", baseURL!).href);

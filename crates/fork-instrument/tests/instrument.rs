@@ -19,7 +19,9 @@
 use std::collections::HashSet;
 
 use fork_instrument::runtime::names as runtime_names;
-use fork_instrument::{Options, instrument};
+// These assertions inspect the retained Walrus IR shape. Native has its own
+// function-local emission and replay suites; keep this oracle explicit.
+use fork_instrument::{Options, instrument_walrus as instrument};
 use walrus::{
     ExportItem, FunctionId, FunctionKind, LocalFunction, Module, ValType,
     ir::{self, Instr, InstrSeqId},

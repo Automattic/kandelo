@@ -9,7 +9,9 @@
 //! - **posix_spawn-class**: code between call sites must NOT re-execute,
 //!   including shadow-stack manipulation.
 
-use fork_instrument::{Options, instrument};
+// These assertions inspect the retained Walrus IR shape. Native has its own
+// function-local emission and replay suites; keep this oracle explicit.
+use fork_instrument::{Options, instrument_walrus as instrument};
 use walrus::{FunctionId, FunctionKind, ImportKind, LocalFunction, Module, ir::*};
 
 fn validate(bytes: &[u8]) {

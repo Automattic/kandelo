@@ -1,8 +1,8 @@
 //! Diagnostic reports use original function ordinals, without a Walrus arena.
+use crate::{Analysis, Options, SinkReport, call_graph::FuncEntry, native};
 use anyhow::{Result, ensure};
-use fork_instrument::{Analysis, Options, SinkReport, call_graph::FuncEntry, native};
 
-pub(super) fn sinks(input: &[u8], options: &Options) -> Result<SinkReport> {
+pub(crate) fn sinks(input: &[u8], options: &Options) -> Result<SinkReport> {
     let analysis = native::analyze(input, options, Default::default())?;
     let names = |set: &std::collections::BTreeSet<u32>| {
         let mut names: Vec<_> = set
@@ -21,7 +21,7 @@ pub(super) fn sinks(input: &[u8], options: &Options) -> Result<SinkReport> {
         facts_error: analysis.decision.facts_error,
     })
 }
-pub(super) fn discover(input: &[u8], options: &Options) -> Result<Analysis> {
+pub(crate) fn discover(input: &[u8], options: &Options) -> Result<Analysis> {
     let analysis = native::analyze(
         input,
         &Options {

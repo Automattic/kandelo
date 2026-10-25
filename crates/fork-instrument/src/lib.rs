@@ -483,17 +483,22 @@ fn apply_plan_sets(
 /// Result of analyzing an input module without rewriting it.
 #[derive(Debug)]
 pub struct Analysis {
-    /// Function entries that must be instrumented for fork support.
-    /// Sorted by display name; stable across runs.
+    /// Original function entries that must be instrumented for fork support.
+    /// Sorted by display name; stable across runs. Generated helpers are omitted.
     pub fork_path: Vec<call_graph::FuncEntry>,
 }
 
 /// Analyze `input` to compute the set of functions that need
 /// instrumentation, without mutating or re-emitting the module.
 ///
-/// Phase 2 scope: direct-call closure only. Phase 3 extends to
-/// indirect calls.
+/// Uses original function identities and follows direct, indirect and reference
+/// calls. Generated helper functions are not included in this diagnostic view.
 pub fn analyze(input: &[u8], opts: &Options) -> Result<Analysis> {
+    native::reports::discover(input, opts)
+}
+
+/// Explicit whole-module Walrus analysis, retained as a migration oracle.
+pub fn analyze_walrus(input: &[u8], opts: &Options) -> Result<Analysis> {
     let mut module =
         walrus::Module::from_buffer(input).context("failed to parse input wasm module")?;
     legacy_dlopen::lower(&mut module)?;
@@ -616,7 +621,17 @@ fn prepare_fork_path(
 /// activation-state helpers even when they do not import fork directly. They
 /// can remain live beside a fork-capable activation, so their mutable globals,
 /// tables, and segment lifetimes remain part of the child process image.
+///
+/// Uses the native backend. This convenience API copies the final artifact
+/// into a Vec; use `native::instrument` or the CLI for file-backed output.
 pub fn instrument(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
+    let artifact = native::instrument(input, opts, Default::default())?;
+    Ok(artifact.bytes.bytes().to_vec())
+}
+
+/// Explicit whole-module Walrus transform, retained as a migration oracle.
+/// Normal builds use the native transform.
+pub fn instrument_walrus(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
     #[cfg(feature = "size-attribution")]
     let mut module =
         size_attribution::parse_for_report(input).context("failed to parse input wasm module")?;
@@ -929,6 +944,11 @@ pub struct SinkReport {
 /// Decide the instrumented set as [`instrument`] does and report it. A
 /// module outside any fork transaction reports an empty set.
 pub fn sink_report(input: &[u8], opts: &Options) -> Result<SinkReport> {
+    native::reports::sinks(input, opts)
+}
+
+/// Explicit whole-module Walrus sink report, retained as a migration oracle.
+pub fn sink_report_walrus(input: &[u8], opts: &Options) -> Result<SinkReport> {
     let mut module =
         walrus::Module::from_buffer(input).context("failed to parse input wasm module")?;
     let Some(planned) = plan_fork(&mut module, input, opts)? else {

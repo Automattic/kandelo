@@ -11,6 +11,7 @@ mod admission;
 mod analysis;
 mod instrument;
 mod metadata;
+pub(crate) mod reports;
 pub use analysis::analyze;
 pub use instrument::{Artifact, Limits, instrument, validate};
 

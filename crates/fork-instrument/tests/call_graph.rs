@@ -209,7 +209,7 @@ fn missing_entry_import_is_an_error() {
 }
 
 #[test]
-fn lowered_legacy_loader_is_a_boundary_without_a_direct_fork_import() {
+fn legacy_loader_is_a_boundary_without_a_direct_fork_import() {
     let wat = r#"
         (module
           (import "env" "__wasm_dlopen"
@@ -226,9 +226,10 @@ fn lowered_legacy_loader_is_a_boundary_without_a_direct_fork_import() {
         found.contains("open_side"),
         "the caller remains live while the generated driver invokes a side initializer: {found:?}",
     );
-    assert!(
-        found.contains("__wpk_fork_legacy_dlopen_driver"),
-        "the staged driver's external call_indirect is the suspension boundary: {found:?}",
+    assert_eq!(
+        found,
+        HashSet::from(["legacy".to_owned(), "open_side".to_owned()]),
+        "native discovery reports original identities before generating loader helpers",
     );
 }
 

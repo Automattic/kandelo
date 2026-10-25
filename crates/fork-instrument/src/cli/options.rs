@@ -18,8 +18,8 @@ pub(super) struct Cli {
     pub(super) output: Option<PathBuf>,
 
     /// Instrumentation backend. Native uses bounded function-local rewriting;
-    /// Walrus remains the default oracle while platform migration gates run.
-    #[arg(long, default_value = "walrus", value_parser = ["native", "walrus"])]
+    /// Walrus is retained as an explicit migration oracle.
+    #[arg(long, default_value = "native", value_parser = ["native", "walrus"])]
     pub(super) backend: String,
 
     /// Maximum bytes in the private immutable input snapshot.

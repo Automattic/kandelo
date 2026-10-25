@@ -53,7 +53,7 @@ ABI version: `50` (see
   scripts can therefore instrument installed executables in place without
   making them non-executable.
 
-## Streaming migration (experimental)
+## Native instrumentation and migration
 
 `fork_instrument::streaming` provides an original-binary scanner, a compact
 conservative call-closure resolver, definition-only compiler-fact binding,
@@ -86,7 +86,7 @@ preserves the selected direct/tail route and reconciles its physical table
 before invocation. A separate guard lookup supports generated call sites.
 Native sparse-table ownership and runtime hooks now supply those frozen indices,
 as described below. `NativePipeline` and `native::instrument` compose these
-components into the opt-in complete transform described later in this section.
+components into the default complete transform described later in this section.
 Validator-canonical concrete heap identities are resolved to source type
 indices before output remapping; they are never encoded as binary indices.
 
@@ -234,8 +234,8 @@ Unknown reference imports and element expressions retain an external-call
 possibility; the sink planner seeds that external vertex even when no dlopen
 import is present. Element expressions containing null slots disable
 constant-slot refinement rather than shifting later functions into those
-slots. These are experimental analysis APIs; none certifies a
-complete fork-instrumented module.
+slots. These analysis APIs do not certify a complete fork-instrumented module;
+the full transform validates and certifies their emitted result.
 
 Parameter-target proofs record direct-call arguments to disk in a separate
 serial pass, then resolve forwarding chains/cycles with recursive disk sets.
@@ -253,9 +253,9 @@ retain signature fallback; unknown side calls retain generic exception
 possibilities. Signal gate mode records required runtime guards; this library
 analysis does not emit those guards itself. `SinkInterpreter` connects these
 policies to the normal-summary driver and local evaluator. Small-callee
-specialization is limited to depth three, uses a bounded FIFO cache (4 MiB by
-default) cleared per root evaluation, and never specializes an unresolved
-side-module call.
+specialization is limited to depth three and never specializes an unresolved
+side-module call. Its bounded cache uses the context and automatic sizing
+policy described above.
 
 `plan_sinks` resolves original call-site targets into indexed disk relations,
 computes the reverse fork closure, probes exception-handler landings, and
@@ -269,9 +269,9 @@ an error without a partial plan; unsupported analysis scope returns `None`,
 requiring the conservative closure. Raw legacy loader/longjmp imports, missing
 dynamic-link facts, oversized tag masks and unsupported body operations cannot
 produce a sink proof. Such inputs still require conservative closure planning;
-generated loader callbacks do not acquire original compiler facts. Production
-orchestration and backend integration remain unfinished. Production continues
-to use the unchanged Walrus implementation.
+generated loader callbacks do not acquire original compiler facts. The native
+production backend composes this planner with the helper and emission passes
+described below.
 
 `FrozenImports` freezes added runtime imports and optional conversions of
 original function imports into local helpers. Retained function imports
@@ -611,7 +611,7 @@ reused rethrow contexts, typed exits and delegates to functions, outer
 tries, loops, if arms and catch arms. A composed GC fixture also exercises
 legacy typed-exception replay with indirect tail transport, module state
 and virtual scratch spills. Emitted activation fixtures contain no legacy
-exception instructions. Production continues to use Walrus.
+exception instructions. The native production pipeline uses this lowering.
 
 The unchanged oracle runs shared positive assertions where it supports
 these inputs. Separate checks record its detached-catch parser panic,
@@ -794,7 +794,7 @@ once and writes through the code/data spools. Catalog and function limits
 remain explicit; output-writer failures propagate, and the same frozen plan
 can be emitted again. Descriptor budgets are checked before writing a header.
 
-The experimental `native::analyze` now applies `Options` to the original scan.
+`native::analyze` applies `Options` to the original scan.
 It seeds every matching fork import, every side-module function import, raw
 loader imports and conservative dynamic dispatch. It rejects previous private
 runtime imports, exports and metadata. Valid compiler facts use private SQLite
@@ -820,11 +820,17 @@ then validates functions serially. It releases analysis and pipeline catalogs
 before output validation. Its result owns immutable file-backed bytes rather
 than a whole output `Vec`.
 
-The CLI accepts `--backend native` for this complete experimental path, including
-discovery and sink reports. `--backend walrus` remains the default while the
-platform migration gates run; there is no automatic switch to Walrus after a
-native error. The existing `instrument` library API remains the unchanged
-Walrus oracle. Native entry tests
+The CLI uses the native backend by default, including discovery and sink
+reports. SDK/package build scripts inherit that choice through the normal
+instrumenter wrapper. `--backend walrus` explicitly selects the temporary
+comparison implementation; there is no automatic switch after a native error.
+The library defaults `instrument`, `analyze` and `sink_report` also use native.
+Discovery and sink reports name original functions, omitting generated helpers.
+The explicit `instrument_walrus`, `analyze_walrus` and `sink_report_walrus`
+entry points retain the oracle during migration. The Vec-returning library
+convenience API copies the final artifact; normal CLI builds retain file-backed
+output. Walrus is transitional and is intended for removal after replacement
+validation. Native entry tests
 execute normal, fresh and failed-capture replay across both pointer and table
 widths. The unchanged Walrus thread wrapper fails validation on table64 and
 does not provide the native wrapper's table-generation guard; its other replay
@@ -867,7 +873,9 @@ exercise direct/indirect and loop forks, stack carryovers, child/grandchild
 replay, signal handlers, pthread entry replay and root/later continuation
 allocation failures followed by recovery. The fixtures carry the current ABI
 contract stamp and require clean stderr. The ABI snapshot check also passes.
-Broader process, browser and conformance gates remain pending.
+The latest focused source passed 28 Node and 57 browser checks; broader
+workspace and conformance reruns are part of the default-backend rollout.
+See the dated comparison reports for exact validated revisions.
 The [complete-transform memory comparison](measurements/2026-10-24-native-fork-instrumenter-full.md)
 now covers seven controlled examples, three fresh runs per backend, identical
 inputs, bounded atomic I/O and separate host-contract/normal-execution checks.
@@ -923,10 +931,9 @@ segment has been dropped. The original module executes, native harvest skips
 the unobservable root, and the unchanged oracle harvest traps. This test does
 not weaken the ordinary cross-backend replay assertions.
 
-These remain component fixtures rather than the normal production path.
-Process-level integration,
-artifact certification and production backend integration remain work. No
-end-to-end memory improvement is claimed.
+These component fixtures supplement the full-transform and process integration
+checks described above. Their isolated results do not establish production
+memory usage; the dated complete-transform measurements record that evidence.
 
 `wasm-fork-instrument input.wasm --streaming-scan` runs that diagnostic scan
 without constructing a Walrus module or producing an executable. It reports
@@ -934,11 +941,8 @@ function/operator counts, maximum source body size and, when facts are
 present, hash-checked definition binding (`--no-facts` skips binding). It
 does not run an optimizer.
 
-Production `instrument`, `analyze`, `sink_report` and normal CLI output still
-use the existing, unmodified Walrus implementation. The native sink planner
-is not yet connected to production; complete component composition and
-production artifact generation remain. No complete bounded fork transform or
-measured Codex memory improvement is claimed.
+Production `instrument`, `analyze`, `sink_report` and normal CLI output use the
+native pipeline. Walrus remains an explicit comparison oracle during rollout.
 See the [dependency map and migration plan](plans/2026-10-22-streaming-fork-instrumentation.md).
 The [front-end memory measurements](measurements/2026-10-23-streaming-instrumenter-front-end.md)
 compare six controlled examples and explicitly exclude the full transform.
@@ -1658,9 +1662,11 @@ bytes to 158 bytes (p90 1,697 to 672). SpiderMonkey compiled 12 copies of the
 module before running out of memory with lazy tiering, up from 6 (7 with
 eager tier-2, up from 3). For bash, instrumentation overhead in the code
 section fell from 1.68 MB to 0.67 MB. Building the crate with
-`--features size-attribution` and setting `WPK_FORK_SIZE_ATTRIBUTION=<path>`
-writes a per-function TSV that attributes every output byte to the emitter
-that produced it; see `crates/fork-instrument/src/size_attribution.rs`.
+`--features size-attribution`, selecting `--backend walrus`, and setting
+`WPK_FORK_SIZE_ATTRIBUTION=<path>` writes a per-function TSV that attributes
+every output byte to the Walrus emitter that produced it; see
+`crates/fork-instrument/src/size_attribution.rs`. This diagnostic is specific
+to the temporary oracle and is not implemented for the native backend.
 
 
 ## Optimization around instrumentation

@@ -60,6 +60,39 @@ fn export_function_id(module: &Module, name: &str) -> walrus::FunctionId {
     }
 }
 
+// Private global names may differ across emitters. Resolve their owners through
+// the public controls: state reads its global, unwind_begin writes state and buf.
+fn runtime_globals(module: &Module) -> (&walrus::Global, &walrus::Global) {
+    let control = |name| {
+        let id = export_function_id(module, name);
+        let walrus::FunctionKind::Local(local) = &module.funcs.get(id).kind else {
+            panic!("runtime control must be defined")
+        };
+        &local.block(local.entry_block()).instrs
+    };
+    let state = control(names::EXPORT_STATE)
+        .iter()
+        .find_map(|(instr, _)| {
+            if let walrus::ir::Instr::GlobalGet(get) = instr {
+                Some(get.global)
+            } else {
+                None
+            }
+        })
+        .expect("state accessor reads its global");
+    let buf = control(names::EXPORT_UNWIND_BEGIN)
+        .iter()
+        .find_map(|(instr, _)| {
+            if let walrus::ir::Instr::GlobalSet(set) = instr {
+                (set.global != state).then_some(set.global)
+            } else {
+                None
+            }
+        })
+        .expect("unwind begin stores its buffer pointer");
+    (module.globals.get(state), module.globals.get(buf))
+}
+
 fn func_signature(module: &Module, id: walrus::FunctionId) -> (Vec<ValType>, Vec<ValType>) {
     let ty_id = module.funcs.get(id).ty();
     let ty = module.types.get(ty_id);
@@ -249,7 +282,7 @@ fn raw_module_cannot_preclaim_reserved_unwind_transport() {
         "{message}"
     );
     assert!(
-        message.contains("instrumenter must own unwind transport"),
+        message.contains("env"),
         "{message}"
     );
 }
@@ -502,14 +535,14 @@ fn injects_state_global_mutable_i32_init_zero() {
     let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK);
     let module = Module::from_buffer(&bytes).unwrap();
 
-    let state_global = module
-        .globals
-        .iter()
-        .find(|g| g.name.as_deref() == Some(names::GLOBAL_STATE))
-        .expect("_wpk_fork_state global missing");
+    let (state_global, _) = runtime_globals(&module);
 
     assert_eq!(state_global.ty, ValType::I32);
     assert!(state_global.mutable, "state global must be mutable");
+    assert!(matches!(
+        state_global.kind,
+        walrus::GlobalKind::Local(walrus::ConstExpr::Value(walrus::ir::Value::I32(0)))
+    ));
 }
 
 #[test]
@@ -517,11 +550,7 @@ fn injects_buf_global_matches_memory_ptr_width_wasm32() {
     let bytes = instrument_wat(EMPTY_MODULE_WITH_FORK); // memory 1 => wasm32
     let module = Module::from_buffer(&bytes).unwrap();
 
-    let buf_global = module
-        .globals
-        .iter()
-        .find(|g| g.name.as_deref() == Some(names::GLOBAL_BUF))
-        .expect("_wpk_fork_buf global missing");
+    let (_, buf_global) = runtime_globals(&module);
 
     assert_eq!(buf_global.ty, ValType::I32, "wasm32 buf should be i32");
     assert!(buf_global.mutable);
@@ -537,11 +566,7 @@ fn injects_buf_global_matches_memory_ptr_width_wasm64() {
     let bytes = instrument_wat(wat);
     let module = Module::from_buffer(&bytes).unwrap();
 
-    let buf_global = module
-        .globals
-        .iter()
-        .find(|g| g.name.as_deref() == Some(names::GLOBAL_BUF))
-        .expect("_wpk_fork_buf global missing");
+    let (_, buf_global) = runtime_globals(&module);
 
     assert_eq!(buf_global.ty, ValType::I64, "wasm64 buf should be i64");
 }

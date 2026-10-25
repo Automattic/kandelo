@@ -20,8 +20,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use fork_instrument::artifact_io::MappedArtifact;
-#[path = "cli/native_reports.rs"]
-mod native_reports;
 #[path = "cli/options.rs"]
 mod options;
 #[path = "cli/transform.rs"]
@@ -122,9 +120,9 @@ fn main() -> Result<()> {
 
     if cli.sink_report {
         let report = if cli.backend == "native" {
-            native_reports::sinks(input, &opts)
-        } else {
             sink_report(input, &opts)
+        } else {
+            fork_instrument::sink_report_walrus(input, &opts)
         }
         .with_context(|| format!("analyzing {}", cli.input.display()))?;
         println!("source\t{}", report.source.as_str());
@@ -148,9 +146,9 @@ fn main() -> Result<()> {
 
     if cli.discover_only {
         let analysis = if cli.backend == "native" {
-            native_reports::discover(input, &opts)
-        } else {
             analyze(input, &opts)
+        } else {
+            fork_instrument::analyze_walrus(input, &opts)
         }
         .with_context(|| format!("analyzing {}", cli.input.display()))?;
         print_analysis_json(&analysis);

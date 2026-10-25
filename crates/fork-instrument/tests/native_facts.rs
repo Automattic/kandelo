@@ -1,4 +1,4 @@
-use fork_instrument::{Options, PlanSource, facts, native, sink_report};
+use fork_instrument::{Options, PlanSource, facts, native, sink_report_walrus as sink_report};
 use wasm_encoder::{CustomSection, Encode};
 
 fn linked(text: &str, hash: Option<[u8; 32]>) -> Vec<u8> {

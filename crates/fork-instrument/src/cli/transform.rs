@@ -40,7 +40,7 @@ pub(super) fn run(
         "walrus" => {
             // The oracle API intentionally retains its Vec result. Only its
             // surrounding publication path changes; its algorithms do not.
-            let output = fork_instrument::instrument(input, options)?;
+            let output = fork_instrument::instrument_walrus(input, options)?;
             let mut instrumented = false;
             for payload in Parser::new(0).parse_all(&output) {
                 if matches!(payload?, Payload::CustomSection(section)

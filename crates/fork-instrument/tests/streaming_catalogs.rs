@@ -1,4 +1,4 @@
-use fork_instrument::{Options, instrument, streaming};
+use fork_instrument::{Options, instrument_walrus as instrument, streaming};
 #[path = "support/streaming_gc.rs"]
 mod native;
 fn oracle(input: &[u8]) -> Vec<u8> {

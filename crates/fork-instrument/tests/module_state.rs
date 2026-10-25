@@ -35,6 +35,13 @@ fn instrument_wat(wat: &str) -> Vec<u8> {
     instrument(&input, &Options::default()).expect("instrument fixture")
 }
 
+// These structural assertions inspect Walrus-specific helper names and inline
+// instruction layouts. Behavior checks below use the default native backend.
+fn instrument_wat_walrus(wat: &str) -> Vec<u8> {
+    let input = wat::parse_str(wat).expect("parse WAT fixture");
+    fork_instrument::instrument_walrus(&input, &Options::default()).expect("instrument oracle fixture")
+}
+
 fn validate(bytes: &[u8]) {
     wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::default())
         .validate_all(bytes)
@@ -273,7 +280,7 @@ fn table_synchronization_helpers_do_not_add_source_function_locals() {
 
 #[test]
 fn deterministic_static_tables_do_not_pay_the_process_generation_fence() {
-    let static_bytes = instrument_wat(
+    let static_bytes = instrument_wat_walrus(
         r#"
         (module
           (@custom "dylink.0" (before first) "state-only")
@@ -324,7 +331,7 @@ fn deterministic_static_tables_do_not_pay_the_process_generation_fence() {
         "static element initialization is the reconstruction owner; a peer snapshot is redundant",
     );
 
-    let process_bytes = instrument_wat(
+    let process_bytes = instrument_wat_walrus(
         r#"
         (module
           (import "env" "__wasm_dlopen"
@@ -526,7 +533,7 @@ fn module_state_record_pointers_follow_memory64() {
 
 #[test]
 fn save_and_restore_own_reference_globals_and_dirty_table_state() {
-    let bytes = instrument_wat(
+    let bytes = instrument_wat_walrus(
         r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -622,7 +629,7 @@ fn save_and_restore_own_reference_globals_and_dirty_table_state() {
 
 #[test]
 fn save_and_restore_own_every_scalar_global_type() {
-    let bytes = instrument_wat(
+    let bytes = instrument_wat_walrus(
         r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -677,7 +684,7 @@ fn save_and_restore_own_every_scalar_global_type() {
 
 #[test]
 fn immutable_imports_keep_their_original_binding_and_preinstantiation_recipe() {
-    let bytes = instrument_wat(
+    let bytes = instrument_wat_walrus(
         r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))
@@ -889,7 +896,7 @@ fn imported_table_identity_has_exact_preinstantiation_recipe_and_catalog() {
 
 #[test]
 fn active_segment_offsets_preserve_extended_const_semantics_without_a_shape_gate() {
-    let bytes = instrument_wat(
+    let bytes = instrument_wat_walrus(
         r#"
         (module
           (@custom "dylink.0" (before first) "state-only")
@@ -944,7 +951,7 @@ fn active_segment_offsets_preserve_extended_const_semantics_without_a_shape_gate
 
 #[test]
 fn segment_lifetime_is_activation_owned_and_reapplied() {
-    let bytes = instrument_wat(
+    let bytes = instrument_wat_walrus(
         r#"
         (module
           (import "kernel" "kernel_fork" (func $fork (result i32)))

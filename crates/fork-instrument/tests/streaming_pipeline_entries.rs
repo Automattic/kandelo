@@ -1,4 +1,4 @@
-use fork_instrument::{Options, instrument, streaming::*};
+use fork_instrument::{Options, instrument_walrus as instrument, streaming::*};
 
 #[test]
 fn fixed_start_and_thread_entries_resume_without_repeating_source_entry_effects() {

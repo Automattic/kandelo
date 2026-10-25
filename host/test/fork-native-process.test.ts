@@ -8,10 +8,10 @@ describe.each(["wasm32", "wasm64"] as const)("native %s process artifacts", (arc
   for (const fixture of nativeForkProcessCases) {
     it(fixture.source, async () => {
       // Use the ordinary SDK, compiler-facts and production post-optimizer.
-      // Only backend selection differs from normal package instrumentation.
+      // Omit backend selection to exercise the normal native default.
       const program = compileSdkFixture(
         new URL(`../../programs/${fixture.source}.c`, import.meta.url), [],
-        { forkInstrument: true, arch, backend: "native" },
+        { forkInstrument: true, arch },
       );
       try {
         const result = await runCentralizedProgram({

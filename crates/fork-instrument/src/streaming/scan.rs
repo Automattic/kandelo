@@ -312,14 +312,20 @@ impl<'a> Scan<'a> {
         let recorded = self
             .custom_data(crate::facts::CODE_HASH_SECTION)
             .last()
-            .context("facts have no original-code hash")?;
+            .with_context(|| {
+                format!(
+                    "facts ignored: the module has no {} section binding them to its code",
+                    crate::facts::CODE_HASH_SECTION,
+                )
+            })?;
         let code = self
             .code_range
             .as_ref()
             .map_or(&[][..], |r| &self.input[r.clone()]);
         ensure!(
             recorded == Sha256::digest(code).as_slice(),
-            "facts code hash mismatch"
+            "facts code hash mismatch: the code changed after linking ({} does not match the code section)",
+            crate::facts::CODE_HASH_SECTION,
         );
         Ok(())
     }

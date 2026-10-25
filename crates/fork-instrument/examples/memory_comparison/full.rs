@@ -27,7 +27,7 @@ pub(super) fn measure(
             );
             // Keep the production oracle algorithm and its Vec return value.
             // Copy/drop that Vec at exactly the boundary used by the CLI.
-            let encoded = fork_instrument::instrument(input.bytes(), &options)?;
+            let encoded = fork_instrument::instrument_walrus(input.bytes(), &options)?;
             let artifact = MappedArtifact::snapshot(encoded.as_slice(), BYTE_LIMIT)?;
             drop(encoded);
             native::validate(artifact.bytes())?;
