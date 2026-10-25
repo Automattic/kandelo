@@ -1,3 +1,5 @@
+import redisCliUrl from "@binaries/programs/wasm32/redis/redis-cli.wasm?url";
+import mariadbUrl from "@binaries/programs/wasm32/mariadb/mariadb.wasm?url";
 import {
   SHELL_LAZY_BINARY_SPECS,
   shellLazyPlaceholderUrl,
@@ -13,7 +15,7 @@ import m4WasmUrl from "@binaries/programs/wasm32/m4.wasm?url";
 import makeWasmUrl from "@binaries/programs/wasm32/make.wasm?url";
 import tarWasmUrl from "@binaries/programs/wasm32/tar.wasm?url";
 import curlWasmUrl from "@binaries/programs/wasm32/curl.wasm?url";
-import ncWasmUrl from "@binaries/programs/wasm32/nc.wasm?url";
+import ncWasmUrl from "@binaries/programs/wasm32/netcat/nc.wasm?url";
 import wgetWasmUrl from "@binaries/programs/wasm32/wget.wasm?url";
 import gitWasmUrl from "@binaries/programs/wasm32/git/git.wasm?url";
 import jqWasmUrl from "@binaries/programs/wasm32/jq.wasm?url";
@@ -31,10 +33,10 @@ import unzipWasmUrl from "@binaries/programs/wasm32/unzip.wasm?url";
 import lsofWasmUrl from "@binaries/programs/wasm32/lsof.wasm?url";
 import nanoWasmUrl from "@binaries/programs/wasm32/nano.wasm?url";
 import tmuxWasmUrl from "@binaries/programs/wasm32/tmux.wasm?url";
-import termchatWasmUrl from "@binaries/programs/wasm32/termchat.wasm?url";
+import termchatWasmUrl from "@binaries/programs/wasm32/termchat/termchat.wasm?url";
 import sqlite3WasmUrl from "@binaries/programs/wasm32/sqlite3.wasm?url";
 import lhaWasmUrl from "@binaries/programs/wasm32/lha.wasm?url";
-import quakeWasmUrl from "@binaries/programs/wasm32/quake.wasm?url";
+import quakeWasmUrl from "@binaries/programs/wasm32/tyrquake/quake.wasm?url";
 import footWasmUrl from "@binaries/programs/wasm32/foot.wasm?url";
 import dbusDaemonWasmUrl from "@binaries/programs/wasm32/dbus/dbus-daemon.wasm?url";
 import qtgalleryWasmUrl from "@binaries/programs/wasm32/qtgallery.wasm?url";
@@ -68,7 +70,7 @@ import klauncherWasmUrl from "@binaries/programs/wasm32/wayland-demo/klauncher.w
 import notifySendWasmUrl from "@binaries/programs/wasm32/wayland-demo/notify-send.wasm?url";
 import kclipdWasmUrl from "@binaries/programs/wasm32/wayland-demo/kclipd.wasm?url";
 import sdl2WasmUrl from "@binaries/programs/wasm32/sdl2.wasm?url";
-import fbdoomWasmUrl from "@binaries/programs/wasm32/fbdoom.wasm?url";
+import fbdoomWasmUrl from "@binaries/programs/wasm32/fbdoom/fbdoom.wasm?url";
 import modesetWasmUrl from "@binaries/programs/wasm32/modeset.wasm?url";
 import espeakNgWasmUrl from "@binaries/programs/wasm32/espeak-ng/espeak-ng.wasm?url";
 import elinksWasmUrl from "@binaries/programs/wasm32/elinks.wasm?url";
@@ -90,7 +92,9 @@ const SHELL_LAZY_ASSET_URLS: Record<
   "programs/make.wasm": makeWasmUrl,
   "programs/tar.wasm": tarWasmUrl,
   "programs/curl.wasm": curlWasmUrl,
-  "programs/nc.wasm": ncWasmUrl,
+  "programs/redis/redis-cli.wasm": redisCliUrl,
+  "programs/mariadb/mariadb.wasm": mariadbUrl,
+  "programs/netcat/nc.wasm": ncWasmUrl,
   "programs/wget.wasm": wgetWasmUrl,
   "programs/git/git.wasm": gitWasmUrl,
   "programs/jq.wasm": jqWasmUrl,
@@ -108,10 +112,10 @@ const SHELL_LAZY_ASSET_URLS: Record<
   "programs/lsof.wasm": lsofWasmUrl,
   "programs/nano.wasm": nanoWasmUrl,
   "programs/tmux.wasm": tmuxWasmUrl,
-  "programs/termchat.wasm": termchatWasmUrl,
+  "programs/termchat/termchat.wasm": termchatWasmUrl,
   "programs/sqlite3.wasm": sqlite3WasmUrl,
   "programs/lha.wasm": lhaWasmUrl,
-  "programs/quake.wasm": quakeWasmUrl,
+  "programs/tyrquake/quake.wasm": quakeWasmUrl,
   "programs/foot.wasm": footWasmUrl,
   "programs/dbus/dbus-daemon.wasm": dbusDaemonWasmUrl,
   "programs/qtgallery.wasm": qtgalleryWasmUrl,
@@ -145,7 +149,7 @@ const SHELL_LAZY_ASSET_URLS: Record<
   "programs/wayland-demo/notify-send.wasm": notifySendWasmUrl,
   "programs/wayland-demo/kclipd.wasm": kclipdWasmUrl,
   "programs/sdl2.wasm": sdl2WasmUrl,
-  "programs/fbdoom.wasm": fbdoomWasmUrl,
+  "programs/fbdoom/fbdoom.wasm": fbdoomWasmUrl,
   "programs/modeset.wasm": modesetWasmUrl,
   "programs/espeak-ng/espeak-ng.wasm": espeakNgWasmUrl,
   "programs/elinks.wasm": elinksWasmUrl,

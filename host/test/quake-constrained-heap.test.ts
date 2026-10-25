@@ -19,7 +19,7 @@ import { describe, expect, it } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { tryResolveBinary } from "../src/binary-resolver";
 
-const quake = tryResolveBinary("programs/quake.wasm");
+const quake = tryResolveBinary("programs/tyrquake/quake.wasm");
 
 /** The two per-process ceilings the shipped memory profiles declare. */
 const CEILINGS = [

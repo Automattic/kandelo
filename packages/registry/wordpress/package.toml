@@ -1,7 +1,7 @@
 kind = "program"
 name = "wordpress"
 version = "7.0"
-kernel_abi = 7
+kernel_abi = 52
 # build-wp-vfs-image.ts starts from shell.vfs.zst, then bakes a service
 # image: dinit as service supervisor, nginx, php-fpm/opcache, the WordPress tree, and
 # the SQLite drop-in with a preinstalled WordPress database. The interactive

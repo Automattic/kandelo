@@ -37,7 +37,15 @@ export async function startTermchatBrowserTest(imageBytes: number[]) {
   };
   const harness = { kernels, processes, text, raw, stderr, diagnostics,
     send: (i: number, value: string) => kernels[i].ptyWrite(processes[i].pid, new TextEncoder().encode(value + "\r")),
-    resize: (i: number) => { terminals[i].resize(100, 34); kernels[i].ptyResize(processes[i].pid, 34, 100); },
+    resize: async (i: number) => {
+      terminals[i].resize(100, 34); kernels[i].ptyResize(processes[i].pid, 34, 100);
+      // Local xterm reflow is immediate; the guest receives SIGWINCH later.
+      // Observe its new bottom border before typing into the resized TUI.
+      await wait(() => {
+        const bottom = terminals[i].buffer.active.getLine(33)?.translateToString(true) ?? "";
+        return bottom.length === 100 && bottom.startsWith("└") && bottom.endsWith("┘");
+      });
+    },
     stop: async (i: number) => { kernels[i].ptyWrite(processes[i].pid, new Uint8Array([27])); return processes[i].exit; },
     destroy: async () => { await Promise.all(kernels.map(k => k.destroy())); terminals.forEach(t => t.dispose()); },
   };

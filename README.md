@@ -279,6 +279,14 @@ unchanged nodes.
 
 Open `http://127.0.0.1:5401` to use the Kandelo UI. The network lab at `http://127.0.0.1:5401/pages/network/` boots multiple local Kandelo machines in one browser session and exercises POSIX UDP/TCP with GNU Netcat (`nc`) and `curl`.
 
+The network button creates an invitation in one step, with an optional
+package-declared activity such as termchat, Doom, Quake or Freeciv. Keep or replace an
+existing room, or leave it from the same panel. Doom and Quake offer known
+shareware/free data or a local file; required data can travel over WebRTC or be
+supplied through acquisition hints and matching-file choices. Websites and
+databases can invite a separate client computer to their running service. See
+[package-declared sessions](docs/package-sessions.md).
+
 To build the deployable static site, run:
 
 ```bash

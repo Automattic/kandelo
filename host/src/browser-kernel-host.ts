@@ -1149,13 +1149,16 @@ export class BrowserKernel {
    * the parsed response. Bypasses real TCP — uses the kernel's
    * `kernel_inject_connection` path directly. Prototype API.
    *
+   * With `options.hostname`, use this machine's Kandelo session TCP network
+   * instead. External physical-host destinations are not accepted by that path.
+   *
    * The in-kernel server must already be listening on `port`. Each call
    * opens a fresh injected connection (no pipelining).
    */
   async fetchInKernel(
     port: number,
     request: HttpRequest,
-    options?: { timeoutMs?: number; maxResponseBytes?: number },
+    options?: { timeoutMs?: number; maxResponseBytes?: number; hostname?: string },
   ): Promise<HttpResponse> {
     const requestId = this.nextRequestId++;
     return this.request(requestId, {
@@ -1165,6 +1168,7 @@ export class BrowserKernel {
       request,
       timeoutMs: options?.timeoutMs,
       maxResponseBytes: options?.maxResponseBytes,
+      hostname: options?.hostname,
     }) as Promise<HttpResponse>;
   }
 

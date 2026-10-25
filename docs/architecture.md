@@ -1904,6 +1904,21 @@ Owned jobs are a host primitive, not a browser feature. `BrowserKernel` and
 `readOwnedJob(id, offset, limit, cancel)` and `releaseOwnedJob(id)`. The WebMCP
 `kandelo_run_command` tool is one consumer; see `docs/webmcp.md`.
 
+### Activity terminal ownership
+
+Browser activity launches allocate a fresh logical PTY and attach the normal
+configured login/shell with an owned-job identifier before it can fork.
+The shared Node/browser `OwnedJobs` ledger already follows fork, exec and
+reparenting; a zero timeout now expresses an interactive family with no
+scheduled deadline. Cancellation still drains the entire family, observes
+all exits and exact worker detachments, reaps the family and requires explicit
+record release. If the original owned login/shell exits, the logical PTY
+remains ended instead of restarting an unowned login outside that family.
+Replacing an activity closes that dedicated terminal only
+after those fences; other terminals remain separate. Raw terminal input is
+not a process-control API, so graphical games are cancelled through ownership
+rather than simulated Ctrl+C input. No guest ABI or syscall changed.
+
 ### clone() (threads)
 
 1. User calls `clone(CLONE_VM | CLONE_THREAD, ...)` → kernel returns clone request
@@ -2724,6 +2739,21 @@ Routed virtual IPv4 addresses are explicit backend addresses. For example, the b
 
 ### Local Virtual Network
 
+Package-owned [session procedures](package-sessions.md) describe optional
+offer setup and participant join forms above the network layer. The browser
+discovers their bounded manifests in the machine's VFS, connects an ordinary
+network room, and dispatches the declared program as the configured guest
+account. Invitations select a locally installed, digest-matched procedure;
+they do not carry program code or replace guest socket behavior. Room
+ownership remains with the hosting machine. The unified invitation form can
+create a room with or without an activity, preserve or replace an existing
+room, and leave it. Package-declared dependencies carry bounded content
+identities and can be acquired from declared sources, selected locally or
+transferred over the separate `activity-data-v1` WebRTC channel. Content is
+verified before it is written to the package-declared temporary destination
+and the application starts. This channel serves only explicitly published
+bytes and is retired with its network connection.
+
 `LocalVirtualNetwork` (`host/src/networking/virtual-network.ts`) is an in-memory `NetworkIO` backend for multiple Kandelo machines in the same JS session. Each machine receives a `VirtualNetworkBackend` with a stable virtual IPv4 address and optional hostnames. The backend delivers UDP datagrams as bounded message queues and creates paired TCP streams for accepted connections. When a machine detaches, its listeners and endpoints are removed. Direct virtual endpoints observe an explicit connection reset; an accepted pipe-bridged endpoint currently maps that reset to EOF/EPIPE because the pipe ABI has no pending-socket-error channel.
 
 Normal TCP close is distinct from that abort path. Bytes queued by the closing endpoint drain before its FIN, and the peer drains those bytes before `recv` reports EOF. The in-kernel loopback and local virtual transports retain an orphaned receive sink that discards later peer sends until the peer closes its own write half; they do not invent a fixed number of successful writes after FIN. The Node backend uses `net.Socket` half-open state and `destroySoon()` so the operating system determines later reset timing after queued bytes and FIN. Explicit receive shutdown remains a refusal path. Enabled `SO_LINGER` is rejected until reset and timed-close modes can be carried coherently through every transport.
@@ -2753,6 +2783,17 @@ Browsers cannot create external raw TCP or UDP sockets. Local loopback and `Loca
    unaffected.
 
 3. **Service Worker HTTP Bridge**: For server demos (nginx, WordPress), a service worker intercepts browser `fetch()` requests to a configurable URL prefix (e.g., `/app/`) and forwards them to the kernel via a MessagePort connection pump. The kernel injects the request as a TCP connection to nginx's listening socket, and nginx's response flows back through the pipe to the service worker.
+
+The preview also supports HTTP servers on the computer's connected Kandelo
+network. Both Node and browser `fetchInKernel(port, request, { hostname })`
+route an explicit destination through `RemoteSegmentRuntime` and its actual
+`SessionNetwork` TCP backend. This path accepts only destinations within the
+Kandelo subnet, uses a separate host handle range above the guest i32 ABI,
+and closes pending requests on session leave or machine teardown. The shared
+client handles short writes, EAGAIN, response limits and a bounded deadline.
+Omitting `hostname` preserves the existing local injected-listener path.
+The preview service-worker bridge is retired when its destination or machine
+is replaced; its ports and event listeners do not retain a retired kernel.
 
 `TcpNetworkBackend`, `FetchNetworkBackend`, `TlsNetworkBackend`, and `LocalVirtualNetwork` share one numeric-address and hostname validator. It accepts decimal one-, two-, three-, and four-component IPv4 forms within their component widths, rejects malformed or overflowing numeric forms, enforces ASCII host-label syntax and DNS length limits, and preserves one trailing root dot. The Node TCP backend resolves validated names through the host resolver. The browser HTTP fetch/TLS bridges synthesize IPv4 mappings for syntactically acceptable DNS names; `LocalVirtualNetwork` resolves only aliases registered by attached machines. None of the browser paths adds browser DNS resolution or AF_INET6 transport.
 

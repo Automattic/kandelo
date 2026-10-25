@@ -38,3 +38,7 @@ load = "lazy"
 [[products]]
 id = "browser-lamp"
 load = "lazy"
+
+[[products]]
+id = "browser-redis"
+load = "lazy"

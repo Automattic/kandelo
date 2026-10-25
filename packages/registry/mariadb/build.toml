@@ -11,6 +11,6 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-# Revision 3 declares and publishes the two MariaDB bootstrap SQL runtime
-# members alongside the compiled programs.
-revision    = 3
+# Revision 5 ships the interactive client with real target terminfo and a
+# consistent function signature in its bundled line editor's history search.
+revision    = 5

@@ -1,3 +1,4 @@
+import { installImageSessions } from "./image-session-files";
 /**
  * Build a fully-bootable VFS image for the nginx + PHP-FPM demo. The image
  * starts from shell.vfs.zst, then dinit, the first user process, brings up php-fpm on :9000
@@ -447,6 +448,7 @@ export async function buildNginxPhpVfsImage(
   ], { binaries: inputs.dinit });
   writeTrackedDemoConfig(fs, "packages/registry/nginx/nginx-php-demo.json");
 
+  installImageSessions(fs, "nginx-php-vfs");
   await saveShellDerivedVfsImage(fs, inputs.outputPath);
 }
 

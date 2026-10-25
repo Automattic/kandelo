@@ -32,7 +32,7 @@ describe("image-owned grouped runtime URLs", () => {
       "https://demo.invalid/a/assets-group/assets/programs/wasm32/vim.zip",
     );
     expect(map("freeciv.zip")).toBe(
-      "https://demo.invalid/a/assets-group/assets/programs/wasm32/freeciv.zip",
+      "https://demo.invalid/a/assets-group/assets/programs/wasm32/freeciv-browser-bundle/freeciv.zip",
     );
   });
 

@@ -64,6 +64,7 @@ export function writeTrackedDemoConfig(
  * baked-equals-tracked check walks this list.
  */
 export const TRACKED_DEMO_CONFIG_SOURCES = [
+  "packages/registry/redis-vfs/redis-demo.json",
   "packages/registry/shell/source-rootfs-shell-demo.json",
   "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
   "packages/registry/nginx/nginx-demo.json",

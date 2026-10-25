@@ -3693,7 +3693,9 @@ function handleInjectConnection(
 
 async function handleHttpRequest(msg: HttpRequestMessage) {
   try {
-    const response = await kernelWorker.sendHttpRequest(
+    const response = await (msg.hostname === undefined
+      ? kernelWorker.sendHttpRequest.bind(kernelWorker)
+      : remoteSegmentRuntime.fetchHttp.bind(remoteSegmentRuntime, msg.hostname))(
       msg.port,
       msg.request,
       {

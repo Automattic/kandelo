@@ -24,3 +24,5 @@ export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
 export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary freeciv-browser-bundle "$WORK/freeciv.zip" freeciv.zip
+
+install_local_runtime_file freeciv-browser-bundle "${HERE}/sessions.json" sessions.json

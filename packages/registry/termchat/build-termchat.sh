@@ -24,3 +24,4 @@ if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
 fi
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary termchat "$WORK/target/wasm32-unknown-kandelo-std/release/termchat.wasm" termchat.wasm
+install_local_runtime_file termchat "$HERE/sessions.json" sessions.json

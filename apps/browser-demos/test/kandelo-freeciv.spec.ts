@@ -433,7 +433,7 @@ test.describe("local Freeciv peer routing", () => {
     console.log("Creating the network session");
     await page.getByRole("button", { name: "Network session: not connected", exact: true }).click();
     await page.getByLabel("Session name").fill("Freeciv night");
-    await page.getByRole("button", { name: "Create session", exact: true }).click();
+    await page.getByRole("button", { name: "Create invite", exact: true }).click();
     await expect(page.getByRole("button", { name: "Network session: connected", exact: true }))
       .toBeAttached({ timeout: 30_000 });
     const link = await page.locator("[data-network-link]").getAttribute("data-network-link");
@@ -1572,7 +1572,7 @@ for (const density of [1, 2]) {
           texturesCreated: state.texturesCreated, presentations: state.presents.length };
       });
       const archiveModule = await (await page.request.get(
-        "/@id/__x00__kandelo-source-only-asset:programs%2Fwasm32%2Ffreeciv.zip?import",
+        "/@id/__x00__kandelo-source-only-asset:programs%2Fwasm32%2Ffreeciv-browser-bundle%2Ffreeciv.zip?import",
       )).text();
       const result = { ...metrics, paced, burst: { ...burst, observedMs: burstMs },
         density, browser: page.context().browser()!.version(), viewport: page.viewportSize(),

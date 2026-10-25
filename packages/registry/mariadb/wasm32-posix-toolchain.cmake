@@ -285,15 +285,10 @@ set(GNUTLS_LIBRARY "GNUTLS_LIBRARY-NOTFOUND" CACHE FILEPATH "" FORCE)
 set(GNUTLS_INCLUDE_DIR "GNUTLS_INCLUDE_DIR-NOTFOUND" CACHE PATH "" FORCE)
 set(OPENSSL_FOUND FALSE CACHE BOOL "" FORCE)
 
-# --- Curses/terminfo stubs ---
-# MariaDB's bundled editline requires curses. Our sysroot doesn't have it,
-# but MariaDB only uses it for the interactive mysql CLI (not mariadbd).
-# Satisfy the cmake check with stubs.
-set(CURSES_FOUND TRUE CACHE BOOL "Curses found (stub)" FORCE)
-set(CURSES_LIBRARY "${WASM_POSIX_SYSROOT}/lib/libc.a" CACHE FILEPATH "Curses library (stub)" FORCE)
-set(CURSES_INCLUDE_PATH "${WASM_POSIX_SYSROOT}/include" CACHE PATH "Curses include path" FORCE)
-set(CURSES_HAVE_CURSES_H FALSE CACHE BOOL "" FORCE)
-set(CURSES_HAVE_NCURSES_H FALSE CACHE BOOL "" FORCE)
+# The upstream interactive client links its bundled, GPLv2-compatible readline
+# against the real target terminfo library built from ncurses-source.
+set(CURSES_LIBRARY "$ENV{WASM_POSIX_MARIADB_TERMINFO_PREFIX}/lib/libtinfow.a" CACHE FILEPATH "Target terminfo" FORCE)
+set(CURSES_INCLUDE_PATH "$ENV{WASM_POSIX_MARIADB_TERMINFO_PREFIX}/include/ncursesw" CACHE PATH "Target curses headers" FORCE)
 
 # --- PCRE2 paths ---
 # Force PCRE2 include path to sysroot to avoid picking up host-native headers.

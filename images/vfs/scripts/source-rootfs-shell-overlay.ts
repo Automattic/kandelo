@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import type { KandeloImageFs } from "../lib/kandelo-image-fs";
 import { populateShellRuntimeLayout } from "./shell-runtime-layout";
+import { installPackageSessionFiles } from "./package-session-files";
 import { symlink } from "../../../host/src/vfs/image-helpers";
 import {
   SHELL_LAZY_BINARY_SPECS,
@@ -30,6 +31,7 @@ export function populateSourceRootfsShellOverlay(
   resolveArtifact: ShellLazyArchiveResolver,
 ): void {
   populateShellRuntimeLayout(fs);
+  installPackageSessionFiles(fs, resolveArtifact);
 
   // WHY: every ncurses/termcap-linked guest program resolves $TERM against
   // /usr/share/terminfo on every run, so the shared database must be present

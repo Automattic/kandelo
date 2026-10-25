@@ -8,6 +8,8 @@ dependency_only = [
   "netsurf-buildsystem-source",
   "pcaudiolib-source",
   "pcre2-source",
+  "ncurses-source",
+  "phpcacheadmin-source",
   "sqlite-amalgamation-source",
   "sqlite3-ruby-source",
   "wordpress-sqlite-integration-source",
@@ -20,7 +22,7 @@ reason = "deferred product"
 
 [[dormant_products]]
 name = "browser-mariadb-wasm32"
-reason = "dormant product"
+reason = "retired standalone browser product; use WordPress with MariaDB"
 
 [[dormant_products]]
 name = "browser-mariadb-wasm64"
@@ -33,10 +35,6 @@ reason = "retired standalone browser product"
 [[dormant_products]]
 name = "browser-python"
 reason = "retired standalone browser product"
-
-[[dormant_products]]
-name = "browser-redis"
-reason = "dormant product"
 
 [[packages]]
 name = "atk"
@@ -786,10 +784,17 @@ reason = "retired standalone browser product"
 name = "perl-vfs"
 reason = "retired standalone browser product"
 
-[[exclusions]]
-name = "mariadb-vfs"
-reason = "dormant browser product"
+
+
+[[packages]]
+name = "redis-vfs"
+class = "user-software"
 
 [[exclusions]]
-name = "redis-vfs"
-reason = "dormant browser product"
+name = "mariadb-vfs"
+reason = "retired standalone browser product; use WordPress with MariaDB"
+
+[[products]]
+id = "browser-redis"
+package = "redis-vfs"
+manifest = "images/vfs/products/browser-redis.toml"

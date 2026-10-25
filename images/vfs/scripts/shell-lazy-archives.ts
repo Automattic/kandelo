@@ -46,7 +46,7 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
   {
     id: "freeciv",
     dependency: "freeciv-browser-bundle",
-    resolverPath: "programs/wasm32/freeciv.zip",
+    resolverPath: "programs/wasm32/freeciv-browser-bundle/freeciv.zip",
     archiveUrl: "freeciv.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/freeciv-play",
@@ -86,7 +86,7 @@ export const SHELL_LAZY_ARCHIVE_SPECS = [
   {
     id: "python",
     dependency: "python-browser-bundle",
-    resolverPath: "programs/wasm32/python.zip",
+    resolverPath: "programs/wasm32/python-browser-bundle/python.zip",
     archiveUrl: "python.zip",
     mountPrefix: "/usr/",
     requiredMember: "bin/python3",

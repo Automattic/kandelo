@@ -76,6 +76,11 @@ const C_TEST_FIXTURES = [
 const RESOLVED_PROGRAM_FIXTURES = [
   {
     arch: "wasm32",
+    src: join(repoRoot, "programs/tiny-http-server.c"),
+    out: join(repoRoot, "local-binaries/programs/wasm32/tiny-http-server.wasm"),
+  },
+  {
+    arch: "wasm32",
     src: join(repoRoot, "programs/scm-rights-pipe-lifetime.c"),
     out: join(
       repoRoot,

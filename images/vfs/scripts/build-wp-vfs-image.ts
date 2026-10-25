@@ -1,3 +1,4 @@
+import { installImageSessions } from "./image-session-files";
 import type { VfsImageFilesystem } from "../../../host/src/vfs/vfs-image-filesystem";
 /**
  * Build a fully-bootable VFS image for the WordPress browser demo. The image
@@ -437,6 +438,7 @@ export async function buildWordPressVfsImage(
   writeTrackedDemoConfig(fs, "packages/registry/wordpress/wordpress-demo.json");
 
   // Save image
+  installImageSessions(fs, "wordpress");
   await saveShellDerivedVfsImage(fs, inputs.outputPath);
   console.log(`${wpCount} WordPress files total`);
 }

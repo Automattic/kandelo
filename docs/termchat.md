@@ -7,6 +7,14 @@ sent files; this version does not provide separate private conversations.
 
 ## Use it
 
+The network panel also offers **Terminal chat** through the package's
+[session declaration](package-sessions.md). Choose a host name and use
+**Start and invite**, or select **Already running** to share a default-config
+instance without restarting it. Guests follow the link, enter a different
+name, and choose **Join and open chat**. New instances open in a fresh
+terminal after the network is connected. The manual commands below remain
+available.
+
 Boot a shell machine on each participant's computer and join them to the same
 Kandelo network session using the dock's network button and invitation link.
 Then run a different name on each machine:

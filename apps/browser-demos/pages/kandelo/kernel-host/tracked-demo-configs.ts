@@ -1,3 +1,4 @@
+import redisDemoSource from "../../../../../packages/registry/redis-vfs/redis-demo.json?raw";
 // The gallery LISTING's view of every first-party machine, aggregated from
 // the tracked `*-demo.json` sources rather than from built images.
 //
@@ -104,6 +105,7 @@ function composeShellDemoConfig(
 export const TRACKED_DEMO_CONFIG_BY_PRODUCT: Readonly<
   Record<string, KandeloDemoConfig>
 > = Object.freeze({
+  "browser-redis": parseTracked(redisDemoSource, "redis-demo.json"),
   "browser-main-shell": composeShellDemoConfig(
     parseTracked(shellDemoSource, "source-rootfs-shell-demo.json"),
     parseTracked(

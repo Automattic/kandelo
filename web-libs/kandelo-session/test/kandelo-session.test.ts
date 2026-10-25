@@ -1021,6 +1021,26 @@ describe("LiveKernelHost: machine PCM lifecycle", () => {
 });
 
 describe("LiveKernelHost: shell command queue", () => {
+  it("dispatches an activity to a fresh terminal without waiting on or typing into the occupied terminal", async () => {
+    let nextPid = 100;
+    const output = new Map<number, (bytes: Uint8Array) => void>();
+    const writes: [number, string][] = [];
+    const encoder = new TextEncoder();
+    const host = new LiveKernelHost({ kernel: {
+      spawnFromVfs: async () => ({ pid: nextPid++, exit: new Promise<number>(() => {}) }),
+      onPtyOutput(pid: number, callback: (bytes: Uint8Array) => void) {
+        output.set(pid, callback); callback(encoder.encode("kandelo$ "));
+      },
+      ptyResize() {},
+      ptyWrite(pid: number, bytes: Uint8Array) { writes.push([pid, new TextDecoder().decode(bytes)]); },
+    } as any });
+    host.setDefaultShell({ programPath: "/bin/bash", argv: ["bash", "-i"], env: ["PS1=kandelo$ "] });
+    await host.dispatchShellCommand("existing-activity");
+    await host.dispatchShellCommand("new-activity", { path: "/dev/pts/1" });
+    expect(writes).toEqual([[100, "existing-activity\n"], [101, "new-activity\n"]]);
+    for (const callback of output.values()) callback(encoder.encode("kandelo$ "));
+  });
+
   it("waits for a current prompt after replaying a busy terminal's history", async () => {
     vi.useFakeTimers();
     try {
@@ -2935,6 +2955,56 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
     });
   });
 
+  it.each([1, 2, 3])("remeasures an activity's bitmap grid at density %s and restores the image scale", async density => {
+    let sized: Promise<{ width: number; height: number } | undefined> | undefined;
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      const kernel = makeKmsKernel();
+      host.attachKernel(kernel as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      const canvas = makeCanvas();
+      host.attachKmsDisplay(canvas);
+      const ro = FakeResizeObserver.instances[0];
+      const report = () => ro.cb([{ devicePixelContentBoxSize: [{ inlineSize: 1440 * density, blockSize: 810 * density }], contentRect: { width: 1440, height: 810 } }]);
+      report();
+      expect(host.getKmsDisplaySize()).toEqual({ width: 1440 * density, height: 810 * density });
+      host.setKmsDisplayScale(1.5);
+      expect(host.getKmsDisplaySize()).toBeUndefined();
+      sized = host.whenKmsDisplaySized(1, 1000);
+      report();
+      expect(host.getKmsDisplaySize()).toEqual({ width: 960, height: 540 });
+      expect(kernel.kmsSetDisplaySize).toHaveBeenLastCalledWith(1, 960, 540, mmFor(960, 540));
+      host.setPresentation({ ...host.getPresentation(), displayScale: 2 });
+      host.setKmsDisplayScale(null);
+      report();
+      expect(host.getKmsDisplaySize()).toEqual({ width: 720, height: 480 });
+    });
+    expect(await sized).toEqual({ width: 960, height: 540 });
+  });
+
+  it("does not revive a closed display or carry a launch scale into another kernel", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      host.attachKernel(makeKmsKernel() as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      const canvas = makeCanvas(), handle = host.attachKmsDisplay(canvas)!;
+      const old = FakeResizeObserver.instances[0];
+      handle.close();
+      host.setKmsDisplayScale(1.5);
+      expect(old.observing).toBe(false);
+      expect(host.attachKmsDisplay(canvas)).toBe(handle);
+      fireResize(old, 1440, 810);
+      expect(host.getKmsDisplaySize()).toEqual({ width: 960, height: 540 });
+      host.detachKernel();
+      expect(old.observing).toBe(false);
+      host.attachKernel(makeKmsKernel() as any);
+      host.attachKmsDisplay(makeCanvas());
+      fireResize(FakeResizeObserver.instances[1], 1440, 810);
+      expect(host.getKmsDisplaySize()).toEqual({ width: 1440, height: 810 });
+      for (const scale of [0, 0.49, 4.01, NaN, Infinity]) expect(() => host.setKmsDisplayScale(scale)).toThrow();
+    });
+  });
+
   it("keeps native device resolution for a compositor without displayScale", () => {
     withFakeResizeObserver(() => {
       const host = new LiveKernelHost();
@@ -3182,4 +3252,40 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
       vi.useRealTimers();
     }
   });
+});
+
+it("owns a fresh PTY through its normal configured account and does not adopt another terminal", async () => {
+  const spawnFromVfs = vi.fn(async () => ({ pid: 100, exit: new Promise<number>(() => {}) }));
+  const host = new LiveKernelHost({ kernel: {
+    spawnFromVfs, readOwnedJob() {}, releaseOwnedJob() {}, onPtyOutput() {}, ptyResize() {}, ptyWrite() {},
+  } as any });
+  host.setDefaultShell({ programPath: "/bin/bash", argv: ["bash", "-i"], env: ["HOME=/home/maker"], uid: 1000, gid: 1000 });
+  const handle = await host.attachPty("/dev/pts/4", undefined, { id: "activity-one", timeoutMs: 0 });
+  expect(spawnFromVfs).toHaveBeenCalledWith("/bin/bash", ["bash", "-i"], expect.objectContaining({
+    pty: true, ownedJob: { id: "activity-one", timeoutMs: 0 }, uid: 1000, gid: 1000, env: ["HOME=/home/maker"],
+  }));
+  handle.close();
+  await host.attachPty("/dev/pts/4");
+  expect(spawnFromVfs).toHaveBeenCalledTimes(1);
+  await expect(host.attachPty("/dev/pts/4", undefined, { id: "another", timeoutMs: 0 })).rejects.toThrow("fresh PTY");
+});
+
+it("an owned terminal's root exit cannot restart a login outside its family", async () => {
+  vi.useFakeTimers();
+  try {
+    let finish!: (code: number) => void;
+    const exit = new Promise<number>(resolve => { finish = resolve; });
+    const spawnFromVfs = vi.fn(async () => ({ pid: 100, exit }));
+    const host = new LiveKernelHost({ kernel: {
+      spawnFromVfs, readOwnedJob() {}, releaseOwnedJob() {}, onPtyOutput() {}, ptyResize() {}, ptyWrite() {},
+    } as any });
+    const login = { programPath: "/usr/bin/login", argv: ["login", "-p", "-f", "maker"], uid: 0, gid: 0 };
+    host.setTerminalSessionPolicy({ initial: login, afterExit: login, shortRunThresholdMs: 2000, initialRestartDelayMs: 250, maximumRestartDelayMs: 5000 });
+    await host.attachPty("/dev/pts/4", undefined, { id: "activity-one", timeoutMs: 0 });
+    finish(0); await exit;
+    await vi.advanceTimersByTimeAsync(5000);
+    await host.attachPty("/dev/pts/4");
+    expect(spawnFromVfs).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { vi.useRealTimers(); }
 });

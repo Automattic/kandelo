@@ -743,6 +743,12 @@ hits. It mirrors them at
 `{local-,}binaries/programs/<arch>/<package>/<artifact>` independently of the
 number of `[[outputs]]` entries.
 
+Optional [package session procedures](package-sessions.md) use this same
+runtime-file contract. Packages declare offer setup forms, participant join
+forms, and launch arguments; images install their manifests for runtime
+discovery even when the executables remain lazy. They are package capabilities
+and do not require adding demo profiles.
+
 Build scripts install declared artifacts through
 `scripts/install-local-binary.sh`. When
 `WASM_POSIX_INSTALL_LOCAL_MIRROR=0` and `WASM_POSIX_DEP_OUT_DIR` are set,
@@ -1738,10 +1744,15 @@ extracts in-place into
 `<cache_root>/sources/pcre2-source-10.44-rev1-<sha>/`. No
 `<arch>` segment because source trees are arch-agnostic.
 
-The MariaDB manifest (`packages/registry/mariadb/package.toml`):
+The MariaDB package (`packages/registry/mariadb/package.toml`) ships `mariadbd.wasm`, the upstream interactive client
+`mariadb.wasm` (with its bundled GPLv2-compatible line editor), and the
+`mysqltest.wasm` test runner. The shell exposes the interactive client as `mariadb` and `mysql`;
+the test runner remains available in MariaDB test images. The recipe builds
+target terminfo privately from the declared `ncurses-source` dependency on both
+architectures; it does not substitute libc or a host library for curses.
 
 ```toml
-depends_on = ["pcre2-source@10.44"]
+depends_on = ["pcre2-source@10.44", "ncurses-source@6.5", "libcxx@21.1.7"]
 ```
 
 The MariaDB build script (`packages/registry/mariadb/build-mariadb.sh`,

@@ -16,7 +16,7 @@ function signallingServer(): string | null {
 
 const transport = { createInvite: createNetworkInvite, answerInvite: answerNetworkInvite, bridge: attachNetworkBridge };
 
-export function useNetworkSession(host: KernelHost) {
+export function useNetworkSession(host: KernelHost, initiallyOpen = true, dismissed = false) {
   const controller = React.useMemo(() => new NetworkSessionController({
     machine: () => host.getStatus() === "running" ? host : null,
     server: signallingServer,
@@ -40,13 +40,18 @@ export function useNetworkSession(host: KernelHost) {
     if (found) {
       const url = new URL(location.href);
       url.searchParams.delete("network"); url.searchParams.delete("networkName");
+      if (found.offer) url.hash = "";
       history.replaceState(history.state, "", url);
     }
-    return found;
+    return dismissed ? null : found;
   });
+  React.useEffect(() => {
+    if (state.phase === "offline" || state.roomClosed) host.closeNetworkWebPreview?.();
+  }, [host, state.phase, state.roomClosed]);
   // An invitation is spent once its room is gone or this computer leaves.
   React.useEffect(() => { if (state.roomClosed) setInvitation(null); }, [state.roomClosed]);
-  const [open, setOpen] = React.useState(invitation !== null);
+  React.useEffect(() => { if (state.phase === "connected" && invitation && !invitation.offer) setInvitation(null); }, [state.phase, invitation]);
+  const [open, setOpen] = React.useState(initiallyOpen && invitation !== null);
 
   React.useEffect(() => {
     // A session belongs to one running machine; booting another ends it.
@@ -65,7 +70,12 @@ export function useNetworkSession(host: KernelHost) {
 
   return {
     state, open, setOpen, invitation,
+    /** Read immediately at asynchronous launch boundaries, before React renders. */
+    getState: () => controller.getState(),
     available: signallingServer() !== null,
+    publishDependencies: controller.publishDependencies.bind(controller),
+    publishActivities: controller.publishActivities.bind(controller),
+    receiveDependency: controller.receiveDependency.bind(controller),
     create: (name: string) => controller.create(name),
     join: (room: string, name: string) => controller.join(room, name),
     leave,
