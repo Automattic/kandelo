@@ -1,17 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
+import { gotoApp } from "./support/kandelo-machine";
 
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
-
-async function gotoOrSkip(page: Page, path: string) {
-  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
-}
 
 /**
  * Show the Internals syslog, the demo canvas, or the machine's terminal.
@@ -237,7 +226,7 @@ async function readDesktopDims(page: Page): Promise<void> {
  *      windows dominate the size delta), while legit clock-animation
  *      variance stays within ~3% — so the 90% cut cleanly separates them.
  *
- * Skips (via gotoOrSkip) when the binaries aren't built — Vite fails the
+ * Fails (via gotoApp) when the binaries aren't published — Vite fails the
  * `?url` import and shows an error overlay.
  *
  * The machine is selected with `?profile=wayland` against the default shell
@@ -253,7 +242,7 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
   // The Wayland desktop is not listed in the gallery (Omarchy is the
   // desktop shown there), but the shell image still declares it, so it
   // boots by profile.
-  await gotoOrSkip(page, "/?profile=wayland");
+  await gotoApp(page, "/?profile=wayland");
 
   // The desktop boot is heavy (four wasm programs + a forkpty'd shell).
   // The image declares one command, /usr/local/bin/wldesktop, which brings

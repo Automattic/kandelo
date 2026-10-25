@@ -1,17 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
+import { gotoApp } from "./support/kandelo-machine";
 
-const appUrl = (path: string): string => {
-  const baseUrl = process.env.KANDELO_TEST_BASE_URL;
-  return baseUrl ? new URL(path, baseUrl).href : path;
-};
-
-async function gotoOrSkip(page: Page, path: string) {
-  await page.goto(appUrl(path), { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2_000);
-  if (await page.locator("vite-error-overlay").count()) {
-    test.skip(true, "Required binary not built - Vite import error");
-  }
-}
 
 /**
  * Boot the Omarchy machine the way a visitor does: through its gallery row.
@@ -19,7 +8,7 @@ async function gotoOrSkip(page: Page, path: string) {
  * tracked channel that produces `?vfs=<image>&profile=<id>`.
  */
 async function launchOmarchy(page: Page) {
-  await gotoOrSkip(page, "/");
+  await gotoApp(page, "/");
   await page
     .getByRole("button", { name: /^(New|Launch new computer)$/ })
     .first()
@@ -148,8 +137,8 @@ const OPEN_LAUNCHER = /KBD_FOCUS layer=launcher(?![\s\S]*LAUNCHER_EXIT)/;
  * Omarchy v4 is made of — one Quickshell process drawing the wallpaper, a
  * layer-shell status bar reserving the top strip, a launcher on CTRL+Space,
  * notifications, an on-screen display, and a lock screen, over switchable
- * themes — and every piece is driven from the keyboard. Skips (via
- * gotoOrSkip) when the binaries aren't built.
+ * themes — and every piece is driven from the keyboard. Fails (via
+ * gotoApp) when the binaries aren't published.
  */
 test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launcher, notifications and lock screen", async ({ page }) => {
   test.setTimeout(300_000);
