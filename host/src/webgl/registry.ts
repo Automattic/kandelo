@@ -1,7 +1,8 @@
+import { allocateGpuStorage, type GlGpuAllocation } from "./gpu-allocation.js";
 import { revokeForeignBo } from "./foreign-retirement.js";
 import { GlFenceOwner } from "./fences.js";
 import type { GlClientArrayFields } from "./client-array.js";
-import { hasNativeRepair, repairNativeState, retireNativeRepair, retireNativeObject, reserveNativeRetirement, retireNativeRetirement, type NativeRetirement, type NativeDeletion } from "./native-recovery.js";
+import { repairNativeState, retireNativeRepair, retireNativeObject, reserveNativeRetirement, retireNativeRetirement, type NativeRetirement, type NativeDeletion } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { captureNativeGlErrors } from "./errors.js";
 import { destroyTextureView, destroyRenderbufferView } from "./image-storage.js";
@@ -147,15 +148,7 @@ export type GlChangeListener = (pid: number, ev: GlChangeEvent) => void;
  *  is no SAB backing — the pixels only ever exist on the GPU. The
  *  producer renders into `fbo`; a consumer that `WPK_BIND_FOREIGN_TEXTURE`s
  *  it samples `tex` zero-copy, so it MUST be on the same `gl`. */
-export type GpuBo = {
-  gl: WebGL2RenderingContext;
-  tex: WebGLTexture;
-  fbo: WebGLFramebuffer;
-  depthStencil: WebGLRenderbuffer;
-  texId: number;
-  w: number;
-  h: number;
-};
+export type GpuBo = GlGpuAllocation;
 
 export type GlExecutionRetirementGuard = {
   readonly context: WebGL2RenderingContext;
@@ -544,7 +537,8 @@ export class GlContextRegistry {
   private foreignRetirementOwners(bo: number): Map<GlObjectGroup, GlBinding> {
     let owners = this.foreignRetirements.get(bo);
     if (!owners) { owners = new Map(); this.foreignRetirements.set(bo,owners); }
-    for (const b of this.bindings.values()) if (b.gl && !owners.has(b.objects)) {
+    const bindings = new Set([...this.bindings.values(),...Array.from(this.executionRecords,record=>record.binding)]);
+    for (const b of bindings) if (b.gl && !owners.has(b.objects)) {
       const cleanup = exposeGlSharedObjects({objects:b.objects,gl:b.gl,errors:b.errors});
       owners.set(b.objects,cleanup as GlBinding);
     }
@@ -590,66 +584,28 @@ export class GlContextRegistry {
     w: number,
     h: number,
   ): number | null {
-    if (this.foreignRetirements.has(bo_id)) return null;
-    if (!repairNativeState(gl)) return null;
+    if (!Number.isInteger(bo_id) || bo_id <= 0 || bo_id > 0xffff_ffff ||
+        !Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0 ||
+        w > 0x7fff_ffff || h > 0x7fff_ffff || gl.isContextLost?.() ||
+        this.foreignRetirements.has(bo_id)) return null;
+    if (!this.retryExecutionRetirements(gl) || !repairNativeState(gl)) return null;
     const existing = this.gpuBos.get(bo_id);
-    if (existing) return existing.texId;
-    const tex = gl.createTexture();
-    const fbo = gl.createFramebuffer();
-    const depthStencil = gl.createRenderbuffer();
-    if (!tex || !fbo || !depthStencil) {
-      if (tex) gl.deleteTexture(tex);
-      if (fbo) gl.deleteFramebuffer(fbo);
-      if (depthStencil) gl.deleteRenderbuffer(depthStencil);
-      return null;
-    }
-    const prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D) as WebGLTexture | null;
-    const prevDraw = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
-    const prevRead = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
-    const prevRbo = gl.getParameter(gl.RENDERBUFFER_BINDING) as WebGLRenderbuffer | null;
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    // `null` data → allocate storage without an upload; the producer
-    // fills it by rendering into the FBO.
-    gl.texImage2D(
-      gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0,
-      gl.RGBA, gl.UNSIGNED_BYTE, null,
-    );
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-    gl.framebufferTexture2D(
-      gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0,
-    );
-    // A Wayland EGL window is a default framebuffer just like scanout.
-    // Color-only storage made stencil clipping silently draw unmasked.
-    gl.bindRenderbuffer(gl.RENDERBUFFER, depthStencil);
-    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH24_STENCIL8, w, h);
-    gl.framebufferRenderbuffer(
-      gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, depthStencil,
-    );
-    const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
-    gl.bindTexture(gl.TEXTURE_2D, prevTex);
-    gl.bindRenderbuffer(gl.RENDERBUFFER, prevRbo);
-    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, prevDraw);
-    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, prevRead);
-    if (!complete) {
-      gl.deleteRenderbuffer(depthStencil);
-      gl.deleteFramebuffer(fbo);
-      gl.deleteTexture(tex);
-      return null;
-    }
-    const texId = this.nextGpuBoTexId++;
-    this.gpuBos.set(bo_id, { gl, tex, fbo, depthStencil, texId, w, h });
-    return texId;
+    if (existing) return !existing.retirement.pending && existing.gl === gl && existing.w === w && existing.h === h
+      ? existing.texId : null;
+    if (this.nextGpuBoTexId > 0x7fff_ffff) return null;
+    const texId = this.nextGpuBoTexId;
+    return allocateGpuStorage(gl,w,h,texId,allocation=>{
+      this.gpuBos.set(bo_id,allocation);
+      this.nextGpuBoTexId++;
+    }) ? texId : null;
   }
 
   /** The GPU-tier bo for `bo_id`, or undefined if it is CPU-tier /
    *  unknown or retiring. Foreign-texture binding uses its private canonical
    *  storage to construct a distinct logical view without a CPU upload. */
   gpuBo(bo_id: number): GpuBo | undefined {
-    return this.foreignRetirements.has(bo_id) ? undefined : this.gpuBos.get(bo_id);
+    const entry = this.gpuBos.get(bo_id);
+    return this.foreignRetirements.has(bo_id) || entry?.retirement.pending ? undefined : entry;
   }
 
   /** Apply the GPU-tier producer render-target redirect for `b` if both
@@ -668,8 +624,9 @@ export class GlContextRegistry {
     if (b.renderTargetFbo || !b.gl || b.pendingRenderTargetBoId === 0) {
       return false;
     }
-    const gpu = this.gpuBos.get(b.pendingRenderTargetBoId);
+    const gpu = this.gpuBo(b.pendingRenderTargetBoId);
     if (!gpu || b.gl !== gpu.gl) return false;
+    b.surface.borrowedTarget = {gl:gpu.gl,fbo:gpu.fbo,w:gpu.w,h:gpu.h,retirement:gpu.retirement};
     b.renderTargetFbo = gpu.fbo;
     replaceDefaultFramebuffer(b, null);
     if (!b.hasBeenCurrent) b.shadow.viewport = [0, 0, gpu.w, gpu.h];
@@ -681,12 +638,14 @@ export class GlContextRegistry {
   destroyGpuBo(bo_id: number): boolean {
     const entry = this.gpuBos.get(bo_id);
     if (!entry) return true;
-    if (hasNativeRepair(entry.gl)) return false;
-    const cleanup = {gl:entry.gl,errors:[]} as unknown as GlBinding;
-    if (!checkedGlCall(cleanup, () => entry.gl.deleteFramebuffer(entry.fbo)) ||
-        !checkedGlCall(cleanup, () => entry.gl.deleteRenderbuffer(entry.depthStencil)) ||
-        !checkedGlCall(cleanup, () => entry.gl.deleteTexture(entry.tex))) return false;
-    this.gpuBos.delete(bo_id); return true;
+    const complete = retireNativeRetirement(entry.retirement);
+    // Public BO ownership can end while accepted work retains its allocation.
+    // A rejected unheld deletion stays addressable only for cleanup retries.
+    if (complete || entry.retirement.references !== 0) {
+      this.gpuBos.delete(bo_id);
+      return true;
+    }
+    return false;
   }
 
   onChange(fn: GlChangeListener): () => void {

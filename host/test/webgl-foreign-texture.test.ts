@@ -328,6 +328,14 @@ it("retains a rejected canonical deletion for retry after all raw views have ret
   reg.retireForeignBo(41);expect(reg.hasForeignRetirements()).toBe(true);expect(alive.has(gpu.tex)).toBe(true);
   reg.retryForeignRetirements();expect(reg.hasForeignRetirements()).toBe(false);expect(alive.has(gpu.tex)).toBe(false);
 });
+it("finds raw BO views in execution groups after their public context was replaced",()=>{
+  const {reg,b,gl,alive}=gpuRawSetup();bindGpuForeignTexture(b,41,reg.gpuBo(41)!);
+  const group=b.objects,guard={context:gl,prepareRetirement:()=>true};
+  const lease=reg.retainContextExecution(7,11,guard)!;expect(lease).not.toBeNull();
+  reg.destroyContext(7,11);expect(reg.get(7,11)).not.toBe(b);expect(group.foreignTextureBos.size).toBe(1);
+  reg.retireForeignBo(41);expect(group.foreignTextureBos.size).toBe(0);expect(reg.hasForeignRetirements()).toBe(false);
+  expect(lease.release()).toBe(true);reg.unbind(7);expect(alive.size).toBe(0);
+});
 
 for (const fault of ["texture","active","unit-zero","row-length","alignment","skip-rows","skip-pixels"]) {
   it(`retains rejected CPU upload ${fault} restoration before query or another upload`, () => {

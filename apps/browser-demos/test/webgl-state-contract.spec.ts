@@ -2478,3 +2478,64 @@ for(const partial of [false,true]) {
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
+
+for (const partial of [false,true]) {
+  test(`borrowed GPU allocation survives BO identity reuse${partial?" with rejected cleanup":""}`,async({page})=>{
+    await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
+    const root=fileURLToPath(new URL("../../../",import.meta.url));
+    const result=await page.evaluate(async({root,partial})=>{
+      const base=new URL(`/@fs${root}host/src/webgl/`,location.href).href;
+      const {GlContextRegistry}=await import(base+"registry.ts"),{GlMuxer}=await import(base+"muxer.ts");
+      const {prepareBorrowedSurfaceTarget,retainSurfaceStorage}=await import(base+"surface-resources.ts");
+      const {applyCurrentDrawable}=await import(base+"current.ts"),{SubmitFrame}=await import(base+"submit-queue.ts");
+      const {decodeAndDispatch,validateCommandBuffer}=await import(base+"bridge.ts"),O=await import(base+"ops.ts");
+      const canvas=document.createElement("canvas");canvas.width=4;canvas.height=3;document.body.replaceChildren(canvas);
+      const gl=canvas.getContext("webgl2",{antialias:false,preserveDrawingBuffer:true})!;if(!gl)throw new Error("no WebGL2");
+      const live:Array<()=>boolean>=[],deleted:object[]=[];let reject:WebGLTexture|null=null;
+      for(const [createName,deleteName,isName] of [["createTexture","deleteTexture","isTexture"],
+        ["createFramebuffer","deleteFramebuffer","isFramebuffer"],["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],
+        ["createVertexArray","deleteVertexArray","isVertexArray"]]) {
+        const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
+        api[createName]=(...args:unknown[])=>{const object=create(...args);if(object)live.push(()=>isLive(object));return object;};
+        api[deleteName]=(object:object|null)=>{if(object && object===reject){reject=null;throw new Error("texture deletion rejected");}destroy(object);if(object)deleted.push(object);};
+      }
+      const reg=new GlContextRegistry(),muxer=new GlMuxer(gl);
+      reg.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:28});const b=reg.get(7,11)!;b.gl=gl;b.contextId=1;b.surfaceId=31;
+      if(reg.createGpuBo(41,gl,2,2)===null)throw new Error("old BO allocation");const old=reg.gpuBo(41)!;
+      prepareBorrowedSurfaceTarget(b,old,41)();
+      if(!applyCurrentDrawable(b,{drawSurfaceId:31,readSurfaceId:31,width:2,height:2}))throw new Error("drawable");
+      const send=(color:number[])=>{
+        const bytes=new Uint8Array(28),view=new DataView(bytes.buffer);
+        view.setUint16(0,O.OP_CLEAR_COLOR,true);view.setUint16(2,16,true);color.forEach((value,index)=>view.setFloat32(4+index*4,value,true));
+        view.setUint16(20,O.OP_CLEAR,true);view.setUint16(22,4,true);view.setUint32(24,gl.COLOR_BUFFER_BIT,true);
+        const frame=new SubmitFrame(bytes,0,28);if(frame.validate(validateCommandBuffer)!==0)throw new Error("preflight");
+        frame.run(b,()=>{muxer.switchTo(b);if(decodeAndDispatch(b,0,28)!==0)throw new Error("dispatch");});
+      };
+      const read=(fbo:WebGLFramebuffer)=>{gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);const out=new Uint8Array(4);gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,out);return [...out];};
+      send([1,0,0,1]);const first=retainSurfaceStorage(b.surface)!;if(!first)throw new Error("borrowed lease");
+      if(!reg.destroyGpuBo(41))throw new Error("public retirement");const second=first.clone()!;if(!second)throw new Error("retired clone");
+      let output:any;
+      try {
+        const hidden=reg.gpuBo(41)===undefined;
+        if(reg.createGpuBo(41,gl,4,3)===null)throw new Error("replacement BO allocation");const fresh=reg.gpuBo(41)!;
+        prepareBorrowedSurfaceTarget(b,fresh,41)();muxer.invalidateCurrent();send([0,0,1,1]);
+        const blue=read(fresh.fbo),red=read(first.framebuffer);
+        muxer.invalidateCurrent();reg.destroySurface(7,11);reg.destroyContext(7,11);
+        if(!reg.destroyGpuBo(41))throw new Error("fresh retirement");
+        gl.bindFramebuffer(gl.FRAMEBUFFER,first.framebuffer);gl.clearColor(0,1,0,1);gl.clear(gl.COLOR_BUFFER_BIT);
+        const green=read(first.framebuffer),oldAlive=gl.isTexture(old.tex);
+        if(!first.release(null))throw new Error("first release");
+        if(partial)reject=old.tex;
+        const peer={errors:[] as number[]};gl.enable(0xdead);const accepted=second.release(peer);
+        if(!second.release(peer))throw new Error("cleanup retry");
+        output={hidden,red,blue,green,oldAlive,accepted,errors:peer.errors,
+          oldDeletes:[old.fbo,old.depthStencil,old.tex].map(object=>deleted.filter(value=>value===object).length),
+          freshDeleted:!gl.isTexture(fresh.tex)&&!gl.isFramebuffer(fresh.fbo)};
+      } finally {reject=null;first.release(null);second.release(null);muxer.invalidateCurrent();reg.unbind(7);reg.destroyGpuBo(41);}
+      return {...output,clean:live.every(check=>!check()),error:gl.getError()};
+    },{root,partial});
+    expect(result).toEqual({hidden:true,red:[255,0,0,255],blue:[0,0,255,255],green:[0,255,0,255],oldAlive:true,
+      accepted:!partial,errors:[0x500],oldDeletes:[1,1,1],freshDeleted:true,clean:true,error:0});
+    expect(await memoryBoundaryFailures(page)).toEqual([]);
+  });
+}

@@ -617,8 +617,9 @@ replacement blue pixels, retire public owners, render green into retained
 storage and check exact final native deletion with and without partial
 cleanup failure. The source fixture normalizes its module URLs so its
 native cleanup probe shares the production module instance. These checks
-cover owned surface allocations; borrowed BO leases, server-wait ordering
-and normal guest lifecycle validation remain open.
+cover owned surface allocations; the borrowed GPU allocation checks below
+extend the same model. Server-wait ordering and normal guest lifecycle
+validation remain open.
 
 Fifteen context-execution source cases retain old native identities through
 public context revocation, session removal and multiple replacements. The three
@@ -630,3 +631,14 @@ blue replacement storage and green through retained old execution, then
 check private cleanup retry and exact deletion while the replacement stays
 usable. These source adapters exercise real WebGL pixels in all three
 engines, but do not run rebuilt guest marshalling or deferred server waits.
+
+Borrowed GPU allocation cases extend the storage leases to canonical BO
+receipts. Three before-source cases fail `3e28c24078`: publication after a
+native storage error, replayed accepted cleanup, and premature borrowed
+allocation deletion. Additional host cases cover malformed metadata,
+conflicting creation, identifier reuse, rejected selector restoration,
+hidden retirement, selected-peer flags and old execution-group discovery.
+Six browser cases retain red old and blue replacement storage, retire
+public owners, render green through the old hold and require exact final
+deletions with and without rejected texture cleanup. They remain source
+adapters, not normal guest or compositor integration evidence.

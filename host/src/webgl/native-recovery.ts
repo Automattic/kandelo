@@ -19,7 +19,7 @@ export type NativeDeletion = ["deleteTexture", WebGLTexture | null] | ["deleteRe
   | ["deleteFramebuffer", WebGLFramebuffer | null] | ["deleteBuffer", WebGLBuffer | null]
   | ["deleteSync", WebGLSync | null] | ["deleteShader", WebGLShader | null]
   | ["deleteProgram", WebGLProgram | null] | ["deleteVertexArray", WebGLVertexArrayObject | null];
-export type NativeRetirement = {owner: CheckedGlOwner; calls: NativeDeletion[]; pending: boolean; complete: boolean; references: number; dependencies: readonly NativeRetirement[]};
+export type NativeRetirement = {owner: CheckedGlOwner; calls: NativeDeletion[]; pending: boolean; complete: boolean; references: number; dependencies: readonly NativeRetirement[]; ordered?: boolean};
 const retirements = new WeakMap<WebGL2RenderingContext, Set<NativeRetirement>>();
 export type NativeInverse = { owner: CheckedGlOwner; groups: NativeCall[][] };
 export type NativeChange = { apply(): boolean; restore: NativeInverse };
@@ -72,10 +72,10 @@ function restoreInverse(inverse: NativeInverse): boolean {
 
 /** Reserve ownership before allocation/publication. Empty slots can be filled by
  * assignment inside native creation calls, without allocating after creation. */
-export function reserveNativeRetirement(b: CheckedGlOwner, calls: NativeDeletion[], dependencies: readonly NativeRetirement[] = []): NativeRetirement | null {
+export function reserveNativeRetirement(b: CheckedGlOwner, calls: NativeDeletion[], dependencies: readonly NativeRetirement[] = [], options: {ordered?: boolean} = {}): NativeRetirement | null {
   if (!b.gl) return null;
   try {
-    const retirement = {owner:nativeOwner(b),calls,pending:false,complete:false,references:0,dependencies};
+    const retirement = {owner:nativeOwner(b),calls,pending:false,complete:false,references:0,dependencies,ordered:options.ordered};
     let owners = retirements.get(b.gl);
     if (!owners) { owners = new Set(); retirements.set(b.gl,owners); }
     owners.add(retirement);
@@ -96,7 +96,12 @@ function collectNativeRetirements(gl: WebGL2RenderingContext): boolean {
       if (!object) continue;
       if (checkedGlCall(retirement.owner, () => Reflect.apply(gl[call[0]],gl,[object]))) {
         retireNativeObject(gl,object); call[1] = null;
-      } else accepted = false;
+      } else {
+        accepted = false;
+        // Canonical BO backing must survive a rejected container retirement.
+        // Already accepted members remain null and never execute again.
+        if (retirement.ordered) break;
+      }
     }
     if (retirement.calls.every(call => call[1] === null) && retirement.dependencies.every(dependency => dependency.complete)) transferNativeRetirement(retirement);
     else accepted = false;

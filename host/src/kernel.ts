@@ -2512,6 +2512,8 @@ export class WasmPosixKernel {
         ): number => {
           const ctx = this.#sharedGlContext();
           if (!ctx) return -38; // -ENOSYS → guest falls back to CPU tier
+          try { this.gl_muxers.get(ctx)?.captureCurrentErrors(); }
+          catch { return -5; }
           const texId = this.gl.createGpuBo(bo_id, ctx, width, height);
           if (texId == null) return -12; // -ENOMEM
           return 0;

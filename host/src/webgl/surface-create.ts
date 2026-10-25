@@ -2,13 +2,14 @@ import type { GlBinding } from "./registry.js";
 import { hasNativeRepair, repairNativeState } from "./native-recovery.js";
 import { createSurfaceResources, exposeSurfaceResources, retireSurface } from "./surface-resources.js";
 import { resizeSurfaceTarget } from "./present-target.js";
+import type { NativeRetirement } from "./native-recovery.js";
 
 /** Reviewed scalars only. No guest memory crosses a renderer boundary. */
 export type GlSurfaceCreation = {
   surfaceId: number; kind: number; width: number; height: number;
   configId: number; targetBoId: number;
 };
-export type GlSurfaceTarget = { gl: WebGL2RenderingContext; fbo: WebGLFramebuffer; w: number; h: number };
+export type GlSurfaceTarget = { gl: WebGL2RenderingContext; fbo: WebGLFramebuffer; w: number; h: number; retirement?: NativeRetirement };
 export const GL_SURFACE_WIRE_BYTES = 36;
 
 export function validSurfaceCreation(v: GlSurfaceCreation): boolean {
@@ -39,6 +40,7 @@ export function prepareSurfaceCreation(b: GlBinding, v: GlSurfaceCreation,
       if ((width && width !== target.w) || (height && height !== target.h)) return { rc: -22 };
       width = target.w; height = target.h;
       candidate.gl = target.gl; candidate.renderTargetFbo = target.fbo;
+      candidate.borrowedTarget = target.retirement ? {gl:target.gl,fbo:target.fbo,w:target.w,h:target.h,retirement:target.retirement} : null;
       candidate.pendingRenderTargetBoId = v.targetBoId;
     } else {
       const gl = b.gl ?? canvas?.getContext("webgl2", {

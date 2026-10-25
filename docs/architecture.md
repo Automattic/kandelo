@@ -4366,8 +4366,25 @@ captures selected-owner errors before private deletion. Failed error
 capture keeps the reference; failed deletion ends use but keeps a retry
 token and checked native receipt. Successful deletion members do not replay,
 and native inverses retain old handles until deletion really accepts.
-These leases currently cover owned surface targets. Borrowed BO storage
-and deferred wait integration remain work.
+The same leases cover borrowed GPU BO allocations through a native-only
+allocation receipt copied into the surface record. Public BO retirement
+revokes lookup while existing leases keep the old allocation usable. A
+replacement BO with the same numeric ID receives a distinct texture ID,
+receipt and storage. New holds cannot revive a retiring allocation; existing
+holds may clone. Surface destruction drops its allocation description
+without taking over the kernel BO's ownership.
+
+GPU BO allocation now reserves native cleanup before creating its texture,
+framebuffer and depth/stencil buffer. Checked creation, storage setup,
+completeness and selected texture/renderbuffer/read/draw restoration all
+precede publication. Failed inverse restoration retains candidates and
+blocks dependent native work until repair. The kernel host import captures
+selected-owner errors before this private utility runs. Cleanup receipts
+can enforce member order, preserving canonical texture backing after a
+rejected container deletion and skipping members already accepted. Failed
+unheld BO retirement stays hidden from public lookup and target selection
+until checked cleanup completes. Retained execution groups remain part of
+raw BO-view retirement even after public context replacement.
 
 Context execution leases separately retain a native execution owner after
 public context destruction or session removal. Acquisition reserves a fresh
@@ -4401,8 +4418,8 @@ to the existing decoder. Finally restores its cached guest view only if a
 memory rebind or teardown has not replaced it. Main forwarding does not
 retain the last delivered command message as a cached binding view. Drain
 remains synchronous: deferred server waits still need per-work drawable
-selection, borrowed BO allocation holds, dependency ownership,
-query/presentation barriers and asynchronous retirement. Command snapshots
+selection, dependency ownership, query/presentation barriers and asynchronous
+retirement. Command snapshots
 and execution leases do not yet implement server ordering.
 
 The main-thread fallback supports synchronous queries through one reusable

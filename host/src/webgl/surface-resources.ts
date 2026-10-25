@@ -7,6 +7,10 @@ export type GlPresentTarget = {
   w: number; h: number;
   retirement: NativeRetirement;
 };
+export type GlBorrowedTarget = {
+  gl: WebGL2RenderingContext; fbo: WebGLFramebuffer; w: number; h: number;
+  retirement: NativeRetirement;
+};
 
 export type GlSurfaceFields = {
   /** Current kernel surface identity, or null before surface creation. */
@@ -30,6 +34,7 @@ export type GlSurfaceResources = GlSurfaceFields & {
   /** Explicit surface storage keeps its acknowledged dimensions. */
   fixedSize: boolean;
   kind: number;
+  borrowedTarget: GlBorrowedTarget | null;
   users: Set<GlBinding>;
 };
 
@@ -37,7 +42,7 @@ export function createSurfaceResources(pid: number): GlSurfaceResources {
   return {
     surfaceId: null, surfaceSize: null, renderTargetFbo: null,
     presentTarget: null, pendingRenderTargetBoId: 0,
-    gl: null, pid, ownerAlive: true, fixedSize: false, kind: 1, users: new Set(),
+    gl: null, pid, ownerAlive: true, fixedSize: false, kind: 1, borrowedTarget: null, users: new Set(),
   };
 }
 
@@ -66,7 +71,7 @@ function collectSurface(s: GlSurfaceResources): void {
   if (target) {
     retireNativeRetirement(target.retirement);
   }
-  s.presentTarget = null; s.renderTargetFbo = null;
+  s.presentTarget = null; s.borrowedTarget = null; s.renderTargetFbo = null;
   s.surfaceId = null; s.surfaceSize = null; s.pendingRenderTargetBoId = 0;
   s.gl = null;
 }
@@ -83,7 +88,7 @@ export class GlSurfaceStorageLease {
     this.#framebuffer = framebuffer; this.width = width; this.height = height; this.surfaceId = surfaceId;
   }
   static acquire(surface: GlSurfaceResources): GlSurfaceStorageLease | null {
-    const target = surface.presentTarget;
+    const target = surface.presentTarget ?? surface.borrowedTarget;
     if (!target || !surface.gl || target.retirement.owner.gl !== surface.gl ||
         surface.renderTargetFbo !== target.fbo) return null;
     try {
@@ -167,8 +172,9 @@ export function prepareSurfaceTargetReplacement(s: GlSurfaceResources, target: G
  * BO target. Publication performs no native calls or allocation, so failure
  * in preflight cannot leave some contexts pointing at the retired FBO. */
 export function prepareBorrowedSurfaceTarget(owner: GlBinding,
-  target: {gl: WebGL2RenderingContext; fbo: WebGLFramebuffer; w: number; h: number}, boId: number): () => void {
+  target: {gl: WebGL2RenderingContext; fbo: WebGLFramebuffer; w: number; h: number; retirement?: NativeRetirement}, boId: number): () => void {
   const s = owner.surface, previous = s.renderTargetFbo;
+  const allocation = target.retirement ? {gl:target.gl,fbo:target.fbo,w:target.w,h:target.h,retirement:target.retirement} : null;
   const size = {width:target.w,height:target.h};
   const users = new Set([...s.users,owner]);
   const updates = [...users].map(b => ({b,
@@ -178,6 +184,7 @@ export function prepareBorrowedSurfaceTarget(owner: GlBinding,
   }));
   return () => {
     s.gl = target.gl; s.pendingRenderTargetBoId = boId;
+    s.borrowedTarget = allocation;
     s.surfaceSize = size; s.renderTargetFbo = target.fbo;
     for (const {b,draw,read,drawable} of updates) {
       if (draw) b.shadow.fbo = b.currentDrawable?.drawSurfaceId === 0 ? b.undefinedDefaultFbo : target.fbo;

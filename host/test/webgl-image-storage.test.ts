@@ -103,7 +103,7 @@ it("registers a GPU source through the actual kernel host import without overwri
   const api = (kernel.testAuthority.buildImportObject(memory) as {
     env: Record<string, (...args: any[]) => number>;
   }).env;
-  const gl = new Proxy({ getError: () => 0, getParameter: () => null, createTexture: () => ({}), createFramebuffer: () => ({}), createRenderbuffer: () => ({}),
+  const gl = new Proxy({ getError: () => 0, getParameter: (p: number) => p === 0x84e0 ? 0x84c0 : null, createTexture: () => ({}), createFramebuffer: () => ({}), createRenderbuffer: () => ({}),
     FRAMEBUFFER_COMPLETE: 0x8cd5, checkFramebufferStatus: () => 0x8cd5 }, { get: (target, name) => Reflect.get(target, name) ?? (() => { }) }) as unknown as WebGL2RenderingContext;
   kernel.gl.bind({ pid: 7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });
   const b = kernel.gl.get(7, 11)!;

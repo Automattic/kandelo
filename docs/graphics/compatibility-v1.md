@@ -86,7 +86,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | E06 | Respecification orphans sibling without altering others; OES_EGL_image | GPU view replacement preserves sibling parameters and canonical pixels, retargets logical FBOs and handles definite rejection before C backing release. C retains backing by object identity and rejects stale association completions. Raw GPU respecification and refresh preserve private canonical storage and independent parameters. CPU coherence, multi-failure recovery and guest CTS remain open | GLES storage model, host object/attachment tracking | Redefine imported texture, sample both siblings, retained FBO | partial |
 | E07 | dma-buf validation, multiple import and format/modifier enumeration; EXT import | Core EGLAttrib and KHR EGLint image creation share retained dma-buf storage and destruction. Parsing rejects wide aliases, missing mandatory fields and malformed modifier pairs before import, validates preservation and hint values, and ignores valid YUV hints for supported RGB formats. Full backing metadata, CPU coherence, format and rollback validation remain open | EGL, PRIME, GBM | CPU/GPU imports, bad fd/stride/offset/modifier; repeated import lifetime | open |
 | E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve for retained dma-buf imports. Native fence candidates, waiter leases and retryable cleanup now have retained source models. Table 17 adds caller-known create/status/release tokens, accepted-reply publication, cancellation and mapped object-session authority without a current context. Native and forwarded source rendering pass. Core C create/destroy/query/client-wait now use generation-owned records, retained sessions, serialized replies, monotonic timeouts and cancellation-safe waiter references; public glFlush requests acknowledged native flush. Focused C and three-engine source evidence is recorded below. The four KHR_fence_sync aliases share these records with width-correct lists/output and 64-bit timeouts; EGL_KHR_fence_sync and client GL_OES_EGL_sync are declared. eglWaitSync server ordering remains open; EGL_KHR_wait_sync is not advertised. GL-source images and full lifecycle/errors/guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
-| B01 | GBM allocation/import/export and plane metadata | Dumb/GPU tiers; cage adds modifier allocators | GBM, DRM BOs, host registry | SDK guest fixtures both widths; unsupported format/flags | partial |
+| B01 | GBM allocation/import/export and plane metadata | Dumb/GPU tiers; cage adds modifier allocators. Native GPU allocation and restoration use checked receipts; borrowed surface leases preserve old GPU storage after public retirement/ID reuse. CPU coherence, format/layout and full guest validation remain open | GBM, DRM BOs, host registry | SDK guest fixtures both widths; unsupported format/flags | partial |
 | B02 | GBM map/unmap coherence and authority | Kernel authoritative BO references; changed-run publication on main | GBM, kernel maps, DRI registry | Importer writes, stale readers, unmap/exit/exec; browser pixels | partial |
 | B03 | Surface ring lock/release/destroy ownership | Main two-BO ring; audit lock/destroy/outstanding buffer lifetime | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks | partial |
 | K01 | Single display resources and consistent object IDs | Integrated dynamic mode catalog, properties and device-wide IDs; broader device/host validation pending | kernel dri/kms, host mode metadata | Rust ioctl and Node mode tests; preserve preferred/catalog semantics | partial |
@@ -94,7 +94,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | K03 | Shared OFD GEM/FB authority, PRIME and final references | Shared KMS FBs and inherited graphics cleanup/BO holds are implemented; general forked GEM handle-map sharing and full guest validation remain open | OFD, process/fork/spawn/exec/close, BO registry | Rust + real Node lifecycle/dup/fork/spawn tests | open |
 | K04 | Legacy modeset/flip/vblank/master handoff | Main display owner and cleanup; cage changes automatic master and CLOSEFB | KMS, host scanout | Pending flip drop/exit/crash/master replacement, no stale event/scanout | partial |
 | K05 | GPU scanout, CPU fallback and context loss | Main has GPU producer target; cage adds scanout blit | host GPU registry/present target/KMS pump | Render imports to scanout; orientation/pixels three engines | open |
-| H01 | Command framing, complete validation and bounded results | Owned bounded submission snapshots make structural validation and dispatch observe the same bytes in native and forwarded paths; one-shot frames restore cached views and discard on purge. Source execution leases retain revoked context owners and owned drawable allocations independently; drain remains synchronous pending borrowed BO holds, per-work drawable selection and server-wait ordering. Kernel query dispatch preprobes nonempty guest destinations, rejects nonzero reserved fields/null inputs, and rejects oversized host replies without copying output. Focused Rust/host source evidence is recorded below; complete guest coverage remains open | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
+| H01 | Command framing, complete validation and bounded results | Owned bounded submission snapshots make structural validation and dispatch observe the same bytes in native and forwarded paths; one-shot frames restore cached views and discard on purge. Source execution leases retain revoked context owners and owned drawable allocations independently; borrowed GPU allocations also have independent source leases; drain remains synchronous pending per-work drawable selection and server-wait ordering. Kernel query dispatch preprobes nonempty guest destinations, rejects nonzero reserved fields/null inputs, and rejects oversized host replies without copying output. Focused Rust/host source evidence is recorded below; complete guest coverage remains open | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Canonical surface BO holds and image-owned renderer cleanup now survive descriptor inheritance/local close; focused native lifecycle checks pass. Raw BO retirement retains failed native cleanup across final member teardown and blocks affected operations until retry. Combined guest/memory-cycle validation remains pending | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
 | A01 | ABI and generated declarations match combined implementation | Current main `5cd771bff8` ABI 53 and graphics development contracts are consolidated under ABI 54. Regenerated snapshot, C/TS declarations and standalone resolver pass focused inspection; operation table stays 17. Normal artifacts and combined consumer/conformance gates remain pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
@@ -4999,3 +4999,72 @@ queries, presentation, cancellation and fence placement remain necessary
 for nonblocking eglWaitSync. Normal SDK/kernel/program/package/image
 builds, upstream CTS, cage/sway, complete browser-memory and required POSIX
 remain deferred/unrun. ABI 54 and GL operation table 17 stay fixed.
+
+
+### Checked GPU allocation and borrowed surface storage leases
+
+Three new regressions fail unchanged `3e28c24078`: native storage errors
+still publish a public GPU BO, retry after a later deletion failure repeats
+accepted framebuffer/renderbuffer deletion, and a copied borrowed-surface
+lease cannot keep native allocation alive after public BO retirement.
+The baseline intentionally selects only these three cases; ten existing
+GPU cases are filtered, not passing coverage.
+
+GPU allocation now prevalidates identifiers/dimensions and rejects a
+conflicting renderer or size for an existing BO. A private native receipt
+owns every candidate before creation. Checked allocation, storage setup,
+completeness and restoration of selected texture/renderbuffer/read/draw
+state precede publication. Failed selector restoration keeps candidates
+and native inverses reachable and blocks dependent allocation until repair.
+The kernel import captures selected-owner flags before private utility
+work and refuses creation if that capture fails. IDs do not wrap.
+
+Canonical allocation retirement uses ordered native receipts: failed
+container deletion preserves the texture backing, and accepted prefix
+members become null rather than replaying on retry. Failed unheld
+retirement stays hidden from BO lookup and target selection while its
+private record supports retry. This preserves the existing backing-lifetime
+assertions, rather than weakening them to allow independent later deletes.
+
+GPU-backed surfaces now carry a native-only allocation description. The
+same surface storage lease covers owned targets and borrowed GPU BOs.
+Public BO destruction can finish while an explicit reference keeps old
+storage usable; a new BO with the same numeric ID has independent storage,
+texture identity and retirement. Existing references may clone after
+retirement, while new public acquisition is refused. Raw-view retirement
+also discovers groups retained only by old execution leases after public
+context replacement. Kernel BO authority and KMS scanout authority remain
+separate from these native allocation holds.
+
+| Check | Exact evidence |
+|---|---|
+| Before-source regressions | Three fail unchanged `3e28c24078` at native error/publication, replayed deletion and premature borrowed allocation deletion; `graphics-gpu-allocation-baseline.log` |
+| Full source host selection | All 681 cases in 29 files pass without skips, including 17 new GPU allocation/lifetime/import/group cases; `graphics-gpu-allocation-host.log` |
+| Node/browser canonical build and declarations | Passed; `graphics-gpu-allocation-build.log`, `graphics-gpu-allocation-declarations.log` |
+| Extra raw TypeScript audit | Still fails with the same 42 first-line diagnostics, ignoring line/column offsets; none added or removed; `graphics-gpu-allocation-tsc.log`, `graphics-gpu-allocation-tsc-comparison.txt` |
+| Borrowed allocation rendering and controls | All 36 selected cases pass across Chromium/Firefox/WebKit without skips: six new GPU cases and all prior 30 controls; `graphics-gpu-allocation-browser.log` |
+| Test inventory | All 600 files agree; `graphics-gpu-allocation-registry.log` |
+
+The six new browser cases preserve old red and replacement blue pixels,
+retire public surfaces/context and the replacement BO, render green into
+the retained old allocation, then require exactly one deletion per old
+native member. Cases include a rejected texture deletion and correct
+selected-peer error ownership. All prior 30 source rendering controls stay
+selected. They use real WebGL pixels and independent device buffers, with
+source registry identities rather than normal guest ioctl marshalling.
+Forwarded BO-source registration, CPU/GPU coherence, complete guest BO
+lifecycle, browser-memory and compositor evidence remain open.
+
+The initial expanded source gate reported five failures. Two renderer
+doubles lacked required getError/active-texture results; those doubles now
+supply the native contract. Restoration retains the existing draw/read
+order. Ordered cleanup preserves the original canonical-backing assertion
+after rejected framebuffer deletion. No original assertion was removed or
+weakened. Later final results apply to the corrected combined source.
+
+These allocation holds do not enable queued server waits. Immutable
+per-work draw/read selection, dependencies, query/presentation ordering,
+cancellation and ordered fence placement remain implementation work.
+Other baseline inventory gaps and normal graphics artifact builds,
+upstream CTS, cage/sway, complete browser-memory and required POSIX gates
+remain open/deferred. ABI 54 and GL operation table 17 stay unchanged.

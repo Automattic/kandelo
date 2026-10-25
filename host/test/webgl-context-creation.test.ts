@@ -25,6 +25,21 @@ function harness(callbacks = {}) {
   };
 }
 
+it("preserves selected-owner errors before GPU BO allocation and refuses unread flags",()=>{
+  const {kernel,imports,setMaster}=harness(),errors:number[]=[];
+  const gl=new Proxy({getError:()=>errors.shift()??0,isContextLost:()=>false,
+    getParameter:(p:number)=>p===0x84e0?0x84c0:null,
+    checkFramebufferStatus:()=>0x8cd5,
+  },{get:(target,key)=>Reflect.get(target,key)??(String(key).startsWith("create")?()=>({}):()=>null)}) as unknown as WebGL2RenderingContext;
+  kernel.gl.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});setMaster(7);
+  const b=kernel.gl.get(7,11)!;b.gl=gl;b.contextId=21;
+  expect(imports.host_gl_submit(7,0,0,11)).toBe(0);errors.push(0x500);
+  expect(imports.host_gbm_gpu_bo_create(7,41,2,2,0,0)).toBe(0);expect(b.errors).toEqual([0x500]);
+  const read=gl.getError;gl.getError=()=>{throw new Error("error read rejected");};
+  expect(imports.host_gbm_gpu_bo_create(7,42,2,2,0,0)).toBe(-5);expect(kernel.gl.gpuBo(42)).toBeUndefined();
+  gl.getError=read;expect(kernel.gl.destroyGpuBo(41)).toBe(true);kernel.releaseProcessViews(7);
+});
+
 it("reports actual surface limits before context creation without publishing a renderer or drawing state", () => {
   const {kernel,imports,memory,create} = harness();
   const errors: number[] = [], calls: string[] = [];
@@ -177,7 +192,7 @@ describe("context creation acknowledgement", () => {
   it("uses a GPU window's real buffer size when no canvas is attached", () => {
     const { kernel, create, imports, memory } = harness();
     const gl = new Proxy({
-      getExtension: () => null, isContextLost: () => false, getParameter: (p:number) => p === 0x84e0 ? 0x84c0 : null,
+      getError: () => 0, getExtension: () => null, isContextLost: () => false, getParameter: (p:number) => p === 0x84e0 ? 0x84c0 : null,
       createTexture: () => ({}), createFramebuffer: () => ({}), createRenderbuffer: () => ({}),
       FRAMEBUFFER_COMPLETE: 0x8cd5, checkFramebufferStatus: () => 0x8cd5,
     }, { get: (target, key) => Reflect.get(target, key) ?? (() => null) });
