@@ -139,7 +139,7 @@ that is all you need:
 
 | Command | What it does |
 |---|---|
-| `./run.sh setup` | One command to get a working repo: provisions the musl sysroot/SDK and builds the fork-instrument tool, every package, the rootfs image, and the TypeScript host. Run this first, and again after pulling upstream changes. |
+| `./run.sh setup` | One command to get a working repo: provisions the musl sysroot/SDK and builds the fork-instrument tool, the packages the VFS products and browser app demand, the rootfs image, and the TypeScript host. Add `--all` to build every supported package, which the test suites need. Run this first, and again after pulling upstream changes. |
 | `./run.sh build <target>` | Build one thing: the kernel, the host, the rootfs, a package (e.g. `php`), or a VFS product (e.g. `shell-vfs`). |
 | `./run.sh rebuild <target>` | Force a rebuild of one target, bypassing the cache. |
 | `./run.sh clean <target>` | Remove a target's build outputs, plus any products that embed it. |

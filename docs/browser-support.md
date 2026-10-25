@@ -1795,16 +1795,65 @@ Browser demos use pre-built **VFS images** — binary snapshots of a filesystem 
    loads it with `kernel_rootfs_load_image`, refusing an image whose ABI,
    seals or deferred-file sections it cannot verify. Files the image only
    names (lazy files and lazy archives) are fetched by the host on first
-   read through `host_fetch_deferred`; relative URLs resolve against
-   `lazyUrlBase`, and `lazyUrlMap` replaces individual URLs without
-   rewriting the image.
+   read through `host_fetch_deferred`. The image is never rewritten: an
+   address in the image-owned grammar (`binaries/programs/...` or
+   `kandelo-lazy:programs/...`, each naming its package-mirror path)
+   resolves to its package member under `lazyAssetDirectory`, `lazyUrlMap` can still pin an
+   individual address, and any other relative address resolves against
+   `lazyUrlBase`.
 
-Static browser asset tables stay within the package closure they represent.
-The canonical rootfs table follows `images/rootfs/PACKAGES.toml`; optional
-utilities belong to their owning image's table. An unrelated static import
-can prevent a SourceOnly deployment from loading its browser modules before
-the selected image even boots, regardless of whether that image executes
-the optional program.
+A deployment serves exactly what its images reference, and the browser app
+keeps no list of lazy files. Each address an image records names its
+package member (`normalizeImageOwnedLazyReference` in
+`host/src/vfs/vfs-asset-group-reference.ts`), and the kernel worker
+resolves it under the lazy-asset directory the page passes
+(`imageOwnedLazyAssetDirectory` in
+`apps/browser-demos/lib/init/image-owned-runtime-urls.ts`):
+
+- In a production deployment that directory is the authenticated asset
+  group. `scripts/build-local-vfs-asset-group.ts` opens each shipped image,
+  lists its lazy entries, and stages exactly those bodies, checked by size
+  and SHA-256.
+- On the Vite dev server it is the `@kandelo-lazy/` route
+  (`apps/browser-demos/vite/dev-lazy-assets.ts`). The route passes the
+  member path to the same binary resolver the Node host uses for lazy
+  assets (the pinned SourceOnly store under `./run.sh browser`), and only
+  that exact answer is served.
+- An image that is not a product activation, such as a `?vfs=` URL image,
+  resolves its lazy bodies under the deployment's own asset group, when
+  there is one; the image's digests still decide whether bytes are
+  accepted.
+- A production build without an asset group has no lazy-asset directory.
+  Addresses then resolve against the deployment base as written, so a body
+  it does not serve fails as an I/O error on the read that needs it. Use
+  `./run.sh build-browser`, which builds the group.
+- The Node host resolves lazy assets through the binary resolver, which
+  applies the same rule. `NodeKernelHost` also accepts the directory as
+  `rootfsLazyAssetDirectory`, the peer of the browser option, for
+  transports keyed by URL such as `rootfsLazyAssets`.
+
+The image records each body's size and digest, and the kernel checks them
+on fetch, so where the deployment serves a body from is transport, not
+trust. Adding a package to an image needs only the image recipe and the
+package's entry in the supported set.
+
+Binaries the browser app imports directly (`@binaries/...`) are the other
+consumer. Each must be an output of a package in
+`packages/sets/local-supported.toml`;
+`scripts/check-browser-binary-supply.ts` enforces this, and
+`tests/package-system/browser-binary-supply.test.ts` runs it in CI. A
+default `./run.sh local-build` selects the owners of those imports beside
+the active products. After every supported-tree build the engine also
+checks the published projection: each browser import, the kernel, rootfs
+and image-writer artifacts, and every lazy body each product image
+references must be present at its declared size, or setup fails naming the
+path and its consumer. Optional gallery globs are outside this rule; their
+artifacts are optional by design.
+
+Machine-booting Playwright specs treat a missing image the same way.
+`gotoMachineOrSkip` fails when the machine's product is one the supported set
+declares, and any Vite error overlay fails the spec with its message. Only a
+product outside the supported set is skipped as optional content.
 
 The canonical package shell has a 512 MiB filesystem ceiling. Products that
 copy that shell and add their own application tree use a separate 768 MiB
@@ -2409,7 +2458,7 @@ Node, WordPress, and LAMP are optional demo profiles. Their VFS asset imports
 are resolved only after that profile is requested; loading the main shell does
 not require or fetch those image bytes. If the selected profile's local or
 resolver-managed artifact is absent, the browser reports that exact missing
-image and asks the user to run `./run.sh fetch`.
+image and asks the user to run `./run.sh local-build`.
 
 Normal Vite development resolves exact optional binary URL globs through
 the verified binary resolver, including the implicit SourceOnly tree.
@@ -2657,11 +2706,13 @@ Never move a group within an already completed build. Its complete group must
 remain beneath the owning prefix; moving only an image or asset also breaks
 the authenticated inventory.
 
-The shell's lazy SDK archive maps to
-`assets/programs/wasm32/kandelo-sdk.zip`. Its LÖVE examples archive maps to
+Every lazy address names its package-mirror path, so it maps to an asset
+by rule: the shell's SDK archive, `kandelo-lazy:programs/wasm32/kandelo-sdk.zip`,
+maps to `assets/programs/wasm32/kandelo-sdk.zip`, and its LÖVE examples
+archive, `kandelo-lazy:programs/love/share/love-examples.zip`, maps to
 `assets/programs/wasm32/love/share/love-examples.zip`, preserving the
-package's runtime-file location. Both names are accepted by the grouped
-reference grammar; other unknown archive names remain invalid.
+package's runtime-file location. An address outside that grammar is
+invalid.
 
 Each output places `service-worker.js` at its prefix root. The bootstrap
 registers that exact script with its own script-directory scope (`/a/` or

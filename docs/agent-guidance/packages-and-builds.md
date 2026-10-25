@@ -67,10 +67,10 @@ the machine** by default. This is deliberate: the cache is content-addressed,
 so identical inputs are built once and reused everywhere, which is what keeps a
 fresh `git worktree` fast instead of a from-scratch rebuild. Set
 `KANDELO_SOURCE_CACHE_ROOT` to an absolute path to give a worktree its own
-isolated cache instead; leave it unset to share. Both build front doors honor
-it and must agree — the Rust default (`default_source_cache_root` in
-`tools/xtask/src/local_build.rs`) and the shell runner
-(`scripts/run-local-build.sh`). Reach for isolation only when an in-progress
+isolated cache instead; leave it unset to share. `./run.sh setup` and
+`./run.sh local-build` both build through `xtask bootstrap`, which reads it
+through `default_source_cache_root` in `tools/xtask/src/local_build.rs`;
+`./run.sh local-build --plan` passes the same default. Reach for isolation only when an in-progress
 change alters the *bytes* a cache key maps to — e.g. a change to the
 build-stamp or artifact format — so that a worktree on the new format does not
 contend with worktrees on the old one at the same content-addressed key.
