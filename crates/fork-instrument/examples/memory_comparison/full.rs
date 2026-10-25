@@ -1,8 +1,8 @@
-//! Match the complete post-optimize=none CLI path on both sides. Measurements
+//! Measure the complete post-optimize=none CLI path. Measurements
 //! include input snapshot, transform, feature declaration, independent Wasm
 //! validation, output snapshot and atomic publication. No input is executed.
 use super::{PEAK, physical_peak};
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, ensure};
 use fork_instrument::{Options, artifact_io::MappedArtifact, native};
 use sha2::{Digest, Sha256};
 use std::{path::Path, sync::atomic::Ordering};
@@ -12,41 +12,22 @@ use wasmparser::{Parser, Payload};
 const BYTE_LIMIT: u64 = 8 * 1024 * 1024 * 1024;
 
 pub(super) fn measure(
-    backend: &str,
     input: &Path,
     destination: &Path,
     specialization_cache_bytes: Option<usize>,
 ) -> Result<()> {
     let (input, permissions) = MappedArtifact::read(input, BYTE_LIMIT)?;
     let options = Options::default();
-    let output = match backend {
-        "eager" => {
-            ensure!(
-                specialization_cache_bytes.is_none(),
-                "cache tuning requires the native backend"
-            );
-            // Keep the production oracle algorithm and its Vec return value.
-            // Copy/drop that Vec at exactly the boundary used by the CLI.
-            let encoded = fork_instrument::instrument_walrus(input.bytes(), &options)?;
-            let artifact = MappedArtifact::snapshot(encoded.as_slice(), BYTE_LIMIT)?;
-            drop(encoded);
-            native::validate(artifact.bytes())?;
-            artifact
-        }
-        "stream" => {
-            let mut limits = native::Limits::default();
-            if let Some(bytes) = specialization_cache_bytes {
-                limits.analysis.sinks.interpreter.specialization_cache_bytes = Some(bytes);
-            }
-            let output = native::instrument(input.bytes(), &options, limits)?;
-            eprintln!("native analysis: {}", output.decision.source.as_str());
-            if let Some(error) = &output.decision.facts_error {
-                eprintln!("compiler facts unavailable: {error}");
-            }
-            output.bytes
-        }
-        _ => bail!("backend must be eager or stream"),
-    };
+    let mut limits = native::Limits::default();
+    if let Some(bytes) = specialization_cache_bytes {
+        limits.analysis.sinks.interpreter.specialization_cache_bytes = Some(bytes);
+    }
+    let result = native::instrument(input.bytes(), &options, limits)?;
+    eprintln!("native analysis: {}", result.decision.source.as_str());
+    if let Some(error) = &result.decision.facts_error {
+        eprintln!("compiler facts unavailable: {error}");
+    }
+    let output = result.bytes;
     output.publish(destination, permissions)?;
     let digest = hex(&Sha256::digest(output.bytes()));
     let (participates, contract) = contract_fingerprint(output.bytes())?;
@@ -58,7 +39,7 @@ pub(super) fn measure(
     let heap = PEAK.load(Ordering::Relaxed);
     let physical = physical_peak()?;
     println!(
-        "{{\"backend\":\"{backend}\",\"phase\":\"instrument\",\"participates\":{participates},\"input_bytes\":{},\"output_bytes\":{},\"output_sha256\":\"{digest}\",\"contract_sha256\":\"{contract}\",\"data_sha256\":\"{data}\",\"rust_requested_peak_bytes\":{heap},\"physical_lifetime_peak_bytes\":{physical}}}",
+        "{{\"backend\":\"native\",\"phase\":\"instrument\",\"participates\":{participates},\"input_bytes\":{},\"output_bytes\":{},\"output_sha256\":\"{digest}\",\"contract_sha256\":\"{contract}\",\"data_sha256\":\"{data}\",\"rust_requested_peak_bytes\":{heap},\"physical_lifetime_peak_bytes\":{physical}}}",
         input.bytes().len(),
         output.bytes().len(),
     );

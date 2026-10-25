@@ -1,4 +1,6 @@
-use fork_instrument::{Options, PlanSource, facts, native, sink_report_walrus as sink_report};
+#[path = "support/snapshot.rs"]
+mod snapshot;
+use fork_instrument::{Options, PlanSource, facts, native};
 use wasm_encoder::{CustomSection, Encode};
 
 fn linked(text: &str, hash: Option<[u8; 32]>) -> Vec<u8> {
@@ -19,7 +21,6 @@ fn append(bytes: &mut Vec<u8>, name: &str, data: &[u8]) {
 }
 fn compare(input: &[u8], options: &Options) -> native::Decision {
     let native = native::analyze(input, options, Default::default()).unwrap();
-    let old = sink_report(input, options).unwrap();
     let names = |set: &std::collections::BTreeSet<u32>| {
         let mut names: Vec<_> = set
             .iter()
@@ -31,19 +32,25 @@ fn compare(input: &[u8], options: &Options) -> native::Decision {
         names.sort();
         names
     };
-    assert_eq!(names(&native.reaching.activations), old.instrumented);
-    assert_eq!(names(&native.boundaries), old.boundaries);
-    assert_eq!(native.decision.source, old.source);
-    assert_eq!(native.decision.facts, old.facts);
-    assert_eq!(
-        native.decision.facts_error.is_some(),
-        old.facts_error.is_some()
+    snapshot::check(
+        input,
+        &format!(
+            "sinks-{}-facts-{}-effective-{}",
+            options.sinks, options.facts, options.effective_types
+        ),
+        (
+            names(&native.reaching.activations),
+            names(&native.boundaries),
+            native.decision.source,
+            &native.decision.facts,
+            native.decision.facts_error.is_some(),
+        ),
     );
     native.decision
 }
 
 #[test]
-fn production_facts_options_and_selected_sets_match_the_oracle() {
+fn production_facts_options_and_selected_sets_preserve_expected_results() {
     let text = include_str!("fixtures/typed_dispatch.calltypes");
     let plain = wat::parse_str(include_str!("fixtures/typed_dispatch.wat")).unwrap();
     let input = linked(text, Some(facts::code_sha256(&plain).unwrap()));

@@ -3,6 +3,8 @@
 //! without facts as the fallback) otherwise, and never shipped. See
 //! `src/facts/` and `docs/fork-instrumentation.md`.
 
+#[path = "support/snapshot.rs"]
+mod snapshot;
 use fork_instrument::facts::{CODE_HASH_SECTION, SECTION, code_sha256};
 use fork_instrument::{Options, PlanSource, instrument, sink_report};
 
@@ -58,15 +60,11 @@ fn has_section(bytes: &[u8], name: &str) -> bool {
 }
 
 #[test]
-fn bounded_definition_binding_matches_the_full_facts_oracle() {
+fn bounded_definition_binding_preserves_original_facts_coordinates() {
     let (_, input) = linked(TYPED_DISPATCH, FACTS, None);
     let scan = fork_instrument::streaming::scan(&input).unwrap();
     let actual = scan.bind_fact_definitions().unwrap();
-    let module = walrus::Module::from_buffer(&input).unwrap();
-    assert_eq!(
-        actual,
-        fork_instrument::facts::binding(&module, FACTS.as_bytes()).unwrap()
-    );
+    snapshot::check(&input, "bindings", actual);
 
     let (_, stale) = linked(TYPED_DISPATCH, FACTS, Some(Some([0; 32])));
     let stale = fork_instrument::streaming::scan(&stale).unwrap();
@@ -91,27 +89,24 @@ fn compare_native_facts(wat: &str) {
 fn compare_native_facts_text(wat: &str, text: &str) {
     let (_, input) = linked(wat, text, None);
     let scan = fork_instrument::streaming::scan(&input).unwrap();
-    let module = walrus::Module::from_buffer(&input).unwrap();
     for effective_types in [false, true] {
         let opts = fork_instrument::facts::FactsOptions { effective_types };
-        let (mut expected, expected_report) =
-            fork_instrument::facts::call_facts(&module, text.as_bytes(), opts).unwrap();
         let (mut actual, actual_report) =
             fork_instrument::facts::call_facts_from_scan(&scan, opts).unwrap();
-        expected.itargets.sort();
         actual.itargets.sort();
-        for (_, handlers) in &mut expected.cleanup {
-            handlers.sort();
-        }
         for (_, handlers) in &mut actual.cleanup {
             handlers.sort();
         }
-        expected.cleanup.sort();
         actual.cleanup.sort();
-        assert_eq!(actual.itargets, expected.itargets);
-        assert_eq!(actual.cleanup, expected.cleanup);
-        assert_eq!(actual.jmp, expected.jmp);
-        assert_eq!(actual_report, expected_report);
+        snapshot::check(
+            &input,
+            if effective_types {
+                "effective"
+            } else {
+                "untyped"
+            },
+            (&actual, actual_report),
+        );
     }
 }
 
@@ -133,7 +128,7 @@ fn file_backed_target_planning_matches_casts_virtual_calls_holes_and_unions() {
 }
 
 #[test]
-fn file_backed_registry_hubs_and_old_action_types_match_the_oracle() {
+fn file_backed_registry_hubs_and_old_action_types_preserve_expected_results() {
     let same_types = FACTS
         .replace("_ZTSFlP3fooE", "_ZTSFviE")
         .replace("_ZTSFiiE", "_ZTSFviE");

@@ -1,4 +1,5 @@
-use fork_instrument::{module_exception_codec, module_gc_codec, runtime, streaming::*};
+use fork_instrument::{module_gc_codec, streaming::*};
+
 use wasm_encoder::{
     Function,
     reencode::{Error, Reencode, RoundtripReencoder},
@@ -10,6 +11,7 @@ struct Constructors {
     plan: NativeGcPlan,
     constructors: FrozenGcConstructors,
 }
+
 macro_rules! remap {
     ($name:ident) => {
         fn $name(&mut self, source: u32) -> Result<u32, Error<Self::Error>> {
@@ -17,6 +19,7 @@ macro_rules! remap {
         }
     };
 }
+
 impl Reencode for Constructors {
     type Error = ImportIndexError;
     remap!(function_index);
@@ -25,6 +28,7 @@ impl Reencode for Constructors {
     remap!(tag_index);
     remap!(memory_index);
 }
+
 impl FunctionTransform for Constructors {
     fn imports(&self) -> Option<&FrozenImports> {
         Some(&self.imports)
@@ -51,6 +55,7 @@ fn fixture(wide: bool) -> Vec<u8> {
     )
     .unwrap()
 }
+
 fn native(input: &[u8]) -> Vec<u8> {
     let scan = scan(input).unwrap();
     let plan = NativeGcPlan::discover(
@@ -89,30 +94,6 @@ fn native(input: &[u8]) -> Vec<u8> {
     output
 }
 
-fn oracle(input: &[u8]) -> Vec<u8> {
-    let mut module = walrus::Module::from_buffer(input).unwrap();
-    let memory = module.memories.iter().next().unwrap().id();
-    let gc = module_gc_codec::declare(&mut module, memory).unwrap();
-    let exception = module_exception_codec::inject_with_reference_overrides(
-        &mut module,
-        memory,
-        Some((gc.encode_externref, gc.decode_externref)),
-        Some((gc.encode_anyref, gc.decode_anyref)),
-    )
-    .unwrap();
-    let runtime = runtime::inject_linked_runtime_with_reference_overrides(
-        &mut module,
-        runtime::ReferenceCodecOverrides {
-            exnref: Some((exception.encode, exception.decode)),
-            anyref: Some((gc.encode_anyref, gc.decode_anyref)),
-            externref: Some((gc.encode_externref, gc.decode_externref)),
-            ..Default::default()
-        },
-    );
-    module_gc_codec::finish_declaration(&mut module, gc, exception, &runtime).unwrap();
-    module.emit_wasm()
-}
-
 #[test]
 fn native_gc_constructors_register_exact_scalars_and_reference_seeds_after_allocation() {
     let transit = wat::parse_str("(module (table (export \"transit\") 64 anyref))").unwrap();
@@ -120,7 +101,7 @@ fn native_gc_constructors_register_exact_scalars_and_reference_seeds_after_alloc
         let input = fixture(wide);
         let native = native(&input);
         assert_eq!(self::native(&input), native);
-        for (backend, output) in [("native", native), ("Walrus", oracle(&input))] {
+        for (backend, output) in [("native", native)] {
             let directory = tempfile::tempdir().unwrap();
             std::fs::write(directory.path().join("provider.wasm"), output).unwrap();
             std::fs::write(directory.path().join("transit.wasm"), &transit).unwrap();

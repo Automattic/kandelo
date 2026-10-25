@@ -20,7 +20,7 @@ const instrumenter = resolve(
   "../../tools/bin/wasm-fork-instrument",
 );
 
-describe.each(["walrus", "native"])("Wasm GC state in a fresh process Worker (%s)", (backend) => {
+describe("Wasm GC state in a fresh process Worker", () => {
   let workDir = "";
   let programPath = "";
 
@@ -35,7 +35,7 @@ describe.each(["walrus", "native"])("Wasm GC state in a fresh process Worker (%s
       rawPath,
       Buffer.from(RAW_GC_REFERENCE_STATE_FRESH_WORKER_HEX, "hex"),
     );
-    execFileSync(instrumenter, [rawPath, "-o", programPath, "--backend", backend]);
+    execFileSync(instrumenter, [rawPath, "-o", programPath]);
     stampFixtureAbiContract(programPath);
   });
 

@@ -1,19 +1,11 @@
-use fork_instrument::{Options, instrument_walrus as instrument, streaming};
+#[path = "support/snapshot.rs"]
+mod snapshot;
+
+use fork_instrument::streaming;
+
 #[path = "support/streaming_gc.rs"]
 mod native;
-fn oracle(input: &[u8]) -> Vec<u8> {
-    instrument(
-        input,
-        &Options {
-            entry_import: "h.fork".into(),
-            sinks: false,
-            facts: false,
-            effective_types: false,
-            ..Default::default()
-        },
-    )
-    .unwrap()
-}
+
 fn reference_globals(bytes: &[u8]) -> usize {
     wasmparser::Parser::new(0)
         .parse_all(bytes)
@@ -36,6 +28,7 @@ fn reference_globals(bytes: &[u8]) -> usize {
         })
         .sum()
 }
+
 fn section(bytes: &[u8], name: &str) -> Vec<u8> {
     wasmparser::Parser::new(0)
         .parse_all(bytes)
@@ -48,6 +41,7 @@ fn section(bytes: &[u8], name: &str) -> Vec<u8> {
         })
         .unwrap()
 }
+
 fn run(input: &[u8], output: &[u8], wide: bool, context: &str, script: &str) {
     let directory = tempfile::tempdir().unwrap();
     for (name, bytes) in [("provider.wasm", output.to_vec()), ("original.wasm", input.to_vec()),
@@ -97,6 +91,7 @@ fn run(input: &[u8], output: &[u8], wide: bool, context: &str, script: &str) {
         String::from_utf8_lossy(&result.stderr)
     );
 }
+
 #[test]
 fn original_function_resume_and_static_roots_preserve_fresh_identity_through_real_replay() {
     for wide in [false, true] {
@@ -106,7 +101,6 @@ fn original_function_resume_and_static_roots_preserve_fresh_identity_through_rea
                 .replace("@POINTER@", if wide { "i64" } else { "i32" }),
         )
         .unwrap();
-        let oracle = oracle(&input);
         for shared in [false, true] {
             let output = native::emit_activations(&input, shared);
             assert_eq!(native::emit_activations(&input, shared), output);
@@ -119,7 +113,7 @@ fn original_function_resume_and_static_roots_preserve_fresh_identity_through_rea
                 "kandelo.wpk_fork.static_root_catalog",
                 "kandelo.wpk_fork.resume_catalog",
             ] {
-                assert_eq!(section(&output, name), section(&oracle, name));
+                snapshot::check(&input, name, section(&output, name));
             }
             run(
                 &input,
@@ -129,15 +123,9 @@ fn original_function_resume_and_static_roots_preserve_fresh_identity_through_rea
                 include_str!("fixtures/streaming_catalogs.mjs"),
             );
         }
-        run(
-            &input,
-            &oracle,
-            wide,
-            "Walrus",
-            include_str!("fixtures/streaming_catalogs.mjs"),
-        );
     }
 }
+
 #[test]
 fn declared_allocating_elements_have_no_post_instantiation_identity_to_harvest() {
     let input = wat::parse_str(
@@ -149,10 +137,7 @@ fn declared_allocating_elements_have_no_post_instantiation_identity_to_harvest()
       (func (export "checkpoint") (result i32) i32.const 3 call $fork))"#,
     )
     .unwrap();
-    for (backend, output) in [
-        ("native", native::emit_activations(&input, true)),
-        ("Walrus", oracle(&input)),
-    ] {
+    for (backend, output) in [("native", native::emit_activations(&input, true))] {
         run(
             &input,
             &output,

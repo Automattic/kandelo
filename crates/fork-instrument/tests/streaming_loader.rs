@@ -1,12 +1,7 @@
 use fork_instrument::streaming::*;
+
 #[path = "support/streaming_loader.rs"]
 mod native;
-
-fn oracle(input: &[u8]) -> Vec<u8> {
-    let mut module = walrus::Module::from_buffer(input).unwrap();
-    fork_instrument::legacy_dlopen::lower(&mut module).unwrap();
-    module.emit_wasm()
-}
 
 #[test]
 fn staged_loader_preserves_argument_shapes_identity_and_nonreentrant_call_order() {
@@ -38,7 +33,7 @@ fn staged_loader_preserves_argument_shapes_identity_and_nonreentrant_call_order(
                 .unwrap();
                 let output = native::emit(&input);
                 assert_eq!(output, native::emit(&input));
-                for (backend, bytes) in [("native", output), ("Walrus", oracle(&input))] {
+                for (backend, bytes) in [("native", output)] {
                     let file = tempfile::NamedTempFile::new().unwrap();
                     std::fs::write(file.path(), bytes).unwrap();
                     let result = std::process::Command::new("node")
@@ -188,7 +183,7 @@ fn missing_canonical_table_keeps_the_private_fallback_and_prepare_failure_bounda
       (export "open" (func $open)))"#,
     )
     .unwrap();
-    for (backend, bytes) in [("native", native::emit(&input)), ("Walrus", oracle(&input))] {
+    for (backend, bytes) in [("native", native::emit(&input))] {
         let scan = scan(&bytes).unwrap();
         assert_eq!(scan.types.as_ref().table_count(), 1);
         assert!(
@@ -229,7 +224,7 @@ fn staged_import_reuse_accepts_a_distinct_scalar_function_subtype() {
       (export "open" (func $open)))"#,
     )
     .unwrap();
-    for output in [native::emit(&input), oracle(&input)] {
+    for output in [native::emit(&input)] {
         let scan = scan(&output).unwrap();
         assert_eq!(
             scan.functions

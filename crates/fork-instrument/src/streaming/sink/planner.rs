@@ -54,7 +54,7 @@ pub struct NativeSinkPlan {
 
 /// A main-module kernel_fork sink plan over exact original bytes. None means
 /// that sink refinement is unavailable; the caller must keep its conservative
-/// closure. This never invokes the Walrus implementation. Legacy import
+/// closure. Legacy import
 /// normalization and production runtime/continuation emission are separate.
 pub fn plan_sinks(
     program: &mut Program<'_, '_>,

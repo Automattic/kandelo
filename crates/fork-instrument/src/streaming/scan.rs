@@ -245,7 +245,7 @@ pub fn scan(input: &[u8]) -> Result<Scan<'_>> {
                         section.data(),
                         section.data_offset(),
                     ));
-                    // Names are diagnostic. Like Walrus, ignore malformed name
+                    // Names are diagnostic. Ignore malformed name
                     // subsections rather than accepting invalid executable code.
                     for name in reader {
                         let Ok(wasmparser::Name::Function(map)) = name else {
@@ -523,7 +523,7 @@ fn const_proof(expr: wasmparser::ConstExpr<'_>) -> Result<ValueProof> {
 fn update_prefix(prefix: &mut Vec<ValueProof>, op: &Operator<'_>, const_expr: bool) {
     use ValueProof::*;
     match op {
-        // Walrus omits nop from its instruction sequences. Preserve lexical
+        // No-op instructions add no value proof. Preserve lexical
         // provenance across it so the oracle and summary planner agree.
         Operator::Nop => {}
         Operator::I32Const { value } => prefix.push(I32(*value)),

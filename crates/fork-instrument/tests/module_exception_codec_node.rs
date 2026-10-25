@@ -4,9 +4,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use fork_instrument::module_exception_codec;
-use walrus::Module;
-
 #[path = "support/streaming_exceptions.rs"]
 mod native;
 
@@ -28,11 +25,7 @@ fn fixture_input(wide: bool) -> Vec<u8> {
 }
 
 fn fixture_module() -> Vec<u8> {
-    let input = fixture_input(false);
-    let mut module = Module::from_buffer(&input).expect("provider fixture module");
-    let memory = module.memories.iter().next().expect("provider memory").id();
-    module_exception_codec::inject(&mut module, memory).expect("inject exception codec");
-    module.emit_wasm()
+    native::emit(&fixture_input(false))
 }
 
 fn helper_module() -> Vec<u8> {

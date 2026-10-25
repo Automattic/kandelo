@@ -1,59 +1,38 @@
+#[path = "support/snapshot.rs"]
+mod snapshot;
 use std::collections::BTreeSet;
 use std::convert::Infallible;
 
-use fork_instrument::{call_graph, streaming::*};
+use fork_instrument::streaming::*;
 use wasm_encoder::reencode::{Reencode, RoundtripReencoder};
 use wasmparser::{Operator, Parser, Payload};
 
 fn assert_closure_matches(input: &[u8], external: bool) {
     let scanned = scan(input).expect("bounded scan");
-    // Walrus program points use arena-local sequence IDs. Resolve them back
-    // to original offsets to compare exact tail sites, not just caller names.
-    let mut config = walrus::ModuleConfig::new();
-    config.on_instr_loc(|offset| walrus::ir::InstrLocId::new(*offset as u32));
-    let located = config.parse(input).unwrap();
-    let seeds = call_graph::find_import_funcs(&located, "kernel.kernel_fork");
-    let actual = scanned
-        .reaching_from_seeds(seeds.iter().map(|id| id.index() as u32), external)
-        .unwrap();
-    let expected = call_graph::analyze_reaching_closure_from_seeds(
-        &located,
-        call_graph::find_import_funcs(&located, "kernel.kernel_fork"),
-        external,
-    );
-    assert_eq!(
-        actual.activations,
-        expected
-            .activations
-            .iter()
-            .map(|id| id.index() as u32)
-            .collect()
-    );
-    assert_eq!(
-        actual.control_reachable,
-        expected
-            .control_reachable
-            .iter()
-            .map(|id| id.index() as u32)
-            .collect()
-    );
-    let tail_points: BTreeSet<_> = expected
-        .tail_call_landings
+    let seeds = scanned
+        .functions
         .iter()
-        .map(|site| {
-            let local = located.funcs.get(site.caller).kind.unwrap_local();
-            let loc = local.block(site.sequence).instrs[site.instruction_index].1;
-            ProgramPoint {
-                function: site.caller.index() as u32,
-                offset: loc.data() as usize,
-            }
-        })
-        .collect();
-    assert_eq!(actual.tail_sites, tail_points);
+        .enumerate()
+        .filter_map(|(index, f)| {
+            f.import
+                .as_ref()
+                .filter(|(m, n)| m == "kernel" && n == "kernel_fork")
+                .map(|_| index as u32)
+        });
+    let actual = scanned.reaching_from_seeds(seeds, external).unwrap();
+    snapshot::check(
+        input,
+        if external { "external" } else { "closed" },
+        (
+            &actual.activations,
+            &actual.control_reachable,
+            &actual.tail_sites,
+        ),
+    );
 }
 
 #[test]
-fn direct_indirect_ref_and_tail_closure_matches_oracle() {
+fn direct_indirect_ref_and_tail_closure_preserves_expected_closure() {
     let input = wat::parse_str(
         r#"(module
       (type $t (func (result i32)))

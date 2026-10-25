@@ -22,7 +22,7 @@ function compileFixture(
   const output = join(directory, "output.wasm");
   writeFileSync(wat, source);
   execFileSync("wat2wasm", ["--enable-all", wat, "-o", raw]);
-  execFileSync(tool, [raw, "--backend", "native", ...options, "-o", output]);
+  execFileSync(tool, [raw, ...options, "-o", output]);
   return readFileSync(output);
 }
 

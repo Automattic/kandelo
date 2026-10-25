@@ -1,4 +1,5 @@
 use fork_instrument::streaming::*;
+
 use wasm_encoder::{
     EntityType, ExportKind, GlobalType, MemoryType, RefType, TableType, ValType,
     reencode::{Error, Reencode},
@@ -9,6 +10,7 @@ struct Bootstrap {
     plan: FrozenModuleBootstrap,
     module: FrozenModuleDeclarations,
 }
+
 macro_rules! remap {
     ($name:ident) => {
         fn $name(&mut self, source: u32) -> Result<u32, Error<Self::Error>> {
@@ -16,6 +18,7 @@ macro_rules! remap {
         }
     };
 }
+
 impl Reencode for Bootstrap {
     type Error = ImportIndexError;
     remap!(function_index);
@@ -24,6 +27,7 @@ impl Reencode for Bootstrap {
     remap!(global_index);
     remap!(tag_index);
 }
+
 impl FunctionTransform for Bootstrap {
     fn imports(&self) -> Option<&FrozenImports> {
         Some(&self.imports)
@@ -45,9 +49,11 @@ impl FunctionTransform for Bootstrap {
         self.plan.emit_helper(ordinal, limit)
     }
 }
+
 fn emit(input: &[u8]) -> Vec<u8> {
     emit_with_limits(input, Default::default())
 }
+
 fn emit_with_limits(input: &[u8], limits: EmitLimits) -> Vec<u8> {
     let scan = scan(input).unwrap();
     let plan = ModuleBootstrapPlan::discover(&scan, Default::default()).unwrap();
@@ -136,7 +142,7 @@ fn parent_thread_and_fork_bootstrap_preserve_initialization_ownership() {
         let directory = tempfile::tempdir().unwrap();
         std::fs::write(directory.path().join("original.wasm"), &input).unwrap();
         std::fs::write(directory.path().join("native.wasm"), output).unwrap();
-        std::fs::write(directory.path().join("oracle.wasm"), oracle(&input)).unwrap();
+
         let script = directory.path().join("test.cjs");
         std::fs::write(&script, include_str!("fixtures/streaming_bootstrap.cjs")).unwrap();
         let result = std::process::Command::new("node")
@@ -150,14 +156,6 @@ fn parent_thread_and_fork_bootstrap_preserve_initialization_ownership() {
             String::from_utf8_lossy(&result.stderr)
         );
     }
-}
-
-fn oracle(input: &[u8]) -> Vec<u8> {
-    let mut module = walrus::Module::from_buffer(input).unwrap();
-    let plan = fork_instrument::module_state::plan(&mut module);
-    let runtime = fork_instrument::runtime::inject_linked_runtime(&mut module);
-    fork_instrument::module_state::inject(&mut module, &runtime, plan).unwrap();
-    module.emit_wasm()
 }
 
 #[test]

@@ -2,8 +2,6 @@
 mod extra;
 #[path = "support/streaming_gc.rs"]
 mod native;
-#[path = "support/module_state_oracle.rs"]
-mod oracle;
 
 const FORK: &str = "i32.const 3 call $fork local.set $fork_result";
 
@@ -178,33 +176,6 @@ fn legacy_control_preserves_handlers_exits_and_delegates_during_replay() {
                 run(&input, &output, wide).unwrap_or_else(|error| {
                     panic!("{name}, memory64={wide}, shared={shared}: {error}")
                 });
-            }
-            // Representative delegate failures are asserted below. These
-            // extra target scopes and the known typed-input oracle defect
-            // use raw-source execution plus strict native replay assertions.
-            if name.starts_with("delegate target ") || name.starts_with("typed legacy ") {
-                continue;
-            }
-            let result = run(&input, &oracle::emit_activations(&input), wide);
-            if name == "function delegate" {
-                // The unchanged oracle lets delegate bypass activation capture.
-                // Native uses the same strict one-frame assertion above.
-                let error = result.expect_err("known oracle delegate defect");
-                assert!(
-                    error.contains("delegate must not skip activation capture"),
-                    "{error}"
-                );
-            } else if name == "delegate to outer handler" {
-                let error = result.expect_err("known oracle outer-delegate defect");
-                assert!(
-                    error.contains("Exception [WebAssembly.Exception]"),
-                    "{error}"
-                );
-            } else if name == "reused rethrow context" {
-                let error = result.expect_err("known oracle eager exception cleanup defect");
-                assert!(error.contains("RuntimeError"), "{error}");
-            } else {
-                result.unwrap_or_else(|error| panic!("{name}, memory64={wide}, Walrus: {error}"));
             }
         }
     }

@@ -1,0 +1,29 @@
+=== closed 8bb0024f3288 ===
+ReachingPlan {
+    activations: {
+        0,
+        2,
+        4,
+    },
+    control_reachable: {
+        0,
+        2,
+        4,
+    },
+    tail_sites: {},
+}
+
+=== external 8bb0024f3288 ===
+ReachingPlan {
+    activations: {
+        0,
+        2,
+        4,
+    },
+    control_reachable: {
+        0,
+        2,
+        4,
+    },
+    tail_sites: {},
+}

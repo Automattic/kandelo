@@ -1,5 +1,5 @@
-#[path = "support/module_state_oracle.rs"]
-mod oracle;
+#[path = "support/snapshot.rs"]
+mod snapshot;
 
 #[path = "support/streaming_gc.rs"]
 mod native;
@@ -23,7 +23,6 @@ fn fresh_instances_restore_typed_roots_and_original_segment_lifetimes() {
         let input = input(wide);
         let output = native::emit_roots(&input);
         assert_eq!(native::emit_roots(&input), output);
-        let oracle = oracle::emit(&input);
         let section = wasm_posix_shared::abi::WPK_FORK_IMPORTED_GLOBALS_SECTION;
         let descriptor = |bytes: &[u8]| {
             wasmparser::Parser::new(0)
@@ -37,12 +36,8 @@ fn fresh_instances_restore_typed_roots_and_original_segment_lifetimes() {
                 })
                 .unwrap()
         };
-        assert_eq!(
-            descriptor(&output),
-            descriptor(&oracle),
-            "original imported global declarations"
-        );
-        for (backend, output) in [("native", output), ("Walrus", oracle)] {
+        snapshot::check(&input, "imported-globals", descriptor(&output));
+        for (backend, output) in [("native", output)] {
             let directory = tempfile::tempdir().unwrap();
             std::fs::write(directory.path().join("provider.wasm"), output).unwrap();
             std::fs::write(

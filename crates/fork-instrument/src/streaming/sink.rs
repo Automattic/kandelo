@@ -2,7 +2,7 @@
 //!
 //! The environment supplies whole-program call summaries/target refinements.
 //! This evaluator owns no module instruction cache or whole-module target map.
-//! It is a building block, not yet the production sink planner.
+//! Whole-program planning composes these local evaluations over file-backed facts.
 
 mod cached_bodies;
 mod engine;

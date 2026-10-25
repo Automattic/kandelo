@@ -40,7 +40,7 @@ impl LexicalRetention {
             Operator::End | Operator::Delegate { .. } => {
                 ensure!(self.frames.pop().is_some(), "end without control frame");
             }
-            // Walrus retains return_call* suffixes. Compiler-fact signature
+            // Retain return_call* suffixes: compiler-fact signature
             // matching and user-local ordering must use the same policy.
             Operator::Return
             | Operator::Unreachable

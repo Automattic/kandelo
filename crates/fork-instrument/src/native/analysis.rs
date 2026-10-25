@@ -172,7 +172,7 @@ fn facts_plan(
         && address_taken(&analysis.scan, &first)
     {
         // WHY: a returning function pointer can enter an untraced side module.
-        // Preserve loading by selecting the full-entry contract, as Walrus does.
+        // Preserve loading by selecting the conservative full-entry contract.
         program.dynamic_linking = true;
         mode = SideModules::AssumeAllEntriesForkReturning;
         let plan = sink::plan_sinks(

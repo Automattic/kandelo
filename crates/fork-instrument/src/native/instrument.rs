@@ -31,11 +31,6 @@ pub struct Artifact {
 }
 
 pub fn instrument(input: &[u8], options: &Options, mut limits: Limits) -> Result<Artifact> {
-    #[cfg(feature = "size-attribution")]
-    anyhow::ensure!(
-        std::env::var_os("WPK_FORK_SIZE_ATTRIBUTION").is_none(),
-        "native size attribution is not implemented; select the explicit Walrus backend for that report"
-    );
     let progress = crate::progress::Progress::new("transform");
     progress.note(format_args!("analysis, {} input bytes", input.len()));
     let analysis = analyze(input, options, limits.analysis)?;

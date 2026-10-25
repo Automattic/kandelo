@@ -1,7 +1,5 @@
 #[path = "support/streaming_gc.rs"]
 mod native;
-#[path = "support/module_state_oracle.rs"]
-mod oracle;
 
 #[test]
 fn staged_initializers_capture_the_generated_driver_without_dead_adapter_pointers() {
@@ -40,20 +38,6 @@ fn staged_initializers_capture_the_generated_driver_without_dead_adapter_pointer
                         table64,
                         shape,
                     ).unwrap_or_else(|error| panic!("native, memory64={wide}, table64={table64}, shape={shape}, shared={shared}: {error}"));
-                }
-                let result = run(&oracle::emit_activations(&input), wide, table64, shape);
-                if table64 && result.is_err() {
-                    let error = result.unwrap_err();
-                    assert!(
-                        error.contains("wpk_fork_resume_thread")
-                            && error.contains("expected type i64")
-                            && error.contains("type i32"),
-                        "unexpected oracle error: {error}"
-                    );
-                } else {
-                    result.unwrap_or_else(|error| {
-                        panic!("Walrus, memory64={wide}, table64={table64}, shape={shape}: {error}")
-                    });
                 }
             }
         }

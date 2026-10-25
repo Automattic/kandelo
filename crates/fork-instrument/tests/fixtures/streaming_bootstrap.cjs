@@ -20,12 +20,12 @@ function instantiate(module) {
     const namespace = imports[entry.module] ??= {};
     if (entry.name in namespace) continue;
     if (entry.kind === 'function') namespace[entry.name] = () => {
-      throw new Error(`unexpected oracle helper import ${entry.name}`);
+      throw new Error(`unexpected runtime helper import ${entry.name}`);
     };
     else if (entry.kind === 'global') namespace[entry.name] = entry.name.includes('generation') ? 0n : 0;
     else if (entry.kind === 'tag') namespace[entry.name] = new WebAssembly.Tag({ parameters: [] });
     else if (entry.kind === 'table') namespace[entry.name] = new WebAssembly.Table({ element: 'anyfunc', initial: 1 });
-    else throw new Error(`unexpected oracle import ${entry.name}`);
+    else throw new Error(`unexpected runtime import ${entry.name}`);
   }
   const instance = new WebAssembly.Instance(module, imports);
   return { exports: instance.exports, memory, table, observations };
@@ -94,4 +94,4 @@ function verifyBackend(backend) {
     assert.equal(new Uint8Array(owner.memory.buffer)[9], 123);
   }
 }
-for (const backend of ['native.wasm', 'oracle.wasm']) verifyBackend(backend);
+for (const backend of ['native.wasm']) verifyBackend(backend);

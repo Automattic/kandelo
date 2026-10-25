@@ -1,45 +1,35 @@
-//! Guest-owned module-state reconstruction for fresh fork children.
-
 use fork_instrument::runtime::names;
+
 use fork_instrument::{FUNCTION_CATALOG_EXPORT, Options, instrument};
+
 use std::{
     fs,
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
-use walrus::{
-    ExportItem, FunctionId, FunctionKind, ImportKind, LocalFunction, Module, ValType,
-    ir::{self, Instr, InstrSeqId},
-};
+
+use walrus::{ExportItem, FunctionId, ImportKind, Module, ValType};
+
 use wasm_posix_shared::abi::{
     WPK_FORK_EXPORT_MODULE_BOOTSTRAP, WPK_FORK_EXPORT_MODULE_STATE_FINISH_RESTORE,
     WPK_FORK_EXPORT_MODULE_STATE_RESTORE, WPK_FORK_EXPORT_MODULE_STATE_SAVE,
-    WPK_FORK_EXPORT_MODULE_TABLE_STATE_SAVE,
-    WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP, WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX,
-    WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE, WPK_FORK_IMPORTED_GLOBALS_MAGIC,
-    WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE, WPK_FORK_IMPORTED_GLOBALS_SECTION,
-    WPK_FORK_IMPORTED_TABLES_HEADER_SIZE, WPK_FORK_IMPORTED_TABLES_MAGIC,
-    WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE, WPK_FORK_IMPORTED_TABLES_SECTION,
-    WPK_FORK_MODULE_STATE_IMPORT_RECORD_COMMIT, WPK_FORK_MODULE_STATE_IMPORT_RECORD_FIND,
-    WPK_FORK_MODULE_STATE_IMPORT_RECORD_RESERVE, WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_COUNT,
-    WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_MARK, WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_PAGE,
+    WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP, WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE,
+    WPK_FORK_IMPORTED_GLOBALS_SECTION, WPK_FORK_IMPORTED_TABLES_HEADER_SIZE,
+    WPK_FORK_IMPORTED_TABLES_MAGIC, WPK_FORK_IMPORTED_TABLES_RECORD_HEADER_SIZE,
+    WPK_FORK_IMPORTED_TABLES_SECTION, WPK_FORK_MODULE_STATE_IMPORT_RECORD_COMMIT,
+    WPK_FORK_MODULE_STATE_IMPORT_RECORD_FIND, WPK_FORK_MODULE_STATE_IMPORT_RECORD_RESERVE,
+    WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_COUNT, WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_MARK,
+    WPK_FORK_MODULE_STATE_IMPORT_TABLE_DIRTY_PAGE,
     WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_ABORT,
     WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_BEGIN,
     WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_COMMIT,
-    WPK_FORK_MODULE_STATE_IMPORT_TABLE_RECONCILE,
-    WPK_FORK_MODULE_STATE_IMPORT_TABLE_STATE_OWNED, WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX,
+    WPK_FORK_MODULE_STATE_IMPORT_TABLE_RECONCILE, WPK_FORK_MODULE_STATE_IMPORT_TABLE_STATE_OWNED,
+    WPK_FORK_TABLE_CATALOG_EXPORT_PREFIX,
 };
 
 fn instrument_wat(wat: &str) -> Vec<u8> {
     let input = wat::parse_str(wat).expect("parse WAT fixture");
     instrument(&input, &Options::default()).expect("instrument fixture")
-}
-
-// These structural assertions inspect Walrus-specific helper names and inline
-// instruction layouts. Behavior checks below use the default native backend.
-fn instrument_wat_walrus(wat: &str) -> Vec<u8> {
-    let input = wat::parse_str(wat).expect("parse WAT fixture");
-    fork_instrument::instrument_walrus(&input, &Options::default()).expect("instrument oracle fixture")
 }
 
 fn validate(bytes: &[u8]) {
@@ -80,45 +70,6 @@ fn imported_function(module: &Module, name: &str) -> FunctionId {
 fn signature(module: &Module, function: FunctionId) -> (Vec<ValType>, Vec<ValType>) {
     let ty = module.types.get(module.funcs.get(function).ty());
     (ty.params().to_vec(), ty.results().to_vec())
-}
-
-fn local(module: &Module, function: FunctionId) -> &LocalFunction {
-    match &module.funcs.get(function).kind {
-        FunctionKind::Local(local) => local,
-        other => panic!("expected local function, got {other:?}"),
-    }
-}
-
-fn children(instr: &Instr) -> Vec<InstrSeqId> {
-    match instr {
-        Instr::Block(ir::Block { seq }) | Instr::Loop(ir::Loop { seq }) => vec![*seq],
-        Instr::IfElse(ir::IfElse {
-            consequent,
-            alternative,
-        }) => vec![*consequent, *alternative],
-        Instr::TryTable(ir::TryTable { seq, .. }) => vec![*seq],
-        Instr::Try(try_) => {
-            let mut result = vec![try_.seq];
-            for catch in &try_.catches {
-                match catch {
-                    ir::LegacyCatch::Catch { handler, .. }
-                    | ir::LegacyCatch::CatchAll { handler } => result.push(*handler),
-                    ir::LegacyCatch::Delegate { .. } => {}
-                }
-            }
-            result
-        }
-        _ => Vec::new(),
-    }
-}
-
-fn walk(local: &LocalFunction, seq: InstrSeqId, visit: &mut impl FnMut(&Instr)) {
-    for (instr, _) in &local.block(seq).instrs {
-        visit(instr);
-        for child in children(instr) {
-            walk(local, child, visit);
-        }
-    }
 }
 
 fn assert_helper_signature(module: &Module, name: &str) {
@@ -163,8 +114,7 @@ fn emitted_local_count(bytes: &[u8], export_name: &str) -> u32 {
                     if export.name == export_name
                         && matches!(
                             export.kind,
-                            wasmparser::ExternalKind::Func
-                                | wasmparser::ExternalKind::FuncExact
+                            wasmparser::ExternalKind::Func | wasmparser::ExternalKind::FuncExact
                         )
                     {
                         exported_function = Some(export.index);
@@ -188,38 +138,6 @@ fn emitted_local_count(bytes: &[u8], export_name: &str) -> u32 {
         }
     }
     panic!("missing emitted function export {export_name}");
-}
-
-fn codec_function(module: &Module, name: &str) -> FunctionId {
-    module
-        .exports
-        .iter()
-        .find_map(|export| {
-            (export.name == name)
-                .then_some(export.item)
-                .and_then(|item| match item {
-                    ExportItem::Function(function) => Some(function),
-                    _ => None,
-                })
-        })
-        .or_else(|| {
-            module.imports.iter().find_map(|import| {
-                (import.name == name)
-                    .then_some(&import.kind)
-                    .and_then(|kind| match kind {
-                        ImportKind::Function(function) => Some(*function),
-                        _ => None,
-                    })
-            })
-        })
-        .or_else(|| {
-            module
-                .funcs
-                .iter()
-                .find(|function| function.name.as_deref() == Some(name))
-                .map(|function| function.id())
-        })
-        .unwrap_or_else(|| panic!("missing codec function {name}"))
 }
 
 #[test]
@@ -276,95 +194,6 @@ fn table_synchronization_helpers_do_not_add_source_function_locals() {
              must live only in generated non-suspendable helpers",
         );
     }
-}
-
-#[test]
-fn deterministic_static_tables_do_not_pay_the_process_generation_fence() {
-    let static_bytes = instrument_wat_walrus(
-        r#"
-        (module
-          (@custom "dylink.0" (before first) "state-only")
-          (memory 1)
-          (table $callbacks (export "__indirect_function_table") 1 funcref)
-          (func $callback)
-          (elem (i32.const 0) $callback)
-          (func (export "read") (param i32) (result funcref)
-            local.get 0
-            table.get $callbacks))
-        "#,
-    );
-    validate(&static_bytes);
-    let static_module =
-        Module::from_buffer(&static_bytes).expect("parse static-table module");
-    let read = local(&static_module, export_function(&static_module, "read"));
-    let mut direct_get = false;
-    let mut calls_generation_helper = false;
-    walk(read, read.entry_block(), &mut |instr| match instr {
-        Instr::TableGet(_) => direct_get = true,
-        Instr::Call(call) => {
-            calls_generation_helper |= static_module
-                .funcs
-                .get(call.func)
-                .name
-                .as_deref()
-                .is_some_and(|name| name.starts_with("__wpk_fork_table_get_"));
-        }
-        _ => {}
-    });
-    assert!(
-        direct_get && !calls_generation_helper,
-        "a deterministic local table read must remain a direct Wasm operation",
-    );
-    let table_save = local(
-        &static_module,
-        export_function(
-            &static_module,
-            WPK_FORK_EXPORT_MODULE_TABLE_STATE_SAVE,
-        ),
-    );
-    let mut snapshots_static_table = false;
-    walk(table_save, table_save.entry_block(), &mut |instr| {
-        snapshots_static_table |= matches!(instr, Instr::TableSize(_) | Instr::TableGet(_));
-    });
-    assert!(
-        !snapshots_static_table,
-        "static element initialization is the reconstruction owner; a peer snapshot is redundant",
-    );
-
-    let process_bytes = instrument_wat_walrus(
-        r#"
-        (module
-          (import "env" "__wasm_dlopen"
-            (func (param i32 i32 i32 i32) (result i32)))
-          (memory 1)
-          (table $callbacks (export "__indirect_function_table") 1 funcref)
-          (func (export "read") (param i32) (result funcref)
-            local.get 0
-            table.get $callbacks))
-        "#,
-    );
-    validate(&process_bytes);
-    let process_module =
-        Module::from_buffer(&process_bytes).expect("parse process-table module");
-    let read = local(&process_module, export_function(&process_module, "read"));
-    direct_get = false;
-    calls_generation_helper = false;
-    walk(read, read.entry_block(), &mut |instr| match instr {
-        Instr::TableGet(_) => direct_get = true,
-        Instr::Call(call) => {
-            calls_generation_helper |= process_module
-                .funcs
-                .get(call.func)
-                .name
-                .as_deref()
-                .is_some_and(|name| name.starts_with("__wpk_fork_table_get_"));
-        }
-        _ => {}
-    });
-    assert!(
-        !direct_get && calls_generation_helper,
-        "the dynamic linker's process table must reconcile before it is consumed",
-    );
 }
 
 #[test]
@@ -450,33 +279,21 @@ fn module_state_imports_and_exports_use_exact_wasm32_signatures() {
     assert_eq!(
         signature(
             &module,
-            imported_function(
-                &module,
-                WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_BEGIN,
-            ),
+            imported_function(&module, WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_BEGIN,),
         ),
         (vec![], vec![ValType::I64]),
     );
     assert_eq!(
         signature(
             &module,
-            imported_function(
-                &module,
-                WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_COMMIT,
-            ),
+            imported_function(&module, WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_COMMIT,),
         ),
-        (
-            vec![ValType::I32, ValType::I64, ValType::I64],
-            vec![],
-        ),
+        (vec![ValType::I32, ValType::I64, ValType::I64], vec![],),
     );
     assert_eq!(
         signature(
             &module,
-            imported_function(
-                &module,
-                WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_ABORT,
-            ),
+            imported_function(&module, WPK_FORK_MODULE_STATE_IMPORT_TABLE_MUTATION_ABORT,),
         ),
         (vec![], vec![]),
     );
@@ -528,298 +345,6 @@ fn module_state_record_pointers_follow_memory64() {
             vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
             vec![ValType::I64],
         ),
-    );
-}
-
-#[test]
-fn save_and_restore_own_reference_globals_and_dirty_table_state() {
-    let bytes = instrument_wat_walrus(
-        r#"
-        (module
-          (import "kernel" "kernel_fork" (func $fork (result i32)))
-          (import "env" "shared_root" (global $shared_root (mut externref)))
-          (memory 1)
-          (global $callback (mut funcref) (ref.null func))
-          (global $exception (mut exnref) (ref.null exn))
-          (global $object (mut anyref) (ref.null any))
-          (table $callbacks 2 8 funcref)
-          (table $exceptions 1 8 exnref)
-          (table $objects 1 8 anyref)
-          (func $mutate_tables
-            (param $callback funcref)
-            (param $exception exnref)
-            (param $object anyref)
-            i32.const 0
-            local.get $callback
-            table.set $callbacks
-            i32.const 0
-            local.get $exception
-            table.set $exceptions
-            i32.const 0
-            local.get $object
-            table.set $objects)
-          (func $caller (result i32) call $fork))
-        "#,
-    );
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).expect("parse instrumented module");
-    let save = local(
-        &module,
-        export_function(&module, WPK_FORK_EXPORT_MODULE_STATE_SAVE),
-    );
-    let restore = local(
-        &module,
-        export_function(&module, WPK_FORK_EXPORT_MODULE_STATE_RESTORE),
-    );
-    let finish_restore = local(
-        &module,
-        export_function(&module, WPK_FORK_EXPORT_MODULE_STATE_FINISH_RESTORE),
-    );
-    let encode_funcref = codec_function(&module, names::IMPORT_REF_ENCODE_FUNCREF);
-    let encode_externref = codec_function(&module, names::IMPORT_REF_ENCODE_EXTERNREF);
-    let encode_exnref = codec_function(&module, names::IMPORT_REF_ENCODE_EXNREF);
-    let encode_anyref = codec_function(&module, names::IMPORT_REF_ENCODE_ANYREF);
-    let decode_funcref = codec_function(&module, names::IMPORT_REF_DECODE_FUNCREF);
-    let decode_externref = codec_function(&module, names::IMPORT_REF_DECODE_EXTERNREF);
-    let decode_exnref = codec_function(&module, names::IMPORT_REF_DECODE_EXNREF);
-    let decode_anyref = codec_function(&module, names::IMPORT_REF_DECODE_ANYREF);
-
-    let mut save_has_table_size = false;
-    let mut save_has_table_get = false;
-    let mut save_codecs = Vec::new();
-    walk(save, save.entry_block(), &mut |instr| match instr {
-        Instr::TableSize(_) => save_has_table_size = true,
-        Instr::TableGet(_) => save_has_table_get = true,
-        Instr::Call(call) => save_codecs.push(call.func),
-        _ => {}
-    });
-    assert!(save_has_table_size && save_has_table_get);
-    assert!(save_codecs.contains(&encode_funcref));
-    assert!(save_codecs.contains(&encode_externref));
-    assert!(save_codecs.contains(&encode_exnref));
-    assert!(save_codecs.contains(&encode_anyref));
-
-    let mut restore_has_global_set = false;
-    let mut restore_has_table_grow = false;
-    let mut restore_has_table_set = false;
-    let mut restore_codecs = Vec::new();
-    walk(
-        finish_restore,
-        finish_restore.entry_block(),
-        &mut |instr| match instr {
-            Instr::GlobalSet(_) => restore_has_global_set = true,
-            Instr::TableGrow(_) => restore_has_table_grow = true,
-            Instr::TableSet(_) => restore_has_table_set = true,
-            Instr::Call(call) => restore_codecs.push(call.func),
-            _ => {}
-        },
-    );
-    walk(restore, restore.entry_block(), &mut |instr| match instr {
-        Instr::GlobalSet(_) => restore_has_global_set = true,
-        Instr::Call(call) => restore_codecs.push(call.func),
-        _ => {}
-    });
-    assert!(restore_has_global_set);
-    assert!(restore_has_table_grow && restore_has_table_set);
-    assert!(restore_codecs.contains(&decode_funcref));
-    assert!(restore_codecs.contains(&decode_externref));
-    assert!(restore_codecs.contains(&decode_exnref));
-    assert!(restore_codecs.contains(&decode_anyref));
-}
-
-#[test]
-fn save_and_restore_own_every_scalar_global_type() {
-    let bytes = instrument_wat_walrus(
-        r#"
-        (module
-          (import "kernel" "kernel_fork" (func $fork (result i32)))
-          (memory 1)
-          (global $i32 (mut i32) (i32.const 1))
-          (global $i64 (mut i64) (i64.const 2))
-          (global $f32 (mut f32) (f32.const 3))
-          (global $f64 (mut f64) (f64.const 4))
-          (global $v128 (mut v128) (v128.const i32x4 5 6 7 8))
-          (func $caller (result i32) call $fork))
-        "#,
-    );
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).expect("parse instrumented module");
-    let save = local(
-        &module,
-        export_function(&module, WPK_FORK_EXPORT_MODULE_STATE_SAVE),
-    );
-    let restore = local(
-        &module,
-        export_function(&module, WPK_FORK_EXPORT_MODULE_STATE_RESTORE),
-    );
-
-    let mut stores = [false; 5];
-    walk(save, save.entry_block(), &mut |instr| {
-        let Instr::Store(store) = instr else { return };
-        match store.kind {
-            ir::StoreKind::I32 { .. } => stores[0] = true,
-            ir::StoreKind::I64 { .. } => stores[1] = true,
-            ir::StoreKind::F32 => stores[2] = true,
-            ir::StoreKind::F64 => stores[3] = true,
-            ir::StoreKind::V128 => stores[4] = true,
-            _ => {}
-        }
-    });
-    assert!(stores.into_iter().all(|seen| seen));
-
-    let mut loads = [false; 5];
-    walk(restore, restore.entry_block(), &mut |instr| {
-        let Instr::Load(load) = instr else { return };
-        match load.kind {
-            ir::LoadKind::I32 { .. } => loads[0] = true,
-            ir::LoadKind::I64 { .. } => loads[1] = true,
-            ir::LoadKind::F32 => loads[2] = true,
-            ir::LoadKind::F64 => loads[3] = true,
-            ir::LoadKind::V128 => loads[4] = true,
-            _ => {}
-        }
-    });
-    assert!(loads.into_iter().all(|seen| seen));
-}
-
-#[test]
-fn immutable_imports_keep_their_original_binding_and_preinstantiation_recipe() {
-    let bytes = instrument_wat_walrus(
-        r#"
-        (module
-          (import "kernel" "kernel_fork" (func $fork (result i32)))
-          (import "env" "immutable_callback" (global $callback funcref))
-          (memory 1)
-          (export "immutable_callback_global" (global $callback))
-          (global $callback_alias funcref (global.get $callback))
-          (export "immutable_callback_alias" (global $callback_alias))
-          (func $read (export "read") (result funcref)
-            global.get $callback)
-          (func $caller (result i32) call $fork))
-        "#,
-    );
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).expect("parse instrumented module");
-    let imported = module
-        .imports
-        .iter()
-        .find_map(|import| {
-            if import.module != "env" || import.name != "immutable_callback" {
-                return None;
-            }
-            match import.kind {
-                ImportKind::Global(global) => Some(global),
-                _ => None,
-            }
-        })
-        .expect("immutable imported global");
-    let read = local(&module, export_function(&module, "read"));
-    let mut observed = Vec::new();
-    walk(read, read.entry_block(), &mut |instr| {
-        if let Instr::GlobalGet(get) = instr {
-            observed.push(get.global);
-        }
-    });
-    assert_eq!(observed.len(), 1);
-    assert_eq!(observed[0], imported);
-    assert!(matches!(
-        module
-            .exports
-            .iter()
-            .find(|export| export.name == "immutable_callback_global")
-            .map(|export| export.item),
-        Some(ExportItem::Global(global)) if global == imported
-    ));
-    let alias = module
-        .exports
-        .iter()
-        .find_map(|export| (export.name == "immutable_callback_alias").then_some(export.item))
-        .expect("immutable alias export");
-    let ExportItem::Global(alias) = alias else {
-        panic!("immutable alias export is not a global")
-    };
-    assert!(matches!(
-        module.globals.get(alias).kind,
-        walrus::GlobalKind::Local(walrus::ConstExpr::Global(source)) if source == imported
-    ));
-    let catalog_globals: Vec<_> = module
-        .exports
-        .iter()
-        .filter_map(|export| {
-            if !export
-                .name
-                .starts_with(WPK_FORK_GLOBAL_CATALOG_EXPORT_PREFIX)
-            {
-                return None;
-            }
-            match export.item {
-                ExportItem::Global(global) => Some(global),
-                _ => panic!("private global catalog entry is not a global"),
-            }
-        })
-        .collect();
-    assert_eq!(catalog_globals.len(), 2);
-    assert!(
-        catalog_globals.contains(&imported),
-        "the imported provider cell needs an exact private Global wrapper"
-    );
-    assert!(
-        catalog_globals.contains(&alias),
-        "local provider cells need the same deterministic catalog"
-    );
-
-    let save = local(
-        &module,
-        export_function(&module, WPK_FORK_EXPORT_MODULE_STATE_SAVE),
-    );
-    let encode_funcref = imported_function(&module, names::IMPORT_REF_ENCODE_FUNCREF);
-    let mut saves_import = false;
-    walk(save, save.entry_block(), &mut |instr| {
-        if matches!(instr, Instr::Call(call) if call.func == encode_funcref) {
-            saves_import = true;
-        }
-    });
-    assert!(saves_import);
-
-    let restore = local(
-        &module,
-        export_function(&module, WPK_FORK_EXPORT_MODULE_STATE_RESTORE),
-    );
-    let mut assigns_import = false;
-    walk(restore, restore.entry_block(), &mut |instr| {
-        if matches!(instr, Instr::GlobalSet(set) if set.global == imported) {
-            assigns_import = true;
-        }
-    });
-    assert!(!assigns_import);
-
-    // The generated helpers use these features; tools that run after
-    // instrumentation (wasm-opt) enable only declared features.
-    let features = custom_section(&bytes, "target_features");
-    for feature in ["exception-handling", "reference-types"] {
-        let mut entry = vec![b'+', feature.len() as u8];
-        entry.extend_from_slice(feature.as_bytes());
-        assert!(
-            features.windows(entry.len()).any(|w| w == entry),
-            "target_features lacks +{feature}"
-        );
-    }
-
-    let descriptor = custom_section(&bytes, WPK_FORK_IMPORTED_GLOBALS_SECTION);
-    assert!(descriptor.len() >= usize::from(WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE));
-    assert_eq!(&descriptor[..4], &WPK_FORK_IMPORTED_GLOBALS_MAGIC);
-    let record = usize::from(WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE);
-    assert_eq!(u32::from_le_bytes(descriptor[8..12].try_into().unwrap()), 1);
-    assert_eq!(
-        u32::from_le_bytes(descriptor[record..record + 4].try_into().unwrap()) as usize,
-        usize::from(WPK_FORK_IMPORTED_GLOBALS_RECORD_HEADER_SIZE)
-            + "env".len()
-            + "immutable_callback".len(),
-    );
-    assert_eq!(
-        u32::from_le_bytes(descriptor[record + 20..record + 24].try_into().unwrap()),
-        0,
-        "KFIG format 2 reserves the former import-ordinal word: hosts resolve by name",
     );
 }
 
@@ -891,137 +416,6 @@ fn imported_table_identity_has_exact_preinstantiation_recipe_and_catalog() {
         u32::from_le_bytes(descriptor[record + 20..record + 24].try_into().unwrap()),
         0,
         "KFIT format 2 reserves the former import-ordinal word: hosts resolve by name",
-    );
-}
-
-#[test]
-fn active_segment_offsets_preserve_extended_const_semantics_without_a_shape_gate() {
-    let bytes = instrument_wat_walrus(
-        r#"
-        (module
-          (@custom "dylink.0" (before first) "state-only")
-          (import "env" "base" (global $base i32))
-          (memory 1)
-          (table 8 funcref)
-          (func $target)
-          (elem (i32.add (global.get $base) (i32.const 1)) $target)
-          (data (i32.mul (global.get $base) (i32.const 2)) "x"))
-        "#,
-    );
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).expect("parse extended-const module");
-    let preserved_offsets = module
-        .globals
-        .iter()
-        .filter(|global| {
-            matches!(
-                global.kind,
-                walrus::GlobalKind::Local(walrus::ConstExpr::Extended(_))
-            )
-        })
-        .count();
-    assert_eq!(
-        preserved_offsets, 2,
-        "each converted active segment must retain its original const expression",
-    );
-
-    for helper in [
-        WPK_FORK_EXPORT_MODULE_BOOTSTRAP,
-        WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP,
-        WPK_FORK_EXPORT_MODULE_STATE_RESTORE,
-    ] {
-        let helper = local(&module, export_function(&module, helper));
-        let mut reads_preserved_offset = false;
-        walk(helper, helper.entry_block(), &mut |instr| {
-            if let Instr::GlobalGet(get) = instr
-                && matches!(
-                    module.globals.get(get.global).kind,
-                    walrus::GlobalKind::Local(walrus::ConstExpr::Extended(_))
-                )
-            {
-                reads_preserved_offset = true;
-            }
-        });
-        assert!(
-            reads_preserved_offset,
-            "segment helper must consume the naturally evaluated offset global",
-        );
-    }
-}
-
-#[test]
-fn segment_lifetime_is_activation_owned_and_reapplied() {
-    let bytes = instrument_wat_walrus(
-        r#"
-        (module
-          (import "kernel" "kernel_fork" (func $fork (result i32)))
-          (memory 1)
-          (table 1 funcref)
-          (func $target)
-          (elem $functions funcref (ref.func $target))
-          (data $bytes "payload")
-          (func $caller (result i32)
-            elem.drop $functions
-            data.drop $bytes
-            call $fork))
-        "#,
-    );
-    validate(&bytes);
-    let module = Module::from_buffer(&bytes).expect("parse instrumented module");
-    let restore = local(
-        &module,
-        export_function(&module, WPK_FORK_EXPORT_MODULE_STATE_RESTORE),
-    );
-    let finish_restore = local(
-        &module,
-        export_function(&module, WPK_FORK_EXPORT_MODULE_STATE_FINISH_RESTORE),
-    );
-    let mut elem_drop = false;
-    let mut data_drop = false;
-    walk(restore, restore.entry_block(), &mut |instr| match instr {
-        Instr::ElemDrop(_) => elem_drop = true,
-        Instr::DataDrop(_) => data_drop = true,
-        _ => {}
-    });
-    assert!(
-        !elem_drop && !data_drop,
-        "value/table restore must leave constructor segments live"
-    );
-    walk(
-        finish_restore,
-        finish_restore.entry_block(),
-        &mut |instr| match instr {
-            Instr::ElemDrop(_) => elem_drop = true,
-            Instr::DataDrop(_) => data_drop = true,
-            _ => {}
-        },
-    );
-    assert!(
-        elem_drop,
-        "finish restore must reapply element-segment lifetime"
-    );
-    assert!(
-        data_drop,
-        "finish restore must reapply data-segment lifetime"
-    );
-
-    let caller = module
-        .funcs
-        .iter()
-        .find(|func| func.name.as_deref() == Some("caller"))
-        .expect("named caller");
-    let caller = local(&module, caller.id());
-    let mut caller_drops = 0;
-    let mut tracker_updates = 0;
-    walk(caller, caller.entry_block(), &mut |instr| match instr {
-        Instr::ElemDrop(_) | Instr::DataDrop(_) => caller_drops += 1,
-        Instr::GlobalSet(_) => tracker_updates += 1,
-        _ => {}
-    });
-    assert_eq!(caller_drops, 2);
-    assert!(
-        tracker_updates >= 2,
-        "each original segment drop must update its activation-owned bitmap",
     );
 }
 

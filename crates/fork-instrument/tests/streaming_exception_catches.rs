@@ -1,5 +1,3 @@
-use fork_instrument::{call_graph, instrument, module_exception_codec, runtime};
-
 #[path = "support/streaming_activation.rs"]
 mod harness;
 
@@ -10,6 +8,7 @@ enum CatchKind {
     All,
     AllRef,
 }
+
 impl CatchKind {
     fn name(self) -> &'static str {
         match self {
@@ -82,45 +81,6 @@ fn fixture(wide: bool, kind: CatchKind, scratch: bool) -> Vec<u8> {
     wat::parse_str(source).unwrap()
 }
 
-fn oracle(input: &[u8]) -> Vec<u8> {
-    let mut module = walrus::Module::from_buffer(input).unwrap();
-    let fork = call_graph::find_import_func(&module, "h.fork").unwrap();
-    let reaching = call_graph::analyze_reaching_closure(&module, fork);
-    let targets = reaching.activations.iter().copied().collect::<Vec<_>>();
-    let catches = instrument::plan_plain_catches(&module, &targets);
-    let memory = module.memories.iter().next().unwrap().id();
-    let codec = module_exception_codec::inject(&mut module, memory).unwrap();
-    let runtime = runtime::inject_linked_runtime_with_reference_overrides(
-        &mut module,
-        runtime::ReferenceCodecOverrides {
-            exnref: Some((codec.encode, codec.decode)),
-            cleanup: Some(codec.clear),
-            ..Default::default()
-        },
-    );
-    instrument::instrument_functions_with_targets_and_tail_sites(
-        &mut module,
-        &runtime,
-        &reaching.activations,
-        &reaching.control_reachable,
-        &reaching.tail_call_landings,
-        &catches,
-        None,
-        &Default::default(),
-    );
-    module
-        .exports
-        .add("unwind_tag", runtime.unwind_tag.unwrap());
-    let resume = module
-        .funcs
-        .iter()
-        .find(|function| function.name.as_deref() == Some("__wpk_fork_resume_0"))
-        .unwrap()
-        .id();
-    module.exports.add("resume_root", resume);
-    module.emit_wasm()
-}
-
 fn execute(output: &[u8], wide: bool, kind: CatchKind, scratch: bool, backend: &str) {
     let directory = tempfile::tempdir().unwrap();
     let wasm = directory.path().join("fixture.wasm");
@@ -181,7 +141,6 @@ fn complete_exception_recipes_replay_through_native_frames_and_shield_private_un
                         },
                     );
                 }
-                execute(&oracle(&input), wide, kind, scratch, "Walrus");
             }
         }
     }

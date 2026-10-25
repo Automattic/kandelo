@@ -1,4 +1,4 @@
-use fork_instrument::{Options, instrument_walrus as instrument, streaming::*};
+use fork_instrument::streaming::*;
 
 #[test]
 fn fixed_start_and_thread_entries_resume_without_repeating_source_entry_effects() {
@@ -43,73 +43,8 @@ fn fixed_start_and_thread_entries_resume_without_repeating_source_entry_effects(
                     )
                 });
             }
-            let mut output = instrument(
-                &input,
-                &Options {
-                    entry_import: "h.fork".into(),
-                    sinks: false,
-                    facts: false,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            // The oracle owns its private tag import but does not export it.
-            let tag = private_unwind_tag(&output);
-            add_tag_export(&mut output, tag);
-            let result = run(&output, wide, table64, false);
-            if table64 {
-                let error = result.unwrap_err();
-                assert!(
-                    error.contains("wpk_fork_resume_thread")
-                        && error.contains("expected type i64")
-                        && error.contains("type i32"),
-                    "{error}"
-                );
-            } else {
-                result.unwrap_or_else(|error| panic!("oracle memory64={wide}: {error}"));
-            }
         }
     }
-}
-
-fn private_unwind_tag(output: &[u8]) -> u32 {
-    let mut tag = 0;
-    for payload in wasmparser::Parser::new(0).parse_all(output) {
-        if let wasmparser::Payload::ImportSection(section) = payload.unwrap() {
-            for import in section.into_imports() {
-                let import = import.unwrap();
-                if matches!(import.ty, wasmparser::TypeRef::Tag(_)) {
-                    if import.module == "env" && import.name == "__wpk_fork_unwind" {
-                        return tag;
-                    }
-                    tag += 1;
-                }
-            }
-        }
-    }
-    panic!("missing private unwind tag")
-}
-
-fn add_tag_export(output: &mut Vec<u8>, tag: u32) {
-    use wasm_encoder::reencode::Reencode;
-    struct ExportTag(u32);
-    impl Reencode for ExportTag {
-        type Error = std::convert::Infallible;
-        fn parse_export_section(
-            &mut self,
-            output: &mut wasm_encoder::ExportSection,
-            reader: wasmparser::ExportSectionReader<'_>,
-        ) -> Result<(), wasm_encoder::reencode::Error<Self::Error>> {
-            wasm_encoder::reencode::utils::parse_export_section(self, output, reader)?;
-            output.export("unwind_tag", wasm_encoder::ExportKind::Tag, self.0);
-            Ok(())
-        }
-    }
-    let mut module = wasm_encoder::Module::new();
-    ExportTag(tag)
-        .parse_core_module(&mut module, wasmparser::Parser::new(0), output)
-        .unwrap();
-    *output = module.finish();
 }
 
 fn run(output: &[u8], wide: bool, table64: bool, native: bool) -> Result<(), String> {

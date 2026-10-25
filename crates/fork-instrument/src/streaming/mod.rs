@@ -1,9 +1,8 @@
-//! Bounded building blocks for the replacement instrumenter.
+//! Bounded scanning, analysis, planning and function-local code generation.
 //!
-//! This module never builds a Walrus module. The production fork rewrite is
-//! still [`crate::instrument`]; these APIs deliberately do not certify a
-//! remapped module as fork-instrumented. See the migration dependency map in
-//! `docs/plans/2026-10-22-streaming-fork-instrumentation.md`.
+//! Module summaries retain original byte coordinates; function bodies are
+//! decoded on demand and released after analysis or emission. The complete
+//! orchestration and admission policy live in [`crate::native`].
 
 mod activation;
 mod bootstrap;

@@ -1,0 +1,29 @@
+=== closed 258b0e8ec09e ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+    },
+    tail_sites: {},
+}
+
+=== external 258b0e8ec09e ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+    },
+    tail_sites: {},
+}

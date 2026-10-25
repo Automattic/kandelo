@@ -1,7 +1,7 @@
 #[path = "support/streaming_gc.rs"]
 mod native;
-#[path = "support/module_state_oracle.rs"]
-mod oracle;
+#[path = "support/snapshot.rs"]
+mod snapshot;
 
 fn input(memory_wide: bool, table_wide: bool, shared: bool, source_memory: bool) -> Vec<u8> {
     let source = include_str!("fixtures/streaming_tables.wat")
@@ -39,9 +39,8 @@ fn sparse_tables_replay_aliases_growth_and_typed_roots_with_exact_generation_gua
                 let input = input(memory_wide, table_wide, shared, true);
                 let native = native::emit_tables(&input);
                 assert_eq!(native::emit_tables(&input), native);
-                let oracle = oracle::emit(&input);
-                assert_eq!(descriptor(&native), descriptor(&oracle));
-                for (backend, output) in [("native", native), ("Walrus", oracle)] {
+                snapshot::check(&input, "table-descriptor", descriptor(&native));
+                for (backend, output) in [("native", native)] {
                     replay(&output, backend, memory_wide, table_wide, shared);
                 }
             }
@@ -119,7 +118,7 @@ fn mixed_table_widths_share_one_snapshot_local_tuple() {
     let input = wat::parse_str(include_str!("fixtures/streaming_tables_mixed.wat")).unwrap();
     let native = native::emit_tables(&input);
     assert_eq!(native::emit_tables(&input), native);
-    for (backend, output) in [("native", native), ("Walrus", oracle::emit(&input))] {
+    for (backend, output) in [("native", native)] {
         replay_script(
             &output,
             backend,

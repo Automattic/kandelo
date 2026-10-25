@@ -1,6 +1,8 @@
+#[path = "support/snapshot.rs"]
+mod snapshot;
 use std::collections::BTreeSet;
 
-use fork_instrument::{call_graph, facts::storage::FactsStore, sink, streaming};
+use fork_instrument::{facts::storage::FactsStore, sink, streaming};
 use streaming::sink::{NativeSinkPlan, Program, SinkLimits, plan_sinks};
 
 fn compare(text: &str) -> NativeSinkPlan {
@@ -25,38 +27,21 @@ fn compare_policy(text: &str, policy: sink::SinkPolicy) -> NativeSinkPlan {
     let native = plan_sinks(&mut program, seed, &today, policy, Default::default())
         .unwrap()
         .expect("native plan");
-    let module = walrus::ModuleConfig::new().parse(&bytes).unwrap();
-    let old_seed = call_graph::find_import_func(&module, "kernel.kernel_fork").unwrap();
-    let old_today = call_graph::analyze_reaching_closure(&module, old_seed);
-    let old = sink::plan(&module, old_seed, &old_today, policy).expect("oracle plan");
-    let indices = |set: Vec<walrus::FunctionId>| -> BTreeSet<u32> {
-        set.into_iter().map(|f| f.index() as u32).collect()
-    };
-    assert_eq!(
-        native.activations,
-        indices(old.activations.into_iter().collect()),
-        "activations: {text}"
-    );
-    assert_eq!(
-        native.control_reachable,
-        indices(old.control_reachable.into_iter().collect()),
-        "control: {text}"
-    );
-    assert_eq!(
-        native.boundaries,
-        indices(old.boundaries.into_iter().collect()),
-        "boundaries: {text}"
-    );
-    assert_eq!(
-        native.fork_returning,
-        indices(old.fork_returning.into_iter().collect()),
-        "returning: {text}"
+    snapshot::check(
+        &bytes,
+        &format!("{:?}", policy.signal),
+        (
+            &native.activations,
+            &native.control_reachable,
+            &native.boundaries,
+            &native.fork_returning,
+        ),
     );
     native
 }
 
 #[test]
-fn native_sink_plans_match_the_oracle_for_indirect_and_reference_targets() {
+fn native_sink_plans_preserve_indirect_and_reference_targets() {
     for dispatch in [
         "local.get 0 call_indirect (type $t)",
         "i32.const 0 call_indirect (type $t)",
@@ -169,7 +154,7 @@ const HEADER: &str = r#"(module
 "#;
 
 #[test]
-fn native_sink_plans_match_the_oracle_for_child_returns_and_vfork() {
+fn native_sink_plans_preserve_child_returns_and_vfork() {
     for mode in [0, 1] {
         for body in [
             "call $fork",
@@ -193,7 +178,7 @@ fn native_sink_plans_match_the_oracle_for_child_returns_and_vfork() {
 }
 
 #[test]
-fn native_sink_plans_match_the_oracle_for_tail_paths() {
+fn native_sink_plans_preserve_tail_paths() {
     for call in ["call $fork", "return_call $fork"] {
         for edge in ["call $tail", "return_call $tail"] {
             compare(&format!(
@@ -208,7 +193,7 @@ fn native_sink_plans_match_the_oracle_for_tail_paths() {
 }
 
 #[test]
-fn native_sink_plans_match_the_oracle_for_frame_escapes() {
+fn native_sink_plans_preserve_frame_escapes() {
     for middle in ["call $noise", "local.get 0 call $clobber"] {
         compare(&format!(
             "{HEADER}
@@ -227,7 +212,7 @@ fn native_sink_plans_match_the_oracle_for_frame_escapes() {
 }
 
 #[test]
-fn native_sink_plans_match_the_oracle_for_caught_and_rethrown_exceptions() {
+fn native_sink_plans_preserve_caught_and_rethrown_exceptions() {
     for handler in [
         "drop i32.const 42",
         "throw $t",

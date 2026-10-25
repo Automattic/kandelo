@@ -17,11 +17,6 @@ pub(super) struct Cli {
     #[arg(short, long)]
     pub(super) output: Option<PathBuf>,
 
-    /// Instrumentation backend. Native uses bounded function-local rewriting;
-    /// Walrus is retained as an explicit migration oracle.
-    #[arg(long, default_value = "native", value_parser = ["native", "walrus"])]
-    pub(super) backend: String,
-
     /// Maximum bytes in the private immutable input snapshot.
     #[arg(long, default_value_t = 8_u64 * 1024 * 1024 * 1024)]
     pub(super) max_input_bytes: u64,
@@ -90,8 +85,8 @@ pub(super) struct Cli {
     #[arg(long)]
     pub(super) discover_only: bool,
 
-    /// Diagnose the bounded original-binary scanner without constructing a
-    /// Walrus module or producing an instrumented artifact. Reports compact
+    /// Diagnose the bounded original-binary scanner without producing an
+    /// instrumented artifact. Reports compact
     /// summary counts and definition binding, not a complete sink/fork plan.
     #[arg(long, conflicts_with_all = [
         "output", "discover_only", "sink_report", "contract_inventory",

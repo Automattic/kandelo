@@ -1,7 +1,5 @@
 #[path = "support/streaming_gc.rs"]
 mod native;
-#[path = "support/module_state_oracle.rs"]
-mod oracle;
 #[test]
 fn real_providers_compose_with_activation_catches_globals_tables_and_fresh_replay() {
     run_fixture(include_str!("fixtures/streaming_provider_activation.wat"));
@@ -47,7 +45,6 @@ fn run_fixture(fixture: &str) {
                     &format!("native, shared_codecs={shared}"),
                 );
             }
-            replay(&oracle::emit_activations(&input), wide, scratch, "Walrus");
         }
     }
 }

@@ -38,7 +38,7 @@ def main():
             or not 0 < args.guard_gib <= 16 or args.timeout <= 0):
         parser.error("invalid rounds, cache sizes, guard or timeout")
     scripts = Path(__file__).resolve().parent
-    packages = load_script("package_comparison", scripts / "profile-fork-instrument-packages.py")
+    packages = load_script("profile_support", scripts / "fork-instrument-profile-support.py")
     guard = load_script("memory_guard", scripts / "profile-fork-instrument-memory.py")
     binary = args.binary.resolve(strict=True)
     sources = [p.resolve(strict=True) for p in args.inputs]
@@ -66,7 +66,7 @@ def main():
         suffix = "diagnostic" if diagnostic else str(repeat)
         prefix = directory / f"{source.stem}-cache-{size}-{suffix}"
         artifact = prefix.with_suffix(".wasm")
-        command = [str(binary), "measure", "stream", "instrument", str(source),
+        command = [str(binary), "measure", "instrument", str(source),
                    str(artifact), str(size * 1024**2)]
         child_env = dict(env, WPK_FORK_PROGRESS="1") if diagnostic else env
         status = packages.run_guarded(guard, command, prefix, ceiling, args.timeout, child_env)

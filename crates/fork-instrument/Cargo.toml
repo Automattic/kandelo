@@ -14,20 +14,8 @@ path = "src/main.rs"
 name = "fork_instrument"
 path = "src/lib.rs"
 
-[features]
-# Opt-in per-category byte attribution of generated code; see
-# src/size_attribution.rs. Default builds emit identical modules.
-size-attribution = []
-
 [dependencies]
 wasm-posix-shared = { path = "../shared" }
-
-# Temporary whole-module oracle for explicit comparisons with the native
-# default. Normal SDK/package builds use wasmparser/wasm-encoder.
-# 0.26.4 pre-registers implicit multi-value legacy-catch block types. Earlier
-# 0.26 releases panic while parsing valid `[tag params] -> [try results]`
-# handlers, before the legacy-to-modern normalization pass can run.
-walrus = "0.26.4"
 
 # anyhow — ergonomic error chaining for a CLI / build tool.
 anyhow = "1"
@@ -56,9 +44,9 @@ smallvec = "1"
 rusqlite = { version = "0.37", features = ["bundled", "hooks", "limits"] }
 
 [dev-dependencies]
-# wasmprinter — byte-level wasm-to-WAT for assertions that walrus's IR
-# can't see (notably post-Br "unreachable" code that walrus's parser
-# strips on round-trip but is preserved in the actual wasm bytes).
+# Independent test inspection of emitted modules; no Walrus transform ships.
+walrus = "0.26.4"
+# Byte-level text inspection also preserves detached/unreachable operators.
 wasmprinter = "0.247"
 
 # wat — compiles WAT source into wasm bytes in-test. Keeps fixture

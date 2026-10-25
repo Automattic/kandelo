@@ -457,7 +457,7 @@ fn liveness(
     Ok(live)
 }
 
-// Walrus omits nops, but they remain in our source-preserving instruction
+// No-ops remain in the source-preserving instruction
 // list. Only skip lexical nops within the same structured region.
 fn previous(body: &FunctionIr<'_>, pc: usize) -> Option<usize> {
     let region = body.instructions[pc].region;

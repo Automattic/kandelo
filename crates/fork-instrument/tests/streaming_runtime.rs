@@ -1,4 +1,6 @@
-use fork_instrument::{runtime as oracle, streaming::*};
+#[path = "support/snapshot.rs"]
+mod snapshot;
+use fork_instrument::streaming::*;
 use wasm_encoder::ValType;
 use wasmparser::Operator;
 
@@ -47,50 +49,19 @@ fn native(input: &[u8]) -> (Vec<u8>, NativeRuntime) {
 }
 
 #[test]
-fn native_runtime_scalar_layout_and_import_abi_match_the_oracle_for_both_widths() {
+fn native_runtime_scalar_layout_and_import_abi_preserve_layout_for_both_widths() {
     for wide in [false, true] {
         let input = fixture(wide);
         let (bytes, runtime) = native(&input);
-        let mut module = walrus::Module::from_buffer(&input).unwrap();
-        let old = oracle::inject_linked_runtime(&mut module);
-        assert_eq!(runtime.frames_start_offset(), old.frames_start_offset);
-        assert_eq!(runtime.fixed_prefix_size(), old.fixed_prefix_size);
-        assert_eq!(runtime.saved_globals().len(), old.saved_globals.len());
-        for (native, old) in runtime.saved_globals().iter().zip(old.saved_globals.iter()) {
-            assert_eq!(native.global, old.id.index() as u32);
-            assert_eq!(native.offset, old.offset);
-            assert_eq!(format!("{:?}", native.ty), format!("{:?}", old.ty));
-        }
-        let native_module = walrus::Module::from_buffer(&bytes).unwrap();
-        let inventory = |m: &walrus::Module| {
-            m.imports
-                .iter()
-                .map(|i| {
-                    (
-                        i.module.clone(),
-                        i.name.clone(),
-                        match i.kind {
-                            walrus::ImportKind::Function(f) => format!(
-                                "{:?}->{:?}",
-                                m.types.params(m.funcs.get(f).ty()),
-                                m.types.results(m.funcs.get(f).ty())
-                            ),
-                            walrus::ImportKind::Global(g) => {
-                                format!("global:{:?}", m.globals.get(g).ty)
-                            }
-                            walrus::ImportKind::Table(t) => {
-                                format!("table:{:?}", m.tables.get(t).element_ty)
-                            }
-                            walrus::ImportKind::Tag(t) => {
-                                format!("tag:{:?}", m.types.params(m.tags.get(t).ty))
-                            }
-                            walrus::ImportKind::Memory(_) => "memory".into(),
-                        },
-                    )
-                })
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(inventory(&native_module), inventory(&module));
+        snapshot::check(
+            &input,
+            "scalar-prefix",
+            (
+                runtime.frames_start_offset(),
+                runtime.fixed_prefix_size(),
+                runtime.saved_globals(),
+            ),
+        );
         assert_eq!(native(&input).0, bytes);
         let scan = scan(&bytes).unwrap();
         for function in [
@@ -200,16 +171,12 @@ fn native_runtime_uses_the_remapped_source_memory_and_globals_after_other_import
 }
 
 #[test]
-fn native_runtime_snapshot_rewind_abort_and_child_binding_execute_like_the_oracle() {
+fn native_runtime_snapshot_rewind_abort_and_child_binding_execute_with_exact_snapshots() {
     for wide in [false, true] {
         let input = fixture(wide);
         let (bytes, runtime) = native(&input);
-        let mut old = walrus::Module::from_buffer(&input).unwrap();
-        let old_runtime = oracle::inject_linked_runtime(&mut old);
-        assert_eq!(
-            execute(&bytes, wide, runtime.frames_start_offset()),
-            execute(&old.emit_wasm(), wide, old_runtime.frames_start_offset)
-        );
+        let snapshot = execute(&bytes, wide, runtime.frames_start_offset());
+        snapshot::check(&input, "runtime-save", snapshot);
     }
 }
 

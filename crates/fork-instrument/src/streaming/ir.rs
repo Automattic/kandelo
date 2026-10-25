@@ -1,4 +1,4 @@
-//! Function-local typed IR, independent of Walrus. Every node borrows only
+//! Function-local typed IR, Every node borrows only
 //! immutable original bytes; no module-wide instruction arena is constructed.
 
 use anyhow::{Context, Result, ensure};

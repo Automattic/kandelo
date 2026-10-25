@@ -1,0 +1,33 @@
+=== closed 774b4ef4038c ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+        3,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+        3,
+    },
+    tail_sites: {},
+}
+
+=== external 774b4ef4038c ===
+ReachingPlan {
+    activations: {
+        0,
+        1,
+        2,
+        3,
+    },
+    control_reachable: {
+        0,
+        1,
+        2,
+        3,
+    },
+    tail_sites: {},
+}

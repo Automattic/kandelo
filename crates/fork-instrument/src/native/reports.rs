@@ -1,4 +1,4 @@
-//! Diagnostic reports use original function ordinals, without a Walrus arena.
+//! Diagnostic reports use original function ordinals, without retaining module instruction bodies.
 use crate::{Analysis, Options, SinkReport, call_graph::FuncEntry, native};
 use anyhow::{Result, ensure};
 

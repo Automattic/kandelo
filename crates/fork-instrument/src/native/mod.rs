@@ -1,5 +1,4 @@
-//! Native backend policy over exact source bytes. Walrus remains a separate,
-//! explicit backend; no failure in this module invokes it as a fallback.
+//! Instrumentation policy and artifact admission over exact source bytes.
 use crate::{
     PlanSource,
     facts::{FactsReport, storage::StorageLimits},

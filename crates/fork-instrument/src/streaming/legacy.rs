@@ -1,4 +1,9 @@
-//! Function-local ownership planning for legacy exception normalization.
+//! Function-local ownership planning for older WebAssembly exception syntax.
+//!
+//! Here “legacy” means Wasm `try`/`catch`/`rethrow`/`delegate`, rather than the
+//! modern `try_table` encoding. This is part of the native transform, not a
+//! retained instrumentation backend. Valid compiler output can use either
+//! encoding; both must preserve exception ownership across fork replay.
 //!
 //! Handler IDs represent the nullable exception locals that lowering must
 //! introduce. Cleanup ranges follow shared parent links instead of retaining
@@ -13,8 +18,6 @@ use wasmparser::Operator;
 mod discover;
 mod native;
 pub use native::*;
-#[cfg(test)]
-mod oracle_tests;
 #[cfg(test)]
 mod tests;
 

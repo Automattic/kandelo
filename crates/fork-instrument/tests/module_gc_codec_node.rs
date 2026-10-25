@@ -4,8 +4,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use fork_instrument::{module_exception_codec, module_gc_codec, runtime};
-use walrus::Module;
+#[path = "support/streaming_gc.rs"]
+mod native;
 
 fn fixture_module(wide: bool) -> Vec<u8> {
     let source = include_str!("fixtures/gc_codec.wat");
@@ -15,41 +15,7 @@ fn fixture_module(wide: bool) -> Vec<u8> {
         source.into()
     })
     .expect("GC provider fixture WAT");
-    let mut module = Module::from_buffer(&input).expect("GC provider fixture module");
-    let memory = module.memories.iter().next().expect("provider memory").id();
-    let declared = module_gc_codec::declare(&mut module, memory).expect("declare GC codec");
-    module
-        .exports
-        .add("__test_encode_externref", declared.encode_externref);
-    module
-        .exports
-        .add("__test_decode_externref", declared.decode_externref);
-    let exception = module_exception_codec::inject_with_reference_overrides(
-        &mut module,
-        memory,
-        Some((declared.encode_externref, declared.decode_externref)),
-        Some((declared.encode_anyref, declared.decode_anyref)),
-    )
-    .expect("inject exception codec");
-    let runtime = runtime::inject_linked_runtime_with_reference_overrides(
-        &mut module,
-        runtime::ReferenceCodecOverrides {
-            funcref: Some((
-                exception.references.encode_funcref,
-                exception.references.decode_funcref,
-            )),
-            externref: Some((
-                exception.references.encode_externref,
-                exception.references.decode_externref,
-            )),
-            exnref: Some((exception.encode, exception.decode)),
-            anyref: Some((declared.encode_anyref, declared.decode_anyref)),
-            cleanup: Some(exception.clear),
-        },
-    );
-    module_gc_codec::finish_declaration(&mut module, declared, exception, &runtime)
-        .expect("finish GC codec");
-    module.emit_wasm()
+    native::emit(&input)
 }
 
 fn transit_provider_module() -> Vec<u8> {

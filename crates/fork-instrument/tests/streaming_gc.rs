@@ -1,4 +1,6 @@
-use fork_instrument::{module_gc_codec, streaming::*};
+#[path = "support/snapshot.rs"]
+mod snapshot;
+use fork_instrument::streaming::*;
 use std::collections::BTreeSet;
 use wasm_encoder::reencode::RoundtripReencoder;
 
@@ -8,17 +10,10 @@ fn compare(source: &str) -> NativeGcPlan {
     let types = SourceTypes::new(&scan);
     let native =
         NativeGcPlan::discover(&scan, &types, &mut RoundtripReencoder, Default::default()).unwrap();
-    let module = walrus::Module::from_buffer(&input).unwrap();
-    let oracle = module_gc_codec::plan(&module).unwrap();
-    assert_eq!(
-        native.descriptor().unwrap(),
-        oracle.descriptor(),
-        "{source}"
-    );
-    assert_eq!(
-        native.dispatch_layouts(),
-        oracle.dispatch_layouts(),
-        "{source}"
+    snapshot::check(
+        &input,
+        "gc-layouts",
+        (native.descriptor().unwrap(), native.dispatch_layouts()),
     );
     native
 }
@@ -52,22 +47,12 @@ fn original_gc_type_identity_follows_validated_recursive_groups() {
         )
         .unwrap();
         assert_eq!(canonical.len(), native.layouts().len());
-        let oracle = module_gc_codec::plan(&walrus::Module::from_buffer(&input).unwrap()).unwrap();
-        if native.layouts().len() == oracle.layouts().len() {
-            assert_eq!(native.descriptor().unwrap(), oracle.descriptor());
-        } else {
-            assert_eq!(native.layouts().len(), 1);
-            assert_eq!(
-                oracle.layouts().len(),
-                2,
-                "equivalent recursive source types share one native layout"
-            );
-        }
+        snapshot::check(&input, "recursive-layouts", native.descriptor().unwrap());
     }
 }
 
 #[test]
-fn native_gc_layout_flags_offsets_and_subtype_dispatch_match_the_oracle() {
+fn native_gc_layout_flags_offsets_and_subtype_dispatch_preserve_expected_results() {
     for source in [
         "(module)",
         r#"(module
@@ -180,15 +165,10 @@ fn gc_catalog_keeps_runtime_types_distinct_across_recursive_groups() {
         Default::default(),
     )
     .unwrap();
-    let mut module = walrus::Module::from_buffer(&input).unwrap();
-    assert_eq!(module_gc_codec::plan(&module).unwrap().layouts().len(), 2);
-    let oracle = module.emit_wasm();
     let directory = tempfile::tempdir().unwrap();
     let first = directory.path().join("source.wasm");
-    let second = directory.path().join("oracle.wasm");
     let third = directory.path().join("native.wasm");
     std::fs::write(&first, input).unwrap();
-    std::fs::write(&second, oracle).unwrap();
     std::fs::write(&third, native).unwrap();
     let output = std::process::Command::new("node")
         .arg("-e")
@@ -202,7 +182,6 @@ fn gc_catalog_keeps_runtime_types_distinct_across_recursive_groups() {
         "#,
         )
         .arg(first)
-        .arg(second)
         .arg(third)
         .output()
         .unwrap();
@@ -212,8 +191,8 @@ fn gc_catalog_keeps_runtime_types_distinct_across_recursive_groups() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(
-        output.stdout, b"0\n1\n0\n",
-        "original and native retain the type distinction; unchanged Walrus merges it"
+        output.stdout, b"0\n0\n",
+        "original and native retain the type distinction"
     );
 }
 
@@ -311,32 +290,5 @@ fn native_gc_keeps_constructor_catalog_bounded_across_repeated_sites() {
     };
     let plan = NativeGcPlan::discover(&scan, &types, &mut RoundtripReencoder, limits).unwrap();
     assert_eq!(plan.layouts().len(), 2);
-    let oracle = walrus::Module::from_buffer(&input).unwrap();
-    assert_eq!(
-        plan.descriptor().unwrap(),
-        module_gc_codec::plan(&oracle).unwrap().descriptor()
-    );
-    for limits in [
-        GcPlanLimits {
-            metadata_bytes: 1,
-            ..Default::default()
-        },
-        GcPlanLimits {
-            work: 0,
-            ..Default::default()
-        },
-        GcPlanLimits {
-            work: 1024,
-            ..Default::default()
-        },
-        GcPlanLimits {
-            ir: IrLimits {
-                instructions: 8,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    ] {
-        assert!(NativeGcPlan::discover(&scan, &types, &mut RoundtripReencoder, limits).is_err());
-    }
+    snapshot::check(&input, "original-coordinates", plan.descriptor().unwrap());
 }

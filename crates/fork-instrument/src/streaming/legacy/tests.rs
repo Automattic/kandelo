@@ -5,7 +5,6 @@ fn with_plan(wat: &str, check: impl FnOnce(&FunctionIr<'_>, LegacyHandlerPlan)) 
     let scan = crate::streaming::scan(&input).unwrap_or_else(|error| panic!("{wat}: {error:#}"));
     let body = scan.body_provider(Default::default()).load(0).unwrap();
     let plan = LegacyHandlerPlan::discover(&body, Default::default()).unwrap();
-    super::oracle_tests::compare(&input, &plan);
     check(&body, plan);
 }
 
@@ -159,9 +158,6 @@ fn delegate_and_detached_handlers_have_no_owned_exception() {
     assert!(plan.handlers.is_empty());
     assert!(plan.exits.is_empty());
     assert!(plan.rethrows.is_empty());
-    // The unchanged Walrus parser panics on this valid detached catch. Keep
-    // its failure visible, separate from the shared positive oracle checks.
-    assert!(std::panic::catch_unwind(|| walrus::Module::from_buffer(&input)).is_err());
 }
 
 #[test]

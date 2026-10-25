@@ -53,7 +53,7 @@ ABI version: `50` (see
   scripts can therefore instrument installed executables in place without
   making them non-executable.
 
-## Native instrumentation and migration
+## Native instrumentation
 
 `fork_instrument::streaming` provides an original-binary scanner, a compact
 conservative call-closure resolver, definition-only compiler-fact binding,
@@ -92,7 +92,7 @@ indices before output remapping; they are never encoded as binary indices.
 
 `facts::call_facts_from_scan` now uses `facts::storage::FactsStore`: interned
 names, binding, call-site, conversion, slot-flow and resolved-target relations
-live in a private temporary SQLite database. It preserves the oracle's
+live in a private temporary SQLite database. It preserves the established
 signature-agreement fallback, ambiguous-definition unions, callback registry,
 cleanup and longjmp-facts policies. Planning is bound to the exact original
 module before lowering. The store exposes one target group at a time for the
@@ -117,8 +117,7 @@ counts without scanning relations. Query temporaries use files; their disk
 space is additional to the main database limit. SQLite's page cache is a
 [suggested limit](https://www.sqlite.org/pragma.html#pragma_cache_size), not a
 hard process-memory ceiling. Row/work/disk failures are explicit, the private
-store is discarded on failed construction, and no unbounded Walrus fallback
-is introduced. Physical-footprint guards remain a separate validation layer.
+store is discarded on failed construction, without selecting another instrumentation backend. Physical-footprint guards remain a separate validation layer.
 The private SQLite connection retains its exclusive file lock between
 queries, avoiding repeated filesystem lock checks. Program metadata and
 parameter recording batch their writes within each private phase transaction;
@@ -140,8 +139,7 @@ integer values and shadow-stack slots. Its environment supplies call effects
 and target refinements. A normal return/throw workqueue loads and discards one
 body per evaluation and borrows the summary array instead of cloning it;
 the policy interpreter and child-continuation planner use this driver.
-Differential fixtures compare results and
-original call coordinates with the unchanged Walrus interpreter. Unsupported
+Fixed regression fixtures check results and original call coordinates. Unsupported
 operators are explicit and cannot prove a boundary. Default limits are
 4,294,967,295 abstract state values, one trillion work units, 16,384 nested control
 regions, 4,096 frame slots and 1,048,576 memberships in distinct retained
@@ -182,7 +180,7 @@ and a label's first incoming branch transfers its owned state. Target-table
 writes batch across the private recording phase while dirty pages still spill.
 
 The repository's host-tool builder uses Cargo's `instrumenter` profile
-(`opt-level=3` for the tool and its host dependencies) for both backends.
+(`opt-level=3` for the tool and its host dependencies) for the native pipeline.
 The guest kernel retains the size-optimized `release` profile. Direct manual
 `cargo build --release` uses that size profile; use
 `scripts/build-fork-instrument-tool.sh` to build and install the normal host tool.
@@ -310,17 +308,13 @@ original loader imports and enable conservative external dispatch in the
 original closure, then include this generated activation in resume planning.
 Raw protocol emission alone does not claim fork capability.
 
-Standalone fixtures compare staged call order, argument defaults, main/failure
-paths, checkpoint counts and function-reference identity with unchanged
-Walrus. Linked fixtures execute initializer and all three checkpoint fork
-sites, fresh-instance replay and allocation failure at each of the three
-captured frames. They cover both memory/table widths, all three historical
-argument counts and shared/inline scalar codecs. Replay does not repeat
-prepare, next or commit work. The original caller retains its live reference
-while the driver has no reference vector. One old runtime defect is recorded
-separately: its generated `wpk_fork_resume_thread` can pass an i32 index to the
-canonical table64, producing invalid Wasm. Native table64 fixtures validate
-and execute strictly; positive oracle paths keep the same runtime assertions.
+Standalone fixtures check staged call order, argument defaults, main/failure
+paths, checkpoint counts and function-reference identity. Linked fixtures
+execute initializer and all three checkpoint fork sites, fresh-instance replay
+and allocation failure at each captured frame. They cover both memory/table
+widths, all three historical argument counts and shared/inline scalar codecs.
+Replay does not repeat prepare, next or commit work. The original caller retains
+its live reference while the driver has no reference vector.
 
 `ModuleDeclarationBuilder` reserves final indices for appended local tables,
 memories, tags, globals and element segments, plus new exports. It rejects
@@ -345,9 +339,8 @@ release the buffer alias, then publish NORMAL. Typed local codec providers may
 be supplied as already planned final-index overrides or reserved helper
 ordinals relative to the frozen function base. Conflicting overrides and
 index overflow fail during planning; no placeholder codec imports are needed.
-These controls have
-native/Walrus layout and import-signature comparisons and wasm32/wasm64 Node
-execution tests for capture, rewind and abort. A composed native fixture also
+These controls have fixed layout/import-signature expectations and wasm32/wasm64
+Node execution tests for capture, rewind and abort. A composed native fixture also
 executes table/drop tracking outside the fork closure.
 
 These runtime controls alone do not install the continuation, reference or
@@ -366,16 +359,13 @@ recipe ID. Tag handlers pool typed locals across layouts, so repeated static
 tag signatures do not multiply physical helper locals. Planning, import
 reservation, signature interning, encoding and decoding are separate modules.
 
-Its descriptor matches the unchanged Walrus codec byte-for-byte for scalar,
-reference and vector layouts. A shared Node fixture executes both backends;
-the native provider additionally runs on memory64. It covers exact local tags
-in fresh instances, scalar/vector bits, recursively nested exceptions, alias
-identity, brokered values, ingress, cache cleanup, invalid IDs and disjoint
-transaction scratch. Budget tests reject metadata, work and output exhaustion;
-256 repeated tag signatures keep the same physical local count. These
-providers now compose with activation frame vectors in the linked catch
-fixtures below. The GC providers described next also compose with these exact
-exception recipes. Production bootstrap integration remains unfinished.
+The exception descriptor records scalar, reference and vector layouts. Node
+fixtures cover both memory widths, exact local tags in fresh instances,
+scalar/vector bits, recursively nested exceptions, alias identity, brokered
+values, ingress, cache cleanup, invalid IDs and disjoint transaction scratch.
+Budget tests reject metadata, work and output exhaustion; 256 repeated tag
+signatures keep the same physical local count. These providers compose with
+activation frame vectors, GC recipes and bootstrap in the complete pipeline.
 Provider metadata alone certifies no artifact.
 
 `NativeGcPlan` discovers aggregate layouts and constructor provenance before
@@ -388,16 +378,13 @@ metadata, work and function-IR limits fail explicitly before unbounded growth.
 Inheritance depths are memoized with an iterative walk.
 
 The GC catalog uses validated Wasm type identity, with frozen output indices
-for payload types. Ordinary descriptors match Walrus byte-for-byte. Recursive
-groups expose two oracle differences: Walrus can retain two layouts for one
-equivalent runtime type, and its shallow type interning can merge distinct
-runtime types. A Node fixture observes `ref.test` return false in the original
-and native round trip, but true after the unchanged Walrus round trip. Native
-planning preserves the original distinction. Metadata tests cover every array
-constructor, constructor sites outside fork, source retention, field/seed
+for payload types. Equivalent recursive source types share a layout; distinct
+runtime types remain distinct. A Node fixture checks that `ref.test` has the
+same result before and after native round trip. Metadata tests cover every
+array constructor, constructor sites outside fork, source retention, field/seed
 ownership and resource failures; 10,000 repeated sites retain two layouts
-within an 8 KiB catalog budget. This is planning evidence, not measured process
-memory or a working GC provider.
+within an 8 KiB catalog budget. These planning limits are separate from
+measured process memory.
 
 `GcConstructorPlan` reserves typed wrapper declarations and provenance imports
 before indices freeze. `FrozenGcConstructors` rewrites original constructor
@@ -406,7 +393,7 @@ wrapper evaluates the original allocation first, then records scalar operand
 bits and required reference seeds through the existing host protocol. Trapping
 allocations publish no provenance. Packed/vector operands, data/element ranges,
 empty non-null arrays and seeds separated by scalar fields are covered by Node
-execution against unchanged Walrus on both memory widths. Operand effects run
+execution on both memory widths. Operand effects run
 once in source order, and the transit slot is cleared after publication.
 Catalogs reject source/type-mapping mismatches and enforce metadata, work,
 signature and output limits. GC and exception catalogs share the immutable
@@ -423,8 +410,7 @@ Private function and exception seeds inhabit mutable non-null fields until
 filling replaces them. Concrete function seeds retain the original nominal
 function type. Added seeds and tags stay outside original source catalogs.
 
-Native and unchanged Walrus output execute the same standalone Node assertions
-on both memory widths. They cover self-cycles, mutual GC/exception cycles,
+Native output executes standalone Node assertions on both memory widths. They cover self-cycles, mutual GC/exception cycles,
 constructor seeds that differ from final fields, function/externref identities,
 signed i31 values, packed/scalar/vector bits, every array constructor variant,
 empty typed arrays and child-to-grandchild reconstruction. Successful helpers
@@ -450,9 +436,7 @@ passive at their original indices, the original start moves to its explicit
 helper, and a missing data-count section is inserted before code. Data payloads
 continue through the disk spool. Node tests cover memory32/table32 and
 memory64/table64, overlapping initializer order, empty segments, extended
-constant offsets, shifted local indices and copied-memory preservation. Parent
-and thread assertions compare unchanged Walrus; native segment lifetime checks
-also compare the original module. Metadata/work/output failures reject
+constant offsets, shifted local indices and copied-memory preservation. Parent, thread and segment lifetime checks also execute the original module. Metadata/work/output failures reject
 explicitly.
 
 `NativeRootState` composes original global roots with these bootstrap phases.
@@ -472,8 +456,8 @@ loads avoid reading allocator padding at the end of memory. Each root helper
 uses one reusable payload-pointer local, independently of the number of roots.
 Metadata, work, output and optional source-hook maps have explicit limits.
 
-Node fixtures compare fresh-instance replay and imported-global descriptor
-bytes with unchanged Walrus on both memory widths. They cover scalar/vector
+Node fixtures check fresh-instance replay and fixed imported-global descriptor
+expectations on both memory widths. They cover scalar/vector
 bits, function/externref identities, typed and abstract aliases, self-cycles,
 mutual GC/exception cycles and arrays reconstructed from parent-dropped data
 and element segments. Separate memoryless fixtures execute runtime controls
@@ -485,12 +469,12 @@ captured. Repeated imported table declarations keep distinct descriptor owners,
 while the host selects one canonical owner per physical table. Imported tables,
 source-mutated tables and the exact dynamic-linker process table synchronize;
 read-only local tables use their static baseline without a generation guard.
-Imported-table descriptors preserve the existing format and match Walrus bytes.
+Imported-table descriptors preserve the existing format.
 
 Save emits the existing 56-byte descriptor and one full single-run record for
 each dirty page. The baseline fingerprint remains an opaque 32-byte binding;
 native generation hashes the exact original module and original table owner,
-independently of Walrus arena identities. Restore checks that binding and page
+using source coordinates. Restore checks that binding and page
 headers, grows with a saved typed entry spanning the old end, decodes entries
 inside Wasm and marks restored pages dirty. One nine-local scalar tuple serves
 all original tables, including mixed table32/table64 declarations. Planning and
@@ -512,16 +496,14 @@ segment drops. The process must restore all activation baselines before running
 these finish helpers. Provider source identities, bootstrap ownership and
 process-memory bindings must agree before composition.
 
-Shared Node assertions run native and unchanged Walrus module-state providers
+Node assertions run native module-state providers
 across all memory32/64, table32/64 and shared/unshared memory combinations. They
 cover aliased imports, non-null typed table growth, GC/exception roots,
 externrefs, empty and failed mutations, delayed segment drops, malformed baseline
 and page records, and a generation publication during reconciliation. Additional
 native memoryless fixtures cover both process/table widths; a mixed-width
-module checks table32 and table64 in the same helper. This is component
-execution evidence; process-level cross-worker replay, production integration
-and artifact certification remain unfinished. Provider/activation composition
-is described below.
+module checks table32 and table64 in the same helper. These component checks complement process-level cross-worker replay and
+artifact validation; provider/activation composition is described below.
 
 `FrameBuilder` now plans one function's activation storage. It keeps parameters
 and first-used original locals in lexical order, assigns synthetic value keys,
@@ -559,12 +541,8 @@ Node component fixtures execute scalar `catch` and `catch_ref` ownership on
 both pointer widths, with shared and inline frame codecs, empty or multi-value
 try inputs, normal try results, and forks inside the try or after its handlers.
 They check exact frame payloads, fresh-instance rewind, live allocation-failure
-restart and invalid-selector traps. Untyped try cases run the same assertions
-against the unchanged Walrus transform. Its current catch wrapper loses try
-input parameters and produces invalid Wasm for the typed-input fixture; those
-native cases instead have independent Wasm validation and execution evidence.
-Differential planning checks cover reference, vector and catch-all payloads,
-including 448 static regions sharing constant physical temporary storage.
+restart and invalid-selector traps. All cases have independent Wasm validation and execution checks.
+Reference, vector and catch-all payloads share bounded temporary storage.
 
 Linked recipe fixtures execute all four modern catch kinds with vector and
 externref payloads, user/synthetic exception aliases, private-tag shielding,
@@ -577,11 +555,9 @@ owns exception reconstruction. No JavaScript `exnref` provider substitutes for
 it. Scratch release is checked against each activation's entry baseline,
 including the restored fork-time stack pointer during replay.
 
-The same journal assertions run against Walrus, with one recorded oracle
-defect: when `catch_all_ref` rethrows a raw broker value, Walrus leaves its
-scratch reservation behind on normal, rewind and live-abort exits. Native
-emission must release that reservation completely. The fixture verifies the
-known oracle failure separately instead of weakening native cleanup checks.
+Journal assertions require complete release of activation scratch on normal,
+rewind and live-abort exits, including a `catch_all_ref` that rethrows a raw
+broker value.
 
 `LegacyHandlerPlan` discovers legacy exception ownership in one original
 function. It assigns each attached handler a parent link, resolves named
@@ -613,19 +589,10 @@ legacy typed-exception replay with indirect tail transport, module state
 and virtual scratch spills. Emitted activation fixtures contain no legacy
 exception instructions. The native production pipeline uses this lowering.
 
-The unchanged oracle runs shared positive assertions where it supports
-these inputs. Separate checks record its detached-catch parser panic,
-delegates bypassing frame capture or an outer handler, and premature
-cleanup when an inner catch intercepts a rethrow. Additional delegate
-target scopes and typed legacy inputs use original-input execution and
-strict native replay assertions rather than those broken oracle paths.
-
 `FrameCodecCatalog` interns scalar save/restore recipes before output starts.
 It emits each helper serially and shares restores across save-commit policies.
 Restore returns at most one value, including an optional catch selector, to
-preserve recursion stack budgets. The generated scalar helper bodies match
-the unchanged Walrus helper bodies byte-for-byte across scalar, selector,
-commit and pointer-width fixtures. Node fixtures additionally exercise header
+preserve recursion stack budgets. Node fixtures additionally exercise header
 preservation, commit ordering, the replay cursor and virtual-spill copying.
 Reference helper generation is separate from these scalar codecs. The
 continuation components below compose call/region replay dispatch.
@@ -649,7 +616,7 @@ region landings own the parent carryovers, block inputs and `if` condition.
 Entry parameters use temporary storage set on every region entry.
 
 Argument and region-input plans replay only constants, local reads and the
-oracle's whitelist of non-trapping integer operations. A backwards typed walk
+checked whitelist of non-trapping integer operations. A backwards typed walk
 finds the closed suffix without repeatedly simulating overlapping suffixes.
 Other values get frame-backed spills, with all call arguments allocated before
 all call carryovers. Reference plans combine normal/exception-successor
@@ -660,12 +627,11 @@ is dead at the original inner call. Defaults add 64 MiB of conservatively
 accounted metadata, 1,000,000 value records and 104,857,600 work units per
 function, independent of frame, IR and reference-analysis limits.
 
-Differential fixtures compare argument suffixes, nested call carryover types
-and region ranges with unchanged Walrus. Node fixtures exercise generated
-capture/reload operations with compacted user locals, reference identity and
-both local/scratch scalar storage on wasm32 and wasm64. These fixtures do not
-perform a fork. Ordinary unreachable calls are excluded from the landing plan;
-this API does not emit or certify a complete fork artifact.
+Fixed regression expectations cover reference liveness, nullability and
+original call coordinates. Node fixtures exercise generated capture/reload
+operations with compacted user locals, reference identity and both local/scratch
+scalar storage on wasm32 and wasm64. Ordinary unreachable calls are excluded
+from the landing plan; these component APIs do not certify complete artifacts.
 
 `emit_continuation_dispatch` now emits the planned normal/replay control flow.
 An iterative task stack handles source nesting and a 32-way recursive bucket
@@ -700,9 +666,8 @@ all bucket levels with emitted nesting below 128, and a 1,024-region fixture
 executes without recursive source emission. Reference call/branch fixtures
 and legacy rethrow/delegate fixtures exercise normal execution, not reference
 or owned-exception frame replay. These dispatcher fixtures use a private test
-frame store. Native linked-frame composition is described below; source
-exception normalization and production module-state integration remain
-unfinished.
+frame store. Native linked-frame composition, source exception normalization
+and production module-state integration are described below.
 
 `NativeActivationPlan` and `emit_native_activation` now compose the dispatcher
 with linked-frame scalar capture/restore, a function-wide private-tag catch,
@@ -720,8 +685,7 @@ resume table during replay. Direct activation calls can remain lexical.
 Scalar resume arguments follow the existing zero-argument/peek policy;
 reference arguments decode the frame's universal vector prefix before entering
 the source signature, including checked narrowing for non-nullable types.
-Frame-selection and scalar/reference resume helper bodies have byte-for-byte
-comparisons against unchanged Walrus on both pointer widths. Planning and
+Planning and
 per-helper emission are separate; no helper retains source instruction bodies
 or a module-wide activation IR. The frozen catalog retains a bounded transport
 index so the emission pass can resolve existing helpers without declaring new
@@ -755,8 +719,7 @@ fresh-instance fixture checks externref aliasing, typed function reference
 parameters, universal vector positions and direct null restoration at two
 capture landings. Both fixtures use readable standalone JavaScript journals
 under `tests/fixtures/streaming_*_replay.cjs`.
-Tail fixtures execute the same journal checks against native and unchanged
-Walrus function transforms on both memory/table widths. They cover a
+Tail fixtures execute journal checks on both memory/table widths. They cover a
 100,000-step direct tail chain, indirect and reference tails, replay that skips
 eliminated callers, and scratch cleanup before normal, private-unwind and
 foreign-exception tail exits. The direct chain retains its self `return_call`
@@ -820,21 +783,13 @@ then validates functions serially. It releases analysis and pipeline catalogs
 before output validation. Its result owns immutable file-backed bytes rather
 than a whole output `Vec`.
 
-The CLI uses the native backend by default, including discovery and sink
-reports. SDK/package build scripts inherit that choice through the normal
-instrumenter wrapper. `--backend walrus` explicitly selects the temporary
-comparison implementation; there is no automatic switch after a native error.
-The library defaults `instrument`, `analyze` and `sink_report` also use native.
-Discovery and sink reports name original functions, omitting generated helpers.
-The explicit `instrument_walrus`, `analyze_walrus` and `sink_report_walrus`
-entry points retain the oracle during migration. The Vec-returning library
-convenience API copies the final artifact; normal CLI builds retain file-backed
-output. Walrus is transitional and is intended for removal after replacement
-validation. Native entry tests
+The CLI, SDK/package builds and library `instrument`, `analyze` and
+`sink_report` use the native pipeline exclusively. There is no backend selector
+or whole-module fallback. Discovery and sink reports name original functions,
+omitting generated helpers. The Vec-returning library convenience API copies
+the final artifact; normal CLI builds retain file-backed output. Entry tests
 execute normal, fresh and failed-capture replay across both pointer and table
-widths. The unchanged Walrus thread wrapper fails validation on table64 and
-does not provide the native wrapper's table-generation guard; its other replay
-assertions run unchanged on table32.
+widths, including the table-generation guard.
 
 Native direct calls to materialized activations replay lexically when the
 callee has no fork-reaching tail transfer. The callee restores its parameters
@@ -843,7 +798,7 @@ imports, indirect/reference calls and possible tail-transparent targets.
 This avoids retaining routing frames for ordinary direct recursion and its
 abort replay, without introducing a new tail-call feature requirement.
 
-Both CLI backends now snapshot the opened input before analysis and publish
+The CLI snapshots the opened input before analysis and publish
 only after transformation, optional Binaryen optimization and validation
 succeed. Permissions come from that same opened source. Failures leave the
 destination's bytes and mode intact, including in-place instrumentation. The
@@ -883,8 +838,7 @@ It excludes post-optimization and does not establish large Codex capacity.
 
 A shared Node fixture now composes the real native GC and exact-tag exception
 providers, activation frame vectors, modern reference catches, globals,
-sparse tables and segment lifetimes. The same assertions run against unchanged
-Walrus on both pointer widths. Native output runs with shared and inline scalar
+sparse tables and segment lifetimes. The assertions run on both pointer widths with shared and inline scalar
 codecs. Normal execution, fresh-child rewind and allocation failure at either
 activation preserve GC/exception cycles, typed non-null resume parameters,
 function/externref aliases and arrays rebuilt from parent-dropped segments.
@@ -913,8 +867,8 @@ segments are already dropped at instantiation and supply no harvestable root.
 Discovery and emission enforce metadata, work, index and output limits; data
 payloads stay outside retained metadata.
 
-Native and production Walrus output run shared catalog/replay assertions on
-both pointer widths; native output uses both scalar codec policies. Static-root
+Native output runs catalog/replay assertions on both pointer widths with
+both scalar codec policies. Static-root
 and resume descriptor bytes match on ordinary inputs. Original function exports
 and bootstrap match their catalog slots, helpers stay excluded, and harvest
 adds no reference globals. Fresh replay preserves identity across imported and
@@ -925,24 +879,26 @@ coordinates rather than structural clone recipes. The composed activation
 fixture now resolves function recipes and resume routing through these actual
 catalogs instead of export-name lists.
 
-One additional oracle defect is recorded separately: Walrus tries to harvest
-an allocating declared element expression through `table.init` after the
-segment has been dropped. The original module executes, native harvest skips
-the unobservable root, and the unchanged oracle harvest traps. This test does
-not weaken the ordinary cross-backend replay assertions.
+Allocating declared element expressions have no observable identity after
+instantiation. Harvest skips those roots rather than attempting `table.init`
+on an already dropped segment. Original-source and native replay assertions
+cover this case.
 
 These component fixtures supplement the full-transform and process integration
 checks described above. Their isolated results do not establish production
 memory usage; the dated complete-transform measurements record that evidence.
 
 `wasm-fork-instrument input.wasm --streaming-scan` runs that diagnostic scan
-without constructing a Walrus module or producing an executable. It reports
+without producing an executable. It reports
 function/operator counts, maximum source body size and, when facts are
 present, hash-checked definition binding (`--no-facts` skips binding). It
 does not run an optimizer.
 
 Production `instrument`, `analyze`, `sink_report` and normal CLI output use the
-native pipeline. Walrus remains an explicit comparison oracle during rollout.
+native pipeline. The former Walrus transform has been removed; Walrus is a
+dev-only parser used by some structural tests, never an instrumentation backend.
+The [backend-removal verification](measurements/2026-10-25-native-only-instrumenter.md)
+records fixed regression expectations and real-package byte comparisons.
 See the [dependency map and migration plan](plans/2026-10-22-streaming-fork-instrumentation.md).
 The [front-end memory measurements](measurements/2026-10-23-streaming-instrumenter-front-end.md)
 compare six controlled examples and explicitly exclude the full transform.
@@ -1661,12 +1617,9 @@ from 67.1 MB to 38.0 MB and the file without its name section from 80.7 MB to
 bytes to 158 bytes (p90 1,697 to 672). SpiderMonkey compiled 12 copies of the
 module before running out of memory with lazy tiering, up from 6 (7 with
 eager tier-2, up from 3). For bash, instrumentation overhead in the code
-section fell from 1.68 MB to 0.67 MB. Building the crate with
-`--features size-attribution`, selecting `--backend walrus`, and setting
-`WPK_FORK_SIZE_ATTRIBUTION=<path>` writes a per-function TSV that attributes
-every output byte to the Walrus emitter that produced it; see
-`crates/fork-instrument/src/size_attribution.rs`. This diagnostic is specific
-to the temporary oracle and is not implemented for the native backend.
+section fell from 1.68 MB to 0.67 MB. These are historical measurements of
+the previous implementation; its emitter-attribution diagnostic was removed
+with that backend.
 
 
 ## Optimization around instrumentation
@@ -1754,26 +1707,6 @@ tool per-function based on call-site topology:
 | switch-dispatch (top-level)  | Every fork-path call lives at the function's top level. Top-level operand-stack carryovers (values pushed before the call's args and consumed after — common in LLVM `*(sp+K) = call(...)` patterns) are absorbed via per-call spill locals (sub-commit 2.4c). Pure scalar call-argument tails can be replayed instead of spilled. | A top-level `br_table` over the `_wpk_fork_call_index` replay cursor, gated by `state >= REWINDING`, jumps directly to the matching `$POST_K` label for ordinary or abort replay (a single landing uses a `br_if`, or nothing when no code precedes it). The chunks between calls run only on the NORMAL fall-through path; carryover spill locals are reloaded in the post-call, followed by spilled or replayed call args. |
 | switch-dispatch (nested)     | Some fork-path calls live inside `Block` / `IfElse` / `Loop` / `TryTable` bodies. Sub-commits 2.5/2.6 made this scheme cover: direct-call carryovers at any nesting depth (2.5c), nested-Loop-with-carryover (2.5c side benefit), multi-value-params SubRegion bodies via body-input-param prespill (2.6c). Pure scalar direct-call args and condition-only `IfElse` carryovers can be replayed instead of spilled. | Cascading `POST_K` blocks plus a per-region `br_table` route ordinary or abort replay through each enclosing instruction's own dispatch — see [Nested per-block switch-dispatch](#nested-per-block-switch-dispatch). For multi-value-params bodies, the body's input params are pre-spilled at body entry and reloaded inside POST_0 to bridge the `Simple(None)` POST_K typing. |
 
-A third path — **guard-dispatch** — existed before commits 3-4 of the
-fork-instrument mega-PR (2026-05-14). It wrapped each fork-path call site
-in an in-place `state == NORMAL || (state == REWINDING && call_idx == N)`
-if-else and gated every side-effect op in the body so it didn't re-fire
-during REWIND's linear body replay. After:
-
-- sub-commit 2.5c absorbed direct-call carryovers into nested switch-dispatch,
-- sub-commit 2.6c absorbed multi-value-params SubRegion bodies,
-- commit 9 (modern wasm-EH SDK flip) removed legacy `try`/`catch` from shipping wasm,
-- the post-9 follow-up generalised `compute_carryover_types` to `Option<ValType>`,
-
-all five conditions that previously forced guard-dispatch were closed.
-Commit 3 replaced the two `instrument_one_function_guard_dispatch` call
-sites in `instrument_one_function` with `panic!()` so any shipping binary
-that still triggers the deleted path (e.g., hand-written legacy-EH wasm,
-or LLVM output with unknown-type producers in a carryover) fails loudly
-with a message naming the function. Commit 4 deleted the
-`instrument_one_function_guard_dispatch` implementation and its ~838-line
-helper graph.
-
 Both shapes share:
 
 - The state machine, exported ABI, and save-buffer header.
@@ -1787,11 +1720,9 @@ in those chunks never re-execute by construction. The previous Phase 4g
 side-effect gating and Phase 4c non-fork-path call gating are no longer
 needed.
 
-The tool's `instrument_one_function` (in `crates/fork-instrument/src/instrument.rs`)
-inspects the original body, runs `classify_nested_pattern` to decide
-whether the per-region transform applies, and routes to either
-`instrument_one_function_nested_switch` or `instrument_one_function_switch`
-accordingly.
+`streaming::FrameBuilder` plans original calls, operand carryovers and
+region ranges. The emitter in `streaming/continuation/dispatch.rs` uses that
+function-local plan to route replay through each enclosing region.
 
 Indirect calls (`call_indirect`) are treated as fork-path landings when they
 may dispatch to a fork-path-reachable callee in the same table with the same
@@ -1799,252 +1730,40 @@ signature. Discovery is table-aware: active element segments populate their
 own table, passive segments count only for tables that can receive them via
 `table.init`, and declared segments do not count as table initializers.
 
-To keep dynamic interpreter/function-pointer-heavy runtimes resource-safe,
-indirect closure is bounded to two dispatch hops. Direct callers of functions
-found through those hops are still included. This covers normal C callback
-fork paths and QuickJS's C-function trampoline shape
-(`JS_CallInternal -> js_call_c_function -> js_os_exec`) without turning one
-generic dispatcher into whole-runtime instrumentation. A program whose only
-fork path requires three or more nested function-pointer dispatches is outside
-the current static-discovery guarantee and needs a more precise value-flow
-analysis before it can be supported safely.
+Indirect and reference discovery runs to a fixed point without a dispatch-hop
+cap. Function-body decoding remains local; compact module summaries retain
+the edges needed for closure.
 
-## Per-function transform — before/after WAT
+## Per-function replay
 
-The tool applies a per-function transform that depends on the dispatch
-scheme described above. The following pairs show representative fixtures
-from `crates/fork-instrument/tests/instrument.rs` and
-`crates/fork-instrument/tests/switch_dispatch.rs`. The transformed WAT is
-simplified for readability; the actual output includes linked-node hook calls,
-default values for result types, and preserved source locations.
+A function-local plan records each fork-reaching call's original byte offset,
+live scalar/reference state, operand carryovers and enclosing region range.
+Normal execution performs the original call. Unwind captures one activation
+and propagates the private unwind tag; rewind restores the captured state and
+routes directly to that call's continuation. The selected return value enters
+the original post-call code without repeating earlier side effects.
 
-> **Note (post-commit-4):** Examples (a) and (c) below describe the
-> pre-2.5/2.6 guard-dispatch shape, which was deleted in commit 4 of
-> the fork-instrument mega-PR (2026-05-14). Real LLVM-emitted C now
-> goes through switch-dispatch (top-level or nested). The historical
-> shape is preserved here because (a) some test fixtures still
-> describe the wrapping semantics for documentation purposes, (b) the
-> state-machine / preamble / postamble structure is shared across all
-> dispatch schemes, and (c) the catch-handler resume in §(b) is still
-> the live mechanism. For current switch-dispatch examples, see the
-> fixtures under `crates/fork-instrument/tests/fixtures/switch_dispatch/`
-> and the assertions in
-> `crates/fork-instrument/tests/switch_dispatch.rs`.
+Top-level and nested regions share this mechanism. Pure scalar argument
+suffixes can be materialized again; mutable inputs, carried operands and
+reference identities use captured values. Scalar codec sharing changes helper
+placement, while each activation keeps its own payload and exact catch selector.
 
-### (a) Direct call to `fork` with no locals
-
-Fixture: `FIXTURE_DIRECT_CALLER` in `tests/instrument.rs` (see
-`wrapper_replaces_call_with_state_gated_if`). Before instrumentation:
-
-```wat
-(func $caller (result i32)
-  call $fork)
-```
-
-After instrumentation (abridged):
-
-```wat
-(func $caller (result i32)
-  ;; [1] Preamble: if REWINDING, load our frame and jump to matching call.
-  (if (i32.eq (global.get $_wpk_fork_state) (i32.const 2 (; REWINDING ;)))
-    (then
-      ;; Request the next committed payload, then restore frame fields and
-      ;; locals. call_index remains in the frame payload header.
-      ...))
-
-  ;; [2] Body wrapper: runs on NORMAL; on REWINDING, dispatch jumps to
-  ;;     the matching post-call site using frame.call_index.
-  (block $unwind_save
-    (block $POST_0
-      (block $dispatch_normal
-        (if (i32.eq (global.get $_wpk_fork_state) (i32.const 2 (; REWINDING ;)))
-          (then
-            ;; Load frame.call_index from *(buf + 0) + 4.
-            ...
-            (br_table $POST_0 $unwind_save))))
-      ;; chunk 0 would run here on NORMAL only.
-    )
-    ;; [3] Wrapped call site.
-    call $fork
-    ;; [4] Post-call unwind check: if callee returned in UNWINDING,
-    ;;     write frame.call_index and jump to postamble.
-    (if (i32.eq (global.get $_wpk_fork_state) (i32.const 1 (; UNWINDING ;)))
-      (then
-        ;; *( *(buf + 0) + 4 ) = 0
-        ...
-        (br $unwind_save)))
-    (return))
-
-  ;; [5] Postamble: finish writing the already-reserved node's frame header
-  ;;     and serialized locals, commit it, then return a default result.
-  ...
-  (return (i32.const 0)))
-```
-
-Numbered callouts:
-
-1. **Preamble (Phase 4d).** Every instrumented function opens with a state
-   test. Under `REWINDING`, the preamble calls
-   `__wpk_fork_frame_next(frame_size)`, stores the returned payload in
-   `*(buf + 0)`, and deserializes every frame scalar: user locals,
-   argument/carryover spills, and tagged-catch activation state. Dispatch reads
-   `call_index` directly from that active frame payload.
-2. **Body wrapper (Phase 4b/4c).** The original body is wrapped in a `$unwind_save`
-   block. On `REWINDING`, a `br_table` keyed by `frame.call_index` jumps to
-   the selected post-call landing. On `NORMAL`, dispatch falls through and
-   executes the original chunks.
-3. **Wrapped call site (Phase 4c).** The original call is kept intact. After
-   the call returns in `UNWINDING`, the tool reserves the function's complete
-   frame node before its first write, stores the returned payload pointer in
-   `*(buf + 0)`, and writes the call site's `call_index` to `frame[+4]`.
-4. **Unwind bridge (Phase 4c/4d).** The unwind-only branch writes
-   `frame.call_index` and exits `$unwind_save`. If the callee did not begin
-   unwinding, execution continues normally.
-5. **Postamble (Phase 4d).** Emits the remaining frame header fields
-   (`func_index`, `catch_region_id`, and a zero reserved word), writes every
-   user and synthetic frame scalar, commits the reserved node, and returns a
-   default value of the function's result type. Callers see the default on the
-   unwind path but discard it because their own postamble runs next.
-
-### (b) Fork from inside a catch handler
-
-Fixture: `FIXTURE_FORK_FROM_CATCH_HANDLER` (see
-`fork_from_inside_catch_handler_full_roundtrip`). Before instrumentation:
-
-```wat
-(func $caller (result i32)
-  (local $caught i32)
-  (block $handler (result i32 exnref)
-    (try_table (result i32 exnref) (catch_ref $exn $handler)
-      i32.const 7
-      throw $exn))
-  drop
-  local.set $caught
-  call $fork)
-```
-
-After instrumentation the `CatchRef` clause targets an injected capture block
-and the try_table body gets a rewind-throw stub. The exact emitted nesting is
-omitted here; the important dataflow is:
-
-```wat
-;; Inside the original try_table body:
-(if (i32.and
-      (i32.ge_u (global.get $_wpk_fork_state) (i32.const 2))
-      (i32.eq (local.get $catch_region_id) (i32.const 1)))
-  (then
-    (if (i32.eq (local.get $active_arm) (i32.const 0))
-      (then
-        ;; The frame restored 7 (or the actual scalar payload).
-        local.get $saved_payload
-        throw $exn)
-      (else unreachable))))
-
-;; On CatchRef dispatch, stack = (i32 payload, non-null exnref):
-local.set $temporary_exnref
-local.set $saved_payload
-i32.const 0
-local.set $active_arm
-i32.const 1
-local.set $in_catch
-i32.const 1
-local.set $catch_region_id
-
-;; Forward the original handler values, but retain no synthetic GC root.
-local.get $saved_payload
-local.get $temporary_exnref
-ref.as_non_null
-ref.null exn
-local.set $temporary_exnref
-br $handler
-```
-
-Numbered callouts:
-
-- **Rewind-throw stub.** On replay with a matching `catch_region_id`, dispatch
-  validates the restored arm index, pushes that arm's restored scalar payload,
-  and executes `throw $tag`. The original `CatchRef` clause catches this new
-  exception and creates a fresh exnref in the child instance.
-- **Capture block.** Every statically tagged `Catch` and `CatchRef` clause is
-  retargeted through a per-arm capture. It stores only the arm index and scalar
-  payload in frame-backed locals. A `CatchRef` exnref is temporarily forwarded
-  to the original handler; the synthetic local is nulled before the branch so
-  successful replay and abort paths do not retain a stale GC root.
-- **Call-site region writes.** A call inside the handler observes the
-  activation-local `$in_catch_K` flag and records the lexical region in the
-  frame before unwinding. There is no reference slot or module-global
-  reference state.
-
-### (c) Indirect fork through `call_indirect`
-
-Fixture: `FIXTURE_INDIRECT` (see `call_indirect_is_wrapped_with_index_as_top_arg`).
-Before instrumentation:
-
-```wat
-(func $caller (result i32)
-  i32.const 0
-  call_indirect (type $sig))
-```
-
-After instrumentation the wrapper shape is identical to the direct-call case,
-with one addition: the table index is spilled to a synthetic local before the
-state-check condition runs, and restored inside the then-branch immediately
-before the `call_indirect`.
-
-```wat
-(func $caller (result i32)
-  ;; ... preamble ...
-  (block $unwind_save
-    (i32.const 0)                 ;; original table index expression
-    (local.set $arg_idx_0)        ;; [3a] spill arg before gate
-    (if (<state-gate condition>)
-      (then
-        (local.get $arg_idx_0)    ;; [3b] restore arg before call
-        (call_indirect (type $sig))
-        (if (<unwinding check>)
-          (then
-            ;; frame.call_index = 0
-            (br $unwind_save))))
-      (else
-        (i32.const 0)))           ;; default i32 for the call's result
-    (return))
-  ;; ... postamble ...)
-```
-
-Callouts:
-
-- **Phase 3 closure.** Before instrumentation runs at all, call-graph
-  discovery walks every `call_indirect` reachable from the fork seed, looks
-  up the call's type signature, and adds every table-reachable function with
-  a matching signature to the fork-path set. The wrapper sees indirect calls
-  with the same shape as direct calls: one additional top-of-stack i32 arg
-  (the table index) on the wasm32 side.
-- **3a / 3b — Arg spill.** All call-site arguments (including the indirect
-  table index) are spilled to synthetic scalar locals before the gate
-  condition runs, so the operand stack is empty at the gate boundary and the
-  else-branch can supply typed defaults.
+Current executable examples live in `tests/streaming_dispatch.rs`,
+`tests/streaming_frames.rs`, `tests/streaming_catches.rs` and their standalone
+Node replay fixtures. The original design plan remains a historical record;
+its former whole-module emitters and guard-dispatch examples are not current
+implementation APIs.
 
 ## Nested per-block switch-dispatch
 
-Top-level switch-dispatch only fires when every fork-path call is at the
-function's entry-block depth. Real LLVM-emitted C — popen's `__fork`,
-`posix_spawn`, FPM's child-spawn, and many libc paths — keeps fork-path
-calls inside a `block` / `if` / `loop` / `try_table`, which would force
-those functions into guard-dispatch. The popen-class hangs investigated
-in `memory/fork-instrument-O2-bug-investigation.md` (external memory)
-showed that guard-dispatch's body-replay diverges from NORMAL flow on
-LLVM-O2-shaped inputs, even with non-fork-path call gating: the kernel_fork
-wrap can be skipped entirely if a control-flow gate reads a different value
-on REWIND than on NORMAL.
-
-`instrument_one_function_nested_switch` extends switch-dispatch to nested
-fork-bearing regions so those functions never enter guard-dispatch. Two
-ideas combine:
+Functions with nested fork calls use the same region-based dispatch as entry
+calls. The plan retains each region's source operands and landing ranges, so
+replay enters the captured region without repeating preceding side effects.
 
 ### 1. Cascading POST blocks per region
 
-`partition_region_instrs` (in `crates/fork-instrument/src/instrument.rs`)
-splits each fork-bearing seq into chunks separated by **landings**. A
+The function-local frame planner and continuation emitter
+split each fork-bearing region into chunks separated by **landings**. A
 landing is one of:
 
 - **DirectCall** — a direct fork-path `Call` or any `CallIndirect` at this
@@ -2329,7 +2048,7 @@ for the implementation.
 
 Instrumentation only rewrites functions that can transitively reach the
 designated async import (default: `kernel.kernel_fork`). The discovery
-algorithm in `crates/fork-instrument/src/call_graph.rs`:
+algorithm in `crates/fork-instrument/src/streaming/graph.rs`:
 
 1. Seed set `S` = { the imported `kernel.kernel_fork` function }.
 2. **Direct reverse closure.** For every newly discovered callee `g`, add
@@ -2341,7 +2060,8 @@ algorithm in `crates/fork-instrument/src/call_graph.rs`:
 4. Repeat steps 2–3 until the worklist is empty.
 
 The output is a function-set `S` that gets instrumented. All other functions
-pass through unmodified.
+still receive index remapping and any required table, segment or module-state
+tracking. They do not acquire an activation frame.
 
 The host-parsed marker exports `__abi_version`,
 `__wasm_posix_thread_slots`, and `__get_channel_base_addr` also remain
@@ -2374,7 +2094,7 @@ K-04, and K-07 cover the current behavior.
 ## Fork sinks and compiler facts
 
 The closure above is the conservative fork path. By default the instrumenter
-then reduces it with a sink analysis (`crates/fork-instrument/src/sink.rs`):
+then reduces it with a sink analysis (`crates/fork-instrument/src/streaming/sink/planner.rs`):
 a function whose fork child can never return to its caller (it calls `_exit`
 or `exec*`) is a boundary; the parent's unwind stops there and the callers
 above it stay uninstrumented. `--no-sinks` keeps the full closure. The
@@ -2722,10 +2442,10 @@ ends with `local.set $spill_local`, and after the enclosing instruction
 the post-landing sequence emits `local.get $spill_local` (and, when the
 enclosing instr returns an i32, a brief juggle through `tmp_result_local`).
 
-Nested switch-dispatch coverage lives in
-`tests/switch_dispatch.rs::nested_fork_call_uses_per_block_switch_dispatch`
-and the carryover-spilling / pure-materialization fixtures alongside it. Add
-new regressions there or in `host/test/fork-instrument-coverage.test.ts`
+Nested dispatch, carryover and materialization coverage lives in
+`tests/streaming_dispatch.rs`, `tests/streaming_frames.rs` and their Node
+replay fixtures. Add regressions there or in
+`host/test/fork-instrument-coverage.test.ts`
 depending on whether the bug is a tool-level transform issue or an end-to-end
 host/runtime issue.
 
@@ -2742,9 +2462,9 @@ cargo test -p fork-instrument --target "$HOST_TARGET"
 
 ### Running the fuzz gate
 
-Phase 6 catch-handler resume was validated with a random-WAT fuzzer that
-generates try_table programs on a fork path and asserts both walrus and
-wasmparser accept the instrumented output.
+The random-WAT fuzzer generates `try_table` programs on a fork path, validates
+native output with wasmparser and checks deterministic instrumentation. Node
+and browser execution suites separately exercise replay semantics.
 
 ```bash
 scripts/run-fork-instrument-fuzz.sh                 # default 10 000 iters
@@ -2796,7 +2516,7 @@ from activation-owned selectors and typed recipes.
 The implementation adds that path without accessing continuation memory during
 ordinary catch execution:
 
-1. **Static discovery (`plan_plain_catches`).** Walk each fork-path function
+1. **Static discovery (`NativeCatchPlan::discover`).** Walk each fork-path function
    and collect every `Catch`, `CatchRef`, `CatchAll`, and `CatchAllRef` arm's
    tag when present, target label, exact catch-list index, kind, and operand
    types. Legacy `try` handlers are normalized to the same modern-EH control
@@ -2815,7 +2535,7 @@ ordinary catch execution:
    exception and exact selector, then restores the original handler stack.
    Short-lived forwarding scratch is cleared before user code; retained recipe
    roots are cleared by transaction completion or abort.
-5. **Replay.** `inject_rewind_throw_stubs` dispatches on the restored selector.
+5. **Replay.** The catch emitter dispatches on the restored selector.
    Scalar arms push their tuple and execute `throw` with the original tag.
    Complete-exception arms materialize and throw inside Wasm. The original
    clause then reconstructs its payload and, for reference clauses, a fresh

@@ -1,13 +1,12 @@
-//! Controlled comparisons of separate phases and complete fork transforms.
+//! Native memory diagnostics for separate phases and complete fork transforms.
 //! Each measurement runs in a fresh process against the same exact input.
 
 use anyhow::{Context, Result, ensure};
-use fork_instrument::{call_graph, facts, sink as oracle_sink, streaming::*};
+use fork_instrument::{facts, streaming::*};
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     borrow::Cow,
     collections::BTreeSet,
-    io::Write,
     path::Path,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -118,175 +117,101 @@ fn binding_hash(bindings: &[(u32, Vec<(usize, usize)>)]) -> u64 {
     hash_words(words)
 }
 
-fn measure(backend: &str, phase: &str, path: &Path) -> Result<()> {
+fn measure(phase: &str, path: &Path) -> Result<()> {
     let input = std::fs::read(path)?;
     let mut binding = 0;
     let mut boundaries = BTreeSet::new();
     let mut returning = BTreeSet::new();
     let (activations, control, functions, nodes, output_bytes);
-    match backend {
-        "eager" => {
-            let mut module = walrus::Module::from_buffer(&input)?;
-            let taken = facts::take_section(&mut module);
-            let seeds = call_graph::find_import_funcs(&module, "kernel.kernel_fork");
-            let mut closure = call_graph::analyze_reaching_closure_from_seeds(
-                &module,
-                seeds.iter().copied(),
-                false,
-            );
-            if phase == "sinks" {
-                ensure!(
-                    seeds.len() == 1,
-                    "sink benchmark requires exactly one fork seed"
-                );
-                let call_facts = taken
-                    .as_ref()
-                    .map(|taken| -> Result<_> {
-                        facts::verify_code_hash(taken, &input)?;
-                        Ok(facts::call_facts(&module, &taken.section, Default::default())?.0)
-                    })
-                    .transpose()?;
-                let plan = oracle_sink::plan_with_facts(
-                    &module,
-                    seeds[0],
-                    &closure,
-                    Default::default(),
-                    call_facts.as_ref(),
-                )
-                .context("oracle sink plan unavailable")?;
-                closure.activations = plan.activations;
-                closure.control_reachable = plan.control_reachable;
-                boundaries.extend(plan.boundaries.into_iter().map(|f| f.index() as u32));
-                returning.extend(plan.fork_returning.into_iter().map(|f| f.index() as u32));
-                std::hint::black_box(&call_facts);
-            }
-            activations = closure
-                .activations
-                .iter()
-                .map(|f| f.index() as u32)
-                .collect::<BTreeSet<_>>();
-            control = closure
-                .control_reachable
-                .iter()
-                .map(|f| f.index() as u32)
-                .collect::<BTreeSet<_>>();
-            functions = module.funcs.iter_local().count();
-            nodes = module
-                .funcs
-                .iter_local()
-                .map(|(_, local)| local.size())
-                .sum::<u64>();
-            if phase != "sinks"
-                && let Some(taken) = taken
-            {
-                facts::verify_code_hash(&taken, &input)?;
-                binding = binding_hash(&facts::binding(&module, &taken.section)?);
-            }
-            if phase == "roundtrip" {
-                let bytes = module.emit_wasm();
-                let mut file = tempfile::tempfile()?;
-                file.write_all(&bytes)?;
-                output_bytes = bytes.len() as u64;
-                std::hint::black_box(&bytes);
-            } else {
-                output_bytes = 0;
-            }
-            std::hint::black_box(&module);
-        }
-        "stream" => {
-            let scanned = scan(&input)?;
-            let seeds: Vec<_> = scanned
-                .functions
-                .iter()
-                .enumerate()
-                .filter_map(|(i, f)| {
-                    f.import
-                        .as_ref()
-                        .filter(|(m, n)| m == "kernel" && n == "kernel_fork")
-                        .map(|_| i as u32)
-                })
-                .collect();
-            let mut closure = scanned.reaching_from_seeds(seeds.iter().copied(), false)?;
-            if phase == "sinks" {
-                ensure!(
-                    seeds.len() == 1,
-                    "sink benchmark requires exactly one fork seed"
-                );
-                let mut store = if scanned.custom_data(facts::SECTION).next().is_some() {
-                    let store =
-                        facts::storage::FactsStore::from_scan(&scanned, Default::default())?;
-                    store.resolve_calls(&scanned, Default::default())?;
-                    store
-                } else {
-                    facts::storage::FactsStore::empty(Default::default())?
-                };
-                let mut program = sink::Program::build(&scanned, &mut store, Default::default())?;
-                let plan = sink::plan_sinks(
-                    &mut program,
-                    seeds[0],
-                    &closure,
-                    Default::default(),
-                    Default::default(),
-                )?
-                .context("native sink plan unavailable")?;
-                closure.activations = plan.activations;
-                closure.control_reachable = plan.control_reachable;
-                boundaries = plan.boundaries;
-                returning = plan.fork_returning;
-                std::hint::black_box(&program);
-            }
-            activations = closure.activations;
-            control = closure.control_reachable;
-            functions = scanned.functions.len() - scanned.imported_functions as usize;
-            if phase != "sinks" && scanned.custom_data(facts::SECTION).next().is_some() {
-                binding = binding_hash(&scanned.bind_fact_definitions()?);
-            }
-            if phase == "roundtrip" {
-                struct Native {
-                    nodes: u64,
-                }
-                impl Reencode for Native {
-                    type Error = std::convert::Infallible;
-                }
-                impl FunctionTransform for Native {
-                    fn function_ir_limits(&self) -> Option<IrLimits> {
-                        Some(IrLimits::default())
-                    }
-                    fn transform_ir(
-                        &mut self,
-                        ir: &FunctionIr<'_>,
-                        limit: usize,
-                    ) -> Result<wasm_encoder::Function> {
-                        self.nodes += ir.instructions.len() as u64;
-                        ir.emit(self, limit)
-                    }
-                }
-                let mut native = Native { nodes: 0 };
-                let mut file = tempfile::tempfile()?;
-                emit_remapped(&scanned, &mut native, &mut file, EmitLimits::default())?;
-                output_bytes = file.metadata()?.len();
-                nodes = native.nodes;
-            } else if phase != "sinks" {
-                let mut count = 0;
-                for body in FunctionBodies::new(&input, IrLimits::default()) {
-                    let body = body?;
-                    count += body.instructions.len() as u64;
-                    std::hint::black_box(&body);
-                }
-                nodes = count;
-                output_bytes = 0;
-            } else {
-                nodes = scanned.operators;
-                output_bytes = 0;
-            }
-            std::hint::black_box(&scanned);
-        }
-        _ => anyhow::bail!("backend must be eager or stream"),
+    let scanned = scan(&input)?;
+    let seeds: Vec<_> = scanned
+        .functions
+        .iter()
+        .enumerate()
+        .filter_map(|(i, f)| {
+            f.import
+                .as_ref()
+                .filter(|(m, n)| m == "kernel" && n == "kernel_fork")
+                .map(|_| i as u32)
+        })
+        .collect();
+    let mut closure = scanned.reaching_from_seeds(seeds.iter().copied(), false)?;
+    if phase == "sinks" {
+        ensure!(
+            seeds.len() == 1,
+            "sink benchmark requires exactly one fork seed"
+        );
+        let mut store = if scanned.custom_data(facts::SECTION).next().is_some() {
+            let store = facts::storage::FactsStore::from_scan(&scanned, Default::default())?;
+            store.resolve_calls(&scanned, Default::default())?;
+            store
+        } else {
+            facts::storage::FactsStore::empty(Default::default())?
+        };
+        let mut program = sink::Program::build(&scanned, &mut store, Default::default())?;
+        let plan = sink::plan_sinks(
+            &mut program,
+            seeds[0],
+            &closure,
+            Default::default(),
+            Default::default(),
+        )?
+        .context("native sink plan unavailable")?;
+        closure.activations = plan.activations;
+        closure.control_reachable = plan.control_reachable;
+        boundaries = plan.boundaries;
+        returning = plan.fork_returning;
+        std::hint::black_box(&program);
     }
+    activations = closure.activations;
+    control = closure.control_reachable;
+    functions = scanned.functions.len() - scanned.imported_functions as usize;
+    if phase != "sinks" && scanned.custom_data(facts::SECTION).next().is_some() {
+        binding = binding_hash(&scanned.bind_fact_definitions()?);
+    }
+    if phase == "roundtrip" {
+        struct Native {
+            nodes: u64,
+        }
+        impl Reencode for Native {
+            type Error = std::convert::Infallible;
+        }
+        impl FunctionTransform for Native {
+            fn function_ir_limits(&self) -> Option<IrLimits> {
+                Some(IrLimits::default())
+            }
+            fn transform_ir(
+                &mut self,
+                ir: &FunctionIr<'_>,
+                limit: usize,
+            ) -> Result<wasm_encoder::Function> {
+                self.nodes += ir.instructions.len() as u64;
+                ir.emit(self, limit)
+            }
+        }
+        let mut native = Native { nodes: 0 };
+        let mut file = tempfile::tempfile()?;
+        emit_remapped(&scanned, &mut native, &mut file, EmitLimits::default())?;
+        output_bytes = file.metadata()?.len();
+        nodes = native.nodes;
+    } else if phase != "sinks" {
+        let mut count = 0;
+        for body in FunctionBodies::new(&input, IrLimits::default()) {
+            let body = body?;
+            count += body.instructions.len() as u64;
+            std::hint::black_box(&body);
+        }
+        nodes = count;
+        output_bytes = 0;
+    } else {
+        nodes = scanned.operators;
+        output_bytes = 0;
+    }
+    std::hint::black_box(&scanned);
     let heap = PEAK.load(Ordering::Relaxed);
     let physical = physical_peak()?;
     println!(
-        "{{\"backend\":\"{backend}\",\"phase\":\"{phase}\",\"input_bytes\":{},\"functions\":{functions},\"ir_nodes\":{nodes},\"activations\":{},\"control\":{},\"activation_hash\":{},\"control_hash\":{},\"boundaries\":{},\"boundary_hash\":{},\"fork_returning\":{},\"returning_hash\":{},\"binding_hash\":{binding},\"output_bytes\":{output_bytes},\"rust_requested_peak_bytes\":{heap},\"physical_lifetime_peak_bytes\":{physical}}}",
+        "{{\"backend\":\"native\",\"phase\":\"{phase}\",\"input_bytes\":{},\"functions\":{functions},\"ir_nodes\":{nodes},\"activations\":{},\"control\":{},\"activation_hash\":{},\"control_hash\":{},\"boundaries\":{},\"boundary_hash\":{},\"fork_returning\":{},\"returning_hash\":{},\"binding_hash\":{binding},\"output_bytes\":{output_bytes},\"rust_requested_peak_bytes\":{heap},\"physical_lifetime_peak_bytes\":{physical}}}",
         input.len(),
         activations.len(),
         control.len(),
@@ -468,19 +393,18 @@ fn main() -> Result<()> {
             facts_inspection::inspect(Path::new(&args[2]), disk_bytes)
         }
         Some("shapes") if args.len() == 3 => shapes::inspect(Path::new(&args[2])),
-        Some("measure") if args.len() == 5 => {
+        Some("measure") if args.len() == 4 => {
             ensure!(
-                matches!(args[3].as_str(), "frontend" | "roundtrip" | "sinks"),
+                matches!(args[2].as_str(), "frontend" | "roundtrip" | "sinks"),
                 "invalid phase"
             );
-            measure(&args[2], &args[3], Path::new(&args[4]))
+            measure(&args[2], Path::new(&args[3]))
         }
-        Some("measure") if (6..=7).contains(&args.len()) && args[3] == "instrument" => {
+        Some("measure") if (5..=6).contains(&args.len()) && args[2] == "instrument" => {
             full::measure(
-                &args[2],
+                Path::new(&args[3]),
                 Path::new(&args[4]),
-                Path::new(&args[5]),
-                args.get(6).map(|s| s.parse()).transpose()?,
+                args.get(5).map(|s| s.parse()).transpose()?,
             )
         }
         Some("validate") if args.len() == 3 => {
@@ -489,8 +413,8 @@ fn main() -> Result<()> {
         }
         _ => anyhow::bail!(concat!(
             "usage: memory_comparison generate|generate-sinks DIR | generate-cache-pressure OUTPUT | shapes INPUT | ",
-            "facts INPUT DB_BYTES | measure eager|stream frontend|roundtrip|sinks INPUT | ",
-            "measure eager|stream instrument INPUT OUTPUT [NATIVE_CACHE_BYTES] | validate INPUT",
+            "facts INPUT DB_BYTES | measure frontend|roundtrip|sinks INPUT | ",
+            "measure instrument INPUT OUTPUT [NATIVE_CACHE_BYTES] | validate INPUT",
         )),
     }
 }

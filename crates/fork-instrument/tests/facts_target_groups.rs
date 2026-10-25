@@ -1,3 +1,5 @@
+#[path = "support/snapshot.rs"]
+mod snapshot;
 use facts::storage::{FactsStore, StorageLimits};
 use fork_instrument::{facts, streaming::scan};
 use wasm_encoder::{CustomSection, Encode};
@@ -121,7 +123,7 @@ fn shared_signature_fallbacks_fit_without_a_caller_by_target_matrix() {
 }
 
 #[test]
-fn shared_fallback_projection_matches_the_unchanged_oracle() {
+fn shared_fallback_projection_preserves_expected_results() {
     for sites in [
         Sites::MissingFacts,
         Sites::Untyped,
@@ -134,17 +136,7 @@ fn shared_fallback_projection_matches_the_unchanged_oracle() {
         let store = FactsStore::from_scan(&scan, Default::default()).unwrap();
         let report = store.resolve_calls(&scan, Default::default()).unwrap();
         let native = store.collect_call_facts().unwrap();
-        let module = walrus::ModuleConfig::new().parse(&input).unwrap();
-        let (oracle, old_report) = facts::call_facts(
-            &module,
-            scan.custom_data(facts::SECTION).next().unwrap(),
-            Default::default(),
-        )
-        .unwrap();
-        assert_eq!(native.itargets, oracle.itargets);
-        assert_eq!(native.cleanup, oracle.cleanup);
-        assert_eq!(native.jmp, oracle.jmp);
-        assert_eq!(report, old_report);
+        snapshot::check(&input, "fallback-targets", (native, report));
     }
 }
 

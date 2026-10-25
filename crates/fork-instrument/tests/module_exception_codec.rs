@@ -1,6 +1,6 @@
 use fork_instrument::module_exception_codec::{
     FORMAT_HEADER_SIZE, FORMAT_SECTION, FORMAT_TAG_RECORD_SIZE, FORMAT_VERSION,
-    IMPORT_SCRATCH_RELEASE, IMPORT_SCRATCH_RESERVE, inject,
+    IMPORT_SCRATCH_RELEASE, IMPORT_SCRATCH_RESERVE,
 };
 use walrus::Module;
 
@@ -25,13 +25,9 @@ fn codec_fixture() -> Vec<u8> {
 
 #[test]
 fn exact_tag_codec_uses_only_the_existing_process_memory() {
-    let mut module = Module::from_buffer(&codec_fixture()).expect("parse codec fixture");
-    let memory = module.memories.iter().next().expect("fixture memory").id();
-    let before_memories = module.memories.iter().count();
-    let codec = inject(&mut module, memory).expect("inject codec");
-
-    assert_eq!(codec.memory, memory);
-    assert_eq!(module.memories.iter().count(), before_memories);
+    let output = native::emit(&codec_fixture());
+    let module = Module::from_buffer(&output).expect("inspect generated codec");
+    assert_eq!(module.memories.iter().count(), 1);
     assert!(
         module
             .exports
@@ -49,7 +45,6 @@ fn exact_tag_codec_uses_only_the_existing_process_memory() {
         );
     }
 
-    let output = module.emit_wasm();
     wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::all())
         .validate_all(&output)
         .expect("generated codec validates");
@@ -57,22 +52,11 @@ fn exact_tag_codec_uses_only_the_existing_process_memory() {
 
 #[test]
 fn descriptor_records_exact_scalar_and_reference_layouts() {
-    let mut module = Module::from_buffer(&codec_fixture()).expect("parse codec fixture");
-    let memory = module.memories.iter().next().expect("fixture memory").id();
-    inject(&mut module, memory).expect("inject codec");
-    let output = module.emit_wasm();
+    let output = native::emit(&codec_fixture());
     let engine_module = WebAssemblyModule::new(&output);
     let section = engine_module
         .custom_section(FORMAT_SECTION)
         .expect("codec descriptor");
-    let native_output = native::emit(&codec_fixture());
-    assert_eq!(
-        WebAssemblyModule::new(&native_output)
-            .custom_section(FORMAT_SECTION)
-            .unwrap(),
-        section
-    );
-
     assert_eq!(section[0], FORMAT_VERSION);
     assert_eq!(u32::from_le_bytes(section[4..8].try_into().unwrap()), 3,);
     assert_eq!(

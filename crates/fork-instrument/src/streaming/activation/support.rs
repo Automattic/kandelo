@@ -476,7 +476,7 @@ impl FrozenActivationSupport {
 /// The activation preamble restores scalar parameters before using them, so
 /// passing zero avoids redundant loads when its encoding is shorter. References
 /// must be decoded first to enter a non-nullable signature; float-heavy scalar
-/// signatures also favor loads. Keep this byte-cost policy aligned with Walrus.
+/// signatures also favor loads. Use the same byte-cost policy at every generated resume entry.
 fn prefer_zero_arguments(parameters: &[ValType]) -> Result<bool> {
     let mut zero_bytes = 0usize;
     for &ty in parameters {

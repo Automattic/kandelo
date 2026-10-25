@@ -1,5 +1,3 @@
-use fork_instrument::streaming::*;
-
 #[path = "support/streaming_activation.rs"]
 mod harness;
 
@@ -46,37 +44,6 @@ fn artifact(input: &[u8], shared: bool) -> (Vec<u8>, u32) {
     harness::emit_catch_fixture(input, 1, shared, false)
 }
 
-fn oracle_artifact(input: &[u8]) -> Vec<u8> {
-    use fork_instrument::{call_graph, instrument, runtime};
-    let mut module = walrus::Module::from_buffer(input).unwrap();
-    let seed = call_graph::find_import_func(&module, "h.fork").unwrap();
-    let reaching = call_graph::analyze_reaching_closure(&module, seed);
-    let targets: Vec<_> = reaching.activations.iter().copied().collect();
-    let catches = instrument::plan_plain_catches(&module, &targets);
-    let runtime = runtime::inject_linked_runtime(&mut module);
-    instrument::instrument_functions_with_targets_and_tail_sites(
-        &mut module,
-        &runtime,
-        &reaching.activations,
-        &reaching.control_reachable,
-        &reaching.tail_call_landings,
-        &catches,
-        None,
-        &Default::default(),
-    );
-    module
-        .exports
-        .add("unwind_tag", runtime.unwind_tag.unwrap());
-    let resume = module
-        .funcs
-        .iter()
-        .find(|function| function.name.as_deref() == Some("__wpk_fork_resume_0"))
-        .unwrap()
-        .id();
-    module.exports.add("resume_root", resume);
-    module.emit_wasm()
-}
-
 fn assert_replay(output: &[u8], offset: u32, wide: bool, placement: ForkPlacement, context: &str) {
     let file = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(file.path(), output).unwrap();
@@ -107,20 +74,6 @@ fn native_scalar_catches_capture_and_replay_with_exact_arm_and_payload() {
             for typed in [false, true] {
                 for placement in [ForkPlacement::InsideTry, ForkPlacement::AfterHandler] {
                     let input = fixture(wide, catch_ref, typed, placement);
-                    let offset = artifact(&input, true).1;
-                    if !typed {
-                        // The unchanged oracle loses try input parameters in
-                        // its catch wrappers. Typed cases below are validated
-                        // and executed directly instead of weakening them to
-                        // match that existing invalid output.
-                        assert_replay(
-                            &oracle_artifact(&input),
-                            offset,
-                            wide,
-                            placement,
-                            &format!("Walrus, catch_ref={catch_ref}, {placement:?}"),
-                        );
-                    }
                     for shared in [false, true] {
                         let (output, offset) = artifact(&input, shared);
                         assert_eq!(artifact(&input, shared).0, output);

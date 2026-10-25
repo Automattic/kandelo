@@ -24,11 +24,10 @@ for the current design, ABI, save-buffer layout, and operating limits.
 wasm-fork-instrument <input.wasm> -o <output.wasm> [--entry kernel.kernel_fork]
 ```
 
-Native instrumentation is the default for the CLI, library and SDK/package
-builds. It uses compact module summaries, disk-backed compiler facts and bounded
-function-local rewriting. `--backend walrus` selects the unchanged comparison
-oracle temporarily retained during replacement validation; it is intended for
-removal. A native failure never falls back to Walrus.
+Native instrumentation is the sole implementation for the CLI, library and
+SDK/package builds. It uses compact module summaries, disk-backed compiler
+facts and bounded function-local rewriting. Walrus is a dev-only parser for
+some structural assertions; the SDK tool does not link it.
 
 Artifact publication guards use the same wasmparser-backed binary decoder
 instead of depending on a text disassembler understanding every proposal used
@@ -60,7 +59,7 @@ are documented as platform boundaries in
 
 ## Build
 
-The repo default Cargo target is `wasm32-unknown-unknown`, which is correct
+The repo default Cargo target is `wasm64-unknown-unknown`, which is correct
 for the kernel but wrong for this host-side CLI. Build it for the host
 triple:
 
@@ -74,26 +73,6 @@ Binary: `target/$HOST_TARGET/instrumenter/wasm-fork-instrument`.
 From the repo root, `scripts/build-fork-instrument-tool.sh` does this and
 installs the result to `tools/bin/wasm-fork-instrument`.
 
-## Size attribution
-
-The temporary Walrus oracle supports per-emitter byte attribution. Build with
-the feature, select that backend explicitly and name an output file:
-
-```sh
-HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
-cargo build -p fork-instrument --profile instrumenter --target "$HOST_TARGET" --features size-attribution
-WPK_FORK_SIZE_ATTRIBUTION=attr.tsv \
-  target/$HOST_TARGET/instrumenter/wasm-fork-instrument in.wasm -o out.wasm --backend walrus
-```
-
-`attr.tsv` has one row per emitted function: its kind (`instrumented`,
-`original`, or `helper`), input and output sizes, shape counts (fork-reaching
-call sites, saved scalars, regions), and bytes per category (`original`,
-`dispatch_head`, `call_boundary`, `post_save_scalars`, ...). The output module
-gains one empty `kandelo.size_attribution` custom section; otherwise it is
-byte-identical to a Walrus build without attribution. Native does not implement
-this diagnostic. Default builds compile none of the attribution code.
-
 ## Tests
 
 ```sh
@@ -103,8 +82,8 @@ cargo test -p fork-instrument --target "$HOST_TARGET"
 
 ## Fuzzing (Phase 6 gate)
 
-The random-WAT fuzzer instruments each valid input with both native and Walrus,
-then validates each output with wasmparser and a Walrus reparse. Per design
+The random-WAT fuzzer instruments each valid input with native, validates its
+output with wasmparser and checks deterministic instrumentation. Per design
 §5.4, ≥10 000 iterations must complete with zero validator failures before
 Phase 6 catch-handler resume is declared shippable.
 
@@ -130,4 +109,8 @@ cargo fuzz run --sanitizer=none fuzz_try_table -- -runs=10000 -max_len=128
 
 `--sanitizer=none` is required: on macOS arm64, cargo-fuzz's default AddressSanitizer deadlocks during init. libFuzzer's coverage instrumentation is orthogonal, so mutation is still coverage-guided. Semantic/validator divergence is what we're fuzzing for here, not memory-safety bugs — ASAN is not load-bearing.
 
-Findings land in `fuzz/artifacts/fuzz_try_table/`. Decode with `cargo fuzz fmt fuzz_try_table <artifact>` to see the `WatProgram` struct that triggered the finding. Any finding MUST be converted into a unit-level fixture in `tests/instrument.rs` before being closed.
+The script keeps corpora and findings under `.context/fork-instrument-fuzz/`
+(or `FUZZ_OUTPUT_DIR`) and build files under `target/fork-instrument-fuzz/`,
+keeping generated files outside the instrumenter source tree. Decode findings with
+`cargo fuzz fmt fuzz_try_table <artifact>` and add a focused native regression
+fixture under `tests/` before closing a finding.

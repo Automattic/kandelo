@@ -1,9 +1,12 @@
 use fork_instrument::streaming::*;
+
 use std::collections::{BTreeMap, BTreeSet};
+
 use wasm_encoder::{ExportKind, ValType, reencode::Reencode};
 
 #[path = "support/streaming_activation.rs"]
 mod harness;
+
 use harness::ActivationModule;
 
 fn fixture(wide: bool) -> Vec<u8> {
@@ -190,46 +193,12 @@ fn artifact(wide: bool) -> Vec<u8> {
     output
 }
 
-fn oracle_artifact(wide: bool) -> Vec<u8> {
-    use fork_instrument::{call_graph, instrument, runtime};
-    let mut module = walrus::Module::from_buffer(&fixture(wide)).unwrap();
-    let seed = call_graph::find_import_func(&module, "h.fork").unwrap();
-    let reaching = call_graph::analyze_reaching_closure(&module, seed);
-    let targets: Vec<_> = reaching.activations.iter().copied().collect();
-    let catch_plan = instrument::plan_plain_catches(&module, &targets);
-    let runtime = runtime::inject_linked_runtime(&mut module);
-    instrument::instrument_functions_with_targets_and_tail_sites(
-        &mut module,
-        &runtime,
-        &reaching.activations,
-        &reaching.control_reachable,
-        &reaching.tail_call_landings,
-        &catch_plan,
-        None,
-        &Default::default(),
-    );
-    module
-        .exports
-        .add("unwind_tag", runtime.unwind_tag.unwrap());
-    for (export, ordinal) in [("resume_child", 0), ("resume_root", 1)] {
-        let name = format!("__wpk_fork_resume_{ordinal}");
-        let thunk = module
-            .funcs
-            .iter()
-            .find(|function| function.name.as_deref() == Some(&name))
-            .unwrap()
-            .id();
-        module.exports.add(export, thunk);
-    }
-    module.emit_wasm()
-}
-
 #[test]
 fn native_tail_chains_preserve_replay_routing_and_release_virtual_spills() {
     for wide in [false, true] {
         let output = artifact(wide);
         assert_eq!(artifact(wide), output);
-        for (backend, output) in [("native", output), ("walrus", oracle_artifact(wide))] {
+        for (backend, output) in [("native", output)] {
             let file = tempfile::NamedTempFile::new().unwrap();
             std::fs::write(file.path(), output).unwrap();
             let result = std::process::Command::new("node")

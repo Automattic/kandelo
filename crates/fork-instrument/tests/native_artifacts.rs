@@ -1,3 +1,5 @@
+#[path = "support/snapshot.rs"]
+mod snapshot;
 use fork_instrument::{Options, native};
 use wasm_encoder::{CustomSection, Encode};
 use wasm_posix_shared::abi;
@@ -40,13 +42,12 @@ fn complete_native_artifacts_declare_the_same_abi_formats_and_capability_roles()
             };
             let native = native::instrument(&input, &options, Default::default()).unwrap();
             let output = native.bytes.bytes();
-            let oracle = fork_instrument::instrument_walrus(&input, &options).unwrap();
             for name in [
                 abi::WPK_FORK_CAPABILITIES_SECTION,
                 abi::WPK_FORK_MODULE_STATE_FORMAT_SECTION,
                 abi::WPK_FORK_UNWIND_TRANSPORT_SECTION,
             ] {
-                assert_eq!(custom(output, name), custom(&oracle, name), "{name}");
+                snapshot::check(&input, &format!("side-{side}-{name}"), custom(output, name));
             }
             let frame = fork_instrument::linked_frames::FrameFormatDescriptor::decode(&custom(
                 output,

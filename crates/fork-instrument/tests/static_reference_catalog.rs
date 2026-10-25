@@ -4,8 +4,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use fork_instrument::static_reference_catalog;
+use fork_instrument::{static_reference_catalog, streaming::*};
 use walrus::Module;
+use wasm_encoder::reencode::{Reencode, RoundtripReencoder};
 
 fn fixture() -> Vec<u8> {
     wat::parse_str(
@@ -45,12 +46,53 @@ fn fixture() -> Vec<u8> {
     .expect("static-root fixture WAT")
 }
 
+fn catalogued(input: &[u8]) -> (Vec<u8>, usize) {
+    struct Catalog {
+        roots: NativeStaticRoots,
+        module: FrozenModuleDeclarations,
+    }
+    impl Reencode for Catalog {
+        type Error = std::convert::Infallible;
+    }
+    impl FunctionTransform for Catalog {
+        fn declarations(&self) -> Option<&FrozenDeclarations> {
+            Some(self.roots.declarations())
+        }
+        fn module_declarations(&self) -> Option<&FrozenModuleDeclarations> {
+            Some(&self.module)
+        }
+        fn emit_helper(
+            &mut self,
+            ordinal: u32,
+            limit: usize,
+        ) -> anyhow::Result<wasm_encoder::Function> {
+            self.roots.emit_helper(ordinal, limit)
+        }
+    }
+    let scan = scan(input).unwrap();
+    let plan = StaticRootPlan::discover(&scan, Default::default()).unwrap();
+    let count = plan.root_count();
+    let mut module = ModuleDeclarationBuilder::new(&scan, None, 1 << 20).unwrap();
+    let roots = plan
+        .freeze(
+            &scan,
+            None,
+            &mut RoundtripReencoder,
+            &mut module,
+            scan.types.as_ref().core_type_count_in_module(),
+            scan.functions.len() as u32,
+        )
+        .unwrap();
+    let mut transform = Catalog {
+        roots,
+        module: module.freeze(),
+    };
+    let mut bytes = Vec::new();
+    emit_remapped(&scan, &mut transform, &mut bytes, Default::default()).unwrap();
+    (bytes, count)
+}
 fn catalogued_fixture() -> (Vec<u8>, usize) {
-    let mut module = Module::from_buffer(&fixture()).expect("parse static-root fixture");
-    let plan = static_reference_catalog::plan(&mut module);
-    let root_count = plan.root_count();
-    static_reference_catalog::inject(&mut module, plan);
-    (module.emit_wasm(), root_count)
+    catalogued(&fixture())
 }
 
 #[test]
@@ -112,10 +154,9 @@ fn allocating_local_table_initializer_is_harvested_without_hoisting() {
         "#,
     )
     .expect("table-initializer fixture WAT");
-    let mut module = Module::from_buffer(&input).expect("parse table-initializer fixture");
-    let plan = static_reference_catalog::plan(&mut module);
-    assert_eq!(plan.root_count(), 1);
-
+    let (output, root_count) = catalogued(&input);
+    assert_eq!(root_count, 1);
+    let module = Module::from_buffer(&output).unwrap();
     let table = module.tables.iter().next().expect("source table");
     assert!(
         !matches!(table.init, Some(walrus::ConstExpr::Global(_))),

@@ -119,12 +119,8 @@ fn main() -> Result<()> {
     };
 
     if cli.sink_report {
-        let report = if cli.backend == "native" {
-            sink_report(input, &opts)
-        } else {
-            fork_instrument::sink_report_walrus(input, &opts)
-        }
-        .with_context(|| format!("analyzing {}", cli.input.display()))?;
+        let report = sink_report(input, &opts)
+            .with_context(|| format!("analyzing {}", cli.input.display()))?;
         println!("source\t{}", report.source.as_str());
         if let Some(f) = &report.facts {
             println!(
@@ -145,12 +141,8 @@ fn main() -> Result<()> {
     }
 
     if cli.discover_only {
-        let analysis = if cli.backend == "native" {
-            analyze(input, &opts)
-        } else {
-            fork_instrument::analyze_walrus(input, &opts)
-        }
-        .with_context(|| format!("analyzing {}", cli.input.display()))?;
+        let analysis =
+            analyze(input, &opts).with_context(|| format!("analyzing {}", cli.input.display()))?;
         print_analysis_json(&analysis);
         return Ok(());
     }
@@ -166,7 +158,6 @@ fn main() -> Result<()> {
         output_path,
         permissions,
         transform::Settings {
-            backend: &cli.backend,
             optimize: &cli.post_optimize,
             keep_names: cli.keep_names,
             output_bytes: cli.max_output_bytes,

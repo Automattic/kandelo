@@ -5,7 +5,6 @@ const wasmModule = new WebAssembly.Module(fs.readFileSync(process.argv[2]));
 const wide = process.argv[3] === '1';
 const kind = process.argv[4];
 const scratch = process.argv[5] === '1';
-const oracle = process.argv[6] === 'Walrus';
 const pointer = value => wide ? BigInt(value) : value;
 const descriptor = pointer(512);
 const frameAddress = 8192;
@@ -155,11 +154,7 @@ function invoke(instance, input, expected) {
 }
 
 function assertReleased(instance, input, baseline, reservation) {
-  // Existing Walrus omits release when catch_all_ref rethrows a
-  // raw broker value. Record that oracle defect explicitly; native emission
-  // must release the complete activation reservation on this path.
-  const knownOracleLeak = oracle && scratch && kind === 'all_ref' && input === 3;
-  assert.equal(Number(instance.exports.sp.value), baseline - (knownOracleLeak ? reservation : 0));
+  assert.equal(Number(instance.exports.sp.value), baseline);
 }
 
 const inputs = kind.startsWith('all') ? [0, 1, 2, 3] : [0, 1, 2];

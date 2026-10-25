@@ -21,7 +21,7 @@ const instrumenter = resolve(
   "../../tools/bin/wasm-fork-instrument",
 );
 
-describe.each(["walrus", "native"])("CatchRef fresh process worker replay (%s)", (backend) => {
+describe("CatchRef fresh process worker replay", () => {
   let workDir = "";
   let programPath = "";
   let referencePayloadProgramPath = "";
@@ -37,7 +37,7 @@ describe.each(["walrus", "native"])("CatchRef fresh process worker replay (%s)",
       "-o",
       rawPath,
     ]);
-    execFileSync(instrumenter, [rawPath, "-o", programPath, "--backend", backend]);
+    execFileSync(instrumenter, [rawPath, "-o", programPath]);
     stampFixtureAbiContract(programPath);
 
     const referencePayloadRawPath = join(
@@ -59,7 +59,6 @@ describe.each(["walrus", "native"])("CatchRef fresh process worker replay (%s)",
       referencePayloadRawPath,
       "-o",
       referencePayloadProgramPath,
-      "--backend", backend,
     ]);
     stampFixtureAbiContract(referencePayloadProgramPath);
   });

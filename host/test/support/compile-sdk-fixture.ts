@@ -7,7 +7,6 @@ import { makeHostScratchTempRoot } from "../centralized-test-helper";
 interface FixtureOptions {
   forkInstrument?: boolean;
   arch?: "wasm32" | "wasm64";
-  backend?: "native" | "walrus";
 }
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
@@ -26,7 +25,7 @@ export function stampFixtureAbiContract(programPath: string): void {
 /** Build and stamp a test-owned guest using the current SDK and ABI contract. */
 export function compileSdkFixture(
   source: URL, linkArgs: string[] = [],
-  { forkInstrument = false, arch = "wasm32", backend }: FixtureOptions = {},
+  { forkInstrument = false, arch = "wasm32" }: FixtureOptions = {},
 ) {
   const scratch = makeHostScratchTempRoot("sdk-fixture-");
   const cleanup = () => rmSync(scratch, { recursive: true, force: true });
@@ -38,7 +37,6 @@ export function compileSdkFixture(
     ], { cwd: root, stdio: "pipe" });
     if (forkInstrument) execFileSync("bash", [
       join(root, "scripts/run-wasm-fork-instrument.sh"), linked, "-o", programPath,
-      ...(backend ? ["--backend", backend] : []),
     ], { cwd: root, stdio: "pipe" });
     stampFixtureAbiContract(programPath);
     return { programPath, cleanup };
