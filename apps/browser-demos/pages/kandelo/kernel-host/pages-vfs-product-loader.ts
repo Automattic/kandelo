@@ -60,6 +60,13 @@ export interface PagesVfsProductLoader {
    * so every retained record is replayed to a subscriber that attaches later.
    */
   subscribeProgress(cb: (progress: PagesVfsProductProgress) => void): () => void;
+  /**
+   * The deployment's lazy-asset authority, from its asset group, for an
+   * image that is not a product activation (a `?vfs=` URL image). Its lazy
+   * bodies resolve to the group's members by path; the image's own digests
+   * still decide whether the bytes are accepted. `undefined` without a group.
+   */
+  deploymentLazyAssets(): ActivatedPagesVfsProduct["lazyAssets"];
 }
 
 const SHA256 = /^[0-9a-f]{64}$/u;
@@ -244,6 +251,15 @@ export function createPagesVfsProductLoaderForBase(
     if (entry.load === "eager") void activate(entry.id).catch(() => undefined);
   return {
     activate,
+    deploymentLazyAssets() {
+      if (group === undefined) return undefined;
+      const manifestUrl = absoluteUrl(group.path);
+      return Object.freeze({
+        deploymentBase: base,
+        directoryUrl: new URL("./", manifestUrl).href,
+        manifestUrl,
+      });
+    },
     async bytes(id) {
       return (await activate(id)).imageBytes.slice(0);
     },

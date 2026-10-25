@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { zipSync } from "fflate";
 import { afterEach, describe, expect, it } from "vitest";
@@ -332,7 +332,7 @@ function fixturePaths(root: string) {
     const artifact = join(dependencyRoots.get(spec.dependency)!,
       spec.resolverPath.startsWith(prefix)
         ? spec.resolverPath.slice(prefix.length)
-        : spec.archiveUrl);
+        : basename(spec.resolverPath));
     mkdirSync(dirname(artifact), { recursive: true });
     writeFileSync(
       artifact,
@@ -959,7 +959,7 @@ describe("canonical source-rootfs shell", () => {
     expect(composed.files.find((file) => file.path === "/usr/local/bin/love")?.uri)
       .toContain("programs/love/love.wasm");
     const loveArchive = composed.archives.find(
-      (archive) => archive.uri === "love-examples.zip",
+      (archive) => archive.uri === "kandelo-lazy:programs/love/share/love-examples.zip",
     );
     expect(loveArchive).toBeDefined();
     expect(composed.files).toContainEqual(expect.objectContaining({
