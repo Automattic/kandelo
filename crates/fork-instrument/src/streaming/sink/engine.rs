@@ -42,6 +42,7 @@ impl Default for InterpreterLimits {
 struct Key {
     function: u32,
     arguments: Vec<Value>,
+    depth: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -99,6 +100,44 @@ pub struct SinkInterpreter<'p, 's, 'a> {
     escaped: Vec<bool>,
     cache: Cache,
     resolved_targets: ResolvedTargetCache,
+    frozen_summaries: bool,
+    escape_generation: usize,
+    incomplete_specializations: usize,
+}
+
+/// Own the immutable summary context so effects cannot survive a rebind.
+/// Only the planner, after its normal fixed point, can create this session.
+pub(super) struct FrozenSinkInterpreter<'p, 's, 'a> {
+    inner: SinkInterpreter<'p, 's, 'a>,
+    summaries: Vec<Summary>,
+}
+
+impl<'p, 's, 'a> FrozenSinkInterpreter<'p, 's, 'a> {
+    pub(super) fn frame_escaped(&self) -> &[bool] {
+        self.inner.frame_escaped()
+    }
+
+    pub(super) fn evaluate_stable(
+        &mut self,
+        body: &FunctionIr<'a>,
+        options: Options<'_>,
+        specialize: bool,
+        work: usize,
+    ) -> Result<Evaluation> {
+        self.inner
+            .evaluate_stable(body, &self.summaries, options, specialize, work)
+    }
+
+    pub(super) fn evaluate(
+        &mut self,
+        body: &FunctionIr<'a>,
+        options: Options<'_>,
+        specialize: bool,
+        work: usize,
+    ) -> Result<Evaluation> {
+        self.inner
+            .evaluate(body, &self.summaries, options, specialize, work)
+    }
 }
 
 impl<'p, 's, 'a> SinkInterpreter<'p, 's, 'a> {
@@ -120,6 +159,25 @@ impl<'p, 's, 'a> SinkInterpreter<'p, 's, 'a> {
             escaped: vec![false; program.functions.len()],
             cache: Cache::default(),
             resolved_targets: ResolvedTargetCache::default(),
+            frozen_summaries: false,
+            escape_generation: 0,
+            incomplete_specializations: 0,
+        })
+    }
+
+    pub(super) fn freeze(
+        mut self,
+        summaries: Vec<Summary>,
+    ) -> Result<FrozenSinkInterpreter<'p, 's, 'a>> {
+        ensure!(
+            summaries.len() == self.escaped.len(),
+            "native interpreter summary catalog mismatch"
+        );
+        self.cache.clear();
+        self.frozen_summaries = true;
+        Ok(FrozenSinkInterpreter {
+            inner: self,
+            summaries,
         })
     }
 
@@ -175,8 +233,14 @@ impl<'p, 's, 'a> SinkInterpreter<'p, 's, 'a> {
             "unknown native interpreter function"
         );
         self.remaining = work;
-        self.cache.clear();
-        self.run(body, summaries, options, specialize, 0)
+        if !self.frozen_summaries {
+            self.cache.clear();
+        }
+        let result = self.run(body, summaries, options, specialize, 0);
+        if result.is_err() {
+            self.cache.clear();
+        }
+        result
     }
 
     pub fn normal_summaries(&mut self, limits: SummaryLimits) -> Result<Summaries> {
@@ -234,7 +298,15 @@ impl<'p, 's, 'a> SinkInterpreter<'p, 's, 'a> {
         };
         let mut output = evaluate(scan, body, &mut calls, options, limits)?;
         self.remaining += budget - output.work_steps;
-        self.escaped[body.function as usize] |= output.frame_escaped;
+        if output.frame_escaped && !self.escaped[body.function as usize] {
+            self.escaped[body.function as usize] = true;
+            if self.frozen_summaries {
+                // A newly escaped frame changes nested specialization context.
+                // Discard old effects and prevent in-flight results reentering.
+                self.escape_generation += 1;
+                self.cache.clear();
+            }
+        }
         output.work_steps = before - self.remaining;
         Ok(output)
     }
@@ -248,6 +320,9 @@ impl<'p, 's, 'a> SinkInterpreter<'p, 's, 'a> {
     ) -> Result<Option<Specialized>> {
         let key = Key {
             function,
+            // Normal fixed-point roots retain their existing per-root policy.
+            // Frozen results also depend on the remaining recursion allowance.
+            depth: if self.frozen_summaries { depth } else { 0 },
             arguments: arguments
                 .iter()
                 .map(|v| {
@@ -263,8 +338,11 @@ impl<'p, 's, 'a> SinkInterpreter<'p, 's, 'a> {
             return Ok(Some(*value));
         }
         if self.remaining == 0 {
+            self.incomplete_specializations += 1;
             return Ok(None);
         }
+        let generation = self.escape_generation;
+        let incomplete = self.incomplete_specializations;
         let body = self.bodies.load(function)?;
         let entry: Vec<_> = key
             .arguments
@@ -323,8 +401,15 @@ impl<'p, 's, 'a> SinkInterpreter<'p, 's, 'a> {
         if info.nothrow {
             value.thrown = 0;
         }
-        self.cache
-            .insert(key, value, self.limits.specialization_cache_bytes);
+        // A subtree that declined optional work is sound for this call, but
+        // its precision depends on this root's budget. Recompute it next time.
+        if !self.frozen_summaries
+            || (generation == self.escape_generation
+                && incomplete == self.incomplete_specializations)
+        {
+            self.cache
+                .insert(key, value, self.limits.specialization_cache_bytes);
+        }
         Ok(Some(value))
     }
 }
@@ -430,5 +515,124 @@ impl Environment for Calls<'_, '_, '_, '_, '_> {
     }
     fn catch_bits(&self, function: u32, tag: u32) -> Tags {
         self.interpreter.plan.catch_bits(function, tag)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        facts::storage::FactsStore,
+        streaming::{scan, sink::Program},
+    };
+
+    #[test]
+    fn frozen_effects_reuse_roots_but_distinguish_depth_and_incomplete_work() {
+        let input = wat::parse_str(
+            r#"(module
+          (func $leaf (param i32) (result i32) local.get 0 i32.const 1 i32.add)
+          (func $middle (param i32) (result i32) local.get 0 call $leaf)
+          (func (result i32) i32.const 41 call $middle))"#,
+        )
+        .unwrap();
+        let scan = scan(&input).unwrap();
+        let mut store = FactsStore::empty(Default::default()).unwrap();
+        let mut program = Program::build(&scan, &mut store, Default::default()).unwrap();
+        let plan = PolicyPlan::build(&mut program, Default::default(), Default::default()).unwrap();
+        let mut interpreter = SinkInterpreter::new(&plan, Default::default()).unwrap();
+        let summaries = interpreter.normal_summaries(Default::default()).unwrap();
+        let mut frozen = interpreter.freeze(summaries.functions).unwrap();
+        let body = scan.body_provider(Default::default()).load(2).unwrap();
+        let work = usize::MAX / 4;
+        let first = frozen
+            .evaluate(&body, Options::default(), true, work)
+            .unwrap();
+        let reused = frozen
+            .evaluate(&body, Options::default(), true, work)
+            .unwrap();
+        assert_eq!(first.returned, Some(Value::Constant(42)));
+        assert_eq!(reused.returned, first.returned);
+        assert!(reused.work_steps < first.work_steps);
+
+        frozen.inner.cache.clear();
+        frozen.inner.remaining = work;
+        let deep = frozen
+            .inner
+            .specialized(1, &[Value::Constant(41)], &frozen.summaries, 3)
+            .unwrap()
+            .unwrap();
+        let shallow = frozen
+            .inner
+            .specialized(1, &[Value::Constant(41)], &frozen.summaries, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(deep.returned, Some(Value::Unknown));
+        assert_eq!(shallow.returned, Some(Value::Constant(42)));
+
+        frozen.inner.cache.clear();
+        // Reserving this entire root allowance leaves no optional nested work.
+        frozen.inner.remaining = 1000;
+        let limited = frozen
+            .inner
+            .specialized(1, &[Value::Constant(41)], &frozen.summaries, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(limited.returned, Some(Value::Unknown));
+        assert!(frozen.inner.incomplete_specializations > 0);
+        assert!(frozen.inner.cache.values.is_empty());
+        frozen.inner.remaining = work;
+        let complete = frozen
+            .inner
+            .specialized(1, &[Value::Constant(41)], &frozen.summaries, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(complete.returned, Some(Value::Constant(42)));
+        assert!(!frozen.inner.cache.values.is_empty());
+    }
+
+    #[test]
+    fn newly_escaped_frames_invalidate_frozen_effects_and_pending_insertions() {
+        let input = wat::parse_str(
+            r#"(module
+          (import "h" "take" (func $take (param i32)))
+          (global $__stack_pointer (mut i32) (i32.const 128))
+          (func (param i32) (result i32) local.get 0)
+          (func (param i32) (result i32)
+            global.get $__stack_pointer call $take local.get 0))"#,
+        )
+        .unwrap();
+        let scan = scan(&input).unwrap();
+        let mut store = FactsStore::empty(Default::default()).unwrap();
+        let mut program = Program::build(&scan, &mut store, Default::default()).unwrap();
+        let plan = PolicyPlan::build(&mut program, Default::default(), Default::default()).unwrap();
+        let interpreter = SinkInterpreter::new(&plan, Default::default()).unwrap();
+        let summaries = vec![
+            Summary {
+                may_return: true,
+                thrown: ALL_TAGS
+            };
+            3
+        ];
+        let mut frozen = interpreter.freeze(summaries).unwrap();
+        frozen.inner.remaining = usize::MAX / 4;
+        frozen
+            .inner
+            .specialized(1, &[Value::Constant(41)], &frozen.summaries, 1)
+            .unwrap();
+        assert!(!frozen.inner.cache.values.is_empty());
+        let result = frozen
+            .inner
+            .specialized(2, &[Value::Constant(41)], &frozen.summaries, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.returned, Some(Value::Constant(41)));
+        assert!(frozen.frame_escaped()[2]);
+        assert_eq!(frozen.inner.escape_generation, 1);
+        assert!(frozen.inner.cache.values.is_empty());
+        frozen
+            .inner
+            .specialized(2, &[Value::Constant(41)], &frozen.summaries, 1)
+            .unwrap();
+        assert!(!frozen.inner.cache.values.is_empty());
     }
 }

@@ -208,7 +208,7 @@ pub fn evaluate(
         limits,
         // The instruction-count check above establishes this subtraction.
         work: limits.work - body.instructions.len(),
-        labels: BTreeMap::new(),
+        labels: Vec::new(),
         legacy_entries: BTreeMap::new(),
         handlers: Vec::new(),
         legacy: Vec::new(),
@@ -259,7 +259,9 @@ struct Walk<'a, 'b, E> {
     options: Options<'b>,
     limits: Limits,
     work: usize,
-    labels: BTreeMap<RegionId, Option<State>>,
+    // Original region IDs increase along the active nesting path. Keep only
+    // that path, without allocating a tree node for every entered label.
+    labels: Vec<(RegionId, Option<State>)>,
     legacy_entries: BTreeMap<usize, Option<State>>,
     handlers: Vec<RegionId>,
     legacy: Vec<RegionId>,
@@ -338,7 +340,18 @@ impl<E: Environment> Walk<'_, '_, E> {
                 memory: state.memory.clone(),
                 stack_pointer: state.stack_pointer,
             };
-            join_state(self.labels.entry(label).or_default(), &branch);
+            let index = self
+                .labels
+                .binary_search_by_key(&label, |entry| entry.0)
+                .map_err(|_| anyhow::anyhow!("sink branch targets an inactive label"))?;
+            let target = &mut self.labels[index].1;
+            if target.is_none() {
+                // The first incoming branch already owns its state. Cloning
+                // it again would duplicate the largest join allocation.
+                *target = Some(branch);
+            } else {
+                join_state(target, &branch);
+            }
         }
         Ok(())
     }
@@ -462,14 +475,16 @@ impl<E: Environment> Walk<'_, '_, E> {
             self.charge(12usize.saturating_mul(
                 source.locals.len() + source.stack.len() + 3 * source.memory.len() + 1,
             ))?;
-            self.labels.insert(region, None);
+            debug_assert!(self.labels.last().is_none_or(|entry| entry.0 < region));
+            self.labels.push((region, None));
             let state = if is_loop {
                 ent.as_ref().unwrap().clone()
             } else {
                 ent.take().unwrap()
             };
             out = self.run(start, end, state)?;
-            let branch = self.labels.remove(&region).unwrap();
+            let (label, branch) = self.labels.pop().unwrap();
+            debug_assert_eq!(label, region);
             if !is_loop {
                 let mut joined = Some(out);
                 if let Some(branch) = branch {

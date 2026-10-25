@@ -153,8 +153,13 @@ its frozen policy with a 2 MiB estimated payload allowance. Keys include the
 original call point, invocation, selector and tail-call status. Eviction or an
 oversized group returns to database queries; a zero allowance disables the
 cache. Return/throw effects are always read from current summaries, and
-specialized effects still expire at each root evaluation. Target-selection
-entries contain no function IR.
+specialized effects expire at each root evaluation while normal summaries are
+changing. After that fixed point, a private interpreter session owns the
+immutable summary vector and reuses specialized effects within the existing
+4 MiB allowance. Keys also distinguish recursion depth. A newly escaped frame
+invalidates these effects and any pending insertions; a subtree that declined
+optional specialization for lack of work is not saved across roots. No session
+can rebind its summaries. Target-selection entries contain no function IR.
 
 A separate 8 MiB estimated payload cache reuses original decoded bodies for
 small specialized callees. It counts vector capacities, nested call/control
@@ -167,7 +172,9 @@ Normal summaries start with direct callees before callers using only compact
 source headers; cyclic and indirect dependencies retain the existing workqueue.
 Common operand groups stay inline, and nonloop control transfers move their
 state instead of copying it. Dead normal suffixes stop only when no later
-injected landing can revive them.
+injected landing can revive them. Active label joins use a nesting stack,
+and a label's first incoming branch transfers its owned state. Target-table
+writes batch across the private recording phase while dirty pages still spill.
 
 The state limit reserves a conservative bound for structured-control scratch
 and recorded states before evaluation; it is not a physical-memory ceiling.

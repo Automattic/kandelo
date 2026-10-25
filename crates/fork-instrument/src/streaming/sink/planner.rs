@@ -6,10 +6,11 @@ use anyhow::{Context, Result, ensure};
 use rusqlite::params;
 use wasmparser::Operator;
 
+use super::engine::FrozenSinkInterpreter;
 use super::{
     ALL_TAGS, CallEffect, Environment, Evaluation, Injection, InterpreterLimits, Invocation,
-    Options, PolicyLimits, PolicyPlan, Program, SinkInterpreter, Summaries, SummaryLimits, Tags,
-    Value, evaluate, join_value,
+    Options, PolicyLimits, PolicyPlan, Program, SinkInterpreter, SummaryLimits, Tags, Value,
+    evaluate, join_value,
 };
 use crate::{
     sink::SinkPolicy,
@@ -107,10 +108,10 @@ pub fn plan_sinks(
     }
     let work = summaries.work_steps;
     let evaluations = summaries.evaluations;
+    let engine = engine.freeze(summaries.functions)?;
     let mut planner = Planner {
         plan: &plan,
         engine,
-        normal: summaries,
         limits,
         work,
         evaluations,
@@ -151,8 +152,7 @@ struct Child {
 
 struct Planner<'p, 's, 'a> {
     plan: &'p PolicyPlan<'p, 's, 'a>,
-    engine: SinkInterpreter<'p, 's, 'a>,
-    normal: Summaries,
+    engine: FrozenSinkInterpreter<'p, 's, 'a>,
     limits: SinkLimits,
     work: usize,
     evaluations: usize,
@@ -206,7 +206,6 @@ impl<'a> Planner<'_, '_, 'a> {
         let work = self.remaining()?;
         let result = self.engine.evaluate_stable(
             body,
-            &self.normal.functions,
             Options {
                 record_states: states,
                 disable_frame_tracking: disabled,
@@ -234,7 +233,6 @@ impl<'a> Planner<'_, '_, 'a> {
             let work = self.remaining()?;
             let result = self.engine.evaluate(
                 body,
-                &self.normal.functions,
                 Options {
                     child: true,
                     injections: Some(injections),
@@ -286,6 +284,9 @@ impl<'a> Planner<'_, '_, 'a> {
         let program = plan.original_program();
         let store = program.store;
         store.db.execute_batch(include_str!("planner.sql"))?;
+        // WHY: no consumer reads the target tables until this phase returns.
+        // Batch writes across bodies; dirty pages can still spill to disk.
+        let transaction = store.write_batch()?;
         let mut provider = program
             .original_scan()
             .body_provider(self.limits.interpreter.ir);
@@ -311,7 +312,6 @@ impl<'a> Planner<'_, '_, 'a> {
             let work = self.remaining()?;
             let result = self.engine.evaluate_stable(
                 &body,
-                &self.normal.functions,
                 Options {
                     record_targets: true,
                     ..Default::default()
@@ -323,7 +323,6 @@ impl<'a> Planner<'_, '_, 'a> {
             if result.unsupported {
                 return Ok(false);
             }
-            let transaction = store.db.unchecked_transaction()?;
             // The evaluator has already shared equal lists. Resolve each one
             // once per body instead of reading its database members per site.
             let mut groups = BTreeMap::new();
@@ -353,8 +352,8 @@ impl<'a> Planner<'_, '_, 'a> {
                     params![function, group],
                 )?;
             }
-            transaction.commit()?;
         }
+        transaction.commit()?;
         Ok(true)
     }
     fn closure(&mut self) -> Result<()> {
