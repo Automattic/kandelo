@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Stage hyprland-protocols 0.6.4 for wasm32-posix-kernel consumers.
+# Stage hyprland-protocols for wasm32-posix-kernel consumers.
 #
 # Upstream's meson.build installs protocols/*.xml under
 # <datadir>/hyprland-protocols/protocols and configures
@@ -22,9 +22,10 @@ WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
 SRC_DIR="$WORK_DIR/hyprland-protocols-src"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$WORK_DIR/hyprland-protocols-install}"
 
-PROTOCOLS_VERSION="${WASM_POSIX_DEP_VERSION:-0.6.4}"
-SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://github.com/hyprwm/hyprland-protocols/archive/refs/tags/v${PROTOCOLS_VERSION}.tar.gz}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-0d4f99abc21b04fc126dd754e306bb84cd334131d542ff2e0c172190c6570384}"
+kandelo_package_load_source_metadata "$SCRIPT_DIR"
+PROTOCOLS_VERSION="$WASM_POSIX_DEP_VERSION"
+SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
+SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 VERIFIED_SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 
 echo "==> Staging verified hyprland-protocols $PROTOCOLS_VERSION source..."
