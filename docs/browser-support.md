@@ -135,8 +135,8 @@ Service Worker ──MessagePort──> Kernel Worker       │
   same SDK/libc fixtures on memory32 and memory64 through real BrowserKernel
   workers in Chromium 153, Firefox 155 and Playwright WebKit 26.6. The matrix
   checks direct/indirect and loop forks, stack carryovers, recursive children,
-  signals, pthread entry and allocation-failure recovery. At native-only commit
-  `89945d25cf`, all 57 checks passed:
+  signals, pthread entry and allocation-failure recovery. At ABI 53 integration
+  commit `d2aaebe3a4`, all 57 checks passed:
   52 positive guest scenarios, three Memory64 probes and two explicit WebKit
   stack-boundary checks, with no skips. WebKit exhausts its native stack on
   this fixture's 4,096-call shape. The test requires the exact stack diagnostic

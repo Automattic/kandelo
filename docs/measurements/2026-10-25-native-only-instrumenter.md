@@ -1,5 +1,9 @@
 # Native-only instrumenter verification
 
+This dated record describes commit `89945d25cf` at ABI 50. The later
+[main integration record](2026-10-25-native-main-integration.md) covers
+the combined ABI 53 sources and freshly rebuilt runtime artifacts.
+
 The native instrumenter is now the only fork-instrumentation implementation.
 The CLI backend selector, explicit Walrus library APIs, whole-module analysis
 and emitters, size-attribution feature and paired-backend profiling coordinator
