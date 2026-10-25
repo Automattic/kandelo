@@ -19,16 +19,16 @@
  *     → PTY — and dash exits;
  *   - foot exits 0, and cage exits with foot's status.
  *
- * Skips if any binary is missing (bare checkout — foot comes from the
- * package cache / binaries tree).
+ * Requires the normal cage, foot and shell package artifacts. A missing
+ * artifact is a provisioning failure, not passing or skipped coverage.
  */
 import { describe, expect, it } from "vitest";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { tryResolveBinary } from "../src/binary-resolver";
-import { WLROOTS_ENV, compositorBytes, hasSession, sessionRootfs } from "./wlroots-session";
+import { resolveBinary } from "../src/binary-resolver";
+import { WLROOTS_ENV, compositorBytes, requireSession, sessionRootfs } from "./wlroots-session";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -37,9 +37,9 @@ const INCONSOLATA = join(
   "third_party/Inconsolata-Regular.ttf",
 );
 
-const footBin = tryResolveBinary("programs/foot.wasm");
-const dashBin = tryResolveBinary("programs/dash.wasm");
-const hasBinaries = hasSession("cage") && !!footBin && !!dashBin && existsSync(dashBin!);
+const footBin = resolveBinary("programs/foot.wasm");
+const dashBin = resolveBinary("programs/dash.wasm");
+requireSession("cage");
 
 const FONT_DIR = "/usr/share/fonts";
 const FONTS_CONF = `<?xml version="1.0"?>
@@ -67,7 +67,7 @@ const KEY_T = 20;
 const KEY_ENTER = 28;
 
 describe("foot — upstream terminal on cage + the ported font stack", () => {
-  it.skipIf(!hasBinaries)(
+  it(
     "maps through gbm shm pools, types into dash, exits clean",
     async () => {
       const out = { value: "" };

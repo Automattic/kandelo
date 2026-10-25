@@ -43,6 +43,19 @@ not advertise a wasm64 graphics build:
 scripts/dev-shell.sh cargo xtask build-deps resolve graphics-cts-egl --arch wasm32
 ```
 
+The browser runner consumes the normal package binary and current kernel,
+constructs its test image through KandeloImageFs, and executes the guest
+through BrowserKernel with a real worker-owned WebGL renderer:
+
+```bash
+scripts/dev-shell.sh bash -c 'cd apps/browser-demos && node_modules/.bin/playwright test test/graphics-cts-egl.spec.ts --workers 1 --project chromium --project firefox --project webkit'
+```
+
+It requires a passing result for every enumerated advertised GLES2 config,
+without changing the upstream method or accepting its optional BAD_MATCH
+branch for this advertised capability. Collection alone is not a guest
+CTS result. Normal package/kernel provisioning must finish before execution.
+
 The native libc device-double suite checks image ownership and command
 encoding under UndefinedBehaviorSanitizer. AddressSanitizer is optional via
 `KANDELO_GRAPHICS_SANITIZERS=address,undefined`; its LLVM 21 runtime

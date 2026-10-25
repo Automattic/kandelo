@@ -5068,3 +5068,114 @@ cancellation and ordered fence placement remain implementation work.
 Other baseline inventory gaps and normal graphics artifact builds,
 upstream CTS, cage/sway, complete browser-memory and required POSIX gates
 remain open/deferred. ABI 54 and GL operation table 17 stay unchanged.
+
+
+### Rebuild/test phase authorized on 2026-10-24
+
+The user explicitly lifted the expensive rebuild/test deferral and asked
+for normal builds and actual cage/sway sessions now. Earlier deferred
+statements above are historical; normal provisioning, compositor tests
+and broader required validation are now authorized. The full graphics
+baseline remains the objective, including its still-open implementation
+inventory. Per-work drawable selection/server waits were not enabled
+before this phase change.
+
+A fresh fetch confirms origin/main remains
+`5cd771bff889bb0d5c4b672a54c0edcffa691066`, ABI 53. Build source starts at
+`6aacd4111b4105ac08c204b376ba933af1bc4db5`, ABI 54, GL table 17. Main is
+already integrated. The branch name and both contributor histories stay
+unchanged. No new ABI number is allocated for the phase.
+
+Initial normal provisioning uses the declared dev shell and xtask
+bootstrap/local-build paths, the ordinary shared SourceOnly cache and
+12 graph workers. It selects kernel, cage, sway, swaybg, dash, bash,
+wayland-demo, foot and rootfs, then host and developer/test programs.
+Automatic shared-cache collection is disabled for these runs. Missing
+artifacts remain provisioning work. Full browser images and conformance
+follow the selected compositor closure; no artifact is manually restamped.
+
+Jobs started from this source:
+
+- `graphics-compositor-normal-build-1024-204258-2e37`:
+  `.context/graphics-compositor-build.sh`; normal provisioning/build.
+- `graphics-combined-rust-1024-204339-bab4`:
+  workspace Rust tests excluding xtask, on the declared host target;
+  `.context/graphics-combined-rust.log`.
+
+No successful normal build, guest CTS, compositor session or full memory/
+POSIX result is claimed by recording these starts. Results and repairs
+must be recorded after the exact jobs finish and their scope is inspected.
+
+Workspace Rust validation has now completed: all 3,135 tests pass across
+44 result groups, excluding xtask, with no failures, ignored or filtered
+cases. The command and log are named above. This is combined Rust evidence,
+not compositor or guest graphics evidence. Normal provisioning is still
+running; package recipes have reached compositor linking/instrumentation.
+
+The selected SourceOnly graph completed successfully: all 59 package
+nodes were published, including kernel, rootfs, wlroots, cage, sway,
+swaybg, foot and the declared dependency closure. Exact machine result:
+`.context/graphics-compositor-build-result.json`. Host build/declarations
+then completed; the same job is still building normal developer/test
+programs and their additional dependencies. The graph result does not
+claim that the subsequent fixture phase has finished.
+
+An early prepared-product run exercises only the already-published
+wlterm/foot/cage closure through the real Node kernel. It omits unrelated
+Vitest global fixture compilation because the normal program builder is
+still running; this is not the complete default-config consumer gate.
+Both wlterm cases passed: typed input/shell output and signal-death status.
+Foot's file initially failed to load at the removed hasSession helper:
+`.context/graphics-compositor-early-node-before.log`. Its test now uses the
+existing mandatory requireSession/resolveBinary contract, retains all
+session/input/exit assertions, and fails on missing artifacts. All three
+cases in both files now pass without skips:
+`.context/graphics-compositor-early-node.log`, exact job
+`graphics-compositor-early-node-fixed-1024-205729-fdc4`.
+
+Normal browser-main-shell image and graphics-cts-egl package provisioning
+has started as `graphics-compositor-browser-normal-build-1024-205824-05a0`,
+with eight graph workers, reusing the completed compositor closure. The
+new graphics-cts-egl.spec.ts runner collects on Chromium/Firefox/WebKit:
+`.context/graphics-cts-browser-inventory.log`. Collection is not execution.
+The runner boots the normal packaged guest through BrowserKernel and the
+real kernel/WebGL path, requires every advertised GLES2 config to pass,
+and keeps the pinned upstream assertion method unchanged. No guest CTS
+or browser compositor pass is claimed yet.
+
+The normal graphics-cts-egl package was published and the real rebuilt
+upstream surfaceless-context subset now passes in all three engines:
+Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6. Each run creates an
+ES2 context for the one advertised EGL configuration and reports
+`CTS-SUBSET PASS surfaceless_context configs=1`. This is the pinned subset,
+not complete EGL/GLES CTS. Exact job:
+`graphics-cts-rebuilt-browser-evidence-1024-210433-fac3`;
+`.context/graphics-cts-browser.log` and per-engine
+`.context/graphics-cts-guest-{chromium,firefox,webkit}.json` contain output,
+engine versions and SHA256 identities. Program SHA256:
+`8d46e20871465b4175c834fa05fd2910369a3f1e681c286101c52ffd528d18fd`;
+kernel SHA256:
+`4f133a2ef431683cfe5ab1f9a6ff26beae40d382404e47dda125d6530287e9a5`.
+
+ABI snapshot/C/TypeScript agreement, binary-bundle resolver tests and the
+600-file Vitest evidence registry also pass:
+`graphics-rebuilt-abi-1024-210633-324f`, with separate ABI/resolver/registry
+logs under `.context/graphics-rebuilt-*.log`. There is one normal wasm32
+kernel serving both guest widths. An attempted `bootstrap kernel64`
+selection was a runner mistake: no such package is declared. It does not
+identify a platform boundary or substitute for wasm64 guest validation.
+
+The standalone rebuilt consumer gate now proves two Chromium cage GLES2
+cycles: normally packaged wlterm/bash render actual terminal pixels,
+receive typed input, update their output, exit zero, release KMS ownership
+and restart in the same kernel. It checks the upstream GLES2 renderer log,
+program-owned GL scanout, visible pixel changes and browser memory-message
+boundaries. Evidence: `.context/cage-chromium-guest.json` and two
+`.context/cage-chromium-*.png` screenshots. Sway initializes the same GLES2
+renderer and modesets successfully, but its configured terminal has not
+appeared; that failure is under investigation. The initial standalone
+fixture also used the wrong wlterm resolver path; correcting it to the
+package-owned wayland-demo path exposed the actual consumer results.
+Neither this minimal test image nor the passing cage case replaces the
+full normal gallery-image, other-engine, memory and POSIX gates. Both
+larger build jobs remain live while these earlier checks run.
