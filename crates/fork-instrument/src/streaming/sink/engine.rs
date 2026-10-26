@@ -509,8 +509,13 @@ impl Environment for Calls<'_, '_, '_, '_, '_> {
                 external: false,
             });
         }
-        let mut returned = selected.external.then_some(Value::Unknown);
-        let mut thrown = if selected.external { ALL_TAGS } else { 0 };
+        // The traced-entry contract excludes side-module fork returns, not
+        // ordinary returns/throws. Do not make a later fork unreachable.
+        let returning_external = selected.external
+            || (plan.original_program().external_returns
+                && !matches!(invocation, Invocation::Direct(_)));
+        let mut returned = returning_external.then_some(Value::Unknown);
+        let mut thrown = if returning_external { ALL_TAGS } else { 0 };
         for &function in &selected.functions {
             if function == u32::MAX {
                 returned = Some(Value::Unknown);
@@ -524,7 +529,7 @@ impl Environment for Calls<'_, '_, '_, '_, '_> {
         }
         if self.specialize
             && !tail
-            && !selected.external
+            && !returning_external
             && self.depth < self.interpreter.limits.specialization_depth
             && let [function] = selected.functions.as_slice()
             && let Some(info) = plan.original_program().functions.get(*function as usize)
@@ -544,7 +549,7 @@ impl Environment for Calls<'_, '_, '_, '_, '_> {
         thrown = plan.remap_longjmp(
             point.function,
             &selected.functions,
-            selected.external,
+            returning_external,
             thrown,
         );
         Ok(CallEffect {

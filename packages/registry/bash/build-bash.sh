@@ -415,11 +415,17 @@ cp "$BASH_BIN" "$BIN_DIR/bash.wasm"
 SIZE_BEFORE=$(wc -c < "$BIN_DIR/bash.wasm" | tr -d ' ')
 echo "==> Pre-instrumentation size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
 
-# --- Size optimization ---
-# Fork instrumentation remains last, but the shared installer below owns that
-# policy so direct and sealed builds cannot diverge.
+# Measured legacy exception: the facts-preserving variants did not meet the
+# launch/fork no-regression requirement. Retain the conservative pipeline
+# described in docs/fork-instrumentation.md until that migration is validated.
 echo "==> Optimizing bash with wasm-opt -O2..."
 "$WASM_OPT" -O2 "$BIN_DIR/bash.wasm" -o "$BIN_DIR/bash.wasm"
+
+# Instrument this deliberate conservative input explicitly. The shared
+# installer continues to require facts when it receives a raw executable.
+"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$BIN_DIR/bash.wasm" \
+    -o "$BIN_DIR/bash.wasm.instr"
+mv -f "$BIN_DIR/bash.wasm.instr" "$BIN_DIR/bash.wasm"
 
 # Install into local-binaries/ (resolver priority 1) and the resolver
 # scratch dir when invoked by xtask build-deps / archive-stage.

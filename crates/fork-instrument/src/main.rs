@@ -8,10 +8,9 @@
 //! ```
 //!
 //! After instrumenting, the CLI runs Binaryen's `wasm-opt` over the result
-//! (`$WASM_OPT`, else `wasm-opt` on PATH). Inputs are expected to be
-//! optimized already, so the full pipeline is wasm-opt -> instrument ->
-//! wasm-opt: the first pass shrinks the call graph the instrumenter has to
-//! cover, and this second pass cleans up the code the instrumenter adds.
+//! (`$WASM_OPT`, else `wasm-opt` on PATH), at Os by default. Linked compiler
+//! facts are consumed before any rewrite. Explicit pre-optimization profiles
+//! discard source facts and analyze the optimized Wasm instead.
 //!
 //! Exits non-zero with a human-readable error on any failure (parse,
 //! validation, or instrumentation). Errors include the input file path
@@ -109,13 +108,26 @@ fn main() -> Result<()> {
     let opts = Options {
         entry_import: cli.entry,
         sinks: !cli.no_sinks,
-        facts: !cli.no_facts,
+        facts: !cli.no_facts && cli.pre_optimize == "none",
         effective_types: !cli.no_effective_types,
         side_modules: if cli.side_modules == "assume-all-entries-fork-returning" {
             fork_instrument::SideModules::AssumeAllEntriesForkReturning
         } else {
             fork_instrument::SideModules::TracedEntries
         },
+    };
+
+    let preoptimized;
+    let input = if cli.pre_optimize != "none" {
+        eprintln!(
+            "wasm-fork-instrument: pre-optimization {}; discarding compiler facts and analyzing final Wasm",
+            cli.pre_optimize
+        );
+        preoptimized =
+            fork_instrument::preopt::run(&snapshot, &cli.pre_optimize, cli.max_output_bytes)?;
+        preoptimized.bytes()
+    } else {
+        input
     };
 
     if cli.sink_report {

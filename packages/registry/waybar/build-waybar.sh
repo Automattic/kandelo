@@ -334,7 +334,7 @@ wasm32posix-c++ "${OBJS[@]}" "${PROTO_OBJS[@]}" \
 
 # Waybar's custom modules and on-click actions run through fork+exec.
 echo "==> Instrumenting fork paths..."
-bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
+bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts \
     "$BUILD_DIR/waybar.wasm" -o "$BUILD_DIR/waybar.wasm.instr"
 mv "$BUILD_DIR/waybar.wasm.instr" "$BUILD_DIR/waybar.wasm"
 

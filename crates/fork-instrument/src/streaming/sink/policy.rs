@@ -86,11 +86,15 @@ impl<'p, 's, 'a> PolicyPlan<'p, 's, 'a> {
             "timer_create",
             "__timer_create",
         ];
-        if !writers.iter().any(|name| {
-            named(program, name, true)
-                .iter()
-                .any(|f| !program.functions[*f as usize].imported)
-        }) {
+        // These source-shape rules require original linked LLVM facts. An
+        // optimizer can inline writers without removing their effects.
+        if program.store.calls_ready.get()
+            && !writers.iter().any(|name| {
+                named(program, name, true)
+                    .iter()
+                    .any(|f| !program.functions[*f as usize].imported)
+            })
+        {
             for name in [
                 "__syscall_cp_check",
                 "__syscall_cp_cancel_preflight",
@@ -109,7 +113,9 @@ impl<'p, 's, 'a> PolicyPlan<'p, 's, 'a> {
                 }
             }
         }
-        output.registries(limits.ir)?;
+        if program.store.calls_ready.get() {
+            output.registries(limits.ir)?;
+        }
         output.cleanup()?;
         if program.store.calls_ready.get() {
             program.store.charge_work(1)?;
@@ -400,7 +406,8 @@ impl<'p, 's, 'a> PolicyPlan<'p, 's, 'a> {
     }
 
     fn finish(&self, point: ProgramPoint, mut selected: PolicyTargets) -> Result<PolicyTargets> {
-        if selected.functions.len() == 1
+        if !selected.external
+            && selected.functions.len() == 1
             && self
                 .program
                 .original_scan()

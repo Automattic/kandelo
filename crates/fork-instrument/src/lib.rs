@@ -21,6 +21,7 @@ pub mod module_exception_codec;
 pub mod module_gc_codec;
 pub mod native;
 mod progress;
+pub mod preopt;
 pub mod runtime;
 pub mod sink;
 pub mod static_reference_catalog;

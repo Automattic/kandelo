@@ -339,7 +339,7 @@ fi
 # no onlylist needed. The tool also runs wasm-opt over the code it adds.
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 echo "==> Applying fork instrumentation..."
-"$FORK_INSTRUMENT" testfixture -o testfixture.instr
+"$FORK_INSTRUMENT" --require-facts testfixture -o testfixture.instr
 mv testfixture.instr testfixture
 
 # --- Install ---

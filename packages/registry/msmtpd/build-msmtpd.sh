@@ -92,7 +92,7 @@ wasm32posix-cc \
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
 echo "==> Applying wasm-fork-instrument to msmtpd.wasm..."
-"$FORK_INSTRUMENT" "$OUT" -o "$OUT.instr"
+"$FORK_INSTRUMENT" --require-facts "$OUT" -o "$OUT.instr"
 mv "$OUT.instr" "$OUT"
 ls -lh "$OUT"
 

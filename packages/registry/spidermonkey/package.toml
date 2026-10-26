@@ -1,4 +1,5 @@
 kind = "program"
+fork_pre_optimize = "Oz"
 name = "spidermonkey"
 version = "140.11.0esr"
 kernel_abi = 7

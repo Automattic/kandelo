@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
 import type { Plugin } from "vite";
+import { tryResolveBinary } from "../../../../../host/src/binary-resolver";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../../../../..");
@@ -17,26 +18,15 @@ function resolveKernelArtifactsAlias(): Plugin {
       const pathPart = queryIdx === -1 ? source : source.slice(0, queryIdx);
       const query = queryIdx === -1 ? "" : source.slice(queryIdx);
 
-      if (pathPart === KERNEL) {
-        const candidates = [
-          path.resolve(repoRoot, "local-binaries/kernel.wasm"),
-          path.resolve(repoRoot, "binaries/kernel.wasm"),
-        ];
-        const file = candidates.find((candidate) => fs.existsSync(candidate));
+      const artifact = pathPart === KERNEL ? "kernel.wasm"
+        : pathPart === ROOTFS ? "rootfs.vfs.zst"
+        : pathPart === "@kandelo-image-module32-wasm" ? "kandelo_image_module32.wasm"
+        : null;
+      if (artifact) {
+        const file = tryResolveBinary(artifact)
+          ?? (pathPart === ROOTFS ? tryResolveBinary("programs/rootfs.vfs.zst") : null);
         if (file) return file + query;
-        this.error(
-          "kernel.wasm not found. Run `bash build.sh` from the repo root.\n" +
-          `  Looked at: ${candidates.join("\n  Looked at: ")}`,
-        );
-      }
-
-      if (pathPart === ROOTFS) {
-        const file = path.resolve(repoRoot, "host/wasm/rootfs.vfs.zst");
-        if (fs.existsSync(file)) return file + query;
-        this.error(
-          "rootfs.vfs.zst not found. Run `bash build.sh` from the repo root.\n" +
-          `  Looked at: ${file}`,
-        );
+        this.error(`${artifact} is not materialized; run the normal setup/build path.`);
       }
 
       return null;
@@ -45,12 +35,7 @@ function resolveKernelArtifactsAlias(): Plugin {
 }
 
 function findJsBinary(): string | null {
-  const candidates = [
-    path.resolve(repoRoot, "local-binaries/programs/wasm32/js.wasm"),
-    path.resolve(repoRoot, "binaries/programs/wasm32/js.wasm"),
-    path.resolve(repoRoot, "packages/registry/spidermonkey/bin/js.wasm"),
-  ];
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+  return tryResolveBinary("programs/js.wasm");
 }
 
 function serveJsWasm(): Plugin {
@@ -63,8 +48,7 @@ function serveJsWasm(): Plugin {
           if (!jsBinary) {
             res.statusCode = 404;
             res.end(
-              "js.wasm not found. Run `bash packages/registry/spidermonkey/build-spidermonkey.sh` " +
-              "or fetch package binaries.",
+              "js.wasm is not materialized; build spidermonkey through the normal package resolver.",
             );
             return;
           }
@@ -81,6 +65,8 @@ function serveJsWasm(): Plugin {
 
 export default {
   root: __dirname,
+  // Shared boot helpers resolve host artifacts through the application alias.
+  resolve: { alias: { "@host": path.join(repoRoot, "host/src") } },
   plugins: [resolveKernelArtifactsAlias(), serveJsWasm()],
   server: {
     headers: {

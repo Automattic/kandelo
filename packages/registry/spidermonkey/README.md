@@ -10,7 +10,7 @@ Current scope:
 - ECMAScript `Intl` support through Mozilla's in-tree ICU/ICU4X
 - JS shared memory and shell worker support
 - JIT disabled and C++ exceptions enabled
-- normal Kandelo fork instrumentation after the final `wasm-opt` pass
+- normal Kandelo fork instrumentation directly after linking, preserving compiler facts and letting the instrumenter optimize afterwards
 - JS `worker_threads` support through clone/pthreads
 
 Out of scope for this package:

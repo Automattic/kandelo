@@ -17,6 +17,7 @@ import {
   parseDylinkSection,
   readForkInstrumentCapabilities,
 } from "../src/dylink";
+import { readForkSideModuleContract } from "../src/fork-side-module-contract";
 import {
   makeHostScratchTempRoot,
   runCentralizedProgram,
@@ -60,12 +61,16 @@ if (process.env.KANDELO_REQUIRE_SIDE_MODULE_FORK_E2E === "1" && !hasPrerequisite
   );
 }
 
-function instrumentInPlace(wasmPath: string, entry?: string): void {
+function instrumentInPlace(
+  wasmPath: string,
+  entry?: string,
+  defaultSideModuleContract = false,
+): void {
   const output = `${wasmPath}.instrumented`;
   const args = [wasmPath, "-o", output];
   if (entry) {
     args.push("--entry", entry);
-  } else {
+  } else if (!defaultSideModuleContract) {
     // These executables deliberately load arbitrary fork-returning plugins.
     // The default traced-entries contract correctly refuses such imports.
     args.push("--side-modules", "assume-all-entries-fork-returning");
@@ -121,9 +126,12 @@ function buildSharedLibrary(
   return libraryPath;
 }
 
-function buildMainProgram(source: string): string {
-  const sourcePath = join(buildDir, "fork-from-side-main.c");
-  const wasmPath = join(buildDir, "fork-from-side-main.wasm");
+function buildMainProgram(
+  source: string,
+  { defaultSideModuleContract = false, name = "fork-from-side-main" } = {},
+): string {
+  const sourcePath = join(buildDir, `${name}.c`);
+  const wasmPath = join(buildDir, `${name}.wasm`);
   writeFileSync(sourcePath, source);
   // The driver supplies the target, the sysroot, -nostdlib, the codegen
   // flags, the syscall glue, compiler_rt.c, cxxrt.c, crt1.o, libc.a and every
@@ -138,12 +146,71 @@ function buildMainProgram(source: string): string {
     "-o",
     wasmPath,
   ], { stdio: "pipe" });
-  instrumentInPlace(wasmPath);
+  instrumentInPlace(wasmPath, undefined, defaultSideModuleContract);
   return wasmPath;
 }
 
 describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
   beforeAll(() => mkdirSync(buildDir, { recursive: true }));
+
+  it("keeps a fork after a dlsym call instrumented under the default contract", async () => {
+    // The default `--side-modules traced-entries` contract says side-module
+    // code never returns through a fork child, not that it never returns. A
+    // call through a dlsym pointer matches no function in the program; when
+    // the analysis summed that empty target set to "never returns", the
+    // fork after it left the plan and `main` stayed uninstrumented, so the
+    // child could not resume inside it.
+    const libraryPath = buildSharedLibrary(`
+      int side_value(void) {
+        return 5;
+      }
+    `, "libsidevalue");
+    const programPath = buildMainProgram(`
+      #include <dlfcn.h>
+      #include <stdio.h>
+      #include <sys/wait.h>
+      #include <unistd.h>
+      typedef int (*side_value_fn)(void);
+      int main(int argc, char **argv) {
+        // Observable only if the child re-runs main's prefix instead of
+        // resuming at fork(): the line prints twice and the child sees
+        // its own pid where the parent's should be.
+        write(1, "prefix\\n", 7);
+        int parent = getpid();
+        void *lib = dlopen(argv[1], RTLD_NOW);
+        if (!lib) {
+          fprintf(stderr, "dlopen failed: %s\\n", dlerror());
+          return 2;
+        }
+        side_value_fn side_value = (side_value_fn)dlsym(lib, "side_value");
+        if (!side_value) return 3;
+        volatile int value = side_value();
+        int pid = fork();
+        if (pid < 0) return 4;
+        if (pid == 0) _exit(value == 5 && getppid() == parent ? 0 : 9);
+        int status = 0;
+        if (waitpid(pid, &status, 0) != pid) return 5;
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return 6;
+        puts("dlsym call then fork ok");
+        return 0;
+      }
+    `, { defaultSideModuleContract: true, name: "dlsym-call-then-fork" });
+
+    const programModule = new WebAssembly.Module(
+      new Uint8Array(readFileSync(programPath)) as unknown as BufferSource,
+    );
+    expect(readForkSideModuleContract(programModule)?.mode).toBe("traced-entries");
+
+    const result = await runCentralizedProgram({
+      programPath,
+      argv: ["dlsym-call-then-fork", libraryPath],
+      timeout: 30_000,
+      io: new NodePlatformIO(),
+    });
+    expect(result.exitCode, `stderr:\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain("dlsym call then fork ok");
+    expect(result.stdout.match(/prefix/g)).toHaveLength(1);
+  }, 30_000);
 
   it("preserves the side frame and returns in both parent and child", async () => {
     const libraryPath = buildSharedLibrary(`

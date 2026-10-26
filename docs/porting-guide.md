@@ -74,15 +74,41 @@ make CC=wasm32posix-cc AR=wasm32posix-ar RANLIB=wasm32posix-ranlib [flags]
 **Missing features**: Check [wasm-limitations.md](wasm-limitations.md) for what cannot be implemented (mprotect, raw server sockets in browser, `PTHREAD_CANCEL_ASYNCHRONOUS`). Most software has graceful fallbacks for these.
 
 **fork() support**: If the program uses `fork()` or fork-like behavior, run
-`wasm-fork-instrument` after linking and after any `wasm-opt` pass of your
-own. The tool runs `wasm-opt -O2` over its output itself. Fork-like behavior includes `vfork()`, `_Fork()`, shell
-pipelines, command substitution, `system()`, `popen()`, and helper processes
-implemented through fork.
+`wasm-fork-instrument` directly after linking. Fork-like behavior includes
+`vfork()`, `_Fork()`, shell pipelines, command substitution, `system()`,
+`popen()`, and fork-backed helper processes.
+
+Do not let recipes rewrite code or strip names between the SDK link and instrumentation:
+the compiler facts describe that exact linked code and bind through its names.
+For a measured optimization-first requirement, set the top-level package
+field `fork_pre_optimize = "O2"` or `"Oz"` and use `install_local_binary`.
+The central instrumenter discards original facts, optimizes with stock
+Binaryen, analyzes the resulting Wasm conservatively, then instruments and
+runs its final optimization. The default `"none"` keeps the facts-first
+order. The independent `fork_post_optimize = "Os" | "Oz"` field selects
+final optimization; choosing final `Oz` alone preserves LLVM facts.
+Select these policies through metadata rather than recipe-owned
+`wasm-opt` commands or an ambient compiler flag.
+Let the SDK and instrumenter optimize. The SDK holds back clang's post-link
+`wasm-opt` for fork-importing links; the instrumenter optimizes the transformed
+module at `-Os` by default (`--post-optimize` selects another level).
+
 ```bash
-"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" program.wasm -o program.wasm
+"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts \
+  program.wasm -o program.wasm
 ```
 
-The tool auto-discovers the fork-call closure via call-graph analysis (direct + indirect calls). No onlylist file is needed, and no manual tracing of fork paths. Optimize before instrumenting (the SDK's `-O` link already runs `wasm-opt`): wasm-opt's inlining shrinks the call graph the tool has to instrument, and the tool's own post-pass then cleans up the code it added. See "Optimization around instrumentation" in [fork-instrumentation.md](fork-instrumentation.md).
+The wrapper checks `--sink-report` and fails unless a fork-using wasm32
+executable's plan source is `facts` and its facts bind to linked functions.
+`install_local_binary` applies this check to raw outputs in the default
+order; an explicit `fork_pre_optimize` policy uses final-Wasm analysis instead. Non-forking modules, side modules
+and wasm64 are exempt because facts-based sink analysis does not apply.
+Document necessary code-rewrite exceptions explicitly, as Ruby does for its
+GC root-spilling pass. The fork guide also records the measured, deferred
+Bash/CPython/PHP migrations; new recipes use the ordering and checks above.
+Remove names only after instrumentation, retaining runtime
+custom sections; the default post-pass already drops names. See
+[Optimization around instrumentation](fork-instrumentation.md#optimization-around-instrumentation).
 
 Instrumentation is mandatory for fork-using programs. Do not treat it as an
 optional optimization, and do not use Binaryen Asyncify as a fallback. The host
@@ -889,7 +915,7 @@ mkdir -p "$BUILD_DIR"
 
 # The default executable policy is fork instrumentation. Install only the
 # exact declared artifact; the resolver validates it before publication.
-"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
+"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts \
   "$BUILD_DIR/myprog.wasm" -o "$OUT_DIR/myprog.wasm"
 ```
 

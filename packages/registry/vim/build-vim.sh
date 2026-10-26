@@ -62,13 +62,6 @@ fi
 # ncurses is resolved via cargo xtask build-deps below — no
 # pre-flight check needed (the resolve step builds-on-miss if absent).
 
-# Check for wasm-opt (used for -O2 optimization after build).
-WASM_OPT="$(command -v wasm-opt 2>/dev/null || true)"
-if [ -z "$WASM_OPT" ]; then
-    echo "ERROR: wasm-opt not found. Install binaryen." >&2
-    exit 1
-fi
-
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
@@ -270,16 +263,10 @@ cp "$SRC_DIR/src/vim" "$BIN_DIR/vim.wasm"
 SIZE_BEFORE=$(wc -c < "$BIN_DIR/vim.wasm" | tr -d ' ')
 echo "==> Pre-instrumentation size: $(echo "$SIZE_BEFORE" | numfmt --to=iec 2>/dev/null || echo "${SIZE_BEFORE} bytes")"
 
-# --- Size optimization + fork instrumentation ---
-# wasm-opt -O2 runs first so instrumentation covers the smaller, inlined
-# call graph; wasm-fork-instrument then runs its own wasm-opt pass over the
-# code it adds. It auto-discovers fork paths via call-graph analysis, so no
-# onlylist file is needed.
-echo "==> Optimizing vim.wasm with wasm-opt -O2..."
-"$WASM_OPT" -O2 "$BIN_DIR/vim.wasm" -o "$BIN_DIR/vim.wasm"
-
+# Preserve the linked code and names for the compiler-facts analysis.
+# The instrumenter optimizes the transformed module.
 echo "==> Applying fork instrumentation..."
-"$FORK_INSTRUMENT" "$BIN_DIR/vim.wasm" -o "$BIN_DIR/vim.wasm.instr"
+"$FORK_INSTRUMENT" --require-facts "$BIN_DIR/vim.wasm" -o "$BIN_DIR/vim.wasm.instr"
 mv "$BIN_DIR/vim.wasm.instr" "$BIN_DIR/vim.wasm"
 
 SIZE_AFTER=$(wc -c < "$BIN_DIR/vim.wasm" | tr -d ' ')

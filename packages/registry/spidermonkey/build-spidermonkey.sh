@@ -421,18 +421,19 @@ fi
 
 cp "$JS_BIN" "$BIN_DIR/js.wasm"
 
-WASM_OPT="${WASM_OPT:-wasm-opt}"
-if command -v "$WASM_OPT" >/dev/null 2>&1; then
-    echo "==> Optimizing js.wasm with wasm-opt -O2..."
-    "$WASM_OPT" -O2 "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm"
+# The installer applies package.toml's optimizer policy through the central
+# instrumenter. Preserve the SDK link until that step; the recipe owns no
+# wasm-opt invocation. Copy the Node entry only after instrumentation.
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
+        WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
+        install_local_binary spidermonkey "$BIN_DIR/js.wasm" js.wasm
 else
-    echo "WARNING: wasm-opt not found; leaving unoptimized js.wasm." >&2
+    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
+        install_local_binary spidermonkey "$BIN_DIR/js.wasm" js.wasm
 fi
-
-FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
-echo "==> Applying fork instrumentation to js.wasm..."
-"$FORK_INSTRUMENT" "$BIN_DIR/js.wasm" -o "$BIN_DIR/js.wasm.instr"
-mv "$BIN_DIR/js.wasm.instr" "$BIN_DIR/js.wasm"
 
 JS_SIZE="$(wc -c < "$BIN_DIR/js.wasm" | tr -d ' ')"
 echo "==> SpiderMonkey built successfully: $BIN_DIR/js.wasm ($JS_SIZE bytes)"
@@ -441,18 +442,11 @@ cp "$BIN_DIR/js.wasm" "$BIN_DIR/node.wasm"
 NODE_SIZE="$(wc -c < "$BIN_DIR/node.wasm" | tr -d ' ')"
 echo "==> SpiderMonkey Node-compatible runtime staged: $BIN_DIR/node.wasm ($NODE_SIZE bytes)"
 
-# shellcheck source=/dev/null
-source "$REPO_ROOT/scripts/install-local-binary.sh"
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
-        WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
-        install_local_binary spidermonkey "$BIN_DIR/js.wasm" js.wasm
     WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
         WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
         install_local_binary spidermonkey-node "$BIN_DIR/node.wasm" node.wasm
 else
-    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
-        install_local_binary spidermonkey "$BIN_DIR/js.wasm" js.wasm
     WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \
         install_local_binary spidermonkey-node "$BIN_DIR/node.wasm" node.wasm
     WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto \

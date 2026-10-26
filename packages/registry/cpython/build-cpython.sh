@@ -283,6 +283,9 @@ if [ ! -f "$RAW_PYTHON" ]; then
     exit 1
 fi
 
+# Measured legacy exception: the facts-preserving control runs did not
+# establish unchanged launch/fork cost. Retain the conservative pipeline
+# described in docs/fork-instrumentation.md pending a validated migration.
 OPTIMIZED_PYTHON="$WORK_DIR/python.optimized.wasm"
 FINAL_PYTHON="$WORK_DIR/python.wasm"
 wasm-opt -O2 "$RAW_PYTHON" -o "$OPTIMIZED_PYTHON"

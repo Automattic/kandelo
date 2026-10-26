@@ -176,8 +176,21 @@ without it falls into a BSD branch or an `#error`. When a package hits that:
    above did not work, and states that it does not make Kandelo a Linux
    target.
 
-Fork-using packages must be instrumented with
-`scripts/run-wasm-fork-instrument.sh` after linking and after optimization.
+Fork-using packages must reach the central installer/instrumenter directly
+after linking. The default order uses
+`scripts/run-wasm-fork-instrument.sh --require-facts`.
+Measured wasm32 program exceptions select top-level `fork_pre_optimize =
+"O2" | "Oz"` in `package.toml` and use `install_local_binary`; the central
+tool discards source facts, optimizes first, analyzes final Wasm, instruments,
+and runs final optimization. The independent `fork_post_optimize = "Os" | "Oz"` field controls final
+optimization without sacrificing linked facts. The resolver owns both
+policies and cache keys.
+Do not rewrite linked code or strip its names/facts first: the SDK and
+instrumenter own optimization ordering. Strip afterwards while preserving
+runtime custom sections. The fork guide records necessary rewrite exceptions
+(Ruby root spilling) and measured, deferred migrations (Bash/CPython/PHP).
+Document exceptions explicitly; new recipes use the facts-preserving order.
+See `docs/fork-instrumentation.md`.
 Missing `wpk_fork_*` exports are a build/runtime error. Legacy Asyncify
 artifacts are stale and must be rebuilt, not supported.
 

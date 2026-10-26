@@ -6,7 +6,7 @@ use crate::{
 };
 use std::collections::BTreeSet;
 
-mod admission;
+pub(crate) mod admission;
 mod analysis;
 mod instrument;
 mod metadata;

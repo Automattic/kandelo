@@ -53,6 +53,50 @@ wasm_drop_compiler_facts() {
     mv -f "$stripped" "$path"
 }
 
+# A package must not silently ship the fallback plan after a post-link pass
+# invalidates its compiler facts. Side modules use full boundary coverage;
+# wasm64 has no facts-based sink analysis. Neither is a facts-check failure.
+wasm_require_fork_compiler_facts() {
+    local path="${1:?expected a linked Wasm file}"
+    local tool="${2:?expected the fork instrumenter}"
+    shift 2
+    local import_status=0
+    wasm_imports_kernel_fork "$path" || import_status=$?
+    [ "$import_status" = 1 ] && return 0
+    [ "$import_status" = 0 ] || return "$import_status"
+    local role arch plan source bound
+    role="$(wasm_artifact_role "$path")" || return 1
+    [ "$role" = executable ] || return 0
+    arch="$(wasm_memory_arch "$path")" || return 1
+    [ "$arch" = wasm32 ] || return 0
+    plan="$("$tool" --sink-report "$path" "$@")" || return 1
+    source="$(printf '%s\n' "$plan" | awk -F '\t' '$1 == "source" {print $2}')"
+    # Retain the source, coverage and counts in build logs without dumping
+    # thousands of function names. Count A rows, not distinct display names.
+    printf '%s\n' "$plan" | awk -F '\t' '
+        $1 != "A" && $1 != "B" { print }
+        $1 == "A" { activations++ }
+        $1 == "B" { boundaries++ }
+        END { printf "plan-counts\tactivations %d boundaries %d\n", activations, boundaries }
+    ' >&2
+    if [ "$source" != facts ]; then
+        echo "ERROR: $path: fork plan source is '${source:-missing}', expected compiler facts" >&2
+        echo "       Preserve linked code, names and call-type sections until fork instrumentation." >&2
+        return 1
+    fi
+    # A name-only strip leaves the code hash valid and the source as facts,
+    # but nothing binds: all functions silently use the no-facts fallback.
+    bound="$(printf '%s\n' "$plan" | awk -F '[\t ]+' '
+        $1 == "facts" { for (i = 2; i < NF; i++) if ($i == "bound") print $(i + 1) }
+    ')"
+    case "$bound" in
+        ''|*[!0-9]*|0)
+            echo "ERROR: $path: compiler facts did not bind any linked functions; preserve function names until instrumentation" >&2
+            return 1
+            ;;
+    esac
+}
+
 # Reject unresolved imports in the namespaces Kandelo reserves for itself
 # unless the host deliberately implements that exact API. The approved names
 # are the generated host-import allowance (libc/glue/kandelo-host-imports.txt,

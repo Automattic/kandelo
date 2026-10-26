@@ -31,18 +31,29 @@ impl Drop for TestDir {
 #[test]
 fn cli_output_is_byte_reproducible_across_processes() {
     let dir = TestDir::new();
-    let input_path = dir.path().join("input.wasm");
-    let input = wat::parse_str(include_str!(
-        "fixtures/determinism/multiple_nested_regions.wat"
-    ))
-    .expect("compile determinism fixture");
+    for (index, fixture) in [
+        include_str!("fixtures/determinism/multiple_nested_regions.wat"),
+        include_str!("fixtures/determinism/mutable_table_helpers.wat"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = dir.path().join(index.to_string());
+        fs::create_dir(&path).unwrap();
+        check_fixture(&path, fixture);
+    }
+}
+
+fn check_fixture(dir: &Path, fixture: &str) {
+    let input_path = dir.join("input.wasm");
+    let input = wat::parse_str(fixture).expect("compile determinism fixture");
     fs::write(&input_path, &input).expect("write determinism fixture");
 
     let mut expected: Option<Vec<u8>> = None;
     for run in 0..12 {
         // Each CLI invocation is a fresh process with a fresh randomized
         // HashMap state. In-process repetition cannot exercise that boundary.
-        let output_path = dir.path().join(format!("output-{run}.wasm"));
+        let output_path = dir.join(format!("output-{run}.wasm"));
         let output = Command::new(env!("CARGO_BIN_EXE_wasm-fork-instrument"))
             .arg(&input_path)
             .arg("--output")

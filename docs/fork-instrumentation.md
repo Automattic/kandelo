@@ -46,8 +46,9 @@ ABI version: `50` (see
 - Binaries exporting legacy `asyncify_*` symbols are stale and must be rebuilt.
   Do not add host support for them.
 - Do not keep compiler/linker flags solely for the retired legacy path. The
-  fork instrumenter does not require preserved function names or onlylists; if
-  a build keeps debug-info flags, it should be for a current diagnostic reason.
+  compiler-facts analysis needs linked function names until instrumentation;
+  the transformed artifact needs no names or onlylists. Keep DWARF only for
+  a current diagnostic reason.
 - On Unix hosts, the CLI preserves the input Wasm file's permission mode on
   its output, including when `--output` names the input file. Package build
   scripts can therefore instrument installed executables in place without
@@ -762,9 +763,11 @@ It seeds every matching fork import, every side-module function import, raw
 loader imports and conservative dynamic dispatch. It rejects previous private
 runtime imports, exports and metadata. Valid compiler facts use private SQLite
 relations with the requested effective-type policy; unreadable facts fall back
-to the bounded native baseline. Dlopen facts preserve the explicit side-module
-contract, including automatic full-entry planning for returning function
-pointers. No facts database survives into helper or source emission.
+to bounded final-Wasm analysis. Both plans preserve the explicit side-module
+loading contract, including automatic full-entry planning for returning
+function pointers. Unsupported interpretation retains the fork-reaching
+closure; exceeded budgets fail explicitly. No facts database survives into
+helper or source emission.
 
 The frozen assembly now includes host `_start` and thread resume boundaries,
 side-module constant ABI markers and sink replay selectors. Thread boundaries
@@ -1630,36 +1633,115 @@ with that backend.
 
 ## Optimization around instrumentation
 
-A fork-using program goes through Binaryen's `wasm-opt` twice:
+A fork-using SDK link must reach instrumentation with its linked code,
+function names and compiler-facts sections intact. Do not run a recipe's
+`wasm-opt`, remove names/facts, or otherwise rewrite code between linking
+and instrumentation.
+The SDK and instrumenter own optimization ordering:
 
-1. **Before instrumentation.** The SDK's `-O` link runs `wasm-opt` (clang
-   schedules it after `wasm-ld`), and some recipes run their own pass.
-   Inlining, dead-function removal and identical-function merging shrink
-   the call graph the instrumenter has to cover. Quickshell's raw link has
-   108,860 functions on the fork path; after `wasm-opt -O2` it has 51,960.
-2. **After instrumentation.** The CLI runs `wasm-opt -Os` over its own
-   output (`--post-optimize`; `$WASM_OPT`, else `wasm-opt` on PATH). This
-   pass simplifies the dispatch and frame code the transform adds, merges
-   or removes generated helpers, and drops runtime imports nothing calls.
+1. The compiler optimizes each source file. For a link importing
+   `kernel.kernel_fork`, the SDK holds back clang's post-link `wasm-opt`
+   and records the linked code's SHA-256 alongside `kandelo.calltypes`.
+2. The instrumenter uses those facts to choose the functions that need
+   continuation frames, then runs `wasm-opt -Os` on the transformed output.
+   Use `--post-optimize O1|O2|O3|Os|Oz` when a measured package need calls
+   for another level; avoid a recipe-owned pre-instrumentation pass.
+3. Remove names only after instrumentation, preserving the runtime's ABI,
+   continuation and dynamic-loader custom sections. An indiscriminate
+   `wasm-strip` after instrumentation removes these contracts too. The
+   instrumenter's default post-pass already removes names; debugging builds
+   can retain them with `--keep-names`. Debug-only stripping that preserves
+   code, names and facts is safe beforehand, as with FFmpeg's
+   `llvm-strip --strip-debug`.
 
-Measured on code-section size (static, captured links, 2026-10-02):
+Program packages can select an instrumenter-owned pre-pass with the top-level
+`package.toml` field `fork_pre_optimize = "none" | "O2" | "Oz"`. The default
+`none` keeps the facts-first order above. `O2` and `Oz` run stock Binaryen
+before analysis, discard the original facts/hash and all transport annotations,
+and derive the plan from the optimized Wasm. Final optimization still runs
+at `fork_post_optimize = "Os"` (the package default) or `"Oz"`, independent
+of the pre-pass. Selecting final `Oz` alone keeps the original facts usable.
+Direct CLI calls can choose the broader `--post-optimize` level set. Names survive the
+pre-pass; no stale source facts receive a replacement hash.
 
-| program | wasm-opt → instrument | + wasm-opt after | instrument → wasm-opt |
-|---|---|---|---|
-| foot | 3,465,173 | −3.3% | −1.8% |
-| bash | 1,611,255 | −3.7% | −3.5% |
-| git | 5,368,248 | −3.9% | −4.9% |
-| python | 8,448,545 | −3.9% | −4.1% |
-| php | 16,888,534 | −5.8% | −5.9% |
-| waybar | 22,532,525 | −4.4% | −1.1% |
-| ruby | 12,769,437 | −3.9% | −4.9% |
-| qtgallery | 11,697,323 | −4.4% | +12.5% |
-| quickshell | 36,978,834 | −4.2% | +18.7% |
+`install_local_binary` reads this package policy through resolver metadata,
+or its resolver-supplied `WASM_POSIX_DEP_FORK_PRE_OPTIMIZE` and
+`WASM_POSIX_DEP_FORK_POST_OPTIMIZE` environment in a sealed build. Recipes keep the raw SDK link intact and let the installer
+invoke the central tool. The policy applies to raw wasm32 main executables;
+side modules retain full boundary instrumentation and already instrumented
+dependency outputs are not processed a second time. Nondefault policies are
+limited to wasm32 program packages and participate in their cache keys.
+For direct diagnostics, use `--pre-optimize O2|Oz` without `--require-facts`.
+`--sink-report` reports `builtin`, or the full `closure` when the interpreter
+cannot model the module. Imported tables retain unknown external targets;
+static slot initializers cannot exclude them. This path does not require
+patched Binaryen.
 
-Instrumenting the raw link instead (last column) gives up step 1: every
-function of the unoptimized graph gets instrumented, and wasm-opt does not
-recover that afterwards. On C programs the difference is small; on Qt
-programs it is large.
+SpiderMonkey selects `fork_pre_optimize = "Oz"` with final `Os`. In the
+2026-10-23 matched source-build comparison using the previous instrumenter, this reduced final bytes from
+30,370,665 to 29,745,924 (2.06%). Twelve accepted paired rounds per host
+measured spawn/wait fork cycles 5.92% faster on Node and 6.88% faster on
+Chromium, with faster launch and a synthetic JSON/sort workload too. These
+are host-clock, fresh-worker measurements in persistent parents; browser
+asset fetching was outside timing. Other package policies retain their
+existing order.
+
+The facts-first/final-`Oz` control was smaller still (29,351,431 bytes), but
+its fork cycles were about 5% slower than pre-`Oz` on both hosts. The selected
+profile favors that runtime gain over a further 394,493-byte saving. This
+compares complete optimization profiles, not the isolated contribution of
+LLVM facts or whole-platform performance.
+
+The earlier annotation-transport experiment is retained in branch history. Its
+Walrus bridge was retired when the instrumenter moved to native, bounded
+analysis. The shipping CLI supports `none`, `O2`, and `Oz`; broader compiler-fact
+provenance transport remains deferred. Stock profiles use private bounded
+snapshots and stream section copies, without constructing a whole-module IR.
+
+Default-order direct package builds use the wrapper's `--require-facts` flag first, immediately
+followed by the input:
+
+```bash
+"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts \
+  program.wasm -o program.wasm
+```
+
+Before transforming a wasm32 executable importing `kernel.kernel_fork`,
+this runs `--sink-report` and requires its `source` row to be `facts`.
+At least one linked function must also bind to the facts: stripping names
+can otherwise leave `source=facts` with zero bindings. Coverage and
+activation/boundary counts are retained in the build log.
+`install_local_binary` applies the same check when it instruments a raw
+executable. Side modules, non-forking modules and wasm64 do not use the
+facts-based plan and are exempt. An already-instrumented artifact must
+have passed the check where its recipe invoked the instrumenter, except
+for the documented conservative pipelines below.
+
+Quickshell's address-taken fork-returning functions cause the instrumenter
+to select `assume-all-entries-fork-returning`; the plan can still come
+from facts, so this is not an exemption. Ruby is an explicit exception:
+its local-root spill pass must run first so fork saves the added GC spill
+state. That rewrite invalidates facts; Ruby deliberately uses the
+conservative fallback until the passes can preserve or regenerate them.
+Do not move root spilling after fork instrumentation merely to satisfy
+this check.
+
+Bash, CPython and PHP CLI/FPM are deferred migrations. Their compared
+facts-preserving pipelines did not meet the package no-regression condition,
+so they retain their established conservative plans. PHP CLI/curl fork
+cycles regressed repeatedly in the Node comparisons. Bash/CPython launch
+results disagreed between the short and longer controls under substantial
+host memory pressure; unchanged cost was not established. See the paired
+measurements in [PR #1565](https://github.com/Automattic/kandelo/pull/1565).
+These recipes instrument explicitly before installation; the shared
+installer still requires facts for raw executable inputs. Re-evaluate the
+migrations with host-clock launch/fork comparisons before enabling their
+facts checks. New recipes follow the SDK/instrumenter ordering above.
+
+Historical pre-facts measurements of `wasm-opt → instrument → wasm-opt`
+are not evidence for adding that ordering to current package recipes.
+Compare final size and host-clock launch/fork timing for the facts-preserving
+pipeline before making a package performance claim.
 
 Why a pass after instrumentation is safe:
 
@@ -2128,8 +2210,13 @@ The analysis resolves each `call_indirect` in one of two ways.
   example) keeps unknown custom sections but changes the code, and the facts
   would then describe the wrong functions. A mismatch or a missing hash
   prints one line and falls back to the analysis without facts.
-- **Without facts**, call sites match by Wasm signature (plus the musl
-  registry, parameter and constant-slot refinements).
+- **Without facts**, call sites match by Wasm signature, with parameter and
+  constant-slot refinements only where the final Wasm proves them. Imported,
+  exported and dynamically modified tables are not immutable slot maps.
+  Source-level libc registry/cancellation rules are disabled: an optimizer
+  can inline their registration APIs or combine unrelated call sites in a
+  named function. A single known local target also cannot exclude an external
+  target that returns or throws.
 
 Facts are bound to functions without a linker map. Objects keep their order
 on both sides, so each module function is matched, in index order, to a
@@ -2172,12 +2259,12 @@ Which analysis runs:
 
 | Module | Analysis |
 |---|---|
-| wasm32 main module, `kernel.kernel_fork` entry, facts with a matching hash | with facts |
-| main module that cannot dlopen, facts absent, unreadable, unhashed or stale, or wasm64 | without facts |
-| main module that can dlopen, no usable facts | none (full closure) |
+| supported wasm32 main module, `kernel.kernel_fork` entry, facts with a matching hash | with facts |
+| supported wasm32 main module, facts absent, unreadable, unhashed or stale | final-Wasm analysis, including the checked dlopen policy |
+| unsupported interpreter operations or exhausted analysis support | conservative closure or an explicit bounded-analysis error |
 | side module (`dylink.0` or `--entry env.fork`) | none (full closure) |
 
-A module that can dlopen is analysed with facts too. What it may assume
+A module that can dlopen is analysed with or without facts. What it may assume
 about side modules is chosen with `--side-modules`:
 
 - `traced-entries` (the default). The analysis treats a side module as
@@ -2198,6 +2285,13 @@ about side modules is chosen with `--side-modules`:
   from a program that has it, so when the analysis finds an address-taken
   fork-returning function the instrumenter prints one line and plans that
   module for `assume-all-entries-fork-returning` instead.
+  The contract is only that side-module code never returns *through a fork
+  child* into the program. An indirect call that may enter a side module
+  (for example a call through a pointer `dlsym` returned, which matches no
+  function in the program) still returns and may throw any exception; it
+  is just not a fork path. Treating such a call as never returning would
+  make the code after it unreachable, so a `fork()` after a `dlsym` call
+  would drop out of the plan and the child would trap.
 - `assume-all-entries-fork-returning`. Any indirect call may enter a side
   module whose fork child returns anything, so every function whose fork
   path can pass through a side module stays instrumented and is never a

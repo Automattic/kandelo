@@ -176,7 +176,7 @@ wasm32posix-cc "${OBJS[@]}" \
     -o "$BUILD_DIR/foot.wasm"
 
 echo "==> Instrumenting fork paths..."
-bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
+bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts \
     "$BUILD_DIR/foot.wasm" -o "$BUILD_DIR/foot.wasm.instr"
 mv "$BUILD_DIR/foot.wasm.instr" "$BUILD_DIR/foot.wasm"
 

@@ -78,6 +78,10 @@ pub(super) struct Cli {
     #[arg(long)]
     pub(super) keep_names: bool,
 
+    /// Run stock Binaryen before analysis, discarding original compiler facts.
+    #[arg(long, default_value = "none", value_parser = ["none", "O2", "Oz"])]
+    pub(super) pre_optimize: String,
+
     /// Analyze the module and print the discovered fork-path function
     /// set as JSON to stdout. Skips instrumentation and output emission.
     /// Useful for validating call-graph discovery against

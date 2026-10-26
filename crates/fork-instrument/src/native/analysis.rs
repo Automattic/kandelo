@@ -109,19 +109,42 @@ fn refine(analysis: &mut Analysis<'_>, options: &Options, limits: AnalysisLimits
             }
         }
     }
-    if analysis.decision.dynamic_linker {
-        return Ok(());
-    }
     let mut store = FactsStore::empty(limits.storage)?;
     let mut program = sink::Program::build(&analysis.scan, &mut store, limits.program)?;
-    if let Some(plan) = sink::plan_sinks(
+    let dynamic = analysis.decision.dynamic_linker;
+    let mut mode = options.side_modules;
+    program.dynamic_linking &= mode != SideModules::TracedEntries;
+    if let Some(mut plan) = sink::plan_sinks(
         &mut program,
         seed,
         &analysis.reaching,
         SinkPolicy::default(),
         limits.sinks,
     )? {
+        if dynamic && mode == SideModules::TracedEntries && address_taken(&analysis.scan, &plan) {
+            program.dynamic_linking = true;
+            mode = SideModules::AssumeAllEntriesForkReturning;
+            let Some(full) = sink::plan_sinks(
+                &mut program,
+                seed,
+                &analysis.reaching,
+                SinkPolicy::default(),
+                limits.sinks,
+            )?
+            else {
+                return Ok(());
+            };
+            plan = full;
+        }
         drop(program);
+        if dynamic {
+            analysis.decision.dlopen_contract = Some(dlopen_contract(
+                &analysis.scan,
+                &plan,
+                mode,
+                limits.program.metadata_bytes,
+            )?);
+        }
         apply(analysis, plan);
         analysis.decision.source = PlanSource::Builtin;
     }

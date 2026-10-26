@@ -58,6 +58,9 @@ pub struct Program<'s, 'a> {
     pub stack_pointer_global: Option<u32>,
     pub constant_slots: bool,
     pub dynamic_linking: bool,
+    /// External code can return even when the load-time contract excludes
+    /// returning through a fork child. Keep return effects separate.
+    pub external_returns: bool,
     unknown_tables: Vec<bool>,
     unknown_reference_imports: bool,
     pub(super) limits: ProgramLimits,
@@ -452,6 +455,16 @@ impl<'s, 'a> Program<'s, 'a> {
                                 | "__wasm_dlerror"
                         )
                 });
+        let exposed_table = scan
+            .exports
+            .iter()
+            .any(|(_, kind, _)| *kind == ExternalKind::Table);
+        constant_slots &= !dynamic_linking && !exposed_table;
+        if exposed_table {
+            // A loader can place any escaped local function in an exposed
+            // table; its static element segment is not the complete set.
+            store.db.execute_batch("INSERT OR IGNORE INTO sink_member SELECT t.id,c.signature,f.id FROM sink_function f JOIN sink_compatible c ON c.function=f.id CROSS JOIN sink_table t WHERE f.escaping;")?;
+        }
         Ok(Self {
             scan,
             store,
@@ -462,6 +475,7 @@ impl<'s, 'a> Program<'s, 'a> {
             stack_pointer_global,
             constant_slots,
             dynamic_linking,
+            external_returns: dynamic_linking,
             unknown_tables,
             unknown_reference_imports,
             limits,

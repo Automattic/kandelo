@@ -92,6 +92,32 @@ When a build fails, fix the first error, not the last: later errors and `BLOCKED
 - **Wasm traces without names** mean `wasm-opt` stripped the name section; keep it for debugging rather than guessing from `wasm-function[N]`.
 - **A missing POSIX API is a platform gap**, not a package patch. Stub honestly or implement it in the kernel/libc.
 
+## Preserve compiler facts for fork instrumentation
+
+Do not run recipe-owned `wasm-opt`, strip names, or rewrite code between the SDK link and
+fork instrumentation. Let the SDK/instrumenter optimize. A wasm32 program may
+select top-level `fork_pre_optimize = "O2"` or `"Oz"` in `package.toml` and
+use `install_local_binary`: the instrumenter discards LLVM facts, runs stock
+Binaryen, analyzes final Wasm conservatively, instruments, and runs its final
+optimization. The default `"none"` preserves the facts-first order. This
+policy is resolver-owned and cache-keyed; do not duplicate it in recipe shell.
+Use the independent `fork_post_optimize = "Os" | "Oz"` field to choose
+final optimization; selecting final `Oz` alone preserves the linked facts.
+Direct default-order recipe calls
+use `scripts/run-wasm-fork-instrument.sh --require-facts <input> -o <output>`;
+`install_local_binary` checks raw fork-using wasm32 executables automatically.
+The wrapper/installer require `--sink-report` to report `source\tfacts` and
+nonzero bound-function coverage wherever facts apply. A name-only strip can
+leave the source as facts while preventing every binding. Side modules and
+wasm64 use conservative coverage; necessary
+pre-instrumentation rewrites such as Ruby GC root spilling need an explicit
+explanation. The fork guide records the measured, deferred Bash/CPython/PHP
+migrations; new recipes use the facts-preserving order. Remove names only afterwards, retaining runtime custom sections.
+
+The shipping native instrumenter supports stock pre-optimization only. The
+annotation-transport prototype is retained in branch history; its previous
+Walrus bridge is not part of the memory-bounded pipeline.
+
 ## Feedback
 
 End your final report with one line, so maintainers can see where this skill helped or misled:

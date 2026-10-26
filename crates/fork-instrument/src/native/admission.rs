@@ -7,7 +7,7 @@ use anyhow::{Result, ensure};
 use wasm_posix_shared::abi;
 use wasmparser::{Parser, Payload};
 
-pub(super) fn reject_instrumented(scan: &Scan<'_>) -> Result<()> {
+pub(crate) fn reject_instrumented(scan: &Scan<'_>) -> Result<()> {
     let export_collision = scan.exports.iter().any(|(name, _, _)| {
         abi::WPK_FORK_REQUIRED_EXPORTS
             .iter()

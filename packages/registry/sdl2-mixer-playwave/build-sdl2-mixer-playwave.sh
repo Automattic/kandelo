@@ -27,5 +27,5 @@ done
 read -r -a mixer_flags <<< "$(wasm32posix-pkg-config --cflags --static --libs SDL2_mixer)"
 wasm32posix-cc -O2 -DSDL_MAIN_HANDLED "${flags[@]}" \
     "$SRC/playwave.c" "${mixer_flags[@]}" -o "$WORK/playwave.wasm"
-"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
+"$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts \
     "$WORK/playwave.wasm" -o "$OUT/playwave.wasm"

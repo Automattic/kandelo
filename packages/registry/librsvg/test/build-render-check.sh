@@ -46,7 +46,7 @@ RAW="${OUT%.wasm}.raw.wasm"
 wasm32posix-cc -O2 "$SCRIPT_DIR/render-check.c" \
     $(PKG_CONFIG_PATH="$pc_path" wasm32posix-pkg-config --static --cflags --libs librsvg-2.0) \
     -o "$RAW"
-bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" "$RAW" -o "$OUT"
+bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" --require-facts "$RAW" -o "$OUT"
 rm -f "$RAW"
 xtask stamp-abi-contract "$OUT" >/dev/null
 echo "RSVG_RENDER_CHECK_BUILT"
