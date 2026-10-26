@@ -30,6 +30,17 @@ Treat these as ABI surface:
 - Generated TypeScript ABI constants under `host/src/generated/abi.ts`.
 - VFS image metadata that binds images carrying Wasm programs to a kernel ABI.
 
+Programs bind to the program surface only. Every built program carries a
+`kandelo.abi.contract` digest of `ABI_VERSION` plus the snapshot sections
+`xtask dump-abi` marks `Surface::Program`, and the host refuses a program
+whose digest differs from the kernel's. Kernel exports, kernel host
+imports, host-adapter metadata, the export filter and kernel-host wire
+formats are `Surface::KernelHost`: changing them without an `ABI_VERSION`
+bump leaves every program valid. When you add a snapshot section, choose
+its surface by asking whether a running program can observe it; if any
+part of it can, it is `Program`. See docs/abi-versioning.md ("Which
+changes force a program rebuild").
+
 A structural additive change may keep the same `ABI_VERSION` only when existing
 binaries remain valid and existing ABI entries are unchanged. Additions still
 require regenerating and committing `abi/snapshot.json`.

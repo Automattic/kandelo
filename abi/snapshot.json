@@ -1,5 +1,46 @@
 {
-  "abi_version": 54,
+  "abi_surfaces": {
+    "kernel_host": [
+      "export_deny",
+      "host_adapter",
+      "kernel_exports",
+      "kernel_imports",
+      "pcm_transport_abi",
+      "process_metadata_contract",
+      "process_snapshot_wire",
+      "wait_completion_wire",
+      "wakeup_event_wire"
+    ],
+    "program": [
+      "channel_buffers",
+      "channel_header",
+      "channel_request_flags",
+      "channel_scalar_contract",
+      "channel_signal_area",
+      "channel_status_codes",
+      "clipboard_device_abi",
+      "custom_sections",
+      "host_env_imports",
+      "host_intercepted_syscalls",
+      "io_multiplexing",
+      "ioctl_request_contracts",
+      "ioctl_request_families",
+      "marshalled_structs",
+      "oss_source_abi",
+      "pathconf_names",
+      "platform_limits",
+      "process_expected_globals",
+      "process_memory_layout",
+      "process_native_layouts",
+      "program_artifact",
+      "spawn_contract",
+      "syscall_arg_descriptors",
+      "syscalls",
+      "vfs_metadata",
+      "wait_contract"
+    ]
+  },
+  "abi_version": 55,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -1347,7 +1388,7 @@
       }
     ],
     "manifest": {
-      "abi_version": 54,
+      "abi_version": 55,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,

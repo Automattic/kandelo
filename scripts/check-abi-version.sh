@@ -133,5 +133,23 @@ elif [ "$version_bumped" -eq 1 ]; then
     echo "     Verify this was intentional; the snapshot/header are still in sync." >&2
 fi
 
+# Say whether this change forces every program to be rebuilt: programs carry
+# a digest of the program surface only (see docs/abi-versioning.md), so a
+# kernel-host-only change leaves them valid.
+if [ "$snapshot_changed" -eq 1 ]; then
+    base_snapshot="$(mktemp "${TMPDIR:-/tmp}/wasm-posix-abi-base.XXXXXX.json")"
+    git show "$base_ref:abi/snapshot.json" > "$base_snapshot"
+    if base_digest="$(run_xtask abi-program-digest "$base_snapshot" 2>/dev/null)"; then
+        if [ "$base_digest" = "$(run_xtask abi-program-digest)" ]; then
+            echo "abi: program digest unchanged; existing programs stay valid."
+        else
+            echo "abi: program digest changed; every program must be rebuilt."
+        fi
+    else
+        echo "abi: $base_ref's snapshot has no program digest; every program must be rebuilt."
+    fi
+    rm -f "$base_snapshot"
+fi
+
 echo "abi: ABI_VERSION and snapshot are consistent."
 exit 0
