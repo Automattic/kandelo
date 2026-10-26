@@ -5505,3 +5505,59 @@ protection, overflow and invalid-argument cases. Exact job:
 `graphics-main-cache-gc-focused-1025-220632-a590`; log:
 `.context/graphics-main-cache-gc-focused.log`. These tests use temporary
 caches. No collection was applied to the shared cache.
+
+
+### Full gallery results and default Node provisioning failure
+
+The pre-instrumenter-repair browser-image job
+`graphics-main-browser-image-build-1025-202123-8896` completed with exit
+zero after 2h17m, including normal graphics CTS, browser-main-shell,
+rootfs and freshness checks. The subsequent full gallery job
+`graphics-main-gallery-1025-224044-35c7` passed **9/9 tests** across
+Chromium, Firefox and WebKit. Log `.context/graphics-main-gallery.log`
+records cage terminal input/rendering and sway foot terminals, status-bar
+updates, workspace changes, tiling, clean exit and restart, plus the EGL
+surfaceless subset. These supplement the earlier standalone guest runs.
+They use the pre-repair instrumenter artifacts; final repaired-source
+artifacts still need their own normal build and combined validation.
+
+The default-config Node gate, with normal global fixture setup, failed:
+**23 cases passed in 11 files; five of 16 files did not load; no cases
+were skipped**. Exact job `graphics-main-default-node-1025-224348-9386`;
+log `.context/graphics-main-compositor-node.log`. Artifact policy refused
+four old developer binaries: `wlclient-test`, `kwldemo`,
+`kms-pageflip-smoke` and `libdrm-kms-smoke`. The normal instrumenter's
+read-only identity report confirms **ABI 54** for all four:
+`.context/graphics-main-stale-node-artifacts.jsonl`. Their rebuild occurs
+after GTK in the interrupted normal program builder. This is unfinished
+provisioning caused by the build failure, not a compositor boundary and
+not a passing default Node gate. The passing cases include cage/sway
+wlterm input, signal-death reporting and foot on cage.
+
+The original large GTK diagnostic finished with exit one after 45m24s
+and identifies function 29105, `__res_msend_rc`, type 14, as the first
+selected activation without ordinary landings. Source inspection is in
+`.context/gtk-failing-function-29105.log`; this function has no source
+tail calls. The small tail-path reproduction demonstrates stale
+activation classification, but does not alone explain why this DNS
+helper remained selected. The GTK-prototype correction with the old
+instrumenter also failed after 44m23s with the same planner error. Thus
+the upstream getter prototype correction alone does not fix Kandelo's
+instrumenter failure.
+
+The isolated ordinary-activation correction, commit `a46e133b679d`,
+passed all **447 fork-instrument tests**, no ignored tests, and its
+release build. This includes the existing Node replay tests. Exact job
+`graphics-tail-refinement-rust-1025-222312-0d61`; log
+`.context/gtk3-prototype-check/.context/tail-refinement-full-rust.log`.
+The corrected normal instrumentation of the freshly linked GTK guest is
+still running as `graphics-gtk3-tail-fixed-smoke-1025-222658-ebe0`; no
+large GTK pass is claimed yet. The upstream package patch retains
+Emmanuele Bassi's authorship in isolated commit `486b740dce24`.
+
+The required browser-memory front door has started as
+`graphics-main-browser-memory-1025-224956-c632`:
+`scripts/dev-shell.sh env KANDELO_CACHE_GC_AUTO=0 KANDELO_PLAYWRIGHT_PORT=5490 ./run.sh test browser-memory`.
+It prepares the complete normal browser products and owns its test
+server. Execution, not collection, is required before claiming repeated
+machine/device reclamation. No browser-memory pass is claimed yet.
