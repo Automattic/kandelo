@@ -1667,9 +1667,11 @@ The contract:
 - The command fails the build with its own exit status, or 124 after its
   timeout (one hour unless `--timeout-ms` says otherwise). Output streams to
   stderr and to `$WASM_POSIX_DEP_WORK_DIR/guest-build.log`.
-- The in-guest compiler does not yet fork-instrument, run Binaryen, or stamp
-  the ABI digest (see [the SDK guide](sdk-guide.md#compile-inside-the-base-shell)).
-  Programs built this way that call `fork()` cannot run until it does.
+- The in-guest compiler runs the build machine's compile, link and
+  `wasm-opt` jobs, but it does not yet fork-instrument or stamp the ABI
+  digest (see [the SDK guide](sdk-guide.md#compile-inside-the-base-shell)).
+  A program built this way that calls `fork()` cannot run until it is
+  instrumented on the build machine.
 
 This is a Node host facility. The browser host has no host-directory mount
 backend, and package builds do not run in browsers.

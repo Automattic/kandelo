@@ -293,6 +293,17 @@ int main(void) {
 
 ## PR B: a guest compiler equivalent to the host SDK
 
+> **As landed (#1580).** PR B took a different route from the one below.
+> Instead of teaching the Bash guest wrapper the host SDK's steps, the
+> host driver was rewritten in Rust (`crates/kandelo-cc`) and the same
+> program runs on both sides, so the two SDKs share every compiler, link
+> and post-link decision. The guest ships `wasm-opt` (`binaryen@126`) and
+> compiler facts (the plugin compiled into clang). It does not ship
+> `wasm-fork-instrument`: the instrumenter's dependencies do not build
+> for Kandelo yet, so a program that calls `fork()` links in the guest
+> but is instrumented on the build machine. The text below is the
+> original plan.
+
 Goal: for the same sources and flags, the compiler inside Kandelo
 produces the same bytes as the host SDK, compiler facts and fork
 instrumentation included. Expand each task into test/implement/verify/
