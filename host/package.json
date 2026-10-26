@@ -125,7 +125,7 @@
     "@types/node": "^26.3.0",
     "@typescript/native": "npm:typescript@^7.0.2",
     "esbuild": "^0.28.2",
-    "tsup": "^8.0.0",
+    "tsup": "^9.0.0",
     "tsx": "^4.23.12",
     "typedoc": "^0.28.20",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
