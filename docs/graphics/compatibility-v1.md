@@ -5425,8 +5425,9 @@ libc result is a failure. A separate normal focused invocation,
 with the same SourceOnly root, passed one test; log
 `.context/graphics-main-raise-race-focused.log`. This does not explain the
 original timeout or turn the full suite green. Load sensitivity remains
-a hypothesis. Sortix is still running from the pinned case-sensitive
-source checkout; no combined Sortix result is claimed yet.
+a hypothesis. The Sortix portion was later stopped with exit 143 after
+a mixed-input incident described below; no combined Sortix pass is
+claimed.
 
 The normal developer-program build stopped while instrumenting
 `gtk3_smoke.raw.wasm`: **activation has no ordinary call landings**.
@@ -5448,3 +5449,59 @@ The full normal browser image is still building as
 consumers, gallery behavior and required browser-memory execution remain
 pending. Per-work drawable selection, server-wait ordering and the other
 open baseline inventory items remain ordinary implementation work.
+
+
+### Tail-only activation reproduction and interrupted Sortix attempt
+
+A small WAT module reproduces **activation has no ordinary call landings**
+with the unchanged normal instrumenter:
+`.context/gtk-mixed-tail-pruning.wat`, binary and failure log with the
+same stem. Its root ordinarily calls a helper whose fork branch is
+provably dead, then tail-calls a live fork function. Sink refinement
+removes the ordinary callee but keeps the root's old ordinary-activation
+membership. The continuation planner has no ordinary landing to emit.
+Tail transport still needs the root's control membership and tail site.
+This is a demonstrated Kandelo implementation defect. Its relationship
+to the large GTK failure remains unconfirmed pending the original
+function-specific diagnostic.
+
+The isolated GTK checkout now filters ordinary-activation membership
+against retained direct-call targets after control refinement, while
+preserving conservative indirect/reference landings and live tail
+transport. A new production-API regression fails before the change with
+the exact error and passes afterward for direct, indirect and reference
+tail calls. It validates emitted Wasm as well as selected control,
+activation and tail-site sets. Logs:
+`.context/gtk3-prototype-check/.context/gtk-mixed-tail-before.log` and
+`gtk-mixed-tail-after.log`. The complete instrumenter suite is running
+as `graphics-tail-refinement-rust-1025-222312-0d61`. This correction has
+not yet been integrated into the primary branch or used for a normal
+program/package pass.
+
+An initial after-change check was accidentally launched from the primary
+checkout. It selected zero tests and ran package-wide rustfmt, briefly
+changing five pre-existing instrumenter files. Those exact own changes
+were restored to HEAD; the formatting-only diff is preserved in
+`.context/unintended-primary-rustfmt.diff`. The zero-test run is not
+validation of the isolated correction. The real focused check was then
+run in the isolated checkout and passed one test with three tail forms.
+
+Live Sortix wrapper preparation observed the temporary input-hash drift
+and invoked instrumenter rebuilds. That attempt cannot establish a final
+coherent-tool result. Its exact tracked script and captured descendants
+were stopped; `.context/graphics-main-sortix-mixed-input-stop.json`
+records the process identities. The outer conformance job terminated
+with exit 1 after 1h54m, retaining `libc=1`, `posix=0`, `sortix=143` in
+`.context/graphics-main-posix-status.txt`. Earlier libc and OpenPOSIX
+completed before the incident and retain their stated results. Sortix
+must be rerun with stable final inputs; no claim is inferred from its
+partially built wrappers. The browser-image build and original GTK
+instrumentation processes use already-loaded native tools; audit their
+final tool identities before using their outputs as combined evidence.
+
+Separately, all **38 cache-GC unit tests passed** on integrated source,
+including the above-ABI filtering, live-root/recent-use/build-lock
+protection, overflow and invalid-argument cases. Exact job:
+`graphics-main-cache-gc-focused-1025-220632-a590`; log:
+`.context/graphics-main-cache-gc-focused.log`. These tests use temporary
+caches. No collection was applied to the shared cache.
