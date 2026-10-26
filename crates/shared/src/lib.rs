@@ -221,7 +221,12 @@ pub mod process_layout;
 ///     scratch reservation exports are gone; `kernel_process_metadata_read`;
 ///     `kernel_exec_target_admit`); later commits of the batch fold their
 ///     changes in here. docs/abi-versioning.md ("ABI 54") lists each.
-pub const ABI_VERSION: u32 = 54;
+/// 55: programs bind only to the program surface. The `kandelo.abi.contract`
+///     digest every program carries now covers `ABI_VERSION` plus the snapshot
+///     sections `xtask dump-abi` marks as the program surface
+///     (`abi_surfaces`), not kernel exports, kernel imports, host-adapter
+///     metadata or kernel-host wire formats. docs/abi-versioning.md ("ABI 55").
+pub const ABI_VERSION: u32 = 55;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///

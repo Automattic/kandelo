@@ -8,7 +8,7 @@
 //!   computed expected key so a stale mirror fails loud, independent of the
 //!   ABI version.
 //! * `kandelo.abi.contract` — the ABI-contract digest
-//!   (`hash(abi/snapshot.json + ABI_VERSION)`) the artifact was built against.
+//!   (`ABI_VERSION` plus the snapshot's program surface) the artifact was built against.
 //!   The host compares a guest's stamp against the running kernel's own
 //!   `kandelo.abi.contract` stamp at exec, so a structural ABI change can't let
 //!   a stale guest run against a mismatched kernel even when the ABI version

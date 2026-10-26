@@ -141,6 +141,7 @@ fn main() -> ExitCode {
         #[cfg(unix)]
         "cache-gc" => cache_gc::run(rest),
         "stamp-abi-contract" => stamp_abi_contract::run(&rest),
+        "abi-program-digest" => stamp_abi_contract::run_print(&rest),
         "runtime-workarounds" => runtime_workarounds::run(rest),
         "verify-fresh" => local_build::run_verify_fresh(rest),
         other => {

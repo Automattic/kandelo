@@ -128,9 +128,10 @@ export function sdkProgramBuildInputs(
     join(repoRoot, "libc/glue"),
     join(repoRoot, arch === "wasm64" ? "sysroot64" : "sysroot"),
     // The `kandelo.abi.contract` digest stamped onto each fixture is derived
-    // from the ABI snapshot, and `stamp-abi-contract` refuses to restamp a
-    // fixture carrying another snapshot's digest. An additive ABI change that
-    // leaves the glue and sysroot alone must still rebuild the fixtures.
+    // from the snapshot's program surface, and `stamp-abi-contract` refuses
+    // to restamp a fixture carrying another digest. The whole file is hashed
+    // here, so a kernel-host-only snapshot change also rebuilds the fixtures:
+    // more than needed, never less, and fixtures are cheap to compile.
     join(repoRoot, "abi/snapshot.json"),
   ];
 }

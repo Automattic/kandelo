@@ -4280,67 +4280,124 @@ fn build_typed_struct_layout(
     Value::Object(layout.into_iter().collect())
 }
 
+/// Who depends on a snapshot section, and so what a change to it forces.
+///
+/// WHY: an already-built program carries a digest of the sections it depends
+/// on (`kandelo.abi.contract`, see `local_abi_identity`), and the host refuses
+/// to run it when that digest differs from the kernel's. Binding programs to
+/// the whole snapshot made every kernel-host change -- a new optional kernel
+/// export, a new host import -- invalidate every program, package and fixture,
+/// although none of them can observe it. The kernel and host ship together and
+/// check each other through `kernel_exports`, `kernel_imports` and
+/// `host_adapter` instead.
+///
+/// Every section declares its surface where it is produced, so a new section
+/// cannot be added without choosing one. A section a running program can
+/// observe at all -- even if parts of it are kernel-host only -- is `Program`:
+/// over-binding costs a rebuild, under-binding lets a stale program run.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Surface {
+    /// Visible to a running program: what it was compiled and linked against
+    /// (syscall numbers and marshalling, channel and memory layout, structs,
+    /// custom sections, imports, fork instrumentation formats).
+    Program,
+    /// Seen only by the kernel Wasm and the host runtime, which ship together.
+    KernelHost,
+}
+
+/// Snapshot key that records each section's [`Surface`].
+pub(crate) const SURFACES_KEY: &str = "abi_surfaces";
+
+struct Sections {
+    root: JsonMap,
+    program: Vec<&'static str>,
+    kernel_host: Vec<&'static str>,
+}
+
+impl Sections {
+    fn add(&mut self, surface: Surface, name: &'static str, value: Value) {
+        assert!(
+            self.root.insert(name.into(), value).is_none(),
+            "ABI snapshot section {name} declared twice"
+        );
+        match surface {
+            Surface::Program => self.program.push(name),
+            Surface::KernelHost => self.kernel_host.push(name),
+        }
+    }
+
+    fn finish(mut self) -> JsonMap {
+        self.program.sort_unstable();
+        self.kernel_host.sort_unstable();
+        self.root.insert(
+            SURFACES_KEY.into(),
+            json!({ "program": self.program, "kernel_host": self.kernel_host }),
+        );
+        self.root
+    }
+}
+
 fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
+    use Surface::{KernelHost, Program};
     let mut root: JsonMap = BTreeMap::new();
-
+    // The ABI epoch is hashed into every digest separately; it is not a section.
     root.insert("abi_version".into(), json!(shared::ABI_VERSION));
-    root.insert("platform_limits".into(), platform_limits());
-    root.insert(
-        "process_metadata_contract".into(),
-        process_metadata_contract(),
-    );
-    root.insert(
-        "process_snapshot_wire".into(),
-        process_snapshot_wire(),
-    );
-    root.insert("wakeup_event_wire".into(), wakeup_event_wire());
-    root.insert("wait_completion_wire".into(), wait_completion_wire());
-    root.insert("io_multiplexing".into(), io_multiplexing());
-    root.insert("vfs_metadata".into(), vfs_metadata());
-    root.insert("spawn_contract".into(), spawn_contract());
+    let mut s = Sections {
+        root,
+        program: Vec::new(),
+        kernel_host: Vec::new(),
+    };
 
-    root.insert("channel_header".into(), channel_header());
-    root.insert("channel_request_flags".into(), channel_request_flags());
-    root.insert("channel_signal_area".into(), channel_signal_area());
-    root.insert("channel_buffers".into(), channel_buffers());
-    root.insert("channel_scalar_contract".into(), channel_scalar_contract());
+    s.add(Program, "platform_limits", platform_limits());
+    // Argument kinds of the host's process-metadata export.
+    s.add(KernelHost, "process_metadata_contract", process_metadata_contract());
+    // The process table the kernel hands the host (ps, the inspector).
+    s.add(KernelHost, "process_snapshot_wire", process_snapshot_wire());
+    s.add(KernelHost, "wakeup_event_wire", wakeup_event_wire());
+    s.add(KernelHost, "wait_completion_wire", wait_completion_wire());
+    s.add(Program, "io_multiplexing", io_multiplexing());
+    s.add(Program, "vfs_metadata", vfs_metadata());
+    s.add(Program, "spawn_contract", spawn_contract());
 
-    root.insert("marshalled_structs".into(), marshalled_structs());
-    root.insert("clipboard_device_abi".into(), clipboard_device_abi());
-    root.insert("oss_source_abi".into(), oss_source_abi());
-    root.insert("pcm_transport_abi".into(), pcm_transport_abi());
-    root.insert("syscalls".into(), syscalls());
-    root.insert("pathconf_names".into(), pathconf_names());
-    root.insert("wait_contract".into(), wait_contract());
-    root.insert(
-        "host_intercepted_syscalls".into(),
-        host_intercepted_syscalls(),
-    );
-    root.insert("host_adapter".into(), host_adapter());
-    root.insert("syscall_arg_descriptors".into(), syscall_arg_descriptors());
-    root.insert("ioctl_request_contracts".into(), ioctl_request_contracts());
-    root.insert("ioctl_request_families".into(), ioctl_request_families());
-    root.insert("channel_status_codes".into(), channel_status_codes());
-    root.insert("process_native_layouts".into(), process_native_layouts());
-    root.insert("process_memory_layout".into(), process_memory_layout());
-    root.insert("custom_sections".into(), custom_sections());
-    root.insert(
-        "process_expected_globals".into(),
-        process_expected_globals(),
-    );
-    root.insert("host_env_imports".into(), host_env_imports());
-    root.insert("program_artifact".into(), program_artifact());
+    s.add(Program, "channel_header", channel_header());
+    s.add(Program, "channel_request_flags", channel_request_flags());
+    s.add(Program, "channel_signal_area", channel_signal_area());
+    s.add(Program, "channel_buffers", channel_buffers());
+    s.add(Program, "channel_scalar_contract", channel_scalar_contract());
 
-    root.insert("export_deny".into(), export_deny());
+    s.add(Program, "marshalled_structs", marshalled_structs());
+    s.add(Program, "clipboard_device_abi", clipboard_device_abi());
+    s.add(Program, "oss_source_abi", oss_source_abi());
+    // The shared PCM ring between the kernel and the host's audio output.
+    s.add(KernelHost, "pcm_transport_abi", pcm_transport_abi());
+    s.add(Program, "syscalls", syscalls());
+    s.add(Program, "pathconf_names", pathconf_names());
+    s.add(Program, "wait_contract", wait_contract());
+    s.add(Program, "host_intercepted_syscalls", host_intercepted_syscalls());
+    s.add(KernelHost, "host_adapter", host_adapter());
+    s.add(Program, "syscall_arg_descriptors", syscall_arg_descriptors());
+    s.add(Program, "ioctl_request_contracts", ioctl_request_contracts());
+    s.add(Program, "ioctl_request_families", ioctl_request_families());
+    s.add(Program, "channel_status_codes", channel_status_codes());
+    s.add(Program, "process_native_layouts", process_native_layouts());
+    s.add(Program, "process_memory_layout", process_memory_layout());
+    s.add(Program, "custom_sections", custom_sections());
+    s.add(Program, "process_expected_globals", process_expected_globals());
+    // What a program imports from `env`: the host supplies it to programs.
+    s.add(Program, "host_env_imports", host_env_imports());
+    s.add(Program, "program_artifact", program_artifact());
+
+    // Which kernel Wasm exports the build keeps.
+    s.add(KernelHost, "export_deny", export_deny());
 
     let wasm =
         std::fs::read(kernel_wasm).map_err(|e| format!("read {}: {e}", kernel_wasm.display()))?;
     let exports = kernel_exports(&wasm)?;
-    validate_host_adapter_export_lifecycles(&root["host_adapter"], &exports)?;
-    root.insert("kernel_exports".into(), exports);
-    root.insert("kernel_imports".into(), kernel_imports(&wasm)?);
+    validate_host_adapter_export_lifecycles(&s.root["host_adapter"], &exports)?;
+    s.add(KernelHost, "kernel_exports", exports);
+    s.add(KernelHost, "kernel_imports", kernel_imports(&wasm)?);
 
-    Ok(root)
+    Ok(s.finish())
 }
 
 fn platform_limits() -> Value {
@@ -8054,6 +8111,24 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
             "vfs_metadata" => {
                 classify_additive_object_by_key(key, old_value, new_value, &mut report)?
             }
+            // A newly added section joins one surface list. Moving an existing
+            // section between surfaces changes what programs bind to, so it is
+            // a removal from one list and stays breaking.
+            k if k == SURFACES_KEY => {
+                for surface in ["program", "kernel_host"] {
+                    classify_additive_array(
+                        &format!("{SURFACES_KEY}.{surface}"),
+                        &old_value[surface],
+                        &new_value[surface],
+                        &mut report,
+                        |entry| {
+                            entry.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                                format!("{SURFACES_KEY}.{surface} entry must be a string: {entry}")
+                            })
+                        },
+                    )?;
+                }
+            }
             _ if old_value != new_value => {
                 report
                     .breaking
@@ -9528,6 +9603,21 @@ mod tests {
         let report = classify_compat_change(&old, &new).unwrap();
         assert!(report.breaking.is_empty(), "{report:?}");
         assert_eq!(report.additive.len(), 5);
+    }
+
+    #[test]
+    fn surface_lists_grow_compatibly_but_a_move_is_breaking() {
+        let mut old = base_snapshot();
+        old[SURFACES_KEY] = json!({"program": ["syscalls"], "kernel_host": ["kernel_exports"]});
+        let mut grown = old.clone();
+        grown[SURFACES_KEY]["program"] = json!(["syscalls", "vfs_metadata"]);
+        let report = classify_compat_change(&old, &grown).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+
+        let mut moved = old.clone();
+        moved[SURFACES_KEY] = json!({"program": [], "kernel_host": ["kernel_exports", "syscalls"]});
+        let report = classify_compat_change(&old, &moved).unwrap();
+        assert!(!report.breaking.is_empty(), "{report:?}");
     }
 
     #[test]

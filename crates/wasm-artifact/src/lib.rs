@@ -49,8 +49,10 @@ pub use policy::{describe_artifact_policy_failures, ArtifactPolicy};
 
 /// The custom section carrying the 32-byte ABI-contract digest.
 ///
-/// The digest binds `hash(abi/snapshot.json + ABI_VERSION)`, so a guest built
-/// against a different snapshot is caught even when the ABI *number* matches.
+/// The digest binds `ABI_VERSION` plus the program surface of
+/// `abi/snapshot.json`, so a guest built against a different program surface
+/// is caught even when the ABI *number* matches, and a kernel-host-only change
+/// does not invalidate it.
 pub const ABI_CONTRACT_SECTION: &str = "kandelo.abi.contract";
 
 /// The custom section carrying the 32-byte content-addressed build key a
