@@ -5794,3 +5794,36 @@ particular, the isolated KMS file/master/cursor repair is not integrated
 into this checkpoint, and ordinary command ordering, server-side sync,
 DRM descriptor transfer, pending flip/event admission and broader CTS
 coverage remain open.
+
+
+### Final-source consumer checkpoint and remaining teardown failure
+
+`graphics-combined-consumers-memory-1026-030409-f8f8` ran stable
+`8268e0fded82` through the normal default Node resolver. All **33 tests in
+17 files passed**, with zero skips/unloaded files, including the strict
+GTK destruction assertion. However, swaybar again left a live process
+through the cooperative drain deadline, producing the host's explicit
+forced-termination warning. Passing assertions do not establish graceful
+swaybar teardown. The selected traced control
+`graphics-sway-retirement-diagnostic-1026-030835-7899` reproduced the
+warning with unchanged runtime source: swaybar PID 104 remained after its
+compositor exited, and the 1.5-second drain expired. The follow-up trace
+`graphics-sway-retirement-through-destroy-1026-031430-0086` observed a
+pthread exit without a process-exit event. This is an ordinary lifecycle
+failure under investigation, not a demonstrated engine boundary.
+
+The same combined job then ran nine gallery/CTS cases. Five passed:
+cage in all three engines and sway in Chromium and Firefox. The three
+CTS cases failed before guest execution because normal browser
+preparation omitted that test-support package from the selected source
+projection. Normal CTS materialization is required. WebKit sway rendered
+its terminals, accepted input, switched workspaces and tiled a new foot
+window, but did not display the expected exit-confirmation swaynag band.
+That failure remains unresolved; its screenshot is preserved under
+`.context/graphics-combined-gallery-before-1026/`. The sequential job
+stopped there and did not rerun the memory gate.
+
+The memory switching runtime-error classifier now also rejects the
+actual forced-drain and forced-termination messages, alongside its
+existing acknowledgement/retirement failures. This closes a harness gap;
+it does not repair swaybar or count as a successful repeated memory run.

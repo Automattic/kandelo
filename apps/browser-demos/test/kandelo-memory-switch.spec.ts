@@ -73,7 +73,7 @@ test("@slow games, cage, sway, tmux and WordPress survive repeated constrained-b
   const runtimeFailures: string[] = [];
   page.on("pageerror", error => runtimeFailures.push(error.message));
   page.on("console", message => {
-    const failedRelease = /release acknowledgement timed out|retirement wake failed|incomplete graceful generation detach|graceful kernel-worker detach timed out/;
+    const failedRelease = /release acknowledgement timed out|retirement wake failed|incomplete graceful generation detach|graceful kernel-worker detach timed out|destroy drain timed out with woken process|force-terminating/;
     if (message.type() === "error" || failedRelease.test(message.text())) {
       runtimeFailures.push(message.text());
     }
