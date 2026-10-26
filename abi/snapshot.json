@@ -1466,7 +1466,8 @@
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_max_addr",
-      "kernel_set_mmap_base"
+      "kernel_set_mmap_base",
+      "kernel_wait_park_followup"
     ],
     "optional_kernel_features": 0,
     "required_kernel_exports": [
@@ -3795,6 +3796,11 @@
     {
       "kind": "func",
       "name": "kernel_wait_next_timeout_ns",
+      "signature": "() -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_wait_park_followup",
       "signature": "() -> (i64)"
     },
     {

@@ -333,12 +333,83 @@ static void *pending_reader(void *arg) {
     return NULL;
 }
 
+/* The same, with the main thread as the reader. Only the main thread's read
+ * parks in the kernel (a pthread's channel is placed by the host, so its read
+ * stays on the host's retry path), so this is the case where the park is
+ * decided the moment it is made: the kernel's sweep finds the pending signal
+ * and the host must collect that decision at once (kernel_wait_park_followup
+ * answering -2), not when the watchdog's write happens to drain it 3 s later.
+ * Deterministic: the sender's kill has returned before the reader leaves its
+ * spin, and every other thread blocks SIGUSR1. */
+static atomic_int pending_main_done;
+static void *pending_main_sender(void *arg) {
+    (void)arg;
+    usleep(100000);
+    pending_sent_at = now_ms();
+    kill(getpid(), SIGUSR1);
+    atomic_store(&pending_sent, 1);
+    /* Make no syscall until the read returns: a thread exit or any later
+     * call would let the kernel's next collection publish the decision, and
+     * the case could not tell an immediate decision from a lucky drain. The
+     * watchdog's 3 s sleep is the only other activity. */
+    while (!atomic_load(&pending_main_done)) {
+    }
+    return NULL;
+}
+
 static void *late_writer(void *arg) {
     int fd = *(int *)arg;
     sleep(3);
     if (write(fd, "w", 1) != 1) {
     }
     return NULL;
+}
+
+static void case_signal_pending_at_main_park(void) {
+    const char *name = "signal-pending-at-main-park";
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_usr1;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGUSR1, &sa, NULL);
+    usr1 = 0;
+    atomic_store(&pending_sent, 0);
+    atomic_store(&pending_main_done, 0);
+    sigset_t block, old;
+    sigemptyset(&block);
+    sigaddset(&block, SIGUSR1);
+    pthread_sigmask(SIG_BLOCK, &block, &old); /* threads below inherit it */
+    if (pipe(pending_pipe) != 0)
+        fail(name, "pipe");
+    pthread_t sender, watchdog;
+    if (pthread_create(&sender, NULL, pending_main_sender, NULL) != 0 ||
+        pthread_create(&watchdog, NULL, late_writer, &pending_pipe[1]) != 0)
+        fail(name, "pthread_create");
+    pthread_sigmask(SIG_UNBLOCK, &block, NULL); /* only this thread takes it */
+    while (!atomic_load(&pending_sent)) {
+        /* spin: no syscall, so the signal cannot be delivered here */
+    }
+    char c;
+    errno = 0;
+    ssize_t n = read(pending_pipe[0], &c, 1);
+    int err = errno;
+    atomic_store(&pending_main_done, 1);
+    long long ms = now_ms() - pending_sent_at;
+    pthread_sigmask(SIG_BLOCK, &block, NULL);
+    pthread_join(sender, NULL);
+    pthread_join(watchdog, NULL);
+    if (n != -1 || err != EINTR || usr1 != 1) {
+        printf("detail n=%zd err=%d usr1=%d ms=%lld\n", n, err, (int)usr1, ms);
+        fail(name, "a signal pending at park time did not interrupt the read");
+    }
+    if (ms > 2000)
+        fail(name, "the pending signal was decided late");
+    close(pending_pipe[0]);
+    close(pending_pipe[1]);
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    sa.sa_handler = SIG_DFL;
+    sigaction(SIGUSR1, &sa, NULL);
+    ok(name);
 }
 
 static void case_signal_pending_at_park(void) {
@@ -858,6 +929,7 @@ int main(int argc, char **argv) {
     case_cancel();
     if (with_signals) {
         case_signal_pending_at_park();
+        case_signal_pending_at_main_park();
     }
     if (with_socket)
         case_expired_timeout();

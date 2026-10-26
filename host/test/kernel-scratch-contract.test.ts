@@ -768,6 +768,10 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#settleKernelWaitsWithinKernelEntry::kernel-export-direct-use::(this.#kernelInstanceForEntry(entry).exports .kernel_wait_next_timeout_ns as () => bigint)()",
   ),
+  // After a park: no arguments; -2 (collect now) or the same deadline.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#handleSyscallInner::kernel-export-direct-use::(this.#kernelInstanceForEntry(entry).exports .kernel_wait_park_followup as (() => bigint) | undefined)?.()",
+  ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#prepareTcpListenerRegistration::kernel-export-direct-use::getAcceptWake?.(pid, fd)",
   ),

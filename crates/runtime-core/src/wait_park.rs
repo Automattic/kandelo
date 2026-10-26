@@ -1073,6 +1073,54 @@ mod tests {
         );
     }
 
+    /// What `kernel_wait_park_followup` (through `settle`) finds right after
+    /// a park: a signal already pending for the parking thread decides the
+    /// park at once, with no generation in between. The host must collect
+    /// it now (the export answers -2); nothing else would drain it.
+    #[test]
+    fn a_park_made_with_its_signal_already_pending_is_decided_at_park() {
+        let (mut table, pid) = table_with_process();
+        let mut parks = Parks::new();
+        table.get_mut(pid).unwrap().raise_signal(wasm_posix_shared::signal::SIGUSR1);
+        // No note_signal_generated: the signal predates the park.
+        let generation = futex(&mut parks, pid, pid, 0x10, None);
+        assert_eq!(parks.pending_completions(), 0, "parking alone decides nothing");
+        parks.sweep_signals(&table);
+        assert_eq!(parks.pending_completions(), 1, "the park's own sweep decides it");
+        let completions = parks.take_completions();
+        assert_eq!(completions.len(), 1);
+        assert_eq!(completions[0].generation, generation);
+        assert_eq!(completions[0].value, -(Errno::EINTR as i32));
+    }
+
+    /// A pthread_cancel that was pending when the thread parked: the host
+    /// cancels the fresh park before asking for the follow-up, so the
+    /// follow-up must report the decision.
+    #[test]
+    fn a_park_cancelled_before_its_followup_is_decided_at_park() {
+        let (table, pid) = table_with_process();
+        let mut parks = Parks::new();
+        let generation = futex(&mut parks, pid, pid, 0x10, None);
+        assert!(parks.cancel_task(pid, pid));
+        parks.sweep_signals(&table);
+        assert_eq!(parks.pending_completions(), 1);
+        let completions = parks.take_completions();
+        assert_eq!(completions[0].generation, generation);
+        assert_eq!(completions[0].flags & wire::FLAG_CANCELLED, wire::FLAG_CANCELLED);
+    }
+
+    /// The ordinary case the follow-up exists for: a fresh park with nothing
+    /// pending is undecided, so the host only keeps its deadline timer.
+    #[test]
+    fn a_fresh_park_with_nothing_pending_is_undecided() {
+        let (table, pid) = table_with_process();
+        let mut parks = Parks::new();
+        futex(&mut parks, pid, pid, 0x10, Some(5 * MS));
+        parks.sweep_signals(&table);
+        assert_eq!(parks.pending_completions(), 0);
+        assert_eq!(parks.next_timeout_ns(0), Some(5 * MS));
+    }
+
     #[test]
     fn a_blocked_signal_leaves_the_park_alone() {
         let (mut table, pid) = table_with_process();

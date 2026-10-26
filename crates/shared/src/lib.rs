@@ -3762,6 +3762,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_transfer_scratch_pointer"),
         HostAdapterKernelExport::required("kernel_validate_task"),
         HostAdapterKernelExport::required("kernel_wait_next_timeout_ns"),
+        HostAdapterKernelExport::optional("kernel_wait_park_followup"),
     ];
 
     const fn host_adapter_export_count(
