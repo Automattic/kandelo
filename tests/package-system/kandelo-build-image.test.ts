@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { zipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 
@@ -24,6 +25,23 @@ function eagerRootfs(): KandeloImageFs {
   writeVfsBinary(fs, "/usr/bin/make", text("make bytes"), 0o755);
   return fs;
 }
+
+function dependsOn(manifest: string): string[] {
+  const text = readFileSync(new URL(`../../${manifest}`, import.meta.url), "utf8");
+  const list = /^depends_on = \[([\s\S]*?)\]/m.exec(text)?.[1] ?? "";
+  return [...list.matchAll(/"([^"]+)"/g)].map((match) => match[1]!);
+}
+
+describe("kandelo-build-image package", () => {
+  it("depends on the rootfs's packages and the guest toolchain", () => {
+    // The image rebuilds the canonical rootfs with every output resident;
+    // a package the rootfs gains must reach the image too.
+    expect(dependsOn("packages/registry/kandelo-build-image/package.toml")).toEqual([
+      ...dependsOn("packages/registry/rootfs/package.toml"),
+      "kandelo-sdk-browser-bundle@21.1.7",
+    ]);
+  });
+});
 
 describe("installGuestToolchain", () => {
   it("expands the SDK archive under /usr with its modes and symlinks", () => {

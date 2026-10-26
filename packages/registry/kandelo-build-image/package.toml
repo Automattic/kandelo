@@ -23,6 +23,8 @@ depends_on = [
   "findutils@4.10.0",
   "diffutils@3.10",
   "posix-utils-lite@0.1.0",
+  "kandelo-exchange@0.1.0",
+  "attr@2.5.2",
   "kandelo-sdk-browser-bundle@21.1.7",
 ]
 
