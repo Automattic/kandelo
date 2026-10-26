@@ -5613,3 +5613,36 @@ catalogue replay tests also pass:
 `.context/graphics-native-catalog-bound.log`. These are bounded repair
 checks. The complete required memory gate, normal Node gate and stable
 Sortix conformance still need rerunning against the repaired inputs.
+
+### Repaired-source normal program build and fresh libc result
+
+The stable normal build at `d3a69caa8617` completed with exit zero after
+55m37s: `graphics-final-ports-build-1025-232951-f945`. The selected package
+graph succeeded on all 59 nodes. Normal fork-instrument, wasm32 SDK,
+wasm64 sysroot, host, developer programs and side modules completed, and
+`verify-fresh` passed. The program log is
+`.context/graphics-final-programs-build.log`; the selected graph report is
+`.context/graphics-final-ports-build-result.json`. This establishes that
+the integrated instrumenter repair works in the ordinary GTK and full
+program build, beyond the earlier isolated GTK instrumentation pass.
+The earlier stopped builder and stale-ABI Node failure remain evidence of
+those attempts. A new default Node consumer run and complete memory gate
+are still required.
+
+Fresh conformance from a clean, private checkout of `d3a69caa8617` has
+completed libc-test: **306 passed, 17 expected failures, one known
+FLAKE-PASS, zero failures, build failures or timeouts; 324 total**.
+`regression/raise-race` passed in this full run. The prior timeout remains
+recorded: its cause has not been established. The exact outer job is
+`graphics-final-conformance-1025-233522-ba0a`; its libc log is
+`.context/gtk3-prototype-check/.context/final-libc.log`. Open POSIX and
+Sortix have not yet completed in this attempt.
+
+K03 implementation continues in a separate owned scratch checkout while
+these artifact and conformance inputs remain frozen. Actual Rust ioctl
+regressions reproduce an inherited GEM handle remaining accessible after
+child removal, and PRIME reimport creating a duplicate handle. A shared
+namespace/allocator and final-namespace-close repair passes 2,589 kernel
+unit tests plus six compile-fail documentation tests in that checkout.
+These changes are not yet integrated into this branch or validated with
+normal guest artifacts; they are not part of the build result above.
