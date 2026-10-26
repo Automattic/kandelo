@@ -30,7 +30,7 @@ use fork_instrument::{
     Options, analyze,
     contract_inventory::{
         artifact_identity, fork_capability_section_hex, fork_contract_inventory,
-        linked_frame_descriptor_section_hex, reserved_env_imports,
+        legacy_asyncify_exports, linked_frame_descriptor_section_hex, reserved_env_imports,
     },
     sink_report,
 };
@@ -95,6 +95,14 @@ fn main() -> Result<()> {
         let hex = linked_frame_descriptor_section_hex(&input)
             .with_context(|| format!("reading linked-frame descriptor: {}", cli.input.display()))?;
         println!("{hex}");
+        return Ok(());
+    }
+    if cli.legacy_asyncify_exports {
+        let names = legacy_asyncify_exports(&input)
+            .with_context(|| format!("inventorying exports: {}", cli.input.display()))?;
+        for name in names {
+            println!("{name}");
+        }
         return Ok(());
     }
     if cli.reserved_env_imports {

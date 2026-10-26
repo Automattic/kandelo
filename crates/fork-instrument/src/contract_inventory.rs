@@ -421,6 +421,33 @@ pub fn reserved_env_imports(bytes: &[u8]) -> Result<Vec<ReservedEnvImport>> {
     Ok(reserved)
 }
 
+/// Export names beginning with `asyncify_`, in declaration order.
+///
+/// WHY exports and not bytes: the retired Asyncify transform is identified by
+/// what it exports (`asyncify_start_unwind` and its siblings,
+/// docs/fork-instrumentation.md). A byte search also matched programs that
+/// only contain the text, such as Binaryen's wasm-opt, which implements the
+/// transform, and refused to install them.
+pub fn legacy_asyncify_exports(bytes: &[u8]) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    for payload in Parser::new(0).parse_all(bytes) {
+        if let Payload::ExportSection(exports) =
+            payload.context("parsing wasm structure for legacy Asyncify exports")?
+        {
+            for export in exports {
+                let export = export.context("parsing export section")?;
+                if export.name.starts_with("asyncify_") {
+                    if export.name.bytes().any(|byte| matches!(byte, b'\n' | b'\r')) {
+                        bail!("export name contains a line separator");
+                    }
+                    names.push(export.name.to_string());
+                }
+            }
+        }
+    }
+    Ok(names)
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 struct ArtifactLoaderIdentity {
     dylink_section_count: usize,
