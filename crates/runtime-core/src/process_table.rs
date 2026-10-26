@@ -461,22 +461,10 @@ pub fn bump_inherited_resource_refcounts(
 /// / prime-fd OFDs — GEM-handle maps and prime-bo bindings. KMS framebuffers
 /// are not per-copy: the clone shares the parent's `SharedKmsFbs`.
 ///
-/// **Spawn-only**, deliberately NOT folded into
-/// [`bump_inherited_resource_refcounts`]: unlike pipes/sockets/PTYs (whose
-/// refcount bumps live solely in that shared helper), DRI bos are increfed on
-/// the *fork* path inside deserialize (`fork::read_dri_fd_state` / the
-/// PrimeBo arm). `spawn_child`, however, builds the
-/// child by value-cloning the parent's `ofd_table` and never deserializes, so
-/// its inherited DRI OFDs carry no registry ref. Calling this from
-/// `bump_inherited_resource_refcounts` would double-incref on `fork_process`
-/// (deserialize + bump). Keeping it spawn-local balances the child's
-/// eventual close-path decref (`dri_release_ofd_state`) exactly once.
-///
-/// Without this, a `posix_spawn`'d client that inherits the compositor's
-/// `O_CLOEXEC` card0 fd (carrying the scanout bo's GEM handle) decrefs that
-/// bo on exec with no matching incref, tombstoning
-/// the compositor's still-live scanout bo in the global `BoRegistry` and
-/// freezing the desktop under a `gbm_bo_map` EINVAL flood.
+/// Spawn clones the live GEM and framebuffer namespaces; those table entries
+/// already own their BO references. Only copied cursor and PRIME sidecars need
+/// another reference. Fork obtains those references while deserializing, then
+/// settles temporary GEM snapshot references when relinking the live namespace.
 fn bump_inherited_dri_bos(child: &Process) {
     for (_idx, ofd) in child.ofd_table.iter() {
         let Some(dri_state) = ofd.dri_state.as_deref() else {
@@ -486,15 +474,8 @@ fn bump_inherited_dri_bos(child: &Process) {
             crate::ofd::DriOfdState::PrimeBo(p) => {
                 reg.incref(p.bo_id);
             }
-            crate::ofd::DriOfdState::RenderNode(dri) => {
-                for bo_id in dri.handles.values() {
-                    reg.incref(*bo_id);
-                }
-            }
-            crate::ofd::DriOfdState::Card { dri, kms } => {
-                for bo_id in dri.handles.values() {
-                    reg.incref(*bo_id);
-                }
+            crate::ofd::DriOfdState::RenderNode(_) => {}
+            crate::ofd::DriOfdState::Card { kms, .. } => {
                 if let Some(bo) = kms.cursor_bo {
                     reg.incref(bo);
                 }
@@ -1399,6 +1380,12 @@ impl ProcessTable {
                 .get(&parent_pid)
                 .ok_or(Errno::ESRCH)?
                 .ofd_table,
+            |bo| crate::dri::with_registry(|registry| {
+                // The matching live parent handle still owns a reference.
+                let before = registry.get(bo).expect("live parent GEM BO").refcount;
+                assert!(before >= 2, "fork snapshot must own a duplicate GEM reference");
+                assert_eq!(registry.decref(bo), Some(before - 1));
+            }),
         )?;
         // POSIX fork leaves one thread in the child, and that thread inherits
         // the mask of the task that called fork rather than the process

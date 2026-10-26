@@ -423,7 +423,7 @@ fn epoll_delivers_a_registration_held_only_in_a_sibling_process() {
     let mut child = fork_child_of(&parent, 112);
     child
         .ofd_table
-        .link_shared_states_from(&parent.ofd_table)
+        .link_shared_states_from(&parent.ofd_table, |_| panic!("no DRI fixture"))
         .unwrap();
     sys_close(&mut parent, &mut h, r).unwrap();
     sys_write(&mut parent, &mut h, w, b"x").unwrap();
@@ -467,7 +467,7 @@ fn epoll_forked_stream_shutdown_uses_the_shared_connection_half() {
     let mut child = fork_child_of(&p, 115);
     child
         .ofd_table
-        .link_shared_states_from(&p.ofd_table)
+        .link_shared_states_from(&p.ofd_table, |_| panic!("no DRI fixture"))
         .unwrap();
     sys_shutdown(&mut child, &mut h, b, 1).unwrap();
     assert_eq!(batch(&mut p, &mut h, ep, 1), [(EPOLLIN | EPOLLRDHUP, 1)]);

@@ -3396,8 +3396,15 @@ backing. Unmapped PRIME imports and selected cursors retain storage after
 the allocator exits. Normal OFD close and process removal share the same
 DRI release collector: kernel references retire synchronously, then the
 owning adapter drains final BO, framebuffer, GL, and master notifications.
-Failed spawn rollback drains those effects too. Spawn counts inherited
-cursor references alongside GEM handles and framebuffers.
+Failed spawn rollback drains those effects too. GEM names and their allocator belong to the DRM open description: dup,
+fork, vfork and spawn aliases share one namespace. Each entry owns one BO
+reference; final namespace close releases its remaining entries. Fork
+settles the deserialized snapshot's duplicate references before publishing
+the shared namespace. Spawn adds references only for copied PRIME and
+cursor sidecars; GEM and framebuffer tables retain their existing holds.
+PRIME reimport returns an existing live handle on the same DRM file.
+KMS master, cursor and event inheritance still have separate gaps; see
+[graphics compatibility v1](graphics/compatibility-v1.md).
 
 The worker's DRI registry merges changed byte runs relative to a private
 snapshot of each mapping. It uses the same merge primitive as anonymous

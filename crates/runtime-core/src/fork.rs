@@ -722,12 +722,13 @@ const PCM_DIR_PLAYBACK: u8 = 0;
 const PCM_DIR_CAPTURE: u8 = 1;
 
 fn write_dri_fd_state(w: &mut Writer<'_>, dri: &crate::ofd::DriFdState) -> Result<(), Errno> {
-    w.write_u32(dri.handles.len() as u32)?;
-    for (handle, bo_id) in &dri.handles {
+    let gem = dri.gem.borrow();
+    w.write_u32(gem.handles.len() as u32)?;
+    for (handle, bo_id) in &gem.handles {
         w.write_u32(*handle)?;
         w.write_u32(*bo_id)?;
     }
-    w.write_u32(dri.next_handle)?;
+    w.write_u32(gem.next_handle)?;
     Ok(())
 }
 
@@ -808,30 +809,38 @@ fn write_input_state(
     Ok(())
 }
 
-/// Read a `DriFdState` from the wire and incref every referenced bo
-/// in the global registry so the new OFD has its own refcount. The
-/// caller may still drop the entire OFD if the surrounding deserialize
-/// fails; the trail of increfs is harmless in that case (the OFD's
-/// eventual close-path decref balances it).
+/// Reconstruct an independently owned GEM namespace. Fork relinking settles
+/// these temporary references before adopting the parent's live namespace.
+/// Parse and preflight the entire table before acquiring any BO references.
 fn read_dri_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::DriFdState, Errno> {
     use alloc::collections::BTreeMap;
     let handle_count = r.read_u32()? as usize;
     if handle_count > 65536 {
         return Err(Errno::EINVAL);
     }
-    let mut handles: BTreeMap<u32, crate::dri::BoId> = BTreeMap::new();
+    let mut handles = BTreeMap::new();
+    let mut references = BTreeMap::<crate::dri::BoId, u32>::new();
     for _ in 0..handle_count {
         let handle = r.read_u32()?;
         let bo_id = r.read_u32()?;
-        crate::dri::with_registry(|reg| {
-            reg.incref(bo_id);
-        });
-        handles.insert(handle, bo_id);
+        if handle == 0 || handles.insert(handle, bo_id).is_some() {
+            return Err(Errno::EINVAL);
+        }
+        *references.entry(bo_id).or_default() += 1;
     }
     let next_handle = r.read_u32()?;
+    crate::dri::with_registry(|reg| {
+        for (&bo, &count) in &references {
+            reg.get(bo).ok_or(Errno::EINVAL)?.refcount
+                .checked_add(count).ok_or(Errno::EOVERFLOW)?;
+        }
+        for &bo in handles.values() {
+            assert!(reg.incref(bo).is_some(), "preflighted GEM snapshot reference");
+        }
+        Ok(())
+    })?;
     Ok(crate::ofd::DriFdState {
-        handles,
-        next_handle,
+        gem: crate::ofd::SharedGemNamespace::new(crate::ofd::GemNamespace { handles, next_handle }),
         gl: None,
         gl_resources: crate::ofd::SharedGlResources::default(),
     })
@@ -3489,11 +3498,11 @@ mod tests {
             host_handle,
             path.to_vec(),
         );
-        let mut dri = DriFdState::default();
+        let dri = DriFdState::default();
         for &(h, bo) in handles {
-            dri.handles.insert(h, bo);
+            dri.gem.borrow_mut().handles.insert(h, bo);
         }
-        dri.next_handle = handles.iter().map(|(h, _)| *h).max().unwrap_or(0) + 1;
+        dri.gem.borrow_mut().next_handle = handles.iter().map(|(h, _)| *h).max().unwrap_or(0) + 1;
         proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
             Some(alloc::boxed::Box::new(DriOfdState::RenderNode(dri)));
         proc.fd_table
@@ -3536,9 +3545,9 @@ mod tests {
         // Child OFD carries the cloned handle map.
         let child_ofd = child.ofd_table.get(ofd_idx).unwrap();
         let child_dri = child_ofd.dri().unwrap();
-        assert_eq!(child_dri.handles.get(&1).copied(), Some(bo_a));
-        assert_eq!(child_dri.handles.get(&2).copied(), Some(bo_b));
-        assert_eq!(child_dri.next_handle, 3);
+        assert_eq!(child_dri.gem.borrow().handles.get(&1).copied(), Some(bo_a));
+        assert_eq!(child_dri.gem.borrow().handles.get(&2).copied(), Some(bo_b));
+        assert_eq!(child_dri.gem.borrow().next_handle, 3);
 
         // Clean up: decref the two extra references so we don't pollute
         // the registry for sibling tests.
@@ -3816,6 +3825,40 @@ mod tests {
             post_kms.holds_master,
             "exec keeps the same process identity; KMS master should survive"
         );
+    }
+
+    #[test]
+    fn gem_snapshot_preflight_rejects_invalid_tables_without_acquiring_references() {
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let bo = crate::dri::with_registry(|r| r.alloc(4, 4, 32).id);
+        let overflowing = crate::dri::with_registry(|r| {
+            let object = r.alloc(4, 4, 32);
+            object.refcount = u32::MAX;
+            object.id
+        });
+        for (words, expected) in [
+            (alloc::vec![2, 1, bo, 1, bo, 2], Errno::EINVAL),
+            (alloc::vec![1, 0, bo, 1], Errno::EINVAL),
+            (alloc::vec![1, 1, bo], Errno::EINVAL),
+            (alloc::vec![2, 1, bo, 2, u32::MAX, 3], Errno::EINVAL),
+            (alloc::vec![2, 1, bo, 2, overflowing, 3], Errno::EOVERFLOW),
+        ] {
+            let bytes: Vec<u8> = words.into_iter().flat_map(u32::to_le_bytes).collect();
+            assert!(matches!(read_dri_fd_state(&mut Reader::new(&bytes)), Err(e) if e == expected));
+            assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 1);
+            assert_eq!(crate::dri::with_registry(|r| r.get(overflowing).unwrap().refcount), u32::MAX);
+        }
+        // Multiple distinct handles may legitimately own the same storage.
+        let bytes: Vec<u8> = [2u32, 1, bo, 2, bo, 3].into_iter().flat_map(u32::to_le_bytes).collect();
+        let snapshot = read_dri_fd_state(&mut Reader::new(&bytes)).unwrap();
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 3);
+        let namespace = snapshot.gem.into_last().unwrap();
+        for bo in namespace.handles.into_values() {
+            crate::dri::with_registry(|r| { r.decref(bo); });
+        }
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 1);
+        crate::dri::bo::reset_registry();
     }
 
 }

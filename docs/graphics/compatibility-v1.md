@@ -91,7 +91,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | B03 | Surface ring lock/release/destroy ownership | Main two-BO ring; audit lock/destroy/outstanding buffer lifetime | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks | partial |
 | K01 | Single display resources and consistent object IDs | Integrated dynamic mode catalog, properties and device-wide IDs; broader device/host validation pending | kernel dri/kms, host mode metadata | Rust ioctl and Node mode tests; preserve preferred/catalog semantics | partial |
 | K02 | Probe all nested outputs before writing | Property, enum and expanded connector outputs now preprobe all destinations; focused Rust regressions pass | syscall nested-output helpers | Valid first/invalid later buffers, unchanged sentinels and top-level bytes | open |
-| K03 | Shared OFD GEM/FB authority, PRIME and final references | Shared KMS FBs and inherited graphics cleanup/BO holds are implemented; general forked GEM handle-map sharing and full guest validation remain open | OFD, process/fork/spawn/exec/close, BO registry | Rust + real Node lifecycle/dup/fork/spawn tests | open |
+| K03 | Shared OFD GEM/FB authority, PRIME and final references | Shared GEM namespace/allocator, KMS FBs and inherited graphics cleanup/BO holds are implemented; final combined guest validation and remaining KMS-file authority gaps stay open | OFD, process/fork/spawn/exec/close, BO registry | Rust + real Node lifecycle/dup/fork/spawn tests | open |
 | K04 | Legacy modeset/flip/vblank/master handoff | Main display owner and cleanup; cage changes automatic master and CLOSEFB | KMS, host scanout | Pending flip drop/exit/crash/master replacement, no stale event/scanout | partial |
 | K05 | GPU scanout, CPU fallback and context loss | Main has GPU producer target; cage adds scanout blit | host GPU registry/present target/KMS pump | Render imports to scanout; orientation/pixels three engines | open |
 | H01 | Command framing, complete validation and bounded results | Owned bounded submission snapshots make structural validation and dispatch observe the same bytes in native and forwarded paths; one-shot frames restore cached views and discard on purge. Source execution leases retain revoked context owners and owned drawable allocations independently; borrowed GPU allocations also have independent source leases; drain remains synchronous pending per-work drawable selection and server-wait ordering. Kernel query dispatch preprobes nonempty guest destinations, rejects nonzero reserved fields/null inputs, and rejects oversized host replies without copying output. Focused Rust/host source evidence is recorded below; complete guest coverage remains open | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
@@ -5672,3 +5672,62 @@ completed: **174 passed, three expected failures, two skips, zero
 unexpected failures/timeouts/build errors; 179 total**. Its log is
 `.context/gtk3-prototype-check/.context/final-posix.log`. Sortix remains
 running against the same clean private `d3a69caa8617` source.
+
+### Shared DRM-file GEM namespace and PRIME names
+
+The branch now shares GEM names **and their allocator** across dup,
+fork, vfork and spawn aliases. Each namespace entry owns one BO reference,
+released by GEM_CLOSE or final namespace close. Independent opens retain
+independent namespaces. Fork deserialization temporarily owns a snapshot's
+references; prevalidated relinking retires those duplicates before sharing
+the parent's live namespace. Spawn no longer adds GEM references for the
+shared table. Copied PRIME and cursor sidecars still acquire their own
+references. The serialized GEM field sequence remains unchanged.
+
+PRIME reimport on the same DRM file reuses a live handle and does not add
+another BO hold. Closing an absent GEM handle returns EINVAL; a missing
+MAP_DUMB handle returns ENOENT without changing the reply. These contracts
+follow Linux's [GEM handle implementation](https://github.com/torvalds/linux/blob/v6.12/drivers/gpu/drm/drm_gem.c)
+and [PRIME file-private import lookup](https://github.com/torvalds/linux/blob/v6.12/drivers/gpu/drm/drm_prime.c).
+Snapshot parsing validates the complete namespace and BO reference
+capacity before acquiring any of its references; duplicate/zero names,
+truncation, missing storage and overflow fail without partial acquisition.
+
+Actual Rust ioctl regressions failed before repair: parent MAP_DUMB
+succeeded after child GEM_CLOSE, and PRIME reimport returned handle two
+instead of the existing handle one. Jobs are
+`graphics-gem-namespace-before-1025-235937-31ac` and
+`graphics-gem-prime-before-1026-001733-886b`. Two initial package-name
+mistakes did not compile tests and are not behavioral evidence.
+
+Both C probes also failed through the normal SDK, fork instrumenter and
+Node host with the unrepaired normal ABI 55 kernel. The source-only
+control deliberately selected the primary checkout's normal projection:
+`graphics-gem-guest-before-prepared-1026-002419-339a`, log
+`.context/gtk-instrument-diagnostic/.context/gem-guest-before-prepared.log`.
+Two selected cases failed at the corresponding ioctl/handle assertions;
+four existing cursor cases were intentionally excluded by the name filter.
+The first provisioning attempt stopped for an uninitialized private musl
+checkout and did not run guests. Its retry uses the exact pinned musl
+commit, without modifying the user's primary submodules.
+
+The repaired scratch source passed **3,231 Rust workspace tests, zero
+ignored**, excluding xtask, in 87 result groups:
+`graphics-gem-workspace-final-1026-003310-a953`, log
+`.context/gtk-instrument-diagnostic/.context/gem-workspace-final.log`.
+This includes actual fork/vfork/spawn/dup ioctl paths, independent opens,
+allocator visibility, final close, PRIME removal/reimport, inherited cursor
+rollback, framebuffer holds and rejected snapshot acquisition.
+A normal repaired-kernel/SDK/rootfs/host guest run is still in progress:
+`graphics-gem-guest-after-1026-003309-f04e`. Neither those guests nor the
+new three-engine guest probe is claimed as passing yet.
+
+The implementation is copied byte-for-byte from the validated owned
+scratch source; no ABI bump is added within this unpublished ABI 55
+iteration. Existing combined Node/browser/conformance results above
+predate this kernel change and remain scoped to their recorded source.
+New normal artifact, Node/browser and conformance evidence is required.
+K03 remains open for that validation and full DRM-file lifecycle coverage.
+KMS master identity is still keyed by process/local slot, and cursor,
+client caps, pending flips and events are still copied; those ordinary
+K04 gaps are not repaired by sharing GEM names.

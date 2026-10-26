@@ -361,33 +361,48 @@ impl WeakGlResources {
     }
 }
 
-/// Per-fd state for `/dev/dri/renderD128` opens.
-///
-/// Same-process aliases share the sidecar; a fresh open has a new handle
-/// namespace. Fork relinks GL cleanup/storage and KMS framebuffer leases,
-/// while the general forked GEM handle map remains a copied snapshot.
-#[derive(Clone, Debug)]
-pub struct DriFdState {
-    /// GEM-handle → global `BoId` map for this fd.
+/// GEM names belong to the DRM open file description, including its allocator.
+/// Each map entry owns one BO reference, regardless of inherited fd aliases.
+#[derive(Debug, PartialEq, Eq)]
+pub struct GemNamespace {
     pub handles: BTreeMap<u32, crate::dri::BoId>,
-    /// Next handle id to issue on this fd. Linux numbers from 1.
     pub next_handle: u32,
+}
+
+impl Default for GemNamespace {
+    fn default() -> Self {
+        Self { handles: BTreeMap::new(), next_handle: 1 }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SharedGemNamespace(Rc<RefCell<GemNamespace>>);
+
+impl SharedGemNamespace {
+    pub fn new(namespace: GemNamespace) -> Self {
+        Self(Rc::new(RefCell::new(namespace)))
+    }
+    pub fn borrow(&self) -> core::cell::Ref<'_, GemNamespace> {
+        self.0.borrow()
+    }
+    pub fn borrow_mut(&self) -> core::cell::RefMut<'_, GemNamespace> {
+        self.0.borrow_mut()
+    }
+    pub fn into_last(self) -> Option<GemNamespace> {
+        Rc::try_unwrap(self.0).ok().map(RefCell::into_inner)
+    }
+}
+
+/// Per-open DRM state. Separate opens have separate namespaces; dup, fork,
+/// vfork and spawn aliases observe the same names and allocator.
+#[derive(Clone, Debug, Default)]
+pub struct DriFdState {
+    pub gem: SharedGemNamespace,
     /// GL session state for this fd's renderD128 handle. `None`
     /// until `GLIO_INIT` succeeds; `Some` until `GLIO_TERMINATE` /
     /// last close / exec.
     pub gl: Option<GlState>,
     pub gl_resources: SharedGlResources,
-}
-
-impl Default for DriFdState {
-    fn default() -> Self {
-        DriFdState {
-            handles: BTreeMap::new(),
-            next_handle: 1,
-            gl: None,
-            gl_resources: SharedGlResources::default(),
-        }
-    }
 }
 
 /// A KMS framebuffer object — i.e. one slot in the per-fd `fbs` map,
@@ -1103,7 +1118,28 @@ impl OfdTable {
 
     /// Relink fork-deserialized entries to the source process's live shared
     /// state. Fork preserves table slots; an identity mismatch is corruption.
-    pub fn link_shared_states_from(&mut self, source: &OfdTable) -> Result<(), Errno> {
+    pub fn link_shared_states_from(
+        &mut self,
+        source: &OfdTable,
+        mut release_snapshot_bo: impl FnMut(crate::dri::BoId),
+    ) -> Result<(), Errno> {
+        // Validate the whole snapshot before settling any temporary references.
+        // Fork runs synchronously; the parent's namespace cannot change between
+        // serialization and this check. A mismatch must not partially relink.
+        for (index, ofd) in self.iter() {
+            let parent = source.get(index).ok_or(Errno::EINVAL)?;
+            if parent.ofd_id != ofd.ofd_id
+                || parent.dri_state.as_deref().map(core::mem::discriminant)
+                    != ofd.dri_state.as_deref().map(core::mem::discriminant)
+            {
+                return Err(Errno::EINVAL);
+            }
+            match (ofd.dri(), parent.dri()) {
+                (Some(child), Some(parent)) if *child.gem.borrow() == *parent.gem.borrow() => {}
+                (None, None) => {}
+                _ => return Err(Errno::EINVAL),
+            }
+        }
         for (index, ofd) in self.iter_mut() {
             let source_ofd = source.get(index).ok_or(Errno::EINVAL)?;
             if source_ofd.ofd_id != ofd.ofd_id {
@@ -1122,6 +1158,15 @@ impl OfdTable {
                 child_input.ring = source_input.ring.clone();
             }
             if let (Some(child_dri), Some(source_dri)) = (ofd.dri_mut(), source_ofd.dri()) {
+                if !Rc::ptr_eq(&child_dri.gem.0, &source_dri.gem.0) {
+                    // Deserialization acquired references for an independent
+                    // snapshot. Retire only those duplicates before sharing the
+                    // still-live parent namespace; its entries retain the BOs.
+                    for &bo in child_dri.gem.borrow().handles.values() {
+                        release_snapshot_bo(bo);
+                    }
+                    child_dri.gem = source_dri.gem.clone();
+                }
                 child_dri.gl_resources = source_dri.gl_resources.clone();
             }
             if let (Some(child_kms), Some(source_kms)) = (ofd.kms_mut(), source_ofd.kms()) {
@@ -1460,7 +1505,7 @@ mod tests {
         // render node: dri() yes, kms() no, prime_bo() no
         let ro = table.get(render).unwrap();
         assert!(ro.dri().is_some());
-        assert_eq!(ro.dri().unwrap().next_handle, 1);
+        assert_eq!(ro.dri().unwrap().gem.borrow().next_handle, 1);
         assert!(ro.kms().is_none());
         assert!(ro.prime_bo().is_none());
 
@@ -1488,13 +1533,13 @@ mod tests {
             Some(Box::new(DriOfdState::RenderNode(DriFdState::default())));
 
         let dri = table.get_mut(render).unwrap().dri_mut().unwrap();
-        let h = dri.next_handle;
-        dri.handles.insert(h, 42);
-        dri.next_handle += 1;
+        let h = dri.gem.borrow().next_handle;
+        dri.gem.borrow_mut().handles.insert(h, 42);
+        dri.gem.borrow_mut().next_handle += 1;
 
         let dri_again = table.get(render).unwrap().dri().unwrap();
-        assert_eq!(dri_again.handles.get(&1).copied(), Some(42));
-        assert_eq!(dri_again.next_handle, 2);
+        assert_eq!(dri_again.gem.borrow().handles.get(&1).copied(), Some(42));
+        assert_eq!(dri_again.gem.borrow().next_handle, 2);
     }
 
     #[test]

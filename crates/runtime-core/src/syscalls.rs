@@ -1110,7 +1110,7 @@ fn ranges_overlap(a_addr: usize, a_len: usize, b_addr: usize, b_len: usize) -> b
 }
 
 fn dri_fd_has_bo_handle(dri: &crate::ofd::DriFdState, bo_id: crate::dri::BoId) -> bool {
-    dri.handles.values().any(|&candidate| candidate == bo_id)
+    dri.gem.borrow().handles.values().any(|&candidate| candidate == bo_id)
 }
 
 fn clear_dri_fd_cmdbuf_in_range(
@@ -1371,7 +1371,7 @@ fn release_dri_handle(
     let pid = proc.pid as i32;
     let bo_id = {
         let dri = dri_state_mut(proc, ofd_idx)?;
-        dri.handles.remove(&handle).ok_or(Errno::ENOENT)?
+        dri.gem.borrow_mut().handles.remove(&handle).ok_or(Errno::ENOENT)?
     };
     let new_count = crate::dri::with_registry(|r| r.decref(bo_id));
     if new_count == Some(0) {
@@ -1587,11 +1587,12 @@ fn handle_dri_ioctl(
             // bo and host backing.
             let handle = match dri_state_mut(proc, ofd_idx) {
                 Ok(dri) => {
-                    let h = dri.next_handle;
-                    match dri.next_handle.checked_add(1) {
+                    let mut gem = dri.gem.borrow_mut();
+                    let h = gem.next_handle;
+                    match gem.next_handle.checked_add(1) {
                         Some(n) => {
-                            dri.next_handle = n;
-                            dri.handles.insert(h, bo_id);
+                            gem.next_handle = n;
+                            gem.handles.insert(h, bo_id);
                             h
                         }
                         None => {
@@ -1648,11 +1649,12 @@ fn handle_dri_ioctl(
             // and its host texture.
             let handle = match dri_state_mut(proc, ofd_idx) {
                 Ok(dri) => {
-                    let h = dri.next_handle;
-                    match dri.next_handle.checked_add(1) {
+                    let mut gem = dri.gem.borrow_mut();
+                    let h = gem.next_handle;
+                    match gem.next_handle.checked_add(1) {
                         Some(n) => {
-                            dri.next_handle = n;
-                            dri.handles.insert(h, bo_id);
+                            gem.next_handle = n;
+                            gem.handles.insert(h, bo_id);
                             h
                         }
                         None => {
@@ -1689,7 +1691,7 @@ fn handle_dri_ioctl(
             let mut req: WpkDrmModeMapDumb =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
             let bo_id = *dri_state(proc, ofd_idx)?
-                .handles
+                .gem.borrow().handles
                 .get(&req.handle)
                 .ok_or(Errno::ENOENT)?;
             // GPU-tier bos have no CPU-side SAB, so they cannot be mapped.
@@ -1726,6 +1728,7 @@ fn handle_dri_ioctl(
             let req: WpkDrmGemClose =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
             release_dri_handle(proc, host, ofd_idx, req.handle)
+                .map_err(|e| if e == Errno::ENOENT { Errno::EINVAL } else { e })
         }
         DRM_IOCTL_PRIME_HANDLE_TO_FD => {
             if buf.len() < core::mem::size_of::<WpkDrmPrimeHandle>() {
@@ -1734,7 +1737,7 @@ fn handle_dri_ioctl(
             let mut req: WpkDrmPrimeHandle =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
             let bo_id = *dri_state(proc, ofd_idx)?
-                .handles
+                .gem.borrow().handles
                 .get(&req.handle)
                 .ok_or(Errno::ENOENT)?;
 
@@ -1808,15 +1811,28 @@ fn handle_dri_ioctl(
                 return Err(Errno::EACCES);
             }
 
+            // PRIME names are cached by the DRM file, not by the importing
+            // process or the dma-buf fd number. Reimporting live storage must
+            // not create another name or another registry reference.
+            let existing = dri_state(proc, ofd_idx)?.gem.borrow().handles.iter()
+                .find_map(|(&handle, &bo)| (bo == prime.bo_id).then_some(handle));
+            if let Some(handle) = existing {
+                req.handle = handle;
+                unsafe {
+                    core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
+                }
+                return Ok(());
+            }
             crate::dri::with_registry(|r| r.incref(prime.bo_id));
 
             let handle = match dri_state_mut(proc, ofd_idx) {
                 Ok(dri) => {
-                    let h = dri.next_handle;
-                    match dri.next_handle.checked_add(1) {
+                    let mut gem = dri.gem.borrow_mut();
+                    let h = gem.next_handle;
+                    match gem.next_handle.checked_add(1) {
                         Some(n) => {
-                            dri.next_handle = n;
-                            dri.handles.insert(h, prime.bo_id);
+                            gem.next_handle = n;
+                            gem.handles.insert(h, prime.bo_id);
                             h
                         }
                         None => {
@@ -1849,7 +1865,7 @@ fn handle_dri_ioctl(
             let bo_id;
             {
                 let dri = dri_state(proc, ofd_idx)?;
-                bo_id = *dri.handles.get(&req.bo_handle).ok_or(Errno::ENOENT)?;
+                bo_id = *dri.gem.borrow().handles.get(&req.bo_handle).ok_or(Errno::ENOENT)?;
                 let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
                 if !gls.initialized || gls.context_id != Some(req.ctx_id) {
                     return Err(Errno::EINVAL);
@@ -2084,7 +2100,7 @@ fn handle_dri_ioctl(
             let target = if attrs.reserved[0] == 0 {
                 None
             } else {
-                Some(*dri.handles.get(&attrs.reserved[0]).ok_or(Errno::ENOENT)?)
+                Some(*dri.gem.borrow().handles.get(&attrs.reserved[0]).ok_or(Errno::ENOENT)?)
             };
             let surface_id = crate::ofd::allocate_gl_id()?;
             {
@@ -2159,7 +2175,7 @@ fn handle_dri_ioctl(
             let dri = dri_state(proc, ofd_idx)?;
             let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
             let surface = gls.surface_id.ok_or(Errno::EINVAL)?;
-            let target = *dri.handles.get(&attrs.reserved[0]).ok_or(Errno::ENOENT)?;
+            let target = *dri.gem.borrow().handles.get(&attrs.reserved[0]).ok_or(Errno::ENOENT)?;
             let session = gls.session_id;
             let record = dri
                 .gl_resources
@@ -2699,7 +2715,7 @@ fn handle_dri_card_ioctl(
                 return Err(Errno::EINVAL);
             }
             let bo_id = *dri_state(proc, ofd_idx)?
-                .handles
+                .gem.borrow().handles
                 .get(&req.handles[0])
                 .ok_or(Errno::ENOENT)?;
             let bo_stride = crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.stride))
@@ -2822,7 +2838,7 @@ fn handle_dri_card_ioctl(
                     if width == 0 || height == 0 || width > 64 || height > 64 {
                         return Err(Errno::EINVAL);
                     }
-                    bo_id = *dri_state(proc, ofd_idx)?.handles.get(&handle)
+                    bo_id = *dri_state(proc, ofd_idx)?.gem.borrow().handles.get(&handle)
                         .ok_or(Errno::ENOENT)?;
                     // Linux legacy cursor images use packed ARGB8888 rows,
                     // independently of the dumb allocation's original pitch.
@@ -3346,8 +3362,10 @@ pub fn collect_dri_release_effects(
             if let Some(resources) = dri.gl_resources.into_last() {
                 effects.extend(collect_gl_resource_releases(resources));
             }
-            for (_handle, bo_id) in dri.handles.into_iter() {
-                release_bo(&mut effects, bo_id);
+            if let Some(gem) = dri.gem.into_last() {
+                for (_, bo_id) in gem.handles {
+                    release_bo(&mut effects, bo_id);
+                }
             }
         }
         crate::ofd::DriOfdState::Card { dri, kms } => {
@@ -3367,8 +3385,10 @@ pub fn collect_dri_release_effects(
             if let Some(resources) = dri.gl_resources.into_last() {
                 effects.extend(collect_gl_resource_releases(resources));
             }
-            for (_handle, bo_id) in dri.handles.into_iter() {
-                release_bo(&mut effects, bo_id);
+            if let Some(gem) = dri.gem.into_last() {
+                for (_, bo_id) in gem.handles {
+                    release_bo(&mut effects, bo_id);
+                }
             }
         }
     }
@@ -51167,7 +51187,7 @@ impl HostIO for RelSymlinkMock {
         let ofd = proc.ofd_table.get(ofd_idx).unwrap();
         assert!(ofd.dri().is_some());
         assert!(ofd.kms().is_none());
-        assert_eq!(ofd.dri().unwrap().next_handle, 1);
+        assert_eq!(ofd.dri().unwrap().gem.borrow().next_handle, 1);
     }
 
     #[test]
@@ -51393,7 +51413,7 @@ impl HostIO for RelSymlinkMock {
             .unwrap()
             .dri()
             .unwrap()
-            .handles
+            .gem.borrow().handles
             .is_empty());
     }
 
@@ -51525,7 +51545,7 @@ impl HostIO for RelSymlinkMock {
             .unwrap()
             .dri()
             .unwrap()
-            .handles
+            .gem.borrow().handles
             .contains_key(&created.handle));
 
         // DESTROY_DUMB removes it from the namespace.
@@ -51548,7 +51568,7 @@ impl HostIO for RelSymlinkMock {
             .unwrap()
             .dri()
             .unwrap()
-            .handles
+            .gem.borrow().handles
             .contains_key(&created.handle));
 
         // Second DESTROY_DUMB on the same handle → ENOENT.
@@ -51608,7 +51628,7 @@ impl HostIO for RelSymlinkMock {
             .unwrap()
             .dri()
             .unwrap()
-            .handles
+            .gem.borrow().handles
             .contains_key(&created.handle));
     }
 
@@ -51777,7 +51797,7 @@ impl HostIO for RelSymlinkMock {
             .unwrap()
             .dri()
             .unwrap()
-            .handles
+            .gem.borrow().handles
             .get(&created.handle)
             .unwrap();
         let bo_b = *proc
@@ -51786,7 +51806,7 @@ impl HostIO for RelSymlinkMock {
             .unwrap()
             .dri()
             .unwrap()
-            .handles
+            .gem.borrow().handles
             .get(&imported.handle)
             .unwrap();
         assert_eq!(bo_a, bo_b, "prime export+import must alias the same bo");
@@ -53056,7 +53076,7 @@ impl HostIO for RelSymlinkMock {
         let bo_id = (offset >> 12) as u32;
         let handle = *dri_state(&proc, proc.fd_table.get(fd).unwrap().ofd_ref.0)
             .unwrap()
-            .handles
+            .gem.borrow().handles
             .iter()
             .find(|(_, id)| **id == bo_id)
             .unwrap()
@@ -54547,7 +54567,7 @@ impl HostIO for RelSymlinkMock {
             }
             sys_ioctl(proc, host, fd, DRM_IOCTL_WPK_CREATE_GPU_BO, &mut bytes).unwrap();
             let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
-            (fd, *dri_state(proc, ofd).unwrap().handles.get(&1).unwrap())
+            (fd, *dri_state(proc, ofd).unwrap().gem.borrow().handles.get(&1).unwrap())
         } else {
             let (fd, offset, _) = dri_alloc_dumb_for_mmap(proc, host, 64, 32);
             (fd, (offset >> 12) as u32)
@@ -54704,7 +54724,7 @@ impl HostIO for RelSymlinkMock {
         )
         .unwrap();
         let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
-        let next = *dri_state(&proc, ofd).unwrap().handles.get(&2).unwrap();
+        let next = *dri_state(&proc, ofd).unwrap().gem.borrow().handles.get(&2).unwrap();
         let mut surface = [0u8; 32];
         for (word, value) in
             surface
@@ -55037,7 +55057,7 @@ impl HostIO for RelSymlinkMock {
             b.id
         });
         let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
-        dri_state_mut(&mut proc, ofd).unwrap().handles.insert(1, bo);
+        dri_state_mut(&mut proc, ofd).unwrap().gem.borrow_mut().handles.insert(1, bo);
         let mut bytes = [0u8; 36];
         for (word, value) in
             bytes
@@ -55110,7 +55130,7 @@ impl HostIO for RelSymlinkMock {
             }
             sys_ioctl(proc, host, fd, DRM_IOCTL_WPK_CREATE_GPU_BO, &mut bo).unwrap();
             let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
-            bos[i] = *dri_state(proc, ofd).unwrap().handles.get(&1).unwrap();
+            bos[i] = *dri_state(proc, ofd).unwrap().gem.borrow().handles.get(&1).unwrap();
             let mut attrs = [0u8; 36];
             for (word, n) in attrs
                 .chunks_exact_mut(4)
@@ -55438,7 +55458,7 @@ impl HostIO for RelSymlinkMock {
         let owner_ofd = proc.fd_table.get(owners[0]).unwrap().ofd_ref.0;
         let next_bo = *dri_state(&proc, owner_ofd)
             .unwrap()
-            .handles
+            .gem.borrow().handles
             .get(&2)
             .unwrap();
         let mut attrs = [0u8; 32];
@@ -60816,4 +60836,199 @@ impl HostIO for RelSymlinkMock {
             assert_eq!(crate::tmpfs::lstat(&dir).unwrap_err(), Errno::ENOENT);
         }
     }
+
+    #[test]
+    fn forked_dri_file_shares_gem_handle_removal() {
+        use wasm_posix_shared::dri::*;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for path in [b"/dev/dri/renderD128".as_slice(), b"/dev/dri/card0".as_slice()] {
+            crate::dri::bo::reset_registry();
+            let mut table = crate::process_table::ProcessTable::new();
+            let parent_pid = table.create_process().unwrap();
+            let mut host = MockHostIO::new();
+            let parent = table.get_mut(parent_pid).unwrap();
+            let fd = sys_open(parent, &mut host, path, O_RDWR, 0).unwrap();
+            let mut create = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+            let request = WpkDrmModeCreateDumb {
+                width: 4,
+                height: 4,
+                bpp: 32,
+                ..Default::default()
+            };
+            unsafe {
+                core::ptr::write_unaligned(
+                    create.as_mut_ptr() as *mut WpkDrmModeCreateDumb,
+                    request,
+                );
+            }
+            sys_ioctl(parent, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut create)
+                .unwrap();
+            let created = unsafe {
+                core::ptr::read_unaligned(create.as_ptr() as *const WpkDrmModeCreateDumb)
+            };
+            let child_pid = table
+                .fork_process_for_caller(parent_pid, parent_pid)
+                .unwrap();
+            let mut close = [0u8; 8];
+            close[..4].copy_from_slice(&created.handle.to_le_bytes());
+            sys_ioctl(
+                table.get_mut(child_pid).unwrap(),
+                &mut host,
+                fd,
+                DRM_IOCTL_GEM_CLOSE,
+                &mut close,
+            ).unwrap();
+
+            // The inherited descriptor addresses the same DRM file. Removing
+            // its handle in the child must also revoke the parent's lookup.
+            let mut map = [0xa5u8; core::mem::size_of::<WpkDrmModeMapDumb>()];
+            map[..4].copy_from_slice(&created.handle.to_le_bytes());
+            map[4..8].fill(0);
+            let before = map;
+            assert_eq!(
+                sys_ioctl(
+                    table.get_mut(parent_pid).unwrap(),
+                    &mut host,
+                    fd,
+                    DRM_IOCTL_MODE_MAP_DUMB,
+                    &mut map,
+                ),
+                Err(Errno::ENOENT),
+                "a forked descriptor must share GEM handle removal for {:?}",
+                path,
+            );
+            assert_eq!(map, before, "failed lookup must preserve the reply");
+            assert_eq!(
+                sys_ioctl(
+                    table.get_mut(parent_pid).unwrap(),
+                    &mut host,
+                    fd,
+                    DRM_IOCTL_GEM_CLOSE,
+                    &mut close,
+                ),
+                Err(Errno::EINVAL),
+                "closing an absent GEM handle follows the DRM GEM_CLOSE contract",
+            );
+        }
+    }
+    #[test]
+    fn inherited_dri_namespace_shares_allocator_and_retires_on_last_close() {
+        use wasm_posix_shared::dri::*;
+        use wasm_posix_shared::fork_contract::Mode;
+        use crate::spawn::SpawnAttrs;
+        fn create(proc: &mut Process, host: &mut MockHostIO, fd: i32) -> u32 {
+            let mut req = [0u8; 32];
+            req[0..4].copy_from_slice(&4u32.to_le_bytes());
+            req[4..8].copy_from_slice(&4u32.to_le_bytes());
+            req[8..12].copy_from_slice(&32u32.to_le_bytes());
+            sys_ioctl(proc, host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut req).unwrap();
+            u32::from_le_bytes(req[16..20].try_into().unwrap())
+        }
+        fn map(proc: &mut Process, host: &mut MockHostIO, fd: i32, handle: u32) -> Result<u64, Errno> {
+            let mut req = [0u8; 16];
+            req[..4].copy_from_slice(&handle.to_le_bytes());
+            sys_ioctl(proc, host, fd, DRM_IOCTL_MODE_MAP_DUMB, &mut req)?;
+            Ok(u64::from_le_bytes(req[8..16].try_into().unwrap()))
+        }
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for path in [b"/dev/dri/renderD128".as_slice(), b"/dev/dri/card0".as_slice()] {
+            for inheritance in 0..3 {
+                crate::dri::bo::reset_registry();
+                let mut table = crate::process_table::ProcessTable::new();
+                let pid = table.create_process().unwrap();
+                let mut host = MockHostIO::new();
+                let parent = table.get_mut(pid).unwrap();
+                let fd = sys_open(parent, &mut host, path, O_RDWR, 0).unwrap();
+                let alias = sys_dup(parent, fd).unwrap();
+                assert_eq!(create(parent, &mut host, alias), 1);
+                let first = map(parent, &mut host, fd, 1).unwrap();
+                let child = match inheritance {
+                    0 => table.fork_process_for_caller(pid, pid).unwrap(),
+                    1 => table.fork_process_for_caller_with_mode(pid, pid, Mode::Vfork).unwrap(),
+                    _ => table.spawn_child_for_caller(pid, pid, &[b"child"], &[], &[], &SpawnAttrs::empty(), &mut host).unwrap(),
+                };
+                assert_eq!(crate::dri::with_registry(|r| r.get((first >> 12) as u32).unwrap().refcount), 1);
+                assert_eq!(create(table.get_mut(child).unwrap(), &mut host, fd), 2);
+                let second = map(table.get_mut(pid).unwrap(), &mut host, alias, 2).unwrap();
+                assert_ne!(first, second);
+                assert_eq!(create(table.get_mut(pid).unwrap(), &mut host, alias), 3);
+                let third = map(table.get_mut(child).unwrap(), &mut host, fd, 3).unwrap();
+                assert_ne!(second, third);
+                // Independent opens start with a separate namespace and allocator.
+                let parent = table.get_mut(pid).unwrap();
+                let independent = sys_open(parent, &mut host, path, O_RDWR, 0).unwrap();
+                assert_eq!(map(parent, &mut host, independent, 1), Err(Errno::ENOENT));
+                assert_eq!(create(parent, &mut host, independent), 1);
+                assert_ne!(map(parent, &mut host, independent, 1).unwrap(), first);
+                sys_close(parent, &mut host, independent).unwrap();
+                // Retiring both parent aliases leaves the child's file alive.
+                sys_close(parent, &mut host, fd).unwrap();
+                sys_close(parent, &mut host, alias).unwrap();
+                let child_proc = table.get_mut(child).unwrap();
+                assert_eq!(map(child_proc, &mut host, fd, 1).unwrap(), first);
+                sys_close(child_proc, &mut host, fd).unwrap();
+                assert_eq!(map(child_proc, &mut host, alias, 2).unwrap(), second);
+                sys_close(child_proc, &mut host, alias).unwrap();
+                for offset in [first, second, third] {
+                    assert!(crate::dri::with_registry(|r| r.get((offset >> 12) as u32).is_none()));
+                }
+                assert!(table.remove_process(child).unwrap().dri_effects.is_empty());
+                assert!(table.remove_process(pid).unwrap().dri_effects.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn dri_prime_reimport_reuses_the_live_file_handle_across_fork() {
+        use wasm_posix_shared::dri::*;
+        fn import(proc: &mut Process, host: &mut MockHostIO, fd: i32, prime: i32) -> u32 {
+            let mut request = [0u8; 12];
+            request[8..12].copy_from_slice(&prime.to_le_bytes());
+            sys_ioctl(proc, host, fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &mut request).unwrap();
+            u32::from_le_bytes(request[..4].try_into().unwrap())
+        }
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut table = crate::process_table::ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        let mut host = MockHostIO::new();
+        let proc = table.get_mut(pid).unwrap();
+        let fd = sys_open(proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let imported = sys_open(proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut create = [0u8; 32];
+        for (word, value) in create.chunks_exact_mut(4).zip([4u32, 4, 32]) {
+            word.copy_from_slice(&value.to_le_bytes());
+        }
+        sys_ioctl(proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut create).unwrap();
+        let handle = u32::from_le_bytes(create[16..20].try_into().unwrap());
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let bo = *dri_state(proc, ofd).unwrap().gem.borrow().handles.get(&handle).unwrap();
+        let mut prime = [0u8; 12];
+        prime[..4].copy_from_slice(&handle.to_le_bytes());
+        sys_ioctl(proc, &mut host, fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &mut prime).unwrap();
+        let prime_fd = i32::from_le_bytes(prime[8..12].try_into().unwrap());
+        assert_eq!(import(proc, &mut host, fd, prime_fd), handle);
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 2);
+        let local = import(proc, &mut host, imported, prime_fd);
+        assert_eq!(import(proc, &mut host, imported, prime_fd), local);
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 3);
+        let child = table.fork_process_for_caller(pid, pid).unwrap();
+        let child_proc = table.get_mut(child).unwrap();
+        assert_eq!(import(child_proc, &mut host, imported, prime_fd), local);
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 4);
+        let mut close = [0u8; 8];
+        close[..4].copy_from_slice(&local.to_le_bytes());
+        sys_ioctl(child_proc, &mut host, imported, DRM_IOCTL_GEM_CLOSE, &mut close).unwrap();
+        let parent = table.get_mut(pid).unwrap();
+        assert_eq!(sys_ioctl(parent, &mut host, imported, DRM_IOCTL_GEM_CLOSE, &mut close), Err(Errno::EINVAL));
+        let renewed = import(parent, &mut host, imported, prime_fd);
+        assert_ne!(renewed, local, "removing the old name must retire the import mapping");
+        assert_eq!(import(table.get_mut(child).unwrap(), &mut host, imported, prime_fd), renewed);
+        assert!(table.remove_process(child).unwrap().dri_effects.is_empty());
+        assert_eq!(table.remove_process(pid).unwrap().dri_effects, alloc::vec![DriReleaseEffect::DestroyBo(bo)]);
+        assert!(crate::dri::with_registry(|r| r.get(bo).is_none()));
+    }
+
 }
