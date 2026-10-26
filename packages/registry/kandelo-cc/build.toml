@@ -8,6 +8,7 @@ inputs = [
   "scripts/package-build-roots.sh",
   "scripts/install-local-binary.sh",
   "scripts/build-rust-sysroot.sh",
+  "scripts/package-rust-build-env.sh",
   "sdk/rust",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"

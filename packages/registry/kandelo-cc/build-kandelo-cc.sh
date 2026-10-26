@@ -36,35 +36,27 @@ cp "$REPO_ROOT/Cargo.lock" "$SRC_DIR/Cargo.lock"
 # The workspace package fields and release profile the member inherits,
 # copied from the repository's Cargo.toml.
 {
-    printf '[workspace]\nresolver = "2"\nmembers = ["crates/kandelo-cc"]\n\n'
+    printf '[workspace]\nresolver = "2"\nexclude = [".kandelo-rust", ".kandelo-patched-crates", ".kandelo-vendor"]\nmembers = ["crates/kandelo-cc"]\n\n'
     sed -n '/^\[workspace.package\]/,/^$/p' "$REPO_ROOT/Cargo.toml"
     sed -n '/^\[profile.release\]/,/^$/p' "$REPO_ROOT/Cargo.toml"
 } > "$SRC_DIR/Cargo.toml"
 
-# Private Rust sysroot (prebuilt std for the Kandelo target).
-RUST_DIR="$WORK_DIR/rust"
-KANDELO_RUST_DIR="$RUST_DIR" bash "$REPO_ROOT/scripts/build-rust-sysroot.sh"
-KANDELO_RUSTC="$RUST_DIR/rustc-kandelo"
-[ -x "$KANDELO_RUSTC" ] || { echo "ERROR: rustc wrapper missing at $KANDELO_RUSTC" >&2; exit 1; }
-
-# A private CARGO_HOME holding the vendored-source config. It and the Kandelo
-# rustc apply to the two cargo commands below only: install_local_binary
-# later runs the repository's own host tools through cargo.
-PACKAGE_CARGO_HOME="$WORK_DIR/cargo-home"
-mkdir -p "$PACKAGE_CARGO_HOME"
-VENDOR_DIR="$WORK_DIR/vendor"
-echo "==> Vendoring crates from Cargo.lock..."
-(cd "$SRC_DIR" && CARGO_HOME="$PACKAGE_CARGO_HOME" cargo vendor --versioned-dirs "$VENDOR_DIR" \
-    > "$PACKAGE_CARGO_HOME/config.toml")
-
 TARGET_DIR="$WORK_DIR/target"
-# The private sysroot's prebuilt std carries no LLVM bitcode, so the
-# workspace release profile's LTO cannot run for this target.
-echo "==> Building kandelo-cc for $TRIPLE..."
-(cd "$SRC_DIR" && CARGO_HOME="$PACKAGE_CARGO_HOME" RUSTC="$KANDELO_RUSTC" \
-    RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1 CARGO_PROFILE_RELEASE_LTO=false cargo build --offline --release \
-    --target "$TRIPLE" --target-dir "$TARGET_DIR" \
-    -p kandelo-cc --bin kandelo-cc)
+(
+    # Kandelo's Rust build environment (private std, the libc fork, vendored
+    # crates, remapped paths), kept to this subshell: install_local_binary
+    # later runs the repository's own host tools through cargo.
+    # shellcheck source=/dev/null
+    source "$REPO_ROOT/scripts/package-rust-build-env.sh"
+    kandelo_package_rust_build_env "$REPO_ROOT" "$SRC_DIR" "$WORK_DIR" "$SCRIPT_DIR/patches"
+    # The private sysroot's prebuilt std carries no LLVM bitcode, so the
+    # workspace release profile's LTO cannot run for this target.
+    export CARGO_PROFILE_RELEASE_LTO=false
+    echo "==> Building kandelo-cc for $TRIPLE..."
+    cd "$SRC_DIR"
+    cargo build --locked --release --target "$TRIPLE" --target-dir "$TARGET_DIR" \
+        -p kandelo-cc --bin kandelo-cc
+)
 OUT_BIN="$TARGET_DIR/$TRIPLE/release/kandelo-cc.wasm"
 [ -f "$OUT_BIN" ] || { echo "ERROR: kandelo-cc.wasm not built" >&2; exit 1; }
 
