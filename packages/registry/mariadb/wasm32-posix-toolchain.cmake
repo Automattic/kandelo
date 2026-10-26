@@ -74,7 +74,7 @@ set(CMAKE_NM "${LLVM_NM}" CACHE FILEPATH "NM")
 # --- HAND-MAINTAINED MIRROR OF THE SDK LINK CONTRACT. IT HAS DRIFTED. ---
 #
 # The flags below are a hand-copied mirror of the SDK's compile/link contract
-# (sdk/src/lib/flags.ts, plus the conditional branches in sdk/src/bin/cc.ts).
+# (crates/kandelo-cc/src/flags.rs, plus the conditional branches in crates/kandelo-cc/src/driver.rs).
 # Nothing keeps the copy in step with the original, and it is behind today.
 #
 # Converting MariaDB to the SDK wrapper (sdk/bin/wasm32posix-cc, as lsof and
@@ -110,7 +110,7 @@ set(CMAKE_NM "${LLVM_NM}" CACHE FILEPATH "NM")
 # this drift. A missing flag is an SDK change; re-mirror deliberately, or do
 # the wrapper port.
 #
-# --- Compiler flags (mirror sdk/src/lib/flags.ts COMPILE_FLAGS) ---
+# --- Compiler flags (mirror crates/kandelo-cc/src/flags.rs COMPILE_FLAGS) ---
 set(WASM32_FLAGS
   "--target=wasm32-unknown-unknown"
   "-matomics"
@@ -127,7 +127,7 @@ set(CMAKE_CXX_FLAGS_INIT "${WASM32_FLAGS_STR} -nostdinc++ -isystem ${WASM_POSIX_
 
 # Executables may leave undefined only the imports the host supplies:
 # libc/glue/kandelo-host-imports.txt, generated from
-# shared::abi::HOST_ENV_IMPORTS (same contract as sdk/src/lib/flags.ts).
+# shared::abi::HOST_ENV_IMPORTS (same contract as crates/kandelo-cc/src/flags.rs).
 if(DEFINED ENV{WASM_POSIX_GLUE_DIR})
   set(_KANDELO_GLUE_DIR "$ENV{WASM_POSIX_GLUE_DIR}")
 else()
@@ -138,7 +138,7 @@ if(NOT EXISTS "${_KANDELO_HOST_IMPORTS}")
   message(FATAL_ERROR "Link allowance not found at ${_KANDELO_HOST_IMPORTS}")
 endif()
 
-# --- Linker flags (mirror sdk/src/lib/flags.ts LINK_FLAGS) ---
+# --- Linker flags (mirror crates/kandelo-cc/src/flags.rs LINK_FLAGS) ---
 set(WASM32_LINK_FLAGS
   "-nostdlib"
   "-Wl,--no-entry"

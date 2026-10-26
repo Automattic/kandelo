@@ -1559,21 +1559,20 @@ place.
 ### Toolchain on PATH
 
 The SDK CLI tools (`wasm{32,64}posix-{cc,c++,ar,ranlib,nm,strip,
-pkg-config,configure}`) live as wrapper symlinks under `sdk/bin/`,
-all pointing at `sdk/bin/_wasm-posix-dispatch`. Every build script
-sources `sdk/activate.sh` near the top, which prepends
-`<worktree>/sdk/bin/` to `PATH`. This makes the toolchain
-worktree-local: a build in worktree A always uses worktree A's SDK
-source, even if worktree B has run `npm link`.
+pkg-config,configure}`) are small wrapper scripts under `sdk/bin/`.
+Each names the tool it is and runs this worktree's SDK driver
+(`crates/kandelo-cc`, built on first use into
+`sdk/.build/bin/kandelo-cc` and rebuilt when its sources change; see
+`sdk/src/kandelo-cc.sh`). Every build script sources `sdk/activate.sh`
+near the top, which prepends `<worktree>/sdk/bin/` to `PATH`, and the
+local-build engine prepends it for every recipe. This makes the
+toolchain worktree-local: a build in worktree A always uses worktree
+A's SDK, even if worktree B has run `npm link`.
 
-Older docs reference `cd sdk && npm link` as a prerequisite. It
-still works (the wrappers and the npm-link-installed binaries
-coexist — the dispatcher exports `WASM_POSIX_INVOKED_AS` so
-`detectArch()` can read it, and falls back to `argv[1]` when the
-env var is absent). `npm link` is now optional, and intentionally
-discouraged for multi-worktree development because the global
-symlink it creates routes every shell to a single worktree's
-source.
+`cd sdk && npm link` also works (the wrappers follow the global
+symlink back to their checkout), but it is optional, and discouraged
+for multi-worktree development because the global symlink routes
+every shell to a single worktree's SDK.
 
 ### Sysroot libraries are not packages
 

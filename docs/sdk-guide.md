@@ -2,6 +2,14 @@
 
 The wasm-posix-sdk provides a cross-compilation toolchain for building C/C++ programs that run on Kandelo. It wraps LLVM tools with the correct flags for the `wasm32-unknown-unknown` target and links against the musl libc sysroot.
 
+Every SDK tool is one program, the SDK driver (`crates/kandelo-cc`), which
+decides from the name it runs as whether to be `cc`, `c++`, `ar`, `configure`
+and so on. The same source is built twice: as a native program for the build
+machine (the `sdk/bin` tools run it) and as a Kandelo program for the SDK
+inside Kandelo (see [Compile inside the base shell](#compile-inside-the-base-shell)).
+Only toolchain discovery differs between the two; every compiler, linker and
+post-link job is decided by the same code.
+
 ## Installation
 
 ### Prerequisites
@@ -13,10 +21,8 @@ The wasm-posix-sdk provides a cross-compilation toolchain for building C/C++ pro
      repo root) — provides LLVM 21 plus the rest of the toolchain, no per-tool
      install needed.
      See the README's "Using Nix" section.
-2. **musl sysroot**. If you installed `wasm-posix-sdk` from npm, the
-   package already contains the published sysroot and glue files. If
-   you are working from a source checkout, initialize the submodules
-   and let `./run.sh setup` (step 3) build the sysroot for you:
+2. **musl sysroot**. Initialize the submodules and let `./run.sh setup`
+   (step 3) build the sysroot for you:
    ```bash
    git submodule update --init libc/musl sdk/rust/libc-upstream
    ```
@@ -33,8 +39,7 @@ The wasm-posix-sdk provides a cross-compilation toolchain for building C/C++ pro
    ```
    `--arch wasm64posix` selects the other architecture. `--core-only`
    omits graphics refresh during dependency resolution to avoid recursion.
-   Without `--ensure`, the command always rebuilds musl. This automation
-   applies to repository builds, not to an installed npm SDK artifact.
+   Without `--ensure`, the command always rebuilds musl.
 3. **Kernel built**:
    ```bash
    ./run.sh setup
@@ -44,13 +49,19 @@ The wasm-posix-sdk provides a cross-compilation toolchain for building C/C++ pro
 
 ### Install the SDK
 
-```bash
-npm install -D wasm-posix-sdk
+The SDK runs from a Kandelo checkout. The dev shell puts `sdk/bin` on `PATH`;
+outside it, source `sdk/activate.sh`, or link the tools globally:
 
-# or, from a source checkout:
+```bash
 cd sdk
 npm link
 ```
+
+The first SDK tool run builds the native SDK driver from `crates/kandelo-cc`
+into `sdk/.build/bin/kandelo-cc` (a few seconds, with cargo from the dev
+shell); later runs rebuild it only when its sources change
+(`scripts/build-kandelo-cc.sh`, run by `./run.sh setup`). The package is not
+published to a registry: the driver is built from the checkout it belongs to.
 
 This makes 8 CLI tools available globally:
 
@@ -70,16 +81,17 @@ This makes 8 CLI tools available globally:
 The SDK finds LLVM in this order:
 
 1. `$WASM_POSIX_LLVM_DIR` environment variable (path to LLVM bin directory)
-2. `clang` on `$PATH` (tested for wasm32 support — covers the Nix dev shell,
-   which puts the pinned LLVM 21 first on `PATH`)
-3. `/usr/lib/llvm-*/bin` (Linux, highest version)
+2. `$LLVM_BIN`, or `$LLVM_PREFIX/bin` (the Nix dev shell exports both)
+3. A `PATH` directory holding clang, clang++, llvm-ar, llvm-ranlib, llvm-nm
+   and wasm-ld whose clang compiles for wasm32
+4. `/usr/lib/llvm-*/bin` (Linux, highest version)
 
 ### Glue and Sysroot Discovery
 
 The SDK locates `libc/glue/` and `sysroot/` in this order:
 
 1. `$WASM_POSIX_GLUE_DIR` / `$WASM_POSIX_SYSROOT` env vars (explicit overrides)
-2. Walk up from `process.cwd()` looking for `libc/glue/abi_constants.h` — anchors to the project root the user is building from
+2. Walk up from the working directory looking for `libc/glue/abi_constants.h` — anchors to the project root the user is building from
 3. Fall back to the SDK's sibling-repository directory (the `..` of the npm-linked package)
 
 The cwd-walk-up step matters when the SDK is `npm link`-ed: the global `wasm32posix-cc` symlink points at whichever worktree last ran `npm link`, but libc/glue/sysroot must come from the worktree the user is actively building in (otherwise programs link against a different `ABI_VERSION` than the kernel they will run on). If you keep multiple worktrees, you do not need to re-`npm link` when switching between them — the SDK resolves libc/glue/sysroot from your shell's cwd.
@@ -120,11 +132,18 @@ wasm32posix-c++ program.cpp -o program.wasm
 
 C++ programs link against libc++ + libc++abi. Both are produced by
 the libcxx package (`packages/registry/libcxx/`) and resolved automatically
-by `cargo xtask build-deps resolve libcxx`. LLVM libunwind is statically
-bundled into `libc++abi.a`, so:
+by `cargo xtask build-deps resolve libcxx`. POSIX specifies no C++
+compiler; like every Unix C++ driver (`g++`, `clang++`), `wasm32posix-c++`
+links the C++ library into an executable by default, adding `-lc++
+-lc++abi` after the caller's inputs and before libc, as clang would for
+this target. `-nostdlib`, `-nodefaultlibs` and `-nostdlib++` turn that
+off; a shared library (`-shared`) takes the C++ library from the program
+that loads it. So the libcxx package must be in the sysroot of any build
+that links with `wasm32posix-c++`, including a configure check. LLVM
+libunwind is statically bundled into `libc++abi.a`, so:
 
 ```bash
-wasm32posix-c++ -fwasm-exceptions main.cpp -lc++ -lc++abi -o app.wasm
+wasm32posix-c++ -fwasm-exceptions main.cpp -o app.wasm
 ```
 
 works out of the box — `_Unwind_*` symbols resolve internally, no
@@ -282,9 +301,20 @@ against the LLVM/Clang headers `flake.nix` exports (`KANDELO_LLVM_DEV` and
 related variables), and caches it under `sdk/.build/calltypes-plugin/` keyed
 by its sources and the compiler. Outside the dev shell, set
 `WASM_POSIX_CALLTYPES_PLUGIN` to a plugin built for the same compiler. musl
-(`scripts/build-musl.sh`) and the SDK's link-time glue are compiled with the
-plugin too. A compile that requests a CFI sanitizer itself is left without
-the plugin, which would otherwise delete the checks it asked for.
+(`scripts/build-musl.sh`), libc++ and the SDK's link-time glue are compiled
+with the plugin too; builds that run clang directly get the cached plugin
+from `scripts/calltypes-plugin.sh <clang>`. A compile that requests a CFI
+sanitizer itself is left without the plugin, which would otherwise delete
+the checks it asked for.
+
+Kandelo's own clang cannot load a native shared library, so the `clang`
+package compiles the same plugin sources into it (`KANDELO_CALLTYPES_STATIC`).
+There the SDK passes the same flags without `-load` and `-fpass-plugin`:
+activating `kandelo-fncasts` also registers the LLVM passes, through
+`CodeGenOptions::PassBuilderCallbacks`, which clang applies immediately after
+`-fpass-plugin` plugins. A plugin library built that way and loaded with
+`-load` alone produces the same object bytes as the normal library with
+`-fpass-plugin`.
 
 **Links.** clang runs Binaryen's `wasm-opt` after wasm-ld when it finds it
 and an optimization level is set. Binaryen inlines and merges functions,
@@ -400,7 +430,7 @@ guard page; an overflow corrupts `.bss` silently instead of trapping), since
 the 8 MiB default, not the warning, is what actually protects a program that
 does not deliberately choose otherwise. When more than one `-z stack-size=`
 operand is present, the SDK resolves them the same way `wasm-ld` itself does:
-the last occurrence wins, not the largest. The Node-hosted driver first asks
+the last occurrence wins, not the largest. The driver first asks
 pinned Clang for a `-###` job trace without injecting executable glue.
 Compiler-only traces, including `-fsyntax-only`, dependency generation, and
 analyzer jobs hidden in response files, continue without link preparation.
@@ -412,11 +442,6 @@ transports cannot be misclassified by a duplicate SDK option table. A failed,
 missing, or ambiguous linker trace aborts before the real link. These traces are
 driver-only invocations and do not compile; they add two Clang processes per
 executable link and one for an otherwise-unrecognized compiler-only mode.
-
-The Kandelo-native driver also uses a non-compiling Clang job trace to preserve
-compiler-only modes before entering its manual link path. For a confirmed link,
-it invokes the adjacent `wasm-ld` directly and scans the exact linker arguments
-it has already classified.
 
 Relative lld response paths follow Clang's effective `-working-directory`,
 including when that option comes from a top-level Clang response file,
@@ -433,28 +458,24 @@ binary.
 Clang expands its response files when producing the trace. The SDK expands any
 remaining lld response files, including nested `@file` references, using LLVM's
 POSIX response-file tokenization rules. Expansion uses an iterative work stack,
-not a nesting cutoff: both drivers inspect chains accepted by LLVM and reject
+not a nesting cutoff: the driver inspects chains accepted by LLVM and rejects
 missing or recursive response files before the real link. To bound hostile or
-accidental input, they also reject an expansion after 4,096 file expansions,
+accidental input, it also rejects an expansion after 4,096 file expansions,
 1,048,576 examined tokens, or 64 MiB of decoded response text. These are
 explicit resource limits; exhausting one never falls back to the 8 MiB floor.
 This keeps quoted or escaped paths distinct from linker options and prevents
 object filenames containing `stack-size=` from changing the stack. Bare
 `stack-size=<bytes>` tokens, `-z=stack-size=<bytes>`, and options after `--` are
 not stack requests. Response-file contents are never rewritten.
-The Node-hosted SDK accepts LLVM's UTF-8, UTF-16LE-BOM, and UTF-16BE-BOM
-response encodings. The Kandelo-native Bash driver accepts UTF-8 response files
-and rejects either UTF-16 BOM before compiling or linking: Bash variables cannot
-retain UTF-16's embedded NUL bytes, and the packaged SDK does not declare a
-transcoding tool. Generate UTF-8 response files when building inside Kandelo.
+The SDK accepts LLVM's UTF-8, UTF-16LE-BOM, and UTF-16BE-BOM response
+encodings, inside Kandelo as on the build machine.
 Invalid spellings stay visible to LLVM so it can reject them; a valid stack
 larger than the SDK's fixed 1 GiB executable-memory maximum fails in the driver
 instead of being silently replaced by the floor. An explicit request below
 8 MiB is honoured verbatim rather than silently raised, with a warning on
 stderr naming the hazard; programs such as SpiderMonkey that explicitly need
-16 MiB retain that larger reservation the same way. Changing the platform
-floor or scanner requires updating both `sdk/kandelo/bin/wasm32posix-cc` and
-`sdk/src/lib/flags.ts`.
+16 MiB retain that larger reservation the same way. The floor and scanner
+live in `crates/kandelo-cc/src/flags.rs`, shared by both SDK builds.
 
 ### Files linked automatically
 
@@ -720,6 +741,7 @@ exported ABI, save-buffer format, and the dispatch-scheme decisions.
 | `WASM_POSIX_SYSROOT` | Override sysroot path (default: `<repo>/sysroot`) |
 | `WASM_POSIX_GLUE_DIR` | Override glue directory (default: `<repo>/libc/glue`) |
 | `WASM_POSIX_CALLTYPES_PLUGIN` | Use this prebuilt KandeloCallTypes plugin instead of building one; it must be built for the same compiler |
+| `WASM_POSIX_SDK_ROOT` | The SDK directory the native driver keeps its plugin cache and `config.site` in (default: the `sdk/` directory holding `.build/bin/kandelo-cc`) |
 
 ## Running Programs
 
@@ -764,10 +786,13 @@ and SHA-256 are recorded in the shell image and verified on download.
 
 The ZIP is the declared output of `kandelo-sdk-browser-bundle@21.1.7`.
 It contains the source-built `clang@21.1.7` tools, matching Clang resource
-headers, musl and libc++ sysroot, syscall glue, and guest shell wrappers.
-The five tools live in `/usr/lib/llvm/bin`; wrappers and the `cc` and
-`c++` aliases live in `/usr/bin`. This delivery uses the base shell's
-existing lazy archive mechanism and requires no separate compiler image.
+headers, musl and libc++ sysroot, syscall glue, the SDK driver
+(`kandelo-cc`) and Binaryen's `wasm-opt`. The five
+LLVM tools live in `/usr/lib/llvm/bin`. The driver lives in `/usr/bin`
+under every SDK tool name (`wasm32posix-cc`, `wasm32posix-c++`,
+`wasm32posix-ar`, ..., `wasm32posix-configure`) and as `cc`, `c89`, `c99`
+and `c++`. This delivery uses the base shell's existing lazy archive
+mechanism and requires no separate compiler image.
 
 In a shell session:
 
@@ -780,15 +805,22 @@ cc /tmp/hello.c -o /tmp/hello
 /tmp/hello
 ```
 
-Use `c++ hello.cpp -o hello` for C++. The guest wrapper runs clang's
-integrated compiler and then `wasm-ld` as separate processes. It supplies
-the Kandelo target, sysroot, host import allowlist, memory layout, and
-libc/glue inputs. Invoke `cc` or `c++` for the supported compilation and
-linking path. The LLVM tools receive the normal host-side continuation
-instrumentation before packaging: their linked code imports `fork`, so
-untransformed tools fail the runtime's executable admission checks.
-The recipe runs Binaryen's full post-instrumentation optimization on one
-core, avoiding the small native worker stacks on macOS.
+Use `c++ hello.cpp -o hello` for C++. The driver is the build machine's
+SDK driver (`crates/kandelo-cc`) built for Kandelo, so a command runs the
+same compiler, linker and post-link jobs it would on the build machine:
+the Kandelo target flags, the glue compiled into each executable, the
+link layout, the compiler facts, and clang's post-link `wasm-opt` for
+modules that do not fork. Only toolchain discovery differs: inside
+Kandelo the driver uses the fixed `/usr` layout above (overridable with
+the same `WASM_POSIX_*` variables), and clang has the facts plugin
+compiled in (see [Compiler facts for fork instrumentation](#compiler-facts-for-fork-instrumentation)).
+`host/test/guest-sdk-equivalence.test.ts` builds one set of commands with
+both SDKs and requires identical bytes. The LLVM tools receive the normal
+host-side continuation instrumentation before packaging: their linked
+code imports `fork`, so untransformed tools fail the runtime's executable
+admission checks. The recipe runs Binaryen's full post-instrumentation
+optimization on one core, avoiding the small native worker stacks on
+macOS.
 
 The `clang` recipe uses the Kandelo CMake platform, a private sysroot,
 and verified LLVM sources in resolver-owned work directories. Its
@@ -797,19 +829,34 @@ LLVM's BSD-specific filesystem locality probe. It uses normal libc++
 `std::random_device` backed by `/dev/urandom` and normal LLVM file output;
 it does not replace entropy with fixed seeds or patch out mmap writeback.
 
-This is an in-guest compiler for ordinary programs that do not require
-fork continuation instrumentation. A fully native SDK remains future
-work: the guest pipeline does not yet run the host SDK's compiler fact
-plugin, Binaryen transforms, or `wasm-fork-instrument`. Porting those
-components is required before programs compiled here that call `fork`
-can run through the normal continuation path. See
-[the saved self-hosting work items](superpowers/specs/2026-08-26-in-kandelo-clang-toolchain-design.md#future-work-recorded-explicitly).
+The SDK inside Kandelo has no fork instrumenter yet. A program that
+calls `fork` links there exactly as on the build machine (with its
+compiler facts, and `wasm-opt` left to the instrumenter), but it must be
+instrumented before it can run (see
+[Fork instrumentation](#fork-instrumentation-wasm-fork-instrument)), and
+the runtime refuses to start it until then. Today that step runs on the
+build machine. `wasm-fork-instrument` does not yet build for Kandelo: its
+dependencies (`rustix`, `getrandom`, and SQLite through `rusqlite`) do
+not know the Kandelo target. Porting them is the remaining work for this
+gap.
 
-Guest-linked outputs also lack the `kandelo.abi.contract` digest stamp
-added by package admission. The current host accepts an absent stamp
-with a warning during the digest rollout; a present mismatched digest
-still fails. Adding digest stamping to guest compilation is remaining
-native SDK work.
+Programs compiled here, like programs compiled ad hoc with the build
+machine's SDK, lack the `kandelo.abi.contract` digest stamp added by
+package admission. The current host accepts an absent stamp with a
+warning during the digest rollout; a present mismatched digest still
+fails.
+
+DWARF from `-g` builds records clang's resource directory, which is
+`/usr/lib/llvm/lib/clang/21` here and a different path on the build
+machine, so `-g` outputs are not byte-identical between the two SDKs.
+
+Running the build machine's jobs costs time inside Kandelo: a link runs
+about eight clang processes (job traces, the glue compile and the link
+itself), and each clang start takes several seconds, so linking a small
+program takes about a minute where compiling a file takes several
+seconds. The base shell image has no `pkg-config` program, so
+`wasm32posix-pkg-config` reports that it cannot start one (exit status
+127).
 
 Node and Chromium pass the full sequential compiler acceptance. Firefox
 passes the C++ containers/entropy case in a fresh shell, but repeated LLVM
@@ -824,9 +871,11 @@ follow-up work. See [Firefox executable-code limit](browser-support.md#firefox-e
 
 The bundled WebKit engine passes the C cases and small C++ programs,
 but reports native Wasm call-stack exhaustion while Clang instantiates
-the templates used by `<random>`. Compilation then exits with SIGSEGV;
-the worker diagnostic says `Maximum call stack size exceeded` inside
-`clang::Sema`. This engine stack is separate from the linear-memory C
+the templates used by `<random>`. The compile job (`clang -cc1`, which
+the clang driver runs as a child process when a command both compiles
+and links) dies with SIGSEGV, and the driver reports `unable to execute
+command: Segmentation fault` and exits 1; the worker diagnostic says
+`Maximum call stack size exceeded` inside `clang::Sema`. This engine stack is separate from the linear-memory C
 stack. Use Node, Chromium, or Firefox for this template-heavy case. The
 browser test checks the exact WebKit failure rather than accepting any
 compiler error or claiming that case compiled.

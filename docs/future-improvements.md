@@ -745,7 +745,7 @@ genuinely need a shadow stack *larger* than the SDK default (SpiderMonkey's
 document why; everything else that goes through the SDK driver should rely
 on the SDK default plus the guard, with no package-local flag at all.
 
-**Files:** `sdk/src/lib/flags.ts` and `sdk/kandelo/bin/wasm32posix-cc` (current
+**Files:** `crates/kandelo-cc/src/flags.rs` and `sdk/kandelo/bin/wasm32posix-cc` (current
 8 MiB default), `packages/registry/php/build-php.sh` (no stack-size override;
 relies on the SDK default), `libc/glue/channel_syscall.c` (likely site for a
 syscall-entry bounds check), `host/src/worker-main.ts` (instantiation-time

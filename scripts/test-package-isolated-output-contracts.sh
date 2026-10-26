@@ -1123,9 +1123,10 @@ icu_private_sysroot="$(find "$icu_work" -mindepth 1 -maxdepth 1 \
 [ -f "$icu_private_sysroot/include/c++/v1/memory" ] ||
     fail "ICU private sysroot omitted the libcxx headers"
 
-# kandelo-sdk must keep its intermediate glue objects below the resolver work
-# root and publish only its declared VFS output. Fake compiler and VFS-builder
-# boundaries make those locations observable without building a real VFS.
+# kandelo-sdk must take its SDK driver and wasm-opt from its declared
+# dependencies, leave the shared sysroot alone, and publish only its declared
+# VFS output. A fake VFS-builder boundary makes those inputs observable
+# without building a real VFS.
 kandelo_sdk_fixture="$TEST_ROOT/kandelo-sdk-sysroot-race"
 kandelo_sdk_repo="$kandelo_sdk_fixture/repo"
 kandelo_sdk_recipe_dir="$kandelo_sdk_repo/packages/registry/kandelo-sdk"
@@ -1133,13 +1134,14 @@ kandelo_sdk_seed="$kandelo_sdk_fixture/seed"
 kandelo_sdk_work="$kandelo_sdk_fixture/work"
 kandelo_sdk_out="$kandelo_sdk_fixture/out"
 kandelo_sdk_libcxx="$kandelo_sdk_fixture/libcxx"
-kandelo_sdk_fake_bin="$kandelo_sdk_fixture/fake-bin"
+kandelo_sdk_driver="$kandelo_sdk_fixture/kandelo-cc"
+kandelo_sdk_binaryen="$kandelo_sdk_fixture/binaryen"
 mkdir -p "$kandelo_sdk_recipe_dir" "$kandelo_sdk_repo/scripts" \
     "$kandelo_sdk_repo/sdk" "$kandelo_sdk_repo/libc/glue" \
     "$kandelo_sdk_repo/images/vfs/scripts" \
     "$kandelo_sdk_seed/lib" "$kandelo_sdk_seed/include" "$kandelo_sdk_work" \
     "$kandelo_sdk_out" "$kandelo_sdk_libcxx/lib" \
-    "$kandelo_sdk_libcxx/include/c++/v1" "$kandelo_sdk_fake_bin"
+    "$kandelo_sdk_libcxx/include/c++/v1" "$kandelo_sdk_driver" "$kandelo_sdk_binaryen"
 cp "$REPO_ROOT/packages/registry/kandelo-sdk/build-kandelo-sdk.sh" \
     "$kandelo_sdk_recipe_dir/build-kandelo-sdk.sh"
 cp "$REPO_ROOT/scripts/package-build-roots.sh" \
@@ -1148,35 +1150,17 @@ cat >"$kandelo_sdk_repo/sdk/activate.sh" <<'SH'
 #!/usr/bin/env bash
 :
 SH
-cat >"$kandelo_sdk_fake_bin/wasm32posix-cc" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-output=""
-while [ "$#" -gt 0 ]; do
-    if [ "$1" = "-o" ]; then
-        output="$2"
-        break
-    fi
-    shift
-done
-[ -n "$output" ] || exit 97
-mkdir -p "$(dirname "$output")"
-printf 'fake kandelo-sdk glue object\n' >"$output"
-SH
+printf 'fake kandelo-cc\n' >"$kandelo_sdk_driver/kandelo-cc.wasm"
+printf 'fake wasm-opt\n' >"$kandelo_sdk_binaryen/wasm-opt.wasm"
 cat >"$kandelo_sdk_repo/images/vfs/scripts/build-kandelo-sdk-vfs-image.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-case "${KANDELO_SDK_GLUE_OBJ_DIR:?}" in
-    "${WASM_POSIX_DEP_WORK_DIR:?}"/*) ;;
-    *) exit 91 ;;
-esac
+[ "${KANDELO_SDK_DRIVER:?}" = "${WASM_POSIX_DEP_KANDELO_CC_DIR:?}/kandelo-cc.wasm" ] || exit 91
+[ "${KANDELO_SDK_WASM_OPT:?}" = "${WASM_POSIX_DEP_BINARYEN_DIR:?}/wasm-opt.wasm" ] || exit 93
 case "${KANDELO_SDK_VFS_OUT:?}" in
     "${WASM_POSIX_DEP_OUT_DIR:?}"/*) ;;
     *) exit 92 ;;
 esac
-for name in channel_syscall compiler_rt cxxrt dlopen; do
-    [ -f "$KANDELO_SDK_GLUE_OBJ_DIR/$name.o" ] || exit 93
-done
 mkdir -p "$(dirname "$KANDELO_SDK_VFS_OUT")"
 printf 'fake kandelo-sdk VFS\n' >"$KANDELO_SDK_VFS_OUT"
 SH
@@ -1188,7 +1172,6 @@ install_local_binary() {
 }
 SH
 chmod 0755 "$kandelo_sdk_repo/sdk/activate.sh" \
-    "$kandelo_sdk_fake_bin/wasm32posix-cc" \
     "$kandelo_sdk_repo/images/vfs/scripts/build-kandelo-sdk-vfs-image.sh" \
     "$kandelo_sdk_repo/scripts/install-local-binary.sh"
 : >"$kandelo_sdk_seed/lib/libc.a"
@@ -1201,11 +1184,12 @@ printf 'kandelo-sdk libcxx header\n' >"$kandelo_sdk_libcxx/include/c++/v1/memory
 kandelo_sdk_before="$(tree_digest "$kandelo_sdk_seed")"
 set +e
 env \
-    PATH="$kandelo_sdk_fake_bin:$PATH" \
     WASM_POSIX_DEP_NAME=kandelo-sdk \
     WASM_POSIX_DEP_WORK_DIR="$kandelo_sdk_work" \
     WASM_POSIX_DEP_OUT_DIR="$kandelo_sdk_out" \
     WASM_POSIX_DEP_LIBCXX_DIR="$kandelo_sdk_libcxx" \
+    WASM_POSIX_DEP_KANDELO_CC_DIR="$kandelo_sdk_driver" \
+    WASM_POSIX_DEP_BINARYEN_DIR="$kandelo_sdk_binaryen" \
     WASM_POSIX_SYSROOT="$kandelo_sdk_seed" \
     KANDELO_UNEXPECTED_LOCAL_MIRROR="$kandelo_sdk_fixture/local-mirror-called" \
     bash "$kandelo_sdk_recipe_dir/build-kandelo-sdk.sh" \
@@ -1226,17 +1210,11 @@ kandelo_sdk_private_sysroot="$(find "$kandelo_sdk_work" -mindepth 1 -maxdepth 1 
 [ ! -e "$kandelo_sdk_private_sysroot/lib/libc++-pic.a" ] &&
     [ ! -e "$kandelo_sdk_private_sysroot/lib/libc++abi-pic.a" ] ||
     fail "kandelo-sdk private sysroot changed the VFS payload with PIC archives"
-[ -f "$kandelo_sdk_work/kandelo-sdk-glue-objs/channel_syscall.o" ] &&
-    [ -f "$kandelo_sdk_work/kandelo-sdk-glue-objs/compiler_rt.o" ] &&
-    [ -f "$kandelo_sdk_work/kandelo-sdk-glue-objs/cxxrt.o" ] &&
-    [ -f "$kandelo_sdk_work/kandelo-sdk-glue-objs/dlopen.o" ] ||
-    fail "kandelo-sdk resolver build did not keep glue objects below its work root"
 [ -f "$kandelo_sdk_out/kandelo-sdk.vfs.zst" ] ||
     fail "kandelo-sdk resolver build did not publish its declared VFS output"
 [ "$(find "$kandelo_sdk_out" -type f | wc -l | tr -d ' ')" = 1 ] ||
     fail "kandelo-sdk resolver output contains undeclared files"
-[ ! -e "$kandelo_sdk_recipe_dir/kandelo-sdk-glue-objs" ] &&
-    [ ! -e "$kandelo_sdk_recipe_dir/kandelo-sdk.vfs.zst" ] ||
+[ ! -e "$kandelo_sdk_recipe_dir/kandelo-sdk.vfs.zst" ] ||
     fail "kandelo-sdk resolver build wrote checkout-local artifacts"
 [ ! -e "$kandelo_sdk_fixture/local-mirror-called" ] ||
     fail "kandelo-sdk resolver build published a local mirror"

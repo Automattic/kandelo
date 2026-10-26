@@ -76,7 +76,7 @@ done
 # The SDK builds and caches the plugin for this exact compiler; musl is
 # compiled with $CC directly, so ask it for the path and pass the SDK's
 # flags. The plugin leaves the code unchanged.
-CALLTYPES_PLUGIN="$(node --experimental-strip-types "$REPO_ROOT/sdk/src/lib/calltypes-plugin.ts" "$CC")"
+CALLTYPES_PLUGIN="$(bash "$REPO_ROOT/scripts/calltypes-plugin.sh" "$CC")"
 CALLTYPES_FLAGS="-Xclang -fsanitize=cfi-icall -Xclang -fsanitize-trap=cfi-icall -Xclang -flto-unit -Xclang -fwhole-program-vtables -Xclang -load -Xclang $CALLTYPES_PLUGIN -Xclang -add-plugin -Xclang kandelo-fncasts -fpass-plugin=$CALLTYPES_PLUGIN"
 
 source "$REPO_ROOT/scripts/musl-build-state.sh"

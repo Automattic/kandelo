@@ -58,7 +58,7 @@ set(CMAKE_AR "${LLVM_AR}" CACHE FILEPATH "Archiver")
 set(CMAKE_RANLIB "${LLVM_RANLIB}" CACHE FILEPATH "Ranlib")
 set(CMAKE_NM "${LLVM_NM}" CACHE FILEPATH "NM")
 
-# --- Compiler flags (mirror sdk/src/lib/flags.ts COMPILE_FLAGS) ---
+# --- Compiler flags (mirror crates/kandelo-cc/src/flags.rs COMPILE_FLAGS) ---
 set(WASM32_FLAGS
   "--target=wasm32-unknown-unknown"
   "-matomics"
@@ -72,12 +72,12 @@ string(REPLACE ";" " " WASM32_FLAGS_STR "${WASM32_FLAGS}")
 set(CMAKE_C_FLAGS_INIT "${WASM32_FLAGS_STR}")
 set(CMAKE_CXX_FLAGS_INIT "${WASM32_FLAGS_STR}")
 
-# --- Linker flags (mirror sdk/src/lib/flags.ts LINK_FLAGS) ---
+# --- Linker flags (mirror crates/kandelo-cc/src/flags.rs LINK_FLAGS) ---
 # Path to the kandelo glue objs that the SDK normally injects. We hand
 # them to CMake via CMAKE_EXE_LINKER_FLAGS_INIT so cmake's link rule
 # Executables may leave undefined only the imports the host supplies:
 # libc/glue/kandelo-host-imports.txt, generated from
-# shared::abi::HOST_ENV_IMPORTS (same contract as sdk/src/lib/flags.ts).
+# shared::abi::HOST_ENV_IMPORTS (same contract as crates/kandelo-cc/src/flags.rs).
 if(DEFINED ENV{WASM_POSIX_GLUE_DIR})
   set(_KANDELO_GLUE_DIR "$ENV{WASM_POSIX_GLUE_DIR}")
 else()

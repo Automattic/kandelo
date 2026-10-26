@@ -1958,6 +1958,7 @@ build_target() {
         ncurses)    build_ncurses ;;
         zlib)       build_zlib ;;
         lua|love|termchat)   bootstrap_target "$target" ;;
+        binaryen|kandelo-cc) bootstrap_target "$target" ;;
         openssl)    build_openssl ;;
         libcurl)    build_libcurl ;;
         vim)        build_vim ;;
@@ -2970,6 +2971,10 @@ cmd_test() {
             cargo)
                 step "Running cargo tests"
                 if ! cargo test -p kandelo --target aarch64-apple-darwin --lib; then
+                    failed=1
+                fi
+                # The SDK driver behind every sdk/bin tool.
+                if ! cargo test -p kandelo-cc --target "$verify_fresh_host_target"; then
                     failed=1
                 fi
                 ;;

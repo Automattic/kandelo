@@ -7245,6 +7245,13 @@ const GLOBAL_PACKAGE_TOOLCHAIN_INPUTS: &[&str] = &[
     "sdk/package.json",
     "sdk/package-lock.json",
     "sdk/src",
+    // The SDK driver behind every sdk/bin tool (its tests excluded), its
+    // build, and the helper that hands its compiler plugin to builds that
+    // call clang directly.
+    "crates/kandelo-cc/Cargo.toml",
+    "crates/kandelo-cc/src",
+    "scripts/build-kandelo-cc.sh",
+    "scripts/calltypes-plugin.sh",
 ];
 
 /// The full input closure of the wasm-fork-instrument tool: the crate's
@@ -14140,9 +14147,9 @@ fn build_into_cache(
         // resolve to THIS worktree's SDK source — not whatever a global
         // `npm link` last pointed at. Without this, a sibling worktree's
         // SDK + sysroot can leak into the build, producing binaries with
-        // a foreign ABI. The shape of `<repo>/sdk/bin/` is committed
-        // symlinks pointing at `_wasm-posix-dispatch`; see
-        // `docs/package-management.md` "SDK toolchain invocation".
+        // a foreign ABI. `<repo>/sdk/bin/` holds committed wrapper
+        // scripts that run this worktree's SDK driver; see
+        // `docs/package-management.md` "Toolchain on PATH".
         let sdk_bin = crate::repo_root().join("sdk").join("bin");
         let path_var = match std::env::var_os("PATH") {
             Some(existing) => {
@@ -25667,6 +25674,7 @@ spdx = "TestLicense"
             "libc/musl-overlay",
             "sdk/bin",
             "sdk/src",
+            "crates/kandelo-cc/src",
         ];
         for input in GLOBAL_PACKAGE_TOOLCHAIN_INPUTS {
             if *input == "libc/musl" {

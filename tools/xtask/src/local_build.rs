@@ -512,7 +512,7 @@ fn run_repo_script_with_env(
     let script = repo.join(rel);
     let mut command = Command::new("bash");
     command.arg(&script).args(args).current_dir(repo);
-    if rel == "scripts/build-musl.sh" {
+    if rel == "scripts/build-musl.sh" || rel == "scripts/build-kandelo-cc.sh" {
         // Build-deps paths and local-build results are machine-readable stdout.
         // SDK prerequisite diagnostics must not contaminate that channel.
         command.stdout(std::process::Stdio::from(std::io::stderr()));
@@ -630,7 +630,7 @@ fn declared_product_ids(set: &LocalSupportedSetV1) -> BTreeSet<String> {
 }
 
 /// Absolute path to the worktree-local SDK's compiler wrapper. Its presence
-/// (as a working symlink to a real file) is the same signal
+/// (as an executable file) is the same signal
 /// `has_sdk`/`command -v wasm32posix-cc` checked in `run.sh`, checked
 /// directly instead of through PATH so this does not depend on the caller
 /// having sourced `sdk/activate.sh`.
@@ -851,14 +851,16 @@ fn run_bootstrap_step(
         "sysroot64" => bootstrap_sysroot_step(repo, "sysroot64", "wasm64posix"),
         "sdk" => {
             bootstrap_sysroot_step(repo, "sysroot", "wasm32posix")?;
-            if is_executable_file(&sdk_cc_path(repo)) {
-                Ok(())
-            } else {
-                Err(format!(
-                    "bootstrap sdk: SDK tools not found. Expected {} to be a working symlink.",
+            if !is_executable_file(&sdk_cc_path(repo)) {
+                return Err(format!(
+                    "bootstrap sdk: SDK tools not found. Expected {} to be an executable wrapper.",
                     sdk_cc_path(repo).display()
-                ))
+                ));
             }
+            // The wrappers run the native SDK driver (crates/kandelo-cc).
+            // They build it on first use; build it here so the first
+            // compiles of a parallel package build do not all start cargo.
+            run_repo_script_with_env(repo, "scripts/build-kandelo-cc.sh", &[], &[])
         }
         other => Err(format!("bootstrap: unknown step {other:?}")),
     }

@@ -4,34 +4,44 @@
 #
 # Packages the whole C/C++ toolchain — clang/wasm-ld/llvm-ar/llvm-ranlib/
 # llvm-nm, the Clang resource headers, the wasm32 sysroot (libc + libc++),
-# the SDK compiler-wrapper scripts, and the precompiled glue objects — into
+# the SDK driver (wasm32posix-cc and the other SDK tools) and wasm-opt — into
 # a single archive. The demo registers this as a lazy archive with mount
 # prefix /usr/, so entries become /usr/lib/llvm/bin/clang,
 # /usr/wasm32posix/sysroot/..., /usr/bin/cc, and so on. On first exec of cc
 # (or clang), the whole archive is fetched and unpacked in one go.
 #
+# The SDK driver is the build machine's driver (crates/kandelo-cc) compiled
+# for Kandelo and wasm-opt is the Binaryen release the build machine uses, so
+# a program compiled inside Kandelo goes through the same compiler, linker and
+# post-link jobs it would on the build machine. The fork instrumenter is not
+# in the archive yet: it does not build for Kandelo (see docs/sdk-guide.md).
+#
 # Usage:
-#   build-kandelo-sdk-zip.sh <clang-dir> <libcxx-dir> <output.zip>
+#   build-kandelo-sdk-zip.sh <clang-dir> <libcxx-dir> <kandelo-cc-dir> \
+#       <binaryen-dir> <output.zip>
 #
 # <clang-dir> is the resolved `clang` package output directory (the 5 wasm
 # binaries: clang.wasm, wasm-ld.wasm, llvm-ar.wasm, llvm-ranlib.wasm,
 # llvm-nm.wasm). <libcxx-dir> is the resolved `libcxx` package output
-# directory (lib/libc++.a, lib/libc++abi.a, include/c++/v1). This script
-# does not resolve packages itself — canonical package builds pass their
-# direct dependencies explicitly.
+# directory (lib/libc++.a, lib/libc++abi.a, include/c++/v1). <kandelo-cc-dir>
+# holds kandelo-cc.wasm and <binaryen-dir> wasm-opt.wasm. This script does
+# not resolve packages itself — canonical package builds pass their direct
+# dependencies explicitly.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-if [ "$#" -ne 3 ]; then
-    echo "usage: $0 <clang-dir> <libcxx-dir> <output.zip>" >&2
+if [ "$#" -ne 5 ]; then
+    echo "usage: $0 <clang-dir> <libcxx-dir> <kandelo-cc-dir> <binaryen-dir> <output.zip>" >&2
     exit 2
 fi
 
 CLANG_DIR="$1"
 LIBCXX_DIR="$2"
-OUTPUT_FILE="$3"
+KANDELO_CC_DIR="$3"
+BINARYEN_DIR="$4"
+OUTPUT_FILE="$5"
 
 require_file() {
     local label="$1"
@@ -60,7 +70,8 @@ require_file "libc++.a" "$LIBCXX_DIR/lib/libc++.a"
 require_file "libc++abi.a" "$LIBCXX_DIR/lib/libc++abi.a"
 require_dir "libc++ headers" "$LIBCXX_DIR/include/c++/v1"
 require_file "sysroot libc.a" "$REPO_ROOT/sysroot/lib/libc.a"
-require_file "wasm32posix-cc wrapper" "$REPO_ROOT/sdk/kandelo/bin/wasm32posix-cc"
+require_file "kandelo-cc.wasm" "$KANDELO_CC_DIR/kandelo-cc.wasm"
+require_file "wasm-opt.wasm" "$BINARYEN_DIR/wasm-opt.wasm"
 require_file "config.site" "$REPO_ROOT/sdk/config.site"
 
 if [ -n "${CLANG_RESOURCE_DIR:-}" ]; then
@@ -77,6 +88,16 @@ if [ -z "$HOST_CLANG_RESOURCE_DIR" ]; then
     exit 1
 fi
 require_dir "Clang resource headers" "$HOST_CLANG_RESOURCE_DIR/include"
+# The resource headers are part of the compiler: they must be the guest
+# clang's own version, or a program could compile differently inside
+# Kandelo. They come from the build machine's clang, so require the same
+# release the clang package builds.
+CLANG_VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$REPO_ROOT/packages/registry/clang/package.toml")"
+HOST_CLANG_VERSION="$(clang --version 2>/dev/null | sed -n 's/.*clang version \([0-9.]*\).*/\1/p' | head -1)"
+if [ -z "${CLANG_RESOURCE_DIR:-}" ] && [ "$HOST_CLANG_VERSION" != "$CLANG_VERSION" ]; then
+    echo "build-kandelo-sdk-zip: the build machine's clang is $HOST_CLANG_VERSION, the guest clang $CLANG_VERSION; their resource headers differ" >&2
+    exit 1
+fi
 
 OUTPUT_DIR="$(dirname "$OUTPUT_FILE")"
 mkdir -p "$OUTPUT_DIR"
@@ -130,33 +151,25 @@ rm -rf "$STAGING/wasm32posix/sysroot/include/c++/v1"
 mkdir -p "$STAGING/wasm32posix/sysroot/include/c++"
 cp -RL "$LIBCXX_DIR/include/c++/v1" "$STAGING/wasm32posix/sysroot/include/c++/v1"
 
-# --- wasm32posix/glue — the glue sources AND their headers. The guest cc
-# wrapper recompiles channel_syscall.c per invocation, and it #includes
-# abi_constants.h (plus gl_abi.h / syscall_imports.h), so the headers must
-# ship alongside the .c files — matching the canonical SDK image, which
-# copies the whole glue directory.
+# --- wasm32posix/glue — the glue sources AND their headers. The SDK driver
+# compiles the glue into every executable it links (the same way it does on
+# the build machine), and channel_syscall.c #includes abi_constants.h (plus
+# gl_abi.h / syscall_imports.h), so the headers ship alongside the .c files.
 mkdir -p "$STAGING/wasm32posix/glue"
 cp -RL "$REPO_ROOT/libc/glue/." "$STAGING/wasm32posix/glue/"
 
-# --- wasm32posix/glue-objects — precompiled glue objects ---
-mkdir -p "$STAGING/wasm32posix/glue-objects"
-export WASM_POSIX_SYSROOT="$STAGING/wasm32posix/sysroot"
-export WASM_POSIX_CLANG_RESOURCE_DIR="$HOST_CLANG_RESOURCE_DIR"
-export WASM_POSIX_GLUE_DIR="$REPO_ROOT/libc/glue"
-export WASM_POSIX_GLUE_OBJ_DIR="$STAGING/wasm32posix/glue-objects"
-for src in channel_syscall compiler_rt cxxrt dlopen; do
-    wasm32posix-cc -O2 -c "$WASM_POSIX_GLUE_DIR/${src}.c" \
-        -o "$STAGING/wasm32posix/glue-objects/${src}.o"
-done
-
-# --- bin — the SDK compiler-wrapper scripts, plus short-name symlinks ---
+# --- bin — the SDK driver under every SDK tool name, and wasm-opt. One
+# driver program; the name it runs as selects the tool.
 mkdir -p "$STAGING/bin"
-cp -R "$REPO_ROOT/sdk/kandelo/bin/." "$STAGING/bin/"
-find "$STAGING/bin" -maxdepth 1 -type f -exec chmod 755 {} +
-ln -s wasm32posix-cc "$STAGING/bin/cc"
-ln -s wasm32posix-cc "$STAGING/bin/c89"
-ln -s wasm32posix-cc "$STAGING/bin/c99"
-ln -s wasm32posix-c++ "$STAGING/bin/c++"
+cp -L "$KANDELO_CC_DIR/kandelo-cc.wasm" "$STAGING/bin/kandelo-cc"
+cp -L "$BINARYEN_DIR/wasm-opt.wasm" "$STAGING/bin/wasm-opt"
+chmod 755 "$STAGING/bin/kandelo-cc" "$STAGING/bin/wasm-opt"
+for tool in cc c++ ar ranlib nm strip configure pkg-config; do
+    ln -s kandelo-cc "$STAGING/bin/wasm32posix-$tool"
+done
+for name in cc c89 c99 c++; do
+    ln -s kandelo-cc "$STAGING/bin/$name"
+done
 
 # --- wasm32posix/config.site — autoconf cross-compilation cache ---
 cp "$REPO_ROOT/sdk/config.site" "$STAGING/wasm32posix/config.site"

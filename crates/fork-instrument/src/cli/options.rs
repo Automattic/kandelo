@@ -164,4 +164,20 @@ pub(super) struct Cli {
         ]
     )]
     pub(super) reserved_env_imports: bool,
+
+    /// Print exported `asyncify_*` names, one per line: the mark of the
+    /// retired Asyncify transform. Prints nothing for a module without them.
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "discover_only",
+            "contract_inventory",
+            "artifact_identity",
+            "fork_capability_hex",
+            "linked_frame_descriptor_hex",
+            "reserved_env_imports",
+            "output"
+        ]
+    )]
+    pub(super) legacy_asyncify_exports: bool,
 }

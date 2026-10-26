@@ -176,5 +176,5 @@ programs/rust/*/target/
 programs/rust/*/Cargo.lock
 programs/rust/*/*/Cargo.lock
 
-# The SDK's compiler plugin, built on first use (sdk/src/lib/calltypes-plugin.ts).
+# The SDK's compiler plugin, built on first use (crates/kandelo-cc/src/plugin.rs).
 /sdk/.build/

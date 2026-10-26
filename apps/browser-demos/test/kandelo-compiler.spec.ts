@@ -16,14 +16,19 @@ async function runScript(page: Page, script: string, expected: string): Promise<
   const run = page.locator(".kdemo-run").first();
   await page.locator(".kdemo textarea").first().fill(action);
   await run.click();
-  await expect.poll(() => terminalText(page), { timeout: 240_000 }).toContain(completion);
+  // One script can compile, archive and link; under WebKit that exceeds
+  // four minutes now that a link runs the build machine's SDK jobs.
+  await expect.poll(() => terminalText(page), { timeout: 600_000 }).toContain(completion);
   expect(await terminalText(page)).toContain(expected);
-  await expect(run).toHaveText("Run script", { timeout: 240_000 });
+  await expect(run).toHaveText("Run script", { timeout: 600_000 });
   await expect(run).toBeEnabled();
 }
 
 test("base shell lazily fetches one SDK, compiles C/C++, and reports engine limits", async ({ page, browserName }, testInfo) => {
-  test.setTimeout(900_000);
+  // Each link runs the build machine's SDK jobs (about eight clang
+  // processes); Chromium needs about 8.5 minutes for the whole sequence and
+  // Firefox and WebKit more than 15.
+  test.setTimeout(2_400_000);
   const requests: string[] = [];
   const diagnostics: string[] = [];
   page.on("console", (message) => {
@@ -50,14 +55,18 @@ test("base shell lazily fetches one SDK, compiles C/C++, and reports engine limi
         // The bundled engine exhausts its native Wasm call stack in Clang's
         // recursive template instantiation. Check that exact boundary, rather
         // than accepting another failure or claiming this program compiled.
+        // `c++ x.cpp -o x` is a compile and a link, so the clang driver runs
+        // the compile as a `clang -cc1` child; like clang on any Unix, it
+        // reports the child's SIGSEGV and exits 1.
         const script = `${guestCompileCommand(sample)}\ncompiler_status=$?\n` +
           `printf '%s %s %s %s %s\\n' compiler boundary ${sample.name} status "$compiler_status"`;
-        await runScript(page, script, `compiler boundary ${sample.name} status 139`);
+        await runScript(page, script, `compiler boundary ${sample.name} status 1`);
+        expect(await terminalText(page)).toContain("clang++: error: unable to execute command: Segmentation fault");
         expect(diagnostics.some((line) =>
           line.includes("[process-worker] Kernel worker failed: Maximum call stack size exceeded") &&
           // Instrumented programs omit function names. The worker's argv
-          // identifies the compiler and source that exhausted the stack.
-          line.includes('argv=["/usr/lib/llvm/bin/clang++"') &&
+          // identifies the compile job and source that exhausted the stack.
+          line.includes('argv=["/usr/lib/llvm/bin/clang","-cc1"') &&
           line.includes('"/tmp/cpp-entropy.cpp"')), "WebKit must report the diagnosed native stack exhaustion").toBe(true);
         expect(requests).toHaveLength(1);
         continue;

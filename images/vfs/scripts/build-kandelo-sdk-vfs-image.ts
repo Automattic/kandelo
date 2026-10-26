@@ -32,8 +32,10 @@ export interface KandeloSdkLicenseInput {
 export interface KandeloSdkVfsInputs {
   sysrootDirectory: string;
   glueDirectory: string;
-  glueObjectsDirectory: string;
-  sdkBinDirectory: string;
+  /** The SDK driver built for Kandelo (kandelo-cc.wasm). */
+  driverPath: string;
+  /** Binaryen's wasm-opt built for Kandelo (wasm-opt.wasm). */
+  wasmOptPath: string;
   configSitePath: string;
   clangResourceDirectory: string;
   licenseFiles: readonly KandeloSdkLicenseInput[];
@@ -104,15 +106,15 @@ export async function buildKandeloSdkVfsImage(
 ): Promise<void> {
   const glueNames = ["channel_syscall", "compiler_rt", "cxxrt", "dlopen"];
   requireInput(join(inputs.sysrootDirectory, "lib", "libc.a"), "sysroot libc");
-  requireInput(join(inputs.sdkBinDirectory, "wasm32posix-cc"), "compiler wrapper");
+  requireInput(inputs.driverPath, "SDK driver");
+  requireInput(inputs.wasmOptPath, "wasm-opt");
   requireInput(inputs.configSitePath, "config.site");
   requireInput(inputs.clangResourceDirectory, "Clang resource headers");
-  // The in-Kandelo wasm32posix-cc links executables against this generated
-  // allowance (shared::abi::HOST_ENV_IMPORTS); without it every link fails.
+  // The SDK driver links executables against this generated allowance
+  // (shared::abi::HOST_ENV_IMPORTS); without it every link fails.
   requireInput(join(inputs.glueDirectory, "kandelo-host-imports.txt"), "link allowance");
   for (const name of glueNames) {
     requireInput(join(inputs.glueDirectory, `${name}.c`), `${name} glue source`);
-    requireInput(join(inputs.glueObjectsDirectory, `${name}.o`), `${name} glue object`);
   }
   for (const license of inputs.licenseFiles) {
     requireInput(license.hostPath, `license ${license.guestPath}`);
@@ -161,13 +163,16 @@ export async function buildKandeloSdkVfsImage(
       "/usr/wasm32posix/sysroot/include/c++/v1",
     );
   }
+  // The driver compiles this glue into every executable it links, as it
+  // does on the build machine.
   copyTree(fs, inputs.glueDirectory, "/usr/wasm32posix/glue");
-  copyTree(fs, inputs.glueObjectsDirectory, "/usr/wasm32posix/glue-objects");
-  copyTree(fs, inputs.sdkBinDirectory, "/usr/bin", 0o755);
-  symlink(fs, "/usr/bin/wasm32posix-cc", "/usr/bin/cc");
-  symlink(fs, "/usr/bin/wasm32posix-cc", "/usr/bin/c89");
-  symlink(fs, "/usr/bin/wasm32posix-cc", "/usr/bin/c99");
-  symlink(fs, "/usr/bin/wasm32posix-c++", "/usr/bin/c++");
+  // One driver program under every SDK tool name; the name selects the tool.
+  writeVfsBinary(fs, "/usr/bin/kandelo-cc", new Uint8Array(readFileSync(inputs.driverPath)), 0o755);
+  writeVfsBinary(fs, "/usr/bin/wasm-opt", new Uint8Array(readFileSync(inputs.wasmOptPath)), 0o755);
+  for (const tool of ["cc", "c++", "ar", "ranlib", "nm", "strip", "configure", "pkg-config"]) {
+    symlink(fs, "kandelo-cc", `/usr/bin/wasm32posix-${tool}`);
+  }
+  for (const name of ["cc", "c89", "c99", "c++"]) symlink(fs, "kandelo-cc", `/usr/bin/${name}`);
   writeVfsBinary(
     fs,
     "/usr/wasm32posix/config.site",
@@ -206,6 +211,12 @@ export async function buildKandeloSdkVfsImage(
       });
 }
 
+function requiredEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is required (packages/registry/kandelo-sdk/build-kandelo-sdk.sh sets it)`);
+  return value;
+}
+
 function hostClangResourceDir(): string {
   if (process.env.CLANG_RESOURCE_DIR) return process.env.CLANG_RESOURCE_DIR;
   const out = execFileSync("clang", ["--print-resource-dir"], { encoding: "utf8" }).trim();
@@ -218,9 +229,8 @@ async function main(): Promise<void> {
   await buildKandeloSdkVfsImage({
     sysrootDirectory: process.env.WASM_POSIX_SYSROOT ?? join(REPO_ROOT, "sysroot"),
     glueDirectory: process.env.WASM_POSIX_GLUE_DIR ?? join(REPO_ROOT, "libc", "glue"),
-    glueObjectsDirectory: process.env.KANDELO_SDK_GLUE_OBJ_DIR ??
-      join(REPO_ROOT, "packages", "registry", "kandelo-sdk", "kandelo-sdk-glue-objs"),
-    sdkBinDirectory: join(REPO_ROOT, "sdk", "kandelo", "bin"),
+    driverPath: requiredEnv("KANDELO_SDK_DRIVER"),
+    wasmOptPath: requiredEnv("KANDELO_SDK_WASM_OPT"),
     configSitePath: join(REPO_ROOT, "sdk", "config.site"),
     clangResourceDirectory: hostClangResourceDir(),
     licenseFiles: [

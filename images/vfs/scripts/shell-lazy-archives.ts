@@ -141,7 +141,8 @@ export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
     dependency: "kandelo-sdk-browser-bundle",
     resolverPath: "programs/wasm32/kandelo-sdk.zip",
     mountPrefix: "/usr/",
-    requiredMember: "bin/wasm32posix-cc",
+    // A regular file: the SDK tool names are symlinks to the driver.
+    requiredMember: "bin/kandelo-cc",
   },
 ] as const);
 

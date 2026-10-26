@@ -115,5 +115,8 @@ describe.skipIf(!available)("base shell in-guest compiler", () => {
     } finally {
       await host.destroy();
     }
-  }, 600_000);
+  // Each link runs the build machine's SDK jobs inside Kandelo: about eight
+  // clang processes (traces, the glue compile, the link) at several seconds
+  // of startup each, about 70 s per program on a loaded machine.
+  }, 1_800_000);
 });
