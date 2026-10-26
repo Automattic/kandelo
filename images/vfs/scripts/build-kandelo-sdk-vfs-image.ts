@@ -36,8 +36,6 @@ export interface KandeloSdkVfsInputs {
   driverPath: string;
   /** Binaryen's wasm-opt built for Kandelo (wasm-opt.wasm). */
   wasmOptPath: string;
-  /** The fork instrumenter built for Kandelo (wasm-fork-instrument.wasm). */
-  forkInstrumentPath: string;
   configSitePath: string;
   clangResourceDirectory: string;
   licenseFiles: readonly KandeloSdkLicenseInput[];
@@ -110,7 +108,6 @@ export async function buildKandeloSdkVfsImage(
   requireInput(join(inputs.sysrootDirectory, "lib", "libc.a"), "sysroot libc");
   requireInput(inputs.driverPath, "SDK driver");
   requireInput(inputs.wasmOptPath, "wasm-opt");
-  requireInput(inputs.forkInstrumentPath, "wasm-fork-instrument");
   requireInput(inputs.configSitePath, "config.site");
   requireInput(inputs.clangResourceDirectory, "Clang resource headers");
   // The SDK driver links executables against this generated allowance
@@ -172,12 +169,6 @@ export async function buildKandeloSdkVfsImage(
   // One driver program under every SDK tool name; the name selects the tool.
   writeVfsBinary(fs, "/usr/bin/kandelo-cc", new Uint8Array(readFileSync(inputs.driverPath)), 0o755);
   writeVfsBinary(fs, "/usr/bin/wasm-opt", new Uint8Array(readFileSync(inputs.wasmOptPath)), 0o755);
-  writeVfsBinary(
-    fs,
-    "/usr/bin/wasm-fork-instrument",
-    new Uint8Array(readFileSync(inputs.forkInstrumentPath)),
-    0o755,
-  );
   for (const tool of ["cc", "c++", "ar", "ranlib", "nm", "strip", "configure", "pkg-config"]) {
     symlink(fs, "kandelo-cc", `/usr/bin/wasm32posix-${tool}`);
   }
@@ -240,7 +231,6 @@ async function main(): Promise<void> {
     glueDirectory: process.env.WASM_POSIX_GLUE_DIR ?? join(REPO_ROOT, "libc", "glue"),
     driverPath: requiredEnv("KANDELO_SDK_DRIVER"),
     wasmOptPath: requiredEnv("KANDELO_SDK_WASM_OPT"),
-    forkInstrumentPath: requiredEnv("KANDELO_SDK_FORK_INSTRUMENT"),
     configSitePath: join(REPO_ROOT, "sdk", "config.site"),
     clangResourceDirectory: hostClangResourceDir(),
     licenseFiles: [

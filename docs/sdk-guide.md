@@ -787,7 +787,7 @@ and SHA-256 are recorded in the shell image and verified on download.
 The ZIP is the declared output of `kandelo-sdk-browser-bundle@21.1.7`.
 It contains the source-built `clang@21.1.7` tools, matching Clang resource
 headers, musl and libc++ sysroot, syscall glue, the SDK driver
-(`kandelo-cc`), Binaryen's `wasm-opt` and `wasm-fork-instrument`. The five
+(`kandelo-cc`) and Binaryen's `wasm-opt`. The five
 LLVM tools live in `/usr/lib/llvm/bin`. The driver lives in `/usr/bin`
 under every SDK tool name (`wasm32posix-cc`, `wasm32posix-c++`,
 `wasm32posix-ar`, ..., `wasm32posix-configure`) and as `cc`, `c89`, `c99`
@@ -829,14 +829,16 @@ LLVM's BSD-specific filesystem locality probe. It uses normal libc++
 `std::random_device` backed by `/dev/urandom` and normal LLVM file output;
 it does not replace entropy with fixed seeds or patch out mmap writeback.
 
-A program that calls `fork` is instrumented after linking, as on the
-build machine (see [Fork instrumentation](#fork-instrumentation-wasm-fork-instrument)):
-
-```sh
-cc fork.c -o fork
-wasm-fork-instrument fork -o fork
-./fork
-```
+The SDK inside Kandelo has no fork instrumenter yet. A program that
+calls `fork` links there exactly as on the build machine (with its
+compiler facts, and `wasm-opt` left to the instrumenter), but it must be
+instrumented before it can run (see
+[Fork instrumentation](#fork-instrumentation-wasm-fork-instrument)), and
+the runtime refuses to start it until then. Today that step runs on the
+build machine. `wasm-fork-instrument` does not yet build for Kandelo: its
+dependencies (`rustix`, `getrandom`, and SQLite through `rusqlite`) do
+not know the Kandelo target. Porting them is the remaining work for this
+gap.
 
 Programs compiled here, like programs compiled ad hoc with the build
 machine's SDK, lack the `kandelo.abi.contract` digest stamp added by

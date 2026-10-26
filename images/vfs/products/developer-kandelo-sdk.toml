@@ -48,13 +48,6 @@ source_roles = []
 role = "runtime"
 materialization = "embedded"
 
-[[software.package]]
-name = "wasm-fork-instrument"
-outputs = ["wasm-fork-instrument"]
-source_roles = []
-role = "runtime"
-materialization = "embedded"
-
 [[software.toolchain]]
 id = "wasm32-sysroot"
 provider = "repository-dev-shell"

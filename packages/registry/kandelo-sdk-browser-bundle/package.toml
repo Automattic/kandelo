@@ -3,7 +3,7 @@ name = "kandelo-sdk-browser-bundle"
 version = "21.1.7"
 kernel_abi = 47
 arches = ["wasm32"]
-depends_on = ["clang@21.1.7", "libcxx@21.1.7", "kandelo-cc@0.1.0", "binaryen@126", "wasm-fork-instrument@0.1.0"]
+depends_on = ["clang@21.1.7", "libcxx@21.1.7", "kandelo-cc@0.1.0", "binaryen@126"]
 
 [source]
 url = "https://github.com/Automattic/kandelo"

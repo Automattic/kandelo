@@ -23,12 +23,11 @@ if [[ ! -f "$SYSROOT/lib/libc.a" ]]; then
 fi
 
 LIBCXX_DIR="${WASM_POSIX_DEP_LIBCXX_DIR:-}"
-# The SDK driver, wasm-opt and wasm-fork-instrument, built for Kandelo: the
-# image runs the build machine's compiler jobs (crates/kandelo-cc) with the
-# build machine's Binaryen release and fork instrumenter.
+# The SDK driver and wasm-opt, built for Kandelo: the image runs the build
+# machine's compiler jobs (crates/kandelo-cc) with the build machine's
+# Binaryen release.
 KANDELO_CC_DIR="${WASM_POSIX_DEP_KANDELO_CC_DIR:-}"
 BINARYEN_DIR="${WASM_POSIX_DEP_BINARYEN_DIR:-}"
-FORK_INSTRUMENT_DIR="${WASM_POSIX_DEP_WASM_FORK_INSTRUMENT_DIR:-}"
 if [ "$RESOLVER_BUILD" -eq 0 ]; then
   HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
   resolve_dep() {
@@ -36,11 +35,9 @@ if [ "$RESOLVER_BUILD" -eq 0 ]; then
   }
   [ -n "$KANDELO_CC_DIR" ] || KANDELO_CC_DIR="$(resolve_dep kandelo-cc)"
   [ -n "$BINARYEN_DIR" ] || BINARYEN_DIR="$(resolve_dep binaryen)"
-  [ -n "$FORK_INSTRUMENT_DIR" ] || FORK_INSTRUMENT_DIR="$(resolve_dep wasm-fork-instrument)"
 fi
 [[ -f "$KANDELO_CC_DIR/kandelo-cc.wasm" ]] || { echo "ERROR: kandelo-cc dependency missing" >&2; exit 1; }
 [[ -f "$BINARYEN_DIR/wasm-opt.wasm" ]] || { echo "ERROR: binaryen dependency missing" >&2; exit 1; }
-[[ -f "$FORK_INSTRUMENT_DIR/wasm-fork-instrument.wasm" ]] || { echo "ERROR: wasm-fork-instrument dependency missing" >&2; exit 1; }
 if [ "$RESOLVER_BUILD" -eq 1 ]; then
   export WASM_POSIX_DEP_WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
   if [ -z "$KANDELO_PACKAGE_OUT_DIR" ]; then
@@ -83,7 +80,6 @@ fi
 
 export KANDELO_SDK_DRIVER="$KANDELO_CC_DIR/kandelo-cc.wasm"
 export KANDELO_SDK_WASM_OPT="$BINARYEN_DIR/wasm-opt.wasm"
-export KANDELO_SDK_FORK_INSTRUMENT="$FORK_INSTRUMENT_DIR/wasm-fork-instrument.wasm"
 export KANDELO_SDK_VFS_OUT="$VFS"
 bash "$REPO_ROOT/images/vfs/scripts/build-kandelo-sdk-vfs-image.sh"
 

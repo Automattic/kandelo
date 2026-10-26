@@ -4,29 +4,27 @@
 #
 # Packages the whole C/C++ toolchain — clang/wasm-ld/llvm-ar/llvm-ranlib/
 # llvm-nm, the Clang resource headers, the wasm32 sysroot (libc + libc++),
-# the SDK driver (wasm32posix-cc and the other SDK tools), wasm-opt and
-# wasm-fork-instrument — into
+# the SDK driver (wasm32posix-cc and the other SDK tools) and wasm-opt — into
 # a single archive. The demo registers this as a lazy archive with mount
 # prefix /usr/, so entries become /usr/lib/llvm/bin/clang,
 # /usr/wasm32posix/sysroot/..., /usr/bin/cc, and so on. On first exec of cc
 # (or clang), the whole archive is fetched and unpacked in one go.
 #
 # The SDK driver is the build machine's driver (crates/kandelo-cc) compiled
-# for Kandelo, wasm-opt is the Binaryen release the build machine uses and
-# wasm-fork-instrument is the build machine's instrumenter, so a program
-# compiled inside Kandelo goes through the same compiler, linker, post-link
-# and fork-instrumentation jobs it would on the build machine.
+# for Kandelo and wasm-opt is the Binaryen release the build machine uses, so
+# a program compiled inside Kandelo goes through the same compiler, linker and
+# post-link jobs it would on the build machine. The fork instrumenter is not
+# in the archive yet: it does not build for Kandelo (see docs/sdk-guide.md).
 #
 # Usage:
 #   build-kandelo-sdk-zip.sh <clang-dir> <libcxx-dir> <kandelo-cc-dir> \
-#       <binaryen-dir> <fork-instrument-dir> <output.zip>
+#       <binaryen-dir> <output.zip>
 #
 # <clang-dir> is the resolved `clang` package output directory (the 5 wasm
 # binaries: clang.wasm, wasm-ld.wasm, llvm-ar.wasm, llvm-ranlib.wasm,
 # llvm-nm.wasm). <libcxx-dir> is the resolved `libcxx` package output
 # directory (lib/libc++.a, lib/libc++abi.a, include/c++/v1). <kandelo-cc-dir>
-# holds kandelo-cc.wasm, <binaryen-dir> wasm-opt.wasm and
-# <fork-instrument-dir> wasm-fork-instrument.wasm. This script does
+# holds kandelo-cc.wasm and <binaryen-dir> wasm-opt.wasm. This script does
 # not resolve packages itself — canonical package builds pass their direct
 # dependencies explicitly.
 set -euo pipefail
@@ -34,8 +32,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-if [ "$#" -ne 6 ]; then
-    echo "usage: $0 <clang-dir> <libcxx-dir> <kandelo-cc-dir> <binaryen-dir> <fork-instrument-dir> <output.zip>" >&2
+if [ "$#" -ne 5 ]; then
+    echo "usage: $0 <clang-dir> <libcxx-dir> <kandelo-cc-dir> <binaryen-dir> <output.zip>" >&2
     exit 2
 fi
 
@@ -43,8 +41,7 @@ CLANG_DIR="$1"
 LIBCXX_DIR="$2"
 KANDELO_CC_DIR="$3"
 BINARYEN_DIR="$4"
-FORK_INSTRUMENT_DIR="$5"
-OUTPUT_FILE="$6"
+OUTPUT_FILE="$5"
 
 require_file() {
     local label="$1"
@@ -75,7 +72,6 @@ require_dir "libc++ headers" "$LIBCXX_DIR/include/c++/v1"
 require_file "sysroot libc.a" "$REPO_ROOT/sysroot/lib/libc.a"
 require_file "kandelo-cc.wasm" "$KANDELO_CC_DIR/kandelo-cc.wasm"
 require_file "wasm-opt.wasm" "$BINARYEN_DIR/wasm-opt.wasm"
-require_file "wasm-fork-instrument.wasm" "$FORK_INSTRUMENT_DIR/wasm-fork-instrument.wasm"
 require_file "config.site" "$REPO_ROOT/sdk/config.site"
 
 if [ -n "${CLANG_RESOURCE_DIR:-}" ]; then
@@ -162,14 +158,12 @@ cp -RL "$LIBCXX_DIR/include/c++/v1" "$STAGING/wasm32posix/sysroot/include/c++/v1
 mkdir -p "$STAGING/wasm32posix/glue"
 cp -RL "$REPO_ROOT/libc/glue/." "$STAGING/wasm32posix/glue/"
 
-# --- bin — the SDK driver under every SDK tool name, wasm-opt and
-# wasm-fork-instrument. One driver program; the name it runs as selects the
-# tool.
+# --- bin — the SDK driver under every SDK tool name, and wasm-opt. One
+# driver program; the name it runs as selects the tool.
 mkdir -p "$STAGING/bin"
 cp -L "$KANDELO_CC_DIR/kandelo-cc.wasm" "$STAGING/bin/kandelo-cc"
 cp -L "$BINARYEN_DIR/wasm-opt.wasm" "$STAGING/bin/wasm-opt"
-cp -L "$FORK_INSTRUMENT_DIR/wasm-fork-instrument.wasm" "$STAGING/bin/wasm-fork-instrument"
-chmod 755 "$STAGING/bin/kandelo-cc" "$STAGING/bin/wasm-opt" "$STAGING/bin/wasm-fork-instrument"
+chmod 755 "$STAGING/bin/kandelo-cc" "$STAGING/bin/wasm-opt"
 for tool in cc c++ ar ranlib nm strip configure pkg-config; do
     ln -s kandelo-cc "$STAGING/bin/wasm32posix-$tool"
 done

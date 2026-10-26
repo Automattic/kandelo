@@ -1136,13 +1136,12 @@ kandelo_sdk_out="$kandelo_sdk_fixture/out"
 kandelo_sdk_libcxx="$kandelo_sdk_fixture/libcxx"
 kandelo_sdk_driver="$kandelo_sdk_fixture/kandelo-cc"
 kandelo_sdk_binaryen="$kandelo_sdk_fixture/binaryen"
-kandelo_sdk_instrumenter="$kandelo_sdk_fixture/wasm-fork-instrument"
 mkdir -p "$kandelo_sdk_recipe_dir" "$kandelo_sdk_repo/scripts" \
     "$kandelo_sdk_repo/sdk" "$kandelo_sdk_repo/libc/glue" \
     "$kandelo_sdk_repo/images/vfs/scripts" \
     "$kandelo_sdk_seed/lib" "$kandelo_sdk_seed/include" "$kandelo_sdk_work" \
     "$kandelo_sdk_out" "$kandelo_sdk_libcxx/lib" \
-    "$kandelo_sdk_libcxx/include/c++/v1" "$kandelo_sdk_driver" "$kandelo_sdk_binaryen" "$kandelo_sdk_instrumenter"
+    "$kandelo_sdk_libcxx/include/c++/v1" "$kandelo_sdk_driver" "$kandelo_sdk_binaryen"
 cp "$REPO_ROOT/packages/registry/kandelo-sdk/build-kandelo-sdk.sh" \
     "$kandelo_sdk_recipe_dir/build-kandelo-sdk.sh"
 cp "$REPO_ROOT/scripts/package-build-roots.sh" \
@@ -1153,13 +1152,11 @@ cat >"$kandelo_sdk_repo/sdk/activate.sh" <<'SH'
 SH
 printf 'fake kandelo-cc\n' >"$kandelo_sdk_driver/kandelo-cc.wasm"
 printf 'fake wasm-opt\n' >"$kandelo_sdk_binaryen/wasm-opt.wasm"
-printf 'fake wasm-fork-instrument\n' >"$kandelo_sdk_instrumenter/wasm-fork-instrument.wasm"
 cat >"$kandelo_sdk_repo/images/vfs/scripts/build-kandelo-sdk-vfs-image.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 [ "${KANDELO_SDK_DRIVER:?}" = "${WASM_POSIX_DEP_KANDELO_CC_DIR:?}/kandelo-cc.wasm" ] || exit 91
 [ "${KANDELO_SDK_WASM_OPT:?}" = "${WASM_POSIX_DEP_BINARYEN_DIR:?}/wasm-opt.wasm" ] || exit 93
-[ "${KANDELO_SDK_FORK_INSTRUMENT:?}" = "${WASM_POSIX_DEP_WASM_FORK_INSTRUMENT_DIR:?}/wasm-fork-instrument.wasm" ] || exit 94
 case "${KANDELO_SDK_VFS_OUT:?}" in
     "${WASM_POSIX_DEP_OUT_DIR:?}"/*) ;;
     *) exit 92 ;;
@@ -1193,7 +1190,6 @@ env \
     WASM_POSIX_DEP_LIBCXX_DIR="$kandelo_sdk_libcxx" \
     WASM_POSIX_DEP_KANDELO_CC_DIR="$kandelo_sdk_driver" \
     WASM_POSIX_DEP_BINARYEN_DIR="$kandelo_sdk_binaryen" \
-    WASM_POSIX_DEP_WASM_FORK_INSTRUMENT_DIR="$kandelo_sdk_instrumenter" \
     WASM_POSIX_SYSROOT="$kandelo_sdk_seed" \
     KANDELO_UNEXPECTED_LOCAL_MIRROR="$kandelo_sdk_fixture/local-mirror-called" \
     bash "$kandelo_sdk_recipe_dir/build-kandelo-sdk.sh" \

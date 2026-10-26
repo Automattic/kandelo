@@ -1958,7 +1958,7 @@ build_target() {
         ncurses)    build_ncurses ;;
         zlib)       build_zlib ;;
         lua|love|termchat)   bootstrap_target "$target" ;;
-        binaryen|kandelo-cc|wasm-fork-instrument) bootstrap_target "$target" ;;
+        binaryen|kandelo-cc) bootstrap_target "$target" ;;
         openssl)    build_openssl ;;
         libcurl)    build_libcurl ;;
         vim)        build_vim ;;

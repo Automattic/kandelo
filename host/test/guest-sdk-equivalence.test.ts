@@ -4,10 +4,9 @@
  * Both SDKs run one driver (crates/kandelo-cc): natively on the build
  * machine, as a Kandelo program in kandelo-sdk.zip. The guest's clang has the
  * compiler-facts plugin compiled in, and the guest ships the build machine's
- * Binaryen release and fork instrumenter. So each command below must produce
- * the same bytes in both places: objects, archives, linked programs (with
- * clang's post-link wasm-opt), fork-capable programs (facts and code hash,
- * no wasm-opt) and their fork instrumentation.
+ * Binaryen release. So each command below must produce the same bytes in both
+ * places: objects, archives, linked programs (with clang's post-link
+ * wasm-opt) and fork-capable programs (facts and code hash, no wasm-opt).
  *
  * Both sides compile against the sysroot and glue inside kandelo-sdk.zip: the
  * build machine's side extracts them and points the SDK at them, so the
@@ -15,7 +14,9 @@
  * both locations to the same stable paths (/usr/src/kandelo-sdk/...).
  *
  * Out of scope: -g builds. DWARF records the compiler's resource directory,
- * which is a different path on each side.
+ * which is a different path on each side. Also out of scope: fork
+ * instrumentation, because the SDK inside Kandelo has no fork instrumenter
+ * yet (docs/sdk-guide.md).
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -35,7 +36,6 @@ import { extractZipEntry, parseZipCentralDirectory } from "../src/vfs/zip";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const hostCc = join(repoRoot, "sdk/bin/wasm32posix-cc");
 const hostAr = join(repoRoot, "sdk/bin/wasm32posix-ar");
-const hostInstrument = join(repoRoot, "scripts/run-wasm-fork-instrument.sh");
 
 const utilityNames = ["coreutils", "grep", "sed"];
 const artifactNames = [
@@ -126,8 +126,8 @@ int main(void) {
 };
 
 interface Step {
-  /** Tool: an SDK tool name, or `instrument` for fork instrumentation. */
-  tool: "cc" | "c++" | "ar" | "instrument";
+  /** Tool: an SDK tool name. */
+  tool: "cc" | "c++" | "ar";
   args: string[];
 }
 
@@ -175,13 +175,10 @@ const cases: Case[] = [
   },
   {
     name: "fork",
-    steps: [
-      { tool: "cc", args: ["-O2", "fork.c", "-o", "fork.wasm"] },
-      { tool: "instrument", args: ["fork.wasm", "-o", "fork.instrumented.wasm"] },
-    ],
-    // fork.wasm: linked with its facts and code hash, wasm-opt held back.
-    outputs: ["fork.wasm", "fork.instrumented.wasm"],
-    runs: [{ program: "fork.instrumented.wasm", stdout: "child\nparent 3\n" }],
+    steps: [{ tool: "cc", args: ["-O2", "fork.c", "-o", "fork.wasm"] }],
+    // Linked with its facts and code hash, wasm-opt held back for the fork
+    // instrumenter. It cannot run until it is instrumented.
+    outputs: ["fork.wasm"],
   },
   {
     name: "self-path",
@@ -232,15 +229,12 @@ function hostStep(step: Step, cwd: string, env: NodeJS.ProcessEnv): void {
     ? hostCc
     : step.tool === "c++"
       ? join(repoRoot, "sdk/bin/wasm32posix-c++")
-      : step.tool === "ar"
-        ? hostAr
-        : hostInstrument;
+      : hostAr;
   execFileSync(program, step.args, { cwd, env, stdio: "pipe" });
 }
 
 function guestCommand(step: Step): string {
-  const program = step.tool === "instrument" ? "wasm-fork-instrument" : `wasm32posix-${step.tool}`;
-  return [program, ...step.args].map((word) => `'${word.replace(/'/g, "'\\''")}'`).join(" ");
+  return [`wasm32posix-${step.tool}`, ...step.args].map((word) => `'${word.replace(/'/g, "'\\''")}'`).join(" ");
 }
 
 describe.skipIf(!available)("SDK equivalence: inside Kandelo and on the build machine", () => {
