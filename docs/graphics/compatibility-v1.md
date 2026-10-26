@@ -5718,9 +5718,22 @@ ignored**, excluding xtask, in 87 result groups:
 This includes actual fork/vfork/spawn/dup ioctl paths, independent opens,
 allocator visibility, final close, PRIME removal/reimport, inherited cursor
 rollback, framebuffer holds and rejected snapshot acquisition.
-A normal repaired-kernel/SDK/rootfs/host guest run is still in progress:
-`graphics-gem-guest-after-1026-003309-f04e`. Neither those guests nor the
-new three-engine guest probe is claimed as passing yet.
+The normal repaired-kernel/SDK/rootfs/host run completed successfully:
+`graphics-gem-guest-after-1026-003309-f04e`, 9m53s. Its 21-node normal
+kernel/rootfs/dash/bash graph, SDKs, host build and freshness check passed,
+followed by six C guest cases (the two GEM probes and four existing cursor
+lifetime cases), with no skipped or unloaded cases. The two new probes use
+strict acknowledged host destruction and require no host diagnostics.
+
+`graphics-gem-browser-1026-004431-47e3` then passed six actual C guest
+cases: both GEM probes on Chromium, Firefox and WebKit, in 1m53s. It uses
+normal SDK compilation, kernel artifacts, strict teardown and the browser
+memory-boundary probe. These are guest ownership checks, not rendered
+pixel evidence. Logs are `.context/gtk-instrument-diagnostic/.context/`
+`gem-guest-after.log` and `gem-browser.log`. The validated scratch commit
+is `496c2c3bb6949fa15fce25de11b1af3fbc985b4c`; nine integrated source
+files match byte-for-byte, recorded in
+`.context/gem-integrated-source-identities.json`.
 
 The implementation is copied byte-for-byte from the validated owned
 scratch source; no ABI bump is added within this unpublished ABI 55
@@ -5731,3 +5744,53 @@ K03 remains open for that validation and full DRM-file lifecycle coverage.
 KMS master identity is still keyed by process/local slot, and cursor,
 client caps, pending flips and events are still copied; those ordinary
 K04 gaps are not repaired by sharing GEM names.
+
+
+## Combined GEM conformance and memory-gate checkpoint, 2026-10-26
+
+The stable combined source `0fe23d85199b` passed the required conformance
+runs in an owned checkout with normal SDK/kernel/rootfs/host artifacts:
+`graphics-combined-gem-conformance-1026-012902-6adc`, exit zero in 1h22m.
+This source includes the integrated PR #1581 behavior, repaired
+instrumenter, strict GTK fixture and shared GEM namespace changes.
+
+| Suite | Pass | Expected failure | Skip/known flake | Unexpected failure/build/timeout |
+|---|---:|---:|---|---:|
+| libc-test | 306 | 17 | One known FLAKE-PASS (`pthread_cond-smasher`) | 0 |
+| Open POSIX selection | 174 | 3 | Two declared skips | 0 |
+| All Sortix suites | 5,065 | 23 | 50 declared skips | 0 |
+
+Logs, exit statuses and normal product results are under
+`.context/gtk3-prototype-check/.context/combined-gem-*`. The libc-test
+source is pinned to `790f94c7b6feb8ade25868c10fba46233f783a0b`;
+Sortix is pinned to `7e8f0082ab0b58ad3383a8abbf47dc4b40dcf25d` in the
+owned case-sensitive source tree. The user's dirty Sortix checkout was
+not used or changed. The earlier `raise-race` timeout and stopped mixed-
+input attempt remain historical failures; passing reruns do not identify
+the timeout's cause.
+
+The required full memory front door
+`graphics-final-browser-memory-1026-003944-6a42` finished with exit one
+in 2h20m on stable `0fe23d85199b`. Normal browser products and the host
+built successfully. The 160 host memory source tests, three Node
+lifecycle cases and seven Bun lifecycle cases passed without skipped or
+unloaded tests. Six browser exit-trap/probe cases passed across all three
+engines. Each switching case stopped at the first cage backend-label
+predicate: `innerText` observes CSS-uppercase `WEBGL2-GL`, while the
+predicate requires the backend token `webgl2-gl`. The UI's raw text
+contains that token. This run did not reach sway, tmux, WordPress or the
+remaining cycles and is not a memory-gate pass.
+
+The harness now reads the label's untransformed `textContent`, retaining
+the exact backend predicate, four cycles, persistent page/audio realm,
+constrained memory profile, pixel/input checks and strict teardown. The
+original input command is unchanged. Failing screenshots, traces and
+error contexts are preserved under
+`.context/browser-memory-label-before-1026/`. A fresh complete gate is
+required after this harness correction.
+
+These results do not complete the GLES/EGL/GBM/KMS inventory. In
+particular, the isolated KMS file/master/cursor repair is not integrated
+into this checkpoint, and ordinary command ordering, server-side sync,
+DRM descriptor transfer, pending flip/event admission and broader CTS
+coverage remain open.

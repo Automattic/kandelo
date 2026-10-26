@@ -116,7 +116,7 @@ test("@slow games, cage, sway, tmux and WordPress survive repeated constrained-b
     await launch(page, "cage kiosk", "cage");
     const cageCanvas = page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
     await expect(cageCanvas).toBeVisible({ timeout: 180_000 });
-    await expect.poll(() => page.locator(".kdemo-surface-controls").allInnerTexts()
+    await expect.poll(() => page.locator(".kdemo-surface-controls").allTextContents()
       .then(text => text.join(" ")), { timeout: 180_000 }).toMatch(/webgl2-gl/);
     await expect.poll(async () => (await cageCanvas.screenshot()).byteLength,
       { timeout: 120_000 }).toBeGreaterThan(8_000);
@@ -130,7 +130,7 @@ test("@slow games, cage, sway, tmux and WordPress survive repeated constrained-b
     await launch(page, "sway tiling desktop", "sway");
     const swayCanvas = page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
     await expect(swayCanvas).toBeVisible({ timeout: 180_000 });
-    await expect.poll(() => page.locator(".kdemo-surface-controls").allInnerTexts()
+    await expect.poll(() => page.locator(".kdemo-surface-controls").allTextContents()
       .then(text => text.join(" ")), { timeout: 180_000 }).toMatch(/webgl2-gl/);
     // Wait for the actual foot tile, rather than accepting sway's wallpaper
     // before its client loads. The full sway consumer spec checks tiling,
