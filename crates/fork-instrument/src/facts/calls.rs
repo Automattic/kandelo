@@ -169,7 +169,7 @@ impl FactsStore {
             let name = row.get_ref(1)?.as_str()?;
             charge(&mut remaining, name.len() + 64)?;
             let mut handlers = Vec::new();
-            let mut query = self.db.prepare_cached("SELECT a.name FROM cleanup_handler h JOIN atom a ON a.id=h.handler WHERE h.caller=? ORDER BY a.name")?;
+            let mut query = self.db.prepare_cached("SELECT DISTINCT a.name FROM cleanup_handler h JOIN atom a ON a.id=h.handler WHERE h.caller=? ORDER BY a.name")?;
             let mut entries = query.query([caller])?;
             while let Some(row) = entries.next()? {
                 let h = row.get_ref(0)?.as_str()?;
@@ -543,9 +543,13 @@ impl FactsStore {
             )))",[cleanup])?;
         self.execute("INSERT INTO cleanup_caller SELECT w.id,w.name FROM wasm_function w WHERE NOT w.imported AND w.chosen_count>0
             AND EXISTS(SELECT 1 FROM wasm_direct c JOIN wasm_function t ON t.id=c.callee WHERE c.caller=w.id AND t.name=?1)",[cleanup])?;
+        // WHY by definition, not name: two translation units can each define a
+        // static function with the caller's name. A registration belongs to
+        // the definition chosen for this Wasm function, and keeps its unit.
         self.execute(
-            "INSERT OR IGNORE INTO cleanup_handler SELECT c.caller,r.name FROM cleanup_caller c
-            JOIN registered_by r ON r.caller=c.name WHERE r.registry=?1",
+            "INSERT OR IGNORE INTO cleanup_handler SELECT c.caller,r.name,d.chunk FROM cleanup_caller c
+            JOIN chosen_definition cd ON cd.caller=c.caller JOIN definition d ON d.id=cd.definition
+            JOIN registered_by r ON r.definition=d.id WHERE r.registry=?1",
             [self.atom("cleanup")?],
         )?;
         Ok(())
