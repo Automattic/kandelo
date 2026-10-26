@@ -5561,3 +5561,55 @@ The required browser-memory front door has started as
 It prepares the complete normal browser products and owns its test
 server. Execution, not collection, is required before claiming repeated
 machine/device reclamation. No browser-memory pass is claimed yet.
+
+
+### Repaired-source build and memory-audit checkpoint
+
+The normal GTK instrumentation job
+`graphics-gtk3-tail-fixed-smoke-1025-222658-ebe0` completed successfully
+in 24m16s, using the default post-optimization path and producing
+`.context/gtk3-smoke-tail-fixed.wasm` (22 MiB). The upstream GTK patch and
+ordinary-activation correction are now integrated as `3b8a717492` and
+`5b168b28ea`, preserving Emmanuele Bassi's authorship. Attribution and
+patch equivalence were checked with range-diff:
+`.context/graphics-gtk-fix-attribution-range-diff.txt`. ABI stays 55.
+This isolated producer success repairs the observed instrumentation
+failure; the primary normal developer-program rebuild remains required.
+
+The first required browser-memory gate terminated with exit one after
+16m28s, before browser switching. All normal browser products and the
+host built; the host selection had **158 passes and two failures out of
+160**, with no skipped or unloaded cases. Exact job:
+`graphics-main-browser-memory-1025-224956-c632`. Its log records 46
+unreviewed authority sites and an obsolete graphics-registry test double.
+No browser-cycle, cross-engine teardown or reclamation pass is inferred.
+
+The audit coverage and assertions remain unchanged. Each of the 43
+native replay-fixture construction sites, two standalone artifact-check
+sites and the new GL surface-reply destination has an explicit reviewed
+key and owner. The surface import receives Rust's mutable fixed-size
+wire Vec, authenticates its generated capacity before renderer effects,
+and consumes the bounded reply token synchronously. One catalogue
+fixture now names its imported Wasm instance before selecting the root
+export, so the audit can track a stable instance owner.
+
+The teardown regression now uses the real GL registry with two sessions
+for the exiting process. It retains the existing device-release and
+canvas-handoff assertions and checks both canvas and command-buffer
+aliases are cleared. Its first repaired run passed teardown but still
+rejected the catalogue's anonymous authority origin; the subsequent
+attempt repeated that failure because a patch precondition failed and
+made no source change. Both attempts remain in their logs:
+`graphics-memory-source-repaired-1025-231933-ced5` and
+`graphics-memory-source-repaired-final-1025-232304-5981`. Neither was
+reported as successful validation.
+
+After the actual fixture binding change, all **11 targeted source
+checks pass**, with no skips or load failures:
+`graphics-memory-source-audited-1025-232506-f762`, log
+`.context/graphics-memory-source-audited.log`. Both actual native
+catalogue replay tests also pass:
+`graphics-native-catalog-bound-1025-232506-6f86`, log
+`.context/graphics-native-catalog-bound.log`. These are bounded repair
+checks. The complete required memory gate, normal Node gate and stable
+Sortix conformance still need rerunning against the repaired inputs.

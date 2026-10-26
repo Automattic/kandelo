@@ -5,6 +5,7 @@ import {
   createCentralizedKernelWorkerTestDouble,
 } from "../src/kernel-worker";
 import { WasmPosixKernel } from "../src/kernel";
+import { GlContextRegistry } from "../src/webgl/registry";
 
 type TestableCentralizedKernelWorker = CentralizedKernelWorker & {
   releaseProcessViews(
@@ -17,19 +18,28 @@ type TestableCentralizedKernelWorker = CentralizedKernelWorker & {
 describe("process-owned device view teardown", () => {
   it("drops every device alias that can retain an exiting process generation", () => {
     const removePid = vi.fn();
-    const glUnbind = vi.fn();
     const framebufferUnbind = vi.fn();
     const releaseBos = vi.fn();
     const dropMaster = vi.fn();
     const markKmsCanvasGlReleased = vi.fn();
-    // The exiting process holds a GL session that claimed CRTC 1's canvas.
-    const binding = { claimedKmsCrtc: 1, canvas: {} as unknown };
+    // Both sessions belong to the exiting generation and claim one canvas.
+    const gl = new GlContextRegistry();
+    const bindings = [1, 7].map((sessionId) => {
+      gl.bind({ pid: 41, sessionId, cmdbufAddr: 0, cmdbufLen: 16 });
+      const binding = gl.get(41, sessionId)!;
+      binding.claimedKmsCrtc = 1;
+      binding.canvas = {} as HTMLCanvasElement;
+      binding.cmdbufView = new Uint8Array(16);
+      return binding;
+    });
+    const glUnbind = vi.spyOn(gl, "unbind");
     const kernel = Object.assign(
       Object.create(WasmPosixKernel.prototype),
       {
         callbacks: { markKmsCanvasGlReleased },
         gl_submit_queue: { removePid },
-        gl: { unbind: glUnbind, get: (pid: number) => (pid === 41 ? binding : undefined) },
+        gl,
+        gl_muxers: new Map(),
         framebuffers: { unbind: framebufferUnbind },
         bos: { releaseProcess: releaseBos },
         kms: {
@@ -49,7 +59,12 @@ describe("process-owned device view teardown", () => {
     // The claimed canvas goes back to the vblank pump before the unbind that
     // would otherwise make the claim unreachable.
     expect(markKmsCanvasGlReleased).toHaveBeenCalledExactlyOnceWith(1);
-    expect(binding.claimedKmsCrtc).toBeNull();
+    expect(gl.list()).toEqual([]);
+    for (const binding of bindings) {
+      expect(binding.claimedKmsCrtc).toBeNull();
+      expect(binding.canvas).toBeNull();
+      expect(binding.cmdbufView).toBeNull();
+    }
   });
 
   it("refuses stale pid-only teardown after exec installs a new Memory", () => {

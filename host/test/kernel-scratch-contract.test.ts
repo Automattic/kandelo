@@ -1073,7 +1073,150 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
 ];
 
+// These exact standalone Node replay sites were reviewed against the Rust
+// fixture producers. They instantiate disposable user-process/provider and
+// reference-transit modules, never the centralized kernel. Keep every key
+// explicit: new or changed creation sites still require their own review.
+const reviewedNativeForkFixtureAuthority = (key: string, count = 1): AuditAllowance => ({
+  key,
+  count,
+  disposition: "non-kernel",
+  authorityOwner: "process-memory",
+  why: "This exact standalone native-instrumenter replay site creates only its test-owned process memory or provider/reference helper instance; it neither receives nor instantiates the centralized kernel.",
+});
+
+const reviewedNativeForkFixtureAuthorities: AuditAllowance[] = [
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/gc_codec_replay.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(transitModule)",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/gc_recipe_host.mjs::createGcStore.instantiate::wasm-instance-authority::new WebAssembly.Instance(providerModule, imports)",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/gc_recipe_host.mjs::createGcStore.instantiate::wasm-memory-authority::new WebAssembly.Memory({ initial: wide ? 2n : 2, address: wide ? \"i64\" : \"i32\" })",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_bootstrap.cjs::instantiate::wasm-instance-authority::new WebAssembly.Instance(module, imports)",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_bootstrap.cjs::instantiate::wasm-memory-authority::new WebAssembly.Memory({ initial: 1 })",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_bootstrap.cjs::instantiate::wasm-memory-authority::new WebAssembly.Memory({ initial: index(1), address: wide ? 'i64' : 'i32' })",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_catalogs_declared.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(load('./original.wasm'), { h: { fork: () => 17 } })",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_catalogs_declared.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(provider, imports)",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_catalogs.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(load('./transit.wasm'))",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_catalogs.mjs::<module>::wasm-memory-authority::new WebAssembly.Memory({ initial: index(4), address: wide ? 'i64' : 'i32' })",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_catalogs.mjs::bind::wasm-instance-authority::new WebAssembly.Instance(imported)",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_catch_replay.cjs::createRun::wasm-instance-authority::new WebAssembly.Instance(wasmModule, imports)",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_entry_boundaries.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(load('./transit.wasm'))",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_entry_boundaries.mjs::<module>::wasm-memory-authority::new WebAssembly.Memory({ initial: pointer(4), address: wide ? 'i64' : 'i32' })",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_exception_catch_replay.cjs::run::wasm-instance-authority::new WebAssembly.Instance(wasmModule, imports)",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_exception_codec.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(anyrefModule)",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_exception_codec.mjs::instantiate::wasm-instance-authority::new WebAssembly.Instance(helperModule, { provider: { tag: provider.exports.test_tag, inner_tag: provider.exports.inner_tag, vector_tag: provider.exports.vector_tag, outer_tag: provider.exports.outer_tag, encode: provider.exports.__wpk_fork_ref_encode_exnref, decode: provider.exports.__wpk_fork_ref_decode_exnref, }, })",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_exception_codec.mjs::instantiate::wasm-instance-authority::new WebAssembly.Instance(providerModule, imports)",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_exception_codec.mjs::newMemory::wasm-instance-authority::new WebAssembly.Instance(memoryModule)",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_gc_constructor_host.cjs::<module>::wasm-instance-authority::new WebAssembly.Instance(load('transit.wasm'))",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_gc_constructor_host.cjs::<module>::wasm-instance-authority::new WebAssembly.Instance(moduleUnderTest, imports)",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_legacy_control.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(load('./original.wasm'), { h: { fork: () => 13, same: (left, right) => Number(left === right), raise: () => { throw rawValue; } }, env: { memory: new WebAssembly.Memory({ initial: pointer(4), address: wide ? 'i64' : 'i32' }) }, })",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_legacy_control.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(load('./transit.wasm'))",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_legacy_control.mjs::<module>::wasm-memory-authority::new WebAssembly.Memory({ initial: pointer(4), address: wide ? 'i64' : 'i32' })",
+    2,
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_loader_activation.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(load('./transit.wasm'))",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_loader_activation.mjs::<module>::wasm-memory-authority::new WebAssembly.Memory({ initial: pointer(4), address: wide ? 'i64' : 'i32' })",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_loader.cjs::<module>::wasm-instance-authority::new WebAssembly.Instance(moduleObject, { env: { __wasm_dlopen_main() { calls.push('main'); return 777; }, __wasm_dlopen_prepare(...args) { calls.push('prepare'); prepared = args; return mode === 'prepare-failure' ? 0 : 17; }, __wasm_dlopen_next(token) { calls.push('next'); assert.equal(token, mode === 'prepare-failure' ? 0 : 17); return mode === 'success' || mode === 'main' ? [1, 2, 0][cursor++] : -1; }, __wasm_dlopen_commit(token) { calls.push('commit'); assert.equal(token, 17); return 888; }, }})",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_provider_activation.mjs::scenario::wasm-instance-authority::new WebAssembly.Instance(load('./transit.wasm'))",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_provider_activation.mjs::scenario::wasm-memory-authority::new WebAssembly.Memory({ initial: wide ? 4n : 4, address: wide ? 'i64' : 'i32' })",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_reference_replay.cjs::exerciseReplay.createInstance::wasm-instance-authority::new WebAssembly.Instance(wasmModule, imports)",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_root_memory_gc.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(load('./transit.wasm'))",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_root_memory_gc.mjs::memory::wasm-memory-authority::new WebAssembly.Memory({ initial: wide ? 2n : 2, maximum: wide ? 2n : 2, address: wide ? 'i64' : 'i32', shared: true })",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_root_memory.cjs::instantiate::wasm-instance-authority::new WebAssembly.Instance(moduleUnderTest, imports)",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_root_memory.cjs::instantiate::wasm-memory-authority::new WebAssembly.Memory({ initial: pointer(2), maximum: pointer(2), shared: true, address: wide ? 'i64' : 'i32' })",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_roots.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(load('./transit.wasm'))",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_scalar_replay.cjs::createRun::wasm-instance-authority::new WebAssembly.Instance(wasmModule, imports)",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_sink_entry.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(load('./thunks.wasm'))",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_sink_entry.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(load('./transit.wasm'))",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_tables_mixed.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(load('./transit.wasm'))",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_tables.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(load('./transit.wasm'))",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_tables.mjs::<module>::wasm-memory-authority::new WebAssembly.Memory({ address: wide ? 'i64' : 'i32', initial: wide ? 2n : 2, maximum: wide ? 2n : 2, shared })",
+  ),
+  reviewedNativeForkFixtureAuthority(
+    "crates/fork-instrument/tests/fixtures/streaming_tail_replay.cjs::createRun::wasm-instance-authority::new WebAssembly.Instance(wasmModule, imports)",
+  ),
+];
+
 const auditAllowances: AuditAllowance[] = [
+  ...reviewedNativeForkFixtureAuthorities,
   {
     key: "host/src/kernel.ts::WasmPosixKernel.init::kernel-export-direct-use::configureCursor(1)",
     disposition: "kernel-control",
@@ -1103,6 +1246,18 @@ const auditAllowances: AuditAllowance[] = [
     why: "The same thread-slot reservation; it carries no Rust scratch reservation token, so no host-staged kernel bytes outlive it.",
   },
   ...reviewedScalarKernelExportCalls,
+  {
+    key: "scripts/check-fork-memory-artifact.ts::<module>::wasm-instance-authority::new WebAssembly.Instance(new WebAssembly.Module( readFileSync(output), ))",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "This standalone artifact verifier instantiates only the local reference-transit table module it just assembled, after validating the input's user-process fork artifact contract.",
+  },
+  {
+    key: "scripts/check-fork-memory-artifact.ts::<module>::wasm-memory-authority::new WebAssembly.Memory({ initial: 256, maximum: 65_536, shared: true, })",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "This standalone Node artifact verifier supplies disposable user-process memory to its replay harness; it does not create a browser machine or retain the centralized kernel's memory.",
+  },
   {
     key: "host/src/host-adapter-manifest.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
     disposition: "kernel-read",
@@ -1585,6 +1740,11 @@ const auditAllowances: AuditAllowance[] = [
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( resultPtr, resultLen, "host_getaddrinfo destination", )',
     disposition: "rust-lent",
     why: "The address lookup import authenticates the untouched result pointer and capacity before the resolver runs.",
+  },
+  {
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination(attrsPtr, GL_SURFACE_WIRE_BYTES, "surface creation reply")',
+    disposition: "rust-lent",
+    why: "Rust lends its mutable, fixed-size surface wire Vec for this synchronous import. The host checks the exact generated length and reserves the bounded destination before renderer effects; the copied width/height reply is written through that same token without an await or retained view.",
   },
   {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( outPtr, outLen, "host_gl_query destination", )',
