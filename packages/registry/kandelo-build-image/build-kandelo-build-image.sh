@@ -25,11 +25,17 @@ SDK_ZIP="$WASM_POSIX_DEP_KANDELO_SDK_BROWSER_BUNDLE_DIR/kandelo-sdk.zip"
 [ -f "$SDK_ZIP" ] || { echo "ERROR: $SDK_ZIP not found" >&2; exit 2; }
 
 EAGER_ROOTFS="$WORK_DIR/rootfs-eager.vfs.zst"
+# The rootfs lets a package or an output choose to install lazily (fetched
+# on first use). A build inside Kandelo has nothing to fetch from, so drop
+# those choices and let --default-install eager decide every output.
+EAGER_PACKAGES="$WORK_DIR/rootfs-packages-eager.toml"
+grep -v '^install = ' "$REPO_ROOT/images/rootfs/PACKAGES.toml" > "$EAGER_PACKAGES"
 # Same sealed settings packages/registry/rootfs/build-rootfs-package.sh
 # uses, so the base is the canonical rootfs except for the install mode.
 (
     cd "$REPO_ROOT"
     ROOTFS_OUT="$EAGER_ROOTFS" \
+        ROOTFS_PACKAGES_CONFIG="$EAGER_PACKAGES" \
         ROOTFS_PACKAGE_MANIFEST="$WORK_DIR/rootfs-packages.MANIFEST" \
         ROOTFS_BINARIES_DIR="$WORK_DIR/rootfs-binaries" \
         ROOTFS_SKIP_PACKAGE_RESOLVE=1 \
