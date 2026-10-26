@@ -16623,6 +16623,30 @@ pub extern "C" fn kernel_wait_next_timeout_ns() -> i64 {
     crate::wait_park::with(|parks| parks.next_timeout_ns(now)).unwrap_or(-1)
 }
 
+/// What the host must do right after a syscall parked (`PARKED_ERRNO`):
+/// `-2` when some park has already been decided -- a signal or cancellation
+/// that was pending when the thread parked -- so the host collects
+/// completions now; otherwise what [`kernel_wait_next_timeout_ns`] answers
+/// (`-1` for no timed park, else nanoseconds until the earliest deadline).
+///
+/// WHY one call: a fresh park is almost never decided at once, and collecting
+/// completions to find that out costs the host a scratch lease and a record
+/// copy. This runs the same signal sweep the drain would and only reports.
+/// It is optional and additive: a host facing a kernel without it collects
+/// as before.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_wait_park_followup() -> i64 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    if crate::wait_park::settle(table) {
+        return -2;
+    }
+    match kernel_wait_next_timeout_ns() {
+        // A clock failure: let the host's ordinary collection report it.
+        ns if ns < -1 => -2,
+        ns => ns,
+    }
+}
+
 /// Consume the coalesced PTY readiness notification. PTY queues are not pipe
 /// slots; keep their notification separate from the packed pipe wake stream.
 /// Additive export: older hosts retain their existing retry-timer fallback.

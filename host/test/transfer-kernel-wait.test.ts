@@ -29,6 +29,7 @@ describe.skipIf(!existsSync(binary))("kernel-owned transfer waits", () => {
       "pinned",
       "cancel",
       "signal-pending-at-park",
+      "signal-pending-at-main-park",
       "expired-timeout",
       "ping-pong",
       "signal-retargeted",
