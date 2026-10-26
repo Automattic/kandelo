@@ -7,7 +7,7 @@
     "serve": "npx tsx serve.ts"
   },
   "dependencies": {
-    "@playwright/test": "^1.63.0",
+    "@playwright/test": "^1.64.1",
     "tsx": "^4.23.15"
   }
 }
