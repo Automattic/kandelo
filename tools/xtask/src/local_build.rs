@@ -512,7 +512,7 @@ fn run_repo_script_with_env(
     let script = repo.join(rel);
     let mut command = Command::new("bash");
     command.arg(&script).args(args).current_dir(repo);
-    if rel == "scripts/build-musl.sh" {
+    if rel == "scripts/build-musl.sh" || rel == "scripts/build-kandelo-cc.sh" {
         // Build-deps paths and local-build results are machine-readable stdout.
         // SDK prerequisite diagnostics must not contaminate that channel.
         command.stdout(std::process::Stdio::from(std::io::stderr()));
