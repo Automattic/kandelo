@@ -19,7 +19,6 @@ import {
   CH_SYSCALL,
   CHANNEL_REQUEST_FLAG_CANCELLATION_POINT,
   CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED,
-  FCNTL_FLOCK_BYTES,
   PROCESS_MSGHDR_WASM32_CONTROLLEN_OFFSET,
   PROCESS_MSGHDR_WASM32_CONTROL_OFFSET,
   PROCESS_MSGHDR_WASM32_FLAGS_OFFSET,
@@ -44,6 +43,11 @@ import {
   WASM_POLL_FD_EVENTS_OFFSET,
   WASM_POLL_FD_FD_OFFSET,
   WASM_POLL_FD_REVENTS_OFFSET,
+  KERNEL_WAIT_PARKED_ERRNO,
+  WAIT_COMPLETION_FIELDS,
+  WAIT_COMPLETION_FLAGS,
+  WAKEUP_EVENT_FIELDS,
+  WAKEUP_EVENT_TYPES,
 } from "../src/generated/abi";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
@@ -186,7 +190,6 @@ function createRetryHarness(
     ABI_SYSCALLS.Openat,
     ABI_SYSCALLS.Poll,
     ABI_SYSCALLS.Ppoll,
-    ABI_SYSCALLS.RtSigtimedwait,
     ABI_SYSCALLS.Select,
     ABI_SYSCALLS.Pselect6,
   ]);
@@ -208,6 +211,11 @@ function createRetryHarness(
     kernel_pick_signal_target_tid: vi.fn(() => pid),
     kernel_set_current_tid: () => 0,
     kernel_thread_has_deliverable: vi.fn(() => 1),
+    // Kernel-owned waits (wait_park): no park decides anything unless a test
+    // says so.
+    kernel_drain_wait_completions: vi.fn(() => 0),
+    kernel_drain_wakeup_events: vi.fn(() => 0),
+    kernel_wait_next_timeout_ns: vi.fn(() => -1n),
   };
   const onKernelFatal = vi.fn();
   const worker = createCentralizedKernelWorkerTestDouble({
@@ -667,7 +675,6 @@ describe("blocking retry snapshot contract", () => {
       "Syscall::Select as u32",
       "extended_syscalls::SYS_PPOLL",
       "extended_syscalls::SYS_PSELECT6",
-      "extended_syscalls::SYS_RT_SIGTIMEDWAIT",
     ]);
 
     const fromSyscall = BLOCKED_RETRY_SOURCE.match(
@@ -811,40 +818,6 @@ afterEach(() => {
 });
 
 describe("blocking retry request snapshots", () => {
-  it.each(WIDTHS)(
-    "%s interprets futex bitset deadlines in the selected guest clock",
-    async (_name, pointerWidth) => {
-      for (const realtime of [false, true]) {
-        const harness = createRetryHarness(pointerWidth);
-        const now = { sec: realtime ? 1_800_000_000 : 123_456, nsec: 500_000_000 };
-        harness.worker.io.clockGettime = vi.fn(() => now);
-        const remaining = vi.fn((_channel, ms) => Date.now() + ms);
-        harness.worker.testAuthority.configureScratchBoundaryHooksForTest({
-          getReadinessDeadline: remaining,
-        });
-        const view = new DataView(harness.processMemory.buffer);
-        view.setBigInt64(0x1800, BigInt(now.sec), true);
-        view.setBigInt64(0x1808, BigInt(now.nsec + 100_000), true);
-        writeRequest(harness, ABI_SYSCALLS.Futex, [
-          0x1000n, BigInt(9 | 128 | (realtime ? 256 : 0)), 0n, 0x1800n, 0n, 0xffffffffn,
-        ]);
-        harness.worker.handleSyscall(harness.channel);
-        expect(harness.worker.io.clockGettime).toHaveBeenCalledWith(realtime ? 0 : 1);
-        expect(remaining.mock.calls[0]?.[1]).toBe(1);
-        harness.worker.pendingFutexWaits.get(harness.channel)?.retire();
-        // An expired absolute deadline must time out immediately.
-        view.setBigInt64(0x1800, BigInt(now.sec - 1), true);
-        writeRequest(harness, ABI_SYSCALLS.Futex, [
-          0x1000n, BigInt(9 | (realtime ? 256 : 0)), 0n, 0x1800n, 0n, 0xffffffffn,
-        ]);
-        harness.worker.handleSyscall(harness.channel);
-        expect(requestResult(harness)).toEqual({
-          status: CHANNEL_STATUS_COMPLETE, returnValue: -110, errno: 110,
-        });
-      }
-    },
-  );
-
   it.each(WIDTHS)(
     "%s retains a scalar write's fd, source range, length, and payload",
     async (_name, pointerWidth) => {
@@ -997,6 +970,36 @@ describe("blocking retry request snapshots", () => {
         ),
       ).toEqual([0x20, 0x20, 0x20]);
       expectExactRetryBindingLifecycle(harness, ABI_SYSCALLS.Read);
+    },
+  );
+
+  it.each(WIDTHS)(
+    "%s ends a host socket's SO_RCVTIMEO wait with EAGAIN, not ETIMEDOUT",
+    (_name, pointerWidth) => {
+      // POSIX (and Linux) report an expired SO_RCVTIMEO/SO_SNDTIMEO as a
+      // partial transfer or -1 with EAGAIN/EWOULDBLOCK; ETIMEDOUT is a
+      // connection timing out. A host socket's timeout is the host's timer.
+      vi.useFakeTimers();
+      const harness = createRetryHarness(pointerWidth);
+      writeRequest(harness, ABI_SYSCALLS.Recv, [7n, 0x1000n, 1n, 0n]);
+      harness.kernelExports.kernel_is_fd_nonblock = vi.fn(() => 0);
+      harness.kernelExports.kernel_get_socket_timeout_ms = vi.fn(() => 25n);
+      harness.kernelExports.kernel_handle_channel = vi.fn(
+        (rawPointer: number | bigint) => {
+          publishKernelResult(kernelView(harness, rawPointer), -1, EAGAIN);
+          return 0;
+        },
+      );
+
+      harness.worker.handleSyscall(harness.channel);
+      expect(requestStatus(harness)).toBe(CHANNEL_STATUS_PENDING);
+      vi.advanceTimersByTime(25);
+
+      expect(requestResult(harness)).toEqual({
+        status: CHANNEL_STATUS_COMPLETE,
+        returnValue: -1,
+        errno: EAGAIN,
+      });
     },
   );
 
@@ -2874,86 +2877,6 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
   );
 
   it.each(WIDTHS)(
-    "%s retains rt_sigtimedwait's mask, output destination, and timeout",
-    async (_name, pointerWidth) => {
-      vi.useFakeTimers();
-      const harness = createRetryHarness(pointerWidth);
-      const mask = 0x1000;
-      const info = 0x1200;
-      const timeout = 0x1400;
-      const replacementInfo = 0x2200;
-      const processView = new DataView(harness.processMemory.buffer);
-      processView.setBigUint64(mask, 0x0102030405060708n, true);
-      processView.setBigInt64(timeout, 5n, true);
-      processView.setBigInt64(timeout + 8, 0n, true);
-      writeRequest(harness, ABI_SYSCALLS.RtSigtimedwait, [
-        BigInt(mask),
-        BigInt(info),
-        BigInt(timeout),
-        BigInt(SIGNAL_MASK_BYTES),
-      ]);
-
-      const attempts: Array<{ mask: bigint; timeoutSeconds: bigint }> = [];
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          const view = kernelView(harness, rawPointer);
-          const stagedMask = new DataView(
-            harness.kernelBytes.buffer,
-            Number(kernelArg(view, 0)),
-            SIGNAL_MASK_BYTES,
-          );
-          const stagedTimeout = new DataView(
-            harness.kernelBytes.buffer,
-            Number(kernelArg(view, 2)),
-            16,
-          );
-          attempts.push({
-            mask: stagedMask.getBigUint64(0, true),
-            timeoutSeconds: stagedTimeout.getBigInt64(0, true),
-          });
-          if (attempts.length === 1) {
-            publishKernelResult(view, -1, EAGAIN);
-          } else {
-            const infoPointer = Number(kernelArg(view, 1));
-            harness.kernelBytes.fill(0x5a, infoPointer, infoPointer + 128);
-            publishKernelResult(view, 10, 0);
-          }
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(harness.channel);
-      processView.setBigUint64(mask, 0xffffffffffffffffn, true);
-      processView.setBigInt64(timeout, 0n, true);
-      writeRequest(harness, ABI_SYSCALLS.RtSigtimedwait, [
-        BigInt(mask),
-        BigInt(replacementInfo),
-        0n,
-        BigInt(SIGNAL_MASK_BYTES),
-      ]);
-      harness.worker.retrySyscall(harness.channel);
-      await Promise.resolve();
-
-      expect(attempts).toEqual([
-        { mask: 0x0102030405060708n, timeoutSeconds: 5n },
-        { mask: 0x0102030405060708n, timeoutSeconds: 5n },
-      ]);
-      expect(
-        Array.from(harness.processBytes.slice(info, info + 128)),
-      ).toEqual(new Array(128).fill(0x5a));
-      expect(
-        Array.from(
-          harness.processBytes.slice(replacementInfo, replacementInfo + 128),
-        ),
-      ).toEqual(new Array(128).fill(0));
-      expectHostOnlyRetryLifecycle(
-        harness,
-        ABI_SYSCALLS.RtSigtimedwait,
-      );
-    },
-  );
-
-  it.each(WIDTHS)(
     "%s retains a FIFO open pathname and flags while parked",
     async (_name, pointerWidth) => {
       vi.useFakeTimers();
@@ -3013,171 +2936,6 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         { path: original, flags: 0 },
       ]);
       expectHostOnlyRetryLifecycle(harness, ABI_SYSCALLS.Open);
-    },
-  );
-
-  it.each(WIDTHS)(
-    "%s retains F_SETLKW's flock wire and acquires an exact target token",
-    async (_name, pointerWidth) => {
-      vi.useFakeTimers();
-      const harness = createRetryHarness(pointerWidth);
-      const flockPointer = 0x1000;
-      const replacementPointer = 0x2000;
-      const original = Array.from(
-        { length: FCNTL_FLOCK_BYTES },
-        (_, index) => (index * 7 + 3) & 0xff,
-      );
-      const replacement = new Array(FCNTL_FLOCK_BYTES).fill(0xee);
-      harness.processBytes.set(original, flockPointer);
-      harness.processBytes.set(replacement, replacementPointer);
-      writeRequest(harness, ABI_SYSCALLS.Fcntl, [
-        7n,
-        7n,
-        BigInt(flockPointer),
-      ]);
-      harness.kernelExports.kernel_blocking_retry_token = vi.fn(() => 43n);
-
-      const attempts: Array<{ fd: number; flock: number[] }> = [];
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          const view = kernelView(harness, rawPointer);
-          const stagedPointer = Number(kernelArg(view, 2));
-          attempts.push({
-            fd: Number(kernelArg(view, 0)),
-            flock: Array.from(
-              harness.kernelBytes.slice(
-                stagedPointer,
-                stagedPointer + FCNTL_FLOCK_BYTES,
-              ),
-            ),
-          });
-          publishKernelResult(
-            view,
-            attempts.length === 1 ? -1 : 0,
-            attempts.length === 1 ? EAGAIN : 0,
-          );
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(harness.channel);
-      harness.processBytes.fill(
-        0xaa,
-        flockPointer,
-        flockPointer + FCNTL_FLOCK_BYTES,
-      );
-      writeRequest(harness, ABI_SYSCALLS.Fcntl, [
-        88n,
-        7n,
-        BigInt(replacementPointer),
-      ]);
-      await vi.advanceTimersByTimeAsync(10);
-      await Promise.resolve();
-
-      expect(attempts).toEqual([
-        { fd: 7, flock: original },
-        { fd: 7, flock: original },
-      ]);
-      expectExactRetryBindingLifecycle(
-        harness,
-        ABI_SYSCALLS.Fcntl,
-        43n,
-      );
-    },
-  );
-
-  it.each(WIDTHS)(
-    "%s retains blocking flock scalars and its exact OFD token",
-    async (_name, pointerWidth) => {
-      vi.useFakeTimers();
-      const harness = createRetryHarness(pointerWidth);
-      writeRequest(harness, ABI_SYSCALLS.Flock, [7n, 2n]);
-      harness.kernelExports.kernel_blocking_retry_token = vi.fn(() => 44n);
-
-      const attempts: Array<{ fd: number; operation: number }> = [];
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          const view = kernelView(harness, rawPointer);
-          attempts.push({
-            fd: Number(kernelArg(view, 0)),
-            operation: Number(kernelArg(view, 1)),
-          });
-          publishKernelResult(
-            view,
-            attempts.length === 1 ? -1 : 0,
-            attempts.length === 1 ? EAGAIN : 0,
-          );
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(harness.channel);
-      writeRequest(harness, ABI_SYSCALLS.Flock, [88n, 8n]);
-      await vi.advanceTimersByTimeAsync(10);
-      await Promise.resolve();
-
-      expect(attempts).toEqual([
-        { fd: 7, operation: 2 },
-        { fd: 7, operation: 2 },
-      ]);
-      expectExactRetryBindingLifecycle(
-        harness,
-        ABI_SYSCALLS.Flock,
-        44n,
-      );
-    },
-  );
-
-  it.each([
-    ["wasm32 F_SETLK", 4, 6],
-    ["wasm64 F_SETLK", 8, 6],
-    ["wasm32 F_OFD_SETLK", 4, 37],
-    ["wasm64 F_OFD_SETLK", 8, 37],
-  ] as const)(
-    "%s releases its Rust target pin before returning EAGAIN",
-    (_name, pointerWidth, command) => {
-      const harness = createRetryHarness(pointerWidth);
-      const flockPointer = 0x1000;
-      harness.processBytes.fill(
-        0x3c,
-        flockPointer,
-        flockPointer + FCNTL_FLOCK_BYTES,
-      );
-      writeRequest(harness, ABI_SYSCALLS.Fcntl, [
-        7n,
-        BigInt(command),
-        BigInt(flockPointer),
-      ]);
-      harness.kernelExports.kernel_blocking_retry_token = vi.fn(() => 45n);
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          publishKernelResult(kernelView(harness, rawPointer), -1, EAGAIN);
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(harness.channel);
-
-      expect(requestResult(harness)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        returnValue: -1,
-        errno: EAGAIN,
-      });
-      expect(harness.worker.pendingAdvisoryLockRetries.size).toBe(0);
-      expect(
-        harness.kernelExports.kernel_blocking_retry_token,
-      ).toHaveBeenCalledWith(
-        harness.channel.pid,
-        harness.channel.pid,
-        ABI_SYSCALLS.Fcntl,
-      );
-      expect(
-        harness.kernelExports.kernel_blocking_retry_release,
-      ).toHaveBeenCalledWith(
-        harness.channel.pid,
-        harness.channel.pid,
-        45n,
-      );
     },
   );
 
@@ -4025,29 +3783,19 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
     "treats -ESRCH from the %s as a vanished target, not corruption",
     async (_description, configure) => {
       const harness = createRetryHarness(4);
-      const futexPointer = 0x1000;
-      new Int32Array(
-        harness.processMemory.buffer,
-      )[futexPointer >>> 2] = 0;
-      writeRequest(harness, ABI_SYSCALLS.Futex, [
-        BigInt(futexPointer),
-        0n,
-        0n,
-        0n,
-        0n,
-        0n,
-      ]);
+      // A host-owned blocking retry (futex waits are kernel parks now, so
+      // the host no longer holds one to interrupt).
+      writeRequest(harness, ABI_SYSCALLS.Read, [7n, 0x1000n, 3n]);
       harness.kernelExports.kernel_handle_channel = vi.fn(
         (rawPointer: number | bigint) => {
-          publishKernelResult(kernelView(harness, rawPointer), 0, 0);
+          publishKernelResult(kernelView(harness, rawPointer), -1, EAGAIN);
           return 0;
         },
       );
-      harness.kernelExports.kernel_dequeue_signal = vi.fn(() => 0);
       harness.worker.handleSyscall(harness.channel);
-      expect(
-        harness.worker.pendingFutexWaits.has(harness.channel),
-      ).toBe(true);
+      expect(requestStatus(harness)).toBe(CHANNEL_STATUS_PENDING);
+      // Count only the dequeues the signal route makes.
+      harness.kernelExports.kernel_dequeue_signal = vi.fn(() => 0);
       configure(harness);
 
       harness.worker.testAuthority.sendSignalForTest(
@@ -4061,310 +3809,6 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         harness.kernelExports.kernel_dequeue_signal,
       ).not.toHaveBeenCalled();
       expect(requestStatus(harness)).toBe(CHANNEL_STATUS_PENDING);
-      expect(
-        harness.worker.pendingFutexWaits.has(harness.channel),
-      ).toBe(true);
-    },
-  );
-
-  it.each([
-    [
-      "SYS_KILL missing signal-target selector",
-      ABI_SYSCALLS.Kill,
-      (harness: RetryHarness) => {
-        harness.kernelExports.kernel_pick_signal_target_tid = undefined;
-      },
-      "kernel export kernel_pick_signal_target_tid failed",
-    ],
-    [
-      "SYS_KILL negative signal-target selector",
-      ABI_SYSCALLS.Kill,
-      (harness: RetryHarness) => {
-        harness.kernelExports.kernel_pick_signal_target_tid = vi.fn(
-          () => -1,
-        );
-      },
-      "kernel returned invalid signal target TID -1",
-    ],
-    [
-      "SYS_TKILL missing deliverable-signal query",
-      ABI_SYSCALLS.Tkill,
-      (harness: RetryHarness) => {
-        harness.kernelExports.kernel_thread_has_deliverable = undefined;
-      },
-      "kernel export kernel_thread_has_deliverable failed",
-    ],
-    [
-      "SYS_TKILL invalid deliverable-signal query",
-      ABI_SYSCALLS.Tkill,
-      (harness: RetryHarness) => {
-        harness.kernelExports.kernel_thread_has_deliverable = vi.fn(
-          () => 2,
-        );
-      },
-      "kernel returned invalid deliverable-signal state 2",
-    ],
-  ] as const)(
-    "fails the kernel generation for guest %s",
-    async (_description, syscall, configure, expectedMessage) => {
-      const harness = createRetryHarness(4);
-      configure(harness);
-      writeRequest(harness, syscall, [
-        BigInt(harness.channel.pid),
-        BigInt(SIGUSR1),
-      ]);
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          publishKernelResult(kernelView(harness, rawPointer), 0, 0);
-          return 0;
-        },
-      );
-
-      expect(() => harness.worker.handleSyscall(harness.channel)).toThrow(
-        expectedMessage,
-      );
-      await Promise.resolve();
-
-      expect(harness.onKernelFatal).toHaveBeenCalledOnce();
-      expect(requestStatus(harness)).toBe(CHANNEL_STATUS_PENDING);
-    },
-  );
-
-  it.each(WIDTHS)(
-    "%s interrupts only the exact caught-signal futex target",
-    async (_name, pointerWidth) => {
-      const harness = createRetryHarness(pointerWidth, {
-        channelOffsets: [4 * 65_536, 6 * 65_536],
-      });
-      const [mainChannel, threadChannel] = harness.channels;
-      const threadTid = 77;
-      harness.worker.channelTids.set(
-        `${threadChannel.pid}:${threadChannel.channelOffset}`,
-        threadTid,
-      );
-      const mainFutex = 0x1000;
-      const threadFutex = 0x1100;
-      new Int32Array(harness.processMemory.buffer)[mainFutex / 4] = 0;
-      new Int32Array(harness.processMemory.buffer)[threadFutex / 4] = 0;
-      writeRequest(
-        harness,
-        ABI_SYSCALLS.Futex,
-        [BigInt(mainFutex), 0n, 0n, 0n, 0n, 0n],
-        mainChannel,
-      );
-      writeRequest(
-        harness,
-        ABI_SYSCALLS.Futex,
-        [BigInt(threadFutex), 0n, 0n, 0n, 0n, 0n],
-        threadChannel,
-      );
-      harness.kernelExports.kernel_pick_signal_target_tid = vi.fn(
-        () => threadTid,
-      );
-      harness.kernelExports.kernel_thread_has_deliverable = vi.fn(() => 1);
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          publishKernelResult(kernelView(harness, rawPointer), 0, 0);
-          return 0;
-        },
-      );
-      harness.kernelExports.kernel_dequeue_signal = vi.fn(
-        (
-          _pid: number,
-          _tid: number,
-          rawPointer: number | bigint,
-        ) => writeKernelCaughtSignal(harness, rawPointer),
-      );
-
-      harness.worker.handleSyscall(mainChannel);
-      harness.worker.handleSyscall(threadChannel);
-      expect(harness.worker.pendingFutexWaits.has(mainChannel)).toBe(true);
-      expect(harness.worker.pendingFutexWaits.has(threadChannel)).toBe(true);
-
-      harness.worker.testAuthority.sendSignalForTest(
-        harness.channel.pid,
-        SIGUSR1,
-      );
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(requestStatus(harness, mainChannel)).toBe(
-        CHANNEL_STATUS_PENDING,
-      );
-      expect(requestResult(harness, threadChannel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        returnValue: -EINTR,
-        errno: EINTR,
-      });
-      expect(harness.worker.pendingFutexWaits.has(mainChannel)).toBe(true);
-      expect(harness.worker.pendingFutexWaits.has(threadChannel)).toBe(false);
-      expect(
-        harness.kernelExports.kernel_dequeue_signal,
-      ).toHaveBeenCalledWith(
-        harness.channel.pid,
-        threadTid,
-        expect.anything(),
-        expect.any(Number),
-      );
-      const threadView = new DataView(
-        harness.processMemory.buffer,
-        threadChannel.channelOffset,
-      );
-      expect(threadView.getUint32(CH_SIG_SIGNUM, true)).toBe(SIGUSR1);
-      expect(threadView.getUint32(CH_SIG_FLAGS, true)).toBe(SA_RESTART);
-
-      harness.worker.removeChannel(
-        mainChannel.pid,
-        mainChannel.channelOffset,
-      );
-    },
-  );
-
-  it.each([
-    ["wasm32 SYS_TKILL", 4, ABI_SYSCALLS.Tkill],
-    ["wasm64 SYS_TKILL", 8, ABI_SYSCALLS.Tkill],
-    ["wasm32 SYS_KILL", 4, ABI_SYSCALLS.Kill],
-    ["wasm64 SYS_KILL", 8, ABI_SYSCALLS.Kill],
-  ] as const)(
-    "%s interrupts the exact pending futex after successful guest dispatch",
-    async (_name, pointerWidth, signalSyscall) => {
-      const harness = createRetryHarness(pointerWidth, {
-        channelOffsets: [4 * 65_536, 6 * 65_536],
-      });
-      const [senderChannel, targetChannel] = harness.channels;
-      const targetTid = 77;
-      harness.worker.channelTids.set(
-        `${targetChannel.pid}:${targetChannel.channelOffset}`,
-        targetTid,
-      );
-      const futexPointer = 0x1000;
-      new Int32Array(harness.processMemory.buffer)[futexPointer / 4] = 0;
-      writeRequest(
-        harness,
-        ABI_SYSCALLS.Futex,
-        [BigInt(futexPointer), 0n, 0n, 0n, 0n, 0n],
-        targetChannel,
-      );
-      harness.kernelExports.kernel_pick_signal_target_tid = vi.fn(
-        () => targetTid,
-      );
-      harness.kernelExports.kernel_thread_has_deliverable = vi.fn(
-        (_pid: number, tid: number) => tid === targetTid ? 1 : 0,
-      );
-      harness.kernelExports.kernel_dequeue_signal = vi.fn(
-        (
-          _pid: number,
-          tid: number,
-          rawPointer: number | bigint,
-        ) => tid === targetTid
-          ? writeKernelCaughtSignal(harness, rawPointer)
-          : 0,
-      );
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          publishKernelResult(kernelView(harness, rawPointer), 0, 0);
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(targetChannel);
-      expect(harness.worker.pendingFutexWaits.has(targetChannel)).toBe(true);
-      const signalArgs = signalSyscall === ABI_SYSCALLS.Tkill
-        ? [BigInt(targetTid), BigInt(SIGUSR1)]
-        : [BigInt(senderChannel.pid), BigInt(SIGUSR1)];
-      writeRequest(harness, signalSyscall, signalArgs, senderChannel);
-      harness.worker.handleSyscall(senderChannel);
-      // Target publication enters only after the sender's kernel-entry token
-      // is revoked; the signal dequeue itself still happened synchronously
-      // under the authoritative sender transition.
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(requestResult(harness, senderChannel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        returnValue: 0,
-        errno: 0,
-      });
-      expect(
-        harness.kernelExports.kernel_thread_has_deliverable,
-      ).toHaveBeenCalledWith(senderChannel.pid, targetTid);
-      expect(requestResult(harness, targetChannel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        returnValue: -EINTR,
-        errno: EINTR,
-      });
-      expect(harness.worker.pendingFutexWaits.has(targetChannel)).toBe(false);
-      expect(
-        harness.kernelExports.kernel_dequeue_signal,
-      ).toHaveBeenCalledWith(
-        senderChannel.pid,
-        targetTid,
-        expect.anything(),
-        expect.any(Number),
-      );
-      const targetView = new DataView(
-        harness.processMemory.buffer,
-        targetChannel.channelOffset,
-      );
-      expect(targetView.getUint32(CH_SIG_SIGNUM, true)).toBe(SIGUSR1);
-      expect(targetView.getUint32(CH_SIG_FLAGS, true)).toBe(SA_RESTART);
-    },
-  );
-
-  it.each(WIDTHS)(
-    "%s clears effective SA_RESTART when a finite futex wait is interrupted",
-    async (_name, pointerWidth) => {
-      const harness = createRetryHarness(pointerWidth);
-      const futexPointer = 0x1000;
-      const timeoutPointer = 0x1800;
-      new Int32Array(harness.processMemory.buffer)[futexPointer / 4] = 0;
-      const processView = new DataView(harness.processMemory.buffer);
-      processView.setBigInt64(timeoutPointer, 10n, true);
-      processView.setBigInt64(timeoutPointer + 8, 0n, true);
-      writeRequest(harness, ABI_SYSCALLS.Futex, [
-        BigInt(futexPointer),
-        0n,
-        0n,
-        BigInt(timeoutPointer),
-        0n,
-        0n,
-      ]);
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          publishKernelResult(kernelView(harness, rawPointer), 0, 0);
-          return 0;
-        },
-      );
-      harness.kernelExports.kernel_dequeue_signal = vi.fn(
-        (
-          _pid: number,
-          _tid: number,
-          rawPointer: number | bigint,
-        ) => writeKernelCaughtSignal(harness, rawPointer),
-      );
-
-      harness.worker.handleSyscall(harness.channel);
-      expect(
-        harness.worker.pendingFutexWaits.get(harness.channel)?.hasTimeout,
-      ).toBe(true);
-      harness.worker.testAuthority.sendSignalForTest(
-        harness.channel.pid,
-        SIGUSR1,
-      );
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(requestResult(harness)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        returnValue: -EINTR,
-        errno: EINTR,
-      });
-      const channelView = new DataView(
-        harness.processMemory.buffer,
-        harness.channel.channelOffset,
-      );
-      expect(channelView.getUint32(CH_SIG_SIGNUM, true)).toBe(SIGUSR1);
-      expect(channelView.getUint32(CH_SIG_FLAGS, true)).toBe(0);
     },
   );
 
@@ -4435,59 +3879,6 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
 
       {
         const harness = createRetryHarness(pointerWidth);
-        const requestPointer = 0x1000;
-        const view = new DataView(harness.processMemory.buffer);
-        view.setBigInt64(requestPointer, 5n, true);
-        view.setBigInt64(requestPointer + 8, 0n, true);
-        armCancellationPoint(harness, ABI_SYSCALLS.Nanosleep, [
-          BigInt(requestPointer),
-          0n,
-        ]);
-        harness.kernelExports.kernel_handle_channel = vi.fn(
-          (rawPointer: number | bigint) =>
-            publishRetryOrExactCleanup(harness, rawPointer, 0, 0),
-        );
-
-        harness.worker.handleSyscall(harness.channel);
-
-        expectInterrupted(harness, "sleep");
-        expect(harness.worker.pendingSleeps.has(harness.channel)).toBe(false);
-      }
-
-      {
-        const harness = createRetryHarness(pointerWidth);
-        const maskPointer = 0x1000;
-        const infoPointer = 0x1200;
-        const timeoutPointer = 0x1400;
-        const view = new DataView(harness.processMemory.buffer);
-        view.setBigUint64(maskPointer, 1n, true);
-        view.setBigInt64(timeoutPointer, 5n, true);
-        view.setBigInt64(timeoutPointer + 8, 0n, true);
-        armCancellationPoint(harness, ABI_SYSCALLS.RtSigtimedwait, [
-          BigInt(maskPointer),
-          BigInt(infoPointer),
-          BigInt(timeoutPointer),
-          BigInt(SIGNAL_MASK_BYTES),
-        ]);
-        harness.kernelExports.kernel_handle_channel = vi.fn(
-          (rawPointer: number | bigint) =>
-            publishRetryOrExactCleanup(harness, rawPointer, -1, EAGAIN),
-        );
-
-        harness.worker.handleSyscall(harness.channel);
-
-        expectInterrupted(harness, "sigtimedwait");
-        const key =
-          `${harness.channel.pid}:${harness.channel.channelOffset}`;
-        expect(harness.worker.pendingSignalWaits.has(key)).toBe(false);
-        // The deadline is kernel state keyed on this channel's execution
-        // generation now, not a host map keyed on `pid:offset`. Retiring it
-        // clears the handle.
-        expect(harness.channel.waitHandle).toBeUndefined();
-      }
-
-      {
-        const harness = createRetryHarness(pointerWidth);
         armCancellationPoint(harness, ABI_SYSCALLS.Poll, [
           0n,
           0n,
@@ -4534,26 +3925,6 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         expectInterrupted(harness, "select");
         expect(
           harness.worker.pendingSelectRetries.has(harness.channel),
-        ).toBe(false);
-      }
-
-      {
-        const harness = createRetryHarness(pointerWidth);
-        armCancellationPoint(
-          harness,
-          ABI_SYSCALLS.Flock,
-          [7n, 2n],
-        );
-        harness.kernelExports.kernel_handle_channel = vi.fn(
-          (rawPointer: number | bigint) =>
-            publishRetryOrExactCleanup(harness, rawPointer, -1, EAGAIN),
-        );
-
-        harness.worker.handleSyscall(harness.channel);
-
-        expectInterrupted(harness, "advisory lock");
-        expect(
-          harness.worker.pendingAdvisoryLockRetries.has(harness.channel),
         ).toBe(false);
       }
 
@@ -4636,28 +4007,136 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
           0n,
           0n,
         ]);
+        // The kernel owns the futex wait: it parks the request (generation 9)
+        // and, when the host's exact-task cleanup reaches it, decides EINTR
+        // and queues a completion record the host must publish. Sleeps park
+        // through the same PARKED result, so this case covers them too.
+        const generation = 9;
+        let decided = false;
         harness.kernelExports.kernel_handle_channel = vi.fn(
-          (rawPointer: number | bigint) =>
-            publishRetryOrExactCleanup(harness, rawPointer, 0, 0),
+          (rawPointer: number | bigint) => {
+            const view = kernelView(harness, rawPointer);
+            if (view.getUint32(CH_SYSCALL, true) === ABI_SYSCALLS.Futex) {
+              publishKernelResult(view, generation, KERNEL_WAIT_PARKED_ERRNO);
+              return 0;
+            }
+            decided = true;
+            return publishRetryOrExactCleanup(harness, rawPointer, 0, 0);
+          },
         );
+        harness.kernelExports.kernel_drain_wakeup_events = vi.fn(
+          (rawPointer: number | bigint) => {
+            if (!decided) return 0;
+            const view = kernelView(harness, rawPointer);
+            view.setUint32(WAKEUP_EVENT_FIELDS.idx.offset, 0, true);
+            view.setUint16(
+              WAKEUP_EVENT_FIELDS.wakeType.offset,
+              WAKEUP_EVENT_TYPES.waitComplete,
+              true,
+            );
+            return 1;
+          },
+        );
+        harness.kernelExports.kernel_drain_wait_completions = vi.fn(
+          (rawPointer: number | bigint) => {
+            if (!decided) return 0;
+            decided = false;
+            const view = kernelView(harness, rawPointer);
+            const F = WAIT_COMPLETION_FIELDS;
+            view.setBigUint64(F.generation.offset, BigInt(generation), true);
+            view.setUint32(F.pid.offset, harness.channel.pid, true);
+            view.setUint32(F.tid.offset, harness.channel.pid, true);
+            view.setInt32(F.value.offset, -EINTR, true);
+            view.setUint32(F.flags.offset, WAIT_COMPLETION_FLAGS.cancelled, true);
+            return 1;
+          },
+        );
+        harness.kernelExports.kernel_wait_next_timeout_ns = vi.fn(() => -1n);
 
         harness.worker.handleSyscall(harness.channel);
 
         expectInterrupted(harness, "futex");
-        expect(
-          harness.worker.pendingFutexWaits.has(harness.channel),
-        ).toBe(false);
       }
     },
   );
 
+  it.each(WIDTHS)(
+    "%s publishes a kernel wait decision only into the park it names",
+    async (_name, pointerWidth) => {
+      // Invariant 1 of wait_queue.rs: a completion carries the park
+      // generation, and a record for any other generation -- a park this
+      // channel no longer holds -- must never complete the request.
+      const harness = createRetryHarness(pointerWidth);
+      writeRequest(harness, ABI_SYSCALLS.Futex, [0x1000n, 0n, 0n, 0n, 0n, 0n]);
+      harness.kernelExports.kernel_handle_channel = vi.fn(
+        (rawPointer: number | bigint) => {
+          publishKernelResult(
+            kernelView(harness, rawPointer),
+            9,
+            KERNEL_WAIT_PARKED_ERRNO,
+          );
+          return 0;
+        },
+      );
+      let recordGeneration = 8;
+      const decide = (): void => {
+        harness.kernelExports.kernel_drain_wait_completions = vi.fn(
+          (rawPointer: number | bigint) => {
+            harness.kernelExports.kernel_drain_wait_completions = vi.fn(() => 0);
+            const view = kernelView(harness, rawPointer);
+            const F = WAIT_COMPLETION_FIELDS;
+            view.setBigUint64(F.generation.offset, BigInt(recordGeneration), true);
+            view.setUint32(F.pid.offset, harness.channel.pid, true);
+            view.setUint32(F.tid.offset, harness.channel.pid, true);
+            view.setInt32(F.value.offset, 0, true);
+            view.setUint32(F.flags.offset, 0, true);
+            return 1;
+          },
+        );
+      };
+
+      decide();
+      harness.worker.handleSyscall(harness.channel);
+      expect(requestStatus(harness), "a stale generation").toBe(
+        CHANNEL_STATUS_PENDING,
+      );
+
+      // The kernel announces the real decision on the wake-event stream.
+      recordGeneration = 9;
+      decide();
+      harness.kernelExports.kernel_drain_wakeup_events = vi.fn(
+        (rawPointer: number | bigint) => {
+          harness.kernelExports.kernel_drain_wakeup_events = vi.fn(() => 0);
+          const view = kernelView(harness, rawPointer);
+          view.setUint32(WAKEUP_EVENT_FIELDS.idx.offset, 0, true);
+          view.setUint16(
+            WAKEUP_EVENT_FIELDS.wakeType.offset,
+            WAKEUP_EVENT_TYPES.waitComplete,
+            true,
+          );
+          return 1;
+        },
+      );
+      harness.worker.drainAndProcessWakeupEvents();
+      await Promise.resolve();
+      expect(requestResult(harness), "the parked generation").toEqual({
+        status: CHANNEL_STATUS_COMPLETE,
+        returnValue: 0,
+        errno: 0,
+      });
+    },
+  );
 
   it.each(WIDTHS)(
-    "%s preserves disabled sleep and poll registrations while cancellation stays pending",
+    "%s preserves disabled kernel-park and poll registrations while cancellation stays pending",
     async (_name, pointerWidth) => {
       vi.useFakeTimers();
 
       {
+        // A kernel-owned sleep. With cancellation disabled the host must not
+        // ask the kernel to end the park: it stays parked under its
+        // generation and the cancel stays pending for the thread's next
+        // enabled cancellation point.
         const harness = createRetryHarness(pointerWidth, {
           channelOffsets: [4 * 65_536, 6 * 65_536],
         });
@@ -4667,31 +4146,31 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
           `${targetChannel.pid}:${targetChannel.channelOffset}`,
           targetTid,
         );
-        const requestPointer = 0x1000;
-        const processView = new DataView(harness.processMemory.buffer);
-        processView.setBigInt64(requestPointer, 5n, true);
-        processView.setBigInt64(requestPointer + 8, 0n, true);
         writeRequest(
           harness,
           ABI_SYSCALLS.Nanosleep,
-          [BigInt(requestPointer), 0n],
+          [0x1000n, 0n],
           targetChannel,
           true,
           false,
         );
+        const syscalls: number[] = [];
         harness.kernelExports.kernel_handle_channel = vi.fn(
           (rawPointer: number | bigint) => {
-            publishKernelResult(kernelView(harness, rawPointer), 0, 0);
+            const view = kernelView(harness, rawPointer);
+            const syscall = view.getUint32(CH_SYSCALL, true);
+            syscalls.push(syscall);
+            if (syscall === ABI_SYSCALLS.Nanosleep) {
+              publishKernelResult(view, 5, KERNEL_WAIT_PARKED_ERRNO);
+            } else {
+              publishKernelResult(view, 0, 0);
+            }
             return 0;
           },
         );
 
         harness.worker.handleSyscall(targetChannel);
-        const originalSleep = harness.worker.pendingSleeps.get(targetChannel);
-        expect(originalSleep).toMatchObject({
-          cancellationPoint: true,
-          cancellationWakeAllowed: false,
-        });
+        expect(targetChannel.kernelWaitGeneration).toBe(5);
 
         writeRequest(
           harness,
@@ -4701,24 +4180,14 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         );
         harness.worker.handleSyscall(callerChannel);
 
-        expect(harness.worker.pendingSleeps.get(targetChannel)).toBe(
-          originalSleep,
-        );
+        expect(syscalls, "no exact-task cleanup").toEqual([
+          ABI_SYSCALLS.Nanosleep,
+        ]);
+        expect(targetChannel.kernelWaitGeneration).toBe(5);
         expect(harness.worker.pendingCancels.has(targetChannel)).toBe(true);
         expect(requestStatus(harness, targetChannel)).toBe(
           CHANNEL_STATUS_PENDING,
         );
-        await vi.advanceTimersByTimeAsync(4_999);
-        expect(requestStatus(harness, targetChannel)).toBe(
-          CHANNEL_STATUS_PENDING,
-        );
-        await vi.advanceTimersByTimeAsync(1);
-        expect(requestResult(harness, targetChannel)).toEqual({
-          status: CHANNEL_STATUS_COMPLETE,
-          returnValue: 0,
-          errno: 0,
-        });
-        expect(harness.worker.pendingCancels.has(targetChannel)).toBe(true);
       }
 
       {
@@ -4804,9 +4273,8 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
   );
 
   it.each(WIDTHS)(
-    "%s cancellation retires an exact sleep before mailbox reuse",
-    async (_name, pointerWidth) => {
-      vi.useFakeTimers();
+    "%s cancellation ends an exact kernel sleep and leaves rem alone",
+    (_name, pointerWidth) => {
       const harness = createRetryHarness(pointerWidth, {
         channelOffsets: [4 * 65_536, 6 * 65_536],
       });
@@ -4816,11 +4284,7 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         `${targetChannel.pid}:${targetChannel.channelOffset}`,
         targetTid,
       );
-      const requestPointer = 0x1000;
       const remainderPointer = 0x1100;
-      const processView = new DataView(harness.processMemory.buffer);
-      processView.setBigInt64(requestPointer, 5n, true);
-      processView.setBigInt64(requestPointer + 8, 0n, true);
       harness.processBytes.fill(
         0x5a,
         remainderPointer,
@@ -4829,22 +4293,59 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
       writeRequest(
         harness,
         ABI_SYSCALLS.Nanosleep,
-        [BigInt(requestPointer), BigInt(remainderPointer)],
+        [0x1000n, BigInt(remainderPointer)],
         targetChannel,
         true,
       );
+      const generation = 12;
+      let decided = false;
       const syscalls: number[] = [];
       harness.kernelExports.kernel_handle_channel = vi.fn(
         (rawPointer: number | bigint) => {
           const view = kernelView(harness, rawPointer);
-          syscalls.push(view.getUint32(CH_SYSCALL, true));
-          publishKernelResult(view, 0, 0);
+          const syscall = view.getUint32(CH_SYSCALL, true);
+          syscalls.push(syscall);
+          if (syscall === ABI_SYSCALLS.Nanosleep) {
+            publishKernelResult(view, generation, KERNEL_WAIT_PARKED_ERRNO);
+          } else {
+            // The exact-task cleanup: the kernel ends the park with EINTR.
+            decided = true;
+            publishKernelResult(view, 0, 0);
+          }
           return 0;
         },
       );
+      harness.kernelExports.kernel_drain_wait_completions = vi.fn(
+        (rawPointer: number | bigint) => {
+          if (!decided) return 0;
+          decided = false;
+          const view = kernelView(harness, rawPointer);
+          const F = WAIT_COMPLETION_FIELDS;
+          view.setBigUint64(F.generation.offset, BigInt(generation), true);
+          view.setUint32(F.pid.offset, targetChannel.pid, true);
+          view.setUint32(F.tid.offset, targetTid, true);
+          view.setInt32(F.value.offset, -EINTR, true);
+          view.setUint32(F.flags.offset, WAIT_COMPLETION_FLAGS.cancelled, true);
+          return 1;
+        },
+      );
+      harness.kernelExports.kernel_drain_wakeup_events = vi.fn(
+        (rawPointer: number | bigint) => {
+          if (!decided) return 0;
+          const view = kernelView(harness, rawPointer);
+          view.setUint32(WAKEUP_EVENT_FIELDS.idx.offset, 0, true);
+          view.setUint16(
+            WAKEUP_EVENT_FIELDS.wakeType.offset,
+            WAKEUP_EVENT_TYPES.waitComplete,
+            true,
+          );
+          return 1;
+        },
+      );
+      harness.kernelExports.kernel_wait_next_timeout_ns = vi.fn(() => -1n);
 
       harness.worker.handleSyscall(targetChannel);
-      expect(harness.worker.pendingSleeps.has(targetChannel)).toBe(true);
+      expect(targetChannel.kernelWaitGeneration).toBe(generation);
 
       writeRequest(
         harness,
@@ -4864,8 +4365,10 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         returnValue: -EINTR,
         errno: EINTR,
       });
-      expect(harness.worker.pendingSleeps.has(targetChannel)).toBe(false);
+      expect(targetChannel.kernelWaitGeneration).toBeUndefined();
       expect(harness.worker.pendingCancels.has(targetChannel)).toBe(false);
+      // POSIX leaves rem unspecified for cancellation; the kernel writes it
+      // only for a signal interruption, and the host never writes it.
       expect(
         Array.from(
           harness.processBytes.slice(
@@ -4878,120 +4381,6 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
         ABI_SYSCALLS.Nanosleep,
         ABI_SYSCALLS.ThreadCancel,
       ]);
-
-      writeRequest(
-        harness,
-        ABI_SYSCALLS.Getpid,
-        [],
-        targetChannel,
-      );
-      await vi.advanceTimersByTimeAsync(5_000);
-      await Promise.resolve();
-      expect(requestStatus(harness, targetChannel)).toBe(
-        CHANNEL_STATUS_PENDING,
-      );
-    },
-  );
-
-  it.each(WIDTHS)(
-    "%s cancellation retires an exact sigtimedwait deadline before mailbox reuse",
-    async (_name, pointerWidth) => {
-      vi.useFakeTimers();
-      const harness = createRetryHarness(pointerWidth, {
-        channelOffsets: [4 * 65_536, 6 * 65_536],
-      });
-      const [callerChannel, targetChannel] = harness.channels;
-      const targetTid = 78;
-      harness.worker.channelTids.set(
-        `${targetChannel.pid}:${targetChannel.channelOffset}`,
-        targetTid,
-      );
-      const maskPointer = 0x1000;
-      const infoPointer = 0x1200;
-      const timeoutPointer = 0x1400;
-      const processView = new DataView(harness.processMemory.buffer);
-      processView.setBigUint64(maskPointer, 1n, true);
-      processView.setBigInt64(timeoutPointer, 5n, true);
-      processView.setBigInt64(timeoutPointer + 8, 0n, true);
-      harness.processBytes.fill(0x6b, infoPointer, infoPointer + 128);
-      writeRequest(
-        harness,
-        ABI_SYSCALLS.RtSigtimedwait,
-        [
-          BigInt(maskPointer),
-          BigInt(infoPointer),
-          BigInt(timeoutPointer),
-          BigInt(SIGNAL_MASK_BYTES),
-        ],
-        targetChannel,
-        true,
-      );
-      const syscalls: number[] = [];
-      harness.kernelExports.kernel_handle_channel = vi.fn(
-        (rawPointer: number | bigint) => {
-          const view = kernelView(harness, rawPointer);
-          const syscall = view.getUint32(CH_SYSCALL, true);
-          syscalls.push(syscall);
-          publishKernelResult(
-            view,
-            syscall === ABI_SYSCALLS.RtSigtimedwait ? -1 : 0,
-            syscall === ABI_SYSCALLS.RtSigtimedwait ? EAGAIN : 0,
-          );
-          return 0;
-        },
-      );
-
-      harness.worker.handleSyscall(targetChannel);
-      const signalWaitKey =
-        `${targetChannel.pid}:${targetChannel.channelOffset}`;
-      expect(harness.worker.pendingSignalWaits.has(signalWaitKey)).toBe(true);
-      expect(targetChannel.waitHandle).toBeTypeOf("bigint");
-
-      writeRequest(
-        harness,
-        ABI_SYSCALLS.ThreadCancel,
-        [BigInt(targetTid)],
-        callerChannel,
-      );
-      harness.worker.handleSyscall(callerChannel);
-
-      expect(requestResult(harness, callerChannel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        returnValue: 0,
-        errno: 0,
-      });
-      expect(requestResult(harness, targetChannel)).toEqual({
-        status: CHANNEL_STATUS_COMPLETE,
-        returnValue: -EINTR,
-        errno: EINTR,
-      });
-      expect(harness.worker.pendingSignalWaits.has(signalWaitKey)).toBe(false);
-      expect(targetChannel.waitHandle).toBeUndefined();
-      expect(harness.worker.pendingCancels.has(targetChannel)).toBe(false);
-      expect(
-        Array.from(
-          harness.processBytes.slice(infoPointer, infoPointer + 128),
-        ),
-      ).toEqual(new Array(128).fill(0x6b));
-      expect(
-        harness.worker.blockingRetrySnapshots.has(targetChannel),
-      ).toBe(false);
-      expect(syscalls).toEqual([
-        ABI_SYSCALLS.RtSigtimedwait,
-        ABI_SYSCALLS.ThreadCancel,
-      ]);
-
-      writeRequest(
-        harness,
-        ABI_SYSCALLS.Getpid,
-        [],
-        targetChannel,
-      );
-      await vi.advanceTimersByTimeAsync(5_000);
-      await Promise.resolve();
-      expect(requestStatus(harness, targetChannel)).toBe(
-        CHANNEL_STATUS_PENDING,
-      );
     },
   );
 

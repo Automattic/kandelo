@@ -999,10 +999,8 @@ describe("kernel scratch transfer capacity regressions", () => {
 
   it("fails closed when the mqueue notification drain returns an errno", () => {
     const harness = makeScratchHarness();
-    const wakePendingSignalWaits = vi.fn();
     const sendSignalToProcess = vi.fn();
     harness.worker.testAuthority.configureScratchBoundaryHooksForTest({
-      wakePendingSignalWaits,
       sendSignalToProcess,
     });
     harness.kernelExports.kernel_mq_drain_notification = vi.fn(() => -EINVAL);
@@ -1020,7 +1018,6 @@ describe("kernel scratch transfer capacity regressions", () => {
     expect(() => harness.worker.drainMqueueNotification()).toThrow(
       /kernel mqueue notification drain returned invalid result -22/,
     );
-    expect(wakePendingSignalWaits).not.toHaveBeenCalled();
     expect(sendSignalToProcess).not.toHaveBeenCalled();
   });
 

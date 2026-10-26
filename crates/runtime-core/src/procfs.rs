@@ -826,6 +826,36 @@ pub fn validate_entry(proc: &Process, entry: &ProcfsEntry) -> Result<(), Errno> 
 
 // ── Readlink handler ────────────────────────────────────────────────────────
 
+/// What `/proc/<pid>/exe` reads as: the path the running image was executed
+/// through, from the open file the kernel keeps for it (`Process::exe`).
+///
+/// It used to be `argv[0]`, which is whatever the caller chose to put there
+/// (`sh` for a login shell, a bare name for a PATH search) and so named the
+/// wrong file, or none. Linux appends ` (deleted)` once the file has no names
+/// left; that is reported here where the kernel can see the link count without
+/// asking a host (the in-kernel filesystems), and a host-supplied program --
+/// which never had a name in the namespace -- carries it from the moment it is
+/// attached. `ENOENT` for a process with no executable attached.
+fn exe_link_target(proc: &Process) -> Result<Vec<u8>, Errno> {
+    let exe = proc.exe.ok_or(Errno::ENOENT)?;
+    let ofd = proc.ofd_table.get(exe.0).ok_or(Errno::ENOENT)?;
+    let mut target = ofd.path.clone();
+    let unlinked = if crate::rootfs::is_rootfs_file_handle(ofd.host_handle) {
+        crate::rootfs::fstat(ofd.host_handle).is_ok_and(|st| st.st_nlink == 0)
+    } else if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) {
+        crate::tmpfs::fstat(ofd.host_handle).is_ok_and(|st| st.st_nlink == 0)
+    } else {
+        false
+    };
+    if unlinked && !target.ends_with(EXE_DELETED_SUFFIX) {
+        target.extend_from_slice(EXE_DELETED_SUFFIX);
+    }
+    Ok(target)
+}
+
+/// Linux's marker on an `exe` link whose file has no names left.
+pub const EXE_DELETED_SUFFIX: &[u8] = b" (deleted)";
+
 /// Handle readlink for procfs symlinks.
 pub fn procfs_readlink(
     proc: &Process,
@@ -863,13 +893,7 @@ pub fn procfs_readlink(
                     ofd.path.clone()
                 }
                 ProcfsEntry::Cwd(_) => proc.cwd.clone(),
-                ProcfsEntry::Exe(_) => {
-                    if !proc.argv.is_empty() {
-                        proc.argv[0].clone()
-                    } else {
-                        b"/usr/bin/unknown".to_vec()
-                    }
-                }
+                ProcfsEntry::Exe(_) => exe_link_target(proc)?,
                 ProcfsEntry::Root_(_) => b"/".to_vec(),
                 _ => unreachable!(),
             }

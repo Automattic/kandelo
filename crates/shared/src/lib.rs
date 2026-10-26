@@ -215,7 +215,13 @@ pub mod process_layout;
 ///     ("ABI 52").
 /// 53: the extended-attribute syscalls marshal their arguments and carry
 ///     channel scalar contracts. docs/abi-versioning.md ("ABI 53") lists each.
-pub const ABI_VERSION: u32 = 53;
+/// 54: the rust-first kernel batch (one unreleased epoch for the whole
+///     batch PR). The kernel decides what an exec or spawn runs
+///     (`kernel_spawn_process` reads the SYS_SPAWN request itself; the spawn
+///     scratch reservation exports are gone; `kernel_process_metadata_read`;
+///     `kernel_exec_target_admit`); later commits of the batch fold their
+///     changes in here. docs/abi-versioning.md ("ABI 54") lists each.
+pub const ABI_VERSION: u32 = 54;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -394,6 +400,76 @@ pub mod wakeup_event_wire {
     pub const TYPE_PROCESS_STOPPED: u8 = 16;
     pub const TYPE_PROCESS_CONTINUED: u8 = 32;
     pub const TYPE_ADVISORY_LOCK: u8 = 64;
+    /// A kernel-owned wait decided a parked task's result (see
+    /// `wait_completion_wire`). `idx` is 0. The host drains
+    /// `kernel_drain_wait_completions` when it sees this bit, so a machine
+    /// with no kernel-parked task pays no extra export call per syscall.
+    pub const TYPE_WAIT_COMPLETE: u8 = 128;
+}
+
+/// Kernel-owned parking: the host/kernel contract for a syscall whose result
+/// the kernel withholds and later decides.
+///
+/// # Why this exists
+///
+/// A guest thread parks on its channel status word until the host publishes a
+/// result, and it cannot tell who decided when to publish. Historically the
+/// host decided: it held each blocked channel in a TypeScript container with
+/// its own timer. When the kernel owns a wait instead, the host keeps only the
+/// acts it cannot give away -- publishing bytes into the guest's memory and
+/// re-entering the kernel at a deadline -- and every *decision* (compare the
+/// futex word, which thread a signal interrupts, whether a deadline has
+/// passed, what the result is) is made in the kernel, once, for every host.
+///
+/// # The protocol
+///
+/// 1. A syscall the kernel parks ends its kernel entry with
+///    `errno = PARKED_ERRNO` and `ret = <park generation>`. The generation is a
+///    never-reused identity for this one park. A host must not publish this
+///    result; the guest stays parked.
+/// 2. Later, inside any kernel entry, the kernel decides the result, queues
+///    one completion record, and raises
+///    [`crate::wakeup_event_wire::TYPE_WAIT_COMPLETE`] on the wake-event
+///    stream.
+/// 3. The host drains the records with `kernel_drain_wait_completions` and
+///    publishes each into the channel of `(pid, tid)` **only if** that channel
+///    is still parked under the same generation. A record for a channel that
+///    exec'd, exited or was completed otherwise is discarded. That check is
+///    what keeps a stale decision from completing a later request that reuses
+///    the same thread and mailbox.
+/// 4. The host arms one timer for `kernel_wait_next_timeout_ns()` and drains
+///    completions again when it fires. The drain performs deadline expiry.
+pub mod wait_completion_wire {
+    use core::mem::size_of;
+
+    /// The `errno` of a parked result.
+    ///
+    /// Above Linux's `MAX_ERRNO` (4095), so it cannot collide with an errno a
+    /// syscall really returns; every host intercepts it before publication, so
+    /// a guest never observes it.
+    pub const PARKED_ERRNO: u32 = 0x1_0000;
+
+    pub const GENERATION_OFFSET: usize = 0;
+    pub const PID_OFFSET: usize = GENERATION_OFFSET + size_of::<u64>();
+    pub const TID_OFFSET: usize = PID_OFFSET + size_of::<u32>();
+    /// The syscall result: `>= 0` on success, a negated errno on failure.
+    pub const VALUE_OFFSET: usize = TID_OFFSET + size_of::<u32>();
+    pub const FLAGS_OFFSET: usize = VALUE_OFFSET + size_of::<i32>();
+    pub const RECORD_BYTES: usize = FLAGS_OFFSET + size_of::<u32>();
+
+    /// A caught signal ended a *timed* wait. Linux answers such a wait with
+    /// `EINTR` even when the handler has `SA_RESTART` (the timed forms return
+    /// `-ERESTART_RESTARTBLOCK`, which a handler turns into `EINTR`), so the
+    /// host clears `SA_RESTART` from this one delivery record.
+    pub const FLAG_SUPPRESS_RESTART: u32 = 1;
+    /// `pthread_cancel` ended the wait. The host's pre-enqueue cancellation
+    /// marker for this channel is consumed.
+    pub const FLAG_CANCELLED: u32 = 2;
+    /// The kernel already published this result into the task's channel,
+    /// through `host_publish_wait_completion`, inside the kernel entry that
+    /// decided it. The host must not publish it again: it only retires its
+    /// own bookkeeping for the request (and re-listens on the channel).
+    pub const FLAG_PUBLISHED: u32 = 4;
 }
 
 /// Cross-layer layout values and defensive limits for the non-forking spawn
@@ -1822,7 +1898,7 @@ pub struct WasmDirent {
 ///
 /// Verified offsets: l_type=0, l_whence=2, l_start=8, l_len=16, l_pid=24.
 /// Total size: 32 bytes.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct WasmFlock {
     pub l_type: i16,   // F_RDLCK, F_WRLCK, F_UNLCK (short)
@@ -1973,18 +2049,6 @@ pub type KernelRusage = WasmRusageWire;
 
 pub const WASM_RUSAGE_WIRE_SIZE: u32 = core::mem::size_of::<WasmRusageWire>() as u32;
 
-/// Fixed result record written by `kernel_wait_child_poll`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-#[repr(C)]
-pub struct KernelWaitResult {
-    pub wait_status: i32,
-    pub si_code: i32,
-    pub si_status: i32,
-    pub child_uid: u32,
-    pub rusage: WasmRusageWire,
-}
-
-pub const KERNEL_WAIT_RESULT_SIZE: u32 = core::mem::size_of::<KernelWaitResult>() as u32;
 
 /// Fixed host/kernel records borrowed through kernel-owned scratch.
 ///
@@ -2042,7 +2106,7 @@ pub mod kernel_scratch_wire {
 
 #[cfg(test)]
 mod wait_abi_tests {
-    use super::{KernelWaitResult, WasmRusageWire, KERNEL_WAIT_RESULT_SIZE, WASM_RUSAGE_WIRE_SIZE};
+    use super::{WasmRusageWire, WASM_RUSAGE_WIRE_SIZE};
     use core::mem::{offset_of, size_of};
 
     #[test]
@@ -2055,16 +2119,6 @@ mod wait_abi_tests {
         assert_eq!(offset_of!(WasmRusageWire, ru_nivcsw), 136);
     }
 
-    #[test]
-    fn kernel_wait_result_layout_is_stable() {
-        assert_eq!(KERNEL_WAIT_RESULT_SIZE, 160);
-        assert_eq!(size_of::<KernelWaitResult>(), 160);
-        assert_eq!(offset_of!(KernelWaitResult, wait_status), 0);
-        assert_eq!(offset_of!(KernelWaitResult, si_code), 4);
-        assert_eq!(offset_of!(KernelWaitResult, si_status), 8);
-        assert_eq!(offset_of!(KernelWaitResult, child_uid), 12);
-        assert_eq!(offset_of!(KernelWaitResult, rusage), 16);
-    }
 }
 
 /// select() constants.
@@ -3587,6 +3641,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_create_process"),
         HostAdapterKernelExport::required("kernel_create_process_with_stdio"),
         HostAdapterKernelExport::required("kernel_dequeue_signal"),
+        HostAdapterKernelExport::required("kernel_drain_wait_completions"),
         HostAdapterKernelExport::required("kernel_epoll_wait_finish"),
         HostAdapterKernelExport::required("kernel_epoll_wait_token"),
         HostAdapterKernelExport::required("kernel_exchange_activate"),
@@ -3610,6 +3665,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_exchange_stream_start"),
         HostAdapterKernelExport::required("kernel_exchange_take_pending"),
         HostAdapterKernelExport::required("kernel_exec_commit"),
+        HostAdapterKernelExport::required("kernel_exec_target_admit"),
         HostAdapterKernelExport::required("kernel_exec_target_cancel"),
         HostAdapterKernelExport::required("kernel_exec_target_prepare"),
         HostAdapterKernelExport::required("kernel_exec_target_read"),
@@ -3650,9 +3706,12 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_pick_tcp_listener_target"),
         HostAdapterKernelExport::required("kernel_pipe_has_readers"),
         HostAdapterKernelExport::required("kernel_posix_timer_fire"),
+        HostAdapterKernelExport::required("kernel_process_attach_exe_handle"),
+        HostAdapterKernelExport::required("kernel_process_attach_exe_path"),
         HostAdapterKernelExport::required("kernel_process_metadata_begin"),
         HostAdapterKernelExport::required("kernel_process_metadata_cancel"),
         HostAdapterKernelExport::required("kernel_process_metadata_commit"),
+        HostAdapterKernelExport::required("kernel_process_metadata_read"),
         HostAdapterKernelExport::required("kernel_process_metadata_stage"),
         HostAdapterKernelExport::required("kernel_process_secure_exec"),
         HostAdapterKernelExport::optional_until("kernel_publish_process_exit", 53, 54),
@@ -3664,17 +3723,12 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_reset_tcp_connection"),
         HostAdapterKernelExport::required("kernel_set_current_tid"),
         HostAdapterKernelExport::required("kernel_set_cwd"),
+        HostAdapterKernelExport::required("kernel_set_main_channel_addr"),
         HostAdapterKernelExport::optional("kernel_set_max_addr"),
         HostAdapterKernelExport::optional("kernel_set_mmap_base"),
         HostAdapterKernelExport::required("kernel_spawn_exec_commit"),
         HostAdapterKernelExport::required("kernel_spawn_exec_target_prepare"),
         HostAdapterKernelExport::required("kernel_spawn_process"),
-        HostAdapterKernelExport::required("kernel_spawn_reserved_process"),
-        HostAdapterKernelExport::required("kernel_spawn_scratch_begin"),
-        HostAdapterKernelExport::required("kernel_spawn_scratch_cancel"),
-        HostAdapterKernelExport::required("kernel_spawn_scratch_capacity"),
-        HostAdapterKernelExport::required("kernel_spawn_scratch_pointer"),
-        HostAdapterKernelExport::required("kernel_spawn_scratch_retained_capacity"),
         HostAdapterKernelExport::required("kernel_take_process_timer_cleanup"),
         HostAdapterKernelExport::required("kernel_tcp_connection_id"),
         HostAdapterKernelExport::required("kernel_thread_exit"),
@@ -3686,7 +3740,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_transfer_scratch_capacity"),
         HostAdapterKernelExport::required("kernel_transfer_scratch_pointer"),
         HostAdapterKernelExport::required("kernel_validate_task"),
-        HostAdapterKernelExport::required("kernel_wait_child_poll"),
+        HostAdapterKernelExport::required("kernel_wait_next_timeout_ns"),
     ];
 
     const fn host_adapter_export_count(

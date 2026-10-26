@@ -87,6 +87,15 @@ impl MemoryManager {
     }
 
     /// Read-only access to the mmap mappings (for fork serialization).
+    /// Whether any live mapping is `MAP_SHARED`. Such a process needs the
+    /// host's shared-memory coherence step at every syscall boundary, so a
+    /// result the kernel would publish directly must take the host's path.
+    pub fn has_shared_mapping(&self) -> bool {
+        self.mappings
+            .iter()
+            .any(|m| m.flags & wasm_posix_shared::mmap::MAP_SHARED != 0)
+    }
+
     pub fn mappings(&self) -> &[MappedRegion] {
         &self.mappings
     }

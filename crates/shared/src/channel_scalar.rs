@@ -177,6 +177,74 @@ const PROCESS_ADDRESS_AND_SIZE_ARGUMENTS_1_2: &[ChannelScalarArgument] = &[
         kind: ChannelScalarKind::ProcessSize,
     },
 ];
+/// `nanosleep(req, rem)`: both are caller timespec addresses. The kernel
+/// parks the sleep, so it reads `req` itself and writes `rem` when an
+/// interruption is drained -- long after any per-call staging is gone.
+const PROCESS_ADDRESS_ARGUMENTS_0_1: &[ChannelScalarArgument] = &[
+    ChannelScalarArgument {
+        index: 0,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+    ChannelScalarArgument {
+        index: 1,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+];
+/// `clock_nanosleep(clock, flags, req, rem)`; see
+/// [`PROCESS_ADDRESS_ARGUMENTS_0_1`].
+const PROCESS_ADDRESS_ARGUMENTS_2_3: &[ChannelScalarArgument] = &[
+    ChannelScalarArgument {
+        index: 2,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+    ChannelScalarArgument {
+        index: 3,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+];
+/// `wait4(pid, status, options, rusage)`: both outputs are caller addresses
+/// the kernel writes when the wait is decided -- for a parked caller, long
+/// after any per-call staging is gone (see `runtime_core::wait_child`).
+const PROCESS_ADDRESS_ARGUMENTS_1_3: &[ChannelScalarArgument] = &[
+    ChannelScalarArgument {
+        index: 1,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+    ChannelScalarArgument {
+        index: 3,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+];
+/// `waitid(idtype, id, info, options, rusage)`; see
+/// [`PROCESS_ADDRESS_ARGUMENTS_1_3`].
+const PROCESS_ADDRESS_ARGUMENTS_2_4: &[ChannelScalarArgument] = &[
+    ChannelScalarArgument {
+        index: 2,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+    ChannelScalarArgument {
+        index: 4,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+];
+/// `rt_sigtimedwait(set, info, timeout, sigsetsize)`: all three pointers are
+/// caller addresses; `info` is written when the wait is decided, which for a
+/// parked caller is after any per-call staging is gone
+/// (`runtime_core::wait_signal`).
+const PROCESS_ADDRESS_ARGUMENTS_0_1_2: &[ChannelScalarArgument] = &[
+    ChannelScalarArgument {
+        index: 0,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+    ChannelScalarArgument {
+        index: 1,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+    ChannelScalarArgument {
+        index: 2,
+        kind: ChannelScalarKind::ProcessAddress,
+    },
+];
 const U32_ARGUMENT_2: &[ChannelScalarArgument] = &[ChannelScalarArgument {
     index: 2,
     kind: ChannelScalarKind::U32,
@@ -399,6 +467,12 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {
+        syscall_number: Syscall::Nanosleep as u32,
+        musl_name: "nanosleep",
+        arguments: PROCESS_ADDRESS_ARGUMENTS_0_1,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
         syscall_number: Syscall::GetEnv as u32,
         musl_name: "getenv",
         arguments: PROCESS_SIZE_ARGUMENT_2,
@@ -555,6 +629,12 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {
+        syscall_number: Syscall::ClockNanosleep as u32,
+        musl_name: "clock_nanosleep",
+        arguments: PROCESS_ADDRESS_ARGUMENTS_2_3,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
         syscall_number: Syscall::Mremap as u32,
         musl_name: "mremap",
         arguments: MREMAP_ARGUMENTS,
@@ -591,6 +671,12 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {
+        syscall_number: Syscall::Wait4 as u32,
+        musl_name: "wait4",
+        arguments: PROCESS_ADDRESS_ARGUMENTS_1_3,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
         syscall_number: extended_syscalls::SYS_FUTEX,
         musl_name: "futex",
         arguments: PROCESS_ADDRESS_ARGUMENT_0,
@@ -600,6 +686,12 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
         syscall_number: extended_syscalls::SYS_SET_TID_ADDRESS,
         musl_name: "set_tid_address",
         arguments: PROCESS_ADDRESS_ARGUMENT_0,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
+        syscall_number: extended_syscalls::SYS_RT_SIGTIMEDWAIT,
+        musl_name: "rt_sigtimedwait",
+        arguments: PROCESS_ADDRESS_ARGUMENTS_0_1_2,
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {
@@ -666,6 +758,12 @@ pub const SYSCALLS: &[ChannelScalarSyscall] = &[
         syscall_number: extended_syscalls::SYS_MUNLOCK,
         musl_name: "munlock",
         arguments: PROCESS_ADDRESS_AND_SIZE_ARGUMENTS_0_1,
+        result: ChannelResultKind::I32,
+    },
+    ChannelScalarSyscall {
+        syscall_number: extended_syscalls::SYS_WAITID,
+        musl_name: "waitid",
+        arguments: PROCESS_ADDRESS_ARGUMENTS_2_4,
         result: ChannelResultKind::I32,
     },
     ChannelScalarSyscall {

@@ -24,8 +24,11 @@
 //! wall-clock `Date.now()` arithmetic those calls used to do, which invariant
 //! 4 below explains is a real defect and not a stylistic difference.
 //!
-//! The *parks* themselves are still host-owned: the seven mechanisms in
-//! `kernel-worker.ts` still hold the timers and route the wakeups. Moving
+//! The first kernel-owned *parks* are live too: `futex` parks in a second
+//! instance of this queue owned by [`crate::wait_park`], which decides each
+//! parked task's result. The remaining parks are still host-owned: the
+//! mechanisms in `kernel-worker.ts` still hold their timers and route their
+//! wakeups (`docs/plans/2026-09-27-guest-waits-into-rust.md` orders the rest). Moving
 //! those is the remaining work, and [`WaitQueue::next_deadline_ns`] is the
 //! export they need. See [`crate::wait_shadow`] for the differential
 //! comparison that increment is gated on.
@@ -310,7 +313,7 @@ impl Default for WaitQueue {
 }
 
 impl WaitQueue {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             enabled: false,
             next_waiter: 1,
@@ -318,8 +321,25 @@ impl WaitQueue {
             sleepers: BTreeMap::new(),
             deadlines: BinaryHeap::new(),
             live_channels: BTreeSet::new(),
-            stats: WaitQueueStats::default(),
+            stats: WaitQueueStats {
+                parked: 0,
+                woken_by_source: 0,
+                woken_by_deadline: 0,
+                broad_wakes: 0,
+                deadline_expiries_with_sources: 0,
+                retired: 0,
+                cancelled: 0,
+            },
         }
+    }
+
+    /// Forget a generation whose only sleeper has already left the queue.
+    ///
+    /// [`WaitQueue::retire_channel`] also scans for sleepers to drop; a caller
+    /// that has just removed the one sleeper a generation carried (a
+    /// kernel-owned park ending) needs only the live-set removal.
+    pub fn release_channel(&mut self, channel: ChannelGeneration) {
+        self.live_channels.remove(&channel);
     }
 
     /// Whether the kernel owns the wait. Dormant by default.
@@ -473,6 +493,82 @@ impl WaitQueue {
             }
         }
         (woken, deferred)
+    }
+
+    /// Wake at most `max` sleepers registered for `source` that `accept`
+    /// admits, oldest first.
+    ///
+    /// This is `FUTEX_WAKE`'s shape: a bounded, ordered wake, where the
+    /// caller may narrow the match beyond the source (a futex bitset). Like
+    /// [`WaitQueue::wake`], the woken set is removed before it is returned,
+    /// so a re-park during the caller's loop cannot be observed.
+    pub fn wake_limited(
+        &mut self,
+        source: WakeSource,
+        max: usize,
+        mut accept: impl FnMut(&Sleeper) -> bool,
+    ) -> Vec<Wakeup> {
+        let selected: Vec<WaiterId> = self
+            .sleepers
+            .iter()
+            .filter(|(_, s)| s.matches(source) && accept(s))
+            .map(|(id, _)| *id)
+            .take(max)
+            .collect();
+        let broad = source.is_broad();
+        let mut woken = Vec::with_capacity(selected.len());
+        for id in selected {
+            if let Some(sleeper) = self.sleepers.remove(&id) {
+                if broad {
+                    self.stats.broad_wakes += 1;
+                } else {
+                    self.stats.woken_by_source += 1;
+                }
+                woken.push(into_wakeup(sleeper, WakeReason::Source(source)));
+            }
+        }
+        woken
+    }
+
+    /// Move at most `max` sleepers waiting on `from` so that they wait on
+    /// `to` instead, oldest first. Returns how many moved.
+    ///
+    /// This is `FUTEX_REQUEUE`: the sleepers stay asleep, keep their identity
+    /// and deadline, and change only what can wake them.
+    pub fn retarget(&mut self, from: WakeSource, to: WakeSource, max: usize) -> usize {
+        let mut moved = 0;
+        for sleeper in self.sleepers.values_mut() {
+            if moved == max {
+                break;
+            }
+            let mut hit = false;
+            for s in sleeper.sources.iter_mut() {
+                if *s == from {
+                    *s = to;
+                    hit = true;
+                }
+            }
+            if hit {
+                moved += 1;
+            }
+        }
+        moved
+    }
+
+    /// Take one sleeper off the queue with an explicit reason, without
+    /// touching the counters' source/deadline buckets.
+    ///
+    /// A kernel-owned park ends this way when a signal interrupts it
+    /// ([`WakeReason::Interrupted`]) or when its task vanished
+    /// ([`WakeReason::Retired`]); both are decided by a caller that has
+    /// already looked at the sleeper.
+    pub fn remove_with_reason(&mut self, id: WaiterId, reason: WakeReason) -> Option<Wakeup> {
+        let sleeper = self.sleepers.remove(&id)?;
+        match reason {
+            WakeReason::Retired => self.stats.retired += 1,
+            _ => self.stats.cancelled += 1,
+        }
+        Some(into_wakeup(sleeper, reason))
     }
 
     /// Wake every sleeper whose deadline has passed.

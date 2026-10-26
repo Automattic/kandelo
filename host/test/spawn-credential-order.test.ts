@@ -18,18 +18,10 @@ import {
   CH_STATUS,
   CH_SYSCALL,
   HOST_INTERCEPTED_SYSCALLS,
-  KERNEL_WAIT_RESULT_SI_CODE_OFFSET,
-  KERNEL_WAIT_RESULT_SI_STATUS_OFFSET,
-  KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET,
-  WAIT_CLD_KILLED,
-  WAIT_WNOHANG,
 } from "../src/generated/abi";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const candidateA = new Uint8Array(
-  readFileSync(join(repoRoot, "local-binaries/programs/wasm32/exec-child.wasm")),
-);
 const authoritativeB = new Uint8Array(
   readFileSync(join(repoRoot, "examples/hello.wasm")),
 );
@@ -57,10 +49,8 @@ describe("posix_spawn credential/action/target order", () => {
     ) => {
       order.push("launch-B");
       expect(new Uint8Array(program.programBytes)).toEqual(authoritativeB);
-      expect(program.programModule).not.toBe(preflight.programModule);
       return 0;
     });
-    const preflight = resolvedProgram(candidateA, ["relative-child"]);
     const harness = createSpawnHarness({
       kernelMemory,
       callbacks: { onSpawn },
@@ -73,7 +63,9 @@ describe("posix_spawn credential/action/target order", () => {
       }),
     });
 
-    harness.dispatch(preflight, "relative-child");
+    harness.dispatch("relative-child");
+    // Under a loaded run the launch can outlast a fixed number of turns.
+    await vi.waitFor(() => expect(onSpawn).toHaveBeenCalled(), { timeout: 5_000 });
     await harness.completed;
 
     expect(spawnProcess).toHaveBeenCalledOnce();
@@ -110,7 +102,7 @@ describe("posix_spawn credential/action/target order", () => {
       kernelExports: exports,
     });
 
-    harness.dispatch(resolvedProgram(candidateA, ["relative-child"]), "relative-child");
+    harness.dispatch("relative-child");
     await harness.completed;
 
     expect(cancelTarget).toHaveBeenCalledExactlyOnceWith(100, 41);
@@ -181,23 +173,34 @@ describe("posix_spawn credential/action/target order", () => {
       return count;
     });
     exports.kernel_exec_target_cancel = cancelTarget;
+    // The kernel decides target 31 is the script and 32 its interpreter.
+    exports.kernel_exec_target_admit = vi.fn((
+      _ownerPid: number,
+      target: number,
+      _abi: number,
+      out: number,
+    ) => {
+      if (target !== 31) {
+        new Uint8Array(kernelMemory.buffer)[out] = 0;
+        return 1;
+      }
+      const interpreter = new TextEncoder().encode("/bin/interpreter");
+      const argument = new TextEncoder().encode("--flag");
+      const view = new DataView(kernelMemory.buffer, out);
+      view.setUint8(0, 1);
+      view.setUint8(1, 1);
+      view.setUint32(2, interpreter.byteLength, true);
+      view.setUint32(6, argument.byteLength, true);
+      new Uint8Array(kernelMemory.buffer).set(interpreter, out + 10);
+      new Uint8Array(kernelMemory.buffer).set(argument, out + 10 + interpreter.byteLength);
+      return 10 + interpreter.byteLength + argument.byteLength;
+    });
     const harness = createSpawnHarness({
       kernelMemory,
       callbacks: { onSpawn },
       kernelExports: exports,
     });
-    const preflightAlreadyRewritten = resolvedProgram(authoritativeB, [
-      "/bin/interpreter",
-      "--flag",
-      "relative-script",
-      "argument",
-    ]);
-
-    harness.dispatch(
-      preflightAlreadyRewritten,
-      "relative-script",
-      ["relative-script", "argument"],
-    );
+    harness.dispatch("relative-script", ["relative-script", "argument"]);
     // This path compiles the interpreter's divergent bytes with the host's
     // asynchronous Wasm compiler, so how many event-loop turns it needs
     // depends on the machine's load. Wait for the launch it ends in, then
@@ -241,6 +244,10 @@ describe("posix_spawn credential/action/target order", () => {
     exports.kernel_get_process_exit_signal = vi.fn((pid: number) =>
       pid === 100 ? 15 : -1
     );
+    // The kernel announces the exit (SIGCHLD) itself; the host then routes
+    // the pending signal to the parent's host-owned waits, which asks the
+    // kernel for the target thread. The parent has none here.
+    exports.kernel_pick_signal_target_tid = vi.fn(() => 0);
     exports.kernel_remove_process = removeProcess;
     const harness = createSpawnHarness({
       kernelMemory,
@@ -248,7 +255,7 @@ describe("posix_spawn credential/action/target order", () => {
       kernelExports: exports,
     });
 
-    harness.dispatch(resolvedProgram(candidateA, ["relative-child"]), "relative-child");
+    harness.dispatch("relative-child");
     await harness.completed;
 
     expect(onSpawn).not.toHaveBeenCalled();
@@ -263,215 +270,6 @@ describe("posix_spawn credential/action/target order", () => {
       0,
       0,
     );
-  });
-
-  it("publishes spawn success before waking a sibling waiter for the hidden zombie", async () => {
-    const kernelMemory = new WebAssembly.Memory({ initial: 4, maximum: 4 });
-    let published = false;
-    let childSignal = -1;
-    let finishLaunch!: (result: number) => void;
-    const onSpawn = vi.fn(() => new Promise<number>((resolve) => {
-      finishLaunch = resolve;
-    }));
-    const publishSpawnChild = vi.fn(() => {
-      published = true;
-      return childSignal;
-    });
-    const waitChildPoll = vi.fn((
-      _parentPid: number,
-      _callerTid: number,
-      _targetPid: number,
-      _eventMask: number,
-      _flags: number,
-      destination: number,
-    ) => {
-      if (!published || childSignal <= 0) return 0;
-      const result = new DataView(kernelMemory.buffer);
-      result.setInt32(
-        destination + KERNEL_WAIT_RESULT_WAIT_STATUS_OFFSET,
-        childSignal,
-        true,
-      );
-      result.setInt32(
-        destination + KERNEL_WAIT_RESULT_SI_CODE_OFFSET,
-        WAIT_CLD_KILLED,
-        true,
-      );
-      result.setInt32(
-        destination + KERNEL_WAIT_RESULT_SI_STATUS_OFFSET,
-        childSignal,
-        true,
-      );
-      return 100;
-    });
-    const removeProcess = vi.fn(() => 0);
-    const exports = preparedSpawnExports({
-      kernelMemory,
-      targetBytes: authoritativeB,
-      spawnProcess: vi.fn(() => 100),
-      prepareTarget: vi.fn(() => 31),
-      commitTarget: vi.fn(() => 0),
-    });
-    exports.kernel_publish_spawn_child = publishSpawnChild;
-    exports.kernel_wait_child_poll = waitChildPoll;
-    exports.kernel_get_process_exit_signal = vi.fn((pid: number) =>
-      pid === 100 ? childSignal : -1
-    );
-    exports.kernel_get_parent_pid = vi.fn((pid: number) =>
-      pid === 100 && published ? 7 : -3
-    );
-    exports.kernel_generate_host_signal = vi.fn(() => 0);
-    exports.kernel_pick_signal_target_tid = vi.fn(() => 0);
-    exports.kernel_has_sa_nocldwait = vi.fn(() => 0);
-    exports.kernel_dequeue_signal = vi.fn(() => 0);
-    exports.kernel_remove_process = removeProcess;
-    const harness = createSpawnHarness({
-      kernelMemory,
-      callbacks: { onSpawn },
-      kernelExports: exports,
-    });
-
-    harness.dispatch(
-      resolvedProgram(candidateA, ["relative-child"]),
-      "relative-child",
-    );
-    await vi.waitFor(() => expect(onSpawn).toHaveBeenCalledOnce());
-
-    childSignal = 15;
-    harness.dispatchSiblingWait();
-    expect(waitChildPoll).toHaveBeenCalledOnce();
-    expect(harness.completeChannel).not.toHaveBeenCalled();
-
-    finishLaunch(0);
-    await harness.completed;
-
-    expect(publishSpawnChild).toHaveBeenCalledExactlyOnceWith(7, 100);
-    expect(waitChildPoll).toHaveBeenCalledTimes(2);
-    expect(removeProcess).not.toHaveBeenCalled();
-    const spawnCompletion = harness.completeChannel.mock.calls.findIndex(
-      (call) => call[1] === HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN,
-    );
-    const waitCompletion = harness.completeChannel.mock.calls.findIndex(
-      (call) => call[1] === ABI_SYSCALLS.Wait4,
-    );
-    expect(spawnCompletion).toBeGreaterThanOrEqual(0);
-    expect(waitCompletion).toBeGreaterThan(spawnCompletion);
-    expect(harness.completeChannel.mock.calls[waitCompletion]).toEqual([
-      harness.siblingWaitChannel,
-      ABI_SYSCALLS.Wait4,
-      [-1, 0, 0, 0, 0, 0],
-      undefined,
-      100,
-      0,
-    ]);
-  });
-
-  it("removes a failed pending spawn once and wakes its parked waiter with ECHILD", async () => {
-    const kernelMemory = new WebAssembly.Memory({ initial: 4, maximum: 4 });
-    let removed = false;
-    let finishLaunch!: (result: number) => void;
-    const onSpawn = vi.fn(() => new Promise<number>((resolve) => {
-      finishLaunch = resolve;
-    }));
-    const waitChildPoll = vi.fn(() => removed ? -10 : 0);
-    const removeProcess = vi.fn(() => {
-      removed = true;
-      return 0;
-    });
-    const exports = preparedSpawnExports({
-      kernelMemory,
-      targetBytes: authoritativeB,
-      spawnProcess: vi.fn(() => 100),
-      prepareTarget: vi.fn(() => 31),
-      commitTarget: vi.fn(() => 0),
-    });
-    exports.kernel_wait_child_poll = waitChildPoll;
-    exports.kernel_dequeue_signal = vi.fn(() => 0);
-    exports.kernel_remove_process = removeProcess;
-    const harness = createSpawnHarness({
-      kernelMemory,
-      callbacks: { onSpawn },
-      kernelExports: exports,
-    });
-
-    harness.dispatch(
-      resolvedProgram(candidateA, ["relative-child"]),
-      "relative-child",
-    );
-    await vi.waitFor(() => expect(onSpawn).toHaveBeenCalledOnce());
-    harness.dispatchSiblingWait();
-    expect(waitChildPoll).toHaveBeenCalledOnce();
-    expect(harness.completeChannel).not.toHaveBeenCalled();
-
-    finishLaunch(-5);
-    await harness.completed;
-
-    expect(removeProcess).toHaveBeenCalledExactlyOnceWith(100);
-    expect(waitChildPoll).toHaveBeenCalledTimes(2);
-    expect(harness.completeChannel).toHaveBeenCalledWith(
-      harness.siblingWaitChannel,
-      ABI_SYSCALLS.Wait4,
-      [-1, 0, 0, 0, 0, 0],
-      undefined,
-      -1,
-      10,
-    );
-    expect(harness.completeChannel).toHaveBeenCalledWith(
-      harness.channel,
-      HOST_INTERCEPTED_SYSCALLS.SYS_SPAWN,
-      harness.origArgs,
-      undefined,
-      -1,
-      5,
-    );
-  });
-
-  it("reports WNOHANG while the unpublished spawn child remains hidden", async () => {
-    const kernelMemory = new WebAssembly.Memory({ initial: 4, maximum: 4 });
-    let finishLaunch!: (result: number) => void;
-    const onSpawn = vi.fn(() => new Promise<number>((resolve) => {
-      finishLaunch = resolve;
-    }));
-    const waitChildPoll = vi.fn(() => 0);
-    const exports = preparedSpawnExports({
-      kernelMemory,
-      targetBytes: authoritativeB,
-      spawnProcess: vi.fn(() => 100),
-      prepareTarget: vi.fn(() => 31),
-      commitTarget: vi.fn(() => 0),
-    });
-    exports.kernel_wait_child_poll = waitChildPoll;
-    exports.kernel_dequeue_signal = vi.fn(() => 0);
-    const harness = createSpawnHarness({
-      kernelMemory,
-      callbacks: { onSpawn },
-      kernelExports: exports,
-    });
-
-    harness.dispatch(
-      resolvedProgram(candidateA, ["relative-child"]),
-      "relative-child",
-    );
-    await vi.waitFor(() => expect(onSpawn).toHaveBeenCalledOnce());
-    harness.dispatchSiblingWait(WAIT_WNOHANG);
-
-    expect(waitChildPoll).toHaveBeenCalledOnce();
-    expect(harness.completeChannel).toHaveBeenCalledWith(
-      harness.siblingWaitChannel,
-      ABI_SYSCALLS.Wait4,
-      [-1, 0, WAIT_WNOHANG, 0, 0, 0],
-      undefined,
-      0,
-      0,
-    );
-
-    finishLaunch(0);
-    await harness.completed;
-    expect(exports.kernel_publish_spawn_child).toHaveBeenCalledExactlyOnceWith(
-      7,
-      100,
-    );
-    expect(exports.kernel_remove_process).not.toHaveBeenCalled();
   });
 
   it("rolls back an ordinary commit ESRCH while the child remains live", async () => {
@@ -494,7 +292,7 @@ describe("posix_spawn credential/action/target order", () => {
       kernelExports: exports,
     });
 
-    harness.dispatch(resolvedProgram(candidateA, ["relative-child"]), "relative-child");
+    harness.dispatch("relative-child");
     // Compilation runs asynchronously; completion, not a guessed number of
     // event-loop turns, proves that commit failure and rollback have finished.
     await harness.completed;
@@ -532,10 +330,7 @@ describe("posix_spawn credential/action/target order", () => {
       kernelExports: exports,
     });
 
-    harness.dispatch(
-      resolvedProgram(candidateA, ["relative-child"]),
-      "relative-child",
-    );
+    harness.dispatch("relative-child");
     // Observe completion, not a guessed number of event-loop turns: the real
     // detached Wasm compiler may settle later when the full suite is busy.
     await harness.completed;
@@ -582,10 +377,7 @@ describe("posix_spawn credential/action/target order", () => {
       kernelExports: exports,
     });
 
-    harness.dispatch(
-      resolvedProgram(candidateA, ["relative-child"]),
-      "relative-child",
-    );
+    harness.dispatch("relative-child");
     await vi.waitFor(() => expect(onSpawn).toHaveBeenCalledOnce());
 
     childSignal = -3;
@@ -620,10 +412,7 @@ describe("posix_spawn credential/action/target order", () => {
       kernelExports: exports,
     });
 
-    harness.dispatch(
-      resolvedProgram(candidateA, ["relative-child"]),
-      "relative-child",
-    );
+    harness.dispatch("relative-child");
     await vi.waitFor(() => expect(onSpawn).toHaveBeenCalledOnce());
 
     harness.retireParentChannel();
@@ -654,10 +443,7 @@ describe("posix_spawn credential/action/target order", () => {
       kernelExports: exports,
     });
 
-    harness.dispatch(
-      resolvedProgram(candidateA, ["relative-child"]),
-      "relative-child",
-    );
+    harness.dispatch("relative-child");
     await harness.completed;
 
     expect(onSpawn).not.toHaveBeenCalled();
@@ -676,18 +462,6 @@ describe("posix_spawn credential/action/target order", () => {
     );
   });
 });
-
-function resolvedProgram(
-  bytes: Uint8Array,
-  argv: string[],
-): ResolvedSpawnProgram {
-  const owned = bytes.slice();
-  return {
-    programBytes: owned.buffer,
-    programModule: new WebAssembly.Module(owned),
-    argv,
-  };
-}
 
 function preparedSpawnExports(options: {
   kernelMemory: WebAssembly.Memory;
@@ -719,6 +493,10 @@ function preparedSpawnExports(options: {
       return count;
     }),
     kernel_exec_target_cancel: vi.fn(() => 0),
+    kernel_exec_target_admit: vi.fn((_pid: number, _target: number, _abi: number, out: number) => {
+      new Uint8Array(options.kernelMemory.buffer)[out] = 0;
+      return 1;
+    }),
     kernel_publish_spawn_child: vi.fn(() => -1),
     kernel_spawn_exec_commit: options.commitTarget,
     kernel_get_cwd: vi.fn((_pid: number, destination: number, capacity: number) => {
@@ -754,6 +532,7 @@ function createSpawnHarness(options: {
     callbacks: options.callbacks,
   });
   let parentChannelActive = true;
+  const metadata: string[][] = [[], []];
   Reflect.set(worker, "kernelAbiVersion", ABI_VERSION);
   installKernelWorkerTestScratch(worker, options.kernelMemory, 4096, 4, {
     kernelExports: {
@@ -763,6 +542,20 @@ function createSpawnHarness(options: {
       kernel_process_secure_exec: vi.fn(() => 0),
       kernel_mark_process_signaled: vi.fn(() => 0),
       kernel_set_current_tid: vi.fn(() => 0),
+      // The child's argv (kind 0) and environment (kind 1) as the kernel
+      // decoded them from the request.
+      kernel_process_metadata_read: vi.fn((
+        _pid: number,
+        kind: number,
+        index: number,
+        out: number,
+      ) => {
+        const entry = metadata[kind]?.[index];
+        if (entry === undefined) return -22;
+        const bytes = new TextEncoder().encode(entry);
+        new Uint8Array(options.kernelMemory.buffer).set(bytes, out);
+        return bytes.byteLength;
+      }),
       ...options.kernelExports,
     },
   });
@@ -785,7 +578,7 @@ function createSpawnHarness(options: {
     isRegisteredChannel: (candidate) =>
       candidate.pid !== 7 || parentChannelActive,
   });
-  const origArgs = [0, 0, 0, 1, 0, 0];
+  const origArgs = [0, 0, 0x200, 1, 0, 0];
   return {
     channel,
     completeChannel,
@@ -795,52 +588,13 @@ function createSpawnHarness(options: {
     retireParentChannel(): void {
       parentChannelActive = false;
     },
-    dispatch(
-      program: ResolvedSpawnProgram,
-      authorityPath: string,
-      originalArgv: string[] = program.argv,
-    ): void {
-      worker.testAuthority.dispatchSpawnAfterResolveForTest({
-        channel,
-        origArgs,
-        parentPid: 7,
-        callerTid: 7,
-        pidOutPtr: 0,
-        blobBytes: new Uint8Array([1]),
-        blobLen: 1,
-        program,
-        envp: [],
-        authorityPath,
-        originalArgv,
-      } as Parameters<
-        typeof worker.testAuthority.dispatchSpawnAfterResolveForTest
-      >[0]);
-    },
-    dispatchSiblingWait(options = 0): void {
-      const waitArgs = [-1, 0, options, 0, 0, 0];
-      const waitView = new DataView(
-        siblingWaitChannel.memory.buffer,
-        siblingWaitChannel.channelOffset,
-      );
-      Atomics.store(
-        new Int32Array(
-          siblingWaitChannel.memory.buffer,
-          siblingWaitChannel.channelOffset,
-        ),
-        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
-        CHANNEL_STATUS_PENDING,
-      );
-      waitView.setUint32(CH_SYSCALL, ABI_SYSCALLS.Wait4, true);
-      for (let index = 0; index < waitArgs.length; index++) {
-        waitView.setBigInt64(
-          CH_ARGS + index * CH_ARG_SIZE,
-          BigInt(waitArgs[index]!),
-          true,
-        );
-      }
-      worker.testAuthority.dispatchScratchBoundarySyscallForTest(
-        siblingWaitChannel,
-      );
+    dispatch(authorityPath: string, argv: string[] = [authorityPath]): void {
+      const path = new TextEncoder().encode(authorityPath);
+      new Uint8Array(processMemory.buffer).set(path, 0x100);
+      origArgs[0] = 0x100;
+      origArgs[1] = path.byteLength;
+      metadata[0] = argv;
+      worker.testAuthority.dispatchSpawnForTest(channel, origArgs);
     },
   };
 }

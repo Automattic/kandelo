@@ -147,6 +147,7 @@ host/test/framebuffer-integration.test.ts	prepared-product
 host/test/framebuffer-registry.test.ts	source-only
 host/test/fstatat-empty-path.test.ts	prepared-product
 host/test/futex-deadlines.test.ts	prepared-product
+host/test/futex-kernel-wait.test.ts	prepared-product
 host/test/gallery-descriptor.test.ts	source-only
 host/test/gbm-surface-ring.test.ts	prepared-product
 host/test/gc-reference-state-fresh-worker.test.ts	prepared-product
@@ -229,6 +230,7 @@ host/test/libudev-input-id-smoke.test.ts	prepared-product
 host/test/libwayland-smoke.test.ts	prepared-product
 host/test/libxkbcommon-smoke.test.ts	prepared-product
 host/test/locale-info.test.ts	prepared-product
+host/test/lock-kernel-wait.test.ts	prepared-product
 host/test/login.test.ts	prepared-product
 host/test/long-timeout.test.ts	source-only
 host/test/love-audio.test.ts	prepared-product
@@ -300,6 +302,7 @@ host/test/poll-timeout-preserves-pollfds.test.ts	prepared-product
 host/test/popen-daemon-regression.test.ts	prepared-product
 host/test/posix-timer-thread.test.ts	prepared-product
 host/test/prepared-exec-target.test.ts	source-only
+host/test/proc-self-exe.test.ts	prepared-product
 host/test/process-generation-detach-host-parity.test.ts	source-only
 host/test/process-generation-detach.test.ts	source-only
 host/test/process-memory-allocator.test.ts	source-only
@@ -373,14 +376,16 @@ host/test/shell-demo-identity.test.ts	prepared-product
 host/test/shell-lazy-archive-inputs.test.ts	prepared-product
 host/test/shell-lazy-data.test.ts	prepared-product
 host/test/shm-mapping-coherence.test.ts	prepared-product
+host/test/sigchld-host-wait.test.ts	prepared-product
 host/test/signal-accept-livelock.test.ts	source-only
+host/test/signal-kernel-wait.test.ts	prepared-product
 host/test/signal-no-restart.test.ts	prepared-product
 host/test/signal-process.test.ts	prepared-product
 host/test/signal-to-threaded.test.ts	prepared-product
 host/test/sigpending.test.ts	prepared-product
 host/test/sjlj-noexcept-boundary.test.ts	prepared-product
+host/test/sleep-kernel-wait.test.ts	prepared-product
 host/test/socket-timeout-options.test.ts	prepared-product
-host/test/spawn-blob-transport.test.ts	source-only
 host/test/spawn-credential-order.test.ts	source-only
 host/test/spawn-host-parity.test.ts	source-only
 host/test/spawn-pid-authority.test.ts	source-only
@@ -405,6 +410,7 @@ host/test/thread-worker-disposition.test.ts	source-only
 host/test/time-provider.test.ts	source-only
 host/test/timerfd-signalfd-scratch.test.ts	prepared-product
 host/test/tls-network-backend-real-client.test.ts	prepared-product
+host/test/transfer-kernel-wait.test.ts	prepared-product
 host/test/trap-signals.test.ts	source-only
 host/test/unix-listener-exec.test.ts	prepared-product
 host/test/utf8proc-smoke.test.ts	prepared-product

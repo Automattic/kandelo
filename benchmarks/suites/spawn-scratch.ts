@@ -1,8 +1,8 @@
 /**
  * Spawn Scratch
  *
- * Measures the ordinary and large posix_spawn transport paths plus retained
- * scratch capacity. This is intentionally separate from process-lifecycle:
+ * Measures ordinary and large posix_spawn requests, which the kernel reads
+ * from the caller's memory, plus the kernel's memory size afterwards. This is intentionally separate from process-lifecycle:
  * the established hello/fork/exec/clone metrics continue to boot the default
  * rootfs, while this fully supplied workload can run against an empty VFS.
  */
@@ -37,16 +37,12 @@ const suite: BenchmarkSuite = {
     if (spawnBench.exitCode !== 0) {
       throw new Error(`spawn-bench failed: ${spawnBench.stderr}`);
     }
-    if (
-      spawnBench.spawnScratchCapacity === undefined ||
-      spawnBench.kernelMemoryPages === undefined
-    ) {
+    if (spawnBench.kernelMemoryPages === undefined) {
       throw new Error("spawn-bench did not return kernel scratch telemetry");
     }
 
     return collectSpawnScratchEvidence({
       stdout: spawnBench.stdout,
-      retainedCapacity: spawnBench.spawnScratchCapacity,
       kernelMemoryPages: spawnBench.kernelMemoryPages,
     });
   },

@@ -329,9 +329,6 @@ mod tests {
             buf.fill(self.random_fill);
             Ok(buf.len())
         }
-        fn host_waitpid(&mut self, _: i32, _: u32) -> Result<(i32, i32), wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
         fn host_net_connect(&mut self, _: i32, _: &[u8], _: u16) -> Result<(), wasm_posix_shared::Errno> {
             unimplemented!()
         }
@@ -357,9 +354,6 @@ mod tests {
             unimplemented!()
         }
         fn host_getaddrinfo(&mut self, _: &[u8], _: &mut [u8]) -> Result<usize, wasm_posix_shared::Errno> {
-            unimplemented!()
-        }
-        fn host_futex_wake(&mut self, _: usize, _: u32) -> Result<i32, wasm_posix_shared::Errno> {
             unimplemented!()
         }
         fn host_network_interface(&mut self) -> Option<InterfaceConfig> {

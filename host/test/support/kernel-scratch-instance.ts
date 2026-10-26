@@ -60,6 +60,10 @@ function signatures(
       parameters: [pointer, i32, i32],
       result: i32,
     },
+    kernel_drain_wait_completions: {
+      parameters: [pointer, i32, i32],
+      result: i32,
+    },
     kernel_take_pty_readiness_changed: {
       parameters: [],
       result: i32,
@@ -70,6 +74,10 @@ function signatures(
     },
     kernel_exec_commit: {
       parameters: [i32, i32, i32],
+      result: i32,
+    },
+    kernel_exec_target_admit: {
+      parameters: [i32, i32, i32, pointer, pointer],
       result: i32,
     },
     kernel_exec_target_cancel: {
@@ -185,10 +193,6 @@ function signatures(
       result: i32,
     },
     kernel_has_sa_nocldstop: {
-      parameters: [i32],
-      result: i32,
-    },
-    kernel_has_sa_nocldwait: {
       parameters: [i32],
       result: i32,
     },
@@ -426,6 +430,10 @@ function signatures(
       parameters: [i32, i32],
       result: i32,
     },
+    kernel_process_metadata_read: {
+      parameters: [i32, i32, i32, pointer, i32],
+      result: i32,
+    },
     kernel_process_metadata_stage: {
       parameters: [i32, i32, i32, pointer, i32],
       result: i32,
@@ -520,6 +528,10 @@ function signatures(
       parameters: [i32, pointer],
       result: i32,
     },
+    kernel_set_main_channel_addr: {
+      parameters: [i32, i64],
+      result: i32,
+    },
     kernel_set_process_pointer_width: {
       parameters: [i32, i32],
       result: i32,
@@ -529,32 +541,8 @@ function signatures(
       result: i32,
     },
     kernel_spawn_process: {
-      parameters: [i32, i32, pointer, pointer],
+      parameters: [i32, i32, i64, i32, i64, i32],
       result: i32,
-    },
-    kernel_spawn_reserved_process: {
-      parameters: [i32, i32, i64, pointer],
-      result: i32,
-    },
-    kernel_spawn_scratch_begin: {
-      parameters: [pointer],
-      result: i64,
-    },
-    kernel_spawn_scratch_pointer: {
-      parameters: [i64],
-      result: pointer,
-    },
-    kernel_spawn_scratch_capacity: {
-      parameters: [i64],
-      result: pointer,
-    },
-    kernel_spawn_scratch_cancel: {
-      parameters: [i64],
-      result: i32,
-    },
-    kernel_spawn_scratch_retained_capacity: {
-      parameters: [],
-      result: pointer,
     },
     kernel_tcgetattr: {
       parameters: [i32, pointer, i32],
@@ -565,7 +553,11 @@ function signatures(
       result: i32,
     },
     kernel_thread_exit: {
-      parameters: [i32, i32],
+      parameters: [i32, i32, i32],
+      result: i64,
+    },
+    kernel_wait_next_timeout_ns: {
+      parameters: [],
       result: i64,
     },
     kernel_thread_has_deliverable: {
@@ -621,10 +613,6 @@ function signatures(
       // The production export is void. Returning an ignored i32 keeps this
       // compact fixture's one-result encoder simple while exercising a
       // genuine gated Wasm call.
-      result: i32,
-    },
-    kernel_wait_child_poll: {
-      parameters: [i32, i32, i32, i32, i32, pointer, i32],
       result: i32,
     },
     kernel_set_wait_queue_enabled: {

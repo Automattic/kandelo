@@ -275,7 +275,6 @@ pub trait HostIO {
     ) -> Result<(), Errno> {
         Err(Errno::ENOSYS)
     }
-    fn host_waitpid(&mut self, pid: i32, options: u32) -> Result<(i32, i32), Errno>;
     fn host_net_connect(&mut self, handle: i32, addr: &[u8], port: u16) -> Result<(), Errno>;
     fn host_net_connect_from(
         &mut self,
@@ -377,8 +376,6 @@ pub trait HostIO {
     fn host_network_interface(&mut self) -> Option<crate::netif::InterfaceConfig> {
         None
     }
-    /// Futex wake: wake up to `count` waiters on addr. Returns number woken.
-    fn host_futex_wake(&mut self, addr: usize, count: u32) -> Result<i32, Errno>;
     /// Notify the host that process `pid` has mapped its `/dev/fb0`
     /// framebuffer at `[addr, addr+len)` within its wasm `Memory`. The host
     /// should mirror that byte range to whatever display surface it owns.
@@ -1070,12 +1067,45 @@ pub struct Process {
     /// recorded once here: at process creation, inherited across `fork`, and
     /// replaced by [`crate::exec_target`] at the instant a new image commits.
     pub pointer_width: u8,
+    /// Byte address of the main thread's syscall channel in this process's
+    /// memory, or 0 while no host has registered one.
+    ///
+    /// WHY THE KERNEL NEEDS IT. A blocking transfer the kernel parks
+    /// (`crate::wait_retry`) re-executes long after the host's per-call
+    /// staging is gone, so it works on the caller's own buffer. The one
+    /// authoritative record of that buffer is the guest's request itself, in
+    /// its channel. A pthread's channel sits in the slot the kernel placed
+    /// ([`ThreadState::slot_addr`]); the main thread's channel is placed by
+    /// the host with the rest of the process layout, so the host registers
+    /// it (`kernel_set_main_channel_addr`), at every registration of an
+    /// address space, including the one after an exec.
+    pub main_channel_addr: u64,
     /// Successful image replacements advance this generation exactly once.
     /// Prepared exec targets bind to its current value and cannot survive a
     /// competing commit for the same persistent PID.
     pub exec_generation: u64,
     /// Kernel-owned exact executable-object leases awaiting commit/cancel.
     pub prepared_exec_targets: PreparedExecLedger,
+    /// The open file description of the executable this image is running,
+    /// held for the life of the image: `/proc/<pid>/exe` names it and opens
+    /// it, and the fork module reads the program's fork sections through it.
+    ///
+    /// Linux semantics, and the reason it is an OPEN FILE rather than a path:
+    /// the image keeps running after its file is unlinked or replaced, so what
+    /// `/proc/self/exe` must reach is the object that was executed, not
+    /// whatever the path names now. An exec commit moves the target's own
+    /// lease here (releasing the previous image's), `fork` and `posix_spawn`
+    /// children inherit it, and process exit releases it.
+    ///
+    /// The cost is Linux's too: an executable that is replaced or unlinked
+    /// while a process runs it stays resident until the last process running
+    /// it exits or execs. A host-supplied program (no VFS file at all) is a
+    /// host handle onto bytes the host already holds, never a copy here.
+    ///
+    /// `None` only for a process no image was ever attached to (a host that
+    /// registered a process without saying what it runs): `/proc/<pid>/exe`
+    /// is then `ENOENT`, the truthful answer, rather than a guess from argv.
+    pub exe: Option<crate::fd::OpenFileDescRef>,
     /// A `posix_spawn` child is a real signal target while its host launch is
     /// pending, but it is not yet part of the parent's waitable child set.
     /// Only the parent-bound spawn publication transaction may clear this.
@@ -1407,8 +1437,10 @@ impl Process {
             credentials: Credentials::root(),
             secure_exec: false,
             pointer_width: 4,
+            main_channel_addr: 0,
             exec_generation: 0,
             prepared_exec_targets: PreparedExecLedger::new(),
+            exe: None,
             spawn_publication_pending: false,
             exit_published: false,
             pgid: pid,
@@ -1587,6 +1619,7 @@ impl Process {
     }
 
     fn set_wait_event(&mut self, event_mask: u32, wait_status: i32, si_code: i32, si_status: i32) {
+        crate::wait_park::note_children_changed();
         self.wait_event = Some(ChildWaitEvent {
             event_mask,
             wait_status,
@@ -1612,7 +1645,7 @@ impl Process {
         );
         crate::wakeup::push(
             self.pid,
-            wasm_posix_shared::wait::WAKE_PROCESS_STOPPED as u8,
+            wasm_posix_shared::wait::WAKE_PROCESS_STOPPED,
         );
         true
     }
@@ -1632,7 +1665,7 @@ impl Process {
         );
         crate::wakeup::push(
             self.pid,
-            wasm_posix_shared::wait::WAKE_PROCESS_CONTINUED as u8,
+            wasm_posix_shared::wait::WAKE_PROCESS_CONTINUED,
         );
         true
     }
@@ -1644,6 +1677,8 @@ impl Process {
         }
         let status = status & 0xff;
         self.state = ProcessState::Exited;
+        // The image is gone; no parked thread of it may ever be completed.
+        crate::wait_park::retire_process(self.pid);
         self.exit_status = status;
         self.exit_signal = 0;
         self.set_wait_event(
@@ -1653,6 +1688,7 @@ impl Process {
             status,
         );
         crate::process_table::queue_process_exit(self.pid);
+        crate::wait_park::note_child_exited(self.pid);
         true
     }
 
@@ -1663,6 +1699,7 @@ impl Process {
         }
         let signum = signum & 0x7f;
         self.state = ProcessState::Exited;
+        crate::wait_park::retire_process(self.pid);
         self.exit_status = 0;
         self.exit_signal = signum;
         self.set_wait_event(
@@ -1672,6 +1709,7 @@ impl Process {
             signum as i32,
         );
         crate::process_table::queue_process_exit(self.pid);
+        crate::wait_park::note_child_exited(self.pid);
         true
     }
 
@@ -1688,6 +1726,11 @@ impl Process {
         if signum == 0 || signum >= NSIG {
             return;
         }
+        // Every generation passes through here, so this is the one place a
+        // kernel-owned park learns that a signal may now target it. The
+        // decision is made later, by `wait_park::Parks::sweep_signals`, once
+        // the generating syscall has finished and the target is final.
+        crate::wait_park::note_signal_generated();
         if signum == SIGCONT {
             for stop in [SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU] {
                 self.clear_signal_everywhere(stop);
@@ -1784,10 +1827,27 @@ impl Process {
     pub fn remove_thread(&mut self, tid: u32) -> Option<ThreadState> {
         crate::epoll::finish_wait(self, tid);
         if let Some(idx) = self.identity.threads.iter().position(|t| t.tid == tid) {
+            // The thread may have been the target of a pending
+            // process-directed signal, which now falls to another, possibly
+            // parked, thread: treat the removal as a generation.
+            if self.signals.pending != 0 {
+                crate::wait_park::note_signal_generated();
+            }
             Some(self.identity.threads.swap_remove(idx).into_state())
         } else {
             None
         }
+    }
+
+    /// Byte address of task `tid`'s syscall channel, if the kernel knows it:
+    /// the main thread's registered channel (`kernel_set_main_channel_addr`).
+    ///
+    /// A pthread's channel is placed by the host, which does not tell the
+    /// kernel where, so this is `None` for any other task and a caller that
+    /// needs the channel (a parked transfer) leaves that task on the host's
+    /// path.
+    pub fn task_channel_addr(&self, tid: u32) -> Option<u64> {
+        (tid == self.pid && self.main_channel_addr != 0).then_some(self.main_channel_addr)
     }
 
     /// Find a thread by TID.
@@ -1947,15 +2007,21 @@ impl Process {
     /// Replace the blocked mask for an exact retained TID.
     /// Returns false without mutation when the task is unknown.
     pub fn set_blocked_for(&mut self, tid: u32, new_blocked: u64) -> bool {
-        if self.is_main_thread(tid) {
-            self.signals.blocked = new_blocked;
-            true
+        let old_blocked = if self.is_main_thread(tid) {
+            core::mem::replace(&mut self.signals.blocked, new_blocked)
         } else if let Some(t) = self.get_thread_mut(tid) {
-            t.signals.blocked = new_blocked;
-            true
+            core::mem::replace(&mut t.signals.blocked, new_blocked)
         } else {
-            false
+            return false;
+        };
+        // A mask change can move a pending process-directed signal onto a
+        // parked thread (`pick_thread_for_shared_signal` reads the masks)
+        // without generating anything, so it counts as a generation for
+        // kernel-owned parks. Blocking a directed signal changes no target.
+        if (old_blocked ^ new_blocked) & self.signals.pending != 0 {
+            crate::wait_park::note_signal_generated();
         }
+        true
     }
 
     pub fn signal_readiness_generations(&self, tid: u32) -> [Option<u64>; 2] {
@@ -2177,6 +2243,21 @@ impl Process {
         } else {
             false
         }
+    }
+
+    /// Queue one process-directed timer notification (`SIGEV_SIGNAL`).
+    ///
+    /// Like every generation it passes through `prepare_signal_generation`,
+    /// which is how a kernel-owned park -- a `sigtimedwait` waiting for this
+    /// very signal, a sleep a caught one should interrupt -- learns that it
+    /// has something to decide. Raising into `self.signals` directly would
+    /// leave the signal pending and every park asleep.
+    pub fn raise_process_timer(&mut self, signum: u32, si_value_bits: u64, timer_id: u32) -> bool {
+        if signum == 0 || signum >= wasm_posix_shared::signal::NSIG {
+            return false;
+        }
+        self.prepare_signal_generation(signum);
+        self.signals.raise_timer(signum, si_value_bits, timer_id)
     }
 
     /// Queue one timer notification for an exact live thread, including the
@@ -2746,9 +2827,6 @@ pub mod test_host {
             }
             Ok(b.len())
         }
-        fn host_waitpid(&mut self, _p: i32, _o: u32) -> Result<(i32, i32), Errno> {
-            Err(Errno::ECHILD)
-        }
         fn host_net_connect(&mut self, _h: i32, _a: &[u8], _p: u16) -> Result<(), Errno> {
             Ok(())
         }
@@ -2775,9 +2853,6 @@ pub mod test_host {
         }
         fn host_getaddrinfo(&mut self, _n: &[u8], _r: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::ENOENT)
-        }
-        fn host_futex_wake(&mut self, _a: usize, _c: u32) -> Result<i32, Errno> {
-            Ok(0)
         }
         fn bind_framebuffer(
             &mut self,
@@ -2924,9 +2999,6 @@ pub mod test_host {
         fn host_getrandom(&mut self, b: &mut [u8]) -> Result<usize, Errno> {
             NoopHost.host_getrandom(b)
         }
-        fn host_waitpid(&mut self, p: i32, o: u32) -> Result<(i32, i32), Errno> {
-            NoopHost.host_waitpid(p, o)
-        }
         fn host_net_connect(&mut self, h: i32, a: &[u8], p: u16) -> Result<(), Errno> {
             NoopHost.host_net_connect(h, a, p)
         }
@@ -2947,9 +3019,6 @@ pub mod test_host {
         }
         fn host_getaddrinfo(&mut self, n: &[u8], r: &mut [u8]) -> Result<usize, Errno> {
             NoopHost.host_getaddrinfo(n, r)
-        }
-        fn host_futex_wake(&mut self, a: usize, c: u32) -> Result<i32, Errno> {
-            NoopHost.host_futex_wake(a, c)
         }
         fn bind_framebuffer(&mut self, p: i32, a: usize, l: usize, w: u32, h: u32, s: u32, f: u32) {
             NoopHost.bind_framebuffer(p, a, l, w, h, s, f)
