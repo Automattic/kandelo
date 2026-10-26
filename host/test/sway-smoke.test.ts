@@ -117,7 +117,8 @@ async function startSway(config: string) {
   const out = { value: "" };
   const err = { value: "" };
   const stdoutByPid = new Map<number, string>();
-  const events: unknown[] = [], progress: unknown[] = [], syscalls: unknown[] = [];
+  const events: unknown[] = [], syscalls: unknown[] = [];
+  const progress: Array<{ time: number; phase: string; completed: number; total: number }> = [];
   const host = new NodeKernelHost({
     onProcessEvent: event => events.push({time:Date.now(),...event}),
     rootfsImage: await sessionRootfs("sway", [
@@ -184,15 +185,21 @@ async function startSway(config: string) {
   ]);
 
   const close = async () => {
-    if (process.env.KANDELO_SWAY_TRACE !== "1") return host.destroy();
-    const before = await host.enumProcs();
-    offSyscalls?.();
+    const trace = process.env.KANDELO_SWAY_TRACE === "1";
+    const before = trace ? await host.enumProcs() : [];
     host.subscribeDestroyProgress(event => progress.push({time:Date.now(),...event}));
-    try { await host.destroy(); }
-    finally {
+    try {
+      await host.destroy();
+      const drain = progress.findLast(event => event.phase === "draining");
+      expect(drain, "destroy must report its cooperative drain").toBeDefined();
+      expect(drain!.completed, "sway session forced termination after an incomplete drain").toBe(drain!.total);
+    } finally {
+      offSyscalls?.();
+      if (trace) {
       const id = createHash("sha256").update(config).digest("hex").slice(0,12);
       writeFileSync(join(__dirname, `../../.context/sway-node-teardown-${id}.json`),
         JSON.stringify({config,before,events,progress,syscalls,stdout:out.value,stderr:err.value},(_key,value) => typeof value === "bigint" ? value.toString() : value,2)+"\n");
+      }
     }
   };
   return { host, out, err, dump, env, tiles, waitForWorkspace, press, click, exitCode, close };

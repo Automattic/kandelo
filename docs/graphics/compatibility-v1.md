@@ -5898,3 +5898,57 @@ SCM_RIGHTS still returns EOPNOTSUPP. Pending flip admission, bounded event
 space and vblank latch timing remain ordinary gaps. The final combined
 Node/browser, compositor, memory and POSIX checks must run after this
 increment is integrated; earlier results are not combined validation.
+
+
+## Swaybar text-status EOF repair and current memory failure
+
+The normal CTS package was materialized and the real upstream surfaceless
+subset passed all three engines on `078979ddb1a4`:
+`.context/graphics-combined-cts.log`. Its artifact hashes and exact engine
+versions are under `.context/graphics-abi55-gem-cts-evidence/`. The
+subsequent full required memory run
+`graphics-cts-memory-refresh-1026-031829-e62f` exited one in 11m33s.
+The source/Node/Bun selections and six browser probe/exit cases passed;
+all three switching cases reached the end-of-cycle runtime-error check
+and failed on actual forced-drain warnings. The labels now work. This is
+not a successful repeated-memory result; remaining cycles were not run.
+
+A scalar channel diagnostic narrowed the swaybar control failure:
+`graphics-sway-retirement-channels-fixed-1026-032546-b4a8`. Its main
+thread's channel was Idle after read(6); only the pthread was parked in
+a futex. Waking that pthread cannot finish a main thread spinning in
+user code. The temporary diagnostic logging was removed and the normal
+host rebuilt. A first diagnostic attempt failed its TypeScript callback
+return type; it did not execute the new diagnostic and is not runtime
+evidence.
+
+The [upstream sway 1.12 text-status reader](https://github.com/swaywm/sway/blob/1.12/swaybar/status_line.c)
+loops on getline until errno is nonzero. POSIX EOF returns -1 with no
+required errno; a closed status command therefore causes an unbounded
+loop, including a negative buffer index. An empty command can also enter
+with zero read length. The unchanged upstream functions reproduce the
+failure on the native host, without Kandelo, using the package's new
+`tests/check-status-line-eof.sh` scaffolding. The native before run emits
+`FAIL: status reader did not return at EOF` and exits one after its alarm;
+the patched run passes a live EAGAIN stream plus text and empty-command
+EOF. Logs and source SHA are under
+`.context/gtk3-prototype-check/.context/sway-status-line-*`. An initial
+missing scaffold field caused a compile error and is kept separately;
+it is not the before-behavior result.
+
+Package patch 0002 guards the buffer index and handles genuine stdio EOF
+without changing nonblocking EAGAIN. The normal recipe runs this native
+regression against its verified, patched upstream source in its private
+work directory. Its tests are declared build inputs and the output
+revision advances from one to two. This is a demonstrated upstream
+package defect, not a runtime workaround or a hidden Kandelo POSIX gap.
+No upstream report was filed.
+
+The Node sway fixture now requires the final cooperative drain to finish,
+instead of accepting successful destroy after its deadline. The old
+normal swaybar binary fails that new assertion:
+`graphics-sway-eof-before-assert-1026-033806-44f0`, zero of one woken
+processes drained. Two other cases were deliberately excluded for this
+focused control. The full repaired normal build, three-case Node suite,
+three-engine gallery, memory and combined conformance remain required.
+The separate WebKit exit-confirmation failure remains unresolved.

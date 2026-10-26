@@ -67,6 +67,9 @@ if [ ! -d "$SRC_DIR" ]; then
     done
 fi
 
+bash "$SCRIPT_DIR/tests/check-status-line-eof.sh" \
+    "$SRC_DIR/swaybar/status_line.c" "$KANDELO_PACKAGE_WORK_DIR/status-line-eof-test"
+
 rm -rf "$BUILD_DIR"
 # The resolver-created output directory is itself publication authority, so
 # a recipe must populate that inode rather than delete and recreate it.

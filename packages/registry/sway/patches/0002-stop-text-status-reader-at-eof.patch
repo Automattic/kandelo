@@ -1,0 +1,36 @@
+From: Brandon Payton <brandon@happycode.net>
+Subject: [PATCH] swaybar: stop the text status reader at end of file
+
+getline returns -1 at EOF without setting errno. The text reader tests
+only errno, so an exited status command leaves it looping forever, with
+a negative index into its buffer on subsequent iterations. An empty
+command can also enter the text branch with read_bytes zero.
+
+Guard the buffer index and close the status stream on genuine stdio EOF.
+Nonblocking EAGAIN still clears the stream error and keeps it live.
+
+This reproduces with the unmodified sway 1.12 reader on a native host;
+it does not compensate for a Kandelo syscall or runtime limitation.
+Source: https://github.com/swaywm/sway/blob/1.12/swaybar/status_line.c
+
+diff --git a/swaybar/status_line.c b/swaybar/status_line.c
+--- a/swaybar/status_line.c
++++ b/swaybar/status_line.c
+@@ -106,12 +106,16 @@ bool status_handle_readable(struct status_line *status) {
+ 		// intentional fall-through
+ 	case PROTOCOL_TEXT:
+ 		while (true) {
+-			if (status->buffer[read_bytes - 1] == '\n') {
++			if (read_bytes > 0 && status->buffer[read_bytes - 1] == '\n') {
+ 				status->buffer[read_bytes - 1] = '\0';
+ 			}
+ 			errno = 0;
+ 			read_bytes = getline(&status->buffer,
+ 					&status->buffer_size, status->read);
++			if (read_bytes < 0 && feof(status->read)) {
++				status_error(status, "[status command closed]");
++				return true;
++			}
+ 			if (errno == EAGAIN) {
+ 				clearerr(status->read);
+ 				return true;
