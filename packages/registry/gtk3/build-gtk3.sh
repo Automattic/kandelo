@@ -96,6 +96,9 @@ if [ ! -d "$SRC_DIR" ]; then
     # arguments; wasm's typed call_indirect traps on them. See
     # docs/porting-guide.md "Callback casts that change arity".
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-callback-arity.patch"
+    # Match the getter definition and declaration: wasm calls have exact arity.
+    # Upstream fix: GNOME/gtk 022c36a1379d82b4212a298ed6eaec02bc0ed7f1.
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/fix-slowdown-prototype.patch"
     # GDK backs its wl_shm pools with memfd_create/shm_open. A memfd is
     # private to the process that made it here, so the compositor's
     # gbm_bo_import(GBM_BO_IMPORT_FD) rejects the fd and the window shows

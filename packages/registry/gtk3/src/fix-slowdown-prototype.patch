@@ -1,0 +1,37 @@
+From 022c36a1379d82b4212a298ed6eaec02bc0ed7f1 Mon Sep 17 00:00:00 2001
+From: Emmanuele Bassi <ebassi@gnome.org>
+Date: Fri, 14 Oct 2016 19:35:59 +0100
+Subject: [PATCH] Fix _gtk_get_slowdown()
+
+We need to pass void as the argument type.
+---
+ gtk/gtkprivate.h         | 2 +-
+ gtk/gtkprogresstracker.c | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/gtk/gtkprivate.h b/gtk/gtkprivate.h
+index dcab28d7e4c..40936b91bc6 100644
+--- a/gtk/gtkprivate.h
++++ b/gtk/gtkprivate.h
+@@ -92,7 +92,7 @@ gboolean        _gtk_propagate_captured_event  (GtkWidget       *widget,
+                                                 GtkWidget       *topmost);
+ 
+ 
+-gdouble _gtk_get_slowdown ();
++gdouble _gtk_get_slowdown (void);
+ void    _gtk_set_slowdown (gdouble slowdown_factor);
+ 
+ gboolean gtk_should_use_portal (void);
+diff --git a/gtk/gtkprogresstracker.c b/gtk/gtkprogresstracker.c
+index 7f7e7d713e0..0ddcbfbe4c9 100644
+--- a/gtk/gtkprogresstracker.c
++++ b/gtk/gtkprogresstracker.c
+@@ -45,7 +45,7 @@ _gtk_set_slowdown (gdouble factor)
+ }
+ 
+ gdouble
+-_gtk_get_slowdown (gdouble factor)
++_gtk_get_slowdown (void)
+ {
+   return gtk_slowdown;
+ }
