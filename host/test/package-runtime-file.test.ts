@@ -41,6 +41,7 @@ describe("package runtime-file closure metadata", () => {
       "php/zip.so",
       "php/intl.so",
       "php/icu.dat",
+      "php/sessions.json",
     ]);
   }, 120_000);
 
