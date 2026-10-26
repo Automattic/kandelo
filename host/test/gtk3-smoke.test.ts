@@ -1,5 +1,5 @@
 /**
- * PR24 gate (GTK3 leg): unmodified GTK 3.24.34, wayland backend only,
+ * PR24 gate (GTK3 leg): packaged GTK 3.24.34, wayland backend only,
  * runs as the session client of cage, the wlroots kiosk compositor.
  *
  * The flow, and what each step proves:
@@ -16,9 +16,8 @@
  *   - the smoke quits its main loop and exits 0, and cage exits with its
  *     status.
  *
- * Skips if any binary is missing (bare checkout — gtk3_smoke.wasm is
- * built by scripts/build-programs.sh, which resolves the gtk3 package
- * closure).
+ * Requires the normal program build and gtk3 package closure; missing
+ * supported binaries fail resolution.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
@@ -65,12 +64,13 @@ async function waitFor(
   throw new Error(`timed out waiting for "${needle}".\n${context()}`);
 }
 
-describe("gtk3 — unmodified GTK 3.24 wayland client on cage", () => {
+describe("gtk3 — packaged GTK 3.24 wayland client on cage", () => {
   it(
     "maps a window, renders a label, exits clean",
     async () => {
       const out = { value: "" };
       const err = { value: "" };
+      const diagnostics: unknown[] = [];
       const host = new NodeKernelHost({
         rootfsImage: await sessionRootfs("cage", [
           { path: "/usr/bin/gtk3_smoke", bytes: new Uint8Array(readFileSync(gtkSmokeBin!)), mode: 0o755 },
@@ -81,6 +81,7 @@ describe("gtk3 — unmodified GTK 3.24 wayland client on cage", () => {
           },
           { path: "/etc/fonts/fonts.conf", bytes: new TextEncoder().encode(FONTS_CONF), mode: 0o644 },
         ]),
+        onHostDiagnostic: diagnostic => diagnostics.push(diagnostic),
         onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
         onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
       });
@@ -106,8 +107,9 @@ describe("gtk3 — unmodified GTK 3.24 wayland client on cage", () => {
         expect(err.value, `the client was disconnected.\n${dump()}`)
           .not.toContain("error in client communication");
       } finally {
-        await host.destroy().catch(() => {});
+        await host.destroy();
       }
+      expect(diagnostics).toEqual([]);
     },
     120_000,
   );

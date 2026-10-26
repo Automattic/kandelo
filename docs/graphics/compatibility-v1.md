@@ -5646,3 +5646,29 @@ namespace/allocator and final-namespace-close repair passes 2,589 kernel
 unit tests plus six compile-fail documentation tests in that checkout.
 These changes are not yet integrated into this branch or validated with
 normal guest artifacts; they are not part of the build result above.
+
+### Fresh default Node consumer gate
+
+`graphics-final-default-node-1026-002616-001a` completed with exit zero in
+9m26s on `0eaadecf5c36` (runtime/package source `d3a69caa8617`): **31 tests
+passed across all 17 selected files, zero skips, zero unloaded files**.
+The normal resolver policy and global fixture setup ran. This includes
+cage, sway tiling/status bar/config-error UI, wlterm on both compositors,
+foot, libkwl, desktop liveness, KMS modes/page flips/libdrm, GBM/EGL/image
+ownership and imported-storage lifetime. GTK also reached its actual
+Wayland draw and successful session exit after the normal build repair.
+Log: `.context/graphics-final-compositor-node.log`. The printed
+`unreachable` is the explicit `trap-owner` lifetime probe, not an
+unexpected compositor crash. No forced worker-drain warning occurred.
+
+The GTK fixture in that attempt still caught a rejected host-destroy
+promise. Its draw and session exit are evidence; that catch cannot prove
+successful teardown. The fixture now awaits destroy without swallowing
+errors and requires an empty host-diagnostic list; a new run is required
+for that stronger assertion.
+
+Fresh Open POSIX in `graphics-final-conformance-1025-233522-ba0a` has also
+completed: **174 passed, three expected failures, two skips, zero
+unexpected failures/timeouts/build errors; 179 total**. Its log is
+`.context/gtk3-prototype-check/.context/final-posix.log`. Sortix remains
+running against the same clean private `d3a69caa8617` source.
