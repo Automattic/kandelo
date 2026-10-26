@@ -772,7 +772,7 @@ fn write_dri_state(
         Some(DriOfdState::Card { dri, kms }) => {
             w.write_u8(DRI_TAG_CARD)?;
             write_dri_fd_state(w, dri)?;
-            write_kms_fd_state(w, kms, preserve_master)
+            write_kms_fd_state(w, &kms.borrow(), preserve_master)
         }
         Some(DriOfdState::PrimeBo(p)) => {
             w.write_u8(DRI_TAG_PRIME_BO)?;
@@ -872,6 +872,7 @@ fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno
         });
     }
     Ok(crate::ofd::KmsFdState {
+        master_identity: None,
         holds_master,
         cursor_bo,
         universal_planes,
@@ -921,6 +922,7 @@ fn read_input_state(
 
 fn read_dri_state(
     r: &mut Reader<'_>,
+    ofd_id: OfdId,
 ) -> Result<Option<alloc::boxed::Box<crate::ofd::DriOfdState>>, Errno> {
     use crate::ofd::{DriOfdState, PrimeBoState};
     let tag = r.read_u8()?;
@@ -932,8 +934,9 @@ fn read_dri_state(
         }
         DRI_TAG_CARD => {
             let dri = read_dri_fd_state(r)?;
-            let kms = read_kms_fd_state(r)?;
-            Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms }))
+            let mut kms = read_kms_fd_state(r)?;
+            kms.master_identity = Some(ofd_id);
+            Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms: kms.into() }))
         }
         DRI_TAG_PRIME_BO => {
             let bo_id = r.read_u32()?;
@@ -1414,7 +1417,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
         while ofd_entries.len() <= index {
             ofd_entries.push(None);
         }
-        let dri_state = read_dri_state(&mut r)?;
+        let dri_state = read_dri_state(&mut r, ofd_id)?;
         let input_state = read_input_state(&mut r)?;
         let mut ofd = OpenFileDesc {
             ofd_id,
@@ -2120,7 +2123,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         while ofd_entries.len() <= index {
             ofd_entries.push(None);
         }
-        let dri_state = read_dri_state(&mut r)?;
+        let dri_state = read_dri_state(&mut r, ofd_id)?;
         let input_state = read_input_state(&mut r)?;
         let mut ofd = OpenFileDesc {
             ofd_id,
@@ -3581,7 +3584,7 @@ mod tests {
         proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
             Some(alloc::boxed::Box::new(DriOfdState::Card {
                 dri: DriFdState::default(),
-                kms,
+                kms: kms.into(),
             }));
         proc.fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
@@ -3620,7 +3623,7 @@ mod tests {
                     holds_master: true,
                     cursor_bo: Some(bo),
                     ..Default::default()
-                },
+                }.into(),
             }));
         proc.fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd), 0)
@@ -3684,7 +3687,7 @@ mod tests {
         proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
             Some(alloc::boxed::Box::new(DriOfdState::Card {
                 dri: DriFdState::default(),
-                kms,
+                kms: kms.into(),
             }));
         proc.fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
@@ -3729,7 +3732,7 @@ mod tests {
         proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
             Some(alloc::boxed::Box::new(DriOfdState::Card {
                 dri: DriFdState::default(),
-                kms,
+                kms: kms.into(),
             }));
         proc.fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
@@ -3810,7 +3813,7 @@ mod tests {
         proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
             Some(alloc::boxed::Box::new(DriOfdState::Card {
                 dri: DriFdState::default(),
-                kms,
+                kms: kms.into(),
             }));
         proc.fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)

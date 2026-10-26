@@ -21,6 +21,7 @@ describe("process-owned device view teardown", () => {
     const framebufferUnbind = vi.fn();
     const releaseBos = vi.fn();
     const dropMaster = vi.fn();
+    const retirePresenter = vi.fn();
     const markKmsCanvasGlReleased = vi.fn();
     // Both sessions belong to the exiting generation and claim one canvas.
     const gl = new GlContextRegistry();
@@ -43,7 +44,7 @@ describe("process-owned device view teardown", () => {
         framebuffers: { unbind: framebufferUnbind },
         bos: { releaseProcess: releaseBos },
         kms: {
-          isMasterPid: (pid: number) => pid === 41,
+          retirePresenter,
           dropMaster,
         },
       },
@@ -55,7 +56,8 @@ describe("process-owned device view teardown", () => {
     expect(glUnbind).toHaveBeenCalledWith(41);
     expect(framebufferUnbind).toHaveBeenCalledWith(41);
     expect(releaseBos).toHaveBeenCalledWith(41);
-    expect(dropMaster).toHaveBeenCalledOnce();
+    expect(dropMaster).not.toHaveBeenCalled();
+    expect(retirePresenter).toHaveBeenCalledExactlyOnceWith(41);
     // The claimed canvas goes back to the vblank pump before the unbind that
     // would otherwise make the claim unreachable.
     expect(markKmsCanvasGlReleased).toHaveBeenCalledExactlyOnceWith(1);

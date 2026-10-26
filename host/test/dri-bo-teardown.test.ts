@@ -71,7 +71,7 @@ it("exec retires memory aliases while preserving open cursor and scanout ownersh
   kernel.bos.create(bo(10, 1));
   kernel.bos.bind(10, 1, 0, 4096);
   kernel.bos.pixelView(1)!.set([0, 0, 255, 255]);
-  kernel.kms.setMasterPid(10);
+  kernel.kms.setMaster(10, 1n, 1n);
   kernel.kms.addFb({ fb_id: 1, bo_id: 1, width: 16, height: 16, pixel_format: 0, pitch: 64 });
   kernel.kms.setFb(1, 1);
   kernel.kms.setCursor(10, 3, 1, 16, 16, 30, 40, 0, 0);
@@ -81,12 +81,30 @@ it("exec retires memory aliases while preserving open cursor and scanout ownersh
 
   expect(kernel.bos.get(10, 1)).toBeDefined();
   expect(kernel.bos.get(10, 1)?.binding).toBeNull();
-  expect(kernel.kms.isMasterPid(10)).toBe(true);
+  expect(kernel.kms.isMasterFile(1n)).toBe(true);
   expect(kernel.kms.currentFb(1)?.bo_id).toBe(1);
   expect(kernel.kms.cursorSnapshot().pixels).toBe(pixels);
   // The kernel's later final-reference release remains authoritative.
   imports.env.host_gbm_bo_destroy(10, 1);
   expect(kernel.bos.get(10, 1)).toBeUndefined();
-  kernel.kms.dropMaster();
+  kernel.kms.dropMaster(1n, 1n);
   kernel.releaseProcessViews(10);
+});
+
+it("process retirement preserves cursor ownership until the kernel drops the master file", () => {
+  const { kernel, imports } = harness();
+  kernel.bos.create(bo(10, 1));
+  kernel.bos.bind(10, 1, 0, 4096);
+  kernel.bos.pixelView(1)!.set([0, 0, 255, 255]);
+  kernel.kms.setMaster(10, 1n, 1n);
+  kernel.kms.setCursor(10, 3, 1, 16, 16, 30, 40, 0, 0);
+  const pixels = kernel.kms.cursorSnapshot().pixels;
+
+  // Rust has retained another descriptor alias. Worker retirement alone is
+  // not proof that this DRM file or its cursor has reached its final close.
+  kernel.releaseProcessViews(10);
+  expect(kernel.kms.cursorSnapshot().pixels).toBe(pixels);
+  imports.env.host_kms_drop_master(10, 1n, 1n);
+  expect(kernel.kms.cursorSnapshot().pixels).toBeNull();
+  imports.env.host_gbm_bo_destroy(10, 1);
 });

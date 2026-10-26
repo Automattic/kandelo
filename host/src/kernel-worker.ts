@@ -1,3 +1,4 @@
+import { KMS_CURSOR_RECORD_BYTES } from "./dri/kms-cursor-protocol.js";
 import { mergeChangedByteRuns } from "./shared-byte-runs";
 import { KmsCursorPlane } from "./dri/cursor-plane";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES } from "./vfs/vfs";
@@ -31112,11 +31113,13 @@ export class CentralizedKernelWorker {
         // this entry, and the presenter receives only owned pixel copies.
         if (typeof entry.instance.exports.kernel_kms_cursor_read === "function") {
           this.#requireMainScratchRegion().withLease(lease => {
-            const pointer = lease.exportPointer(0, 32);
+            const pointer = lease.exportPointer(0, KMS_CURSOR_RECORD_BYTES);
             const count = this.#invokeEntryScratchExport(
-              entry, lease, "kernel_kms_cursor_read", [pointer, 32],
+              entry, lease, "kernel_kms_cursor_read", [pointer, KMS_CURSOR_RECORD_BYTES],
             );
-            if (count === 32) this.#kernel.kms.applyCursorRecord(lease.copyOut(0, 32));
+            if (count === KMS_CURSOR_RECORD_BYTES) {
+              this.#kernel.kms.applyCursorRecord(lease.copyOut(0, KMS_CURSOR_RECORD_BYTES));
+            }
             else if (count !== 0) throw new Error(`Invalid KMS cursor record length: ${count}`);
           });
         }

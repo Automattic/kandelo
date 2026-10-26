@@ -1,3 +1,4 @@
+import { KMS_CURSOR_RECORD_BYTES } from "./kms-cursor-protocol.js";
 import type { KmsCursor } from "./cursor-plane.js";
 import type { GbmBoRegistry } from "./registry.js";
 
@@ -86,6 +87,9 @@ export class KmsRegistry {
   private fbs = new Map<number, HostFb>();
   private crtcBindings = new Map<number, number>();
   private masterPid: number | null = null;
+  private masterFileId: bigint | null = null;
+  private masterLeaseId = 0n;
+  private lastMasterLeaseId = 0n;
   private flips = 0;
   private cursor: KmsCursor = {
     version: 0, x: 0, y: 0, hotX: 0, hotY: 0, width: 0, height: 0, pixels: null,
@@ -140,25 +144,22 @@ export class KmsRegistry {
     this.cursorSnapshot();
   }
 
-  /** Protocol 1 carries the complete latest state, never a dangling delta. */
+  /** A queued observer record cannot cross a drop/reacquire boundary. */
   applyCursorRecord(bytes: Uint8Array): void {
-    if (bytes.byteLength !== 32) throw new Error("Invalid KMS cursor record");
+    if (bytes.byteLength !== KMS_CURSOR_RECORD_BYTES) throw new Error("Invalid KMS cursor record");
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const pid = view.getInt32(0, true);
-    // Forced process cleanup can retire host views before a queued update
-    // is drained. Such a record must never resurrect the dead owner's BO.
-    if (pid !== 0 && !this.isMasterPid(pid)) return;
-    const bo = view.getUint32(4, true);
-    const width = view.getUint32(8, true);
-    const height = view.getUint32(12, true);
-    const x = view.getInt32(16, true), y = view.getInt32(20, true);
-    const hotX = view.getInt32(24, true), hotY = view.getInt32(28, true);
+    if (view.getBigUint64(0, true) !== this.masterLeaseId) return;
+    if (view.getUint32(36, true) !== 0) throw new Error("Invalid KMS cursor reserved word");
+    const bo = view.getUint32(8, true);
+    const width = view.getUint32(12, true), height = view.getUint32(16, true);
+    const x = view.getInt32(20, true), y = view.getInt32(24, true);
+    const hotX = view.getInt32(28, true), hotY = view.getInt32(32, true);
     if (bo && (!width || !height || width > 64 || height > 64)) {
       throw new Error("Invalid KMS cursor image geometry");
     }
     const imageChanged = bo !== this.cursorBo || width !== this.cursor.width
       || height !== this.cursor.height || hotX !== this.cursor.hotX || hotY !== this.cursor.hotY;
-    this.setCursor(pid, imageChanged ? 3 : 2, bo, width, height, x, y, hotX, hotY);
+    this.setCursor(0, imageChanged ? 3 : 2, bo, width, height, x, y, hotX, hotY);
   }
 
   constructor(private gbm: GbmBoRegistry) {}
@@ -180,29 +181,57 @@ export class KmsRegistry {
     return id === undefined ? undefined : this.fbs.get(id);
   }
 
-  setMasterPid(pid: number): void { this.masterPid = pid; }
-  dropMaster(): void {
-    this.masterPid = null;
+  setMaster(pid: number, fileId: bigint, leaseId: bigint): boolean {
+    const max = 0xffff_ffff_ffff_ffffn;
+    if (typeof fileId !== "bigint" || typeof leaseId !== "bigint"
+        || fileId <= 0n || fileId > max || leaseId <= 0n || leaseId > max) {
+      throw new Error("Invalid DRM master identity");
+    }
+    if (leaseId < this.lastMasterLeaseId
+        || (leaseId === this.lastMasterLeaseId
+          && (this.masterFileId !== fileId || this.masterLeaseId !== leaseId))) return false;
+    if (leaseId > this.lastMasterLeaseId) {
+      this.clearCursor();
+      this.lastMasterLeaseId = leaseId;
+    }
+    this.masterPid = pid;
+    this.masterFileId = fileId;
+    this.masterLeaseId = leaseId;
+    return true;
+  }
+
+  private clearCursor(): void {
     this.cursorBo = 0;
     this.cursorBytes = null;
-    this.cursor = { ...this.cursor, version: this.cursor.version + 1, pixels: null };
+    this.cursor = { version: this.cursor.version + 1, x: 0, y: 0,
+      hotX: 0, hotY: 0, width: 0, height: 0, pixels: null };
   }
-  isMasterPid(pid: number): boolean { return this.masterPid === pid; }
-  /** The pid currently holding DRM master, or null. The compositor's
-   *  scanout context is the shared GPU-bo multiplexer context, so the
-   *  host resolves it via this pid. */
+
+  /** A late release receipt must not clear a renewed grant. */
+  dropMaster(fileId: bigint, leaseId: bigint): boolean {
+    if (this.masterFileId !== fileId || this.masterLeaseId !== leaseId) return false;
+    this.masterPid = null;
+    this.masterFileId = null;
+    this.masterLeaseId = 0n;
+    this.clearCursor();
+    return true;
+  }
+
+  isMasterFile(fileId: bigint | null | undefined): boolean {
+    return fileId != null && this.masterFileId === fileId;
+  }
+  getMasterFileId(): bigint | null { return this.masterFileId; }
+  getMasterLeaseId(): bigint { return this.masterLeaseId; }
+
+  /** Presenter metadata is not authority and can outlive neither its Worker
+   * nor its file's grant. Retiring one Worker does not close inherited fds. */
+  notePresenter(pid: number): void { if (this.masterFileId !== null) this.masterPid = pid; }
+  retirePresenter(pid: number): void { if (this.masterPid === pid) this.masterPid = null; }
   getMasterPid(): number | null { return this.masterPid; }
 
-  /** First CRTC with an FB bound for which `pid` holds DRM master.
-   *  Null if `pid` is not master or no CRTC has an FB yet. The kernel
-   *  currently advertises a single CRTC, so the iteration order doesn't
-   *  matter; once multi-head lands the caller can iterate `crtcBindings`
-   *  directly. */
-  masterCrtcForPid(pid: number): number | null {
-    if (this.masterPid !== pid) return null;
-    for (const crtc_id of this.crtcBindings.keys()) {
-      return crtc_id;
-    }
+  masterCrtcForFile(fileId: bigint | null | undefined): number | null {
+    if (!this.isMasterFile(fileId)) return null;
+    for (const crtcId of this.crtcBindings.keys()) return crtcId;
     return null;
   }
 

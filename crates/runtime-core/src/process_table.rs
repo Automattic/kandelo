@@ -475,11 +475,7 @@ fn bump_inherited_dri_bos(child: &Process) {
                 reg.incref(p.bo_id);
             }
             crate::ofd::DriOfdState::RenderNode(_) => {}
-            crate::ofd::DriOfdState::Card { kms, .. } => {
-                if let Some(bo) = kms.cursor_bo {
-                    reg.incref(bo);
-                }
-            }
+            crate::ofd::DriOfdState::Card { .. } => {}
         });
     }
 }

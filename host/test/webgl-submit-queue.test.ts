@@ -25,7 +25,7 @@ function drainOne(q: SubmitQueue): QueueEntry | null {
 
 describe("SubmitQueue", () => {
   it("compositor pid jumps ahead of clients enqueued earlier", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     q.enqueue(mkBinding(10), mkFrame());
     q.enqueue(mkBinding(11), mkFrame());
     q.enqueue(mkBinding(2), mkFrame());
@@ -33,7 +33,7 @@ describe("SubmitQueue", () => {
   });
 
   it("drains compositor first, then clients in enqueue order", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     q.enqueue(mkBinding(10), mkFrame());
     q.enqueue(mkBinding(2), mkFrame());
     q.enqueue(mkBinding(11), mkFrame());
@@ -46,7 +46,7 @@ describe("SubmitQueue", () => {
   });
 
   it("round-robins among clients when each carries multiple frames", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     const a = mkBinding(10);
     const b = mkBinding(11);
     const c = mkBinding(12);
@@ -67,7 +67,7 @@ describe("SubmitQueue", () => {
   });
 
   it("multiple frames for the same (pid, ctx) coalesce into one entry", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     const a = mkBinding(10, 7);
     q.enqueue(a, mkFrame(1));
     q.enqueue(a, mkFrame(2));
@@ -79,7 +79,7 @@ describe("SubmitQueue", () => {
   });
 
   it("same pid with different contextId produces two distinct entries", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     q.enqueue(mkBinding(10, 1), mkFrame(1));
     q.enqueue(mkBinding(10, 2), mkFrame(2));
 
@@ -90,7 +90,7 @@ describe("SubmitQueue", () => {
   });
 
   it("releaseIfEmpty is a no-op when the entry still has frames", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     const a = mkBinding(10);
     q.enqueue(a, mkFrame(1));
     q.enqueue(a, mkFrame(2));
@@ -106,7 +106,7 @@ describe("SubmitQueue", () => {
   });
 
   it("releaseIfEmpty drops empty entries from byKey and the lane", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     q.enqueue(mkBinding(10), mkFrame());
     drainOne(q);
     expect(q.isEmpty()).toBe(true);
@@ -114,13 +114,13 @@ describe("SubmitQueue", () => {
   });
 
   it("pickNext on empty queue returns null and leaves isEmpty true", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     expect(q.pickNext()).toBeNull();
     expect(q.isEmpty()).toBe(true);
   });
 
   it("isCompositor predicate override routes the chosen pid to the compositor lane", () => {
-    const q = new SubmitQueue((pid) => pid === 99);
+    const q = new SubmitQueue(binding => binding.pid === 99);
     q.enqueue(mkBinding(2), mkFrame());
     q.enqueue(mkBinding(10), mkFrame());
     q.enqueue(mkBinding(99), mkFrame());
@@ -128,7 +128,7 @@ describe("SubmitQueue", () => {
   });
 
   it("compositor with multiple frames stays at the head until drained", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     q.enqueue(mkBinding(2), mkFrame(1));
     q.enqueue(mkBinding(2), mkFrame(2));
     q.enqueue(mkBinding(10), mkFrame(3));
@@ -140,7 +140,7 @@ describe("SubmitQueue", () => {
   });
 
   it("re-enqueuing after release creates a fresh entry at the tail", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     const a = mkBinding(10);
     const b = mkBinding(11);
     q.enqueue(a, mkFrame(1));
@@ -155,7 +155,7 @@ describe("SubmitQueue", () => {
   });
 
   it("purges every queued frame for one exiting pid without disturbing peers", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     q.enqueue(mkBinding(10, 1), mkFrame(1));
     q.enqueue(mkBinding(10, 1), mkFrame(2));
     q.enqueue(mkBinding(10, 2), mkFrame(3));
@@ -199,13 +199,13 @@ it("rejects invalid spans before admitting a frame", () => {
   expect(new SubmitFrame(new Uint8Array(2),2,0).byteLength).toBe(0);
 });
 it("rejects duplicate admission without duplicating an accepted packet", () => {
-  const q=new SubmitQueue(),binding=mkBinding(10),frame=mkFrame(7);
+  const q=new SubmitQueue(binding => binding.pid === 2),binding=mkBinding(10),frame=mkFrame(7);
   q.enqueue(binding,frame);
   expect(()=>q.enqueue(binding,frame)).toThrow("already admitted");
   expect(q.pickNext()?.frames).toEqual([frame]);
 });
 it("discarding a session clears the bytes of caller-held frame tokens", () => {
-  const q=new SubmitQueue(),binding=mkBinding(10),frame=mkFrame(7);
+  const q=new SubmitQueue(binding => binding.pid === 2),binding=mkBinding(10),frame=mkFrame(7);
   q.enqueue(binding,frame);q.removeSession(10);
   expect(frame.validate(()=>0)).toBe(-5);
   expect(()=>frame.run(binding,()=>0)).toThrow("already consumed");

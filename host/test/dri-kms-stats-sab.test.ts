@@ -138,14 +138,14 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
     const kernel = makeKernel();
     const stats = new Int32Array(new SharedArrayBuffer(64));
     kernel.attachKmsStats(1, stats.buffer as SharedArrayBuffer);
-    kernel.kms.setMasterPid(123);
+    kernel.kms.setMaster(123, 1n, 1n);
     vi.advanceTimersByTime(17);
     expect(Atomics.load(stats, 8)).toBe(123);
     expect(Atomics.load(stats, 0)).toBe(0);
-    kernel.kms.dropMaster();
+    kernel.kms.dropMaster(1n, 1n);
     vi.advanceTimersByTime(17);
     expect(Atomics.load(stats, 8)).toBe(0);
-    kernel.kms.setMasterPid(456);
+    kernel.kms.setMaster(456, 2n, 2n);
     vi.advanceTimersByTime(17);
     expect(Atomics.load(stats, 8)).toBe(456);
   });

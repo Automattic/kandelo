@@ -232,6 +232,9 @@ pub struct GlState {
     /// fresh session identity, independent of fd/OFD slot reuse.
     pub role: u32,
     pub display_id: u32,
+    /// Exact DRM description supplying the EGL display. Object sessions may
+    /// use a separate render-node fd while retaining this root identity.
+    pub display_file_id: Option<OfdId>,
     pub initialized: bool,
     pub context_id: Option<u32>,
     pub surface_id: Option<u32>,
@@ -457,6 +460,8 @@ pub struct PendingFlip {
 /// Per-fd KMS state for `/dev/dri/card0` opens.
 #[derive(Clone, Debug, Default)]
 pub struct KmsFdState {
+    /// Bound by kernel open/restore to the exact containing description.
+    pub master_identity: Option<OfdId>,
     pub holds_master: bool,
     /// A visible cursor owns a BO reference independently of GEM handles.
     pub cursor_bo: Option<u32>,
@@ -470,6 +475,22 @@ pub struct KmsFdState {
     pub event_ring: VecDeque<u8>,
 }
 
+/// Mutable KMS state belongs to the DRM file, including caps, cursor and
+/// queued events. Process-local fd aliases do not own independent snapshots.
+#[derive(Clone, Debug, Default)]
+pub struct SharedKmsFile(Rc<RefCell<KmsFdState>>);
+
+impl From<KmsFdState> for SharedKmsFile {
+    fn from(state: KmsFdState) -> Self { Self(Rc::new(RefCell::new(state))) }
+}
+impl SharedKmsFile {
+    pub fn borrow(&self) -> core::cell::Ref<'_, KmsFdState> { self.0.borrow() }
+    pub fn borrow_mut(&self) -> core::cell::RefMut<'_, KmsFdState> { self.0.borrow_mut() }
+    pub fn into_last(self) -> Option<KmsFdState> {
+        Rc::try_unwrap(self.0).ok().map(RefCell::into_inner)
+    }
+}
+
 /// DRI sidecar on [`OpenFileDesc::dri_state`]. A card0 OFD needs both
 /// a GEM-handle namespace (for `MODE_ADDFB2` lookups against
 /// `PRIME_FD_TO_HANDLE`-imported bos) and a KMS scope, so the three
@@ -481,7 +502,7 @@ pub enum DriOfdState {
     /// fd from `open("/dev/dri/renderD128")`.
     RenderNode(DriFdState),
     /// fd from `open("/dev/dri/card0")`.
-    Card { dri: DriFdState, kms: KmsFdState },
+    Card { dri: DriFdState, kms: SharedKmsFile },
 }
 
 /// Per-OFD ring cap: 1024 `struct input_event` records (24 KiB).
@@ -868,16 +889,16 @@ impl OpenFileDesc {
         }
     }
 
-    pub fn kms(&self) -> Option<&KmsFdState> {
+    pub fn kms(&self) -> Option<core::cell::Ref<'_, KmsFdState>> {
         match self.dri_state.as_deref()? {
-            DriOfdState::Card { kms, .. } => Some(kms),
+            DriOfdState::Card { kms, .. } => Some(kms.borrow()),
             _ => None,
         }
     }
 
-    pub fn kms_mut(&mut self) -> Option<&mut KmsFdState> {
+    pub fn kms_mut(&mut self) -> Option<core::cell::RefMut<'_, KmsFdState>> {
         match self.dri_state.as_deref_mut()? {
-            DriOfdState::Card { kms, .. } => Some(kms),
+            DriOfdState::Card { kms, .. } => Some(kms.borrow_mut()),
             _ => None,
         }
     }
@@ -1169,8 +1190,14 @@ impl OfdTable {
                 }
                 child_dri.gl_resources = source_dri.gl_resources.clone();
             }
-            if let (Some(child_kms), Some(source_kms)) = (ofd.kms_mut(), source_ofd.kms()) {
-                child_kms.fbs = source_kms.fbs.clone();
+            if let (Some(DriOfdState::Card { kms: child, .. }),
+                    Some(DriOfdState::Card { kms: parent, .. })) =
+                (ofd.dri_state.as_deref_mut(), source_ofd.dri_state.as_deref())
+            {
+                // The fork wire clears cursor/master and omits event bytes.
+                // Those placeholders never become published authority: restore
+                // the exact live file, including its already queued events.
+                *child = parent.clone();
             }
         }
         Ok(())
@@ -1494,7 +1521,7 @@ mod tests {
             Some(Box::new(DriOfdState::RenderNode(DriFdState::default())));
         table.get_mut(card).unwrap().dri_state = Some(Box::new(DriOfdState::Card {
             dri: DriFdState::default(),
-            kms: KmsFdState::default(),
+            kms: KmsFdState::default().into(),
         }));
         table.get_mut(prime).unwrap().dri_state =
             Some(Box::new(DriOfdState::PrimeBo(PrimeBoState {

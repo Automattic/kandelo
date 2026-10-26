@@ -783,14 +783,18 @@ fn install_dri_state_on_open(
         )),
         VirtualDevice::DriCard0 => {
             let pid = proc.pid as i32;
+            let ofd_id = proc.ofd_table.get(ofd_idx).expect("fresh DRM description").ofd_id;
             let holds_master = crate::dri::master::current().is_none()
-                && crate::dri::master::try_set_master(pid, ofd_idx).is_ok();
+                && crate::dri::master::try_set_master(pid, ofd_id).is_ok();
             if holds_master {
-                host.kms_set_master(pid);
+                let grant = crate::dri::master::current().expect("admitted DRM master grant");
+                host.kms_set_master(pid, grant.ofd_id.0, grant.lease_id);
             }
             Some(crate::ofd::DriOfdState::Card {
                 dri: crate::ofd::DriFdState::default(),
-                kms: crate::ofd::KmsFdState { holds_master, ..Default::default() },
+                kms: crate::ofd::KmsFdState {
+                    master_identity: Some(ofd_id), holds_master, ..Default::default()
+                }.into(),
             })
         }
         _ => None,
@@ -833,18 +837,25 @@ fn dri_state_mut(proc: &mut Process, ofd_idx: usize) -> Result<&mut crate::ofd::
         .ok_or(Errno::EBADF)
 }
 
-fn kms_state(proc: &Process, ofd_idx: usize) -> Result<&crate::ofd::KmsFdState, Errno> {
+fn kms_state(proc: &Process, ofd_idx: usize) -> Result<core::cell::Ref<'_, crate::ofd::KmsFdState>, Errno> {
     proc.ofd_table
         .get(ofd_idx)
         .and_then(|o| o.kms())
         .ok_or(Errno::EBADF)
 }
 
-fn kms_state_mut(proc: &mut Process, ofd_idx: usize) -> Result<&mut crate::ofd::KmsFdState, Errno> {
+fn kms_state_mut(proc: &mut Process, ofd_idx: usize) -> Result<core::cell::RefMut<'_, crate::ofd::KmsFdState>, Errno> {
     proc.ofd_table
         .get_mut(ofd_idx)
         .and_then(|o| o.kms_mut())
         .ok_or(Errno::EBADF)
+}
+
+fn kms_file_is_current_master(proc: &Process, ofd_idx: usize) -> Result<bool, Errno> {
+    let file = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+    let kms = file.kms().ok_or(Errno::EBADF)?;
+    Ok(kms.master_identity == Some(file.ofd_id)
+        && crate::dri::master::current().is_some_and(|grant| grant.ofd_id == file.ofd_id))
 }
 
 fn gl_session_id(proc: &Process, ofd_idx: usize) -> Result<u32, Errno> {
@@ -1910,11 +1921,12 @@ fn handle_dri_ioctl(
             if dri_state(proc, ofd_idx)?.gl.is_some() {
                 return Err(Errno::EBUSY);
             }
-            match info.role {
+            let display_file_id = match info.role {
                 gl::SESSION_DISPLAY => {
                     if info.display_fd != -1 || info.display_id != 0 {
                         return Err(Errno::EINVAL);
                     }
+                    proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.ofd_id
                 }
                 gl::SESSION_OBJECTS => {
                     let root_ofd = proc.fd_table.get(info.display_fd)?.ofd_ref.0;
@@ -1932,9 +1944,10 @@ fn handle_dri_ioctl(
                     {
                         return Err(Errno::EINVAL);
                     }
+                    root.display_file_id.ok_or(Errno::EINVAL)?
                 }
                 _ => return Err(Errno::EINVAL),
-            }
+            };
             let session_id = crate::ofd::allocate_gl_id()?;
             if info.role == gl::SESSION_DISPLAY {
                 info.display_id = session_id;
@@ -1945,6 +1958,7 @@ fn handle_dri_ioctl(
                 initialized: true,
                 role: info.role,
                 display_id: info.display_id,
+                display_file_id: Some(display_file_id),
                 ..Default::default()
             });
             dri_state_mut(proc, ofd_idx)?
@@ -2512,17 +2526,29 @@ fn handle_dri_card_ioctl(
     match request {
         DRM_IOCTL_SET_MASTER => {
             kms_state(proc, ofd_idx)?;
-            crate::dri::master::try_set_master(pid, ofd_idx)?;
-            if let Ok(kms) = kms_state_mut(proc, ofd_idx) {
+            let ofd_id = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.ofd_id;
+            {
+                let mut kms = kms_state_mut(proc, ofd_idx)?;
+                if kms.master_identity.is_some_and(|bound| bound != ofd_id) {
+                    return Err(Errno::EINVAL);
+                }
+                kms.master_identity = Some(ofd_id);
+            }
+            let changed = crate::dri::master::try_set_master(pid, ofd_id)?;
+            if let Ok(mut kms) = kms_state_mut(proc, ofd_idx) {
                 kms.holds_master = true;
             }
-            host.kms_set_master(pid);
+            if changed {
+                let grant = crate::dri::master::current().expect("admitted DRM master grant");
+                host.kms_set_master(pid, grant.ofd_id.0, grant.lease_id);
+            }
             Ok(())
         }
         DRM_IOCTL_DROP_MASTER => {
             kms_state(proc, ofd_idx)?;
-            if crate::dri::master::drop_master(pid, ofd_idx) {
-                if let Ok(kms) = kms_state_mut(proc, ofd_idx) {
+            let ofd_id = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.ofd_id;
+            if let Some(grant) = crate::dri::master::drop_master(ofd_id) {
+                if let Ok(mut kms) = kms_state_mut(proc, ofd_idx) {
                     kms.holds_master = false;
                     if let Some(old) = kms.cursor_bo.take() {
                         if crate::dri::with_registry(|r| r.decref(old)) == Some(0) {
@@ -2530,9 +2556,11 @@ fn handle_dri_card_ioctl(
                         }
                     }
                 }
-                host.kms_drop_master(pid);
+                host.kms_drop_master(pid, grant.ofd_id.0, grant.lease_id);
+                Ok(())
+            } else {
+                Err(Errno::EINVAL)
             }
-            Ok(())
         }
         DRM_IOCTL_MODE_GETRESOURCES => {
             if buf.len() < core::mem::size_of::<WpkDrmModeCardRes>() {
@@ -2824,7 +2852,7 @@ fn handle_dri_card_ioctl(
             if crtc != 1 {
                 return Err(Errno::ENOENT);
             }
-            if !kms_state(proc, ofd_idx)?.holds_master {
+            if !kms_file_is_current_master(proc, ofd_idx)? {
                 return Err(Errno::EACCES);
             }
             // WHY: older hosts must instantiate without cursor imports, but
@@ -2875,7 +2903,7 @@ fn handle_dri_card_ioctl(
             let req: WpkDrmModeGetCrtc =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
             let kms = kms_state(proc, ofd_idx)?;
-            if !kms.holds_master {
+            if !kms_file_is_current_master(proc, ofd_idx)? {
                 return Err(Errno::EACCES);
             }
             if req.crtc_id != kms::CRTC_ID {
@@ -2923,7 +2951,7 @@ fn handle_dri_card_ioctl(
                 if req.crtc_id != 1 {
                     return Err(Errno::ENOENT);
                 }
-                if !kms.holds_master {
+                if !kms_file_is_current_master(proc, ofd_idx)? {
                     return Err(Errno::EACCES);
                 }
                 if !kms.fbs.borrow().contains_key(&req.fb_id) {
@@ -2962,7 +2990,7 @@ fn handle_dri_card_ioctl(
             // new sequence and host monotonic time. Result: libdrm's
             // `drmModePageFlip → poll → drmHandleEvent` loop returns
             // at monitor-refresh rate instead of ioctl rate.
-            let kms_mut = kms_state_mut(proc, ofd_idx)?;
+            let mut kms_mut = kms_state_mut(proc, ofd_idx)?;
             kms_mut.pending_flips.push(crate::ofd::PendingFlip {
                 crtc_id: req.crtc_id,
                 fb_id: req.fb_id,
@@ -3093,20 +3121,20 @@ fn handle_dri_card_ioctl(
         }
         DRM_IOCTL_MODE_OBJ_SETPROPERTY => {
             let req: WpkDrmModeObjSetProperty = read_dri_struct(buf)?;
-            if !kms_state(proc, ofd_idx)?.holds_master {
+            if !kms_file_is_current_master(proc, ofd_idx)? {
                 return Err(Errno::EACCES);
             }
             kms::set_property(req.obj_id, req.obj_type, req.prop_id, req.value)
         }
         DRM_IOCTL_MODE_SETPROPERTY => {
             let req: WpkDrmModeConnectorSetProperty = read_dri_struct(buf)?;
-            if !kms_state(proc, ofd_idx)?.holds_master {
+            if !kms_file_is_current_master(proc, ofd_idx)? {
                 return Err(Errno::EACCES);
             }
             kms::set_property(req.connector_id, DRM_MODE_OBJECT_CONNECTOR, req.prop_id, req.value)
         }
         DRM_IOCTL_GET_MAGIC => {
-            let kms = kms_state_mut(proc, ofd_idx)?;
+            let mut kms = kms_state_mut(proc, ofd_idx)?;
             if kms.magic == 0 {
                 kms.magic = kms::issue_magic();
             }
@@ -3115,7 +3143,7 @@ fn handle_dri_card_ioctl(
         }
         DRM_IOCTL_AUTH_MAGIC => {
             let magic = u32::from_le_bytes(buf.get(..4).ok_or(Errno::EINVAL)?.try_into().unwrap());
-            if !kms_state(proc, ofd_idx)?.holds_master {
+            if !kms_file_is_current_master(proc, ofd_idx)? {
                 return Err(Errno::EACCES);
             }
             // Kandelo does not gate primary-node ioctls on authentication,
@@ -3323,7 +3351,7 @@ pub fn dri_release_ofd_state(
 pub enum DriReleaseEffect {
     DestroyBo(u32),
     RemoveFramebuffer(u32),
-    DropMaster,
+    DropMaster { file_id: u64, lease_id: u64 },
     UnbindGl { owner_pid: i32, session_id: u32 },
 }
 
@@ -3332,15 +3360,15 @@ pub fn apply_dri_release_effects(pid: i32, effects: Vec<DriReleaseEffect>, host:
         match effect {
             DriReleaseEffect::DestroyBo(bo) => host.gbm_bo_destroy(pid, bo),
             DriReleaseEffect::RemoveFramebuffer(fb) => host.kms_rmfb(pid, fb),
-            DriReleaseEffect::DropMaster => host.kms_drop_master(pid),
+            DriReleaseEffect::DropMaster { file_id, lease_id } => host.kms_drop_master(pid, file_id, lease_id),
             DriReleaseEffect::UnbindGl { owner_pid, session_id } => host.gl_unbind(owner_pid, session_id),
         }
     }
 }
 
 pub fn collect_dri_release_effects(
-    pid: i32,
-    ofd_idx: usize,
+    _pid: i32,
+    _ofd_idx: usize,
     state: Option<alloc::boxed::Box<crate::ofd::DriOfdState>>,
 ) -> Vec<DriReleaseEffect> {
     let mut effects = Vec::new();
@@ -3369,18 +3397,25 @@ pub fn collect_dri_release_effects(
             }
         }
         crate::ofd::DriOfdState::Card { dri, kms } => {
-            if let Some(bo_id) = kms.cursor_bo { release_bo(&mut effects, bo_id); }
-            // Framebuffers retain one BO reference per shared table entry.
-            for (fb_id, fb) in kms.fbs.into_last().into_iter().flatten() {
-                disable_crtc_scanning(fb_id);
-                release_bo(&mut effects, fb.bo_id);
-                effects.push(DriReleaseEffect::RemoveFramebuffer(fb_id));
-            }
-            // Drop master if this OFD held it — otherwise a
-            // dangling holder would block future SET_MASTER calls
-            // by other processes.
-            if kms.holds_master && crate::dri::master::drop_master(pid, ofd_idx) {
-                effects.push(DriReleaseEffect::DropMaster);
+            if let Some(kms) = kms.into_last() {
+                if let Some(bo_id) = kms.cursor_bo {
+                    release_bo(&mut effects, bo_id);
+                }
+                // Framebuffers retain one BO reference per shared table entry.
+                for (fb_id, fb) in kms.fbs.into_last().into_iter().flatten() {
+                    disable_crtc_scanning(fb_id);
+                    release_bo(&mut effects, fb.bo_id);
+                    effects.push(DriReleaseEffect::RemoveFramebuffer(fb_id));
+                }
+                // Only the last alias closes this DRM file's master grant.
+                if kms.holds_master {
+                    if let Some(grant) = kms.master_identity.and_then(crate::dri::master::drop_master) {
+                        effects.push(DriReleaseEffect::DropMaster {
+                            file_id: grant.ofd_id.0,
+                            lease_id: grant.lease_id,
+                        });
+                    }
+                }
             }
             if let Some(resources) = dri.gl_resources.into_last() {
                 effects.extend(collect_gl_resource_releases(resources));
@@ -7145,7 +7180,7 @@ pub fn sys_read(
                             // into the caller buffer, one byte at a time so a
                             // short caller buffer returns whatever fits and
                             // leaves the remainder queued for the next read.
-                            let kms = kms_state_mut(proc, ofd_idx)?;
+                            let mut kms = kms_state_mut(proc, ofd_idx)?;
                             let mut n = 0usize;
                             while n < buf.len() {
                                 match kms.event_ring.pop_front() {
@@ -12864,6 +12899,8 @@ pub fn sys_mmap(
                     .map(|g| g.owner_pid == proc.pid as i32 && g.initialized && g.role == wasm_posix_shared::gl::SESSION_OBJECTS && g.cmdbuf.is_none())
                     .unwrap_or(false);
             if needs_cmdbuf {
+                let display_file_id = ofd.dri().and_then(|dri| dri.gl.as_ref())
+                    .and_then(|gl| gl.display_file_id).ok_or(Errno::EINVAL)?;
                 if len != wasm_posix_shared::gl::CMDBUF_LEN {
                     return Err(Errno::EINVAL);
                 }
@@ -12898,7 +12935,7 @@ pub fn sys_mmap(
                     owner.native_live = true;
                     owner.cmdbuf_range = Some((addr_out, len));
                 }
-                host.gl_bind(proc.pid as i32, addr_out, len, gl_session_id(proc, ofd_idx)?);
+                host.gl_bind(proc.pid as i32, addr_out, len, gl_session_id(proc, ofd_idx)?, display_file_id.0);
                 return Ok(addr_out);
             }
             if (offset as u64) & 0xFFF != 0 {
@@ -25400,7 +25437,7 @@ mod tests {
         fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {
             self.gbm_bo_unbind_calls.push((pid, bo_id, addr, len));
         }
-        fn gl_bind(&mut self, _pid: i32, _addr: usize, _len: usize, session_id: u32) {
+        fn gl_bind(&mut self, _pid: i32, _addr: usize, _len: usize, session_id: u32, _display_file_id: u64) {
             self.gl_bind_sessions.push(session_id);
         }
         fn gl_unbind(&mut self, pid: i32, session_id: u32) {
@@ -52451,6 +52488,7 @@ impl HostIO for RelSymlinkMock {
         // it into event_ring as a 32-byte DRM_EVENT_FLIP_COMPLETE record.
         assert_eq!(kms.pending_flips.len(), 1);
         assert!(kms.event_ring.is_empty());
+        drop(kms);
 
         // A back-to-back second PAGE_FLIP is EBUSY while one is pending.
         unsafe {
@@ -52484,6 +52522,7 @@ impl HostIO for RelSymlinkMock {
         assert!(kms.pending_flips.is_empty());
         assert_eq!(kms.event_ring.len(), 32);
         let event: Vec<u8> = kms.event_ring.iter().copied().collect();
+        drop(kms);
         assert_eq!(u32::from_le_bytes(event[0..4].try_into().unwrap()), 2);
         assert_eq!(u32::from_le_bytes(event[4..8].try_into().unwrap()), 32);
         assert_eq!(u64::from_le_bytes(event[8..16].try_into().unwrap()), 0x42);
@@ -61029,6 +61068,59 @@ impl HostIO for RelSymlinkMock {
         assert!(table.remove_process(child).unwrap().dri_effects.is_empty());
         assert_eq!(table.remove_process(pid).unwrap().dri_effects, alloc::vec![DriReleaseEffect::DestroyBo(bo)]);
         assert!(crate::dri::with_registry(|r| r.get(bo).is_none()));
+    }
+
+    #[test]
+    fn inherited_kms_file_keeps_master_authority_across_fork() {
+        use wasm_posix_shared::dri::*;
+        let _guard = crate::dri::master::lock_for_test();
+        let mut table = crate::process_table::ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        let mut host = MockHostIO::new();
+        let fd = sys_open(table.get_mut(pid).unwrap(), &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let child = table.fork_process_for_caller(pid, pid).unwrap();
+        // fork inherits the same DRM file, so acquiring its existing master
+        // authority is idempotent even through another process-local slot.
+        assert_eq!(sys_ioctl(table.get_mut(child).unwrap(), &mut host, fd, DRM_IOCTL_SET_MASTER, &mut []), Ok(()));
+        assert_eq!(sys_ioctl(table.get_mut(child).unwrap(), &mut host, fd, DRM_IOCTL_DROP_MASTER, &mut []), Ok(()));
+        let parent = table.get_mut(pid).unwrap();
+        let idx = parent.fd_table.get(fd).unwrap().ofd_ref.0;
+        assert!(!kms_state(parent, idx).unwrap().holds_master);
+        assert!(crate::dri::master::current().is_none());
+        sys_ioctl(parent, &mut host, fd, DRM_IOCTL_SET_MASTER, &mut []).unwrap();
+        assert!(table.remove_process(pid).unwrap().dri_effects.is_empty(), "another alias keeps the master file live");
+        assert!(crate::dri::master::current().is_some());
+        let grant = crate::dri::master::current().unwrap();
+        let removed = table.remove_process(child).unwrap();
+        assert_eq!(removed.dri_effects, alloc::vec![DriReleaseEffect::DropMaster { file_id: grant.ofd_id.0, lease_id: grant.lease_id }]);
+        assert!(crate::dri::master::current().is_none());
+    }
+
+    #[test]
+    fn inherited_kms_file_shares_client_caps_and_magic() {
+        use wasm_posix_shared::dri::*;
+        let _guard = crate::dri::master::lock_for_test();
+        let mut table = crate::process_table::ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        let mut host = MockHostIO::new();
+        let fd = sys_open(table.get_mut(pid).unwrap(), &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let child = table.fork_process_for_caller(pid, pid).unwrap();
+        kms_ioctl(table.get_mut(child).unwrap(), &mut host, fd, DRM_IOCTL_SET_CLIENT_CAP,
+            WpkDrmSetClientCap { capability: DRM_CLIENT_CAP_UNIVERSAL_PLANES, value: 1 }).unwrap();
+        let query = WpkDrmModeGetPlaneRes { plane_id_ptr: 0, count_planes: 0, pad: 0 };
+        let response = kms_ioctl(table.get_mut(pid).unwrap(), &mut host, fd, DRM_IOCTL_MODE_GETPLANERESOURCES, query).unwrap();
+        assert_eq!(response.count_planes, 1, "client caps belong to the shared DRM file");
+        let child_magic: u32 = kms_ioctl(table.get_mut(child).unwrap(), &mut host, fd, DRM_IOCTL_GET_MAGIC, 0u32).unwrap();
+        let parent_magic: u32 = kms_ioctl(table.get_mut(pid).unwrap(), &mut host, fd, DRM_IOCTL_GET_MAGIC, 0u32).unwrap();
+        assert_ne!(child_magic, 0);
+        assert_eq!(child_magic, parent_magic);
+        let independent = sys_open(table.get_mut(pid).unwrap(), &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let independent_response = kms_ioctl(table.get_mut(pid).unwrap(), &mut host, independent, DRM_IOCTL_MODE_GETPLANERESOURCES, query).unwrap();
+        assert_eq!(independent_response.count_planes, 0);
+        let other_magic: u32 = kms_ioctl(table.get_mut(pid).unwrap(), &mut host, independent, DRM_IOCTL_GET_MAGIC, 0u32).unwrap();
+        assert_ne!(child_magic, other_magic);
+        table.remove_process(child).unwrap();
+        table.remove_process(pid).unwrap();
     }
 
 }

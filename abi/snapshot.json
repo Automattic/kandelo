@@ -4020,7 +4020,7 @@
       "kind": "func",
       "module": "env",
       "name": "host_gl_bind",
-      "signature": "(i32,i32,i32,i32) -> ()"
+      "signature": "(i32,i32,i32,i32,i64) -> ()"
     },
     {
       "kind": "func",
@@ -4116,7 +4116,7 @@
       "kind": "func",
       "module": "env",
       "name": "host_kms_drop_master",
-      "signature": "(i32) -> ()"
+      "signature": "(i32,i64,i64) -> ()"
     },
     {
       "kind": "func",
@@ -4140,7 +4140,7 @@
       "kind": "func",
       "module": "env",
       "name": "host_kms_set_master",
-      "signature": "(i32) -> ()"
+      "signature": "(i32,i64,i64) -> ()"
     },
     {
       "kind": "func",

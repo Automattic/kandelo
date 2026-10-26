@@ -5827,3 +5827,74 @@ The memory switching runtime-error classifier now also rejects the
 actual forced-drain and forced-termination messages, alongside its
 existing acknowledgement/retirement failures. This closes a harness gap;
 it does not repair swaybar or count as a successful repeated memory run.
+
+
+## Shared DRM master files and cursor grants, 2026-10-26
+
+This increment shares the whole KMS file across fork, vfork and spawn:
+client capabilities, cursor storage, framebuffer table, pending flips and
+event ring. Master authority uses the containing stable open-description
+identity, with a monotonically allocated 64-bit grant for each acquisition.
+An inherited alias may use SET_MASTER idempotently without replacing the
+grant or presenter. Only the final file alias releases the cursor,
+framebuffers and master grant. Independent opens remain independent.
+
+The host receives exact file/grant receipts for master acquisition and
+release and the root display's file identity for GL binding. PID is
+presenter metadata; retiring its Worker does not revoke a surviving DRM
+file. Stale release receipts cannot drop a renewed grant. Cursor protocol
+2 carries the grant in a 40-byte record, rejects stale records before BO
+lookup and scopes clears to the current grant. It replaces protocol 1
+within this unpublished ABI 55 effort; ABI remains one above integrated
+main's 54. Regenerated kernel import signatures are recorded in the ABI
+snapshot. There is no PID-based authority fallback.
+
+Before-source Rust ioctl tests rejected inherited SET_MASTER with EBUSY
+and copied client capabilities instead of sharing them:
+`graphics-kms-file-before-1026-005007-1ae5`. The host regression
+`graphics-kms-host-owner-before-1026-011506-8942` observed cursor pixels
+cleared when the opener Worker retired before Rust released the file.
+
+| Validation of this isolated increment | Result |
+|---|---|
+| Rust workspace excluding xtask | 3,236 passed, zero ignored, 87 result groups |
+| Host graphics source | 682 passed in 29 files |
+| Host memory source | 161 passed in 14 files |
+| Canonical host ESM/CJS and declarations | Passed |
+| Normal SDK32/64, 21-node kernel/rootfs graph, host, freshness | Passed |
+| Regenerated ABI and standalone resolver checks | Passed; ABI 55 |
+| Actual Node C guests | Eight passed; no skips/unloaded cases |
+| Actual browser C guests | 21 passed across Chromium, Firefox and WebKit |
+
+The normal build/workspace job is
+`graphics-kms-combined-guest-1026-025228-a5f2`; its first Node run passed
+six cases and stalled in the two new probes because their driver addressed
+input to an orphan's PID after reparenting. The corrected driver addresses
+the registered host input stream, which outlives its opener while the
+child retains its read end. It awaits natural opener exit and exact Worker
+retirement before releasing that stream. The child then retains master,
+reads inherited storage, moves the existing green cursor and exits
+naturally. Both Node and browser require acknowledged destruction and no
+host diagnostics. The old input-route failure remains in
+`.context/gtk-instrument-diagnostic/.context/kms-guest-first-node.log`.
+
+The existing cursor-import C fixture also omitted the producer's explicit
+DROP_MASTER before its independent consumer acquired master. The invalid
+precondition stopped the first four Chromium cases and one Firefox case;
+that repeated run was deliberately stopped (exit 143), not counted as a
+pass. The producer now releases only master and retains its storage.
+The successful full rerun is
+`graphics-kms-guests-master-precondition-1026-031234-fd5b`, 1m24s,
+with logs `kms-guest-node.log` and `kms-guest-browser.log` under the owned
+scratch `.context/`. Its browser inventory is six GEM ownership cases,
+12 actual cursor write-visibility cases and three actual inherited-master
+cursor presentations. The new inherited-master cases inspect green
+browser pixels after acknowledged opener retirement, not injected host
+registry state. The six GEM cases are ownership checks without rendering.
+
+K04 remains partial. This does not prove inherited GLES contexts or every
+lost-master presentation path. DRM card/render transfer through
+SCM_RIGHTS still returns EOPNOTSUPP. Pending flip admission, bounded event
+space and vblank latch timing remain ordinary gaps. The final combined
+Node/browser, compositor, memory and POSIX checks must run after this
+increment is integrated; earlier results are not combined validation.

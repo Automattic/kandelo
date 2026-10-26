@@ -1,3 +1,4 @@
+import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
 import { querySurfaceCapabilities, surfaceCapabilityRenderer } from "./webgl/surface-capabilities.js";
 import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH } from "./webgl/ops.js";
@@ -984,7 +985,7 @@ export class WasmPosixKernel {
    * Muxers keyed by `WebGL2RenderingContext` so pids sharing a canvas
    * share a muxer; `WeakMap` drops the muxer when the context is GC'd.
    */
-  private gl_submit_queue = new SubmitQueue((pid) => this.kms.isMasterPid(pid));
+  private gl_submit_queue = new SubmitQueue(binding => this.#isMasterGlBinding(binding));
   private gl_muxers = new WeakMap<WebGL2RenderingContext, GlMuxer>();
 
   private prepareForeignRetirements(b: GlBinding): boolean {
@@ -1023,13 +1024,13 @@ export class WasmPosixKernel {
 
   /**
    * Attach the KMS scanout canvas to `pid`'s GL binding and build its
-   * WebGL2 context when the pid holds DRM master and the embedder has
+   * WebGL2 context when its display file holds DRM master and the embedder has
    * registered a scanout canvas — independent of whether the pid has yet
    * bound an FB with `drmModeSetCrtc`.
    *
    * Two orderings must both work:
    *  - modeset.c: `drmModeSetCrtc` → `eglCreateContext`. A CRTC already
-   *    has an FB bound, so `masterCrtcForPid` resolves the canvas.
+   *    has an FB bound, so `masterCrtcForFile` resolves the canvas.
    *  - SDL2 KMSDRM: `eglCreateContext` (+ every shader compile) →
    *    first `SDL_GL_SwapWindow` → first `drmModeSetCrtc`. At context
    *    creation no FB is bound, so we fall back to a registered scanout
@@ -1040,6 +1041,20 @@ export class WasmPosixKernel {
    * Idempotent: returns early once `b.gl` exists. Called from
    * `host_gl_create_context` and `host_kms_set_fb`.
    */
+  #isMasterGlBinding(binding: GlBinding): boolean {
+    return !binding.forward && this.kms.isMasterFile(binding.displayFileId);
+  }
+
+  #kernelIdentity(value: bigint, label: string): bigint {
+    // Wasm i64 imports use signed JS BigInts; preserve unsigned Rust IDs
+    // without narrowing through Number or wrapping out-of-range inputs.
+    if (typeof value !== "bigint" || value < -0x8000_0000_0000_0000n
+        || value > 0xffff_ffff_ffff_ffffn) throw new Error(`Invalid ${label}`);
+    const identity = BigInt.asUintN(64, value);
+    if (identity === 0n) throw new Error(`Missing ${label}`);
+    return identity;
+  }
+
   private tryAttachKmsGlCanvas(b: GlBinding): void {
     const pid = b.pid;
     if (!b || b.forward) return;
@@ -1064,13 +1079,13 @@ export class WasmPosixKernel {
       && other.claimedKmsCrtc !== null)?.claimedKmsCrtc ?? null;
     if (!b.canvas) {
       // Prefer a CRTC that already has an FB bound (modeset order);
-      // otherwise, if the pid holds DRM master, take a registered scanout
+      // otherwise, if the binding's display file holds master, take a registered scanout
       // CRTC even without an FB binding yet (SDL2 order — the FB is bound
       // later, on the first SwapWindow). The kernel advertises a single
       // CRTC (see kms-registry.ts), so the first registered id is that
-      // CRTC; multi-head would need a pid→CRTC map here.
-      let crtc = this.kms.masterCrtcForPid(pid);
-      if (crtc == null && this.kms.isMasterPid(pid)) {
+      // CRTC; multi-head would need explicit file-to-CRTC selection here.
+      let crtc = this.kms.masterCrtcForFile(b.displayFileId);
+      if (crtc == null && this.#isMasterGlBinding(b)) {
         const ids = this.callbacks.getKmsCrtcIds?.() ?? [];
         crtc = ids.length > 0 ? ids[0] : null;
       }
@@ -1129,6 +1144,7 @@ export class WasmPosixKernel {
       // hand the CRTC back to the pump when this GL session ends; without it
       // that release is a no-op and the canvas freezes on the last GL frame.
       b.claimedKmsCrtc = attachedCrtc;
+      if (this.#isMasterGlBinding(b)) this.kms.notePresenter(pid);
       if (!this.gl.list().some(other => other !== b && other.claimedKmsCrtc === attachedCrtc)) {
         this.callbacks.markKmsCanvasGlOwned?.(attachedCrtc);
       }
@@ -1171,7 +1187,7 @@ export class WasmPosixKernel {
       this.bos.releaseProcessMappings(pid);
     } else {
       this.bos.releaseProcess(pid);
-      if (this.kms.isMasterPid(pid)) this.kms.dropMaster();
+      this.kms.retirePresenter(pid);
     }
   }
 
@@ -1560,9 +1576,7 @@ export class WasmPosixKernel {
    *  the compositor's `eglCreateContext`) — the GPU-bo path then degrades
    *  to CPU tier. */
   #sharedGlContext(): WebGL2RenderingContext | null {
-    const masterPid = this.kms.getMasterPid();
-    if (masterPid == null) return null;
-    return this.gl.list().find(b => b.pid === masterPid && b.gl)?.gl ?? null;
+    return this.gl.list().find(binding => this.#isMasterGlBinding(binding) && binding.gl)?.gl ?? null;
   }
 
   #createKernelMemory(pointerWidth: 4 | 8): WebAssembly.Memory {
@@ -1784,7 +1798,9 @@ export class WasmPosixKernel {
       const configureCursor = exports.kernel_kms_cursor_configure;
       const readCursor = exports.kernel_kms_cursor_read;
       if (typeof configureCursor === "function" && typeof readCursor === "function") {
-        if (configureCursor(1) !== 1) throw new Error("Kernel rejected KMS cursor protocol 1");
+        if (configureCursor(KMS_CURSOR_PROTOCOL_VERSION) !== KMS_CURSOR_PROTOCOL_VERSION) {
+          throw new Error(`Kernel rejected KMS cursor protocol ${KMS_CURSOR_PROTOCOL_VERSION}`);
+        }
       } else if (configureCursor || readCursor) {
         throw new Error("Kernel has an incomplete KMS cursor transport");
       }
@@ -2567,7 +2583,7 @@ export class WasmPosixKernel {
         // supplied `getProcessMemory` callback. Session identities come
         // from the kernel's open-description state, not from guest pointers
         // or a process-only lookup that could select another context.
-        host_gl_bind: (pid: number, addr: KernelPointer, len: KernelPointer, sessionId?: number): void => {
+        host_gl_bind: (pid: number, addr: KernelPointer, len: KernelPointer, sessionId: number, displayFileId: bigint): void => {
           const binding = this.#checkedKernelSpan(
             addr,
             len,
@@ -2576,6 +2592,7 @@ export class WasmPosixKernel {
           );
           this.gl.bind({
             pid, sessionId,
+            displayFileId: this.#kernelIdentity(displayFileId, "GL display file identity"),
             cmdbufAddr: binding.offset,
             cmdbufLen: binding.length,
           });
@@ -2620,7 +2637,7 @@ export class WasmPosixKernel {
               b.contextId = ctxId;
               return 0;
             }
-            if (!b.canvas && !this.kms.isMasterPid(pid)) {
+            if (!b.canvas && !this.#isMasterGlBinding(b)) {
               const shared = source?.gl ?? this.#sharedGlContext();
               if (shared && !shared.isContextLost()) {
                 b.gl = shared;
@@ -2687,8 +2704,8 @@ export class WasmPosixKernel {
               return 0;
             }
             let canvas = b.canvas;
-            if (!canvas && this.kms.isMasterPid(pid)) {
-              const crtc = this.kms.masterCrtcForPid(pid) ?? this.callbacks.getKmsCrtcIds?.()[0];
+            if (!canvas && this.#isMasterGlBinding(b)) {
+              const crtc = this.kms.masterCrtcForFile(b.displayFileId) ?? this.callbacks.getKmsCrtcIds?.()[0];
               if (crtc !== undefined && crtc !== null) canvas = this.callbacks.getKmsCanvas?.(crtc) ?? null;
             }
             const result = prepareSurfaceCreation(b, creation, this.gl.gpuBo(creation.targetBoId) ?? undefined, canvas, gl => {
@@ -2963,11 +2980,11 @@ export class WasmPosixKernel {
                 written = preparedFence.rc;
               } else if (op === QOP_SURFACE_CAPABILITIES) {
                 let canvas = b.canvas;
-                if (!canvas && this.kms.isMasterPid(pid)) {
-                  const crtc = this.kms.masterCrtcForPid(pid) ?? this.callbacks.getKmsCrtcIds?.()[0];
+                if (!canvas && this.#isMasterGlBinding(b)) {
+                  const crtc = this.kms.masterCrtcForFile(b.displayFileId) ?? this.callbacks.getKmsCrtcIds?.()[0];
                   if (crtc !== undefined && crtc !== null) canvas = this.callbacks.getKmsCanvas?.(crtc) ?? null;
                 }
-                const shared = !b.canvas && !this.kms.isMasterPid(pid) ? this.#sharedGlContext() : null;
+                const shared = !b.canvas && !this.#isMasterGlBinding(b) ? this.#sharedGlContext() : null;
                 const gl = b.gl ?? shared ?? surfaceCapabilityRenderer(b,canvas);
                 // Capture the outgoing owner's flags without replaying or
                 // publishing this not-yet-current configuration session.
@@ -3037,8 +3054,14 @@ export class WasmPosixKernel {
           if (name <= 0) this.gl_muxers.get(b.gl)?.invalidateCurrent();
           return name;
         },
-        host_kms_set_master: (pid: number): void => { this.kms.setMasterPid(pid); },
-        host_kms_drop_master: (_pid: number): void => { this.kms.dropMaster(); },
+        host_kms_set_master: (pid: number, fileId: bigint, leaseId: bigint): void => {
+          this.kms.setMaster(pid, this.#kernelIdentity(fileId, "DRM file identity"),
+            this.#kernelIdentity(leaseId, "DRM master grant identity"));
+        },
+        host_kms_drop_master: (_pid: number, fileId: bigint, leaseId: bigint): void => {
+          this.kms.dropMaster(this.#kernelIdentity(fileId, "DRM release file identity"),
+            this.#kernelIdentity(leaseId, "DRM release grant identity"));
+        },
         // `addr` is a GUEST address and arrives as a BigInt, because the
         // kernel declares it `u64` so that one import signature serves both a
         // wasm32 and a wasm64 guest.

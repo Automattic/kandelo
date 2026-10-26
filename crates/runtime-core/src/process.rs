@@ -473,7 +473,7 @@ pub trait HostIO {
     /// given offset within its wasm `Memory`. Length is always
     /// `shared::gl::CMDBUF_LEN` in v1.
     #[allow(unused_variables)]
-    fn gl_bind(&mut self, pid: i32, addr: usize, len: usize, session_id: u32) {}
+    fn gl_bind(&mut self, pid: i32, addr: usize, len: usize, session_id: u32, display_file_id: u64) {}
 
     /// Notify the host that one session's command memory is gone (`munmap`,
     /// process exit, or exec). Never retire another session of `pid`.
@@ -566,10 +566,10 @@ pub trait HostIO {
     }
 
     #[allow(unused_variables)]
-    fn kms_set_master(&mut self, pid: i32) {}
+    fn kms_set_master(&mut self, pid: i32, file_id: u64, lease_id: u64) {}
 
     #[allow(unused_variables)]
-    fn kms_drop_master(&mut self, pid: i32) {}
+    fn kms_drop_master(&mut self, pid: i32, file_id: u64, lease_id: u64) {}
 
     /// Copy `src` from kernel-owned memory into the wasm process at `pid`'s
     /// linear memory at guest address `addr`. Returns 0 on success, negative
@@ -3840,7 +3840,7 @@ mod tests {
             },
         );
         parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
-            Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms }));
+            Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms: kms.into() }));
         parent
             .fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
@@ -3897,11 +3897,14 @@ mod tests {
         dri.gem.borrow_mut().handles.insert(5, bo);
         let mut kms = KmsFdState::default();
         kms.cursor_bo = Some(bo);
-        proc.ofd_table.get_mut(idx).unwrap().dri_state = Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms }));
+        proc.ofd_table.get_mut(idx).unwrap().dri_state = Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms: kms.into() }));
         proc.fd_table.alloc(crate::fd::OpenFileDescRef(idx), 0).unwrap();
         let mut host = test_host::NoopHost;
         let child = table.spawn_child_for_caller(pid, pid, &[b"child"], &[], &[], &SpawnAttrs::empty(), &mut host).unwrap();
-        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 3);
+        // The GEM and cursor references belong to the shared DRM file,
+        // not to each process alias. Child close and failed inheritance must
+        // leave both original holds intact until final file retirement.
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 2);
         let removed = table.remove_process(child).unwrap();
         assert!(removed.dri_effects.is_empty());
         assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 2);
@@ -3956,7 +3959,7 @@ mod tests {
             },
         );
         parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
-            Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms }));
+            Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms: kms.into() }));
         parent
             .fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
@@ -4020,7 +4023,7 @@ mod tests {
         parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
             Some(alloc::boxed::Box::new(DriOfdState::Card {
                 dri: DriFdState::default(),
-                kms: kms_state,
+                kms: kms_state.into(),
             }));
         let fd = parent
             .fd_table

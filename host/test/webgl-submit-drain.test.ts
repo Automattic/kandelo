@@ -29,7 +29,7 @@ function fakeMuxer(): FakeMuxer {
 
 describe("drainSubmitQueue", () => {
   it.each(["switch", "dispatch"])("contains a failing renderer during %s without retaining its consumed frame", stage => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     const binding = mkBinding(10);
     q.enqueue(binding, mkFrame(1));
     const fail = () => { throw new Error("renderer failed"); };
@@ -45,7 +45,7 @@ describe("drainSubmitQueue", () => {
   });
 
   it("drives switchTo once per distinct binding then dispatches each frame", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     const a = mkBinding(10);
     const b = mkBinding(11);
     q.enqueue(a, mkFrame(1));
@@ -71,7 +71,7 @@ describe("drainSubmitQueue", () => {
   });
 
   it("compositor pid drains before clients regardless of enqueue order", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     const client = mkBinding(10);
     const comp = mkBinding(2);
     q.enqueue(client, mkFrame(1));
@@ -84,7 +84,7 @@ describe("drainSubmitQueue", () => {
   });
 
   it("skips switchTo when muxerFor returns null", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     q.enqueue(mkBinding(10, null), mkFrame(1));
 
     const dispatch = vi.fn<GlDispatch>();
@@ -93,7 +93,7 @@ describe("drainSubmitQueue", () => {
   });
 
   it("still dispatches when binding has a gl but muxerFor returns null", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     q.enqueue(mkBinding(10), mkFrame(7));
 
     const dispatch = vi.fn<GlDispatch>();
@@ -103,7 +103,7 @@ describe("drainSubmitQueue", () => {
   });
 
   it("each binding gets its own muxer when they hold distinct gl contexts", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     const glA = {};
     const glB = {};
     const ba = mkBinding(10, glA);
@@ -125,21 +125,21 @@ describe("drainSubmitQueue", () => {
   });
 
   it("returns immediately on an empty queue", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     const dispatch = vi.fn<GlDispatch>();
     drainSubmitQueue(q, () => null, dispatch);
     expect(dispatch).not.toHaveBeenCalled();
   });
 
   it("releaseIfEmpty drops entries promptly so isEmpty flips after the last frame", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     q.enqueue(mkBinding(10), mkFrame(1));
     drainSubmitQueue(q, () => null, vi.fn<GlDispatch>());
     expect(q.isEmpty()).toBe(true);
   });
 
   it("returns the first dispatch error and leaves later frames queued", () => {
-    const q = new SubmitQueue();
+    const q = new SubmitQueue(binding => binding.pid === 2);
     q.enqueue(mkBinding(10), mkFrame(1));
     q.enqueue(mkBinding(11), mkFrame(2));
 
@@ -153,7 +153,7 @@ describe("drainSubmitQueue", () => {
 });
 
 it.each(["success","error","throw"])("restores the borrowed view and consumes the snapshot after %s", outcome => {
-  const q=new SubmitQueue(),binding=mkBinding(10),borrowed=new Uint8Array([99]);binding.cmdbufView=borrowed;
+  const q=new SubmitQueue(binding => binding.pid === 2),binding=mkBinding(10),borrowed=new Uint8Array([99]);binding.cmdbufView=borrowed;
   const frame=mkFrame(7);q.enqueue(binding,frame);
   const rc=drainSubmitQueue(q,()=>null,(current,offset,length)=>{
     expect(current.cmdbufView).not.toBe(borrowed);expect([...current.cmdbufView!]).toEqual([7]);
@@ -168,7 +168,7 @@ it.each(["success","error","throw"])("restores the borrowed view and consumes th
   expect(q.isEmpty()).toBe(true);
 });
 it.each([null,new Uint8Array([42])])("does not resurrect a retired or rebound guest view", replacement => {
-  const q=new SubmitQueue(),binding=mkBinding(10);binding.cmdbufView=new Uint8Array([99]);
+  const q=new SubmitQueue(binding => binding.pid === 2),binding=mkBinding(10);binding.cmdbufView=new Uint8Array([99]);
   q.enqueue(binding,mkFrame(7));
   expect(drainSubmitQueue(q,()=>null,current=>{current.cmdbufView=replacement;return 0;})).toBe(0);
   expect(binding.cmdbufView).toBe(replacement);

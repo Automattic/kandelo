@@ -316,7 +316,7 @@ unsafe extern "C" {
     fn host_gbm_bo_destroy(pid: i32, bo_id: u32);
     fn host_gbm_bo_bind(pid: i32, bo_id: u32, addr: usize, len: usize) -> i32;
     fn host_gbm_bo_unbind(pid: i32, bo_id: u32, addr: usize, len: usize);
-    fn host_gl_bind(pid: i32, addr: usize, len: usize, session_id: u32);
+    fn host_gl_bind(pid: i32, addr: usize, len: usize, session_id: u32, display_file_id: u64);
     fn host_gl_unbind(pid: i32, session_id: u32);
     fn host_gl_create_context(pid: i32, ctx_id: u32, attrs_ptr: *const u8, attrs_len: usize, session_id: u32) -> i32;
     fn host_gl_destroy_context(pid: i32, ctx_id: u32);
@@ -336,8 +336,8 @@ unsafe extern "C" {
         session_id: u32,
     ) -> i32;
     fn host_gl_bind_foreign_texture(pid: i32, ctx_id: u32, bo_id: u32, gl_target: u32) -> i32;
-    fn host_kms_set_master(pid: i32);
-    fn host_kms_drop_master(pid: i32);
+    fn host_kms_set_master(pid: i32, file_id: u64, lease_id: u64);
+    fn host_kms_drop_master(pid: i32, file_id: u64, lease_id: u64);
     fn host_proc_write_bytes(pid: i32, addr: u64, src_ptr: *const u8, len: u32) -> i32;
     /// Publish a parked request's decided result into the channel at
     /// `channel_addr` of process `pid`: write `ret` and `errno`, store
@@ -1128,8 +1128,8 @@ impl HostIO for WasmHostIO {
         unsafe { host_gbm_bo_unbind(pid, bo_id, addr, len) }
     }
 
-    fn gl_bind(&mut self, pid: i32, addr: usize, len: usize, session_id: u32) {
-        unsafe { host_gl_bind(pid, addr, len, session_id) }
+    fn gl_bind(&mut self, pid: i32, addr: usize, len: usize, session_id: u32, display_file_id: u64) {
+        unsafe { host_gl_bind(pid, addr, len, session_id, display_file_id) }
     }
 
     fn gl_unbind(&mut self, pid: i32, session_id: u32) {
@@ -1192,13 +1192,13 @@ impl HostIO for WasmHostIO {
         unsafe { host_gl_bind_foreign_texture(pid, ctx_id, bo_id, gl_target) }
     }
 
-    fn kms_set_master(&mut self, pid: i32) {
-        unsafe { host_kms_set_master(pid) }
+    fn kms_set_master(&mut self, pid: i32, file_id: u64, lease_id: u64) {
+        unsafe { host_kms_set_master(pid, file_id, lease_id) }
     }
 
-    fn kms_drop_master(&mut self, pid: i32) {
-        CURSOR_TRANSPORT.lock().clear();
-        unsafe { host_kms_drop_master(pid) }
+    fn kms_drop_master(&mut self, pid: i32, file_id: u64, lease_id: u64) {
+        CURSOR_TRANSPORT.lock().clear(lease_id);
+        unsafe { host_kms_drop_master(pid, file_id, lease_id) }
     }
 
     fn proc_write_bytes(&mut self, pid: i32, addr: u64, src: &[u8]) -> i32 {
@@ -1247,11 +1247,12 @@ impl HostIO for WasmHostIO {
     }
 
     fn kms_cursor(
-        &mut self, pid: i32, _crtc_id: u32, flags: u32, bo_id: u32,
+        &mut self, _pid: i32, _crtc_id: u32, flags: u32, bo_id: u32,
         width: u32, height: u32, x: i32, y: i32, hot_x: i32, hot_y: i32,
     ) {
+        let grant = crate::dri::master::current().expect("authorized KMS cursor grant");
         CURSOR_TRANSPORT.lock().update(
-            pid, flags, bo_id, width, height, x, y, hot_x, hot_y,
+            grant.lease_id, flags, bo_id, width, height, x, y, hot_x, hot_y,
         );
     }
 }
@@ -17116,26 +17117,25 @@ pub extern "C" fn kernel_set_input_canvas_dims(width: u32, height: u32) {
 static CURSOR_TRANSPORT: spin::Mutex<crate::dri::cursor::CursorTransport> =
     spin::Mutex::new(crate::dri::cursor::CursorTransport::new());
 
-/// Negotiate cursor protocol 1. Older hosts never call this and cursor
-/// capability remains disabled. No new host import is needed under ABI 50.
+/// Negotiate cursor protocol 2 with exact master-grant identity.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_kms_cursor_configure(version: u32) -> i32 {
     CURSOR_TRANSPORT.lock().configure(version)
 }
 
 /// Read the latest complete cursor state, coalescing image and motion updates.
-/// Protocol 1: eight little-endian words (pid, BO, width, height, x, y, hot_x,
-/// hot_y). Returns 32 after copying, 0 when unchanged, or negative errno.
+/// Protocol 2: ten little-endian words (lease low/high, BO, width, height,
+/// x, y, hot_x, hot_y, zero). Returns 40, 0 when unchanged, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_kms_cursor_read(out_ptr: *mut u8, out_len: u32) -> i32 {
-    if out_ptr.is_null() || out_len < 32 { return -(Errno::EINVAL as i32); }
+    if out_ptr.is_null() || out_len < 40 { return -(Errno::EINVAL as i32); }
     let mut transport = CURSOR_TRANSPORT.lock();
     let Some(words) = transport.take() else { return 0 };
-    let out = unsafe { slice::from_raw_parts_mut(out_ptr, 32) };
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, 40) };
     for (chunk, word) in out.chunks_exact_mut(4).zip(words) {
         chunk.copy_from_slice(&word.to_le_bytes());
     }
-    32
+    40
 }
 
 /// Number of successful page-flip commits on the given crtc.

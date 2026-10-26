@@ -1,7 +1,7 @@
 /**
  * Buffered submit lanes for the multiplexer (plan 3 §B3).
  *
- * Compositor entries (`isCompositor(pid)` true) jump ahead of every
+ * Compositor entries (`isCompositor(binding)` true) jump ahead of every
  * client; clients FIFO-rotate between drains so a chatty client cannot
  * starve a slow peer. A never-emptying compositor will starve clients —
  * acceptable for v2 (the compositor is well-behaved by construction);
@@ -72,11 +72,10 @@ export class SubmitQueue {
   private clients: QueueEntry[] = [];
   private byKey = new Map<string, QueueEntry>();
 
-  /** Default predicate keeps the queue's unit tests independent of a
-   *  KmsRegistry. Production wires `(pid) => kms.isMasterPid(pid)` so
-   *  the compositor lane tracks DRM_MASTER. */
+  /** Only the caller's exact binding authority selects the compositor lane.
+   * Unclassified bindings remain ordinary FIFO clients. */
   constructor(
-    private isCompositor: (pid: number) => boolean = (pid) => pid === 2,
+    private isCompositor: (binding: GlBinding) => boolean = () => false,
   ) {}
 
   enqueue(binding: GlBinding, frame: SubmitFrame): void {
@@ -84,7 +83,7 @@ export class SubmitQueue {
     const key = `${binding.pid}:${binding.sessionId}:${binding.contextId ?? "_"}`;
     const existing = this.byKey.get(key);
     let entry: QueueEntry | undefined;
-    const lane = this.isCompositor(binding.pid) ? this.compositor : this.clients;
+    const lane = this.isCompositor(binding) ? this.compositor : this.clients;
     try {
       if (existing) existing.frames.push(frame);
       else {

@@ -77,7 +77,7 @@ describe("dri multiplex — two-pid interleaved submits (plan 3 §B8)", () => {
     const b10 = setupBinding(reg, 10, gl, [1, 0, 0, 1]);
     const b11 = setupBinding(reg, 11, gl, [0, 0, 1, 1]);
 
-    const queue = new SubmitQueue();
+    const queue = new SubmitQueue(binding => binding.pid === 2);
     queue.enqueue(b10, new SubmitFrame(b10.cmdbufView!,0,FRAME_LEN));
     queue.enqueue(b11, new SubmitFrame(b11.cmdbufView!,0,FRAME_LEN));
 
@@ -97,7 +97,7 @@ describe("dri multiplex — two-pid interleaved submits (plan 3 §B8)", () => {
     const b11 = setupBinding(reg, 11, gl, [0, 0, 0.1, 1]);
     const b2 = setupBinding(reg, 2, gl, [0, 0.1, 0, 1]);
 
-    const queue = new SubmitQueue();
+    const queue = new SubmitQueue(binding => binding.pid === 2);
     queue.enqueue(b10, new SubmitFrame(b10.cmdbufView!,0,FRAME_LEN));
     queue.enqueue(b11, new SubmitFrame(b11.cmdbufView!,0,FRAME_LEN));
     queue.enqueue(b2, new SubmitFrame(b2.cmdbufView!,0,FRAME_LEN));

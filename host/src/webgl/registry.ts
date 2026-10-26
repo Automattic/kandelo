@@ -53,6 +53,9 @@ export type GlBindingInput = {
   /** Kernel-owned open-description session identity. Zero is the unscoped
    * embedder API's single-session identity; kernel sessions are nonzero. */
   sessionId?: number;
+  /** Root EGL display's exact kernel DRM description, scoped to this kernel.
+   * Omission is an independent embedder context with no DRM master rights. */
+  displayFileId?: bigint | null;
   /** Wasm-process address where the cmdbuf was mmap'd (set by the
    *  kernel's `host_gl_bind` call). */
   cmdbufAddr: number;
@@ -81,6 +84,7 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlC
   drawSurface: GlSurfaceResources | null;
   readSurface: GlSurfaceResources | null;
   sessionId: number;
+  displayFileId: bigint | null;
   currentDrawable: GlDrawableBinding | null;
   hasBeenCurrent: boolean;
   /** Undefined means no driver savepoint; null captures the zero binding.
@@ -301,6 +305,7 @@ export class GlContextRegistry {
       objects: createGlObjectGroup(),
       pid: b.pid, cmdbufAddr: b.cmdbufAddr, cmdbufLen: b.cmdbufLen,
       sessionId,
+      displayFileId: b.displayFileId ?? null,
       currentDrawable: null,
       hasBeenCurrent: false,
       savedClientArrayBuffer: undefined,

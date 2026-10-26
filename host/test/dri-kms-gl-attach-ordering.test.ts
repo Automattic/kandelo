@@ -107,10 +107,10 @@ it.each([false, true])("rebuilds a recreated EGL window before drawing (new cont
     getKmsDisplaySize: () => ({ width: 640, height: 480 }),
     onKmsGlPresented: (crtc: number) => presented.push(crtc),
   });
-  kernel.gl.bind({ pid: PID, cmdbufAddr: 128, cmdbufLen: 0 });
+  kernel.gl.bind({ displayFileId: 1n, pid: PID, cmdbufAddr: 128, cmdbufLen: 0 });
   const binding = kernel.gl.get(PID)!;
   binding.cmdbufView = new Uint8Array(memory.buffer, 128, 0);
-  imports.env.host_kms_set_master(PID);
+  imports.env.host_kms_set_master(PID, 1n, 1n);
   imports.env.host_kms_addfb(PID, 10, 100, 640, 480, 0x34325258, 2560);
   imports.env.host_kms_set_fb(PID, 1, 10);
   imports.env.host_gl_create_context(PID, 1, 0, 0);
@@ -159,12 +159,12 @@ describe("KMS GL canvas auto-attach — ordering independence", () => {
       getKmsCrtcIds: () => [1],
       markKmsCanvasGlOwned: () => {},
     });
-    kernel.gl.bind({ pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+    kernel.gl.bind({ displayFileId: 1n, pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
 
     // SDL2 acquires DRM master early, then creates its GL context and
     // compiles shaders BEFORE the first drmModeSetCrtc (which the KMSDRM
     // backend defers to the first SwapWindow). No host_kms_set_fb yet.
-    imports.env.host_kms_set_master(PID);
+    imports.env.host_kms_set_master(PID, 1n, 1n);
     imports.env.host_gl_create_context(PID, 1, 0, 0);
 
     const b = kernel.gl.get(PID)!;
@@ -182,9 +182,9 @@ describe("KMS GL canvas auto-attach — ordering independence", () => {
       getKmsCrtcIds: () => [1],
       markKmsCanvasGlOwned: () => {},
     });
-    kernel.gl.bind({ pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+    kernel.gl.bind({ displayFileId: 1n, pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
 
-    imports.env.host_kms_set_master(PID);
+    imports.env.host_kms_set_master(PID, 1n, 1n);
     imports.env.host_kms_addfb(PID, 10, 100, 1920, 1080, 0x34325258, 7680);
     imports.env.host_kms_set_fb(PID, 1, 10);
     imports.env.host_gl_create_context(PID, 1, 0, 0);
@@ -203,9 +203,9 @@ describe("KMS GL canvas auto-attach — ordering independence", () => {
       getKmsCrtcIds: () => [1],
       markKmsCanvasGlOwned: () => {},
     });
-    kernel.gl.bind({ pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+    kernel.gl.bind({ displayFileId: 1n, pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
 
-    imports.env.host_kms_set_master(PID);
+    imports.env.host_kms_set_master(PID, 1n, 1n);
     imports.env.host_gl_create_context(PID, 1, 0, 0);
     // Context built against the default-sized canvas; now the program
     // adds its real FB and points the CRTC at it.
@@ -223,14 +223,14 @@ describe("KMS GL canvas auto-attach — ordering independence", () => {
       getKmsCrtcIds: () => [1],
       markKmsCanvasGlOwned: () => {},
     });
-    kernel.gl.bind({ pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+    kernel.gl.bind({ displayFileId: 1n, pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
     expect(imports.env.host_gl_create_context(PID, 1, 0, 0)).toBe(-19);
     const b = kernel.gl.get(PID)!;
     expect(b.gl).toBeNull();
     expect(b.contextId).toBeNull();
     expect(b.canvas).toBeNull();
 
-    imports.env.host_kms_set_master(PID);
+    imports.env.host_kms_set_master(PID, 1n, 1n);
     imports.env.host_kms_addfb(PID, 10, 100, 1920, 1080, 0x34325258, 7680);
     imports.env.host_kms_set_fb(PID, 1, 10);
     // Failed creation cannot become successful behind the guest's back
@@ -255,9 +255,9 @@ describe("KMS GL canvas auto-attach — ordering independence", () => {
         markedCrtc = crtc;
       },
     });
-    kernel.gl.bind({ pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+    kernel.gl.bind({ displayFileId: 1n, pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
 
-    imports.env.host_kms_set_master(PID);
+    imports.env.host_kms_set_master(PID, 1n, 1n);
     imports.env.host_gl_create_context(PID, 1, 0, 0);
 
     const b = kernel.gl.get(PID)!;
@@ -285,9 +285,9 @@ describe("KMS GL canvas release — the claim is handed back", () => {
       markKmsCanvasGlOwned: (id: number) => owned.push(id),
       markKmsCanvasGlReleased: (id: number) => released.push(id),
     });
-    imports.env.host_kms_set_master(PID);
+    imports.env.host_kms_set_master(PID, 1n, 1n);
     for (const sessionId of [11, 12]) {
-      kernel.gl.bind({ pid: PID, sessionId, cmdbufAddr: 0, cmdbufLen: 0 });
+      kernel.gl.bind({ displayFileId: 1n, pid: PID, sessionId, cmdbufAddr: 0, cmdbufLen: 0 });
       expect(imports.env.host_gl_create_context(PID, sessionId + 20, 0, 0, sessionId)).toBe(0);
     }
     expect(owned).toEqual([1]);
@@ -313,8 +313,8 @@ describe("KMS GL canvas release — the claim is handed back", () => {
         released.push(crtc);
       },
     });
-    kernel.gl.bind({ pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
-    imports.env.host_kms_set_master(PID);
+    kernel.gl.bind({ displayFileId: 1n, pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+    imports.env.host_kms_set_master(PID, 1n, 1n);
     imports.env.host_gl_create_context(PID, 1, 0, 0);
     expect(kernel.gl.get(PID)!.claimedKmsCrtc, "the claim is recorded").toBe(1);
     return { kernel, imports, released };
