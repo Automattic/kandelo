@@ -1017,7 +1017,9 @@ fn classify_compat_files(
         for item in &report.breaking {
             eprintln!("abi: breaking/incompatible snapshot change: {item}");
         }
-        Err("snapshot changes require ABI_VERSION bump".to_string())
+        compat_verdict(&old, &new, &report)?;
+        println!("abi: breaking changes are covered by the version bump.");
+        Ok(())
     }
 }
 
@@ -8006,6 +8008,52 @@ fn render_deterministic(root: &JsonMap) -> String {
 struct CompatReport {
     additive: Vec<String>,
     breaking: Vec<String>,
+    /// The top-level section of each `breaking` item, index for index.
+    breaking_sections: Vec<String>,
+}
+
+impl CompatReport {
+    /// Attribute the breaking items pushed since `before` to `section`.
+    fn attribute(&mut self, section: &str, before: usize) {
+        let added = self.breaking.len() - before;
+        self.breaking_sections
+            .extend(std::iter::repeat_n(section.to_owned(), added));
+    }
+}
+
+/// Which version an incompatible snapshot change requires.
+///
+/// WHY two: programs carry `ABI_VERSION` (and the program digest), so bumping
+/// it rebuilds every program. A breaking change confined to kernel-host
+/// sections (`abi_surfaces.kernel_host`) bumps `HOST_ADAPTER_VERSION`, the
+/// kernel-host version the host checks exactly at boot, instead. An
+/// `ABI_VERSION` bump starts a new epoch for everything.
+fn compat_verdict(old: &Value, new: &Value, report: &CompatReport) -> Result<(), String> {
+    if old["abi_version"] != new["abi_version"] {
+        return Ok(());
+    }
+    let kernel_host = |section: &str| {
+        new[SURFACES_KEY]["kernel_host"]
+            .as_array()
+            .is_some_and(|names| names.iter().any(|name| name == section))
+    };
+    let (host_only, program): (Vec<_>, Vec<_>) = report
+        .breaking
+        .iter()
+        .zip(&report.breaking_sections)
+        .partition(|(_, section)| kernel_host(section));
+    if !program.is_empty() {
+        return Err("program-surface snapshot changes require an ABI_VERSION bump".to_string());
+    }
+    let host_version = |snapshot: &Value| snapshot["host_adapter"]["version"].clone();
+    if !host_only.is_empty() && host_version(old) == host_version(new) {
+        return Err(
+            "kernel-host snapshot changes require a HOST_ADAPTER_VERSION bump \
+             (the kernel-host version), not an ABI_VERSION bump"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, String> {
@@ -8024,13 +8072,16 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
 
     for key in old_obj.keys() {
         if !new_obj.contains_key(key) {
+            let before = report.breaking.len();
             report
                 .breaking
                 .push(format!("removed top-level section {key:?}"));
+            report.attribute(key, before);
         }
     }
     for key in new_obj.keys() {
         if !old_obj.contains_key(key) {
+            let before = report.breaking.len();
             if additive_top_level_section(key) {
                 report
                     .additive
@@ -8040,6 +8091,7 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
                     .breaking
                     .push(format!("added top-level section {key:?}"));
             }
+            report.attribute(key, before);
         }
     }
 
@@ -8052,6 +8104,7 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
     for key in keys {
         let old_value = &old_obj[key];
         let new_value = &new_obj[key];
+        let before = report.breaking.len();
         match key.as_str() {
             "syscalls" | "host_intercepted_syscalls" => {
                 classify_additive_array_by_number_name(key, old_value, new_value, &mut report)?
@@ -8136,6 +8189,7 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
             }
             _ => {}
         }
+        report.attribute(key, before);
     }
 
     Ok(report)
@@ -9603,6 +9657,57 @@ mod tests {
         let report = classify_compat_change(&old, &new).unwrap();
         assert!(report.breaking.is_empty(), "{report:?}");
         assert_eq!(report.additive.len(), 5);
+    }
+
+    fn with_surfaces(mut snapshot: Value) -> Value {
+        snapshot[SURFACES_KEY] = json!({
+            "program": ["host_intercepted_syscalls", "syscalls"],
+            "kernel_host": ["host_adapter", "kernel_exports", "kernel_imports"],
+        });
+        snapshot
+    }
+
+    fn bump_kernel_host_version(snapshot: &mut Value) {
+        snapshot["host_adapter"]["version"] = json!(2);
+        snapshot["host_adapter"]["manifest"]["required_host_adapter_version"] = json!(2);
+    }
+
+    /// An incompatible change only the kernel and host see -- a changed kernel
+    /// export, a new kernel host import -- needs the kernel-host version, not
+    /// ABI_VERSION, so programs stay valid.
+    #[test]
+    fn kernel_host_breaks_need_the_kernel_host_version_not_abi_version() {
+        let old = with_surfaces(base_snapshot());
+        let mut new = old.clone();
+        new["kernel_exports"][1]["signature"] = json!("(i32,i32) -> ()");
+        new["kernel_imports"].as_array_mut().unwrap().push(json!({
+            "module": "env", "name": "host_new_import",
+            "kind": "func", "signature": "() -> (i32)"
+        }));
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(report.breaking.len(), 2, "{report:?}");
+        let error = compat_verdict(&old, &new, &report).unwrap_err();
+        assert!(error.contains("HOST_ADAPTER_VERSION"), "{error}");
+
+        bump_kernel_host_version(&mut new);
+        let report = classify_compat_change(&old, &new).unwrap();
+        compat_verdict(&old, &new, &report).unwrap();
+        assert_eq!(new["abi_version"], old["abi_version"]);
+    }
+
+    #[test]
+    fn program_breaks_still_need_abi_version() {
+        let old = with_surfaces(base_snapshot());
+        let mut new = old.clone();
+        new["host_intercepted_syscalls"][0]["number"] = json!(299);
+        bump_kernel_host_version(&mut new);
+        let report = classify_compat_change(&old, &new).unwrap();
+        let error = compat_verdict(&old, &new, &report).unwrap_err();
+        assert!(error.contains("ABI_VERSION bump"), "{error}");
+
+        new["abi_version"] = json!(11);
+        let report = classify_compat_change(&old, &new).unwrap();
+        compat_verdict(&old, &new, &report).unwrap();
     }
 
     #[test]

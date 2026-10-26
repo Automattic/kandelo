@@ -59,6 +59,27 @@ describe("host adapter manifest validation", () => {
     });
   });
 
+  it("refuses a kernel built for another kernel-host version", () => {
+    for (const requiredHostAdapterVersion of [
+      HOST_ADAPTER_VERSION - 1,
+      HOST_ADAPTER_VERSION + 1,
+    ]) {
+      const memory = createMemory();
+      writeManifest(memory, { requiredHostAdapterVersion });
+      const instance = createKernelEntryGatedInstance(
+        createInstance(memory),
+        new KernelEntryGate(),
+      );
+      expect(() =>
+        validateKernelHostAdapterManifest(
+          instance,
+          memory,
+          HOST_ADAPTER_REQUIRED_WORKER_FEATURES,
+        )
+      ).toThrow(/kernel-host version .*rebuild the kernel and host together/);
+    }
+  });
+
   it("reads the manifest through one active initialization scope only", () => {
     const memory = createMemory();
     writeManifest(memory);

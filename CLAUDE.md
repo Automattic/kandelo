@@ -158,9 +158,11 @@ process, VFS, memory, device, or root-cause debugging behavior.
 
 ## ABI Contract
 
-Every incompatible ABI change requires an `ABI_VERSION` bump in
-`crates/shared/src/lib.rs` and a regenerated `abi/snapshot.json` in the same
-change. Do not ship incompatible ABI changes under an existing `ABI_VERSION`.
+Every incompatible ABI change requires a version bump and a regenerated
+`abi/snapshot.json` in the same change: `ABI_VERSION` in
+`crates/shared/src/lib.rs` for a change programs can observe, or the
+kernel-host version (`HOST_ADAPTER_VERSION`) for a change only the kernel and
+host can see. Do not ship incompatible ABI changes under an existing version.
 
 The ABI includes syscall numbers and marshalling, channel layout, process
 memory layout, host-reserved control regions, `repr(C)` structs, kernel Wasm

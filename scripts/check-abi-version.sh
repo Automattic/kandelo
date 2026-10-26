@@ -116,8 +116,9 @@ if [ "$snapshot_changed" -eq 1 ] && [ "$version_bumped" -eq 0 ]; then
 
     if ! run_xtask dump-abi --classify-compat "$old_snapshot" abi/snapshot.json ; then
         echo
-        echo "ERROR: ABI snapshot changed in a backward-incompatible way but ABI_VERSION was not bumped." >&2
-        echo "       Either bump ABI_VERSION, or keep the ABI change purely additive." >&2
+        echo "ERROR: ABI snapshot changed in a backward-incompatible way without the version bump it needs." >&2
+        echo "       Program-surface changes bump ABI_VERSION; kernel-host-only changes bump" >&2
+        echo "       HOST_ADAPTER_VERSION (the kernel-host version). Or keep the change additive." >&2
         echo "       (See docs/abi-versioning.md for policy.)" >&2
         exit 1
     fi
@@ -126,7 +127,7 @@ fi
 if [ "$snapshot_changed" -eq 1 ] && [ "$version_bumped" -eq 1 ]; then
     echo "abi: snapshot changed and ABI_VERSION was bumped."
 elif [ "$snapshot_changed" -eq 1 ]; then
-    echo "abi: snapshot changed only by backward-compatible additions; ABI_VERSION may stay unchanged."
+    echo "abi: snapshot changed without an ABI_VERSION bump: additions, or kernel-host changes under a HOST_ADAPTER_VERSION bump."
 elif [ "$version_bumped" -eq 1 ]; then
     echo
     echo "abi: ABI_VERSION changed but abi/snapshot.json did not change." >&2
