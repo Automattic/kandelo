@@ -177,8 +177,30 @@ use guest artifacts stamped for the kernel being tested.
 
 ### Changes that require a version bump
 
+There are two versions, one per audience (see [Which changes force a
+program rebuild](#which-changes-force-a-program-rebuild)):
+
+- `ABI_VERSION` is the program epoch. Every program carries it, so a bump
+  rebuilds every program. It moves only for program-surface changes.
+- `shared::abi::HOST_ADAPTER_VERSION` is the kernel-host version. The kernel
+  records it in its host-adapter manifest and the host refuses any other
+  value at boot, so a stale kernel/host pairing fails loudly. It moves for
+  incompatible changes only the kernel and host can see: adding or changing
+  a kernel host import, changing or removing a kernel export the host uses,
+  changing host-adapter metadata (including making an optional export
+  required), the export filter, or a kernel-host wire format (wakeup events,
+  wait completions, the process-table snapshot, process-metadata kinds, the
+  PCM transport). A semantic change to an existing kernel export bumps it
+  too. Programs stay valid.
+
+`check-abi-version.sh` enforces the split: a breaking change to a
+`kernel_host` section passes without an `ABI_VERSION` bump only when
+`HOST_ADAPTER_VERSION` changed, and a breaking change to a `program` section
+always needs `ABI_VERSION`. An `ABI_VERSION` bump starts a new epoch for
+everything.
+
 Anything that could make an old compiled binary misbehave against a new
-kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
+kernel requires an `ABI_VERSION` bump. Specifically:
 
 - Removing, renaming, or reassigning a syscall number.
 - Changing an existing syscall argument descriptor used by the host for
@@ -203,9 +225,6 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
   including the wasm32 cancellation-point `__syscall_cp` path. These are not
   currently visible in the structural snapshot, but stale objects and archives
   can otherwise link with incompatible Wasm function signatures.
-- Adding or changing a required kernel-Wasm host import. Kernel imports are not
-  yet present in the structural snapshot, so reviewers must track this surface
-  explicitly and coordinate the host implementation in the same ABI epoch.
 - Changing the name, version, encoding, or role semantics of the
   `kandelo.wpk_fork.capabilities` custom section. The host uses these claims to
   decide whether a main/side-module pair can safely coordinate fork replay and,
@@ -2013,9 +2032,16 @@ Structural changes (recorded in the snapshot):
 - **Digest framing.** The digest's domain string is now
   `kandelo-program-abi-contract-v2`; it covers the program sections only.
 
+- **The kernel-host version is its own epoch.** `HOST_ADAPTER_VERSION`
+  becomes 2. The host now requires the kernel's manifest to name exactly its
+  own version (it used to accept any kernel requiring at most its own), and
+  incompatible kernel-host-only changes bump it instead of `ABI_VERSION`
+  (see [Changes that require a version bump](#changes-that-require-a-version-bump)).
+
 Changing what the stamp covers changes every program's digest once, so
 every program, package archive, test fixture and VFS image is rebuilt for
-55. After that, kernel-host-only changes leave them valid.
+55. After that, kernel-host-only changes, compatible or not, leave them
+valid.
 
 ## The snapshot
 
@@ -2205,8 +2231,9 @@ while a host still offering an import the kernel no longer asks for is
 unaffected, because WebAssembly resolves imports by name. Changing an
 import's signature, or the imported memory's shape, is breaking.
 
-So **adding an `env.host_*` import fails the ABI check** unless
-`ABI_VERSION` is bumped in the same change. That is deliberate: growing
+So **adding an `env.host_*` import fails the ABI check** unless the
+kernel-host version (`HOST_ADAPTER_VERSION`) is bumped in the same change;
+since ABI 55 it no longer needs `ABI_VERSION`, because no program sees it. That is deliberate: growing
 the host surface is what the Rust-first migration is trying not to do, and
 it should cost a conversation rather than depend on a reviewer noticing a
 new line. Before this section existed, widening `host_proc_read_bytes` /
@@ -2282,10 +2309,10 @@ So:
   program-surface section, including a compatible addition such as a new
   syscall number (the digest is compared for equality).
 - **Does not:** adding or changing a kernel export, a kernel host import,
-  host-adapter metadata, the export filter, or a kernel-host wire format,
-  as long as `ABI_VERSION` stays the same. An incompatible kernel-host
-  change still needs its own `ABI_VERSION` bump under the rules above,
-  and that bump rebuilds programs.
+  host-adapter metadata, the export filter, or a kernel-host wire format.
+  An incompatible one bumps the kernel-host version (`HOST_ADAPTER_VERSION`)
+  instead of `ABI_VERSION`; the kernel and host are rebuilt together and
+  every program stays valid.
 
 A section that a program can observe at all is on the program surface,
 even if parts of it are kernel-host only (for example `wait_contract`
@@ -2293,7 +2320,14 @@ and `marshalled_structs`): binding too much costs a rebuild, binding too
 little lets a stale program run. `bash scripts/check-abi-version.sh`
 reports whether a change moved the program digest, and
 `cargo run -p xtask -- abi-program-digest [snapshot.json]` prints it.
-VFS images are not stamped themselves; the programs inside them are.
+
+VFS images are not stamped with the digest themselves; the programs inside
+them are. Loading an image checks each program's ABI number, and the host
+checks each program's digest when it is exec'd. A stale program in an image
+therefore fails loudly at exec with a digest mismatch, naming the program,
+which is the moment it matters; checking the digest at image load as well
+would only move the same failure earlier, so images keep checking the
+number alone.
 
 `ABI_VERSION` is one of the inputs to every package's cache key. When the
 ABI is bumped, every package's cache key changes, so the next resolve

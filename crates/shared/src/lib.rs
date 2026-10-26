@@ -225,7 +225,9 @@ pub mod process_layout;
 ///     digest every program carries now covers `ABI_VERSION` plus the snapshot
 ///     sections `xtask dump-abi` marks as the program surface
 ///     (`abi_surfaces`), not kernel exports, kernel imports, host-adapter
-///     metadata or kernel-host wire formats. docs/abi-versioning.md ("ABI 55").
+///     metadata or kernel-host wire formats. Those bump the kernel-host
+///     version, `abi::HOST_ADAPTER_VERSION` (now 2, checked exactly), instead
+///     of this. docs/abi-versioning.md ("ABI 55").
 pub const ABI_VERSION: u32 = 55;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
@@ -3525,7 +3527,21 @@ pub mod abi {
 
     pub const HOST_ADAPTER_MANIFEST_MAGIC: u32 = 0x4d4b_5057; // "WPKM", little-endian.
     pub const HOST_ADAPTER_MANIFEST_VERSION: u16 = 1;
-    pub const HOST_ADAPTER_VERSION: u32 = 1;
+    /// The kernel-host version: the compatibility epoch between the kernel Wasm
+    /// and the host runtime, which are built from one tree and ship together.
+    ///
+    /// WHY separate from `ABI_VERSION`: programs carry `ABI_VERSION` and the
+    /// program digest, so bumping it rebuilds every program. A change no
+    /// program can observe -- a new or changed kernel export or kernel host
+    /// import, a kernel-host wire format, host-adapter metadata -- bumps this
+    /// instead when it is incompatible. The kernel records it in its manifest
+    /// and the host refuses any other value, so a stale kernel/host pairing
+    /// fails at boot rather than misbehaving.
+    ///
+    /// 1: the host accepted any kernel requiring at most its own version.
+    /// 2: the check is exact, and this version (not `ABI_VERSION`) is the
+    ///    epoch for kernel-host-only changes (ABI 55).
+    pub const HOST_ADAPTER_VERSION: u32 = 2;
     pub const HOST_ADAPTER_MANIFEST_SIZE: u16 = core::mem::size_of::<HostAdapterManifest>() as u16;
 
     pub const HOST_FEATURE_SHARED_ARRAY_BUFFER: u32 = 1 << 0;

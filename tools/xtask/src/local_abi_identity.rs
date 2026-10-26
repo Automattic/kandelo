@@ -273,6 +273,26 @@ mod tests {
         imports.as_array_mut().unwrap().push(added);
         assert_eq!(baseline, digest(&host_import), "new kernel host import");
 
+        // An incompatible kernel-host change: an existing export's signature
+        // changes under a kernel-host version bump. ABI_VERSION stays.
+        let mut kernel_host_break = snapshot.clone();
+        let export = kernel_host_break["kernel_exports"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|export| export["name"] == "kernel_wait_next_timeout_ns")
+            .unwrap();
+        export["signature"] = json!("(i32) -> (i64)");
+        let version = kernel_host_break["host_adapter"]["version"].as_u64().unwrap();
+        kernel_host_break["host_adapter"]["version"] = json!(version + 1);
+        kernel_host_break["host_adapter"]["manifest"]["required_host_adapter_version"] =
+            json!(version + 1);
+        assert_eq!(
+            baseline,
+            digest(&kernel_host_break),
+            "incompatible kernel-host change under a kernel-host version bump"
+        );
+
         // A renumbered syscall.
         let mut syscall = snapshot.clone();
         let first = &mut syscall["syscalls"].as_array_mut().unwrap()[0];
