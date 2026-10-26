@@ -98,7 +98,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Canonical surface BO holds and image-owned renderer cleanup now survive descriptor inheritance/local close; focused native lifecycle checks pass. Raw BO retirement retains failed native cleanup across final member teardown and blocks affected operations until retry. Combined guest/memory-cycle validation remains pending | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
 | A01 | ABI and generated declarations match combined implementation | Main `7dfe4b501e` ABI 54 and graphics development contracts are consolidated under ABI 55. Regeneration and combined validation are in progress; operation table stays 17. Previous ABI 54 results remain historical evidence. Normal artifacts and combined consumer/conformance gates remain pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
-| P01 | Real upstream compositor integration | wlroots/cage/sway recipes and consumers integrated; combined artifacts and compositor validation pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
+| P01 | Real upstream compositor integration | Normal selected graph59 and actual ABI55 cage/sway GLES2 sessions pass all three engines; default Node, full gallery and browser-memory gates remain pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
 
 ## Separate expansions
 
@@ -5363,3 +5363,88 @@ compositor/memory behavior. Those rebuilds and gates remain next.
 The five graphics package ABI floors (cage, sway, wlroots, libwayland
 and graphics-cts-egl) now require the combined ABI 55 contract. Their
 normal resolver rebuild is starting from this integrated source.
+
+
+### Combined ABI 55 guest and conformance checkpoint, 2026-10-25
+
+The following results use integrated source `b2c914c74f08`, main
+`7dfe4b501e93`, ABI 55, operation table 17 and fork record version 21.
+They supplement the source checks above. Historical ABI 54 results remain
+separate evidence.
+
+- The normal selected SourceOnly graph finished **59/59 nodes** before
+  the subsequent developer-program phase failed. Exact job:
+  `graphics-main-compositor-build-1025-195724-ca52`; machine result:
+  `.context/graphics-main-compositor-build-result.json`. SDKs and canonical
+  host outputs were built through the normal bootstrap path. This does
+  not establish that every developer/test program has been rebuilt.
+- Rebuilt guest validation passed **9/9 tests** across Chromium
+  153.0.8010.12, Firefox 155 and WebKit 26.6. Exact job:
+  `graphics-main-guest-browser-1025-202313-203f`; log:
+  `.context/graphics-main-guest-browser.log`. Three runs execute the
+  pinned upstream surfaceless EGL subset, covering every advertised ES2
+  configuration (one per engine). Six compositor tests execute two
+  cycles each: **12 actual GLES2 cage/sway sessions**, rendered pixels,
+  input, exit status zero, KMS master release and restart. Deliberately
+  missing explicit Wayland endpoints are refused. This is standalone
+  guest integration evidence, not full gallery or broad CTS coverage.
+- Exact ABI 55 per-engine JSON records and successful cycle screenshots
+  are under `.context/graphics-abi55-evidence/`, named
+  `{cage,sway}-{chromium,firefox,webkit}-guest.json`, corresponding
+  `-0.png`/`-1.png`, and `graphics-cts-guest-{engine}.json`. Original
+  per-engine filenames outside that archive retain the historical ABI 54
+  evidence cited above. The archived `sway-startup-test-failed-1.png`
+  remains a failed-attempt artifact, not a successful-cycle screenshot.
+- The combined source-browser gate passed **39/39** contracts across
+  the same engines: native/forwarded fences, actual C traces, retained
+  images, command snapshots, replacement contexts/surfaces, BO reuse and
+  cleanup retries. Exact job:
+  `graphics-main-source-browser-1025-202619-3880`; log:
+  `.context/graphics-main-source-browser.log`. This harness supplies
+  synthetic kernel authority; it is distinct from the real guest runs.
+
+Guest SHA256 identities:
+
+| Artifact | SHA256 |
+|---|---|
+| Kernel | `128b1df4581cf2a14c840aba237ae74238997db9d7af513ce71fe55b85c72da2` |
+| graphics-cts-egl | `e3fa183764b8a77ed5c82ac93da933c775cd7a40c42c5a1d7d014e5a340286bd` |
+| cage | `23abcb8fee3b9e55264c0ae14198adfc2221c78946e384721abb4b19972d0d87` |
+| sway | `7b35bc94e886bf20e66b391cc8e3e19975478c108ac138bb11f33e240fc7dfc3` |
+| wlterm client | `6b61f5601dc4a25f3e682358e11962f79cbec212d2d505aa4363a02c96b50053` |
+
+The stable combined conformance job is
+`graphics-main-posix-1025-202921-b805`. OpenPOSIX completed with **174
+passes, three expected failures and two skips**, no unexpected failure,
+build failure or timeout; log `.context/graphics-main-posix.log`.
+Libc-test completed with **305 passes, 17 expected failures, one known
+FLAKE-PASS and one unexpected timeout**, `regression/raise-race` at the
+unchanged 30-second limit; log `.context/graphics-main-libc.log`. The full
+libc result is a failure. A separate normal focused invocation,
+`scripts/dev-shell.sh bash scripts/run-libc-tests.sh regression raise-race`
+with the same SourceOnly root, passed one test; log
+`.context/graphics-main-raise-race-focused.log`. This does not explain the
+original timeout or turn the full suite green. Load sensitivity remains
+a hypothesis. Sortix is still running from the pinned case-sensitive
+source checkout; no combined Sortix result is claimed yet.
+
+The normal developer-program build stopped while instrumenting
+`gtk3_smoke.raw.wasm`: **activation has no ordinary call landings**.
+The failure remains recorded in the normal-build job above. A separate
+linker warning identifies inconsistent GTK `_gtk_get_slowdown` function
+prototypes. An isolated normal GTK package rebuild with upstream
+[022c36a1379d82b4212a298ed6eaec02bc0ed7f1](https://github.com/GNOME/gtk/commit/022c36a1379d82b4212a298ed6eaec02bc0ed7f1)
+passes and removes that warning from a fresh smoke-program link. Its
+instrumentation is still running. This proves the source prototype
+correction, not that the warning caused Kandelo's planner failure.
+Diagnostic-only comparison of all 29,474 functions found no direct-call
+disagreements between the scanner and function IR. The isolated jobs are
+`graphics-gtk3-prototype-sdk-1025-214322-213d`,
+`graphics-gtk3-prototype-smoke-1025-214916-b1fe`, and
+`graphics-gtk-scan-compare-1025-215300-7177`.
+
+The full normal browser image is still building as
+`graphics-main-browser-image-build-1025-202123-8896`. Default-config Node
+consumers, gallery behavior and required browser-memory execution remain
+pending. Per-work drawable selection, server-wait ordering and the other
+open baseline inventory items remain ordinary implementation work.
