@@ -3485,7 +3485,10 @@ In the image-backed producer path, rendering resources and presenting them
 are separate operations. Authorized KMS operations select a framebuffer;
 the vblank pump presents its retained GPU BO even when the producer uses
 an independent render file. On the same native display context it blits
-the selected FBO, with KMS row zero at the top. An explicitly 2D display or
+the selected FBO, with KMS row zero at the top. Primary scanout forces only
+its displayed alpha to one, matching both CPU presenters; source BO alpha
+remains available to image siblings. Native color masks and clear values
+are restored through the same retryable inverse journal. A 2D display or
 a different native canvas receives an independent RGBA readback. GPU access
 is synchronous inside the kernel entry while the latched framebuffer owns
 its BO; only owned pixel bytes survive into detached presentation.

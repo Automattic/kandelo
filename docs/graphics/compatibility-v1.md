@@ -6248,3 +6248,40 @@ POSIX conformance and normal manual browser verification are still
 required. CPU/GPU coherence, framebuffer layout/offset validation, lost
 resources, ordered execution/server waits and the other inventory gaps
 remain ordinary implementation work. Performance was not measured.
+
+
+## Opaque primary GPU scanout, 2026-10-27
+
+The direct GPU presenter now matches the existing opaque 2D/WebGL CPU
+presenters for Kandelo's primary display plane. Its old raw blit preserved
+a source BO's alpha in the browser canvas, allowing the page background to
+show through the physical display. Device presentation now sets alpha to
+one only in the displayed default framebuffer. The canonical source BO
+retains its alpha for EGLImage siblings and subsequent rendering. Native
+color masks and clear values join the retryable inverse journal, and the
+guest's scissor, framebuffer selectors and error ownership remain intact.
+
+A real WebGL source control first reproduced the zero displayed alpha on
+Chromium, Firefox and WebKit while the source contained red/alpha-zero
+pixels. The corrected fixture explicitly uses the production path's
+non-multisampled context. Its first default-antialias setup attempt failed
+earlier at the incompatible single-to-multisample blit and is retained as
+setup failure, not alpha evidence. Neither pixel assertions nor state
+restoration assertions were weakened.
+
+`graphics-primary-alpha-check-1027-173138-6ffc` passed after 2m33s:
+canonical host JS/declarations build, all 690 graphics source cases in
+30 files and the three-engine native-rendering control. The control proves
+source RGBA [255,0,0,0], displayed RGBA [255,0,0,255], untouched source
+storage and restored masks/clear/scissor/read/draw state. This is actual
+WebGL rendering of the host utility, not a normal SDK guest or complete
+compositor session. The full combined guest, compositor and browser-memory
+gates still need this final host source.
+
+The isolated checkout preserves
+`.context/primary-alpha-browser-{setup-antialias-failure,before,after}.log`,
+`.context/primary-alpha-{host-build,graphics-source}.log`, failed screenshots
+and successful engine-version/pixel records under
+`.context/graphics-primary-alpha/`. Program ABI remains 56, kernel-host
+version 3 and operation table 17. No memory ceiling, package recipe or
+upstream runtime workaround changed. Performance was not measured.

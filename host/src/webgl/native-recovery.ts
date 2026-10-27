@@ -7,6 +7,8 @@ import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
 export type NativeCall =
   | ["clearVertexAttribute", NativeRetirement, number, number, number, boolean, number, number]
   | ["enable", number] | ["disable", number]
+  | ["colorMask", boolean, boolean, boolean, boolean]
+  | ["clearColor", number, number, number, number]
   | ["activeTexture", number]
   | ["pixelStorei", number, number]
   | ["bindTexture", number, WebGLTexture | null]

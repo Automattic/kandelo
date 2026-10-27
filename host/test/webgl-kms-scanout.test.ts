@@ -7,6 +7,7 @@ function renderer() {
   const state = new Map<number, unknown>([
     [0x8caa, read], [0x8ca6, draw], [0x88ed, pack], [0x0c11, true],
     [0x0d05, 8], [0x0d02, 19], [0x0d04, 3], [0x0d03, 5],
+    [0x0c23, [true, false, true, false]], [0x0c22, [0.25, 0.5, 0.75, 0.125]],
   ]);
   const initial = new Map(state), calls: unknown[][] = [];
   let error = 0, rejectRead = false, rejectRestore = false;
@@ -22,6 +23,15 @@ function renderer() {
     },
     bindBuffer: (_target: number, value: unknown) => state.set(0x88ed, value),
     pixelStorei: (name: number, value: number) => state.set(name, value),
+    colorMask: (...value: boolean[]) => state.set(0x0c23, value),
+    clearColor: (...value: number[]) => state.set(0x0c22, value),
+    clear(mask: number) {
+      expect(mask).toBe(0x4000);
+      expect(state.get(0x8ca6)).toBeNull();
+      expect(state.get(0x0c23)).toEqual([false, false, false, true]);
+      expect(state.get(0x0c22)).toEqual([0, 0, 0, 1]);
+      calls.push(["opaque primary"]);
+    },
     blitFramebuffer(...args: unknown[]) {
       expect(state.get(0x8caa)).toBe(fbo);
       expect(state.get(0x8ca6)).toBeNull();
@@ -49,7 +59,7 @@ function renderer() {
 it("blits only the selected GPU framebuffer and restores both selectors and scissor", () => {
   const r = renderer();
   expect(drawGpuScanout(r.storage, 2, 2)).toBe(true);
-  expect(r.calls).toEqual([[0, 0, 2, 2, 0, 2, 2, 0, 0x4000, 0x2600]]);
+  expect(r.calls).toEqual([[0, 0, 2, 2, 0, 2, 2, 0, 0x4000, 0x2600], ["opaque primary"]]);
   expect(r.state).toEqual(r.initial);
   expect(hasNativeRepair(r.gl)).toBe(false);
 });
