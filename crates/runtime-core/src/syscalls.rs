@@ -5161,7 +5161,7 @@ fn release_ofd_reference_impl(
                 crate::descriptor_backing::release_for_ofd(file_type, host_handle);
             }
             FileType::MemFd => {
-                if crate::descriptor_backing::release_for_ofd(file_type, host_handle) {
+                if crate::descriptor_backing::release_description(file_type, host_handle, ofd_id) {
                     release_final_ofd_locks(locks.as_deref_mut(), ofd_id);
                 }
             }
@@ -5215,7 +5215,7 @@ fn release_ofd_reference_impl(
                         || crate::tmpfs::is_tmpfs_file_handle(host_handle)
                         || crate::rootfs::is_rootfs_file_handle(host_handle))
                 {
-                    if crate::descriptor_backing::release_for_ofd(file_type, host_handle) {
+                    if crate::descriptor_backing::release_description(file_type, host_handle, ofd_id) {
                         release_final_ofd_locks(locks.as_deref_mut(), ofd_id);
                     } else {
                         // Another open of the same file keeps the backing
@@ -8376,7 +8376,7 @@ fn reopen_process_exe(
     };
     let stat = exe_backing_fstat(host, host_handle)?;
     // One more owner of the backing, exactly as an inherited description is.
-    if !crate::descriptor_backing::add_ref_for_ofd(file_type, host_handle)? {
+    if !crate::descriptor_backing::add_backing_ref_for_new_description(file_type, host_handle)? {
         if host_handle < 0 {
             return Err(Errno::EBADF);
         }
@@ -29079,6 +29079,176 @@ mod tests {
             Err(Errno::EIO)
         );
         assert!(locks.is_empty());
+    }
+
+    fn inode_lock_paths() -> [&'static [u8]; 2] {
+        [b"/tmp/inode-description-lock", b"/inode-description-lock"]
+    }
+
+    #[test]
+    fn inode_backed_flock_final_close_ignores_independent_opens() {
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        for path in inode_lock_paths() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let mut locks = AdvisoryLockManager::new();
+            let owner = sys_open(&mut proc, &mut host, path, O_CREAT | O_RDWR, 0o600).unwrap();
+            let other = sys_open(&mut proc, &mut host, path, O_RDWR, 0).unwrap();
+            let alias = sys_dup(&mut proc, owner).unwrap();
+            sys_flock(&mut proc, &mut locks, owner, LOCK_EX, &mut host).unwrap();
+            sys_close_with_locks(&mut proc, &mut locks, &mut host, owner).unwrap();
+            assert_eq!(
+                sys_flock(&mut proc, &mut locks, other, LOCK_EX | LOCK_NB, &mut host),
+                Err(Errno::EAGAIN)
+            );
+            sys_close_with_locks(&mut proc, &mut locks, &mut host, alias).unwrap();
+            assert!(
+                locks.is_empty(),
+                "an independent open cannot retain another OFD's lock"
+            );
+            sys_flock(&mut proc, &mut locks, other, LOCK_EX | LOCK_NB, &mut host).unwrap();
+            sys_close_with_locks(&mut proc, &mut locks, &mut host, other).unwrap();
+            assert!(locks.is_empty());
+        }
+    }
+
+    /// Opening `/proc/self/exe` creates a NEW description that shares the
+    /// image's inode backing. It must not become another owner of the image's
+    /// own description: the image's locks still end when the image does.
+    #[test]
+    fn inode_backed_proc_self_exe_reopen_is_an_independent_description() {
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        for path in inode_lock_paths() {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let mut locks = AdvisoryLockManager::new();
+            let image = sys_open(&mut proc, &mut host, path, O_CREAT | O_RDWR, 0o700).unwrap();
+            sys_flock(&mut proc, &mut locks, image, LOCK_EX, &mut host).unwrap();
+            // The running image holds this description as its executable.
+            proc.exe = Some(proc.fd_table.free(image).unwrap());
+
+            let reopened = sys_open(&mut proc, &mut host, b"/proc/self/exe", O_RDONLY, 0).unwrap();
+            assert_eq!(
+                sys_flock(&mut proc, &mut locks, reopened, LOCK_SH | LOCK_NB, &mut host),
+                Err(Errno::EAGAIN),
+                "the reopened description is a different owner than the image's"
+            );
+            // The image ends: its description's final owner releases its lock
+            // even though the reopened description keeps the inode open.
+            crate::exec_target::release_process_exe(&mut proc, &mut locks, &mut host);
+            sys_flock(&mut proc, &mut locks, reopened, LOCK_SH | LOCK_NB, &mut host).unwrap();
+            sys_close_with_locks(&mut proc, &mut locks, &mut host, reopened).unwrap();
+            assert!(locks.is_empty());
+        }
+    }
+
+    #[test]
+    fn inode_backed_flock_survives_fork_until_final_description_close() {
+        use crate::process_table::ProcessTable;
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        for path in inode_lock_paths() {
+            let mut table = ProcessTable::new();
+            let parent = table.create_process().unwrap();
+            let mut host = MockHostIO::new();
+            let owner = sys_open(
+                table.get_mut(parent).unwrap(),
+                &mut host,
+                path,
+                O_CREAT | O_RDWR,
+                0o600,
+            )
+            .unwrap();
+            {
+                let (proc, locks) = table.process_and_advisory_locks(parent).unwrap();
+                sys_flock(proc, locks, owner, LOCK_EX, &mut host).unwrap();
+            }
+            let child = table.fork_process_for_caller(parent, parent).unwrap();
+            let other = sys_open(table.get_mut(parent).unwrap(), &mut host, path, O_RDWR, 0).unwrap();
+            {
+                let (proc, locks) = table.process_and_advisory_locks(parent).unwrap();
+                sys_close_with_locks(proc, locks, &mut host, owner).unwrap();
+                assert_eq!(
+                    sys_flock(proc, locks, other, LOCK_EX | LOCK_NB, &mut host),
+                    Err(Errno::EAGAIN)
+                );
+            }
+            {
+                let (proc, locks) = table.process_and_advisory_locks(child).unwrap();
+                sys_close_with_locks(proc, locks, &mut host, owner).unwrap();
+            }
+            assert!(table.advisory_locks().is_empty());
+            {
+                let (proc, locks) = table.process_and_advisory_locks(parent).unwrap();
+                sys_flock(proc, locks, other, LOCK_EX | LOCK_NB, &mut host).unwrap();
+                sys_close_with_locks(proc, locks, &mut host, other).unwrap();
+            }
+            table.remove_process(child).unwrap();
+            table.remove_process(parent).unwrap();
+        }
+    }
+
+    #[test]
+    fn inode_backed_flock_scm_rights_final_close_or_discard_releases_owner() {
+        let _guard = SCM_RIGHTS_LIFETIME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _tmpfs = TmpfsEnableGuard(crate::tmpfs::set_enabled(true));
+        let _rootfs = RootfsEnableGuard(crate::rootfs::set_enabled(true));
+        crate::rootfs::reset();
+        crate::rootfs::insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
+        for path in inode_lock_paths() {
+            for receive in [false, true] {
+                let mut sender = Process::new(73);
+                let mut receiver = Process::new(74);
+                let mut locks = AdvisoryLockManager::new();
+                let mut host = MockHostIO::new();
+                let owner = sys_open(&mut sender, &mut host, path, O_CREAT | O_RDWR, 0o600).unwrap();
+                let other = sys_open(&mut receiver, &mut host, path, O_RDWR, 0).unwrap();
+                sys_flock(&mut sender, &mut locks, owner, LOCK_EX, &mut host).unwrap();
+                let queued = retain_fd_for_scm_rights(&sender, owner);
+                sys_close_with_locks(&mut sender, &mut locks, &mut host, owner).unwrap();
+                assert_eq!(
+                    sys_flock(
+                        &mut receiver,
+                        &mut locks,
+                        other,
+                        LOCK_EX | LOCK_NB,
+                        &mut host
+                    ),
+                    Err(Errno::EAGAIN)
+                );
+                if receive {
+                    let received = install_scm_rights_fds(&mut receiver, vec![queued]);
+                    assert_eq!(received.len(), 1);
+                    sys_close_with_locks(&mut receiver, &mut locks, &mut host, received[0]).unwrap();
+                } else {
+                    drop(queued);
+                    drain_deferred_scm_rights_releases(&mut locks, &mut host);
+                }
+                assert!(
+                    locks.is_empty(),
+                    "SCM_RIGHTS lifetime follows the transferred description, not the inode"
+                );
+                sys_flock(
+                    &mut receiver,
+                    &mut locks,
+                    other,
+                    LOCK_EX | LOCK_NB,
+                    &mut host,
+                )
+                .unwrap();
+                sys_close_with_locks(&mut receiver, &mut locks, &mut host, other).unwrap();
+            }
+        }
     }
 
     #[test]
@@ -55944,15 +56114,15 @@ impl HostIO for RelSymlinkMock {
 
             // A second process inheriting the description (fork) keeps the
             // session alive past the first close.
-            let handle = crate::exchange::device::ExchangeDevice::from_host_handle(
-                proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap().host_handle,
-            )
+            let description = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap();
+            let description_id = description.ofd_id;
+            let handle = crate::exchange::device::ExchangeDevice::from_host_handle(description.host_handle)
             .unwrap()
             .host_handle();
-            assert_eq!(crate::descriptor_backing::add_ref_for_ofd(FileType::CharDevice, handle), Ok(true));
+            assert_eq!(crate::descriptor_backing::add_ref_for_ofd(FileType::CharDevice, handle, description_id), Ok(true));
             sys_close(&mut proc, &mut host, fd).unwrap();
             assert!(crate::tmpfs::lstat(&dir).is_ok(), "the inherited reference keeps it");
-            assert!(crate::descriptor_backing::release_for_ofd(FileType::CharDevice, handle));
+            assert!(crate::descriptor_backing::release_description(FileType::CharDevice, handle, description_id));
             assert_eq!(crate::tmpfs::lstat(&dir).unwrap_err(), Errno::ENOENT);
         }
     }

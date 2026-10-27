@@ -126,6 +126,11 @@ backend that cannot prove an exact stable identity returns `ENOLCK` for locking
 instead of using a pathname hash. Memfd, procfs regular objects, and read-only
 synthetic regular files use tagged in-kernel identities and participate in the
 same final-OFD lifetime rules.
+Tmpfs and rootfs track shared description ownership separately from inode
+open counts: closing the final alias of one description releases its OFD and
+`flock` locks even while independently opened handles keep that inode alive.
+Fork/spawn and queued `SCM_RIGHTS` references continue to retain the original
+description's locks.
 
 ## Process Management
 

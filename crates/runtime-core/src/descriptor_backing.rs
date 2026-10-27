@@ -17,6 +17,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use wasm_posix_shared::Errno;
 
 use crate::ofd::FileType;
+use crate::lock::OfdId;
 use crate::process::{EpollInstance, EventFdState, Process, SignalFdState, TimerFdState};
 
 #[derive(Debug)]
@@ -449,12 +450,12 @@ pub fn is_live_managed_ofd(file_type: FileType, host_handle: i64) -> bool {
 pub fn removed_backings_for_exec(
     old: &Process,
     replacement: &Process,
-) -> Result<Vec<(FileType, i64)>, Errno> {
-    let old_backings: Vec<(FileType, i64)> = old
+) -> Result<Vec<(FileType, i64, OfdId)>, Errno> {
+    let old_backings: Vec<(FileType, i64, OfdId)> = old
         .ofd_table
         .iter()
         .filter_map(|(_, ofd)| {
-            manages_ofd(ofd.file_type, ofd.host_handle).then_some((ofd.file_type, ofd.host_handle))
+            manages_ofd(ofd.file_type, ofd.host_handle).then_some((ofd.file_type, ofd.host_handle, ofd.ofd_id))
         })
         .collect();
     let mut retained = alloc::vec![false; old_backings.len()];
@@ -466,7 +467,7 @@ pub fn removed_backings_for_exec(
         let Some((idx, _)) = old_backings
             .iter()
             .enumerate()
-            .find(|(idx, key)| !retained[*idx] && **key == (ofd.file_type, ofd.host_handle))
+            .find(|(idx, key)| !retained[*idx] && **key == (ofd.file_type, ofd.host_handle, ofd.ofd_id))
         else {
             return Err(Errno::EBADF);
         };
@@ -484,9 +485,9 @@ pub fn removed_backings_for_exec(
     not(any(target_arch = "wasm32", target_arch = "wasm64")),
     allow(dead_code)
 )]
-pub fn release_backings(backings: &[(FileType, i64)]) {
-    for &(file_type, host_handle) in backings {
-        release_for_ofd(file_type, host_handle);
+pub fn release_backings(backings: &[(FileType, i64, OfdId)]) {
+    for &(file_type, host_handle, id) in backings {
+        release_description(file_type, host_handle, id);
     }
 }
 
@@ -567,9 +568,96 @@ pub fn set_current_offset(
     }
 }
 
+// tmpfs/rootfs encode an inode in their backing handle, so independent
+// opens share that handle. Inode open_count keeps file contents alive, but
+// cannot decide when one particular OFD's advisory locks must disappear.
+// Only shared descriptions need an entry: an absent ID has one owner.
+struct InodeDescriptionRefs {
+    locked: AtomicBool,
+    refs: UnsafeCell<Vec<(OfdId, u32)>>,
+}
+unsafe impl Sync for InodeDescriptionRefs {}
+static INODE_DESCRIPTION_REFS: InodeDescriptionRefs = InodeDescriptionRefs {
+    locked: AtomicBool::new(false),
+    refs: UnsafeCell::new(Vec::new()),
+};
+
+fn with_inode_description_refs<R>(f: impl FnOnce(&mut Vec<(OfdId, u32)>) -> R) -> R {
+    let state = &INODE_DESCRIPTION_REFS;
+    while state
+        .locked
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        spin_loop();
+    }
+    let _unlock = UnlockOnDrop(&state.locked);
+    f(unsafe { &mut *state.refs.get() })
+}
+
+fn is_inode_backed_description(file_type: FileType, host_handle: i64) -> bool {
+    file_type == FileType::Regular
+        && (crate::tmpfs::is_tmpfs_file_handle(host_handle)
+            || crate::rootfs::is_rootfs_file_handle(host_handle))
+}
+
+fn retain_inode_description(id: OfdId) -> Result<(), Errno> {
+    with_inode_description_refs(|refs| {
+        match refs.binary_search_by_key(&id, |(id, _)| *id) {
+            Ok(index) => refs[index].1 = refs[index].1.checked_add(1).ok_or(Errno::EOVERFLOW)?,
+            Err(index) => {
+                refs.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+                refs.insert(index, (id, 2));
+            }
+        }
+        Ok(())
+    })
+}
+
+/// Release one real description owner, distinct from an inode reference.
+/// This is used by final local close, process teardown, and discarded
+/// SCM_RIGHTS entries. Dup aliases are counted by the process's OFD table.
+/// Returns whether this description's locks may now be retired.
+pub fn release_description(file_type: FileType, host_handle: i64, id: OfdId) -> bool {
+    let final_backing = release_for_ofd(file_type, host_handle);
+    if !is_inode_backed_description(file_type, host_handle) {
+        return final_backing;
+    }
+    with_inode_description_refs(|refs| match refs.binary_search_by_key(&id, |(id, _)| *id) {
+        Ok(index) if refs[index].1 > 1 => {
+            refs[index].1 -= 1;
+            false
+        }
+        Ok(index) => {
+            refs.remove(index);
+            true
+        }
+        Err(_) => true,
+    })
+}
+
 /// Add the child's one-per-OFD ownership reference when an OFD is inherited.
 /// Returns `Ok(false)` for descriptor types without a backing in this module.
-pub fn add_ref_for_ofd(file_type: FileType, host_handle: i64) -> Result<bool, Errno> {
+pub fn add_ref_for_ofd(file_type: FileType, host_handle: i64, id: OfdId) -> Result<bool, Errno> {
+    if !add_backing_ref_for_new_description(file_type, host_handle)? {
+        return Ok(false);
+    }
+    if is_inode_backed_description(file_type, host_handle) {
+        if let Err(err) = retain_inode_description(id) {
+            release_for_ofd(file_type, host_handle);
+            return Err(err);
+        }
+    }
+    Ok(true)
+}
+
+/// Add one backing reference for a NEW open file description that shares an
+/// existing backing, as an independent open of the same inode does (for
+/// example reopening `/proc/self/exe`). The new description starts with its
+/// single owner, so no description reference is recorded: its locks end with
+/// its own final close, not with the description it was opened from.
+/// Returns `Ok(false)` for descriptor types without a backing in this module.
+pub fn add_backing_ref_for_new_description(file_type: FileType, host_handle: i64) -> Result<bool, Errno> {
     match file_type {
         FileType::EventFd => {
             with_eventfds(|table| table.add_ref(negative_handle_idx(host_handle)?))?

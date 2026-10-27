@@ -741,7 +741,11 @@ and OFD byte-range records. Process locks are not inherited by `fork`; they
 survive `exec` under the same PID, except that closing a `FD_CLOEXEC`
 descriptor applies the normal close rule. A close removes all process locks
 held by that PID on the file; an OFD lock remains until the last machine-wide
-reference to its open file description closes. Range
+reference to its open file description closes. Tmpfs and rootfs backing
+handles identify inodes, so independent opens can share a backing handle
+while owning different descriptions. Their fork/spawn and ancillary ownership
+counts are keyed separately by `OfdId`; the inode's total open count governs
+file storage, not the lifetime of any one description's locks. Range
 normalization, replacement, splitting, coalescing, conflict selection, and
 capacity checks all happen in Rust. Conflicts are reported as `EAGAIN` before
 capacity is considered; a mutation that would exceed the record limit or
