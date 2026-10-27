@@ -4554,7 +4554,11 @@ chooses a primary DRM file. Each initialized generation owns a CLOEXEC
 duplicate of its native file until final context/surface/sync retirement,
 including after public termination. Display metadata has process lifetime.
 KMS scanout advertises the same five formats accepted by ADDFB2:
-XRGB8888, ARGB8888, XBGR8888, ABGR8888 and RGB565. CPU presenters validate
+XRGB8888, ARGB8888, XBGR8888, ABGR8888 and RGB565. Framebuffer admission
+checks complete visible row extents against BO backing before retaining or
+publishing an FB. GPU views also remain within the native texture extent;
+valid padded RGB565 CPU views remain admitted. Nonzero-offset presentation
+and the complete layout/modifier model remain incomplete. CPU presenters validate
 visible row lengths and pitch before copying. The 2D presenter converts
 little-endian pixels to opaque RGBA; the WebGL presenter selects the
 proper channel order or packed RGB565 upload. Pixel snapshots are copied

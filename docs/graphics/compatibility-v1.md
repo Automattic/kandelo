@@ -6285,3 +6285,43 @@ and successful engine-version/pixel records under
 `.context/graphics-primary-alpha/`. Program ABI remains 56, kernel-host
 version 3 and operation table 17. No memory ceiling, package recipe or
 upstream runtime workaround changed. Performance was not measured.
+
+
+## Reject out-of-backing framebuffer views before admission, 2026-10-27
+
+ADDFB2 now computes the selected format's visible row bytes and complete
+last-row extent with checked arithmetic, including the supplied offset.
+It rejects a row wider than the pitch, any view outside its BO bytes and
+a GPU view beyond its native texture dimensions. Rejection precedes BO
+retention, framebuffer ID publication and host admission. Such a malformed
+view must not arrive at GPU scanout as an internal renderer failure.
+Compatible padded RGB565 views of wider CPU backing remain admitted.
+
+The new Rust control first reproduced acceptance of an invalid 3x2 RGBA
+view over 2x2 backing. After the repair it covers CPU/GPU storage, excessive
+width/height, high offsets and GPU texture extents. Every rejection leaves
+the complete ioctl output unchanged, publishes no FB and retains no BO.
+The positive padded-view case preserves valid reinterpretation of CPU bytes.
+The first failure remains in diagnostic
+`.context/framebuffer-layout-before.log`.
+
+`graphics-framebuffer-layout-rust-1027-174342-6b8e` passed after 4m40s:
+3,357 tests across 96 result groups in the complete Rust workspace excluding
+xtask, with zero failures or ignored cases, plus all six program-contract
+identity tests. This count excludes xtask's broader automation suite and
+is not presented as the earlier 4,175-test selection. No ABI structure,
+import, declaration or epoch changed; program ABI remains 56/kernel-host 3.
+Actual new-kernel build, freshness/ABI verification and normal guest
+execution remain pending at this source checkpoint.
+
+The ordinary SDK scanout fixture now includes four malformed ADDFB2 calls
+per format before its valid color/pitch case: excessive row width, excess
+height, offset at the end of backing and a high offset. Each requires
+EINVAL and an unchanged caller output. Those prepared guest assertions
+have not yet executed on the new kernel. The existing pixel assertions
+and valid RGB565 padding remain intact.
+
+This is bounded admission validation. Arbitrary valid offsets/custom
+pitches, full format reinterpretation, modifier/flag handling and the rest
+of the framebuffer/presentation model remain ordinary gaps; K04/K05 stay
+partial. No hard boundary or complete layout support is claimed.

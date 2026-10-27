@@ -2753,9 +2753,25 @@ fn handle_dri_card_ioctl(
                 .gem.borrow().handles
                 .get(&req.handles[0])
                 .ok_or(Errno::ENOENT)?;
-            let bo_stride = crate::dri::with_registry(|r| r.get(bo_id).map(|b| b.stride))
+            let (bo_stride, bo_size, bo_width, bo_height, tier) = crate::dri::with_registry(|r|
+                r.get(bo_id).map(|b| (b.stride, b.size, b.width, b.height, b.tier)))
                 .ok_or(Errno::ENOENT)?;
             if req.pitches[0] != bo_stride {
+                return Err(Errno::EINVAL);
+            }
+            let bytes_per_pixel = if req.pixel_format == DRM_FORMAT_RGB565 { 2 } else { 4 };
+            let row_bytes = u64::from(req.width) * bytes_per_pixel;
+            let visible_end = u64::from(req.height - 1)
+                .checked_mul(u64::from(req.pitches[0]))
+                .and_then(|rows| rows.checked_add(u64::from(req.offsets[0])))
+                .and_then(|start| start.checked_add(row_bytes));
+            // Reject before retaining backing or publishing an FB. A bad
+            // view must not reach a presenter as an internal GPU failure.
+            if row_bytes > u64::from(req.pitches[0])
+                || visible_end.is_none_or(|end| end > bo_size)
+                || (tier == crate::dri::BoTier::GpuTexture
+                    && (req.width > bo_width || req.height > bo_height))
+            {
                 return Err(Errno::EINVAL);
             }
             let fb_id = {
@@ -50943,6 +50959,62 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(plane.possible_crtcs, 0b1);
         assert_eq!(plane.count_format_types, crate::dri::kms::PRIMARY_PLANE_FORMATS.len() as u32);
         assert_eq!(last_written_u32s(&host), crate::dri::kms::PRIMARY_PLANE_FORMATS);
+    }
+
+    #[test]
+    fn kms_rejects_framebuffer_views_outside_their_backing_before_publication() {
+        use wasm_posix_shared::dri::*;
+        let _master = crate::dri::master::lock_for_test();
+        let _bo = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for gpu in [false, true] {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let fd = kms_master_card0(&mut proc, &mut host);
+            let (handle, pitch) = if gpu {
+                let created = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_CREATE_GPU_BO,
+                    WpkDrmGpuBoCreate { width: 2, height: 2, format: DRM_FORMAT_ABGR8888, usage: 5 }).unwrap();
+                (created.format, created.usage)
+            } else {
+                let created = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB,
+                    WpkDrmModeCreateDumb { width: 2, height: 2, bpp: 32, ..Default::default() }).unwrap();
+                (created.handle, created.pitch)
+            };
+            let bo = crate::dri::bo::next_id_for_test() - 1;
+            let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            let mut layouts = alloc::vec![
+                (3, 2, 0, DRM_FORMAT_ABGR8888),
+                (2, 3, 0, DRM_FORMAT_ABGR8888),
+                (2, 2, 16, DRM_FORMAT_ABGR8888),
+                (2, 2, u32::MAX, DRM_FORMAT_ABGR8888),
+                (2, u32::MAX, 0, DRM_FORMAT_ABGR8888),
+            ];
+            // Packed RGB565 can fit a wider view in CPU bytes, but a GPU
+            // allocation still has a fixed native texture extent.
+            if gpu { layouts.push((3, 2, 0, DRM_FORMAT_RGB565)); }
+            for (width, height, offset, format) in layouts {
+                let mut bytes = alloc::vec![0u8; core::mem::size_of::<WpkDrmModeFbCmd2>()];
+                for (at, value) in [(0, 0xa55a_beef), (4, width), (8, height),
+                    (12, format), (20, handle), (36, pitch), (52, offset)] {
+                    bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+                }
+                let original = bytes.clone();
+                assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, &mut bytes),
+                    Err(Errno::EINVAL), "gpu={gpu} layout={width}x{height}+{offset}");
+                assert_eq!(bytes, original, "rejection must not publish a framebuffer id");
+                assert!(kms_state_mut(&mut proc, ofd).unwrap().fbs.borrow().is_empty());
+                assert_eq!(bo_refcount(bo), Some(1), "rejection must not retain the BO");
+            }
+            let mut valid = WpkDrmModeFbCmd2 { width: if gpu { 2 } else { 3 }, height: 2,
+                pixel_format: if gpu { DRM_FORMAT_ABGR8888 } else { DRM_FORMAT_RGB565 },
+                ..Default::default() };
+            valid.handles[0] = handle;
+            valid.pitches[0] = pitch;
+            let fb = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, valid).unwrap();
+            assert_eq!(bo_refcount(bo), Some(2));
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_RMFB, &mut fb.fb_id.to_le_bytes()).unwrap();
+            sys_close(&mut proc, &mut host, fd).unwrap();
+            assert_eq!(bo_refcount(bo), None);
+        }
     }
 
     #[test]

@@ -32,6 +32,19 @@ int main(int argc, char **argv) {
     drmModeFreeConnector(connector); drmModeFreeResources(resources);
     struct drm_mode_create_dumb dumb = {.width = mode.hdisplay, .height = mode.vdisplay, .bpp = 32};
     CHECK(ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &dumb) == 0);
+    /* Malformed views must fail before publishing any FB or reaching the
+     * display. RGB565 intentionally has extra valid row padding below. */
+    for (unsigned bad = 0; bad < 4; bad++) {
+        uint32_t handles[4] = {dumb.handle}, pitches[4] = {dumb.pitch}, offsets[4] = {0};
+        uint32_t width = dumb.width, height = dumb.height, untouched = 0xa55abeef;
+        if (bad == 0) width = dumb.pitch / (format == DRM_FORMAT_RGB565 ? 2 : 4) + 1;
+        if (bad == 1) height++;
+        if (bad == 2) offsets[0] = (uint32_t)dumb.size;
+        if (bad == 3) offsets[0] = UINT32_MAX;
+        errno = 0;
+        CHECK(drmModeAddFB2(fd, width, height, format, handles, pitches, offsets, &untouched, 0) < 0);
+        CHECK(errno == EINVAL && untouched == 0xa55abeef);
+    }
     struct drm_mode_map_dumb mapping = {.handle = dumb.handle};
     CHECK(ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &mapping) == 0);
     uint8_t *pixels = mmap(NULL, dumb.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, mapping.offset);
