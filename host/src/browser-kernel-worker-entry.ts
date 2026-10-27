@@ -1,3 +1,4 @@
+import { prepareThreadProgram } from "./thread-program";
 import { BrowserPcmMirror } from "./audio/browser-pcm-mirror";
 import { BrowserFramebufferMirrors } from "./framebuffer/browser-mirror";
 import { AudioActivityLatch } from "./audio/audio-activity-latch";
@@ -3240,6 +3241,8 @@ async function handleClone(
     cacheCompiledModule = true;
   }
 
+  const preparedProgram = await prepareThreadProgram(processInfo.programBytes);
+
   // Compilation yields. A sibling pthread may have committed exec while this
   // clone continuation was suspended; never attach the old program/Memory to
   // the replacement exec image for the same process identity.
@@ -3319,7 +3322,7 @@ async function handleClone(
     type: "centralized_thread_init",
     pid,
     tid,
-    programBytes: processInfo.programBytes,
+    preparedProgram,
     programModule: threadModule,
     memory,
     processChannelOffset: processInfo.channelOffset,

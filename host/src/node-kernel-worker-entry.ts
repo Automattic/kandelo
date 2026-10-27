@@ -1,3 +1,4 @@
+import { prepareThreadProgram } from "./thread-program";
 import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/remote-segment-runtime";
 /**
  * Node.js kernel worker entry point — general-purpose, message-based.
@@ -2910,6 +2911,8 @@ async function handleClone(
     cacheCompiledModule = true;
   }
 
+  const preparedProgram = await prepareThreadProgram(processInfo.programBytes);
+
   // Compilation yields. A sibling pthread may have committed exec while this
   // clone continuation was suspended; never attach the old program/Memory to
   // the replacement exec image for the same process identity.
@@ -2988,7 +2991,7 @@ async function handleClone(
     type: "centralized_thread_init",
     pid,
     tid,
-    programBytes: processInfo.programBytes,
+    preparedProgram,
     programModule: threadModule,
     memory,
     processChannelOffset: processInfo.channelOffset,

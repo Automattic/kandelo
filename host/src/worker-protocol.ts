@@ -1,3 +1,4 @@
+import type { PreparedThreadProgram } from "./thread-program";
 import type {
   ForkHostImportWorkerInit,
 } from "./fork-host-import-runtime";
@@ -136,8 +137,10 @@ export interface CentralizedThreadInitMessage {
   type: "centralized_thread_init";
   pid: number;
   tid: number;
-  programBytes: ArrayBuffer;
+  /** Direct harnesses can supply bytes; normal owners send prepared metadata. */
+  programBytes?: ArrayBuffer;
   programModule?: WebAssembly.Module;
+  preparedProgram?: PreparedThreadProgram;
   memory: WebAssembly.Memory;
   /** Main process channel offset. The thread reads the process-wide dlopen
    * archive head relative to this live shared-memory anchor before fork. */

@@ -1938,6 +1938,16 @@ variant is keyed on the *program's* digest; `patchWasmForThread` is a pure
 function of those bytes. When the patch leaves the bytes unchanged (a module
 without a start section), the thread module is the program module itself.
 
+Pthread initialization also reuses compact artifact facts prepared once by the
+process owner (`host/src/thread-program.ts`): import/export descriptors, exact
+function import signatures, the original module template digest, and the legacy
+channel TLS offset. Normal Node and browser thread messages carry these facts
+and the compiled module, rather than cloning the complete executable into every
+thread and hashing it again. Preparation is keyed by the immutable admitted
+program snapshot, so an exec replacement cannot reuse the old image's facts.
+The existing generation/liveness fence runs after asynchronous preparation.
+Direct test harnesses may still initialize a thread from exact program bytes.
+
 **Admission is never skipped.** The cache replaces only the compile step.
 The ABI marker and artifact-policy checks still run on every launch's bytes
 before the lookup, exec permission and set-ID policy are still decided by the
