@@ -11,9 +11,11 @@ set -eu
 JOBS="${NETHACK_JOBS:-4}"
 cd /build
 
-# The build image has no yacc or lex. Upstream ships the generated parsers
-# in sys/share for this case; copied after the grammars, they are newer
-# than them, so make uses them as they are.
+# The build image's yacc and lex (posix-utils-lite) are placeholders: they
+# write a parser and scanner that ignore the grammar (yyparse returns 0) and
+# report success. Upstream ships generated parsers in sys/share for systems
+# without yacc; copied after the grammars, they are newer than them, so
+# make uses them instead of running yacc and lex.
 cp sys/share/dgn_yacc.c sys/share/dgn_lex.c \
     sys/share/lev_yacc.c sys/share/lev_lex.c util/
 cp sys/share/dgn_comp.h sys/share/lev_comp.h include/
