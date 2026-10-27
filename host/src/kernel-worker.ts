@@ -444,6 +444,26 @@ class KernelTaskBindingError extends Error {
 }
 
 /**
+ * Exec re-registration found that the process is no longer runnable: a
+ * signal ended it after the exec committed, and its parent may already have
+ * reaped it, before the host installed the replacement image. Registration
+ * waits for the kernel entry gate, so another process's kill() and waitpid()
+ * can run in between. This is a lifecycle outcome rather than a host/kernel
+ * identity failure: the caller finalizes the death through the kernel
+ * instead of reporting a crash for a process the kernel has already retired.
+ */
+export class KernelProcessEndedError extends Error {
+  constructor(
+    readonly pid: number,
+    readonly state: "exited" | "reaped",
+    detail: string,
+  ) {
+    super(detail);
+    this.name = "KernelProcessEndedError";
+  }
+}
+
+/**
  * A JavaScript exception escaped while Rust held the global transfer
  * reservation in Executing state.
  *
@@ -7096,18 +7116,26 @@ export class CentralizedKernelWorker {
           ((pid: number) => number) | undefined;
         const processState = getProcessState?.(pid);
         if (processState === undefined || processState < 0) {
-          registrationPreconditionError = new Error(
-            `Cannot register unknown kernel process ${pid}`,
-          );
+          registrationPreconditionError = replacingExecImage && processState !== undefined
+            ? new KernelProcessEndedError(
+              pid,
+              "reaped",
+              `Cannot register unknown kernel process ${pid}`,
+            )
+            : new Error(`Cannot register unknown kernel process ${pid}`);
           return undefined;
         }
         if (
           processState !== PROCESS_STATE_RUNNING
           && processState !== PROCESS_STATE_STOPPED
         ) {
-          registrationPreconditionError = new Error(
-            `Cannot register inactive kernel process ${pid}`,
-          );
+          registrationPreconditionError = replacingExecImage
+            ? new KernelProcessEndedError(
+              pid,
+              "exited",
+              `Cannot register inactive kernel process ${pid}`,
+            )
+            : new Error(`Cannot register inactive kernel process ${pid}`);
           return undefined;
         }
 

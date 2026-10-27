@@ -23,6 +23,7 @@ import {
   CAPTURED_STDIO,
   CentralizedKernelWorker,
   isCurrentProcessGeneration,
+  KernelProcessEndedError,
   TERMINAL_STDIO,
 } from "./kernel-worker";
 import {
@@ -2472,19 +2473,49 @@ async function handleExec(
         return workerAdapter.createWorker(initData);
       });
       // See the launch-continuation retry note on the root spawn path.
-      await retryKernelEntryResult(() =>
-        kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
-          preserveProcessState: true,
-          ptrWidth: newPtrWidth,
-          metadataPtrWidth: initiatingInfo.ptrWidth,
-          brkBase: newLayout.brkBase,
-          mmapBase: newLayout.mmapBase,
-          maxAddr: newLayout.maxAddr,
-          // Refresh kernel-side Process.argv and environment so procfs and
-          // kernel APIs reflect the replacement image.
-          argv: launchArgv,
-          env: envp,
-        }));
+      let endedBeforeRegistration = false;
+      try {
+        await retryKernelEntryResult(() =>
+          kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
+            preserveProcessState: true,
+            ptrWidth: newPtrWidth,
+            metadataPtrWidth: initiatingInfo.ptrWidth,
+            brkBase: newLayout.brkBase,
+            mmapBase: newLayout.mmapBase,
+            maxAddr: newLayout.maxAddr,
+            // Refresh kernel-side Process.argv and environment so procfs and
+            // kernel APIs reflect the replacement image.
+            argv: launchArgv,
+            env: envp,
+          }));
+      } catch (error) {
+        if (!(error instanceof KernelProcessEndedError)) throw error;
+        endedBeforeRegistration = true;
+      }
+      if (endedBeforeRegistration) {
+        // WHY: registration waits for the kernel entry gate, so a kill() and
+        // even the parent's waitpid() can run after the handoff check above.
+        // The kernel already ended this process; finish its death exactly as
+        // the handoff branch does instead of reporting a crash for a pid the
+        // kernel has retired (that report would fail the whole kernel).
+        replacementForkHostImports.close();
+        await terminateTrackedWorker(replacementWorker);
+        prepared.memoryLease.release();
+        preparedLeaseConsumed = true;
+        externrefProcessOwner.releaseGeneration(replacementExternrefGeneration);
+        replacementExternrefGeneration = undefined;
+        kernelWorker.finishProcessExecHandoff(pid);
+        const signal = await retryKernelEntryResult(
+          () => kernelWorker.finalizeExecHandoffTermination(pid),
+        );
+        await awaitFinalizedProcessTeardown(
+          pid,
+          signal > 0 ? signalExitStatus(signal) : 0,
+          initiatingInfo.worker,
+          signal > 0 ? "signal" : "exit",
+        );
+        return 0;
+      }
       replacementRegistered = true;
       bindForkHostImports(replacementWorker, replacementForkHostImports);
 
