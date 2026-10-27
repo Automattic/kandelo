@@ -1,10 +1,17 @@
 import { corsProxyFetchUrl } from "./cors-proxy-url";
 import { fetchWithProxySession } from "./cors-proxy-session";
+import {
+  type CredentialRelayConfig,
+  fetchWithCredentialRelay,
+  validateCredentialRelayConfig,
+} from "./credential-relay";
 
 export type HttpHeaderOccurrence =
   readonly [name: string, value: string];
 
 export interface BrowserCorsProxyConfig {
+  /** Local development transport, blocked until the user explicitly consents. */
+  readonly credentialRelay?: CredentialRelayConfig;
   readonly url: string;
   readonly allowedRequestHeaderNames: readonly string[];
   readonly allowAnonymousGetHeaderOmission: boolean;
@@ -160,6 +167,9 @@ export function validateBrowserCorsProxyConfig(
 
   return Object.freeze({
     url: value.url,
+    ...(value.credentialRelay === undefined ? {} : {
+      credentialRelay: validateCredentialRelayConfig(value.credentialRelay),
+    }),
     allowedRequestHeaderNames: Object.freeze(allowedRequestHeaderNames),
     allowAnonymousGetHeaderOmission: value.allowAnonymousGetHeaderOmission,
     ...(alias === undefined ? {} : { rangeRequestHeaderAlias: alias }),
@@ -209,6 +219,10 @@ export class BrowserCorsProxy {
     fetchImpl: (input: string, init: RequestInit) => Promise<Response> =
       (input, init) => globalThis.fetch(input, init),
   ): Promise<Response> {
+    const relay = this.config.credentialRelay;
+    if (relay?.allowedOrigins.includes(new URL(request.targetUrl).origin)) {
+      return fetchWithCredentialRelay(relay, request, fetchImpl);
+    }
     const ifRangeValues: string[] = [];
     const occurrences = this.isAllowed("if-range")
       ? request.headers

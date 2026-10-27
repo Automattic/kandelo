@@ -1,3 +1,4 @@
+import { createServer as createPermissionServer } from "node:http";
 import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
@@ -39,11 +40,13 @@ import {
   createBatchedBrowserBinaryResolution,
   type BrowserBinaryResolution,
 } from "./vite-binary-resolution";
-import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "./lib/browser-cors-proxy";
+import { DEFAULT_BROWSER_CORS_PROXY_CONFIG, DEVELOPMENT_CREDENTIAL_RELAY_ORIGINS } from "./lib/browser-cors-proxy";
 import { createProxySessionTransport } from "../../host/src/networking/cors-proxy-session";
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 import { devSignallingServer } from "./vite/dev-signalling";
 import { batchedFsServePath, devLazyAssets } from "./vite/dev-lazy-assets";
+import { createCredentialRelayHandler } from "./vite/credential-relay";
+import { createCredentialRelayTransport, type CredentialRelayConfig } from "../../host/src/networking/credential-relay";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
   createVfsProductDeploymentPlugin,
@@ -273,9 +276,10 @@ function configuredCorsProxyUrl(): string | undefined {
   return process.env.VITE_CORS_PROXY_URL?.trim() || undefined;
 }
 
-function browserCorsProxyConfig(url: string) {
+function browserCorsProxyConfig(url: string, credentialRelay?: CredentialRelayConfig) {
   return {
     ...DEFAULT_BROWSER_CORS_PROXY_CONFIG,
+    ...(credentialRelay ? { credentialRelay } : {}),
     allowedRequestHeaderNames: [
       ...DEFAULT_BROWSER_CORS_PROXY_CONFIG.allowedRequestHeaderNames,
     ],
@@ -308,7 +312,8 @@ function injectCorsProxyConfigPlaceholder(
   return content.replace(
     '"__CORS_PROXY_CONFIG__"',
     JSON.stringify(corsProxyConfig),
-  ).replace('"__CORS_PROXY_SESSION_TRANSPORT__"', `(${createProxySessionTransport.toString()})`);
+  ).replace('"__CORS_PROXY_SESSION_TRANSPORT__"', `(${createProxySessionTransport.toString()})`)
+    .replace('"__CREDENTIAL_RELAY_TRANSPORT__"', `(${createCredentialRelayTransport.toString()})()`);
 }
 
 const blobIframeInterceptorPath = path.resolve(
@@ -944,6 +949,8 @@ function injectCorsProxyConfig(): Plugin {
       outputRoot = path.resolve(config.root, config.build.outDir);
       servedCorsProxyConfig = browserCorsProxyConfig(
         configuredCorsProxyUrl() || devCorsProxyFetchUrlForBase(base),
+        { url: `${normalizeDeploymentBase(base)}__kandelo_credential_relay`,
+          allowedOrigins: DEVELOPMENT_CREDENTIAL_RELAY_ORIGINS },
       );
       outputCorsProxyConfig = buildCorsProxyConfig();
     },
@@ -971,12 +978,30 @@ function injectCorsProxyConfig(): Plugin {
 
 function devCorsProxyMiddleware(): Plugin {
   let base = "/";
+  let permissionOrigin: string | undefined;
+  let permissionServer: ReturnType<typeof createPermissionServer> | undefined;
+  const handleCredentials = createCredentialRelayHandler({
+    allowedOrigins: DEVELOPMENT_CREDENTIAL_RELAY_ORIGINS,
+    permissionOrigin: () => {
+      if (!permissionOrigin) throw new Error("Permission server is not ready");
+      return permissionOrigin;
+    },
+  });
+  const closePermissionServer = () => {
+    handleCredentials.clearPermissions();
+    permissionServer?.closeAllConnections();
+    permissionServer?.close();
+    permissionServer = undefined;
+    permissionOrigin = undefined;
+  };
 
   function attachMiddleware(
     middlewares: ViteDevServer["middlewares"] | PreviewServer["middlewares"],
+    credentials = false,
   ): void {
     const proxyPath = devCorsProxyPathForBase(base);
     middlewares.use(async (req, res, next) => {
+      if (credentials && await handleCredentials(req, res, `${normalizeDeploymentBase(base)}__kandelo_credential_relay`)) return;
       if (!(await handleDevCorsProxyRequest(req, res, proxyPath))) next();
     });
   }
@@ -986,12 +1011,32 @@ function devCorsProxyMiddleware(): Plugin {
     configResolved(config) {
       base = config.base;
     },
-    configureServer(server) {
-      attachMiddleware(server.middlewares);
+    async configureServer(server) {
+      // Guest previews share the app origin. Keep approval on an origin with
+      // no app scripts, preview content, CORS, or upstream response bodies.
+      const isolatedServer = createPermissionServer((req, res) => {
+        void handleCredentials(req, res, `${normalizeDeploymentBase(base)}__kandelo_credential_relay`, "permission")
+          .then(handled => { if (!handled) { res.statusCode = 404; res.end(); } })
+          .catch(() => { if (!res.headersSent) res.statusCode = 500; res.end("Permission request failed"); });
+      });
+      permissionServer = isolatedServer;
+      await new Promise<void>((resolve, reject) => {
+        isolatedServer.once("error", reject);
+        isolatedServer.listen(0, "127.0.0.1", () => {
+          isolatedServer.off("error", reject);
+          resolve();
+        });
+      });
+      const address = isolatedServer.address();
+      if (!address || typeof address === "string") throw new Error("No permission server address");
+      permissionOrigin = `http://127.0.0.1:${address.port}`;
+      server.httpServer?.once("close", closePermissionServer);
+      attachMiddleware(server.middlewares, true);
     },
     configurePreviewServer(server) {
       attachMiddleware(server.middlewares);
     },
+    closeBundle() { closePermissionServer(); },
   };
 }
 

@@ -42,6 +42,10 @@ if (defaultConfig === undefined) {
 
 export const DEFAULT_BROWSER_CORS_PROXY_CONFIG = defaultConfig;
 
+export const DEVELOPMENT_CREDENTIAL_RELAY_ORIGINS = Object.freeze([
+  'https://auth.openai.com', 'https://chatgpt.com', 'https://api.openai.com',
+]);
+
 interface BrowserCorsProxyEnvironment {
   configuredUrl?: string;
   development: boolean;
@@ -75,5 +79,11 @@ export function resolveBrowserCorsProxyConfig(
   return validateBrowserCorsProxyConfig({
     ...DEFAULT_BROWSER_CORS_PROXY_CONFIG,
     url,
+    ...(environment.development &&
+      ['localhost', '127.0.0.1', '[::1]'].includes(new URL(environment.pageUrl).hostname)
+      ? { credentialRelay: {
+        url: new URL(`${environment.baseUrl.replace(/\/$/, '')}/__kandelo_credential_relay`, environment.pageUrl).href,
+        allowedOrigins: DEVELOPMENT_CREDENTIAL_RELAY_ORIGINS,
+      } } : {}),
   })!;
 }

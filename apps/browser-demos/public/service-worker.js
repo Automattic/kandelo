@@ -1012,6 +1012,7 @@ if (typeof window !== "undefined") {
   var CORS_PROXY_CONFIG = "__CORS_PROXY_CONFIG__";
   var proxySessionFactory = "__CORS_PROXY_SESSION_TRANSPORT__";
   var proxySessionFetch = typeof proxySessionFactory === "function" ? proxySessionFactory() : null;
+  var credentialRelayFetch = "__CREDENTIAL_RELAY_TRANSPORT__";
   var corsProxyWarningKeys = new Set();
 
   function normalizedCorsProxyConfig() {
@@ -1247,6 +1248,19 @@ if (typeof window !== "undefined") {
   // resource. Several If-Range fields reach here joined, which never match.
   function fetchThroughCorsProxy(request, outgoingUrl, targetUrl) {
     var config = normalizedCorsProxyConfig();
+    if (config && config.credentialRelay &&
+        config.credentialRelay.allowedOrigins.includes(new URL(targetUrl).origin)) {
+      if (typeof credentialRelayFetch !== "function") {
+        return Promise.resolve(new Response("Credential relay transport unavailable", { status: 502 }));
+      }
+      return credentialRelayFetch(config.credentialRelay, {
+        targetUrl: targetUrl, method: request.method,
+        headers: Array.from(request.headers.entries()), signal: request.signal,
+        body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
+      }).catch(function () {
+        return new Response("Credential relay requires permission or could not complete the request", { status: 502 });
+      });
+    }
     var ifRange = config && !proxyAllowedHeaderNames(config).has("if-range")
       ? request.headers.get("if-range")
       : null;

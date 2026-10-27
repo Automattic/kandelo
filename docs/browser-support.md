@@ -1467,6 +1467,47 @@ credentialed, body-bearing, or non-GET request before dispatch. Direct Fetch
 attempts remain unprojected. The development same-origin relay enforces the same
 profile as production.
 
+#### Local credential relay permission
+
+Loopback development servers also provide a separate, opt-in credential
+relay at `<base>/__kandelo_credential_relay`. The public anonymous proxy
+profile is unchanged. The development configuration routes requests to
+`https://auth.openai.com`, `https://chatgpt.com`, and
+`https://api.openai.com` through this local transport. Other destinations
+retain the ordinary proxy rules. Production builds do not enable it.
+
+Open the relay's permission page before signing in from a guest. It names
+the local relay and allowed destinations and explains that the relay can
+read guest credentials, headers, and request bodies. Permission starts
+blocked, lasts at most one hour, ends when the development server restarts,
+and can be revoked on that page. It applies to the page's relay session,
+including all programs using that session; it is not a per-process grant.
+The permission link redirects to a dedicated, ephemeral loopback origin
+serving only the approval document. App-origin scripts, including guest
+previews, cannot read its CSRF token or grant consent. The relay itself
+remains same-origin with the app. Its private session cookie is set before
+the redirect; approval on the isolated origin changes only that session.
+The isolated server has no CORS access, proxy routes, or guest content and
+closes with the development server. This isolates permission approval;
+it does not make ordinary same-origin guest previews a security boundary.
+
+The shared worker/service-worker transport checks consent before sending
+the guest request envelope to the relay. The server independently checks
+consent, the outer Origin, the exact HTTPS destination, and expiry before
+dispatch. Consent changes require a form from the isolated permission origin and a
+CSRF token; the app-origin relay endpoint cannot accept consent changes.
+Guest headers are inside the envelope, separate from browser cookies and
+other outer-request authentication. Upstream requests use no ambient cookie
+jar, refuse redirects, and responses expose only selected inert headers.
+Requests are limited to 8 MiB of decoded body, responses to 64 MiB and ten
+minutes; response bodies stream. This is HTTP(S) transport, not WebSocket
+or arbitrary TCP forwarding. The Node host's direct networking is unchanged.
+
+The local relay is intended for user-controlled testing. It does not enable
+credential forwarding through the public proxy or establish subscription
+entitlement. Sign in inside the guest after granting permission; the app
+does not import host credential files.
+
 #### Byte-range reads through the proxy
 
 `Range` is in the profile so that a byte-range read (for example, reading a
