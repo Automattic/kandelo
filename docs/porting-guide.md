@@ -114,6 +114,17 @@ resolver understands only `>=` constraints, so a recipe needing an exact match
 must check it itself and fail loudly. See
 `packages/registry/qtbase/build-qtbase.sh`.
 
+**Generators whose output must describe the target**: Some projects build a
+helper from their own sources and run it to write headers or data files the
+program reads, so the helper's answers have to be the target's: type sizes,
+struct layouts, the OS name. Built for the build machine, it answers for the
+build machine instead. Do not patch the layouts to agree; build the whole
+project inside a Kandelo machine, where the helper is a wasm32 program like the
+one it serves (see [Building inside Kandelo](package-management.md#building-inside-kandelo)).
+NetHack's `makedefs`, `dgn_comp`, `lev_comp` and `dlb` run this way: see
+`packages/registry/nethack/`, whose build machine script only prepares the
+source and whose guest script runs `make`.
+
 **A generator the pinned host package does not ship**: A host package built for
 the build machine carries only the generators that machine's platform enables,
 which is not always the set a cross-build needs. nixpkgs' darwin `qtbase` has no

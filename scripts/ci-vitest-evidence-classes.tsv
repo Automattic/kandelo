@@ -165,6 +165,7 @@ host/test/guest-spawn-overlay-program.test.ts	prepared-product
 host/test/heap-safepoint.test.ts	prepared-product
 host/test/host-adapter-manifest.test.ts	source-only
 host/test/host-diagnostic-routing.test.ts	source-only
+host/test/host-directory-readdir-inode.test.ts	source-only
 host/test/host-env-imports.test.ts	source-only
 host/test/host-fetch-deferred-provider.test.ts	source-only
 host/test/host-file-offset.test.ts	source-only
@@ -256,6 +257,7 @@ host/test/multi-worker.test.ts	prepared-product
 host/test/native-lazy-integrity-recovery.test.ts	prepared-product
 host/test/native-open-create-race.test.ts	source-only
 host/test/nethack-shared-playground.test.ts	prepared-product
+host/test/nethack-special-levels.test.ts	prepared-product
 host/test/network-hostname.test.ts	source-only
 host/test/network-readiness-generation.test.ts	source-only
 host/test/node-compat-builtin-exports.test.ts	prepared-product
