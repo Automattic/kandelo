@@ -14,7 +14,7 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
 +++ b/src/new/common/linux_like/pthread.rs	2026-09-07 17:36:57
 @@ -1,7 +1,7 @@
  use crate::prelude::*;
- 
+
  extern "C" {
 -    #[cfg(any(target_os = "linux", target_os = "l4re"))]
 +    #[cfg(any(any(target_os = "linux", target_os = "kandelo"), target_os = "l4re"))]
@@ -22,13 +22,13 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
          thread: crate::pthread_t,
          cpusetsize: size_t,
 @@ -10,16 +10,16 @@
- 
+
      pub fn pthread_getattr_np(native: crate::pthread_t, attr: *mut crate::pthread_attr_t) -> c_int;
- 
+
 -    #[cfg(target_os = "linux")]
 +    #[cfg(any(target_os = "linux", target_os = "kandelo"))]
      pub fn pthread_getname_np(thread: crate::pthread_t, name: *mut c_char, len: size_t) -> c_int;
- 
+
 -    #[cfg(any(target_os = "linux", target_os = "l4re"))]
 +    #[cfg(any(any(target_os = "linux", target_os = "kandelo"), target_os = "l4re"))]
      pub fn pthread_setaffinity_np(
@@ -36,7 +36,7 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
          cpusetsize: size_t,
          cpuset: *const crate::cpu_set_t,
      ) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", any(target_os = "linux", target_os = "kandelo")))]
      pub fn pthread_setname_np(thread: crate::pthread_t, name: *const c_char) -> c_int;
@@ -51,7 +51,7 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
 +    target_os = "kandelo",
  ))]
  pub(crate) mod linux_like;
- 
+
 diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new/common/posix/mod.rs b/src/new/common/posix/mod.rs
 --- a/src/new/common/posix/mod.rs	2006-07-23 21:21:28
 +++ b/src/new/common/posix/mod.rs	2026-09-07 17:34:34
@@ -68,7 +68,7 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
 +++ b/src/new/common/posix/pthread.rs	2026-09-07 17:36:57
 @@ -5,14 +5,14 @@
  use crate::prelude::*;
- 
+
  extern "C" {
 -    #[cfg(any(target_os = "android", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", any(target_os = "linux", target_os = "kandelo")))]
@@ -77,7 +77,7 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
          parent: Option<unsafe extern "C" fn()>,
          child: Option<unsafe extern "C" fn()>,
      ) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "l4re", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", target_os = "l4re", any(target_os = "linux", target_os = "kandelo")))]
      pub fn pthread_attr_getguardsize(
@@ -95,14 +95,14 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
 @@ -29,13 +29,13 @@
          inheritsched: *mut c_int,
      ) -> c_int;
- 
+
 -    #[cfg(any(target_os = "l4re", target_os = "linux", target_vendor = "apple"))]
 +    #[cfg(any(target_os = "l4re", any(target_os = "linux", target_os = "kandelo"), target_vendor = "apple"))]
      pub fn pthread_attr_getschedparam(
          attr: *const crate::pthread_attr_t,
          param: *mut crate::sched_param,
      ) -> c_int;
- 
+
 -    #[cfg(any(target_os = "l4re", target_os = "linux", target_vendor = "apple"))]
 +    #[cfg(any(target_os = "l4re", any(target_os = "linux", target_os = "kandelo"), target_vendor = "apple"))]
      pub fn pthread_attr_getschedpolicy(
@@ -120,11 +120,11 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
 @@ -53,13 +53,13 @@
          stacksize: *mut size_t,
      ) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "l4re", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", target_os = "l4re", any(target_os = "linux", target_os = "kandelo")))]
      pub fn pthread_attr_setguardsize(attr: *mut crate::pthread_attr_t, guardsize: size_t) -> c_int;
- 
+
      #[cfg(any(
          target_os = "android",
          target_os = "l4re",
@@ -136,18 +136,18 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
 @@ -67,19 +67,19 @@
          inheritsched: c_int,
      ) -> c_int;
- 
+
 -    #[cfg(any(target_os = "l4re", target_os = "linux", target_vendor = "apple"))]
 +    #[cfg(any(target_os = "l4re", any(target_os = "linux", target_os = "kandelo"), target_vendor = "apple"))]
      pub fn pthread_attr_setschedparam(
          attr: *mut crate::pthread_attr_t,
          param: *const crate::sched_param,
      ) -> c_int;
- 
+
 -    #[cfg(any(target_os = "l4re", target_os = "linux", target_vendor = "apple"))]
 +    #[cfg(any(target_os = "l4re", any(target_os = "linux", target_os = "kandelo"), target_vendor = "apple"))]
      pub fn pthread_attr_setschedpolicy(attr: *mut crate::pthread_attr_t, policy: c_int) -> c_int;
- 
+
      #[cfg(any(
          target_os = "android",
          target_os = "emscripten",
@@ -159,11 +159,11 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
 @@ -88,41 +88,41 @@
          stacksize: size_t,
      ) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "l4re", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", target_os = "l4re", any(target_os = "linux", target_os = "kandelo")))]
      pub fn pthread_barrier_destroy(barrier: *mut crate::pthread_barrier_t) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "l4re", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", target_os = "l4re", any(target_os = "linux", target_os = "kandelo")))]
      pub fn pthread_barrier_init(
@@ -171,37 +171,37 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
          attr: *const crate::pthread_barrierattr_t,
          count: c_uint,
      ) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "l4re", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", target_os = "l4re", any(target_os = "linux", target_os = "kandelo")))]
      pub fn pthread_barrier_wait(barrier: *mut crate::pthread_barrier_t) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "l4re", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", target_os = "l4re", any(target_os = "linux", target_os = "kandelo")))]
      pub fn pthread_barrierattr_destroy(attr: *mut crate::pthread_barrierattr_t) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", any(target_os = "linux", target_os = "kandelo")))]
      pub fn pthread_barrierattr_getpshared(
          attr: *const crate::pthread_barrierattr_t,
          shared: *mut c_int,
      ) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "l4re", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", target_os = "l4re", any(target_os = "linux", target_os = "kandelo")))]
      pub fn pthread_barrierattr_init(attr: *mut crate::pthread_barrierattr_t) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "l4re", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", target_os = "l4re", any(target_os = "linux", target_os = "kandelo")))]
      pub fn pthread_barrierattr_setpshared(
          attr: *mut crate::pthread_barrierattr_t,
          shared: c_int,
      ) -> c_int;
- 
+
 -    #[cfg(any(target_os = "l4re", all(target_os = "linux", not(target_env = "ohos"))))]
 +    #[cfg(any(target_os = "l4re", all(any(target_os = "linux", target_os = "kandelo"), not(target_env = "ohos"))))]
      pub fn pthread_cancel(thread: crate::pthread_t) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "emscripten", target_os = "linux",))]
 +    #[cfg(any(target_os = "android", target_os = "emscripten", any(target_os = "linux", target_os = "kandelo"),))]
      pub fn pthread_condattr_getclock(
@@ -219,7 +219,7 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
 @@ -139,7 +139,7 @@
          pshared: *mut c_int,
      ) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "emscripten", target_os = "linux",))]
 +    #[cfg(any(target_os = "android", target_os = "emscripten", any(target_os = "linux", target_os = "kandelo"),))]
      pub fn pthread_condattr_setclock(
@@ -246,11 +246,11 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
 @@ -170,13 +170,13 @@
          value: *mut c_void,
      ) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", any(target_os = "linux", target_os = "kandelo")))]
      pub fn pthread_getcpuclockid(thread: crate::pthread_t, clk_id: *mut crate::clockid_t) -> c_int;
- 
+
      #[cfg(any(
          target_os = "android",
          target_os = "l4re",
@@ -260,17 +260,17 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
      ))]
      pub fn pthread_getschedparam(
 @@ -187,13 +187,13 @@
- 
+
      // FIXME(reorg): In recent POSIX versions, this is a signal.h function and not required
      // in pthread.
 -    #[cfg(any(target_os = "android", target_os = "l4re", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", target_os = "l4re", any(target_os = "linux", target_os = "kandelo")))]
      pub fn pthread_kill(thread: crate::pthread_t, sig: c_int) -> c_int;
- 
+
 -    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 +    #[cfg(all(any(target_os = "linux", target_os = "kandelo"), not(target_env = "ohos")))]
      pub fn pthread_mutex_consistent(mutex: *mut crate::pthread_mutex_t) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "l4re", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", target_os = "l4re", any(target_os = "linux", target_os = "kandelo")))]
      #[cfg_attr(gnu_time_bits64, link_name = "__pthread_mutex_timedlock64")]
@@ -279,7 +279,7 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
 @@ -201,7 +201,7 @@
          abstime: *const crate::timespec,
      ) -> c_int;
- 
+
 -    #[cfg(target_os = "linux")]
 +    #[cfg(any(target_os = "linux", target_os = "kandelo"))]
      pub fn pthread_mutexattr_getprotocol(
@@ -297,14 +297,14 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
 @@ -218,13 +218,13 @@
          pshared: *mut c_int,
      ) -> c_int;
- 
+
 -    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 +    #[cfg(all(any(target_os = "linux", target_os = "kandelo"), not(target_env = "ohos")))]
      pub fn pthread_mutexattr_getrobust(
          attr: *const crate::pthread_mutexattr_t,
          robustness: *mut c_int,
      ) -> c_int;
- 
+
 -    #[cfg(target_os = "linux")]
 +    #[cfg(any(target_os = "linux", target_os = "kandelo"))]
      pub fn pthread_mutexattr_setprotocol(
@@ -322,7 +322,7 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
 @@ -242,7 +242,7 @@
          pshared: c_int,
      ) -> c_int;
- 
+
 -    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 +    #[cfg(all(any(target_os = "linux", target_os = "kandelo"), not(target_env = "ohos")))]
      pub fn pthread_mutexattr_setrobust(
@@ -348,7 +348,7 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
      ))]
 @@ -273,7 +273,7 @@
      ) -> c_int;
- 
+
      // FIXME(1.0): These shoul be combined to the version that takes an optional unsafe function.
 -    #[cfg(any(target_os = "l4re", target_os = "linux"))]
 +    #[cfg(any(target_os = "l4re", any(target_os = "linux", target_os = "kandelo")))]
@@ -367,11 +367,11 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
 @@ -293,30 +293,30 @@
          param: *const crate::sched_param,
      ) -> c_int;
- 
+
 -    #[cfg(target_os = "linux")]
 +    #[cfg(any(target_os = "linux", target_os = "kandelo"))]
      pub fn pthread_setschedprio(native: crate::pthread_t, priority: c_int) -> c_int;
- 
+
      // FIXME(reorg): In recent POSIX versions, this is a signal.h function and not required
      // in pthread.
 -    #[cfg(any(target_os = "android", target_os = "l4re", target_os = "linux"))]
@@ -381,23 +381,23 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
          set: *const crate::sigset_t,
          oldset: *mut crate::sigset_t,
      ) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "l4re", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", target_os = "l4re", any(target_os = "linux", target_os = "kandelo")))]
      pub fn pthread_spin_destroy(lock: *mut crate::pthread_spinlock_t) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "l4re", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", target_os = "l4re", any(target_os = "linux", target_os = "kandelo")))]
      pub fn pthread_spin_init(lock: *mut crate::pthread_spinlock_t, pshared: c_int) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "l4re", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", target_os = "l4re", any(target_os = "linux", target_os = "kandelo")))]
      pub fn pthread_spin_lock(lock: *mut crate::pthread_spinlock_t) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "l4re", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", target_os = "l4re", any(target_os = "linux", target_os = "kandelo")))]
      pub fn pthread_spin_trylock(lock: *mut crate::pthread_spinlock_t) -> c_int;
- 
+
 -    #[cfg(any(target_os = "android", target_os = "l4re", target_os = "linux"))]
 +    #[cfg(any(target_os = "android", target_os = "l4re", any(target_os = "linux", target_os = "kandelo")))]
      pub fn pthread_spin_unlock(lock: *mut crate::pthread_spinlock_t) -> c_int;
@@ -435,11 +435,11 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/new
          pub use pthread::*;
          pub use unistd::*;
 diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/unix/linux_like/linux/musl/b64/wasm32/mod.rs b/src/unix/linux_like/linux/musl/b64/wasm32/mod.rs
---- a/src/unix/linux_like/linux/musl/b64/wasm32/mod.rs	2006-07-23 21:21:28
-+++ b/src/unix/linux_like/linux/musl/b64/wasm32/mod.rs	2026-09-07 21:54:21
+--- a/src/unix/linux_like/linux/musl/b64/wasm32/mod.rs
++++ b/src/unix/linux_like/linux/musl/b64/wasm32/mod.rs
 @@ -4,33 +4,41 @@
  use crate::prelude::*;
- 
+
  pub type wchar_t = i32;
 -pub type nlink_t = u64;
 -pub type blksize_t = c_long;
@@ -450,9 +450,9 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/uni
 +pub type blksize_t = c_int;
  pub type __u64 = c_ulonglong;
  pub type __s64 = c_longlong;
- 
+
  pub type stat64 = stat;
- 
+
  s! {
 +    // kandelo: This layout matches Kandelo's own musl, not the WALI ABI. See
 +    // libc/musl-overlay/arch/wasm32posix/bits/stat.h, whose 112-byte record is
@@ -464,9 +464,9 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/uni
      pub struct stat {
          pub st_dev: crate::dev_t,
          pub st_ino: crate::ino_t,
--        pub st_nlink: crate::nlink_t,
-         pub st_mode: crate::mode_t,
-+        pub st_nlink: crate::nlink_t,
++        pub st_mode: crate::mode_t,
+         pub st_nlink: crate::nlink_t,
+-        pub st_mode: crate::mode_t,
          pub st_uid: crate::uid_t,
          pub st_gid: crate::gid_t,
 -        __pad0: Padding<c_int>,
@@ -485,12 +485,12 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/uni
 +        pub st_blksize: crate::blksize_t,
 +        pub st_blocks: crate::blkcnt_t,
      }
- 
+
      pub struct ipc_perm {
-@@ -54,213 +62,235 @@
+@@ -54,213 +62,252 @@
      }
  }
- 
+
 -// Syscall table
 -pub const SYS_read: c_long = 0;
 -pub const SYS_write: c_long = 1;
@@ -587,6 +587,23 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/uni
 +// a size drift here would silently corrupt the syscall marshalling std relies
 +// on for stat/statfs, signals, and sockets.
 +const _: () = [()][(core::mem::size_of::<crate::siginfo_t>() != 128) as usize];
++// Kandelo ILP32 libc layouts, also compared with the installed C headers
++// by programs/rust/c-interop. A short sigset corrupts sigaction flags.
++const _: () = [()][(core::mem::size_of::<crate::sigset_t>() != 128) as usize];
++const _: () = [()][(core::mem::size_of::<crate::sigaction>() != 140) as usize];
++const _: () = [()][(core::mem::size_of::<crate::pthread_attr_t>() != 36) as usize];
++const _: () = [()][(core::mem::size_of::<crate::pthread_mutex_t>() != 24) as usize];
++const _: () = [()][(core::mem::size_of::<crate::pthread_rwlock_t>() != 32) as usize];
++const _: () = [()][(core::mem::size_of::<crate::pthread_barrier_t>() != 20) as usize];
++const _: () = [()][(core::mem::size_of::<crate::sem_t>() != 16) as usize];
++const _: () = [()][(core::mem::align_of::<crate::sigset_t>() != 4) as usize];
++const _: () = [()][(core::mem::align_of::<crate::sigaction>() != 4) as usize];
++const _: () = [()][(core::mem::align_of::<crate::pthread_attr_t>() != 4) as usize];
++const _: () = [()][(core::mem::align_of::<crate::pthread_mutex_t>() != 4) as usize];
++const _: () = [()][(core::mem::align_of::<crate::pthread_rwlock_t>() != 4) as usize];
++const _: () = [()][(core::mem::align_of::<crate::pthread_barrier_t>() != 4) as usize];
++const _: () = [()][(core::mem::align_of::<crate::sem_t>() != 4) as usize];
++const _: () = [()][(core::mem::offset_of!(crate::sigaction, sa_flags) != 132) as usize];
 +const _: () = [()][(core::mem::size_of::<crate::stack_t>() != 12) as usize];
 +const _: () = [()][(core::mem::size_of::<crate::statfs>() != 88) as usize];
 +const _: () = [()][(core::mem::size_of::<crate::sysinfo>() != 312) as usize];
@@ -913,7 +930,7 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/uni
  pub const SYS_io_setup: c_long = 206;
  pub const SYS_io_destroy: c_long = 207;
  pub const SYS_io_getevents: c_long = 208;
-@@ -268,126 +298,126 @@
+@@ -268,126 +315,126 @@
  pub const SYS_io_cancel: c_long = 210;
  pub const SYS_get_thread_area: c_long = 211;
  pub const SYS_lookup_dcookie: c_long = 212;
@@ -1129,7 +1146,7 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/uni
  pub const SYS_io_pgetevents: c_long = 333;
  pub const SYS_rseq: c_long = 334;
  pub const SYS_pidfd_send_signal: c_long = 424;
-@@ -405,7 +435,7 @@
+@@ -405,7 +452,7 @@
  pub const SYS_close_range: c_long = 436;
  pub const SYS_openat2: c_long = 437;
  pub const SYS_pidfd_getfd: c_long = 438;
@@ -1138,15 +1155,15 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/uni
  pub const SYS_process_madvise: c_long = 440;
  pub const SYS_epoll_pwait2: c_long = 441;
  pub const SYS_mount_setattr: c_long = 442;
-@@ -418,14 +448,18 @@
+@@ -418,14 +465,18 @@
  pub const SYS_futex_waitv: c_long = 449;
  pub const SYS_set_mempolicy_home_node: c_long = 450;
- 
+
 -// Syscall aliases for WALI
 +// kandelo: `fadvise64` and `fadvise` share number 307 per syscall.h.in
 +// (__NR_fadvise64 aliases __NR_fadvise).
  pub const SYS_fadvise: c_long = SYS_fadvise64;
- 
+
  pub const MADV_SOFT_OFFLINE: c_int = 101;
  pub const O_APPEND: c_int = 1024;
  pub const O_DIRECT: c_int = 0x4000;
@@ -1159,10 +1176,10 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/uni
  pub const O_NOFOLLOW: c_int = 0x20000;
  pub const O_CREAT: c_int = 64;
  pub const O_EXCL: c_int = 128;
-@@ -554,10 +588,13 @@
+@@ -554,10 +605,13 @@
  pub const SIG_BLOCK: c_int = 0x000000;
  pub const SIG_UNBLOCK: c_int = 0x01;
- 
+
 -pub const F_GETLK: c_int = 5;
 +// kandelo: 12/13/14 per arch/generic/bits/fcntl.h. wasm32 has 32-bit `long`
 +// (__LONG_MAX == 0x7fffffff), which selects the generic F_GETLK/F_SETLK/F_SETLKW
@@ -1174,7 +1191,7 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/uni
 +pub const F_SETLK: c_int = 13;
 +pub const F_SETLKW: c_int = 14;
  pub const F_SETOWN: c_int = 8;
- 
+
  pub const VEOF: usize = 4;
 diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/unix/linux_like/mod.rs b/src/unix/linux_like/mod.rs
 --- a/src/unix/linux_like/mod.rs	2006-07-23 21:21:28
@@ -1205,24 +1222,98 @@ diff -ruN --exclude=.cargo* --exclude=Cargo.toml.orig --exclude=target a/src/uni
          pub use self::linux_like::*;
 --- a/src/unix/linux_like/linux/musl/b64/mod.rs
 +++ b/src/unix/linux_like/linux/musl/b64/mod.rs
-@@ -18,2 +18,6 @@
+@@ -11,11 +11,19 @@
+         pub ss_size: size_t,
+     }
+
++    // Kandelo uses ILP32, unlike the original WALI wasm32 bindings.
++    // Match the installed musl headers; sigemptyset writes the full 128 bytes.
+     pub struct pthread_attr_t {
++        #[cfg(all(target_os = "kandelo", target_pointer_width = "32"))]
++        __size: [u32; 9],
++        #[cfg(not(all(target_os = "kandelo", target_pointer_width = "32")))]
+         __size: [u64; 7],
+     }
+
      pub struct sigset_t {
-+        // Kandelo uses musl's ILP32 sigset_t, not WALI's b64 layout.
-+        #[cfg(all(target_os = "kandelo", target_arch = "wasm32"))]
++        #[cfg(all(target_os = "kandelo", target_pointer_width = "32"))]
 +        __val: [c_ulong; 32],
-+        #[cfg(not(all(target_os = "kandelo", target_arch = "wasm32")))]
++        #[cfg(not(all(target_os = "kandelo", target_pointer_width = "32")))]
          __val: [c_ulong; 16],
-@@ -88 +92,13 @@
+     }
+
+@@ -49,12 +57,24 @@
+     }
+
+     pub struct sem_t {
++        #[cfg(all(target_os = "kandelo", target_pointer_width = "32"))]
++        __val: [c_int; 4],
++        #[cfg(not(all(target_os = "kandelo", target_pointer_width = "32")))]
+         __val: [c_int; 8],
+     }
  }
-+
-+// Match the SDK's musl signal.h. A shorter mask shifts sa_flags and makes
-+// a three-argument SA_SIGINFO handler get invoked as a one-argument handler.
-+#[cfg(all(target_os = "kandelo", target_arch = "wasm32"))]
-+const _: () = {
-+    core::assert!(core::mem::size_of::<crate::sigset_t>() == 128);
-+    core::assert!(core::mem::align_of::<crate::sigset_t>() == 4);
-+    core::assert!(core::mem::size_of::<crate::sigaction>() == 140);
-+    core::assert!(core::mem::offset_of!(crate::sigaction, sa_mask) == 4);
-+    core::assert!(core::mem::offset_of!(crate::sigaction, sa_flags) == 132);
-+    core::assert!(core::mem::offset_of!(crate::sigaction, sa_restorer) == 136);
-+};
+
++#[cfg(all(target_os = "kandelo", target_pointer_width = "32"))]
++pub const __SIZEOF_PTHREAD_RWLOCK_T: usize = 32;
++#[cfg(not(all(target_os = "kandelo", target_pointer_width = "32")))]
+ pub const __SIZEOF_PTHREAD_RWLOCK_T: usize = 56;
++#[cfg(all(target_os = "kandelo", target_pointer_width = "32"))]
++pub const __SIZEOF_PTHREAD_MUTEX_T: usize = 24;
++#[cfg(not(all(target_os = "kandelo", target_pointer_width = "32")))]
+ pub const __SIZEOF_PTHREAD_MUTEX_T: usize = 40;
++#[cfg(all(target_os = "kandelo", target_pointer_width = "32"))]
++pub const __SIZEOF_PTHREAD_BARRIER_T: usize = 20;
++#[cfg(not(all(target_os = "kandelo", target_pointer_width = "32")))]
+ pub const __SIZEOF_PTHREAD_BARRIER_T: usize = 32;
+
+ cfg_if! {
+--- a/src/unix/linux_like/linux/mod.rs
++++ b/src/unix/linux_like/linux/mod.rs
+@@ -1072,6 +1072,7 @@
+         all(
+             target_pointer_width = "32",
+             any(
++                target_os = "kandelo",
+                 target_arch = "mips",
+                 target_arch = "mips32r6",
+                 target_arch = "arm",
+@@ -1090,6 +1091,7 @@
+         any(
+             target_pointer_width = "64",
+             not(any(
++                target_os = "kandelo",
+                 target_arch = "mips",
+                 target_arch = "mips32r6",
+                 target_arch = "arm",
+@@ -1113,6 +1115,7 @@
+         all(
+             target_pointer_width = "32",
+             any(
++                target_os = "kandelo",
+                 target_arch = "mips",
+                 target_arch = "mips32r6",
+                 target_arch = "arm",
+@@ -1131,6 +1134,7 @@
+         any(
+             target_pointer_width = "64",
+             not(any(
++                target_os = "kandelo",
+                 target_arch = "mips",
+                 target_arch = "mips32r6",
+                 target_arch = "arm",
+@@ -1152,6 +1156,7 @@
+         all(
+             target_pointer_width = "32",
+             any(
++                target_os = "kandelo",
+                 target_arch = "mips",
+                 target_arch = "mips32r6",
+                 target_arch = "arm",
+@@ -1170,6 +1175,7 @@
+         any(
+             target_pointer_width = "64",
+             not(any(
++                target_os = "kandelo",
+                 target_arch = "mips",
+                 target_arch = "mips32r6",
+                 target_arch = "arm",

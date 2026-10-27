@@ -66,15 +66,29 @@
      use crate::ffi::c_char;
 --- a/library/std/src/sys/fs/unix.rs
 +++ b/library/std/src/sys/fs/unix.rs
-@@ -1153,6 +1153,8 @@
-         target_os = "vxworks",
-         target_os = "wasi",
-         target_vendor = "apple",
+@@ -1155,0 +1156,2 @@
 +        // kandelo: dirents carry `d_ino` (linux-musl `dirent64` layout).
 +        target_os = "kandelo",
-     ))]
-     pub fn ino(&self) -> u64 {
-         self.entry.d_ino as u64
+@@ -1448,0 +1451 @@
++        target_os = "kandelo",
+@@ -1474,0 +1478 @@
++        target_os = "kandelo",
+@@ -1491,0 +1496 @@
++        target_os = "kandelo",
+@@ -1517,0 +1523 @@
++        target_os = "kandelo",
+@@ -1534,0 +1541 @@
++        target_os = "kandelo",
+@@ -1576,0 +1584 @@
++        target_os = "kandelo",
+@@ -1596,0 +1605 @@
++        target_os = "kandelo",
+@@ -1638,0 +1648 @@
++        target_os = "kandelo",
+@@ -1658,0 +1669 @@
++        target_os = "kandelo",
+@@ -1684,0 +1696 @@
++        target_os = "kandelo",
 --- a/library/std/src/sys/thread/mod.rs
 +++ b/library/std/src/sys/thread/mod.rs
 @@ -59,6 +59,9 @@
@@ -215,3 +229,14 @@
              ),
              all(
                  target_env = "sgx",
+--- a/library/std/src/os/fd/owned.rs
++++ b/library/std/src/os/fd/owned.rs
+@@ -15 +15 @@
+-    target_arch = "wasm32",
++    all(target_arch = "wasm32", not(target_os = "kandelo")),
+@@ -107 +107 @@
+-        target_arch = "wasm32",
++        all(target_arch = "wasm32", not(target_os = "kandelo")),
+@@ -134 +134 @@
+-    #[cfg(any(target_arch = "wasm32", target_os = "hermit", target_os = "trusty"))]
++    #[cfg(any(all(target_arch = "wasm32", not(target_os = "kandelo")), target_os = "hermit", target_os = "trusty"))]
