@@ -143,7 +143,8 @@ Rendered, guest, conformance and complete lifecycle validation remain open.
 
 The sysfs/netlink and KMS changes were adapted from mho22's `f758e3fe4b`
 and `ea2bae402f`, retaining that author on both derived commits. The
-current combined contract uses ABI 55 and fork record version 21. Main's cursor
+current combined contract uses program ABI 56, kernel-host version 3 and
+fork record version 21. Main's cursor
 references, complete mode catalog and deferred cleanup effects are retained.
 The first integrated DRI selection passed 50 Rust tests after migrating its
 connector lookup to the new device-wide object ID.
@@ -6004,3 +6005,14 @@ rebuilt and checked the standalone resolver, and passed the ABI source and
 base comparison checks. Focused snapshot-generation and program-digest unit
 checks also passed. This establishes source/ABI coherence, not rebuilt user
 programs or rendered consumer compatibility.
+
+
+Four fresh-worker fixture sources also follow program ABI 56: the two
+catch/reference WAT modules, the GC reference-state WAT module and its
+checked-in deterministic bytes. The first two compiled and their exported
+version functions disassembled to 56; the GC bytes exactly match the
+reviewed WAT parsed by the repository's pinned Rust `wat` crate.
+`.context/abi56-fixture-check.log` records the successful source check.
+The first WABT decoding attempt and first standalone Rust linker setup
+attempt are retained separately; neither executed a guest. Fresh-worker
+Node/browser replay still requires combined artifact execution.
