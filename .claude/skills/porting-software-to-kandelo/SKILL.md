@@ -85,10 +85,12 @@ that workspace with `kandelo_guest_build`. Things that differ from a
 cross build:
 
 - The guest compiler is `cc` (`c++`, `wasm32posix-ar`, ...). The build
-  image is the rootfs with every tool resident: `make`, `m4`, `awk`, and
-  POSIX `yacc` and `lex` from `posix-utils-lite`, but not `bison`, `flex`
-  or other tools no package provides. Check with `command -v` in the
-  guest before assuming either way.
+  image is the rootfs with every tool resident (`make`, `m4`, `awk`, ...);
+  check with `command -v` in the guest. Its `yacc` and `lex` (from
+  `posix-utils-lite`) are placeholders: they ignore the grammar, write a
+  parser whose `yyparse()` returns 0, and exit successfully. Use
+  upstream's pre-generated parsers, or a real yacc/lex package, and do not
+  trust a build that ran them.
 - Dependencies are `--input` mounts (`/deps/<name>`), so paths written into
   Makefiles must be the guest's, not the build machine's.
 - Guest-created files reach the build machine as mode 0600; set modes when
