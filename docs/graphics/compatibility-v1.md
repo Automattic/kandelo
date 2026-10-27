@@ -6016,3 +6016,60 @@ reviewed WAT parsed by the repository's pinned Rust `wat` crate.
 The first WABT decoding attempt and first standalone Rust linker setup
 attempt are retained separately; neither executed a guest. Fresh-worker
 Node/browser replay still requires combined artifact execution.
+
+
+## Native EGL display ownership repair, 2026-10-27
+
+The EGL facade now resolves legacy and platform GBM native displays through
+the actual GBM live-device registry. Distinct native device objects receive
+stable, separate EGL display handles and active generations. Repeating a
+lookup for the same live device returns its display; a recycled GBM pointer
+cannot revive an old display. The implementation-selected default display
+is retained, as required by
+[EGL_KHR_platform_gbm](https://registry.khronos.org/EGL/extensions/KHR/EGL_KHR_platform_gbm.txt).
+
+Each initialized generation retains a CLOEXEC duplicate of its native DRM
+file until final resource retirement, including a context still current
+after eglTerminate. Root/object GL sessions continue to own separate
+render-node files; multiple roots may select the same native file without
+colliding. The DISPLAY role of GLIO_INIT accepts a held native DRM fd,
+with -1 preserving the direct render-file identity path. The kernel checks
+it before publishing state and inherits that stable identity into object
+sessions. OBJECTS still joins its root. No PID-based master fallback or
+additional ABI increment was introduced within program ABI 56/kernel-host
+version 3. Per-display validation, termination, current-display queries
+and image helpers route the associated generation.
+
+Source validation job `graphics-native-display-source-v2-1027-151632-39c0`
+passed 65 Rust GL-ioctl tests, all 211 native EGL/GLES cases under UBSan,
+and the actual GBM metadata executable. The native tests cover foreign and
+protected pointers, caller-owned fds and fresh device identities. The first
+attempt passed Rust but stopped at a missing metadata symbol in the native
+fixture scaffold; its log remains separate. It did not run native behavior.
+
+`graphics-native-display-guests-1027-151907-c4d9` rebuilt both normal SDK
+widths, fork instrumentation, selected ABI 56 kernel/rootfs dependency
+artifacts and host, and passed freshness/ABI checks. Its 11 Node cases in
+four files passed without skips or unloaded files. This includes both
+previously failing EGL dma-buf/image-ownership cases and the new ordinary
+SDK/kernel multiple-display probe. The latter verifies exact current
+display, cross-display rejection, descriptor closure, retained master
+through terminated-current context retirement, default/native isolation
+and final native-file release. The Node renderer is a call recorder and
+is not pixel evidence. The existing deliberate worker-crash ownership case
+emits its expected trap while its lifecycle assertion passes.
+
+The same job exited one after 12m59s: three real browser cursor cases
+passed, while all three inherited-render cases now pass EGL context
+creation and red GL pixel readback but fail `drmModeAddFB2` with EINVAL.
+The EGL native visual is ABGR8888; KMS currently advertises and accepts
+only XRGB8888, ARGB8888 and RGB565. This ordinary scanout-format mismatch
+is the next repair. The rendered probe and failure assertions were not
+weakened. Preserve `.context/native-display-guest-{node,browser}.log` under
+the owned diagnostic checkout, plus its failed screenshots, as this
+checkpoint's evidence. Integrated production/test source hashes are in
+`.context/native-display-integrated-source-identities.json`.
+
+E01/E02 and K04 remain partial. The complete combined compositor gallery,
+browser-memory switching, POSIX conformance and expanded CTS are still
+required after the remaining ordinary repairs.

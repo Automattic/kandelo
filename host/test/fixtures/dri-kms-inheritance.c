@@ -7,6 +7,14 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#ifdef TEST_EGL_RENDER
+#include <gbm.h>
+#include <EGL/egl.h>
+#include <GLES2/gl2.h>
+#include <libdrm/xf86drm.h>
+#include <libdrm/xf86drmMode.h>
+#include <poll.h>
+#endif
 
 /* Linux UAPI layouts, also checked by shared::dri's layout tests. */
 struct dumb { uint32_t height, width, bpp, flags, handle, pitch; uint64_t size; };
@@ -17,8 +25,115 @@ struct planes { uint64_t ids; uint32_t count, pad; };
 struct gem_close { uint32_t handle, pad; };
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "line %d: %s (errno %d)\n", __LINE__, #x, errno); exit(1); } } while (0)
 
+#ifdef TEST_EGL_RENDER
+struct rendered_display {
+    struct gbm_device *device;
+    struct gbm_surface *window;
+    struct gbm_bo *front;
+    EGLDisplay display;
+    EGLContext context;
+    EGLSurface surface;
+    uint32_t crtc, framebuffer;
+};
+
+static void flip_done(int fd, unsigned sequence, unsigned seconds, unsigned microseconds, void *data) {
+    (void)fd; (void)sequence; (void)seconds; (void)microseconds;
+    *(int *)data = 1;
+}
+
+static struct rendered_display render_frames(int fd) {
+    struct rendered_display state = {0};
+    drmModeRes *resources = drmModeGetResources(fd);
+    CHECK(resources && resources->count_crtcs > 0);
+    drmModeConnector *connector = NULL;
+    for (int i = 0; i < resources->count_connectors; ++i) {
+        connector = drmModeGetConnector(fd, resources->connectors[i]);
+        CHECK(connector);
+        if (connector->connection == DRM_MODE_CONNECTED && connector->count_modes > 0) break;
+        drmModeFreeConnector(connector);
+        connector = NULL;
+    }
+    CHECK(connector);
+    drmModeModeInfo mode = connector->modes[0];
+    uint32_t connector_id = connector->connector_id;
+    state.crtc = resources->crtcs[0];
+    drmModeFreeConnector(connector);
+    drmModeFreeResources(resources);
+    state.device = gbm_create_device(fd);
+    CHECK(state.device);
+    state.display = eglGetDisplay((EGLNativeDisplayType)state.device);
+    CHECK(state.display != EGL_NO_DISPLAY && eglInitialize(state.display, NULL, NULL));
+    CHECK(eglBindAPI(EGL_OPENGL_ES_API));
+    EGLConfig config;
+    EGLint count, visual;
+    const EGLint attributes[] = {EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_NONE};
+    CHECK(eglChooseConfig(state.display, attributes, &config, 1, &count) && count == 1);
+    CHECK(eglGetConfigAttrib(state.display, config, EGL_NATIVE_VISUAL_ID, &visual));
+    const EGLint context_attributes[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
+    state.context = eglCreateContext(state.display, config, EGL_NO_CONTEXT, context_attributes);
+    CHECK(state.context != EGL_NO_CONTEXT);
+    state.window = gbm_surface_create(state.device, mode.hdisplay, mode.vdisplay, visual,
+        GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+    CHECK(state.window);
+    state.surface = eglCreateWindowSurface(state.display, config, (EGLNativeWindowType)state.window, NULL);
+    CHECK(state.surface != EGL_NO_SURFACE);
+    CHECK(eglMakeCurrent(state.display, state.surface, state.surface, state.context));
+    glViewport(0, 0, mode.hdisplay, mode.vdisplay);
+    for (int frame = 0; frame < 3; ++frame) {
+        glClearColor(1, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        unsigned char pixel[4] = {0};
+        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+        CHECK(glGetError() == GL_NO_ERROR && pixel[0] == 255 && pixel[1] == 0
+            && pixel[2] == 0 && pixel[3] == 255);
+        CHECK(eglSwapBuffers(state.display, state.surface));
+        struct gbm_bo *front = gbm_surface_lock_front_buffer(state.window);
+        CHECK(front);
+        uint32_t handles[4] = {gbm_bo_get_handle(front).u32};
+        uint32_t pitches[4] = {gbm_bo_get_stride(front)}, offsets[4] = {0}, fb = 0;
+        CHECK(drmModeAddFB2(fd, mode.hdisplay, mode.vdisplay, gbm_bo_get_format(front),
+            handles, pitches, offsets, &fb, 0) == 0);
+        if (frame == 0) {
+            CHECK(drmModeSetCrtc(fd, state.crtc, fb, 0, 0, &connector_id, 1, &mode) == 0);
+        } else {
+            int done = 0;
+            CHECK(drmModePageFlip(fd, state.crtc, fb, DRM_MODE_PAGE_FLIP_EVENT, &done) == 0);
+            drmEventContext events = {.version = 2, .page_flip_handler = flip_done};
+            while (!done) {
+                struct pollfd event = {.fd = fd, .events = POLLIN};
+                CHECK(poll(&event, 1, 3000) == 1 && (event.revents & POLLIN));
+                CHECK(drmHandleEvent(fd, &events) == 0);
+            }
+            CHECK(drmModeRmFB(fd, state.framebuffer) == 0);
+            gbm_surface_release_buffer(state.window, state.front);
+        }
+        state.front = front;
+        state.framebuffer = fb;
+    }
+    return state;
+}
+
+static void retire_display(int fd, struct rendered_display *state) {
+    CHECK(drmModeSetCrtc(fd, state->crtc, 0, 0, 0, NULL, 0, NULL) == 0);
+    CHECK(drmModeRmFB(fd, state->framebuffer) == 0);
+    gbm_surface_release_buffer(state->window, state->front);
+    CHECK(eglMakeCurrent(state->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
+    CHECK(eglDestroySurface(state->display, state->surface));
+    CHECK(eglDestroyContext(state->display, state->context));
+    CHECK(eglTerminate(state->display));
+    gbm_surface_destroy(state->window);
+    gbm_device_destroy(state->device);
+}
+#endif
+
 int main(int argc, char **argv) {
-    CHECK(argc == 2 && (strcmp(argv[1], "master") == 0 || strcmp(argv[1], "cursor") == 0));
+    CHECK(argc == 2);
+    int render = strcmp(argv[1], "render") == 0;
+    CHECK(render || strcmp(argv[1], "master") == 0 || strcmp(argv[1], "cursor") == 0);
+#ifndef TEST_EGL_RENDER
+    CHECK(!render);
+#endif
     int fd = open("/dev/dri/card0", O_RDWR), ready[2];
     CHECK(fd >= 0 && pipe(ready) == 0);
     uint32_t magic = 0;
@@ -65,16 +180,23 @@ int main(int argc, char **argv) {
     pixels = mmap(NULL, bo.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, map.offset);
     CHECK(pixels != MAP_FAILED && pixels[0] == 0xff00ff00);
     CHECK(munmap(pixels, bo.size) == 0);
-    if (strcmp(argv[1], "cursor") == 0) {
+    if (render || strcmp(argv[1], "cursor") == 0) {
         /* MOVE alone must retain the image installed by the retired opener. */
         cursor.flags = 2;
         cursor.x = 30;
         cursor.y = 40;
         CHECK(ioctl(fd, 0xc02464bb, &cursor) == 0);
     }
+#ifdef TEST_EGL_RENDER
+    struct rendered_display display = {0};
+    if (render) display = render_frames(fd);
+#endif
     printf("inherited %s after opener retirement: ready\n", argv[1]);
     fflush(stdout);
     CHECK(read(STDIN_FILENO, &byte, 1) == 1 && byte == 'q');
+#ifdef TEST_EGL_RENDER
+    if (render) retire_display(fd, &display);
+#endif
     cursor.flags = 1;
     cursor.handle = 0;
     CHECK(ioctl(fd, 0xc02464bb, &cursor) == 0);

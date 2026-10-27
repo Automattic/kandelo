@@ -5599,6 +5599,8 @@ pub mod gl {
     pub struct GlInitInfo {
         pub op_version: u32,
         pub role: u32,
+        /// DISPLAY: native DRM fd, or -1 for this render file's identity.
+        /// OBJECTS: initialized display-root fd to join.
         pub display_fd: i32,
         pub display_id: u32,
     }

@@ -1,14 +1,19 @@
-import { expect, it } from "vitest";
-import { resolveBinary } from "../src/binary-resolver";
+import { afterAll, beforeAll, expect, it } from "vitest";
+import { compileSdkFixture } from "./support/compile-sdk-fixture";
 import { loggingGraphicsGl, allocatedTexture } from "./support/logging-graphics-gl";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
-const programPath = resolveBinary("programs/egl_image_ownership.wasm");
+let fixture: ReturnType<typeof compileSdkFixture>;
+beforeAll(() => {
+  fixture = compileSdkFixture(new URL("../../programs/egl_image_ownership.c", import.meta.url),
+    ["-lEGL", "-lGLESv2", "-lgbm", "-ldrm"]);
+}, 120_000);
+afterAll(() => fixture?.cleanup());
 
 it("retains imported storage through image, object, and framebuffer retirement", async () => {
   const { calls, gl } = loggingGraphicsGl();
   const result = await runCentralizedProgram({
-    programPath,
+    programPath: fixture.programPath,
     argv: ["egl_image_ownership"],
     timeout: 30_000,
     onKernelReady(kernel, pid) {

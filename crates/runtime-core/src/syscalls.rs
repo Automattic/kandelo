@@ -1923,10 +1923,20 @@ fn handle_dri_ioctl(
             }
             let display_file_id = match info.role {
                 gl::SESSION_DISPLAY => {
-                    if info.display_fd != -1 || info.display_id != 0 {
+                    if info.display_fd < -1 || info.display_id != 0 {
                         return Err(Errno::EINVAL);
                     }
-                    proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.ofd_id
+                    let native_ofd = if info.display_fd == -1 {
+                        ofd_idx
+                    } else {
+                        let native = proc.fd_table.get(info.display_fd)?.ofd_ref.0;
+                        // Native display authority comes from a held DRM file,
+                        // independently of the render OFD owning this session.
+                        // Never infer its identity from the caller's PID.
+                        dri_state(proc, native)?;
+                        native
+                    };
+                    proc.ofd_table.get(native_ofd).ok_or(Errno::EBADF)?.ofd_id
                 }
                 gl::SESSION_OBJECTS => {
                     let root_ofd = proc.fd_table.get(info.display_fd)?.ofd_ref.0;
@@ -53515,7 +53525,7 @@ impl HostIO for RelSymlinkMock {
         for (role, display_fd, display_id, error) in [
             (0,root,id,Errno::EINVAL), (gl::SESSION_OBJECTS,-1,id,Errno::EBADF),
             (gl::SESSION_OBJECTS,root,id+1000,Errno::EINVAL),
-            (gl::SESSION_DISPLAY,root,0,Errno::EINVAL),
+            (gl::SESSION_DISPLAY,-2,0,Errno::EINVAL),
         ] {
             let mut bytes = glio_init_bytes(gl::GlInitInfo {op_version:gl::OP_VERSION,role,display_fd,display_id}); let before = bytes;
             assert_eq!(sys_ioctl(&mut proc,&mut host,child,gl::GLIO_INIT,&mut bytes),Err(error)); assert_eq!(bytes,before);
@@ -53526,6 +53536,79 @@ impl HostIO for RelSymlinkMock {
         let mut bytes = glio_init_bytes(gl::GlInitInfo {op_version:gl::OP_VERSION,role:gl::SESSION_OBJECTS,display_fd:root,display_id:id});
         assert_eq!(sys_ioctl(&mut proc,&mut host,child,gl::GLIO_INIT,&mut bytes),Err(Errno::EACCES));
         assert!(host.gl_bind_sessions.is_empty()); assert!(host.gl_create_context_sessions.is_empty());
+    }
+
+    #[test]
+    fn glio_native_display_roots_preserve_exact_file_identity_across_aliases_and_fd_reuse() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let native = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let alias = sys_dup(&mut proc, native).unwrap();
+        let independent = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let identity = |proc: &Process, fd| {
+            proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap().ofd_id
+        };
+        let original_id = identity(&proc, native);
+        let independent_id = identity(&proc, independent);
+        assert_ne!(original_id, independent_id);
+        let mut roots = alloc::vec::Vec::new();
+        for (display_fd, expected) in [(native, original_id), (alias, original_id), (independent, independent_id)] {
+            let root = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+            let mut info = glio_init_bytes(gl::GlInitInfo {
+                op_version: gl::OP_VERSION, role: gl::SESSION_DISPLAY, display_fd, display_id: 0,
+            });
+            sys_ioctl(&mut proc, &mut host, root, gl::GLIO_INIT, &mut info).unwrap();
+            let generation = u32::from_le_bytes(info[12..16].try_into().unwrap());
+            let object = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+            let mut join = glio_init_bytes(gl::GlInitInfo {
+                op_version: gl::OP_VERSION, role: gl::SESSION_OBJECTS,
+                display_fd: root, display_id: generation,
+            });
+            sys_ioctl(&mut proc, &mut host, object, gl::GLIO_INIT, &mut join).unwrap();
+            for fd in [root, object] {
+                let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+                assert_eq!(dri_state(&proc, ofd).unwrap().gl.as_ref().unwrap().display_file_id, Some(expected));
+                assert_ne!(identity(&proc, fd), expected);
+            }
+            roots.push((root, object, expected));
+        }
+        sys_close(&mut proc, &mut host, native).unwrap();
+        sys_close(&mut proc, &mut host, alias).unwrap();
+        let reused = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        assert_eq!(reused, native);
+        assert_ne!(identity(&proc, reused), original_id);
+        for (root, object, expected) in roots {
+            let ofd = proc.fd_table.get(root).unwrap().ofd_ref.0;
+            assert_eq!(dri_state(&proc, ofd).unwrap().gl.as_ref().unwrap().display_file_id, Some(expected));
+            sys_close(&mut proc, &mut host, object).unwrap();
+            sys_close(&mut proc, &mut host, root).unwrap();
+        }
+        sys_close(&mut proc, &mut host, reused).unwrap();
+        sys_close(&mut proc, &mut host, independent).unwrap();
+    }
+
+    #[test]
+    fn glio_native_display_rejects_invalid_files_before_publishing_a_session() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let null = sys_open(&mut proc, &mut host, b"/dev/null", O_RDWR, 0).unwrap();
+        for (display_fd, display_id, error) in [(-2, 0, Errno::EINVAL), (999, 0, Errno::EBADF),
+            (null, 0, Errno::EBADF), (fd, 1, Errno::EINVAL)] {
+            let mut info = glio_init_bytes(gl::GlInitInfo {
+                op_version: gl::OP_VERSION, role: gl::SESSION_DISPLAY, display_fd, display_id,
+            });
+            let input = info;
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut info), Err(error));
+            assert_eq!(info, input);
+            let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            assert!(dri_state(&proc, ofd).unwrap().gl.is_none());
+        }
+        assert!(host.gl_bind_sessions.is_empty());
+        sys_close(&mut proc, &mut host, null).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
     }
 
     #[test]

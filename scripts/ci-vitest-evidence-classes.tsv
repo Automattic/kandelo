@@ -86,6 +86,7 @@ host/test/dylink-fork-archive.test.ts	source-only
 host/test/dylink.test.ts	source-only
 host/test/egl-dmabuf-smoke.test.ts	prepared-product
 host/test/egl-image-ownership.test.ts	prepared-product
+host/test/egl-native-display.test.ts	prepared-product
 host/test/egress-link.test.ts	source-only
 host/test/environment-lifecycle.test.ts	prepared-product
 host/test/epoll-pwait-sigmask.test.ts	prepared-product

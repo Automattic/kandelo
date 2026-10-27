@@ -71,7 +71,30 @@ struct wpk_drm_gpu_bo_create {
 
 struct gbm_device {
     int fd;  /* owned by caller; gbm_device_destroy does NOT close it */
+    uint64_t identity;
+    struct gbm_device *live_next;
 };
+
+static pthread_mutex_t device_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct gbm_device *live_devices;
+static uint64_t next_device_identity = 1;
+
+/* EGL receives an opaque native handle. Resolve only our live devices;
+ * neither a foreign pointer nor a recycled allocation selects an old display. */
+int _wpk_gbm_device_metadata(const void *native, int *fd, uint64_t *identity) {
+    int found = 0;
+    pthread_mutex_lock(&device_mutex);
+    for (struct gbm_device *d = live_devices; d; d = d->live_next) {
+        if (d == native) {
+            *fd = d->fd;
+            *identity = d->identity;
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&device_mutex);
+    return found;
+}
 
 struct gbm_bo {
     struct gbm_device *dev;
@@ -147,17 +170,37 @@ static uint32_t format_bpp(uint32_t fourcc) {
 }
 
 struct gbm_device *gbm_create_device(int fd) {
+    if (fcntl(fd, F_GETFD) < 0) return NULL;
     struct gbm_device *d = (struct gbm_device *) calloc(1, sizeof(*d));
     if (!d) {
         errno = ENOMEM;
         return NULL;
     }
     d->fd = fd;
+    pthread_mutex_lock(&device_mutex);
+    if (next_device_identity == 0) {
+        pthread_mutex_unlock(&device_mutex);
+        free(d);
+        errno = EOVERFLOW;
+        return NULL;
+    }
+    d->identity = next_device_identity;
+    next_device_identity = next_device_identity == UINT64_MAX ? 0 : next_device_identity + 1;
+    d->live_next = live_devices;
+    live_devices = d;
+    pthread_mutex_unlock(&device_mutex);
     return d;
 }
 
 void gbm_device_destroy(struct gbm_device *gbm) {
-    free(gbm);
+    pthread_mutex_lock(&device_mutex);
+    struct gbm_device **slot = &live_devices;
+    while (*slot && *slot != gbm) slot = &(*slot)->live_next;
+    if (*slot) {
+        *slot = gbm->live_next;
+        free(gbm);
+    }
+    pthread_mutex_unlock(&device_mutex);
 }
 
 int gbm_device_get_fd(struct gbm_device *gbm) {

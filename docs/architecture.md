@@ -4486,8 +4486,24 @@ final close prevents new contexts, surfaces and positive binds, while
 already-current children retain submit/query/release/destruction paths.
 Descriptor reuse cannot revive an old generation. Roots have no command
 mapping or renderer and therefore send no renderer unbind on cleanup.
+An EGL native GBM device selects its exact DRM open file. Display roots
+still keep their GL state on separate render-node files, so independent
+EGL displays may reference aliases of the same native file without
+colliding. `GlInitInfo.display_fd` on a DISPLAY initialization selects a
+held DRM file, or -1 keeps that render file's own identity; OBJECTS still
+joins its display root. The kernel validates the selected file before
+publishing state and passes its stable identity to the host. It does not
+infer native display or master authority from the process ID.
+The GBM library resolves native handles through a live-device registry
+with monotonic identities. EGL display handles are cached by device
+identity, independent of recycled heap pointers. Immutable display
+records are atomically published for safe handle validation; each record
+selects its active generation under the context lock. The default display
+chooses a primary DRM file. Each initialized generation owns a CLOEXEC
+duplicate of its native file until final context/surface/sync retirement,
+including after public termination. Display metadata has process lifetime.
 The EGL library retains one heap record per display generation. Public
-lookups use the active generation; thread bindings retain their actual
+lookups use that display's active generation; thread bindings retain their actual
 generation's descriptor, mapping and encoder after termination. A new
 initialization can therefore overlap old current resources. Successful
 replacement releases the old generation after backend acceptance; a failed

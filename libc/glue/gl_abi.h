@@ -217,6 +217,7 @@
 /* Marshalled ioctl arg structs — must match shared::gl byte-for-byte. */
 #define WPK_GL_SESSION_DISPLAY 1u
 #define WPK_GL_SESSION_OBJECTS 2u
+/* DISPLAY: native DRM fd (-1 means this render file); OBJECTS: root fd. */
 struct gl_init_info { uint32_t op_version, role; int32_t display_fd; uint32_t display_id; };
 struct gl_submit_info { uint32_t offset; uint32_t length; };
 struct gl_make_current { uint32_t context_id, draw_surface_id, read_surface_id; };

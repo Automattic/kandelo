@@ -145,6 +145,7 @@ static int imported_owners[8];
 static unsigned transfers, transfer_closes, export_closes;
 static int fail_prime_export, fail_prime_import, fail_foreign_texture, fail_dmabuf_import;
 static unsigned display_opens, display_closes, object_closes;
+static unsigned native_files[8];
 static uint32_t display_generation = 91;
 static int display_live, fail_display_join;
 static uint32_t bound_texture, redefined_texture;
@@ -398,8 +399,20 @@ static int native_image_bind(struct device_slot *slot, unsigned kind, GLenum tar
     return 1;
 }
 
+/* This executable models render sessions without linking GBM devices.
+ * Real native-device lookup is covered by the actual GBM and guest tests. */
+int _wpk_gbm_device_metadata(const void *native, int *fd, uint64_t *identity) {
+    (void)native; (void)fd; (void)identity; return 0;
+}
+
 int graphics_open(const char *path, int flags, ...) {
     (void)flags;
+    if (!strcmp(path, "/dev/dri/card0")) {
+        for (unsigned i = 0; i < 8; i++) {
+            if (!native_files[i]) { native_files[i] = 1; return 40 + (int)i; }
+        }
+        assert(0 && "native file table exhausted");
+    }
     assert(!strcmp(path, WPK_GL_DEVICE));
 #ifdef WPK_GL_SESSION_DISPLAY
     display_opens++;
@@ -423,6 +436,9 @@ int graphics_open(const char *path, int flags, ...) {
 #endif
 }
 int graphics_close(int fd) {
+    if (fd >= 40 && fd < 48) {
+        assert(native_files[fd - 40]); native_files[fd - 40] = 0; return 0;
+    }
     if (fd >= 200 && fd < 208) {
         assert(prime_exports[fd - 200].handle);
         prime_exports[fd - 200].handle = 0;
@@ -483,7 +499,8 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         struct gl_init_info *info = arg;
         assert(info->op_version == WPK_GL_OP_VERSION);
         if (fd >= 20 && fd < 28) {
-            assert(info->role == WPK_GL_SESSION_DISPLAY && info->display_fd == -1 && !info->display_id);
+            assert(info->role == WPK_GL_SESSION_DISPLAY && !info->display_id);
+            assert(info->display_fd >= 40 && info->display_fd < 48 && native_files[info->display_fd - 40]);
             assert(root_slots[fd - 20].open);
             root_slots[fd - 20].live = display_live = 1;
             info->display_id = root_slots[fd - 20].generation = ++display_generation;

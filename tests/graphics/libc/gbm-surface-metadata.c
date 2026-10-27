@@ -5,6 +5,7 @@
 #include <drm/drm_mode.h>
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/mman.h>
@@ -12,9 +13,11 @@
 
 int _wpk_gbm_surface_metadata(const void *, uint32_t *, uint32_t *, uint32_t *, uint32_t *);
 int _wpk_gbm_surface_dimensions(const void *, uint32_t *, uint32_t *);
+int _wpk_gbm_device_metadata(const void *, int *, uint64_t *);
+static int device_fd;
 static unsigned created, closed, fail_allocation;
 int drmIoctl(int fd, unsigned long request, void *data) {
-    assert(fd == 17);
+    assert(fd == device_fd);
     if (request == DRM_IOCTL_MODE_CREATE_DUMB) {
         if (fail_allocation && created+1 == fail_allocation) { errno = ENOMEM; return -1; }
         struct drm_mode_create_dumb *d = data;
@@ -24,7 +27,7 @@ int drmIoctl(int fd, unsigned long request, void *data) {
     errno = ENOSYS; return -1;
 }
 int drmCloseBufferHandle(int fd, uint32_t handle) {
-    assert(fd == 17 && handle && handle <= created); closed++; return 0;
+    assert(fd == device_fd && handle && handle <= created); closed++; return 0;
 }
 static void rejected(const void *pointer) {
     uint32_t width=101,height=102,format=103,flags=104;
@@ -34,11 +37,22 @@ static void rejected(const void *pointer) {
     assert(width == 101 && height == 102);
 }
 int main(void) {
-    struct gbm_device *device = gbm_create_device(17); assert(device);
+    device_fd = open("/dev/null", O_RDWR); assert(device_fd >= 0);
+    assert(!gbm_create_device(-1) && errno == EBADF);
+    struct gbm_device *device = gbm_create_device(device_fd); assert(device);
+    int native_fd = -9; uint64_t identity = 0;
+    assert(_wpk_gbm_device_metadata(device, &native_fd, &identity));
+    assert(native_fd == device_fd && identity);
+    uint64_t first_identity = identity;
+    assert(!_wpk_gbm_device_metadata((void *)(uintptr_t)1, &native_fd, &identity));
+    assert(native_fd == device_fd && identity == first_identity);
     rejected(NULL); rejected((void *)(uintptr_t)1); rejected(device);
     size_t page = (size_t)sysconf(_SC_PAGESIZE);
     void *guard = mmap(NULL,page,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0); assert(guard != MAP_FAILED);
-    rejected(guard); assert(!munmap(guard,page));
+    rejected(guard);
+    assert(!_wpk_gbm_device_metadata(guard, &native_fd, &identity));
+    assert(native_fd == device_fd && identity == first_identity);
+    assert(!munmap(guard,page));
     struct gbm_surface *first = gbm_surface_create(device,32,24,GBM_FORMAT_ABGR8888,GBM_BO_USE_RENDERING);
     struct gbm_surface *second = gbm_surface_create(device,17,9,GBM_FORMAT_XRGB8888,GBM_BO_USE_SCANOUT);
     assert(first && second);
@@ -57,6 +71,14 @@ int main(void) {
     assert(!gbm_surface_create(device,3,2,GBM_FORMAT_ABGR8888,GBM_BO_USE_SCANOUT));
     assert(created == 5 && closed == 5 && errno == ENOMEM);
     rejected((void *)retired);
+    uintptr_t retired_device = (uintptr_t)device;
     gbm_device_destroy(device);
+    assert(!_wpk_gbm_device_metadata((void *)retired_device, &native_fd, &identity));
+    assert(fcntl(device_fd, F_GETFD) >= 0); /* The caller still owns its fd. */
+    device = gbm_create_device(device_fd); assert(device);
+    assert(_wpk_gbm_device_metadata(device, &native_fd, &identity));
+    assert(native_fd == device_fd && identity != first_identity);
+    gbm_device_destroy(device);
+    assert(!close(device_fd));
     puts("PASS actual GBM live, foreign, guarded, retired and failed-creation metadata");
 }
