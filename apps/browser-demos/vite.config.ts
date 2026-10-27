@@ -754,6 +754,87 @@ function injectGitRevision(): Plugin {
 }
 
 /**
+ * Test-server-only: silence the speakers while Web Audio keeps running.
+ *
+ * WHY here: Playwright mutes Chromium with `--mute-audio` and Firefox with
+ * `media.volume_scale`, but WebKit has no launch flag or preference that
+ * mutes output, so WebKit runs played demo audio out loud. The page itself is
+ * the only place left to mute it. This rewires every connection into a
+ * realtime `AudioContext.destination` so it passes through one gain-0 node per
+ * context. Worklets, analysers, PCM checks, context state and the autoplay
+ * policy all behave exactly as in the product; only the final output is zero.
+ * It applies in every browser, so the three engines run the same graph.
+ *
+ * WHY the test web server, never the product: it is gated on
+ * `KANDELO_BROWSER_TEST_MUTE_AUDIO=1`, which only playwright.config.ts sets
+ * for the dev server it starts, and `apply: "serve"` keeps it out of every
+ * build even if the variable leaks. A reused external server or a sealed
+ * production preview does not get it; those WebKit runs are audible.
+ *
+ * The edge is moved after the original `connect` returns, rather than its
+ * target swapped beforehand, so a spec probe that wrapped `connect` earlier
+ * (Playwright init scripts run before this script) still sees the real
+ * destination. Such an own `connect` override on a node prototype is wrapped
+ * too, since it captured the unwrapped method.
+ */
+function muteBrowserTestAudio(): Plugin {
+  const script = `(() => {
+  if (typeof AudioNode === "undefined") return;
+  const nativeConnect = AudioNode.prototype.connect;
+  const nativeDisconnect = AudioNode.prototype.disconnect;
+  // Keyed by context, not destination: in WebKit a lookup keyed by
+  // context.destination missed between a connect and a later disconnect
+  // (likely a collected and recreated wrapper), leaving a second, unconnected
+  // gain node. The page holds its context, so that key stays put.
+  const mutes = new WeakMap();
+  const muteFor = (dest) =>
+    dest instanceof AudioDestinationNode && dest.context instanceof AudioContext
+      ? mutes.get(dest.context) ?? (() => {
+        const mute = dest.context.createGain();
+        mute.gain.value = 0;
+        nativeConnect.call(mute, dest);
+        mutes.set(dest.context, mute);
+        return mute;
+      })()
+      : null;
+  const wrap = (proto) => {
+    const connect = proto.connect;
+    proto.connect = function (dest, ...rest) {
+      const result = connect.call(this, dest, ...rest);
+      const mute = muteFor(dest);
+      if (mute !== null && this !== mute) {
+        try { nativeDisconnect.call(this, dest, ...rest); } catch { return result; }
+        nativeConnect.call(this, mute, ...rest);
+      }
+      return result;
+    };
+  };
+  wrap(AudioNode.prototype);
+  for (const name of Object.getOwnPropertyNames(globalThis)) {
+    if (!name.endsWith("Node")) continue;
+    const proto = globalThis[name]?.prototype;
+    if (proto instanceof AudioNode && Object.hasOwn(proto, "connect")) wrap(proto);
+  }
+  // disconnect(destination) must find the edge where it now lives. Pass the
+  // arguments through untouched otherwise: disconnect() and disconnect(0)
+  // are different overloads.
+  AudioNode.prototype.disconnect = function (...args) {
+    const mute = args.length > 0 ? muteFor(args[0]) : null;
+    if (mute !== null && this !== mute) args[0] = mute;
+    return nativeDisconnect.apply(this, args);
+  };
+})();`;
+  return {
+    name: "mute-browser-test-audio",
+    apply: "serve",
+    transformIndexHtml() {
+      if (process.env.KANDELO_BROWSER_TEST_MUTE_AUDIO !== "1") return [];
+      return [{ tag: "script", children: script, injectTo: "head-prepend" }];
+    },
+  };
+}
+
+/**
  * Vite plugin: inject the COI (Cross-Origin Isolation) service worker bootstrap
  * script into HTML pages during production builds. The service worker adds
  * COOP/COEP headers to all responses, enabling SharedArrayBuffer on hosts
@@ -979,6 +1060,7 @@ export default defineConfig(() => {
     plugins: [
       vfsProductsPlugin(base),
       react(),
+      muteBrowserTestAudio(),
       // Before the SourceOnly store, and like it `enforce: "pre"`: the
       // store's middleware answers the pinned path this route rewrites a
       // lazy-asset request to, so this one must run first.
