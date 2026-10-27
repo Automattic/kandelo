@@ -2857,8 +2857,11 @@ The kernel exposes a Linux fbdev surface so unmodified fbdev software (fbDOOM, m
    ─────────────────                  ───────────────                   ────────────
    open("/dev/fb0")     ─────────►   match_virtual_device              (no host call)
                                      CAS FB0_OWNER (single-open)
+   ioctl(FBIOPUT_VSCREENINFO)  ──►   check xres × yres, set the        (no host call)
+     (optional)                      device mode; EBUSY while bound
    ioctl(FBIOGET_*)     ─────────►   fill fb_var_screeninfo /          (no host call)
-                                     fb_fix_screeninfo, 640×400 BGRA32
+                                     fb_fix_screeninfo, BGRA32 at
+                                     the device mode
    mmap(fd, len)        ─────────►   memory.mmap_anonymous(len)
                                      record FbBinding(addr,len,w,h)
                                      host.bind_framebuffer(...)  ───►  registry.bind(pid,...)
@@ -2866,6 +2869,10 @@ The kernel exposes a Linux fbdev surface so unmodified fbdev software (fbDOOM, m
                          host sees them through the same SAB)
    ioctl(FBIOPAN_DISPLAY) ───────►   no-op success                     (no-op)
 ```
+
+The display mode is device state in `crates/runtime-core/src/framebuffer.rs`. It boots at 640×400, the mode fbDOOM was written against. A program selects another mode with `FBIOPUT_VSCREENINFO` before it maps or writes the device: any `xres` × `yres` from 1×1 to 3840×2160 at 32 bits per pixel. A mode out of range or another pixel depth is `EINVAL`, and `FB_ACTIVATE_TEST` in `activate` checks a mode without setting it. The virtual size always equals the visible size, because the device does not pan. Everything the device reports follows the mode: `xres`/`yres`, `line_length`, `smem_len`, the length an `mmap` must request, and the `bind_framebuffer` call that sizes the host canvas. As on Linux, the mode stays after the process that set it exits; the next program gets it from `FBIOGET_VSCREENINFO`.
+
+A mode change is `EBUSY` while the caller has the device mapped or write-bound, or while another process owns the device. The bound buffer has the old size, and resizing it under a program that draws into it needs a buffer replacement the device does not do. The same mode is always accepted, so a program that sets the mode it already has still works after `mmap`. To keep "only the owner holds a binding" true, `mmap` and the first `write` claim device ownership, so a fork child that keeps the parent's fd gets `EBUSY` while the parent owns the device. The ioctl contract declares `FBIOPUT_VSCREENINFO` as `In`, so unlike Linux the kernel does not copy the accepted mode back into the caller's struct; the caller reads it with `FBIOGET_VSCREENINFO`.
 
 The guest's mmap pixel buffer lives inside its process's Wasm memory. The
 `bind_framebuffer` callback reports `(pid, addr, len, w, h, stride, fmt)` to
