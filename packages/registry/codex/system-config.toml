@@ -1,0 +1,17 @@
+# Kandelo system defaults for Codex, installed as /etc/codex/config.toml.
+# This is upstream's system configuration layer: ~/.codex/config.toml,
+# profiles, and command-line options all override it.
+
+# Models whose catalog entry is `code_mode_only` (the gpt-5.6 and gpt-6
+# families in Codex 0.163.0) reach every tool through `codex-code-mode-host`,
+# a JavaScript host built on native V8, and fail closed without it. V8 does
+# not target Kandelo, so this build has no code-mode host. gpt-5.5 uses
+# Codex's direct tools (shell commands, file edits), which run here. Choose
+# another model with /model or -m; its tools will report the missing host.
+model = "gpt-5.5"
+
+[features]
+# The shared background server installs a complete managed Codex package,
+# which includes codex-code-mode-host. Run the interface in-process
+# instead, as `codex --no-daemon` does.
+daemon_auto_start = false

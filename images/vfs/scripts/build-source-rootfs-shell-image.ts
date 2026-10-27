@@ -1253,6 +1253,7 @@ function requireCompleteProductShellContract(fs: KandeloImageFs): void {
   for (const path of [
     "/etc/gitconfig",
     "/etc/profile",
+    "/etc/codex/config.toml",
     `${NETHACK_PLAYGROUND}/perm`,
     `${NETHACK_PLAYGROUND}/record`,
   ]) {

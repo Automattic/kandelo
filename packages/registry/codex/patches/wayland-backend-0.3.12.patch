@@ -1,0 +1,49 @@
+--- a/src/rs/server_impl/common_poll.rs
++++ b/src/rs/server_impl/common_poll.rs
+@@ -14,7 +14,7 @@
+     types::server::InitError,
+ };
+ 
+-#[cfg(any(target_os = "linux", target_os = "android"))]
++#[cfg(any(any(target_os = "linux", target_os = "kandelo"), target_os = "android"))]
+ use rustix::event::{epoll, Timespec};
+ 
+ #[cfg(any(
+@@ -34,7 +34,7 @@
+ 
+ impl<D> InnerBackend<D> {
+     pub fn new() -> Result<Self, InitError> {
+-        #[cfg(any(target_os = "linux", target_os = "android"))]
++        #[cfg(any(any(target_os = "linux", target_os = "kandelo"), target_os = "android"))]
+         let poll_fd = epoll::create(epoll::CreateFlags::CLOEXEC)
+             .map_err(Into::into)
+             .map_err(InitError::Io)?;
+@@ -77,7 +77,7 @@
+         ret
+     }
+ 
+-    #[cfg(any(target_os = "linux", target_os = "android"))]
++    #[cfg(any(any(target_os = "linux", target_os = "kandelo"), target_os = "android"))]
+     pub fn dispatch_all_clients(&self, data: &mut D) -> std::io::Result<usize> {
+         use std::os::unix::io::AsFd;
+ 
+@@ -163,7 +163,7 @@
+                             }
+                         }
+                         Err(e) => {
+-                            #[cfg(any(target_os = "linux", target_os = "android"))]
++                            #[cfg(any(any(target_os = "linux", target_os = "kandelo"), target_os = "android"))]
+                             {
+                                 epoll::delete(&state.poll_fd, client)?;
+                             }
+--- a/src/rs/server_impl/handle.rs
++++ b/src/rs/server_impl/handle.rs
+@@ -327,7 +327,7 @@
+         let client = self.clients.get_client(id.clone()).unwrap();
+ 
+         // register the client to the internal epoll
+-        #[cfg(any(target_os = "linux", target_os = "android"))]
++        #[cfg(any(any(target_os = "linux", target_os = "kandelo"), target_os = "android"))]
+         let ret = {
+             use rustix::event::epoll;
+             epoll::add(

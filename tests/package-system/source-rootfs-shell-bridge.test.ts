@@ -30,7 +30,11 @@ import {
   SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES,
 } from "../../images/vfs/scripts/build-source-rootfs-shell-image";
 import { SHELL_LAZY_BINARY_SPECS, shellLazySpecDependency } from "../../images/vfs/lib/init/shell-binaries";
-import { SHELL_SESSION_PACKAGES, SHELL_SESSION_HELPERS } from "../../images/vfs/scripts/package-session-files";
+import {
+  SHELL_PACKAGE_RUNTIME_FILES,
+  SHELL_SESSION_PACKAGES,
+  SHELL_SESSION_HELPERS,
+} from "../../images/vfs/scripts/package-session-files";
 import {
   NCURSES_TERMINFO_RUNTIME_FILE,
   SHELL_CA_BUNDLE,
@@ -77,6 +81,16 @@ const canonicalDependencyContract = join(
   "packages/registry/shell/source-rootfs-shell-dependencies.json",
 );
 const roots: string[] = [];
+/**
+ * The registry file each package's build installs as a runtime artifact
+ * named in `SHELL_PACKAGE_RUNTIME_FILES`. A new entry there without a source
+ * here fails the fixture loudly instead of being skipped.
+ */
+const SHELL_PACKAGE_RUNTIME_FILE_SOURCES: Record<string, Record<string, string>> = {
+  codex: {
+    "config.toml": "system-config.toml",
+  },
+};
 const MiB = 1024 * 1024;
 const CA_FIXTURE = new TextEncoder().encode("rootfs CA fixture\n");
 const ROOTFS_LAZY_IDS = new Set([
@@ -325,6 +339,17 @@ function fixturePaths(root: string) {
   for (const name of SHELL_SESSION_PACKAGES) {
     for (const artifact of ["sessions.json", ...SHELL_SESSION_HELPERS[name] ?? []]) {
       writeFileSync(join(dependencyRoots.get(name)!, artifact), readFileSync(join(repoRoot, "packages/registry", name, artifact)));
+    }
+  }
+  // Package-owned configuration the shell installs: each artifact is the
+  // real file the package's build installs under that name.
+  for (const [name, artifacts] of Object.entries(SHELL_PACKAGE_RUNTIME_FILES)) {
+    for (const artifact of artifacts) {
+      const source = SHELL_PACKAGE_RUNTIME_FILE_SOURCES[name]?.[artifact];
+      if (!source) {
+        throw new Error(`fixture has no source for ${name}'s runtime file ${artifact}`);
+      }
+      writeFileSync(join(dependencyRoots.get(name)!, artifact), readFileSync(join(repoRoot, "packages/registry", name, source)));
     }
   }
   for (const spec of SHELL_LAZY_ARCHIVE_SPECS) {

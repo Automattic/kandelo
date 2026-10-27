@@ -1,0 +1,12 @@
+--- a/src/sys/unix.rs
++++ b/src/sys/unix.rs
+@@ -391,6 +391,9 @@
+ ))]
+ type IovLen = c_int;
+ 
++#[cfg(target_os = "kandelo")]
++type IovLen = c_int;
++
+ /// Unix only API.
+ impl Domain {
+     /// Domain for low-level packet interface, corresponding to `AF_PACKET`.

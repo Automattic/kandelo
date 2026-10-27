@@ -1,0 +1,250 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -862,7 +862,7 @@
+ version = "0.7"
+ features = ["rt"]
+ 
+-[target.'cfg(all(target_family = "wasm", not(target_os = "wasi")))'.dev-dependencies.wasm-bindgen-test]
++[target.'cfg(all(all(target_family = "wasm", not(target_os = "kandelo")), not(target_os = "wasi")))'.dev-dependencies.wasm-bindgen-test]
+ version = "0.3.0"
+ 
+ [target.'cfg(all(tokio_unstable, target_has_atomic = "64"))'.dev-dependencies.tracing-mock]
+@@ -897,7 +897,7 @@
+ [target.'cfg(all(tokio_unstable, target_os = "linux"))'.dev-dependencies.backtrace]
+ version = "0.3.58"
+ 
+-[target.'cfg(any(not(target_family = "wasm"), all(target_os = "wasi", not(target_env = "p1"))))'.dependencies.socket2]
++[target.'cfg(any(not(all(target_family = "wasm", not(target_os = "kandelo"))), all(target_os = "wasi", not(target_env = "p1"))))'.dependencies.socket2]
+ version = "0.6.3"
+ features = ["all"]
+ optional = true
+@@ -909,16 +909,16 @@
+     "checkpoint",
+ ]
+ 
+-[target.'cfg(not(all(target_family = "wasm", target_os = "unknown")))'.dev-dependencies.rand]
++[target.'cfg(not(all(all(target_family = "wasm", not(target_os = "kandelo")), target_os = "unknown")))'.dev-dependencies.rand]
+ version = "0.9"
+ 
+-[target.'cfg(not(target_family = "wasm"))'.dev-dependencies.proptest]
++[target.'cfg(not(all(target_family = "wasm", not(target_os = "kandelo"))))'.dev-dependencies.proptest]
+ version = "1"
+ 
+-[target.'cfg(not(target_family = "wasm"))'.dev-dependencies.socket2]
++[target.'cfg(not(all(target_family = "wasm", not(target_os = "kandelo"))))'.dev-dependencies.socket2]
+ version = "0.6.0"
+ 
+-[target.'cfg(not(target_family = "wasm"))'.dev-dependencies.tempfile]
++[target.'cfg(not(all(target_family = "wasm", not(target_os = "kandelo"))))'.dev-dependencies.tempfile]
+ version = "3.1.0"
+ 
+ [target.'cfg(target_os = "freebsd")'.dev-dependencies.mio-aio]
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -465,7 +465,7 @@
+ 
+ #[cfg(all(
+     not(tokio_unstable),
+-    target_family = "wasm",
++    all(target_family = "wasm", not(target_os = "kandelo")),
+     any(
+         feature = "fs",
+         feature = "io-std",
+--- a/src/macros/cfg.rs
++++ b/src/macros/cfg.rs
+@@ -712,7 +712,7 @@
+ macro_rules! cfg_is_wasm_not_wasi {
+     ($($item:item)*) => {
+         $(
+-            #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
++            #[cfg(all(all(target_family = "wasm", not(target_os = "kandelo")), not(target_os = "wasi")))]
+             $item
+         )*
+     }
+--- a/src/net/unix/ucred.rs
++++ b/src/net/unix/ucred.rs
+@@ -33,6 +33,7 @@
+ 
+ #[cfg(any(
+     target_os = "linux",
++    target_os = "kandelo",
+     target_os = "redox",
+     target_os = "android",
+     target_os = "openbsd",
+@@ -67,6 +68,7 @@
+ 
+ #[cfg(any(
+     target_os = "linux",
++    target_os = "kandelo",
+     target_os = "redox",
+     target_os = "android",
+     target_os = "openbsd",
+@@ -83,6 +85,7 @@
+     use libc::sockpeercred as ucred;
+     #[cfg(any(
+         target_os = "linux",
++    target_os = "kandelo",
+         target_os = "redox",
+         target_os = "android",
+         target_os = "haiku",
+--- a/src/runtime/config.rs
++++ b/src/runtime/config.rs
+@@ -1,5 +1,5 @@
+ #![cfg_attr(
+-    any(not(all(tokio_unstable, feature = "full")), target_family = "wasm"),
++    any(not(all(tokio_unstable, feature = "full")), all(target_family = "wasm", not(target_os = "kandelo"))),
+     allow(dead_code)
+ )]
+ use crate::runtime::{Callback, TaskCallback};
+--- a/src/runtime/driver.rs
++++ b/src/runtime/driver.rs
+@@ -3,7 +3,7 @@
+ // Eventually, this file will see significant refactoring / cleanup. For now, we
+ // don't need to worry much about dead code with certain feature permutations.
+ #![cfg_attr(
+-    any(not(all(tokio_unstable, feature = "full")), target_family = "wasm"),
++    any(not(all(tokio_unstable, feature = "full")), all(target_family = "wasm", not(target_os = "kandelo"))),
+     allow(dead_code)
+ )]
+ 
+--- a/src/runtime/metrics/histogram/h2_histogram.rs
++++ b/src/runtime/metrics/histogram/h2_histogram.rs
+@@ -302,7 +302,7 @@
+     use crate::runtime::metrics::histogram::h2_histogram::LogHistogram;
+     use crate::runtime::metrics::histogram::HistogramType;
+ 
+-    #[cfg(not(target_family = "wasm"))]
++    #[cfg(not(all(target_family = "wasm", not(target_os = "kandelo"))))]
+     mod proptests {
+         use super::*;
+         use crate::runtime::metrics::batch::duration_as_u64;
+--- a/src/runtime/mod.rs
++++ b/src/runtime/mod.rs
+@@ -396,7 +396,7 @@
+ 
+ // At the top due to macros
+ #[cfg(test)]
+-#[cfg(not(target_family = "wasm"))]
++#[cfg(not(all(target_family = "wasm", not(target_os = "kandelo"))))]
+ #[macro_use]
+ mod tests;
+ 
+--- a/src/runtime/park.rs
++++ b/src/runtime/park.rs
+@@ -153,14 +153,14 @@
+             Err(actual) => panic!("inconsistent park_timeout state; actual = {actual}"),
+         }
+ 
+-        #[cfg(not(all(target_family = "wasm", not(target_feature = "atomics"))))]
++        #[cfg(not(all(all(target_family = "wasm", not(target_os = "kandelo")), not(target_feature = "atomics"))))]
+         // Wait with a timeout, and if we spuriously wake up or otherwise wake up
+         // from a notification, we just want to unconditionally set the state back to
+         // empty, either consuming a notification or un-flagging ourselves as
+         // parked.
+         let (_m, _result) = self.condvar.wait_timeout(m, dur).unwrap();
+ 
+-        #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
++        #[cfg(all(all(target_family = "wasm", not(target_os = "kandelo")), not(target_feature = "atomics")))]
+         // Wasm without atomics doesn't have threads, so just sleep.
+         {
+             let _m = m;
+--- a/src/runtime/scheduler/inject/synced.rs
++++ b/src/runtime/scheduler/inject/synced.rs
+@@ -1,5 +1,5 @@
+ #![cfg_attr(
+-    any(not(all(tokio_unstable, feature = "full")), target_family = "wasm"),
++    any(not(all(tokio_unstable, feature = "full")), all(target_family = "wasm", not(target_os = "kandelo"))),
+     allow(dead_code)
+ )]
+ 
+--- a/src/runtime/task/mod.rs
++++ b/src/runtime/task/mod.rs
+@@ -514,7 +514,7 @@
+ impl<S: Schedule> UnownedTask<S> {
+     // Used in test of the inject queue.
+     #[cfg(test)]
+-    #[cfg_attr(target_family = "wasm", allow(dead_code))]
++    #[cfg_attr(all(target_family = "wasm", not(target_os = "kandelo")), allow(dead_code))]
+     pub(super) fn into_notified(self) -> Notified<S> {
+         Notified(self.into_task())
+     }
+--- a/src/sync/tests/atomic_waker.rs
++++ b/src/sync/tests/atomic_waker.rs
+@@ -15,7 +15,7 @@
+ impl AssertSend for Waker {}
+ impl AssertSync for Waker {}
+ 
+-#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
++#[cfg(all(all(target_family = "wasm", not(target_os = "kandelo")), not(target_os = "wasi")))]
+ use wasm_bindgen_test::wasm_bindgen_test as test;
+ 
+ #[test]
+@@ -40,7 +40,7 @@
+ }
+ 
+ #[test]
+-#[cfg_attr(target_family = "wasm", ignore)] // threads not supported
++#[cfg_attr(all(target_family = "wasm", not(target_os = "kandelo")), ignore)] // threads not supported
+ fn failed_wake_synchronizes() {
+     for _ in 0..1000 {
+         failed_wake_synchronizes_inner();
+@@ -73,7 +73,7 @@
+ 
+ #[cfg(panic = "unwind")]
+ #[test]
+-#[cfg(not(target_family = "wasm"))] // wasm currently doesn't support unwinding
++#[cfg(not(all(target_family = "wasm", not(target_os = "kandelo"))))] // wasm currently doesn't support unwinding
+ fn atomic_waker_panic_safe() {
+     use std::panic;
+     use std::ptr;
+--- a/src/sync/tests/notify.rs
++++ b/src/sync/tests/notify.rs
+@@ -3,7 +3,7 @@
+ use std::sync::Arc;
+ use std::task::{Context, RawWaker, RawWakerVTable, Waker};
+ 
+-#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
++#[cfg(all(all(target_family = "wasm", not(target_os = "kandelo")), not(target_os = "wasi")))]
+ use wasm_bindgen_test::wasm_bindgen_test as test;
+ 
+ #[test]
+@@ -103,7 +103,7 @@
+ }
+ 
+ #[test]
+-#[cfg(not(target_family = "wasm"))]
++#[cfg(not(all(target_family = "wasm", not(target_os = "kandelo"))))]
+ fn watch_test() {
+     let rt = crate::runtime::Builder::new_current_thread()
+         .build()
+--- a/src/sync/tests/semaphore_batch.rs
++++ b/src/sync/tests/semaphore_batch.rs
+@@ -3,7 +3,7 @@
+ 
+ const MAX_PERMITS: usize = crate::sync::Semaphore::MAX_PERMITS;
+ 
+-#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
++#[cfg(all(all(target_family = "wasm", not(target_os = "kandelo")), not(target_os = "wasi")))]
+ use wasm_bindgen_test::wasm_bindgen_test as test;
+ 
+ #[test]
+@@ -177,7 +177,7 @@
+ 
+ #[test]
+ #[should_panic]
+-#[cfg(not(target_family = "wasm"))] // wasm currently doesn't support unwinding
++#[cfg(not(all(target_family = "wasm", not(target_os = "kandelo"))))] // wasm currently doesn't support unwinding
+ fn validates_max_permits() {
+     Semaphore::new(MAX_PERMITS + 1);
+ }
+--- a/src/task/coop/mod.rs
++++ b/src/task/coop/mod.rs
+@@ -496,7 +496,7 @@
+ mod test {
+     use super::*;
+ 
+-    #[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
++    #[cfg(all(all(target_family = "wasm", not(target_os = "kandelo")), not(target_os = "wasi")))]
+     use wasm_bindgen_test::wasm_bindgen_test as test;
+ 
+     fn get() -> Budget {

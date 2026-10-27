@@ -1,0 +1,11 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -107,7 +107,7 @@
+         }
+     }
+ 
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(all(target_arch = "wasm32", not(target_os = "kandelo"))))]
+     #[cfg(feature = "reqwest-blocking")]
+     #[async_trait]
+     impl HttpClient for reqwest::blocking::Client {

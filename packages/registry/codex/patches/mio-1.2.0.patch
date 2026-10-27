@@ -1,0 +1,109 @@
+--- a/src/interest.rs
++++ b/src/interest.rs
+@@ -48,7 +48,7 @@
+     pub const LIO: Interest = Interest(unsafe { NonZeroU8::new_unchecked(LIO) });
+ 
+     /// Returns a `Interest` set representing priority completion interests.
+-    #[cfg(any(target_os = "linux", target_os = "android"))]
++    #[cfg(any(any(target_os = "linux", target_os = "kandelo"), target_os = "android"))]
+     pub const PRIORITY: Interest = Interest(unsafe { NonZeroU8::new_unchecked(PRIORITY) });
+ 
+     /// Add together two `Interest`.
+@@ -186,7 +186,7 @@
+                 one = true
+             }
+         }
+-        #[cfg(any(target_os = "linux", target_os = "android"))]
++        #[cfg(any(any(target_os = "linux", target_os = "kandelo"), target_os = "android"))]
+         {
+             if self.is_priority() {
+                 if one {
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -40,7 +40,7 @@
+ //!
+ //! The available features are described in the [`features`] module.
+ 
+-#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
++#[cfg(all(all(target_family = "wasm", not(target_os = "kandelo")), not(target_os = "wasi")))]
+ compile_error!("This wasm target is unsupported by mio. If using Tokio, disable the net feature.");
+ 
+ // macros used internally
+--- a/src/sys/unix/mod.rs
++++ b/src/sys/unix/mod.rs
+@@ -20,7 +20,7 @@
+         any(
+             target_os = "android",
+             target_os = "illumos",
+-            target_os = "linux",
++            any(target_os = "linux", target_os = "kandelo"),
+             target_os = "redox",
+         )
+     ), path = "selector/epoll.rs")]
+@@ -63,7 +63,7 @@
+             target_os = "fuchsia",
+             target_os = "hermit",
+             target_os = "illumos",
+-            target_os = "linux",
++            any(target_os = "linux", target_os = "kandelo"),
+         )
+     ), path = "waker/eventfd.rs")]
+     #[cfg_attr(all(
+--- a/src/sys/unix/net.rs
++++ b/src/sys/unix/net.rs
+@@ -19,7 +19,7 @@
+         target_os = "freebsd",
+         target_os = "hurd",
+         target_os = "illumos",
+-        target_os = "linux",
++        any(target_os = "linux", target_os = "kandelo"),
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_os = "solaris",
+--- a/src/sys/unix/pipe.rs
++++ b/src/sys/unix/pipe.rs
+@@ -14,7 +14,7 @@
+         target_os = "freebsd",
+         target_os = "fuchsia",
+         target_os = "hurd",
+-        target_os = "linux",
++        any(target_os = "linux", target_os = "kandelo"),
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_os = "illumos",
+--- a/src/sys/unix/selector/poll.rs
++++ b/src/sys/unix/selector/poll.rs
+@@ -490,9 +490,9 @@
+     }
+ }
+ 
+-#[cfg(target_os = "linux")]
++#[cfg(any(target_os = "linux", target_os = "kandelo"))]
+ const POLLRDHUP: libc::c_short = libc::POLLRDHUP;
+-#[cfg(not(target_os = "linux"))]
++#[cfg(not(any(target_os = "linux", target_os = "kandelo")))]
+ const POLLRDHUP: libc::c_short = 0;
+ 
+ #[cfg(not(target_os = "wasi"))]
+--- a/src/sys/unix/tcp.rs
++++ b/src/sys/unix/tcp.rs
+@@ -69,7 +69,7 @@
+         target_os = "fuchsia",
+         target_os = "hurd",
+         target_os = "illumos",
+-        target_os = "linux",
++        any(target_os = "linux", target_os = "kandelo"),
+         target_os = "netbsd",
+         target_os = "openbsd",
+         target_os = "solaris",
+--- a/src/sys/unix/uds/listener.rs
++++ b/src/sys/unix/uds/listener.rs
+@@ -26,7 +26,7 @@
+     )) {
+         128
+     } else if cfg!(any(
+-        target_os = "linux",
++        any(target_os = "linux", target_os = "kandelo"),
+         target_os = "freebsd",
+         target_os = "openbsd",
+         target_vendor = "apple"

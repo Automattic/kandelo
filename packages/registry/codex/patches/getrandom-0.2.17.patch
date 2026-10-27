@@ -1,0 +1,21 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -248,6 +248,7 @@
+         #[path = "getentropy.rs"] mod imp;
+     } else if #[cfg(any(
+         target_os = "dragonfly",
++        target_os = "kandelo",
+         target_os = "freebsd",
+         target_os = "hurd",
+         target_os = "illumos",
+--- a/src/util_libc.rs
++++ b/src/util_libc.rs
+@@ -11,7 +11,7 @@
+ cfg_if! {
+     if #[cfg(any(target_os = "netbsd", target_os = "openbsd", target_os = "android", target_os = "cygwin"))] {
+         use libc::__errno as errno_location;
+-    } else if #[cfg(any(target_os = "linux", target_os = "emscripten", target_os = "hurd", target_os = "redox", target_os = "dragonfly"))] {
++    } else if #[cfg(any(any(target_os = "linux", target_os = "kandelo"), target_os = "emscripten", target_os = "hurd", target_os = "redox", target_os = "dragonfly"))] {
+         use libc::__errno_location as errno_location;
+     } else if #[cfg(any(target_os = "solaris", target_os = "illumos"))] {
+         use libc::___errno as errno_location;

@@ -23,6 +23,7 @@ depends_on = [
   "mariadb@10.5.28",
   "wget@1.25.0",
   "git@2.47.1",
+  "codex@0.163.0",
   "jq@1.8.2",
   "php@8.5.12",
   "composer@2.10.3",
