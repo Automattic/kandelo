@@ -82,6 +82,10 @@ function playwrightWebServerEnvironment(
     }
   }
   childEnvironment.KANDELO_BROWSER_TEST_NO_HMR = "1";
+  // WebKit has no mute flag (Chromium and Firefox are muted below), so the
+  // dev server routes page audio through a silent gain node instead; see
+  // muteBrowserTestAudio in vite.config.ts.
+  childEnvironment.KANDELO_BROWSER_TEST_MUTE_AUDIO = "1";
   return childEnvironment;
 }
 
