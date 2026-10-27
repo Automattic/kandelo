@@ -1344,6 +1344,10 @@ export class NodeKernelHost {
   }
 
   private handleWorkerMessage(msg: KernelToMainMessage): void {
+    // WHY: under `node --watch`, the worker inherits WATCH_REPORT_DEPENDENCIES
+    // and posts `{ "watch:import" | "watch:require": [...] }` for each module
+    // it loads. Node's Worker already forwards them to the watch parent.
+    if ("watch:import" in msg || "watch:require" in msg) return;
     switch (msg.type) {
       case "exchange_range_request":
         this.exchange.handleRangeRequest(msg.source, msg.offset, msg.length);
