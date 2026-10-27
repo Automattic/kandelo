@@ -24,15 +24,20 @@ const shellImagePath = join(programsDir, "shell.vfs.zst");
 const LAZY_URL_BASE = "https://kandelo.invalid/";
 const ASSETS: ReadonlyArray<readonly [url: string, file: string]> = [
   [`${LAZY_URL_BASE}assets/programs/wasm32/nethack.zip`, "nethack.zip"],
+  [`${LAZY_URL_BASE}assets/programs/wasm32/coreutils.wasm`, "coreutils.wasm"],
 ];
 const available =
   kernelPath !== null &&
   existsSync(shellImagePath) &&
   ASSETS.every(([, file]) => existsSync(join(programsDir, file)));
 
-// Levels whose old 8-byte encoding the game could not read, and one it could
-// (oracle), so a teleport that fails for another reason does not pass.
-const LEVELS = ["oracle", "minetn", "soko1", "bigrm", "medusa", "castle"];
+// Main-dungeon levels (level teleport by name stays within the current
+// dungeon). Read with 4-byte fields, the old 8-byte files sent the Oracle and
+// Medusa levels to the loader's "impossible opcode" panic and cut the Castle
+// short.
+const LEVELS = ["oracle", "medusa", "castle"];
+// Where each arrives: the Oracle at depth 5-9, Medusa's island in water (})
+// below depth 20, and the Castle below Medusa.
 const OPTIONS =
   "windowtype:tty,role:Valkyrie,race:human,gender:female,align:neutral,!legacy,!autopickup";
 
@@ -76,24 +81,35 @@ async function until(
 describe.skipIf(!available)("NetHack special levels (Node host, shell product)", () => {
   it("loads special levels from nhdat", async () => {
     let pty = "";
+    let output = "";
     const host = new NodeKernelHost({
       rootfsImage: new Uint8Array(readFileSync(shellImagePath)),
       rootfsLazyUrlBase: LAZY_URL_BASE,
       rootfsLazyAssetDirectory: LAZY_URL_BASE,
       rootfsLazyAssets: ASSETS.map(([url, file]) => closedAsset(url, file)),
+      onStdout: (_pid, bytes) => { output += new TextDecoder().decode(bytes); },
+      onStderr: (_pid, bytes) => { output += new TextDecoder().decode(bytes); },
       onPtyOutput: (_pid, bytes) => { pty += new TextDecoder().decode(bytes); },
     });
     try {
       await host.init(arrayBuffer(new Uint8Array(readFileSync(kernelPath!))));
+      // Without a sysconf file, NetHack grants wizard mode to the login
+      // named `wizard`.
+      const added = await host.spawnFromVfs("/usr/bin/bash", ["bash", "-c",
+        "echo 'wizard:x:1002:1002:wizard:/home/wizard:/bin/bash' >> /etc/passwd && " +
+          "echo 'wizard:x:1002:' >> /etc/group && " +
+          "mkdir -p /home/wizard && chown 1002:1002 /home/wizard"],
+      { env: ["HOME=/root", "PATH=/usr/bin:/bin"], uid: 0, gid: 0 });
+      expect(await added.exit, output).toBe(0);
+
       let pid = -1;
-      // Without a sysconf file, the player named `wizard` may use wizard mode.
       const { exit } = await host.spawnFromVfs(
         "/usr/bin/bash",
         ["bash", "-c", `NETHACKOPTIONS='${OPTIONS}' exec nethack -D -u wizard`],
         {
-          env: ["HOME=/home/maker", "USER=maker", "TERM=xterm-256color", "PATH=/usr/bin:/bin"],
-          uid: 1000,
-          gid: 1000,
+          env: ["HOME=/home/wizard", "USER=wizard", "TERM=xterm-256color", "PATH=/usr/bin:/bin"],
+          uid: 1002,
+          gid: 1002,
           pty: true,
           ptyCols: 80,
           ptyRows: 24,
@@ -109,6 +125,7 @@ describe.skipIf(!available)("NetHack special levels (Node host, shell product)",
         `reached the map:\n${screenText(pty)}`,
       ).toBe(true);
 
+      const depth: Record<string, number> = {};
       for (const level of LEVELS) {
         pty = "";
         key("\x16"); // ^V: level teleport
@@ -128,7 +145,13 @@ describe.skipIf(!available)("NetHack special levels (Node host, shell product)",
         const screen = screenText(pty);
         expect(arrived && status === null, `${level}:\n${screen}`).toBe(true);
         expect(screen, level).not.toMatch(/impossible opcode|Program in disorder|panic/i);
+        depth[level] = Number(/Dlvl:?\s*(\d+)/.exec(screen)![1]);
+        if (level === "medusa") expect(screen, level).toContain("}}}}");
       }
+      expect(depth.oracle).toBeGreaterThanOrEqual(5);
+      expect(depth.oracle).toBeLessThanOrEqual(9);
+      expect(depth.medusa).toBeGreaterThan(20);
+      expect(depth.castle).toBeGreaterThan(depth.medusa!);
     } finally {
       await host.destroy().catch(() => {});
     }
