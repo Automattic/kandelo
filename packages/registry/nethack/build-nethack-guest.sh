@@ -18,9 +18,13 @@ cp sys/share/dgn_yacc.c sys/share/dgn_lex.c \
     sys/share/lev_yacc.c sys/share/lev_lex.c util/
 cp sys/share/dgn_comp.h sys/share/lev_comp.h include/
 
-make -j"$JOBS" CC=cc LINK=cc -C util makedefs dgn_comp lev_comp dlb
-make -j"$JOBS" CC=cc LINK=cc -C dat all
-make CC=cc LINK=cc dlb
+# util/Makefile does not order the headers makedefs generates (pm.h,
+# onames.h) before the game objects lev_comp links, so the generators and
+# the data files build one job at a time. With those headers in place,
+# src/Makefile chains its own generated sources for parallel make.
+make -j1 CC=cc LINK=cc -C util makedefs dgn_comp lev_comp dlb
+make -j1 CC=cc LINK=cc -C dat all
+make -j1 CC=cc LINK=cc dlb
 make -j"$JOBS" CC=cc LINK=cc -C src nethack
 
 test -f src/nethack
