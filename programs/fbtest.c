@@ -1,6 +1,7 @@
 /*
  * fbtest — open /dev/fb0, query geometry, mmap the pixel buffer, write a
- * known pattern, and pause.
+ * known pattern, and pause. `fbtest WIDTH HEIGHT` first selects that mode
+ * with FBIOPUT_VSCREENINFO.
  *
  * Used by host/test/framebuffer-integration.test.ts to verify the kernel
  * binds the framebuffer correctly and the host can read pixel bytes back
@@ -13,17 +14,28 @@
 #include <linux/fb.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
-int main(void) {
+int main(int argc, char** argv) {
     int fd = open("/dev/fb0", O_RDWR);
     if (fd < 0) { perror("open /dev/fb0"); return 1; }
 
     struct fb_var_screeninfo v;
     if (ioctl(fd, FBIOGET_VSCREENINFO, &v) < 0) {
         perror("FBIOGET_VSCREENINFO"); return 1;
+    }
+    if (argc == 3) {
+        v.xres = (uint32_t)strtoul(argv[1], NULL, 10);
+        v.yres = (uint32_t)strtoul(argv[2], NULL, 10);
+        if (ioctl(fd, FBIOPUT_VSCREENINFO, &v) < 0) {
+            perror("FBIOPUT_VSCREENINFO"); return 1;
+        }
+        if (ioctl(fd, FBIOGET_VSCREENINFO, &v) < 0) {
+            perror("FBIOGET_VSCREENINFO"); return 1;
+        }
     }
     struct fb_fix_screeninfo f;
     if (ioctl(fd, FBIOGET_FSCREENINFO, &f) < 0) {
