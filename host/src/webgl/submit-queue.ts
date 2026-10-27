@@ -131,9 +131,13 @@ export class SubmitQueue {
   releaseIfEmpty(entry: QueueEntry): void {
     if (entry.frames.length > 0) return;
     this.byKey.delete(entry.key);
-    const lane = this.isCompositor(entry.binding.pid) ? this.compositor : this.clients;
-    const i = lane.indexOf(entry);
-    if (i >= 0) lane.splice(i, 1);
+    // Admission chose a lane using the exact binding's then-current file
+    // authority. Cleanup must remove that owned entry even after handoff,
+    // without consulting a changed classifier or retaining its guest view.
+    const compositorIndex = this.compositor.indexOf(entry);
+    if (compositorIndex >= 0) this.compositor.splice(compositorIndex, 1);
+    const clientIndex = this.clients.indexOf(entry);
+    if (clientIndex >= 0) this.clients.splice(clientIndex, 1);
   }
 
   /**

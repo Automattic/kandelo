@@ -24,6 +24,25 @@ function drainOne(q: SubmitQueue): QueueEntry | null {
 }
 
 describe("SubmitQueue", () => {
+  it.each([true, false])("retires an empty lane without rechecking changed master authority (compositor: %s)", compositor => {
+    let admitted = false;
+    const binding = mkBinding(2);
+    const q = new SubmitQueue(candidate => {
+      expect(candidate).toBe(binding);
+      if (admitted) throw new Error("Master authority changed after admission");
+      return compositor;
+    });
+    q.enqueue(binding, mkFrame());
+    admitted = true;
+    const entry = q.pickNext()!;
+    entry.frames.shift();
+    expect(() => q.releaseIfEmpty(entry)).not.toThrow();
+    expect(q.isEmpty()).toBe(true);
+    // Failed dispatch can stop draining immediately. No lane may retain the
+    // consumed binding (and its guest memory) until a later pickNext call.
+    expect(q).toMatchObject({ compositor: [], clients: [] });
+  });
+
   it("compositor pid jumps ahead of clients enqueued earlier", () => {
     const q = new SubmitQueue(binding => binding.pid === 2);
     q.enqueue(mkBinding(10), mkFrame());

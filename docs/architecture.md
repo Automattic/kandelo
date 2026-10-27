@@ -4454,6 +4454,11 @@ accessors avoid overridable source properties. A frame is admitted once,
 consumed before dispatch, and cleared on session/process purge. A failed
 or partially executed packet is not replayed.
 
+Empty queue entries release their actual lane membership without rechecking
+DRM master authority. The file grant may change after admission, and failed
+dispatch can stop the drain immediately. Cleanup must release the consumed
+binding's references in that same turn rather than wait for another drain.
+
 During synchronous dispatch the binding temporarily exposes the owned bytes
 to the existing decoder. Finally restores its cached guest view only if a
 memory rebind or teardown has not replaced it. Main forwarding does not

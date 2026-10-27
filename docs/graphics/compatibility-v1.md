@@ -6129,3 +6129,26 @@ or browser-memory switching gate. Render-node-first context/resource
 creation, lost-master scanout, flip admission/timing, complete storage
 views, expanded CTS, final combined POSIX and normal manual browser checks
 remain required. Performance was not measured by these correctness cases.
+
+
+## Submission lane retirement after master changes, 2026-10-27
+
+An empty submission entry now drops its actual compositor/client lane
+membership without consulting current DRM master classification. The old
+release passed a numeric PID to the binding classifier, despite admission
+using the binding's exact file identity. A changed grant could also select
+the wrong lane even with the correct argument. A dispatch failure can stop
+the drain immediately, leaving the consumed binding and its cached guest
+command view retained until some later drain. Cleanup now removes the owned
+entry directly from both possible lanes and preserves pending peer frames.
+
+Two new source regressions first failed on the integrated ABI 56 source,
+one for each admission lane. Both require cleanup after classification
+changes and assert that no lane retains the consumed binding. The repaired
+queue, drain and immutable-snapshot selection passed 38 tests in three
+files, without skips or unloaded files, through the ordinary graphics
+source configuration. The owned conformance checkout keeps
+`.context/submit-queue-authority-{before,after,final}.log`. No guest pixel,
+full memory-switching or conformance result is inferred from this source
+selection. H01/H03 remain partial; program ABI 56 and kernel-host version 3
+are unchanged. Performance was not measured.
