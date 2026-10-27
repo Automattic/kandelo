@@ -11,12 +11,14 @@ import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./sup
 
 test.use({ serviceWorkers: "block", viewport: { width: 800, height: 600 } });
 let fixture: ReturnType<typeof compileSdkFixture>;
-const evidenceRoot = fileURLToPath(new URL("../../../.context/graphics-abi56-format-evidence/", import.meta.url));
+const evidenceBase = fileURLToPath(new URL("../../../.context/graphics-abi56-format-evidence/", import.meta.url));
+let evidenceRoot = evidenceBase;
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 test.beforeAll(() => {
   fixture = compileSdkFixture(new URL("../../../host/test/fixtures/dri-scanout-formats.c", import.meta.url), [
     `-I${fileURLToPath(new URL("../../../sysroot/include/drm", import.meta.url))}`, "-ldrm",
   ]);
+  evidenceRoot = join(evidenceBase, `run-${Date.now()}-${test.info().project.name}-formats`);
   mkdirSync(evidenceRoot, { recursive: true });
   writeFileSync(join(evidenceRoot, `scanout-probe-${test.info().project.name}.wasm`), readFileSync(fixture.programPath));
 });

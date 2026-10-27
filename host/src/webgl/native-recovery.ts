@@ -6,6 +6,7 @@ import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
  * callbacks whose lexical environment could retain a whole binding. */
 export type NativeCall =
   | ["clearVertexAttribute", NativeRetirement, number, number, number, boolean, number, number]
+  | ["enable", number] | ["disable", number]
   | ["activeTexture", number]
   | ["pixelStorei", number, number]
   | ["bindTexture", number, WebGLTexture | null]

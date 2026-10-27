@@ -469,6 +469,7 @@ host/test/webgl-gpu-bo.test.ts	source-only
 host/test/webgl-image-bindings.test.ts	source-only
 host/test/webgl-image-storage.test.ts	source-only
 host/test/webgl-image-transactions.test.ts	source-only
+host/test/webgl-kms-scanout.test.ts	source-only
 host/test/webgl-main-forward.test.ts	source-only
 host/test/webgl-muxer.test.ts	source-only
 host/test/webgl-op-contract.test.ts	source-only

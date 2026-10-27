@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { createWasmPosixKernelTestHarness, WasmPosixKernel } from "../src/kernel";
+import { createWasmPosixKernelTestHarness, getKernelGraphicsAccess, WasmPosixKernel } from "../src/kernel";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
 /**
@@ -78,6 +78,17 @@ function fakeCanvas(width = 300, height = 150): {
 }
 
 const PID = 101;
+
+it("stands down GPU scanout after native context loss without terminating the machine", () => {
+  const { kernel } = harness({});
+  vi.spyOn(kernel.gl, "gpuBo").mockReturnValue({
+    gl: { isContextLost: () => true }, w: 640, h: 480,
+  } as any);
+  const canvas = { getContext: () => { throw new Error("Lost storage must not reach the display"); } };
+  expect(getKernelGraphicsAccess(kernel).gpuScanout(
+    { bo_id: 1, width: 640, height: 480 } as any, canvas as any, true,
+  )).toBeNull();
+});
 
 it.each([false, true])("rebuilds a recreated EGL window before drawing (new context: %s)", (newContext) => {
   let drawFramebuffer: unknown = null;
@@ -218,8 +229,9 @@ describe("KMS GL canvas auto-attach — ordering independence", () => {
 
   it("requires an explicit context retry after a renderer becomes available", () => {
     const canvas = fakeCanvas(1920, 1080);
+    let available = false;
     const { kernel, imports } = harness({
-      getKmsCanvas: (crtc: number) => (crtc === 1 ? canvas : undefined),
+      getKmsCanvas: (crtc: number) => (available && crtc === 1 ? canvas : undefined),
       getKmsCrtcIds: () => [1],
       markKmsCanvasGlOwned: () => {},
     });
@@ -230,6 +242,7 @@ describe("KMS GL canvas auto-attach — ordering independence", () => {
     expect(b.contextId).toBeNull();
     expect(b.canvas).toBeNull();
 
+    available = true;
     imports.env.host_kms_set_master(PID, 1n, 1n);
     imports.env.host_kms_addfb(PID, 10, 100, 1920, 1080, 0x34325258, 7680);
     imports.env.host_kms_set_fb(PID, 1, 10);
@@ -346,4 +359,25 @@ describe("KMS GL canvas release — the claim is handed back", () => {
     kernel.releaseProcessViews(PID);
     expect(released).toEqual([1]);
   });
+});
+
+
+it("creates a render-file context without granting another file's scanout authority", () => {
+  const canvas = fakeCanvas(640, 480);
+  let claims = 0;
+  const { kernel, imports } = harness({
+    getKmsCanvas: (crtc: number) => crtc === 1 ? canvas : undefined,
+    getKmsCrtcIds: () => [1],
+    markKmsCanvasGlOwned: () => { claims++; },
+  });
+  imports.env.host_kms_set_master(PID, 1n, 1n);
+  kernel.gl.bind({ displayFileId: 2n, pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+  expect(imports.env.host_gl_create_context(PID, 1, 0, 0)).toBe(0);
+  const binding = kernel.gl.get(PID)!;
+  expect(binding.gl).not.toBeNull();
+  expect(binding.canvas).toBeNull();
+  expect(binding.claimedKmsCrtc).toBeNull();
+  expect(claims).toBe(0);
+  expect(kernel.kms.getMasterFileId()).toBe(1n);
+  expect(kernel.kms.isMasterFile(binding.displayFileId)).toBe(false);
 });

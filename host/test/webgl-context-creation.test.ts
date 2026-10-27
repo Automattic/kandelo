@@ -29,6 +29,7 @@ function harness(callbacks = {}) {
 it("retires a GPU BO through the kernel destroy callback without CPU metadata", () => {
   const {kernel, imports, setMaster} = harness();
   const {gl, alive} = foreignTextureGl();
+  Object.assign(gl, { isContextLost: () => false });
   const deleted = vi.spyOn(gl, "deleteTexture");
   kernel.gl.bind({displayFileId: 1n, pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
   const binding = kernel.gl.get(7,11)!;
@@ -119,7 +120,7 @@ it("reads shared renderer limits for an unbound client while preserving the outg
 
 it("does not claim or resize KMS scanout merely to inspect renderer limits", () => {
   const claims:string[] = [], canvas = {width:11,height:7,getContext:()=>({
-    isContextLost:()=>false,getError:()=>0,getParameter:()=>8192,
+    isContextLost:()=>false,getError:()=>0,getParameter:()=>8192,getExtension:()=>null,
   } as unknown as WebGL2RenderingContext)} as unknown as OffscreenCanvas;
   const {kernel,imports,setMaster} = harness({getKmsCrtcIds:()=>[1],getKmsCanvas:()=>canvas,
     markKmsCanvasGlOwned:()=>claims.push("owned"),markKmsCanvasGlReleased:()=>claims.push("released")});
@@ -620,8 +621,12 @@ it("attaches master scanout by display file identity across process aliases", ()
   });
   imports.host_kms_set_master(7, 1n, 1n);
   kernel.gl.bind({ pid: 7, sessionId: 11, displayFileId: 2n, cmdbufAddr: 0, cmdbufLen: 0 });
-  expect(imports.host_gl_create_context(7, 21, 0, 0, 11)).toBe(-19);
-  expect(getContext).not.toHaveBeenCalled();
+  expect(imports.host_gl_create_context(7, 21, 0, 0, 11)).toBe(0);
+  const renderOnly = kernel.gl.get(7, 11)!;
+  expect(renderOnly.canvas).toBeNull();
+  expect(renderOnly.claimedKmsCrtc).toBeNull();
+  expect(kernel.kms.getMasterFileId()).toBe(1n);
+  expect(kernel.kms.getMasterPid()).toBe(7);
   kernel.gl.bind({ pid: 8, sessionId: 12, displayFileId: 1n, cmdbufAddr: 0, cmdbufLen: 0 });
   expect(imports.host_gl_create_context(8, 22, 0, 0, 12)).toBe(0);
   expect(kernel.gl.get(8, 12)!.canvas).toBe(canvas);

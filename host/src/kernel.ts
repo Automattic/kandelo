@@ -1,3 +1,6 @@
+import { drawGpuScanout, readGpuScanout } from "./webgl/kms-scanout.js";
+import { captureNativeGlErrors } from "./webgl/errors.js";
+import type { HostFb } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
 import { querySurfaceCapabilities, surfaceCapabilityRenderer } from "./webgl/surface-capabilities.js";
@@ -97,6 +100,20 @@ interface WasmPosixKernelRuntimeAccess {
   readonly gate: KernelEntryGate;
   readonly instance: () => WebAssembly.Instance | null;
   readonly memory: () => WebAssembly.Memory | null;
+}
+
+interface KernelGraphicsAccess {
+  readonly withGraphicsState: <T>(gl: WebGL2RenderingContext, work: () => T) => T;
+  readonly gpuScanout: (fb: HostFb, canvas: OffscreenCanvas, allowDirect: boolean) =>
+    { direct: true } | { direct: false; pixels: Uint8Array<ArrayBuffer> } | null;
+}
+const kernelGraphicsAccess = new WeakMap<WasmPosixKernel, KernelGraphicsAccess>();
+
+/** Native graphics operations expose no Instance, Memory or kernel gate. */
+export function getKernelGraphicsAccess(kernel: WasmPosixKernel): KernelGraphicsAccess {
+  const access = intrinsicApply(intrinsicWeakMapGet, kernelGraphicsAccess, [kernel]) as KernelGraphicsAccess | undefined;
+  if (!access) throw new Error("Unknown graphics device runtime");
+  return access;
 }
 
 // Package-private authority used by kernel-worker.ts. It is intentionally not
@@ -987,6 +1004,9 @@ export class WasmPosixKernel {
    */
   private gl_submit_queue = new SubmitQueue(binding => this.#isMasterGlBinding(binding));
   private gl_muxers = new WeakMap<WebGL2RenderingContext, GlMuxer>();
+  // Physical GPU resource ownership is device-wide, independent of DRM master
+  // and of the first process that happens to create an EGL context.
+  #deviceGl: WebGL2RenderingContext | null = null;
 
   private prepareForeignRetirements(b: GlBinding): boolean {
     if (b.gl) {
@@ -1013,6 +1033,43 @@ export class WasmPosixKernel {
     return muxer;
   }
 
+
+  private withGraphicsState<T>(gl: WebGL2RenderingContext, work: () => T): T {
+    const muxer = this.glMuxerFor(gl);
+    if (!muxer.prepareRetirement() || !this.gl.retryExecutionRetirements(gl) || !repairNativeState(gl))
+      throw new Error("Native graphics state is not ready for device presentation");
+    try {
+      const result = work();
+      const errors: number[] = [];
+      captureNativeGlErrors(gl, { errors });
+      if (errors.length) throw new Error(`Device graphics operation failed: ${errors.join(",")}`);
+      return result;
+    } finally { muxer.invalidateCurrent(); }
+  }
+
+  private gpuScanout(fb: HostFb, canvas: OffscreenCanvas, allowDirect: boolean):
+      { direct: true } | { direct: false; pixels: Uint8Array<ArrayBuffer> } | null {
+    const storage = this.gl.gpuBo(fb.bo_id);
+    if (!storage) return null;
+    // Context loss already reaches the guest through its EGL/GL failure
+    // channel. A device tick must stand down rather than kill the machine.
+    if (storage.gl.isContextLost()) return null;
+    if (fb.width > storage.w || fb.height > storage.h)
+      throw new Error("Invalid GPU scanout storage dimensions");
+    return this.withGraphicsState(storage.gl, () => {
+      const target = allowDirect ? canvas.getContext("webgl2") : null;
+      if (target === storage.gl) {
+        if (canvas.width !== fb.width || canvas.height !== fb.height) {
+          canvas.width = fb.width; canvas.height = fb.height;
+        }
+        if (!drawGpuScanout(storage, fb.width, fb.height)) throw new Error("GPU scanout blit failed");
+        return { direct: true };
+      }
+      const pixels = readGpuScanout(storage, fb.width, fb.height);
+      if (!pixels) throw new Error("GPU scanout readback failed");
+      return { direct: false, pixels };
+    });
+  }
 
   /**
    * Merge additional callbacks into the existing set.
@@ -1059,7 +1116,9 @@ export class WasmPosixKernel {
     const pid = b.pid;
     if (!b || b.forward) return;
     if (b.contextId == null) return; // GL context not created yet
-    if (b.gl) return; // already built
+    // A render-node context may already use the device's physical renderer.
+    // Only an exact master file can additionally select the scanout canvas.
+    if (b.gl && (b.canvas || !this.#isMasterGlBinding(b))) return;
     if (b.surface.kind === 2 && b.surface.gl) {
       // A previously created pbuffer already owns compatible offscreen
       // storage. Attaching it as a scanout window would resize the visible
@@ -1116,7 +1175,10 @@ export class WasmPosixKernel {
       stencil: true,
       preserveDrawingBuffer: true,
     }) as WebGL2RenderingContext | null;
-    if (ctx?.isContextLost()) return;
+    if (ctx?.isContextLost() || (b.gl && ctx !== b.gl)) {
+      b.canvas = null;
+      return;
+    }
     if (ctx) {
       // Mirror main-forward.ts: enable the WebGL2 float extensions so
       // RGBA16F framebuffers are renderable and float textures accept
@@ -1303,6 +1365,10 @@ export class WasmPosixKernel {
         },
       ],
     );
+    intrinsicApply(intrinsicWeakMapSet, kernelGraphicsAccess, [this, intrinsicObjectFreeze({
+      withGraphicsState: <T>(gl: WebGL2RenderingContext, work: () => T) => this.withGraphicsState(gl, work),
+      gpuScanout: (fb: HostFb, canvas: OffscreenCanvas, allowDirect: boolean) => this.gpuScanout(fb, canvas, allowDirect),
+    })]);
     // Let the GBM bo registry reach per-pid wasm Memory so the
     // bind/unbind sync (parent writes → SAB → child reads after PRIME
     // export+import) actually moves bytes. The closure follows
@@ -1567,16 +1633,30 @@ export class WasmPosixKernel {
     }
   }
 
-  /** The shared multiplexer context that backs GPU-tier bos: the
-   *  DRM-master compositor's scanout WebGL2 context. WebGL textures are
-   *  not shareable across contexts, so every GPU-bo texture (and the FBO
-   *  its producer renders into) must live here for the compositor to
-   *  sample its logical views without a CPU upload. Null when no pid holds
-   *  master or the master has no live context yet (headless Node, or before
-   *  the compositor's `eglCreateContext`) — the GPU-bo path then degrades
-   *  to CPU tier. */
+  /** The one virtual GPU's native renderer. A render file permits resource
+   * creation without DRM master. KMS control/presentation still follows exact
+   * file authority and the framebuffer selected by authorized KMS operations. */
   #sharedGlContext(): WebGL2RenderingContext | null {
-    return this.gl.list().find(binding => this.#isMasterGlBinding(binding) && binding.gl)?.gl ?? null;
+    if (this.#deviceGl && !this.#deviceGl.isContextLost()) return this.#deviceGl;
+    const existing = this.gl.list().find(binding => !binding.forward && binding.gl && !binding.gl.isContextLost())?.gl;
+    if (existing) return this.#deviceGl = existing;
+    const accept = (gl: WebGL2RenderingContext) => {
+      gl.getExtension("EXT_color_buffer_float"); gl.getExtension("OES_texture_float_linear");
+      gl.getExtension("EXT_float_blend");
+      return this.#deviceGl = gl;
+    };
+    const options = { antialias: false, premultipliedAlpha: false,
+      depth: true, stencil: true, preserveDrawingBuffer: true };
+    for (const id of this.callbacks.getKmsCrtcIds?.() ?? []) {
+      const canvas = this.callbacks.getKmsCanvas?.(id);
+      const gl = canvas?.getContext("webgl2", options) as WebGL2RenderingContext | null;
+      if (gl && !gl.isContextLost()) return accept(gl);
+    }
+    if (typeof OffscreenCanvas !== "undefined") {
+      const gl = new OffscreenCanvas(1, 1).getContext("webgl2", options);
+      if (gl && !gl.isContextLost()) return accept(gl);
+    }
+    return null;
   }
 
   #createKernelMemory(pointerWidth: 4 | 8): WebAssembly.Memory {
@@ -2511,14 +2591,9 @@ export class WasmPosixKernel {
         // unmappable, sampled through GPU views by the compositor and rendered
         // into by its producer (PR10).
         //
-        // The shared context is the DRM-master compositor's scanout
-        // context (`sharedGlContext`). When it is absent — headless Node
-        // (no WebGL at all), or the browser before the compositor's
-        // `eglCreateContext` — we return -ENOSYS so the kernel rolls back
-        // its registry allocation and libgbm falls back to a CPU-tier
-        // dumb bo. That fallback is the correct behavior, not a defect.
-        // A createGpuBo failure (context couldn't allocate the objects)
-        // returns -ENOMEM, likewise rolled back by the kernel.
+        // Render-file resource creation uses the device renderer and does
+        // not require DRM master. A host with no rendering backend returns
+        // ENOSYS before allocation; native allocation failures return ENOMEM.
         host_gbm_gpu_bo_create: (
           _pid: number,
           bo_id: number,
@@ -2527,10 +2602,12 @@ export class WasmPosixKernel {
           _format: number,
           _usage: number,
         ): number => {
-          const ctx = this.#sharedGlContext();
-          if (!ctx) return -38; // -ENOSYS → guest falls back to CPU tier
-          try { this.gl_muxers.get(ctx)?.captureCurrentErrors(); }
-          catch { return -5; }
+          let ctx: WebGL2RenderingContext | null;
+          try {
+            ctx = this.#sharedGlContext();
+            if (!ctx) return -38; // No configured rendering backend.
+            this.gl_muxers.get(ctx)?.captureCurrentErrors();
+          } catch { return -5; }
           const texId = this.gl.createGpuBo(bo_id, ctx, width, height);
           if (texId == null) return -12; // -ENOMEM
           return 0;
@@ -2637,7 +2714,7 @@ export class WasmPosixKernel {
               b.contextId = ctxId;
               return 0;
             }
-            if (!b.canvas && !this.#isMasterGlBinding(b)) {
+            if (!b.canvas) {
               const shared = source?.gl ?? this.#sharedGlContext();
               if (shared && !shared.isContextLost()) {
                 b.gl = shared;
@@ -2984,7 +3061,7 @@ export class WasmPosixKernel {
                   const crtc = this.kms.masterCrtcForFile(b.displayFileId) ?? this.callbacks.getKmsCrtcIds?.()[0];
                   if (crtc !== undefined && crtc !== null) canvas = this.callbacks.getKmsCanvas?.(crtc) ?? null;
                 }
-                const shared = !b.canvas && !this.#isMasterGlBinding(b) ? this.#sharedGlContext() : null;
+                const shared = !b.canvas ? this.#sharedGlContext() : null;
                 const gl = b.gl ?? shared ?? surfaceCapabilityRenderer(b,canvas);
                 // Capture the outgoing owner's flags without replaying or
                 // publishing this not-yet-current configuration session.
@@ -3242,6 +3319,7 @@ export class WasmPosixKernel {
         host_kms_rmfb: (_pid: number, fb_id: number): void => { this.kms.rmFb(fb_id); },
         host_kms_set_fb: (pid: number, crtc_id: number, fb_id: number): void => {
           this.kms.setFb(crtc_id, fb_id);
+          this.kms.notePresenter(pid);
           this.callbacks.onKmsScanoutActive?.();
           // SDL2's KMSDRM backend creates its GL context before the first
           // drmModeSetCrtc (deferred to the first SwapWindow). The

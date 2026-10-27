@@ -39,6 +39,7 @@ import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { LongTimeouts, MAX_ENGINE_TIMER_DELAY_MS } from "./long-timeout";
 import {
   getWasmPosixKernelRuntimeAccess,
+  getKernelGraphicsAccess,
   negErrno,
   WasmPosixKernel,
   type KernelPointer,
@@ -2651,13 +2652,11 @@ function releaseKmsGlPresenter(presenter: KmsGlPresenter | null | undefined): vo
   gl.deleteProgram(presenter.prog);
 }
 
-function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null {
-  // The context may be inherited from a torn-down program GL session
-  // (markKmsCanvasGlReleased): getContext returns the canvas's existing
-  // context with whatever state the dying compositor left behind, and
-  // nothing replays it back to defaults. Reset everything the upload and
-  // the fullscreen-triangle draw depend on; on a fresh context these are
-  // all defaults already.
+function resetKmsGlState(gl: WebGL2RenderingContext): void {
+  // CPU scanout shares the physical renderer with live GLES contexts.
+  // Re-establish every upload/draw dependency on each accepted frame; the
+  // graphics capability invalidates the muxer so the next GLES command
+  // restores its logical context rather than inheriting presenter state.
   //
   // Draw target and pipeline.
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -2689,6 +2688,10 @@ function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null 
   gl.pixelStorei(gl.UNPACK_SKIP_IMAGES, 0);
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+}
+
+function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null {
+  resetKmsGlState(gl);
   const compile = (type: number, src: string): WebGLShader | null => {
     const sh = gl.createShader(type);
     if (!sh) return null;
@@ -3426,7 +3429,7 @@ export class CentralizedKernelWorker {
         // free what it owns (texture, program, vertex array; deletion also
         // unbinds each); anything else the presenter set (viewport, clear
         // color) is state the claiming session sets itself before drawing.
-        releaseKmsGlPresenter(this.kmsGlPresenters.get(crtcId));
+        this.releaseKmsPresenter(crtcId);
         this.kmsGlPresenters.delete(crtcId);
         if (!this.kmsModeBeforeGlOwn.has(crtcId)) {
           this.kmsModeBeforeGlOwn.set(crtcId, this.kmsContextMode.get(crtcId));
@@ -30805,7 +30808,7 @@ export class CentralizedKernelWorker {
     // Cached `null` failures are dropped too — the new canvas may accept
     // a context the old one refused.
     if (this.kmsCanvases.get(crtc_id) !== canvas) {
-      releaseKmsGlPresenter(this.kmsGlPresenters.get(crtc_id));
+      this.releaseKmsPresenter(crtc_id);
       this.kmsGlPresenters.delete(crtc_id);
       // A program's GL session owns the CRTC's current canvas, and a WebGL
       // context cannot move to another canvas: it keeps drawing into the old
@@ -30975,13 +30978,21 @@ export class CentralizedKernelWorker {
           this.scheduleWakeBlockedRetries(entry);
         }
 
-        // Snapshot webgl2-scanout presenter inputs while entry authority is
-        // live. The detached canvas phase below runs the GL upload + draw
-        // against host-owned SAB pixel copies only; the commit counter is a
-        // kernel export, so it must be read here.
+        // Retain no guest views beyond this entry. GPU scanout is synchronous
+        // while the latched framebuffer owns its BO; a different native
+        // display context receives an independent pixel copy. CPU scanout
+        // likewise snapshots its visible rows before detached presentation.
         const commitCountFn = entry.instance.exports
           .kernel_kms_commit_count as
           ((id: number) => bigint) | undefined;
+        const gpuFrames = new Map<number, { direct: true } | { direct: false; pixels: Uint8Array<ArrayBuffer> }>();
+        for (const [crtcId, canvas] of this.kmsCanvases) {
+          const fb = this.#kernel.kms.currentFb(crtcId);
+          if (!fb || !this.#kernel.gl.gpuBo(fb.bo_id)) continue;
+          const frame = getKernelGraphicsAccess(this.#kernel).gpuScanout(
+            fb, canvas, this.kmsContextMode.get(crtcId) !== "2d");
+          if (frame) gpuFrames.set(crtcId, frame);
+        }
         const glPresents: Array<{
           crtcId: number;
           canvas: OffscreenCanvas;
@@ -30990,9 +31001,13 @@ export class CentralizedKernelWorker {
           commits: number;
         }> = [];
         for (const [crtcId, canvas] of this.kmsCanvases) {
-          if (this.kmsContextMode.get(crtcId) !== "webgl2-scanout") continue;
-          const fb = this.#kernel.kms.currentFb(crtcId);
-          if (!fb) continue;
+          const gpu = gpuFrames.get(crtcId);
+          if (gpu?.direct || this.kmsContextMode.get(crtcId) === "2d") continue;
+          if (!gpu && this.kmsContextMode.get(crtcId) !== "webgl2-scanout") continue;
+          const selected = this.#kernel.kms.currentFb(crtcId);
+          if (!selected) continue;
+          const fb = gpu && !gpu.direct
+            ? { ...selected, pixel_format: 0x34324241, pitch: selected.width * 4 } : selected;
           const commits = commitCountFn
             ? Number(commitCountFn(crtcId) & 0x7fffffffn) : -1;
           const presenter = this.kmsGlPresenters.get(crtcId);
@@ -31006,7 +31021,7 @@ export class CentralizedKernelWorker {
             presenter.probePhase = (presenter.probePhase + 1) & 3;
             if (presenter.probePhase !== 0) continue;
           }
-          const pixels = this.#kernel.kms.scanoutBytes(crtcId);
+          const pixels = gpu && !gpu.direct ? gpu.pixels : this.#kernel.kms.scanoutBytes(crtcId);
           if (!pixels) continue;
           // The detached GL phase gets a bounded owned snapshot, never a
           // later lookup that reads guest memory after entry authority ends.
@@ -31028,14 +31043,15 @@ export class CentralizedKernelWorker {
         for (const [crtcId, canvas] of this.kmsCanvases) {
           if (this.kmsContextMode.get(crtcId) !== "2d") continue;
           const fb = this.#kernel.kms.currentFb(crtcId);
-          const pixels = fb
-            ? this.#kernel.kms.scanoutBytes(crtcId)
-            : null;
+          const gpu = gpuFrames.get(crtcId);
+          const pixels = gpu && !gpu.direct ? gpu.pixels : fb ? this.#kernel.kms.scanoutBytes(crtcId) : null;
           const context = this.kmsContexts.get(crtcId);
           if (!fb || !pixels || !context) continue;
           const width = fb.width;
           const height = fb.height;
-          const packedPixels = scanoutRgba(fb.pixel_format, snapshotScanout(fb, pixels));
+          const packedPixels = gpu && !gpu.direct
+            ? scanoutRgba(0x34324241, pixels)
+            : scanoutRgba(fb.pixel_format, snapshotScanout(fb, pixels));
           blits.push({
             crtcId,
             canvas,
@@ -31107,6 +31123,14 @@ export class CentralizedKernelWorker {
           for (const { plane, width, height } of cursorPlanes) plane.present(cursor, width, height);
           // The pump never acquires a context here: only canvases explicitly
           // attached in 2D mode can appear in the owned snapshot.
+          for (const [crtcId, frame] of gpuFrames) {
+            if (!frame.direct) continue;
+            const stats = this.kmsStatsViews.get(crtcId);
+            if (stats) {
+              Atomics.add(stats, 0, 1); Atomics.store(stats, 1, performance.now() | 0);
+              if (stats.length > 7) Atomics.store(stats, 7, 3);
+            }
+          }
           for (const blit of blits) {
             if (
               blit.canvas.width !== blit.width
@@ -31249,58 +31273,63 @@ export class CentralizedKernelWorker {
     // the exact bounded snapshot against the last host-owned upload instead.
     if (!changed && previous?.byteLength === pixels.byteLength &&
         previous.every((value, index) => value === pixels[index])) return false;
-    const presentStart = performance.now();
-    if (canvas.width !== cw || canvas.height !== ch) {
-      canvas.width = cw;
-      canvas.height = ch;
-    }
-    const format = scanoutFormat(fb.pixel_format);
-    const scratch = this.kmsScratchFor(crtc_id, pixels, pixels.byteLength);
-    const rgb565 = format.bytesPerPixel === 2;
-    const data = rgb565 ? new Uint16Array(scratch.buffer, scratch.byteOffset, scratch.byteLength / 2) : scratch;
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    if (presenter.bgrUniform !== null) gl.uniform1i(presenter.bgrUniform, format.bgr ? 1 : 0);
-    const external = rgb565 ? gl.RGB : gl.RGBA;
-    const type = rgb565 ? gl.UNSIGNED_SHORT_5_6_5 : gl.UNSIGNED_BYTE;
-    if (presenter.texW !== fb.width || presenter.texH !== fb.height || presenter.texFormat !== fb.pixel_format) {
-      gl.texImage2D(gl.TEXTURE_2D, 0, rgb565 ? gl.RGB565 : gl.RGBA8,
-        fb.width, fb.height, 0, external, type, data);
-      presenter.texW = fb.width;
-      presenter.texH = fb.height;
-      presenter.texFormat = fb.pixel_format;
-    } else {
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, fb.width, fb.height, external, type, data);
-    }
-    if (!presenter.degraded) gl.generateMipmap(gl.TEXTURE_2D);
-    // Contain-fit letterbox, same math as the Modeset pane's
-    // toCanvasCoords / the wayland spec's desktopPoint (which assume
-    // the fb sits centered and aspect-true inside the canvas). Bars
-    // are cleared to black; the viewport clips the triangle to the
-    // content rect.
-    const scale = Math.min(cw / fb.width, ch / fb.height);
-    const vw = Math.max(1, Math.round(fb.width * scale));
-    const vh = Math.max(1, Math.round(fb.height * scale));
-    gl.clearColor(0, 0, 0, 1);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.viewport((cw - vw) >> 1, (ch - vh) >> 1, vw, vh);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-    presenter.lastFbId = fb.fb_id;
-    presenter.lastCommits = commits;
-    // Adaptive quality: a steady-state present that blows the 60 Hz
-    // frame budget means GL is running in software (headless Chromium's
-    // SwiftShader) where the mip chain + trilinear fullscreen draw cost
-    // tens of ms and would starve the kernel worker between presents.
-    // Fall back to plain bilinear once, permanently. Hardware GL
-    // presents in well under a millisecond; a false trip (a GC pause
-    // landing mid-present) costs filtering quality only. The first
-    // present is exempt — it pays one-off allocation costs.
-    if (!presenter.degraded && presenter.presentCount > 0 &&
-        performance.now() - presentStart > 16) {
-      presenter.degraded = true;
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    }
-    presenter.presentCount++;
-    return true;
+    return getKernelGraphicsAccess(this.#kernel).withGraphicsState(gl, () => {
+      resetKmsGlState(gl);
+      gl.useProgram(presenter.prog);
+      gl.bindVertexArray(presenter.vao);
+      const presentStart = performance.now();
+      if (canvas.width !== cw || canvas.height !== ch) {
+        canvas.width = cw;
+        canvas.height = ch;
+      }
+      const format = scanoutFormat(fb.pixel_format);
+      const scratch = this.kmsScratchFor(crtc_id, pixels, pixels.byteLength);
+      const rgb565 = format.bytesPerPixel === 2;
+      const data = rgb565 ? new Uint16Array(scratch.buffer, scratch.byteOffset, scratch.byteLength / 2) : scratch;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      if (presenter.bgrUniform !== null) gl.uniform1i(presenter.bgrUniform, format.bgr ? 1 : 0);
+      const external = rgb565 ? gl.RGB : gl.RGBA;
+      const type = rgb565 ? gl.UNSIGNED_SHORT_5_6_5 : gl.UNSIGNED_BYTE;
+      if (presenter.texW !== fb.width || presenter.texH !== fb.height || presenter.texFormat !== fb.pixel_format) {
+        gl.texImage2D(gl.TEXTURE_2D, 0, rgb565 ? gl.RGB565 : gl.RGBA8,
+          fb.width, fb.height, 0, external, type, data);
+        presenter.texW = fb.width;
+        presenter.texH = fb.height;
+        presenter.texFormat = fb.pixel_format;
+      } else {
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, fb.width, fb.height, external, type, data);
+      }
+      if (!presenter.degraded) gl.generateMipmap(gl.TEXTURE_2D);
+      // Contain-fit letterbox, same math as the Modeset pane's
+      // toCanvasCoords / the wayland spec's desktopPoint (which assume
+      // the fb sits centered and aspect-true inside the canvas). Bars
+      // are cleared to black; the viewport clips the triangle to the
+      // content rect.
+      const scale = Math.min(cw / fb.width, ch / fb.height);
+      const vw = Math.max(1, Math.round(fb.width * scale));
+      const vh = Math.max(1, Math.round(fb.height * scale));
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.viewport((cw - vw) >> 1, (ch - vh) >> 1, vw, vh);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      presenter.lastFbId = fb.fb_id;
+      presenter.lastCommits = commits;
+      // Adaptive quality: a steady-state present that blows the 60 Hz
+      // frame budget means GL is running in software (headless Chromium's
+      // SwiftShader) where the mip chain + trilinear fullscreen draw cost
+      // tens of ms and would starve the kernel worker between presents.
+      // Fall back to plain bilinear once, permanently. Hardware GL
+      // presents in well under a millisecond; a false trip (a GC pause
+      // landing mid-present) costs filtering quality only. The first
+      // present is exempt — it pays one-off allocation costs.
+      if (!presenter.degraded && presenter.presentCount > 0 &&
+          performance.now() - presentStart > 16) {
+        presenter.degraded = true;
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      }
+      presenter.presentCount++;
+      return true;
+    });
   }
 
   /** Arm loss/restore listeners on a scanout canvas. Installed at attach
@@ -31337,6 +31366,13 @@ export class CentralizedKernelWorker {
     });
   }
 
+  private releaseKmsPresenter(crtcId: number): void {
+    const presenter = this.kmsGlPresenters.get(crtcId);
+    if (!presenter) return;
+    getKernelGraphicsAccess(this.#kernel).withGraphicsState(presenter.gl,
+      () => releaseKmsGlPresenter(presenter));
+  }
+
   /** Lazily acquire the WebGL2 presenter for a `webgl2-scanout` CRTC.
    *  A failed acquisition (no WebGL2 on this host, context refused) is
    *  cached as `null` so the pump doesn't retry getContext at 60 Hz —
@@ -31361,7 +31397,7 @@ export class CentralizedKernelWorker {
         preserveDrawingBuffer: true,
       }) as WebGL2RenderingContext | null;
       if (gl && typeof gl.createTexture === "function") {
-        presenter = buildKmsGlPresenter(gl);
+        presenter = getKernelGraphicsAccess(this.#kernel).withGraphicsState(gl, () => buildKmsGlPresenter(gl));
       }
     } catch {
       presenter = null;

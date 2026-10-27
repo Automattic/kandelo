@@ -3461,7 +3461,50 @@ these interfaces do not establish complete EGL1.5 or GLES2 conformance.
 
 `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` (a WPK extension, `'d'` nr `0xE1`) bridges the two tiers: it (re)uploads a CPU-tier bo's current pixels into a `WebGLTexture` in the calling fd's GL context — the host reads the bo's canonical SAB storage directly, so window-sized textures never squeeze through the 64 KB-capped cmdbuf TLV records. The bo handle and the GL session must live on the same fd; `libEGL` exposes the flow as `wpkEglImportDmabufHandle(prime_fd)` (PRIME import on the EGL fd) + `wpkEglBindBoTexture(handle, GL_TEXTURE_2D)` (idempotent per bo; re-call to refresh after the producer commits). Texture lifetime is tied to the bo: the last GEM_CLOSE deletes it.
 
-`DRM_IOCTL_WPK_CREATE_GPU_BO` (`'d'` nr `0xE0`) is the fully GPU-backed tier: the bo is a host `WebGLTexture` plus a color-attachment FBO — no SAB, unmappable on the CPU. WebGL textures are not shareable across contexts, so all GPU-tier bos and every GL client that touches them live on **one** shared multiplexer context: the DRM-master compositor's scanout WebGL2 context. A non-master GL client (which has no display canvas of its own) is routed onto that shared context at `host_gl_create_context`; the existing `GlMuxer` (keyed by the WebGL2 context) multiplexes the compositor and its clients by replaying each binding's shadow state on `switchTo`. A client renders into the bo by targeting its FBO: the bo handle reaches the next `eglCreateWindowSurface`'s `GLIO_CREATE_SURFACE` either explicitly (`libEGL`'s `wpkEglSetWindowSurfaceTarget(handle)`) or, for a libwayland-egl `wl_egl_window`, from the bo that window allocated; the kernel translates the per-fd handle to a global bo id and the host redirects the client's "bind default framebuffer 0" to the bo's FBO (sizing the viewport to the bo). Because a toolkit may create the window surface *before* the GL context, the redirect target is captured at surface creation and (re)applied at whichever of context-creation or surface-creation runs last, since it needs both `b.gl` and the resolved bo. A `wl_egl_window_resize` (a tiling compositor resizes every window it maps) gives the window a new bo at the new size and has `libEGL` destroy and re-create the window surface against it, flushing first so commands already queued land in the old bo; the old buffer is destroyed only after the next `eglSwapBuffers` has attached and committed its successor. As in Mesa, the resize takes effect from the next frame. `eglSwapBuffers` flushes the shared context as the buffer-ready fence before `wl_surface.commit`; command order through the one submit queue gives render-before-sample ordering for free (no explicit sync object in v1). `BIND_FOREIGN_TEXTURE` on a GPU-tier bo then degenerates to returning the texture id — true zero-copy, no upload. Allocation degrades to a CPU-tier dumb bo whenever no shared context exists — headless Node has no WebGL2, and in the browser the compositor must have created its context first — so `libgbm` requests the GPU tier only for bos that GL renders into and falls back to CREATE_DUMB on any error. `gbm_bo_create` treats SCANOUT as CPU-facing (RENDERING set, none of SCANOUT/CURSOR/WRITE/LINEAR), because its scanout callers — the `gbm_surface` ring, a compositor's CPU blit — read or write the bytes. `gbm_bo_create_with_modifiers[2]` is the entry point of a renderer that draws its own scanout buffers (wlroots' gbm allocator), so its SCANOUT|RENDERING bos are GPU-tier. A PAGE_FLIP or SETCRTC that latches a GPU-tier bo on a CRTC whose canvas the same context claimed blits the bo's FBO onto that canvas (`blitGpuScanout`, flipping Y because KMS buffers hold the top row first); the vblank pump has no CPU bytes to show for it. This producer path is browser-only. Each GPU-tier bo's FBO has color, 24-bit depth, and 8-bit stencil storage, so default-framebuffer depth testing and stencil clipping work for Wayland clients as well as canvas-backed sessions.
+`DRM_IOCTL_WPK_CREATE_GPU_BO` (`'d'` nr `0xE0`) allocates host-native
+texture/FBO storage without CPU-mappable bytes. The virtual GPU has one
+native renderer, independent of DRM master and of whichever process first
+creates an EGL context. It prefers an already registered WebGL2 display
+context and otherwise creates an offscreen resource context. A render-node
+file may therefore create GPU resources before any primary-file context.
+Logical GL object groups, context state and file authority remain separate;
+the shared native context does not grant another context's public names or
+KMS controls. Node without a configured WebGL backend returns ENOSYS from
+GPU allocation and retains the existing CPU-buffer fallback.
+
+A client can target a retained GPU BO through its window surface or import
+its dma-buf as an EGLImage and attach a logical renderbuffer/texture view.
+The kernel resolves per-file GEM handles to backing storage. Surface targets
+and image siblings retain their own references; public image/handle deletion
+does not authorize deletion of a surviving sibling's storage. GPU BOs include
+color, 24-bit depth and 8-bit stencil attachments. General CPU/GPU coherence,
+format reinterpretation and native GBM ring posting remain incomplete;
+see the graphics compatibility ledger for the exact implemented scope.
+
+In the image-backed producer path, rendering resources and presenting them
+are separate operations. Authorized KMS operations select a framebuffer;
+the vblank pump presents its retained GPU BO even when the producer uses
+an independent render file. On the same native display context it blits
+the selected FBO, with KMS row zero at the top. An explicitly 2D display or
+a different native canvas receives an independent RGBA readback. GPU access
+is synchronous inside the kernel entry while the latched framebuffer owns
+its BO; only owned pixel bytes survive into detached presentation.
+
+Native device blits/readback retain retryable selector, scissor and packing
+inverses through the shared recovery journal. They retain native handles and
+scalars rather than guest memories or bindings. CPU WebGL scanout also resets
+its complete draw/upload dependencies on each accepted frame. Every utility
+captures the outgoing logical owner's errors and invalidates the muxer so
+later GLES work restores that context's state. Package-private immutable
+graphics access exposes these native operations separately from raw kernel
+memory authority. Context loss stands GPU scanout down; complete restoration
+of lost resources remains an ordinary implementation gap.
+
+`gbm_bo_create` treats SCANOUT as CPU-facing. Modifier-aware rendering
+allocators, including wlroots' SCANOUT|RENDERING allocations, request GPU
+storage. GBM native-window ring storage/posting still needs repair: its
+current lock/release bookkeeping does not establish a faithful rendered
+front/back-buffer contract. This limitation is not a browser boundary.
 
 The absolute pointer defaults to a fixed 0–65535 device range on both hosts.
 Display pixels are converted to these device units by the KMS session

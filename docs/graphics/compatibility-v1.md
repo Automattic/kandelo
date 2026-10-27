@@ -90,12 +90,12 @@ reproduction and correct observable failure; none is inferred from a stub.
 | E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve for retained dma-buf imports. Native fence candidates, waiter leases and retryable cleanup now have retained source models. Table 17 adds caller-known create/status/release tokens, accepted-reply publication, cancellation and mapped object-session authority without a current context. Native and forwarded source rendering pass. Core C create/destroy/query/client-wait now use generation-owned records, retained sessions, serialized replies, monotonic timeouts and cancellation-safe waiter references; public glFlush requests acknowledged native flush. Focused C and three-engine source evidence is recorded below. The four KHR_fence_sync aliases share these records with width-correct lists/output and 64-bit timeouts; EGL_KHR_fence_sync and client GL_OES_EGL_sync are declared. eglWaitSync server ordering remains open; EGL_KHR_wait_sync is not advertised. GL-source images and full lifecycle/errors/guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
 | B01 | GBM allocation/import/export and plane metadata | Dumb/GPU tiers; cage adds modifier allocators. Native GPU allocation and restoration use checked receipts; borrowed surface leases preserve old GPU storage after public retirement/ID reuse. CPU coherence, format/layout and full guest validation remain open | GBM, DRM BOs, host registry | SDK guest fixtures both widths; unsupported format/flags | partial |
 | B02 | GBM map/unmap coherence and authority | Kernel authoritative BO references; changed-run publication on main | GBM, kernel maps, DRI registry | Importer writes, stale readers, unmap/exit/exec; browser pixels | partial |
-| B03 | Surface ring lock/release/destroy ownership | Main two-BO ring; audit lock/destroy/outstanding buffer lifetime | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks | partial |
+| B03 | Surface ring lock/release/destroy ownership | Two-BO bookkeeping does not establish rendered front/back storage. An unselected native-window swap reaches the canvas; actual GBM ring posting, retained locks and destruction still need repair | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks | partial |
 | K01 | Single display resources and consistent object IDs | Integrated dynamic mode catalog, properties and device-wide IDs; broader device/host validation pending | kernel dri/kms, host mode metadata | Rust ioctl and Node mode tests; preserve preferred/catalog semantics | partial |
 | K02 | Probe all nested outputs before writing | Property, enum and expanded connector outputs now preprobe all destinations; focused Rust regressions pass | syscall nested-output helpers | Valid first/invalid later buffers, unchanged sentinels and top-level bytes | open |
 | K03 | Shared OFD GEM/FB authority, PRIME and final references | Shared GEM namespace/allocator, KMS FBs and inherited graphics cleanup/BO holds are implemented; final combined guest validation and remaining KMS-file authority gaps stay open | OFD, process/fork/spawn/exec/close, BO registry | Rust + real Node lifecycle/dup/fork/spawn tests | open |
 | K04 | Legacy modeset/flip/vblank/master handoff | Main display owner and cleanup; cage changes automatic master and CLOSEFB | KMS, host scanout | Pending flip drop/exit/crash/master replacement, no stale event/scanout | partial |
-| K05 | GPU scanout, CPU fallback and context loss | Main has GPU producer target; cage adds scanout blit | host GPU registry/present target/KMS pump | Render imports to scanout; orientation/pixels three engines | open |
+| K05 | GPU scanout, CPU fallback and context loss | Device-wide render-node-first resources are independent of master. Selected GPU framebuffers use native blit or owned readback for a 2D/different native display. Focused three-engine rendering passes; complete format views, CPU/GPU coherence and lost-resource reconstruction remain open | host GPU registry/present target/KMS pump | Render imports to scanout; orientation/pixels three engines | partial |
 | H01 | Command framing, complete validation and bounded results | Owned bounded submission snapshots make structural validation and dispatch observe the same bytes in native and forwarded paths; one-shot frames restore cached views and discard on purge. Source execution leases retain revoked context owners and owned drawable allocations independently; borrowed GPU allocations also have independent source leases; drain remains synchronous pending per-work drawable selection and server-wait ordering. Kernel query dispatch preprobes nonempty guest destinations, rejects nonzero reserved fields/null inputs, and rejects oversized host replies without copying output. Focused Rust/host source evidence is recorded below; complete guest coverage remains open | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Canonical surface BO holds and image-owned renderer cleanup now survive descriptor inheritance/local close; focused native lifecycle checks pass. Raw BO retirement retains failed native cleanup across final member teardown and blocks affected operations until retry. Combined guest/memory-cycle validation remains pending | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
@@ -6152,3 +6152,99 @@ source configuration. The owned conformance checkout keeps
 full memory-switching or conformance result is inferred from this source
 selection. H01/H03 remain partial; program ABI 56 and kernel-host version 3
 are unchanged. Performance was not measured.
+
+
+## Independent render resources and selected GPU scanout, 2026-10-27
+
+GPU resource creation now belongs to the virtual device, independently of
+DRM master or which process creates a context first. The first available
+native display renderer, or an offscreen renderer when needed, backs the
+canonical GPU allocations. Exact primary-file/grant authority still owns
+KMS control. A render-node context receives no canvas claim or display
+control merely by creating resources. Node without a configured WebGL
+backend retains its ENOSYS/CPU allocation fallback.
+
+This is required by the verified wlroots source archive
+`80c567d2ed4efb2cfa6b077f22c7a710d9c78ba4e185a75e8694001114af0733`:
+`render/egl.c` opens an independent render node and constructs its GBM
+device from that descriptor. The checked source excerpts are retained in
+`.context/wlroots-upstream-review/`. No compositor-specific primary-file
+selection patch was added. The original real render-node-first control
+failed context creation with ENODEV on all three engines; preserve
+`.context/render-node-before-evidence/` in the diagnostic checkout.
+
+The vblank path now selects canonical GPU storage from the KMS framebuffer
+actually latched by authorized operations. On its native display context
+it blits that storage; on a different renderer or an explicitly 2D display
+it takes an independent RGBA readback. GPU access remains synchronous under
+kernel entry authority while the selected framebuffer holds its BO. Only
+owned pixels survive into detached presentation. Blit/readback selectors,
+scissor and packing state have retryable native-only inverse records. A
+failed restoration fences later native work until repair accepts.
+
+CPU WebGL presentation resets its complete upload/draw dependencies while
+GLES contexts remain live. Device operations capture the outgoing context's
+errors and invalidate the muxer so later guest commands restore their own
+logical state. An immutable package-private graphics capability exposes
+only native graphics operations, separately from kernel Memory/Instance/
+gate authority. The reviewed raw-memory authority record was not broadened.
+A lost native context stands scanout down rather than terminating the
+machine; complete lost-storage reconstruction remains open.
+
+The final combined job
+`graphics-render-node-validation-v8-1027-170352-5e47` passed in 4m15s:
+
+| Scope | Result |
+| --- | --- |
+| Canonical host build and evidence registry | Passed |
+| Complete graphics source gate | 690 passed in 30 files; no skips/unloaded files |
+| Complete memory ownership source gate | 161 passed in 14 files; no allowance expansion |
+| Normal Node EGL/import/lifecycle guests | 11 passed in four files; no skips/unloaded files |
+| Actual browser pixels and teardown | 42 passed across Chromium, Firefox and WebKit |
+
+The browser inventory includes the previous 30 five-format CPU scanout
+cases and 12 inherited-file cases. The new GPU cases use ordinary SDK
+GBM modifier-aware allocation, dma-buf EGLImage import and an image-backed
+renderbuffer/FBO, matching wlroots' resource path. They retain primary-file
+KMS authority after acknowledged opener-worker retirement. Red resource
+pixels remain invisible before KMS selection; a blue CPU framebuffer then
+replaces them; the live GLES context subsequently renders red again. Both
+direct GPU and 2D readback paths display a single white marker at (17,19),
+which detects inversion, and the inherited cursor remains green. Natural
+child exit, exact worker retirement, empty diagnostics and the browser
+memory-message boundary probe are asserted. This is not a mock-pixel test.
+
+Successful screenshots, actual compiled guests and per-engine JSON records
+with engine versions and kernel/guest/screenshot SHA-256 identities are
+retained in unique `run-*` directories under
+`.context/graphics-abi56-format-evidence/`. Earlier runs are preserved.
+The new source tests cover native selector/pack restoration, owned readback,
+bad geometry, rejected inverse repair and native-context loss. Detailed
+logs use the `render-node-` prefix in the owned diagnostic checkout.
+
+The earlier v7 and full-source/browser attempts each passed 41/42 rendered
+cases and timed out on Firefox's GPU-to-2D pixel inspection. Two isolated
+controls passed. Failure diagnostics show the guest ready, no reported
+errors, a last blue sample and a red failure screenshot. That fixture had
+stacked scene/cursor canvases, so inspecting either scrolled the other out
+of view. The final fixture overlays the two planes in one visible display,
+as the product does, and retains failure-state records before teardown.
+The full 42-case rerun passes without changing pixel assertions or timeouts.
+These records do not demonstrate an outside browser defect.
+
+A separate ordinary B03 failure remains visible. The first extended probe
+used a GBM native-window ring: swapping an unselected window already showed
+its red pixels. The current ring only chooses unused BOs and is not wired
+to faithful rendered front/back storage. The exact fixture, three failed
+browser results and screenshots are retained under diagnostic
+`.context/render-node-gbm-ring-failure-v5/`. Testing the actual wlroots
+image-backed path does not close that native-window gap.
+
+Program ABI remains 56, kernel-host version 3, operation table 17 and fork
+record 21. K05, B03 and the overall baseline remain partial. Normal combined
+program/image closure, default-resolver cage/sway consumers, the full
+three-engine gallery and CTS, complete browser-memory switching, current
+POSIX conformance and normal manual browser verification are still
+required. CPU/GPU coherence, framebuffer layout/offset validation, lost
+resources, ordered execution/server waits and the other inventory gaps
+remain ordinary implementation work. Performance was not measured.
