@@ -527,6 +527,7 @@ packages/registry/mandoc/test/mandoc-smoke.test.ts	prepared-product
 packages/registry/nginx/test/nginx.test.ts	prepared-product
 packages/registry/openssl/test/certificates.test.ts	prepared-product
 packages/registry/openssl/test/ssl-basic.test.ts	prepared-product
+packages/registry/openssl/test/threads.test.ts	prepared-product
 packages/registry/php/test/php-concurrent-sqlite.test.ts	prepared-product
 packages/registry/php/test/php-curl.test.ts	prepared-product
 packages/registry/php/test/php-hello.test.ts	prepared-product
