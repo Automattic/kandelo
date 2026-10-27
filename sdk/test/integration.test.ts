@@ -2,15 +2,18 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { existsSync, unlinkSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { basename, join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
-import { resolveToolchain } from '../src/lib/toolchain.ts';
-import { buildClangArgs, prepareExecutableLinker } from '../src/bin/cc.ts';
-import { run } from '../src/lib/exec.ts';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SDK_ROOT = resolve(__dirname, '..');
 const REPO_ROOT = resolve(SDK_ROOT, '..');
 const TMP_DIR = join(SDK_ROOT, '.test-tmp');
+
+// The SDK's tools as users and package builds run them: the wrapper
+// executables, which run this worktree's driver (crates/kandelo-cc).
+const CC = join(SDK_ROOT, 'bin', 'wasm32posix-cc');
+const CXX = join(SDK_ROOT, 'bin', 'wasm32posix-c++');
+const AR = join(SDK_ROOT, 'bin', 'wasm32posix-ar');
 
 /**
  * Find the main repo root. In a worktree, REPO_ROOT is the worktree dir,
@@ -29,7 +32,9 @@ function findMainRepoRoot(): string {
 }
 
 beforeAll(() => {
-  // If sysroot isn't in the worktree, use the main repo's
+  // If sysroot isn't in the worktree, use the main repo's. The driver
+  // honours the same WASM_POSIX_* overrides, and every SDK tool below
+  // inherits this environment.
   if (!existsSync(join(REPO_ROOT, 'sysroot', 'lib', 'libc.a'))) {
     const mainRepo = findMainRepoRoot();
     if (existsSync(join(mainRepo, 'sysroot', 'lib', 'libc.a'))) {
@@ -41,6 +46,97 @@ beforeAll(() => {
     }
   }
 });
+
+/**
+ * The LLVM bin directory the driver resolves: WASM_POSIX_LLVM_DIR, else the
+ * dev shell's LLVM_BIN (find_llvm_dir in crates/kandelo-cc/src/toolchain.rs).
+ */
+function llvmDir(): string {
+  const dir = process.env.WASM_POSIX_LLVM_DIR || process.env.LLVM_BIN;
+  if (!dir) {
+    throw new Error('neither WASM_POSIX_LLVM_DIR nor LLVM_BIN is set; run these tests inside scripts/dev-shell.sh');
+  }
+  return dir;
+}
+
+/**
+ * The sysroot and glue the driver resolves when it runs inside this
+ * checkout: the WASM_POSIX_* overrides, else the repository layout
+ * (find_sysroot and find_glue_dir in crates/kandelo-cc/src/toolchain.rs).
+ */
+function sysroot(): string {
+  return process.env.WASM_POSIX_SYSROOT || join(REPO_ROOT, 'sysroot');
+}
+
+function glueDir(): string {
+  return process.env.WASM_POSIX_GLUE_DIR || join(REPO_ROOT, 'libc', 'glue');
+}
+
+interface ToolResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Run an SDK tool. The default working directory is the SDK directory,
+ * inside this checkout, so the driver discovers this checkout's sysroot
+ * and glue.
+ */
+function sdk(
+  tool: string,
+  args: string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+): ToolResult {
+  const result = spawnSync(tool, args, {
+    cwd: options.cwd ?? SDK_ROOT,
+    env: options.env ?? process.env,
+    encoding: 'utf8',
+  });
+  if (result.error) throw result.error;
+  return { exitCode: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
+}
+
+/**
+ * The jobs of a `-###` trace. `wasm32posix-cc -###` prepares the link as a
+ * real build would and then passes the trace through, so clang prints each
+ * job it would run as an indented line of double-quoted, backslash-escaped
+ * arguments.
+ */
+function tracedJobs(trace: string): string[][] {
+  return trace
+    .split('\n')
+    .filter((line) => line.startsWith(' "'))
+    .map((line) => [...line.matchAll(/"((?:[^"\\]|\\.)*)"/g)]
+      .map((match) => match[1].replace(/\\(.)/g, '$1')));
+}
+
+function isLinkerJob(job: string[]): boolean {
+  return basename(job[0]) === 'wasm-ld';
+}
+
+/** The one wasm-ld argv of a traced link. */
+function tracedLinker(trace: string): string[] {
+  const linkers = tracedJobs(trace).filter(isLinkerJob);
+  expect(linkers, trace).toHaveLength(1);
+  return linkers[0];
+}
+
+/**
+ * The main-thread stack size a wasm-ld argv requests: the last
+ * `-z stack-size=` operand, as wasm-ld resolves repeated ones.
+ */
+function linkedStackSize(linkerArgs: string[]): number | undefined {
+  let size: number | undefined;
+  for (let index = 0; index < linkerArgs.length; index++) {
+    const arg = linkerArgs[index];
+    const value = arg === '-z'
+      ? linkerArgs[index + 1]?.match(/^stack-size=(\d+)$/)?.[1]
+      : arg.match(/^-zstack-size=(\d+)$/)?.[1];
+    if (value !== undefined) size = Number(value);
+  }
+  return size;
+}
 
 describe('integration: compile C program', () => {
   it('pins the complete wasm32 pointer-sized autoconf types', () => {
@@ -58,26 +154,25 @@ describe('integration: compile C program', () => {
     expect(site).toContain('php_cv_sizeof_ptrdiff_t=${php_cv_sizeof_ptrdiff_t=8}');
   });
 
-  it('pins clang to the resolved wasm-ld', async () => {
-    const toolchain = await resolveToolchain();
+  it('pins clang to the resolved wasm-ld', () => {
     mkdirSync(TMP_DIR, { recursive: true });
     const srcFile = join(TMP_DIR, 'linker-probe.c');
     const outFile = join(TMP_DIR, 'linker-probe.wasm');
     writeFileSync(srcFile, 'int main(void) { return 0; }\n');
 
-    const userArgs = ['-###', srcFile, '-o', outFile];
-    const executableLinker = await prepareExecutableLinker(userArgs, toolchain);
-    const args = buildClangArgs(userArgs, toolchain, 'wasm32', executableLinker ?? undefined);
-    const result = await run(toolchain.cc, args);
+    try {
+      const result = sdk(CC, ['-###', srcFile, '-o', outFile]);
 
-    expect(result.exitCode).toBe(0);
-    expect(result.stderr).toContain(join(toolchain.llvmDir, 'wasm-ld'));
-    try { unlinkSync(srcFile); } catch {}
-    try { unlinkSync(outFile); } catch {}
-  }, 30_000);
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(result.stderr).toContain(join(llvmDir(), 'wasm-ld'));
+      expect(tracedLinker(result.stderr)[0]).toBe(join(llvmDir(), 'wasm-ld'));
+    } finally {
+      try { unlinkSync(srcFile); } catch {}
+      try { unlinkSync(outFile); } catch {}
+    }
+  }, 60_000);
 
-  it('preserves Clang non-linking modes directly and through response files', async () => {
-    const toolchain = await resolveToolchain();
+  it('preserves Clang non-linking modes directly and through response files', () => {
     mkdirSync(TMP_DIR, { recursive: true });
     const source = join(TMP_DIR, 'non-link-mode.c');
     const modes = [
@@ -91,6 +186,8 @@ describe('integration: compile C program', () => {
       join(TMP_DIR, `non-link-${name}-direct.out`),
       join(TMP_DIR, `non-link-${name}-response.out`),
     ]);
+    // The SDK tools run in SDK_ROOT, so an analyzer job that lost its -o
+    // would leave its report here.
     const sourceTreeAnalyzerOutput = join(SDK_ROOT, 'non-link-mode.plist');
     writeFileSync(source, 'int square(int value) { return value * value; }\n');
     expect(existsSync(sourceTreeAnalyzerOutput)).toBe(false);
@@ -108,20 +205,19 @@ describe('integration: compile C program', () => {
           [mode, source, '-o', directOutput],
           [`@${responses[index]}`],
         ]) {
-          const preparation = await prepareExecutableLinker(userArgs, toolchain);
-          expect(preparation).toEqual({ kind: 'no-link' });
-          const args = buildClangArgs(userArgs, toolchain, 'wasm32', preparation ?? undefined);
-          expect(args).not.toContain(`-fuse-ld=${join(toolchain.llvmDir, 'wasm-ld')}`);
-          expect(args.join(' ')).not.toContain('channel_syscall.c');
-          execFileSync(process.execPath, [
-            '--experimental-strip-types',
-            join(SDK_ROOT, 'src/bin/cc.ts'),
-            ...userArgs,
-          ], {
-            cwd: TMP_DIR,
-            env: process.env,
-            stdio: 'pipe',
-          });
+          // A response file hides the mode from the SDK's own parse, so
+          // prepare_executable_linker must classify it through clang as a
+          // no-link command. The trace shows the jobs the driver would run:
+          // no wasm-ld job, no pinned linker (clang names an injected but
+          // unused -fuse-ld in a warning), and no link-time glue.
+          const traced = sdk(CC, ['-###', ...userArgs]);
+          expect(traced.exitCode, traced.stderr).toBe(0);
+          expect(tracedJobs(traced.stderr).some(isLinkerJob), traced.stderr).toBe(false);
+          expect(traced.stderr).not.toContain(`-fuse-ld=${join(llvmDir(), 'wasm-ld')}`);
+          expect(traced.stderr).not.toContain('channel_syscall');
+
+          const result = sdk(CC, userArgs);
+          expect(result.exitCode, result.stderr).toBe(0);
         }
       }
       expect(existsSync(sourceTreeAnalyzerOutput)).toBe(false);
@@ -131,10 +227,9 @@ describe('integration: compile C program', () => {
         try { unlinkSync(path); } catch {}
       }
     }
-  }, 30_000);
+  }, 120_000);
 
-  it('retains larger stacks across non-intervening options and UTF-16 responses', async () => {
-    const toolchain = await resolveToolchain();
+  it('retains larger stacks across non-intervening options and UTF-16 responses', () => {
     mkdirSync(TMP_DIR, { recursive: true });
     const source = join(TMP_DIR, 'stack-floor-probe.c');
     const newlineSource = join(TMP_DIR, 'stack-floor-\nprobe.c');
@@ -151,7 +246,6 @@ describe('integration: compile C program', () => {
     const compilationDirectoryConfig = join(TMP_DIR, 'stack-floor-compilation-dir.cfg');
     const workingDirectoryConfig = join(TMP_DIR, 'stack-floor-working-dir.cfg');
     const configuredWorkingDirectoryOutput = join(TMP_DIR, 'stack-floor-configured-cwd.wasm');
-    const environmentWorkingDirectoryOutput = join(TMP_DIR, 'stack-floor-environment-cwd.wasm');
     const deepResponseOutput = join(TMP_DIR, 'stack-floor-deep-response.wasm');
     const deepResponses = Array.from({ length: 100 }, (_, index) =>
       join(TMP_DIR, `stack-floor-deep-${index}.rsp`));
@@ -172,7 +266,7 @@ describe('integration: compile C program', () => {
       driverResponse, objectOutput, debugDirectoryOutput, fileDirectoryOutput,
       configuredDirectoryOutput, xclangOutput, compilationDirectoryConfig,
       workingDirectoryConfig, configuredWorkingDirectoryOutput,
-      environmentWorkingDirectoryOutput, deepResponseOutput, ...deepResponses,
+      deepResponseOutput, ...deepResponses,
       floorOutput, responseOutput, response,
       ...variantOutputs,
     ];
@@ -206,14 +300,8 @@ describe('integration: compile C program', () => {
       );
     }
 
-    const link = async (userArgs: string[]): Promise<void> => {
-      const executableLinker = await prepareExecutableLinker(userArgs, toolchain);
-      const result = await run(toolchain.cc, buildClangArgs(
-        userArgs,
-        toolchain,
-        'wasm32',
-        executableLinker ?? undefined,
-      ));
+    const link = (userArgs: string[]): void => {
+      const result = sdk(CC, userArgs);
       expect(result.exitCode, result.stderr).toBe(0);
     };
     const stackPointer = (path: string): number => {
@@ -224,69 +312,54 @@ describe('integration: compile C program', () => {
     };
 
     try {
-      const pchResult = await run(toolchain.cc, buildClangArgs([
-        '-c', '-x', 'c-header', pchSource, '-o', pch,
-      ], toolchain));
+      const pchResult = sdk(CC, ['-c', '-x', 'c-header', pchSource, '-o', pch]);
       expect(pchResult.exitCode, pchResult.stderr).toBe(0);
-      const objectResult = await run(toolchain.cc, buildClangArgs([
-        '-c', source, '-o', object,
-      ], toolchain));
+      const objectResult = sdk(CC, ['-c', source, '-o', object]);
       expect(objectResult.exitCode, objectResult.stderr).toBe(0);
 
-      await link([source, '-o', floorOutput]);
+      link([source, '-o', floorOutput]);
       for (let index = 0; index < variants.length; index++) {
         const [, ...options] = variants[index];
-        await link([
+        link([
           source, '-Wl,-z', ...options,
           '-Wl,stack-size=16777216', '-o', variantOutputs[index],
         ]);
       }
-      await link([
+      link([
         source, '-working-directory', TMP_DIR,
         `-Wl,@${basename(response)}`, '-o', responseOutput,
       ]);
-      await link([object, `@${driverResponse}`, '-o', objectOutput]);
-      await link([
+      link([object, `@${driverResponse}`, '-o', objectOutput]);
+      link([
         source, '-working-directory', TMP_DIR,
         '-fdebug-compilation-dir=/unrelated',
         `-Wl,@${basename(response)}`, '-o', debugDirectoryOutput,
       ]);
-      await link([
+      link([
         source, '-working-directory', TMP_DIR,
         '-ffile-compilation-dir=/unrelated',
         `-Wl,@${basename(response)}`, '-o', fileDirectoryOutput,
       ]);
-      await link([
+      link([
         source, '-working-directory', TMP_DIR,
         `--config=${compilationDirectoryConfig}`,
         `-Wl,@${basename(response)}`, '-o', configuredDirectoryOutput,
       ]);
-      await link([
+      link([
         source, '-working-directory', TMP_DIR,
         '-Xclang', '-working-directory', '-Xclang', SDK_ROOT,
         `-Wl,@${basename(response)}`, '-o', xclangOutput,
       ]);
-      await link([
+      link([
         source, `--config=${workingDirectoryConfig}`,
         `-Wl,@${basename(response)}`, '-o', configuredWorkingDirectoryOutput,
       ]);
-      const previousOverride = process.env.CCC_OVERRIDE_OPTIONS;
-      try {
-        process.env.CCC_OVERRIDE_OPTIONS = `+-working-directory=${TMP_DIR}`;
-        await link([
-          source, `-Wl,@${basename(response)}`,
-          '-o', environmentWorkingDirectoryOutput,
-        ]);
-      } finally {
-        if (previousOverride === undefined) delete process.env.CCC_OVERRIDE_OPTIONS;
-        else process.env.CCC_OVERRIDE_OPTIONS = previousOverride;
-      }
-      await link([
+      link([
         source, '-working-directory', TMP_DIR,
         `-Wl,@${basename(deepResponses[0])}`, '-o', deepResponseOutput,
       ]);
       if (process.platform !== 'win32') {
-        await link([
+        link([
           newlineSource, '-Wl,-z', '-Wl,stack-size=16777216',
           '-o', newlineOutput,
         ]);
@@ -305,7 +378,6 @@ describe('integration: compile C program', () => {
       expect(stackPointer(configuredDirectoryOutput)).toBe(largeStackPointer);
       expect(stackPointer(xclangOutput)).toBe(largeStackPointer);
       expect(stackPointer(configuredWorkingDirectoryOutput)).toBe(largeStackPointer);
-      expect(stackPointer(environmentWorkingDirectoryOutput)).toBe(largeStackPointer);
       expect(stackPointer(deepResponseOutput)).toBe(largeStackPointer);
       if (process.platform !== 'win32') {
         expect(stackPointer(newlineOutput)).toBe(largeStackPointer);
@@ -315,24 +387,66 @@ describe('integration: compile C program', () => {
         try { unlinkSync(path); } catch {}
       }
     }
-  }, 30_000);
+  }, 300_000);
 
-  it('honours an explicit sub-floor stack through the real wasm32posix-cc path, and warns', async () => {
+  it('retains a larger stack when CCC_OVERRIDE_OPTIONS sets the working directory', () => {
+    // The driver resolves a relative response file against the working
+    // directory clang itself uses, which CCC_OVERRIDE_OPTIONS can set. The
+    // variable reaches every clang the driver runs, so this runs on its own:
+    // a failure here names the environment case instead of hiding the rest
+    // of the stack-floor cases behind it.
+    mkdirSync(TMP_DIR, { recursive: true });
+    const source = join(TMP_DIR, 'stack-override-probe.c');
+    const response = join(TMP_DIR, 'stack-override-utf16.rsp');
+    const floorOutput = join(TMP_DIR, 'stack-override-default.wasm');
+    const environmentWorkingDirectoryOutput = join(TMP_DIR, 'stack-override-environment-cwd.wasm');
+    writeFileSync(source, 'int main(void) { return 0; }\n');
+    writeFileSync(response, Buffer.concat([
+      Buffer.from([0xff, 0xfe]),
+      Buffer.from('-z\nstack-size=16777216\n', 'utf16le'),
+    ]));
+    const stackPointer = (path: string): number => {
+      const dump = execFileSync('wasm-objdump', ['-x', path], { encoding: 'utf8' });
+      const match = dump.match(/<__stack_pointer> - init i32=(\d+)/);
+      expect(match, dump).not.toBeNull();
+      return Number(match?.[1]);
+    };
+
+    try {
+      const floor = sdk(CC, [source, '-o', floorOutput]);
+      expect(floor.exitCode, floor.stderr).toBe(0);
+      const result = sdk(CC, [
+        source, `-Wl,@${basename(response)}`,
+        '-o', environmentWorkingDirectoryOutput,
+      ], { env: { ...process.env, CCC_OVERRIDE_OPTIONS: `+-working-directory=${TMP_DIR}` } });
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      expect(stackPointer(environmentWorkingDirectoryOutput) - stackPointer(floorOutput))
+        .toBe(8 * 1024 * 1024);
+    } finally {
+      for (const path of [source, response, floorOutput, environmentWorkingDirectoryOutput]) {
+        try { unlinkSync(path); } catch {}
+      }
+    }
+  }, 120_000);
+
+  it('honours an explicit sub-floor stack through the real wasm32posix-cc path, and warns', () => {
     // This is the end-to-end level for the defect that changing
-    // mainThreadStackSize()'s resolution surfaced: prepareExecutableLinker()
-    // (sdk/src/bin/cc.ts) used to build its own provisional Clang trace with
-    // a placeholder `-z stack-size=<default>` appended AFTER the caller's
-    // forwarded args, to discover what the caller asked for. Under
-    // mainThreadStackSize()'s last-wins resolution (matching wasm-ld's own
-    // behaviour for repeated `-z stack-size=` operands), that placeholder
-    // always won, silently overriding every explicit request — larger or
-    // smaller — back down to the default. A unit test on
-    // mainThreadStackSize() alone cannot see this: the contamination is
-    // introduced one layer up, in how cc.ts assembles the trace it measures.
-    // This test drives the real prepareExecutableLinker()/buildClangArgs()
-    // path and links a real binary, so it fails the same way a real build
-    // would if the contamination came back.
-    const toolchain = await resolveToolchain();
+    // main_thread_stack_size()'s resolution surfaced: prepare_executable_linker()
+    // (crates/kandelo-cc/src/driver.rs) used to build its own provisional
+    // Clang trace with a placeholder `-z stack-size=<default>` appended AFTER
+    // the caller's forwarded args, to discover what the caller asked for.
+    // Under main_thread_stack_size()'s last-wins resolution
+    // (crates/kandelo-cc/src/flags.rs, matching wasm-ld's own behaviour for
+    // repeated `-z stack-size=` operands), that placeholder always won,
+    // silently overriding every explicit request — larger or smaller — back
+    // down to the default. A unit test on main_thread_stack_size() alone
+    // cannot see this: the contamination is introduced one layer up, in how
+    // the driver assembles the trace it measures. This test drives the real
+    // wasm32posix-cc driver: its `-###` trace shows the stack size the
+    // prepared link hands wasm-ld, and a real link shows the binary gets it,
+    // so it fails the same way a real build would if the contamination came
+    // back.
     mkdirSync(TMP_DIR, { recursive: true });
     const source = join(TMP_DIR, 'stack-sub-floor.c');
     const floorOutput = join(TMP_DIR, 'stack-sub-floor-default.wasm');
@@ -346,35 +460,24 @@ describe('integration: compile C program', () => {
       expect(match, dump).not.toBeNull();
       return Number(match?.[1]);
     };
-    const link = async (userArgs: string[]): Promise<void> => {
-      const executableLinker = await prepareExecutableLinker(userArgs, toolchain);
-      const args = buildClangArgs(userArgs, toolchain, 'wasm32', executableLinker ?? undefined);
-      const result = await run(toolchain.cc, args);
-      expect(result.exitCode, result.stderr).toBe(0);
-    };
 
     try {
-      await link([source, '-o', floorOutput]);
+      const floor = sdk(CC, [source, '-o', floorOutput]);
+      expect(floor.exitCode, floor.stderr).toBe(0);
 
-      const warnings: string[] = [];
-      const restoreWarn = console.warn;
-      console.warn = (msg: string) => warnings.push(String(msg));
-      let explicitLinker;
-      try {
-        explicitLinker = await prepareExecutableLinker(subFloorArgs, toolchain);
-      } finally {
-        console.warn = restoreWarn;
-      }
-      expect(explicitLinker?.kind).toBe('executable-link');
-      if (explicitLinker?.kind === 'executable-link') {
-        expect(explicitLinker.mainThreadStackSizeBytes).toBe(65536);
-      }
-      expect(warnings.join('\n')).toMatch(/stack-size=65536/);
-      expect(warnings.join('\n')).toMatch(/\.bss|guard page|corrupt/i);
+      // The prepared link's main-thread stack size is the SDK's own
+      // `-z stack-size=`, placed after the caller's and so the one wasm-ld
+      // uses.
+      const traced = sdk(CC, ['-###', ...subFloorArgs]);
+      expect(traced.exitCode, traced.stderr).toBe(0);
+      expect(linkedStackSize(tracedLinker(traced.stderr))).toBe(65536);
 
-      const args = buildClangArgs(subFloorArgs, toolchain, 'wasm32', explicitLinker ?? undefined);
-      const result = await run(toolchain.cc, args);
+      // The real link carries no trace, so its stderr is the driver's own
+      // diagnostics.
+      const result = sdk(CC, subFloorArgs);
       expect(result.exitCode, result.stderr).toBe(0);
+      expect(result.stderr).toMatch(/stack-size=65536/);
+      expect(result.stderr).toMatch(/\.bss|guard page|corrupt/i);
 
       const floorStackPointer = stackPointer(floorOutput);
       const subFloorStackPointer = stackPointer(subFloorOutput);
@@ -384,10 +487,9 @@ describe('integration: compile C program', () => {
         try { unlinkSync(path); } catch {}
       }
     }
-  }, 30_000);
+  }, 120_000);
 
-  it('compiles a hello world program to .wasm', async () => {
-    const toolchain = await resolveToolchain();
+  it('compiles a hello world program to .wasm', () => {
     mkdirSync(TMP_DIR, { recursive: true });
 
     const srcFile = join(TMP_DIR, 'hello.c');
@@ -401,13 +503,10 @@ describe('integration: compile C program', () => {
       }
     `);
 
-    const userArgs = [srcFile, '-o', outFile];
-    const executableLinker = await prepareExecutableLinker(userArgs, toolchain);
-    const args = buildClangArgs(userArgs, toolchain, 'wasm32', executableLinker ?? undefined);
-    const result = await run(toolchain.cc, args);
+    const result = sdk(CC, [srcFile, '-o', outFile]);
 
     if (result.exitCode !== 0) {
-      console.error('clang stderr:', result.stderr);
+      console.error('wasm32posix-cc stderr:', result.stderr);
     }
     expect(result.exitCode).toBe(0);
     expect(existsSync(outFile)).toBe(true);
@@ -415,73 +514,69 @@ describe('integration: compile C program', () => {
     // Clean up
     try { unlinkSync(srcFile); } catch {}
     try { unlinkSync(outFile); } catch {}
-  }, 30_000);
+  }, 60_000);
 
-  it('keeps SDK checkout paths out of linked debug information', async () => {
-    const toolchain = await resolveToolchain();
+  it('keeps SDK checkout paths out of linked debug information', () => {
     mkdirSync(TMP_DIR, { recursive: true });
 
     const srcFile = join(TMP_DIR, 'debug-paths.c');
     const outFile = join(TMP_DIR, 'debug-paths.wasm');
-    writeFileSync(srcFile, '#include <stdio.h>\nint main(void) { return puts("debug paths"); }\n');
+    // The local's FILE type is declared in a sysroot header, so the
+    // program's own DWARF names that header's directory.
+    writeFileSync(
+      srcFile,
+      '#include <stdio.h>\nint main(void) { FILE *stream = stdout; return fputs("debug paths\\n", stream); }\n',
+    );
 
     try {
-      const userArgs = ['-g', srcFile, '-o', outFile];
-      const executableLinker = await prepareExecutableLinker(userArgs, toolchain);
-      const args = buildClangArgs(
-        userArgs,
-        toolchain,
-        'wasm32',
-        executableLinker ?? undefined,
-      );
-      const result = await run(toolchain.cc, args);
+      const result = sdk(CC, ['-g', srcFile, '-o', outFile]);
       if (result.exitCode !== 0) {
-        console.error('clang stderr:', result.stderr);
+        console.error('wasm32posix-cc stderr:', result.stderr);
       }
       expect(result.exitCode).toBe(0);
 
+      // The glue is compiled apart from the caller's command with fixed
+      // flags and no -g (build_glue_compile_args in
+      // crates/kandelo-cc/src/driver.rs), so it contributes no DWARF to
+      // map; it must still leave no checkout path behind.
       const artifact = readFileSync(outFile);
-      expect(artifact.includes(Buffer.from(toolchain.glueDir))).toBe(false);
-      expect(artifact.includes(Buffer.from(toolchain.sysroot))).toBe(false);
-      expect(artifact.includes(Buffer.from('/usr/src/kandelo-sdk/libc/glue'))).toBe(true);
+      expect(artifact.includes(Buffer.from(glueDir()))).toBe(false);
+      expect(artifact.includes(Buffer.from(sysroot()))).toBe(false);
       expect(artifact.includes(Buffer.from('/usr/src/kandelo-sdk/sysroot'))).toBe(true);
     } finally {
       try { unlinkSync(srcFile); } catch {}
       try { unlinkSync(outFile); } catch {}
     }
-  }, 30_000);
+  }, 60_000);
 
-  it('maps sysroot paths in compile-only debug information', async () => {
-    const toolchain = await resolveToolchain();
+  it('maps sysroot paths in compile-only debug information', () => {
     mkdirSync(TMP_DIR, { recursive: true });
 
     const srcFile = join(TMP_DIR, 'compile-debug-paths.c');
     const outFile = join(TMP_DIR, 'compile-debug-paths.o');
-    const syntheticHeader = join(toolchain.sysroot, 'include', 'debug-paths.h');
+    const syntheticHeader = join(sysroot(), 'include', 'debug-paths.h');
     writeFileSync(
       srcFile,
       `#line 1 ${JSON.stringify(syntheticHeader)}\nconst char *debug_path = __FILE__;\n`,
     );
 
     try {
-      const args = buildClangArgs(['-g', '-c', srcFile, '-o', outFile], toolchain);
-      const result = await run(toolchain.cc, args);
+      const result = sdk(CC, ['-g', '-c', srcFile, '-o', outFile]);
       if (result.exitCode !== 0) {
-        console.error('clang stderr:', result.stderr);
+        console.error('wasm32posix-cc stderr:', result.stderr);
       }
       expect(result.exitCode).toBe(0);
 
       const artifact = readFileSync(outFile);
-      expect(artifact.includes(Buffer.from(toolchain.sysroot))).toBe(false);
+      expect(artifact.includes(Buffer.from(sysroot()))).toBe(false);
       expect(artifact.includes(Buffer.from('/usr/src/kandelo-sdk/sysroot/include/debug-paths.h'))).toBe(true);
     } finally {
       try { unlinkSync(srcFile); } catch {}
       try { unlinkSync(outFile); } catch {}
     }
-  }, 30_000);
+  }, 60_000);
 
-  it('links timer_create without fictional raw setjmp imports', async () => {
-    const toolchain = await resolveToolchain();
+  it('links timer_create without fictional raw setjmp imports', () => {
     mkdirSync(TMP_DIR, { recursive: true });
 
     const srcFile = join(TMP_DIR, 'timer-create.c');
@@ -500,12 +595,9 @@ describe('integration: compile C program', () => {
     `);
 
     try {
-      const userArgs = [srcFile, '-o', outFile];
-      const executableLinker = await prepareExecutableLinker(userArgs, toolchain);
-      const args = buildClangArgs(userArgs, toolchain, 'wasm32', executableLinker ?? undefined);
-      const result = await run(toolchain.cc, args);
+      const result = sdk(CC, [srcFile, '-o', outFile]);
       if (result.exitCode !== 0) {
-        console.error('clang stderr:', result.stderr);
+        console.error('wasm32posix-cc stderr:', result.stderr);
       }
       expect(result.exitCode).toBe(0);
 
@@ -519,15 +611,14 @@ describe('integration: compile C program', () => {
       try { unlinkSync(srcFile); } catch {}
       try { unlinkSync(outFile); } catch {}
     }
-  }, 30_000);
+  }, 60_000);
 
-  it('links working dlopen into C++ programs that request -ldl', async () => {
+  it('links working dlopen into C++ programs that request -ldl', () => {
     // wasm32posix-c++ hands the SDK's C glue to clang++, which compiles a .c
     // input as C++. dlopen.c once lacked C linkage there, so its dlopen was
     // mangled and a C++ program silently bound to musl's weak stub, which
     // only reports "Dynamic loading not supported". The functional glue is
     // recognizable by its host imports.
-    const toolchain = await resolveToolchain();
     mkdirSync(TMP_DIR, { recursive: true });
 
     const srcFile = join(TMP_DIR, 'dlopen-cxx.cpp');
@@ -540,17 +631,12 @@ describe('integration: compile C program', () => {
     `);
 
     try {
-      const userArgs = [srcFile, '-o', outFile, '-ldl'];
-      const executableLinker = await prepareExecutableLinker(
-        userArgs,
-        toolchain,
-        'wasm32',
-        toolchain.cxx,
-      );
-      const args = buildClangArgs(userArgs, toolchain, 'wasm32', executableLinker ?? undefined);
-      const result = await run(toolchain.cxx, args);
+      // The program uses no C++ library, and the repository sysroot holds
+      // none (libc++ is a declared package dependency), so it opts out of
+      // the C++ library c++ links by default, as it would with g++.
+      const result = sdk(CXX, [srcFile, '-o', outFile, '-ldl', '-nostdlib++']);
       if (result.exitCode !== 0) {
-        console.error('clang++ stderr:', result.stderr);
+        console.error('wasm32posix-c++ stderr:', result.stderr);
       }
       expect(result.exitCode).toBe(0);
 
@@ -565,10 +651,9 @@ describe('integration: compile C program', () => {
       try { unlinkSync(srcFile); } catch {}
       try { unlinkSync(outFile); } catch {}
     }
-  }, 30_000);
+  }, 60_000);
 
-  it('compiles in compile-only mode', async () => {
-    const toolchain = await resolveToolchain();
+  it('compiles in compile-only mode', () => {
     mkdirSync(TMP_DIR, { recursive: true });
 
     const srcFile = join(TMP_DIR, 'componly.c');
@@ -578,11 +663,10 @@ describe('integration: compile C program', () => {
       int add(int a, int b) { return a + b; }
     `);
 
-    const args = buildClangArgs(['-c', srcFile, '-o', objFile], toolchain);
-    const result = await run(toolchain.cc, args);
+    const result = sdk(CC, ['-c', srcFile, '-o', objFile]);
 
     if (result.exitCode !== 0) {
-      console.error('clang stderr:', result.stderr);
+      console.error('wasm32posix-cc stderr:', result.stderr);
     }
     expect(result.exitCode).toBe(0);
     expect(existsSync(objFile)).toBe(true);
@@ -590,10 +674,9 @@ describe('integration: compile C program', () => {
     // Clean up
     try { unlinkSync(srcFile); } catch {}
     try { unlinkSync(objFile); } catch {}
-  }, 30_000);
+  }, 60_000);
 
-  it('keeps direct helper objects ahead of dependent static libraries', async () => {
-    const toolchain = await resolveToolchain();
+  it('keeps direct helper objects ahead of dependent static libraries', () => {
     mkdirSync(TMP_DIR, { recursive: true });
 
     const mainSource = join(TMP_DIR, 'link-order-main.c');
@@ -641,13 +724,13 @@ describe('integration: compile C program', () => {
         [apiSource, apiObject],
         [archiveHelperSource, archiveHelperObject],
       ]) {
-        const compile = await run(toolchain.cc, buildClangArgs(['-c', source, '-o', object], toolchain));
+        const compile = sdk(CC, ['-c', source, '-o', object]);
         expect(compile.exitCode, compile.stderr).toBe(0);
       }
-      const archive = await run(toolchain.ar, ['rcs', providerArchive, apiObject, archiveHelperObject]);
+      const archive = sdk(AR, ['rcs', providerArchive, apiObject, archiveHelperObject]);
       expect(archive.exitCode, archive.stderr).toBe(0);
 
-      const linkArgs = [
+      const link = sdk(CC, [
         mainObject,
         directHelperObject,
         '-L',
@@ -655,14 +738,7 @@ describe('integration: compile C program', () => {
         '-llink-order-provider',
         '-o',
         output,
-      ];
-      const executableLinker = await prepareExecutableLinker(linkArgs, toolchain);
-      const link = await run(toolchain.cc, buildClangArgs(
-        linkArgs,
-        toolchain,
-        'wasm32',
-        executableLinker ?? undefined,
-      ));
+      ]);
       expect(link.exitCode, link.stderr).toBe(0);
 
       const module = new WebAssembly.Module(readFileSync(output));
@@ -674,10 +750,9 @@ describe('integration: compile C program', () => {
         try { unlinkSync(path); } catch {}
       }
     }
-  }, 30_000);
+  }, 60_000);
 
-  it('preserves Autoconf pthread compiler semantics', async () => {
-    const toolchain = await resolveToolchain();
+  it('preserves Autoconf pthread compiler semantics', () => {
     mkdirSync(TMP_DIR, { recursive: true });
 
     const srcFile = join(TMP_DIR, 'autoconf-pthread.c');
@@ -707,24 +782,26 @@ describe('integration: compile C program', () => {
 
     try {
       const userArgs = ['-pthread', srcFile, '-lpthread', '-o', outFile];
-      const executableLinker = await prepareExecutableLinker(userArgs, toolchain);
-      const args = buildClangArgs(
-        userArgs,
-        toolchain,
-        'wasm32',
-        executableLinker ?? undefined,
-      );
-      const result = await run(toolchain.cc, args);
+
+      // -pthread reaches the compile of the caller's source; -lpthread (musl
+      // has no separate libpthread) never reaches wasm-ld.
+      const traced = sdk(CC, ['-###', ...userArgs]);
+      expect(traced.exitCode, traced.stderr).toBe(0);
+      const sourceCompile = tracedJobs(traced.stderr)
+        .find((job) => job[1] === '-cc1' && job.includes(srcFile));
+      expect(sourceCompile, traced.stderr).toBeDefined();
+      expect(sourceCompile).toContain('-pthread');
+      expect(tracedLinker(traced.stderr)).not.toContain('-lpthread');
+
+      const result = sdk(CC, userArgs);
       if (result.exitCode !== 0) {
-        console.error('clang stderr:', result.stderr);
+        console.error('wasm32posix-cc stderr:', result.stderr);
       }
-      expect(args).toContain('-pthread');
-      expect(args).not.toContain('-lpthread');
       expect(result.exitCode).toBe(0);
       expect(existsSync(outFile)).toBe(true);
     } finally {
       try { unlinkSync(srcFile); } catch {}
       try { unlinkSync(outFile); } catch {}
     }
-  }, 30_000);
+  }, 60_000);
 });

@@ -1017,7 +1017,9 @@ fn classify_compat_files(
         for item in &report.breaking {
             eprintln!("abi: breaking/incompatible snapshot change: {item}");
         }
-        Err("snapshot changes require ABI_VERSION bump".to_string())
+        compat_verdict(&old, &new, &report)?;
+        println!("abi: breaking changes are covered by the version bump.");
+        Ok(())
     }
 }
 
@@ -4280,67 +4282,124 @@ fn build_typed_struct_layout(
     Value::Object(layout.into_iter().collect())
 }
 
+/// Who depends on a snapshot section, and so what a change to it forces.
+///
+/// WHY: an already-built program carries a digest of the sections it depends
+/// on (`kandelo.abi.contract`, see `local_abi_identity`), and the host refuses
+/// to run it when that digest differs from the kernel's. Binding programs to
+/// the whole snapshot made every kernel-host change -- a new optional kernel
+/// export, a new host import -- invalidate every program, package and fixture,
+/// although none of them can observe it. The kernel and host ship together and
+/// check each other through `kernel_exports`, `kernel_imports` and
+/// `host_adapter` instead.
+///
+/// Every section declares its surface where it is produced, so a new section
+/// cannot be added without choosing one. A section a running program can
+/// observe at all -- even if parts of it are kernel-host only -- is `Program`:
+/// over-binding costs a rebuild, under-binding lets a stale program run.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Surface {
+    /// Visible to a running program: what it was compiled and linked against
+    /// (syscall numbers and marshalling, channel and memory layout, structs,
+    /// custom sections, imports, fork instrumentation formats).
+    Program,
+    /// Seen only by the kernel Wasm and the host runtime, which ship together.
+    KernelHost,
+}
+
+/// Snapshot key that records each section's [`Surface`].
+pub(crate) const SURFACES_KEY: &str = "abi_surfaces";
+
+struct Sections {
+    root: JsonMap,
+    program: Vec<&'static str>,
+    kernel_host: Vec<&'static str>,
+}
+
+impl Sections {
+    fn add(&mut self, surface: Surface, name: &'static str, value: Value) {
+        assert!(
+            self.root.insert(name.into(), value).is_none(),
+            "ABI snapshot section {name} declared twice"
+        );
+        match surface {
+            Surface::Program => self.program.push(name),
+            Surface::KernelHost => self.kernel_host.push(name),
+        }
+    }
+
+    fn finish(mut self) -> JsonMap {
+        self.program.sort_unstable();
+        self.kernel_host.sort_unstable();
+        self.root.insert(
+            SURFACES_KEY.into(),
+            json!({ "program": self.program, "kernel_host": self.kernel_host }),
+        );
+        self.root
+    }
+}
+
 fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
+    use Surface::{KernelHost, Program};
     let mut root: JsonMap = BTreeMap::new();
-
+    // The ABI epoch is hashed into every digest separately; it is not a section.
     root.insert("abi_version".into(), json!(shared::ABI_VERSION));
-    root.insert("platform_limits".into(), platform_limits());
-    root.insert(
-        "process_metadata_contract".into(),
-        process_metadata_contract(),
-    );
-    root.insert(
-        "process_snapshot_wire".into(),
-        process_snapshot_wire(),
-    );
-    root.insert("wakeup_event_wire".into(), wakeup_event_wire());
-    root.insert("wait_completion_wire".into(), wait_completion_wire());
-    root.insert("io_multiplexing".into(), io_multiplexing());
-    root.insert("vfs_metadata".into(), vfs_metadata());
-    root.insert("spawn_contract".into(), spawn_contract());
+    let mut s = Sections {
+        root,
+        program: Vec::new(),
+        kernel_host: Vec::new(),
+    };
 
-    root.insert("channel_header".into(), channel_header());
-    root.insert("channel_request_flags".into(), channel_request_flags());
-    root.insert("channel_signal_area".into(), channel_signal_area());
-    root.insert("channel_buffers".into(), channel_buffers());
-    root.insert("channel_scalar_contract".into(), channel_scalar_contract());
+    s.add(Program, "platform_limits", platform_limits());
+    // Argument kinds of the host's process-metadata export.
+    s.add(KernelHost, "process_metadata_contract", process_metadata_contract());
+    // The process table the kernel hands the host (ps, the inspector).
+    s.add(KernelHost, "process_snapshot_wire", process_snapshot_wire());
+    s.add(KernelHost, "wakeup_event_wire", wakeup_event_wire());
+    s.add(KernelHost, "wait_completion_wire", wait_completion_wire());
+    s.add(Program, "io_multiplexing", io_multiplexing());
+    s.add(Program, "vfs_metadata", vfs_metadata());
+    s.add(Program, "spawn_contract", spawn_contract());
 
-    root.insert("marshalled_structs".into(), marshalled_structs());
-    root.insert("clipboard_device_abi".into(), clipboard_device_abi());
-    root.insert("oss_source_abi".into(), oss_source_abi());
-    root.insert("pcm_transport_abi".into(), pcm_transport_abi());
-    root.insert("syscalls".into(), syscalls());
-    root.insert("pathconf_names".into(), pathconf_names());
-    root.insert("wait_contract".into(), wait_contract());
-    root.insert(
-        "host_intercepted_syscalls".into(),
-        host_intercepted_syscalls(),
-    );
-    root.insert("host_adapter".into(), host_adapter());
-    root.insert("syscall_arg_descriptors".into(), syscall_arg_descriptors());
-    root.insert("ioctl_request_contracts".into(), ioctl_request_contracts());
-    root.insert("ioctl_request_families".into(), ioctl_request_families());
-    root.insert("channel_status_codes".into(), channel_status_codes());
-    root.insert("process_native_layouts".into(), process_native_layouts());
-    root.insert("process_memory_layout".into(), process_memory_layout());
-    root.insert("custom_sections".into(), custom_sections());
-    root.insert(
-        "process_expected_globals".into(),
-        process_expected_globals(),
-    );
-    root.insert("host_env_imports".into(), host_env_imports());
-    root.insert("program_artifact".into(), program_artifact());
+    s.add(Program, "channel_header", channel_header());
+    s.add(Program, "channel_request_flags", channel_request_flags());
+    s.add(Program, "channel_signal_area", channel_signal_area());
+    s.add(Program, "channel_buffers", channel_buffers());
+    s.add(Program, "channel_scalar_contract", channel_scalar_contract());
 
-    root.insert("export_deny".into(), export_deny());
+    s.add(Program, "marshalled_structs", marshalled_structs());
+    s.add(Program, "clipboard_device_abi", clipboard_device_abi());
+    s.add(Program, "oss_source_abi", oss_source_abi());
+    // The shared PCM ring between the kernel and the host's audio output.
+    s.add(KernelHost, "pcm_transport_abi", pcm_transport_abi());
+    s.add(Program, "syscalls", syscalls());
+    s.add(Program, "pathconf_names", pathconf_names());
+    s.add(Program, "wait_contract", wait_contract());
+    s.add(Program, "host_intercepted_syscalls", host_intercepted_syscalls());
+    s.add(KernelHost, "host_adapter", host_adapter());
+    s.add(Program, "syscall_arg_descriptors", syscall_arg_descriptors());
+    s.add(Program, "ioctl_request_contracts", ioctl_request_contracts());
+    s.add(Program, "ioctl_request_families", ioctl_request_families());
+    s.add(Program, "channel_status_codes", channel_status_codes());
+    s.add(Program, "process_native_layouts", process_native_layouts());
+    s.add(Program, "process_memory_layout", process_memory_layout());
+    s.add(Program, "custom_sections", custom_sections());
+    s.add(Program, "process_expected_globals", process_expected_globals());
+    // What a program imports from `env`: the host supplies it to programs.
+    s.add(Program, "host_env_imports", host_env_imports());
+    s.add(Program, "program_artifact", program_artifact());
+
+    // Which kernel Wasm exports the build keeps.
+    s.add(KernelHost, "export_deny", export_deny());
 
     let wasm =
         std::fs::read(kernel_wasm).map_err(|e| format!("read {}: {e}", kernel_wasm.display()))?;
     let exports = kernel_exports(&wasm)?;
-    validate_host_adapter_export_lifecycles(&root["host_adapter"], &exports)?;
-    root.insert("kernel_exports".into(), exports);
-    root.insert("kernel_imports".into(), kernel_imports(&wasm)?);
+    validate_host_adapter_export_lifecycles(&s.root["host_adapter"], &exports)?;
+    s.add(KernelHost, "kernel_exports", exports);
+    s.add(KernelHost, "kernel_imports", kernel_imports(&wasm)?);
 
-    Ok(root)
+    Ok(s.finish())
 }
 
 fn platform_limits() -> Value {
@@ -7959,6 +8018,52 @@ fn render_deterministic(root: &JsonMap) -> String {
 struct CompatReport {
     additive: Vec<String>,
     breaking: Vec<String>,
+    /// The top-level section of each `breaking` item, index for index.
+    breaking_sections: Vec<String>,
+}
+
+impl CompatReport {
+    /// Attribute the breaking items pushed since `before` to `section`.
+    fn attribute(&mut self, section: &str, before: usize) {
+        let added = self.breaking.len() - before;
+        self.breaking_sections
+            .extend(std::iter::repeat_n(section.to_owned(), added));
+    }
+}
+
+/// Which version an incompatible snapshot change requires.
+///
+/// WHY two: programs carry `ABI_VERSION` (and the program digest), so bumping
+/// it rebuilds every program. A breaking change confined to kernel-host
+/// sections (`abi_surfaces.kernel_host`) bumps `HOST_ADAPTER_VERSION`, the
+/// kernel-host version the host checks exactly at boot, instead. An
+/// `ABI_VERSION` bump starts a new epoch for everything.
+fn compat_verdict(old: &Value, new: &Value, report: &CompatReport) -> Result<(), String> {
+    if old["abi_version"] != new["abi_version"] {
+        return Ok(());
+    }
+    let kernel_host = |section: &str| {
+        new[SURFACES_KEY]["kernel_host"]
+            .as_array()
+            .is_some_and(|names| names.iter().any(|name| name == section))
+    };
+    let (host_only, program): (Vec<_>, Vec<_>) = report
+        .breaking
+        .iter()
+        .zip(&report.breaking_sections)
+        .partition(|(_, section)| kernel_host(section));
+    if !program.is_empty() {
+        return Err("program-surface snapshot changes require an ABI_VERSION bump".to_string());
+    }
+    let host_version = |snapshot: &Value| snapshot["host_adapter"]["version"].clone();
+    if !host_only.is_empty() && host_version(old) == host_version(new) {
+        return Err(
+            "kernel-host snapshot changes require a HOST_ADAPTER_VERSION bump \
+             (the kernel-host version), not an ABI_VERSION bump"
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, String> {
@@ -7977,13 +8082,16 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
 
     for key in old_obj.keys() {
         if !new_obj.contains_key(key) {
+            let before = report.breaking.len();
             report
                 .breaking
                 .push(format!("removed top-level section {key:?}"));
+            report.attribute(key, before);
         }
     }
     for key in new_obj.keys() {
         if !old_obj.contains_key(key) {
+            let before = report.breaking.len();
             if additive_top_level_section(key) {
                 report
                     .additive
@@ -7993,6 +8101,7 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
                     .breaking
                     .push(format!("added top-level section {key:?}"));
             }
+            report.attribute(key, before);
         }
     }
 
@@ -8005,6 +8114,7 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
     for key in keys {
         let old_value = &old_obj[key];
         let new_value = &new_obj[key];
+        let before = report.breaking.len();
         match key.as_str() {
             "syscalls" | "host_intercepted_syscalls" => {
                 classify_additive_array_by_number_name(key, old_value, new_value, &mut report)?
@@ -8064,6 +8174,24 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
             "vfs_metadata" => {
                 classify_additive_object_by_key(key, old_value, new_value, &mut report)?
             }
+            // A newly added section joins one surface list. Moving an existing
+            // section between surfaces changes what programs bind to, so it is
+            // a removal from one list and stays breaking.
+            k if k == SURFACES_KEY => {
+                for surface in ["program", "kernel_host"] {
+                    classify_additive_array(
+                        &format!("{SURFACES_KEY}.{surface}"),
+                        &old_value[surface],
+                        &new_value[surface],
+                        &mut report,
+                        |entry| {
+                            entry.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+                                format!("{SURFACES_KEY}.{surface} entry must be a string: {entry}")
+                            })
+                        },
+                    )?;
+                }
+            }
             _ if old_value != new_value => {
                 report
                     .breaking
@@ -8071,6 +8199,7 @@ fn classify_compat_change(old: &Value, new: &Value) -> Result<CompatReport, Stri
             }
             _ => {}
         }
+        report.attribute(key, before);
     }
 
     Ok(report)
@@ -9538,6 +9667,72 @@ mod tests {
         let report = classify_compat_change(&old, &new).unwrap();
         assert!(report.breaking.is_empty(), "{report:?}");
         assert_eq!(report.additive.len(), 5);
+    }
+
+    fn with_surfaces(mut snapshot: Value) -> Value {
+        snapshot[SURFACES_KEY] = json!({
+            "program": ["host_intercepted_syscalls", "syscalls"],
+            "kernel_host": ["host_adapter", "kernel_exports", "kernel_imports"],
+        });
+        snapshot
+    }
+
+    fn bump_kernel_host_version(snapshot: &mut Value) {
+        snapshot["host_adapter"]["version"] = json!(2);
+        snapshot["host_adapter"]["manifest"]["required_host_adapter_version"] = json!(2);
+    }
+
+    /// An incompatible change only the kernel and host see -- a changed kernel
+    /// export, a new kernel host import -- needs the kernel-host version, not
+    /// ABI_VERSION, so programs stay valid.
+    #[test]
+    fn kernel_host_breaks_need_the_kernel_host_version_not_abi_version() {
+        let old = with_surfaces(base_snapshot());
+        let mut new = old.clone();
+        new["kernel_exports"][1]["signature"] = json!("(i32,i32) -> ()");
+        new["kernel_imports"].as_array_mut().unwrap().push(json!({
+            "module": "env", "name": "host_new_import",
+            "kind": "func", "signature": "() -> (i32)"
+        }));
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert_eq!(report.breaking.len(), 2, "{report:?}");
+        let error = compat_verdict(&old, &new, &report).unwrap_err();
+        assert!(error.contains("HOST_ADAPTER_VERSION"), "{error}");
+
+        bump_kernel_host_version(&mut new);
+        let report = classify_compat_change(&old, &new).unwrap();
+        compat_verdict(&old, &new, &report).unwrap();
+        assert_eq!(new["abi_version"], old["abi_version"]);
+    }
+
+    #[test]
+    fn program_breaks_still_need_abi_version() {
+        let old = with_surfaces(base_snapshot());
+        let mut new = old.clone();
+        new["host_intercepted_syscalls"][0]["number"] = json!(299);
+        bump_kernel_host_version(&mut new);
+        let report = classify_compat_change(&old, &new).unwrap();
+        let error = compat_verdict(&old, &new, &report).unwrap_err();
+        assert!(error.contains("ABI_VERSION bump"), "{error}");
+
+        new["abi_version"] = json!(11);
+        let report = classify_compat_change(&old, &new).unwrap();
+        compat_verdict(&old, &new, &report).unwrap();
+    }
+
+    #[test]
+    fn surface_lists_grow_compatibly_but_a_move_is_breaking() {
+        let mut old = base_snapshot();
+        old[SURFACES_KEY] = json!({"program": ["syscalls"], "kernel_host": ["kernel_exports"]});
+        let mut grown = old.clone();
+        grown[SURFACES_KEY]["program"] = json!(["syscalls", "vfs_metadata"]);
+        let report = classify_compat_change(&old, &grown).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+
+        let mut moved = old.clone();
+        moved[SURFACES_KEY] = json!({"program": [], "kernel_host": ["kernel_exports", "syscalls"]});
+        let report = classify_compat_change(&old, &moved).unwrap();
+        assert!(!report.breaking.is_empty(), "{report:?}");
     }
 
     #[test]

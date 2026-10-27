@@ -22,7 +22,7 @@ for (const path of [
   'scripts/install-overlay-headers.sh', 'libc/musl/Makefile',
   'libc/musl/tools', 'libc/musl/include', 'libc/musl/src',
   'libc/musl/arch', 'libc/musl/crt', 'libc/musl-overlay', 'libc/glue',
-  'sdk/src/lib/calltypes-plugin.ts', 'sdk/src/plugin',
+  'scripts/calltypes-plugin.sh', 'crates/kandelo-cc/src/plugin.rs', 'sdk/src/plugin',
 ]) visit(path);
 add('musl-revision', execFileSync('git', ['-C', join(repo, 'libc/musl'), 'rev-parse', 'HEAD']));
 add('arch', arch);

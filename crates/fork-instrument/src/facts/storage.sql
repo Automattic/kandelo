@@ -29,8 +29,10 @@ CREATE TABLE cfi_type (ty INTEGER PRIMARY KEY) WITHOUT ROWID;
 CREATE TABLE vslot (name INTEGER, ty INTEGER, offset INTEGER,
   PRIMARY KEY(name,ty,offset)) WITHOUT ROWID;
 CREATE TABLE registered (registry INTEGER, name INTEGER, PRIMARY KEY(registry,name)) WITHOUT ROWID;
-CREATE TABLE registered_by (registry INTEGER, caller INTEGER, name INTEGER,
-  PRIMARY KEY(registry,caller,name)) WITHOUT ROWID;
+-- definition: the registering function's own definition, so a registration
+-- belongs to that translation unit, not to every function sharing its name.
+CREATE TABLE registered_by (registry INTEGER, caller INTEGER, name INTEGER, definition INTEGER,
+  PRIMARY KEY(registry,caller,name,definition)) WITHOUT ROWID;
 CREATE TABLE unknown_registry (registry INTEGER PRIMARY KEY) WITHOUT ROWID;
 CREATE TABLE old_action (name INTEGER PRIMARY KEY) WITHOUT ROWID;
 CREATE TABLE jmp (sequence INTEGER PRIMARY KEY, line TEXT NOT NULL UNIQUE);

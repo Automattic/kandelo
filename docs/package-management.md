@@ -1559,21 +1559,20 @@ place.
 ### Toolchain on PATH
 
 The SDK CLI tools (`wasm{32,64}posix-{cc,c++,ar,ranlib,nm,strip,
-pkg-config,configure}`) live as wrapper symlinks under `sdk/bin/`,
-all pointing at `sdk/bin/_wasm-posix-dispatch`. Every build script
-sources `sdk/activate.sh` near the top, which prepends
-`<worktree>/sdk/bin/` to `PATH`. This makes the toolchain
-worktree-local: a build in worktree A always uses worktree A's SDK
-source, even if worktree B has run `npm link`.
+pkg-config,configure}`) are small wrapper scripts under `sdk/bin/`.
+Each names the tool it is and runs this worktree's SDK driver
+(`crates/kandelo-cc`, built on first use into
+`sdk/.build/bin/kandelo-cc` and rebuilt when its sources change; see
+`sdk/src/kandelo-cc.sh`). Every build script sources `sdk/activate.sh`
+near the top, which prepends `<worktree>/sdk/bin/` to `PATH`, and the
+local-build engine prepends it for every recipe. This makes the
+toolchain worktree-local: a build in worktree A always uses worktree
+A's SDK, even if worktree B has run `npm link`.
 
-Older docs reference `cd sdk && npm link` as a prerequisite. It
-still works (the wrappers and the npm-link-installed binaries
-coexist — the dispatcher exports `WASM_POSIX_INVOKED_AS` so
-`detectArch()` can read it, and falls back to `argv[1]` when the
-env var is absent). `npm link` is now optional, and intentionally
-discouraged for multi-worktree development because the global
-symlink it creates routes every shell to a single worktree's
-source.
+`cd sdk && npm link` also works (the wrappers follow the global
+symlink back to their checkout), but it is optional, and discouraged
+for multi-worktree development because the global symlink routes
+every shell to a single worktree's SDK.
 
 ### Sysroot libraries are not packages
 
@@ -1617,6 +1616,65 @@ A package that depends on those libraries should:
    `scripts/build-musl.sh`, `scripts/build-dri-stubs.sh`,
    `scripts/build-gles-stubs.sh`) to `build.toml.inputs` so cache keys move
    when the sysroot implementation changes.
+
+### Building inside Kandelo
+
+A cross-compiled build that compiles helper programs and runs them during the
+build runs them on the build machine, so what they generate describes the
+build machine rather than the wasm32 target. NetHack's `makedefs` named the
+maintainer's OS in the game's banner and wrote 8-byte `long` fields that the
+32-bit game reads as 4 bytes. A recipe can instead run its whole build, helpers
+included, inside a Kandelo machine through the guest toolchain:
+
+```bash
+source "$REPO_ROOT/scripts/guest-build.sh"
+WS="$WASM_POSIX_DEP_WORK_DIR/ws"
+cp -R "$SRC" "$WS"
+kandelo_guest_build --workspace "$WS" \
+    --input /deps/ncurses="$WASM_POSIX_DEP_NCURSES_DIR" \
+    --env CC=cc \
+    -- /bin/sh -c 'make -j2'
+install -m 0755 "$WS/prog.wasm" "$WASM_POSIX_DEP_OUT_DIR/prog.wasm"
+```
+
+The contract:
+
+- `package.toml` lists `kernel@0.1.0` and `kandelo-build-image@0.1.0` in
+  `depends_on`. The machine boots exactly those artifacts. The build image is
+  the canonical rootfs with every tool resident, plus `kandelo-sdk.zip`
+  expanded under `/usr` (`cc`, `c++`, `wasm32posix-ar`, `wasm32posix-ranlib`
+  and the LLVM tools). It is never served to browsers.
+- `build.toml` `inputs` lists `scripts/guest-build.sh`,
+  `scripts/guest-build.ts`, `host/src/node-guest-build.ts` and the host runtime
+  it imports, and `cargo:runtime-core`, as `coreutils-docs` does: the kernel and
+  host runtime are part of the output's identity.
+- The workspace is mounted read-write at `/build` and must be a copy under
+  `WASM_POSIX_DEP_WORK_DIR`, never the checkout. `--input` mounts are
+  read-only. Neither may sit under a path the in-kernel tmpfs owns (`/tmp`,
+  `/var/tmp`, `/var/log`, `/var/run`, `/home/maker`, `/root`, `/srv`); the
+  runner refuses them.
+- The command runs as root with an exact environment: `PATH=/usr/bin:/bin`,
+  `HOME=/build/.home`, `TMPDIR=/build/.tmp`, `LC_ALL=C`, `TZ=UTC0`,
+  `SOURCE_DATE_EPOCH`, and any `--env` additions. `--env` cannot replace those.
+- Files the guest creates reach the host as mode `0600`; the guest's `chmod`
+  is not persisted to the host. Set output modes on the host while installing.
+  A program the build links can still be run in the same command, because the
+  guest sees its own modes for the session.
+- The machine uses the real clock. The image-build deterministic clock
+  restarts at the epoch for every process, which would let a later step write
+  an output older than its input and break `make`. Reproducibility comes from
+  `SOURCE_DATE_EPOCH`; prove it by building twice.
+- The command fails the build with its own exit status, or 124 after its
+  timeout (one hour unless `--timeout-ms` says otherwise). Output streams to
+  stderr and to `$WASM_POSIX_DEP_WORK_DIR/guest-build.log`.
+- The in-guest compiler runs the build machine's compile, link and
+  `wasm-opt` jobs, but it does not yet fork-instrument or stamp the ABI
+  digest (see [the SDK guide](sdk-guide.md#compile-inside-the-base-shell)).
+  A program built this way that calls `fork()` cannot run until it is
+  instrumented on the build machine.
+
+This is a Node host facility. The browser host has no host-directory mount
+backend, and package builds do not run in browsers.
 
 ## Migrating a consumer to the cache
 

@@ -43,6 +43,29 @@ pub(crate) fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `xtask abi-program-digest [snapshot.json]`: print the program digest of a
+/// snapshot (default: this checkout's) as hex. It answers "does this ABI change
+/// force every program to be rebuilt?" by comparing two snapshots.
+pub(crate) fn run_print(args: &[String]) -> Result<(), String> {
+    let path = match args {
+        [] => crate::repo_root().join("abi/snapshot.json"),
+        [path] => path.into(),
+        _ => return Err("usage: xtask abi-program-digest [snapshot.json]".to_string()),
+    };
+    let text = std::fs::read_to_string(&path)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    let snapshot: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| format!("parse {}: {error}", path.display()))?;
+    let version = snapshot["abi_version"]
+        .as_u64()
+        .and_then(|version| u32::try_from(version).ok())
+        .ok_or_else(|| format!("{}: missing abi_version", path.display()))?;
+    let digest = crate::local_abi_identity::program_contract_digest(&snapshot, version)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    println!("{}", digest.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    Ok(())
+}
+
 enum Outcome {
     Stamped,
     AlreadyCurrent,

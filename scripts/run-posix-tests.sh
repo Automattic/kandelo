@@ -15,7 +15,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # WHY: the SDK driver finds its sysroot and glue dir by walking up from the
-# current directory (findProjectRoot in sdk/src/lib/toolchain.ts), not from
+# current directory (find_project_root in crates/kandelo-cc/src/toolchain.rs), not from
 # this script's location. Run from inside another Kandelo checkout, it would
 # compile against THAT checkout's sysroot while the prerequisite check below
 # validated this one. Pin the cwd so both agree.
@@ -91,7 +91,7 @@ LLVM_BIN="$(find_llvm_bin)"
 # ── Toolchain: the SDK owns the target/link contract ──
 #
 # Conformance binaries must be built the way user software is built.
-# `sdk/src/lib/flags.ts` is the single authority for the wasm32posix
+# `crates/kandelo-cc/src/flags.rs` is the single authority for the wasm32posix
 # target triple, the guest syscall glue, crt1/libc ordering, the pinned
 # wasm-ld, the host-imports allowance file that bounds what may stay
 # undefined, and the process memory layout (8 MiB main-thread shadow

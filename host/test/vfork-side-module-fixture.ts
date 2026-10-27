@@ -46,9 +46,9 @@ export function buildVforkSideModuleFixture(
   try {
     const programPath = join(buildDir, "vfork-side-main.wasm");
     const libraryPath = join(buildDir, "libvfork-side.so");
-    // The SDK owns both link contracts this fixture needs: SHARED_LINK_FLAGS
-    // for the side module and linkFlags() for the main program
-    // (sdk/src/lib/flags.ts). This file used to invoke clang and wasm-ld
+    // The SDK owns both link contracts this fixture needs: shared_link_flags()
+    // for the side module and link_flags() for the main program
+    // (crates/kandelo-cc/src/flags.rs). This file used to invoke clang and wasm-ld
     // directly with its own copy of each, and the main-program copy had
     // drifted -- it reserved wasm-ld's ~64 KiB default shadow stack instead of
     // the SDK's 8 MiB, so the fixture ran under a process memory layout no
@@ -75,8 +75,8 @@ export function buildVforkSideModuleFixture(
     ], { stdio: "pipe" });
     instrumentInPlace(instrument, libraryPath, "env.fork");
 
-    // `-ldl` is how the SDK spells the dlopen glue (parseArgs/linkDl in
-    // sdk/src/bin/cc.ts). `-Wl,--export-all` stays: it is this fixture's own
+    // `-ldl` is how the SDK spells the dlopen glue (parse_args/link_dl in
+    // crates/kandelo-cc/src/driver.rs). `-Wl,--export-all` stays: it is this fixture's own
     // requirement, not part of the platform link contract.
     execFileSync(cc, [
       "-O2",

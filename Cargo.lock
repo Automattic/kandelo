@@ -639,6 +639,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kandelo-cc"
+version = "0.1.0"
+dependencies = [
+ "fork-instrument",
+ "sha2",
+ "wat",
+]
+
+[[package]]
 name = "kandelo-image-module"
 version = "0.1.0"
 dependencies = [

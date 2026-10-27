@@ -3343,7 +3343,8 @@ large-module sharing/reclamation remains follow-up work.
 That template-heavy case fails during compilation on the tested WebKit
 engine: Clang's recursive template instantiation exhausts the engine's
 native Wasm call stack. The worker reports `Maximum call stack size
-exceeded` inside `clang::Sema`, and the shell reports compiler SIGSEGV.
+exceeded` inside `clang::Sema`; the compile job (`clang -cc1`) dies with
+SIGSEGV, and the clang driver reports it and exits 1.
 This is separate from the C stack stored in Wasm linear memory. Raising
 the compiled program's linker stack size does not enlarge the running
 compiler's engine stack. The compiler browser test checks this exact

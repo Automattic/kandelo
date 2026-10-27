@@ -951,7 +951,7 @@ if [ ! -f Makefile ]; then
     # table; without -u they never enter php.wasm and intl.so fails to load.
     #
     # No -z stack-size= override here: the SDK's own 8 MiB default main-
-    # thread stack (see sdk/src/lib/flags.ts and docs/sdk-guide.md) is
+    # thread stack (see crates/kandelo-cc/src/flags.rs and docs/sdk-guide.md) is
     # already well above the 4 MiB this build once requested explicitly for
     # opcache's PASS_6 (DFA-based SSA optimization), which calls
     # zend_build_ssa and can otherwise overflow a too-small stack on large

@@ -7246,6 +7246,13 @@ const GLOBAL_PACKAGE_TOOLCHAIN_INPUTS: &[&str] = &[
     "sdk/package.json",
     "sdk/package-lock.json",
     "sdk/src",
+    // The SDK driver behind every sdk/bin tool (its tests excluded), its
+    // build, and the helper that hands its compiler plugin to builds that
+    // call clang directly.
+    "crates/kandelo-cc/Cargo.toml",
+    "crates/kandelo-cc/src",
+    "scripts/build-kandelo-cc.sh",
+    "scripts/calltypes-plugin.sh",
 ];
 
 /// The full input closure of the wasm-fork-instrument tool: the crate's
@@ -14138,9 +14145,9 @@ fn build_into_cache(
         // resolve to THIS worktree's SDK source — not whatever a global
         // `npm link` last pointed at. Without this, a sibling worktree's
         // SDK + sysroot can leak into the build, producing binaries with
-        // a foreign ABI. The shape of `<repo>/sdk/bin/` is committed
-        // symlinks pointing at `_wasm-posix-dispatch`; see
-        // `docs/package-management.md` "SDK toolchain invocation".
+        // a foreign ABI. `<repo>/sdk/bin/` holds committed wrapper
+        // scripts that run this worktree's SDK driver; see
+        // `docs/package-management.md` "Toolchain on PATH".
         let sdk_bin = crate::repo_root().join("sdk").join("bin");
         let path_var = match std::env::var_os("PATH") {
             Some(existing) => {
@@ -14397,7 +14404,7 @@ fn build_into_cache(
                 )
             })?;
             // Sibling of the build key: the ABI-contract digest
-            // (hash(abi/snapshot.json + ABI_VERSION)) this artifact was built
+            // (the program digest, `local_abi_identity`) this artifact was built
             // against. Stamped on EVERY program (kernel, userspace, and every
             // guest) so the host can compare a guest's stamp against the
             // running kernel's own kandelo.abi.contract stamp at exec and
@@ -25666,6 +25673,7 @@ spdx = "TestLicense"
             "libc/musl-overlay",
             "sdk/bin",
             "sdk/src",
+            "crates/kandelo-cc/src",
         ];
         for input in GLOBAL_PACKAGE_TOOLCHAIN_INPUTS {
             if *input == "libc/musl" {
@@ -32184,8 +32192,9 @@ libs = ["lib/libF3b.a"]
         assert_eq!(
             hex(&source_only),
             // Regenerated when the build script became an implicit
-            // source-only input (the fixture does not list its script).
-            "1011893256fa81b97d562408507251aa056cd05b6697063007cdc9d9b67af262",
+            // source-only input (the fixture does not list its script), and
+            // when the ABI-contract digest became the program digest (v2).
+            "f6b899183fc55f3b8073bf4ed2b87a75bcd5e69bdd096590ce519461af8a90b7",
             "this golden binds the exact source-only-v1 provider-domain bytes"
         );
     }
@@ -33342,7 +33351,7 @@ spdx = "TestLicense"
         std::fs::create_dir_all(root.join("abi")).unwrap();
         std::fs::write(
             root.join("abi/snapshot.json"),
-            r#"{"abi_version":4,"layout":{"b":2,"a":1}}"#,
+            r#"{"abi_version":4,"layout":{"b":2,"a":1},"kernel_exports":["a"],"abi_surfaces":{"program":["layout"],"kernel_host":["kernel_exports"]}}"#,
         )
         .unwrap();
         write(&root, "libAbi", "1.0.0", &[]);
@@ -33356,7 +33365,7 @@ spdx = "TestLicense"
 
         std::fs::write(
             root.join("abi/snapshot.json"),
-            "{\n  \"layout\": {\"a\": 1, \"b\": 2},\n  \"abi_version\": 4\n}\n",
+            "{\n  \"abi_surfaces\": {\"kernel_host\": [\"kernel_exports\"], \"program\": [\"layout\"]},\n  \"kernel_exports\": [\"a\"],\n  \"layout\": {\"a\": 1, \"b\": 2},\n  \"abi_version\": 4\n}\n",
         )
         .unwrap();
         assert_eq!(
@@ -33367,13 +33376,24 @@ spdx = "TestLicense"
 
         std::fs::write(
             root.join("abi/snapshot.json"),
-            r#"{"abi_version":4,"layout":{"a":1,"b":3}}"#,
+            r#"{"abi_version":4,"layout":{"a":1,"b":2},"kernel_exports":["a","b"],"abi_surfaces":{"program":["layout"],"kernel_host":["kernel_exports"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            baseline,
+            source_only_identity_with_overrides(&manifest, &reg, &root, 4, &[]).unwrap(),
+            "a kernel-host-only change must not invalidate compiled artifacts"
+        );
+
+        std::fs::write(
+            root.join("abi/snapshot.json"),
+            r#"{"abi_version":4,"layout":{"a":1,"b":3},"kernel_exports":["a"],"abi_surfaces":{"program":["layout"],"kernel_host":["kernel_exports"]}}"#,
         )
         .unwrap();
         assert_ne!(
             baseline,
             source_only_identity_with_overrides(&manifest, &reg, &root, 4, &[]).unwrap(),
-            "structural ABI changes must invalidate compiled artifacts"
+            "program-surface ABI changes must invalidate compiled artifacts"
         );
     }
 
@@ -33853,7 +33873,7 @@ revision = 1
             "published wasm must carry a kandelo.build.key stamp"
         );
         // Every published program also carries the sibling ABI-contract stamp,
-        // equal to hash(abi/snapshot.json + ABI_VERSION) for the repo it was
+        // equal to the program digest (`local_abi_identity`) for the repo it was
         // built against. This resolve runs under `crate::repo_root()` and the
         // current ABI version, so the stamped digest must equal the same
         // `local_abi_contract_digest` the host reads from the kernel at exec.

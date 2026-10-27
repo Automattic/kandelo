@@ -696,10 +696,10 @@ impl FactsStore {
                             "INSERT OR IGNORE INTO registered VALUES(?,?)",
                             params![registry, name],
                         )?;
-                        if let Some((_, caller)) = state.current {
+                        if let Some((definition, caller)) = state.current {
                             self.execute(
-                                "INSERT OR IGNORE INTO registered_by VALUES(?,?,?)",
-                                params![registry, caller, name],
+                                "INSERT OR IGNORE INTO registered_by VALUES(?,?,?,?)",
+                                params![registry, caller, name, definition],
                             )?;
                         }
                         false

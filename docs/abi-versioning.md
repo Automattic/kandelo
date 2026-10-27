@@ -177,8 +177,30 @@ use guest artifacts stamped for the kernel being tested.
 
 ### Changes that require a version bump
 
+There are two versions, one per audience (see [Which changes force a
+program rebuild](#which-changes-force-a-program-rebuild)):
+
+- `ABI_VERSION` is the program epoch. Every program carries it, so a bump
+  rebuilds every program. It moves only for program-surface changes.
+- `shared::abi::HOST_ADAPTER_VERSION` is the kernel-host version. The kernel
+  records it in its host-adapter manifest and the host refuses any other
+  value at boot, so a stale kernel/host pairing fails loudly. It moves for
+  incompatible changes only the kernel and host can see: adding or changing
+  a kernel host import, changing or removing a kernel export the host uses,
+  changing host-adapter metadata (including making an optional export
+  required), the export filter, or a kernel-host wire format (wakeup events,
+  wait completions, the process-table snapshot, process-metadata kinds, the
+  PCM transport). A semantic change to an existing kernel export bumps it
+  too. Programs stay valid.
+
+`check-abi-version.sh` enforces the split: a breaking change to a
+`kernel_host` section passes without an `ABI_VERSION` bump only when
+`HOST_ADAPTER_VERSION` changed, and a breaking change to a `program` section
+always needs `ABI_VERSION`. An `ABI_VERSION` bump starts a new epoch for
+everything.
+
 Anything that could make an old compiled binary misbehave against a new
-kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
+kernel requires an `ABI_VERSION` bump. Specifically:
 
 - Removing, renaming, or reassigning a syscall number.
 - Changing an existing syscall argument descriptor used by the host for
@@ -203,9 +225,6 @@ kernel. Specifically, any of the following requires an `ABI_VERSION` bump:
   including the wasm32 cancellation-point `__syscall_cp` path. These are not
   currently visible in the structural snapshot, but stale objects and archives
   can otherwise link with incompatible Wasm function signatures.
-- Adding or changing a required kernel-Wasm host import. Kernel imports are not
-  yet present in the structural snapshot, so reviewers must track this surface
-  explicitly and coordinate the host implementation in the same ABI epoch.
 - Changing the name, version, encoding, or role semantics of the
   `kandelo.wpk_fork.capabilities` custom section. The host uses these claims to
   decide whether a main/side-module pair can safely coordinate fork replay and,
@@ -2310,11 +2329,11 @@ marshalled structure or kernel-import signature changes. The combined
 effort now uses ABI 55 after integration of main ABI 54.
 
 
-### ABI 55 graphics compatibility combined with main
+### Development ABI 55 graphics compatibility combined with main
 
 ABI 55 combines the graphics interfaces above with main ABI 54, including
-the kernel-owned wait and executable-admission changes in PR #1581. Keep
-55 across implementation increments of this unpublished graphics effort.
+the kernel-owned wait and executable-admission changes in PR #1581. At this earlier checkpoint, 55 was the single epoch for the unpublished
+graphics effort. ABI 56 below supersedes that numeric label.
 The independent GL operation table remains 17. Fork-state version 21
 combines graphics inheritance with main's executable OFD inheritance;
 both preceding branches independently used fork-state version 20.
@@ -2323,6 +2342,57 @@ Regenerate the complete snapshot, C/TypeScript declarations and standalone
 resolver, then rebuild normal SDK, kernel, program, package and image
 artifacts. Previous ABI 54 test results remain historical evidence and
 do not validate this combined implementation.
+### ABI 55 programs bind only to the program surface
+
+Every built program carries a 32-byte `kandelo.abi.contract` digest, and
+the host refuses to run a program whose digest differs from the running
+kernel's (see [Which changes force a program
+rebuild](#which-changes-force-a-program-rebuild)). Until ABI 54 that
+digest hashed the whole snapshot. A change that only the kernel and the
+host can see, such as a new optional kernel export the host may call,
+therefore changed every program's digest and forced every program,
+package archive, test fixture and VFS image to be rebuilt, although none
+of them could observe the change.
+
+From ABI 55 the digest hashes `ABI_VERSION` plus only the snapshot
+sections a running program depends on. `xtask dump-abi` assigns each
+section a surface where the section is produced and records the
+assignment in the snapshot's new `abi_surfaces` key; the digest refuses a
+snapshot in which any section lacks exactly one surface.
+
+Structural changes (recorded in the snapshot):
+
+- **New top-level key `abi_surfaces`** with two lists, `program` and
+  `kernel_host`, naming every section.
+- **Digest framing.** The digest's domain string is now
+  `kandelo-program-abi-contract-v2`; it covers the program sections only.
+
+- **The kernel-host version is its own epoch.** `HOST_ADAPTER_VERSION`
+  becomes 2. The host now requires the kernel's manifest to name exactly its
+  own version (it used to accept any kernel requiring at most its own), and
+  incompatible kernel-host-only changes bump it instead of `ABI_VERSION`
+  (see [Changes that require a version bump](#changes-that-require-a-version-bump)).
+
+Changing what the stamp covers changes every program's digest once, so
+every program, package archive, test fixture and VFS image is rebuilt for
+55. After that, kernel-host-only changes, compatible or not, leave them
+valid.
+
+
+### ABI 56 graphics compatibility combined with program-surface main
+
+Main `cb0a8226c965` uses program ABI 55 and kernel-host version 2. The
+combined graphics effort uses program ABI 56, one above current main,
+and preserves the new program-only contract digest and exact kernel-host
+version check. Keep 56 across increments of this unpublished effort.
+Kernel-host version 3 covers the incompatible graphics import signatures,
+session routing, acknowledged resources and exact DRM file/grant identity.
+The GL operation table stays 17 and fork-state record version stays 21.
+
+Regenerate the snapshot, C/TypeScript declarations and standalone resolver
+from the merged source. All normal SDK, kernel, program, package and image
+artifacts require rebuilding for the combined program surface. Historical
+ABI 55 graphics results do not validate the newly combined implementation.
 
 ## The snapshot
 
@@ -2331,6 +2401,11 @@ authoritative Rust sources and the freshly-built kernel `.wasm`. It
 captures:
 
 - `abi_version` — the integer [`ABI_VERSION`](../crates/shared/src/lib.rs).
+- `abi_surfaces` — which surface each other section belongs to:
+  `program` (bound into every program's `kandelo.abi.contract` digest) or
+  `kernel_host` (checked only between the kernel and the host). See
+  [Which changes force a program
+  rebuild](#which-changes-force-a-program-rebuild).
 - `platform_limits` — the advertised `ARG_MAX`, `PATH_MAX`, and `IOV_MAX`
   values plus defensive process-startup argv/environment count caps generated
   into the TypeScript host and public musl headers.
@@ -2507,8 +2582,9 @@ while a host still offering an import the kernel no longer asks for is
 unaffected, because WebAssembly resolves imports by name. Changing an
 import's signature, or the imported memory's shape, is breaking.
 
-So **adding an `env.host_*` import fails the ABI check** unless
-`ABI_VERSION` is bumped in the same change. That is deliberate: growing
+So **adding an `env.host_*` import fails the ABI check** unless the
+kernel-host version (`HOST_ADAPTER_VERSION`) is bumped in the same change;
+since ABI 55 it no longer needs `ABI_VERSION`, because no program sees it. That is deliberate: growing
 the host surface is what the Rust-first migration is trying not to do, and
 it should cost a conversation rather than depend on a reviewer noticing a
 new line. Before this section existed, widening `host_proc_read_bytes` /
@@ -2548,6 +2624,62 @@ wasm custom section (`wasm-posix-abi`). The host refuses to launch a
 binary whose custom-section version does not match the kernel's
 `__abi_version` export.
 
+### Which changes force a program rebuild
+
+A built program carries two facts the host checks before running it: the
+ABI version in `wasm-posix-abi` (and its `__abi_version` export), which
+must equal the kernel's, and the `kandelo.abi.contract` digest, which must
+equal the digest stamped on the running kernel. The local build engine
+also keys every program and library on that digest, so the digest decides
+when cached package builds are reused.
+
+The digest covers `ABI_VERSION` and the snapshot sections listed under
+`abi_surfaces.program`: what a running program was compiled and linked
+against. That is syscall numbers (including host-intercepted ones) and
+argument marshalling, the channel header, buffers, status codes, request
+flags, scalar contract and signal area, process memory layout and native
+layouts, marshalled `repr(C)` structs, VFS, ioctl, wait, spawn, pathconf
+and device constants, platform limits, the ABI custom sections and
+process-expected globals, the `env` imports programs link against, and
+the fork-instrumentation artifact contract (`wpk_fork_*` exports,
+save-buffer and frame formats).
+
+The sections under `abi_surfaces.kernel_host` are not in it: kernel
+exports, kernel imports (`env.host_*`), host-adapter metadata, the
+export filter policy, and the wire formats only the kernel and host
+exchange (wakeup events, wait completions, the process-table snapshot,
+process-metadata kinds, the PCM transport). Generated TypeScript constants
+are host code and are not in the snapshot's program surface either. The
+kernel and host are built from the same tree and check each other through
+the host-adapter manifest and Wasm instantiation, so no program needs to
+know about them.
+
+So:
+
+- **Forces a program rebuild:** any `ABI_VERSION` bump, and any change to a
+  program-surface section, including a compatible addition such as a new
+  syscall number (the digest is compared for equality).
+- **Does not:** adding or changing a kernel export, a kernel host import,
+  host-adapter metadata, the export filter, or a kernel-host wire format.
+  An incompatible one bumps the kernel-host version (`HOST_ADAPTER_VERSION`)
+  instead of `ABI_VERSION`; the kernel and host are rebuilt together and
+  every program stays valid.
+
+A section that a program can observe at all is on the program surface,
+even if parts of it are kernel-host only (for example `wait_contract`
+and `marshalled_structs`): binding too much costs a rebuild, binding too
+little lets a stale program run. `bash scripts/check-abi-version.sh`
+reports whether a change moved the program digest, and
+`cargo run -p xtask -- abi-program-digest [snapshot.json]` prints it.
+
+VFS images are not stamped with the digest themselves; the programs inside
+them are. Loading an image checks each program's ABI number, and the host
+checks each program's digest when it is exec'd. A stale program in an image
+therefore fails loudly at exec with a digest mismatch, naming the program,
+which is the moment it matters; checking the digest at image load as well
+would only move the same failure earlier, so images keep checking the
+number alone.
+
 `ABI_VERSION` is one of the inputs to every package's cache key. When the
 ABI is bumped, every package's cache key changes, so the next resolve
 misses the local cache and rebuilds the package from source under the new
@@ -2564,8 +2696,9 @@ strict equality (`actual !== expected`). This is intentional: we keep a
 single breaking-compatibility epoch rather than accepting arbitrary
 older binaries against newer kernels.
 
-The package cache key remains keyed by `ABI_VERSION`,
-so additive kernel API growth does not force every package to rebuild.
+The package cache key is keyed by the program digest, so additive
+kernel-host growth (a new kernel export) does not force every package to
+rebuild; an addition on the program surface (a new syscall number) does.
 Packages built after an additive change may depend on the new syscall or
 export; those packages should be resolved with the matching current
 kernel, even though the ABI epoch did not change.

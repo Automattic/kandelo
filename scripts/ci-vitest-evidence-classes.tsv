@@ -161,6 +161,9 @@ host/test/getgroups-large-buffer.test.ts	prepared-product
 host/test/getpwent.test.ts	prepared-product
 host/test/glib-smoke.test.ts	prepared-product
 host/test/gtk3-smoke.test.ts	prepared-product
+host/test/guest-build-make.test.ts	prepared-product
+host/test/guest-build-run.test.ts	prepared-product
+host/test/guest-sdk-equivalence.test.ts	prepared-product
 host/test/guest-spawn-overlay-program.test.ts	prepared-product
 host/test/heap-safepoint.test.ts	prepared-product
 host/test/host-adapter-manifest.test.ts	source-only
@@ -259,6 +262,7 @@ host/test/nethack-shared-playground.test.ts	prepared-product
 host/test/network-hostname.test.ts	source-only
 host/test/network-readiness-generation.test.ts	source-only
 host/test/node-compat-builtin-exports.test.ts	prepared-product
+host/test/node-guest-build.test.ts	source-only
 host/test/node-host-mounts.test.ts	prepared-product
 host/test/node-host-vfs-only-metadata.test.ts	source-only
 host/test/node-input-source.test.ts	source-only
@@ -576,6 +580,7 @@ tests/package-system/dev-lazy-assets.test.ts	source-only
 tests/package-system/espeak-ng-package.test.ts	prepared-product
 tests/package-system/host-package-projection-contract.test.ts	prepared-product
 tests/package-system/installed-host-package.test.ts	prepared-product
+tests/package-system/kandelo-build-image.test.ts	prepared-product
 tests/package-system/kernel-test-fixtures.test.ts	prepared-product
 tests/package-system/local-build-wrapper.test.ts	source-only
 tests/package-system/playwright-server-policy.test.ts	prepared-product

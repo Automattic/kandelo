@@ -178,6 +178,13 @@ without it falls into a BSD branch or an `#error`. When a package hits that:
    above did not work, and states that it does not make Kandelo a Linux
    target.
 
+When a build compiles helper programs and runs them to generate code or data,
+cross-compiling runs those helpers on the build machine, so their output
+describes the build machine instead of the wasm32 target. Before adding a
+patch that compensates for that, consider building the package inside Kandelo
+with `scripts/guest-build.sh`. See "Building inside Kandelo" in
+`docs/package-management.md` for the recipe contract.
+
 Fork-using packages must be instrumented with
 `scripts/run-wasm-fork-instrument.sh` after linking and after optimization.
 Missing `wpk_fork_*` exports are a build/runtime error. Legacy Asyncify

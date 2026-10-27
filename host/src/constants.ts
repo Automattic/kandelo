@@ -2411,7 +2411,8 @@ export function readWasmCustomSectionNames(programBytes: ArrayBuffer): string[] 
 
 /**
  * Custom-section name carrying the 32-byte ABI-contract digest
- * (`hash(abi/snapshot.json + ABI_VERSION)`) a wasm artifact was built against.
+ * (`ABI_VERSION` plus the program surface of abi/snapshot.json) a wasm
+ * artifact was built against.
  * Stamped by the local-build engine (`tools/xtask/src/build_stamp.rs`,
  * `ABI_CONTRACT_SECTION`) onto every program — kernel, userspace, and every
  * guest. The host reads the kernel's own stamp at init and compares each
@@ -2531,9 +2532,9 @@ export function describeWasmArtifactPolicyFailures(
 
   // ABI-contract digest gate (Stage 3): the ABI version NUMBER can coincide
   // across a structural ABI change that regenerated abi/snapshot.json. The
-  // 32-byte contract digest binds hash(abi/snapshot.json + ABI_VERSION), so a
-  // guest built against a different snapshot is caught even when the numbers
-  // match. Warn-then-enforce during rollout: an UNSTAMPED (legacy) guest warns
+  // 32-byte contract digest binds ABI_VERSION plus the snapshot's program
+  // surface, so a guest built against a different program surface is caught
+  // even when the numbers match. Warn-then-enforce during rollout: an UNSTAMPED (legacy) guest warns
   // once and passes; a STAMPED-but-mismatched guest fails hard.
   if (
     options.expectedAbiContractDigest !== undefined &&

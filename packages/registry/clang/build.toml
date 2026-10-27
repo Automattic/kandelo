@@ -7,7 +7,9 @@ inputs = [
   "scripts/install-local-binary.sh",
   "sdk/activate.sh",
   "sdk/cmake/Platform/Kandelo.cmake",
+  "sdk/src/plugin/KandeloCallTypes.cpp",
+  "sdk/src/plugin/KandeloFnCasts.cpp",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 3
+revision    = 4

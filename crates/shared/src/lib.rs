@@ -221,10 +221,17 @@ pub mod process_layout;
 ///     scratch reservation exports are gone; `kernel_process_metadata_read`;
 ///     `kernel_exec_target_admit`); later commits of the batch fold their
 ///     changes in here. docs/abi-versioning.md ("ABI 54") lists each.
-/// 55: combine main ABI 54 with kernel-owned graphics sessions, shared
-///     contexts, acknowledged surfaces and retained graphics storage. Use
-///     one epoch across the unpublished graphics effort.
-pub const ABI_VERSION: u32 = 55;
+/// 55: programs bind only to the program surface. The `kandelo.abi.contract`
+///     digest every program carries now covers `ABI_VERSION` plus the snapshot
+///     sections `xtask dump-abi` marks as the program surface
+///     (`abi_surfaces`), not kernel exports, kernel imports, host-adapter
+///     metadata or kernel-host wire formats. Those bump the kernel-host
+///     version, `abi::HOST_ADAPTER_VERSION` (now 2, checked exactly), instead
+///     of this. docs/abi-versioning.md ("ABI 55").
+/// 56: combine main's program-surface digest with kernel-owned graphics
+///     sessions, shared contexts, acknowledged surfaces and retained storage.
+///     One epoch covers the unpublished graphics compatibility effort.
+pub const ABI_VERSION: u32 = 56;
 
 /// Byte width of Kandelo's Linux-compatible kernel CPU-affinity mask.
 ///
@@ -3529,7 +3536,23 @@ pub mod abi {
 
     pub const HOST_ADAPTER_MANIFEST_MAGIC: u32 = 0x4d4b_5057; // "WPKM", little-endian.
     pub const HOST_ADAPTER_MANIFEST_VERSION: u16 = 1;
-    pub const HOST_ADAPTER_VERSION: u32 = 1;
+    /// The kernel-host version: the compatibility epoch between the kernel Wasm
+    /// and the host runtime, which are built from one tree and ship together.
+    ///
+    /// WHY separate from `ABI_VERSION`: programs carry `ABI_VERSION` and the
+    /// program digest, so bumping it rebuilds every program. A change no
+    /// program can observe -- a new or changed kernel export or kernel host
+    /// import, a kernel-host wire format, host-adapter metadata -- bumps this
+    /// instead when it is incompatible. The kernel records it in its manifest
+    /// and the host refuses any other value, so a stale kernel/host pairing
+    /// fails at boot rather than misbehaving.
+    ///
+    /// 1: the host accepted any kernel requiring at most its own version.
+    /// 2: the check is exact, and this version (not `ABI_VERSION`) is the
+    ///    epoch for kernel-host-only changes (ABI 55).
+    /// 3: graphics sessions, thread-current ownership, acknowledged surfaces,
+    ///    and exact DRM file/grant identities across kernel-host imports.
+    pub const HOST_ADAPTER_VERSION: u32 = 3;
     pub const HOST_ADAPTER_MANIFEST_SIZE: u16 = core::mem::size_of::<HostAdapterManifest>() as u16;
 
     pub const HOST_FEATURE_SHARED_ARRAY_BUFFER: u32 = 1 << 0;
@@ -3750,6 +3773,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_transfer_scratch_pointer"),
         HostAdapterKernelExport::required("kernel_validate_task"),
         HostAdapterKernelExport::required("kernel_wait_next_timeout_ns"),
+        HostAdapterKernelExport::optional("kernel_wait_park_followup"),
     ];
 
     const fn host_adapter_export_count(

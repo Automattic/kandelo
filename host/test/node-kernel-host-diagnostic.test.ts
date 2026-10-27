@@ -42,6 +42,25 @@ describe("NodeKernelHost diagnostics", () => {
     expect(onStderr).toHaveBeenCalledWith(7, data);
     expect(onHostDiagnostic).not.toHaveBeenCalled();
   });
+
+  it("ignores the dependency reports that node --watch makes the worker post", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const host = new NodeKernelHost();
+    const testable = host as unknown as TestableNodeKernelHost;
+
+    try {
+      testable.handleWorkerMessage(
+        { "watch:import": ["file:///foo"] } as unknown as KernelToMainMessage,
+      );
+      testable.handleWorkerMessage(
+        { "watch:require": ["/bar.js"] } as unknown as KernelToMainMessage,
+      );
+
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
 });
 
 describe("NodeKernelHost lazy VFS transport events", () => {

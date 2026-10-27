@@ -52,6 +52,38 @@ cat >"$work/hybrid-exec.wat" <<'WAT'
 WAT
 wat2wasm "$work/hybrid-exec.wat" -o "$work/hybrid-exec.wasm"
 
+# Legacy Asyncify is identified by its exports. A program that only
+# contains the text (Binaryen's wasm-opt implements the transform) is not
+# a legacy artifact; one that exports asyncify_* is.
+cat >"$work/asyncify-text.wat" <<'WAT'
+(module
+  (memory 1)
+  (data (i32.const 0) "asyncify_start_unwind asyncify_get_state")
+  (func (export "main")))
+WAT
+wat2wasm "$work/asyncify-text.wat" -o "$work/asyncify-text.wasm"
+cat >"$work/asyncify-export.wat" <<'WAT'
+(module
+  (func (export "asyncify_start_unwind")))
+WAT
+wat2wasm "$work/asyncify-export.wat" -o "$work/asyncify-export.wasm"
+if ! (unset WASM_POSIX_FORK_INSTRUMENT; \
+      wasm_require_no_legacy_asyncify "$work/asyncify-text.wasm"); then
+    echo "ERROR: a module containing only the text asyncify_ was refused" >&2
+    exit 1
+fi
+if (unset WASM_POSIX_FORK_INSTRUMENT; \
+    wasm_require_no_legacy_asyncify "$work/asyncify-export.wasm") \
+    2>"$work/asyncify-export.error"; then
+    echo "ERROR: a module exporting asyncify_start_unwind was accepted" >&2
+    exit 1
+fi
+grep -F "refusing legacy Asyncify wasm artifact" "$work/asyncify-export.error" >/dev/null || {
+    echo "ERROR: the legacy Asyncify refusal did not name the failure" >&2
+    cat "$work/asyncify-export.error" >&2
+    exit 1
+}
+
 if ! declare -F wasm_require_target_aware_exec_authority >/dev/null; then
     echo "ERROR: target-aware exec artifact guard is unavailable" >&2
     exit 1

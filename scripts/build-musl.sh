@@ -76,7 +76,7 @@ done
 # The SDK builds and caches the plugin for this exact compiler; musl is
 # compiled with $CC directly, so ask it for the path and pass the SDK's
 # flags. The plugin leaves the code unchanged.
-CALLTYPES_PLUGIN="$(node --experimental-strip-types "$REPO_ROOT/sdk/src/lib/calltypes-plugin.ts" "$CC")"
+CALLTYPES_PLUGIN="$(bash "$REPO_ROOT/scripts/calltypes-plugin.sh" "$CC")"
 CALLTYPES_FLAGS="-Xclang -fsanitize=cfi-icall -Xclang -fsanitize-trap=cfi-icall -Xclang -flto-unit -Xclang -fwhole-program-vtables -Xclang -load -Xclang $CALLTYPES_PLUGIN -Xclang -add-plugin -Xclang kandelo-fncasts -fpass-plugin=$CALLTYPES_PLUGIN"
 
 source "$REPO_ROOT/scripts/musl-build-state.sh"
@@ -363,9 +363,17 @@ make install
 # ---------------------------------------------------------------
 # 6. Build __main_void wrapper and add to libc.a
 # ---------------------------------------------------------------
+# WHY relative source paths (here and in steps 7-8): the calltypes plugin
+# records each object's source path in its `kandelo.calltypes` section, and
+# fork instrumentation hashes the whole linked input module (sections it
+# later strips included) into code it emits. An absolute path would put this
+# checkout's location into every program that links the object, so two
+# worktrees building the same cache key would publish different bytes. The
+# overlay was copied into "$MUSL_DIR" (the cwd) in step 1, and musl's own
+# make already compiles every other object by its relative path.
 echo "==> Building __main_void wrapper..."
 "$CC" --target=$TARGET -O2 $CALLTYPES_FLAGS -c \
-    "$OVERLAY_DIR/src/env/__main_void.c" \
+    "src/env/__main_void.c" \
     -o "$SYSROOT/lib/__main_void.o"
 "$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/__main_void.o"
 
@@ -384,7 +392,7 @@ echo "==> Building setjmp runtime..."
 "$CC" --target=$TARGET -O2 $CALLTYPES_FLAGS \
     -fwasm-exceptions -matomics -mbulk-memory \
     -I"$SYSROOT/include" \
-    -c "$OVERLAY_DIR/src/setjmp/$SETJMP_DIR/rt.c" \
+    -c "src/setjmp/$SETJMP_DIR/rt.c" \
     -o "$SYSROOT/lib/wasm_setjmp_rt.o"
 "$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/wasm_setjmp_rt.o"
 
@@ -395,7 +403,7 @@ echo "==> Building sigsetjmp helpers..."
 "$CC" --target=$TARGET -O2 $CALLTYPES_FLAGS \
     -matomics -mbulk-memory \
     -I"$SYSROOT/include" \
-    -c "$OVERLAY_DIR/src/signal/$SIGSETJMP_DIR/sigsetjmp.c" \
+    -c "src/signal/$SIGSETJMP_DIR/sigsetjmp.c" \
     -o "$SYSROOT/lib/sigsetjmp_helpers.o"
 "$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/sigsetjmp_helpers.o"
 
@@ -421,6 +429,14 @@ rm -f "$SYSROOT/lib/ucontext_unsupported.o"
 # ---------------------------------------------------------------
 echo "==> Installing override headers..."
 bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$SYSROOT"
+
+# A sysroot object that names this checkout makes every program linking it
+# depend on where the checkout lives (see step 6). Fail here rather than as
+# a cache-winner mismatch between two worktrees hours later.
+if LC_ALL=C grep -rlaF "$REPO_ROOT" "$SYSROOT/lib" >&2; then
+    echo "ERROR: the sysroot objects above embed the checkout path $REPO_ROOT" >&2
+    exit 1
+fi
 
 # Do not label an output current if its sources changed during compilation.
 if [ "$INPUT_HASH" != "$(kandelo_musl_input_hash "$REPO_ROOT" "$ARCH" "$CC" "$CALLTYPES_PLUGIN")" ]; then

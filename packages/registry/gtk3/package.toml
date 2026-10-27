@@ -12,7 +12,7 @@ kind = "library"
 # no dynamic modules.
 name = "gtk3"
 version = "3.24.34"
-kernel_abi = 55
+kernel_abi = 56
 depends_on = [
   "glib@2.84.4",
   "atk@2.36.0",

@@ -13376,7 +13376,12 @@ export class CentralizedKernelWorker {
             "cancellation of a kernel-parked wait failed",
           );
         }
-        this.#settleKernelWaitsWithinKernelEntry(entry);
+        // Collect only when the kernel says a park is already decided (-2;
+        // also without the export). Otherwise just keep the deadline timer.
+        const followup = (this.#kernelInstanceForEntry(entry).exports
+          .kernel_wait_park_followup as (() => bigint) | undefined)?.() ?? -2n;
+        if (followup === -2n) this.#settleKernelWaitsWithinKernelEntry(entry);
+        else this.#armKernelWaitTimer(followup);
         return;
       }
       if (
@@ -15949,8 +15954,12 @@ export class CentralizedKernelWorker {
       );
     }
 
-    const nextNs = (this.#kernelInstanceForEntry(entry).exports
-      .kernel_wait_next_timeout_ns as () => bigint)();
+    this.#armKernelWaitTimer((this.#kernelInstanceForEntry(entry).exports
+      .kernel_wait_next_timeout_ns as () => bigint)());
+  }
+
+  /** Keep the one host timer at the kernel's earliest park deadline. */
+  #armKernelWaitTimer(nextNs: bigint): void {
     if (nextNs < 0n) return;
     const delayMs = Math.min(Number((nextNs + 999_999n) / 1_000_000n), 2_147_483_647);
     const dueAt = performance.now() + delayMs;

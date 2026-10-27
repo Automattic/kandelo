@@ -27,6 +27,7 @@ const CASES = [
   "pinned",
   "cancel",
   "signal-pending-at-park",
+  "signal-pending-at-main-park",
   "expired-timeout",
   "ping-pong",
   "signal-retargeted",

@@ -18,6 +18,7 @@ package_archive_changed_files() {
     -e '^tools/mkrootfs/(bin|src)/' \
     -e '^tools/mkrootfs/(package(-lock)?\.json|tsconfig\.json)$' \
     -e '^crates/fork-instrument/(Cargo\.toml|src/)' \
+    -e '^crates/kandelo-cc/(Cargo\.toml|src/)' \
     -e '^libc/(glue|musl-overlay)(/|$)' \
     -e '^libc/musl($|/)' \
     -e '^images/vfs/' \
@@ -25,7 +26,7 @@ package_archive_changed_files() {
     -e '^\.github/actions/(exact-main-package-rebuild|package-archive-build|package-toolchain|fetch-submodules|download-run-artifacts)/' \
     -e '^\.github/scripts/download-dependency-artifacts\.sh$' \
     -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules|package(-lock)?\.json|host/package(-lock)?\.json|sdk/package(-lock)?\.json|tools/mkrootfs/package(-lock)?\.json)$' \
-    -e '^scripts/(build-fork-instrument-tool|build-musl|check-libcxx-toolchain-version|dev-shell|install-local-binary|install-overlay-headers|run-wasm-fork-instrument)\.sh$' \
+    -e '^scripts/(build-fork-instrument-tool|build-kandelo-cc|build-musl|calltypes-plugin|check-libcxx-toolchain-version|dev-shell|install-local-binary|install-overlay-headers|run-wasm-fork-instrument)\.sh$' \
     | grep -vE \
       -e '^packages/registry/[^/]+/(demo|test)(/|$)' \
     || true)

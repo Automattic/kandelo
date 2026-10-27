@@ -10,8 +10,10 @@ validation cover it; a passing demo does not close an API family.
 ## Unpublished ABI policy
 
 Use one ABI above current main for the combined effort, as requested by
-the user on 2026-10-24. After PR #1581, main `7dfe4b501e` uses ABI 54,
-so the combined source uses **ABI 55**. Keep this number across increments
+the user on 2026-10-24. Main `cb0a8226c965` uses program ABI 55 and kernel-host version 2. The
+combined source uses **program ABI 56 and kernel-host version 3**, preserving
+main's program-only contract digest and exact host/kernel version check.
+Keep these numbers across increments
 and regenerate outputs when their inputs change. Rebuild normal artifacts
 from the final coherent source before relying on them. Earlier ABI 52-59
 references below record unpublished development history, not released
@@ -97,7 +99,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | H01 | Command framing, complete validation and bounded results | Owned bounded submission snapshots make structural validation and dispatch observe the same bytes in native and forwarded paths; one-shot frames restore cached views and discard on purge. Source execution leases retain revoked context owners and owned drawable allocations independently; borrowed GPU allocations also have independent source leases; drain remains synchronous pending per-work drawable selection and server-wait ordering. Kernel query dispatch preprobes nonempty guest destinations, rejects nonzero reserved fields/null inputs, and rejects oversized host replies without copying output. Focused Rust/host source evidence is recorded below; complete guest coverage remains open | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Canonical surface BO holds and image-owned renderer cleanup now survive descriptor inheritance/local close; focused native lifecycle checks pass. Raw BO retirement retains failed native cleanup across final member teardown and blocks affected operations until retry. Combined guest/memory-cycle validation remains pending | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
-| A01 | ABI and generated declarations match combined implementation | Main `7dfe4b501e` ABI 54 and graphics development contracts are consolidated under ABI 55. Regeneration and combined validation are in progress; operation table stays 17. Previous ABI 54 results remain historical evidence. Normal artifacts and combined consumer/conformance gates remain pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
+| A01 | ABI and generated declarations match combined implementation | Main `cb0a8226c965` program ABI 55/kernel-host 2 and graphics development contracts are consolidated under program ABI 56/kernel-host 3. Regeneration and combined validation are in progress; operation table stays 17. Previous ABI 54/55 results remain historical evidence. Normal artifacts and combined consumer/conformance gates remain pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
 | P01 | Real upstream compositor integration | Normal selected graph59 and actual ABI55 cage/sway GLES2 sessions pass all three engines; default Node, full gallery and browser-memory gates remain pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
 
 ## Separate expansions
@@ -5952,3 +5954,53 @@ processes drained. Two other cases were deliberately excluded for this
 focused control. The full repaired normal build, three-case Node suite,
 three-engine gallery, memory and combined conformance remain required.
 The separate WebKit exit-confirmation failure remains unresolved.
+
+
+## Main program-surface integration and normal regression checkpoint, 2026-10-27
+
+The latest main integration is `cb0a8226c965`. Preserve its Rust SDK driver,
+guest-build package path, cleanup-handler instrumentation, completion-drain
+behavior, reproducible libc archive paths and program-only ABI digest.
+Program ABI 56 and kernel-host version 3 combine that source with graphics;
+this is the requested single epoch above current main, not an increment
+for each graphics change. Main's batch provisioning job
+`main-provision-v2-1027-122133-c324` completed successfully in 2h43m before
+starting this checkout's next builds. That job validates main provisioning,
+not this graphics branch.
+
+The preceding graphics run
+`graphics-kms-ports-validation-1026-034333-3cbd` exited one after 52m19s
+on source `14f36676b3`. The normal 60-node selected package graph, full
+program build, host build and freshness check completed. The default Node
+selection loaded 17 files and ran 36 cases: 34 passed, two failed, none
+skipped. The failures were the GPU-tier modifier allocation assertion in
+`egl-dmabuf-smoke.test.ts` and the GL error assertion in
+`egl-image-ownership.test.ts`. Logs remain in
+`.context/graphics-kms-ports-{programs-build,node}.log` and the graph result
+in `.context/graphics-kms-ports-build-result.json`. The sequential run
+stopped before browser and browser-memory validation. The stricter Sway
+cooperative-drain cases passed in this run; that is not a full memory-gate
+result.
+
+An additional real inherited-file rendering probe passed its eight Node
+ownership cases and three browser cursor cases, but failed EGL context
+creation with ENODEV in Chromium, Firefox and WebKit:
+`graphics-kms-inherited-render-1026-034915-1aff`. Raw before evidence is
+under `.context/gtk-instrument-diagnostic/.context/kms-inherited-render-before/`.
+The EGL facade ignores the supplied native GBM device and initializes a
+separate render-node identity. That cannot satisfy the exact DRM-file
+master authority now enforced by the kernel/host. Correct native-display
+association remains an ordinary implementation gap; restoring PID-based
+authority or weakening the rendered probe would not fix it. Multiple EGL
+displays and retained native-file ownership are under repair. Combined
+ABI 56 artifacts, rendered consumers, memory and POSIX validation remain
+pending.
+
+
+The merged ABI generation/check job `graphics-main56-abi-1027-150650-f765`
+completed in 56s. It built the current kernel for actual import/export
+signatures, regenerated the complete snapshot and C/TypeScript declarations,
+rebuilt and checked the standalone resolver, and passed the ABI source and
+base comparison checks. Focused snapshot-generation and program-digest unit
+checks also passed. This establishes source/ABI coherence, not rebuilt user
+programs or rendered consumer compatibility.

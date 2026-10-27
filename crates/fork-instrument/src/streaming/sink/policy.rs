@@ -389,12 +389,25 @@ impl<'p, 's, 'a> PolicyPlan<'p, 's, 'a> {
         // Keep original caller identity. The compatibility projection uses
         // names; copying that projection would apply a bound caller's proof
         // to an unrelated unbound function with the same local symbol name.
+        //
+        // The same holds for the handler: a cleanup handler is usually a
+        // static function, and another translation unit may define its own
+        // static of that name. Resolve the name to the function bound to a
+        // definition in the registering unit. Only when that unit has no such
+        // definition (the handler is defined elsewhere) does every function of
+        // that name stay a candidate. A wrong candidate here is not merely
+        // imprecise: it makes the caller look fork-reaching through an edge no
+        // real frame chain has, so the caller is kept with no call to land on.
         self.program.store.db.execute_batch(
             "INSERT INTO sink_cleanup_group
           SELECT caller FROM cleanup_caller;
           INSERT OR IGNORE INTO sink_cleanup_target
           SELECT c.caller,t.id FROM cleanup_caller c
-            JOIN cleanup_handler h ON h.caller=c.caller JOIN wasm_function t ON t.name=h.handler;",
+            JOIN cleanup_handler h ON h.caller=c.caller JOIN wasm_function t ON t.name=h.handler
+            WHERE EXISTS(SELECT 1 FROM bound_definition b JOIN definition d ON d.id=b.definition
+                WHERE b.caller=t.id AND d.chunk=h.chunk)
+              OR NOT EXISTS(SELECT 1 FROM wasm_function u JOIN bound_definition b ON b.caller=u.id
+                JOIN definition d ON d.id=b.definition WHERE u.name=h.handler AND d.chunk=h.chunk);",
         )?;
         Ok(())
     }

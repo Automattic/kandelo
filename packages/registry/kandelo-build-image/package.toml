@@ -1,0 +1,49 @@
+kind = "program"
+name = "kandelo-build-image"
+version = "0.1.0"
+kernel_abi = 50
+arches = ["wasm32"]
+# The canonical rootfs's own package closure (it is rebuilt here with every
+# output installed eagerly), plus the guest toolchain. Keep the first group
+# equal to packages/registry/rootfs/package.toml's depends_on.
+depends_on = [
+  "login@0.1.0",
+  "sudo-lite@0.1.0",
+  "sudo@1.9.17p2",
+  "bash@5.2.37",
+  "ncurses@6.5",
+  "coreutils@9.6",
+  "gawk@5.3.0",
+  "grep@3.11",
+  "sed@4.9",
+  "bc@1.07.1",
+  "file@5.45",
+  "m4@1.4.19",
+  "make@4.4.1",
+  "findutils@4.10.0",
+  "diffutils@3.10",
+  "posix-utils-lite@0.1.0",
+  "kandelo-exchange@0.1.0",
+  "attr@2.5.2",
+  "kandelo-sdk-browser-bundle@21.1.7",
+]
+
+# The image a package build boots when it builds inside Kandelo
+# (scripts/guest-build.sh): the rootfs with every tool resident, and the
+# guest compiler toolchain under /usr. Built for Node package builds only;
+# never served to browsers.
+[source]
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+provider = "repository"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/kandelo-build-image/build-kandelo-build-image.sh"
+
+[[outputs]]
+name = "kandelo-build-image"
+wasm = "kandelo-build-image.vfs.zst"

@@ -2,7 +2,7 @@ kind = "program"
 name = "kandelo-sdk"
 version = "0.1.0"
 kernel_abi = 13
-depends_on = ["libcxx@21.1.7"]
+depends_on = ["libcxx@21.1.7", "kandelo-cc@0.1.0", "binaryen@126"]
 
 [source]
 url = "https://github.com/Automattic/kandelo"

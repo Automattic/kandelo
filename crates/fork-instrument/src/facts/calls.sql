@@ -52,7 +52,9 @@ CREATE VIEW IF NOT EXISTS call_target AS
   SELECT g.caller,g.sig,t.target FROM call_unknown_group g JOIN call_target_class t
     ON t.sig=g.sig AND t.known=0;
 CREATE TABLE IF NOT EXISTS cleanup_caller (caller INTEGER PRIMARY KEY,name INTEGER) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS cleanup_handler (caller INTEGER,handler INTEGER,PRIMARY KEY(caller,handler)) WITHOUT ROWID;
+-- chunk: the translation unit that registered the handler. A static handler
+-- name is only meaningful there; see PolicyPlan::cleanup.
+CREATE TABLE IF NOT EXISTS cleanup_handler (caller INTEGER,handler INTEGER,chunk INTEGER,PRIMARY KEY(caller,handler,chunk)) WITHOUT ROWID;
 
 DELETE FROM wasm_function; DELETE FROM wasm_direct; DELETE FROM wasm_indirect;
 DELETE FROM wasm_constant; DELETE FROM wasm_slot; DELETE FROM binding_group;

@@ -880,7 +880,7 @@ These PHP needs are well-handled by the current kernel:
 - Multi-process: fork (kernel syscall), exec (host-initiated), waitpid (kernel syscall)
 - Networking: AF_INET TCP (connect, bind, listen, accept, send, recv), getaddrinfo
 - Dynamic linking: dlopen (including the main-program handle), dlsym (including
-  RTLD_DEFAULT), dlclose, dlerror (Wasm dylink on the process worker) for both
+  RTLD_DEFAULT), dlclose, dlerror, dladdr (Wasm dylink on the process worker) for both
   wasm32 and wasm64 processes. The wasm64 path uses memory64 pointer globals,
   GOT entries, and table64 indices without narrowing them to JavaScript
   numbers at the Wasm boundary. `DT_NEEDED`, `RTLD_LOCAL`/`RTLD_GLOBAL`,
@@ -907,6 +907,10 @@ These PHP needs are well-handled by the current kernel:
   Loader-owned VFS/mapping completions leave caught signals pending, and libc
   performs an ordinary signal-delivery checkpoint after each staged import
   returns and after `dlclose`. RTLD_NEXT lookup is not currently supported.
+  `dladdr` reports every non-null address against the main program: its
+  `dli_fname` is the executable (`/proc/self/exe`), and the symbol fields
+  are not filled in. Addresses inside a side module are not distinguished,
+  because side modules share the main program's memory and table.
 - POSIX timers: `SIGEV_SIGNAL`, `SIGEV_NONE`, and `SIGEV_THREAD` timer creation,
   timer_settime, timer_gettime, overrun reporting, and deletion. Timer timing
   remains host-scheduled at millisecond granularity. Direct wasm64
