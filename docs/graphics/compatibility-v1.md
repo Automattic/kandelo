@@ -6073,3 +6073,59 @@ checkpoint's evidence. Integrated production/test source hashes are in
 E01/E02 and K04 remain partial. The complete combined compositor gallery,
 browser-memory switching, POSIX conformance and expanded CTS are still
 required after the remaining ordinary repairs.
+
+
+## Scanout format consistency and actual pixel evidence, 2026-10-27
+
+KMS now advertises and accepts XRGB8888, ARGB8888, RGB565, ABGR8888 and
+XBGR8888 from one Rust format list. This includes the native ABGR8888
+visual returned by EGL. The 2D presenter converts the selected byte order
+to opaque RGBA. The WebGL scanout presenter selects red/blue ordering or
+RGB565 upload and handles packed row alignment. Both respect pitch and
+validate complete visible rows. Previously 2D copied BGR bytes directly
+as RGBA, and WebGL always swapped red/blue, regardless of the format.
+
+The WebGL presenter now receives an owned, tightly packed pixel snapshot
+captured under the kernel entry. It no longer re-reads guest memory in
+the detached observer phase. Its unflipped-write check compares exact
+owned bytes against the last upload, rather than a sparse checksum which
+could miss a single pixel or collide. No memory ceiling was raised.
+
+`graphics-kms-format-validation-1027-154521-0101` passed in 13m10s:
+
+| Scope | Result |
+| --- | --- |
+| Full Rust workspace | 4,175 passed across 102 groups; zero failures or ignored cases |
+| Browser memory-boundary probe | 12 passed |
+| Focused KMS host cases | 45 passed in three files, no skips/unloaded files |
+| Normal build | Both SDK widths, fork tool, selected kernel/rootfs dependency graph, host and freshness/ABI checks passed |
+| Selected normal Node guests | 14 passed in six files, no skips/unloaded files; includes fresh-worker catch/reference/GC replay and the 11 prior EGL/inherited-file cases |
+| Actual browser rendering | 36 passed across Chromium, Firefox and WebKit |
+
+The browser inventory contains six inherited-file cases and 30 CPU-buffer
+scanout cases (five formats times both presenters times all three engines).
+The inherited rendered cases now pass context creation, red GLES readback,
+three frames/two event flips, a red visible scene and the inherited green
+cursor after acknowledged opener retirement. The CPU cases verify red,
+green, blue and white, RGB565 row padding, and a single-pixel write without
+another SETCRTC/PAGE_FLIP. Natural exits and exact worker retirement are
+awaited. These are real public SDK/libdrm/GBM/EGL/GLES guests and actual
+browser pixels, not host registry injections or a mock renderer.
+
+The subsequent evidence job
+`graphics-kms-format-evidence-1027-160019-2cb0` passed in 2m28s. It reran
+the same 36 rendered cases while saving successful canvas screenshots,
+compiled guest Wasm, exact engine versions and kernel/guest/image SHA-256
+identities to `.context/graphics-abi56-format-evidence/`. The complete
+14-file host memory-ownership source gate also passed. Source hashes
+matching the isolated implementation to the integrated files are in
+`.context/kms-format-integrated-source-identities.json`. Detailed logs
+remain under the owned diagnostic checkout's `.context/`, with prefix
+`kms-format-`. Earlier ENODEV and ABGR framebuffer failures stay recorded.
+
+Program ABI remains 56, kernel-host version 3, operation table 17 and fork
+record 21. These results do not close K04 or establish the full compositor
+or browser-memory switching gate. Render-node-first context/resource
+creation, lost-master scanout, flip admission/timing, complete storage
+views, expanded CTS, final combined POSIX and normal manual browser checks
+remain required. Performance was not measured by these correctness cases.

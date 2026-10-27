@@ -88,7 +88,7 @@ function makeKernel(
 }
 
 function stubScanout(kernel: TestKernel, w: number, h: number): void {
-  const fb = { fb_id: 10, bo_id: 100, width: w, height: h, pixel_format: 0, pitch: w * 4 };
+  const fb = { fb_id: 10, bo_id: 100, width: w, height: h, pixel_format: 0x34325258, pitch: w * 4 };
   const pixels = new Uint8Array(w * h * 4);
   (kernel.kms as unknown as { currentFb: (id: number) => unknown }).currentFb = () => fb;
   (kernel.kms as unknown as { scanoutBytes: (id: number) => Uint8Array }).scanoutBytes = () => pixels;

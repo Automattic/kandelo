@@ -1,5 +1,7 @@
 /** An actual forked guest presents its inherited cursor after opener retirement. */
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import { compileSdkFixture } from "../../../host/test/support/compile-sdk-fixture";
@@ -9,6 +11,8 @@ import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./sup
 
 test.use({ serviceWorkers: "block", viewport: { width: 800, height: 600 } });
 let fixture: ReturnType<typeof compileSdkFixture>;
+const evidenceRoot = fileURLToPath(new URL("../../../.context/graphics-abi56-format-evidence/", import.meta.url));
+const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 test.beforeAll(() => {
   fixture = compileSdkFixture(new URL("../../../host/test/fixtures/dri-kms-inheritance.c", import.meta.url), [
     "-DTEST_EGL_RENDER",
@@ -17,11 +21,13 @@ test.beforeAll(() => {
   ], {
     forkInstrument: true,
   });
+  mkdirSync(evidenceRoot, { recursive: true });
+  writeFileSync(join(evidenceRoot, `inherited-probe-${test.info().project.name}.wasm`), readFileSync(fixture.programPath));
 });
 test.afterAll(() => fixture?.cleanup());
 
 for (const mode of ["cursor", "render"]) {
-  test(`inherited master presents ${mode} after the opener Worker exits`, async ({ page, baseURL }) => {
+  test(`inherited master presents ${mode} after the opener Worker exits`, async ({ page, baseURL, browser }) => {
     test.setTimeout(60_000);
     const image = KandeloImageFs.create();
     image.mkdir("/bin", 0o755);
@@ -106,6 +112,17 @@ for (const mode of ["cursor", "render"]) {
         await expect.poll(() => sampleCanvas("#inherited-scene", 320, 240), { timeout: 10_000 })
           .toEqual([255, 0, 0, 255]);
       }
+      const evidenceName = `${test.info().project.name}-inherited-${mode}`;
+      const screenshot = await page.locator(mode === "render" ? "#inherited-scene" : "#inherited-cursor").screenshot({
+        scale: "css", path: join(evidenceRoot, `${evidenceName}.png`),
+      });
+      writeFileSync(join(evidenceRoot, `${evidenceName}.json`), JSON.stringify({
+        engine: test.info().project.name, version: browser.version(), mode,
+        kernelSha256: sha256(readFileSync(resolveBinary("kernel.wasm"))),
+        guestSha256: sha256(readFileSync(fixture.programPath)), screenshotSha256: sha256(screenshot),
+        openerStatus: prepared.openerStatus, openerPid: prepared.openerPid, childPid: prepared.childPid,
+        pixelAssertion: mode === "render" ? "red scene and inherited green cursor" : "inherited green cursor",
+      }, null, 2) + "\n");
       const result = await page.evaluate(async () => {
         const { kernel, state, childExit } = (globalThis as any).__kmsInheritance;
         kernel.appendStdinData(state.openerPid, new TextEncoder().encode("q"));

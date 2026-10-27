@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { snapshotScanout, scanoutRgba } from "../src/dri/scanout-format";
 import { KmsCursorPlane } from "../src/dri/cursor-plane.js";
 import { GbmBoRegistry } from "../src/dri/registry.js";
 import { KmsRegistry, buildVirtualConnectorMode } from "../src/dri/kms-registry.js";
@@ -281,4 +282,41 @@ it("consumes complete grant-scoped cursor records without resurrecting retired s
   expect(kms.dropMaster(1n, 1n)).toBe(false);
   expect(kms.setMaster(7, 1n, 1n)).toBe(false);
   expect(kms.getMasterPid()).toBe(8);
+});
+
+
+describe("DRM scanout pixel layouts", () => {
+  it.each([
+    ["XRGB8888", 0x34325258, [3, 2, 1, 0, 6, 5, 4, 0]],
+    ["ARGB8888", 0x34325241, [3, 2, 1, 64, 6, 5, 4, 128]],
+    ["XBGR8888", 0x34324258, [1, 2, 3, 0, 4, 5, 6, 0]],
+    ["ABGR8888", 0x34324241, [1, 2, 3, 64, 4, 5, 6, 128]],
+  ] as const)("decodes %s without confusing channel order or row padding", (_name, pixel_format, bytes) => {
+    const source = new Uint8Array(new SharedArrayBuffer(12));
+    source.set([...bytes.slice(0, 4), 99, 99, ...bytes.slice(4), 99, 99]);
+    const packed = snapshotScanout({ width: 1, height: 2, pitch: 6, pixel_format }, source);
+    expect(packed.buffer).toBeInstanceOf(ArrayBuffer);
+    expect(Array.from(scanoutRgba(pixel_format, packed))).toEqual([1, 2, 3, 255, 4, 5, 6, 255]);
+    source.fill(0);
+    expect(Array.from(packed)).toEqual(bytes);
+  });
+
+  it("expands little-endian RGB565 endpoints and ignores padding", () => {
+    const source = new Uint8Array([0, 248, 224, 7, 31, 0, 99, 99, 255, 255, 0, 0, 16, 132]);
+    const packed = snapshotScanout({ width: 3, height: 2, pitch: 8, pixel_format: 0x36314752 }, source);
+    expect(Array.from(scanoutRgba(0x36314752, packed))).toEqual([
+      255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255,
+      255, 255, 255, 255, 0, 0, 0, 255, 132, 130, 132, 255,
+    ]);
+  });
+
+  it("rejects unknown formats and incomplete geometry before copying", () => {
+    const fb = { width: 2, height: 2, pitch: 8, pixel_format: 0x34324241 };
+    for (const geometry of [
+      { ...fb, pixel_format: 0 }, { ...fb, width: 0 }, { ...fb, height: -1 },
+      { ...fb, pitch: 7 }, { ...fb, width: 1.5 }, { ...fb, height: Number.MAX_SAFE_INTEGER },
+    ]) expect(() => snapshotScanout(geometry, new Uint8Array(16))).toThrow(RangeError);
+    expect(() => snapshotScanout(fb, new Uint8Array(15))).toThrow(RangeError);
+    expect(() => scanoutRgba(0x36314752, new Uint8Array(3))).toThrow(RangeError);
+  });
 });

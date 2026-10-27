@@ -5775,6 +5775,10 @@ pub mod dri {
     pub const DRM_FORMAT_ARGB8888: u32 = 0x34325241;
     /// `fourcc('X','R','2','4')` — 8-8-8-8 padding + RGB.
     pub const DRM_FORMAT_XRGB8888: u32 = 0x34325258;
+    /// `fourcc('A','B','2','4')` — RGBA bytes in little-endian memory.
+    pub const DRM_FORMAT_ABGR8888: u32 = 0x34324241;
+    /// `fourcc('X','B','2','4')` — RGBX bytes in little-endian memory.
+    pub const DRM_FORMAT_XBGR8888: u32 = 0x34324258;
     /// `fourcc('R','G','1','6')` — 5-6-5 RGB.
     pub const DRM_FORMAT_RGB565: u32 = 0x36314752;
 
@@ -7006,6 +7010,8 @@ mod dri_tests {
         assert_eq!(DRM_FORMAT_ARGB8888, fourcc(b'A', b'R', b'2', b'4'));
         assert_eq!(DRM_FORMAT_XRGB8888, fourcc(b'X', b'R', b'2', b'4'));
         assert_eq!(DRM_FORMAT_RGB565, fourcc(b'R', b'G', b'1', b'6'));
+        assert_eq!(DRM_FORMAT_ABGR8888, fourcc(b'A', b'B', b'2', b'4'));
+        assert_eq!(DRM_FORMAT_XBGR8888, fourcc(b'X', b'B', b'2', b'4'));
     }
 
     #[test]

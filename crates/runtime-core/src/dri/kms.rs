@@ -24,8 +24,10 @@ pub const PROP_LINK_STATUS: u32 = 8;
 pub const PROP_NON_DESKTOP: u32 = 9;
 
 /// The pixel formats `DRM_IOCTL_MODE_ADDFB2` accepts for scanout.
-pub const PRIMARY_PLANE_FORMATS: [u32; 3] =
-    [DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888, DRM_FORMAT_RGB565];
+pub const PRIMARY_PLANE_FORMATS: [u32; 5] = [
+    DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888, DRM_FORMAT_RGB565,
+    DRM_FORMAT_ABGR8888, DRM_FORMAT_XBGR8888,
+];
 
 pub enum PropertyKind {
     Enum(&'static [(u64, &'static str)]),

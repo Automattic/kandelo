@@ -1,6 +1,8 @@
 import { KMS_CURSOR_RECORD_BYTES } from "./dri/kms-cursor-protocol.js";
 import { mergeChangedByteRuns } from "./shared-byte-runs";
 import { KmsCursorPlane } from "./dri/cursor-plane";
+import { scanoutFormat, snapshotScanout, scanoutRgba } from "./dri/scanout-format";
+import type { HostFb } from "./dri/kms-registry";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES } from "./vfs/vfs";
 import type { VfsChangeEvent } from "./vfs/types";
 /**
@@ -2573,6 +2575,8 @@ interface KmsGlPresenter {
   vao: WebGLVertexArrayObject;
   texW: number;
   texH: number;
+  texFormat: number;
+  bgrUniform: WebGLUniformLocation | null;
   /** fb_id + kernel commit count at the last present. The presenter
    *  re-presents only when one of them (or the target size) changes —
    *  flip-driven renderers change content exclusively through
@@ -2581,9 +2585,9 @@ interface KmsGlPresenter {
    *  skipped. The content probe below backstops the exceptions. */
   lastFbId: number;
   lastCommits: number;
-  /** Tick phase + strided checksum for the low-rate content probe.
+  /** Tick phase for the low-rate exact content comparison.
    *  Every 4th otherwise-skipped tick the presenter samples the
-   *  scanout bytes; a checksum change forces a present. This catches
+   *  scanout bytes against the last owned upload. This catches
    *  scanout mutations that never tick the commit count — a renderer
    *  painting its single bound bo without flipping, or a broken
    *  kernel leaving `currentFb` pinned to a bo the client is
@@ -2591,7 +2595,6 @@ interface KmsGlPresenter {
    *  flicker gate exists to catch: flip-synced presents alone always
    *  sample the pinned bo *before* its repaint and hide the bug). */
   probePhase: number;
-  lastProbeSum: number;
   /** Presents completed (drives the one-warmup-frame degrade grace). */
   presentCount: number;
   /** Set once a steady-state present overruns the frame budget —
@@ -2625,10 +2628,12 @@ void main() {
 const KMS_SCANOUT_FS = `#version 300 es
 precision highp float;
 uniform sampler2D u_scanout;
+uniform bool u_bgr;
 in vec2 v_uv;
 out vec4 o_color;
 void main() {
-  o_color = vec4(texture(u_scanout, v_uv).bgr, 1.0);
+  vec3 color = texture(u_scanout, v_uv).rgb;
+  o_color = vec4(u_bgr ? color.bgr : color, 1.0);
 }
 `;
 
@@ -2676,7 +2681,7 @@ function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null 
   // buffer object instead (and reject an ArrayBufferView source), and any
   // non-default unpack parameter reshapes or offsets the rows.
   gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
-  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
   gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
   gl.pixelStorei(gl.UNPACK_IMAGE_HEIGHT, 0);
   gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
@@ -2738,29 +2743,12 @@ function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null 
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   return {
-    gl, tex, prog, vao, texW: 0, texH: 0,
+    gl, tex, prog, vao, texW: 0, texH: 0, texFormat: 0,
+    bgrUniform: gl.getUniformLocation(prog, "u_bgr"),
     lastFbId: -1, lastCommits: -1,
     presentCount: 0, degraded: false,
-    probePhase: 0, lastProbeSum: 0,
+    probePhase: 0,
   };
-}
-
-/** Strided checksum over the scanout pixels (u32 samples, ~4k reads at
- *  1080p). Cheap enough for the 15 Hz content probe; a mid-composite or
- *  otherwise-mutated frame differs across many pixels, so a simple
- *  multiplicative hash over a sparse stride is plenty. */
-function kmsProbeChecksum(pixels: Uint8Array): number {
-  const words = new Uint32Array(
-    pixels.buffer,
-    pixels.byteOffset,
-    pixels.byteLength >> 2,
-  );
-  const stride = Math.max(1, words.length >> 12);
-  let h = 0;
-  for (let i = 0; i < words.length; i += stride) {
-    h = (Math.imul(h, 31) + words[i]) | 0;
-  }
-  return h;
 }
 
 export class CentralizedKernelWorker {
@@ -30997,21 +30985,33 @@ export class CentralizedKernelWorker {
         const glPresents: Array<{
           crtcId: number;
           canvas: OffscreenCanvas;
-          fb: { fb_id: number; width: number; height: number };
+          fb: HostFb;
+          pixels: Uint8Array<ArrayBuffer>;
           commits: number;
         }> = [];
         for (const [crtcId, canvas] of this.kmsCanvases) {
           if (this.kmsContextMode.get(crtcId) !== "webgl2-scanout") continue;
           const fb = this.#kernel.kms.currentFb(crtcId);
           if (!fb) continue;
-          glPresents.push({
-            crtcId,
-            canvas,
-            fb: { fb_id: fb.fb_id, width: fb.width, height: fb.height },
-            commits: commitCountFn
-              ? Number(commitCountFn(crtcId) & 0x7fffffffn)
-              : -1,
-          });
+          const commits = commitCountFn
+            ? Number(commitCountFn(crtcId) & 0x7fffffffn) : -1;
+          const presenter = this.kmsGlPresenters.get(crtcId);
+          const display = this.kmsDisplaySizes.get(crtcId);
+          const changed = !presenter || presenter.lastFbId !== fb.fb_id
+            || presenter.lastCommits !== commits || presenter.texW !== fb.width
+            || presenter.texH !== fb.height || presenter.texFormat !== fb.pixel_format
+            || canvas.width !== (display?.width ?? fb.width)
+            || canvas.height !== (display?.height ?? fb.height);
+          if (!changed && presenter) {
+            presenter.probePhase = (presenter.probePhase + 1) & 3;
+            if (presenter.probePhase !== 0) continue;
+          }
+          const pixels = this.#kernel.kms.scanoutBytes(crtcId);
+          if (!pixels) continue;
+          // The detached GL phase gets a bounded owned snapshot, never a
+          // later lookup that reads guest memory after entry authority ends.
+          glPresents.push({ crtcId, canvas, fb: { ...fb }, commits,
+            pixels: snapshotScanout(fb, pixels) });
         }
 
         // WHY: process/BO memory may change on the next ingress. Copy every
@@ -31035,43 +31035,7 @@ export class CentralizedKernelWorker {
           if (!fb || !pixels || !context) continue;
           const width = fb.width;
           const height = fb.height;
-          const pitch = fb.pitch;
-          if (
-            !Number.isSafeInteger(width)
-            || width <= 0
-            || !Number.isSafeInteger(height)
-            || height <= 0
-            || !Number.isSafeInteger(pitch)
-            || pitch <= 0
-          ) {
-            throw new KernelScratchError(
-              `invalid KMS scanout geometry ${width}x${height} pitch=${pitch}`,
-              EIO,
-            );
-          }
-          const rowBytes = width * 4;
-          const packedLength = rowBytes * height;
-          const sourceLength = pitch * (height - 1) + rowBytes;
-          if (
-            !Number.isSafeInteger(rowBytes)
-            || !Number.isSafeInteger(packedLength)
-            || !Number.isSafeInteger(sourceLength)
-            || pitch < rowBytes
-            || sourceLength > pixels.byteLength
-          ) {
-            throw new KernelScratchError(
-              "KMS scanout bytes do not cover the declared pitch and geometry",
-              EIO,
-            );
-          }
-          const packedPixels = new Uint8Array(packedLength);
-          for (let row = 0; row < height; row++) {
-            const sourceOffset = row * pitch;
-            packedPixels.set(
-              pixels.subarray(sourceOffset, sourceOffset + rowBytes),
-              row * rowBytes,
-            );
-          }
+          const packedPixels = scanoutRgba(fb.pixel_format, snapshotScanout(fb, pixels));
           blits.push({
             crtcId,
             canvas,
@@ -31185,6 +31149,7 @@ export class CentralizedKernelWorker {
               present.canvas,
               present.fb,
               present.commits,
+              present.pixels,
             );
             if (!painted) continue;
             const presentUs =
@@ -31240,8 +31205,9 @@ export class CentralizedKernelWorker {
   private presentKmsGlScanout(
     crtc_id: number,
     canvas: OffscreenCanvas,
-    fb: { fb_id: number; width: number; height: number },
+    fb: HostFb,
     commits: number,
+    pixels: Uint8Array<ArrayBuffer>,
   ): boolean {
     const presenter = this.ensureKmsGlPresenter(crtc_id, canvas);
     if (!presenter) return false;
@@ -31275,30 +31241,35 @@ export class CentralizedKernelWorker {
       presenter.lastCommits !== commits ||
       presenter.texW !== fb.width ||
       presenter.texH !== fb.height ||
+      presenter.texFormat !== fb.pixel_format ||
       canvas.width !== cw ||
       canvas.height !== ch;
-    if (!changed) {
-      presenter.probePhase = (presenter.probePhase + 1) & 3;
-      if (presenter.probePhase !== 0) return false;
-    }
-    const pixels = this.#kernel.kms.scanoutBytes(crtc_id);
-    if (!pixels) return false;
-    const probeSum = kmsProbeChecksum(pixels);
-    if (!changed && probeSum === presenter.lastProbeSum) return false;
+    const previous = this.kmsScratchBytes.get(crtc_id);
+    // A sparse checksum can miss a single changed pixel (or collide). Compare
+    // the exact bounded snapshot against the last host-owned upload instead.
+    if (!changed && previous?.byteLength === pixels.byteLength &&
+        previous.every((value, index) => value === pixels[index])) return false;
     const presentStart = performance.now();
     if (canvas.width !== cw || canvas.height !== ch) {
       canvas.width = cw;
       canvas.height = ch;
     }
-    const need = fb.width * fb.height * 4;
-    const scratch = this.kmsScratchFor(crtc_id, pixels, need);
+    const format = scanoutFormat(fb.pixel_format);
+    const scratch = this.kmsScratchFor(crtc_id, pixels, pixels.byteLength);
+    const rgb565 = format.bytesPerPixel === 2;
+    const data = rgb565 ? new Uint16Array(scratch.buffer, scratch.byteOffset, scratch.byteLength / 2) : scratch;
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    if (presenter.texW !== fb.width || presenter.texH !== fb.height) {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, fb.width, fb.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, scratch);
+    if (presenter.bgrUniform !== null) gl.uniform1i(presenter.bgrUniform, format.bgr ? 1 : 0);
+    const external = rgb565 ? gl.RGB : gl.RGBA;
+    const type = rgb565 ? gl.UNSIGNED_SHORT_5_6_5 : gl.UNSIGNED_BYTE;
+    if (presenter.texW !== fb.width || presenter.texH !== fb.height || presenter.texFormat !== fb.pixel_format) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, rgb565 ? gl.RGB565 : gl.RGBA8,
+        fb.width, fb.height, 0, external, type, data);
       presenter.texW = fb.width;
       presenter.texH = fb.height;
+      presenter.texFormat = fb.pixel_format;
     } else {
-      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, fb.width, fb.height, gl.RGBA, gl.UNSIGNED_BYTE, scratch);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, fb.width, fb.height, external, type, data);
     }
     if (!presenter.degraded) gl.generateMipmap(gl.TEXTURE_2D);
     // Contain-fit letterbox, same math as the Modeset pane's
@@ -31315,7 +31286,6 @@ export class CentralizedKernelWorker {
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     presenter.lastFbId = fb.fb_id;
     presenter.lastCommits = commits;
-    presenter.lastProbeSum = probeSum;
     // Adaptive quality: a steady-state present that blows the 60 Hz
     // frame budget means GL is running in software (headless Chromium's
     // SwiftShader) where the mip chain + trilinear fullscreen draw cost

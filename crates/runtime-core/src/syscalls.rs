@@ -2746,10 +2746,7 @@ fn handle_dri_card_ioctl(
             if req.handles[1..].iter().any(|&h| h != 0) {
                 return Err(Errno::EINVAL);
             }
-            if !matches!(
-                req.pixel_format,
-                DRM_FORMAT_ARGB8888 | DRM_FORMAT_XRGB8888 | DRM_FORMAT_RGB565
-            ) {
+            if !kms::PRIMARY_PLANE_FORMATS.contains(&req.pixel_format) {
                 return Err(Errno::EINVAL);
             }
             let bo_id = *dri_state(proc, ofd_idx)?
@@ -50944,8 +50941,34 @@ impl HostIO for RelSymlinkMock {
         )
         .unwrap();
         assert_eq!(plane.possible_crtcs, 0b1);
-        assert_eq!(plane.count_format_types, 3);
+        assert_eq!(plane.count_format_types, crate::dri::kms::PRIMARY_PLANE_FORMATS.len() as u32);
         assert_eq!(last_written_u32s(&host), crate::dri::kms::PRIMARY_PLANE_FORMATS);
+    }
+
+    #[test]
+    fn kms_accepts_each_advertised_scanout_format_and_rejects_unknown_formats() {
+        use wasm_posix_shared::dri::*;
+        let _master = crate::dri::master::lock_for_test();
+        let _bo = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let dumb = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB,
+            WpkDrmModeCreateDumb { width: 2, height: 2, bpp: 32, ..Default::default() }).unwrap();
+        for pixel_format in crate::dri::kms::PRIMARY_PLANE_FORMATS {
+            let mut request = WpkDrmModeFbCmd2 { width: 2, height: 2, pixel_format, ..Default::default() };
+            request.handles[0] = dumb.handle;
+            request.pitches[0] = dumb.pitch;
+            let fb = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, request).unwrap();
+            assert_ne!(fb.fb_id, 0);
+            assert_eq!(fb.pixel_format, pixel_format);
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_RMFB, &mut fb.fb_id.to_le_bytes()).unwrap();
+        }
+        let mut bad = WpkDrmModeFbCmd2 { width: 2, height: 2, pixel_format: 0xdead_beef, ..Default::default() };
+        bad.handles[0] = dumb.handle;
+        bad.pitches[0] = dumb.pitch;
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, bad).map(|_| ()), Err(Errno::EINVAL));
+        sys_close(&mut proc, &mut host, fd).unwrap();
     }
 
     #[test]

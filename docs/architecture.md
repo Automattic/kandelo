@@ -4502,6 +4502,16 @@ selects its active generation under the context lock. The default display
 chooses a primary DRM file. Each initialized generation owns a CLOEXEC
 duplicate of its native file until final context/surface/sync retirement,
 including after public termination. Display metadata has process lifetime.
+KMS scanout advertises the same five formats accepted by ADDFB2:
+XRGB8888, ARGB8888, XBGR8888, ABGR8888 and RGB565. CPU presenters validate
+visible row lengths and pitch before copying. The 2D presenter converts
+little-endian pixels to opaque RGBA; the WebGL presenter selects the
+proper channel order or packed RGB565 upload. Pixel snapshots are copied
+under the kernel entry before detached presentation. The low-rate
+unflipped-write check compares the entire owned snapshot against the last
+upload instead of relying on a sparse hash that could miss one pixel.
+This does not complete flip admission/vblank ordering or all buffer views.
+
 The EGL library retains one heap record per display generation. Public
 lookups use that display's active generation; thread bindings retain their actual
 generation's descriptor, mapping and encoder after termination. A new
