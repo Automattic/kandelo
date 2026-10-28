@@ -314,6 +314,11 @@ int main(void) {
     assert(_wpk_gbm_device_metadata(device, &native_fd, &identity));
     same_device_file(native_fd); assert(identity);
     uint64_t first_identity = identity;
+    assert(_wpk_gbm_device_acquire_fd(device, identity + 1) == -1 && errno == EINVAL);
+    int display_fd = _wpk_gbm_device_acquire_fd(device, identity);
+    assert(display_fd >= 0 && display_fd != native_fd);
+    assert(fcntl(display_fd, F_GETFD) & FD_CLOEXEC);
+    same_device_file(display_fd);
     assert(!_wpk_gbm_device_metadata((void *)(uintptr_t)1, &native_fd, &identity));
     same_device_file(native_fd); assert(identity == first_identity);
     rejected(NULL); rejected((void *)(uintptr_t)1); rejected(device);
@@ -321,6 +326,7 @@ int main(void) {
     void *guard = mmap(NULL,page,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0); assert(guard != MAP_FAILED);
     rejected(guard);
     assert(!_wpk_gbm_device_metadata(guard, &native_fd, &identity));
+    assert(_wpk_gbm_device_acquire_fd(guard, first_identity) == -1 && errno == EINVAL);
     same_device_file(native_fd); assert(identity == first_identity);
     assert(!munmap(guard,page));
     struct gbm_surface *first = gbm_surface_create(device,32,24,GBM_FORMAT_ABGR8888,GBM_BO_USE_RENDERING);
@@ -351,10 +357,14 @@ int main(void) {
     uintptr_t retired_device = (uintptr_t)device;
     gbm_device_destroy(device);
     assert(!_wpk_gbm_device_metadata((void *)retired_device, &native_fd, &identity));
+    assert(_wpk_gbm_device_acquire_fd((void *)retired_device, first_identity) == -1 && errno == EINVAL);
+    same_device_file(display_fd);
+    assert(close(display_fd) == 0);
     assert(fcntl(device_fd, F_GETFD) >= 0); /* The caller still owns its fd. */
     device = gbm_create_device(device_fd); assert(device);
     assert(_wpk_gbm_device_metadata(device, &native_fd, &identity));
     same_device_file(native_fd); assert(identity != first_identity);
+    assert(_wpk_gbm_device_acquire_fd(device, first_identity) == -1 && errno == EINVAL);
     gbm_device_destroy(device);
     assert(!close(device_fd));
     puts("PASS actual GBM metadata, modifiers, formats and retained CPU mappings");

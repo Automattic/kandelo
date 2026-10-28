@@ -137,6 +137,20 @@ int _wpk_gbm_device_metadata(const void *native, int *fd, uint64_t *identity) {
     return found;
 }
 
+int _wpk_gbm_device_acquire_fd(const void *native, uint64_t identity) {
+    int fd = -1;
+    pthread_mutex_lock(&device_mutex);
+    errno = EINVAL;
+    for (struct gbm_device *d = live_devices; d; d = d->live_next) {
+        if (d == native && d->identity == identity) {
+            fd = fcntl(d->fd, F_DUPFD_CLOEXEC, 0);
+            break;
+        }
+    }
+    pthread_mutex_unlock(&device_mutex);
+    return fd;
+}
+
 struct gbm_bo {
     struct gbm_device *dev;
     uint32_t handle;          /* per-fd DRM handle */

@@ -7021,3 +7021,44 @@ cage/sway, browser-memory, upstream CTS and POSIX gates still remain.
 CPU-facing EGL windows, forwarded native BO storage, affected source-C
 rendering replays and the other documented ownership gaps remain ordinary
 implementation work. B03 and the overall compatibility baseline stay partial.
+
+### Atomic GBM-device to EGL-file acquisition, 2026-10-28
+
+EGL initialization previously borrowed the private device fd under the GBM
+registry lock, released that lock, then duplicated the descriptor. Public
+device withdrawal could close/reuse that descriptor in between. The new
+private acquisition hook validates the exact live device identity and
+creates a caller-owned CLOEXEC alias under the withdrawal lock. Successful
+acquisition therefore precedes withdrawal atomically; otherwise EGL reports
+NOT_INITIALIZED. The identity-only display lookup never uses its borrowed
+fd for I/O. This closes the documented metadata-to-EGL acquisition gap;
+cross-wrapper GEM-name coordination and failed destructor cleanup remain
+separate ordinary gaps.
+
+The native actual-GBM harness checks wrong/retired identities, unreadable
+foreign pointers, CLOEXEC and independent fd lifetime after withdrawal.
+The normal SDK native-window guest also terminates its display, withdraws
+the GBM device, reuses the caller fd for /dev/null, and requires failed
+reinitialization without closing that replacement file.
+`graphics-gbm-display-acquire-1028-194517-4c3c` passed in 3m48s: normal SDK32
+and SDK64 bootstrap; native GBM/UBSan and allocator poisoning; all 211 native
+EGL cases; six normal SDK Node cases in three files with no skipped/unloaded
+cases; and all 24 browser cases in 38.2s. Browsers cover both guest widths,
+all three engines, retained fronts, device withdrawal and both KMS presenters.
+The initial native EGL link attempt lacked the new private hook in its
+standalone device double; supplying the same absent-device failure used
+by that double repaired the harness. It was not a passing runtime run.
+
+Logs are `.context/graphics-gbm-acquire-*.log`, browser results are
+`.context/graphics-gbm-acquire-browser-results/`, and exact source/archive
+identities are `.context/graphics-gbm-acquire-identities.json`. ABI56 and
+kernel-host3 remain unchanged; complete combined gates remain required.
+
+The independent ABI check in
+`graphics-gbm-copy-abi-replay-1028-194203-651e` passed and explicitly requires
+program rebuilds for the changed copy-record digest. Its subsequent older
+C-operation platform-window replay failed six cases: native replay omits
+the required stable DRM-file identity and forwarded replay rejects native
+BO targets. These are preserved in `.context/graphics-gbm-copy-c-replay.log`
+and `.context/graphics-gbm-copy-c-replay-results/`. They are ordinary replay
+adapter/forwarding work, not a demonstrated host platform boundary.

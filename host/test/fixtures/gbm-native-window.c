@@ -45,6 +45,16 @@ int main(void) {
     CHECK(!_wpk_gbm_surface_dimensions(second, &width, &height));
     gbm_device_destroy(device);
     CHECK(close(fd) == 0);
+    int replacement = open("/dev/null", O_RDWR | O_CLOEXEC);
+    CHECK(replacement >= 0);
+    if (replacement != fd) {
+        CHECK(dup2(replacement, fd) == fd);
+        CHECK(close(replacement) == 0);
+    }
+    CHECK(!eglInitialize(display, NULL, NULL));
+    CHECK(eglGetError() == EGL_NOT_INITIALIZED);
+    CHECK(fcntl(fd, F_GETFD) >= 0);
+    CHECK(close(fd) == 0);
     puts("gbm-native-window: distinct live sizes, opaque foreign handles, EGL handoff, retirement: ok");
     return 0;
 }

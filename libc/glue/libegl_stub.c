@@ -221,6 +221,7 @@ __attribute__((weak)) int _wpk_gbm_surface_metadata(const void *window,
     uint32_t *width, uint32_t *height, uint32_t *format, uint32_t *flags);
 __attribute__((weak)) int _wpk_gbm_device_metadata(const void *native, int *fd,
                                                   uint64_t *identity);
+__attribute__((weak)) int _wpk_gbm_device_acquire_fd(const void *native, uint64_t identity);
 
 #define EGL_DPY_HANDLE      ((EGLDisplay)(uintptr_t)1)
 #define EGL_CONFIG_HANDLE ((EGLConfig)(uintptr_t)1)
@@ -328,15 +329,9 @@ static EGLBoolean initialize_locked(EGLDisplay dpy, EGLint *major, EGLint *minor
     if (display == &g_default_display) {
         native_fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
     } else {
-        int fd;
-        uint64_t identity;
-        if (!_wpk_gbm_device_metadata ||
-            !_wpk_gbm_device_metadata(display->native_device, &fd, &identity) ||
-            identity != display->native_identity) {
-            g_last_error = EGL_NOT_INITIALIZED;
-            return EGL_FALSE;
-        }
-        native_fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+        native_fd = _wpk_gbm_device_acquire_fd
+            ? _wpk_gbm_device_acquire_fd(display->native_device, display->native_identity)
+            : -1;
     }
     if (native_fd < 0) { g_last_error = EGL_NOT_INITIALIZED; return EGL_FALSE; }
     /* The root owns GL state on its render file. A separate retained native

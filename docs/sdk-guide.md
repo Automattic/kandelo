@@ -520,7 +520,10 @@ file. `gbm_device_get_fd` still returns the caller's original descriptor.
 Buffer objects and GBM surfaces hold independent device references, so
 withdrawing the public device and reusing the caller's descriptor cannot
 redirect their DRM operations. The private alias closes when the final
-owner retires. EGL native-window leases and locked fronts also retain
+owner retires. EGL initialization validates the live device identity and
+duplicates its file under the same lock as public device withdrawal; it
+cannot duplicate a borrowed descriptor after that descriptor is retired.
+EGL native-window leases and locked fronts also retain
 their windows independently. A successful GBM swap copies the private render
 back into an unlocked GPU front with top-row-first buffer storage. Only an
 accepted copy publishes that front; rejected copies preserve the previously

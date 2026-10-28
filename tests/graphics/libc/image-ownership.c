@@ -431,6 +431,9 @@ static int native_image_bind(struct device_slot *slot, unsigned kind, GLenum tar
 int _wpk_gbm_device_metadata(const void *native, int *fd, uint64_t *identity) {
     (void)native; (void)fd; (void)identity; return 0;
 }
+int _wpk_gbm_device_acquire_fd(const void *native, uint64_t identity) {
+    (void)native; (void)identity; errno = EINVAL; return -1;
+}
 
 int graphics_open(const char *path, int flags, ...) {
     (void)flags;
