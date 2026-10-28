@@ -2397,11 +2397,21 @@ fn handle_dri_ioctl(
             Ok(())
         }
         gl::GLIO_QUERY => {
-            if buf.len() < core::mem::size_of::<gl::GlQueryInfo>() {
-                return Err(Errno::EINVAL);
-            }
-            let info: gl::GlQueryInfo =
-                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            let info = match proc.pointer_width {
+                4 if buf.len() >= core::mem::size_of::<gl::GlQueryInfo>() => {
+                    let narrow: gl::GlQueryInfo = unsafe {
+                        core::ptr::read_unaligned(buf.as_ptr().cast())
+                    };
+                    gl::GlQueryInfo64 { op: narrow.op,
+                        in_buf_ptr: u64::from(narrow.in_buf_ptr), in_buf_len: narrow.in_buf_len,
+                        out_buf_ptr: u64::from(narrow.out_buf_ptr), out_buf_len: narrow.out_buf_len,
+                        reserved: narrow.reserved, ..Default::default() }
+                }
+                8 if buf.len() >= core::mem::size_of::<gl::GlQueryInfo64>() => unsafe {
+                    core::ptr::read_unaligned(buf.as_ptr().cast())
+                },
+                _ => return Err(Errno::EINVAL),
+            };
             if info.in_buf_len > gl::MAX_QUERY_IN_LEN
                 || info.out_buf_len > gl::MAX_QUERY_OUT_LEN
                 || info.reserved != 0
@@ -56626,6 +56636,37 @@ impl HostIO for RelSymlinkMock {
         let mut bytes = [0u8; core::mem::size_of::<wasm_posix_shared::gl::GlQueryInfo>()];
         unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr().cast(), info); }
         bytes
+    }
+
+    #[test]
+    fn glio_query_wasm64_keeps_high_addresses_and_preflights_before_dispatch() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        proc.pointer_width = 8;
+        host.gl_query_result = Some(0);
+        let valid = gl::GlQueryInfo64 { op: gl::QOP_BIND_FRAMEBUFFER,
+            in_buf_ptr:32, in_buf_len:8, out_buf_ptr:64, out_buf_len:12,
+            ..Default::default() };
+        let bytes = |info: gl::GlQueryInfo64| {
+            let mut bytes = [0u8;40];
+            unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr().cast(),info); }
+            bytes
+        };
+        sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut bytes(valid)).unwrap();
+        assert_eq!(host.gl_query_sessions.len(),1);
+        host.gl_query_sessions.clear(); host.gl_query_inputs.clear();
+        let before = host.proc_memory.clone();
+        for info in [gl::GlQueryInfo64 { in_buf_ptr:0x1_0000_0020, ..valid },
+                     gl::GlQueryInfo64 { out_buf_ptr:0x1_0000_0040, ..valid }] {
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut bytes(info)),Err(Errno::EFAULT));
+            assert!(host.gl_query_sessions.is_empty());
+            assert_eq!(host.proc_memory,before);
+        }
+        assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,
+            &mut bytes(gl::GlQueryInfo64 { reserved:1, ..valid })),Err(Errno::EINVAL));
+        assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,
+            &mut bytes(valid)[..39]),Err(Errno::EINVAL));
+        assert!(host.gl_query_sessions.is_empty());
     }
 
     #[test]

@@ -103,8 +103,9 @@ They also check uninitialized-display failures with unchanged query output,
 image identities across repeated allocation and generation replacement,
 and release of a temporary image reference after failed installation.
 Native query
-tests resolve the library's recorded heap allocation explicitly because the
-guest wire format uses u32 pointers. They do not execute guest marshalling or
+tests resolve the library's recorded heap allocation explicitly. The GL
+query wire uses native-width pointers: 24 bytes on wasm32 and 40 bytes on
+wasm64, selected by the kernel's registered process width. They do not execute guest marshalling or
 substitute for WebAssembly/browser tests.
 
 
@@ -694,3 +695,15 @@ close its private alias without touching the replacement fd. The host
 EGL native-window metadata host probe also links both SDK widths. These
 are bounded file/ownership and provisioning checks; rendered GBM front/back
 storage and full graphics conformance remain separate requirements.
+
+
+The `gbm-rendered-ring` normal SDK guest verifies produced-front state,
+retained pixels in locked red/green/blue buffers, bounded exhaustion,
+recovery to the yellow back, and window/device retirement. Browser tests
+execute both guest widths in all three engines with actual WebGL readback.
+The Node test compiles the same guest with `GBM_RING_OWNERSHIP_ONLY` for its
+allocation/ownership double; that define omits the pixel-byte comparisons
+and is never used by the browser cases. The normal `gbm_surface_smoke`
+program now checks the valid pre-render contract: a window has available
+storage but no lockable produced front. Its previous count-valued two-BO
+locking oracle did not represent rendered GBM behavior.

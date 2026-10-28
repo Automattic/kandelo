@@ -32,17 +32,18 @@
  *   - gbm_surface_lock_front_buffer / gbm_surface_release_buffer
  *   - gbm_surface_has_free_buffers / gbm_surface_destroy
  *
- * The surface holds a fixed-size two-BO ring (double-buffer);
- * lock_front_buffer hands out an unused BO and release_buffer
- * returns it. Modifier requests must allow a linear layout; unsupported
- * lists fail before allocation. Full rendered front/back storage remains
- * separate from this ring bookkeeping.
+ * EGL owns a render-buffer lease distinct from the public window and
+ * locked front buffers. Only an accepted swap publishes a front. A bounded
+ * four-slot GPU pool never reuses locked storage; KMS alone selects scanout.
+ * CPU-facing window rendering remains unsupported rather than silently
+ * replacing mappable storage with a GPU-only BO.
  *
  * Format queries report the single linear plane actually allocated here;
  * names use the public fourcc spelling, including the two legacy aliases.
  */
 
 #include <gbm.h>
+#include "gbm_window.h"
 #include <xf86drm.h>
 #include <drm/drm.h>
 #include <drm/drm_mode.h>
@@ -95,6 +96,15 @@ static int retain_device(struct gbm_device *device) {
     }
     pthread_mutex_unlock(&device_mutex);
     if (!retained) errno = EINVAL;
+    return retained;
+}
+
+static int retain_owned_device(struct gbm_device *device) {
+    pthread_mutex_lock(&device_mutex);
+    int retained = device->references != UINT_MAX;
+    if (retained) ++device->references;
+    pthread_mutex_unlock(&device_mutex);
+    if (!retained) errno = EOVERFLOW;
     return retained;
 }
 
@@ -167,16 +177,16 @@ struct gbm_mapping {
 static pthread_mutex_t mapping_mutex = PTHREAD_MUTEX_INITIALIZER;
 static uintptr_t next_mapping_token = 1;
 
-#define WPK_GBM_SURFACE_BO_COUNT 2
+#define WPK_GBM_SURFACE_BO_COUNT 4
+#define WPK_GBM_SURFACE_INITIAL_BO_COUNT 2
 
 struct gbm_surface {
     struct gbm_device *dev;
-    uint32_t width, height;
-    uint32_t format;
-    uint32_t flags;
+    uint32_t width, height, format, flags;
     struct gbm_bo *bos[WPK_GBM_SURFACE_BO_COUNT];
     int in_use[WPK_GBM_SURFACE_BO_COUNT];
-    int next;                /* round-robin cursor for lock_front_buffer */
+    int public_live, window_owned;
+    int back, front, pending;
     struct gbm_surface *live_next;
 };
 
@@ -190,7 +200,7 @@ int _wpk_gbm_surface_metadata(const void *window, uint32_t *width, uint32_t *hei
     int found = 0;
     pthread_mutex_lock(&surface_mutex);
     for (struct gbm_surface *s = live_surfaces; s; s = s->live_next) {
-        if (s == window) {
+        if (s == window && s->public_live) {
             *width = s->width;
             *height = s->height;
             *format = s->format;
@@ -321,13 +331,13 @@ static int modifier_usage_wants_gpu_tier(uint32_t flags) {
 static struct gbm_bo *bo_create(struct gbm_device *gbm,
                                 uint32_t width, uint32_t height,
                                 uint32_t format, uint32_t flags,
-                                int gpu_tier) {
+                                int gpu_tier, int owned_device) {
     uint32_t bpp = format_bpp(format);
     if (!gbm || !bpp || !width || !height) {
         errno = EINVAL;
         return NULL;
     }
-    if (!retain_device(gbm)) return NULL;
+    if (!(owned_device ? retain_owned_device(gbm) : retain_device(gbm))) return NULL;
 
     struct gbm_bo *bo = (struct gbm_bo *) calloc(1, sizeof(*bo));
     if (!bo) {
@@ -361,7 +371,14 @@ static struct gbm_bo *bo_create(struct gbm_device *gbm,
             register_bo(bo);
             return bo;
         }
-        /* else: degrade to CPU tier below. */
+        if (gpu_tier == 2) {
+            int save = errno;
+            free(bo);
+            release_device(gbm);
+            errno = save;
+            return NULL;
+        }
+        /* Optional GPU preference may degrade to CPU tier below. */
     }
 
     struct drm_mode_create_dumb req;
@@ -388,7 +405,7 @@ struct gbm_bo *gbm_bo_create(struct gbm_device *gbm,
                              uint32_t width, uint32_t height,
                              uint32_t format, uint32_t flags) {
     return bo_create(gbm, width, height, format, flags,
-                     usage_wants_gpu_tier(flags));
+                     usage_wants_gpu_tier(flags), 0);
 }
 
 /* Every bo is a single linear plane, so a modifier list is satisfiable
@@ -423,7 +440,7 @@ struct gbm_bo *gbm_bo_create_with_modifiers2(struct gbm_device *gbm,
         return NULL;
     }
     return bo_create(gbm, width, height, format, flags,
-                     modifier_usage_wants_gpu_tier(flags));
+                     modifier_usage_wants_gpu_tier(flags), 0);
 }
 
 struct gbm_bo *gbm_bo_create_with_modifiers(struct gbm_device *gbm,
@@ -723,31 +740,13 @@ int gbm_device_is_format_supported(struct gbm_device *gbm,
     return format_bpp(format) ? 1 : 0;
 }
 
-/* ----- gbm_surface_* (double-buffered scanout ring) ---------------
- *
- * SDL2's KMSDRM backend wants a gbm_surface it can hand to
- * eglCreateWindowSurface and then drive page-flipping via
- * gbm_surface_lock_front_buffer / release_buffer.  The mesa
- * implementation backs each surface with a small ring of BOs that
- * EGL renders into and KMS scans out from.
- *
- * Our v1 mirrors that with a fixed two-BO ring, which is enough for
- * a single-window double-buffered demo.  The BOs are allocated
- * eagerly so consumers always observe the same width/height/stride
- * across lock cycles.  Repeated lock without an intervening release
- * (or a release without a prior lock) returns NULL — that matches
- * mesa's behaviour when the ring is exhausted.
- */
-
-static struct gbm_bo *surface_alloc_bo(struct gbm_surface *s) {
-    /* Map GBM_BO_USE_* flags onto the kernel-side DUMB path; v1
-     * accepts any flag combination because all BOs are linear
-     * CPU-shared dumbs. */
-    struct gbm_bo *bo = gbm_bo_create(s->dev, s->width, s->height,
-                                      s->format, s->flags);
-    if (bo) {
-        bo->surface = s;
-    }
+/* The initial CPU-compatible allocation preserves constructor validation.
+ * EGL acquires strict GPU render storage transactionally before it can use
+ * the window; no CPU BO is ever published as a rendered front. */
+static struct gbm_bo *surface_alloc_bo(struct gbm_surface *s, int gpu) {
+    struct gbm_bo *bo = bo_create(s->dev, s->width, s->height,
+                                s->format, s->flags, gpu, 1);
+    if (bo) bo->surface = s;
     return bo;
 }
 
@@ -770,8 +769,10 @@ struct gbm_surface *gbm_surface_create(struct gbm_device *gbm,
     s->height = height;
     s->format = format;
     s->flags  = flags;
-    for (int i = 0; i < WPK_GBM_SURFACE_BO_COUNT; i++) {
-        s->bos[i] = surface_alloc_bo(s);
+    s->public_live = 1;
+    s->back = s->front = s->pending = -1;
+    for (int i = 0; i < WPK_GBM_SURFACE_INITIAL_BO_COUNT; i++) {
+        s->bos[i] = surface_alloc_bo(s, usage_wants_gpu_tier(flags));
         if (!s->bos[i]) {
             int save = errno;
             for (int j = 0; j < i; j++) {
@@ -815,63 +816,161 @@ gbm_surface_create_with_modifiers2(struct gbm_device *gbm,
     return gbm_surface_create(gbm, width, height, format, flags);
 }
 
-struct gbm_bo *gbm_surface_lock_front_buffer(struct gbm_surface *surface) {
-    if (!surface) {
-        errno = EINVAL;
-        return NULL;
-    }
-    /* Hand out the next free BO in round-robin order.  Consumers
-     * are expected to release the previous frame's BO before
-     * locking the next; if both BOs are in use we return NULL +
-     * EBUSY (mesa returns NULL in the equivalent ring-exhausted
-     * case). */
-    for (int i = 0; i < WPK_GBM_SURFACE_BO_COUNT; i++) {
-        int idx = (surface->next + i) % WPK_GBM_SURFACE_BO_COUNT;
-        if (!surface->in_use[idx]) {
-            surface->in_use[idx] = 1;
-            surface->next = (idx + 1) % WPK_GBM_SURFACE_BO_COUNT;
-            return surface->bos[idx];
-        }
-    }
-    errno = EBUSY;
+/* Every lookup compares opaque pointers before dereferencing them. Retired
+ * public windows remain in this owner table while EGL/locked fronts hold them. */
+static struct gbm_surface *find_surface_locked(const void *window) {
+    for (struct gbm_surface *s = live_surfaces; s; s = s->live_next)
+        if (s == window) return s;
     return NULL;
 }
-
-void gbm_surface_release_buffer(struct gbm_surface *surface, struct gbm_bo *bo) {
-    if (!surface || !bo) return;
-    for (int i = 0; i < WPK_GBM_SURFACE_BO_COUNT; i++) {
-        if (surface->bos[i] == bo) {
-            surface->in_use[i] = 0;
-            return;
-        }
-    }
-    /* Releasing a BO that doesn't belong to this surface is a
-     * caller bug; mesa silently ignores. */
-}
-
-int gbm_surface_has_free_buffers(struct gbm_surface *surface) {
-    if (!surface) return 0;
-    int free_count = 0;
-    for (int i = 0; i < WPK_GBM_SURFACE_BO_COUNT; i++) {
-        if (!surface->in_use[i]) free_count++;
-    }
-    return free_count;
-}
-
-void gbm_surface_destroy(struct gbm_surface *surface) {
-    if (!surface) return;
-    pthread_mutex_lock(&surface_mutex);
+static struct gbm_surface *retire_surface_locked(struct gbm_surface *s) {
+    if (s->public_live || s->window_owned) return NULL;
+    for (unsigned i = 0; i < WPK_GBM_SURFACE_BO_COUNT; ++i)
+        if (s->in_use[i]) return NULL;
     struct gbm_surface **link = &live_surfaces;
-    while (*link && *link != surface) link = &(*link)->live_next;
-    if (*link) *link = surface->live_next;
-    pthread_mutex_unlock(&surface_mutex);
-    for (int i = 0; i < WPK_GBM_SURFACE_BO_COUNT; i++) {
-        if (surface->bos[i]) {
-            surface->bos[i]->surface = NULL;
-            gbm_bo_destroy(surface->bos[i]);
-            surface->bos[i] = NULL;
+    while (*link && *link != s) link = &(*link)->live_next;
+    if (*link) *link = s->live_next;
+    return s;
+}
+/* User BO callbacks may reenter EGL/GBM. Never run them under metadata locks. */
+static void free_surface(struct gbm_surface *s) {
+    if (!s) return;
+    for (unsigned i = 0; i < WPK_GBM_SURFACE_BO_COUNT; ++i) {
+        if (s->bos[i]) {
+            s->bos[i]->surface = NULL;
+            gbm_bo_destroy(s->bos[i]);
         }
     }
-    release_device(surface->dev);
-    free(surface);
+    release_device(s->dev);
+    free(s);
+}
+static void surface_frame(struct gbm_surface *s, int index, struct wpk_gbm_frame *frame) {
+    *frame = (struct wpk_gbm_frame){s->dev->fd, s->bos[index]->handle, s->width, s->height};
+}
+int _wpk_gbm_window_acquire(const void *window, void **lease, struct wpk_gbm_frame *frame) {
+    struct gbm_bo *replaced[WPK_GBM_SURFACE_BO_COUNT] = {0};
+    int accepted = 0;
+    pthread_mutex_lock(&surface_mutex);
+    struct gbm_surface *s = find_surface_locked(window);
+    if (!s || !s->public_live) errno = EINVAL;
+    else if (s->window_owned) errno = EBUSY;
+    else if (!(s->flags & GBM_BO_USE_RENDERING) ||
+             (s->flags & (GBM_BO_USE_WRITE | GBM_BO_USE_LINEAR | GBM_BO_USE_CURSOR)))
+        errno = EOPNOTSUPP;
+    else {
+        /* Pick any unlocked slot. Replacing an unexposed CPU allocation is
+         * safe; failure leaves every existing slot and owner unchanged. */
+        errno = EBUSY;
+        for (int i = 0; i < WPK_GBM_SURFACE_BO_COUNT; ++i) {
+            if (s->in_use[i]) continue;
+            struct gbm_bo *bo = s->bos[i];
+            if (!bo || !bo->is_gpu) {
+                bo = surface_alloc_bo(s, 2);
+                if (!bo) break;
+                replaced[i] = s->bos[i];
+                s->bos[i] = bo;
+            }
+            s->back = i;
+            s->front = s->pending = -1;
+            s->window_owned = 1;
+            surface_frame(s, i, frame);
+            *lease = s;
+            accepted = 1;
+            break;
+        }
+        if (!accepted && !errno) errno = EBUSY;
+    }
+    pthread_mutex_unlock(&surface_mutex);
+    for (unsigned i = 0; i < WPK_GBM_SURFACE_BO_COUNT; ++i)
+        if (replaced[i]) { replaced[i]->surface = NULL; gbm_bo_destroy(replaced[i]); }
+    return accepted;
+}
+int _wpk_gbm_window_prepare(void *lease, struct wpk_gbm_frame *frame) {
+    int accepted = 0;
+    struct gbm_bo *replaced = NULL;
+    pthread_mutex_lock(&surface_mutex);
+    struct gbm_surface *s = find_surface_locked(lease);
+    if (!s || !s->window_owned || s->pending >= 0) errno = EINVAL;
+    else {
+        errno = EBUSY;
+        for (int i = 0; i < WPK_GBM_SURFACE_BO_COUNT; ++i) {
+            if (i == s->back || i == s->front || s->in_use[i]) continue;
+            struct gbm_bo *bo = s->bos[i];
+            if (!bo || !bo->is_gpu) {
+                /* CPU allocations have never escaped through lock_front. */
+                bo = surface_alloc_bo(s, 2);
+                if (!bo) break;
+                replaced = s->bos[i];
+                s->bos[i] = bo;
+            }
+            s->pending = i;
+            surface_frame(s, i, frame);
+            accepted = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&surface_mutex);
+    if (replaced) { replaced->surface = NULL; gbm_bo_destroy(replaced); }
+    return accepted;
+}
+void _wpk_gbm_window_finish(void *lease, int accepted) {
+    pthread_mutex_lock(&surface_mutex);
+    struct gbm_surface *s = find_surface_locked(lease);
+    if (s && s->window_owned && s->pending >= 0) {
+        if (accepted) { s->front = s->back; s->back = s->pending; }
+        s->pending = -1;
+    }
+    pthread_mutex_unlock(&surface_mutex);
+}
+void _wpk_gbm_window_release(void *lease) {
+    pthread_mutex_lock(&surface_mutex);
+    struct gbm_surface *s = find_surface_locked(lease), *retired = NULL;
+    if (s && s->window_owned) {
+        s->window_owned = 0;
+        s->back = s->front = s->pending = -1;
+        retired = retire_surface_locked(s);
+    }
+    pthread_mutex_unlock(&surface_mutex);
+    free_surface(retired);
+}
+struct gbm_bo *gbm_surface_lock_front_buffer(struct gbm_surface *window) {
+    struct gbm_bo *bo = NULL;
+    pthread_mutex_lock(&surface_mutex);
+    struct gbm_surface *s = find_surface_locked(window);
+    if (s && s->public_live && s->front >= 0) {
+        int index = s->front;
+        s->front = -1;
+        s->in_use[index] = 1;
+        bo = s->bos[index];
+    } else errno = EINVAL;
+    pthread_mutex_unlock(&surface_mutex);
+    return bo;
+}
+void gbm_surface_release_buffer(struct gbm_surface *window, struct gbm_bo *bo) {
+    pthread_mutex_lock(&surface_mutex);
+    struct gbm_surface *s = find_surface_locked(window), *retired = NULL;
+    if (s && bo) {
+        for (unsigned i = 0; i < WPK_GBM_SURFACE_BO_COUNT; ++i)
+            if (s->bos[i] == bo) { s->in_use[i] = 0; break; }
+        retired = retire_surface_locked(s);
+    }
+    pthread_mutex_unlock(&surface_mutex);
+    free_surface(retired);
+}
+int gbm_surface_has_free_buffers(struct gbm_surface *window) {
+    int available = 0;
+    pthread_mutex_lock(&surface_mutex);
+    struct gbm_surface *s = find_surface_locked(window);
+    if (s && s->public_live)
+        for (unsigned i = 0; i < WPK_GBM_SURFACE_BO_COUNT; ++i)
+            if (!s->in_use[i] && (int)i != s->back && (int)i != s->front) { available = 1; break; }
+    pthread_mutex_unlock(&surface_mutex);
+    return available;
+}
+void gbm_surface_destroy(struct gbm_surface *window) {
+    pthread_mutex_lock(&surface_mutex);
+    struct gbm_surface *s = find_surface_locked(window), *retired = NULL;
+    if (s && s->public_live) { s->public_live = 0; retired = retire_surface_locked(s); }
+    pthread_mutex_unlock(&surface_mutex);
+    free_surface(retired);
 }

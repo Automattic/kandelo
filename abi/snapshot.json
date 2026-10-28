@@ -2521,7 +2521,7 @@
       "argKind": "pointer",
       "direction": "in",
       "wasm32Size": 24,
-      "wasm64Size": null
+      "wasm64Size": 40
     },
     "74": {
       "argKind": "pointer",
@@ -4834,6 +4834,51 @@
         }
       ],
       "size": 24
+    },
+    "GlQueryInfo64": {
+      "fields": [
+        {
+          "name": "op",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "padding0",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "in_buf_ptr",
+          "offset": 8,
+          "span": 8
+        },
+        {
+          "name": "in_buf_len",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "padding1",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "out_buf_ptr",
+          "offset": 24,
+          "span": 8
+        },
+        {
+          "name": "out_buf_len",
+          "offset": 32,
+          "span": 4
+        },
+        {
+          "name": "reserved",
+          "offset": 36,
+          "span": 4
+        }
+      ],
+      "size": 40
     },
     "GlSubmitInfo": {
       "fields": [

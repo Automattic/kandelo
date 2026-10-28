@@ -2063,7 +2063,7 @@ export const IOCTL_REQUESTS: Record<number, IoctlRequestContract> = {
   70: { argKind: "pointer", direction: "in", wasm32Size: 12, wasm64Size: 12 },
   71: { argKind: "pointer", direction: "in", wasm32Size: 8, wasm64Size: 8 },
   72: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
-  73: { argKind: "pointer", direction: "in", wasm32Size: 24, wasm64Size: null },
+  73: { argKind: "pointer", direction: "in", wasm32Size: 24, wasm64Size: 40 },
   74: { argKind: "pointer", direction: "in", wasm32Size: 32, wasm64Size: 32 },
   17920: { argKind: "pointer", direction: "out", wasm32Size: 160, wasm64Size: 160 },
   17921: { argKind: "pointer", direction: "in", wasm32Size: 160, wasm64Size: 160 },

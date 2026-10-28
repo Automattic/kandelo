@@ -18,6 +18,7 @@
 #include <sys/stat.h>
 #include <pthread.h>
 #include "gl_abi.h"
+#include "gbm_window.h"
 /* Wire tag is independent of the selected production revision in baseline runs. */
 #define GRAPHICS_SURFACE_CAPABILITIES 0x002du
 /* Existing bridge entry points; this fixture does not advertise GLES3. */
@@ -133,6 +134,32 @@ int _wpk_gbm_surface_metadata(const void *window, uint32_t *w, uint32_t *h,
     if (!_wpk_gbm_surface_dimensions(window,w,h)) return 0;
     *format = record_format; *flags = record_flags;
     return 1;
+}
+
+/* GBM bridge double: source BO names are separate from EGL object sessions.
+ * Actual GBM allocation/locked-front ownership is checked by the separate
+ * GBM C harness and normal SDK rendered-ring guest. */
+static unsigned window_leases[3];
+int _wpk_gbm_window_acquire(const void *window, void **lease, struct wpk_gbm_frame *frame) {
+    uint32_t width, height;
+    if (!_wpk_gbm_surface_dimensions(window,&width,&height)) return 0;
+    unsigned i = (const int *)window-record_windows;
+    if (window_leases[i]) { errno = EBUSY; return 0; }
+    window_leases[i] = 1; *lease = &window_leases[i];
+    *frame = (struct wpk_gbm_frame){10,77,width,height};
+    return 1;
+}
+int _wpk_gbm_window_prepare(void *lease, struct wpk_gbm_frame *frame) {
+    unsigned i = (unsigned *)lease-window_leases;
+    assert(i < 3 && window_leases[i]);
+    *frame = (struct wpk_gbm_frame){10,88,32+i,24+i};
+    return 1;
+}
+void _wpk_gbm_window_finish(void *lease, int accepted) { (void)lease; (void)accepted; }
+void _wpk_gbm_window_release(void *lease) {
+    unsigned i = (unsigned *)lease-window_leases;
+    assert(i < 3 && window_leases[i]);
+    window_leases[i] = 0;
 }
 
 static unsigned closes, imports;
@@ -1303,7 +1330,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         }
         if (numeric_queries) {
             assert(latest_allocation);
-            assert(q->out_buf_ptr == (uint32_t)(uintptr_t)latest_allocation);
+            assert(q->out_buf_ptr == (uintptr_t)latest_allocation);
             if (numeric_queries == 2 && q->out_buf_len == 4) {
                 assert(q->op == QOP_GET_INTEGERV);
                 const GLint count = 6;
@@ -4409,8 +4436,10 @@ int main(int argc, char **argv) {
         native_window_bo = 77;
         native_window_fd = 11;
         EGLSurface surface = eglCreateWindowSurface(dpy, (EGLConfig)1, &native_window, NULL);
-        assert(surface && surface_target == 77 && export_closes == 1 && closes == 0 &&
-               transfer_closes == 0);
+        /* The GBM window now transfers its own source before Wayland's
+         * existing-image transfer; that temporary name closes independently. */
+        assert(surface && surface_target == 77 && export_closes == 2 && closes == 0 &&
+               transfer_closes == 1);
         assert(eglDestroySurface(dpy, surface) && eglDestroySurface(dpy, other) && closes == 0);
         assert(eglDestroyImageKHR(dpy, img) && closes == 1);
         assert(eglDestroyContext(dpy, second) && eglDestroyContext(dpy, ctx));

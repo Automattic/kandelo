@@ -228,9 +228,9 @@ struct gl_surface_attrs { uint32_t kind; uint32_t width; uint32_t height; uint32
 struct gl_surface_create { struct gl_surface_attrs attrs; uint32_t surface_id; };
 struct gl_query_info {
     uint32_t op;
-    uint32_t in_buf_ptr;
+    uintptr_t in_buf_ptr;
     uint32_t in_buf_len;
-    uint32_t out_buf_ptr;
+    uintptr_t out_buf_ptr;
     uint32_t out_buf_len;
     uint32_t reserved;
 };

@@ -309,9 +309,8 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::gl::GLIO_MAKE_CURRENT, In, 12),
     pointer!(crate::gl::GLIO_SUBMIT, In, 8),
     no_arg!(crate::gl::GLIO_PRESENT),
-    // WHY: GlQueryInfo contains wasm32 pointers. Until a native wasm64 wire
-    // structure exists, rejecting the known request is safer than truncating.
-    pointer!(crate::gl::GLIO_QUERY, In, wasm32 24),
+    // Registered caller width selects native addresses, never the kernel's width.
+    pointer!(crate::gl::GLIO_QUERY, In, 24, 40),
     pointer!(crate::gl::GLIO_UPDATE_SURFACE, In, 32),
     pointer!(crate::fbdev::FBIOGET_VSCREENINFO, Out, 160),
     pointer!(crate::fbdev::FBIOPUT_VSCREENINFO, In, 160),
@@ -521,10 +520,10 @@ mod tests {
     }
 
     #[test]
-    fn gl_query_refuses_wasm64_until_it_has_a_native_wire() {
+    fn gl_query_selects_each_native_pointer_layout() {
         let query = request_contract(crate::gl::GLIO_QUERY).unwrap();
         assert_eq!(query.size_for_pointer_width(4), Some(24));
-        assert_eq!(query.size_for_pointer_width(8), None);
+        assert_eq!(query.size_for_pointer_width(8), Some(40));
     }
 
     /// An ioctl handled in syscalls.rs but absent from this table is

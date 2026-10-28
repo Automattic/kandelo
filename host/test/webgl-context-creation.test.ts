@@ -26,6 +26,25 @@ function harness(callbacks = {}) {
   };
 }
 
+it("allocates device storage from an attached renderer before EGL context creation", () => {
+  const { kernel, imports, create } = harness();
+  const { gl } = foreignTextureGl();
+  Object.assign(gl, { isContextLost: () => false, getExtension: () => null });
+  const getContext = vi.fn(() => gl);
+  kernel.gl.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
+  kernel.gl.attachCanvas(7,{ getContext } as unknown as OffscreenCanvas);
+  const binding = kernel.gl.get(7,11)!;
+  expect(binding.gl).toBeNull(); expect(binding.contextId).toBeNull();
+  expect(imports.host_gbm_gpu_bo_create(7,41,2,2,0,0)).toBe(0);
+  expect(kernel.gl.gpuBo(41)?.gl).toBe(gl);
+  expect(getContext).toHaveBeenCalledWith("webgl2", expect.any(Object));
+  expect(binding.contextId).toBeNull();
+  expect(create(7,21,11)).toBe(0);
+  expect(binding.gl).toBe(gl);
+  imports.host_gbm_bo_destroy(7,41);
+  kernel.releaseProcessViews(7);
+});
+
 it("retires a GPU BO through the kernel destroy callback without CPU metadata", () => {
   const {kernel, imports, setMaster} = harness();
   const {gl, alive} = foreignTextureGl();

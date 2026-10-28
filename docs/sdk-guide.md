@@ -520,8 +520,13 @@ file. `gbm_device_get_fd` still returns the caller's original descriptor.
 Buffer objects and GBM surfaces hold independent device references, so
 withdrawing the public device and reusing the caller's descriptor cannot
 redirect their DRM operations. The private alias closes when the final
-owner retires. This does not yet establish EGL-retained GBM window or
-rendered front/back buffer lifetime; those remain compatibility gaps.
+owner retires. EGL native-window leases and locked fronts also retain
+their windows independently. A successful GBM swap publishes the completed
+GPU front and selects an unlocked next back; it does not post to the
+display. The bounded four-slot pool includes one render back. CPU-facing
+WRITE/LINEAR/CURSOR windows cannot yet supply EGL render targets and fail
+with EGL_BAD_MATCH. KMS visibility/orientation and forwarded storage remain
+separate compatibility work; see the versioned graphics inventory.
 
 Programs should reference these through the matching SDK pkg-config
 wrapper (`wasm32posix-pkg-config` or `wasm64posix-pkg-config`), for example:

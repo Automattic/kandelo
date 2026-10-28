@@ -5666,7 +5666,7 @@ pub mod gl {
         pub surface_id: u32,
     }
 
-    /// Argument to `GLIO_QUERY`. Total: 24 bytes.
+    /// wasm32 argument to `GLIO_QUERY`. Total: 24 bytes.
     /// Input/output pointers are process addresses copied through HostIO.
     /// The kernel validates nonempty ranges before renderer dispatch; zero
     /// lengths do not inspect their pointers. HostIO receives owned kernel
@@ -5690,6 +5690,22 @@ pub mod gl {
         /// Must be zero; reserved for a future async-completion handle.
         pub reserved: u32,
     }
+    /// Native wasm64 GL query: 40 bytes, with full-width process addresses.
+    /// The caller's registered pointer width selects this layout. Padding
+    /// carries no authority; reserved remains zero on both widths.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlQueryInfo64 {
+        pub op: u32,
+        pub padding0: u32,
+        pub in_buf_ptr: u64,
+        pub in_buf_len: u32,
+        pub padding1: u32,
+        pub out_buf_ptr: u64,
+        pub out_buf_len: u32,
+        pub reserved: u32,
+    }
+
 }
 
 /// Linux DRM `/dev/dri/*` ABI — ioctl numbers, fourcc constants, and
@@ -7188,6 +7204,12 @@ mod gl_tests {
         assert_eq!(size_of::<GlSurfaceAttrs>(), 32);
         assert_eq!(size_of::<GlSurfaceCreateInfo>(), 36);
         assert_eq!(size_of::<GlQueryInfo>(), 24);
+        assert_eq!(size_of::<GlQueryInfo64>(), 40);
+        assert_eq!(core::mem::offset_of!(GlQueryInfo64, in_buf_ptr), 8);
+        assert_eq!(core::mem::offset_of!(GlQueryInfo64, in_buf_len), 16);
+        assert_eq!(core::mem::offset_of!(GlQueryInfo64, out_buf_ptr), 24);
+        assert_eq!(core::mem::offset_of!(GlQueryInfo64, out_buf_len), 32);
+        assert_eq!(core::mem::offset_of!(GlQueryInfo64, reserved), 36);
     }
 
     #[test]

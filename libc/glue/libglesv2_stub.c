@@ -1088,8 +1088,8 @@ static int _wpk_gl_query_into(uint32_t op,
     if (dst_len) memset(heap, 0, dst_len);
     struct gl_query_info qi = {
         .op = op,
-        .in_buf_ptr  = (uint32_t)(uintptr_t)in,   .in_buf_len  = in_len,
-        .out_buf_ptr = (uint32_t)(uintptr_t)heap, .out_buf_len = dst_len,
+        .in_buf_ptr  = (uintptr_t)in,   .in_buf_len  = in_len,
+        .out_buf_ptr = (uintptr_t)heap, .out_buf_len = dst_len,
         .reserved = 0,
     };
     int rc = ioctl(fd, GLIO_QUERY, &qi);
@@ -1107,8 +1107,8 @@ static int shader_upload_query(int fd, uint8_t *request, uint32_t input_len,
     memset(reply,0,12);
     struct gl_query_info info = {
         .op = QOP_SHADER_SOURCE_UPLOAD,
-        .in_buf_ptr = (uint32_t)(uintptr_t)request, .in_buf_len = input_len,
-        .out_buf_ptr = (uint32_t)(uintptr_t)reply, .out_buf_len = 12, .reserved = 0,
+        .in_buf_ptr = (uintptr_t)request, .in_buf_len = input_len,
+        .out_buf_ptr = (uintptr_t)reply, .out_buf_len = 12, .reserved = 0,
     };
     if (ioctl(fd,GLIO_QUERY,&info) != 0) goto invalid;
     uint32_t status, echoed, footer;
@@ -2202,9 +2202,9 @@ static int uniform_lookup_query(int fd, uint8_t *request, uint32_t length, uint8
                                 uint32_t token, GLint *location, int quiet) {
     memset(reply, 0, 16);
     struct gl_query_info info = {.op = QOP_LOOKUP_UNIFORM,
-                                 .in_buf_ptr = (uint32_t)(uintptr_t)request,
+                                 .in_buf_ptr = (uintptr_t)request,
                                  .in_buf_len = length,
-                                 .out_buf_ptr = (uint32_t)(uintptr_t)reply,
+                                 .out_buf_ptr = (uintptr_t)reply,
                                  .out_buf_len = 16,
                                  .reserved = 0};
     if (ioctl(fd, GLIO_QUERY, &info) != 0)

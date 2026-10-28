@@ -1,6 +1,7 @@
 /* Actual GBM source with a DRM allocation double: this tests the native
  * window registry, not kernel allocation or pixel rendering. */
 #include <gbm.h>
+#include "gbm_window.h"
 #include <xf86drm.h>
 #include <drm/drm_mode.h>
 #include <drm/drm_fourcc.h>
@@ -20,7 +21,7 @@ int _wpk_gbm_device_metadata(const void *, int *, uint64_t *);
 static int device_fd;
 static unsigned created, closed, fail_allocation;
 static uint32_t imported_handle;
-static int fail_unmap;
+static int fail_unmap, gpu_enabled;
 static unsigned unmap_attempts;
 static void same_device_file(int fd) {
     struct stat expected, actual;
@@ -34,6 +35,13 @@ int graphics_gbm_munmap(void *address, size_t length) {
 }
 int drmIoctl(int fd, unsigned long request, void *data) {
     same_device_file(fd);
+    if (request == 0xc01064e0u && gpu_enabled) {
+        uint32_t *words = data;
+        if (fail_allocation && created+1 == fail_allocation) { errno = ENOMEM; return -1; }
+        uint32_t pitch = words[0]*4;
+        words[2] = ++created; words[3] = pitch;
+        return 0;
+    }
     if (request == DRM_IOCTL_PRIME_HANDLE_TO_FD) {
         struct drm_prime_handle *prime = data;
         assert(prime->handle && prime->handle <= created);
@@ -74,6 +82,68 @@ static void retained_device_file(void) {
     int prime = gbm_bo_get_fd(bo); assert(prime >= 0);
     assert(close(prime) == 0);
     gbm_bo_destroy(bo);
+}
+static unsigned ring_callbacks;
+static struct gbm_surface *retired_ring;
+static void ring_callback(struct gbm_bo *bo, void *data) {
+    assert(bo && data == &ring_callbacks);
+    assert(!gbm_surface_has_free_buffers(retired_ring));
+    ++ring_callbacks;
+}
+static void rendered_ring_ownership(void) {
+    int input = dup(device_fd); assert(input >= 0);
+    struct gbm_device *device = gbm_create_device(input); assert(device);
+    struct gbm_surface *window = gbm_surface_create(device, 4, 3,
+        GBM_FORMAT_ABGR8888, GBM_BO_USE_RENDERING | GBM_BO_USE_SCANOUT);
+    assert(window && gbm_surface_has_free_buffers(window) == 1);
+    assert(!gbm_surface_lock_front_buffer(window));
+    struct wpk_gbm_frame initial = {0}, candidate = {0}; void *lease = NULL;
+    /* A missing GPU backend must not substitute a CPU BO for the target. */
+    assert(!_wpk_gbm_window_acquire(window, &lease, &initial) && !lease && !initial.handle);
+    gpu_enabled = 1;
+    assert(_wpk_gbm_window_acquire(window, &lease, &initial) && lease);
+    void *other = NULL;
+    assert(!_wpk_gbm_window_acquire(window, &other, &candidate) && !other);
+    gbm_device_destroy(device); assert(close(input) == 0);
+    /* Lazy allocation must use the surface's owned device after withdrawal. */
+    fail_allocation = created+1;
+    assert(!_wpk_gbm_window_prepare(lease, &candidate));
+    assert(!gbm_surface_lock_front_buffer(window));
+    fail_allocation = 0;
+    assert(_wpk_gbm_window_prepare(lease, &candidate));
+    uint32_t next = candidate.handle;
+    _wpk_gbm_window_finish(lease, 0);
+    assert(!gbm_surface_lock_front_buffer(window));
+    assert(_wpk_gbm_window_prepare(lease, &candidate) && candidate.handle == next);
+    _wpk_gbm_window_finish(lease, 1);
+    struct gbm_bo *front[3];
+    front[0] = gbm_surface_lock_front_buffer(window);
+    assert(front[0] && gbm_bo_get_handle(front[0]).u32 == initial.handle);
+    assert(!gbm_surface_lock_front_buffer(window));
+    for (unsigned i = 1; i < 3; ++i) {
+        assert(_wpk_gbm_window_prepare(lease, &candidate));
+        _wpk_gbm_window_finish(lease, 1);
+        front[i] = gbm_surface_lock_front_buffer(window);
+        assert(front[i] && front[i] != front[i-1] && front[i] != front[0]);
+    }
+    assert(!gbm_surface_has_free_buffers(window));
+    assert(!_wpk_gbm_window_prepare(lease, &candidate) && errno == EBUSY);
+    for (unsigned i = 0; i < 3; ++i)
+        gbm_bo_set_user_data(front[i], &ring_callbacks, ring_callback);
+    retired_ring = window;
+    gbm_surface_destroy(window);
+    assert(!gbm_surface_lock_front_buffer(window));
+    _wpk_gbm_window_release(lease);
+    assert(!ring_callbacks && fcntl(initial.fd,F_GETFD) >= 0);
+    gbm_surface_release_buffer(window, front[0]);
+    gbm_surface_release_buffer(window, front[0]);
+    gbm_surface_release_buffer(window, (void *)(uintptr_t)1);
+    gbm_surface_release_buffer(window, front[1]);
+    assert(!ring_callbacks);
+    gbm_surface_release_buffer(window, front[2]);
+    assert(ring_callbacks == 3 && fcntl(initial.fd,F_GETFD) == -1 && errno == EBADF);
+    gpu_enabled = 0;
+    assert(created == closed);
 }
 static void rejected(const void *pointer) {
     uint32_t width=101,height=102,format=103,flags=104;
@@ -277,6 +347,7 @@ int main(void) {
     imported_handle_lifetime(device);
     cpu_mapping();
     retained_device_file();
+    rendered_ring_ownership();
     uintptr_t retired_device = (uintptr_t)device;
     gbm_device_destroy(device);
     assert(!_wpk_gbm_device_metadata((void *)retired_device, &native_fd, &identity));

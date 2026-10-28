@@ -90,7 +90,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve for retained dma-buf imports. Native fence candidates, waiter leases and retryable cleanup now have retained source models. Table 17 adds caller-known create/status/release tokens, accepted-reply publication, cancellation and mapped object-session authority without a current context. Native and forwarded source rendering pass. Core C create/destroy/query/client-wait now use generation-owned records, retained sessions, serialized replies, monotonic timeouts and cancellation-safe waiter references; public glFlush requests acknowledged native flush. Focused C and three-engine source evidence is recorded below. The four KHR_fence_sync aliases share these records with width-correct lists/output and 64-bit timeouts; EGL_KHR_fence_sync and client GL_OES_EGL_sync are declared. eglWaitSync server ordering remains open; EGL_KHR_wait_sync is not advertised. GL-source images and full lifecycle/errors/guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
 | B01 | GBM allocation/import/export and plane metadata | Dumb/GPU tiers; cage adds modifier allocators. Native GPU allocation and restoration use checked receipts; borrowed surface leases preserve old GPU storage after public retirement/ID reuse. CPU coherence, format/layout and full guest validation remain open | GBM, DRM BOs, host registry | SDK guest fixtures both widths; unsupported format/flags | partial |
 | B02 | GBM map/unmap coherence and authority | Kernel authoritative BO references; changed-run publication on main | GBM, kernel maps, DRI registry | Importer writes, stale readers, unmap/exit/exec; browser pixels | partial |
-| B03 | Surface ring lock/release/destroy ownership | Two-BO bookkeeping does not establish rendered front/back storage. An unselected native-window swap reaches the canvas; actual GBM ring posting, retained locks and destruction still need repair | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks | partial |
+| B03 | Surface ring lock/release/destroy ownership | Retained EGL leases and a bounded GPU pool publish produced fronts only after accepted swaps. Uniform rendered-front retention/exhaustion/retirement passes both guest widths in all three engines. KMS visibility/orientation, CPU-facing windows, forwarding and broader combined validation remain open | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks; asymmetric KMS pixels | partial |
 | K01 | Single display resources and consistent object IDs | Integrated dynamic mode catalog, properties and device-wide IDs; broader device/host validation pending | kernel dri/kms, host mode metadata | Rust ioctl and Node mode tests; preserve preferred/catalog semantics | partial |
 | K02 | Probe all nested outputs before writing | Property, enum and expanded connector outputs now preprobe all destinations; focused Rust regressions pass | syscall nested-output helpers | Valid first/invalid later buffers, unchanged sentinels and top-level bytes | open |
 | K03 | Shared OFD GEM/FB authority, PRIME and final references | Shared GEM namespace/allocator, KMS FBs and inherited graphics cleanup/BO holds are implemented; final combined guest validation and remaining KMS-file authority gaps stay open | OFD, process/fork/spawn/exec/close, BO registry | Rust + real Node lifecycle/dup/fork/spawn tests | open |
@@ -6836,3 +6836,126 @@ EGL/GLES conformance. The existing ring smoke test still checks its old
 bookkeeping model, not produced rendered fronts. Complete consumer/image
 rebuild, memory and POSIX gates on these newest C changes remain required;
 the prior full gates have their separately recorded source identities.
+
+
+## Rendered GBM front/back ownership checkpoint, 2026-10-28
+
+GBM native windows now lend EGL a retained GPU render target instead of
+merely reporting dimensions for unrelated storage. The public window, EGL
+lease, active back, produced front and locked front owners have distinct
+states. A pre-swap/repeated lock fails without inventing a frame. The pool
+has four slots, including a reserved render back; three outstanding locked
+fronts therefore exhaust the next swap. Free-buffer queries return a
+boolean. Released/foreign buffers are compared under the owner table, and
+public window destruction waits for EGL and locked-front owners. New
+internal allocations use the retained device even after public device
+withdrawal. GPU render-target acquisition fails honestly when unavailable;
+WRITE/LINEAR/CURSOR window rendering remains an ordinary unsupported path.
+
+EGL flushes accepted commands, reserves an unlocked next back and uses the
+existing transactional GLIO_UPDATE_SURFACE operation. Only its accepted
+reply publishes the completed front and switches the back. A rejected
+allocation/update leaves the prior front/back state in place. GBM swaps
+no longer issue GLIO_PRESENT; KMS selection remains the posting authority.
+The actual unselected-display and asymmetric orientation checks are still
+pending, so this code-level change does not yet close the earlier B03
+posting failure. EGL retires its lease only after native surface retirement,
+and drains resulting user BO callbacks after releasing its metadata lock.
+
+The normal SDK regression imports locked fronts as EGLImage renderbuffers
+and reads every pixel after later red, green and blue frames. Exhaustion
+must preserve their pixels and current context; releasing a front permits
+the retained yellow back to swap. Public device/window destruction cannot
+retire the storage early. A final BO callback reenters a locking EGL API
+without deadlock. Chromium, Firefox and WebKit passed both wasm32 and
+wasm64 guests, six cases, in 15.1s in
+`graphics-gbm-ring-query64-build-v2-1028-180329-c80e`. The job also built the
+normal kernel and both SDKs and checked every regenerated ABI output. The
+old-archive control failed both widths at its count-valued free-buffer
+query in `graphics-gbm-rendered-ring-before-1028-175029-1808`; it does not
+by itself establish a before/after pixel regression. The earlier actual
+three-engine unselected-red failure remains separately preserved above.
+
+This exposed a real wasm64 platform gap: GLIO_QUERY was declared wasm32
+only, so the kernel rejected synchronous GL queries with EOVERFLOW before
+WebGL dispatch. The first rendered-ring run passed all three wasm32 cases
+and failed all three wasm64 cases. A direct query diagnostic confirmed
+EOVERFLOW with valid low addresses; all temporary private diagnostic calls
+were removed from the guest. The unchanged wasm32 wire remains 24 bytes.
+The new native wasm64 record is 40 bytes, with full u64 input/output
+addresses. Registered process width selects it in the kernel. C now uses
+uintptr_t query fields rather than narrowing pointers. The snapshot, C
+headers and TypeScript table are regenerated under the combined unpublished
+ABI56/kernel-host3; no per-increment version was added.
+
+The 87 shared tests and ten focused GL query tests pass, including full-width
+invalid input/output addresses that must not alias low addresses or dispatch
+the renderer. The broader Rust run passed runtime-core 2,603 tests plus six
+doctests, and xtask 809 unit tests plus its 2/4/2 integration tests. All 211
+native EGL cases and all 38 GBM symbols/native UBSan/allocator poisoning
+checks pass. Native transfer accounting now includes the GBM window's own
+BO transfer; pointer assertions follow the native query width. These checks
+are in `graphics-gbm-ring-broad-1028-180916-8d90`, which later failed its Node
+selection: the new Node guest itself exited successfully but its test
+wrongly counted driver-internal clearColor calls; an old normal smoke
+binary had the previous ABI digest; and surface-before-context creation
+exposed an attached-renderer bootstrap gap. Those repairs and the normal
+program rebuild are being validated separately. The broad job did not
+reach its browser step. No complete combined gate is claimed.
+
+Standalone host TypeScript checking still reports 42 diagnostics, including
+Vite module declarations and imports outside host/src. A read-only owned
+checkout control at 09a6401b2b reports the same 42 file/code/message
+signatures with no added or removed signatures. Logs and comparison are
+`.context/graphics-gbm-ring-host-types{,-before}.log` and
+`.context/graphics-gbm-ring-host-types-comparison.json`. This is a matched
+baseline comparison, not a clean type-check result.
+
+KMS visibility/orientation, CPU-facing native windows, forwarded storage,
+the affected C rendering replays and complete current-source consumer,
+memory, CTS and POSIX gates remain ordinary work. B03 remains partial.
+
+### Completed render-ring checkpoint and next orientation repair
+
+The normal `scripts/build-programs.sh` run completed all 239 program
+stamps in `graphics-gbm-ring-repair-validation-1028-181812-8ec9`. Its Node
+selection passed 223/224 cases in 11 files with zero skipped/unloaded
+cases. All 12 normal SDK cases passed, including both widths of device
+retirement, native-window metadata and rendered-ring ownership. The only
+failure was the new source-only renderer test's incomplete WebGL double:
+it omitted the standard getExtension method. Supplying that method made
+all 35 context-creation cases pass in
+`graphics-gbm-ring-checkpoint-final-1028-191453-7d97`. That job then passed
+all 21 normal SDK browser cases in 34.7s across Chromium, Firefox and
+WebKit. The 177 scratch-boundary cases had already passed unchanged.
+The program build took roughly 51 minutes, including GTK/SDL dependencies
+and normal fork instrumentation; it was not a quiet-machine interval.
+
+An actual SDK/KMS consumer now confirms the unselected-swap repair. Its
+locked front contains green at the window's lower-left and blue at its
+upper-right, and the visible canvas stays black until KMS selection.
+After selecting the front, however, those markers appear at the wrong
+vertical positions. `graphics-gbm-native-kms-probe-v3-1028-183031-b8a4`
+preserves that failing exact-pixel control, trace and screenshot under
+`.context/graphics-gbm-native-kms-probe-v3-results/`. Its source is saved as
+`.context/gbm-native-kms-before-normalization.c` and
+`.context/gbm-native-kms-probe.spec.ts`. The first two probe attempts failed
+before selection because of a missing DRM include flag and an invalid
+assumption that a 4x3 mode was advertised. The final probe consumes the
+actual connector mode. Those setup failures are not graphics boundaries.
+
+A row-normalization repair is being prepared in the isolated checkout
+`.context/gbm-front-normalize`, leaving the completed normal build's inputs
+unchanged. It keeps a private render back and copies into an unpublished,
+top-row-first front. The existing KMS row convention stays intact. Six
+source/failure checks, a kernel lifetime check and both native C harnesses
+support that candidate. A source WebGL check passed all three engines;
+its normal kernel/SDK build passed six retained-front guest cases, and a
+normal SDK/KMS replay passed all three engines with the original visible
+corner expectations. These are the isolated candidate's evidence, not
+validation of the primary implementation before integration. Exact jobs
+are `graphics-gbm-front-copy-isolated-v2-1028-190209-abc3`,
+`graphics-gbm-front-copy-source-1028-190450-9a66`,
+`graphics-gbm-front-copy-normal-1028-190931-d4b2` and
+`graphics-gbm-front-copy-kms-1028-191457-e87e`. Complete current-source
+consumer/image, memory, upstream CTS and POSIX gates still remain.

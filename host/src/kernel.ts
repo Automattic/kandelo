@@ -1652,6 +1652,14 @@ export class WasmPosixKernel {
       const gl = canvas?.getContext("webgl2", options) as WebGL2RenderingContext | null;
       if (gl && !gl.isContextLost()) return accept(gl);
     }
+    // An embedder can attach a renderer before any public EGL context
+    // exists. Native-window BO allocation must be able to use that renderer,
+    // including on hosts without a global OffscreenCanvas constructor.
+    for (const binding of this.gl.list()) {
+      if (binding.forward || !binding.canvas) continue;
+      const gl = binding.canvas.getContext("webgl2", options) as WebGL2RenderingContext | null;
+      if (gl && !gl.isContextLost()) return accept(gl);
+    }
     if (typeof OffscreenCanvas !== "undefined") {
       const gl = new OffscreenCanvas(1, 1).getContext("webgl2", options);
       if (gl && !gl.isContextLost()) return accept(gl);

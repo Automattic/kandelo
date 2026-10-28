@@ -4,9 +4,9 @@ import { resolveBinary } from "../src/binary-resolver";
 
 const programBinary = resolveBinary("programs/gbm_surface_smoke.wasm");
 
-describe("libgbm 2-BO surface ring", () => {
+describe("libgbm surface before rendering", () => {
   it(
-    "lock/release/has_free_buffers transitions match mesa semantics",
+    "requires a produced frame before a front buffer can be locked",
     async () => {
       const result = await runCentralizedProgram({
         programPath: programBinary!,

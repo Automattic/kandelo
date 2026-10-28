@@ -33,6 +33,11 @@
 #include <time.h>
 
 #include "gl_abi.h"
+#include "gbm_window.h"
+__attribute__((weak)) int _wpk_gbm_window_acquire(const void *, void **, struct wpk_gbm_frame *);
+__attribute__((weak)) int _wpk_gbm_window_prepare(void *, struct wpk_gbm_frame *);
+__attribute__((weak)) void _wpk_gbm_window_finish(void *, int);
+__attribute__((weak)) void _wpk_gbm_window_release(void *);
 
 void glDrawBuffer(GLenum buf);
 void glDrawBuffers(GLsizei n, const GLenum *bufs);
@@ -101,7 +106,7 @@ struct egl_surface_record {
     int delete_pending, gbm_window, pbuffer;
     EGLint largest_pbuffer, mipmap_texture;
     EGLint render_buffer, gl_colorspace;
-    void *native_window;
+    void *native_window, *gbm_lease;
     struct egl_surface_record *next;
 };
 struct egl_generation {
@@ -117,6 +122,12 @@ struct egl_generation {
     struct egl_generation *next;
 };
 static struct egl_generation *g_generations;
+static struct egl_surface_record *g_surface_releases;
+static void free_surface_record_locked(struct egl_surface_record *surface) {
+    if (!surface->gbm_lease) { free(surface); return; }
+    surface->next = g_surface_releases;
+    g_surface_releases = surface;
+}
 struct egl_thread_binding {
     int current, surfaceless;
     EGLContext context;
@@ -142,7 +153,15 @@ static void lock_context(void) {
 }
 static void unlock_context(void) {
     int cancel_state = g_context_cancel_state;
+    struct egl_surface_record *releases = g_surface_releases;
+    g_surface_releases = NULL;
     pthread_mutex_unlock(&g_context_mutex);
+    while (releases) {
+        struct egl_surface_record *surface = releases;
+        releases = surface->next;
+        _wpk_gbm_window_release(surface->gbm_lease);
+        free(surface);
+    }
     pthread_setcancelstate(cancel_state, NULL);
 }
 /* GL siblings can retire while another thread terminates/reinitializes EGL.
@@ -532,7 +551,7 @@ static int surface_limits_locked(struct egl_generation *generation) {
     uint32_t *reply = calloc(4,sizeof *reply);
     if (!reply) { g_last_error = EGL_BAD_ALLOC; return 0; }
     const struct gl_query_info query = {.op = QOP_SURFACE_CAPABILITIES,
-        .out_buf_ptr = (uint32_t)(uintptr_t)reply, .out_buf_len = 16};
+        .out_buf_ptr = (uintptr_t)reply, .out_buf_len = 16};
     int accepted = ioctl(generation->fd,GLIO_QUERY,&query) == 0 && reply[3] == WPK_GL_QUERY_REPLY_MAGIC &&
         reply[0] > 0 && reply[0] <= INT32_MAX && reply[1] > 0 && reply[1] <= INT32_MAX &&
         reply[2] > 0 && reply[2] <= INT32_MAX && (uint64_t)reply[2] <= (uint64_t)reply[0]*reply[1];
@@ -822,11 +841,26 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
         g_last_error = EGL_BAD_ALLOC;
         return EGL_NO_SURFACE;
     }
+    EGLint error = EGL_BAD_ALLOC;
     struct egl_session *session = object_session(generation, 0);
     if (!session)
         goto fail;
     uint32_t target = generation->pending_surface_target_bo;
     int source_fd = generation->fd;
+    if (is_gbm) {
+        struct wpk_gbm_frame frame;
+        if (!_wpk_gbm_window_acquire || !_wpk_gbm_window_prepare ||
+            !_wpk_gbm_window_finish || !_wpk_gbm_window_release)
+            goto fail;
+        if (!_wpk_gbm_window_acquire((void *)win, &surface->gbm_lease, &frame)) {
+            if (errno == EOPNOTSUPP) error = EGL_BAD_MATCH;
+            goto fail;
+        }
+        target = frame.handle;
+        source_fd = frame.fd;
+        request.attrs.width = frame.width;
+        request.attrs.height = frame.height;
+    }
     if (!target && !is_gbm && win && _wpk_wlegl_bo_handle) {
         target = _wpk_wlegl_bo_handle((void *)win);
         if (target && _wpk_wlegl_device_fd)
@@ -854,7 +888,8 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
                                            .height = request.attrs.height,
                                            .render_buffer = render_buffer,
                                            .gl_colorspace = gl_colorspace,
-                                           .native_window = (void *)win};
+                                           .native_window = (void *)win,
+                                           .gbm_lease = surface->gbm_lease};
     /* GBM windows have no Wayland attach/commit hook. */
     surface->gbm_window = is_gbm;
     surface->next = generation->surfaces;
@@ -863,9 +898,9 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
     generation->pending_surface_target_bo = 0;
     return surface->handle;
 fail:
-    free(surface);
+    free_surface_record_locked(surface);
     retire_empty_sessions(generation);
-    g_last_error = EGL_BAD_ALLOC;
+    g_last_error = error;
     return EGL_NO_SURFACE;
 }
 EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config, EGLNativeWindowType win,
@@ -1284,6 +1319,24 @@ EGLSurface eglCreatePbufferFromClientBuffer(EGLDisplay dpy, EGLenum buftype, EGL
     unlock_context();
     return EGL_NO_SURFACE;
 }
+static int swap_gbm_window_locked(struct egl_generation *g, struct egl_surface_record *surface) {
+    struct wpk_gbm_frame frame;
+    if (!_wpk_gbm_window_prepare(surface->gbm_lease, &frame)) {
+        g_last_error = EGL_BAD_ALLOC;
+        return 0;
+    }
+    uint32_t local = transfer_bo_handle(frame.fd, surface->session->fd, frame.handle);
+    int accepted = 0;
+    if (local) {
+        struct gl_surface_attrs attrs = {.kind = WPK_SURFACE_DEFAULT, .config_id = 1,
+            .width = frame.width, .height = frame.height, .reserved = {local, 0, 0, 0}};
+        accepted = ioctl(surface->session->fd, GLIO_UPDATE_SURFACE, &attrs) == 0;
+        release_transferred_bo(g, frame.fd, surface->session->fd, local);
+    }
+    _wpk_gbm_window_finish(surface->gbm_lease, accepted);
+    if (!accepted) g_last_error = EGL_BAD_ALLOC;
+    return accepted;
+}
 EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface handle) {
     lock_context();
     EGLBoolean result = EGL_FALSE;
@@ -1298,10 +1351,13 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface handle) {
         if (!p || !context || g_thread_binding.generation != g || g_thread_binding.draw != p)
             g_last_error = EGL_BAD_SURFACE;
         else {
-            _wpk_gl_flush();
+            if (_wpk_gl_flush_checked() != 0)
+                g_last_error = current_binding_error();
+            else if (p->gbm_lease)
+                result = swap_gbm_window_locked(g, p) ? EGL_TRUE : EGL_FALSE;
             /* The host distinguishes offscreen no-post flushes from window
              * posting. Keep its failure channel for pbuffers as well. */
-            if (ioctl(context->session->fd, GLIO_PRESENT, NULL) != 0)
+            else if (ioctl(context->session->fd, GLIO_PRESENT, NULL) != 0)
                 g_last_error = current_binding_error();
             else {
                 if (p->native_window && !p->gbm_window && _wpk_wlegl_present)
@@ -1391,7 +1447,7 @@ static void retire_pending_resources_locked(struct egl_generation *g) {
                 detach_binding(c->owner);
         *surface = p->next;
         p->session->surface_used = 0;
-        free(p);
+        free_surface_record_locked(p);
     }
     retire_empty_sessions(g);
     if (!g->terminate_pending || g->contexts || g->surfaces || g->syncs)
@@ -1466,8 +1522,8 @@ static int sync_query(struct egl_sync_record *sync, uint32_t op, uint32_t *statu
     *sync->request = sync->token;
     memset(sync->reply, 0, 16);
     struct gl_query_info info = {.op = op,
-        .in_buf_ptr = (uint32_t)(uintptr_t)sync->request, .in_buf_len = 4,
-        .out_buf_ptr = (uint32_t)(uintptr_t)sync->reply, .out_buf_len = 16};
+        .in_buf_ptr = (uintptr_t)sync->request, .in_buf_len = 4,
+        .out_buf_ptr = (uintptr_t)sync->reply, .out_buf_len = 16};
     int rc = ioctl(sync->session->fd, GLIO_QUERY, &info);
     uint32_t reply[4];
     memcpy(reply, sync->reply, sizeof reply);
