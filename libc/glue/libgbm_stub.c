@@ -112,7 +112,21 @@ struct gbm_bo {
     void *user_data;
     void (*user_data_destroy)(struct gbm_bo *, void *);
     struct gbm_surface *surface;  /* non-NULL when owned by a surface ring */
+    struct gbm_bo *handle_next;
 };
+
+/* PRIME reimport returns the existing GEM name on this DRM file. Public
+ * GBM objects own separate lifetimes, so only the final peer closes it.
+ * Serialize import with removal: an ioctl followed by later registration
+ * could otherwise lose the handle to a concurrent peer's destruction. */
+static pthread_mutex_t handle_mutex = PTHREAD_MUTEX_INITIALIZER;
+static struct gbm_bo *live_bos;
+static void register_bo(struct gbm_bo *bo) {
+    pthread_mutex_lock(&handle_mutex);
+    bo->handle_next = live_bos;
+    live_bos = bo;
+    pthread_mutex_unlock(&handle_mutex);
+}
 
 struct gbm_mapping {
     struct gbm_mapping *next;
@@ -305,6 +319,7 @@ static struct gbm_bo *bo_create(struct gbm_device *gbm,
             bo->stride = greq.usage;    /* out: stride (bytes) */
             bo->size   = (uint64_t) greq.usage * height;
             bo->is_gpu = 1;
+            register_bo(bo);
             return bo;
         }
         /* else: degrade to CPU tier below. */
@@ -325,6 +340,7 @@ static struct gbm_bo *bo_create(struct gbm_device *gbm,
     bo->handle = req.handle;
     bo->stride = req.pitch;
     bo->size   = req.size;
+    register_bo(bo);
     return bo;
 }
 
@@ -401,18 +417,16 @@ struct gbm_bo *gbm_bo_import(struct gbm_device *gbm, uint32_t type,
         return NULL;
     }
 
-    struct drm_prime_handle req;
-    memset(&req, 0, sizeof(req));
-    req.fd    = d->fd;
-    req.flags = 0;
+    /* Allocate before import: a failed userspace allocation must not close
+     * a cached handle still owned by another public BO. */
+    struct gbm_bo *bo = calloc(1, sizeof *bo);
+    if (!bo) { errno = ENOMEM; return NULL; }
+    struct drm_prime_handle req = {.fd = d->fd};
+    pthread_mutex_lock(&handle_mutex);
     if (drmIoctl(gbm->fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &req) < 0) {
-        return NULL;
-    }
-
-    struct gbm_bo *bo = (struct gbm_bo *) calloc(1, sizeof(*bo));
-    if (!bo) {
         int save = errno;
-        drmCloseBufferHandle(gbm->fd, req.handle);
+        pthread_mutex_unlock(&handle_mutex);
+        free(bo);
         errno = save;
         return NULL;
     }
@@ -425,6 +439,9 @@ struct gbm_bo *gbm_bo_import(struct gbm_device *gbm, uint32_t type,
     bo->format   = d->format;
     bo->bpp      = bpp;
     bo->modifier = DRM_FORMAT_MOD_LINEAR;
+    bo->handle_next = live_bos;
+    live_bos = bo;
+    pthread_mutex_unlock(&handle_mutex);
     return bo;
 }
 
@@ -552,7 +569,19 @@ void gbm_bo_destroy(struct gbm_bo *bo) {
         free(mapping);
     }
     pthread_mutex_unlock(&mapping_mutex);
-    drmCloseBufferHandle(bo->dev->fd, bo->handle);
+    pthread_mutex_lock(&handle_mutex);
+    struct gbm_bo **link = &live_bos;
+    while (*link && *link != bo) link = &(*link)->handle_next;
+    if (*link) *link = bo->handle_next;
+    int retained = 0;
+    for (struct gbm_bo *peer = live_bos; peer; peer = peer->handle_next) {
+        if (peer->dev == bo->dev && peer->handle == bo->handle) {
+            retained = 1;
+            break;
+        }
+    }
+    if (!retained) drmCloseBufferHandle(bo->dev->fd, bo->handle);
+    pthread_mutex_unlock(&handle_mutex);
     free(bo);
 }
 

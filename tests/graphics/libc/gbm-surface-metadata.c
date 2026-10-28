@@ -18,6 +18,7 @@ int _wpk_gbm_surface_dimensions(const void *, uint32_t *, uint32_t *);
 int _wpk_gbm_device_metadata(const void *, int *, uint64_t *);
 static int device_fd;
 static unsigned created, closed, fail_allocation;
+static uint32_t imported_handle;
 static int fail_unmap;
 static unsigned unmap_attempts;
 int graphics_gbm_munmap(void *address, size_t length) {
@@ -31,6 +32,12 @@ int drmIoctl(int fd, unsigned long request, void *data) {
         if (fail_allocation && created+1 == fail_allocation) { errno = ENOMEM; return -1; }
         struct drm_mode_create_dumb *d = data;
         d->handle = ++created; d->pitch = d->width*4; d->size = (uint64_t)d->pitch*d->height;
+        return 0;
+    }
+    if (request == DRM_IOCTL_PRIME_FD_TO_HANDLE && imported_handle) {
+        struct drm_prime_handle *prime = data;
+        assert(prime->fd == 42);
+        prime->handle = imported_handle;
         return 0;
     }
     if (request == DRM_IOCTL_MODE_MAP_DUMB) {
@@ -49,6 +56,21 @@ static void rejected(const void *pointer) {
     assert(width == 101 && height == 102 && format == 103 && flags == 104);
     assert(!_wpk_gbm_surface_dimensions(pointer,&width,&height));
     assert(width == 101 && height == 102);
+}
+static void imported_handle_lifetime(struct gbm_device *device) {
+    unsigned before = closed;
+    struct gbm_bo *source = gbm_bo_create(device, 4, 3, GBM_FORMAT_ABGR8888, GBM_BO_USE_WRITE);
+    assert(source);
+    imported_handle = gbm_bo_get_handle(source).u32;
+    struct gbm_import_fd_data data = {.fd = 42, .width = 4, .height = 3,
+        .stride = gbm_bo_get_stride(source), .format = GBM_FORMAT_ABGR8888};
+    struct gbm_bo *first = gbm_bo_import(device, GBM_BO_IMPORT_FD, &data, 0);
+    struct gbm_bo *second = gbm_bo_import(device, GBM_BO_IMPORT_FD, &data, 0);
+    assert(first && second);
+    gbm_bo_destroy(first); assert(closed == before);
+    gbm_bo_destroy(source); assert(closed == before);
+    gbm_bo_destroy(second); assert(closed == before + 1);
+    imported_handle = 0;
 }
 static void public_format_queries(struct gbm_device *device) {
     unsigned before = created;
@@ -227,6 +249,7 @@ int main(void) {
     fail_allocation = 0;
     modifier_requests(device);
     public_format_queries(device);
+    imported_handle_lifetime(device);
     cpu_mapping();
     uintptr_t retired_device = (uintptr_t)device;
     gbm_device_destroy(device);

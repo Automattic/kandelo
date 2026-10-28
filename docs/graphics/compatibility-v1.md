@@ -6649,3 +6649,61 @@ These passing reductions support the repair; they do not replace the
 complete memory gate, which is running on the isolated prepared source.
 The latest GBM C checkpoints still require a subsequent coherent normal
 package/image rebuild and complete memory validation together.
+
+
+## GBM PRIME alias lifetime repair, 2026-10-28
+
+An actual normal SDK guest reproduced another B01 defect: importing one
+PRIME fd twice on its source GBM device correctly reused the DRM file's
+cached GEM name, but destroying the first public GBM object closed that
+name while its source and second import remained live. Exporting from the
+surviving second object then failed with ENOENT. The failed control is
+`graphics-gbm-import-before-1028-162041-74b8`; its actual stderr reports
+`line 22: survivor >= 0 errno=2`. No kernel deduplication or assertion was
+weakened to accommodate this.
+
+The C shim now records public BO peers and closes a device/handle pair
+only after its final peer retires. Import and peer removal are serialized
+so registration cannot race the last close. Userspace allocation happens
+before PRIME import, avoiding a failed allocation closing a cached name
+owned by another BO. This repair is bounded to objects on one GBM device;
+coordinating distinct GBM device wrappers over aliased DRM files remains
+open, as do import layout/coherence and failed-destruction cleanup.
+
+`graphics-gbm-import-after-1028-162401-45ee` passed in 3m18s after a normal
+SDK/archive rebuild. All 38 public GBM symbols and native UBSan passed,
+including a same-name close counter that retains both surviving peers.
+Seven normal SDK Node cases passed in seven files with no skipped or
+unloaded cases. The import, modifier and CPU-map SDK probes passed all
+nine browser cases across Chromium, Firefox and WebKit. This is bounded
+API/lifetime validation, not a rebuilt complete gallery or memory gate
+with the latest C source. Program ABI56/kernel-host3 remains unchanged.
+
+## Inherited-display capture investigation, 2026-10-28
+
+A fixed three-repetition control passed 3/3 using the older prepared SDK,
+while the latest SDK source passed 2/3. Host graphics and the guest probe
+sources are identical across those checkouts; the only host change is
+the fresh exit-request flags repair. The guest does not call the changed
+GBM mapping APIs. These controls do not establish a mapping regression.
+The two new GBM probes continue passing in all engines.
+
+Decoding the actual screenshot PNG in the Node test runner retained the
+same exact pixel assertions and produced a 17/18 broader result. Unlike
+the earlier pending predicate, it captured a black primary frame where
+red was required. Temporary detached diagnostics then compared only owned
+pixel copies: in both failures of a fixed ten-repetition Firefox run,
+the GPU readback and 2D canvas center were red, while a screenshot took
+10-20 seconds or returned black. Another failure returned the correct red
+pixel only after the unchanged 10-second polling deadline. The diagnostic
+run passed 8/10; the preceding three diagnostic repetitions passed 3/3.
+These are observations, not a runtime fix or confirmed engine defect.
+All temporary production instrumentation was removed and its patch saved.
+
+A standalone worker/WebGL-readback/2D/cursor capture reduction, without
+Kandelo modules or guests, passed 60/60 captures over 20 iterations. Its
+first launch failed on the existing macOS Firefox profile constraint;
+using the same isolated-home launch environment as the normal suite
+allowed it to run. Therefore an outside defect is still unconfirmed.
+The normal test is now comparing clipped viewport capture with element
+capture while preserving pixels and deadlines; that result is pending.

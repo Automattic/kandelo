@@ -673,3 +673,8 @@ with and without public views. `gbm-map-double.h` redirects only the GBM
 object's munmap call to inject that one failure; ordinary mapping and all
 other unmaps use the native system. Kernel/guest coherence still needs
 the separate SDK probes.
+
+The GBM native harness also models PRIME reimport returning a cached GEM
+name: removing one public BO must not close the name owned by its two
+surviving peers. `host/test/gbm-import-lifetime.test.ts` and the browser
+probe exercise the normal SDK and real DRM kernel path for that lifetime.
