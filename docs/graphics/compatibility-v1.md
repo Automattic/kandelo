@@ -6576,3 +6576,76 @@ Ordinary SDK Node and three-engine browser mapping probes are prepared,
 but have not executed at this source checkpoint. SDK/archive and linked
 consumer validation remains required. Program ABI stays 56/kernel-host 3,
 with operation table 17. No new ABI increment or hard boundary is claimed.
+
+
+## Combined validation and remaining failures, 2026-10-28
+
+The normal SDK/archive mapping checkpoint on `fbfb5f1faeb8`, job
+`graphics-gbm-map-sdk-guests-1028-154740-0f41`, passed native UBSan and
+all 38 public GBM symbol checks. Six normal SDK Node probes passed with
+no skipped or unloaded cases. The two new GBM probes passed all six
+three-engine browser cases. The broader inherited-display check passed
+11/12: Firefox's render-node-to-2D case timed out while decoding a cursor
+capture, before its pixel assertion returned. The combined browser result
+is 17/18, not a passed broader graphics gate. Its failure JSON records the
+blue CPU interlude and a captured cursor image whose decoding did not
+finish; there were no page errors. Evidence was copied before the shared
+output directory could be overwritten to
+`.context/gbm-map-browser-first-results/`. This remains unresolved and is
+not evidence of a confirmed engine defect or a mapping regression.
+
+The normal main batch artifacts at `cb0a8226c965` reproduce the game
+teardown failure. The baseline-only three-cycle Doom/Quake/Freeciv
+reduction failed in all three engines in
+`graphics-main-game-teardown-baseline-v2-1028-153703-08f7`, using main's
+ABI 55/host 2 kernel, SHA256
+`2f92989fe898d2e80f25e736dd8a99bbc507605d38566b5d10aa361b8e416e56`.
+The probe preserves the production launch/audio/pixel checks and the
+unchanged no-forced-drain assertion. Its first attempt failed only because
+an owned-server port was already occupied; that setup log is separate.
+The successful reproduction establishes that this failure predates these
+GBM changes. It does not make the lifecycle defect a platform boundary.
+Baseline identities, traces, screenshots and failure contexts remain in
+`.context/main-game-baseline-identities.json` and
+`.context/main-game-teardown-baseline-evidence/`.
+
+The normal `./run.sh browser` server was also started. The available
+computer-use connection has no enabled browsers, so manual GUI validation
+could not execute; the owned server was explicitly stopped. The six
+normal gallery passes remain automated evidence, not a manual check.
+
+Temporary, uncommitted diagnostics in an isolated checkout show the
+teardown wake can select an unhandled opaque-record clock request. Its
+request flags are still 8. The worker then publishes Exit, but Exit
+inherits that flag and the host's existing malformed-request check rejects
+it before inner dispatch. An isolated before-control confirms the exit
+import publishes flags 8 instead of a fresh raw request's 0. A repair and
+both-host/browser validation are in progress; this checkpoint does not
+claim the memory gate fixed. Temporary per-syscall diagnostics are saved
+separately and removed from the candidate runtime.
+
+
+## Fresh exit-request flags repair, 2026-10-28
+
+The shared process-worker exit import now publishes request flags zero
+before its atomic PENDING store. Machine teardown can complete a mailbox
+before its previous request was selected; the previous opaque-record or
+cancellation flags therefore still belong to that earlier request. Exit
+must establish fresh raw-request metadata. The existing host validation
+continues rejecting contradictory request flags. No kernel status,
+assertion, timeout, signal authority or ABI version is changed.
+
+The new regression in `exec-retirement-marker.test.ts` first failed with
+actual published flags `[8]` instead of `[0]`. With the fix,
+`graphics-fresh-exit-flags-host-1028-160835-9ba8` passed all 135 cases in
+five files, no skipped/unloaded cases, including blocked-worker teardown
+and retry/entry contracts. The isolated real-game reduction then passed
+all three engines, three cycles each, in
+`graphics-game-teardown-fresh-exit-flags-1028-160819-682a` (3m51s).
+Its source is `ec499f4cb412` plus only this four-line shared import repair;
+all temporary syscall diagnostics were removed before that run. Main's
+unmodified producer had failed this same reduction in every engine.
+These passing reductions support the repair; they do not replace the
+complete memory gate, which is running on the isolated prepared source.
+The latest GBM C checkpoints still require a subsequent coherent normal
+package/image rebuild and complete memory validation together.
