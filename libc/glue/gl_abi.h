@@ -226,6 +226,13 @@ struct gl_context_attrs { uint32_t client_version; uint32_t share_context_id; ui
 struct gl_surface_attrs { uint32_t kind; uint32_t width; uint32_t height; uint32_t config_id; uint32_t reserved[4]; };
 /* ABI 57: zero identity on input; accepted size and fresh identity on output. */
 struct gl_surface_create { struct gl_surface_attrs attrs; uint32_t surface_id; };
+/* GLIO_UPDATE_SURFACE copy variant: retain the render back, write an
+ * unpublished top-row-first front. Zero target_reserved distinguishes it
+ * from a retarget; copy_target_bo names a GEM handle on this session. */
+struct gl_surface_front_copy {
+    uint32_t kind, width, height, config_id;
+    uint32_t target_reserved, copy_target_bo, reserved[2];
+};
 struct gl_query_info {
     uint32_t op;
     uintptr_t in_buf_ptr;

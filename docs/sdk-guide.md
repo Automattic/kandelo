@@ -521,11 +521,13 @@ Buffer objects and GBM surfaces hold independent device references, so
 withdrawing the public device and reusing the caller's descriptor cannot
 redirect their DRM operations. The private alias closes when the final
 owner retires. EGL native-window leases and locked fronts also retain
-their windows independently. A successful GBM swap publishes the completed
-GPU front and selects an unlocked next back; it does not post to the
-display. The bounded four-slot pool includes one render back. CPU-facing
+their windows independently. A successful GBM swap copies the private render
+back into an unlocked GPU front with top-row-first buffer storage. Only an
+accepted copy publishes that front; rejected copies preserve the previously
+published front. Swaps do not post to the display. The bounded four-slot
+pool includes one private render back. CPU-facing
 WRITE/LINEAR/CURSOR windows cannot yet supply EGL render targets and fail
-with EGL_BAD_MATCH. KMS visibility/orientation and forwarded storage remain
+with EGL_BAD_MATCH. Forwarded storage and broader combined validation remain
 separate compatibility work; see the versioned graphics inventory.
 
 Programs should reference these through the matching SDK pkg-config

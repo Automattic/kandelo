@@ -9,6 +9,7 @@ export type NativeCall =
   | ["enable", number] | ["disable", number]
   | ["colorMask", boolean, boolean, boolean, boolean]
   | ["clearColor", number, number, number, number]
+  | ["readBuffer", number]
   | ["activeTexture", number]
   | ["pixelStorei", number, number]
   | ["bindTexture", number, WebGLTexture | null]

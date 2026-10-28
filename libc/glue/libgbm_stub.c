@@ -917,7 +917,7 @@ void _wpk_gbm_window_finish(void *lease, int accepted) {
     pthread_mutex_lock(&surface_mutex);
     struct gbm_surface *s = find_surface_locked(lease);
     if (s && s->window_owned && s->pending >= 0) {
-        if (accepted) { s->front = s->back; s->back = s->pending; }
+        if (accepted) s->front = s->pending;
         s->pending = -1;
     }
     pthread_mutex_unlock(&surface_mutex);

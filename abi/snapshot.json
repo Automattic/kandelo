@@ -4925,6 +4925,46 @@
       ],
       "size": 32
     },
+    "GlSurfaceFrontCopyInfo": {
+      "fields": [
+        {
+          "name": "kind",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "width",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "height",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "config_id",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "target_reserved",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "copy_target_bo",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "reserved",
+          "offset": 24,
+          "span": 8
+        }
+      ],
+      "size": 32
+    },
     "PcmSharedControl": {
       "align": 4,
       "fields": [

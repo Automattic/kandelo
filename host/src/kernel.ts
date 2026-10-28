@@ -69,6 +69,7 @@ import {
   WASM_POLL_FD_REVENTS_OFFSET,
   CH_ERRNO, CH_RETURN, CH_STATUS, CHANNEL_STATUS_COMPLETE,
 } from "./generated/abi";
+import { copyGbmFront } from "./webgl/gbm-front-copy";
 import { registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
 import { repairNativeState } from "./webgl/native-recovery";
 import { bindForeignTexture, bindGpuForeignTexture } from "./webgl/foreign-texture";
@@ -2819,6 +2820,20 @@ export class WasmPosixKernel {
             const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
             if (view.getUint32(0, true) !== 1 || view.getUint32(12, true) !== 1) return -22;
             const targetId = view.getUint32(16, true);
+            const copyId = view.getUint32(20, true);
+            if (view.getUint32(24,true) || view.getUint32(28,true)) return -22;
+            if (copyId) {
+              if (targetId || b.forward || !b.pendingRenderTargetBoId || b.presentTarget) return -22;
+              const copy = this.gl.gpuBo(copyId), size = b.surfaceSize;
+              if (!copy || !size || copyId === b.pendingRenderTargetBoId ||
+                  view.getUint32(4,true) !== size.width || view.getUint32(8,true) !== size.height)
+                return -22;
+              if (!this.prepareForeignRetirements(b)) return -5;
+              const muxer = this.glMuxerFor(copy.gl);
+              return copyGbmFront(b.surface, copy, () => {
+                muxer.captureCurrentErrors(); muxer.invalidateCurrent();
+              });
+            }
             const target = this.gl.gpuBo(targetId);
             if (!target || !b.pendingRenderTargetBoId || b.presentTarget || b.forward
                 || (b.contextId !== null && !b.gl) || target.gl.isContextLost()

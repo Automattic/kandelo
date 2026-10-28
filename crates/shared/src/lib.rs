@@ -5666,6 +5666,22 @@ pub mod gl {
         pub surface_id: u32,
     }
 
+    /// Copy-only variant of GLIO_UPDATE_SURFACE. The old render target
+    /// stays selected; an accepted reply publishes the destination front.
+    /// target_reserved must be zero and copy_target_bo nonzero. GEM names
+    /// are resolved on the calling surface session before host dispatch.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlSurfaceFrontCopyInfo {
+        pub kind: u32,
+        pub width: u32,
+        pub height: u32,
+        pub config_id: u32,
+        pub target_reserved: u32,
+        pub copy_target_bo: u32,
+        pub reserved: [u32; 2],
+    }
+
     /// wasm32 argument to `GLIO_QUERY`. Total: 24 bytes.
     /// Input/output pointers are process addresses copied through HostIO.
     /// The kernel validates nonempty ranges before renderer dispatch; zero
@@ -7203,6 +7219,8 @@ mod gl_tests {
         assert_eq!(core::mem::offset_of!(GlContextAttrs, context_id), 12);
         assert_eq!(size_of::<GlSurfaceAttrs>(), 32);
         assert_eq!(size_of::<GlSurfaceCreateInfo>(), 36);
+        assert_eq!(size_of::<GlSurfaceFrontCopyInfo>(), 32);
+        assert_eq!(core::mem::offset_of!(GlSurfaceFrontCopyInfo, copy_target_bo),20);
         assert_eq!(size_of::<GlQueryInfo>(), 24);
         assert_eq!(size_of::<GlQueryInfo64>(), 40);
         assert_eq!(core::mem::offset_of!(GlQueryInfo64, in_buf_ptr), 8);

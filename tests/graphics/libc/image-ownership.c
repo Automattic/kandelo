@@ -807,7 +807,8 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         egl_trace(3, fd, request, sizeof *request);
     } else if (request == GLIO_UPDATE_SURFACE) {
         if (fail_surface_update) { errno = ENOMEM; return -1; }
-        surface_target = ((struct gl_surface_attrs *)arg)->reserved[0];
+        uint32_t words[8]; memcpy(words,arg,sizeof words);
+        if (!words[5]) surface_target = words[4];
     } else if (request == GLIO_MAKE_CURRENT) {
         if (fail_make_current) { errno = make_current_errno; return -1; }
         assert(arg);

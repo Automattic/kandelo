@@ -470,6 +470,7 @@ host/test/webgl-context-execution.test.ts	source-only
 host/test/webgl-fence-query.test.ts	source-only
 host/test/webgl-fences.test.ts	source-only
 host/test/webgl-foreign-texture.test.ts	source-only
+host/test/webgl-gbm-front-copy.test.ts	source-only
 host/test/webgl-gpu-bo.test.ts	source-only
 host/test/webgl-image-bindings.test.ts	source-only
 host/test/webgl-image-storage.test.ts	source-only

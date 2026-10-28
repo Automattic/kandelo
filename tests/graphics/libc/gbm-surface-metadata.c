@@ -118,7 +118,7 @@ static void rendered_ring_ownership(void) {
     _wpk_gbm_window_finish(lease, 1);
     struct gbm_bo *front[3];
     front[0] = gbm_surface_lock_front_buffer(window);
-    assert(front[0] && gbm_bo_get_handle(front[0]).u32 == initial.handle);
+    assert(front[0] && gbm_bo_get_handle(front[0]).u32 == next);
     assert(!gbm_surface_lock_front_buffer(window));
     for (unsigned i = 1; i < 3; ++i) {
         assert(_wpk_gbm_window_prepare(lease, &candidate));

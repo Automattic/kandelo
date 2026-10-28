@@ -1328,13 +1328,13 @@ static int swap_gbm_window_locked(struct egl_generation *g, struct egl_surface_r
     uint32_t local = transfer_bo_handle(frame.fd, surface->session->fd, frame.handle);
     int accepted = 0;
     if (local) {
-        struct gl_surface_attrs attrs = {.kind = WPK_SURFACE_DEFAULT, .config_id = 1,
-            .width = frame.width, .height = frame.height, .reserved = {local, 0, 0, 0}};
+        struct gl_surface_front_copy attrs = {.kind = WPK_SURFACE_DEFAULT, .config_id = 1,
+            .width = frame.width, .height = frame.height, .copy_target_bo = local};
         accepted = ioctl(surface->session->fd, GLIO_UPDATE_SURFACE, &attrs) == 0;
         release_transferred_bo(g, frame.fd, surface->session->fd, local);
     }
     _wpk_gbm_window_finish(surface->gbm_lease, accepted);
-    if (!accepted) g_last_error = EGL_BAD_ALLOC;
+    if (!accepted) g_last_error = current_binding_error();
     return accepted;
 }
 EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface handle) {

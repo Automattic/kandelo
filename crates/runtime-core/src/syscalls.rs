@@ -2189,6 +2189,40 @@ fn handle_dri_ioctl(
             }
             let attrs: gl::GlSurfaceAttrs =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            // Copy-only publication leaves the render back unchanged. The
+            // destination is resolved from this file's GEM namespace and held
+            // until the synchronous host receipt, even on rejected copies.
+            if attrs.reserved[1] != 0 {
+                if attrs.kind != gl::WPK_SURFACE_DEFAULT || attrs.config_id != 1
+                    || attrs.reserved[0] != 0 || attrs.reserved[2..] != [0;2] {
+                    return Err(Errno::EINVAL);
+                }
+                let dri = dri_state(proc, ofd_idx)?;
+                let state = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
+                let surface = state.surface_id.ok_or(Errno::EINVAL)?;
+                let session = state.session_id;
+                let record = dri.gl_resources.borrow().surface.clone().ok_or(Errno::EINVAL)?;
+                let source = record.borrow().target_bo.ok_or(Errno::EINVAL)?;
+                if record.borrow().pending_target_bo.is_some() { return Err(Errno::EBUSY); }
+                let target = *dri.gem.borrow().handles.get(&attrs.reserved[1]).ok_or(Errno::ENOENT)?;
+                if source == target { return Err(Errno::EINVAL); }
+                let dimensions = crate::dri::with_registry(|r| {
+                    let source = r.get(source)?; let target = r.get(target)?;
+                    Some((source.width, source.height, target.width, target.height))
+                }).ok_or(Errno::ENOENT)?;
+                if dimensions != (attrs.width,attrs.height,attrs.width,attrs.height)
+                    || attrs.width == 0 || attrs.height == 0 {
+                    return Err(Errno::EINVAL);
+                }
+                let mut host_attrs = buf[..size].to_vec();
+                host_attrs[20..24].copy_from_slice(&target.to_le_bytes());
+                retain_gl_surface_bo(target)?;
+                let rc = host.gl_update_surface(pid,surface,&host_attrs,session);
+                apply_dri_release_effects(pid,collect_gl_bo_releases([Some(target),None]),host);
+                return if rc == 0 { Ok(()) } else {
+                    Err(rc.checked_neg().and_then(|value| Errno::from_u32(value as u32)).unwrap_or(Errno::EIO))
+                };
+            }
             if attrs.kind != gl::WPK_SURFACE_DEFAULT
                 || attrs.config_id != 1
                 || attrs.reserved[0] == 0
@@ -55003,6 +55037,51 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(glio_surface_bo_count(next), Some(1));
         sys_close(&mut proc, &mut host, fd).unwrap();
         assert_eq!(host.gbm_bo_destroy_calls, [(1, old), (1, next)]);
+    }
+
+    #[test]
+    fn glio_surface_front_copy_keeps_render_back_and_releases_temporary_owners() {
+        use wasm_posix_shared::{dri::*,gl};
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1); let mut host = MockHostIO::new();
+        let (fd,old) = glio_surface_bo_setup(&mut proc,&mut host,true);
+        let mut create = [0u8;16];
+        for (bytes,value) in create.chunks_exact_mut(4).zip([64u32,32,0x34325258,5]) {
+            bytes.copy_from_slice(&value.to_le_bytes());
+        }
+        sys_ioctl(&mut proc,&mut host,fd,DRM_IOCTL_WPK_CREATE_GPU_BO,&mut create).unwrap();
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let target = *dri_state(&proc,ofd).unwrap().gem.borrow().handles.get(&2).unwrap();
+        let mut attrs = [0u8;32];
+        for (bytes,value) in attrs.chunks_exact_mut(4).zip([1u32,64,32,1,0,2,0,0]) {
+            bytes.copy_from_slice(&value.to_le_bytes());
+        }
+        let record = dri_state(&proc,ofd).unwrap().gl_resources.borrow().surface.clone().unwrap();
+        for result in [-(Errno::ENOMEM as i32),0] {
+            host.gl_update_surface_rc = result;
+            let expected = if result == 0 { Ok(()) } else { Err(Errno::ENOMEM) };
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_UPDATE_SURFACE,&mut attrs),expected);
+            assert_eq!(record.borrow().target_bo,Some(old));
+            assert_eq!(glio_surface_bo_count(old),Some(2));
+            assert_eq!(glio_surface_bo_count(target),Some(1));
+            let (_,copy,_) = host.gl_update_surface_calls.last().unwrap();
+            assert_eq!(u32::from_le_bytes(copy[16..20].try_into().unwrap()),0);
+            assert_eq!(u32::from_le_bytes(copy[20..24].try_into().unwrap()),target);
+        }
+        let calls = host.gl_update_surface_calls.len();
+        for (offset,value) in [(16,1u32),(20,1),(24,1),(28,1),(4,63)] {
+            let mut bad = attrs; bad[offset..offset+4].copy_from_slice(&value.to_le_bytes());
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_UPDATE_SURFACE,&mut bad),Err(Errno::EINVAL));
+            assert_eq!(host.gl_update_surface_calls.len(),calls);
+            assert_eq!(glio_surface_bo_count(target),Some(1));
+        }
+        drop(record); // Inspection must not retain the surface through final close.
+        glio_surface_bo_close_handle(&mut proc,&mut host,fd,2);
+        glio_surface_bo_close_handle(&mut proc,&mut host,fd,1);
+        sys_close(&mut proc,&mut host,fd).unwrap();
+        assert_eq!(glio_surface_bo_count(old),None);
+        assert_eq!(glio_surface_bo_count(target),None);
     }
 
     #[test]

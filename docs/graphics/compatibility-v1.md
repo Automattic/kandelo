@@ -90,7 +90,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve for retained dma-buf imports. Native fence candidates, waiter leases and retryable cleanup now have retained source models. Table 17 adds caller-known create/status/release tokens, accepted-reply publication, cancellation and mapped object-session authority without a current context. Native and forwarded source rendering pass. Core C create/destroy/query/client-wait now use generation-owned records, retained sessions, serialized replies, monotonic timeouts and cancellation-safe waiter references; public glFlush requests acknowledged native flush. Focused C and three-engine source evidence is recorded below. The four KHR_fence_sync aliases share these records with width-correct lists/output and 64-bit timeouts; EGL_KHR_fence_sync and client GL_OES_EGL_sync are declared. eglWaitSync server ordering remains open; EGL_KHR_wait_sync is not advertised. GL-source images and full lifecycle/errors/guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
 | B01 | GBM allocation/import/export and plane metadata | Dumb/GPU tiers; cage adds modifier allocators. Native GPU allocation and restoration use checked receipts; borrowed surface leases preserve old GPU storage after public retirement/ID reuse. CPU coherence, format/layout and full guest validation remain open | GBM, DRM BOs, host registry | SDK guest fixtures both widths; unsupported format/flags | partial |
 | B02 | GBM map/unmap coherence and authority | Kernel authoritative BO references; changed-run publication on main | GBM, kernel maps, DRI registry | Importer writes, stale readers, unmap/exit/exec; browser pixels | partial |
-| B03 | Surface ring lock/release/destroy ownership | Retained EGL leases and a bounded GPU pool publish produced fronts only after accepted swaps. Uniform rendered-front retention/exhaustion/retirement passes both guest widths in all three engines. KMS visibility/orientation, CPU-facing windows, forwarding and broader combined validation remain open | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks; asymmetric KMS pixels | partial |
+| B03 | Surface ring lock/release/destroy ownership | Retained EGL leases and a bounded GPU pool publish a top-row-first copy only after accepted swaps, preserving the private render back and locked fronts. Rendered retention/exhaustion/retirement and asymmetric KMS visibility/orientation pass both guest widths in all three engines, through WebGL and 2D scanout. CPU-facing windows, forwarding and broader combined validation remain open | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks; asymmetric KMS pixels | partial |
 | K01 | Single display resources and consistent object IDs | Integrated dynamic mode catalog, properties and device-wide IDs; broader device/host validation pending | kernel dri/kms, host mode metadata | Rust ioctl and Node mode tests; preserve preferred/catalog semantics | partial |
 | K02 | Probe all nested outputs before writing | Property, enum and expanded connector outputs now preprobe all destinations; focused Rust regressions pass | syscall nested-output helpers | Valid first/invalid later buffers, unchanged sentinels and top-level bytes | open |
 | K03 | Shared OFD GEM/FB authority, PRIME and final references | Shared GEM namespace/allocator, KMS FBs and inherited graphics cleanup/BO holds are implemented; final combined guest validation and remaining KMS-file authority gaps stay open | OFD, process/fork/spawn/exec/close, BO registry | Rust + real Node lifecycle/dup/fork/spawn tests | open |
@@ -6959,3 +6959,65 @@ are `graphics-gbm-front-copy-isolated-v2-1028-190209-abc3`,
 `graphics-gbm-front-copy-normal-1028-190931-d4b2` and
 `graphics-gbm-front-copy-kms-1028-191457-e87e`. Complete current-source
 consumer/image, memory, upstream CTS and POSIX gates still remain.
+
+### Integrated top-row-first GBM front publication, 2026-10-28
+
+The row-normalization repair is now integrated on top of 4d37cbc82b.
+The earlier rotate-back model above is historical: the render back now
+stays private and selected. Swap reserves an unpublished unlocked BO,
+copies the completed render back into top-row-first buffer storage, and
+publishes that BO only after an accepted host receipt. A failed copy
+cannot modify a locked front or replace the previously published front.
+The four-slot limit still includes one private render back and therefore
+permits three simultaneous locked fronts. KMS retains its existing row
+convention and remains the only display-posting authority.
+
+The copy-only variant of GLIO_UPDATE_SURFACE has a named 32-byte record.
+Rust resolves its destination GEM name through the caller's exact file,
+validates dimensions/reserved fields and rejects self-copy. A temporary
+storage reference survives until either accepted or rejected host receipt;
+the surface's source reference never changes. The host preserves independent
+read/draw framebuffer bindings, the source's read-buffer selector, scissor
+state and pre-existing public GL errors. Private failures retain native-only
+repair records until restoration succeeds. Native out-of-memory maps to
+ENOMEM/EGL_BAD_ALLOC instead of publishing an incomplete front. This stays
+within the single unpublished ABI56/kernel-host3 epoch; structural snapshot
+changes still require matching fresh program artifacts.
+
+`graphics-gbm-front-copy-primary-1028-193136-acbc` passed in 9m38s after
+normal kernel, wasm32 SDK and wasm64 SDK bootstrap and generated-output
+checking. Its exact results are:
+
+- Runtime-core: 2,604 tests and six doctests passed.
+- Xtask: 809 unit tests and its 2/4/2 integration tests passed.
+- Native EGL: all 211 cases passed. GBM: all 38 public symbols and the
+  native UBSan/allocator-poisoning ownership checks passed.
+- Source host selection: 67/67 in four files, including eight new copy,
+  error-ownership, rejection and repair cases.
+- Normal SDK Node selection: 11/11 in eight files, with zero skipped or
+  unloaded cases. The mock renderer is ownership evidence, not pixel proof.
+- Actual SDK browsers: 33/33 in 50.6s across Chromium, Firefox and WebKit.
+  Twelve cases execute the asymmetric KMS guest at both pointer widths
+  through both WebGL scanout and the 2D presenter. The unselected display
+  stays black; selecting the locked front produces the original green
+  lower-left/blue upper-right markers. The guest also checks the imported
+  raw BO's top-row-first storage. Remaining cases exercise retained fronts,
+  device withdrawal, imports, modifiers and CPU map leases. Process exit,
+  retirement acknowledgements, diagnostics and memory-message boundaries
+  are checked; no assertion or timeout was relaxed.
+
+Logs are `.context/graphics-gbm-front-copy-*.log`; browser artifacts are in
+`.context/graphics-gbm-front-copy-browser-results/`. Each KMS run saves its
+actual guest Wasm plus kernel/program/image hashes, engine version and
+observed pixels under `.context/gbm-native-kms-guests/`. Current source,
+SDK archive and kernel hashes are
+`.context/graphics-gbm-front-copy-primary-identities.json`. The earlier
+v3 orientation failure remains preserved at its original path above.
+
+Origin/main was fetched again and remains cb0a8226c965, already merged.
+The complete 239-program build above predates this copy-record snapshot;
+it is not current consumer validation. Complete current program/image,
+cage/sway, browser-memory, upstream CTS and POSIX gates still remain.
+CPU-facing EGL windows, forwarded native BO storage, affected source-C
+rendering replays and the other documented ownership gaps remain ordinary
+implementation work. B03 and the overall compatibility baseline stay partial.
