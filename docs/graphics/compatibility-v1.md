@@ -6457,3 +6457,40 @@ runs retain their explicitly recorded earlier source identities. Program
 ABI remains 56, kernel-host 3 and operation table 17. B01 remains partial;
 B03 rendered front/back storage and B02 mapping/coherence remain ordinary
 implementation gaps. No hard boundary or complete GBM support is claimed.
+
+
+### GBM query/layout guest checkpoint
+
+`graphics-gbm-sdk-guests-1028-151711-82b9` passed after 3m20s on
+`41ce43155eca`: the normal SDK bootstrap rebuilt the musl/graphics
+archives from current sources, native UBSan and all 38 public symbol
+checks passed, the evidence registry passed, all three Node cases passed
+with no skipped/unloaded cases, and the new ordinary SDK probe passed in
+Chromium, Firefox and WebKit. The Node selection includes the prior
+native-window metadata and ring bookkeeping tests; the latter still does
+not establish rendered front/back correctness. Browser JSON records under
+`.context/gbm-modifier-guests/` retain engine versions and exact
+program/kernel/image hashes. No renderer double substitutes for the new
+guest's public GBM calls. This supersedes the preceding checkpoint's
+pending targeted guest checks, while broader linked package/image
+validation and the remaining GBM gaps stay open.
+
+The earlier normal browser closure
+`graphics-main56-final-browser-closure-1028-145748-b194` completed its
+normal 176-node/nine-product preparation successfully. Finalization took
+523.5 seconds; an own-process stack sample showed source/receipt
+revalidation, not a demonstrated runtime or compiler failure. Its nine
+subsequent gallery/CTS attempts failed during setup: CTS was outside that
+selected projection, and gallery module imports/server requests failed.
+No program rendering or gallery behavior was validated by that attempt.
+The raw log and failure screenshots remain in the diagnostic checkout;
+normal gallery setup still needs repair and a real consumer rerun.
+
+A primary browser-memory attempt was stopped after 3m13s to avoid a
+duplicate package rebuild under a different native-plugin/SDK cache
+identity. Its 12 protocol checks passed but it is not a passed memory
+gate. The complete ordinary gate is now running in the prepared diagnostic
+checkout as `graphics-abi56-browser-memory-prepared-1028-150810-3904`,
+on its earlier explicitly recorded `ec499f4cb412` C source. Final
+conformance on that same source is also still running. Neither live job
+is claimed passed.
