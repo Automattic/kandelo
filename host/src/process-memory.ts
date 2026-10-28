@@ -902,7 +902,7 @@ export class ProcessMemoryAllocator {
     try {
       if (source !== undefined) {
         snapshot = new ArrayBuffer(source.byteLength);
-        copyArrayBufferInChunks(snapshot, source);
+        copyIntoZeroedArrayBuffer(snapshot, source);
       }
     } catch (error) {
       this.releaseAllocationReservation(reservedBytes);
@@ -937,7 +937,7 @@ export class ProcessMemoryAllocator {
       const lease = this.registerFreshMemory(request, memory);
       try {
         if (snapshot !== undefined) {
-          copyArrayBufferInChunks(memory.buffer, snapshot);
+          copyIntoZeroedArrayBuffer(memory.buffer, snapshot);
         }
         return lease;
       } catch (error) {
@@ -1404,8 +1404,6 @@ export class ProcessMemoryAllocator {
   }
 }
 
-const PROCESS_MEMORY_COPY_CHUNK_BYTES = 64 * 1024 * 1024;
-
 /**
  * Acquire and synchronously populate the exact address-space generation for a
  * committed fork.
@@ -1435,7 +1433,7 @@ export function acquireForkMemoryClone(
     maximumPages,
   });
   try {
-    copyArrayBufferInChunks(lease.memory.buffer, parentMemory.buffer);
+    copyIntoZeroedArrayBuffer(lease.memory.buffer, parentMemory.buffer);
     return lease;
   } catch (error) {
     // This clone has not been registered or exposed to a Worker, so it can be
@@ -1446,28 +1444,48 @@ export function acquireForkMemoryClone(
 }
 
 /**
- * Copy equal-length process address spaces without relying on one potentially
- * multi-gigabyte TypedArray view.
+ * Copy equal-length process address spaces into a destination that is still
+ * all zero, one Wasm page at a time.
+ *
+ * WHY: every caller copies into a buffer or Memory it has just created, so the
+ * destination is all zero. Skipping all-zero source chunks leaves those
+ * destination pages untouched, so the host never commits them. A forked PHP
+ * address space is often more than half zero pages. Page-sized views also
+ * avoid one potentially multi-gigabyte TypedArray view.
  */
-export function copyArrayBufferInChunks(
+export function copyIntoZeroedArrayBuffer(
   destination: ArrayBufferLike,
   source: ArrayBufferLike,
-  chunkBytes = PROCESS_MEMORY_COPY_CHUNK_BYTES,
+  chunkBytes = WASM_PAGE_SIZE,
 ): void {
   if (destination.byteLength !== source.byteLength) {
     throw new Error(
       `process memory copy length mismatch: ${source.byteLength}/${destination.byteLength}`,
     );
   }
-  if (!Number.isSafeInteger(chunkBytes) || chunkBytes <= 0) {
+  if (!Number.isSafeInteger(chunkBytes) || chunkBytes <= 0 || chunkBytes % 4 !== 0) {
     throw new Error(`invalid process memory copy chunk length: ${chunkBytes}`);
   }
   for (let offset = 0; offset < source.byteLength; offset += chunkBytes) {
     const length = Math.min(chunkBytes, source.byteLength - offset);
+    if (isZeroChunk(source, offset, length)) continue;
     new Uint8Array(destination, offset, length).set(
       new Uint8Array(source, offset, length),
     );
   }
+}
+
+function isZeroChunk(
+  buffer: ArrayBufferLike,
+  offset: number,
+  length: number,
+): boolean {
+  const words = new Int32Array(buffer, offset, length >> 2);
+  for (let index = 0; index < words.length; index++) {
+    if (words[index] !== 0) return false;
+  }
+  const tail = new Uint8Array(buffer, offset + words.byteLength, length & 3);
+  return tail.every((byte) => byte === 0);
 }
 
 export function growMemoryToCover(
