@@ -6739,21 +6739,21 @@ a single all-engine pass does not close it.
 ## Complete prepared-checkpoint memory gate passes, 2026-10-28
 
 `graphics-memory-fresh-exit-flags-1028-161245-8e8e` completed successfully
-in36m06s, including normal image preparation and the inherited-display
+in 36m06s, including normal image preparation and the inherited-display
 control dependency. The unmodified `./run.sh test browser-memory` command
-passed protocol12/12, ownership161/161 across14 files, Node teardown3/3
-and Bun teardown7/7. Its browser portion passed all9 required cases in
+passed protocol 12/12, ownership 161/161 across 14 files, Node teardown 3/3
+and Bun teardown 7/7. Its browser portion passed all 9 required cases in
 14.1 minutes, with zero skipped, flaky or unexpected cases under the
 command's report validation. All three engines completed four complete
-eight-application cycles in one persistent page: Chromium4.2m,
-Firefox5.4m and WebKit4.4m. Both exit/memory-boundary probes passed in each
-engine. The original no-forced-drain assertions and1500ms drain timeout
+eight-application cycles in one persistent page: Chromium 4.2m,
+Firefox 5.4m and WebKit 4.4m. Both exit/memory-boundary probes passed in each
+engine. The original no-forced-drain assertions and 1500ms drain timeout
 were retained. This closes the demonstrated game-teardown regression at
 this prepared checkpoint; it does not close all graphics lifecycle work.
 
 The exact source is `ec499f4cb412a934a7501d7a8ba09a78b6ad3366` plus only
 the four-line shared process-worker Exit request-flags repair now present
-in commit`d3507d7f24`. The normal resolved kernel SHA256 is
+in commit `d3507d7f24`. The normal resolved kernel SHA256 is
 `e407bf187956024fa80bb710b9ec3206075de0da8192eb92a579bc52c10f29c5`.
 Primary copies of the source hashes, exact diff, resolved kernel path and
 log are `.context/graphics-memory-fresh-identities.json` and
