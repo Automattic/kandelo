@@ -6483,7 +6483,9 @@ revalidation, not a demonstrated runtime or compiler failure. Its nine
 subsequent gallery/CTS attempts failed during setup: CTS was outside that
 selected projection, and gallery module imports/server requests failed.
 No program rendering or gallery behavior was validated by that attempt.
-The raw log and failure screenshots remain in the diagnostic checkout;
+The raw log remains in the diagnostic checkout; the subsequent memory
+run replaced the shared test-results directory before those setup
+screenshots were copied, so those screenshots are no longer retained;
 normal gallery setup still needs repair and a real consumer rerun.
 
 A primary browser-memory attempt was stopped after 3m13s to avoid a
@@ -6494,3 +6496,40 @@ checkout as `graphics-abi56-browser-memory-prepared-1028-150810-3904`,
 on its earlier explicitly recorded `ec499f4cb412` C source. Final
 conformance on that same source is also still running. Neither live job
 is claimed passed.
+
+
+### Normal gallery and complete memory gate results
+
+`graphics-gallery-owned-server-1028-152329-e97a` passed all six normal
+gallery cage/sway cases across Chromium, Firefox and WebKit, after its
+explicit dependency wait (actual test time 2.1m). It required its own Vite
+server with CI=1 and wrote results to a unique evidence directory.
+This supersedes the preceding gallery setup failure; no program or
+assertion changed between attempts. The Sway cases cover foot rendering,
+status redraw, keyboard input, workspace changes, tiling, the exit
+confirmation, status-zero shell return and subsequent CPU-renderer launch.
+The former WebKit exit-confirmation failure is not reproduced in this
+combined-source run. The source remains `ec499f4cb412`, before the latest
+GBM query/layout C change.
+
+The complete ordinary browser-memory command
+`graphics-abi56-browser-memory-prepared-1028-150810-3904` failed overall
+after 21m25s including its gallery dependency wait. Protocol checks passed
+12/12, host ownership tests 161/161 in 14 files, Node teardown tests 3/3
+and Bun teardown tests 7/7. The browser portion passed seven of nine cases
+in 7.3m. Chromium completed all four cycles in the same persistent page.
+Firefox and WebKit each stopped after the first eight-application cycle
+because actual forced-drain warnings failed the unchanged assertion; the
+remaining three cycles on those engines did not execute.
+
+The preserved Playwright traces locate Firefox's warning at Quake-to-
+Freeciv teardown and WebKit's two warnings at Doom-to-Quake and Quake-to-
+Freeciv teardown, before cage/sway were launched. This identifies the
+affected transitions; it does not establish an outside engine defect or
+prove the failure pre-exists on main. Baseline comparison and platform
+repair remain required. The warning timeout was not increased or hidden.
+Copied error contexts, traces and screenshots are retained under primary
+`.context/graphics-memory-checkpoint-evidence/` and the diagnostic
+`.context/graphics-memory-checkpoint-results/`. The Firefox failure also
+has a separate primary copy at
+`.context/graphics-memory-firefox-first-failure/`.
