@@ -153,6 +153,7 @@ host/test/fstatat-empty-path.test.ts	prepared-product
 host/test/futex-deadlines.test.ts	prepared-product
 host/test/futex-kernel-wait.test.ts	prepared-product
 host/test/gallery-descriptor.test.ts	source-only
+host/test/gbm-cpu-map.test.ts	prepared-product
 host/test/gbm-modifiers.test.ts	prepared-product
 host/test/gbm-surface-ring.test.ts	prepared-product
 host/test/gc-reference-state-fresh-worker.test.ts	prepared-product

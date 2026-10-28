@@ -12,7 +12,8 @@ cp "$repo_root/libc/musl-overlay/include/gbm.h" "$output_dir/include/"
 native_flags=(-g -O1 -pthread -fsanitize="${KANDELO_GRAPHICS_SANITIZERS:-undefined}"
     -fno-omit-frame-pointer -fno-sanitize-recover=all
     -I"$output_dir/include" -I"$output_dir/include/drm")
-clang "${native_flags[@]}" -c "$repo_root/libc/glue/libgbm_stub.c" -o "$output_dir/gbm.o"
+clang "${native_flags[@]}" -include "$repo_root/tests/graphics/libc/gbm-map-double.h" \
+    -c "$repo_root/libc/glue/libgbm_stub.c" -o "$output_dir/gbm.o"
 python3 - "$repo_root/libc/musl-overlay/include/gbm.h" "$output_dir/gbm.o" <<'PY'
 import re, subprocess, sys
 from pathlib import Path

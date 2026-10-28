@@ -6533,3 +6533,46 @@ Copied error contexts, traces and screenshots are retained under primary
 `.context/graphics-memory-checkpoint-results/`. The Firefox failure also
 has a separate primary copy at
 `.context/graphics-memory-firefox-first-failure/`.
+
+
+## GBM CPU mapping regions and independent leases, 2026-10-28
+
+CPU map requests now validate nonempty rectangles with subtraction-based
+bounds, row/backing extents, transfer flags and required output pointers
+before publication. The returned address includes the requested x/y
+offset while retaining the actual full-row pitch. Simultaneous views of
+one BO share its mapped bytes but own separate, serialized map leases.
+Opaque tokens are monotonically allocated, not recycled record addresses;
+a foreign, repeated or stale token cannot release a peer's live view.
+Only the last accepted release unmaps backing. A failed last unmap keeps
+its address and token available for retry.
+
+`gbm_bo_write` uses its own full-BO mapping lease and releases it after
+copying, preserving other public views instead of relying on an unowned
+permanent cached mapping. A failed private write release stays in a
+BO-owned pending record; the next mapping transfers that hold and retries
+physical release when its last view ends. A native counter control first
+reproduced a retained private-write hold, then passes after this repair.
+No new shared buffer or guest-memory authority
+is exposed to the host or browser main thread. Transfer flags zero remain
+accepted for existing callers; unknown bits fail. GPU mapping, import
+coherence, failed BO-destruction cleanup and the complete backing model
+remain ordinary B01/B02 gaps. This is not complete GBM mapping support.
+
+The native control first had an invalid fixture offset on macOS's larger
+page size; that setup failure is preserved separately. After using the
+actual native page size, the old source failed the intended assertion:
+a subrectangle returned the BO base instead of base plus row/pixel offset.
+The repaired actual C source passes UBSan and the 38-symbol audit, covering
+overlapping views, distinct tokens, release ordering, foreign/stale tokens,
+seven bad rectangles/flags with unchanged outputs, absent output pointers,
+write/readback and retry after an injected EINTR release failure. Native
+mapping uses an actual MAP_SHARED temporary file behind the DRM allocation
+double; only the tested unmap failure is injected. It is not kernel/guest
+coherence evidence. Logs stay in the owned GBM checkout as
+`.context/gbm-cpu-map-{setup-page-size,before,after,retirement}.log`.
+
+Ordinary SDK Node and three-engine browser mapping probes are prepared,
+but have not executed at this source checkpoint. SDK/archive and linked
+consumer validation remains required. Program ABI stays 56/kernel-host 3,
+with operation table 17. No new ABI increment or hard boundary is claimed.

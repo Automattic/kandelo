@@ -106,12 +106,21 @@ struct gbm_bo {
     uint64_t size;            /* total bytes (pitch * height) */
     uint64_t modifier;        /* DRM_FORMAT_MOD_LINEAR for v1 */
     int is_gpu;               /* 1 = GPU-tier (unmappable WebGLTexture bo) */
-    void *map_addr;           /* lazy: set by gbm_bo_map */
+    struct gbm_mapping *mappings;
+    void *map_addr;           /* shared by this BO's active CPU map leases */
     size_t map_len;
     void *user_data;
     void (*user_data_destroy)(struct gbm_bo *, void *);
     struct gbm_surface *surface;  /* non-NULL when owned by a surface ring */
 };
+
+struct gbm_mapping {
+    struct gbm_mapping *next;
+    uintptr_t token;
+    int internal_release_pending;
+};
+static pthread_mutex_t mapping_mutex = PTHREAD_MUTEX_INITIALIZER;
+static uintptr_t next_mapping_token = 1;
 
 #define WPK_GBM_SURFACE_BO_COUNT 2
 
@@ -442,63 +451,90 @@ int gbm_bo_get_fd_for_plane(struct gbm_bo *bo, int plane) {
     return gbm_bo_get_fd(bo);
 }
 
-void *gbm_bo_map(struct gbm_bo *bo,
-                 uint32_t x, uint32_t y,
-                 uint32_t width, uint32_t height,
-                 uint32_t flags,
-                 uint32_t *stride, void **map_data) {
-    (void) x; (void) y; (void) width; (void) height; (void) flags;
-    /* v1: always maps the whole BO. Sub-rectangle support would
-     * require MAP_DUMB + per-call mmap of a sub-range; consumers
-     * compute sub-regions from the returned base + stride. */
-    if (!bo) {
-        errno = EINVAL;
-        return NULL;
-    }
-    if (bo->is_gpu) {
-        /* GPU-tier bos live only as a host WebGLTexture — there is no CPU
-         * mapping. The kernel also rejects MAP_DUMB for them; fail here so
-         * a caller doesn't spin on a MAP_FAILED ioctl. */
-        errno = EINVAL;
-        return NULL;
-    }
-
-    if (bo->map_addr) {
-        /* libgbm's contract permits repeated map calls; re-issue
-         * the cached address rather than re-mmapping. */
-        if (stride)   *stride   = bo->stride;
-        if (map_data) *map_data = bo->map_addr;
-        return bo->map_addr;
-    }
-
-    struct drm_mode_map_dumb req;
-    memset(&req, 0, sizeof(req));
-    req.handle = bo->handle;
-    if (drmIoctl(bo->dev->fd, DRM_IOCTL_MODE_MAP_DUMB, &req) < 0) {
-        return NULL;
-    }
-
-    void *addr = mmap(NULL, (size_t) bo->size,
-                      PROT_READ | PROT_WRITE,
-                      MAP_SHARED,
-                      bo->dev->fd,
-                      (off_t) req.offset);
-    if (addr == MAP_FAILED) {
-        return NULL;
-    }
+/* Caller holds mapping_mutex. Map the canonical BO once so overlapping
+ * CPU views alias the same bytes until the final view is released. */
+static int map_bo_locked(struct gbm_bo *bo) {
+    if (bo->map_addr) return 0;
+    if (bo->size > SIZE_MAX) { errno = EOVERFLOW; return -1; }
+    struct drm_mode_map_dumb req = {.handle = bo->handle};
+    if (drmIoctl(bo->dev->fd, DRM_IOCTL_MODE_MAP_DUMB, &req) < 0) return -1;
+    void *addr = mmap(NULL, (size_t)bo->size, PROT_READ | PROT_WRITE,
+        MAP_SHARED, bo->dev->fd, (off_t)req.offset);
+    if (addr == MAP_FAILED) return -1;
     bo->map_addr = addr;
-    bo->map_len  = (size_t) bo->size;
-    if (stride)   *stride   = bo->stride;
-    if (map_data) *map_data = addr;
-    return addr;
+    bo->map_len = (size_t)bo->size;
+    return 0;
+}
+
+void *gbm_bo_map(struct gbm_bo *bo,
+                 uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+                 uint32_t flags, uint32_t *stride, void **map_data) {
+    if (!bo || !stride || !map_data || !width || !height || bo->is_gpu ||
+        (flags & ~GBM_BO_TRANSFER_READ_WRITE) || x >= bo->width || y >= bo->height ||
+        width > bo->width - x || height > bo->height - y) {
+        errno = EINVAL;
+        return NULL;
+    }
+    uint64_t x_bytes = (uint64_t)x * (bo->bpp / 8);
+    uint64_t row_bytes = (uint64_t)width * (bo->bpp / 8);
+    if (x_bytes + row_bytes > bo->stride ||
+        ((uint64_t)y + height - 1) * bo->stride + x_bytes + row_bytes > bo->size) {
+        errno = EINVAL;
+        return NULL;
+    }
+    struct gbm_mapping *mapping = calloc(1, sizeof *mapping);
+    if (!mapping) { errno = ENOMEM; return NULL; }
+    pthread_mutex_lock(&mapping_mutex);
+    if (!next_mapping_token || map_bo_locked(bo) < 0) {
+        if (!next_mapping_token) errno = ENOMEM;
+        pthread_mutex_unlock(&mapping_mutex);
+        free(mapping);
+        return NULL;
+    }
+    /* Tokens are never recycled, even if malloc reuses a record address.
+     * A stale or foreign map_data must not release another live mapping. */
+    mapping->token = next_mapping_token++;
+    mapping->next = bo->mappings;
+    bo->mappings = mapping;
+    /* A failed private write release has no public token owner. The new
+     * lease keeps the same mapping alive while retiring that bookkeeping;
+     * its final release retries the actual unmap instead of leaking a hold. */
+    struct gbm_mapping **pending = &mapping->next;
+    while (*pending) {
+        if ((*pending)->internal_release_pending) {
+            struct gbm_mapping *retired = *pending;
+            *pending = retired->next;
+            free(retired);
+        } else pending = &(*pending)->next;
+    }
+    void *address = (char *)bo->map_addr + (size_t)((uint64_t)y * bo->stride + x_bytes);
+    *stride = bo->stride;
+    *map_data = (void *)mapping->token;
+    pthread_mutex_unlock(&mapping_mutex);
+    return address;
+}
+
+static int unmap_bo_locked(struct gbm_bo *bo, void *map_data) {
+    struct gbm_mapping **link = &bo->mappings;
+    while (*link && (*link)->token != (uintptr_t)map_data) link = &(*link)->next;
+    if (!*link) { errno = EINVAL; return -1; }
+    struct gbm_mapping *mapping = *link;
+    if (link == &bo->mappings && !mapping->next) {
+        // Keep the lease and address if the kernel did not accept release.
+        if (munmap(bo->map_addr, bo->map_len) < 0) return -1;
+        bo->map_addr = NULL;
+        bo->map_len = 0;
+    }
+    *link = mapping->next;
+    free(mapping);
+    return 0;
 }
 
 void gbm_bo_unmap(struct gbm_bo *bo, void *map_data) {
-    (void) map_data;
-    if (!bo || !bo->map_addr) return;
-    munmap(bo->map_addr, bo->map_len);
-    bo->map_addr = NULL;
-    bo->map_len  = 0;
+    if (!bo) { errno = EINVAL; return; }
+    pthread_mutex_lock(&mapping_mutex);
+    unmap_bo_locked(bo, map_data);
+    pthread_mutex_unlock(&mapping_mutex);
 }
 
 void gbm_bo_destroy(struct gbm_bo *bo) {
@@ -508,11 +544,14 @@ void gbm_bo_destroy(struct gbm_bo *bo) {
         bo->user_data = NULL;
         bo->user_data_destroy = NULL;
     }
-    if (bo->map_addr) {
-        munmap(bo->map_addr, bo->map_len);
-        bo->map_addr = NULL;
-        bo->map_len  = 0;
+    pthread_mutex_lock(&mapping_mutex);
+    if (bo->map_addr) munmap(bo->map_addr, bo->map_len);
+    while (bo->mappings) {
+        struct gbm_mapping *mapping = bo->mappings;
+        bo->mappings = mapping->next;
+        free(mapping);
     }
+    pthread_mutex_unlock(&mapping_mutex);
     drmCloseBufferHandle(bo->dev->fd, bo->handle);
     free(bo);
 }
@@ -526,24 +565,24 @@ int gbm_bo_write(struct gbm_bo *bo, const void *buf, size_t count) {
         errno = EINVAL;
         return -1;
     }
-    /* Reuse the lazy-mapped pointer when present; otherwise mmap
-     * the dumb buffer and copy.  gbm_bo_map's flags+rect args are
-     * ignored in v1, so passing zeros + NULLs is fine. */
-    void *addr = bo->map_addr;
-    int mapped_here = 0;
-    if (!addr) {
-        addr = gbm_bo_map(bo, 0, 0, bo->width, bo->height, 0, NULL, NULL);
-        if (!addr) {
-            return -1;
+    uint32_t stride;
+    void *token;
+    void *address = gbm_bo_map(bo, 0, 0, bo->width, bo->height,
+        GBM_BO_TRANSFER_WRITE, &stride, &token);
+    if (!address) return -1;
+    memcpy(address, buf, count);
+    pthread_mutex_lock(&mapping_mutex);
+    int result = unmap_bo_locked(bo, token);
+    if (result < 0) {
+        for (struct gbm_mapping *mapping = bo->mappings; mapping; mapping = mapping->next) {
+            if (mapping->token == (uintptr_t)token) {
+                mapping->internal_release_pending = 1;
+                break;
+            }
         }
-        mapped_here = 1;
     }
-    memcpy(addr, buf, count);
-    if (mapped_here) {
-        /* Hold the mapping — repeated writes are common from
-         * cursor / icon uploads. gbm_bo_destroy will unmap. */
-    }
-    return 0;
+    pthread_mutex_unlock(&mapping_mutex);
+    return result;
 }
 
 void gbm_bo_set_user_data(struct gbm_bo *bo, void *data,

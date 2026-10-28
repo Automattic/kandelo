@@ -18,12 +18,24 @@ int _wpk_gbm_surface_dimensions(const void *, uint32_t *, uint32_t *);
 int _wpk_gbm_device_metadata(const void *, int *, uint64_t *);
 static int device_fd;
 static unsigned created, closed, fail_allocation;
+static int fail_unmap;
+static unsigned unmap_attempts;
+int graphics_gbm_munmap(void *address, size_t length) {
+    unmap_attempts++;
+    if (fail_unmap) { fail_unmap = 0; errno = EINTR; return -1; }
+    return munmap(address, length);
+}
 int drmIoctl(int fd, unsigned long request, void *data) {
     assert(fd == device_fd);
     if (request == DRM_IOCTL_MODE_CREATE_DUMB) {
         if (fail_allocation && created+1 == fail_allocation) { errno = ENOMEM; return -1; }
         struct drm_mode_create_dumb *d = data;
         d->handle = ++created; d->pitch = d->width*4; d->size = (uint64_t)d->pitch*d->height;
+        return 0;
+    }
+    if (request == DRM_IOCTL_MODE_MAP_DUMB) {
+        struct drm_mode_map_dumb *d = data;
+        d->offset = (uint64_t)d->handle * (uint64_t)sysconf(_SC_PAGESIZE);
         return 0;
     }
     errno = ENOSYS; return -1;
@@ -57,6 +69,76 @@ static void public_format_queries(struct gbm_device *device) {
     assert(gbm_format_get_name(GBM_FORMAT_ABGR8888, &name.desc) == name.desc.name);
     assert(!strcmp(name.desc.name, "AB24"));
     assert(name.sentinel == 'Q' && created == before);
+}
+static void cpu_mapping(void) {
+    int previous_fd = device_fd;
+    FILE *file = tmpfile(); assert(file);
+    device_fd = fileno(file);
+    assert(!ftruncate(device_fd, 1024 * 1024));
+    struct gbm_device *device = gbm_create_device(device_fd); assert(device);
+    struct gbm_bo *bo = gbm_bo_create(device, 4, 3, GBM_FORMAT_ABGR8888, GBM_BO_USE_WRITE);
+    struct gbm_bo *other = gbm_bo_create(device, 4, 3, GBM_FORMAT_ABGR8888, GBM_BO_USE_WRITE);
+    assert(bo && other);
+    uint32_t pitch = 0;
+    void *region_token = NULL, *whole_token = NULL;
+    uint8_t *region = gbm_bo_map(bo, 1, 1, 2, 1, GBM_BO_TRANSFER_READ_WRITE, &pitch, &region_token);
+    assert(region && pitch == 16 && region_token);
+    uint8_t *whole = gbm_bo_map(bo, 0, 0, 4, 3, GBM_BO_TRANSFER_READ_WRITE, &pitch, &whole_token);
+    assert(whole && whole_token && region == whole + pitch + 4);
+    assert(region_token != whole_token);
+    uint32_t color = 0xff123456;
+    memcpy(region, &color, 4);
+    assert(!memcmp(whole + pitch + 4, &color, 4));
+    gbm_bo_unmap(bo, region_token);
+    assert(!memcmp(whole + pitch + 4, &color, 4));
+    gbm_bo_unmap(other, whole_token);
+    assert(!memcmp(whole + pitch + 4, &color, 4));
+    gbm_bo_unmap(bo, region_token);
+    assert(!memcmp(whole + pitch + 4, &color, 4));
+    const struct { uint32_t x, y, w, h, flags; } invalid[] = {
+        {0, 0, 0, 1, 0}, {0, 0, 1, 0, 0}, {3, 0, 2, 1, 0},
+        {0, 2, 1, 2, 0}, {UINT32_MAX, 0, 2, 1, 0}, {0, UINT32_MAX, 1, 2, 0},
+        {0, 0, 1, 1, 0x80000000u},
+    };
+    for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        uint32_t untouched_pitch = 101; void *untouched_token = (void *)(uintptr_t)102;
+        errno = 0;
+        assert(!gbm_bo_map(bo, invalid[i].x, invalid[i].y, invalid[i].w, invalid[i].h,
+            invalid[i].flags, &untouched_pitch, &untouched_token) && errno == EINVAL);
+        assert(untouched_pitch == 101 && untouched_token == (void *)(uintptr_t)102);
+    }
+    uint32_t unchanged = 101; void *unchanged_token = (void *)(uintptr_t)102;
+    assert(!gbm_bo_map(bo, 0, 0, 1, 1, 0, NULL, &unchanged_token));
+    assert(unchanged_token == (void *)(uintptr_t)102);
+    assert(!gbm_bo_map(bo, 0, 0, 1, 1, 0, &unchanged, NULL) && unchanged == 101);
+    fail_unmap = 1; errno = 0;
+    gbm_bo_unmap(bo, whole_token);
+    assert(errno == EINTR && !memcmp(whole + pitch + 4, &color, 4));
+    gbm_bo_unmap(bo, whole_token);
+    uint32_t backing = 0;
+    off_t offset = (off_t)gbm_bo_get_handle(bo).u32 * sysconf(_SC_PAGESIZE) + pitch + 4;
+    assert(pread(device_fd, &backing, 4, offset) == 4 && backing == color);
+    void *new_token = NULL;
+    whole = gbm_bo_map(bo, 0, 0, 4, 3, 0, &pitch, &new_token);
+    assert(whole && new_token && new_token != region_token && new_token != whole_token);
+    gbm_bo_unmap(bo, whole_token);
+    assert(!memcmp(whole + pitch + 4, &color, 4));
+    uint32_t replacement = 0xffabcdef;
+    assert(gbm_bo_write(bo, &replacement, 4) == 0);
+    assert(!memcmp(whole, &replacement, 4));
+    gbm_bo_unmap(bo, new_token);
+    assert(gbm_bo_write(bo, &color, 4) == 0);
+    assert(pread(device_fd, &backing, 4, offset - pitch - 4) == 4 && backing == color);
+    unsigned attempts = unmap_attempts;
+    fail_unmap = 1; errno = 0;
+    assert(gbm_bo_write(bo, &replacement, 4) == -1 && errno == EINTR);
+    assert(unmap_attempts == attempts + 1);
+    whole = gbm_bo_map(bo, 0, 0, 4, 3, 0, &pitch, &new_token);
+    assert(whole && !memcmp(whole, &replacement, 4));
+    gbm_bo_unmap(bo, new_token);
+    assert(unmap_attempts == attempts + 2);
+    gbm_bo_destroy(bo); gbm_bo_destroy(other); gbm_device_destroy(device);
+    assert(!fclose(file)); device_fd = previous_fd;
 }
 static void modifier_requests(struct gbm_device *device) {
     const uint64_t linear[] = {DRM_FORMAT_MOD_LINEAR};
@@ -145,6 +227,7 @@ int main(void) {
     fail_allocation = 0;
     modifier_requests(device);
     public_format_queries(device);
+    cpu_mapping();
     uintptr_t retired_device = (uintptr_t)device;
     gbm_device_destroy(device);
     assert(!_wpk_gbm_device_metadata((void *)retired_device, &native_fd, &identity));
@@ -154,5 +237,5 @@ int main(void) {
     assert(native_fd == device_fd && identity != first_identity);
     gbm_device_destroy(device);
     assert(!close(device_fd));
-    puts("PASS actual GBM metadata, modifier admission and public format queries");
+    puts("PASS actual GBM metadata, modifiers, formats and retained CPU mappings");
 }

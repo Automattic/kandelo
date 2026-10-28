@@ -665,3 +665,11 @@ compares all 38 public header functions against the compiled object's
 external definitions. It needs the normal provisioned public DRM headers.
 This is source/API evidence, not SDK guest execution, rendered GBM
 front/back storage or complete GBM compatibility.
+
+The GBM native control also maps real temporary-file storage behind its
+DRM double. It checks CPU rectangle addresses, independently retained
+views, stale/foreign release tokens, failed final unmap retry and writes
+with and without public views. `gbm-map-double.h` redirects only the GBM
+object's munmap call to inject that one failure; ordinary mapping and all
+other unmaps use the native system. Kernel/guest coherence still needs
+the separate SDK probes.
