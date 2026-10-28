@@ -6325,3 +6325,93 @@ This is bounded admission validation. Arbitrary valid offsets/custom
 pitches, full format reinterpretation, modifier/flag handling and the rest
 of the framebuffer/presentation model remain ordinary gaps; K04/K05 stay
 partial. No hard boundary or complete layout support is claimed.
+
+
+## Combined ABI 56 consumer checkpoint, 2026-10-28
+
+The normal full program job
+`graphics-main56-programs-1027-163119-f690` succeeded after 1h24m,
+stamping all 239 programs. After updating the primary checkout to
+`ec499f4cb412`, the consumer preparation job
+`graphics-main56-consumer-preparation-1027-180033-926a` passed in 1m32s:
+normal new-kernel product build, canonical host/rootfs refresh, freshness,
+actual ABI import/export verification and evidence registry. Program ABI
+56, kernel-host 3, GL operation table 17 and fork record 21 are unchanged.
+
+The default-resolver Node job
+`graphics-main56-node-consumers-1027-180457-4201` passed all 36 cases in
+17 files after 7m38s, with no skipped or unloaded cases. This covers cage,
+sway tiling/input/IPC, swaybar status EOF and swaynag exit, wlterm under
+both compositors, foot, GTK, libkwl, desktop liveness, EGL imports, native
+windows, GEM lifecycle and KMS modes/page flips. Node uses CPU rendering;
+these results do not establish GLES pixel correctness.
+
+The new-kernel browser job
+`graphics-main56-browser-consumers-1027-180457-2820` passed 51 of 54
+cases: 12 inherited-file cases, 30 CPU/WebGL format cases, three native
+alpha controls, three upstream surfaceless CTS cases and three focused
+cage sessions. The format cases execute all 120 new malformed ADDFB2
+requests through ordinary SDK guests. Each rejects with EINVAL and keeps
+the ioctl output unchanged; valid color/pitch and padded RGB565 rendering
+assertions also pass. This supplies actual guest evidence for the
+preceding framebuffer admission checkpoint.
+
+All three new focused Sway cases rendered red pixels, routed input and
+exited with status zero and empty diagnostics, but failed a new assertion
+requiring their first feedback event to be `presented`. That assertion
+was invalid for this client: `wlclient-test.c` commits again when Sway
+configures its mapped surface. Pinned wlroots'
+`types/wlr_presentation_time.c` finishes the old feedback when synchronized
+surface state moves; the [Wayland presentation protocol](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/main/stable/presentation-time/presentation-time.xml)
+allows discarded feedback for a superseded content update. This is a test
+correction, not an outside runtime defect or a platform workaround. The
+three initial failure records remain under
+`.context/wlroots-rendered-sessions/*-sway-failure.json`.
+
+The focused fixture `wlroots-rendered-session.spec.ts` now requires
+resolved first feedback for Sway and still requires positive `presented`
+feedback for cage. Both require actual GPU scanout, accepted KMS commits,
+more than 10,000 exact red screenshot pixels, real keyboard/button delivery,
+status-zero exit, acknowledged worker retirement, empty diagnostics and the
+browser memory-message boundary probe. Sway's fixture includes its normal
+packaged swaybg and uname dependencies. No application or upstream assertion
+was changed to make this fixture pass.
+
+`graphics-wlroots-browser-final-1028-145707-c2a7` passed all six focused
+sessions in 2m33s across Chromium, Firefox and WebKit. JSON records retain
+engine versions, kernel/compositor/client/image SHA-256 identities, KMS
+statistics and visible pixel counts; PNG screenshots are beside them.
+This closes the focused consumer rerun, not the normal gallery or full
+browser-memory gate.
+
+The combined conformance checkpoint
+`graphics-main56-combined-conformance-1027-171057-fc84` also passed in
+1h59m on `6cb0181761dd`, before the alpha and framebuffer admission fixes:
+
+| Suite | Result |
+| --- | --- |
+| musl libc-test | 306 passed, 17 expected failures, one known FLAKE-PASS; 324 total |
+| Open POSIX | 174 passed, three expected failures, two skips; 179 total |
+| Sortix os-test | 5,065 passed, 23 expected failures, 50 skips; 5,138 total |
+
+There were no unexpected failures, build failures or timeouts. Exact
+external pins and source roots are unchanged from the preceding recorded
+conformance runs. A fresh `ec499f4cb412` rerun is running as
+`graphics-main56-final-conformance-1028-145731-953f`; it is not yet claimed
+passed.
+
+The normal gallery preparation attempt
+`graphics-main56-browser-closure-1027-171009-2f07` failed after 1h57m:
+kandelo-cc and termchat required the isolated checkout's missing pinned
+`sdk/rust/libc-upstream` submodule. Independent packages drained, including
+Clang and Qt. This was provisioning failure, not a demonstrated program
+compatibility defect. The exact submodule
+`71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8` is now initialized, the checkout
+is updated to `ec499f4cb412`, and normal preparation/gallery/CTS is running
+as `graphics-main56-final-browser-closure-1028-145748-b194`.
+
+The complete gallery, four-cycle browser-memory gate, normal manual browser
+check and final conformance rerun remain outstanding. All ordinary baseline
+gaps remain tracked above, including B03 native-window front/back storage.
+These consumer passes do not establish complete GLES2/EGL/GBM/KMS
+compatibility. Performance was not measured.
