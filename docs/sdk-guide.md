@@ -494,7 +494,12 @@ without pulling musl's syscall definitions ahead of Kandelo's glue overrides.
 ### Sysroot platform libraries
 
 `scripts/build-musl.sh` also builds Kandelo's platform graphics shims into the
-wasm32 sysroot:
+selected sysroot: `sysroot` for wasm32posix and `sysroot64` for
+wasm64posix. Pass `--arch wasm64posix` to select the latter; the default
+remains wasm32posix. Both widths provision libdrm through its normal
+architecture-specific package recipe. `--core-only` skips graphics when
+the resolver needs to check libc without recursively resolving libdrm.
+The paths below use the default sysroot:
 
 | Library | pkg-config name | Purpose |
 |---------|-----------------|---------|
@@ -510,7 +515,16 @@ renderer replacement. Applications need no Kandelo-specific dimension
 attributes. The private lookup recognizes only live GBM handles and does
 not interpret opaque pointers belonging to another window backend.
 
-Programs should reference these through `wasm32posix-pkg-config`, for example:
+Each GBM device retains its own close-on-exec alias of the caller's DRM
+file. `gbm_device_get_fd` still returns the caller's original descriptor.
+Buffer objects and GBM surfaces hold independent device references, so
+withdrawing the public device and reusing the caller's descriptor cannot
+redirect their DRM operations. The private alias closes when the final
+owner retires. This does not yet establish EGL-retained GBM window or
+rendered front/back buffer lifetime; those remain compatibility gaps.
+
+Programs should reference these through the matching SDK pkg-config
+wrapper (`wasm32posix-pkg-config` or `wasm64posix-pkg-config`), for example:
 
 ```bash
 wasm32posix-cc -D_DEFAULT_SOURCE \
@@ -769,8 +783,9 @@ See the [Porting Guide](porting-guide.md) for preparing browser-facing package i
 - **For fork support**: Run `scripts/run-wasm-fork-instrument.sh` as the final
   post-link step. Without complete `wpk_fork_*` exports, fork-using programs
   are invalid.
-- **For DRM/KMS/EGL/GLES programs**: Rebuild the wasm32 sysroot with
-  `scripts/dev-shell.sh bash scripts/build-musl.sh` if `libdrm`, `libgbm`,
+- **For DRM/KMS/EGL/GLES programs**: Rebuild the selected sysroot with
+  `scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm32posix`
+  (or `--arch wasm64posix`) if `libdrm`, `libgbm`,
   `libEGL`, or `libGLESv2` is missing. `./run.sh setup` (and the deprecated
   `build.sh` delegator) checks musl freshness and refreshes these graphics
   libraries through their own build stamps.

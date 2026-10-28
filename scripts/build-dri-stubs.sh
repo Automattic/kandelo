@@ -17,7 +17,20 @@ set -euo pipefail
 # cache would leave that copy dangling.
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SYSROOT="$REPO_ROOT/sysroot"
+ARCH="wasm32posix"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --arch)
+            [ $# -ge 2 ] || { echo "Error: --arch requires a value" >&2; exit 1; }
+            ARCH="$2"; shift 2 ;;
+        *) echo "Unknown argument: $1" >&2; exit 1 ;;
+    esac
+done
+case "$ARCH" in
+    wasm32posix) TARGET_ARCH=wasm32; SYSROOT="$REPO_ROOT/sysroot" ;;
+    wasm64posix) TARGET_ARCH=wasm64; SYSROOT="$REPO_ROOT/sysroot64" ;;
+    *) echo "Error: unsupported arch '$ARCH'. Use wasm32posix or wasm64posix." >&2; exit 1 ;;
+esac
 GLUE_DIR="$REPO_ROOT/libc/glue"
 
 # shellcheck source=build-step-input-hash.sh
@@ -73,6 +86,7 @@ DRI_INPUT_HASH="$(repo_input_hash "$REPO_ROOT" \
     scripts/build-dri-stubs.sh \
     scripts/write-graphics-pkgconfig.sh \
     scripts/build-step-input-hash.sh \
+    "literal:ARCH=$ARCH" \
     packages/registry/libdrm \
     libc/glue \
     libc/musl-overlay/include \
@@ -95,8 +109,8 @@ mkdir -p "$OUT_DIR" "$PC_DIR"
 
 echo "Resolving libdrm (upstream KMS subset)..."
 HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
-(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libdrm >/dev/null)
-LIBDRM_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libdrm)"
+(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libdrm --arch "$TARGET_ARCH" >/dev/null)
+LIBDRM_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libdrm --arch "$TARGET_ARCH")"
 if [ ! -f "$LIBDRM_PREFIX/lib/libdrm.a" ]; then
     echo "Error: libdrm resolve succeeded but $LIBDRM_PREFIX/lib/libdrm.a is missing." >&2
     exit 1
@@ -107,7 +121,7 @@ cp -R "$LIBDRM_PREFIX/include/drm"    "$SYSROOT/include/drm"
 cp -R "$LIBDRM_PREFIX/include/libdrm" "$SYSROOT/include/libdrm"
 
 CFLAGS=(
-    --target=wasm32-unknown-unknown
+    --target="$TARGET_ARCH-unknown-unknown"
     --sysroot="$SYSROOT"
     -I"$GLUE_DIR"
     -I"$SYSROOT/include/libdrm"

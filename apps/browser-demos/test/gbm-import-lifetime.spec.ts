@@ -14,7 +14,7 @@ test.beforeAll(() => {
 });
 test.afterAll(() => fixture?.cleanup());
 
-test("normal GBM guest retains overlapping CPU views and validates mapping regions", async ({ page, baseURL, browser }) => {
+test("normal GBM guest retains shared GEM handles until the final import retires", async ({ page, baseURL, browser }) => {
   test.setTimeout(90_000);
   const program = readFileSync(fixture.programPath);
   const kernelBytes = readFileSync(resolveBinary("kernel.wasm"));

@@ -35,9 +35,10 @@ Verify the assertions with:
 python3 tests/graphics/verify-cts-source.py /path/to/pinned/VK-GL-CTS
 ```
 
-Build the wasm32 guest through the normal package resolver. The existing
-graphics SDK archives and libdrm recipe are wasm32-only; this package does
-not advertise a wasm64 graphics build:
+Build the wasm32 guest through the normal package resolver. The graphics
+SDK archives and libdrm recipe now build for both wasm32 and wasm64, but
+this CTS package still declares only wasm32. Dual-width API probes do
+not establish full wasm64 graphics conformance:
 
 ```
 scripts/dev-shell.sh cargo xtask build-deps resolve graphics-cts-egl --arch wasm32
@@ -541,7 +542,11 @@ evidence, not eleven independently reproduced ownership defects.
 The separate actual-GBM source fixture uses provisioned public DRM headers
 and a DRM allocation double. It verifies live metadata, format/usage,
 foreign/protected-page pointers, unchanged output on rejection, retirement
-and cleanup after partial constructor failure:
+and cleanup after partial constructor failure. It also checks device-file
+retention through public device destruction, with UndefinedBehaviorSanitizer
+by default. Set `MallocScribble=1` for the allocator-poisoning control on
+macOS. An optional Git reference builds that historical GBM source against
+the same current harness; the native process has a 30-second deadline:
 
 ```
 scripts/dev-shell.sh bash tests/graphics/run-gbm-unit.sh
@@ -678,3 +683,14 @@ The GBM native harness also models PRIME reimport returning a cached GEM
 name: removing one public BO must not close the name owned by its two
 surviving peers. `host/test/gbm-import-lifetime.test.ts` and the browser
 probe exercise the normal SDK and real DRM kernel path for that lifetime.
+
+
+The normal SDK GBM device-retirement guest closes and reuses the caller's
+DRM descriptor after destroying the public device. Buffer export/write
+and surface cleanup must keep using the original file; final cleanup must
+close its private alias without touching the replacement fd. The host
+`gbm-device-retirement.test.ts` and browser
+`gbm-device-retirement.spec.ts` execute it for both wasm32 and wasm64. The
+EGL native-window metadata host probe also links both SDK widths. These
+are bounded file/ownership and provisioning checks; rendered GBM front/back
+storage and full graphics conformance remain separate requirements.

@@ -8,7 +8,7 @@
 # We deliberately skip the GPU-specific subdirs (libdrm_amdgpu,
 # libdrm_radeon, libdrm_intel, libdrm_nouveau, libdrm_etnaviv,
 # libdrm_exynos, libdrm_freedreno, libdrm_omap, libdrm_tegra,
-# libdrm_vc4) — none of those run on the wasm32 kernel and they
+# libdrm_vc4) — none of those run on the Kandelo kernel and they
 # pull in vendor-specific ioctl tables we don't ship.
 #
 # libdrm-KMS has no link-time deps. It wraps the kernel's KMS ioctl
@@ -23,6 +23,7 @@ name = "libdrm"
 version = "2.4.134"
 kernel_abi = 43
 depends_on = []
+arches = ["wasm32", "wasm64"]
 
 [source]
 url = "https://dri.freedesktop.org/libdrm/libdrm-2.4.134.tar.xz"

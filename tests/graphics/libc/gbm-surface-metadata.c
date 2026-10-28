@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 int _wpk_gbm_surface_metadata(const void *, uint32_t *, uint32_t *, uint32_t *, uint32_t *);
@@ -21,13 +22,24 @@ static unsigned created, closed, fail_allocation;
 static uint32_t imported_handle;
 static int fail_unmap;
 static unsigned unmap_attempts;
+static void same_device_file(int fd) {
+    struct stat expected, actual;
+    assert(fstat(device_fd, &expected) == 0 && fstat(fd, &actual) == 0);
+    assert(expected.st_dev == actual.st_dev && expected.st_ino == actual.st_ino);
+}
 int graphics_gbm_munmap(void *address, size_t length) {
     unmap_attempts++;
     if (fail_unmap) { fail_unmap = 0; errno = EINTR; return -1; }
     return munmap(address, length);
 }
 int drmIoctl(int fd, unsigned long request, void *data) {
-    assert(fd == device_fd);
+    same_device_file(fd);
+    if (request == DRM_IOCTL_PRIME_HANDLE_TO_FD) {
+        struct drm_prime_handle *prime = data;
+        assert(prime->handle && prime->handle <= created);
+        prime->fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+        return prime->fd < 0 ? -1 : 0;
+    }
     if (request == DRM_IOCTL_MODE_CREATE_DUMB) {
         if (fail_allocation && created+1 == fail_allocation) { errno = ENOMEM; return -1; }
         struct drm_mode_create_dumb *d = data;
@@ -48,7 +60,20 @@ int drmIoctl(int fd, unsigned long request, void *data) {
     errno = ENOSYS; return -1;
 }
 int drmCloseBufferHandle(int fd, uint32_t handle) {
-    assert(fd == device_fd && handle && handle <= created); closed++; return 0;
+    same_device_file(fd);
+    assert(handle && handle <= created); closed++; return 0;
+}
+static void retained_device_file(void) {
+    int input = dup(device_fd); assert(input >= 0);
+    struct gbm_device *device = gbm_create_device(input); assert(device);
+    assert(gbm_device_get_fd(device) == input);
+    struct gbm_bo *bo = gbm_bo_create(device, 4, 3, GBM_FORMAT_ABGR8888, GBM_BO_USE_WRITE);
+    assert(bo);
+    gbm_device_destroy(device);
+    assert(close(input) == 0);
+    int prime = gbm_bo_get_fd(bo); assert(prime >= 0);
+    assert(close(prime) == 0);
+    gbm_bo_destroy(bo);
 }
 static void rejected(const void *pointer) {
     uint32_t width=101,height=102,format=103,flags=104;
@@ -217,16 +242,16 @@ int main(void) {
     struct gbm_device *device = gbm_create_device(device_fd); assert(device);
     int native_fd = -9; uint64_t identity = 0;
     assert(_wpk_gbm_device_metadata(device, &native_fd, &identity));
-    assert(native_fd == device_fd && identity);
+    same_device_file(native_fd); assert(identity);
     uint64_t first_identity = identity;
     assert(!_wpk_gbm_device_metadata((void *)(uintptr_t)1, &native_fd, &identity));
-    assert(native_fd == device_fd && identity == first_identity);
+    same_device_file(native_fd); assert(identity == first_identity);
     rejected(NULL); rejected((void *)(uintptr_t)1); rejected(device);
     size_t page = (size_t)sysconf(_SC_PAGESIZE);
     void *guard = mmap(NULL,page,PROT_NONE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0); assert(guard != MAP_FAILED);
     rejected(guard);
     assert(!_wpk_gbm_device_metadata(guard, &native_fd, &identity));
-    assert(native_fd == device_fd && identity == first_identity);
+    same_device_file(native_fd); assert(identity == first_identity);
     assert(!munmap(guard,page));
     struct gbm_surface *first = gbm_surface_create(device,32,24,GBM_FORMAT_ABGR8888,GBM_BO_USE_RENDERING);
     struct gbm_surface *second = gbm_surface_create(device,17,9,GBM_FORMAT_XRGB8888,GBM_BO_USE_SCANOUT);
@@ -251,13 +276,14 @@ int main(void) {
     public_format_queries(device);
     imported_handle_lifetime(device);
     cpu_mapping();
+    retained_device_file();
     uintptr_t retired_device = (uintptr_t)device;
     gbm_device_destroy(device);
     assert(!_wpk_gbm_device_metadata((void *)retired_device, &native_fd, &identity));
     assert(fcntl(device_fd, F_GETFD) >= 0); /* The caller still owns its fd. */
     device = gbm_create_device(device_fd); assert(device);
     assert(_wpk_gbm_device_metadata(device, &native_fd, &identity));
-    assert(native_fd == device_fd && identity != first_identity);
+    same_device_file(native_fd); assert(identity != first_identity);
     gbm_device_destroy(device);
     assert(!close(device_fd));
     puts("PASS actual GBM metadata, modifiers, formats and retained CPU mappings");

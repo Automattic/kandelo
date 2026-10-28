@@ -53,6 +53,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
+#include <unistd.h>
 #include <pthread.h>
 
 /* WPK GPU-tier bo allocator (mirrors wasm_posix_shared::dri). A GPU-tier
@@ -70,7 +72,9 @@ struct wpk_drm_gpu_bo_create {
 };
 
 struct gbm_device {
-    int fd;  /* owned by caller; gbm_device_destroy does NOT close it */
+    int fd;          /* retained file alias, owned until the last object retires */
+    int public_fd;   /* caller's original descriptor, returned by the public API */
+    unsigned references;
     uint64_t identity;
     struct gbm_device *live_next;
 };
@@ -78,6 +82,33 @@ struct gbm_device {
 static pthread_mutex_t device_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct gbm_device *live_devices;
 static uint64_t next_device_identity = 1;
+
+static int retain_device(struct gbm_device *device) {
+    int retained = 0;
+    pthread_mutex_lock(&device_mutex);
+    for (struct gbm_device *p = live_devices; p; p = p->live_next) {
+        if (p == device && p->references != UINT_MAX) {
+            ++p->references;
+            retained = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&device_mutex);
+    if (!retained) errno = EINVAL;
+    return retained;
+}
+
+/* A public device name can disappear while BOs or windows still own its
+ * file. Retire the private alias only after their independent holds end. */
+static void release_device(struct gbm_device *device) {
+    pthread_mutex_lock(&device_mutex);
+    int retired = --device->references == 0;
+    pthread_mutex_unlock(&device_mutex);
+    if (retired) {
+        close(device->fd);
+        free(device);
+    }
+}
 
 /* EGL receives an opaque native handle. Resolve only our live devices;
  * neither a foreign pointer nor a recycled allocation selects an old display. */
@@ -221,10 +252,14 @@ struct gbm_device *gbm_create_device(int fd) {
         errno = ENOMEM;
         return NULL;
     }
-    d->fd = fd;
+    d->fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+    if (d->fd < 0) { int save = errno; free(d); errno = save; return NULL; }
+    d->public_fd = fd;
+    d->references = 1;
     pthread_mutex_lock(&device_mutex);
     if (next_device_identity == 0) {
         pthread_mutex_unlock(&device_mutex);
+        close(d->fd);
         free(d);
         errno = EOVERFLOW;
         return NULL;
@@ -238,18 +273,20 @@ struct gbm_device *gbm_create_device(int fd) {
 }
 
 void gbm_device_destroy(struct gbm_device *gbm) {
+    int removed = 0;
     pthread_mutex_lock(&device_mutex);
     struct gbm_device **slot = &live_devices;
     while (*slot && *slot != gbm) slot = &(*slot)->live_next;
     if (*slot) {
         *slot = gbm->live_next;
-        free(gbm);
+        removed = 1;
     }
     pthread_mutex_unlock(&device_mutex);
+    if (removed) release_device(gbm);
 }
 
 int gbm_device_get_fd(struct gbm_device *gbm) {
-    return gbm->fd;
+    return gbm->public_fd;
 }
 
 const char *gbm_device_get_backend_name(struct gbm_device *gbm) {
@@ -290,9 +327,11 @@ static struct gbm_bo *bo_create(struct gbm_device *gbm,
         errno = EINVAL;
         return NULL;
     }
+    if (!retain_device(gbm)) return NULL;
 
     struct gbm_bo *bo = (struct gbm_bo *) calloc(1, sizeof(*bo));
     if (!bo) {
+        release_device(gbm);
         errno = ENOMEM;
         return NULL;
     }
@@ -334,6 +373,7 @@ static struct gbm_bo *bo_create(struct gbm_device *gbm,
     if (drmIoctl(gbm->fd, DRM_IOCTL_MODE_CREATE_DUMB, &req) < 0) {
         int save = errno;
         free(bo);
+        release_device(gbm);
         errno = save;
         return NULL;
     }
@@ -416,17 +456,19 @@ struct gbm_bo *gbm_bo_import(struct gbm_device *gbm, uint32_t type,
         errno = EINVAL;
         return NULL;
     }
+    if (!retain_device(gbm)) return NULL;
 
     /* Allocate before import: a failed userspace allocation must not close
      * a cached handle still owned by another public BO. */
     struct gbm_bo *bo = calloc(1, sizeof *bo);
-    if (!bo) { errno = ENOMEM; return NULL; }
+    if (!bo) { release_device(gbm); errno = ENOMEM; return NULL; }
     struct drm_prime_handle req = {.fd = d->fd};
     pthread_mutex_lock(&handle_mutex);
     if (drmIoctl(gbm->fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &req) < 0) {
         int save = errno;
         pthread_mutex_unlock(&handle_mutex);
         free(bo);
+        release_device(gbm);
         errno = save;
         return NULL;
     }
@@ -582,6 +624,7 @@ void gbm_bo_destroy(struct gbm_bo *bo) {
     }
     if (!retained) drmCloseBufferHandle(bo->dev->fd, bo->handle);
     pthread_mutex_unlock(&handle_mutex);
+    release_device(bo->dev);
     free(bo);
 }
 
@@ -715,8 +758,10 @@ struct gbm_surface *gbm_surface_create(struct gbm_device *gbm,
         errno = EINVAL;
         return NULL;
     }
+    if (!retain_device(gbm)) return NULL;
     struct gbm_surface *s = (struct gbm_surface *) calloc(1, sizeof(*s));
     if (!s) {
+        release_device(gbm);
         errno = ENOMEM;
         return NULL;
     }
@@ -734,6 +779,7 @@ struct gbm_surface *gbm_surface_create(struct gbm_device *gbm,
                 gbm_bo_destroy(s->bos[j]);
             }
             free(s);
+            release_device(gbm);
             errno = save;
             return NULL;
         }
@@ -826,5 +872,6 @@ void gbm_surface_destroy(struct gbm_surface *surface) {
             surface->bos[i] = NULL;
         }
     }
+    release_device(surface->dev);
     free(surface);
 }

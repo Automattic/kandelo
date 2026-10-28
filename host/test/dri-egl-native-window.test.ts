@@ -3,10 +3,10 @@ import { runCentralizedProgram } from "./centralized-test-helper";
 import { loggingGraphicsGl, allocatedTexture } from "./support/logging-graphics-gl";
 import { compileSdkFixture } from "./support/compile-sdk-fixture";
 
-it("passes live GBM native window sizes through the SDK's ordinary EGL path", async () => {
+it.each(["wasm32", "wasm64"] as const)("passes live GBM native window sizes through the %s SDK's ordinary EGL path", async arch => {
   const { programPath, cleanup } = compileSdkFixture(
     new URL("./fixtures/gbm-native-window.c", import.meta.url),
-    ["-lEGL", "-lGLESv2", "-lgbm", "-ldrm"],
+    ["-lEGL", "-lGLESv2", "-lgbm", "-ldrm"], { arch },
   );
   try {
     const { gl, calls } = loggingGraphicsGl();

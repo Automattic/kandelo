@@ -6771,3 +6771,68 @@ rebuild and memory gate together. The intermittent inherited 2D Firefox
 capture, actual GBM native-window rendered front/back storage and the
 remaining GLES/EGL/GBM/KMS inventory are still ordinary open work. No
 baseline-wide completion or new hard boundary is claimed.
+
+## GBM device file retention and dual-width SDK, 2026-10-28
+
+A normal SDK guest reproduced a B01 owner-lifetime defect on `09a6401b2b`:
+create a BO, destroy its public GBM device, close the caller's DRM fd,
+then export the surviving BO. The old shim freed the device record and
+borrowed the closed fd; export failed with EBADF. The actual before run
+is `graphics-gbm-device-before-1028-172201-f125`, with stderr
+`line 14: prime >= 0 errno=9`. The strengthened regression also reuses
+the caller's fd for `/dev/null`, writes the surviving BO, retires its
+surface, and checks that final cleanup closes only the private DRM alias.
+
+Each device now owns a close-on-exec duplicate of its DRM file. The public
+name, every BO and every GBM surface hold independent references. Public
+device destruction withdraws metadata lookup; the file/record survives
+until its final owned object retires. `gbm_device_get_fd` still returns
+the caller's original descriptor. Failure paths release acquired holds.
+This does not close the borrowed metadata-to-EGL acquisition race,
+cross-wrapper cached GEM ownership, failed destructor cleanup, or the
+EGL-retained GBM native-window/rendered front-back storage gaps.
+
+The same native harness against historic `09a6401b2b` fails with allocator
+poisoning (`MallocScribble=1`, status134, wrong-device-file assertion).
+Without poisoning it initially passed because freed bytes remained
+readable; that run is not a failing control. An AddressSanitizer diagnostic
+hung during sanitizer initialization before test entry and was stopped;
+it is neither a test pass nor evidence of an outside defect. Logs and its
+sample remain in `.context/gbm-ring-repair/.context/gbm-device-native-*`.
+The repaired harness passes both UBSan and the poisoning control, including
+all 38 public symbol checks. The revision runner now accepts one historic
+source reference and bounds the native process at 30 seconds.
+
+The added normal wasm64 guest first failed to link: bootstrap and the
+libdrm recipe provisioned graphics only for wasm32. This was ordinary
+missing SDK support, not a platform boundary. The DRI/EGL/GLES builders
+now select the requested target and sysroot, include that architecture
+in their freshness identity, and resolve the matching libdrm package.
+Libdrm declares both widths and uses the matching worktree SDK wrappers.
+Normal musl bootstrap refreshes graphics on both widths; `--core-only`
+continues to prevent recursive resolution. No ABI or publish revision
+was used as a progress counter. No new Linux identity define or upstream
+source patch was introduced; the existing libdrm compatibility header is
+unchanged. The CTS package still declares only wasm32.
+
+`graphics-gbm-device-combined-1028-173943-bc69` passed in 2m56s after normal
+bootstrap of both SDKs. Ten Node cases passed in eight files with zero
+skipped/unloaded cases: device retirement and EGL native-window handoff
+both execute wasm32 and wasm64, alongside import, modifier, mapping,
+existing ring-bookkeeping, dma-buf and image ownership checks. Fifteen
+browser cases passed in 26.6s across Chromium, Firefox and WebKit,
+including device retirement at both guest widths. Native UBSan, native
+allocator poisoning, relocatable graphics pkg-config, musl build-state
+and evidence classification checks passed. Logs are primary
+`.context/graphics-gbm-device-*-final.log`; browser results are in
+`.context/graphics-gbm-device-browser-final-results/`, and per-engine
+kernel/program/image hashes in `.context/gbm-device-retirement-guests/`.
+Source/archive identities are `.context/graphics-gbm-device-identities.json`.
+
+This is source `09a6401b2b` plus the device-retention and SDK provision
+changes in this checkpoint, with program ABI56/kernel-host3 unchanged.
+It does not establish rendered GBM ring semantics or complete wasm64
+EGL/GLES conformance. The existing ring smoke test still checks its old
+bookkeeping model, not produced rendered fronts. Complete consumer/image
+rebuild, memory and POSIX gates on these newest C changes remain required;
+the prior full gates have their separately recorded source identities.

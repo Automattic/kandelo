@@ -1190,7 +1190,8 @@ omitted.
 The default reflects the project's wasm64 build policy: the kernel
 is wasm64, but most ported user-space programs (dash, vim, perl,
 etc.) ship wasm32 only. The packages that currently opt into
-wasm64 are MariaDB, MariaDB-VFS, libcxx, zlib, OpenSSL, and SQLite.
+wasm64 include MariaDB, MariaDB-VFS, libcxx, zlib, OpenSSL, SQLite, and
+libdrm.
 PHP, libiconv, and libxml2 remain wasm32-only because their current recipes
 invoke the wasm32 SDK explicitly. Adding a manifest to the wasm64 set is one
 line, but the corresponding recipe and runtime/link validation must support
