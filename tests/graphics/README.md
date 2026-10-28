@@ -655,3 +655,13 @@ Six browser cases retain red old and blue replacement storage, retire
 public owners, render green through the old hold and require exact final
 deletions with and without rejected texture cleanup. They remain source
 adapters, not normal guest or compositor integration evidence.
+
+
+`run-gbm-unit.sh` compiles actual GBM source with a native DRM allocation
+double under UBSan. It checks live native handles, allocation rollback,
+modifier pointer/count validation, layout rejection before allocation,
+linear plane-count queries, fourcc names and legacy name aliases. It also
+compares all 38 public header functions against the compiled object's
+external definitions. It needs the normal provisioned public DRM headers.
+This is source/API evidence, not SDK guest execution, rendered GBM
+front/back storage or complete GBM compatibility.

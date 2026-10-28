@@ -3,11 +3,13 @@
 #include <gbm.h>
 #include <xf86drm.h>
 #include <drm/drm_mode.h>
+#include <drm/drm_fourcc.h>
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -35,6 +37,75 @@ static void rejected(const void *pointer) {
     assert(width == 101 && height == 102 && format == 103 && flags == 104);
     assert(!_wpk_gbm_surface_dimensions(pointer,&width,&height));
     assert(width == 101 && height == 102);
+}
+static void public_format_queries(struct gbm_device *device) {
+    unsigned before = created;
+    const uint32_t formats[] = {GBM_FORMAT_XRGB8888, GBM_FORMAT_ARGB8888,
+        GBM_FORMAT_XBGR8888, GBM_FORMAT_ABGR8888};
+    for (unsigned i = 0; i < 4; ++i) {
+        assert(gbm_device_get_format_modifier_plane_count(device, formats[i], DRM_FORMAT_MOD_LINEAR) == 1);
+        assert(gbm_device_get_format_modifier_plane_count(device, formats[i], UINT64_C(0x0100000000000001)) == -1);
+    }
+    assert(gbm_device_get_format_modifier_plane_count(device, 0xdeadbeef, DRM_FORMAT_MOD_LINEAR) == -1);
+    assert(gbm_device_get_format_modifier_plane_count(device, GBM_BO_FORMAT_XRGB8888, DRM_FORMAT_MOD_LINEAR) == 1);
+    assert(gbm_device_get_format_modifier_plane_count(device, GBM_BO_FORMAT_ARGB8888, DRM_FORMAT_MOD_LINEAR) == 1);
+    struct { struct gbm_format_name_desc desc; char sentinel; } name = {.sentinel = 'Q'};
+    assert(gbm_format_get_name(GBM_BO_FORMAT_XRGB8888, &name.desc) == name.desc.name);
+    assert(!strcmp(name.desc.name, "XR24"));
+    assert(gbm_format_get_name(GBM_BO_FORMAT_ARGB8888, &name.desc) == name.desc.name);
+    assert(!strcmp(name.desc.name, "AR24"));
+    assert(gbm_format_get_name(GBM_FORMAT_ABGR8888, &name.desc) == name.desc.name);
+    assert(!strcmp(name.desc.name, "AB24"));
+    assert(name.sentinel == 'Q' && created == before);
+}
+static void modifier_requests(struct gbm_device *device) {
+    const uint64_t linear[] = {DRM_FORMAT_MOD_LINEAR};
+    const uint64_t unavailable[] = {UINT64_C(0x0100000000000001)};
+    const uint64_t choices[] = {unavailable[0], DRM_FORMAT_MOD_LINEAR};
+    const uint32_t flags = GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING;
+    unsigned before = created;
+    const struct { const uint64_t *list; unsigned count; uint32_t usage; } invalid[] = {
+        {NULL, 1, flags},
+        {linear, 0, flags},
+        {unavailable, 1, flags},
+        {linear, 1, flags | GBM_BO_USE_LINEAR},
+    };
+    /* Reject malformed/unsatisfiable requests before allocating any BO. */
+    for (unsigned kind = 0; kind < 2; ++kind) {
+        for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+            errno = 0;
+            if (kind == 0) {
+                struct gbm_bo *bo = gbm_bo_create_with_modifiers2(device, 3, 2,
+                    GBM_FORMAT_ABGR8888, invalid[i].list, invalid[i].count, invalid[i].usage);
+                assert(!bo && errno == EINVAL);
+            } else {
+                struct gbm_surface *surface = gbm_surface_create_with_modifiers2(device, 3, 2,
+                    GBM_FORMAT_ABGR8888, invalid[i].list, invalid[i].count, invalid[i].usage);
+                assert(!surface && errno == EINVAL);
+            }
+            assert(created == before);
+        }
+    }
+    errno = 0;
+    assert(!gbm_surface_create_with_modifiers(device, 3, 2, GBM_FORMAT_ABGR8888,
+        unavailable, 1) && errno == EINVAL);
+    assert(created == before);
+    struct gbm_surface *surface = gbm_surface_create_with_modifiers2(device, 3, 2,
+        GBM_FORMAT_ABGR8888, choices, 2, flags);
+    assert(surface);
+    uint32_t width, height, format, usage;
+    assert(_wpk_gbm_surface_metadata(surface, &width, &height, &format, &usage));
+    assert(width == 3 && height == 2 && format == GBM_FORMAT_ABGR8888 && usage == flags);
+    gbm_surface_destroy(surface);
+    struct gbm_bo *bo = gbm_bo_create_with_modifiers2(device, 3, 2, GBM_FORMAT_ABGR8888,
+        choices, 2, flags);
+    assert(bo && gbm_bo_get_modifier(bo) == DRM_FORMAT_MOD_LINEAR);
+    gbm_bo_destroy(bo);
+    bo = gbm_bo_create_with_modifiers2(device, 3, 2, GBM_FORMAT_ABGR8888,
+        NULL, 0, flags | GBM_BO_USE_LINEAR);
+    assert(bo && gbm_bo_get_modifier(bo) == DRM_FORMAT_MOD_LINEAR);
+    gbm_bo_destroy(bo);
+    assert(created == before + 4 && closed == created);
 }
 int main(void) {
     device_fd = open("/dev/null", O_RDWR); assert(device_fd >= 0);
@@ -71,6 +142,9 @@ int main(void) {
     assert(!gbm_surface_create(device,3,2,GBM_FORMAT_ABGR8888,GBM_BO_USE_SCANOUT));
     assert(created == 5 && closed == 5 && errno == ENOMEM);
     rejected((void *)retired);
+    fail_allocation = 0;
+    modifier_requests(device);
+    public_format_queries(device);
     uintptr_t retired_device = (uintptr_t)device;
     gbm_device_destroy(device);
     assert(!_wpk_gbm_device_metadata((void *)retired_device, &native_fd, &identity));
@@ -80,5 +154,5 @@ int main(void) {
     assert(native_fd == device_fd && identity != first_identity);
     gbm_device_destroy(device);
     assert(!close(device_fd));
-    puts("PASS actual GBM live, foreign, guarded, retired and failed-creation metadata");
+    puts("PASS actual GBM metadata, modifier admission and public format queries");
 }

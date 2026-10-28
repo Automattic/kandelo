@@ -34,12 +34,12 @@
  *
  * The surface holds a fixed-size two-BO ring (double-buffer);
  * lock_front_buffer hands out an unused BO and release_buffer
- * returns it. Modifiers other than DRM_FORMAT_MOD_LINEAR are
- * ignored — every BO is linear, CPU-shared, single-plane.
+ * returns it. Modifier requests must allow a linear layout; unsupported
+ * lists fail before allocation. Full rendered front/back storage remains
+ * separate from this ring bookkeeping.
  *
- * Declared in <gbm.h> but intentionally NOT implemented (consumers
- * calling these get link-time undefined-symbol errors):
- *   gbm_device_get_format_modifier_plane_count, gbm_format_get_name.
+ * Format queries report the single linear plane actually allocated here;
+ * names use the public fourcc spelling, including the two legacy aliases.
  */
 
 #include <gbm.h>
@@ -167,6 +167,28 @@ static uint32_t format_bpp(uint32_t fourcc) {
     default:
         return 0;
     }
+}
+
+static uint32_t canonical_format(uint32_t format) {
+    if (format == GBM_BO_FORMAT_XRGB8888) return GBM_FORMAT_XRGB8888;
+    if (format == GBM_BO_FORMAT_ARGB8888) return GBM_FORMAT_ARGB8888;
+    return format;
+}
+
+int gbm_device_get_format_modifier_plane_count(struct gbm_device *gbm,
+                                               uint32_t format, uint64_t modifier) {
+    if (!gbm || !format_bpp(canonical_format(format)) || modifier != DRM_FORMAT_MOD_LINEAR) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 1;
+}
+
+char *gbm_format_get_name(uint32_t format, struct gbm_format_name_desc *desc) {
+    format = canonical_format(format);
+    for (unsigned i = 0; i < 4; ++i) desc->name[i] = (char)(format >> (i * 8));
+    desc->name[4] = '\0';
+    return desc->name;
 }
 
 struct gbm_device *gbm_create_device(int fd) {
@@ -315,13 +337,23 @@ static int modifiers_allow_linear(const uint64_t *modifiers, unsigned count) {
     return 0;
 }
 
+/* Match the public GBM pointer/count and explicit-layout contract for
+ * both BOs and surfaces. USE_LINEAR cannot accompany an explicit list,
+ * even if that list includes LINEAR. Never allocate a different layout
+ * after the caller supplied only unsupported modifiers. */
+static int modifier_request_valid(const uint64_t *modifiers, unsigned count, uint32_t flags) {
+    return !((count && !modifiers) || (modifiers && !count))
+        && !(modifiers && (flags & GBM_BO_USE_LINEAR))
+        && (!count || modifiers_allow_linear(modifiers, count));
+}
+
 struct gbm_bo *gbm_bo_create_with_modifiers2(struct gbm_device *gbm,
                                              uint32_t width, uint32_t height,
                                              uint32_t format,
                                              const uint64_t *modifiers,
                                              const unsigned int count,
                                              uint32_t flags) {
-    if (count > 0 && (!modifiers || !modifiers_allow_linear(modifiers, count))) {
+    if (!modifier_request_valid(modifiers, count, flags)) {
         errno = EINVAL;
         return NULL;
     }
@@ -651,12 +683,8 @@ gbm_surface_create_with_modifiers(struct gbm_device *gbm,
                                   uint32_t format,
                                   const uint64_t *modifiers,
                                   const unsigned int count) {
-    (void) modifiers; (void) count;
-    /* v1 only emits DRM_FORMAT_MOD_LINEAR; ignoring caller-supplied
-     * modifier set matches the documented mesa fallback when no
-     * requested modifier is available. */
-    return gbm_surface_create(gbm, width, height, format,
-                              GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+    return gbm_surface_create_with_modifiers2(gbm, width, height, format,
+        modifiers, count, GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
 }
 
 struct gbm_surface *
@@ -666,7 +694,10 @@ gbm_surface_create_with_modifiers2(struct gbm_device *gbm,
                                    const uint64_t *modifiers,
                                    const unsigned int count,
                                    uint32_t flags) {
-    (void) modifiers; (void) count;
+    if (!modifier_request_valid(modifiers, count, flags)) {
+        errno = EINVAL;
+        return NULL;
+    }
     return gbm_surface_create(gbm, width, height, format, flags);
 }
 

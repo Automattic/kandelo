@@ -6415,3 +6415,45 @@ check and final conformance rerun remain outstanding. All ordinary baseline
 gaps remain tracked above, including B03 native-window front/back storage.
 These consumer passes do not establish complete GLES2/EGL/GBM/KMS
 compatibility. Performance was not measured.
+
+
+## GBM modifier admission and public format queries, 2026-10-28
+
+The GBM library now defines the missing public
+`gbm_device_get_format_modifier_plane_count` and `gbm_format_get_name`
+functions. Supported fourcc/linear pairs report the actual one-plane
+layout; unsupported pairs fail. Format names write into caller-owned
+storage and normalize the two legacy XRGB/ARGB name aliases. This does not
+extend the allocator's format inventory or claim complete legacy alias
+handling in the other GBM entry points.
+
+BO and surface modifier constructors now share pointer/count and
+explicit-layout validation. A nonempty list needs a pointer; a nonnull
+pointer needs a nonzero count; an explicit list cannot accompany
+GBM_BO_USE_LINEAR. Surface construction previously ignored the list and
+silently allocated linear storage even when only unsupported layouts were
+requested. It now rejects that request before allocating or publishing
+BOs. Lists containing an available linear choice and implicit no-list
+linear requests remain supported. The contract was checked against
+[Mesa's pinned public GBM implementation](https://gitlab.freedesktop.org/mesa/mesa/-/blob/f1f246cfda65eff82fba3be1caf2d23bdeda60cc/src/gbm/main/gbm.c)
+and its DRI format/modifier query implementation at the same revision.
+
+The native regression first reproduced malformed BO-request acceptance
+(exit 134) and separately failed to link the two missing public symbols.
+After repair, `tests/graphics/run-gbm-unit.sh` passes under UBSan and
+checks all 38 header-declared functions against actual compiled external
+definitions. Its device double checks no allocation on nine invalid
+requests, successful mixed-list and implicit-linear allocations, actual
+linear plane metadata, unsupported formats/modifiers, fourcc names and
+unchanged adjacent caller storage. Logs are retained in the owned
+GBM checkout as `.context/gbm-{modifier,query}-{before,after}.log` and
+`.context/gbm-public-native-final.log`.
+
+This checkpoint has native source/API evidence. New ordinary SDK Node and
+three-engine browser fixtures are prepared, but have not yet executed.
+SDK archives, linked consumers and normal images still require rebuilding
+for this C source; the preceding consumer and live memory/conformance
+runs retain their explicitly recorded earlier source identities. Program
+ABI remains 56, kernel-host 3 and operation table 17. B01 remains partial;
+B03 rendered front/back storage and B02 mapping/coherence remain ordinary
+implementation gaps. No hard boundary or complete GBM support is claimed.
