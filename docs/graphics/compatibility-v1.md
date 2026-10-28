@@ -6707,3 +6707,30 @@ using the same isolated-home launch environment as the normal suite
 allowed it to run. Therefore an outside defect is still unconfirmed.
 The normal test is now comparing clipped viewport capture with element
 capture while preserving pixels and deadlines; that result is pending.
+
+
+## Completed conformance and capture controls, 2026-10-28
+
+`graphics-main56-final-conformance-1028-145731-953f` completed successfully
+in 1h30m on source `ec499f4cb412`: libc 306 pass, 17 expected failures
+and one known FLAKE-PASS (324 total); Open POSIX174 pass, three expected
+failures and two skips (179 total); Sortix5,065 pass,23 expected failures
+and50 skips (5,138 total). There were no unexpected failures, build
+failures or timeouts. This source includes the combined ABI56/host3,
+alpha and framebuffer-admission fixes. It predates the later GBM query,
+map and import C changes and the shared exit-request flags repair.
+
+The clipped-viewport capture experiment first passed all12 inherited
+cases across three engines in
+`graphics-inherited-viewport-capture-1028-162725-6199`. A fixed ten-case
+Firefox repetition then passed7/10 and failed3/10 in
+`graphics-inherited-viewport-repeat-1028-162852-e886`, again timing out
+while screenshot capture took10-20 seconds. It is not a fix. Both this
+experiment and Node PNG-decoder dependencies were removed from the branch;
+the original exact pixel assertions and original fixture are retained.
+Their patches, experimental fixture and lockfile are saved under primary
+`.context/inherited-capture-experiments.patch`,
+`.context/inherited-viewport-probe.spec.ts` and
+`.context/inherited-png-package-lock.json`. All diagnostic result folders
+remain separate. The Firefox inherited 2D capture remains unresolved;
+a single all-engine pass does not close it.
