@@ -3,9 +3,9 @@
 [PR #1574](https://github.com/Automattic/kandelo/pull/1574) lands the
 infrastructure and normal package/image integration for upstream cage
 0.3.1 and sway 1.12 on wlroots 0.20.2. Its runtime source cut is
-`21f3d451bb`; the landing also integrates main `35164686062c` and its
-program-ABI crate extraction, package build fixes, terminal signal wakeup
-and WebKit thread-worker retirement policy. Existing consumer evidence
+`21f3d451bb`; the landing also integrates main `e4bca8639e4b` and its
+program-ABI crate extraction, package build fixes, terminal signal wakeup,
+WebKit thread-worker retirement, real yacc/lex and guest NetHack build. Existing consumer evidence
 predates that main integration; normal combined rebuilds and acceptance
 remain required. This is a bounded compositor consumer contract; complete
 GLES 2.0 and advertised EGL 1.5/extensions conformance continue in
@@ -87,14 +87,17 @@ not authorize weaker assertions, a blanket waiver or a platform boundary.
 
 ## Evidence and current status, 2026-10-29
 
-Main `35164686062c` is integrated by merge `5a54da5635`, preserving
-its program-ABI crate extraction, build changes, terminal signal wakeups
-and WebKit worker retention. Program ABI 56 / host 3 / GL table 17 /
-fork record 21 remain unchanged. ABI regeneration/check and resolver
-regression pass; all generated ABI outputs are byte-identical to the
-prior landing candidate. Shared tests pass 87/87, focused xtask checks
-15/15 and six focused host source files 357/357. These source checks do
-not establish combined-main application acceptance, which remains pending.
+Main `e4bca8639e4b` is integrated by merge `30dfe6bb0d`, preserving
+its program-ABI crate extraction, build changes, terminal signal wakeups,
+WebKit worker retention, real yacc/lex and guest NetHack build. Program ABI 56 / host 3 / GL table 17 /
+fork record 21 remain unchanged. Earlier integration `5a54da5635` passed
+ABI regeneration/check, resolver regression, 87 shared cases, 15 focused
+xtask checks and 357 focused host cases, with byte-identical generated
+outputs. The additional main merge passes 60 host cases in three files.
+The resumed full xtask suite passes at follow-up source `ba845edaf4`,
+including all 811 unit cases and later integration targets. These source
+checks do not establish combined-main application acceptance, which
+remains pending.
 
 The prior clean candidate `9088f31021` completed its normal product,
 optional CTS, ABI, freshness and artifact-closure checks. Its bounded
@@ -239,3 +242,23 @@ The baseline inventory remains authoritative for those ordinary gaps.
 Advertised capabilities are unchanged, and passing compositor sessions
 does not close an API family. Once this unpublished ABI is released,
 future incompatible changes follow the normal ABI versioning contract.
+
+
+### Narrow renderbuffer replay ownership
+
+A canonical host build on combined follow-up `97e0aaf98a` exposed a
+TypeScript declaration error: the muxer owns replay state, while its
+renderbuffer helper was typed as requiring a complete guest binding.
+The helper now accepts only the optional read-only renderbuffer-view
+map it actually reads. A state-only owner without imported aliases uses
+its native renderbuffer directly; a mapped owner resolves the retained
+native alias. No guest address space is added to the muxer contract.
+
+The new causal regression fails before the repair with a missing-map
+exception. After the repair all 24 muxer cases pass, and the canonical
+host build completes JavaScript and declaration generation. Both commands
+use the declared development shell; logs are retained in the VMA
+checkout as `.context/muxer-narrow-owner-{before,after,host}.log`.
+This is bounded helper/build evidence. The current normal product run at
+`85c56d342d` predates this helper repair; combined rebuilt application,
+three-engine browser, memory and conformance acceptance remain required.

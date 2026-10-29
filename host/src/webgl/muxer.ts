@@ -1,5 +1,5 @@
 // Replay each GLES2 texture target independently on the shared context.
-import { renderbufferNative, type GlTextureView } from "./image-storage.js";
+import { renderbufferNative, type GlRenderbufferView, type GlTextureView } from "./image-storage.js";
 import { reconcileClientArrayRestore, type GlClientArrayFields } from "./client-array.js";
 import { hasNativeRepair, repairNativeState } from "./native-recovery.js";
 import { knownTextureUnitLimit } from "./limits.js";
@@ -22,7 +22,9 @@ import {
   type GlShadowState,
 } from "./shadow.js";
 
-type GlMuxerOwner = {shadow: GlShadowState; textureViews?: Map<WebGLTexture,GlTextureView>}
+// Replay reads device state only; it must not require or retain guest memory.
+type GlMuxerOwner = {shadow: GlShadowState; textureViews?: Map<WebGLTexture,GlTextureView>;
+  renderbufferViews?: ReadonlyMap<WebGLRenderbuffer,GlRenderbufferView>}
   & GlErrorState & GlClientArrayFields;
 
 export class GlMuxer {

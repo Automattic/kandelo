@@ -42,8 +42,8 @@ export function registerImageSource(b: GlBinding, bo: number, texture: WebGLText
 export function textureNative(b: GlBinding, object: WebGLTexture): WebGLTexture {
   return b.textureViews.get(object)?.native ?? object;
 }
-export function renderbufferNative(b: GlBinding, object: WebGLRenderbuffer): WebGLRenderbuffer {
-  return b.renderbufferViews.get(object)?.native ?? object;
+export function renderbufferNative(b: { readonly renderbufferViews?: ReadonlyMap<WebGLRenderbuffer, GlRenderbufferView> }, object: WebGLRenderbuffer): WebGLRenderbuffer {
+  return b.renderbufferViews?.get(object)?.native ?? object;
 }
 export function canonicalTexture(b: GlBinding, native: WebGLTexture): WebGLTexture {
   return b.textureViewOwners.get(native) ?? native;
