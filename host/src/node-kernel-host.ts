@@ -113,6 +113,15 @@ export interface NodeKernelHostOptions {
    *  external hosts via Node `net.Socket`. */
   enableTcpNetwork?: boolean;
   /**
+   * Boot the machine with the internet egress link the browser host always
+   * gives it (eth0 at 10.0.2.15/24 behind a NAT gateway), but with nothing
+   * behind the gateway: connections beyond the machine fail with
+   * EHOSTUNREACH and the host's network is never touched. For conformance
+   * runs that must observe the browser's machine. Cannot be combined with
+   * `enableTcpNetwork`.
+   */
+  offlineEgressLink?: boolean;
+  /**
    * Boot the kernel in deterministic image-build mode: `CLOCK_REALTIME`
    * counts up from `epochSeconds` and every entropy read (`getrandom`,
    * `/dev/urandom`) draws from a stream seeded by `seed`. For image builders
@@ -278,6 +287,9 @@ export class NodeKernelHost {
     if (this.kernelFatalError !== null) throw this.kernelFatalError;
     const wasmBytes = kernelWasmBytes ?? loadKernelWasm();
     const rootfsImage = resolveRootfsImage(this.options.rootfsImage);
+    if (this.options.enableTcpNetwork && this.options.offlineEgressLink) {
+      throw new Error("enableTcpNetwork and offlineEgressLink are exclusive: a machine has one egress link");
+    }
     if (this.options.rootfsLazyAssets !== undefined && rootfsImage === null) {
       throw new Error("rootfsLazyAssets requires rootfsImage");
     }
@@ -462,6 +474,7 @@ export class NodeKernelHost {
           extraMounts: this.options.extraMounts,
           sessionSeedTrees,
           enableTcpNetwork: this.options.enableTcpNetwork,
+          offlineEgressLink: this.options.offlineEgressLink,
         };
         const transfer: Transferable[] = [
           ...(this.options.remoteNetwork?.role === "joiner"

@@ -662,6 +662,7 @@ _run_runtime_test_worker() {
     set +e
     (cd "$REPO_ROOT" && \
         KERNEL_CWD= \
+        KANDELO_RUNNER_NETWORK=offline-egress \
         KANDELO_GUEST_OUTPUT_FILE="$guest_output_file" \
         KANDELO_RUNNER_FIXTURE_ROOT="${SORTIX_FIXTURE_ROOT:?}" \
         KANDELO_RUNNER_FIXTURE_CWD="$suite" \

@@ -381,6 +381,7 @@ run_test() {
         KANDELO_RUNNER_FIXTURE_CWD="$fixture_cwd" \
         KANDELO_RUNNER_GUEST_PROGRAM= \
         KANDELO_RUNNER_VFS=isolated \
+        KANDELO_RUNNER_NETWORK=offline-egress \
         KANDELO_RUNNER_BUILTINS=explicit \
         TIMEOUT="$((TEST_TIMEOUT * 1000))" \
         timeout "$((TEST_TIMEOUT + 5))" node --experimental-wasm-exnref \

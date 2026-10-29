@@ -54,6 +54,7 @@ import {
   createClosedLazyAssetSourceFetcher,
 } from "./vfs/closed-lazy-assets";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
+import { OfflineEgressBackend } from "./networking/offline-egress-backend";
 import { NodeLazyAssetResolver } from "./node-lazy-asset-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
 import { DeferredWorkerHandle } from "./deferred-worker-handle";
@@ -949,8 +950,13 @@ async function handleInit(msg: InitMessage) {
     )
     : new NodePlatformIO();
   vfsExecIO = msg.rootfsImage ? io : null;
+  if (msg.enableTcpNetwork && msg.offlineEgressLink) {
+    throw new Error("enableTcpNetwork and offlineEgressLink are exclusive: a machine has one egress link");
+  }
   if (msg.enableTcpNetwork) {
     io.network = new TcpNetworkBackend();
+  } else if (msg.offlineEgressLink) {
+    io.network = new OfflineEgressBackend();
   }
   // The session network wraps the configured backend (or none) for the
   // machine's life, so a session can start or end under running programs.

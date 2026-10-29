@@ -55,23 +55,26 @@ SIGNAL_EXPECTED_FAIL=()
 PROCESS_EXPECTED_FAIL=()
 PATHS_EXPECTED_FAIL=()
 
+# Both runners boot a machine with the internet egress link
+# (host/src/networking/egress-link.ts): eth0 is 10.0.2.15/24 behind a NAT
+# gateway that carries TCP only. The browser's carries it through fetch; the
+# Node runner's forwards nothing, so a conformance run never reaches the
+# host's network. Each entry below is either that boundary or a recorded
+# defect, with its reason in xfail_expected_reason.
 UDP_EXPECTED_FAIL=(
-    # External raw UDP routes need a HostIO/proxy backend. The in-kernel UDP
-    # implementation intentionally supports loopback/virtual datagrams only and
-    # reports unreachable external routes as ENETUNREACH for now.
-    "bind-lan-subnet-broadcast"
-    "bind-lan-subnet-first"
-    "bind-lan-subnet-wrong"
-    "connect-broadcast-getpeername-so-broadcast"
-    "connect-broadcast-getsockname-so-broadcast"
-    "connect-wan-get-so-bindtodevice"
-    "connect-wan-getsockname"
+    # Boundary: no UDP datagram leaves the machine; the gateway answers
+    # EHOSTUNREACH. Browsers expose no raw UDP.
     "connect-wan-send-reconnect-loopback-send"
-    "connect-wan-unconnect-rebind-any-getsockname"
-    "connect-wan-unconnect-rebind-same-getsockname"
-    "cross-netif-lan-send-loopback-recv"
-    "cross-netif-loopback-send-lan-recv"
     "shutdown-r-send"
+    # Defect: a socket bound to 127.0.0.1 connects to an off-machine address
+    # and keeps its loopback source. Linux refuses that route with EINVAL.
+    "connect-loopback-reconnect-wan-getsockname"
+    # Defect: a datagram sent to the machine's own eth0 address is handed to
+    # the gateway (EHOSTUNREACH) instead of being delivered locally.
+    "cross-netif-loopback-send-lan-recv"
+    # Defect: the egress link refuses a bind to its own subnet broadcast
+    # address, 10.0.2.255, which Linux allows.
+    "bind-lan-subnet-broadcast"
 )
 
 # How each XFAIL above is expected to fail, checked by xfail_check (see
@@ -95,7 +98,11 @@ xfail_expected_reason() {
         basic/syslog/syslog) echo "output:syslog: EDESTADDRREQ" ;;
         basic/unistd/fpathconf|basic/unistd/pathconf) echo "output:_PC_FILESIZEBITS" ;;
         basic/strings/ffsll) echo "output:ffsll\(.*\) gave" ;;
-        udp/*) echo "output:ENETUNREACH" ;;
+        udp/connect-wan-send-reconnect-loopback-send) echo "output:first send: EHOSTUNREACH" ;;
+        udp/shutdown-r-send) echo "output:sendto: EHOSTUNREACH" ;;
+        udp/connect-loopback-reconnect-wan-getsockname) echo "output:^127\.0\.0\.1:same port" ;;
+        udp/cross-netif-loopback-send-lan-recv) echo "output:sendto: EHOSTUNREACH" ;;
+        udp/bind-lan-subnet-broadcast) echo "output:bind: EADDRNOTAVAIL" ;;
         *) echo "" ;;
     esac
 }
