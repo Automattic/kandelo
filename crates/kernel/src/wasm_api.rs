@@ -3189,7 +3189,21 @@ pub extern "C" fn kernel_fork_process(parent_pid: u32, caller_tid: u32, mode: u3
     };
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     match table.fork_process_for_caller_with_mode(parent_pid, caller_tid, mode) {
-        Ok(child_pid) => child_pid as i32,
+        Ok(child_pid) => {
+            let mut host = WasmHostIO;
+            // Announce exact kernel-owned aliases while they are still
+            // pending. The host primes them only after cloning child Memory.
+            let accepted = table.get(child_pid).unwrap().dri_bindings.iter().all(|binding| {
+                let len = crate::dri::with_registry(|registry| registry.get(binding.bo_id)
+                    .map(|bo| binding.len.min(usize::try_from(bo.size).unwrap_or(usize::MAX)))).expect("retained child CPU BO");
+                host.gbm_bo_bind(child_pid as i32, binding.bo_id, binding.addr, len) >= 0
+            });
+            if !accepted {
+                if let Some(result) = table.remove_process(child_pid) { finish_removed_process(child_pid,result); }
+                return -(Errno::ENOMEM as i32);
+            }
+            child_pid as i32
+        },
         Err(e) => -(e as i32),
     }
 }
@@ -15346,8 +15360,8 @@ fn settle_retry_waits() {
 ///   teardown) has no park, because those paths retire it here first.
 ///   Stopped is the kernel's own process state, which the host mirrors.
 /// - Shared memory. A process with any `MAP_SHARED` mapping or SysV
-///   attachment needs the host's coherence step at the syscall boundary, so
-///   it takes the queued path.
+///   attachment or a mapped DRI buffer needs the host's coherence step at
+///   the syscall boundary, so it takes the queued path.
 /// - A stopped process, a dead or unknown task, or an unregistered channel
 ///   address takes the queued path.
 fn publish_transfer_directly(pid: u32, tid: u32, op: &crate::wait_retry::RetryOp, value: i32) -> u32 {
@@ -15360,6 +15374,7 @@ fn publish_transfer_directly(pid: u32, tid: u32, op: &crate::wait_retry::RetryOp
         || !proc.is_live_explicit_tid(tid)
         || crate::wait_park::signal_targets_task(proc, tid)
         || proc.memory.has_shared_mapping()
+        || !proc.dri_bindings.is_empty()
         || unsafe { crate::memory::global_shared_mapping_table() }.sysv_mapping_count_for(pid) != 0
     {
         return 0;

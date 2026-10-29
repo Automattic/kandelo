@@ -565,3 +565,21 @@ it("retires exactly one mapping and primes the requested address after zero-fill
   expect(registry.pixelView(41)![0]).toBe(91);
   registry.releaseProcessMappings(7);expect(registry.findBindingByAddr(7,2048)).toBeUndefined();
 });
+
+it("primes inherited aliases only after clone bytes are ready and rejects an invalid sibling atomically",()=>{
+  const parent=new WebAssembly.Memory({initial:1,maximum:1});
+  const child=new WebAssembly.Memory({initial:1,maximum:1});
+  const registry=new GbmBoRegistry({getProcessMemory:pid=>pid===7?parent:child});
+  registry.create({pid:7,bo_id:41,size:16,w:2,h:2,stride:8});
+  registry.bind(7,41,1024,16);registry.primeBindFromSab(7,41,parent,1024);
+  new Uint8Array(parent.buffer,1024,16).fill(71);
+  registry.bind(8,41,1024,16);registry.bind(8,41,65530,16);
+  new Uint8Array(child.buffer,1024,16).fill(123);
+  expect(registry.primeProcessMappings(8,child)).toBe(false);
+  expect([...new Uint8Array(child.buffer,1024,16)]).toEqual(Array(16).fill(123));
+  registry.syncToSab(41);expect([...registry.pixelView(41)!]).toEqual(Array(16).fill(71));
+  registry.unbind(8,41,65530);expect(registry.primeProcessMappings(8,child)).toBe(true);
+  expect([...new Uint8Array(child.buffer,1024,16)]).toEqual(Array(16).fill(71));
+  new Uint8Array(child.buffer,1024,16)[1]=81;registry.syncImportsForPid(7,parent);
+  expect([...new Uint8Array(parent.buffer,1024,2)]).toEqual([71,81]);
+});

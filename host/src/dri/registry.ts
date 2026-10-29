@@ -250,6 +250,35 @@ export class GbmBoRegistry {
     e.pendingReaders.delete(pid);
   }
 
+  /** Prime kernel-announced inherited aliases after the child's clone is
+   * complete. Preflight every destination before exposing any child mapping.
+   * Pending clone bytes never become a writer. Local guest views do not escape. */
+  primeProcessMappings(pid: number, memory: WebAssembly.Memory): boolean {
+    if (!this.bindingCounts.has(pid)) return true;
+    try {
+      const targets: {entry: InternalEntry; binding: InternalBinding;
+        destination: Uint8Array; source: Uint8Array; length: number}[] = [];
+      for (const entry of this.bos.values()) {
+        const aliases = entry.bindingsByPid.get(pid);
+        if (!aliases) continue;
+        this.syncToSab(entry.bo_id);
+        for (const binding of aliases.values()) {
+          if (binding.primed) continue;
+          const length = Math.min(binding.len, entry.size);
+          if (binding.addr + length > memory.buffer.byteLength || binding.snapshot.length !== length) return false;
+          targets.push({entry, binding, length,
+            destination: new Uint8Array(memory.buffer,binding.addr,length), source: new Uint8Array(entry.sab,0,length)});
+        }
+      }
+      if (targets.some(target => target.destination.byteLength !== target.length)) return false;
+      for (const {entry,binding,destination,source} of targets) {
+        destination.set(source); binding.snapshot.set(source); binding.primed=true;
+        entry.pendingReaders.delete(pid);
+      }
+      return true;
+    } catch { return false; }
+  }
+
   private flushMemoryToSab(
     e: InternalEntry,
     binding: InternalBinding,

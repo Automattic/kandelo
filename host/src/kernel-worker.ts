@@ -15937,6 +15937,12 @@ export class CentralizedKernelWorker {
         (flags & WAIT_COMPLETION_FLAGS.suppressRestart) !== 0,
       );
       if (this.#finishSignalTermination(channel, entry)) continue;
+      // Kernel-decided waits bypass the ordinary post-syscall readiness
+      // hooks. Publish device writers and refresh this exact live generation
+      // before making its successful completion visible to the guest.
+      if (value >= 0 && this.#kernel.bos.hasStaleableImports(channel.pid)) {
+        this.#kernel.bos.syncImportsForPid(channel.pid, channel.memory);
+      }
       this.completeChannelRawAndRelisten(
         channel,
         value,
@@ -17500,6 +17506,12 @@ export class CentralizedKernelWorker {
       if (this.hostReaped?.has(channel.pid)) return;
     }
 
+    // Frozen retries do not run the original dispatch's post-syscall tail.
+    // Use the captured operation, not a mutable channel header, when this
+    // retry finally reports imported-buffer readiness.
+    if (snapshot.syscallNr === SYS_POLL || snapshot.syscallNr === SYS_PPOLL) {
+      this.#syncImportedBosOnReadiness(channel, result.retVal);
+    }
     this.completeChannel(
       channel,
       snapshot.syscallNr,
@@ -26558,6 +26570,9 @@ export class CentralizedKernelWorker {
       if (childSharedMap.size > 0) {
         this.sharedMappings.set(prepared.childPid, childSharedMap);
         sharedPublished = true;
+      }
+      if (!this.#kernel.bos.primeProcessMappings(prepared.childPid, prepared.childMemory)) {
+        throw new Error("Inherited DRI mapping publication failed");
       }
     } catch (cause) {
       if (

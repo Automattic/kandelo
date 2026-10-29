@@ -1815,7 +1815,9 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     child.alt_stack_depth = 0;
     child.fork_pipe_replay.clear();
     child.has_exec = false;
-    // Fork children do not inherit host framebuffer or DRI bindings.
+    // Framebuffer ownership is not inherited. The same-machine ProcessTable
+    // installs retained CPU DRI mappings from its live parent after parsing;
+    // serialized bytes alone cannot mint those backing references.
     child.fb_binding = None;
     child.dri_bindings.clear();
     child.fork_count = 0;

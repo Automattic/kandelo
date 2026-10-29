@@ -1177,10 +1177,8 @@ fn unbind_gl_cmdbufs_in_range(proc: &mut Process, host: &mut dyn HostIO, addr: u
 
 fn release_process_dri_mappings(proc: &mut Process, host: &mut dyn HostIO) {
     let pid = proc.pid as i32;
-    let bindings = core::mem::take(&mut proc.dri_bindings);
-    for b in bindings {
-        host.gbm_bo_unbind(pid, b.bo_id, b.addr, b.len);
-    }
+    let effects = collect_dri_mapping_releases(core::mem::take(&mut proc.dri_bindings));
+    apply_dri_release_effects(pid, effects, host);
     let effects = collect_process_gl_image_release_effects(proc);
     apply_dri_release_effects(pid, effects, host);
     for (_, ofd) in proc.ofd_table.iter_mut() {
@@ -3452,6 +3450,7 @@ pub fn dri_release_ofd_state(
 /// Host notifications are drained by the caller that owns its host adapter.
 #[derive(Debug, PartialEq, Eq)]
 pub enum DriReleaseEffect {
+    UnbindBo {bo_id: u32, addr: usize, len: usize},
     DestroyBo(u32),
     RemoveFramebuffer(u32),
     DropMaster { file_id: u64, lease_id: u64 },
@@ -3461,12 +3460,26 @@ pub enum DriReleaseEffect {
 pub fn apply_dri_release_effects(pid: i32, effects: Vec<DriReleaseEffect>, host: &mut dyn HostIO) {
     for effect in effects {
         match effect {
+            DriReleaseEffect::UnbindBo {bo_id, addr, len} => host.gbm_bo_unbind(pid, bo_id, addr, len),
             DriReleaseEffect::DestroyBo(bo) => host.gbm_bo_destroy(pid, bo),
             DriReleaseEffect::RemoveFramebuffer(fb) => host.kms_rmfb(pid, fb),
             DriReleaseEffect::DropMaster { file_id, lease_id } => host.kms_drop_master(pid, file_id, lease_id),
             DriReleaseEffect::UnbindGl { owner_pid, session_id } => host.gl_unbind(owner_pid, session_id),
         }
     }
+}
+
+/// Each live mapping owns one BO reference independently of descriptors.
+/// Flush/unbind host aliases before delivering any final destruction effect.
+pub fn collect_dri_mapping_releases(bindings: Vec<crate::process::DriBoBinding>) -> Vec<DriReleaseEffect> {
+    let mut effects = Vec::new();
+    for binding in bindings {
+        effects.push(DriReleaseEffect::UnbindBo {bo_id: binding.bo_id, addr: binding.addr, len: binding.len});
+        if crate::dri::with_registry(|registry| registry.decref(binding.bo_id)) == Some(0) {
+            effects.push(DriReleaseEffect::DestroyBo(binding.bo_id));
+        }
+    }
+    effects
 }
 
 pub fn collect_dri_release_effects(
@@ -12961,13 +12974,19 @@ pub fn sys_mmap(
             if len > aligned_bo_size {
                 return Err(Errno::EINVAL);
             }
+            proc.dri_bindings.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
             let addr_out = proc.memory.mmap_anonymous(addr, len, prot, flags | MAP_ANONYMOUS);
             if addr_out == MAP_FAILED {
+                return Err(Errno::ENOMEM);
+            }
+            if crate::dri::with_registry(|registry| registry.incref(bo_id)).is_none() {
+                proc.memory.munmap(addr_out, len);
                 return Err(Errno::ENOMEM);
             }
             let bind_len = len.min(bo_size as usize);
             if host.gbm_bo_bind(proc.pid as i32, bo_id, addr_out, bind_len) < 0 {
                 proc.memory.munmap(addr_out, len);
+                crate::dri::with_registry(|registry| registry.decref(bo_id));
                 return Err(Errno::ENOMEM);
             }
             proc.dri_bindings.push(crate::process::DriBoBinding { addr: addr_out, len, bo_id });
@@ -13008,7 +13027,8 @@ pub fn sys_mmap(
                     return Err(Errno::EINVAL);
                 }
                 let alloc_flags = flags | MAP_ANONYMOUS;
-                let addr_out = proc.memory.mmap_anonymous(addr, len, prot, alloc_flags);
+                proc.dri_bindings.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
+            let addr_out = proc.memory.mmap_anonymous(addr, len, prot, alloc_flags);
                 if addr_out == MAP_FAILED {
                     return Err(Errno::ENOMEM);
                 }
@@ -13084,9 +13104,14 @@ pub fn sys_mmap(
             if addr_out == MAP_FAILED {
                 return Err(Errno::ENOMEM);
             }
+            if crate::dri::with_registry(|registry| registry.incref(bo_id)).is_none() {
+                proc.memory.munmap(addr_out, len);
+                return Err(Errno::ENOMEM);
+            }
             let bind_rc = host.gbm_bo_bind(proc.pid as i32, bo_id, addr_out, len);
             if bind_rc < 0 {
                 proc.memory.munmap(addr_out, len);
+                crate::dri::with_registry(|registry| registry.decref(bo_id));
                 return Err(Errno::ENOMEM);
             }
             proc.dri_bindings.push(crate::process::DriBoBinding {
@@ -13190,9 +13215,7 @@ pub fn sys_munmap(
             true
         }
     });
-    for b in &released {
-        host.gbm_bo_unbind(pid, b.bo_id, b.addr, b.len);
-    }
+    apply_dri_release_effects(pid, collect_dri_mapping_releases(released), host);
 
     // Linux munmap succeeds (returns 0) even if no mappings overlap the range,
     // as long as the address is valid and page-aligned.
@@ -53247,6 +53270,25 @@ impl HostIO for RelSymlinkMock {
             unsafe { core::ptr::read_unaligned(mbuf.as_ptr() as *const WpkDrmModeMapDumb) };
 
         (fd, mapped.offset, created.size as usize)
+    }
+
+    #[test]
+    fn mmap_dri_storage_survives_final_descriptor_close_until_unmap() {
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, offset, size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 64, 64);
+        let bo = (offset >> 12) as u32;
+        let address = sys_mmap(&mut proc, &mut host, 0, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, offset as i64).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert!(crate::dri::with_registry(|r| r.get(bo).is_some()), "a live mapping owns backing storage after the final close");
+        assert!(host.gbm_bo_destroy_calls.is_empty());
+        sys_munmap(&mut proc, &mut host, address, size).unwrap();
+        assert!(crate::dri::with_registry(|r| r.get(bo).is_none()));
+        assert_eq!(host.gbm_bo_destroy_calls, [(1, bo)]);
+        assert_eq!(host.gbm_bo_unbind_calls, [(1, bo, address, size)]);
     }
 
     #[test]
