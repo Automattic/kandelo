@@ -274,6 +274,7 @@ static unsigned buffer_uploads;
 static unsigned draw_commands;
 static int indexed_queries;
 static uint32_t indexed_max, query_scalar, query_gl_error, query_status;
+static unsigned string_queries;
 static unsigned image_failure, image_queries, fail_image_storage, image_pixel_updates;
 static unsigned bind_failure, bind_queries;
 static unsigned buffer_bind_failure, buffer_delete_failure;
@@ -1285,6 +1286,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 memcpy(latest_allocation, &value, 4);
             return 0;
         }
+        if (q->op == QOP_GET_STRING) string_queries++;
         if (q->op == QOP_GET_STRING && string_generation) {
             const char *value = string_generation == 1 ? "renderer A" : "renderer B";
             uint32_t length = (uint32_t)strlen(value);
@@ -3427,6 +3429,39 @@ int main(int argc, char **argv) {
         assert(buffer_uploads == 1 && glGetError() == GL_NO_ERROR);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-vao-attribs"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-string-errors")) {
+        string_generation = 1;
+        const GLubyte *vendor = glGetString(GL_VENDOR);
+        assert(vendor && !strcmp((const char *)vendor, "renderer A"));
+        assert(glGetError() == GL_NO_ERROR);
+        const unsigned queried = string_queries;
+        const GLenum invalid[] = {0, GL_TEXTURE_2D, 0x821bu, 0x821du, 0xffffffffu};
+        for (unsigned i = 0; i < sizeof invalid / sizeof invalid[0]; ++i) {
+            assert(glGetString(invalid[i]) == NULL);
+            assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+            assert(glGetString(GL_VENDOR) == vendor && !strcmp((const char *)vendor, "renderer A"));
+            assert(string_queries == queried);
+        }
+        /* Successful cached queries preserve an earlier error. */
+        glDrawArrays(GL_POINTS, -1, 1);
+        assert(glGetString(GL_VENDOR) == vendor);
+        assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+        /* A shared-object peer has its own query errors and string cache. */
+        assert(glGetString(0) == NULL);
+        EGLContext peer = eglCreateContext(dpy, (EGLConfig)1, ctx, attrs);
+        assert(peer && eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, peer));
+        assert(glGetError() == GL_NO_ERROR);
+        string_generation = 2;
+        assert(!strcmp((const char *)glGetString(GL_VENDOR), "renderer B"));
+        assert(glGetString(0) == NULL && glGetError() == GL_INVALID_ENUM);
+        assert(eglDestroyContext(dpy, peer) && eglReleaseThread());
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+        assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+        assert(glGetString(GL_VENDOR) == vendor && !strcmp((const char *)vendor, "renderer A"));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        puts("PASS encoder-string-errors"); return 0;
     }
     if (!strcmp(argv[1], "encoder-strings")) {
         string_generation = 1;

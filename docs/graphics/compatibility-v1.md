@@ -8261,3 +8261,32 @@ links and the local analysis are retained in primary
 `.context/firefox-landing-separated*` retain the actual evidence. This
 does not establish a product repair or causation for every Kandelo
 capture failure, and does not close any baseline inventory row.
+
+### GLES string-query invalid enums, 2026-10-29
+
+The follow-up implements one ordinary G09 error gap. With a current
+GLES2 context, `glGetString` previously returned null for an unsupported
+name without setting a GL error. The
+[Khronos ES2 reference](https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glGetString.xml)
+requires `GL_INVALID_ENUM` for that call and a null result. The pinned
+upstream CTS negative-state `get_string` case independently exercises the
+same requirement. The encoder now raises its context-local error before
+returning null, without sending an invalid query to the host. Valid
+version/vendor/renderer/extension strings and their context-owned caches
+keep their existing behavior; no wire operation or ABI changes.
+
+The authored `encoder-string-errors` native regression failed against
+`f7b42c7123` at its first missing-error assertion. After implementation,
+all 215 native C cases passed through `scripts/dev-shell.sh` with the
+harness's undefined-behavior sanitizer. The new case covers zero,
+unrelated, ES3 state-query and maximum-width enum values, unchanged cached
+vendor strings, successful queries preserving an earlier error, and
+independent error/cache state across shared-object contexts. Both normal
+cleanup and zero retained native allocations are checked. Evidence is the
+file-owner checkout's `.context/gles-string-errors-{before,after}.log`.
+The source also passed wasm32 and wasm64 syntax checks with the declared
+LLVM compiler and existing normal sysroot headers; that compile-only log
+is `.context/gles-string-errors-syntax.log`.
+This is focused native-library evidence, not a newly run upstream CTS
+case or normal guest/browser validation. The complete G09 audit and
+combined product/conformance gates remain open under the follow-up.

@@ -2480,6 +2480,7 @@ const GLubyte *glGetString(GLenum name) {
             }
             return (const GLubyte *)extensions;
         default:
+            raise_client_error(GL_INVALID_ENUM);
             return NULL;
     }
 }
