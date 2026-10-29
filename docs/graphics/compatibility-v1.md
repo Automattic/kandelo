@@ -8783,5 +8783,38 @@ tree is identical to landing `cc215b9291`. Its graphics source gate
 passed 717/717 in 32 files. A separate server-wait execution-ownership
 foundation is checkpointed on a WIP branch at `43b9f60e388d`, with
 725/725 source checks and normal/browser/lifecycle validation still
-unrun; it is not merged into either PR. Public EGL server waits remain
-open. Exact resume state is retained privately under `.context/`.
+unrun. It was initially kept on a separate checkpoint branch and is now
+published as work in progress in follow-up PR #1594, as recorded below.
+Public EGL server waits remain open.
+
+### Publishing the paused execution-ownership checkpoint
+
+At the user's request, checkpoint `43b9f60e388d` is included in draft
+follow-up PR #1594 as derived commit `96241a20da`, preserving its author.
+The cage/sway landing PR #1574 is unchanged. No work goal, build, test
+suite or implementation agent was resumed for this publication.
+
+This work in progress attaches retained context and independent draw/read
+allocation ownership to native and forwarded submissions. It preserves
+accepted allocation identity across resize or public context replacement,
+cancels queued work on session retirement, and retains failed cleanup
+receipts. The original checkpoint's graphics source selection passed
+725/725 in 33 files after three initial causal failures and repair of
+five selected-error-owner regressions. That result is at the checkpoint's
+source, not a rerun of the combined follow-up tree.
+
+Before this foundation is ready, review reentrant resize during frame
+execution, independent read surfaces, forwarding-specific admission and
+resize failures, cleanup callbacks and retry of pending retirements.
+Raw WebGL default drawing buffers still need retained storage for general
+deferred execution. Current resize rejection is a visible ordinary model
+gap, not a demonstrated platform boundary. Selection replay overhead has
+not been measured. Public server waits still require ordered command,
+query, fence and presentation streams plus source-authority validation,
+asynchronous fence polling, cancellation and query retry/wakeup.
+
+Canonical host build/declarations, ownership audit, normal SDK guests,
+real native/forwarded browser rendering, browser-memory and conformance
+remain unrun for this checkpoint and its combined integration. No ABI,
+wire operation or advertised capability changed. Both PRs remain drafts;
+full graphics compatibility and merge readiness are not claimed.
