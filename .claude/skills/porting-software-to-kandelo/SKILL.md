@@ -37,6 +37,7 @@ The current shape: `source scripts/package-build-roots.sh`, `kandelo_package_pre
 | C++ programs | `depends_on` libcxx plus `kandelo_package_prepare_private_sysroot`, as in `packages/registry/dinit/` |
 | Rust programs and dependency portability | `sdk/rust/README.md` "Porting Rust dependencies"; termchat is the standalone program reference, librsvg/rsvg-convert cover native dependencies |
 | Fork-using programs | `docs/fork-instrumentation.md` |
+| The build compiles helpers and runs them to generate headers or data the program reads (type sizes, struct layouts, OS names must be the target's) | Build inside a Kandelo machine with `scripts/guest-build.sh`: `docs/package-management.md` "Building inside Kandelo". `host/test/fixtures/guest-build/gen-header` is the smallest working example. Do not patch layouts to agree with a host-built helper |
 | Large compiler builds or engine resource failures | `docs/porting-guide.md` "Large compiler builds and runtime limits"; `docs/browser-support.md` "Firefox executable-code limit" |
 | Include it in `./run.sh setup` / `local-build` | Add a `[[packages]]` entry to `packages/sets/local-supported.toml` (the local-build set; an unlisted package is never built there) |
 | Shared build changes affect dormant or unlisted image recipes | `docs/agent-guidance/packages-and-builds.md` "Image recipes outside the default build"; validate affected recipes without changing product exposure |
@@ -65,7 +66,43 @@ scripts/agent-job wait <id>
 Wait from the main session. See `docs/agent-guidance/validation.md`
 "Waiting on long builds and suites"; do not have a subagent poll it.
 
+Do not edit anything under `packages/registry/` while a local build
+(`./run.sh setup`, `local-build`, `build <pkg>`, or the script above) is
+running. The engine reads the registry once, and at publication it fails
+with "package registry changed while generating program-packages.json;
+retry from one stable registry snapshot", even when every node built.
+Stop the build, make the edit, and start it again.
+
 When a build fails, fix the first error, not the last: later errors and `BLOCKED` packages are usually fallout. Search the log (`rg -n`) and read around the hit rather than reading it whole. The resolver deletes the work directory on failure, so `config.log` is gone; to see it, re-run configure by hand in a scratch directory.
+
+A recipe that builds inside Kandelo runs its compiles in the guest, so
+its failures show up in the guest's output (also written to
+`$WASM_POSIX_DEP_WORK_DIR/guest-build.log`, which goes with the work
+directory). To iterate, run the recipe by hand with the `WASM_POSIX_DEP_*`
+variables pointing at a work directory you keep and at the cached
+`kernel` and `kandelo-build-image` outputs, then rerun single commands in
+that workspace with `kandelo_guest_build`. Things that differ from a
+cross build:
+
+- The guest compiler is `cc` (`c++`, `wasm32posix-ar`, ...). The build
+  image is the rootfs with every tool resident (`make`, `m4`, `awk`, ...);
+  check with `command -v` in the guest. `yacc` is Berkeley yacc and `lex`
+  is flex, without their `-ly`/`-ll` libraries. Several other base tools
+  from `posix-utils-lite` are placeholders that report success without
+  doing the work (`patch`, `compress`, `iconv`, `ed`, ...): see
+  "Base-image utilities that are placeholders" in `docs/posix-status.md`
+  before relying on one in a build.
+- Dependencies are `--input` mounts (`/deps/<name>`), so paths written into
+  Makefiles must be the guest's, not the build machine's.
+- Guest-created files reach the build machine as mode 0600; set modes when
+  installing outputs.
+- The SDK inside Kandelo has no fork instrumenter yet: link in the guest
+  and let `install_local_binary` instrument on the build machine.
+- Each guest compile starts clang inside Kandelo and costs seconds, and a
+  link several times that, so keep `make -j` where upstream allows it.
+- A guest build that fails differently from the cross build may be a
+  platform defect (a syscall, the host mount, the guest SDK). Treat it as
+  one before patching the package.
 
 ## Platform facts that make ports go wrong
 
