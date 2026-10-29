@@ -7504,3 +7504,59 @@ No timeout or pixel assertion was changed. The independent expanded browser
 selection is running separately; its result cannot turn the failed Node gate
 into a complete pass. Logs are the CPU checkout's
 `cpu-image-broad-node-{v2,serial}.log` and `cpu-smoke-timeout-control.log`.
+
+
+### Completed memory gate, rendered file-owner gate and Node tool control
+
+The earlier-checkpoint full memory job
+`graphics-retained-front-memory-1028-211051-11ed` is terminal, exit 1 after
+2h41m including normal full preparation. Its pre-browser selections passed
+162/162, 3/3 and 7/7. The real browser selection passed eight cases and failed
+one in 18.6m. WebKit's constrained switching scenario reached LÖVE after
+DOOM, Quake and Freeciv, then failed to find the LÖVE primary canvas within
+180 seconds. This is before cage/sway in that cycle, so this run does not
+prove that sequence on WebKit. Chromium/Firefox cases and all exit-trap
+cases passed. No outside-engine defect is confirmed by this failure.
+
+The exact failed trace, screenshot, page context, full job log and checkpoint
+identity were copied to `.context/retained-front-memory-webkit-failure/`
+before changing the primary checkout. Its kernel hash is
+`d67643211332aa1ed71f879571fd89cb3b33305b806b25b2bb7cbd6de09f9a1c`, source
+`9a9dec0bf4`. The primary branch was then fast-forwarded to `730a0132c0`,
+retaining its name and pre-existing local submodule/untracked changes.
+Primary artifacts from the old checkpoint require normal rebuilding; only
+the file-owner checkout's own normal artifacts prove its latest guest gates.
+
+The latest file-owner source's rendered gate
+`graphics-file-alias-rendered-1028-234713-4119` ran all 66 selected cases,
+with 65 passes and one failure (4.8m). All 48 GBM native-window cases and six
+retained-ring cases passed across widths, usages, presenters and engines.
+Eleven inherited-display cases passed. Firefox's `render-node-2d` case
+failed the white corner pixel assertion after the opener Worker exited;
+the cursor and red-center assertions had passed. This is a preserved
+presentation failure, not the earlier cursor-capture assertion and not a
+full inherited-display pass. The original ten-second pixel predicate remains.
+Logs, traces and screenshots are in the file-owner checkout's
+`.context/file-alias-rendered*` and
+`.context/graphics-abi56-format-evidence/`. Focused repeated controls are
+running against the same unmodified source and assertions.
+
+The older CPU checkpoint's separate 66-case browser selection finished at
+65 pass/one fail (3.2m). Its failure is a different Firefox case: wasm64 GPU
+window through the 2D presenter stayed black at the selected-frame sample.
+Guest stdout reached READY_SELECTED with no diagnostics. The failed trace
+is in `.context/gbm-cpu-fronts/.context/cpu-image-browser-independent-results/`.
+It remains unexplained; no platform boundary is claimed.
+
+The full older CPU Node selection is now verified with its original test
+files and original five-second outer budgets. The failing broad commands
+selected the debug xtask; the isolated passing control selected release.
+A diagnostic with 30-second outer budgets passed 24/24 but was not retained.
+Both test files were restored byte-for-byte to `01f7b80a0f`, and the complete
+10-file/24-case selection then passed with the normal release xtask in
+88.82s, zero skips or unloaded files. The successful job is
+`graphics-cpu-image-node-release-1028-235209-4231`, log
+`.context/gbm-cpu-fronts/.context/cpu-image-broad-node-release.log`.
+The debug-tool failures and temporary diagnostic patch remain preserved.
+This resolves that bounded Node gate without changing an assertion, timeout,
+or fixture. It does not make either failed browser or memory gate pass.
