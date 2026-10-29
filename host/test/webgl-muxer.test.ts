@@ -72,6 +72,22 @@ function mk(): { gl: RecordingGl; mux: GlMuxer } {
   return { gl, mux };
 }
 
+it("replays renderbuffer aliases from a narrow state owner", () => {
+  const { gl, mux } = mk();
+  const logical = {}, native = {};
+  const direct = newTarget();
+  direct.shadow.renderbuffer = logical;
+  mux.switchTo(direct);
+  expect(gl.callsOf("bindRenderbuffer").at(-1)).toEqual([0x8d41, logical]);
+
+  const aliased = { ...newTarget(), renderbufferViews: new Map([
+    [logical, { native, source: null }],
+  ]) };
+  aliased.shadow.renderbuffer = logical;
+  mux.switchTo(aliased);
+  expect(gl.callsOf("bindRenderbuffer").at(-1)).toEqual([0x8d41, native]);
+});
+
 describe("GlMuxer.switchTo", () => {
   it("keeps native errors with the outgoing owner across a switch", () => {
     const { gl, mux } = mk();

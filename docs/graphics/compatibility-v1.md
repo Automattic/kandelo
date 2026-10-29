@@ -8944,3 +8944,25 @@ run in that script. Correcting the helper's actual authority contract and
 rerunning the canonical build are required. Normal guests, real native
 and forwarded rendering, browser-memory and final conformance remain
 pending for the combined execution/uniform model.
+
+
+### Narrow native renderbuffer replay contract (2026-10-29)
+
+The first resumed combined canonical host build (`97e0aaf98a`) fails
+TypeScript declaration generation because renderbuffer replay's helper
+requires a complete `GlBinding`, while the muxer intentionally owns only
+state. The helper now reads an optional read-only renderbuffer-view map;
+it neither needs nor retains command-buffer or guest-memory authority.
+A direct renderbuffer remains unchanged when no alias map exists, and a
+mapped object resolves its retained native renderbuffer.
+
+The new regression fails before the repair with a missing-map exception;
+afterward all 24 muxer cases pass, including direct and aliased owners.
+The canonical `scripts/build-host.sh` completes JavaScript and declaration
+generation in the declared shell on landing `85c56d342d` plus this repair.
+Logs in the VMA checkout are `.context/muxer-narrow-owner-before.log`,
+`.context/muxer-narrow-owner-after.log` and
+`.context/muxer-narrow-owner-host.log`. This closes the demonstrated helper
+contract/build failure at that source, not combined application acceptance.
+The combined follow-up build and source/ownership/runtime gates still need
+rerunning after integration. No ABI or capability changes are included.
