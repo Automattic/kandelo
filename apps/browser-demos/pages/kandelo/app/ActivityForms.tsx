@@ -134,7 +134,8 @@ export function ActivityJoinForm({ activity, blocked, room, dismiss, joinNetwork
   const [values, setValues] = React.useState<SessionValues>(() => sessionDefaults(activity.invited?.presentation?.join.fields ?? []));
   React.useEffect(() => { if (invitation) setValues(sessionDefaults(invitation.join.fields)); }, [invitation?.join.id, invitation?.manifest.package]);
   if (activity.ready && !invitation) return <div>
-    <p role="alert">{activity.invitationError ?? "This activity is unavailable on this computer."}</p>
+    {/* The session notice above is the one alert; this explains it. */}
+    <p className="knetwork-note">{activity.invitationError ?? "This activity is unavailable on this computer."}</p>
     {joinNetworkOnly && <button type="button" className="kshare-btn" disabled={blocked} onClick={joinNetworkOnly}>Join network only</button>}
     <button type="button" className="kshare-btn" onClick={dismiss}>Dismiss</button>
   </div>;

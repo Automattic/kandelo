@@ -233,7 +233,9 @@ test("game invitations show host choices and acquisition details before host ini
     await page.goto(`/?profile=shell&network=${"a".repeat(24)}${encodeSessionInvitation(offer)}`);
     await running(page);
     await expect(dialog.locator('.knetwork-notice[data-tone="error"]')).toContainText("Cannot join this activity.");
-    await expect(dialog.getByRole("alert").filter({ hasText: "Package sessions:" })).toContainText("display details do not match");
+    // One live alert announces the failure; the join form explains it.
+    await expect(dialog.getByRole("alert")).toHaveCount(1);
+    await expect(dialog.locator(".knetwork-note").filter({ hasText: "Package sessions:" })).toContainText("display details do not match");
     await expect(dialog.getByRole("button", { name: /^Join and/ })).toHaveCount(0);
   } finally { release(); releaseImage(); }
 });
