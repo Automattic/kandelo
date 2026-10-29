@@ -410,18 +410,19 @@ function concatChunks(parts: readonly Uint8Array[]): Uint8Array {
   return out;
 }
 
-/** Decode a `Content-Encoding`-compressed request body to plaintext so the
- *  re-issued fetch() carries an identity-encoded body. git gzip-compresses the
- *  `git-upload-pack` (fetch command) request and sets `Content-Encoding: gzip`;
- *  the browser CORS proxy allow-list does not carry `content-encoding`, so the
- *  faithful pass-through of the compressed body is refused. Decoding here lets
- *  the request traverse the proxy today. Returns null for an identity or
- *  unrecognized encoding, leaving the body and header untouched.
+/** Decode a gzip or deflate request body to plaintext so the re-issued
+ *  fetch() carries an identity-encoded body. Returns null for any other
+ *  encoding, leaving the body and its `Content-Encoding` untouched: those are
+ *  relayed verbatim, as Codex's zstd model turns are (browsers have no zstd
+ *  decoder, and Kandelo never re-encodes a body).
  *
- *  A more faithful alternative — forwarding `Content-Encoding` and the
- *  compressed body verbatim — is the more complete long-term behavior but
- *  requires the dev relay and the upstream CORS proxy to allow-list
- *  `content-encoding` (as they did `git-protocol`). Tracked as future work. */
+ *  WORKAROUND at the WordPress Playground CORS proxy's boundary: git
+ *  gzip-compresses the `git-upload-pack` (fetch command) request and sets
+ *  `Content-Encoding: gzip`, and the Playground proxy, Kandelo's default,
+ *  does not yet allow `Content-Encoding` in its CORS preflight, so relaying
+ *  that request verbatim would fail there. Decoding keeps git working through
+ *  it. Remove this, and relay every encoding verbatim, once the Playground
+ *  proxy allows `Content-Encoding`. */
 async function decodeContentEncodingBody(
   body: Uint8Array,
   encoding: string,
@@ -985,8 +986,9 @@ export class TlsNetworkBackend implements NetworkIO {
     (async () => {
       let responseStarted = false;
       try {
-        // Decode a compressed request body to identity so it can traverse the
-        // proxy, and drop the now-inaccurate Content-Encoding from the headers.
+        // Decode a gzip/deflate request body to identity (see
+        // decodeContentEncodingBody) and drop the now-inaccurate
+        // Content-Encoding. Any other encoding goes out byte-for-byte.
         let outgoingBody = fetchBody;
         let outgoingHeaders = browserHeaders;
         if (fetchBody && contentEncoding !== undefined) {

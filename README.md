@@ -356,8 +356,8 @@ keeps an older service worker around.
 The application owns one complete proxy profile. The current profile relays
 only `Accept`, `Content-Type`, `git-protocol`, `Range`, `wp_blog`,
 `wp_install`, and the non-credential fields signed-in Codex sends
-(`OpenAI-Beta`, `originator`, `session_id`, `version`,
-`x-client-request-id`, `x-openai-subagent`, and five named `x-codex-`
+(`Content-Encoding`, `originator`, `session-id`,
+`version`, and the other `OpenAI-`, `OAI-`, `x-openai-` and `x-codex-`
 fields listed in `docs/browser-support.md`), by
 case-insensitive field name, at every configured proxy
 dispatch, and also sends `Range` as `X-Cors-Proxy-Range` (a workaround the

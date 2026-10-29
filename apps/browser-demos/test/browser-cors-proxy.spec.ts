@@ -422,7 +422,7 @@ test("Vite serves a service worker with the complete proxy profile", async ({
   );
   expect(source).toContain("kandelo-proxy-sessions-v1");
   expect(source).toContain(
-    '"allowedRequestHeaderNames":["accept","content-type","git-protocol","openai-beta","originator","range","session_id","version","wp_blog","wp_install","x-client-request-id","x-codex-installation-id","x-codex-parent-thread-id","x-codex-turn-metadata","x-codex-turn-state","x-openai-subagent"]',
+    '"allowedRequestHeaderNames":["accept","content-encoding","content-type","git-protocol","oai-product-sku","openai-beta","originator","range","session-id","thread-id","version","wp_blog","wp_install","x-client-request-id","x-codex-beta-features","x-codex-parent-thread-id","x-codex-routing-hint","x-codex-turn-metadata","x-codex-turn-state","x-codex-window-id","x-openai-account-routing-override","x-openai-fedramp","x-openai-internal-codex-responses-lite","x-openai-product-sku","x-openai-subagent"]',
   );
   expect(source).toContain('"allowAnonymousGetHeaderOmission":true');
   expect(source).toContain('"rangeRequestHeaderAlias":"x-cors-proxy-range"');

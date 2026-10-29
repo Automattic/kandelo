@@ -192,6 +192,42 @@ forwards only to the three OpenAI HTTPS origins. A process that was not
 granted is refused before its request reaches the relay.
 Guest Codex integration and actual subscription use remain unverified.
 
+What Codex 0.163.0 sends, and how the browser bridge answers, was measured
+against local mock servers in ChatGPT sign-in mode (no real account):
+
+- **WebSocket first, HTTPS after.** Codex's built-in OpenAI provider opens a
+  WebSocket to `.../backend-api/codex/responses` before its first model
+  request in every session, and no setting turns that off in sign-in mode.
+  The browser bridge carries HTTP requests only, so Kandelo answers the
+  handshake with `502 Bad Gateway`, the truthful answer: the bridge cannot
+  open that connection. Codex treats any answer other than `426 Upgrade
+  Required` as a failure worth retrying, retries five times with backoff,
+  and then uses HTTPS with server-sent events for the rest of the session.
+  Against a mock that refused the handshake, that cost about 9.4 seconds
+  once per session, and Codex showed `Reconnecting... n/5` messages and
+  `Falling back from WebSockets to HTTPS transport.` Each attempt carries
+  `Authorization`, so each is refused before it leaves the browser unless
+  the process holds a grant, and refused with `502` either way.
+- **Compressed model requests.** Codex compresses every signed-in model
+  turn with zstd (`Content-Encoding: zstd`; its `enable_request_compression`
+  feature is on by default). Kandelo relays the compressed bytes and the
+  field unchanged; it never decodes or re-encodes them, and the proxy must
+  relay them the same way. The largest body in ten tool turns, up to
+  100 KB of tool output each, was 118 KB compressed (253 KB decoded), well
+  under the proxies' 1 MiB request limit. The body carries the whole
+  conversation every time, so it grows with the session.
+- **Credentials in request bodies.** The device-code, code-exchange and
+  token-refresh requests to `auth.openai.com` carry the authorization code
+  or refresh token in their bodies and send no credential field. A body is
+  ordinary data, relayed like any other request's: the credential grant
+  governs only the credential request fields (`Authorization`,
+  `ChatGPT-Account-ID`), so these requests need no grant.
+- **One non-turn call is refused.** Codex's user-settings request
+  (`GET .../wham/settings/user`) sends `Cache-Control`, which the browser
+  profile does not relay (relaying it would break ordinary GETs through
+  the default proxy). It fails visibly, naming the field; model turns do
+  not need it.
+
 To sign in from a local development server, run
 `codex login --device-auth` in the browser machine. The app asks "Codex
 wants to use your sign-in credentials"; choose "Allow for this process".

@@ -7,6 +7,8 @@ import {
 import { afterEach, expect, it, vi } from "vitest";
 import { CredentialGrants } from "../src/credential-grants";
 import { EagainError } from "../src/networking/fetch-backend";
+import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "../../apps/browser-demos/lib/browser-cors-proxy";
+import { CODEX_OBSERVED_REQUESTS } from "./fixtures/codex-observed-requests";
 import {
   TlsNetworkBackend,
   type TlsMitmConnection,
@@ -324,10 +326,10 @@ it("serves multiple keep-alive requests over one MITM connection (git smart-HTTP
 
 it("decodes a gzip Content-Encoding POST body so it traverses the CORS proxy", async () => {
   // git gzip-compresses the git-upload-pack fetch command and sets
-  // Content-Encoding: gzip. That header is not in the proxy allow-list, so a
-  // faithful pass-through is refused (previously surfaced to git as HTTP 502).
-  // The MITM decodes the body to identity and drops Content-Encoding so only
-  // allow-listed fields remain.
+  // Content-Encoding: gzip. A proxy whose profile does not carry that field
+  // (the Playground proxy's preflight does not allow it yet) would refuse a
+  // faithful pass-through, so the MITM decodes gzip to identity and drops
+  // Content-Encoding. Other encodings are relayed verbatim (below).
   const fetchMock = vi.fn().mockResolvedValue(new Response("ok"));
   vi.stubGlobal("fetch", fetchMock);
   const backend = new TlsNetworkBackend({
@@ -495,11 +497,13 @@ interface CredentialedRun {
  */
 async function startCredentialedRequest(options: {
   host: string;
-  requestParts: readonly string[];
+  requestParts: ReadonlyArray<string | Uint8Array>;
   writerFor: (recordType: number) => number;
   /** Grant GRANTED_PID before any byte is written (default true). */
   grantFirst?: boolean;
   fetchImpl?: () => Promise<Response>;
+  /** The proxy profile's relayed fields (default: accept, content-type). */
+  allowedRequestHeaderNames?: readonly string[];
 }): Promise<CredentialedRun> {
   const fetchMock = vi.fn(options.fetchImpl ?? (async () => new Response("granted reply")));
   vi.stubGlobal("fetch", fetchMock);
@@ -510,7 +514,7 @@ async function startCredentialedRequest(options: {
   const backend = new TlsNetworkBackend({
     corsProxy: {
       url: "https://proxy.example/?",
-      allowedRequestHeaderNames: ["accept", "content-type"],
+      allowedRequestHeaderNames: options.allowedRequestHeaderNames ?? ["accept", "content-type"],
       allowAnonymousGetHeaderOmission: true,
     },
     currentPid: () => servingPid,
@@ -904,4 +908,76 @@ it("refuses credentials on a TLS connection when no CORS proxy is configured", a
   expect(fetchMock).not.toHaveBeenCalled();
   expect(response).toContain("HTTP/1.1 502");
   expect(response).toContain("credential request headers: authorization");
+});
+
+/** Codex's observed request as the guest writes it, with `body` sent as is. */
+function codexObservedRequest(
+  request: (typeof CODEX_OBSERVED_REQUESTS)[keyof typeof CODEX_OBSERVED_REQUESTS],
+  body: Uint8Array = new Uint8Array(),
+): Uint8Array {
+  const url = new URL(request.url);
+  let head = `${request.method} ${url.pathname}${url.search} HTTP/1.1\r\nHost: ${url.host}\r\n`;
+  let hasConnection = false;
+  for (const [name, value] of request.headers) {
+    if (name.toLowerCase() === "content-length") continue;
+    if (name.toLowerCase() === "connection") hasConnection = true;
+    head += `${name}: ${value}\r\n`;
+  }
+  if (body.length > 0) head += `Content-Length: ${body.length}\r\n`;
+  if (!hasConnection) head += "Connection: close\r\n";
+  return Buffer.concat([Buffer.from(`${head}\r\n`), body]);
+}
+
+it("relays a granted Codex turn's zstd body byte-for-byte with its Content-Encoding", async () => {
+  // Codex compresses every signed-in model turn with zstd. Kandelo relays
+  // the compressed bytes and their encoding as written; it never decodes or
+  // re-encodes them. The bytes include CR, LF, NUL and 0xFF, and the zstd
+  // frame magic, to catch any text or framing treatment.
+  const body = new Uint8Array([
+    0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x0d, 0x0a, 0xff, 0x0d, 0x0a, 0x0d, 0x0a,
+    0x30, 0x0d, 0x0a, 0x00, 0x7f, 0x80, 0xfe, 0x01,
+  ]);
+  const run = await startCredentialedRequest({
+    host: "chatgpt.com",
+    requestParts: [codexObservedRequest(CODEX_OBSERVED_REQUESTS.responses, body)],
+    writerFor: () => GRANTED_PID,
+    allowedRequestHeaderNames: DEFAULT_BROWSER_CORS_PROXY_CONFIG.allowedRequestHeaderNames,
+  });
+  const response = await run.response;
+  const { fetchMock } = run;
+  const token = run.grants.grantFor(GRANTED_PID)!.token;
+  expect(response).toContain("HTTP/1.1 200");
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+  expect(url).toBe("https://proxy.example/?https://chatgpt.com/backend-api/codex/responses");
+  expect(init.method).toBe("POST");
+  const sent = new Uint8Array(await new Response(init.body).arrayBuffer());
+  expect(sent.length).toBe(body.length);
+  expect([...sent]).toEqual([...body]);
+  const headers = new Headers(init.headers);
+  expect(headers.get("content-encoding")).toBe("zstd");
+  // fetch() derives Content-Length from the body it is given.
+  expect(headers.has("content-length")).toBe(false);
+  for (const name of [
+    "session-id", "thread-id", "x-codex-window-id", "x-codex-beta-features",
+    "x-codex-routing-hint", "x-codex-turn-metadata", "x-codex-turn-state",
+    "x-client-request-id", "originator", "version", "accept", "content-type",
+  ]) {
+    expect(headers.has(name), name).toBe(true);
+  }
+  expect(headers.get("authorization")).toBe("Bearer synthetic-access-token");
+  expect(headers.get("x-kandelo-credential-grant")).toBe(token);
+});
+
+it("answers Codex's granted WebSocket handshake with 502 and sends nothing", async () => {
+  const run = await startCredentialedRequest({
+    host: "chatgpt.com",
+    requestParts: [codexObservedRequest(CODEX_OBSERVED_REQUESTS.websocketHandshake)],
+    writerFor: () => GRANTED_PID,
+    allowedRequestHeaderNames: DEFAULT_BROWSER_CORS_PROXY_CONFIG.allowedRequestHeaderNames,
+  });
+  const response = await run.response;
+  expect(run.fetchMock).not.toHaveBeenCalled();
+  expect(response).toContain("HTTP/1.1 502");
+  expect(response).toContain("upgrade the connection to WebSocket");
 });

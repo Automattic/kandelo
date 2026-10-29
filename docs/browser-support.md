@@ -1445,15 +1445,32 @@ The Node.js host is unaffected and continues to fetch its lazy URLs directly.
 
 The current profile allows `Accept`, `Content-Type`, `git-protocol`,
 `Range`, `wp_blog`, and `wp_install`, plus the ordinary (non-credential)
-fields signed-in Codex sends: `OpenAI-Beta`, `originator`, `session_id`,
-`version`, `x-client-request-id`, `x-codex-installation-id`,
-`x-codex-parent-thread-id`, `x-codex-turn-metadata`, `x-codex-turn-state`,
-and `x-openai-subagent`. It copies `Range` into `X-Cors-Proxy-Range` (see
+fields signed-in Codex 0.163.0 sends: `Content-Encoding`,
+`OAI-Product-Sku`, `OpenAI-Beta`, `originator`, `session-id`, `thread-id`,
+`version`, `x-client-request-id`, `x-codex-beta-features`,
+`x-codex-parent-thread-id`, `x-codex-routing-hint`,
+`x-codex-turn-metadata`, `x-codex-turn-state`, `x-codex-window-id`,
+`x-openai-product-sku`, and `x-openai-subagent`, and the two it sends only
+for US-residency and FedRAMP accounts, `x-openai-account-routing-override`
+and `x-openai-fedramp`. These are the fields observed from Codex 0.163.0
+against local mock servers, plus those read from its source for account
+classes and sub-agents the probe could not reach. Codex's telemetry
+(`statsig-api-key`), its internal and desktop-only fields, and
+`x-openai-memgen-request` (sent only by its `memories` feature, which is
+off by default) are not relayed; a request that carries one fails before
+dispatch, naming it. It copies `Range` into `X-Cors-Proxy-Range` (see
 "Byte-range reads through the proxy" below). The Codex fields are relayed
 for any request, granted or not. A proxy whose preflight does not allow
 one fails a request that carries it at the browser's CORS check rather
 than dropping the field; today that includes the default Playground proxy
-and the Spacefast proxy, whose allow-lists have not been extended yet. Every
+and the Spacefast proxy, whose allow-lists have not been extended yet.
+`Cache-Control` is deliberately not relayed: Codex sends it only on its
+user-settings call (`GET .../wham/settings/user`), which a model turn
+does not need and which is refused before dispatch, naming the field. If
+the profile relayed it, an anonymous GET that carries it (pip, for one,
+sends `Cache-Control: max-age=0` when it revalidates a package index)
+would fail the Playground proxy's preflight instead of going out without
+the field. Every
 actual proxy boundary projects by case-insensitive field name only and
 preserves browser-representable values and occurrences as far as Fetch
 permits. Request fields the browser sets or
@@ -1481,6 +1498,28 @@ still fails a credentialed, body-bearing, or non-GET request before
 dispatch. Direct Fetch
 attempts remain unprojected. The development same-origin relay enforces the same
 profile as production.
+
+**Compressed request bodies.** Kandelo relays a request body and its
+`Content-Encoding` as the guest wrote them: it never decodes or re-encodes
+a `zstd` body. Signed-in Codex compresses every model turn
+(`POST .../responses`) with zstd, and those bytes reach the proxy
+byte-for-byte, with a `Content-Length` the browser derives from them; the
+proxy must relay them the same way (browsers have no zstd decoder, and a
+decoded body would be two to four times larger). One exception remains
+at the default proxy's boundary: a `gzip` or `deflate` body that reaches
+the TLS bridge is decoded and sent without `Content-Encoding`, because
+git compresses its `git-upload-pack` request with gzip and the Playground
+proxy's preflight does not allow `Content-Encoding` yet. That decoding
+goes away once the Playground proxy allows the field.
+
+**WebSocket handshakes.** The bridge carries HTTP requests, and `fetch()`
+cannot send `Upgrade`. A request asking to upgrade its connection to
+WebSocket therefore fails before dispatch (the guest receives `502 Bad
+Gateway` naming the reason) instead of reaching the destination as a
+plain GET. Codex tries a WebSocket first in every session and falls back
+to HTTPS with server-sent events after its retries; see the Codex
+package README. Upgrades a server may ignore, such as `h2c`, are still
+dropped as browser-controlled fields.
 
 #### Development credential relay
 

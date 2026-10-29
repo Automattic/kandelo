@@ -519,6 +519,44 @@ describe("BrowserCorsProxy", () => {
     expect([...headers.entries()]).toEqual([]);
   });
 
+  it("refuses a WebSocket handshake instead of relaying it as a plain GET", () => {
+    // fetch() cannot carry Upgrade, so the destination would answer a
+    // different request than the one the guest made.
+    for (const upgrade of ["websocket", "WebSocket", "foo, websocket"]) {
+      expect(() => proxy({
+        url: PROXY_URL,
+        allowedRequestHeaderNames: [],
+        allowAnonymousGetHeaderOmission: true,
+      }).project({
+        method: "GET",
+        headers: [
+          ["Connection", "Upgrade"],
+          ["Upgrade", upgrade],
+          ["Sec-WebSocket-Version", "13"],
+          ["Sec-WebSocket-Key", "AAAAAAAAAAAAAAAAAAAAAA=="],
+        ],
+        bodyPresent: false,
+        targetUrl: TARGET_URL,
+      })).toThrow(new BrowserCorsProxyRequestError(
+        `Browser CORS proxy ${PROXY_URL} cannot relay GET request to ${TARGET_ORIGIN}: it asks to upgrade the connection to WebSocket, and the browser's HTTP(S) bridge carries HTTP requests only`,
+      ));
+    }
+  });
+
+  it("still drops an Upgrade offer a server may ignore, such as h2c", () => {
+    const headers = proxy({
+      url: PROXY_URL,
+      allowedRequestHeaderNames: [],
+      allowAnonymousGetHeaderOmission: false,
+    }).project({
+      method: "GET",
+      headers: [["Connection", "Upgrade, HTTP2-Settings"], ["Upgrade", "h2c"]],
+      bodyPresent: false,
+      targetUrl: TARGET_URL,
+    });
+    expect([...headers.entries()]).toEqual([]);
+  });
+
   it("still fails a body-bearing request carrying an application-owned unsupported header", () => {
     expect(() => proxy({
       url: PROXY_URL,

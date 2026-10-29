@@ -165,6 +165,21 @@ export const BROWSER_CONTROLLED_REQUEST_HEADER_NAMES = new Set([
   "user-agent",
 ]);
 
+// A WebSocket handshake asks for the connection itself: its answer is
+// `101 Switching Protocols`, after which both sides speak WebSocket. fetch()
+// cannot send `Upgrade`, so relaying the handshake would deliver a plain GET
+// and hand the guest the destination's answer to a request it never made.
+// Refuse it as a request the bridge cannot carry. An upgrade a server may
+// ignore (h2c) loses nothing when dropped, so only WebSocket is refused.
+function requestsWebSocketUpgrade(
+  headers: readonly HttpHeaderOccurrence[],
+): boolean {
+  return headers.some(([name, value]) =>
+    asciiLowercase(name) === "upgrade" &&
+    value.split(",").some((token) => asciiLowercase(token.trim()) === "websocket")
+  );
+}
+
 function isBrowserControlledRequestHeader(lowerName: string): boolean {
   return (
     BROWSER_CONTROLLED_REQUEST_HEADER_NAMES.has(lowerName) ||
@@ -400,7 +415,7 @@ export class BrowserCorsProxy {
    * still makes the request credentialed, so no other field is omitted from
    * it. Every other credential field, and every credential without a grant,
    * fails the request. Reserved proxy-control fields fail it whatever the
-   * grant.
+   * grant, and so does a WebSocket handshake, which fetch() cannot carry.
    */
   project(input: {
     method: string;
@@ -458,6 +473,11 @@ export class BrowserCorsProxy {
     if (reservedNames.length > 0) {
       throw new BrowserCorsProxyRequestError(
         `Browser CORS proxy ${this.config.url} cannot relay ${input.method} request to ${origin} with reserved request headers: ${sortedUnique(reservedNames).join(", ")}`,
+      );
+    }
+    if (requestsWebSocketUpgrade(input.headers)) {
+      throw new BrowserCorsProxyRequestError(
+        `Browser CORS proxy ${this.config.url} cannot relay ${input.method} request to ${origin}: it asks to upgrade the connection to WebSocket, and the browser's HTTP(S) bridge carries HTTP requests only`,
       );
     }
 

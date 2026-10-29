@@ -15,6 +15,8 @@ import {
   CREDENTIAL_GATE_CHANNEL,
   credentialTokenHash,
 } from "../src/credential-gate";
+import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "../../apps/browser-demos/lib/browser-cors-proxy";
+import { CODEX_OBSERVED_REQUESTS } from "./fixtures/codex-observed-requests";
 
 // The CORS proxy request-header projection is implemented twice: once in TS
 // (browser-cors-proxy.ts, used by the guest-socket backends) and once in plain
@@ -153,11 +155,15 @@ interface SentRequest {
   referrerPolicy: ReferrerPolicy;
   headers: Record<string, string>;
   body?: string;
+  bodyBytes?: Uint8Array;
 }
 
 // Run the service worker's own proxy-dispatch code, not a copy: the section
 // from the injected profile through fetchThroughCorsProxy, with a fake fetch.
-function serviceWorkerDispatch(answer: (sent: SentRequest) => Response) {
+function serviceWorkerDispatch(
+  answer: (sent: SentRequest) => Response,
+  allowedRequestHeaderNames: readonly string[] = ["accept", "content-type", "range"],
+) {
   const start = serviceWorkerSource.indexOf(
     'var CORS_PROXY_CONFIG = "__CORS_PROXY_CONFIG__";',
   );
@@ -171,7 +177,7 @@ function serviceWorkerDispatch(answer: (sent: SentRequest) => Response) {
     '"__CORS_PROXY_CONFIG__"',
     JSON.stringify({
       url: "https://proxy.example/?",
-      allowedRequestHeaderNames: ["accept", "content-type", "range"],
+      allowedRequestHeaderNames,
       allowAnonymousGetHeaderOmission: true,
       rangeRequestHeaderAlias: "x-cors-proxy-range",
     }),
@@ -179,6 +185,9 @@ function serviceWorkerDispatch(answer: (sent: SentRequest) => Response) {
   const warnings: string[] = [];
   const sent: SentRequest[] = [];
   const fakeFetch = async (request: Request) => {
+    const bytes = request.method === "POST"
+      ? new Uint8Array(await request.clone().arrayBuffer())
+      : undefined;
     const record = {
       url: request.url,
       method: request.method,
@@ -186,7 +195,7 @@ function serviceWorkerDispatch(answer: (sent: SentRequest) => Response) {
       credentials: request.credentials,
       referrerPolicy: request.referrerPolicy,
       headers: Object.fromEntries(request.headers.entries()),
-      ...(request.method === "POST" ? { body: await request.text() } : {}),
+      ...(request.method === "POST" ? { body: await request.text(), bodyBytes: bytes } : {}),
     };
     sent.push(record);
     return answer(record);
@@ -297,6 +306,44 @@ describe("service worker proxy dispatch", () => {
     expect(refused.status).toBe(502);
     expect(await refused.text()).toContain("authorization, chatgpt-account-id");
     expect(sent).toHaveLength(1);
+  });
+
+  it("relays a granted Codex turn's zstd body byte-for-byte with its Content-Encoding", async () => {
+    // The production profile, and Codex's observed fields with synthetic
+    // values. The service worker re-projects the kernel worker's request and
+    // must pass the compressed bytes through untouched.
+    const { dispatch, sent } = serviceWorkerDispatch(
+      () => new Response("ok"),
+      DEFAULT_BROWSER_CORS_PROXY_CONFIG.allowedRequestHeaderNames,
+    );
+    const body = new Uint8Array([
+      0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x0d, 0x0a, 0xff, 0x30, 0x0d, 0x0a, 0x7f,
+    ]);
+    const codex = CODEX_OBSERVED_REQUESTS.responses;
+    const headers = new Headers();
+    for (const [name, value] of codex.headers) headers.append(name, value);
+    headers.set("X-Kandelo-Credential-Grant", "token-value");
+    const proxied = `https://proxy.example/?${codex.url}`;
+    const response = await dispatch(
+      new Request(proxied, { method: "POST", headers, body }),
+      proxied,
+      codex.url,
+      { token: "token-value" },
+    );
+    expect(response.status).toBe(200);
+    expect(sent).toHaveLength(1);
+    expect([...sent[0]!.bodyBytes!]).toEqual([...body]);
+    expect(sent[0]!.headers).toMatchObject({
+      "content-encoding": "zstd",
+      "session-id": expect.any(String),
+      "thread-id": expect.any(String),
+      "x-codex-window-id": expect.any(String),
+      "x-codex-beta-features": "remote_compaction_v2",
+      "x-codex-routing-hint": "model=gpt-5.5",
+      authorization: "Bearer synthetic-access-token",
+      "x-cors-proxy-allowed-request-headers": "Authorization",
+    });
+    expect(sent[0]!.headers["x-kandelo-credential-grant"]).toBeUndefined();
   });
 
   it("never relays cookies or proxy credentials, even with a verified grant", async () => {
