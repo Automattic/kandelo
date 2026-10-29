@@ -4,7 +4,7 @@
 use super::*;
 use anyhow::{Result, ensure};
 use wasm_encoder::{BlockType, ExportKind, FuncType, Function, Instruction, ValType};
-use wasm_posix_shared::abi;
+use wasm_posix_program_abi::abi;
 
 pub struct NativeModuleState {
     declarations: FrozenDeclarations,

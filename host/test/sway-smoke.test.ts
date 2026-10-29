@@ -119,6 +119,20 @@ async function startSway(config: string) {
   const stdoutByPid = new Map<number, string>();
   const events: unknown[] = [], syscalls: unknown[] = [];
   const progress: Array<{ time: number; phase: string; completed: number; total: number }> = [];
+  const checkpoints: Array<{ time: number; phase: string }> = [];
+  const trace = process.env.KANDELO_SWAY_TRACE === "1";
+  const id = createHash("sha256").update(config).digest("hex").slice(0,12);
+  let before: unknown[] = [];
+  const checkpoint = (phase: string) => {
+    if (!trace) return;
+    checkpoints.push({ time: Date.now(), phase });
+    // Preserve the last completed phase even if enumeration or destroy never
+    // returns; writing only from finally loses the evidence of that stall.
+    writeFileSync(join(__dirname, `../../.context/sway-node-teardown-${id}.json`),
+      JSON.stringify({config,before,checkpoints,events,progress,syscalls,stdout:out.value,stderr:err.value},
+        (_key,value) => typeof value === "bigint" ? value.toString() : value,2)+"\n");
+  };
+  checkpoint("rootfs-start");
   const host = new NodeKernelHost({
     onProcessEvent: event => events.push({time:Date.now(),...event}),
     rootfsImage: await sessionRootfs("sway", [
@@ -141,8 +155,10 @@ async function startSway(config: string) {
   const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
   const env = [...WLROOTS_ENV, "PATH=/usr/bin:/bin", `SWAYSOCK=${SWAYSOCK}`];
   const swaymsg = async (...args: string[]) => {
+    checkpoint(`swaymsg-start:${args.join(" ")}`);
     const before = new Set(stdoutByPid.keys());
     const code = await host.spawn(arrayBuffer(swaymsgBin!), ["swaymsg", ...args], { env });
+    checkpoint(`swaymsg-finished:${args.join(" ")}`);
     expect(code, `swaymsg ${args.join(" ")}.\n${dump()}`).toBe(0);
     return [...stdoutByPid].filter(([pid]) => !before.has(pid)).map(([, text]) => text).join("");
   };
@@ -172,37 +188,45 @@ async function startSway(config: string) {
     host.injectInputEvent(1, EV_SYN, SYN_REPORT, 0);
   };
 
+  checkpoint("host-init-start");
   await host.init();
+  checkpoint("host-init-finished");
   const offSyscalls = process.env.KANDELO_SWAY_TRACE === "1" ? host.subscribeSyscalls(event => {
     syscalls.push(event); if (syscalls.length > 256) syscalls.shift();
   }) : undefined;
   host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+  checkpoint("sway-spawn-start");
   const exited = host.spawn(compositorBytes("sway"), ["sway"], { env });
-  const exitCode = () => Promise.race([
-    exited,
-    new Promise<number>((_, reject) =>
-      setTimeout(() => reject(new Error(`sway timed out.\n${dump()}`)), 30_000)),
-  ]);
+  const exitCode = () => {
+    checkpoint("sway-exit-wait");
+    return Promise.race([
+      exited,
+      new Promise<number>((_, reject) =>
+        setTimeout(() => reject(new Error(`sway timed out.\n${dump()}`)), 30_000)),
+    ]).then(code => { checkpoint("sway-exited"); return code; });
+  };
 
   const close = async () => {
-    const trace = process.env.KANDELO_SWAY_TRACE === "1";
-    const before = trace ? await host.enumProcs() : [];
-    host.subscribeDestroyProgress(event => progress.push({time:Date.now(),...event}));
+    checkpoint("close-enum-procs-start");
+    before = trace ? await host.enumProcs() : [];
+    checkpoint("close-enum-procs-finished");
+    host.subscribeDestroyProgress(event => {
+      progress.push({time:Date.now(),...event});
+      checkpoint(`destroy-${event.phase}:${event.completed}/${event.total}`);
+    });
     try {
+      checkpoint("destroy-start");
       await host.destroy();
+      checkpoint("destroy-finished");
       const drain = progress.findLast(event => event.phase === "draining");
       expect(drain, "destroy must report its cooperative drain").toBeDefined();
       expect(drain!.completed, "sway session forced termination after an incomplete drain").toBe(drain!.total);
     } finally {
       offSyscalls?.();
-      if (trace) {
-      const id = createHash("sha256").update(config).digest("hex").slice(0,12);
-      writeFileSync(join(__dirname, `../../.context/sway-node-teardown-${id}.json`),
-        JSON.stringify({config,before,events,progress,syscalls,stdout:out.value,stderr:err.value},(_key,value) => typeof value === "bigint" ? value.toString() : value,2)+"\n");
-      }
+      checkpoint("close-finished");
     }
   };
-  return { host, out, err, dump, env, tiles, waitForWorkspace, press, click, exitCode, close };
+  return { host, out, err, dump, env, tiles, waitForWorkspace, press, click, exitCode, close, checkpoint };
 }
 
 describe("sway — a wlroots tiling compositor runs a client session", () => {
@@ -264,16 +288,21 @@ describe("sway — a wlroots tiling compositor runs a client session", () => {
 exec wlclient-test
 `);
       try {
+        sway.checkpoint("client-ready-wait");
         await waitFor(sway.out, (t) => t.includes("CLIENT_READY\n"),
           "a mapped client", 60_000, sway.dump);
+        sway.checkpoint("bar-workspace-wait");
         const workspace = await sway.waitForWorkspace((r) => r.height < CANVAS_H,
           "swaybar to reserve its height");
         expect(workspace.y).toBe(0);
         expect(workspace.width).toBe(CANVAS_W);
+        sway.checkpoint("bar-status-wait");
         await waitFor(sway.err, (t) => t.includes("BAR_STATUS"),
           "swaybar's status_command", 30_000, sway.dump);
 
+        sway.checkpoint("bar-exit-command-start");
         await sway.host.spawn(arrayBuffer(swaymsgBin!), ["swaymsg", "exit"], { env: sway.env });
+        sway.checkpoint("bar-exit-command-finished");
         expect(await sway.exitCode(), `sway exit.\n${sway.dump()}`).toBe(0);
       } finally {
         await sway.close();
@@ -287,8 +316,10 @@ exec wlclient-test
     async () => {
       const sway = await startSway("not_a_sway_command\nexec wlclient-test\n");
       try {
+        sway.checkpoint("client-ready-wait");
         await waitFor(sway.out, (t) => t.includes("CLIENT_READY\n"),
           "a mapped client", 60_000, sway.dump);
+        sway.checkpoint("nag-workspace-wait");
         const workspace = await sway.waitForWorkspace((r) => r.y > 0,
           "swaynag to reserve its height");
         const nagHeight = workspace.y;
@@ -297,6 +328,7 @@ exec wlclient-test
         // swaynag lays its buttons out from the right edge: the 21-pixel
         // dismiss button, a 35-pixel gap, then "Exit sway", whose 9
         // Inconsolata glyphs at 10 points span about 60 pixels.
+        sway.checkpoint("nag-exit-click");
         sway.click(CANVAS_W - 90, Math.floor(nagHeight / 2));
         expect(await sway.exitCode(), `sway exit.\n${sway.dump()}`).toBe(0);
       } finally {

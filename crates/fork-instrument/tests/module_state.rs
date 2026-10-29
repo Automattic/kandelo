@@ -10,7 +10,7 @@ use std::{
 
 use walrus::{ExportItem, FunctionId, ImportKind, Module, ValType};
 
-use wasm_posix_shared::abi::{
+use wasm_posix_program_abi::abi::{
     WPK_FORK_EXPORT_MODULE_BOOTSTRAP, WPK_FORK_EXPORT_MODULE_STATE_FINISH_RESTORE,
     WPK_FORK_EXPORT_MODULE_STATE_RESTORE, WPK_FORK_EXPORT_MODULE_STATE_SAVE,
     WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP, WPK_FORK_IMPORTED_GLOBALS_HEADER_SIZE,

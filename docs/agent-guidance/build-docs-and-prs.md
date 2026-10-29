@@ -244,6 +244,12 @@ rewriting another contributor's branch, inspect the original commits with
   committer. Set `--author` explicitly when reconstructing a commit.
 - For materially combined work, retain the primary author and add accurate
   `Co-authored-by:` trailers; do not demote the primary author to a trailer.
+- Attribution credits people. Never add a `Co-authored-by:` trailer, a
+  "Generated with" line, or similar credit for an AI model, agent, or coding
+  tool (Claude, ChatGPT, Codex, Copilot, and so on), in commits or PR
+  descriptions. The checked-in `.claude/settings.json` sets Claude Code's
+  `attribution` to empty so it adds none; other clients must omit it
+  themselves.
 - Before force-pushing, verify patch and author preservation with
   `git range-diff` and `git log --format=fuller`. If provenance is ambiguous,
   reconstruct it from the original commits and PR timeline instead of guessing.

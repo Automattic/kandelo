@@ -1,8 +1,9 @@
-# Claude — local state stays private; shared agent skills and opt-in hooks
-# are checked in.
+# Claude — local state stays private; shared agent skills, opt-in hooks and
+# the shared project settings (which turn off AI attribution) are checked in.
 .claude/*
 !.claude/skills/
 !.claude/hooks/
+!.claude/settings.json
 
 # Build artifacts
 /target

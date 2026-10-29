@@ -222,13 +222,13 @@ fn emit_mode(input: &[u8], state: State, staging_wide: bool) -> Vec<u8> {
     ];
     if let Some(roots) = &roots {
         descriptors.push((
-            wasm_posix_shared::abi::WPK_FORK_IMPORTED_GLOBALS_SECTION,
+            wasm_posix_program_abi::abi::WPK_FORK_IMPORTED_GLOBALS_SECTION,
             roots.roots.imported_globals_descriptor().to_vec(),
         ));
     }
     if let Some(tables) = &tables {
         descriptors.push((
-            wasm_posix_shared::abi::WPK_FORK_IMPORTED_TABLES_SECTION,
+            wasm_posix_program_abi::abi::WPK_FORK_IMPORTED_TABLES_SECTION,
             tables.tables.imported_tables_descriptor().to_vec(),
         ));
     }

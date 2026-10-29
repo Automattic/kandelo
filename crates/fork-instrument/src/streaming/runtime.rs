@@ -205,7 +205,7 @@ impl NativeRuntime {
         )?;
         let vv = add_type(&mut inputs.types, base, &[], &[], budget)?;
         let vi = add_type(&mut inputs.types, base, &[], &[ValType::I32], budget)?;
-        let module = wasm_posix_shared::abi::WPK_FORK_FRAME_IMPORT_MODULE;
+        let module = wasm_posix_program_abi::abi::WPK_FORK_FRAME_IMPORT_MODULE;
         let mut function = |name, ty| {
             add_import(
                 &mut inputs.imports,

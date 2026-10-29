@@ -55,6 +55,11 @@ as `gotoMachineOrSkip` and `gotoApp` in
 documented optional content, such as network-fetched data or a product
 outside `packages/sets/local-supported.toml`.
 
+The kernel-memory ownership audit excludes the fork instrumenter's offline
+JavaScript fixtures and `scripts/check-fork-memory-artifact.ts`: they create
+private synthetic module memories, never views into a live kernel. Production
+host sources, other scripts, and browser runtime fixtures remain in scope.
+
 Keep authored-source audits separate from generated reports and private
 worktrees. Exclude those evidence directories explicitly while retaining
 production source. Report authorized deferred tests and unsupported cases

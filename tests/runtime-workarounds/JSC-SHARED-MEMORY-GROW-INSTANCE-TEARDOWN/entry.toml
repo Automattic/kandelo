@@ -1,0 +1,29 @@
+id = "JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN"
+kind = "bug"
+status = "confirmed"
+runtimes = ["webkit"]
+summary = "Growing a shared WebAssembly.Memory while another thread destroys an instance that imports it crashes the web content process (SIGSEGV in updateMatchingCachedMemoriesConcurrently): reproduces on WebKit build 2359"
+reports = "human-only"
+
+# The minimal page. repro-faithful.html (with faithful-*.js) is the same
+# defect driven through Kandelo's worker topology; it is evidence described
+# in entry.md and is run by hand, because one target has one reproduction.
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["webkit"]
+self_judging = true
+crash_is_reproduced = true
+attempts = 3
+min_reproduced = 1
+timeout_seconds = 120
+
+# Playwright webkit-2359 (Playwright 1.63.0).
+[[observed]]
+runtime = "webkit"
+version = "26.6"
+os = "macos"
+reproduced = true
+date = 2026-10-27
+source = "suite"
+released = false

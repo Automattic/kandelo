@@ -19,13 +19,13 @@ impl AbiMarker {
             match artifact_identity(scan.input())?.abi_version {
                 ArtifactAbiVersion::Missing => true,
                 ArtifactAbiVersion::Present(version)
-                    if version == wasm_posix_shared::ABI_VERSION =>
+                    if version == wasm_posix_program_abi::ABI_VERSION =>
                 {
                     false
                 }
                 ArtifactAbiVersion::Present(version) => bail!(
                     "side module declares stale __abi_version {version}; expected current ABI {}",
-                    wasm_posix_shared::ABI_VERSION
+                    wasm_posix_program_abi::ABI_VERSION
                 ),
                 ArtifactAbiVersion::Invalid => bail!(
                     "side module has an invalid __abi_version export; expected a constant current ABI marker"
@@ -58,7 +58,7 @@ impl AbiMarker {
         );
         let mut body = Function::new([]);
         body.instruction(&Instruction::I32Const(
-            wasm_posix_shared::ABI_VERSION as i32,
+            wasm_posix_program_abi::ABI_VERSION as i32,
         ));
         body.instruction(&Instruction::End);
         ensure!(

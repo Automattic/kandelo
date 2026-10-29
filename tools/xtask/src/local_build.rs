@@ -1392,7 +1392,7 @@ fn run_check_abi_version_check(repo: &Path, script_rel: &str) -> Result<(), Stri
 /// Cheap gate for `snapshot_drift_check`: has any ABI-defining source
 /// changed more recently than the committed snapshot? Compares
 /// `abi/snapshot.json`'s mtime against the newest mtime found under
-/// `crates/shared` and `crates/kernel`. This is a gate, not the safety
+/// `crates/program-abi`, `crates/shared` and `crates/kernel`. This is a gate, not the safety
 /// check itself -- a false "changed" only costs one extra
 /// `check-abi-version.sh` run -- so ambiguity resolves to `true`: a
 /// missing snapshot, or an error walking a source directory that does
@@ -1404,7 +1404,7 @@ fn abi_sources_changed_since_snapshot(repo: &Path) -> Result<bool, String> {
         Ok(mtime) => mtime,
         Err(_) => return Ok(true),
     };
-    for dir in ["crates/shared", "crates/kernel"] {
+    for dir in ["crates/program-abi", "crates/shared", "crates/kernel"] {
         match newest_mtime_under(&repo.join(dir)) {
             Ok(mtime) if mtime > snapshot_mtime => return Ok(true),
             Ok(_) => {}
@@ -4406,7 +4406,12 @@ fn run_child_process(
 ) -> Result<ValidatedChildResultV1, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("resolve current xtask executable: {error}"))?;
-    let mut command = Command::new(executable);
+    let mut command = Command::new(&executable);
+    // WHY: this exact xtask is already the source-built local-build driver.
+    // Recipes have private Cargo roots; rebuilding metadata tooling there
+    // would compile xtask and download its dependencies for every recipe.
+    // Override any inherited path so a stale outer binary cannot win.
+    command.env("WASM_POSIX_XTASK_BIN", &executable);
     command
         .arg("local-build")
         .arg("run-node")
@@ -9169,6 +9174,27 @@ materialization = "lazy"
             abi_sources_changed_since_snapshot(repo.path()).unwrap(),
             "a source newer than the snapshot must open the gate"
         );
+    }
+
+    #[test]
+    fn abi_sources_changed_since_snapshot_watches_the_program_abi_crate() {
+        // ABI_VERSION and the program artifact declarations live in
+        // crates/program-abi; an edit there alone must still open the gate.
+        let repo = tempfile::TempDir::new().unwrap();
+        let now = std::time::SystemTime::now();
+        let hour_ago = now - std::time::Duration::from_secs(3600);
+
+        let snapshot = repo.path().join("abi/snapshot.json");
+        fs::create_dir_all(snapshot.parent().unwrap()).unwrap();
+        fs::write(&snapshot, "{}").unwrap();
+        set_mtime(&snapshot, hour_ago);
+
+        let program_abi_src = repo.path().join("crates/program-abi/src/lib.rs");
+        fs::create_dir_all(program_abi_src.parent().unwrap()).unwrap();
+        fs::write(&program_abi_src, "// program ABI, edited after the snapshot").unwrap();
+        set_mtime(&program_abi_src, now);
+
+        assert!(abi_sources_changed_since_snapshot(repo.path()).unwrap());
     }
 
     /// A directory-walk error inside an EXISTING source directory (as

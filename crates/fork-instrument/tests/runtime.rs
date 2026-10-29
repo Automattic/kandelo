@@ -17,7 +17,7 @@ use fork_instrument::linked_frames::{
 use fork_instrument::runtime::names;
 use fork_instrument::{Options, UNWIND_TRANSPORT_SECTION, UNWIND_TRANSPORT_VERSION, instrument};
 use walrus::{ExportItem, ImportKind, Module, ValType};
-use wasm_posix_shared::abi::{
+use wasm_posix_program_abi::abi::{
     WPK_FORK_CAP_ACTIVATION_STATE_SAFE, WPK_FORK_CAP_DYLINK_MAIN, WPK_FORK_CAP_SIDE_ENTRY,
     WPK_FORK_CAPABILITIES_SECTION, WPK_FORK_CAPABILITIES_VERSION,
     WPK_FORK_IMPORTED_GLOBALS_SECTION, WPK_FORK_MODULE_STATE_FORMAT_SECTION,
@@ -423,7 +423,7 @@ fn reference_vector_finish_import_returns_a_canonical_ordinal() {
         .imports
         .iter()
         .find_map(|import| {
-            (import.module == wasm_posix_shared::abi::WPK_FORK_FRAME_IMPORT_MODULE
+            (import.module == wasm_posix_program_abi::abi::WPK_FORK_FRAME_IMPORT_MODULE
                 && import.name == names::IMPORT_REFERENCE_VECTOR_FINISH)
                 .then(|| match import.kind {
                     ImportKind::Function(function) => Some(function),

@@ -15,7 +15,7 @@ name = "fork_instrument"
 path = "src/lib.rs"
 
 [dependencies]
-wasm-posix-shared = { path = "../shared" }
+wasm-posix-program-abi = { path = "../program-abi" }
 
 # anyhow — ergonomic error chaining for a CLI / build tool.
 anyhow = "1"

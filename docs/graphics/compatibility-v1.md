@@ -29,7 +29,7 @@ follow-up; no missing API is reclassified as a platform boundary.
 ## Unpublished ABI policy
 
 Use one ABI above current main for the combined effort, as requested by
-the user on 2026-10-24. Main `cb0a8226c965` uses program ABI 55 and kernel-host version 2. The
+the user on 2026-10-24. Main `35164686062c` uses program ABI 55 and kernel-host version 2. The
 combined source uses **program ABI 56 and kernel-host version 3**, preserving
 main's program-only contract digest and exact host/kernel version check.
 Keep these numbers across increments
@@ -81,20 +81,29 @@ artifact sets or compatibility promises between those source revisions.
 
 ## Current completion checkpoints, 2026-10-29
 
-Actual cage/sway sessions pass across Chromium, Firefox and WebKit on
-`d081e6d453`. The latest native-window format repair still needs the
-canonical Freeciv application and repeated switching gate. That normal
-product rebuild is running on `21f3d451bb`; the shell image includes the
-SDK, so its dependency graph includes Clang. The recurring Firefox
-inherited-display pixel-capture failure remains unresolved.
+The cage/sway landing integrates main `35164686062c` via
+`5a54da5635`. The unpublished program ABI remains 56, now declared in
+main's program-ABI crate, with host 3 / GL table 17 / fork record 21.
+Generated outputs and focused ABI/Rust/host checks pass. Combined-main
+normal builds and acceptance remain pending.
 
-Pinned libc-test, Open POSIX and Sortix conformance on `d081e6d453`
-have all completed with zero unexpected failures; exact counts are below. The later hint
-increment has focused dual-width Node/three-engine evidence below and
-still requires final combined artifacts and gates. Broader implementation
-work remains in server waits, GL-source/forwarded images, GLES/EGL
-state/errors/rollback, context-loss recovery and the other inventory gaps.
-The enabled upstream CTS subset does not establish broad conformance.
+Prior candidate `9088f31021` passed normal product/freshness/closure/ABI
+checks, Freeciv and the complete three-engine browser-memory gate. Its
+Node selection passed 23/25 with two unexplained Sway timeouts; browser
+acceptance passed 13/15 with two Sway prompt-observation failures. The
+Cage idle repair passed all engines. A stronger Sway exit observation is
+prepared, and a fresh-artifact traced diagnostic passed all three Node
+Sway cases, without clearing the earlier failed combined selection.
+Exact source and artifact evidence is recorded below and in the bounded
+[cage/sway landing contract](cage-sway-landing.md).
+
+The broader graphics follow-up remains incomplete. Pinned libc/POSIX/
+Sortix at `d081e6d453` completed with zero unexpected failures, and
+focused later GLES increments have dual-width Node/three-engine evidence.
+Those results do not establish full combined conformance. Ordinary work
+remains in server waits, GL-source/forwarded images, GLES/EGL state,
+errors, rollback, context loss and the other inventory gaps. The enabled
+upstream CTS subset does not establish broad conformance.
 
 ## Inventory
 
@@ -149,12 +158,12 @@ ownership, completion and import/export semantics; serialized command order
 alone does not supply that contract. Multiple displays and non-linear or
 multi-plane dma-bufs require distinct format/layout and display authority.
 These are outside this baseline and cannot excuse EGL1.5 core sync gaps.
-Wasm64 userspace graphics is also a separate expansion: today libdrm's recipe
-explicitly accepts only wasm32, and the graphics archive builders target
-wasm32 and run only for that sysroot. Extending it requires architecture-aware
-archive builders, the libdrm recipe, high-address GL query marshalling and
-executed wasm64 coverage. This records absent support, not a hard platform
-boundary and not a reduction of an existing advertised graphics API.
+Normal graphics guests now use both wasm32 and wasm64 SDKs, including
+rendered browser and kernel pointer-marshalling checks. Upstream
+compositor packages currently build for wasm32; extending their recipes
+and executed package acceptance to wasm64 is a separate packaging
+expansion. This does not excuse missing behavior in the existing
+userspace graphics API or its wide-pointer marshalling.
 
 ## Implementation evidence
 
@@ -8568,6 +8577,101 @@ location ownership/type models, larger positive-array transport, broad
 upstream CTS, or full combined graphics-baseline acceptance. These remain
 ordinary implementation and validation work. The unchanged unpublished
 ABI is program 56 / host 3 / GL table 17 / fork record 21.
+
+### Main integration and program-ABI extraction, 2026-10-29
+
+The landing integrates main `35164686062cad97a660452e3d445373e4cfc519`
+into candidate `9088f31021`, preserving all nine newer main commits and
+their contributor attribution. Main's dependency-free program-ABI crate
+owns the single unpublished `ABI_VERSION = 56`; shared re-exports that
+declaration, while kernel-host version 3, GL operation table 17 and
+runtime-core fork record version 21 remain unchanged. The moved program
+declarations match main exactly apart from the graphics epoch's version
+and history comment. The browser support documentation retains both the
+graphics texture-respecification boundary and main's new thread-worker
+retirement and nested-worker findings.
+
+Normal `check-abi-version.sh update` and check both pass after compiling
+the integrated kernel and xtask. Regenerated ABI snapshot, TypeScript and
+C outputs, host import allowance and standalone resolver bundle match
+the prior landing byte for byte; the resolver bundle regression passes.
+The snapshot SHA-256 is
+`df64f6c6a2ca1ea26a89b9720a5a14aec5354850f729445ff3ec488dd1c7cc12`.
+Program-ABI/shared crate test targets pass (87 shared cases; the new
+program-ABI crate has no unit cases). Focused xtask extraction and ABI
+source-gate checks pass (9 + 5 + 1 cases), including the actual fork
+package key's independence from kernel-host source edits.
+
+Focused host source checks pass all 357 cases in six files: scratch
+contract/transfer boundaries, large transfers, readiness wakeups, runtime
+memory profiles and the memory-write audit. The initial combined run
+passed 356 cases and failed the static audit solely for 44 stale
+allowances for offline fork fixtures and the artifact verifier. Main now
+classifies those exact paths as test harnesses, so their old per-site
+allowances were removed; production ownership coverage and graphics
+allowances remain. The subsequent complete six-file run passes with zero
+skips. These source-only checks use the normal host Vitest configuration
+with global fixture compilation disabled, as the repository's source
+gates do. An earlier direct Vitest invocation was stopped during global
+fixture provisioning before any test result, and is not counted as a
+passing run.
+
+These are source and ABI checks. Main also changes live host behavior
+(terminal-input wakeups and WebKit thread-worker lifetime), package build
+input closures and default Node program demand. The older candidate's
+product, browser-memory, compositor and conformance evidence does not
+validate this combined source. Normal products and acceptance must be
+rebuilt and rerun before the landing is declared ready.
+
+### Reviewed landing acceptance and retained failures (2026-10-29)
+
+The clean `9088f31021` run
+`cage-sway-reviewed-landing-1029-143356-baef` completed with exit 1 after
+1h17m. Normal bootstrap, optional landing CTS build, ABI, freshness and
+artifact-closure checks passed. Freeciv's SDL main menu passed 1/1.
+Node passed 23/25 across 11 files; the Sway bar and configuration-error
+cases hit whole-test timeouts. Browser acceptance passed 13/15: all
+three Cage cases, six rendered compositor sessions and three pinned EGL
+CTS cases passed, as did WebKit Sway. Chromium and Firefox Sway failed
+an unreliable historical shell-prompt count after display release.
+Their trace text shows the prompt split by late child stderr. No broad
+Firefox capture failure is waived by this diagnosis.
+
+The complete browser-memory gate passed, including 9/9 browser cases
+and all four persistent-page game/compositor/tmux/WordPress switching
+cycles per engine. Chromium, Firefox and WebKit switching cases took
+7.2, 5.6 and 4.5 minutes respectively; browser cases totaled 17.4 minutes.
+This is the full unchanged constrained-budget gate, not isolated fresh
+pages. Exact logs/results are `.context/cage-sway-reviewed-*` in the
+fork-alias checkout.
+
+The private `.context/cage-sway-reviewed-artifacts.json` records all 98
+projected owners and 237 members at source `9088f31021`, with kernel
+SHA-256 `3b255f7f652d520fae5a24a3f8ff377a79ccb151b352204c9b052ecfc5f7de91`.
+The fresh standalone fixture input/byte bridge passed both before and
+after acceptance with zero differences, using the complete SDK,
+compiler/toolchain, generated protocols and relevant source inputs.
+The collector did not compile, copy or stamp fixtures. Normal-policy
+resolution was separately captured at the test-only diagnostic head in
+`.context/gbm-fork-aliases/.context/cage-sway-default-identities.json`:
+kernel, compositor programs, helpers and dash match the recorded product
+bytes; all three standalone fixture hashes match the bridge record.
+
+The Node timeout cause remains open. Fresh-artifact diagnostic
+`sway-node-fresh-diagnostic-1029-155733-42b2` on source `5a0f83afb7`
+passed all three Sway cases in 14.371, 14.951 and 14.869 seconds, with
+unchanged assertions/deadlines and persisted phase/cleanup checkpoints.
+That pass is narrower evidence, not a repair or deletion of the failed
+combined result. The separate CPU-checkout diagnostic failed because
+its client had a stale ABI digest; it is a provisioning failure, not
+an explanation of the verified candidate's timeouts.
+
+The browser exit fixture now requires actual display-owner release,
+automatic terminal handoff and the resumed parent shell's real
+`sway-exit=0` output, preserving all other idle/input/clock/restart
+checks. Execution of that repair and combined-main products, consumer,
+memory and conformance gates remain pending. Prior-candidate acceptance
+is not transferred to the new main integration.
 
 ### Inactive uniforms require a current executable, 2026-10-29
 

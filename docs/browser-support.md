@@ -1856,13 +1856,14 @@ trust. Adding a package to an image needs only the image recipe and the
 package's entry in the supported set.
 
 Binaries the browser app imports directly (`@binaries/...`) are the other
-consumer. Each must be an output of a package in
+consumer. The Node CLI's literal `optionalBinary` built-ins are consumers
+too, including each alternative entry point. Each must be an output of a package in
 `packages/sets/local-supported.toml`;
 `scripts/check-browser-binary-supply.ts` enforces this, and
 `tests/package-system/browser-binary-supply.test.ts` runs it in CI. A
-default `./run.sh local-build` selects the owners of those imports beside
+default `./run.sh local-build` selects the owners of those host demands beside
 the active products. After every supported-tree build the engine also
-checks the published projection: each browser import, the kernel, rootfs
+checks the published projection: each host program demand, the kernel, rootfs
 and image-writer artifacts, and every lazy body each product image
 references must be present at its declared size, or setup fails naming the
 path and its consumer. Optional gallery globs are outside this rule; their
@@ -3327,6 +3328,40 @@ is recorded as [the runtime workaround entry](../tests/runtime-workarounds/CHROM
 The image-view path avoids copying a base image that the next command
 replaces. Stable Chrome and other backends have not been established as
 affected; the default Playwright headless shell did not reproduce it.
+
+### WebKit page-process crash when thread workers end
+
+This is a confirmed WebKit defect, recorded in the runtime workaround
+registry as
+[`JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN`](../tests/runtime-workarounds/JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN/entry.md).
+JavaScriptCore crashes the web content process (`SIGSEGV` in
+`JSWebAssemblyInstance::updateMatchingCachedMemoriesConcurrently`) when one
+thread grows a shared `WebAssembly.Memory` by at least one page while
+another thread destroys an instance that imports it, whether its worker is
+terminated or closed or the garbage collector frees it. Standalone pages
+with no Kandelo code crash Playwright's WebKit every time; Chromium and
+Firefox run them clean.
+
+Every Kandelo pthread binds one instance to its process memory in its own
+worker, and the rest of the process keeps growing that memory, so an
+exiting thread used to crash the tab. On WebKit only (detected from the
+user agent), process and thread workers now keep every instance bound to
+process memory until the worker ends, and an exited thread's idle worker is
+terminated with its process at exit, exec, forced termination or destroy.
+Its slot is still reclaimed when the thread exits, and workers are never
+reused. The cost is one idle worker per thread a process has created, held
+until that process ends. Chromium, Firefox and Node.js terminate thread
+workers as soon as the thread exits.
+
+### Firefox crash when a Worker ends a starting classic Worker
+
+Playwright's Firefox 155 crashes its content process when a dedicated
+Worker terminates a nested classic Worker that is still starting. Module
+Workers do not crash, and Kandelo creates only module Workers on Firefox (its
+kernel Worker and every process and thread Worker), so Kandelo is not
+affected and has no workaround for it. Nested Workers must stay module
+Workers. The standalone reproduction and measurements are in
+[`docs/measurements/2026-10-28-firefox-nested-classic-worker-termination.md`](measurements/2026-10-28-firefox-nested-classic-worker-termination.md).
 
 ### Compiler engine limits
 

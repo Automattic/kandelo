@@ -3,9 +3,11 @@
 [PR #1574](https://github.com/Automattic/kandelo/pull/1574) lands the
 infrastructure and normal package/image integration for upstream cage
 0.3.1 and sway 1.12 on wlroots 0.20.2. Its runtime source cut is
-`21f3d451bb`, above main `cb0a8226c965`. Current build source
-`e58d19f98a` also corrects Sway's declared native build tools without a
-runtime change. This is a bounded compositor consumer contract; complete
+`21f3d451bb`; the landing also integrates main `35164686062c` and its
+program-ABI crate extraction, package build fixes, terminal signal wakeup
+and WebKit thread-worker retirement policy. Existing consumer evidence
+predates that main integration; normal combined rebuilds and acceptance
+remain required. This is a bounded compositor consumer contract; complete
 GLES 2.0 and advertised EGL 1.5/extensions conformance continue in
 [follow-up PR #1594](https://github.com/Automattic/kandelo/pull/1594),
 tracked by the [graphics baseline](compatibility-v1.md).
@@ -85,43 +87,70 @@ not authorize weaker assertions, a blanket waiver or a platform boundary.
 
 ## Evidence and current status, 2026-10-29
 
-The `d081e6d453` mapping checkpoint passed the explicit normal CTS/
-compositor selection: nine browser cases across all three engines,
-including actual cage and sway sessions. Its libc-test, Open POSIX and
-Sortix runs completed with zero unexpected failures; exact counts and
-artifact identities are in the baseline ledger.
+Main `35164686062c` is integrated by merge `5a54da5635`, preserving
+its program-ABI crate extraction, build changes, terminal signal wakeups
+and WebKit worker retention. Program ABI 56 / host 3 / GL table 17 /
+fork record 21 remain unchanged. ABI regeneration/check and resolver
+regression pass; all generated ABI outputs are byte-identical to the
+prior landing candidate. Shared tests pass 87/87, focused xtask checks
+15/15 and six focused host source files 357/357. These source checks do
+not establish combined-main application acceptance, which remains pending.
 
-The later ARGB/config increment at `21f3d451bb` passed 212 native C
-cases, 717 graphics source checks, workspace Rust, normal matching
-dual-width SDK/kernel/host and ABI checks, and 8/8 Node cases. Its
-broader browser selection passed 89/90; the fixed comparison passed 11/12.
-The failed Firefox GPU-to-2D captures remain recorded. A standalone
-capture diagnostic exists, but engine-versus-tooling attribution remains
-unresolved. No platform boundary or waiver is claimed.
+The prior clean candidate `9088f31021` completed its normal product,
+optional CTS, ABI, freshness and artifact-closure checks. Its bounded
+acceptance job `cage-sway-reviewed-landing-1029-143356-baef` finished
+with exit 1 after 1h17m:
 
-The Sway recipe now declares Python 3.11+ and native Clang 21+ for its
-required upstream status-reader regression helper. This corrects package
-preflight metadata without changing target build flags or source. Its
-normal package rebuild on `e58d19f98a` completed successfully in 12m05s;
-it does not establish application acceptance.
+| Selection | Result |
+|---|---|
+| Freeciv SDL main menu, Chromium | 1/1 passed |
+| Node compositor/device selection | 23/25 passed; two Sway timeouts |
+| Three-engine gallery, rendered sessions and pinned EGL CTS | 13/15 passed; two Sway shell-prompt observations failed |
+| Full persistent-page browser-memory gate | 9/9 passed across all three engines |
 
-The original primary normal build and the first landing candidate were
-deliberately stopped with status 143 before application acceptance while
-debug-built artifact validation was investigated. A release-bootstrap
-attempt then failed solely because `sdk/rust/libc-upstream` was absent.
-The submodule was initialized normally at its pinned revision; neither
-the interruption nor the provisioning failure is a runtime test result.
+The memory gate completed all four game/compositor/tmux/WordPress cycles
+per engine. The Cage idle observation repair passed in all three engines.
+Chromium and Firefox Sway traces show master release, but late child
+stderr split the shell prompt that the old test counted. The fixture now
+requires actual display release and automatic terminal handoff, then
+executes the parent shell's existing exit-status command. It preserves
+input, idle, renderer, clock and restart assertions and their deadlines.
+This stronger exit observation still needs execution.
 
-The final normal pipeline is running as
-`cage-sway-final-provisioned-1029-121133-541f` on `e58d19f98a`. It uses
-the release-built xtask and the normal build graph/cache, followed by
-artifact freshness/closure/ABI and native/source checks, actual Freeciv,
-combined Node/three-engine browser consumers, six cage/sway gallery
-cases, and the unmodified complete browser-memory gate. No application
-acceptance result from this pipeline is available yet. Manual browser
-and final combined checks remain pending. This document defines the
-landing target; it does not declare the PR merge-ready. Performance has
-not been measured.
+The two Node whole-test timeouts remain unexplained. A diagnostic on the
+same verified artifacts with opt-in phase checkpoints passed all three
+Sway cases in 14.4–15.0 seconds, including cooperative cleanup. That
+passing diagnostic (`sway-node-fresh-diagnostic-1029-155733-42b2`, source
+`5a0f83afb7`) does not erase the failed combined selection. A diagnostic
+in a different checkout instead exposed a stale client ABI digest; it
+is recorded as provisioning failure and is not evidence about the
+verified candidate's timeouts.
+
+Artifact identities for `9088f31021` are retained privately in
+`.context/cage-sway-reviewed-artifacts.json`: 98 owners, 237 members,
+with resolved kernel SHA-256
+`3b255f7f652d520fae5a24a3f8ff377a79ccb151b352204c9b052ecfc5f7de91`.
+A complete SDK/toolchain/generated-input/raw-module comparison before
+and after acceptance found no differences from the freshly built
+standalone fixture inputs. No fixture bytes were copied or restamped by
+that comparison. A separate normal-policy identity capture confirms
+that the Node-selected compositor programs match the recorded products.
+These identities are prior-candidate evidence, not current-main builds.
+
+The earlier `e58d19f98a` combined selection passed Node 25/25 and the
+full memory gate 9/9; its broad browser selection passed 142/144, retaining
+two Firefox GPU-to-2D capture failures under #1594. Its gallery passed
+4/6 before the readiness repairs. Manual headless Chromium review at
+that source observed Cage shell input/exit and Sway's initial terminal
+and workspace switching; it did not establish tiling or pixman restart.
+
+Pinned libc-test, Open POSIX and Sortix at the `d081e6d453` mapping
+checkpoint completed with zero unexpected failures. Later ARGB/config
+source `21f3d451bb` passed 212 native C cases, 717 graphics source checks,
+workspace Rust, normal dual-width SDK/kernel/host and ABI checks.
+Exact counts, failures and identities remain in the baseline ledger.
+They are historical evidence and do not replace combined-main checks.
+This PR remains a draft. Performance has not been measured.
 
 ### Port dependency prerequisites
 
@@ -143,8 +172,9 @@ program-index check pass. The full metadata checker still exits 1 for
 python3 and zip. Its diagnostic output matches main
 `cb0a8226c965` exactly; the introduced CMake, Meson, Perl and pkg-config
 disagreements are eliminated. This is a metadata and prerequisite-check
-correction. Target sources, flags and revisions are unchanged; normal
-rebuilding against these recipe inputs is pending.
+correction. Target sources, flags and revisions are unchanged. Normal
+rebuilding against these recipe inputs passed on `9088f31021`; fresh
+combined-main validation remains pending.
 
 ### Cage idle-frame fixture prerequisite
 
@@ -166,8 +196,9 @@ trace controls yield zero columns for the empty grid and 38.4 for the
 rendered prompt after scaling the trace's 680-pixel canvas to its
 1088-pixel output. The exact one-second idle equality, typing change,
 nonblank-frame and clean-exit assertions remain unchanged, with no
-deadline increase. The corrected full browser case remains to be run;
-these observation controls alone do not establish compositor acceptance.
+deadline increase. The corrected full case passed on all three engines
+at `9088f31021`. This is Cage acceptance evidence for that candidate,
+not full graphics conformance or combined-main validation.
 
 ## Follow-up graphics baseline
 

@@ -7,7 +7,7 @@ use super::{
 use anyhow::{Context, Result, ensure};
 use std::collections::BTreeMap;
 use wasm_encoder::{Function, Instruction, ValType, reencode::Reencode};
-use wasm_posix_shared::abi;
+use wasm_posix_program_abi::abi;
 
 mod catalog;
 mod emit;

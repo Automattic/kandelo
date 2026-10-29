@@ -26,23 +26,15 @@ BUILD_DIR="$POSIX_TEST/build"
 # ── Expected failures (same as Node.js version) ──────────────────
 
 EXPECTED_FAIL=(
-    # Wasm limitations: sigaltstack
-    sigaltstack/1-1
-    sigaltstack/2-1
-    sigaltstack/3-1
-    sigaltstack/6-1
-    sigaltstack/7-1
-    sigaltstack/8-1
+    # Mirrors scripts/run-posix-tests.sh. The sigaltstack, kill and sigqueue
+    # entries left both lists once those tests passed on Node and in the
+    # browser; keep the two lists in step.
     # munmap: wasm can't revoke page access — see docs/wasm-limitations.md §6
     munmap/1-1
     munmap/1-2
-    # Not implemented / stubs
+    # mlock() succeeds for an unprivileged caller whose RLIMIT_MEMLOCK is 0;
+    # the test expects EPERM. Kandelo does not enforce RLIMIT_MEMLOCK.
     mlock/12-1
-    # Process/permission model
-    kill/2-2
-    kill/3-1
-    sigqueue/3-1
-    sigqueue/12-1
 )
 
 # ── Browser-specific expected failures ──────────────────────────
