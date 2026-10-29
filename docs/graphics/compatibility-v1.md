@@ -8440,3 +8440,45 @@ Playwright collection passes for all three engines; executing the
 strengthened gate is still pending. The original failure remains
 retained under `.context/cage-sway-final-gallery-results/` in the
 fork-owner checkout and is not reported as a passing run.
+
+
+### Executed linked validation families on all browser engines, 2026-10-29
+
+The follow-up's combined validation guest at `ce27f28345` now has normal
+linked execution evidence. Job
+`gles-validation-prepared-node-1029-140117-6830` rebuilt/checks both SDKs
+through `build-musl.sh --ensure`, then normal kernel and host bootstrap,
+ABI/freshness checks and the 629-file evidence registry. Its two files
+passed all four Node cases: the validation guest and independent GBM
+rendered-ring fixture at both pointer widths. Node retains the existing
+allocation/ownership GL double and establishes C error-path behavior,
+not real framebuffer pixels.
+
+Job `gles-validation-three-engine-1029-141442-6dee` passed all 12 browser
+cases in 26.5 seconds: six dual-width validation guests and six unchanged
+rendered-ring cases. The normal BrowserKernel guests require success
+markers for string-query enums, generation counts, all 19 negative uniform
+locations, all three matrix argument/overflow paths, actual texture-FBO
+clear/scissor/readback pixels, and the original context-local hints.
+Exit status is zero, stderr/host diagnostics/page errors are empty, and
+post-destroy diagnostics and worker memory-message boundary checks pass.
+Engines were Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6.
+
+The actual kernel SHA-256 is
+`0ccaaeae4e3030075fd873a4cf545e87e599bf04d1499a7e4b832b75d7896abd`.
+Validation guest identities are identical across engines for each width:
+
+| Width | Program SHA-256 | Minimal VFS image SHA-256 |
+|---|---|---|
+| wasm32 | `db5d20a3c65d9e8b0a3f5edc47f8007e8d438f757770a6095f4906244cc6e0d1` | `83bda5c4de54baabe88760515c562d7145d7a635631f06d5b7b3c13b5ab9a9a0` |
+| wasm64 | `4d9234ee2913d770df360d448f950253d3746cad7f12ff27cbf2c16471b4c3a1` | `489d489c23919ce9d177a73902972d314f6109ac2b363e845c48199f4d5ec64f` |
+
+Evidence is the file-owner checkout's `.context/gles-validation-*.log`,
+`gles-validation-browser-results/` and six timestamped JSON records in
+`gles-hints-guests/`. Program ABI 56 / host 3 / GL table 17 / fork 21 is
+unchanged. These results validate the named C/error families and actual
+post-error framebuffer rendering. They are not new upstream CTS runs,
+positive uniform shader/type/array conformance, the larger-array transport
+repair, full graphics compatibility, or final combined POSIX conformance.
+The native 220-case evidence remains attached to `d771bf71d1`; this later
+commit adds guest tests without changing those library implementations.
