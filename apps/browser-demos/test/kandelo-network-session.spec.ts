@@ -68,7 +68,8 @@ test("package activity invitations reject incompatible procedures and do not lau
   const offer: SessionOffer = { version: 1, package: "termchat", packageVersion: "1.3.1", manifestSha256: "f".repeat(64), offer: "chat", values: { name: "alice" } };
   url.hash = encodeSessionInvitation(offer);
   await page.goto(url.href); await running(page);
-  await expect(page.getByRole("alert")).toContainText("requires a different installed package procedure");
+  await expect(page.getByRole("alert")).toContainText("Cannot join this activity.");
+  await expect(page.getByText(/different activity procedures/)).toBeVisible();
   await expect(page.getByRole("form", { name: "Join activity" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Network session: not connected", exact: true })).toBeAttached();
   offer.manifestSha256 = createHash("sha256").update(bytes).digest("hex");
@@ -150,18 +151,13 @@ test("an already-running termchat can be offered without restarting it", async (
     await join.getByRole("button", { name: "Join and open chat", exact: true }).click();
     await expect.poll(() => screen(guest), { timeout: 90_000 }).toContain("alice is online");
     await expect.poll(() => screen(page)).toContain("bob is online");
-    // A participant can invite people to discovery-based chat while keeping
-    // the room they joined; server-hosted activities still need the hub.
+    // A joined client's only advertised activity is the one it is in, so it
+    // has no other activity to change to (docs/package-sessions.md); its
+    // invite link still names the room it joined.
     await guest.getByRole("button", { name: "Network session: connected", exact: true }).click();
-    await guest.getByRole("button", { name: "Change activity", exact: true }).click();
-    const reoffer = guest.getByRole("form", { name: "Host activity" });
-    await reoffer.getByLabel("Activity", { exact: true }).selectOption("termchat/chat");
-    await reoffer.getByLabel("Your name").fill("bob");
-    await reoffer.getByRole("checkbox").check();
-    await reoffer.getByRole("button", { name: "Share running activity", exact: true }).click();
-    await expect(guest.locator("[data-network-link]")).toHaveAttribute("data-network-link", /#ks1=/);
-    const reshared = new URL((await guest.locator("[data-network-link]").getAttribute("data-network-link"))!);
-    expect(reshared.searchParams.get("network")).toBe(new URL(link).searchParams.get("network"));
+    await expect(guest.getByRole("button", { name: "Change activity", exact: true })).toHaveCount(0);
+    const shared = new URL((await guest.locator("[data-network-link]").getAttribute("data-network-link"))!);
+    expect(shared.searchParams.get("network")).toBe(new URL(link).searchParams.get("network"));
     await closePanel(guest);
     expect(await screen(page)).toContain("before-invitation");
     await page.locator(".kshell-host:visible").click(); await page.keyboard.press("Escape");
