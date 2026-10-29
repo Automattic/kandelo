@@ -5,6 +5,13 @@ import type {
   ExchangeRequestMessage,
 } from "./exchange-host";
 import type { RemoteSegmentInit } from "./networking/remote-segment-port";
+import type {
+  CredentialAnswerMessage,
+  CredentialRequestCancelMessage,
+  CredentialRequestMessage,
+  GetCredentialGrantMessage,
+  RevokeCredentialGrantMessage,
+} from "./kernel-protocol-shared";
 import type { VfsChangeEvent } from "./vfs/types";
 // Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
 // for which types are NOT shared and why.
@@ -185,6 +192,12 @@ export interface InitMessage {
   /** Attach the egress link with nothing behind its gateway
    *  (OfflineEgressBackend). Exclusive with `enableTcpNetwork`. */
   offlineEgressLink?: boolean;
+  /**
+   * Where this machine's VFS image came from, shown to the user when a
+   * declared program asks for credentials. Embedder-supplied text, never
+   * derived from the image itself; absent reads "unknown".
+   */
+  credentialImageSource?: string;
 }
 
 /** Read, cancel or release one worker-owned command family. */
@@ -322,6 +335,9 @@ export interface ClipboardGuestWaitMessage {
 
 export type MainToKernelMessage =
   | InitMessage
+  | CredentialAnswerMessage
+  | GetCredentialGrantMessage
+  | RevokeCredentialGrantMessage
   | ExchangeRequestMessage
   | ExchangeRangeMessage
   | AttachRemotePeerMessage
@@ -406,6 +422,8 @@ export interface DestroyProgressMessage {
 
 export type KernelToMainMessage =
   | ReadyMessage
+  | CredentialRequestMessage
+  | CredentialRequestCancelMessage
   | ExchangeRangeRequestMessage
   | ExchangeNotificationsMessage
   | InitErrorMessage

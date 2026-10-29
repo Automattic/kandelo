@@ -56,6 +56,21 @@ import type {
 import type { VmInterruptTimerManager } from "./vm-interrupt-timer";
 import { PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import type { CentralizedKernelWorker } from "./kernel-worker";
+import {
+  type CredentialEnforcement,
+  CredentialGrants,
+  CredentialLaunchPolicy,
+  type CredentialLaunchPolicyOptions,
+  type CredentialTransportPlan,
+  programFileIdentity,
+} from "./credential-grants";
+import {
+  CREDENTIAL_REQUESTS_DIR,
+  parseCredentialRequests,
+  type CredentialRequestDeclaration,
+} from "./credential-requests";
+import type { VfsDirEntrySnapshot } from "./vfs/vfs";
+import type { VfsFileIdentity } from "./vfs/rootfs-inspection";
 import { retryKernelEntryResult } from "./kernel-entry-retry";
 import type { LazyFetch } from "./vfs/lazy-download-event";
 import { resolveLazyUrl } from "./vfs/lazy-url";
@@ -573,4 +588,96 @@ export function isRootfsMissingFileError(error: unknown): boolean {
   return errno === ROOTFS_ENOENT_ERRNO ||
     errno === ROOTFS_ENOTDIR_ERRNO ||
     errno === ROOTFS_EISDIR_ERRNO;
+}
+
+const S_IFMT = 0o170000;
+const S_IFREG = 0o100000;
+
+/**
+ * Read every declaration under `/etc/kandelo/credential-requests.d` from the
+ * kernel-owned filesystem once, at boot, and parse them. A missing directory
+ * means no declarations. Anything else that is not a regular `*.json` file,
+ * and any malformed file, throws, so the boot fails loudly instead of
+ * silently ignoring a program's request. Later guest writes to the directory
+ * change nothing: the result is frozen for the machine's life.
+ */
+async function loadCredentialRequestDeclarations(
+  kernel: CentralizedKernelWorker,
+): Promise<ReadonlyMap<string, CredentialRequestDeclaration>> {
+  let entries: VfsDirEntrySnapshot[];
+  try {
+    entries = await retryKernelEntryResult(() =>
+      kernel.rootfsReadDirectory(CREDENTIAL_REQUESTS_DIR)
+    );
+  } catch (error) {
+    if (isMissingPathError(error)) return new Map();
+    throw error;
+  }
+  const files = new Map<string, Uint8Array>();
+  for (const entry of [...entries].sort((a, b) => a.name < b.name ? -1 : 1)) {
+    if (entry.name === "." || entry.name === "..") continue;
+    const path = `${CREDENTIAL_REQUESTS_DIR}/${entry.name}`;
+    if ((entry.mode & S_IFMT) !== S_IFREG || !entry.name.endsWith(".json")) {
+      throw new Error(
+        `Credential request declaration ${path}: expected a regular *.json file`,
+      );
+    }
+    const bytes = await readNamespaceFileWithRetry(kernel, path);
+    if (bytes === null) {
+      throw new Error(`Credential request declaration ${path}: unreadable`);
+    }
+    files.set(entry.name, bytes);
+  }
+  return parseCredentialRequests(files);
+}
+
+/**
+ * Build the kernel worker's credential launch policy (`credential-grants.ts`)
+ * at boot, after the kernel owns `/` and before any process launches. Shared
+ * so both entries read declarations identically; it uses `kernel` only
+ * through public ingress (`rootfsReadDirectory`, `rootfsInspectFile`,
+ * `rootfsFileIdentity`, and the grant, executable-path and executable-identity
+ * queries the policy makes). It records each declared program's file identity now, so
+ * a prompt can say when the file was changed after boot. `hasRootfs` is
+ * false only for a Node boot on the raw host filesystem, which has no
+ * kernel-owned image to declare anything. A malformed declaration rejects,
+ * failing the boot.
+ */
+export async function createCredentialLaunchPolicy(
+  kernel: CentralizedKernelWorker,
+  options: {
+    hasRootfs: boolean;
+    imageSource: string | undefined;
+    /** What an answer controls on this host (`CredentialRequest.enforcement`). */
+    enforcement: CredentialEnforcement;
+    /**
+     * Which intermediary carries each destination's credentials on this
+     * host (`CredentialRequest.transport`, `credential-transport.ts`).
+     */
+    transport: CredentialTransportPlan;
+    post: CredentialLaunchPolicyOptions["post"];
+    report: CredentialLaunchPolicyOptions["report"];
+  },
+): Promise<CredentialLaunchPolicy> {
+  const declarations = options.hasRootfs
+    ? await loadCredentialRequestDeclarations(kernel)
+    : new Map<string, CredentialRequestDeclaration>();
+  const bootIdentities = new Map<string, VfsFileIdentity | null>();
+  for (const program of declarations.keys()) {
+    bootIdentities.set(
+      program,
+      await retryKernelEntryResult(() => programFileIdentity(kernel, program)),
+    );
+  }
+  return new CredentialLaunchPolicy({
+    kernel,
+    grants: new CredentialGrants(kernel),
+    declarations,
+    bootIdentities,
+    imageSource: options.imageSource || "unknown",
+    enforcement: options.enforcement,
+    transport: options.transport,
+    post: options.post,
+    report: options.report,
+  });
 }

@@ -1508,6 +1508,18 @@ credential forwarding through the public proxy or establish subscription
 entitlement. Sign in inside the guest after granting permission; the app
 does not import host credential files.
 
+#### Per-process credential grants
+
+`BrowserKernel` asks its `onCredentialRequest` option before a program
+whose package declared credential destinations starts (see
+[credential grants](architecture.md#credential-grants)); the Node host
+asks identically. The browser app does not install that handler yet, so
+every declared program is denied at once: Codex, declared
+`launch = "wait"`, starts immediately without a grant. A grant is recorded
+in the kernel and lasts for the process's life, but no request path
+consults it yet, so it does not change what the anonymous proxy or the
+local relay forward.
+
 #### Byte-range reads through the proxy
 
 `Range` is in the profile so that a byte-range read (for example, reading a

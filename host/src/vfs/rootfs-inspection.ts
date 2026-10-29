@@ -19,6 +19,49 @@ export function decodeInspectionStat(view: Pick<DataView, "byteLength" | "getBig
   };
 }
 
+/**
+ * What identifies a file and its content without reading it: device and
+ * inode name the file, and size, modification time and change time move
+ * whenever its bytes or metadata are written. Change time cannot be set by
+ * a guest, so restoring an old modification time still shows.
+ */
+export interface VfsFileIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly size: bigint;
+  readonly mtimeSec: bigint;
+  readonly mtimeNsec: number;
+  readonly ctimeSec: bigint;
+  readonly ctimeNsec: number;
+}
+
+/** Decode the identity fields of copied kernel metadata (`WasmStat`). */
+export function decodeInspectionIdentity(
+  view: Pick<DataView, "byteLength" | "getBigUint64" | "getUint32">,
+): VfsFileIdentity {
+  if (view.byteLength < STRUCT_SIZE_WASM_STAT) {
+    throw new KernelScratchError("Truncated inspection stat", ERRNO.EIO);
+  }
+  // WasmStat (crates/shared): st_dev 0, st_ino 8, st_size 32,
+  // st_mtime_sec 56, st_mtime_nsec 64, st_ctime_sec 72, st_ctime_nsec 80.
+  return {
+    dev: view.getBigUint64(0, true),
+    ino: view.getBigUint64(8, true),
+    size: view.getBigUint64(32, true),
+    mtimeSec: view.getBigUint64(56, true),
+    mtimeNsec: view.getUint32(64, true),
+    ctimeSec: view.getBigUint64(72, true),
+    ctimeNsec: view.getUint32(80, true),
+  };
+}
+
+/** Whether two identities name the same, unmodified file. */
+export function sameFileIdentity(a: VfsFileIdentity, b: VfsFileIdentity): boolean {
+  return a.dev === b.dev && a.ino === b.ino && a.size === b.size &&
+    a.mtimeSec === b.mtimeSec && a.mtimeNsec === b.mtimeNsec &&
+    a.ctimeSec === b.ctimeSec && a.ctimeNsec === b.ctimeNsec;
+}
+
 class InspectionReader {
   private at = 0;
   constructor(private readonly bytes: Uint8Array) {}

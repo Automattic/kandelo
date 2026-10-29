@@ -3,10 +3,12 @@
  * to which HTTPS origins.
  *
  * A package installs one JSON file per declaring program under
- * `/etc/kandelo/credential-requests.d/`. The platform reads these files to
- * decide when to ask the user; it never infers a destination from program
- * behavior. Files are untrusted input, so every field is checked and an
- * unrecognized or malformed file fails loudly rather than being skipped.
+ * `/etc/kandelo/credential-requests.d/`. Each kernel worker reads them once
+ * at boot (`credential-grants.ts`) and asks the user when a process starts a
+ * declared program; it never infers a destination from program behavior.
+ * Files are untrusted input, so every field is checked and an unrecognized
+ * or malformed file fails loudly (the image build, or the boot) rather than
+ * being skipped.
  */
 export const CREDENTIAL_REQUESTS_DIR = "/etc/kandelo/credential-requests.d";
 export const MAX_CREDENTIAL_REQUEST_BYTES = 65_536;

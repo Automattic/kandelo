@@ -801,7 +801,10 @@ fragment, userinfo, or trailing slash), and `launch` (`"wait"` or
 `host/src/credential-requests.ts` is the authoritative parser, and VFS image
 builders that install such a file run it so a malformed declaration fails the
 build. The declaration names destinations only; it grants nothing and does not
-by itself make credentials flow.
+by itself make credentials flow. The host reads every declaration once at
+boot and, when a process starts the declared program, asks the user whether
+that one process may send credentials; see
+[credential grants](architecture.md#credential-grants).
 
 Build scripts install declared artifacts through
 `scripts/install-local-binary.sh`. When

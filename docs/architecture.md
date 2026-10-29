@@ -1894,6 +1894,76 @@ after those fences; other terminals remain separate. Raw terminal input is
 not a process-control API, so graphical games are cancelled through ownership
 rather than simulated Ctrl+C input. No guest ABI or syscall changed.
 
+### Credential grants
+
+A credential grant is the user's permission for one running image of one
+process to send account credentials to the fixed HTTPS origins its package
+declared in `/etc/kandelo/credential-requests.d/*.json`
+(`host/src/credential-requests.ts`). The kernel's process table is the
+authority: `Process::credential_grant` holds the grant id the host issued,
+read and written through `kernel_get_credential_grant` and
+`kernel_set_credential_grant`. The kernel ends a grant when the process
+execs (any exec, even of the same path) or exits, and a fork child never
+inherits one. There is no expiry; a grant lasts until exit, exec,
+revocation, or machine teardown.
+
+Both kernel workers run the same policy (`host/src/credential-grants.ts`):
+
+1. At boot, after the kernel owns `/`, the worker reads every declaration
+   once through the kernel-owned filesystem and freezes the result. Guest
+   writes to the directory later change nothing. A missing directory means
+   no declarations; any other entry that is not a regular `*.json` file, or
+   a malformed file, fails the boot.
+2. Every path that commits an image, the host's root spawn, a guest
+   `posix_spawn` and exec, then asks the kernel which file the image runs
+   (`kernel_get_exe_path`, what `/proc/<pid>/exe` reads, symlinks
+   resolved). A `/bin/codex` symlink and `/usr/bin/codex` are therefore the
+   same program, and the host never resolves a guest path itself. A `#!`
+   script's image is its interpreter, as on Linux. Fork commits no image and
+   never asks. In the same synchronous step it reads the identity of the
+   file the image was executed from (`kernel_get_exe_stat`, the metadata
+   of the description the kernel keeps for the image's executable), so a
+   file moved back to the declared path after another file was executed
+   under that name does not pass as the one recorded at boot.
+3. For a declared program, the worker posts `credential_request` (pid,
+   title, program, argv, parent chain, destinations, and the embedder's
+   description of where the image came from) to the main thread, whose
+   `onCredentialRequest` handler answers with `credential_answer`. No
+   handler, or one that throws, rejects or resolves anything but `true`,
+   denies.
+4. With `launch = "wait"` the launch awaits the answer before the process
+   worker starts, so the image runs no instruction first. With
+   `"continue"` it starts at once, and an allow is applied only if the
+   process still runs that same image. A decline never stops the program;
+   it runs without a grant. A held process can be stopped or killed while
+   the question is open, so every launch path, root spawn included, starts
+   its Worker through the kernel-checked start gate
+   (`startProcessWorkerWhenRunnable`): a stopped process starts on
+   `SIGCONT`, and a killed one runs nothing and reports the kill as its
+   exit status. A held process is already a live process: every launch
+   path registers it with the kernel worker before asking, so a signal (an
+   owned job's cancellation included) reaches it, and a rootfs export sees
+   it and is refused as for any live process rather than waiting. The
+   host's root spawn leaves the rootfs snapshot gate once the program is
+   attached and its stdin set up, before it asks, so other launches and
+   VFS mutations do not wait on the user either. What does wait is the
+   launch itself: `spawn` resolves only once the held program starts or
+   dies, a parent blocked in `posix_spawn` waits for the answer about its
+   child, and a vfork parent whose child execs a declared program stays
+   suspended until the answer, as it would until any exec completes.
+5. On allow, the worker issues a nonzero grant id and a token of 32 random
+   bytes (base64url), records the id in the kernel, and caches the token
+   and destinations. `CredentialGrants.grantFor(pid)` returns the cached
+   grant only while the kernel still reports that id, so a kernel-side clear
+   the host missed still ends it. Exit, exec, `revokeCredentialGrant`, and
+   teardown drop the host entry; an exit or exec also withdraws an open
+   question (`credential_request_cancel`), and teardown denies every open
+   question so no launch waits forever.
+
+What a grant permits is still being built: nothing consumes one yet. On
+Node, programs open real sockets, so there is no request path to gate; the
+prompt and grant exist there for host parity.
+
 ### clone() (threads)
 
 1. User calls `clone(CLONE_VM | CLONE_THREAD, ...)` → kernel returns clone request

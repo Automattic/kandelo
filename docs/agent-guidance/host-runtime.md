@@ -209,6 +209,20 @@ thread exit, crash, syscall trace, PTY, framebuffer, audio, network, VFS, and
 service-worker messages must have symmetric request, response, error, and
 cleanup behavior. A missing message handler is a platform bug.
 
+Credential prompts are part of process launch. Every path that commits an
+image (root spawn, guest `posix_spawn`, exec) calls
+`CredentialLaunchPolicy.imageCommitted` after the commit and before the
+process worker starts, in both entries; a new launch path must too. Call
+it after the process is registered in `processes` and outside the rootfs
+snapshot gate, so a held process can be signalled (owned-job cancellation
+included) and no export, VFS mutation or other launch waits on the user. A
+`launch = "wait"` program's first instruction waits on the main thread's
+`credential_answer`, so exit and teardown must withdraw or deny the open
+question rather than leave the launch waiting. The kernel's
+`Process::credential_grant` is the authority; the host's token cache counts
+only while the kernel reports the same grant id. See
+[credential grants](../architecture.md#credential-grants).
+
 Stdio descriptor type is chosen when the process is created. Hosts that launch
 without a PTY must create fds 0, 1, and 2 as pipe-backed descriptors so
 `isatty()` and terminal ioctls observe non-terminal semantics; hosts that

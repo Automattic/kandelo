@@ -181,6 +181,8 @@ describe("host adapter manifest validation", () => {
   it.each([
     "kernel_get_cwd",
     "kernel_get_dirfd_path",
+    "kernel_get_exe_path",
+    "kernel_get_exe_stat",
     "kernel_get_fd_path",
     "kernel_process_metadata_begin",
     "kernel_process_metadata_cancel",

@@ -140,12 +140,22 @@ titled "Codex", sends account credentials to exactly three HTTPS origins,
 prompt reads; a program that declares nothing is never offered
 credentials. The path is the real file, not the `/bin/codex` symlink.
 
-The declaration only names who may receive credentials. It does not grant
-anything, and nothing in the platform reads it at runtime as of this
-change. The shell image builder validates it with
+The declaration only names who may receive credentials; it grants nothing
+by itself. The shell image builder validates it with
 `parseCredentialRequests` (`host/src/credential-requests.ts`), so a
-malformed declaration fails the image build. The local credential relay's
-origin list is configured separately and is not derived from this file.
+malformed declaration fails the image build, and each kernel worker reads
+it once at boot (a malformed one fails the boot). When a process starts
+`/usr/bin/codex`, through the symlink or not, the host asks its
+`onCredentialRequest` handler whether that one process may send
+credentials, and holds Codex's first instruction until the answer. A
+declined request, or a host with no handler, still starts Codex, without a
+grant. The
+browser app does not install that handler yet, so in the browser app Codex
+is denied at once and starts immediately. A grant does not yet change what
+any transport forwards. See
+[credential grants](../../../docs/architecture.md#credential-grants). The
+local credential relay's origin list is configured separately and is not
+derived from this file.
 
 ## Networking boundaries
 
