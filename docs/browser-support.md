@@ -3310,6 +3310,30 @@ Other host code still constructs decoders per call. A recurrence elsewhere
 would be evidence for the hypothesis and a reason to build the standalone
 reduction, not a reason to avoid `TextDecoder` as a rule.
 
+### WebKit page-process crash when thread workers end
+
+This is a confirmed WebKit defect, recorded in the runtime workaround
+registry as
+[`JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN`](../tests/runtime-workarounds/JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN/entry.md).
+JavaScriptCore crashes the web content process (`SIGSEGV` in
+`JSWebAssemblyInstance::updateMatchingCachedMemoriesConcurrently`) when one
+thread grows a shared `WebAssembly.Memory` by at least one page while
+another thread destroys an instance that imports it, whether its worker is
+terminated or closed or the garbage collector frees it. Standalone pages
+with no Kandelo code crash Playwright's WebKit every time; Chromium and
+Firefox run them clean.
+
+Every Kandelo pthread binds one instance to its process memory in its own
+worker, and the rest of the process keeps growing that memory, so an
+exiting thread used to crash the tab. On WebKit only (detected from the
+user agent), process and thread workers now keep every instance bound to
+process memory until the worker ends, and an exited thread's idle worker is
+terminated with its process at exit, exec, forced termination or destroy.
+Its slot is still reclaimed when the thread exits, and workers are never
+reused. The cost is one idle worker per thread a process has created, held
+until that process ends. Chromium, Firefox and Node.js terminate thread
+workers as soon as the thread exits.
+
 ### Compiler engine limits
 
 The base shell lazily loads its C/C++ SDK on first use. Compiler acceptance

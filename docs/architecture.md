@@ -2091,6 +2091,15 @@ graceful detach attempt fails or times out. That realm boundary is the final
 release fallback; a false graceful result never asks the main thread to keep a
 partially detached kernel Worker alive.
 
+A pthread Worker is terminated when its `memory_quiescent` arrives, except on
+JavaScriptCore browsers: there the exited thread's Worker stays idle, holding
+its instances, and is terminated with its process (exit, exec, forced
+termination or destroy). JavaScriptCore crashes when process memory grows
+while another thread destroys an instance of it
+([`JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN`](../tests/runtime-workarounds/JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN/entry.md)).
+The thread's slot and channel are reclaimed at `memory_quiescent` on every
+host.
+
 The allocator applies a hard live-address-space count and samples a live-byte
 admission budget before each new allocation. Uninstrumented
 `WebAssembly.Memory.grow()` does not call JavaScript, so simultaneous live

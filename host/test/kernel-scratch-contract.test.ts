@@ -1172,6 +1172,24 @@ const auditAllowances: AuditAllowance[] = [
     why: "This standalone runtime-workaround reproduction contains no Kandelo code; it creates only the disposable memory its blocked test worker waits on.",
   },
   {
+    key: "tests/runtime-workarounds/JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN/repro/faithful-kernel.js::runProcess::wasm-memory-authority::new WebAssembly.Memory({ initial: INITIAL, maximum: MAXIMUM, shared: true })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This standalone runtime-workaround reproduction contains no Kandelo code; it creates only the disposable memory its simulated process and threads share.",
+  },
+  {
+    key: "tests/runtime-workarounds/JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN/repro/faithful-process.js::<module>::wasm-instance-authority::new WebAssembly.Instance(new WebAssembly.Module(WASM_BYTES), { env: { memory } })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This standalone runtime-workaround reproduction binds its probe module to the disposable memory the reproduction's kernel worker created.",
+  },
+  {
+    key: "tests/runtime-workarounds/JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN/repro/faithful-thread.js::<module>::wasm-instance-authority::new WebAssembly.Instance(new WebAssembly.Module(WASM_BYTES), { env: { memory } })",
+    disposition: "non-kernel",
+    authorityOwner: "shared-memory",
+    why: "This standalone runtime-workaround reproduction binds its probe module to the disposable memory the reproduction's kernel worker created.",
+  },
+  {
     key: "apps/browser-demos/public/wasm-memory-reclaim-worker.js::makeCommittedSharedMemory::wasm-memory-authority::new WebAssembly.Memory({ initial: 1, maximum: MAX_PAGES, shared: true, })",
     disposition: "non-kernel",
     authorityOwner: "shared-memory",
