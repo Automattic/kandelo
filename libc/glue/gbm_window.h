@@ -7,7 +7,7 @@
 int _wpk_gbm_device_acquire_fd(const void *native, uint64_t identity);
 struct wpk_gbm_frame {
     int fd;
-    uint32_t handle, width, height;
+    uint32_t handle, width, height, format, pitch;
 };
 int _wpk_gbm_window_acquire(const void *window, void **lease, struct wpk_gbm_frame *frame);
 int _wpk_gbm_window_prepare(void *lease, struct wpk_gbm_frame *frame);

@@ -1530,6 +1530,7 @@ fn handle_dri_ioctl(
     // its command memory belong to their creator's address-space generation.
     if (gl::GLIO_INIT..=gl::GLIO_UPDATE_SURFACE).contains(&request)
         || request == DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE
+        || request == DRM_IOCTL_WPK_IMPORT_IMAGE
     {
         let dri = dri_state(proc, ofd_idx)?;
         if dri.gl.as_ref().is_some_and(|gl| gl.owner_pid != pid)
@@ -1863,6 +1864,32 @@ fn handle_dri_ioctl(
             }
             Ok(())
         }
+        DRM_IOCTL_WPK_IMPORT_IMAGE => {
+            if buf.len() < core::mem::size_of::<WpkDrmImportImage>() { return Err(Errno::EINVAL); }
+            let mut req: WpkDrmImportImage = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            if req.width == 0 || req.height == 0 || req.source != 0 || req.offset % 4 != 0
+                || req.pitch % 4 != 0 || (req.pitch as u64) < req.width as u64 * 4
+                || !matches!(req.format, 0x34325241 | 0x34325258 | 0x34324241 | 0x34324258) {
+                return Err(Errno::EINVAL);
+            }
+            let bo_id = {
+                let dri = dri_state(proc, ofd_idx)?;
+                let bo_id = *dri.gem.borrow().handles.get(&req.bo_handle).ok_or(Errno::ENOENT)?;
+                let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
+                if !gls.initialized || gls.context_id != Some(req.ctx_id) { return Err(Errno::EINVAL); }
+                bo_id
+            };
+            let span = req.offset as u64 + (req.height as u64 - 1) * req.pitch as u64 + req.width as u64 * 4;
+            let valid = crate::dri::with_registry(|r| r.get(bo_id).map(|bo|
+                bo.tier == crate::dri::bo::BoTier::CpuShared && bo.bpp == 32 && span <= bo.size).unwrap_or(false));
+            if !valid { return Err(Errno::EINVAL); }
+            require_gl_current(proc, ofd_idx)?;
+            let source = host.gl_import_image(pid, req.ctx_id, bo_id, req.width, req.height, req.format, req.pitch, req.offset);
+            if source <= 0 { return Err(Errno::EIO); }
+            req.source = source as u32;
+            unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req); }
+            Ok(())
+        }
         DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE => {
             if buf.len() < core::mem::size_of::<WpkDrmBindForeignTexture>() {
                 return Err(Errno::EINVAL);
@@ -2194,7 +2221,7 @@ fn handle_dri_ioctl(
             // until the synchronous host receipt, even on rejected copies.
             if attrs.reserved[1] != 0 {
                 if attrs.kind != gl::WPK_SURFACE_DEFAULT || attrs.config_id != 1
-                    || attrs.reserved[0] != 0 || attrs.reserved[2..] != [0;2] {
+                    || attrs.reserved[0] != 0 {
                     return Err(Errno::EINVAL);
                 }
                 let dri = dri_state(proc, ofd_idx)?;
@@ -2206,12 +2233,21 @@ fn handle_dri_ioctl(
                 if record.borrow().pending_target_bo.is_some() { return Err(Errno::EBUSY); }
                 let target = *dri.gem.borrow().handles.get(&attrs.reserved[1]).ok_or(Errno::ENOENT)?;
                 if source == target { return Err(Errno::EINVAL); }
-                let dimensions = crate::dri::with_registry(|r| {
+                let valid = crate::dri::with_registry(|r| {
                     let source = r.get(source)?; let target = r.get(target)?;
-                    Some((source.width, source.height, target.width, target.height))
+                    let format_valid = if attrs.reserved[2] == 0 {
+                        // Existing GPU-only copy requests have no linear view.
+                        attrs.reserved[3] == 0 && target.tier == crate::dri::BoTier::GpuTexture
+                    } else {
+                        attrs.reserved[2] == wasm_posix_shared::dri::DRM_FORMAT_ABGR8888
+                            && attrs.reserved[3] == target.stride
+                    };
+                    Some(format_valid && source.tier == crate::dri::BoTier::GpuTexture
+                        && source.bpp == 32 && target.bpp == 32
+                        && (source.width, source.height, target.width, target.height)
+                            == (attrs.width, attrs.height, attrs.width, attrs.height))
                 }).ok_or(Errno::ENOENT)?;
-                if dimensions != (attrs.width,attrs.height,attrs.width,attrs.height)
-                    || attrs.width == 0 || attrs.height == 0 {
+                if !valid || attrs.width == 0 || attrs.height == 0 {
                     return Err(Errno::EINVAL);
                 }
                 let mut host_attrs = buf[..size].to_vec();
@@ -24538,6 +24574,7 @@ mod tests {
         /// Recorded `(pid, ctx_id, bo_id, gl_target)` for every
         /// `gl_bind_foreign_texture` call.
         gl_bind_foreign_texture_calls: Vec<(i32, u32, u32, u32)>,
+        gl_import_image_calls: Vec<(i32, u32, u32, [u32; 5])>,
         /// Return value for `gl_bind_foreign_texture` (> 0 = texture id,
         /// <= 0 = failure → the ioctl surfaces EIO).
         gl_bind_foreign_texture_rc: i32,
@@ -24691,6 +24728,7 @@ mod tests {
                 base_blobs: std::collections::HashMap::new(),
                 kms_set_fb_calls: Vec::new(),
                 gl_bind_foreign_texture_calls: Vec::new(),
+                gl_import_image_calls: Vec::new(),
                 gl_bind_foreign_texture_rc: 7,
                 gbm_gpu_bo_create_calls: Vec::new(),
                 gbm_gpu_bo_create_rc: 0,
@@ -25562,6 +25600,12 @@ mod tests {
         fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32) {
             self.kms_set_fb_calls.push((pid, crtc_id, fb_id));
         }
+        fn gl_import_image(&mut self, pid: i32, ctx_id: u32, bo_id: u32,
+            width: u32, height: u32, format: u32, pitch: u32, offset: u32) -> i32 {
+            self.gl_import_image_calls.push((pid, ctx_id, bo_id, [width, height, format, pitch, offset]));
+            self.gl_bind_foreign_texture_rc
+        }
+
         fn gl_bind_foreign_texture(
             &mut self,
             pid: i32,
@@ -54705,6 +54749,61 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
+    fn drm_import_image_preserves_layout_identity_and_rejects_bad_records_before_writes() {
+        use wasm_posix_shared::dri::*;
+        use wasm_posix_shared::gl;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let first = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut allocation = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        for device in [first, fd] {
+            let request = WpkDrmModeCreateDumb {width: 64, height: 32, bpp: 32, ..Default::default()};
+            unsafe { core::ptr::write_unaligned(allocation.as_mut_ptr() as *mut _, request); }
+            sys_ioctl(&mut proc, &mut host, device, DRM_IOCTL_MODE_CREATE_DUMB, &mut allocation).unwrap();
+        }
+        let bo: WpkDrmModeCreateDumb = unsafe { core::ptr::read_unaligned(allocation.as_ptr() as *const _) };
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+        let attrs = gl::GlContextAttrs {client_version: 2, share_context_id: 0, reserved: 0, context_id: 0};
+        let mut context = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
+        unsafe { core::ptr::write_unaligned(context.as_mut_ptr() as *mut _, attrs); }
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut context).unwrap();
+        let ctx_id = u32::from_le_bytes(context[12..16].try_into().unwrap());
+        glio_test_bind(&mut proc, &mut host, fd);
+        let good = WpkDrmImportImage {bo_handle: bo.handle, ctx_id, width: 1, height: 2,
+            format: 0x34324241, pitch: 12, offset: 4, source: 0};
+        let mut bytes = [0u8; core::mem::size_of::<WpkDrmImportImage>()];
+        for bad in [
+            WpkDrmImportImage {width: 0, ..good}, WpkDrmImportImage {height: 0, ..good},
+            WpkDrmImportImage {format: 0, ..good}, WpkDrmImportImage {pitch: 3, ..good},
+            WpkDrmImportImage {offset: 1, ..good}, WpkDrmImportImage {offset: u32::MAX - 3, ..good},
+            WpkDrmImportImage {height: u32::MAX, ..good}, WpkDrmImportImage {source: 99, ..good},
+            WpkDrmImportImage {ctx_id: 0, ..good},
+        ] {
+            unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, bad); }
+            let original = bytes;
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_IMPORT_IMAGE, &mut bytes), Err(Errno::EINVAL));
+            assert_eq!(bytes, original);
+        }
+        assert!(host.gl_import_image_calls.is_empty());
+        for format in [0x34325241, 0x34325258, 0x34324241, 0x34324258] {
+            let request = WpkDrmImportImage {format, ..good};
+            unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, request); }
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_IMPORT_IMAGE, &mut bytes).unwrap();
+            let out: WpkDrmImportImage = unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const _) };
+            assert_eq!(out.source, 7);
+            assert_eq!(host.gl_import_image_calls.last(), Some(&(1, ctx_id, 2, [1, 2, format, 12, 4])));
+        }
+        host.gl_bind_foreign_texture_rc = -(Errno::ENOMEM as i32);
+        unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, good); }
+        let original = bytes;
+        assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_IMPORT_IMAGE, &mut bytes), Err(Errno::EIO));
+        assert_eq!(bytes, original);
+    }
+
+    #[test]
     fn drm_bind_foreign_texture_uploads_and_writes_texture_id() {
         use wasm_posix_shared::dri::*;
         use wasm_posix_shared::gl;
@@ -55082,6 +55181,60 @@ impl HostIO for RelSymlinkMock {
         sys_close(&mut proc,&mut host,fd).unwrap();
         assert_eq!(glio_surface_bo_count(old),None);
         assert_eq!(glio_surface_bo_count(target),None);
+    }
+
+    #[test]
+    fn glio_surface_front_copy_validates_linear_format_pitch_and_allocation_width() {
+        use wasm_posix_shared::{dri::*, gl};
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1); let mut host = MockHostIO::new();
+        let (fd, source) = glio_surface_bo_setup(&mut proc, &mut host, true);
+        let mut handles = Vec::new();
+        for bpp in [32u32, 16] {
+            let mut create = [0u8;32];
+            for (bytes, value) in create.chunks_exact_mut(4).zip([32u32,64,bpp,0]) {
+                bytes.copy_from_slice(&value.to_le_bytes());
+            }
+            if bpp == 16 {
+                // The current dumb-buffer API admits 32-bit allocations only.
+                // Do not manufacture a supported 16-bit guest allocation.
+                assert_eq!(sys_ioctl(&mut proc,&mut host,fd,DRM_IOCTL_MODE_CREATE_DUMB,&mut create),Err(Errno::EINVAL));
+                continue;
+            }
+            sys_ioctl(&mut proc,&mut host,fd,DRM_IOCTL_MODE_CREATE_DUMB,&mut create).unwrap();
+            let handle = u32::from_le_bytes(create[16..20].try_into().unwrap());
+            let pitch = u32::from_le_bytes(create[20..24].try_into().unwrap());
+            let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            let target = *dri_state(&proc,ofd).unwrap().gem.borrow().handles.get(&handle).unwrap();
+            handles.push(handle);
+            let mut attrs = [0u8;32];
+            for (bytes,value) in attrs.chunks_exact_mut(4)
+                .zip([1u32,64,32,1,0,handle,DRM_FORMAT_ABGR8888,pitch]) {
+                bytes.copy_from_slice(&value.to_le_bytes());
+            }
+            if bpp == 32 {
+                for rc in [-(Errno::ENOMEM as i32),0] {
+                    host.gl_update_surface_rc = rc;
+                    assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_UPDATE_SURFACE,&mut attrs),
+                        if rc == 0 { Ok(()) } else { Err(Errno::ENOMEM) });
+                    assert_eq!(glio_surface_bo_count(source),Some(2));
+                    assert_eq!(glio_surface_bo_count(target),Some(1));
+                }
+                let calls = host.gl_update_surface_calls.len();
+                for (format, stride) in [(0,0),(DRM_FORMAT_XRGB8888,pitch),(DRM_FORMAT_ABGR8888,pitch+4)] {
+                    let mut bad = attrs;
+                    bad[24..28].copy_from_slice(&format.to_le_bytes());
+                    bad[28..32].copy_from_slice(&stride.to_le_bytes());
+                    assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_UPDATE_SURFACE,&mut bad),Err(Errno::EINVAL));
+                    assert_eq!(host.gl_update_surface_calls.len(),calls);
+                }
+            }
+        }
+        for handle in handles { glio_surface_bo_close_handle(&mut proc,&mut host,fd,handle); }
+        glio_surface_bo_close_handle(&mut proc,&mut host,fd,1);
+        sys_close(&mut proc,&mut host,fd).unwrap();
+        assert_eq!(glio_surface_bo_count(source),None);
     }
 
     #[test]

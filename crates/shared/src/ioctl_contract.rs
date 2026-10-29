@@ -428,6 +428,7 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_MODE_CREATE_DUMB, InOut, 32),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETPLANE, InOut, 32),
     pointer!(crate::dri::DRM_IOCTL_MODE_OBJ_GETPROPERTIES, InOut, 32),
+    pointer!(crate::dri::DRM_IOCTL_WPK_IMPORT_IMAGE, InOut, 32),
     // Linux encodes pointer-sized fields into DRM_IOCTL_VERSION itself.
     pointer!(crate::dri::DRM_IOCTL_VERSION, InOut, wasm32 36),
     pointer!(crate::dri::DRM_IOCTL_MODE_CURSOR2, In, 36),

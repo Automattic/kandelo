@@ -565,6 +565,13 @@ pub trait HostIO {
         -(Errno::ENOSYS as i32)
     }
 
+    /// Import a CPU BO image view without copying guest memory into the host.
+    #[allow(unused_variables)]
+    fn gl_import_image(&mut self, pid: i32, ctx_id: u32, bo_id: u32,
+        width: u32, height: u32, format: u32, pitch: u32, offset: u32) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
     #[allow(unused_variables)]
     fn kms_set_master(&mut self, pid: i32, file_id: u64, lease_id: u64) {}
 

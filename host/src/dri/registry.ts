@@ -28,9 +28,8 @@ export type GbmBoBinding = {
   len: number;
 };
 
-/** Projected view of a bo for a specific pid — what `get`/`listForPid`
- *  return. Backward-compatible with the pre-rekey shape so existing
- *  callers reading `e.binding` keep working. */
+/** Metadata for a BO observed by a process. `binding` is its most recently
+ * registered alias for inspection; coherence tracks every live alias. */
 export type GbmBoEntry = {
   pid: number;
   bo_id: number;
@@ -50,26 +49,22 @@ export type GbmBoChangeListener = (
   ev: GbmBoChangeEvent,
 ) => void;
 
+type InternalBinding = GbmBoBinding & {
+  pid: number;
+  /** Independent baseline; never a guest memory view. */
+  snapshot: Uint8Array;
+  primed: boolean;
+};
 type InternalEntry = {
   bo_id: number;
   size: number;
   w: number;
   h: number;
   stride: number;
-  /** Canonical pixel storage. Pre-`mmap_shared`, this is also the
-   *  authoritative buffer that bind/unbind syncs each pid's wasm
-   *  Memory against. Allocated on the first `create` for the bo. */
   sab: SharedArrayBuffer;
-  /** Observed pids, registered by create or first bind. Unmapped imports
-   * are not visible here; this set is never a kernel reference count. */
+  /** Observed mappings are metadata, never a kernel ownership count. */
   pids: Set<number>;
-  /** Per-pid bindings. A pid has at most one bo mmap in v1 (the
-   *  shim always maps the whole bo). */
-  bindingsByPid: Map<number, GbmBoBinding>;
-  // At most min(mapping length, BO size) bytes per live mapping, owned only
-  // by the disposable kernel worker. Never retains guest Memory or a view.
-  snapshotsByPid: Map<number, Uint8Array>;
-  /** Readers still awaiting published bytes, even after the writer retires. */
+  bindingsByPid: Map<number, Map<number, InternalBinding>>;
   pendingReaders: Set<number>;
 };
 
@@ -96,20 +91,31 @@ export class GbmBoRegistry {
    *  at all -- nearly every process -- answer without scanning every bo. */
   private bindingCounts = new Map<number, number>();
 
-  private setBinding(e: InternalEntry, pid: number, binding: GbmBoBinding): void {
-    if (!e.bindingsByPid.has(pid)) {
-      this.bindingCounts.set(pid, (this.bindingCounts.get(pid) ?? 0) + 1);
-    }
-    e.bindingsByPid.set(pid, binding);
+  private setBinding(e: InternalEntry, pid: number, binding: InternalBinding): void {
+    let aliases = e.bindingsByPid.get(pid);
+    if (!aliases) { aliases = new Map(); e.bindingsByPid.set(pid, aliases); }
+    if (!aliases.has(binding.addr)) this.bindingCounts.set(pid, (this.bindingCounts.get(pid) ?? 0) + 1);
+    aliases.set(binding.addr, binding);
   }
 
-  private deleteBinding(e: InternalEntry, pid: number): void {
-    if (!e.bindingsByPid.delete(pid)) return;
-    e.snapshotsByPid.delete(pid);
-    e.pendingReaders.delete(pid);
-    const n = (this.bindingCounts.get(pid) ?? 1) - 1;
-    if (n > 0) this.bindingCounts.set(pid, n);
+  private deleteBinding(e: InternalEntry, pid: number, addr?: number): void {
+    const aliases = e.bindingsByPid.get(pid);
+    if (!aliases) return;
+    const removed = addr === undefined ? aliases.size : Number(aliases.delete(addr));
+    if (addr === undefined) aliases.clear();
+    if (!aliases.size) { e.bindingsByPid.delete(pid); e.pendingReaders.delete(pid); }
+    const count = (this.bindingCounts.get(pid) ?? removed) - removed;
+    if (count > 0) this.bindingCounts.set(pid, count);
     else this.bindingCounts.delete(pid);
+  }
+
+  private *bindings(e: InternalEntry): Iterable<InternalBinding> {
+    for (const aliases of e.bindingsByPid.values()) yield* aliases.values();
+  }
+  private latestBinding(e: InternalEntry, pid: number): InternalBinding | undefined {
+    let last: InternalBinding | undefined;
+    for (const binding of e.bindingsByPid.get(pid)?.values() ?? []) last = binding;
+    return last;
   }
   private getProcessMemory: ProcessMemoryResolver | null;
 
@@ -139,7 +145,6 @@ export class GbmBoRegistry {
         sab: new SharedArrayBuffer(b.size),
         pids: new Set([b.pid]),
         bindingsByPid: new Map(),
-        snapshotsByPid: new Map(),
         pendingReaders: new Set(),
       });
     }
@@ -165,15 +170,13 @@ export class GbmBoRegistry {
     // mmap region. If we wrote here, the zero-fill would clobber
     // our primed bytes.
     e.pids.add(pid);
-    this.setBinding(e, pid, { addr, len });
-    // mmap is zero-filled then primed after the syscall. primeBindFromSab
-    // replaces this initial baseline once the actual memory exists.
-    e.snapshotsByPid.set(pid, new Uint8Array(Math.min(len, e.size)));
+    this.setBinding(e, pid, {pid, addr, len, primed: false,
+      snapshot: new Uint8Array(Math.min(len, e.size))});
     for (const l of this.listeners) l(pid, bo_id, "bind");
     return 0;
   }
 
-  unbind(pid: number, bo_id: number): void {
+  unbind(pid: number, bo_id: number, addr?: number): void {
     const e = this.bos.get(bo_id);
     if (!e) return;
     // Flush the unbinding pid's current bytes into the SAB before
@@ -182,9 +185,9 @@ export class GbmBoRegistry {
     // The kernel fires `gbm_bo_unbind` BEFORE `proc.memory.munmap`
     // releases pages (see crates/kernel/src/syscalls.rs sys_munmap),
     // so the Memory still has the bytes here.
-    const binding = e.bindingsByPid.get(pid);
-    if (binding) this.flushMemoryToSab(e, pid, binding);
-    this.deleteBinding(e, pid);
+    for (const binding of e.bindingsByPid.get(pid)?.values() ?? [])
+      if (addr === undefined || binding.addr === addr) this.flushMemoryToSab(e, binding);
+    this.deleteBinding(e, pid, addr);
     for (const l of this.listeners) l(pid, bo_id, "unbind");
   }
 
@@ -203,12 +206,7 @@ export class GbmBoRegistry {
    */
   releaseProcess(pid: number): void {
     for (const [bo_id, e] of Array.from(this.bos)) {
-      const binding = e.bindingsByPid.get(pid);
-      if (binding) {
-        this.flushMemoryToSab(e, pid, binding);
-        this.deleteBinding(e, pid);
-        for (const l of this.listeners) l(pid, bo_id, "unbind");
-      }
+      if (e.bindingsByPid.has(pid)) this.unbind(pid, bo_id);
       if (!e.pids.delete(pid)) continue;
       // pids records observed mappings, not all kernel references. An
       // importer may hold a valid GEM/cursor/PRIME reference without mapping.
@@ -220,8 +218,7 @@ export class GbmBoRegistry {
    *  post-mmap hook to decide whether to run `primeBindFromSab`. */
   findBindingByAddr(pid: number, addr: number): number | undefined {
     for (const e of this.bos.values()) {
-      const b = e.bindingsByPid.get(pid);
-      if (b && b.addr === addr) return e.bo_id;
+      if (e.bindingsByPid.get(pid)?.has(addr)) return e.bo_id;
     }
     return undefined;
   }
@@ -236,46 +233,41 @@ export class GbmBoRegistry {
     pid: number,
     bo_id: number,
     memory: WebAssembly.Memory,
+    addr?: number,
   ): void {
     const e = this.bos.get(bo_id);
     if (!e) return;
-    const binding = e.bindingsByPid.get(pid);
+    const binding = addr === undefined ? this.latestBinding(e,pid) : e.bindingsByPid.get(pid)?.get(addr);
     if (!binding) return;
-    for (const [otherPid, otherBinding] of e.bindingsByPid) {
-      if (otherPid === pid) continue;
-      this.flushMemoryToSab(e, otherPid, otherBinding);
-    }
+    for (const other of this.bindings(e)) if (other !== binding) this.flushMemoryToSab(e, other);
     const copyLen = Math.min(binding.len, e.size);
     if (binding.addr + copyLen > memory.buffer.byteLength) return;
     const dst = new Uint8Array(memory.buffer, binding.addr, copyLen);
     const src = new Uint8Array(e.sab, 0, copyLen);
     dst.set(src);
-    e.snapshotsByPid.get(pid)?.set(src);
+    binding.snapshot.set(src);
+    binding.primed = true;
     e.pendingReaders.delete(pid);
   }
 
   private flushMemoryToSab(
     e: InternalEntry,
-    pid: number,
-    binding: GbmBoBinding,
+    binding: InternalBinding,
     byteLimit = Infinity,
   ): void {
     const resolver = this.getProcessMemory;
-    if (!resolver) return;
-    const mem = resolver(pid);
+    if (!resolver || !binding.primed) return;
+    const mem = resolver(binding.pid);
     if (!mem) return;
     const copyLen = Math.min(binding.len, e.size, byteLimit);
     if (binding.addr + copyLen > mem.buffer.byteLength) return;
     const dst = new Uint8Array(e.sab, 0, copyLen);
     const src = new Uint8Array(mem.buffer, binding.addr, copyLen);
-    const snapshot = e.snapshotsByPid.get(pid);
-    if (!snapshot) throw new Error("DRI mapping has no publication snapshot");
+    const snapshot = binding.snapshot;
     if (mergeChangedByteRuns(src, 0, snapshot, 0, dst, 0, copyLen)) {
       // A reader must consume the final publication even if this writer's
       // mapping disappears before the reader's next poll/epoll/select return.
-      for (const reader of e.bindingsByPid.keys()) {
-        if (reader !== pid) e.pendingReaders.add(reader);
-      }
+      for (const reader of this.bindings(e)) if (reader !== binding) e.pendingReaders.add(reader.pid);
     }
     snapshot.set(src);
   }
@@ -301,6 +293,42 @@ export class GbmBoRegistry {
     return new Uint8Array(e.sab);
   }
 
+  /** Publish a complete device write and refresh every live mapped reader.
+   * Views are local to this synchronous call. Updating their snapshots keeps
+   * a later unchanged reader from publishing pre-render bytes over the frame.
+   * Validate every destination before the first write. */
+  publishDevicePixels(bo_id: number, pixels: Uint8Array): boolean {
+    const e = this.bos.get(bo_id);
+    if (!e || pixels.byteLength !== e.size) return false;
+    try {
+      const canonical = new Uint8Array(e.sab);
+      const targets: {pid: number; length: number; view: Uint8Array; source: Uint8Array; snapshot: Uint8Array}[] = [];
+      for (const binding of this.bindings(e)) {
+        if (!binding.primed) continue;
+        const pid = binding.pid;
+        const memory = this.getProcessMemory?.(pid);
+        if (!memory) continue;
+        const length = Math.min(binding.len, e.size);
+        const snapshot = binding.snapshot;
+        if (!snapshot || snapshot.byteLength !== length ||
+            binding.addr + length > memory.buffer.byteLength) return false;
+        targets.push({pid, length, view: new Uint8Array(memory.buffer, binding.addr, length),
+          source: canonical.subarray(0, length), snapshot});
+      }
+      // A resolver callback may replace or grow an unshared test memory.
+      // Allocate every source view and recheck all destinations before writing.
+      if (targets.some(target => target.view.byteLength !== target.length) || pixels.byteLength !== e.size)
+        return false;
+      canonical.set(pixels);
+      for (const {pid, view, source, snapshot} of targets) {
+        view.set(source);
+        snapshot.set(view);
+        e.pendingReaders.delete(pid);
+      }
+      return true;
+    } catch { return false; }
+  }
+
   /** Pid-independent geometry lookup. The GL bridge's foreign-texture
    *  upload path needs dims for a bo the caller holds only a kernel
    *  handle to (PRIME import without an mmap), which `get(pid, bo_id)`
@@ -315,9 +343,7 @@ export class GbmBoRegistry {
   syncToSab(bo_id: number, byteLimit = Infinity): void {
     const e = this.bos.get(bo_id);
     if (!e) return;
-    for (const [pid, binding] of e.bindingsByPid) {
-      this.flushMemoryToSab(e, pid, binding, byteLimit);
-    }
+    for (const binding of this.bindings(e)) this.flushMemoryToSab(e, binding, byteLimit);
   }
 
   /** Flush each bound pid's Memory into the SAB (KMS scanout calls this
@@ -335,11 +361,9 @@ export class GbmBoRegistry {
     // few processes taking part in buffer sharing.
     if (!this.bindingCounts.has(pid)) return false;
     for (const e of this.bos.values()) {
-      if (
-        e.bindingsByPid.has(pid) && (e.bindingsByPid.size > 1 || e.pendingReaders.has(pid))
-      ) {
-        return true;
-      }
+      const aliases = e.bindingsByPid.get(pid);
+      if (!aliases || ![...aliases.values()].some(binding => binding.primed)) continue;
+      if (e.bindingsByPid.size > 1 || aliases.size > 1 || e.pendingReaders.has(pid)) return true;
     }
     return false;
   }
@@ -348,16 +372,19 @@ export class GbmBoRegistry {
    * view and baseline at a readiness boundary. */
   syncImportsForPid(pid: number, memory: WebAssembly.Memory): void {
     for (const e of this.bos.values()) {
-      const binding = e.bindingsByPid.get(pid);
-      if (!binding) continue;
-      // Publish all writers before refreshing this reader's mapping.
+      const aliases = e.bindingsByPid.get(pid);
+      if (!aliases) continue;
       this.syncToSab(e.bo_id);
-      const copyLen = Math.min(binding.len, e.size);
-      if (binding.addr + copyLen > memory.buffer.byteLength) continue;
-      const dst = new Uint8Array(memory.buffer, binding.addr, copyLen);
-      dst.set(new Uint8Array(e.sab, 0, copyLen));
-      e.snapshotsByPid.get(pid)?.set(dst);
-      e.pendingReaders.delete(pid);
+      let complete = true;
+      for (const binding of aliases.values()) {
+        if (!binding.primed) continue;
+        const copyLen = Math.min(binding.len, e.size);
+        if (binding.addr + copyLen > memory.buffer.byteLength) { complete = false; continue; }
+        const dst = new Uint8Array(memory.buffer, binding.addr, copyLen);
+        dst.set(new Uint8Array(e.sab, 0, copyLen));
+        binding.snapshot.set(dst);
+      }
+      if (complete) e.pendingReaders.delete(pid);
     }
   }
 
@@ -376,7 +403,7 @@ export class GbmBoRegistry {
       w: e.w,
       h: e.h,
       stride: e.stride,
-      binding: e.bindingsByPid.get(pid) ?? null,
+      binding: (() => { const value = this.latestBinding(e,pid); return value ? {addr:value.addr,len:value.len} : null; })(),
     };
   }
 }

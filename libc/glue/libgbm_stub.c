@@ -754,12 +754,14 @@ int gbm_device_is_format_supported(struct gbm_device *gbm,
     return format_bpp(format) ? 1 : 0;
 }
 
-/* The initial CPU-compatible allocation preserves constructor validation.
- * EGL acquires strict GPU render storage transactionally before it can use
- * the window; no CPU BO is ever published as a rendered front. */
+/* The render back is private GPU storage. Public CPU-facing usage flags
+ * apply to exported fronts, so they must not silently become unmappable. */
 static struct gbm_bo *surface_alloc_bo(struct gbm_surface *s, int gpu) {
+    uint32_t flags = s->flags;
+    if (gpu == 2)
+        flags &= ~(GBM_BO_USE_WRITE | GBM_BO_USE_LINEAR | GBM_BO_USE_CURSOR);
     struct gbm_bo *bo = bo_create(s->dev, s->width, s->height,
-                                s->format, s->flags, gpu, 1);
+                                s->format, flags, gpu, 1);
     if (bo) bo->surface = s;
     return bo;
 }
@@ -859,7 +861,9 @@ static void free_surface(struct gbm_surface *s) {
     free(s);
 }
 static void surface_frame(struct gbm_surface *s, int index, struct wpk_gbm_frame *frame) {
-    *frame = (struct wpk_gbm_frame){s->dev->fd, s->bos[index]->handle, s->width, s->height};
+    struct gbm_bo *bo = s->bos[index];
+    *frame = (struct wpk_gbm_frame){s->dev->fd, bo->handle, s->width, s->height,
+        bo->format, bo->stride};
 }
 int _wpk_gbm_window_acquire(const void *window, void **lease, struct wpk_gbm_frame *frame) {
     struct gbm_bo *replaced[WPK_GBM_SURFACE_BO_COUNT] = {0};
@@ -868,8 +872,7 @@ int _wpk_gbm_window_acquire(const void *window, void **lease, struct wpk_gbm_fra
     struct gbm_surface *s = find_surface_locked(window);
     if (!s || !s->public_live) errno = EINVAL;
     else if (s->window_owned) errno = EBUSY;
-    else if (!(s->flags & GBM_BO_USE_RENDERING) ||
-             (s->flags & (GBM_BO_USE_WRITE | GBM_BO_USE_LINEAR | GBM_BO_USE_CURSOR)))
+    else if (!(s->flags & GBM_BO_USE_RENDERING))
         errno = EOPNOTSUPP;
     else {
         /* Pick any unlocked slot. Replacing an unexposed CPU allocation is
@@ -907,12 +910,12 @@ int _wpk_gbm_window_prepare(void *lease, struct wpk_gbm_frame *frame) {
     if (!s || !s->window_owned || s->pending >= 0) errno = EINVAL;
     else {
         errno = EBUSY;
+        int gpu = !(s->flags & (GBM_BO_USE_WRITE | GBM_BO_USE_LINEAR | GBM_BO_USE_CURSOR));
         for (int i = 0; i < WPK_GBM_SURFACE_BO_COUNT; ++i) {
             if (i == s->back || i == s->front || s->in_use[i]) continue;
             struct gbm_bo *bo = s->bos[i];
-            if (!bo || !bo->is_gpu) {
-                /* CPU allocations have never escaped through lock_front. */
-                bo = surface_alloc_bo(s, 2);
+            if (!bo || bo->is_gpu != gpu) {
+                bo = surface_alloc_bo(s, gpu ? 2 : 0);
                 if (!bo) break;
                 replaced = s->bos[i];
                 s->bos[i] = bo;

@@ -7,25 +7,29 @@ import { compileSdkFixture } from "../../../host/test/support/compile-sdk-fixtur
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./support/browser-memory-boundary";
 
+const usages = [["gpu",0],["write",8],["linear",16],["cursor",2]] as const;
 const fixtures = new Map<string, ReturnType<typeof compileSdkFixture>>();
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 test.use({ serviceWorkers: "block", viewport: { width: 400, height: 300 } });
 test.beforeAll(() => {
   for (const arch of ["wasm32", "wasm64"] as const) {
+    for (const [usage, flags] of usages) {
     const sysroot = arch === "wasm64" ? "sysroot64" : "sysroot";
-    fixtures.set(arch, compileSdkFixture(new URL("../../../host/test/fixtures/gbm-native-kms.c", import.meta.url), [
+    fixtures.set(`${arch}-${usage}`, compileSdkFixture(new URL("../../../host/test/fixtures/gbm-native-kms.c", import.meta.url), [
       `-I${fileURLToPath(new URL(`../../../${sysroot}/include/drm`, import.meta.url))}`,
-      "-lEGL", "-lGLESv2", "-lgbm", "-ldrm",
+      `-DKANDELO_GBM_CPU_WINDOW_FLAGS=${flags}`, "-lEGL", "-lGLESv2", "-lgbm", "-ldrm",
     ], { arch }));
+    }
   }
 });
 test.afterAll(() => { for (const fixture of fixtures.values()) fixture.cleanup(); });
 
 for (const arch of ["wasm32", "wasm64"] as const) {
   for (const mode of ["webgl2-scanout", "2d"] as const) {
-    test(`${arch} ${mode} native window waits for KMS selection and preserves GL row orientation`, async ({ page, baseURL, browser }) => {
+    for (const [usage] of usages) {
+    test(`${arch} ${mode} ${usage} native window waits for KMS selection and preserves GL row orientation`, async ({ page, baseURL, browser }) => {
       test.setTimeout(90_000);
-      const program = readFileSync(fixtures.get(arch)!.programPath);
+      const program = readFileSync(fixtures.get(`${arch}-${usage}`)!.programPath);
       const kernelBytes = readFileSync(resolveBinary("kernel.wasm"));
       const fs = KandeloImageFs.create();
       fs.mkdir("/bin", 0o755);
@@ -33,7 +37,7 @@ for (const arch of ["wasm32", "wasm64"] as const) {
       const bytes = await fs.saveImage();
       const evidence = fileURLToPath(new URL("../../../.context/gbm-native-kms-guests/", import.meta.url));
       mkdirSync(evidence, { recursive: true });
-      const identity = `${Date.now()}-${test.info().project.name}-${arch}-${mode}`;
+      const identity = `${Date.now()}-${test.info().project.name}-${arch}-${mode}-${usage}`;
       writeFileSync(`${evidence}/${identity}.wasm`, program);
       const observations: Record<string, number[][]> = {};
       let phase = "unselected", exitStatus: number | undefined;
@@ -111,7 +115,7 @@ for (const arch of ["wasm32", "wasm64"] as const) {
         try { await page.evaluate(async () => await (globalThis as any).__ringKms?.kernel.destroy()); }
         finally {
           writeFileSync(`${evidence}/${identity}.json`, JSON.stringify({
-            arch, mode, engine: test.info().project.name, version: browser.version(),
+            arch, mode, usage, engine: test.info().project.name, version: browser.version(),
             kernelSha256: hash(kernelBytes), programSha256: hash(program), imageSha256: hash(bytes),
             observations, exitStatus, errors,
           }, null, 2) + "\n");
@@ -122,4 +126,5 @@ for (const arch of ["wasm32", "wasm64"] as const) {
       expect(await memoryBoundaryFailures(page)).toEqual([]);
     });
   }
+}
 }

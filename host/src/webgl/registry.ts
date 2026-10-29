@@ -1,3 +1,4 @@
+import { CpuImageStorage } from "./cpu-image-storage.js";
 import { allocateGpuStorage, type GlGpuAllocation } from "./gpu-allocation.js";
 import { revokeForeignBo } from "./foreign-retirement.js";
 import { GlFenceOwner } from "./fences.js";
@@ -271,6 +272,7 @@ export class GlContextRegistry {
    *  the texture is owned by the bo and shared across every session that
    *  binds it, so it is freed only on bo destroy, never on `unbind()`. */
   private gpuBos = new Map<number, GpuBo>();
+  readonly cpuImages = new CpuImageStorage();
   /** Id allocator for GPU-bo textures. Distinct band from per-binding
    *  foreign textures (`0x4000_0000`) so a stray id never resolves to
    *  the wrong table when debugging. */
@@ -558,7 +560,7 @@ export class GlContextRegistry {
   }
   retireForeignBo(bo: number): void {
     this.foreignRetirementOwners(bo);
-    if (this.dropForeignTexturesForBo(bo) && this.destroyGpuBo(bo)) this.foreignRetirements.delete(bo);
+    if (this.dropForeignTexturesForBo(bo) && this.destroyGpuBo(bo) && this.cpuImages.retire(bo)) this.foreignRetirements.delete(bo);
   }
   retryForeignRetirements(): void {
     for (const bo of this.foreignRetirements.keys()) this.retireForeignBo(bo);
@@ -569,6 +571,7 @@ export class GlContextRegistry {
   }
   groupHasForeignRetirement(b: GlBinding): boolean {
     for (const bo of b.foreignTextureBos.values()) if (this.foreignRetirements.has(bo)) return true;
+    for (const source of b.imageSources.values()) if (this.foreignRetirements.has(source.bo)) return true;
     return false;
   }
 

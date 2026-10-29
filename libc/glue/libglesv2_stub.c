@@ -3098,9 +3098,8 @@ void glFramebufferRenderbuffer(GLenum target, GLenum attachment,
 
 /* ----- GL_OES_EGL_image --------------------------------------------- */
 
-/* GPU images attach a private canonical source to a logical GL object.
- * CPU images still copy rows from their mapping; full CPU sibling coherence
- * remains separate work. [AX]RGB8888 rows use BGRA byte order. */
+/* Both storage tiers use retained canonical sources. The host publishes CPU
+ * mappings and native sibling writes at ordered command boundaries. */
 void glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image) {
     if (!_wpk_gl_current_encoder()) return;
     if (target != GL_TEXTURE_2D) {
@@ -3118,39 +3117,17 @@ void glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image) {
         _wpk_egl_image_release(img);
         return;
     }
-    if (!img->pixels) {
-        GLuint source = _wpk_egl_image_texture(img);
-        if (!source) {
-            raise_client_error(GL_INVALID_OPERATION);
-            _wpk_egl_image_release(img);
-            return;
-        }
-        (void)import_image_object(1, g_texture_units[g_active_unit].texture_object, source, img);
+    GLuint source = _wpk_egl_image_texture(img);
+    if (!source) {
+        raise_client_error(GL_INVALID_OPERATION);
         _wpk_egl_image_release(img);
         return;
     }
-    emit_bind_texture(GL_TEXTURE_2D, name);
-    int bgra = img->fourcc == 0x34325241u || img->fourcc == 0x34325258u;
-    uint32_t words[10] = {OP_TEX_IMAGE_2D, GL_TEXTURE_2D,    0, GL_RGBA, img->width, img->height, 0,
-                          GL_RGBA,         GL_UNSIGNED_BYTE, 0};
-    if (checked_mutation_query(QOP_IMAGE_STORAGE, words, 10) != 1) {
-        _wpk_egl_image_release(img);
-        return;
-    }
-    if (!sync_object_image(1, g_texture_units[g_active_unit].texture_object)) {
-        _wpk_egl_image_release(img);
-        return;
-    }
-    emit_tex_rows(GL_TEXTURE_2D, 0, 0, 0,
-                  (GLsizei)img->width, (GLsizei)img->height,
-                  bgra ? GL_BGRA_EXT : GL_RGBA, GL_UNSIGNED_BYTE,
-                  img->pixels, img->pitch);
+    (void)import_image_object(1, g_texture_units[g_active_unit].texture_object, source, img);
     _wpk_egl_image_release(img);
 }
 
-/* Rendering into an image needs storage the GPU writes, so only a
- * GPU-tier image can back a renderbuffer; a CPU-tier one would leave its
- * memory untouched by every draw. */
+/* Renderbuffer siblings retain the same canonical source as texture siblings. */
 void glEGLImageTargetRenderbufferStorageOES(GLenum target, GLeglImageOES image) {
     if (!_wpk_gl_current_encoder()) return;
     if (target != GL_RENDERBUFFER) {
@@ -3162,7 +3139,7 @@ void glEGLImageTargetRenderbufferStorageOES(GLenum target, GLeglImageOES image) 
         raise_client_error(GL_INVALID_VALUE);
         return;
     }
-    if (g_bound_renderbuffer == 0 || img->pixels) {
+    if (g_bound_renderbuffer == 0) {
         raise_client_error(GL_INVALID_OPERATION);
         _wpk_egl_image_release(img);
         return;

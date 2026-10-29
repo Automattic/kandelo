@@ -13582,7 +13582,7 @@ export class CentralizedKernelWorker {
           const mmapAddr = retVal;
           const boId = this.#kernel.bos.findBindingByAddr(channel.pid, mmapAddr);
           if (boId !== undefined) {
-            this.#kernel.bos.primeBindFromSab(channel.pid, boId, channel.memory);
+            this.#kernel.bos.primeBindFromSab(channel.pid, boId, channel.memory, mmapAddr);
           }
         }
       }

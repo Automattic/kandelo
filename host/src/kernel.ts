@@ -1,3 +1,4 @@
+import { cpuImageKey } from "./webgl/cpu-image-storage.js";
 import { drawGpuScanout, readGpuScanout } from "./webgl/kms-scanout.js";
 import { captureNativeGlErrors } from "./webgl/errors.js";
 import type { HostFb } from "./dri/kms-registry.js";
@@ -69,7 +70,7 @@ import {
   WASM_POLL_FD_REVENTS_OFFSET,
   CH_ERRNO, CH_RETURN, CH_STATUS, CHANNEL_STATUS_COMPLETE,
 } from "./generated/abi";
-import { copyGbmFront } from "./webgl/gbm-front-copy";
+import { copyGbmFront, readGbmFront } from "./webgl/gbm-front-copy";
 import { registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
 import { repairNativeState } from "./webgl/native-recovery";
 import { bindForeignTexture, bindGpuForeignTexture } from "./webgl/foreign-texture";
@@ -2659,10 +2660,11 @@ export class WasmPosixKernel {
         host_gbm_bo_unbind: (
           pid: number,
           bo_id: number,
-          _addr: KernelPointer,
-          _len: KernelPointer,
+          addr: KernelPointer,
+          len: KernelPointer,
         ): void => {
-          this.bos.unbind(pid, bo_id);
+          const range = this.#checkedKernelSpan(addr,len,Number.MAX_SAFE_INTEGER,"host_gbm_bo_unbind BO range");
+          this.bos.unbind(pid, bo_id, range.offset);
         },
         // /dev/dri/renderD128 GL hooks. The cmdbuf lives in the process's
         // wasm Memory SAB; submit/query reach into it via the embedder-
@@ -2821,19 +2823,37 @@ export class WasmPosixKernel {
             if (view.getUint32(0, true) !== 1 || view.getUint32(12, true) !== 1) return -22;
             const targetId = view.getUint32(16, true);
             const copyId = view.getUint32(20, true);
-            if (view.getUint32(24,true) || view.getUint32(28,true)) return -22;
+            const format = view.getUint32(24,true), pitch = view.getUint32(28,true);
             if (copyId) {
               if (targetId || b.forward || !b.pendingRenderTargetBoId || b.presentTarget) return -22;
-              const copy = this.gl.gpuBo(copyId), size = b.surfaceSize;
-              if (!copy || !size || copyId === b.pendingRenderTargetBoId ||
-                  view.getUint32(4,true) !== size.width || view.getUint32(8,true) !== size.height)
-                return -22;
+              const copy = this.gl.gpuBo(copyId), size = b.surfaceSize, gl = b.surface.gl;
+              if (!size || !gl || copyId === b.pendingRenderTargetBoId ||
+                  view.getUint32(4,true) !== size.width || view.getUint32(8,true) !== size.height ||
+                  (format !== 0 && format !== 0x34324241) || (!format && pitch)) return -22;
               if (!this.prepareForeignRetirements(b)) return -5;
-              const muxer = this.glMuxerFor(copy.gl);
-              return copyGbmFront(b.surface, copy, () => {
-                muxer.captureCurrentErrors(); muxer.invalidateCurrent();
-              });
+              const muxer = this.glMuxerFor(gl);
+              const capture = () => { muxer.captureCurrentErrors(); muxer.invalidateCurrent(); };
+              if (copy) return copyGbmFront(b.surface, copy, capture);
+              const dimensions = this.bos.dims(copyId), canonical = this.bos.pixelView(copyId);
+              const rowBytes = size.width * 4;
+              if (!dimensions || !canonical || format !== 0x34324241 || pitch !== dimensions.stride ||
+                  dimensions.w !== size.width || dimensions.h !== size.height ||
+                  !Number.isSafeInteger(rowBytes) || pitch < rowBytes ||
+                  !Number.isSafeInteger(pitch * size.height) || canonical.byteLength !== pitch * size.height)
+                return -22;
+              let linear: Uint8Array<ArrayBuffer>;
+              try { linear = new Uint8Array(canonical.byteLength); } catch { return -12; }
+              const read = readGbmFront(b.surface, capture);
+              if (read.rc !== 0 || !read.pixels) return read.rc || -5;
+              try {
+                for (let y = 0; y < size.height; y++) {
+                  const start = (size.height - 1 - y) * rowBytes;
+                  linear.set(read.pixels.subarray(start, start + rowBytes), y * pitch);
+                }
+              } catch { return -12; }
+              return this.bos.publishDevicePixels(copyId, linear) ? 0 : -5;
             }
+            if (format || pitch) return -22;
             const target = this.gl.gpuBo(targetId);
             if (!target || !b.pendingRenderTargetBoId || b.presentTarget || b.forward
                 || (b.contextId !== null && !b.gl) || target.gl.isContextLost()
@@ -2952,7 +2972,17 @@ export class WasmPosixKernel {
               if (!bb.gl) return null;
               return this.glMuxerFor(bb.gl);
             },
-            (bb, off, len) => decodeAndDispatch(bb, off, len),
+            (bb, off, len) => {
+              const capture = (gl: WebGL2RenderingContext) => this.gl_muxers.get(gl)?.captureCurrentErrors();
+              return decodeAndDispatch(bb, off, len, {
+                before: () => {
+                  if (!this.gl.cpuImages.prepare(bb, this.bos, capture)) return false;
+                  this.gl.cpuImages.begin(bb);
+                  return true;
+                },
+                after: () => this.gl.cpuImages.publish(bb, this.bos, capture),
+              });
+            },
           );
         },
         host_gl_present: (pid: number, sessionId?: number): number => {
@@ -3093,7 +3123,11 @@ export class WasmPosixKernel {
               } else {
                 // Empty command buffers still need to select their owner.
                 this.glMuxerFor(b.gl!).switchTo(b);
-                written = runGlQuery(b, op, inBuf, outBuf);
+                const capture = (gl: WebGL2RenderingContext) => this.gl_muxers.get(gl)?.captureCurrentErrors();
+                if (!this.gl.cpuImages.prepare(b, this.bos, capture)) return -5;
+                this.gl.cpuImages.begin(b);
+                try { written = runGlQuery(b, op, inBuf, outBuf); }
+                finally { if (!this.gl.cpuImages.publish(b, this.bos, capture)) return -5; }
               }
             }
           } catch {
@@ -3122,6 +3156,20 @@ export class WasmPosixKernel {
         // WebGLTexture in `pid`'s context. Returns the stable guest-
         // visible texture id, or negative errno — the kernel surfaces
         // any failure as EIO and callers degrade to their CPU path.
+        host_gl_import_image: (pid: number, ctxId: number, boId: number,
+          width: number, height: number, format: number, pitch: number, offset: number): number => {
+          try {
+          const b = this.gl.getContext(pid, ctxId >>> 0);
+          if (!b?.gl || !this.prepareForeignRetirements(b)) return -5;
+          const layout = {width: width >>> 0, height: height >>> 0, format: format >>> 0,
+            pitch: pitch >>> 0, offset: offset >>> 0};
+          this.glMuxerFor(b.gl).switchTo(b);
+          const mirror = this.gl.cpuImages.acquire(b, boId >>> 0, this.bos, layout);
+          if (!mirror || !this.gl.cpuImages.prepare(b, this.bos,
+            gl => this.gl_muxers.get(gl)?.captureCurrentErrors())) return -5;
+          return registerImageSource(b, boId >>> 0, mirror.tex, mirror.w, mirror.h, cpuImageKey(layout));
+          } catch { return -5; }
+        },
         host_gl_bind_foreign_texture: (
           pid: number, ctxId: number, boId: number, glTarget: number,
         ): number => {
@@ -3142,7 +3190,7 @@ export class WasmPosixKernel {
             if (name <= 0) this.gl_muxers.get(b.gl)?.invalidateCurrent();
             return name;
           }
-          if(glTarget===WPK_IMAGE_SOURCE_TARGET)return -22;
+          if (glTarget === WPK_IMAGE_SOURCE_TARGET) return -22;
           const dims = this.bos.dims(boId);
           const bytes = this.bos.pixelView(boId);
           if (!dims || !bytes) return -2;                       // ENOENT

@@ -68,3 +68,56 @@ export function copyGbmFront(surface: GlSurfaceResources, target: GpuFront,
     return accepted ? 0 : owner.errors.includes(0x505) ? -12 : -5;
   } catch { return -5; }
 }
+
+/** Read the private render back into independent bottom-row-first RGBA bytes.
+ * The CPU publication caller packs/normalizes those owned bytes only after
+ * native restoration has succeeded. No guest view enters a repair record. */
+export function readGbmFront(surface: GlSurfaceResources,
+  capturePriorErrors: () => void): {rc: number; pixels?: Uint8Array<ArrayBuffer>} {
+  const gl = surface.gl, size = surface.surfaceSize, source = surface.renderTargetFbo;
+  if (!gl || !source || !size || !Number.isSafeInteger(size.width) ||
+      !Number.isSafeInteger(size.height) || size.width <= 0 || size.height <= 0 ||
+      !Number.isSafeInteger(size.width * size.height * 4)) return {rc: -22};
+  let pixels: Uint8Array<ArrayBuffer>;
+  try { pixels = new Uint8Array(size.width * size.height * 4); }
+  catch { return {rc: -12}; }
+  const owner = {gl, errors: [] as number[], shadow: {}};
+  const failed = () => ({rc: owner.errors.includes(0x505) ? -12 : -5});
+  try {
+    capturePriorErrors();
+    if (gl.isContextLost() || !repairNativeState(gl)) return {rc: -5};
+    let oldRead: WebGLFramebuffer | null = null, oldPack: WebGLBuffer | null = null;
+    const fields = [0x0d05, 0x0d02, 0x0d04, 0x0d03];
+    let values: number[] = [];
+    if (!checkedGlCall(owner, () => {
+      oldRead = gl.getParameter(READ_BINDING); oldPack = gl.getParameter(0x88ed);
+      values = fields.map(field => gl.getParameter(field));
+    }) || !values.every(Number.isInteger)) return failed();
+    const readGroup: NativeCall[] = [["bindFramebuffer", READ, source]];
+    const readRestore = nativeInverse(owner, readGroup);
+    const accepted = applyNativeChanges(owner, [
+      {
+        apply: () => {
+          if (!checkedGlCall(owner, () => gl.bindFramebuffer(READ, source))) return false;
+          let mode: unknown;
+          if (!checkedGlCall(owner, () => { mode = gl.getParameter(READ_BUFFER); }) ||
+              !Number.isInteger(mode)) return false;
+          readGroup.push(["readBuffer", mode as number]);
+          return true;
+        }, restore: nativeInverse(owner, [["bindFramebuffer", READ, oldRead]])
+      },
+      {apply: () => checkedGlCall(owner, () => gl.readBuffer(COLOR0)), restore: readRestore},
+      {apply: () => checkedGlCall(owner, () => gl.bindBuffer(0x88eb, null)),
+        restore: nativeInverse(owner, [["bindBuffer", 0x88eb, oldPack]])},
+      ...fields.map((field, index) => ({
+        apply: () => checkedGlCall(owner, () => gl.pixelStorei(field, index === 0 ? 1 : 0)),
+        restore: nativeInverse(owner, [["pixelStorei", field, values[index]]])
+      })),
+      {apply: () => checkedGlCall(owner, () => gl.readPixels(0, 0, size.width, size.height,
+        0x1908, 0x1401, pixels)), restore: nativeInverse(owner)},
+    ], {shared: true, finalizer: nativeInverse(owner, readGroup,
+      [["bindFramebuffer", READ, oldRead]], [["bindBuffer", 0x88eb, oldPack]],
+      fields.map((field, index) => ["pixelStorei", field, values[index]]))});
+    return accepted ? {rc: 0, pixels} : failed();
+  } catch { return {rc: -5}; }
+}

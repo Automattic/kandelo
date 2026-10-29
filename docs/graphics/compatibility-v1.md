@@ -2,8 +2,9 @@
 
 This is the implementation and evidence ledger for the GLES 2.0, EGL 1.5,
 GBM and single-display legacy DRM/KMS baseline. Userspace graphics uses
-the existing wasm32 SDK; Node/browser host parity is required. Kernel DRM
-pointer-marshalling tests retain both guest address widths. It is not a conformance
+the normal wasm32 and wasm64 SDKs; compositor packages currently build for
+wasm32. Node/browser host parity is required. Kernel DRM pointer-marshalling
+tests retain both guest address widths. It is not a conformance
 claim. An ordinary defect remains open until implementation and executable
 validation cover it; a passing demo does not close an API family.
 
@@ -7253,3 +7254,49 @@ host type check reports 42 baseline diagnostics, with no additions or removals
 by normalized file/code/message against the prior retained-front checkpoint;
 it is not a clean type check. Evidence is
 `.context/gbm-cpu-fronts/.context/cpu-image-*`.
+
+
+### CPU fronts, retained images and multiple CPU aliases, 2026-10-28
+
+The isolated candidate's expanded run
+`graphics-cpu-image-expanded-1028-213732-edcc` passed in 8m37s: the Rust
+layout/no-write-on-rejection test, 211 native EGL cases, native GBM checks,
+109 focused host cases, normal kernel/generated verification, and 54 real
+browser cases in 2.7m. The browser matrix covers both widths, GPU/WRITE/
+LINEAR/CURSOR windows, WebGL/2D presenters and all three engines. CPU cases
+retain a renderbuffer after public EGLImage destruction and test CPU→GL and
+GL→live-mapping visibility before restoring the existing KMS pixel oracle.
+The exact 48 native-window guest/image/kernel identities and source hashes
+are preserved in the candidate's `.context/cpu-image-expanded-identities.json`;
+the other six cases are retained-ring cases. These results predate the next
+multiple-mapping repair and are not combined primary-checkpoint gates.
+
+A further source regression showed a genuine same-process alias defect:
+registering a second mapping made writes through the first disappear from
+canonical storage. The source control failed (26 passed, one failed) in
+`.context/gbm-cpu-fronts/.context/cpu-multiple-maps-before.log`. The host store
+now retains each process/address alias, with its own zero-fill/prime barrier
+and independent changed-byte snapshot. Kernel unbind notifications already
+carry addresses; the host now uses that exact address instead of removing
+all aliases. The worker primes the specific successful mmap address.
+No guest memory or views are retained in the new device mirror/repair records.
+
+After this repair, all 111 focused source cases pass. The normal Chromium
+wasm32 WRITE-window case additionally passes real imports of all four
+advertised dma-buf channel layouts with nonzero offsets, non-allocator pitch,
+a live application mapping across multiple image mappings, CPU/GL writes,
+preserved row padding/X bits and implicit alpha one for XRGB. The evidence is
+`cpu-image-layout-maps-first.log` and its guest/result artifacts in the owned
+candidate checkout. This remains a narrow post-repair rendered result;
+both-width/all-engine repeats and broader Node/source validation are next.
+
+CPU native mirrors remain distinct from GPU-tier BOs used for scanout. They
+carry explicit imported layout identity and merge changed sibling bytes into
+canonical CPU storage. Accepted writes whose native readback/publication
+fails retain authority until retry, before a CPU upload can erase them.
+The current implementation synchronizes eagerly at command boundaries;
+performance has not been measured. Fork-inherited mapping registration,
+forwarded BO/image sources, full negative/lifecycle validation and broader
+CTS remain open. CPU changes do not close those inventory rows or establish
+full GLES/EGL/GBM conformance. Current browser-memory and POSIX jobs still
+validate the earlier `9a9dec0bf4` checkpoint, not this candidate ABI snapshot.

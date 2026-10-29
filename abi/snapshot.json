@@ -2355,6 +2355,12 @@
       "wasm32Size": 32,
       "wasm64Size": 32
     },
+    "3223348450": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 32,
+      "wasm64Size": 32
+    },
     "3223610368": {
       "argKind": "pointer",
       "direction": "inout",
@@ -4102,6 +4108,12 @@
     {
       "kind": "func",
       "module": "env",
+      "name": "host_gl_import_image",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
       "name": "host_gl_make_current",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
@@ -4958,9 +4970,14 @@
           "span": 4
         },
         {
-          "name": "reserved",
+          "name": "format",
           "offset": 24,
-          "span": 8
+          "span": 4
+        },
+        {
+          "name": "pitch",
+          "offset": 28,
+          "span": 4
         }
       ],
       "size": 32
@@ -5617,6 +5634,51 @@
         }
       ],
       "size": 16
+    },
+    "WpkDrmImportImage": {
+      "fields": [
+        {
+          "name": "bo_handle",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "ctx_id",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "width",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "height",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "format",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "pitch",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "offset",
+          "offset": 24,
+          "span": 4
+        },
+        {
+          "name": "source",
+          "offset": 28,
+          "span": 4
+        }
+      ],
+      "size": 32
     },
     "WpkDrmModeCardRes": {
       "fields": [

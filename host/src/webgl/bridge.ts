@@ -92,6 +92,7 @@ export function decodeAndDispatch(
   b: GlBinding,
   offset: number,
   length: number,
+  storage?: {before: () => boolean; after: () => boolean},
 ): number {
   if (!b.cmdbufView || !b.gl) return GL_SUBMIT_OK;
   // Validate the entire batch before the first observable mutation. A bad
@@ -101,7 +102,9 @@ export function decodeAndDispatch(
   const result = walkCommandBuffer(b.cmdbufView, offset, length, (payload, op) => {
     try {
       if (!repairNativeState(b.gl!) || !reconcileClientArrayRestore(b,b.gl!)) return GL_SUBMIT_EIO;
-      dispatch(b.gl!, b, payload, 0, op);
+      if (storage && !storage.before()) return GL_SUBMIT_EIO;
+      try { dispatch(b.gl!, b, payload, 0, op); }
+      finally { if (storage && !storage.after()) return GL_SUBMIT_EIO; }
       return GL_SUBMIT_OK;
     } catch (err) {
       logGlBridgeFailure("submit", op, err);

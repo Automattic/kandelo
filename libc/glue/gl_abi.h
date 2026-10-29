@@ -231,7 +231,7 @@ struct gl_surface_create { struct gl_surface_attrs attrs; uint32_t surface_id; }
  * from a retarget; copy_target_bo names a GEM handle on this session. */
 struct gl_surface_front_copy {
     uint32_t kind, width, height, config_id;
-    uint32_t target_reserved, copy_target_bo, reserved[2];
+    uint32_t target_reserved, copy_target_bo, format, pitch;
 };
 struct gl_query_info {
     uint32_t op;
@@ -303,8 +303,8 @@ struct wpk_egl_image {
     size_t map_len;
 };
 
-/* A private source token, separate from public GL names, for a GPU image.
- * Zero for CPU images, no current context or unavailable native storage. */
+/* A retained private source token, separate from public GL names, for either
+ * storage tier. Zero for no current context or unavailable native storage. */
 /* Lookup retains a temporary reference; the caller must release it. */
 struct wpk_egl_image *_wpk_egl_image_lookup(const void *image);
 void _wpk_egl_image_retain(struct wpk_egl_image *image);

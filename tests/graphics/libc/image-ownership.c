@@ -146,13 +146,13 @@ int _wpk_gbm_window_acquire(const void *window, void **lease, struct wpk_gbm_fra
     unsigned i = (const int *)window-record_windows;
     if (window_leases[i]) { errno = EBUSY; return 0; }
     window_leases[i] = 1; *lease = &window_leases[i];
-    *frame = (struct wpk_gbm_frame){10,77+i,width,height};
+    *frame = (struct wpk_gbm_frame){10,77+i,width,height,record_format,width*4};
     return 1;
 }
 int _wpk_gbm_window_prepare(void *lease, struct wpk_gbm_frame *frame) {
     unsigned i = (unsigned *)lease-window_leases;
     assert(i < 3 && window_leases[i]);
-    *frame = (struct wpk_gbm_frame){10,88+i,32+i,24+i};
+    *frame = (struct wpk_gbm_frame){10,88+i,32+i,24+i,record_format,(32+i)*4};
     return 1;
 }
 void _wpk_gbm_window_finish(void *lease, int accepted) { (void)lease; (void)accepted; }

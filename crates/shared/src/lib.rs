@@ -5679,7 +5679,8 @@ pub mod gl {
         pub config_id: u32,
         pub target_reserved: u32,
         pub copy_target_bo: u32,
-        pub reserved: [u32; 2],
+        pub format: u32,
+        pub pitch: u32,
     }
 
     /// wasm32 argument to `GLIO_QUERY`. Total: 24 bytes.
@@ -5927,6 +5928,24 @@ pub mod dri {
     /// view without a CPU upload. Deleting and reimporting creates a fresh
     /// name/object; peers can retain the deleted object until bo retirement.
     pub const DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE: u32 = 0xc010_64e1;
+
+    /// Import a linear image view with explicit layout; source is a private
+    /// token, separate from public texture names and local GEM handles.
+    pub const DRM_IOCTL_WPK_IMPORT_IMAGE: u32 = 0xc020_64e2;
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmImportImage {
+        pub bo_handle: u32,
+        pub ctx_id: u32,
+        pub width: u32,
+        pub height: u32,
+        pub format: u32,
+        pub pitch: u32,
+        pub offset: u32,
+        pub source: u32,
+    }
+
 
     /// GPU-bo allocator argument. 16 bytes on wasm32 (4 × u32). `format` and
     /// `usage` are passed through to libgbm's `gbm_bo_create(format, usage)`

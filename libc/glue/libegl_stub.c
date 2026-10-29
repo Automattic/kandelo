@@ -851,6 +851,10 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
             if (errno == EOPNOTSUPP) error = EGL_BAD_MATCH;
             goto fail;
         }
+        if (frame.format != GBM_FORMAT_ABGR8888) {
+            error = EGL_BAD_MATCH;
+            goto fail;
+        }
         target = frame.handle;
         source_fd = frame.fd;
         request.attrs.width = frame.width;
@@ -1324,7 +1328,8 @@ static int swap_gbm_window_locked(struct egl_generation *g, struct egl_surface_r
     int accepted = 0;
     if (local) {
         struct gl_surface_front_copy attrs = {.kind = WPK_SURFACE_DEFAULT, .config_id = 1,
-            .width = frame.width, .height = frame.height, .copy_target_bo = local};
+            .width = frame.width, .height = frame.height, .copy_target_bo = local,
+            .format = frame.format, .pitch = frame.pitch};
         accepted = ioctl(surface->session->fd, GLIO_UPDATE_SURFACE, &attrs) == 0;
         release_transferred_bo(g, frame.fd, surface->session->fd, local);
     }
@@ -2790,8 +2795,20 @@ static void retire_imported_images(struct egl_generation *generation) {
 }
 
 uint32_t _wpk_egl_image_texture(const struct wpk_egl_image *image) {
-    if (!image || image->pixels || image->generation != g_thread_binding.generation) return 0;
-    return bind_bo_texture(image->generation->display->handle, image->handle, WPK_GL_IMAGE_SOURCE_TARGET, 0);
+    if (!image || image->generation != g_thread_binding.generation) return 0;
+    if (!image->pixels)
+        return bind_bo_texture(image->generation->display->handle, image->handle, WPK_GL_IMAGE_SOURCE_TARGET, 0);
+    struct egl_context_record *context = g_thread_binding.object;
+    if (!context || context->session->fd < 0 || _wpk_gl_flush_checked() != 0) return 0;
+    uint32_t local = transfer_bo_handle(image->generation->fd, context->session->fd, image->handle);
+    if (!local) return 0;
+    /* A CPU image can select a subrectangle, row pitch and channel layout
+     * independently of the allocator's geometry. Carry every field. */
+    uint32_t req[8] = {local, context->backend_id, image->width, image->height,
+        image->fourcc, image->pitch, (uint32_t)(image->pixels - (const uint8_t *)image->map), 0};
+    int rc = ioctl(context->session->fd, 0xc02064e2u, req);
+    release_transferred_bo(image->generation, image->generation->fd, context->session->fd, local);
+    return rc == 0 ? req[7] : 0;
 }
 
 EGLBoolean eglQueryDmaBufFormatsEXT(EGLDisplay dpy, EGLint max_formats,

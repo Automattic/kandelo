@@ -6,6 +6,7 @@ import { checkedGlCall, recordGlError } from "./program-objects.js";
 export const WPK_IMAGE_SOURCE_TARGET = 0x57504b49;
 export type GlImageSource = {
   token: number;
+  key?: string;
   bo: number;
   texture: WebGLTexture;
   width: number;
@@ -22,15 +23,15 @@ export type GlRenderbufferView = {
   source: GlImageSource | null;
 };
 const TEX = 0x0de1, RBO = 0x8d41, DRAW = 0x8ca9, READ = 0x8ca8, COLOR = 0x8ce0;
-export function registerImageSource(b: GlBinding, bo: number, texture: WebGLTexture, width: number, height: number): number {
+export function registerImageSource(b: GlBinding, bo: number, texture: WebGLTexture, width: number, height: number, key?: string): number {
   for (const source of b.imageSources.values())
-    if (source.bo === bo)
+    if (source.bo === bo && source.key === key)
       return source.token;
   if (b.nextImageSource > 0x7fffffff)
     return -12;
   const token = b.nextImageSource;
   try {
-    b.imageSources.set(token, { token, bo, texture, width, height });
+    b.imageSources.set(token, { token, bo, texture, width, height, key });
   }
   catch {
     return -12;

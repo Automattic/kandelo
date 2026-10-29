@@ -152,6 +152,42 @@ static void rejected(const void *pointer) {
     assert(!_wpk_gbm_surface_dimensions(pointer,&width,&height));
     assert(width == 101 && height == 102);
 }
+static void cpu_window_fronts(void) {
+    int previous_fd = device_fd;
+    FILE *file = tmpfile(); assert(file);
+    device_fd = fileno(file);
+    assert(!ftruncate(device_fd, 1024 * 1024));
+    struct gbm_device *device = gbm_create_device(device_fd); assert(device);
+    gpu_enabled = 1;
+    const uint32_t usages[] = {GBM_BO_USE_WRITE, GBM_BO_USE_LINEAR, GBM_BO_USE_CURSOR};
+    for (unsigned i = 0; i < sizeof usages / sizeof usages[0]; ++i) {
+        struct gbm_surface *window = gbm_surface_create(device, 4, 3,
+            GBM_FORMAT_ABGR8888, GBM_BO_USE_RENDERING | usages[i]);
+        assert(window);
+        struct wpk_gbm_frame back = {0}, candidate = {0}; void *lease = NULL;
+        assert(_wpk_gbm_window_acquire(window, &lease, &back));
+        assert(_wpk_gbm_window_prepare(lease, &candidate) && candidate.handle != back.handle);
+        _wpk_gbm_window_finish(lease, 1);
+        struct gbm_bo *front = gbm_surface_lock_front_buffer(window); assert(front);
+        assert(gbm_bo_get_handle(front).u32 == candidate.handle);
+        uint32_t stride = 0; void *token = NULL;
+        uint32_t *pixels = gbm_bo_map(front, 0, 0, 4, 3,
+            GBM_BO_TRANSFER_READ_WRITE, &stride, &token);
+        assert(pixels && stride == 16 && token);
+        pixels[0] = 0xff123456;
+        gbm_bo_unmap(front, token);
+        off_t offset = (off_t)candidate.handle * sysconf(_SC_PAGESIZE);
+        uint32_t stored = 0;
+        assert(pread(device_fd, &stored, 4, offset) == 4 && stored == 0xff123456);
+        gbm_surface_destroy(window);
+        _wpk_gbm_window_release(lease);
+        gbm_surface_release_buffer(window, front);
+    }
+    gpu_enabled = 0;
+    gbm_device_destroy(device);
+    fclose(file); device_fd = previous_fd;
+    assert(created == closed);
+}
 static void imported_handle_lifetime(struct gbm_device *device) {
     unsigned before = closed;
     struct gbm_bo *source = gbm_bo_create(device, 4, 3, GBM_FORMAT_ABGR8888, GBM_BO_USE_WRITE);
@@ -354,6 +390,7 @@ int main(void) {
     cpu_mapping();
     retained_device_file();
     rendered_ring_ownership();
+    cpu_window_fronts();
     uintptr_t retired_device = (uintptr_t)device;
     gbm_device_destroy(device);
     assert(!_wpk_gbm_device_metadata((void *)retired_device, &native_fd, &identity));

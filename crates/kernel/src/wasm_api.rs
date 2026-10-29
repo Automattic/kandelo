@@ -336,6 +336,7 @@ unsafe extern "C" {
         session_id: u32,
     ) -> i32;
     fn host_gl_bind_foreign_texture(pid: i32, ctx_id: u32, bo_id: u32, gl_target: u32) -> i32;
+    fn host_gl_import_image(pid: i32, ctx_id: u32, bo_id: u32, width: u32, height: u32, format: u32, pitch: u32, offset: u32) -> i32;
     fn host_kms_set_master(pid: i32, file_id: u64, lease_id: u64);
     fn host_kms_drop_master(pid: i32, file_id: u64, lease_id: u64);
     fn host_proc_write_bytes(pid: i32, addr: u64, src_ptr: *const u8, len: u32) -> i32;
@@ -1190,6 +1191,11 @@ impl HostIO for WasmHostIO {
         gl_target: u32,
     ) -> i32 {
         unsafe { host_gl_bind_foreign_texture(pid, ctx_id, bo_id, gl_target) }
+    }
+
+    fn gl_import_image(&mut self, pid: i32, ctx_id: u32, bo_id: u32,
+        width: u32, height: u32, format: u32, pitch: u32, offset: u32) -> i32 {
+        unsafe { host_gl_import_image(pid, ctx_id, bo_id, width, height, format, pitch, offset) }
     }
 
     fn kms_set_master(&mut self, pid: i32, file_id: u64, lease_id: u64) {
