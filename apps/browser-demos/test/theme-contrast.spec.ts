@@ -76,7 +76,8 @@ const palette = surfaces.map((surface) => `<section style="background:var(--${su
 }</section>`).join("");
 const overlays = ["black", "white"].map((color) => `<section style="background:${color}">
   <button data-contrast="touch control over ${color}" class="ktouch-btn">Fire</button>
-  <span data-contrast="drop prompt over ${color}" class="kframebuffer-dropzone" style="position:static">Drop game data</span>
+  <div data-contrast="drop prompt over ${color}" class="kexchange-dropzone" data-refused="false" style="position:static">Drop to send to this machine</div>
+  <div data-contrast="refused drop prompt over ${color}" class="kexchange-dropzone" data-refused="true" style="position:static">This machine doesn't accept files</div>
   <div class="kmodeset-waiting" style="position:static">
     <span data-contrast="waiting over ${color}">Waiting for display</span>
     <span data-contrast="waiting detail over ${color}" class="kmodeset-waiting-secondary">Run a program</span>
