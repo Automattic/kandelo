@@ -3269,6 +3269,49 @@ fn spawn_parsed_for_caller(
     }
 }
 
+/// Record the user's grant for process `pid` to send credentials
+/// (`Process::credential_grant`). `grant` is the host-issued grant id; 0
+/// clears the grant. Returns 0 on success, or -ESRCH when `pid` is absent or
+/// has already exited (an exited process has no image left to grant).
+///
+/// The kernel forgets the grant by itself when the process execs, exits, or
+/// is a fork child; the host never has to chase those transitions.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_set_credential_grant(pid: u32, grant: u32) -> i32 {
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.get_mut(pid) {
+        Some(proc)
+            if !matches!(
+                proc.state,
+                crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+            ) =>
+        {
+            proc.credential_grant = (grant != 0).then_some(grant);
+            0
+        }
+        _ => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Return the credential grant id held by process `pid`, or 0 when it holds
+/// none. -ESRCH when `pid` is absent or has exited (a zombie holds no
+/// grant). The i64 return keeps every u32 grant id distinct from an errno.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_credential_grant(pid: u32) -> i64 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc)
+            if !matches!(
+                proc.state,
+                crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+            ) =>
+        {
+            proc.credential_grant.unwrap_or(0) as i64
+        }
+        _ => -(Errno::ESRCH as i64),
+    }
+}
+
 /// Returns the per-process fork counter (parent side, incremented on
 /// successful fork). Used by the non-forking spawn test suite as a
 /// regression guardrail. Returns `u64::MAX` as a sentinel if the pid
@@ -3665,6 +3708,78 @@ pub extern "C" fn kernel_get_cwd(pid: u32, buf_ptr: *mut u8, buf_len: u32) -> i3
             crate::complete_copy::copy_complete_bytes(&proc.cwd, buf_ptr, buf_len)
         },
         None => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Get the path of the executable `pid` runs: exactly what
+/// `/proc/<pid>/exe` reads (`procfs::exe_link_target`), the path the kernel
+/// resolved when it committed the image (symlinks followed), with
+/// ` (deleted)` when the file has no names left.
+///
+/// The host uses this to match a running image against package
+/// declarations by the file actually executed, rather than by the spelling
+/// a caller passed to `execve`. Returns `-ESRCH` when `pid` is absent or has
+/// exited, `-ENOENT` when no executable is attached. The zero-capacity query
+/// and complete-or-`ERANGE` copy contract matches `kernel_get_cwd`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_exe_path(pid: u32, buf_ptr: *mut u8, buf_len: u32) -> i32 {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc)
+            if !matches!(
+                proc.state,
+                crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+            ) =>
+        {
+            match crate::procfs::exe_link_target(proc) {
+                Ok(target) => unsafe {
+                    crate::complete_copy::copy_complete_bytes(&target, buf_ptr, buf_len)
+                },
+                Err(error) => -(error as i32),
+            }
+        }
+        _ => -(Errno::ESRCH as i32),
+    }
+}
+
+/// Write the metadata (`WasmStat`) of the file `pid`'s image was executed
+/// from, through the open file description the kernel keeps for it
+/// (`syscalls::executable_file_stat`) -- the file that was executed, even
+/// when its path has since been renamed away or names a different file.
+///
+/// `kernel_get_exe_path` says which program a process runs; this says
+/// whether it is the same file: the host compares its device, inode, size,
+/// modification and change times with what the declared program's path
+/// named at boot. Returns 0 on success, `-ESRCH` when `pid` is absent or has
+/// exited, `-ENOENT` when no executable is attached, `-EINVAL` when `out_len`
+/// is shorter than `WasmStat`.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_exe_stat(pid: u32, out_ptr: *mut WasmStat, out_len: u32) -> i32 {
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    if out_len < size_of::<WasmStat>() as u32 {
+        return -(Errno::EINVAL as i32);
+    }
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.get(pid) {
+        Some(proc)
+            if !matches!(
+                proc.state,
+                crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
+            ) =>
+        {
+            match syscalls::executable_file_stat(proc, &mut WasmHostIO) {
+                Ok(stat) => {
+                    unsafe {
+                        out_ptr.write_unaligned(stat);
+                    }
+                    0
+                }
+                Err(error) => -(error as i32),
+            }
+        }
+        _ => -(Errno::ESRCH as i32),
     }
 }
 

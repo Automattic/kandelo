@@ -2195,7 +2195,10 @@ pub mod abi {
     /// 1: the host accepted any kernel requiring at most its own version.
     /// 2: the check is exact, and this version (not `ABI_VERSION`) is the
     ///    epoch for kernel-host-only changes (ABI 55).
-    pub const HOST_ADAPTER_VERSION: u32 = 2;
+    /// 3: `kernel_set_credential_grant`, `kernel_get_credential_grant`,
+    ///    `kernel_get_exe_path` and `kernel_get_exe_stat` join the required
+    ///    kernel exports.
+    pub const HOST_ADAPTER_VERSION: u32 = 3;
     pub const HOST_ADAPTER_MANIFEST_SIZE: u16 = core::mem::size_of::<HostAdapterManifest>() as u16;
 
     pub const HOST_FEATURE_SHARED_ARRAY_BUFFER: u32 = 1 << 0;
@@ -2346,8 +2349,11 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_exec_target_read"),
         HostAdapterKernelExport::required("kernel_exec_target_size"),
         HostAdapterKernelExport::required("kernel_fork_process"),
+        HostAdapterKernelExport::required("kernel_get_credential_grant"),
         HostAdapterKernelExport::required("kernel_get_cwd"),
         HostAdapterKernelExport::required("kernel_get_dirfd_path"),
+        HostAdapterKernelExport::required("kernel_get_exe_path"),
+        HostAdapterKernelExport::required("kernel_get_exe_stat"),
         HostAdapterKernelExport::required("kernel_get_fd_path"),
         HostAdapterKernelExport::required("kernel_get_parent_pid"),
         HostAdapterKernelExport::required("kernel_get_process_exit_signal"),
@@ -2396,6 +2402,7 @@ pub mod abi {
         HostAdapterKernelExport::optional("kernel_reserve_host_region"),
         HostAdapterKernelExport::optional("kernel_reserve_host_region_at"),
         HostAdapterKernelExport::required("kernel_reset_tcp_connection"),
+        HostAdapterKernelExport::required("kernel_set_credential_grant"),
         HostAdapterKernelExport::required("kernel_set_current_tid"),
         HostAdapterKernelExport::required("kernel_set_cwd"),
         HostAdapterKernelExport::required("kernel_set_main_channel_addr"),

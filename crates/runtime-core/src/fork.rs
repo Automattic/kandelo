@@ -1811,6 +1811,9 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     child.fb_binding = None;
     child.dri_bindings.clear();
     child.fork_count = 0;
+    // A credential grant is the user's permission for the parent's process,
+    // not for a new one; the child starts with none.
+    child.credential_grant = None;
     Ok(())
 }
 
@@ -2284,6 +2287,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     process.fb_binding = None;
     process.dri_bindings.clear();
     process.fork_count = 0;
+    process.credential_grant = None;
     Ok(process)
 }
 
