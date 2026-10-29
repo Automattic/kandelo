@@ -26,99 +26,63 @@ OS_TEST_LOCAL="$REPO_ROOT/tests/sortix/os-test-local"
 # Upstream tests that do not test a POSIX requirement on Kandelo are
 # reported as SKIP; see scripts/sortix-not-applicable.sh.
 source "$REPO_ROOT/scripts/sortix-not-applicable.sh"
+# shellcheck source=scripts/browser-runner-accounting.sh
+source "$REPO_ROOT/scripts/browser-runner-accounting.sh"
 BUILD_DIR="$REPO_ROOT/tests/sortix/os-test/build"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
-# ── Expected failures (same as Node.js version) ──────────────────────
-INCLUDE_EXPECTED_FAIL=(
-    # (pthread clock-aware waits now pass — pthread.h/semaphore.h overlays + stubs)
-    # (REG_MINIMAL now passes — regex.h overlay)
-    "devctl/posix_devctl" "devctl/size_t"
-    # (libintl _l variants now pass — libintl.h overlay + stubs)
-    # (ndbm now passes — ndbm.h overlay + stubs)
-    # (SCHED_SPORADIC + sched_param fields now pass — sched.h overlay)
-    # (typed memory objects now pass — sys/mman.h overlay + stubs)
-)
-
-BASIC_EXPECTED_FAIL=(
-    "devctl/posix_devctl"
-    # (exec/spawn/popen/system/wordexp now pass — browser exec support with tool binaries)
-    # (aio_fsync, pthread_create, thrd_create and the two setpshared tests now
-    # pass, as they do on Node)
-    "pthread/pthread_attr_setinheritsched"
-    "strings/ffsll"
-    # (spawn addchdir/addfchdir now pass — exec path normalization fix)
-)
-
-LIMITS_EXPECTED_FAIL=()
-MALLOC_EXPECTED_FAIL=()
-STDIO_EXPECTED_FAIL=()
-
-IO_EXPECTED_FAIL=(
-)
-
-SIGNAL_EXPECTED_FAIL=(
-    # (exec-based signal tests now pass — browser exec support)
-    # (sigaction-exec-flags now passes — .unknown.* glob pattern added)
-)
-PROCESS_EXPECTED_FAIL=(
-    # (fork-exec tests now pass — browser exec support)
-)
-PATHS_EXPECTED_FAIL=()
-UDP_EXPECTED_FAIL=(
-    # External raw UDP routes need a HostIO/proxy backend. The in-kernel UDP
-    # implementation intentionally supports loopback/virtual datagrams only and
-    # reports unreachable external routes as ENETUNREACH for now.
-    "bind-lan-subnet-broadcast"
-    "bind-lan-subnet-first"
-    "bind-lan-subnet-wrong"
-    "connect-broadcast-getpeername-so-broadcast"
-    "connect-broadcast-getsockname-so-broadcast"
-    "connect-wan-get-so-bindtodevice"
-    "connect-wan-getsockname"
-    "connect-wan-send-reconnect-loopback-send"
-    "connect-wan-unconnect-rebind-any-getsockname"
-    "connect-wan-unconnect-rebind-same-getsockname"
-    "cross-netif-lan-send-loopback-recv"
-    "cross-netif-loopback-send-lan-recv"
-    "shutdown-r-send"
-)
+# Expected failures, their recorded reasons, and how expected output is
+# found and compared are shared with the Node.js runner: both boot the same
+# kernel and libc, so a test's expected outcome belongs to Kandelo, not to
+# the host.
+# shellcheck source=scripts/sortix-expectations.sh
+source "$REPO_ROOT/scripts/sortix-expectations.sh"
+# shellcheck source=scripts/xfail-reasons.sh
+source "$REPO_ROOT/scripts/xfail-reasons.sh"
 
 # ── Browser-specific expected failures ──────────────────────────────
-# Tests that pass on Node.js but fail in the browser due to platform differences.
-# Primarily: tests needing data directory (KERNEL_CWD), /etc/passwd, /etc/hosts.
+# Tests that pass on Node.js but fail in the browser because of a real
+# difference between the hosts. Each needs a reason in
+# browser_xfail_expected_reason, like the shared entries.
 
 BROWSER_BASIC_EXPECTED_FAIL=(
     # dlfcn: dynamic linking not supported in browser
     "dlfcn/dlclose" "dlfcn/dlopen" "dlfcn/dlsym"
-    # (pthread_atfork now passes — fork() calls __fork_handler in channel_syscall.c)
-    # (terminal/PTY tests now pass — grantpt, posix_openpt, ptsname, unlockpt in PR #181)
-    # (aio_read now passes — pthread_create works for its aio worker thread)
 )
 
 BROWSER_INCLUDE_EXPECTED_FAIL=()
 BROWSER_LIMITS_EXPECTED_FAIL=()
 BROWSER_MALLOC_EXPECTED_FAIL=()
 BROWSER_STDIO_EXPECTED_FAIL=()
-
-BROWSER_IO_EXPECTED_FAIL=(
-)
+BROWSER_IO_EXPECTED_FAIL=()
 
 BROWSER_SIGNAL_EXPECTED_FAIL=(
     # Intermittent timing failure in browser polling mode
     "ppoll-block-sleep-write-raise"
 )
 
-BROWSER_PROCESS_EXPECTED_FAIL=(
-    # All previously-failing process tests now pass with stderr+stdout merging
-)
-
-# paths: most non-existent paths now match .2 expect files (ENOENT on stderr)
-# Remaining failures: device nodes and /bin/sh not present in browser VFS
-BROWSER_PATHS_EXPECTED_FAIL=(
-    # (bin-sh now passes — exec stubs populate /bin/sh)
-)
+BROWSER_PROCESS_EXPECTED_FAIL=()
+BROWSER_PATHS_EXPECTED_FAIL=()
 BROWSER_UDP_EXPECTED_FAIL=()
+
+# How each browser-specific XFAIL is expected to fail (see
+# xfail_expected_reason in scripts/sortix-expectations.sh). Shared entries
+# fall through to the shared table.
+browser_xfail_expected_reason() {
+    case "$1" in
+        *) xfail_expected_reason "$1" ;;
+    esac
+}
+
+# A mismatched XFAIL counts as a FAIL: the test is failing for a reason
+# nobody has accepted, and the run must not read as clean.
+record_xfail_mismatch() {
+    local id="$1" output="$2"
+    echo "XFAIL-MISMATCH ${id} (${XFAIL_MISMATCH})"
+    printf '%s\n' "$output" | tail -10 | head -5 | sed 's/^/  /'
+    RESULTS+=("FAIL  ${id}")
+    FAIL=$((FAIL + 1))
+}
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -428,9 +392,11 @@ run_include_suite() {
             fi
             ;;
         *)
-            if $is_xfail; then
+            if $is_xfail && xfail_check "$(browser_xfail_expected_reason "include/${test_name}")" outcome "$outcome"; then
                 RESULTS+=("XFAIL include/${test_name}")
                 XFAIL=$((XFAIL + 1))
+            elif $is_xfail; then
+                record_xfail_mismatch "include/${test_name}" "$outcome"
             elif [ "$outcome" = "missing_optional" ]; then
                 RESULTS+=("SKIP  include/${test_name}")
                 SKIP=$((SKIP + 1))
@@ -496,9 +462,11 @@ run_runtime_suite() {
             if [ ${#_XFAIL_LIST[@]} -gt 0 ] && is_expected_fail "$test_name" "${_XFAIL_LIST[@]}"; then
                 is_xfail=true
             fi
-            if $is_xfail; then
+            if $is_xfail && xfail_check "$(browser_xfail_expected_reason "${suite}/${test_name}")" build "wasm not found: $BUILD_DIR/$suite/${test_name}.wasm"; then
                 RESULTS+=("XFAIL ${suite}/${test_name}")
                 XFAIL=$((XFAIL + 1))
+            elif $is_xfail; then
+                record_xfail_mismatch "${suite}/${test_name}" "build failed"
             else
                 echo "BUILD ${suite}/${test_name}"
                 RESULTS+=("BUILD ${suite}/${test_name}")
@@ -520,31 +488,46 @@ run_runtime_suite() {
     RESULT_FILE=$(mktemp)
     STDERR_FILE=$(mktemp)
 
+    local RUNNER_RC=0
+    set +e
     npx tsx scripts/browser-test-runner.ts --json --timeout "$TEST_TIMEOUT" \
         --reload-interval 10 \
         --data-prefix "$BUILD_DIR/$suite" \
         --source-dir "$OS_TEST/$suite" \
         --suite "$suite" \
-        "${wasm_files[@]}" > "$RESULT_FILE" 2>"$STDERR_FILE" || true
+        "${wasm_files[@]}" > "$RESULT_FILE" 2>"$STDERR_FILE"
+    RUNNER_RC=$?
+    set -e
     cat "$STDERR_FILE" >&2
     rm -f "$STDERR_FILE"
 
-    # Parse results
+    # Parse results. Each JSON line is one test, in the order handed over.
     local idx=0
+    local OUTPUT_FILE
+    OUTPUT_FILE=$(mktemp)
     while IFS= read -r line; do
         [[ "$line" != "{"* ]] && continue
-
-        local exitCode error duration stdout stderr combined
-        exitCode=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('exitCode',-1))" 2>/dev/null || echo "-1")
-        error=$(echo "$line" | python3 -c "import sys,json; e=json.load(sys.stdin).get('error',''); print(e if e else '')" 2>/dev/null || echo "")
-        duration=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('durationMs',0))" 2>/dev/null || echo "0")
-        stdout=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stdout',''))" 2>/dev/null || echo "")
-        stderr=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('stderr',''))" 2>/dev/null || echo "")
-        combined=$(echo "$line" | python3 -c "import sys,json; print(json.load(sys.stdin).get('combined',''))" 2>/dev/null || echo "")
 
         if [ $idx -ge ${#test_names[@]} ]; then
             break
         fi
+
+        # One parse per line: the scalar fields on stdout, and the guest's
+        # output written byte-for-byte to OUTPUT_FILE, so an output of just
+        # "\n" stays distinguishable from no output (sortix_compose_output).
+        # Newer runner pages return an interleaved combined stream; older
+        # ones only stdout and stderr.
+        local exitCode error duration
+        IFS=$'\t' read -r exitCode duration error < <(printf '%s' "$line" | OUTPUT_FILE="$OUTPUT_FILE" python3 -c '
+import json, os, sys
+d = json.load(sys.stdin)
+combined = d.get("combined")
+if not combined:
+    combined = d.get("stdout", "") + d.get("stderr", "")
+open(os.environ["OUTPUT_FILE"], "w").write(combined)
+error = (d.get("error") or "").replace("\t", " ").replace("\n", " ")
+print("\t".join([str(d.get("exitCode", -1)), str(d.get("durationMs", 0)), error]))
+' 2>/dev/null || printf -- '-1\t0\tunparseable runner result\n')
 
         local test_name="${test_names[$idx]}"
         idx=$((idx + 1))
@@ -557,108 +540,81 @@ run_runtime_suite() {
         if [ ${#_XFAIL_LIST[@]} -gt 0 ] && is_expected_fail "$test_name" "${_XFAIL_LIST[@]}"; then
             is_xfail=true
         fi
-
-        # Check expect files for output comparison
-        local test_passed=false
-        local has_expect=false
-        local local_expect_dir="$OS_TEST_LOCAL/${suite}.expect"
-        local expect_dir="$OS_TEST/${suite}.expect"
-        local expect_base="${test_name##*/}"
-        if [ -d "$local_expect_dir" ]; then
-            for expect_file in "$local_expect_dir/${expect_base}.posix" "$local_expect_dir/${expect_base}.posix."* "$local_expect_dir/${expect_base}."[0-9]* "$local_expect_dir/${expect_base}.unknown."*; do
-                if [ -f "$expect_file" ]; then
-                    expect_dir="$local_expect_dir"
-                    has_expect=true
-                    break
-                fi
-            done
-        fi
-        if ! $has_expect && [ -d "$expect_dir" ]; then
-            has_expect=true
-        fi
+        local reason
+        reason="$(browser_xfail_expected_reason "${suite}/${test_name}")"
 
         if [ -n "$error" ]; then
+            local output
+            output=$(cat "$OUTPUT_FILE")
             if [ "$error" = "TIMEOUT" ]; then
-                if $is_xfail; then
+                if $is_xfail && xfail_check "$reason" timeout "$output"; then
                     RESULTS+=("XFAIL ${suite}/${test_name}")
                     XFAIL=$((XFAIL + 1))
+                elif $is_xfail; then
+                    record_xfail_mismatch "${suite}/${test_name}" "$output"
                 else
                     echo "TIME  ${suite}/${test_name} (timeout)"
                     RESULTS+=("TIME  ${suite}/${test_name}")
                     TIMEOUT_COUNT=$((TIMEOUT_COUNT + 1))
                 fi
             else
-                if $is_xfail; then
-                    RESULTS+=("XFAIL ${suite}/${test_name}")
-                    XFAIL=$((XFAIL + 1))
-                else
-                    echo "ERROR ${suite}/${test_name}: $error"
-                    RESULTS+=("ERROR ${suite}/${test_name}")
-                    ERROR_COUNT=$((ERROR_COUNT + 1))
-                fi
+                # The runner could not run the test (page crash, load
+                # failure): no XFAIL reason describes that.
+                echo "ERROR ${suite}/${test_name}: $error"
+                RESULTS+=("ERROR ${suite}/${test_name}")
+                ERROR_COUNT=$((ERROR_COUNT + 1))
             fi
-        else
-            # Check output against expect files if available
-            if $has_expect; then
-                for expect_file in "$expect_dir/${expect_base}.posix" "$expect_dir/${expect_base}.posix."* "$expect_dir/${expect_base}."[0-9]* "$expect_dir/${expect_base}.unknown."*; do
-                    [ -f "$expect_file" ] || continue
-                    local expected
-                    expected=$(cat "$expect_file")
-                    # Build output like Node.js runner (2>&1). Newer browser
-                    # runner pages return an interleaved combined stream;
-                    # keep a stdout+stderr fallback for older pages.
-                    local full_output="$combined"
-                    if [ -z "$full_output" ]; then
-                        full_output="$stdout"
-                        if [ -n "$stderr" ]; then
-                            if [ -n "$full_output" ]; then
-                                full_output="${full_output}
-${stderr}"
-                            else
-                                full_output="$stderr"
-                            fi
-                        fi
-                    fi
-                    if [ -z "$full_output" ] || [ "$exitCode" -ge 2 ] 2>/dev/null; then
-                        if [ -n "$full_output" ]; then
-                            full_output="${full_output}
-exit: ${exitCode}"
-                        else
-                            full_output="exit: ${exitCode}"
-                        fi
-                    fi
-                    if [ "$full_output" = "$expected" ]; then
-                        test_passed=true
-                        break
-                    fi
-                done
-            elif [ "$exitCode" = "0" ]; then
+            continue
+        fi
+
+        local output test_passed=false
+        output=$(sortix_compose_output "$OUTPUT_FILE" "$exitCode")
+        sortix_expect_dirs "$suite" "$test_name"
+        if [ ${#SORTIX_EXPECT_DIRS[@]} -gt 0 ]; then
+            if sortix_output_matches "$suite" "$test_name" "$output"; then
                 test_passed=true
             fi
+        elif [ "$exitCode" = "0" ]; then
+            test_passed=true
+        fi
 
-            if $test_passed; then
-                if $is_xfail; then
-                    echo "XPASS ${suite}/${test_name}"
-                    RESULTS+=("XPASS ${suite}/${test_name}")
-                    XPASS=$((XPASS + 1))
-                else
-                    echo "PASS  ${suite}/${test_name} (${duration}ms)"
-                    RESULTS+=("PASS  ${suite}/${test_name}")
-                    PASS=$((PASS + 1))
-                fi
+        if $test_passed; then
+            if $is_xfail; then
+                echo "XPASS ${suite}/${test_name}"
+                RESULTS+=("XPASS ${suite}/${test_name}")
+                XPASS=$((XPASS + 1))
             else
-                if $is_xfail; then
-                    RESULTS+=("XFAIL ${suite}/${test_name}")
-                    XFAIL=$((XFAIL + 1))
-                else
-                    echo "FAIL  ${suite}/${test_name} (exit $exitCode)"
-                    RESULTS+=("FAIL  ${suite}/${test_name}")
-                    FAIL=$((FAIL + 1))
-                fi
+                echo "PASS  ${suite}/${test_name} (${duration}ms)"
+                RESULTS+=("PASS  ${suite}/${test_name}")
+                PASS=$((PASS + 1))
             fi
+        elif $is_xfail && xfail_check "$reason" output "exit $exitCode
+$output"; then
+            RESULTS+=("XFAIL ${suite}/${test_name}")
+            XFAIL=$((XFAIL + 1))
+        elif $is_xfail; then
+            record_xfail_mismatch "${suite}/${test_name}" "$output"
+        else
+            echo "FAIL  ${suite}/${test_name} (exit $exitCode)"
+            printf '%s\n' "$output" | tail -10 | sed 's/^/  /'
+            RESULTS+=("FAIL  ${suite}/${test_name}")
+            FAIL=$((FAIL + 1))
         fi
     done < "$RESULT_FILE"
-    rm -f "$RESULT_FILE"
+    rm -f "$RESULT_FILE" "$OUTPUT_FILE"
+
+    # A test the runner never reported (its server or page could not start,
+    # or it crashed) is an ERROR, not an absence: counting only reported
+    # lines once let a 55-test section vanish from the totals.
+    if [ "$idx" -lt "${#test_names[@]}" ]; then
+        local -a ids=()
+        local n
+        for n in "${test_names[@]}"; do ids+=("${suite}/${n}"); done
+        TOTAL=$((TOTAL + ${#test_names[@]} - idx))
+        record_missing_browser_results "$idx" "$RUNNER_RC" "${ids[@]}"
+    else
+        record_runner_exit_after_results "$RUNNER_RC" "${suite}/browser-runner"
+    fi
 }
 
 # Get combined XFAIL list (shared + browser-specific) for a suite.
@@ -774,12 +730,11 @@ if [ ${#RESULTS[@]} -gt 0 ]; then
     done
 fi
 
-# XPASS is not treated as failure for browser tests — some tests expected to
-# fail on Node.js pass in the browser due to different timing/VFS behavior.
-if [ $FAIL -gt 0 ] || [ $BUILD_FAIL -gt 0 ]; then
+# The expected failures are shared with the Node.js runner, so an XPASS is a
+# Node/browser divergence or a stale entry, and fails the run as it does on
+# Node. ERROR and TIMEOUT are tests that did not finish.
+if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] \
+    || [ $ERROR_COUNT -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
     exit 1
-fi
-if [ $XPASS -gt 0 ]; then
-    echo "Note: $XPASS XPASS tests (expected fail but passed) — consider updating XFAIL lists"
 fi
 exit 0
