@@ -40,6 +40,10 @@ CROSS_FILE="$REPO_ROOT/sdk/meson/wasm32posix.ini"
 # In a cross build meson resolves native dependencies with the build
 # machine's pkg-config and build.pkg_config_path, not PKG_CONFIG_PATH.
 # Without wayland-scanner, upstream silently skips the enum headers.
+if ! pkg-config --atleast-version=1.20.0 wayland-scanner; then
+    echo "ERROR: native wayland-scanner >=1.20.0 is required. Enter scripts/dev-shell.sh." >&2
+    exit 1
+fi
 SCANNER_PC_DIR="$(pkg-config --variable=pcfiledir wayland-scanner)" || {
     echo "ERROR: wayland-scanner not found by the build machine's pkg-config. Enter scripts/dev-shell.sh." >&2
     exit 1

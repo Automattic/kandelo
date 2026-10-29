@@ -23,7 +23,7 @@ script_path = "packages/registry/json-c/build-json-c.sh"
 
 [[host_tools]]
 name = "cmake"
-version_constraint = ">=3.9"
+version_constraint = ">=3.20"
 probe = { args = ["--version"], version_regex = "cmake version (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 

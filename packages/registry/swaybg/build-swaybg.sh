@@ -44,6 +44,10 @@ fi
 DEP_PKG_CONFIG_PATH="${WASM_POSIX_DEP_PKG_CONFIG_PATH:?WASM_POSIX_DEP_PKG_CONFIG_PATH not set (must be invoked via cargo xtask build-deps resolve swaybg)}"
 # In a cross build meson resolves the native wayland-scanner with the
 # build machine's pkg-config and build.pkg_config_path.
+if ! pkg-config --atleast-version=1.20.0 wayland-scanner; then
+    echo "ERROR: native wayland-scanner >=1.20.0 is required. Enter scripts/dev-shell.sh." >&2
+    exit 1
+fi
 SCANNER_PC_DIR="$(pkg-config --variable=pcfiledir wayland-scanner)" || {
     echo "ERROR: wayland-scanner not found by the build machine's pkg-config. Enter scripts/dev-shell.sh." >&2
     exit 1

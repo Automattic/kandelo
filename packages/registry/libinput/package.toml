@@ -17,7 +17,7 @@ depends_on = ["libevdev@1.13.3", "libudev-zero@1.0.5", "mtdev@1.1.7"]
 
 [[host_tools]]
 name = "meson"
-version_constraint = ">=0.60.0"
+version_constraint = ">=1.4.0"
 install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
 
 [[host_tools]]

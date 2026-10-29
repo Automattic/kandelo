@@ -13,7 +13,7 @@ kernel_abi = 52
 
 [[host_tools]]
 name = "meson"
-version_constraint = ">=0.57.0"
+version_constraint = ">=1.4.0"
 install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
 
 [[host_tools]]
@@ -24,18 +24,16 @@ install_hints = { darwin = "provided by flake.nix (pkgs.ninja); enter scripts/de
 # tool/gen-search-table.py turns pnp.ids into the vendor-name C table.
 [[host_tools]]
 name = "python3"
-version_constraint = ">=3.6"
+version_constraint = ">=3.11"
 probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "provided by flake.nix (pkgs.python3); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.python3); enter scripts/dev-shell.sh" }
 
-# hwdata is data, not an executable, so the probe asks the build
-# machine's pkg-config for it: the same lookup meson's native
-# dependency('hwdata') performs.
+# Native module versions are checked by the recipe; preflight probes
+# pkg-config itself, consistently across consumers.
 [[host_tools]]
 name = "pkg-config"
-version_constraint = ">=0.300"
-probe = { args = ["--modversion", "hwdata"], version_regex = "(?m)^(\\d+\\.\\d+)$" }
-install_hints = { darwin = "hwdata is provided by flake.nix (pkgs.hwdata); enter scripts/dev-shell.sh", linux = "hwdata is provided by flake.nix (pkgs.hwdata); enter scripts/dev-shell.sh" }
+version_constraint = ">=0.29.2"
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
 [source]
 url = "https://gitlab.freedesktop.org/emersion/libdisplay-info/-/releases/0.3.0/downloads/libdisplay-info-0.3.0.tar.xz"

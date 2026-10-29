@@ -38,7 +38,7 @@ script_path = "packages/registry/freeciv/build-freeciv.sh"
 
 [[host_tools]]
 name = "meson"
-version_constraint = ">=1.3"
+version_constraint = ">=1.4.0"
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
 [[host_tools]]

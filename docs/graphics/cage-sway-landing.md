@@ -123,6 +123,29 @@ and final combined checks remain pending. This document defines the
 landing target; it does not declare the PR merge-ready. Performance has
 not been measured.
 
+### Port dependency prerequisites
+
+The port dependency declarations follow the shared host-toolchain
+contract. SHA-256-verified libxkbcommon 1.13.2 source requires Meson 1.4
+in its upstream `meson.build`; all Meson consumers therefore declare
+1.4, including the existing Cairo, librsvg, Pango and Freeciv recipes.
+The development shell provides Meson 1.9.1. json-c reuses the CMake 3.20
+floor, xkeyboard-config reuses the existing Perl probe, and
+libdisplay-info requires Python 3.11 because the shared metadata helper
+imports `tomllib`.
+
+The pkg-config declarations probe the executable itself. Normal recipe
+checks retain native hwdata 0.300 and Wayland scanner module 1.20
+minimums before configuration; upstream Meson dependencies are
+unchanged. Manifest parsing, shell syntax and the regenerated local
+program-index check pass. The full metadata checker still exits 1 for
+17 disagreements in six existing groups: cargo, clang, make, patch,
+python3 and zip. Its diagnostic output matches main
+`cb0a8226c965` exactly; the introduced CMake, Meson, Perl and pkg-config
+disagreements are eliminated. This is a metadata and prerequisite-check
+correction. Target sources, flags and revisions are unchanged; normal
+rebuilding against these recipe inputs is pending.
+
 ## Follow-up graphics baseline
 
 The pushed branch `brandonpayton/graphics-baseline-follow-up` preserves

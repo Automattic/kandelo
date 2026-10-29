@@ -14,7 +14,7 @@ kernel_abi = 48
 
 [[host_tools]]
 name = "meson"
-version_constraint = ">=0.60.0"
+version_constraint = ">=1.4.0"
 install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
 
 [[host_tools]]

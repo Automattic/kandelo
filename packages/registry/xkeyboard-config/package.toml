@@ -24,7 +24,7 @@ depends_on = []
 
 [[host_tools]]
 name = "meson"
-version_constraint = ">=0.61.0"
+version_constraint = ">=1.4.0"
 install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
 
 [[host_tools]]
@@ -42,8 +42,8 @@ install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run thro
 # Generates the evdev.lst and base.lst listings (rules/xml2lst.pl).
 [[host_tools]]
 name = "perl"
-version_constraint = ">=5.0"
-probe = { args = ["--version"], version_regex = "\\(v(\\d+\\.\\d+(?:\\.\\d+)?)\\)" }
+version_constraint = ">=5.0.0"
+probe = { args = ["-e", "print $^V"], version_regex = "v(\\d+\\.\\d+\\.\\d+)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
 [source]

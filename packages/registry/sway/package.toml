@@ -30,7 +30,7 @@ depends_on = [
 
 [[host_tools]]
 name = "meson"
-version_constraint = ">=1.3.0"
+version_constraint = ">=1.4.0"
 install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
 
 [[host_tools]]
@@ -44,13 +44,12 @@ version_constraint = ">=1.24"
 probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh" }
 
-# meson resolves the native wayland-scanner with the build machine's
-# pkg-config, so the probe asks that pkg-config for it.
+# Native module versions are checked by the recipe; preflight probes
+# pkg-config itself, consistently across consumers.
 [[host_tools]]
 name = "pkg-config"
-version_constraint = ">=1.20.0"
-probe = { args = ["--modversion", "wayland-scanner"], version_regex = "(?m)^(\\d+\\.\\d+(?:\\.\\d+)?)$" }
-install_hints = { darwin = "wayland-scanner is provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "wayland-scanner is provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh" }
+version_constraint = ">=0.29.2"
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
 # The build's upstream status-reader regression extracts C with Python and
 # compiles it for the build machine before configuring the target binaries.

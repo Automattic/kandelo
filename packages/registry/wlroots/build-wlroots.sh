@@ -49,6 +49,10 @@ WAYLAND_PROTOCOLS_INCLUDE="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DE
 # In a cross build meson resolves native dependencies (hwdata,
 # wayland-scanner) with the build machine's pkg-config and
 # build.pkg_config_path, not PKG_CONFIG_PATH.
+if ! pkg-config --atleast-version=0.300 hwdata; then
+    echo "ERROR: native hwdata >=0.300 is required. Enter scripts/dev-shell.sh." >&2
+    exit 1
+fi
 NATIVE_PC_PATH=""
 for native in hwdata wayland-scanner; do
     dir="$(pkg-config --variable=pcfiledir "$native")" || {
