@@ -274,6 +274,21 @@ function isAllowedGitPost(
   );
 }
 
+/**
+ * Mark a relay response as data that never runs as this origin's code.
+ *
+ * WHY: the relay answers from Kandelo's own origin with a third party's body
+ * and content type. Loaded as a worker, script, document or style, that body
+ * would run with this origin's authority (a worker started from it could,
+ * for example, impersonate Kandelo code to the service worker's credential
+ * gate). The service worker refuses such loads when it controls the page;
+ * these headers and the `Sec-Fetch-Dest` check below hold when it does not.
+ */
+function setInertRelayResponseHeaders(response: ServerResponse): void {
+  response.setHeader("Content-Security-Policy", "sandbox");
+  response.setHeader("X-Content-Type-Options", "nosniff");
+}
+
 /** Route one request when it targets Vite's private development relay. */
 export async function handleDevCorsProxyRequest(
   request: IncomingMessage,
@@ -284,6 +299,7 @@ export async function handleDevCorsProxyRequest(
   if (request.url === undefined) return false;
   const requestUrl = new URL(request.url, "http://localhost");
   if (requestUrl.pathname !== proxyPath) return false;
+  setInertRelayResponseHeaders(response);
   const target = requestUrl.searchParams.get("url");
   if (target === null || target === "") {
     fail(response, 400, "Missing url");
@@ -314,6 +330,16 @@ export async function relayDevCorsProxyRequest(
   fetchImpl: DevCorsProxyFetch = (fetchTarget, init) =>
     fetch(fetchTarget, init),
 ): Promise<void> {
+  setInertRelayResponseHeaders(response);
+  // Only fetch() (and the service worker's own fetch) reads relay data. A
+  // browser that names any other destination (script, worker, document,
+  // style, ...) would run or render a third party's bytes as this origin.
+  // A client that sends no Sec-Fetch-Dest at all is not a browser load.
+  const destination = headerValue(request.headers["sec-fetch-dest"]);
+  if (destination !== undefined && destination !== "empty") {
+    fail(response, 403, `The relay answers only fetch(), not a load as ${destination}`);
+    return;
+  }
   const method = request.method?.toUpperCase() ?? "";
   if (!ALLOWED_METHODS.has(method)) {
     fail(response, 405, "Method Not Allowed");

@@ -59,6 +59,13 @@ const ANONYMOUS_OMISSION_EXCLUDED_NAMES = new Set([
 ]);
 
 /**
+ * Every credential field. The app's service worker mirrors this set: a
+ * request to the proxy that carries one needs a verified grant tag there too.
+ */
+export const CREDENTIAL_REQUEST_HEADER_NAMES: ReadonlySet<string> =
+  ANONYMOUS_OMISSION_EXCLUDED_NAMES;
+
+/**
  * The credential fields a per-process credential grant lets through. A
  * grant covers a bearer token and the account it names, nothing else:
  * cookies and proxy credentials stay refused for every request.
@@ -68,8 +75,9 @@ export const GRANTED_CREDENTIAL_REQUEST_HEADER_NAMES: ReadonlySet<string> =
 
 /**
  * Tags a granted request with its grant's token. The browser app's service
- * worker verifies the tag with the kernel worker that owns the machine and
- * removes it before the request leaves the browser.
+ * worker verifies the tag with the kernel worker that sent it
+ * (`credential-gate.ts`) and removes it before the request leaves the
+ * browser.
  */
 export const CREDENTIAL_GRANT_REQUEST_HEADER = "X-Kandelo-Credential-Grant";
 

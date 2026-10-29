@@ -47,6 +47,10 @@ import { devSignallingServer } from "./vite/dev-signalling";
 import { batchedFsServePath, devLazyAssets } from "./vite/dev-lazy-assets";
 import { createCredentialRelayHandler } from "./vite/credential-relay";
 import { createCredentialRelayTransport, type CredentialRelayConfig } from "../../host/src/networking/credential-relay";
+import {
+  bundleIncludesModule,
+  kernelWorkerScriptPathsForServiceWorker,
+} from "./vite/kernel-worker-scripts";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
   createVfsProductDeploymentPlugin,
@@ -305,15 +309,64 @@ function devCorsProxyFetchUrlForBase(base: string): string {
   return `${devCorsProxyPathForBase(base)}?url=`;
 }
 
+// The kernel worker's entry module. The service worker's credential gate
+// accepts a grant tag only from a dedicated worker running exactly this
+// script, so it is told the script's URL path at build time (see
+// kernelWorkerScriptPaths below and isCredentialGateClient in
+// public/service-worker.js).
+const kernelWorkerEntryPath = normalizePath(
+  fs.realpathSync(path.resolve(repoRoot, "host/src/browser-kernel-worker-entry.ts")),
+);
+// The module that starts the kernel worker. A production build that bundles
+// it must have emitted the worker's chunk (see kernel-worker-scripts.ts).
+const kernelHostPath = normalizePath(
+  fs.realpathSync(path.resolve(repoRoot, "host/src/browser-kernel-host.ts")),
+);
+
+/**
+ * Development: Vite serves `browser-kernel-worker-entry.ts?worker&url` from
+ * outside the app root as `<base>@fs<absolute path>?worker_file&type=module`.
+ */
+function devKernelWorkerScriptPath(base: string): string {
+  return `${normalizeDeploymentBase(base)}@fs${kernelWorkerEntryPath}`;
+}
+
+/**
+ * Worker build plugin: remember the file the kernel worker's entry chunk is
+ * emitted as (`assets/browser-kernel-worker-entry-<hash>.js`), for the
+ * production service worker.
+ */
+function recordKernelWorkerChunk(fileNames: Set<string>): Plugin {
+  return {
+    name: "record-kernel-worker-chunk",
+    generateBundle(_options, bundle) {
+      for (const output of Object.values(bundle)) {
+        if (
+          output.type === "chunk" && output.isEntry &&
+          output.facadeModuleId !== null &&
+          normalizePath(output.facadeModuleId.replace(/[?#].*$/, "")) ===
+            kernelWorkerEntryPath
+        ) {
+          fileNames.add(output.fileName);
+        }
+      }
+    },
+  };
+}
+
+const kernelWorkerChunkFileNames = new Set<string>();
+
 function injectCorsProxyConfigPlaceholder(
   content: string,
   corsProxyConfig: ReturnType<typeof browserCorsProxyConfig>,
+  kernelWorkerScriptPaths: readonly string[],
 ): string {
   return content.replace(
     '"__CORS_PROXY_CONFIG__"',
     JSON.stringify(corsProxyConfig),
   ).replace('"__CORS_PROXY_SESSION_TRANSPORT__"', `(${createProxySessionTransport.toString()})`)
-    .replace('"__CREDENTIAL_RELAY_TRANSPORT__"', `(${createCredentialRelayTransport.toString()})()`);
+    .replace('"__CREDENTIAL_RELAY_TRANSPORT__"', `(${createCredentialRelayTransport.toString()})()`)
+    .replace('"__KERNEL_WORKER_SCRIPT_PATHS__"', JSON.stringify(kernelWorkerScriptPaths));
 }
 
 const blobIframeInterceptorPath = path.resolve(
@@ -910,19 +963,32 @@ function injectCorsProxyConfig(): Plugin {
   let outputCorsProxyConfig = buildCorsProxyConfig();
   let outputRoot = path.resolve(__dirname, "dist");
   let base = "/";
+  let assetsDir = "assets";
   const sourceSwPath = path.resolve(__dirname, "public", "service-worker.js");
 
-  function serviceWorkerSource(): string {
+  // `vite preview` serves the built kernel worker; read its emitted name.
+  function builtKernelWorkerScriptPaths(): string[] {
+    const directory = path.resolve(outputRoot, assetsDir);
+    if (!fs.existsSync(directory)) return [];
+    return fs.readdirSync(directory)
+      .filter((name) => /^browser-kernel-worker-entry-[\w-]+\.js$/.test(name))
+      .sort()
+      .map((name) => `${normalizeDeploymentBase(base)}${assetsDir}/${name}`);
+  }
+
+  function serviceWorkerSource(kernelWorkerScriptPaths: readonly string[]): string {
     return injectBlobIframeInterceptorPlaceholder(
       injectCorsProxyConfigPlaceholder(
         fs.readFileSync(sourceSwPath, "utf-8"),
         servedCorsProxyConfig,
+        kernelWorkerScriptPaths,
       ),
     );
   }
 
   function attachMiddleware(
     middlewares: ViteDevServer["middlewares"] | PreviewServer["middlewares"],
+    kernelWorkerScriptPaths: () => readonly string[],
   ): void {
     const serviceWorkerPath = serviceWorkerPathForBase(base);
     middlewares.use((req, res, next) => {
@@ -938,7 +1004,7 @@ function injectCorsProxyConfig(): Plugin {
       res.statusCode = 200;
       res.setHeader("Content-Type", "application/javascript; charset=utf-8");
       res.setHeader("Cache-Control", "no-store");
-      res.end(serviceWorkerSource());
+      res.end(serviceWorkerSource(kernelWorkerScriptPaths()));
     });
   }
 
@@ -947,6 +1013,7 @@ function injectCorsProxyConfig(): Plugin {
     configResolved(config) {
       base = config.base;
       outputRoot = path.resolve(config.root, config.build.outDir);
+      assetsDir = config.build.assetsDir;
       servedCorsProxyConfig = browserCorsProxyConfig(
         configuredCorsProxyUrl() || devCorsProxyFetchUrlForBase(base),
         { url: `${normalizeDeploymentBase(base)}__kandelo_credential_relay`,
@@ -955,19 +1022,32 @@ function injectCorsProxyConfig(): Plugin {
       outputCorsProxyConfig = buildCorsProxyConfig();
     },
     configureServer(server) {
-      attachMiddleware(server.middlewares);
+      attachMiddleware(server.middlewares, () => [devKernelWorkerScriptPath(base)]);
     },
     configurePreviewServer(server) {
-      attachMiddleware(server.middlewares);
+      attachMiddleware(server.middlewares, builtKernelWorkerScriptPaths);
     },
-    writeBundle() {
+    writeBundle(_options, bundle) {
       // service-worker.js is in public/ and Vite copies it to the resolved outDir.
       const swPath = path.resolve(outputRoot, "service-worker.js");
       if (fs.existsSync(swPath)) {
         let content = fs.readFileSync(swPath, "utf-8");
+        let kernelWorkerScriptPaths: string[];
+        try {
+          kernelWorkerScriptPaths = kernelWorkerScriptPathsForServiceWorker(
+            kernelWorkerChunkFileNames,
+            normalizeDeploymentBase(base),
+            bundleIncludesModule(bundle, kernelHostPath),
+          );
+        } catch (error) {
+          // Fails the build: a service worker that names no kernel worker
+          // refuses every credential grant of the kernel this build ships.
+          this.error(error instanceof Error ? error.message : String(error));
+        }
         content = injectCorsProxyConfigPlaceholder(
           content,
           outputCorsProxyConfig,
+          kernelWorkerScriptPaths,
         );
         content = injectBlobIframeInterceptorPlaceholder(content);
         fs.writeFileSync(swPath, content);
@@ -1197,6 +1277,7 @@ export default defineConfig(() => {
         resolveKernelArtifactsAlias(binaryDevAccess),
         resolveBinariesAlias(binaryDevAccess, browserBinaryResolution),
         dropWorkerEntryExports(),
+        recordKernelWorkerChunk(kernelWorkerChunkFileNames),
       ],
     },
     assetsInclude: [

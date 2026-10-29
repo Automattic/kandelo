@@ -53,6 +53,18 @@ do not isolate guest preview scripts from that origin. Keep this browser
 trust boundary explicit; do not claim preview isolation without testing an
 actual origin boundary.
 
+The service worker's credential gate is a second gate behind the kernel
+worker's, not a replacement for it. Keep it accepting tags only from the
+kernel worker's entry script (whose URL the build injects), keep its
+answers in memory only, never let the grant tag leave the browser, and
+never serve a CORS proxy's answer as anything but `fetch()` data. Do not
+describe it as protecting against code the app's origin runs: that code
+can start its own kernel worker. Its names mirror host constants; the parity
+test in `host/test/browser-cors-proxy-service-worker-parity.test.ts` and
+`apps/browser-demos/test/credential-gate.spec.ts` on all three engines
+cover it (see `docs/browser-support.md`, "Per-process credential
+grants").
+
 Boot descriptors and shared URLs are untrusted input. They need explicit
 versioning, size caps, mount limits, path validation, allowed source kinds, and
 loud failures for malformed or oversized payloads. Do not relax validation to

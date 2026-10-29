@@ -10,6 +10,10 @@ import {
   isCredentialMainMessage,
   type CredentialLaunchPolicy,
 } from "./credential-grants";
+import {
+  CREDENTIAL_GATE_CHANNEL,
+  CredentialGateResponder,
+} from "./credential-gate";
 import { browserCredentialTransport } from "./credential-transport";
 /**
  * Kernel Worker Entry Point — Dedicated web worker that hosts the
@@ -190,6 +194,8 @@ const ENOEXEC = 8;
 let initReady = false;
 /** Asks before a declared program may use credentials; built at boot. */
 let credentialPolicy: CredentialLaunchPolicy | null = null;
+/** Answers the app service worker's credential gate; built with the policy. */
+let credentialGate: CredentialGateResponder | null = null;
 let initFailure: string | null = null;
 let kernelFatalReported = false;
 const rootfsSnapshotGate = new RootfsSnapshotGate();
@@ -601,6 +607,25 @@ const ownedJobs = new OwnedJobs(pid => {
 }, 256 * 1024, family => kernelWorker.reapOwnedJobExitedProcesses(family), error => {
   terminatePoisonedKernelWorker(error instanceof Error ? error : new Error(String(error)));
 });
+
+/**
+ * Let the service worker's credential gate ask this kernel worker about its
+ * grants (`credential-gate.ts`). `verify` enters the kernel, so it runs from
+ * the channel's own task, retried while another entry holds the gate.
+ */
+function startCredentialGate(
+  policy: CredentialLaunchPolicy,
+): CredentialGateResponder | null {
+  if (typeof BroadcastChannel !== "function") return null;
+  return new CredentialGateResponder({
+    grants: policy.grants,
+    verify: (token, origin) =>
+      retryKernelEntryResult(() => policy.grants.verify(token, origin)),
+    origin: self.location.origin,
+    channel: new BroadcastChannel(CREDENTIAL_GATE_CHANNEL),
+    fetch: (url, init) => fetch(url, init),
+  });
+}
 
 function requireCredentialPolicy(): CredentialLaunchPolicy {
   if (!credentialPolicy) {
@@ -1321,7 +1346,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     transport: browserCredentialTransport(corsProxy),
     post: (message) => post(message),
     report: (message) => console.error(message),
+    onGrantEnded: (grant) => credentialGate?.grantEnded(grant.token),
   });
+  credentialGate = startCredentialGate(credentialPolicy);
 
   initReady = true;
 
@@ -4446,6 +4473,9 @@ async function handleDestroy(
   // A launch held on a credential answer is a creator in flight; deny every
   // open question now, after admission closed, so the drain can finish.
   credentialPolicy?.close();
+  // close() ended every grant and announced each to the service worker.
+  credentialGate?.close();
+  credentialGate = null;
   // Closing the creator gate happens synchronously. Cancel allocations before
   // awaiting its drain, including a constructor stalled in its own realm.
   processMemoryFactory?.dispose();

@@ -1994,6 +1994,23 @@ configured, is refused before any fetch. What a granted request sends is
 described in [browser
 support](browser-support.md#per-process-credential-grants).
 
+**The service-worker gate.** In the browser app, the service worker
+checks credentialed proxy requests a second time, independently of the
+kernel worker, and removes the grant's tag before a request leaves the
+browser. To verify a tag it asks over a same-origin `BroadcastChannel`;
+the kernel worker that holds the tag answers with
+`CredentialGrants.verify(token, origin)`, which enters the kernel
+(`host/src/credential-gate.ts`, run outside any kernel entry and retried
+while the gate is busy). It answers by a fetch whose client id the
+browser vouches for, and the service worker accepts a tag and an answer
+only from a worker running exactly the kernel worker's entry script,
+whose URL the build injects. Any script the app's origin runs can still
+start a genuine kernel worker and answer its prompt, so the app's origin
+remains a trusted boundary. `CredentialGrants` reports every grant it drops, so
+the kernel worker can tell the service worker to forget it. The
+protocol, cache rule and engine evidence are in [browser
+support](browser-support.md#per-process-credential-grants).
+
 On Node, programs open real sockets and TLS sessions themselves, so there
 is no proxy or request path to gate: credentials flow as on any Unix
 machine, and the prompt and grant exist there for host parity. This is a

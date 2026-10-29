@@ -160,12 +160,24 @@ function base64url(bytes: Uint8Array): string {
  */
 export class CredentialGrants {
   readonly #kernel: CredentialGrantKernel;
+  readonly #onGrantEnded: ((grant: CredentialGrant) => void) | undefined;
   #nextId = 1;
   readonly #byPid = new Map<number, GrantEntry>();
   readonly #byToken = new Map<string, GrantEntry>();
 
-  constructor(kernel: CredentialGrantKernel) {
+  /**
+   * `onGrantEnded` runs synchronously whenever this host drops a grant:
+   * revoke, replacement, exit, teardown, or finding that the kernel ended it.
+   * The browser kernel worker uses it to tell the service worker's
+   * credential gate to forget the grant (`credential-gate.ts`). It must not
+   * enter the kernel.
+   */
+  constructor(
+    kernel: CredentialGrantKernel,
+    options: { onGrantEnded?: (grant: CredentialGrant) => void } = {},
+  ) {
     this.#kernel = kernel;
+    this.#onGrantEnded = options.onGrantEnded;
   }
 
   /**
@@ -266,8 +278,15 @@ export class CredentialGrants {
 
   /** Machine teardown: no grant outlives the kernel. */
   clear(): void {
-    this.#byPid.clear();
-    this.#byToken.clear();
+    for (const pid of [...this.#byPid.keys()]) this.#drop(pid);
+  }
+
+  /**
+   * The tokens of the grants this host holds, WITHOUT entering the kernel.
+   * A token may name a grant the kernel has already ended; `verify` asks.
+   */
+  heldTokens(): string[] {
+    return [...this.#byToken.keys()];
   }
 
   #drop(pid: number): void {
@@ -275,6 +294,7 @@ export class CredentialGrants {
     if (!entry) return;
     this.#byPid.delete(pid);
     this.#byToken.delete(entry.grant.token);
+    this.#onGrantEnded?.(entry.grant);
   }
 }
 

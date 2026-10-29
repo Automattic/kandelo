@@ -5,8 +5,16 @@ import { createProxySessionTransport } from "../src/networking/cors-proxy-sessio
 
 import {
   BROWSER_CONTROLLED_REQUEST_HEADER_NAMES,
+  CORS_PROXY_ALLOWED_REQUEST_HEADERS_HEADER,
+  CREDENTIAL_GRANT_REQUEST_HEADER,
+  CREDENTIAL_REQUEST_HEADER_NAMES,
+  GRANTED_CREDENTIAL_REQUEST_HEADER_NAMES,
   ifRangeMatches,
 } from "../src/networking/browser-cors-proxy";
+import {
+  CREDENTIAL_GATE_CHANNEL,
+  credentialTokenHash,
+} from "../src/credential-gate";
 
 // The CORS proxy request-header projection is implemented twice: once in TS
 // (browser-cors-proxy.ts, used by the guest-socket backends) and once in plain
@@ -25,17 +33,27 @@ const serviceWorkerSource = readFileSync(
   "utf8",
 );
 
-function serviceWorkerBrowserControlledNames(): Set<string> {
+function serviceWorkerNameSet(name: string): Set<string> {
   const match = serviceWorkerSource.match(
-    /BROWSER_CONTROLLED_REQUEST_HEADER_NAMES\s*=\s*new Set\(\[([\s\S]*?)\]\)/,
+    new RegExp(`var ${name}\\s*=\\s*new Set\\(\\[([\\s\\S]*?)\\]\\)`),
   );
   if (!match) {
     throw new Error(
-      "service-worker.js no longer declares BROWSER_CONTROLLED_REQUEST_HEADER_NAMES as a Set literal; update this parity test",
+      `service-worker.js no longer declares ${name} as a Set literal; update this parity test`,
     );
   }
   const names = [...match[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
   return new Set(names);
+}
+
+function serviceWorkerBrowserControlledNames(): Set<string> {
+  return serviceWorkerNameSet("BROWSER_CONTROLLED_REQUEST_HEADER_NAMES");
+}
+
+function serviceWorkerString(name: string): string {
+  const match = serviceWorkerSource.match(new RegExp(`var ${name} = "([^"]+)";`));
+  if (!match) throw new Error(`service-worker.js no longer declares ${name}`);
+  return match[1];
 }
 
 describe("browser CORS proxy service-worker parity", () => {
@@ -87,11 +105,37 @@ describe("browser CORS proxy service-worker parity", () => {
     }
   });
 
+  it("shares the credential gate's field names, header names and channel", () => {
+    expect([...serviceWorkerNameSet("CREDENTIAL_REQUEST_HEADER_NAMES")].sort())
+      .toEqual([...CREDENTIAL_REQUEST_HEADER_NAMES].sort());
+    expect([...serviceWorkerNameSet("GRANTED_CREDENTIAL_REQUEST_HEADER_NAMES")].sort())
+      .toEqual([...GRANTED_CREDENTIAL_REQUEST_HEADER_NAMES].sort());
+    expect(serviceWorkerString("CREDENTIAL_GRANT_HEADER"))
+      .toBe(CREDENTIAL_GRANT_REQUEST_HEADER.toLowerCase());
+    expect(serviceWorkerString("CREDENTIAL_OPT_IN_HEADER"))
+      .toBe(CORS_PROXY_ALLOWED_REQUEST_HEADERS_HEADER.toLowerCase());
+    expect(serviceWorkerString("CREDENTIAL_GATE_CHANNEL")).toBe(CREDENTIAL_GATE_CHANNEL);
+  });
+
+  it("hashes a grant token exactly like credentialTokenHash()", async () => {
+    const start = serviceWorkerSource.indexOf("function credentialTokenHash(");
+    const end = serviceWorkerSource.indexOf("\n  }\n", start);
+    expect(start).toBeGreaterThan(-1);
+    const serviceWorkerHash = new Function(
+      `${serviceWorkerSource.slice(start, end + 4)}; return credentialTokenHash;`,
+    )() as (token: string) => Promise<string>;
+    for (const token of ["token", "a".repeat(43), "Zm9v-_x"]) {
+      expect(await serviceWorkerHash(token)).toBe(await credentialTokenHash(token));
+    }
+  });
+
   it("checks credential headers before the browser-controlled drop in the service worker", () => {
     // proxy-authorization matches the proxy- prefix, so the credential check
     // must run first or credentials would be silently dropped instead of
     // failing loudly. Assert the credential branch precedes the managed drop.
-    const credentialIndex = serviceWorkerSource.indexOf('"proxy-authorization"');
+    const credentialIndex = serviceWorkerSource.indexOf(
+      "CREDENTIAL_REQUEST_HEADER_NAMES.has(lower)",
+    );
     const managedIndex = serviceWorkerSource.indexOf(
       "isBrowserManagedRequestHeader(lower)",
     );
@@ -156,7 +200,12 @@ function serviceWorkerDispatch(answer: (sent: SentRequest) => Response) {
     { location: new URL("https://kandelo.test/") },
     { warn: (message: string) => warnings.push(message) },
     fakeFetch,
-  ) as (request: Request, outgoingUrl: string, targetUrl: string) => Promise<Response>;
+  ) as (
+    request: Request,
+    outgoingUrl: string,
+    targetUrl: string,
+    grant?: { token: string },
+  ) => Promise<Response>;
   return { dispatch, sent, warnings };
 }
 
@@ -216,6 +265,55 @@ describe("service worker proxy dispatch", () => {
       expect(sent[0]!.headers["x-cors-proxy-range"]).toBe("bytes=0-3");
       expect(warnings).toEqual([]);
     }
+  });
+
+  it("relays a verified grant's credentials with a re-derived opt-in, never the tag", async () => {
+    const { dispatch, sent } = serviceWorkerDispatch(() => new Response("ok"));
+    const headers = {
+      Authorization: "Bearer granted",
+      "ChatGPT-Account-ID": "account",
+      "X-Cors-Proxy-Allowed-Request-Headers": "Authorization, Cookie",
+      "X-Kandelo-Credential-Grant": "token-value",
+    };
+    const granted = await dispatch(
+      new Request(PROXIED, { method: "POST", headers, body: "{}" }),
+      PROXIED,
+      TARGET,
+      { token: "token-value" },
+    );
+    expect(granted.status).toBe(200);
+    expect(sent[0]!.headers).toMatchObject({
+      authorization: "Bearer granted",
+      "chatgpt-account-id": "account",
+      "x-cors-proxy-allowed-request-headers": "Authorization",
+    });
+    expect(sent[0]!.headers["x-kandelo-credential-grant"]).toBeUndefined();
+    // Without a verified grant the same request is refused before dispatch.
+    const refused = await dispatch(
+      new Request(PROXIED, { method: "POST", headers, body: "{}" }),
+      PROXIED,
+      TARGET,
+    );
+    expect(refused.status).toBe(502);
+    expect(await refused.text()).toContain("authorization, chatgpt-account-id");
+    expect(sent).toHaveLength(1);
+  });
+
+  it("never relays cookies or proxy credentials, even with a verified grant", async () => {
+    const { dispatch, sent } = serviceWorkerDispatch(() => new Response("ok"));
+    const response = await dispatch(
+      new Request(PROXIED, {
+        method: "POST",
+        headers: { Authorization: "Bearer granted", "Proxy-Authorization": "Basic eA==" },
+        body: "{}",
+      }),
+      PROXIED,
+      TARGET,
+      { token: "token-value" },
+    );
+    expect(response.status).toBe(502);
+    expect(await response.text()).toContain("proxy-authorization");
+    expect(sent).toEqual([]);
   });
 
   it("re-derives a caller's alias from Range rather than relaying it", async () => {

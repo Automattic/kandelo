@@ -61,5 +61,7 @@ test("normal nonzero exits do not write host diagnostics to stderr", async ({
     stderr: "",
     combined: "",
     hostDiagnostics: [],
+    // An undeclared program raises no credential question.
+    credentialRequests: [],
   });
 });

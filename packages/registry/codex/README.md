@@ -174,11 +174,11 @@ requests. The profile now lists Codex's non-credential request headers, and
 a granted Codex process's credentials are routed with the proxy's opt-in and
 a grant tag (see
 [per-process credential grants](../../../docs/browser-support.md#per-process-credential-grants)).
-Browser model requests still fail today: the app installs no prompt
-handler, so Codex holds no grant; the service worker does not yet verify
-and remove the grant tag, so it would refuse a granted request too; and
-neither the default Playground proxy nor the Spacefast proxy allows
-Codex's headers in its preflight yet.
+The app's service worker verifies that tag with the kernel worker and
+removes it before the request leaves the browser. Browser model requests
+still fail today: the app installs no prompt handler, so Codex holds no
+grant, and neither the default Playground proxy nor the Spacefast proxy
+allows Codex's headers in its preflight yet.
 For local development, the app now has a separate credential relay with an
 explicit permission page on an isolated loopback origin. App and guest-preview
 scripts cannot read or submit the approval form. It checks consent before receiving guest request

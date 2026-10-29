@@ -1561,17 +1561,123 @@ forge the tag or the opt-in: a request that already carries either is
 refused, and a proxy profile may list neither a reserved field nor a
 credential field.
 
-Nothing downstream honors the tag yet, so a granted request does not
-succeed end to end. The service worker still re-projects a proxy-bound
-kernel-worker fetch it intercepts with the anonymous profile, and so
-answers `502` to one that carries `Authorization`, the opt-in, or the
-tag. Verifying the tag with the owning kernel worker and removing it
-before the request leaves the browser is not built yet, and neither the
-Playground nor the Spacefast proxy's preflight allows Codex's fields
-yet. On a loopback development server, requests to the local credential
-relay's origins still take that relay, which does not consult grants. On
-Node, programs open real sockets, so credentials flow as on any Unix
-machine and no grant is consulted (a documented host boundary).
+**The service-worker gate.** The browser app's service worker is a
+second gate, independent of the kernel worker, at the browser's network
+edge. What it guarantees: only Kandelo's kernel-worker script can present
+a grant tag and vouch for it, so a page script, a guest web preview, or a
+worker started from any other script cannot send credentials through the
+proxy. What it does not guarantee: any script the app's origin runs can
+still start a genuine kernel worker of its own and answer that kernel's
+credential prompt itself. The app's origin is a trusted boundary until
+guest previews move to an origin of their own (a later change in this
+work). The gate applies to every request it handles that targets the
+configured CORS proxy, whichever origin the proxy is on: the kernel
+worker's own proxy requests, a page or worker script's, and the
+cross-origin `GET`/`HEAD` requests it wraps in the proxy itself.
+
+- A request that carries a credential field or the opt-in
+  `X-Cors-Proxy-Allowed-Request-Headers` without `X-Kandelo-Credential-Grant`
+  gets `403 Forbidden` with a short plain-text reason. The body never
+  contains a tag.
+- A tag is accepted only on an HTTPS target through the configured proxy,
+  and only from a dedicated worker on the app's origin whose script is
+  exactly the kernel worker's entry: same origin and path, which the build
+  injects into the service worker (`<base>@fs/…/browser-kernel-worker-entry.ts`
+  on a development server, `<base>assets/browser-kernel-worker-entry-<hash>.js`
+  in a production build or `vite preview`). Windows (pages, frames, guest
+  previews) and workers started from any other script, including `blob:`
+  and `data:` URLs, are refused without being asked anything. A tag on
+  any other request gets `403`.
+- Before it accepts a tag it has not yet verified for that client and
+  origin, the service worker asks the kernel workers over the same-origin
+  `BroadcastChannel` `kandelo-credential-grants`:
+  `{ type: "credential-grant-verify", id, tokenHash, origin, replyUrl }`.
+  `tokenHash` is the SHA-256 of the token, base64url without padding, so
+  a listener learns nothing it could use as a tag. The kernel worker that
+  holds the token answers (any same-origin listener can hear the question,
+  but only the requesting client's answer counts, and that client is the
+  kernel worker's script). It POSTs
+  `{ type: "credential-grant-verified", id, valid }` to `replyUrl`
+  (`<scope>__kandelo_credential_grant_reply`), where `valid` is
+  `CredentialGrants.verify(token, origin)`: the kernel still records that
+  grant for its process, and the grant's destinations include the
+  origin. The service worker accepts the answer only when the browser
+  stamps its fetch with the client id of the client that sent the tagged
+  request. No answer within 5 seconds, or `valid: false`, means `403`.
+- The answer is cached in the service worker's memory only, never in
+  Cache Storage or IndexedDB, as token → client id and verified origins.
+  A cached tag is accepted only from the same client and for an origin
+  verified for it. The same tag from any other client is refused without
+  asking. The cache holds at most 256 tags and evicts the oldest. An
+  entry is dropped when the kernel worker announces
+  `{ type: "credential-grant-ended", tokenHash }` (revocation, exec, exit,
+  machine teardown, or finding that the kernel ended the grant), when any
+  later verification finds the entry's client gone, when it is evicted,
+  and whenever the service worker's state resets, after an update or an
+  idle restart. The next request then asks again. Any same-origin context
+  can post `credential-grant-ended` for a hash it heard on the channel;
+  that only forces the service worker to ask again. There is no expiry. The cache cannot extend a grant, because the kernel worker
+  attaches a tag only after the kernel confirms the grant for that very
+  request.
+- A verified request is projected like any other, except that
+  `Authorization` and `ChatGPT-Account-ID` pass and the service worker
+  writes `X-Cors-Proxy-Allowed-Request-Headers: Authorization` itself,
+  only when `Authorization` is present. It removes
+  `X-Kandelo-Credential-Grant`, so the proxy and the destination see only
+  the opt-in and the credentials. `Cookie`, `Cookie2` and
+  `Proxy-Authorization` are refused even with a grant. The proxy session
+  token (`X-Kandelo-Proxy-Session`) is not a guest credential: it is the
+  app's own quota token, which the session transport attaches, and a
+  caller's value is dropped as before.
+- A proxy answers with a third party's bytes, so the service worker
+  serves a request to the configured proxy, or to the development relay's
+  path, only to `fetch()` (`request.destination` empty). A load as a
+  document, frame, script, worker, style or anything else gets `403`.
+  From a same-origin proxy such a load would run a third party's code
+  with the app's authority, for example as a worker posing as Kandelo
+  code. The development relay itself refuses a request whose
+  `Sec-Fetch-Dest` is present and not `empty`, and marks every answer
+  `Content-Security-Policy: sandbox` and `X-Content-Type-Options: nosniff`,
+  for loads the service worker does not see. A fetch the service worker
+  passes on reaches the relay as `empty`, so in a controlled page the
+  service worker's check is the one that holds.
+
+Why a broadcast question and a fetch answer: measured on 2026-10-29
+with Playwright's Chromium, Firefox and WebKit, a module dedicated
+worker's fetches reach the service worker as a `worker` client in all
+three engines. Chromium, however, delivers no `Client.postMessage()` to a
+dedicated worker, because it has no `navigator.serviceWorker` in
+workers; WebKit and Firefox do deliver it. A `BroadcastChannel` message
+reaches workers in all three, the answering fetch carries its sender's
+client id in all three, and a service worker registered anew claims the
+running kernel worker in all three.
+
+The gate's boundaries. It sees only requests from clients the service
+worker controls. A page loaded with a forced reload (which bypasses the
+service worker), an embedder that runs `BrowserKernel` without this
+service worker, and, observed only with Playwright's bundled Firefox so
+far, the fetches a dedicated worker makes in its first moments all
+reach the network unintercepted. There the kernel worker's own refusal
+is the only gate. A granted request sent that way names
+`X-Kandelo-Credential-Grant` in its CORS preflight, and neither the
+Playground nor the Spacefast proxy allows that field, so it fails the
+preflight visibly; only the field's name, never the token, leaves the
+browser. A CORS proxy must never allow `X-Kandelo-Credential-Grant`.
+Guest web previews are same-origin windows today; windows are refused,
+but isolating previews on another origin is separate work. The Node
+host has no service worker (see below).
+
+With a handler that allows, a granted guest request now reaches the
+configured proxy with its credentials and the opt-in and without the
+tag, in Chromium, Firefox and WebKit, against a local proxy
+(`apps/browser-demos/test/credential-gate.spec.ts`). It does not yet
+work in the browser app: the app installs no prompt handler, and
+neither the Playground nor the Spacefast proxy's preflight allows
+Codex's fields yet. On a loopback development server, the kernel
+worker sends requests to the local credential relay's origins to that
+relay directly, which does not consult grants. On Node, programs open
+real sockets, so credentials flow as on any Unix machine and no grant
+is consulted (a documented host boundary).
 
 #### Byte-range reads through the proxy
 

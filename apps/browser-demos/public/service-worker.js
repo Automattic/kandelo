@@ -1015,6 +1015,24 @@ if (typeof window !== "undefined") {
   var credentialRelayFetch = "__CREDENTIAL_RELAY_TRANSPORT__";
   var corsProxyWarningKeys = new Set();
 
+  // Mirror of the credential field set (ANONYMOUS_OMISSION_EXCLUDED_NAMES,
+  // exported as CREDENTIAL_REQUEST_HEADER_NAMES) in
+  // host/src/networking/browser-cors-proxy.ts. Only a request whose tag the
+  // owning kernel worker vouches for may carry one to the proxy.
+  var CREDENTIAL_REQUEST_HEADER_NAMES = new Set([
+    "authorization", "chatgpt-account-id", "cookie", "cookie2",
+    "proxy-authorization",
+  ]);
+  // Mirror of GRANTED_CREDENTIAL_REQUEST_HEADER_NAMES there: the fields a
+  // verified grant lets through. Cookies and proxy credentials never pass.
+  var GRANTED_CREDENTIAL_REQUEST_HEADER_NAMES = new Set([
+    "authorization", "chatgpt-account-id",
+  ]);
+  // Mirror of CREDENTIAL_GRANT_REQUEST_HEADER and
+  // CORS_PROXY_ALLOWED_REQUEST_HEADERS_HEADER there, lowercased.
+  var CREDENTIAL_GRANT_HEADER = "x-kandelo-credential-grant";
+  var CREDENTIAL_OPT_IN_HEADER = "x-cors-proxy-allowed-request-headers";
+
   function normalizedCorsProxyConfig() {
     if (!CORS_PROXY_CONFIG || typeof CORS_PROXY_CONFIG !== "object") return null;
     if (
@@ -1116,18 +1134,39 @@ if (typeof window !== "undefined") {
     );
   }
 
-  function projectCorsProxyRequest(request, outgoingUrl, targetUrl) {
+  // `grant` is credentialGate()'s finding that the owning kernel worker
+  // vouched for this request's tag (null otherwise). Only then do the fields
+  // a grant covers pass, with the proxy's opt-in re-derived here. The tag
+  // itself never leaves the browser, granted or not.
+  function projectCorsProxyRequest(request, outgoingUrl, targetUrl, grant) {
     var config = normalizedCorsProxyConfig();
     if (!config) return Promise.resolve(request);
     var allowed = proxyAllowedHeaderNames(config);
     var headers = new Headers();
     var unsupported = [];
     var credential = false;
+    var grantedAuthorization = false;
     request.headers.forEach(function (value, name) {
       var lower = name.toLowerCase();
       if (lower === "x-kandelo-proxy-session") {
         // Reprojection owns quota metadata, just as it owns the range alias.
         // The session transport reads its own persisted, verified credential.
+        // It authenticates this app to the proxy's quota service, never a
+        // guest to a destination, so it is not a credential field here.
+      } else if (lower === CREDENTIAL_GRANT_HEADER) {
+        // Consumed by credentialGate(); upstream never sees it.
+      } else if (lower === CREDENTIAL_OPT_IN_HEADER) {
+        // Re-derived below from what a verified grant actually carries.
+      } else if (grant && GRANTED_CREDENTIAL_REQUEST_HEADER_NAMES.has(lower)) {
+        headers.append(name, value);
+        if (lower === "authorization") grantedAuthorization = true;
+        credential = true;
+      } else if (CREDENTIAL_REQUEST_HEADER_NAMES.has(lower)) {
+        // Credentials are never silently dropped, even though some match the
+        // browser-managed prefixes below — surface them so the request fails
+        // loudly instead of going out unauthenticated.
+        unsupported.push(lower);
+        credential = true;
       } else if (allowed.has(lower)) {
         headers.append(name, value);
       } else if (lower === "if-range") {
@@ -1139,15 +1178,6 @@ if (typeof window !== "undefined") {
         // never relayed. Kandelo's own kernel worker sends it when its guest
         // traffic reaches the proxy URL through this worker already
         // projected; that is not an unsupported field.
-      } else if (
-        lower === "authorization" || lower === "cookie" ||
-        lower === "cookie2" || lower === "proxy-authorization"
-      ) {
-        // Credentials are never silently dropped, even though some match the
-        // browser-managed prefixes below — surface them so the request fails
-        // loudly instead of going out unauthenticated.
-        unsupported.push(lower);
-        credential = true;
       } else if (isBrowserManagedRequestHeader(lower)) {
         // Fetch adds these fields independently of the Headers supplied by
         // callers. Do not copy them into the proxy request or classify them as
@@ -1167,6 +1197,11 @@ if (typeof window !== "undefined") {
     var range = headers.get("range");
     if (config.rangeRequestHeaderAlias && range !== null) {
       headers.set(config.rangeRequestHeaderAlias, range);
+    }
+    if (grantedAuthorization) {
+      // Mirrors BrowserCorsProxy.project(): the proxy relays Authorization
+      // only when the request opts in to it by name.
+      headers.set(CREDENTIAL_OPT_IN_HEADER, "Authorization");
     }
     var diagnosticNames = Array.from(new Set(unsupported)).sort();
     if (diagnosticNames.length > 0) {
@@ -1246,7 +1281,7 @@ if (typeof window !== "undefined") {
   // If-Range condition is false would send (RFC 9110 section 13.1.5). The
   // cost of doubt is one extra full request, never a slice of a changed
   // resource. Several If-Range fields reach here joined, which never match.
-  function fetchThroughCorsProxy(request, outgoingUrl, targetUrl) {
+  function fetchThroughCorsProxy(request, outgoingUrl, targetUrl, grant) {
     var config = normalizedCorsProxyConfig();
     if (config && config.credentialRelay &&
         config.credentialRelay.allowedOrigins.includes(new URL(targetUrl).origin)) {
@@ -1255,7 +1290,12 @@ if (typeof window !== "undefined") {
       }
       return credentialRelayFetch(config.credentialRelay, {
         targetUrl: targetUrl, method: request.method,
-        headers: Array.from(request.headers.entries()), signal: request.signal,
+        // The development relay keeps its own consent; the gate's tag and
+        // the proxy's opt-in mean nothing to it and never leave the browser.
+        headers: Array.from(request.headers.entries()).filter(function (entry) {
+          var lower = entry[0].toLowerCase();
+          return lower !== CREDENTIAL_GRANT_HEADER && lower !== CREDENTIAL_OPT_IN_HEADER;
+        }), signal: request.signal,
         body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
       }).catch(function () {
         return new Response("Credential relay requires permission or could not complete the request", { status: 502 });
@@ -1264,7 +1304,7 @@ if (typeof window !== "undefined") {
     var ifRange = config && !proxyAllowedHeaderNames(config).has("if-range")
       ? request.headers.get("if-range")
       : null;
-    return projectCorsProxyRequest(request, outgoingUrl, targetUrl).then(function (projected) {
+    return projectCorsProxyRequest(request, outgoingUrl, targetUrl, grant || null).then(function (projected) {
       if (projected instanceof Response) return projected;
       function send(projected) {
         if (!proxySessionFetch) return fetch(projected);
@@ -1303,6 +1343,274 @@ if (typeof window !== "undefined") {
    */
   function isCrossOrigin(url) {
     return url.origin !== self.location.origin;
+  }
+
+  // --- Credential gate ---
+  // The kernel worker adds credentials, the proxy's credential opt-in, and a
+  // grant's tag only to requests a process the user granted wrote (see
+  // host/src/credential-grants.ts). This is a second, independent gate at the
+  // browser's network edge. What it guarantees: only Kandelo's kernel-worker
+  // script can present a grant tag and vouch for it, so a page script, a
+  // guest preview, or a worker started from any other script cannot send
+  // credentials through the proxy.
+  // - A proxy request that carries a credential field or the opt-in without
+  //   a tag is refused.
+  // - A tag is accepted only on a request to the configured proxy, from a
+  //   dedicated worker running exactly the kernel worker's entry script
+  //   (KERNEL_WORKER_SCRIPT_PATHS, injected at build time), and only once
+  //   that worker has vouched for it: it holds a live grant with that token
+  //   whose destinations include the target origin.
+  // - The tag is removed before the request leaves the browser.
+  // What it does not guarantee: any script the app's origin runs can still
+  // start a genuine kernel worker and answer that kernel's credential prompt
+  // itself. The app's origin is trusted until guest previews move to an
+  // origin of their own.
+  // The answer is cached in memory only, keyed by token and bound to the
+  // client that presented it; another client presenting the same tag is
+  // refused without asking. An entry ends when the kernel worker announces
+  // the grant ended, when a later verification finds its client gone, when
+  // the bounded cache evicts it, or when this worker's state resets (an
+  // update or an idle restart), after which the next request asks again.
+  // There is no expiry: the kernel worker itself attaches a tag only after
+  // the kernel confirms the grant for that request.
+  //
+  // WHY a BroadcastChannel question and a fetch answer: Chromium delivers no
+  // Client.postMessage() to a dedicated worker (it has no
+  // navigator.serviceWorker in workers; measured 2026-10-29), while every
+  // engine delivers BroadcastChannel messages to workers. The browser stamps
+  // the answering fetch with its sender's client id, which no script can
+  // forge, and that client must be the kernel worker that presented the tag.
+  // The broadcast carries the token's hash, never the token.
+  // Mirror of CREDENTIAL_GATE_CHANNEL in host/src/credential-gate.ts.
+  var CREDENTIAL_GATE_CHANNEL = "kandelo-credential-grants";
+  var CREDENTIAL_GATE_REPLY_PATH = "__kandelo_credential_grant_reply";
+  var CREDENTIAL_GATE_TIMEOUT_MS = 5000;
+  var CREDENTIAL_GATE_CACHE_LIMIT = 256;
+  var CREDENTIAL_GATE_REPLY_URL = new URL(
+    CREDENTIAL_GATE_REPLY_PATH, self.registration.scope,
+  ).href;
+  // URL paths of the kernel worker's entry script, injected at build time by
+  // apps/browser-demos/vite.config.ts. Not injected (a raw copy of this
+  // file): no client can present a tag.
+  var KERNEL_WORKER_SCRIPT_PATHS = "__KERNEL_WORKER_SCRIPT_PATHS__";
+  var kernelWorkerScriptPaths = new Set(
+    Array.isArray(KERNEL_WORKER_SCRIPT_PATHS) ? KERNEL_WORKER_SCRIPT_PATHS : [],
+  );
+  var credentialGrantCache = new Map(); // token -> { clientId, tokenHash, origins }
+  var pendingCredentialVerifications = new Map(); // id -> { clientId, settle }
+  var credentialGateChannel = typeof BroadcastChannel === "function"
+    ? new BroadcastChannel(CREDENTIAL_GATE_CHANNEL) : null;
+  if (credentialGateChannel) {
+    credentialGateChannel.onmessage = function (event) {
+      var message = event.data;
+      if (
+        !message || message.type !== "credential-grant-ended" ||
+        typeof message.tokenHash !== "string"
+      ) return;
+      credentialGrantCache.forEach(function (entry, token) {
+        if (entry.tokenHash === message.tokenHash) credentialGrantCache.delete(token);
+      });
+    };
+  }
+
+  function isCredentialGateReply(url) {
+    return url.origin + url.pathname === CREDENTIAL_GATE_REPLY_URL;
+  }
+
+  function credentialRefusal(reason) {
+    return new Response("Kandelo refused this request: " + reason + "\n", {
+      status: 403,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  function carriesCredentialFields(request) {
+    if (request.headers.has(CREDENTIAL_OPT_IN_HEADER)) return true;
+    var found = false;
+    CREDENTIAL_REQUEST_HEADER_NAMES.forEach(function (name) {
+      if (request.headers.has(name)) found = true;
+    });
+    return found;
+  }
+
+  // Mirror of credentialTokenHash() in host/src/credential-gate.ts.
+  function credentialTokenHash(token) {
+    return crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
+      .then(function (digest) {
+        var binary = "";
+        new Uint8Array(digest).forEach(function (byte) {
+          binary += String.fromCharCode(byte);
+        });
+        return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_")
+          .replace(/=+$/, "");
+      });
+  }
+
+  // Only Kandelo's kernel worker presents a grant tag: a dedicated worker on
+  // this origin whose script is exactly the kernel worker's entry (origin
+  // and path; the query Vite adds in development is ignored). Windows
+  // (pages, frames, guest previews) and workers started from any other
+  // script, including a blob: or data: URL or a proxied third-party body,
+  // never do.
+  function isCredentialGateClient(client) {
+    if (!client || client.type !== "worker") return false;
+    var clientUrl;
+    try {
+      clientUrl = new URL(client.url);
+    } catch (_error) {
+      return false;
+    }
+    if (clientUrl.protocol !== "http:" && clientUrl.protocol !== "https:") return false;
+    if (clientUrl.origin !== self.location.origin) return false;
+    return kernelWorkerScriptPaths.has(clientUrl.pathname);
+  }
+
+  function answerCredentialGateReply(event) {
+    if (event.request.method !== "POST") {
+      return Promise.resolve(new Response(null, { status: 405 }));
+    }
+    return event.request.text().then(function (text) {
+      var reply = null;
+      try {
+        reply = JSON.parse(text);
+      } catch (_error) {
+        reply = null;
+      }
+      var pending = reply && typeof reply.id === "string"
+        ? pendingCredentialVerifications.get(reply.id) : undefined;
+      if (
+        !pending || pending.clientId !== event.clientId ||
+        reply.type !== "credential-grant-verified" ||
+        typeof reply.valid !== "boolean"
+      ) {
+        return new Response(null, { status: 403 });
+      }
+      pending.settle(reply.valid);
+      return new Response(null, { status: 204 });
+    });
+  }
+
+  function askKernelWorker(clientId, token, origin) {
+    return credentialTokenHash(token).then(function (tokenHash) {
+      return new Promise(function (resolve) {
+        var id = crypto.randomUUID();
+        var timer = setTimeout(function () { settle(false); }, CREDENTIAL_GATE_TIMEOUT_MS);
+        function settle(valid) {
+          clearTimeout(timer);
+          pendingCredentialVerifications.delete(id);
+          resolve({ valid: valid, tokenHash: tokenHash });
+        }
+        pendingCredentialVerifications.set(id, { clientId: clientId, settle: settle });
+        credentialGateChannel.postMessage({
+          type: "credential-grant-verify",
+          id: id,
+          tokenHash: tokenHash,
+          origin: origin,
+          replyUrl: CREDENTIAL_GATE_REPLY_URL,
+        });
+      });
+    });
+  }
+
+  function pruneCredentialGrantCache() {
+    credentialGrantCache.forEach(function (entry, token) {
+      self.clients.get(entry.clientId).then(function (client) {
+        if (!client) credentialGrantCache.delete(token);
+      }).catch(function () {});
+    });
+  }
+
+  // Bounded: a grant evicted here is simply asked about again.
+  function rememberCredentialGrant(token, entry) {
+    credentialGrantCache.set(token, entry);
+    while (credentialGrantCache.size > CREDENTIAL_GATE_CACHE_LIMIT) {
+      credentialGrantCache.delete(credentialGrantCache.keys().next().value);
+    }
+  }
+
+  // Resolves to null (nothing to gate), { token } (a verified grant), or a
+  // 403 Response. `targetUrl` is where the proxy would send the request, or
+  // null when the request is not going to the configured proxy.
+  function credentialGate(event, targetUrl) {
+    var request = event.request;
+    var tag = request.headers.get(CREDENTIAL_GRANT_HEADER);
+    if (tag === null) {
+      return Promise.resolve(carriesCredentialFields(request)
+        ? credentialRefusal(
+          "it carries credentials, or the CORS proxy's credential opt-in, " +
+            "without a Kandelo credential grant.",
+        )
+        : null);
+    }
+    var target = null;
+    try {
+      target = targetUrl ? new URL(targetUrl) : null;
+    } catch (_error) {
+      target = null;
+    }
+    if (!target || target.protocol !== "https:") {
+      return Promise.resolve(credentialRefusal(
+        "a credential grant tag is accepted only on HTTPS requests through " +
+          "the configured CORS proxy.",
+      ));
+    }
+    var origin = target.origin;
+    var clientId = event.clientId;
+    var cached = credentialGrantCache.get(tag);
+    if (cached && cached.clientId !== clientId) {
+      return Promise.resolve(credentialRefusal(
+        "its credential grant tag belongs to another client.",
+      ));
+    }
+    if (cached && cached.origins.has(origin)) {
+      return Promise.resolve({ token: tag });
+    }
+    var refused = credentialRefusal(
+      "no Kandelo process holds a credential grant for this request.",
+    );
+    if (!clientId || !credentialGateChannel) return Promise.resolve(refused);
+    return self.clients.get(clientId).then(function (client) {
+      if (!isCredentialGateClient(client)) return refused;
+      return askKernelWorker(clientId, tag, origin).then(function (answer) {
+        pruneCredentialGrantCache();
+        if (!answer.valid) return refused;
+        // Another client may have presented the tag while this one waited.
+        var entry = credentialGrantCache.get(tag);
+        if (entry && entry.clientId !== clientId) return refused;
+        if (!entry) {
+          entry = { clientId: clientId, tokenHash: answer.tokenHash, origins: new Set() };
+          rememberCredentialGrant(tag, entry);
+        }
+        entry.origins.add(origin);
+        return { token: tag };
+      });
+    });
+  }
+
+  function isCorsProxyRequestUrl(href) {
+    return isCorsProxyFetchUrl(href) && !isCorsProxySessionUrl(href);
+  }
+
+  // Mirror of devCorsProxyPathForBase() in apps/browser-demos/vite.config.ts:
+  // the development relay's path, which exists only on a Vite server and may
+  // not be the configured proxy (VITE_CORS_PROXY_URL).
+  function isDevCorsProxyUrl(url) {
+    return !isCrossOrigin(url) && url.pathname === SCOPE_PATH + "__kandelo_cors_proxy";
+  }
+
+  // A proxy answers with a third party's bytes. Only fetch() (destination
+  // "") may read them. As a document, frame, script, worker or style they
+  // would render or run, and from a same-origin proxy they would run with
+  // this origin's authority: a worker started from a proxied body could, for
+  // one, pose as Kandelo code.
+  function proxyDestinationRefusal(request, url) {
+    if (request.destination === "") return null;
+    if (!isCorsProxyRequestUrl(url.href) && !isDevCorsProxyUrl(url)) return null;
+    return new Response(
+      "Kandelo refused this request: the CORS proxy's answers are data for " +
+        "fetch(), not for a load as " + request.destination + ".\n",
+      { status: 403, headers: { "Content-Type": "text/plain; charset=utf-8" } },
+    );
   }
 
   function isCanonicalPagesVfsRequest(request, url) {
@@ -1560,7 +1868,21 @@ if (typeof window !== "undefined") {
     });
   }
 
-  function fetchCrossOrigin(request) {
+  // Gate, then relay through the proxy. The refusal gets the same CORS and
+  // embedder-policy headers as a relayed answer so the caller can read it.
+  function fetchGatedThroughCorsProxy(event, outgoingUrl, targetUrl, gateTargetUrl) {
+    var request = event.request;
+    return credentialGate(event, gateTargetUrl).then(function (gate) {
+      if (gate instanceof Response) return gate;
+      return fetchThroughCorsProxy(request, outgoingUrl, targetUrl, gate);
+    }).then(function (response) {
+      var headers = corsSafeResponseHeaders(response);
+      return responseWithHeaders(response, headers);
+    });
+  }
+
+  function fetchCrossOrigin(event) {
+    var request = event.request;
     var targetUrl = request.url;
 
     // This fixed endpoint belongs to the configured proxy's quota protocol.
@@ -1570,11 +1892,10 @@ if (typeof window !== "undefined") {
     // The page and worker runtime may already be deliberately fetching the
     // configured CORS proxy. Do not wrap that request in the same proxy again.
     if (isCorsProxyFetchUrl(targetUrl)) {
-      var proxiedTargetUrl = corsProxyTargetUrl(targetUrl) || targetUrl;
-      return fetchThroughCorsProxy(request, targetUrl, proxiedTargetUrl).then(function (response) {
-        var headers = corsSafeResponseHeaders(response);
-        return responseWithHeaders(response, headers);
-      });
+      var proxiedTargetUrl = corsProxyTargetUrl(targetUrl);
+      return fetchGatedThroughCorsProxy(
+        event, targetUrl, proxiedTargetUrl || targetUrl, proxiedTargetUrl,
+      );
     }
 
     // If we have a CORS proxy, route reads through it. The proxy exists to
@@ -1588,10 +1909,9 @@ if (typeof window !== "undefined") {
       (request.method === "GET" || request.method === "HEAD")
     ) {
       var proxyUrl = corsProxyFetchUrl(targetUrl);
-      return fetchThroughCorsProxy(request, proxyUrl, targetUrl).then(function (response) {
-        var headers = corsSafeResponseHeaders(response);
-        return responseWithHeaders(response, headers);
-      });
+      // A tag is meaningful only on the kernel worker's own proxy requests,
+      // so gate as for a request that is not going to the proxy.
+      return fetchGatedThroughCorsProxy(event, proxyUrl, targetUrl, null);
     }
 
     // No proxy: try a normal CORS fetch. Policy headers are useful only after
@@ -1855,6 +2175,32 @@ if (typeof window !== "undefined") {
   self.addEventListener("fetch", function (event) {
     var url = new URL(event.request.url);
 
+    // A kernel worker's answer to the credential gate (see credentialGate).
+    if (!isCrossOrigin(url) && isCredentialGateReply(url)) {
+      event.respondWith(answerCredentialGateReply(event));
+      return;
+    }
+
+    var proxyRefusal = proxyDestinationRefusal(event.request, url);
+    if (proxyRefusal) {
+      event.respondWith(proxyRefusal);
+      return;
+    }
+
+    // A grant's tag is meaningful only on the way to the configured proxy;
+    // anywhere else it is refused rather than sent on.
+    if (
+      event.request.headers.has(CREDENTIAL_GRANT_HEADER) &&
+      !isCorsProxyRequestUrl(url.href)
+    ) {
+      event.respondWith(credentialGate(event, null).then(function (refusal) {
+        return isCrossOrigin(url)
+          ? responseWithHeaders(refusal, corsSafeResponseHeaders(refusal))
+          : refusal;
+      }));
+      return;
+    }
+
     // Host navigate-away is handled by the page's pagehide -> instance-closing
     // message (see sw-bridge-fetch.ts), which offlines the machines the tab
     // owns and notifies viewers. There is no navigation-branch teardown here:
@@ -1879,7 +2225,23 @@ if (typeof window !== "undefined") {
     // before the per-machine dispatch so a cross-origin fetch from an app
     // viewer is never mistaken for a nameless in-app subresource.
     if (isCrossOrigin(url)) {
-      event.respondWith(fetchCrossOrigin(event.request));
+      event.respondWith(fetchCrossOrigin(event));
+      return;
+    }
+
+    // A same-origin proxy (the development relay) is gated like any other;
+    // ordinary traffic to it passes untouched.
+    if (
+      isCorsProxyRequestUrl(url.href) &&
+      (event.request.headers.has(CREDENTIAL_GRANT_HEADER) ||
+        carriesCredentialFields(event.request))
+    ) {
+      event.respondWith(credentialGate(event, corsProxyTargetUrl(url.href)).then(function (gate) {
+        if (gate instanceof Response) return gate;
+        var headers = new Headers(event.request.headers);
+        headers.delete(CREDENTIAL_GRANT_HEADER);
+        return fetchWithCoiHeaders(new Request(event.request, { headers: headers }));
+      }));
       return;
     }
 

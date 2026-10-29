@@ -58,6 +58,7 @@ import { PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
 import type { CentralizedKernelWorker } from "./kernel-worker";
 import {
   type CredentialEnforcement,
+  type CredentialGrant,
   CredentialGrants,
   CredentialLaunchPolicy,
   type CredentialLaunchPolicyOptions,
@@ -657,6 +658,8 @@ export async function createCredentialLaunchPolicy(
     transport: CredentialTransportPlan;
     post: CredentialLaunchPolicyOptions["post"];
     report: CredentialLaunchPolicyOptions["report"];
+    /** See `CredentialGrants`' constructor. */
+    onGrantEnded?: (grant: CredentialGrant) => void;
   },
 ): Promise<CredentialLaunchPolicy> {
   const declarations = options.hasRootfs
@@ -671,7 +674,7 @@ export async function createCredentialLaunchPolicy(
   }
   return new CredentialLaunchPolicy({
     kernel,
-    grants: new CredentialGrants(kernel),
+    grants: new CredentialGrants(kernel, { onGrantEnded: options.onGrantEnded }),
     declarations,
     bootIdentities,
     imageSource: options.imageSource || "unknown",
