@@ -8350,3 +8350,39 @@ uniform rendering, upstream CTS execution, rebuilt normal guests or
 browser validation. Positive-location ownership/type/count validation,
 matrix argument/size behavior, complete G05/G09 semantics and final
 combined conformance remain ordinary follow-up work.
+
+### Shared uniform-matrix validation and bounded encoding, 2026-10-29
+
+All three GLES2 matrix setters now use the same encoder. The separate
+`glUniformMatrix4fv` path silently ignored negative counts, emitted
+zero-count records, and multiplied the count before checking its size.
+A count of `0x04000000` wrapped the byte product and read an inaccessible
+source instead of rejecting the command. The shared path validates
+negative counts and the ES2 requirement that transpose be `GL_FALSE`,
+including before an inactive `-1` location can suppress the call. Valid
+ignored locations and zero counts do not read data or publish a record.
+The shared size check bounds count before multiplication and source reads.
+No wire layout, ABI or host operation changed.
+
+Three authored native cases failed against `104f8595da`: missing count
+and transpose errors failed assertions, and the wraparound guard case
+produced an actual protected-page READ/BUS in `glUniformMatrix4fv`, with
+its undefined-behavior sanitizer stack retained. After implementation,
+all 220 native C cases passed under the declared dev shell and both Wasm
+pointer-width syntax checks passed with the declared LLVM compiler.
+The three matrix dimensions cover negative and zero counts, true and
+other nonzero transpose values, ignored-location argument validation,
+`INT_MAX`, both product-wrap counts, and the first count above the TLV
+capacity. Rejected/ignored calls emit no uniform record or batch. Valid
+one-matrix calls and each dimension's largest fitting payload preserve
+location, count, transpose and exact record length; their source ends at
+a protected page so an extra read would fail. Cleanup retains no native
+allocations. Evidence is the file-owner checkout's
+`.context/gles-uniform-matrices-{before,after,syntax}.log`.
+
+The current single-record command capacity still rejects oversized
+positive matrix arrays with `GL_OUT_OF_MEMORY`. This is an ordinary
+transport/compatibility gap, not a hard platform boundary or complete
+G05/G09 conformance. Larger-array transport, positive uniform ownership,
+types and array semantics, actual rendering, fresh linked products,
+browser validation and upstream CTS execution remain follow-up work.

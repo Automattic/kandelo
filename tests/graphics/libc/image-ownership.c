@@ -277,6 +277,8 @@ static int indexed_queries;
 static uint32_t indexed_max, query_scalar, query_gl_error, query_status;
 static unsigned string_queries, uniform_commands;
 static GLint last_uniform_location;
+static uint32_t last_uniform_count, last_uniform_transpose;
+static uint16_t last_uniform_payload;
 static unsigned image_failure, image_queries, fail_image_storage, image_pixel_updates;
 static unsigned bind_failure, bind_queries;
 static unsigned buffer_bind_failure, buffer_delete_failure;
@@ -781,6 +783,12 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             if (op >= OP_UNIFORM1I && op <= OP_UNIFORM_MATRIX3FV) {
                 uniform_commands++;
                 last_uniform_location = (GLint)words[0];
+                if (op == OP_UNIFORM_MATRIX2FV || op == OP_UNIFORM_MATRIX3FV || op == OP_UNIFORM_MATRIX4FV) {
+                    assert(len >= 12);
+                    last_uniform_count = words[1];
+                    last_uniform_payload = len;
+                    memcpy(&last_uniform_transpose, commands + at + 12, 4);
+                }
             }
             if (op == OP_DRAW_ARRAYS || op == OP_DRAW_ELEMENTS) draw_commands++;
             if (op == OP_TEX_IMAGE_2D) redefined_texture = bound_texture;
@@ -3463,6 +3471,74 @@ int main(int argc, char **argv) {
         assert(buffer_uploads == 1 && glGetError() == GL_NO_ERROR);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-vao-attribs"); return 0;
+    }
+    if (!strncmp(argv[1], "encoder-uniform-matrix-", 23)) {
+        void (*const setters[])(GLint, GLsizei, GLboolean, const GLfloat *) = {
+            glUniformMatrix4fv, glUniformMatrix2fv, glUniformMatrix3fv,
+        };
+        const unsigned components[] = {16, 4, 9};
+        const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+        const size_t readable = ((65535u + page - 1) / page) * page;
+        unsigned char *mapping = mmap(NULL, readable + page, PROT_READ | PROT_WRITE,
+                                     MAP_PRIVATE | MAP_ANON, -1, 0);
+        assert(mapping != MAP_FAILED && !mprotect(mapping + readable, page, PROT_NONE));
+        const GLfloat *guard = (const GLfloat *)(mapping + readable);
+        const GLfloat value[16] = {1, 2, 3, 4};
+        for (unsigned i = 0; i < 3; ++i) {
+            const unsigned submitted = uniform_commands, batches = submit_batches;
+            const GLsizei maximum = (65535u - 12u) / (sizeof(GLfloat) * components[i]);
+            if (!strcmp(argv[1], "encoder-uniform-matrix-counts")) {
+                const GLsizei negative[] = {-1, INT_MIN};
+                for (unsigned j = 0; j < 2; ++j) {
+                    setters[i](37, negative[j], GL_FALSE, guard);
+                    assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+                    setters[i](-1, negative[j], GL_FALSE, guard);
+                    assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+                }
+                setters[i](37, 0, GL_FALSE, guard);
+                setters[i](37, 0, GL_FALSE, NULL);
+                setters[i](-1, 1, GL_FALSE, guard);
+                assert(glGetError() == GL_NO_ERROR);
+            } else if (!strcmp(argv[1], "encoder-uniform-matrix-transpose")) {
+                const GLboolean transpose[] = {GL_TRUE, 2, 255};
+                for (unsigned j = 0; j < 3; ++j) {
+                    setters[i](37, 1, transpose[j], value);
+                    assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+                    setters[i](37, 0, transpose[j], guard);
+                    assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+                    setters[i](-1, 1, transpose[j], guard);
+                    assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+                }
+            } else {
+                assert(!strcmp(argv[1], "encoder-uniform-matrix-bounds"));
+                /* These counts wrap the old mat4 float/byte products; the
+                 * inaccessible source makes prevalidation reads observable. */
+                const GLsizei oversized[] = {0x04000000, 0x10000000, INT_MAX, maximum + 1};
+                setters[i](-1, INT_MAX, GL_FALSE, guard);
+                assert(glGetError() == GL_NO_ERROR);
+                for (unsigned j = 0; j < 4; ++j) {
+                    setters[i](37, oversized[j], GL_FALSE, guard);
+                    assert(glGetError() == GL_OUT_OF_MEMORY && glGetError() == GL_NO_ERROR);
+                }
+            }
+            glFlush();
+            assert(uniform_commands == submitted && submit_batches == batches);
+            setters[i](37, 1, GL_FALSE, value);
+            assert(glGetError() == GL_NO_ERROR && uniform_commands == submitted + 1);
+            assert(last_uniform_location == 37 && last_uniform_count == 1 && !last_uniform_transpose);
+            assert(last_uniform_payload == 12 + components[i] * sizeof(GLfloat));
+            if (!strcmp(argv[1], "encoder-uniform-matrix-bounds")) {
+                const GLfloat *last = guard - (size_t)maximum * components[i];
+                setters[i](37, maximum, GL_FALSE, last);
+                assert(glGetError() == GL_NO_ERROR && uniform_commands == submitted + 2);
+                assert(last_uniform_count == (uint32_t)maximum && !last_uniform_transpose);
+                assert(last_uniform_payload == 12 + maximum * components[i] * sizeof(GLfloat));
+            }
+        }
+        assert(!munmap(mapping, readable + page));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        printf("PASS %s\n", argv[1]); return 0;
     }
     if (!strcmp(argv[1], "encoder-uniform-location-errors")) {
         const GLint invalid_locations[] = {-2, INT_MIN};

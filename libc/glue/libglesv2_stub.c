@@ -2080,30 +2080,6 @@ void glUniform4f(GLint location, GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
     EMIT_END()
 }
 
-/* Column-major 4x4 matrix uniforms — the MVP path any 3D client needs.
- * WebGL2 rejects a
- * transpose flag other than false, so the host forwards `transpose`
- * verbatim to gl.uniformMatrix4fv; callers must pass GL_FALSE and supply
- * column-major data. Payload: i32 loc, u32 count, u32 transposeBool,
- * f32 mat[count*16]. */
-void glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose,
-                        const GLfloat *value) {
-    if (!_wpk_gl_current_encoder()) return;
-    if (!uniform_location_accepted(location)) return;
-    if (count < 0 || !value) return;
-    uint32_t floats = (uint32_t)count * 16u;
-    /* The TLV payload-length field is u16 — a single record holds at
-     * most (0xFFFF - 12) / 4 floats. One mat4 (16 floats) is far under
-     * that; guard anyway so an oversized array drops rather than truncates. */
-    if (12u + floats * 4u > 0xFFFFu) return;
-    EMIT_BEGIN(OP_UNIFORM_MATRIX4FV, 12u + floats * 4u)
-    w_i32(&_c, location);
-    w_u32(&_c, (uint32_t)count);
-    w_u32(&_c, transpose ? 1u : 0u);
-    for (uint32_t i = 0; i < floats; i++) w_f32(&_c, value[i]);
-    EMIT_END()
-}
-
 /* ----- framebuffers ------------------------------------------------- */
 
 void glGenFramebuffers(GLsizei n, GLuint *out) {
@@ -2930,15 +2906,21 @@ static void emit_uniform_iv(uint16_t op, GLint location, GLsizei count,
     EMIT_END()
 }
 
+/* ES2 requires non-transposed matrices. Bound the complete TLV before
+ * multiplying or reading the source, including counts whose products wrap. */
 static void emit_uniform_matrix(uint16_t op, GLint location, GLsizei count,
                                 GLboolean transpose, const GLfloat *value,
                                 uint32_t components) {
-    if (!uniform_location_accepted(location)) return;
-    if (count < 0 || (count > 0 && !value)) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
+    if (count < 0 || transpose != GL_FALSE) {
+        raise_client_error(GL_INVALID_VALUE);
         return;
     }
+    if (!uniform_location_accepted(location)) return;
     if (count == 0) return;
+    if (!value) {
+        raise_client_error(GL_INVALID_VALUE);
+        return;
+    }
     if ((uint32_t)count > (WPK_GL_MAX_TLV_PAYLOAD - 12u) / (4u * components)) {
         if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
         return;
@@ -3011,6 +2993,11 @@ void glUniformMatrix2fv(GLint location, GLsizei count, GLboolean transpose, cons
 void glUniformMatrix3fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) {
     if (!_wpk_gl_current_encoder()) return;
     emit_uniform_matrix(OP_UNIFORM_MATRIX3FV, location, count, transpose, value, 9);
+}
+
+void glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) {
+    if (!_wpk_gl_current_encoder()) return;
+    emit_uniform_matrix(OP_UNIFORM_MATRIX4FV, location, count, transpose, value, 16);
 }
 
 void glGenRenderbuffers(GLsizei n, GLuint *out) {
