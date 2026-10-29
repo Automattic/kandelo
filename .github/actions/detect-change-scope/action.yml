@@ -199,10 +199,10 @@ runs:
           <(printf '%s\n' "$all_scoped_files") \
           || true)
 
-        if printf '%s\n' "$files" | grep -qx 'crates/shared/src/lib.rs' &&
-           git diff -U0 "$diff_range" -- crates/shared/src/lib.rs \
+        if printf '%s\n' "$files" | grep -qx 'crates/program-abi/src/lib.rs' &&
+           git diff -U0 "$diff_range" -- crates/program-abi/src/lib.rs \
              | grep -E '^[+-][[:space:]]*pub const ABI_VERSION: u32 = [0-9]+' >/dev/null; then
-          package_archive_files=$(printf '%s\n%s\n' "$package_archive_files" 'crates/shared/src/lib.rs (ABI_VERSION)' | sed '/^$/d')
+          package_archive_files=$(printf '%s\n%s\n' "$package_archive_files" 'crates/program-abi/src/lib.rs (ABI_VERSION)' | sed '/^$/d')
         fi
 
         if [ -z "$files" ]; then

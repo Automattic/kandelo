@@ -1249,8 +1249,11 @@ unsupported-platform error rather than using a weaker pathname-based digest.
 Program packages that use fork instrumentation also hash the
 fork-instrument host tool inputs (`crates/fork-instrument`, the
 target-unfiltered non-dev Cargo dependency closure selected from the
-workspace lockfile, and the wrapper/build scripts). The dependency closure is
-the union across build-host target predicates: package cache paths do not have
+workspace lockfile, and the wrapper/build scripts). The instrumenter depends
+only on `crates/program-abi` for program-visible constants and types;
+`crates/shared` re-exports those declarations for existing Rust consumers.
+Kernel-host-only edits to shared therefore do not re-key instrumented
+programs. The dependency closure is the union across build-host target predicates: package cache paths do not have
 a build-host dimension, so filtering through the current macOS or Linux host
 would give identical source trees different identities. Programs that declare
 `fork_instrumentation = "disabled"` do not hash that tooling.

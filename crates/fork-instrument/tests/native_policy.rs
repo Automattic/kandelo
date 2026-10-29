@@ -68,7 +68,7 @@ fn loader_only_modules_freeze_the_generated_boundary_and_nonforking_inputs_stay_
 
 #[test]
 fn side_modules_get_exact_current_abi_identity_and_reject_stale_markers() {
-    let current = wasm_posix_shared::ABI_VERSION;
+    let current = wasm_posix_program_abi::ABI_VERSION;
     for version in [None, Some(current), Some(current - 1)] {
         let marker = version
             .map(|version| {

@@ -2,7 +2,7 @@
 mod snapshot;
 use fork_instrument::{Options, native};
 use wasm_encoder::{CustomSection, Encode};
-use wasm_posix_shared::abi;
+use wasm_posix_program_abi::abi;
 
 fn custom(bytes: &[u8], name: &str) -> Vec<u8> {
     wasmparser::Parser::new(0)

@@ -219,11 +219,11 @@ impl<'a> ModuleBootstrapPlan<'a> {
         )?;
         for (name, index) in [
             (
-                wasm_posix_shared::abi::WPK_FORK_EXPORT_MODULE_BOOTSTRAP,
+                wasm_posix_program_abi::abi::WPK_FORK_EXPORT_MODULE_BOOTSTRAP,
                 first_function,
             ),
             (
-                wasm_posix_shared::abi::WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP,
+                wasm_posix_program_abi::abi::WPK_FORK_EXPORT_MODULE_THREAD_BOOTSTRAP,
                 first_function + 1,
             ),
         ] {

@@ -33,7 +33,7 @@ The current shape: `source scripts/package-build-roots.sh`, `kandelo_package_pre
 | Directory, `package.toml`, `build.toml` fields | `docs/porting-guide.md` "Adding a new package to the registry"; `docs/package-management.md` "Schema" |
 | Env vars a build script gets and must honor | `docs/package-management.md` "Build-script contract" |
 | Dep include/lib flags | `docs/package-management.md` "The CPPFLAGS/LDFLAGS contract" |
-| `kernel_abi` value | Current `ABI_VERSION` in `crates/shared/src/lib.rs`. Required with `[build]`; recorded as a floor but not yet enforced, so neighbouring manifests and doc examples carry stale values. Do not copy them. |
+| `kernel_abi` value | Current `ABI_VERSION` in `crates/program-abi/src/lib.rs`. Required with `[build]`; recorded as a floor but not yet enforced, so neighbouring manifests and doc examples carry stale values. Do not copy them. |
 | C++ programs | `depends_on` libcxx plus `kandelo_package_prepare_private_sysroot`, as in `packages/registry/dinit/` |
 | Rust programs and dependency portability | `sdk/rust/README.md` "Porting Rust dependencies"; termchat is the standalone program reference, librsvg/rsvg-convert cover native dependencies |
 | Fork-using programs | `docs/fork-instrumentation.md` |

@@ -6,7 +6,7 @@ use anyhow::{Result, ensure};
 use fork_instrument::{Options, artifact_io::MappedArtifact, native};
 use sha2::{Digest, Sha256};
 use std::{path::Path, sync::atomic::Ordering};
-use wasm_posix_shared::abi;
+use wasm_posix_program_abi::abi;
 use wasmparser::{Parser, Payload};
 
 const BYTE_LIMIT: u64 = 8 * 1024 * 1024 * 1024;

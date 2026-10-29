@@ -186,7 +186,7 @@ fn scalar_only_modules_reserve_no_constructor_helpers_or_host_imports() {
 
 #[test]
 fn gc_and_exception_catalogs_share_activation_in_either_reservation_order() {
-    let activation_name = wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_ACTIVATION;
+    let activation_name = wasm_posix_program_abi::abi::WPK_FORK_EXCEPTION_IMPORT_ACTIVATION;
     for source_import in [false, true] {
         let source = if source_import {
             SOURCE.replacen(
@@ -274,7 +274,7 @@ fn constructor_imports_reuse_valid_prefix_bindings_and_reject_wrong_types() {
     let mut inputs = RuntimeInputs::default();
     inputs.imports.push(PlannedImport {
         module: abi::HOST_IMPORT_MODULE.into(),
-        name: wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_ACTIVATION.into(),
+        name: wasm_posix_program_abi::abi::WPK_FORK_EXCEPTION_IMPORT_ACTIVATION.into(),
         ty: EntityType::Global(GlobalType {
             val_type: ValType::I32,
             mutable: true,

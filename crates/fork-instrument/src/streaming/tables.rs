@@ -4,7 +4,7 @@ use super::*;
 use anyhow::{Context, Result, ensure};
 use std::collections::{BTreeMap, BTreeSet};
 use wasm_encoder::{ConstExpr, FuncType, Function, GlobalType, RefType, ValType};
-use wasm_posix_shared::abi;
+use wasm_posix_program_abi::abi;
 
 mod catalog;
 mod emit;
