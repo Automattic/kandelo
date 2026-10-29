@@ -43,6 +43,13 @@ async function chipText(page: Page): Promise<string> {
   return texts.join(" ");
 }
 
+/** The DRM master published by the machine's display statistics. */
+async function displayOwner(page: Page): Promise<number> {
+  const owner = await page.locator(".kmachine-primary-slot:not(.is-hidden) .kmodeset-surface")
+    .getAttribute("data-kms-owner-pid");
+  return owner === null ? Number.NaN : Number(owner);
+}
+
 type Rgb = [number, number, number];
 
 /** The canvas and the size of the output sway drives on it. */
@@ -164,6 +171,8 @@ test("Kandelo sway tiles foot terminals under swaybar with wlroots' GLES2 render
   await expect
     .poll(() => chipText(page), { timeout: 120_000 })
     .toMatch(/webgl2-gl/i);
+  await expect.poll(() => displayOwner(page), { timeout: 120_000 }).toBeGreaterThan(0);
+  const glesOwner = await displayOwner(page);
   let out = await output(page);
 
   // Gate 2.
@@ -239,6 +248,7 @@ test("Kandelo sway tiles foot terminals under swaybar with wlroots' GLES2 render
   await page.locator(".xterm").first().click();
   await page.keyboard.type("echo sway-exit=$?\n", { delay: 40 });
   await expect.poll(() => terminalText(page), { timeout: 30_000 }).toMatch(/sway-exit=0/);
+  await expect.poll(() => displayOwner(page), { timeout: 60_000 }).toBe(0);
 
   // Gate 7.
   await page.keyboard.type(
@@ -246,6 +256,16 @@ test("Kandelo sway tiles foot terminals under swaybar with wlroots' GLES2 render
       + " FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/local/bin/sway\n",
   );
   await openSurface(page, "Demo");
+  // A startup repaint can change the screenshot before the dock drains its
+  // 4 Hz statistics. First prove the new session owns the display and its
+  // CPU frames reached the scanout presenter; then measure its moving clock.
+  await expect.poll(() => displayOwner(page), { timeout: 180_000 }).toBeGreaterThan(0);
+  expect(await displayOwner(page)).not.toBe(glesOwner);
+  await expect.poll(() => chipText(page), { timeout: 180_000 }).toMatch(/·\s*webgl2\s*$/i);
+  out = await output(page);
+  await expect
+    .poll(async () => isFoot(await meanColor(page, await middle(out))), { timeout: 180_000, intervals: [2_000] })
+    .toBe(true);
   await expect
     .poll(
       async () => {
@@ -256,9 +276,4 @@ test("Kandelo sway tiles foot terminals under swaybar with wlroots' GLES2 render
       { timeout: 180_000, intervals: [1_000] },
     )
     .toBe(false);
-  expect(await chipText(page)).not.toMatch(/webgl2-gl/i);
-  out = await output(page);
-  await expect
-    .poll(async () => isFoot(await meanColor(page, await middle(out))), { timeout: 180_000, intervals: [2_000] })
-    .toBe(true);
 });

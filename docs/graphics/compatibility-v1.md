@@ -8102,3 +8102,26 @@ links and the local analysis are retained in primary
 `.context/firefox-landing-separated*` retain the actual evidence. This
 does not establish a product repair or causation for every Kandelo
 capture failure, and does not close any baseline inventory row.
+
+### Sway gallery restart observation, 2026-10-29
+
+The `e58d19f98a` combined gallery run failed Chromium's Sway restart
+check: its immediate status-chip read still reported 44 flips and
+`webgl2-gl`, after two screenshots differed. The same failure's page
+snapshot already reported 56 flips and `webgl2`, the CPU scanout
+presenter. The trace records the restart command at 70.848–71.124 s,
+screenshots at 72.318–72.427 s and 73.983–74.060 s, and the stale
+one-shot chip read at 74.064–74.067 s. Changing pixels alone did not
+prove that startup had completed or that the dock's 250 ms statistics
+drain had observed the replacement renderer.
+
+The gallery gate now checks the old DRM master's release, a different
+positive master for the replacement session, and the positive `webgl2`
+scanout presenter before checking foot and the moving clock. The
+420-second test deadline and existing assertion deadlines are unchanged.
+This changes browser test synchronization only: host/kernel lifecycle,
+Node behavior, ABI, package artifacts and presentation are unchanged.
+Playwright collection passes for all three engines; executing the
+strengthened gate is still pending. The original failure remains
+retained under `.context/cage-sway-final-gallery-results/` in the
+fork-owner checkout and is not reported as a passing run.
