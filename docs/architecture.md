@@ -2006,7 +2006,8 @@ browser vouches for, and the service worker accepts a tag and an answer
 only from a worker running exactly the kernel worker's entry script,
 whose URL the build injects. Any script the app's origin runs can still
 start a genuine kernel worker and answer its prompt, so the app's origin
-remains a trusted boundary. `CredentialGrants` reports every grant it drops, so
+remains a trusted boundary; it runs only Kandelo's own code, because guest
+web previews run on a separate preview origin. `CredentialGrants` reports every grant it drops, so
 the kernel worker can tell the service worker to forget it. The
 protocol, cache rule and engine evidence are in [browser
 support](browser-support.md#per-process-credential-grants).
@@ -2912,7 +2913,7 @@ Browsers cannot create external raw TCP or UDP sockets. Local loopback and `Loca
    connection and may reuse it independently. Node's direct TCP backend is
    unaffected.
 
-3. **Service Worker HTTP Bridge**: For server demos (nginx, WordPress), a service worker intercepts browser `fetch()` requests to a configurable URL prefix (e.g., `/app/`) and forwards them to the kernel via a MessagePort connection pump. The kernel injects the request as a TCP connection to nginx's listening socket, and nginx's response flows back through the pipe to the service worker.
+3. **Guest web preview bridge**: Guest web pages (nginx, WordPress, any in-machine server) are served from a separate preview origin, never Kandelo's, so guest scripts cannot reach the Kandelo page. That origin's service worker (`apps/browser-demos/preview-origin/preview-service-worker.js`) forwards each request for `<scope>computer/<name>/…` over a `MessagePort` to the Kandelo tab that owns the machine; the tab's `PreviewBridgeHost` (`apps/browser-demos/lib/preview/`) answers it with `fetchInKernel`, which injects the request as a TCP connection to the server's listening socket. The tab owns the machine's cookie jar, the forwarded headers and URL rewriting. See [browser support](browser-support.md#guest-web-previews-run-on-their-own-origin).
 
 The preview also supports HTTP servers on the computer's connected Kandelo
 network. Both Node and browser `fetchInKernel(port, request, { hostname })`
@@ -2922,8 +2923,9 @@ Kandelo subnet, uses a separate host handle range above the guest i32 ABI,
 and closes pending requests on session leave or machine teardown. The shared
 client handles short writes, EAGAIN, response limits and a bounded deadline.
 Omitting `hostname` preserves the existing local injected-listener path.
-The preview service-worker bridge is retired when its destination or machine
-is replaced; its ports and event listeners do not retain a retired kernel.
+The preview bridge is retired when its destination or machine is replaced:
+the tab tells the preview worker the machine is closing, and its ports and
+event listeners do not retain a retired kernel.
 
 `TcpNetworkBackend`, `FetchNetworkBackend`, `TlsNetworkBackend`, and `LocalVirtualNetwork` share one numeric-address and hostname validator. It accepts decimal one-, two-, three-, and four-component IPv4 forms within their component widths, rejects malformed or overflowing numeric forms, enforces ASCII host-label syntax and DNS length limits, and preserves one trailing root dot. The Node TCP backend resolves validated names through the host resolver. The browser HTTP fetch/TLS bridges synthesize IPv4 mappings for syntactically acceptable DNS names; `LocalVirtualNetwork` resolves only aliases registered by attached machines. None of the browser paths adds browser DNS resolution or AF_INET6 transport.
 
@@ -4023,7 +4025,7 @@ The remaining methods (`pipeRead`/`pipeWrite`, `injectConnection`, stdin/PTY rou
 
 **dinit service supervisor** (`packages/registry/dinit/`): Service-supervised demos boot dinit v0.19.4 (cross-compiled to wasm32) as the first user process via `kernel.boot({ argv: ["/sbin/dinit", "--container", ...] })`. It receives the first kernel-allocated user PID (100); PID 1 remains the kernel's synthetic init reservation. The service tree is baked into `/etc/dinit.d/*` at image-build time via `addDinitInit()` in `dinit-image-helpers.ts`. Service types in use: `process` (long-running daemons), `scripted` (one-shot bootstraps that exit cleanly), and `internal` (dependency-only nodes used to express "boot the whole tree" or "pick this engine"). dinit reaps its directly supervised children. A service that daemonizes by double fork leaves its grandchild to synthetic init, which the kernel reaps (see "Orphan adoption"); dinit is not a subreaper here because it requests `PR_SET_CHILD_SUBREAPER` only under `__linux__`. dinit disables restarts by default and enforces inter-service `depends-on` ordering.
 
-**Service Worker** (`apps/browser-demos/public/service-worker.js`): Dual-mode file that acts as both a page bootstrap script (registers itself, enables cross-origin isolation) and a service worker (adds COOP/COEP headers, handles HTTP bridge routing).
+**Service Worker** (`apps/browser-demos/public/service-worker.js`): Dual-mode file that acts as both a page bootstrap script (registers itself, enables cross-origin isolation) and a service worker (adds COOP/COEP headers, gates and routes CORS-proxy traffic, caches lazy VFS assets, and serves the viewer shell for `computer/<name>/` addresses). It serves no guest page; the preview origin's own worker does (`apps/browser-demos/preview-origin/`).
 
 ### Linux-compatible graphics devices
 

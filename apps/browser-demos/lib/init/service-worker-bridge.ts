@@ -1,10 +1,9 @@
 /**
- * Service worker bridge initialization — shared across all demos that use
- * a service worker to intercept HTTP requests (nginx, nginx-php, wordpress, lamp).
- *
- * Extracted from the duplicated initBridge() function in those demo pages.
+ * Kandelo service worker readiness. The app's own service worker gives the
+ * page cross-origin isolation, the CORS proxy and its credential gate, and
+ * the lazy VFS cache. It serves no guest web page: those come from the
+ * deployment's preview origin (see lib/preview/).
  */
-import { HttpBridgeHost } from "../http-bridge";
 import {
   deploymentScopeFromServiceWorkerUrl,
   normalizeDeploymentBase,
@@ -132,86 +131,4 @@ export async function ensureServiceWorkerReady(
     scriptUrl.href,
     expectedScopeUrl,
   );
-}
-
-/**
- * Initialize the service worker HTTP bridge.
- *
- * 1. Creates an HttpBridgeHost (MessageChannel pair)
- * 2. Registers the service worker at swUrl
- * 3. Verifies the returned registration and waits for its matching controller
- * 4. Sends "init-bridge" message with the bridge's SW port and sessionId
- * 5. Waits for the SW to mint and confirm a machine name + app prefix
- * 6. Returns the ready bridge and the SW-minted name/appPrefix
- *
- * The service worker owns machine naming: the page no longer chooses the app
- * prefix. It sends only the sessionId and receives the minted `name` and
- * `appPrefix` in the bridge-ready reply.
- *
- * @param swUrl     — URL of the service worker script (e.g. "/demo/service-worker.js")
- * @param scopePath — normalized deployment scope owned by that script
- * @param sessionId — unique id for this Kandelo machine instance; scopes the
- *                    SW cookie jar so sessions never share cookies
- * @returns The initialized bridge with its SW-minted name and appPrefix, or
- *          null if service workers are unavailable
- */
-export async function initServiceWorkerBridge(
-  swUrl: string,
-  scopePath: string,
-  sessionId: string,
-): Promise<{ bridge: HttpBridgeHost; name: string; appPrefix: string } | null> {
-  if (!("serviceWorker" in navigator)) {
-    return null;
-  }
-
-  const bridge = new HttpBridgeHost();
-  const controller = await ensureServiceWorkerReady(swUrl, scopePath);
-
-  // Send bridge port and wait for the SW to mint and confirm the machine name.
-  const minted = await new Promise<{ name: string; appPrefix: string }>(
-    (resolve, reject) => {
-      const reply = new MessageChannel();
-      let settled = false;
-      const finish = (complete: () => void) => {
-        if (settled) return;
-        settled = true;
-        reply.port1.onmessage = null;
-        reply.port1.close();
-        complete();
-      };
-      reply.port1.onmessage = (event) => {
-        const message = event.data;
-        if (
-          message?.type === "bridge-ready" &&
-          typeof message.name === "string" &&
-          typeof message.appPrefix === "string"
-        ) {
-          finish(() =>
-            resolve({ name: message.name, appPrefix: message.appPrefix })
-          );
-        } else if (message?.type === "bridge-error") {
-          const code = typeof message.code === "string"
-            ? message.code
-            : "unknown";
-          finish(() => reject(new Error(
-            `Service worker bridge initialization failed: ${code}`,
-          )));
-        } else {
-          finish(() => reject(new Error(
-            "Unexpected bridge initialization reply",
-          )));
-        }
-      };
-      try {
-        controller.postMessage(
-          { type: "init-bridge", sessionId },
-          [bridge.getSwPort(), reply.port2],
-        );
-      } catch (error) {
-        finish(() => reject(error));
-      }
-    },
-  );
-
-  return { bridge, name: minted.name, appPrefix: minted.appPrefix };
 }

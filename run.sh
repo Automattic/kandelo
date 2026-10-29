@@ -2815,9 +2815,15 @@ cmd_prepare_browser() {
 # absolute URL prefix (`--base`, default `/`). The output directory is the
 # complete site to upload; see docs/browser-support.md
 # "Directory-scoped production hosting" for the hosting rules.
+# `--preview-origin` (where guest web previews will be served) and
+# `--app-origin` (the only Kandelo origin that preview bundle accepts) go
+# together; they also write the preview origin's bundle to `<out>-preview`.
+# Without them the app refuses to open web previews.
 cmd_build_browser() {
     local base="/"
     local out="$REPO_ROOT/apps/browser-demos/dist"
+    local preview_origin=""
+    local app_origin=""
     local cors_proxy="${VITE_CORS_PROXY_URL-}"
     local signalling_url="${VITE_KANDELO_SIGNALLING_URL-}"
     local cors_proxy_set="${VITE_CORS_PROXY_URL+1}"
@@ -2840,8 +2846,14 @@ cmd_build_browser() {
             --signalling-url=*) signalling_url="${1#--signalling-url=}"; shift
                                [ -n "$signalling_url" ] || { err "--signalling-url requires a URL"; exit 2; }
                                signalling_url_set=1 ;;
+            --preview-origin) [ $# -ge 2 ] && [ -n "$2" ] || { err "--preview-origin requires an origin"; exit 2; }
+                              preview_origin="$2"; shift 2 ;;
+            --preview-origin=*) preview_origin="${1#--preview-origin=}"; shift ;;
+            --app-origin) [ $# -ge 2 ] && [ -n "$2" ] || { err "--app-origin requires an origin"; exit 2; }
+                          app_origin="$2"; shift 2 ;;
+            --app-origin=*) app_origin="${1#--app-origin=}"; shift ;;
             *)
-                err "Usage: $0 build-browser [--base /prefix/] [--out DIR] [--cors-proxy URL] [--signalling-url URL]"
+                err "Usage: $0 build-browser [--base /prefix/] [--out DIR] [--cors-proxy URL] [--signalling-url URL] [--preview-origin ORIGIN --app-origin ORIGIN]"
                 exit 2
                 ;;
         esac
@@ -2854,6 +2866,11 @@ cmd_build_browser() {
         /*) ;;
         *) out="$PWD/$out" ;;
     esac
+    if { [ -n "$preview_origin" ] && [ -z "$app_origin" ]; } ||
+       { [ -z "$preview_origin" ] && [ -n "$app_origin" ]; }; then
+        err "--preview-origin and --app-origin must be given together"
+        exit 2
+    fi
 
     cmd_prepare_browser
 
@@ -2869,6 +2886,10 @@ cmd_build_browser() {
     fi
     if [ -n "$signalling_url_set" ]; then
         deployment_env+=("VITE_KANDELO_SIGNALLING_URL=$signalling_url")
+    fi
+    if [ -n "$preview_origin" ]; then
+        deployment_env+=("KANDELO_PREVIEW_ORIGIN=$preview_origin" "KANDELO_APP_ORIGIN=$app_origin"
+            "KANDELO_PREVIEW_OUT_DIR=$out-preview")
     fi
     # dev-shell.sh does not forward arbitrary caller environment, so the
     # inner script takes the repo root, base, and output as arguments.
@@ -2895,12 +2916,20 @@ cmd_build_browser() {
 
     # Fail loudly on an incomplete site rather than letting it be uploaded.
     local missing=0 required
-    for required in index.html service-worker.js vfs-groups signalling/piplet.php; do
+    for required in index.html service-worker.js vfs-groups signalling/piplet.php pages/kandelo/viewer.html; do
         if [ ! -e "$out/$required" ]; then
             err "build-browser: $out/$required is missing"
             missing=1
         fi
     done
+    if [ -n "$preview_origin" ]; then
+        for required in preview-service-worker.js __kandelo_preview/relay.html __kandelo_preview/relay.js; do
+            if [ ! -e "$out-preview/$required" ]; then
+                err "build-browser: $out-preview/$required is missing"
+                missing=1
+            fi
+        done
+    fi
     if [ -e "$out/pages-vfs-products.private.json" ]; then
         err "build-browser: the private product map leaked into $out"
         missing=1
@@ -2909,6 +2938,12 @@ cmd_build_browser() {
 
     info "Browser app built: $out"
     info "Upload the contents of that directory so it is served at exactly $base"
+    if [ -n "$preview_origin" ]; then
+        info "Guest preview bundle built: $out-preview"
+        info "Serve it at exactly $preview_origin$base (see docs/browser-support.md)"
+    else
+        warn "No --preview-origin: this build refuses to open web previews"
+    fi
 }
 
 cmd_browser() {

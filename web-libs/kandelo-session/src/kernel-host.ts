@@ -738,15 +738,29 @@ export interface WebPreviewTarget {
 }
 export interface WebPreviewState {
   label: string;
+  /**
+   * Absolute URL of the machine's root on the deployment's preview origin
+   * (`<preview origin><scope>computer/<name>/`), never Kandelo's own origin:
+   * guest pages run on an origin of their own so their scripts cannot reach
+   * the Kandelo page. Error states that never mount a frame may carry
+   * `about:blank`.
+   */
   url: string;
+  /**
+   * Kandelo's own address for this machine
+   * (`<app origin><scope>computer/<name>/`): the viewer shell that embeds
+   * `url` through the owning tab. The address users share and terminal
+   * links open.
+   */
+  viewerUrl?: string;
   initialPath?: string;
   destination?: { hostname: string; port: number };
   status: WebPreviewStatus;
   message?: string;
   pendingRequests?: number;
   /**
-   * The in-machine TCP port that `url` forwards to through the service-worker
-   * HTTP bridge. Consumers that have to decide whether a loopback URL the
+   * The in-machine TCP port that `url` forwards to through the preview
+   * bridge. Consumers that have to decide whether a loopback URL the
    * machine printed is reachable from the page need this: the bridge forwards
    * exactly this one port, so `http://localhost:<port>/` is reachable only
    * when `<port>` matches.
@@ -2066,16 +2080,18 @@ export class LiveKernelHost implements KernelHost {
   }
 
   private refreshWebAvailability(): void {
-    // A running preview is available; "offline" and "reconnecting" also keep
-    // the web surface available so the pane stays mounted to show that state
-    // rather than the view silently falling back to syslog/terminal when a
-    // machine's bridge goes away.
+    // A running preview is available; "offline", "reconnecting" and "error"
+    // also keep the web surface available so the pane stays mounted to show
+    // that state rather than the view silently falling back to
+    // syslog/terminal when a machine's bridge goes away or never starts (a
+    // browser that blocks the preview origin's storage, for one).
     const status = this.webPreview?.status;
     this.setSurfaceAvailability({
       web:
         status === "running" ||
         status === "offline" ||
-        status === "reconnecting",
+        status === "reconnecting" ||
+        status === "error",
     });
   }
 

@@ -514,6 +514,47 @@ app with `build-site.mjs STATIC-DIRECTORY --without-proxy` so it includes
 signalling and static assets without exposing a second, unused proxy route.
 `--without-proxy` and `--allow-referer` cannot be combined.
 
+### Guest preview Space
+
+Guest web pages (WordPress, nginx, any server inside a machine) run on a
+second origin so their scripts cannot reach the Kandelo page (see
+[Guest web previews run on their own
+origin](../../docs/browser-support.md#guest-web-previews-run-on-their-own-origin)).
+On Spacefast that origin is a second Space. Without one, the deployed app
+refuses to open web previews.
+
+Create or choose that Space and keep it **public**: a private Space's access
+page forbids framing, which breaks the preview frame. Set
+`KANDELO_PREVIEW_SPACE_URL` to its canonical HTTPS origin, then add it to the
+deployment:
+
+```sh
+node scripts/deploy-spacefast.mjs --space "$KANDELO_SPACE_URL" \
+  --preview-space "$KANDELO_PREVIEW_SPACE_URL"
+```
+
+The build injects the preview origin into the app and the app origin into
+the preview bundle (`./run.sh build-browser --preview-origin ...
+--app-origin ...` writes it to `<out>-preview`).
+`build-preview-site.mjs` checks that bundle was built for this app at the
+current preview protocol, and adds `_headers` (COEP `require-corp`, CORP
+`cross-origin`, `Origin-Agent-Cluster`, nothing that forbids framing) and
+`_redirects` (`/computer/*` to the app's viewer shell). The app Space's
+`_headers` send `Content-Security-Policy: frame-ancestors 'self'` on its
+documents, and its `_redirects` rewrite `/computer/*` to the viewer shell
+page. The relay accepts the app origin and that Space's `<label>--v<n>`
+version hosts, which only that Space can own because slugs cannot contain
+`--`. The script publishes the preview Space first, so the app never names
+an origin that does not yet serve its protocol. It never approves the
+preview Space for the CORS proxy and refuses `--allow-referer` for it.
+
+Before relying on a deployed pair, confirm that the public preview Space
+serves `__kandelo_preview/relay.html` verbatim (no injected scripts) with
+its `_headers`, that its `_redirects` and the app Space's `/computer/*`
+rewrite behave as written, and that one guest page with CSS and JavaScript
+loads through the pair in Chromium, Firefox and WebKit. These behaviors of
+the Spacefast platform have not been verified by a deployment yet.
+
 ## Verification
 
 From the repository root:

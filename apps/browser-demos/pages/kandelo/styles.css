@@ -3090,6 +3090,8 @@
 
 .kdisplay-status.is-error {
   color: var(--k-err-ink);
+  /* Error text names origins and paths, which must read exactly. */
+  text-transform: none;
 }
 
 .kweb-urlbar {

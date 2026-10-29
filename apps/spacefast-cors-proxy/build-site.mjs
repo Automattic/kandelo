@@ -75,9 +75,22 @@ await writeFile(join(output, "sf.jsonc"), JSON.stringify({
 }, null, 2) + "\n");
 // Pages and workers need isolation, but binary assets do not. A blanket rule
 // forces assets above Spacefast's 100 MiB PHP-lane limit into an unservable path.
+// Only Kandelo may frame Kandelo: a guest page on the preview origin must not
+// frame the app (for example to clickjack a credential prompt).
 await writeFile(join(output, "_headers"), [...isolationPaths].sort().map(path => `${path}
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
   Cross-Origin-Resource-Policy: same-origin
+  Content-Security-Policy: frame-ancestors 'self'
+  Origin-Agent-Cluster: ?1
 `).join("\n"));
+// `computer/<name>/…` is the address users share. Kandelo's service worker
+// serves the viewer shell for it; this covers a first visit it does not yet
+// control. Guest pages themselves come only from the preview Space.
+try {
+  await stat(join(source, "pages/kandelo/viewer.html"));
+  await writeFile(join(output, "_redirects"), "/computer/*  /pages/kandelo/viewer.html  200\n");
+} catch (error) {
+  if (error.code !== "ENOENT") throw error;
+}
 console.log(output);

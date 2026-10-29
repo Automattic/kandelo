@@ -1,6 +1,11 @@
 import { expect, test } from "@playwright/test";
 import { readFileSync } from "node:fs";
-import { gotoMachine, machineAppPrefix, previewFrameSelector } from "./support/kandelo-machine";
+import {
+  gotoMachine,
+  machineAppPrefix,
+  machinePreviewDocument,
+  previewFrameSelector,
+} from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";
 
 const declaredVersion = readFileSync(
@@ -19,14 +24,20 @@ for (const { profile, title, pageText } of [
     // so the new primary surface cannot take focus during command input.
     const preview = page.locator(previewFrameSelector(title));
     await expect(preview).toBeVisible({ timeout: 240_000 });
-    // Firefox's frame driver can lose the execution context after Adminer
-    // creates its version-check iframe. Read the same-origin document from
-    // its visible owner element, which keeps this a rendered-page check.
-    const previewText = () => preview.evaluate((frame: HTMLIFrameElement) =>
-      frame.contentDocument?.body?.innerText ?? "",
-    );
-    await expect.poll(previewText, { timeout: 240_000 }).toMatch(pageText);
+    // The page renders on the preview origin, so it is read through the
+    // frame itself; the app's document cannot reach into it. The frame is
+    // taken from page.frames(), not a FrameLocator: nginx-php's Adminer page
+    // embeds a COEP-blocked iframe that stops Playwright's Firefox backend
+    // from resolving any FrameLocator (see machinePreviewDocument).
+    const previewDocument = await machinePreviewDocument(page, title);
+    const previewBody = previewDocument.locator("body");
+    await expect(previewBody).toContainText(pageText, { timeout: 240_000 });
     const appPrefix = await machineAppPrefix(page, title);
+    // Marks this document, so the end of the test can tell it was kept, not
+    // reloaded, while the terminal was selected.
+    await previewDocument.evaluate(() => {
+      (window as { kandeloSurfaceProbe?: boolean }).kandeloSurfaceProbe = true;
+    });
     await page.getByRole("button", { name: "Terminal", exact: true }).click({
       timeout: 120_000,
     });
@@ -49,10 +60,13 @@ for (const { profile, title, pageText } of [
       page,
       'test "$(stat -c %u:%g /var/cache/opcache)" = 65534:65534',
     );
-    // Check the live FPM response while the terminal stays selected. This
-    // browser fetch uses the same service-worker bridge as the preview.
-    const response = await page.evaluate(async (url) => {
-      const result = await fetch(url);
+    // Check the live FPM response while the terminal stays selected. The
+    // machine is reachable only from its own preview origin, so the fetch
+    // runs inside the preview frame and goes through the same preview
+    // bridge as the page.
+    await expect(preview).toBeHidden();
+    const response = await previewDocument.evaluate(async (url) => {
+      const result = await fetch(url, { cache: "no-store" });
       return { status: result.status, body: await result.text() };
     }, appPrefix);
     expect(response.status).toBe(200);
@@ -60,6 +74,9 @@ for (const { profile, title, pageText } of [
     // Switching surfaces must preserve the live document and its navigation.
     await page.getByRole("button", { name: "Demo", exact: true }).click();
     await expect(preview).toBeVisible();
-    await expect.poll(previewText, { timeout: 30_000 }).toMatch(pageText);
+    expect(previewDocument.isDetached()).toBe(false);
+    expect(await previewDocument.evaluate(() =>
+      (window as { kandeloSurfaceProbe?: boolean }).kandeloSurfaceProbe === true)).toBe(true);
+    await expect(previewBody).toContainText(pageText, { timeout: 30_000 });
   });
 }

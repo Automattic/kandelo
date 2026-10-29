@@ -33,11 +33,24 @@ const path = require('node:path');
 const args = process.argv.slice(2);
 const out = args[args.indexOf('--outDir') + 1];
 fs.mkdirSync(path.join(out, 'vfs-groups'), { recursive: true });
-for (const name of ['index.html', 'service-worker.js']) fs.writeFileSync(path.join(out, name), 'built');
+fs.mkdirSync(path.join(out, 'pages/kandelo'), { recursive: true });
+for (const name of ['index.html', 'service-worker.js', 'pages/kandelo/viewer.html']) fs.writeFileSync(path.join(out, name), 'built');
+if (process.env.KANDELO_PREVIEW_ORIGIN && !process.env.SKIP_PREVIEW_BUNDLE) {
+  const preview = process.env.KANDELO_PREVIEW_OUT_DIR;
+  fs.mkdirSync(path.join(preview, '__kandelo_preview'), { recursive: true });
+  for (const name of ['preview-service-worker.js', '__kandelo_preview/relay.html', '__kandelo_preview/relay.js']) {
+    fs.writeFileSync(path.join(preview, name), 'built');
+  }
+}
 fs.writeFileSync(path.join(out, 'deployment.json'), JSON.stringify({
   proxy: process.env.VITE_CORS_PROXY_URL ?? null,
   signalling: process.env.VITE_KANDELO_SIGNALLING_URL ?? null,
   base: process.env.VITE_BASE,
+  ...(process.env.KANDELO_PREVIEW_ORIGIN ? {
+    previewOrigin: process.env.KANDELO_PREVIEW_ORIGIN,
+    appOrigin: process.env.KANDELO_APP_ORIGIN,
+    previewOut: process.env.KANDELO_PREVIEW_OUT_DIR,
+  } : {}),
 }));
 `, { mode: 0o755 });
   const env = { ...process.env, ...variables, PATH: `${join(root, "bin")}:${process.env.PATH}` };
@@ -49,6 +62,7 @@ REPO_ROOT="$1"; shift
 cmd_prepare_browser() { :; }
 step() { :; }
 info() { :; }
+warn() { :; }
 err() { echo "$*" >&2; }
 ${command}
 cmd_build_browser --base /candidate/ --out "$REPO_ROOT/output" "$@"
@@ -92,4 +106,21 @@ test("empty deployment flags fail instead of selecting a different service", asy
   for (const args of [["--cors-proxy="], ["--cors-proxy"], ["--signalling-url="], ["--signalling-url"]]) {
     await assert.rejects(build(t, {}, args), /requires a URL/);
   }
+});
+
+test("a preview origin and its app origin build the preview bundle beside the app", async t => {
+  const built = await build(t, {}, [
+    "--preview-origin", "https://preview.example", "--app-origin=https://app.example",
+  ]);
+  assert.equal(built.previewOrigin, "https://preview.example");
+  assert.equal(built.appOrigin, "https://app.example");
+  assert.match(built.previewOut, /\/output-preview$/);
+});
+
+test("a preview origin without its app origin, or a missing preview bundle, fails", async t => {
+  await assert.rejects(build(t, {}, ["--preview-origin", "https://preview.example"]), /must be given together/);
+  await assert.rejects(build(t, {}, ["--app-origin", "https://app.example"]), /must be given together/);
+  await assert.rejects(build(t, { SKIP_PREVIEW_BUNDLE: "1" }, [
+    "--preview-origin", "https://preview.example", "--app-origin", "https://app.example",
+  ]), /output-preview\/preview-service-worker.js is missing/);
 });

@@ -49,6 +49,8 @@ import {
   bundleIncludesModule,
   kernelWorkerScriptPathsForServiceWorker,
 } from "./vite/kernel-worker-scripts";
+import { previewOriginPlugin } from "./vite/preview-origin";
+import { restartConvergencePlugin } from "./vite/restart-convergence";
 import type { CredentialRelayConfig } from "../../host/src/networking/credential-relay";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
@@ -273,6 +275,11 @@ const crossOriginIsolationHeaders = {
   // page. Mark every dev/preview response same-origin so that cached worker
   // responses remain admissible under COEP, including a 304 revalidation.
   "Cross-Origin-Resource-Policy": "same-origin",
+  // Only Kandelo may frame Kandelo: a guest page on the preview origin must
+  // not be able to frame the app (for example to clickjack the credential
+  // prompt of a machine it embeds).
+  "Content-Security-Policy": "frame-ancestors 'self'",
+  "Origin-Agent-Cluster": "?1",
 };
 
 function configuredCorsProxyUrl(): string | undefined {
@@ -365,31 +372,6 @@ function injectCorsProxyConfigPlaceholder(
     JSON.stringify(corsProxyConfig),
   ).replace('"__CORS_PROXY_SESSION_TRANSPORT__"', `(${createProxySessionTransport.toString()})`)
     .replace('"__KERNEL_WORKER_SCRIPT_PATHS__"', JSON.stringify(kernelWorkerScriptPaths));
-}
-
-const blobIframeInterceptorPath = path.resolve(
-  __dirname,
-  "public",
-  "blob-iframe-interceptor.js",
-);
-
-/**
- * Inline the reusable blob-iframe interceptor (public/blob-iframe-interceptor.js)
- * into the service worker in place of the `"__BLOB_IFRAME_INTERCEPTOR__"`
- * placeholder. The service worker injects this source into every bridged HTML
- * document so app-created `blob:` iframes become service-worker-controlled
- * `about:srcdoc` documents. Kept as a separate file so it stays independently
- * readable and testable.
- */
-function injectBlobIframeInterceptorPlaceholder(content: string): string {
-  if (!content.includes('"__BLOB_IFRAME_INTERCEPTOR__"')) {
-    return content;
-  }
-  const interceptor = fs.readFileSync(blobIframeInterceptorPath, "utf-8");
-  return content.replace(
-    '"__BLOB_IFRAME_INTERCEPTOR__"',
-    JSON.stringify(interceptor),
-  );
 }
 
 /**
@@ -975,12 +957,10 @@ function injectCorsProxyConfig(): Plugin {
   }
 
   function serviceWorkerSource(kernelWorkerScriptPaths: readonly string[]): string {
-    return injectBlobIframeInterceptorPlaceholder(
-      injectCorsProxyConfigPlaceholder(
-        fs.readFileSync(sourceSwPath, "utf-8"),
-        servedCorsProxyConfig,
-        kernelWorkerScriptPaths,
-      ),
+    return injectCorsProxyConfigPlaceholder(
+      fs.readFileSync(sourceSwPath, "utf-8"),
+      servedCorsProxyConfig,
+      kernelWorkerScriptPaths,
     );
   }
 
@@ -1053,7 +1033,6 @@ function injectCorsProxyConfig(): Plugin {
           outputCorsProxyConfig,
           kernelWorkerScriptPaths,
         );
-        content = injectBlobIframeInterceptorPlaceholder(content);
         fs.writeFileSync(swPath, content);
       }
     },
@@ -1097,6 +1076,8 @@ function devCorsProxyMiddleware(): Plugin {
 const defaultDemoInputs = {
   main: path.resolve(__dirname, "index.html"),
   kandelo: path.resolve(__dirname, "pages/kandelo/index.html"),
+  // The viewer shell `<base>computer/<name>/` opens (vite/preview-origin.ts).
+  "kandelo-viewer": path.resolve(__dirname, "pages/kandelo/viewer.html"),
   network: path.resolve(__dirname, "pages/network/index.html"),
 };
 
@@ -1120,7 +1101,7 @@ function sourceOnlyDemoInputs<T extends Record<string, string>>(
   );
   if (unsupported.length > 0) {
     throw new Error(
-      "SourceOnly browser builds admit only the root main, kandelo, network, and peer-network inputs; " +
+      "SourceOnly browser builds admit only the root main, kandelo, kandelo-viewer, network, and peer-network inputs; " +
         `these inputs still depend on ambient build outputs: ${unsupported.join(", ")}`,
     );
   }
@@ -1136,6 +1117,11 @@ function selectedDemoInputs(): typeof demoInputs | Record<string, string> {
   }
 
   const selected: Record<string, string> = {};
+  // Every app that can open a web preview needs the viewer shell its shared
+  // preview addresses open.
+  if (requested.includes("main") || requested.includes("kandelo")) {
+    selected["kandelo-viewer"] = demoInputs["kandelo-viewer"];
+  }
   for (const name of requested) {
     if (!(name in demoInputs)) {
       throw new Error(`Unknown KANDELO_BROWSER_DEMO_INPUTS entry: ${name}`);
@@ -1157,6 +1143,9 @@ export default defineConfig(() => {
       alias: browserRepositoryAliases(repoRoot),
     },
     plugins: [
+      // A config change made while Vite restarts must not leave the server on
+      // the configuration it was loading (vite/restart-convergence.ts).
+      restartConvergencePlugin(),
       vfsProductsPlugin(base),
       react(),
       muteBrowserTestAudio(),
@@ -1201,6 +1190,7 @@ export default defineConfig(() => {
       injectCorsProxyConfig(),
       devCorsProxyMiddleware(),
       devSignallingServer(repoRoot),
+      previewOriginPlugin(),
     ],
     server: {
       host: "127.0.0.1",

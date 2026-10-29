@@ -61,6 +61,14 @@ exact retirement fence before terminating its realm. If a fence never
 arrives, keep forced termination/containment visible; do not report proven
 reclamation or reuse the address space on that basis.
 
+The guest web preview bridge is the same kind of boundary, one origin
+further out. Its bytes cross into the preview origin's service worker, which
+guest pages share: hand it exact, unshared copies of response bodies, never
+a view of kernel or guest memory, and keep the machine's cookie jar and
+response shaping in the owning tab (`apps/browser-demos/lib/preview/`). The
+host's `fetchInKernel` is unchanged and remains the only path into the
+machine's server on both hosts.
+
 Every asynchronous resource needs an explicit end: retire engine futex waits
 before dropping their bookkeeping, release AudioWorklet views/ports and stop
 its processor, and cancel device timers. Exit must escape guest exception

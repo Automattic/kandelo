@@ -132,9 +132,13 @@ test.beforeAll(async () => {
   const saved = {
     VITE_CORS_PROXY_URL: process.env.VITE_CORS_PROXY_URL,
     KANDELO_BROWSER_TEST_NO_HMR: process.env.KANDELO_BROWSER_TEST_NO_HMR,
+    KANDELO_PREVIEW_ORIGIN: process.env.KANDELO_PREVIEW_ORIGIN,
   };
   process.env.VITE_CORS_PROXY_URL = proxyUrl;
   process.env.KANDELO_BROWSER_TEST_NO_HMR = "1";
+  // This server's ephemeral port + 1 may belong to another server; it opens
+  // no web previews, so it serves no preview origin.
+  process.env.KANDELO_PREVIEW_ORIGIN = "off";
   try {
     vite = await createViteServer({
       configFile: resolve(appRoot, "vite.config.ts"),

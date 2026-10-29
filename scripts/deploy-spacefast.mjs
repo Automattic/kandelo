@@ -13,6 +13,8 @@ Prepare a combined Kandelo app, CORS proxy and signalling service for an
 existing Space. Requires Node 24 and Kandelo's normal build prerequisites.
 
   --space ORIGIN          Required canonical HTTPS origin of the target Space
+  --preview-space ORIGIN  Public Space that serves guest web previews; without
+                          it the app refuses to open web previews
   --allow-referer ORIGIN  Also approve this HTTP(S) app origin (repeatable)
   --publish               Build, package and update the selected Space live
   --dry-run               Build, package and inspect the CLI plan; no upload
@@ -21,34 +23,40 @@ existing Space. Requires Node 24 and Kandelo's normal build prerequisites.
 Without --publish or --dry-run, only prepare the bundle and print its path
 and exact publish command. The Space origin is always approved automatically.
 Use origins without paths or trailing slashes. No saved Space selection is
-used as a default. This script never installs tools, signs in, creates a
+used as a default. The preview Space is never approved for the CORS proxy,
+and it is published before the app so the app never names a missing origin. This script never installs tools, signs in, creates a
 Space, or changes access settings. --publish/--dry-run require the sf CLI.
 `;
 
 function origin(value, flag) {
   try {
     const parsed = parseApprovedRefererOrigins(value);
+    const space = flag === "--space" || flag === "--preview-space";
     if (parsed.length === 1 && parsed[0] === value &&
-        (flag !== "--space" || value.startsWith("https://"))) return value;
+        (!space || value.startsWith("https://"))) return value;
   } catch { /* Keep invalid URLs, including possible callback secrets, out of errors. */ }
-  const scheme = flag === "--space" ? "HTTPS" : "HTTP(S)";
+  const scheme = flag === "--space" || flag === "--preview-space" ? "HTTPS" : "HTTP(S)";
   throw new Error(`${flag} requires one exact ${scheme} origin without credentials, path, query, fragment or trailing slash`);
 }
 
 function options(args) {
   let space;
+  let previewSpace;
   let mode = "prepare";
   const approved = [];
   for (let i = 0; i < args.length; i++) {
     const argument = args[i];
     const flag = argument.split("=", 1)[0];
-    if (flag === "--space" || flag === "--allow-referer") {
+    if (flag === "--space" || flag === "--allow-referer" || flag === "--preview-space") {
       const value = argument.includes("=") ? argument.slice(flag.length + 1) : args[++i];
       if (!value || value.startsWith("--")) throw new Error(`${flag} requires an origin`);
       const validated = origin(value, flag);
       if (flag === "--space") {
         if (space) throw new Error("Specify --space exactly once");
         space = validated;
+      } else if (flag === "--preview-space") {
+        if (previewSpace) throw new Error("Specify --preview-space at most once");
+        previewSpace = validated;
       } else approved.push(validated);
     } else if (argument === "--publish" || argument === "--dry-run") {
       if (mode !== "prepare") throw new Error("Choose only one of --publish and --dry-run");
@@ -56,7 +64,12 @@ function options(args) {
     } else throw new Error("Unknown deployment option; use --help");
   }
   if (!space) throw new Error("--space is required; saved Space selections are not used");
-  return { space, mode, approved: [...new Set([space, ...approved])] };
+  if (previewSpace === space) throw new Error("--preview-space must be a different Space from --space");
+  // Guest pages must never be able to spend the proxy's quota as Kandelo.
+  if (previewSpace && approved.includes(previewSpace)) {
+    throw new Error("--preview-space must not be approved for the CORS proxy");
+  }
+  return { space, previewSpace, mode, approved: [...new Set([space, ...approved])] };
 }
 
 function run(command, args, { capture = false } = {}) {
@@ -76,7 +89,7 @@ function quote(value) { return "'" + value.replaceAll("'", "'\\''") + "'"; }
 
 async function main(args) {
   if (args.includes("--help")) { process.stdout.write(help); return; }
-  const { space, mode, approved } = options(args);
+  const { space, previewSpace, mode, approved } = options(args);
   // Check the external publishing tool before an expensive build. Keep it
   // outside the pure build shell so its existing host authentication works.
   if (mode !== "prepare") await run("sf", ["--version"]);
@@ -85,7 +98,8 @@ async function main(args) {
   const work = await mkdtemp(join(context, "spacefast-deploy-"));
   const site = join(work, "static");
   await run("bash", [join(root, "run.sh"), "build-browser", "--base", "/", "--out", site,
-    "--cors-proxy", "/cors-proxy?url=", "--signalling-url", "/signalling"]);
+    "--cors-proxy", "/cors-proxy?url=", "--signalling-url", "/signalling",
+    ...(previewSpace ? ["--preview-origin", previewSpace, "--app-origin", space] : [])]);
   const output = await run("bash", [join(root, "scripts/dev-shell.sh"), "node",
     join(root, "apps/spacefast-cors-proxy/build-site.mjs"), site,
     ...approved.flatMap(value => ["--allow-referer", value])], { capture: true });
@@ -99,12 +113,31 @@ async function main(args) {
   const config = JSON.parse(await readFile(join(bundle, "sf.jsonc"), "utf8"));
   if (config.runtime?.kind !== "functions") throw new Error("Bundle is missing its Functions configuration");
   console.log(`Prepared bundle: ${bundle}`);
-  const publish = ["publish", bundle, "--prebuilt", "--space", space, "--wait"];
-  if (mode === "prepare") {
-    console.log(`Publish this exact bundle: sf ${publish.map(quote).join(" ")}`);
+  const publishes = [];
+  if (previewSpace) {
+    const previewOutput = await run("bash", [join(root, "scripts/dev-shell.sh"), "node",
+      join(root, "apps/spacefast-cors-proxy/build-preview-site.mjs"), `${site}-preview`,
+      "--app-origin", space], { capture: true });
+    const preview = await realpath(previewOutput.trim().split(/\r?\n/).at(-1));
+    const previewLocal = relative(await realpath(context), preview);
+    if (!previewLocal.startsWith("spacefast-kandelo-preview-") || previewLocal.includes(sep)) {
+      throw new Error("Preview packager returned an unexpected bundle directory; nothing published");
+    }
+    console.log(`Prepared preview bundle: ${preview}`);
+    // The preview Space first: the app must never name an origin that does
+    // not serve this bundle's protocol yet.
+    publishes.push(["publish", preview, "--prebuilt", "--space", previewSpace, "--wait"]);
   } else {
-    if (mode === "dry-run") publish.push("--dry-run");
-    await run("sf", publish);
+    console.log("No --preview-space: this deployment will refuse to open web previews.");
+  }
+  publishes.push(["publish", bundle, "--prebuilt", "--space", space, "--wait"]);
+  for (const publish of publishes) {
+    if (mode === "prepare") {
+      console.log(`Publish this exact bundle: sf ${publish.map(quote).join(" ")}`);
+    } else {
+      if (mode === "dry-run") publish.push("--dry-run");
+      await run("sf", publish);
+    }
   }
 }
 

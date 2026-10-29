@@ -31,7 +31,8 @@ test("site packager preserves the built app and emits a compiled file-router han
   const config = JSON.parse(await readFile(join(output, "sf.jsonc"), "utf8"));
   assert.equal(config.runtime.kind, "functions"); assert.equal(config.runtime.entry, undefined);
   const headers = await readFile(join(output, "_headers"), "utf8");
-  for (const line of ["Cross-Origin-Opener-Policy: same-origin", "Cross-Origin-Embedder-Policy: require-corp", "Cross-Origin-Resource-Policy: same-origin"]) assert.ok(headers.includes(line));
+  for (const line of ["Cross-Origin-Opener-Policy: same-origin", "Cross-Origin-Embedder-Policy: require-corp", "Cross-Origin-Resource-Policy: same-origin",
+    "Content-Security-Policy: frame-ancestors 'self'", "Origin-Agent-Cluster: ?1"]) assert.ok(headers.includes(line));
   const workerPath = join(output, "functions", "cors-proxy", "[...rest].mjs");
   for (const entry of [workerPath, join(output, "functions", "signalling.mjs")]) {
     // Match the official CLI's route admission: its default-export scanner
@@ -120,4 +121,13 @@ test("a Spacefast app using a separate proxy can omit the local proxy route", as
   assert.equal(await readFile(join(output, "index.html"), "utf8"), "<h1>Kandelo</h1>");
   assert.ok((await readFile(join(output, "_headers"), "utf8")).includes("Cross-Origin-Embedder-Policy: require-corp"));
   await assert.rejects(execute(process.execPath, [builder, root, "--without-proxy", "--allow-referer", "https://site.example"]), /cannot be used/);
+});
+
+test("a build with the viewer shell rewrites computer/ addresses to it", async t => {
+  const root = await fixture(); t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, "pages", "kandelo"), { recursive: true });
+  await writeFile(join(root, "pages/kandelo/viewer.html"), "viewer");
+  const { stdout } = await execute(process.execPath, [builder, root, "--without-proxy"]);
+  const output = stdout.trim(); t.after(() => rm(output, { recursive: true, force: true }));
+  assert.equal(await readFile(join(output, "_redirects"), "utf8"), "/computer/*  /pages/kandelo/viewer.html  200\n");
 });

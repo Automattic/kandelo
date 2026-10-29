@@ -4,7 +4,13 @@
  * handleIncomingTcpConnection in kernel-worker.ts.
  */
 import type { BrowserKernel } from "@host/browser-kernel-host";
-import type { HttpRequest, HttpResponse, HttpBridgeHost } from "./http-bridge";
+import type { HttpRequest, HttpResponse } from "@host/browser-kernel-host";
+
+/** Where a pumped response goes. */
+interface HttpResponder {
+  respond(requestId: number, response: HttpResponse): void;
+  error(requestId: number, message?: string): void;
+}
 
 const encoder = new TextEncoder();
 // Injected TCP pipes are allocated in the kernel's global pipe table so any
@@ -18,7 +24,7 @@ const GLOBAL_PIPE_PID = 0;
  */
 export async function handleHttpRequest(
   kernel: BrowserKernel,
-  bridge: HttpBridgeHost,
+  bridge: HttpResponder,
   requestId: number,
   request: HttpRequest,
   listenerPort: number,
@@ -106,7 +112,7 @@ function buildRawHttpRequest(request: HttpRequest): Uint8Array {
  */
 function pumpResponse(
   kernel: BrowserKernel,
-  bridge: HttpBridgeHost,
+  bridge: HttpResponder,
   requestId: number,
   sendPipeIdx: number,
   recvPipeIdx: number,

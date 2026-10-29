@@ -114,7 +114,11 @@ test.beforeAll(async () => {
     },
   };
   const saved = process.env.KANDELO_BROWSER_TEST_NO_HMR;
+  const savedPreview = process.env.KANDELO_PREVIEW_ORIGIN;
   process.env.KANDELO_BROWSER_TEST_NO_HMR = "1";
+  // This server's ephemeral port + 1 may belong to another server; it opens
+  // no web previews, so it serves no preview origin.
+  process.env.KANDELO_PREVIEW_ORIGIN = "off";
   try {
     vite = await createViteServer({
       configFile: resolve(appRoot, "vite.config.ts"),
@@ -127,6 +131,8 @@ test.beforeAll(async () => {
   } finally {
     if (saved === undefined) delete process.env.KANDELO_BROWSER_TEST_NO_HMR;
     else process.env.KANDELO_BROWSER_TEST_NO_HMR = saved;
+    if (savedPreview === undefined) delete process.env.KANDELO_PREVIEW_ORIGIN;
+    else process.env.KANDELO_PREVIEW_ORIGIN = savedPreview;
   }
   origin = `http://127.0.0.1:${(vite.httpServer!.address() as AddressInfo).port}`;
 });

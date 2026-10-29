@@ -3,6 +3,7 @@ import {
   gotoInPreview,
   gotoMachineOrSkip,
   machineAppPrefix,
+  machinePreviewOrigin,
   previewFrame,
 } from "./support/kandelo-machine";
 
@@ -21,52 +22,36 @@ async function dismissDockPopover(page: Page) {
 }
 
 /**
- * Read the cookie jar from the complete bridge authority record. The service
- * worker replaces this single record atomically inside the registration's
- * scope-derived cache, so restart never combines a prefix, session, and jar
- * from different transitions.
+ * WordPress's cookies live in the owning tab's per-machine jar
+ * (`lib/preview/cookie-jar.ts`) and are never handed to the browser: neither
+ * Kandelo's origin nor the preview origin may hold one. The whole browser
+ * store must stay empty, as it had to when the jar lived in Kandelo's
+ * service worker: every cookie a guest server sets is consumed by the jar.
  */
-async function readPersistedCookieJar(
+async function browserCookieNames(page: Page): Promise<string[]> {
+  return (await page.context().cookies()).map((cookie) => cookie.name);
+}
+
+/**
+ * Names and paths (never values) of the cookies the owning tab's jar holds
+ * for this machine. Development servers expose them to tests
+ * (`exposeCookieNamesForTests` in `kernel-host/machine-preview.ts`); the jar
+ * exists nowhere else.
+ */
+async function machineJarEntries(
   page: Page,
+  appPrefix: string,
 ): Promise<Array<{ name: string; path: string }>> {
-  return page.evaluate(async () => {
-    const registration = await navigator.serviceWorker.getRegistration();
-    if (!registration) {
-      throw new Error("WordPress page has no owning service worker registration");
-    }
-    const scopePath = new URL(registration.scope).pathname;
-    const cacheName =
-      `kandelo-sw:${encodeURIComponent(scopePath)}:bridge-v2`;
-    if (!(await caches.keys()).includes(cacheName)) {
-      throw new Error(`WordPress bridge cache is missing: ${cacheName}`);
-    }
-    const cache = await caches.open(cacheName);
-    const keys = await cache.keys();
-    // Each machine owns its own authority record, keyed
-    // `bridge-authority-v1/<machine-name>` (see bridgeAuthorityKeyFor in
-    // public/service-worker.js). Match the PREFIX, not a whole-segment
-    // equality on the old single-instance key — that equality silently
-    // matched nothing once routing became per-machine, which turns a real
-    // "cookies were not persisted" failure into an empty list that reads
-    // like one.
-    const authorityReqs = keys.filter((r) =>
-      new URL(r.url).pathname.includes("/bridge-authority-v1/"),
-    );
-    if (authorityReqs.length !== 1) {
-      throw new Error(
-        `expected exactly one machine authority record in ${cacheName}, got `
-          + JSON.stringify(keys.map((r) => new URL(r.url).pathname)),
-      );
-    }
-    const resp = await cache.match(authorityReqs[0]);
-    if (!resp) {
-      throw new Error(`machine authority record has no response body`);
-    }
-    const authority = JSON.parse(await resp.text());
-    return authority?.version === 1 && Array.isArray(authority.cookies)
-      ? authority.cookies
-      : [];
-  });
+  const name = /\/computer\/([a-z]+-[a-z]+-[a-z]+-[a-z2-7]{20})\/$/.exec(appPrefix)?.[1];
+  if (!name) throw new Error(`no machine name in ${appPrefix}`);
+  return page.evaluate((machine) => {
+    const registry = (window as unknown as {
+      __kandeloPreviewCookieNames?: Map<string, () => Array<{ name: string; path: string }>>;
+    }).__kandeloPreviewCookieNames;
+    const read = registry?.get(machine);
+    if (!read) throw new Error(`the development server exposes no cookie jar for ${machine}`);
+    return read();
+  }, name);
 }
 
 /**
@@ -114,7 +99,9 @@ test("@slow Kandelo WordPress/MariaDB mysqli transport benchmark returns", async
     previewFrame(page, MACHINE_TITLE).locator("body"),
   ).toContainText(/WordPress on Kandelo|Hello world/i, { timeout: 240_000 });
 
-  const result = await page.evaluate(async (prefix) => {
+  // The machine is reachable only from its own preview origin, so the
+  // benchmark request runs inside the preview frame.
+  const result = await previewFrame(page, MACHINE_TITLE).locator("body").evaluate(async (_body, prefix) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort("timeout"), 90_000);
     try {
@@ -186,7 +173,7 @@ test("@slow Kandelo WordPress/MariaDB preinstalled site logs into wp-admin", asy
   });
 });
 
-test("@slow Kandelo WordPress login survives a service worker restart", async ({
+test("@slow Kandelo WordPress login survives a preview service worker restart", async ({
   page,
   browserName,
 }) => {
@@ -196,38 +183,25 @@ test("@slow Kandelo WordPress login survives a service worker restart", async ({
   test.setTimeout(420_000);
 
   const { frame, appPrefix } = await loginToWpAdmin(page);
+  const previewOrigin = await machinePreviewOrigin(page, MACHINE_TITLE);
+  expect(previewOrigin).not.toBe(new URL(page.url()).origin);
 
-  // The auth cookie must be durably persisted to Cache Storage, not just held
-  // in the SW's in-memory jar. WordPress auth cookies are session cookies (no
-  // Expires), so before the fix they lived only in memory and were lost
-  // whenever the browser terminated the idle service worker — logging the user
-  // out a minute or two after signing in.
-  const persistedCookieNames = (await readPersistedCookieJar(page)).map((c) => c.name);
-  expect(
-    persistedCookieNames.some((name) => name.startsWith("wordpress_logged_in_")),
-    `persisted cookie jar: ${JSON.stringify(persistedCookieNames)}`,
-  ).toBe(true);
+  // The jar is the owning tab's; the browser's cookie store stays empty so
+  // machine cookies never outlive the machine or reach another origin.
+  expect(await browserCookieNames(page)).toEqual([]);
 
-  // The SW jar is the ONLY cookie store: the browser's own cookie store must
-  // stay empty so Kandelo cookies never accumulate there across sessions.
-  const browserCookies = await page.context().cookies();
-  expect(
-    browserCookies.length,
-    `browser cookie store: ${JSON.stringify(browserCookies.map((c) => c.name))}`,
-  ).toBe(0);
-
-  // Force the service worker to shut down, discarding all in-memory state
-  // (the cookie jar included). The next request revives it, which must
-  // restore the session from the persisted jar rather than fall back to
-  // logged-out.
+  // Force the preview service worker to shut down, discarding its in-memory
+  // bridge port. The next guest request revives it; it asks the owning tab
+  // for a fresh port, and the tab's jar keeps the session signed in.
   const client = await page.context().newCDPSession(page);
   await client.send("ServiceWorker.enable");
+  const scriptUrl = `${previewOrigin}${appPrefix.replace(/computer\/[^/]+\/$/, "")}preview-service-worker.js`;
   const versionId = await new Promise<string | null>((resolve) => {
     const timer = setTimeout(() => resolve(null), 15_000);
     client.on("ServiceWorker.workerVersionUpdated", (event) => {
       const running = (event.versions ?? []).find(
-        (v: { runningStatus?: string; versionId: string }) =>
-          v.runningStatus === "running",
+        (v: { runningStatus?: string; scriptURL?: string; versionId: string }) =>
+          v.runningStatus === "running" && v.scriptURL === scriptUrl,
       );
       if (running) {
         clearTimeout(timer);
@@ -235,12 +209,9 @@ test("@slow Kandelo WordPress login survives a service worker restart", async ({
       }
     });
   });
-  expect(versionId, "expected a running service worker to stop").not.toBeNull();
+  expect(versionId, `expected a running ${scriptUrl}`).not.toBeNull();
   await client.send("ServiceWorker.stopWorker", { versionId: versionId! });
 
-  // Re-enter wp-admin. This wakes the freshly-restarted SW, which restores
-  // the cookie jar from Cache Storage and forwards the auth cookie — so we
-  // land on the dashboard, not the login form.
   await gotoInPreview(frame, appPrefix, "wp-admin/index.php");
   await expect(frame.locator("#wpadminbar, #adminmenu, body.wp-admin").first()).toBeVisible({
     timeout: 180_000,
@@ -254,12 +225,13 @@ test("@slow Kandelo WordPress site editor loads assets through the bridge (no bl
   test.setTimeout(420_000);
 
   // The block/site editor mounts its canvas from a `blob:` URL. Blob documents
-  // are not controlled by the service worker, so without the blob-iframe
-  // interceptor their asset requests (load-scripts.php/load-styles.php) escape
-  // the bridge and 404 against the static origin. The interceptor rewrites
-  // such iframes to about:srcdoc, which the SW controls. Assert that no editor
-  // asset 404s and nothing under this machine's app prefix escapes to the
-  // origin. The prefix is minted per machine, so the listener reads it from a
+  // are not controlled by the preview service worker, so without the
+  // blob-iframe helper their asset requests (load-scripts.php/load-styles.php)
+  // escape the bridge to the preview origin's network. The helper hands the
+  // canvas HTML to the preview worker, which serves it as an ordinary
+  // controlled document; it also keeps the editor's keepalive preference
+  // writes on the bridge in Firefox. Assert that no editor asset fails and
+  // nothing under this machine's app prefix escapes to the network. The prefix is minted per machine, so the listener reads it from a
   // binding the login fills in; the window that matters starts after the reset
   // below, by which time it is set.
   let appPrefix = "";
@@ -295,33 +267,40 @@ test("@slow Kandelo WordPress site editor loads assets through the bridge (no bl
   expect(badAssets, `escaped/404 asset requests:\n${badAssets.join("\n")}`).toEqual([]);
 });
 
-test("@slow Kandelo WordPress auth cookie is retained for every cookie path", async ({
+test("@slow Kandelo WordPress auth cookies stay in the machine and keep every admin path signed in", async ({
   page,
 }) => {
   test.setTimeout(420_000);
 
-  await loginToWpAdmin(page);
+  const { frame, appPrefix } = await loginToWpAdmin(page);
 
   // WordPress sets the SAME auth cookie name for two paths: ADMIN_COOKIE_PATH
-  // (.../wp-admin) and PLUGINS_COOKIE_PATH (.../wp-content/plugins). Cookies are
-  // identified by name AND path (RFC 6265), so a cookie jar keyed by name alone
-  // collapses the two into one — dropping auth for the plugins subtree. Read the
-  // persisted jar and confirm the auth cookie survives for both paths.
-  const authCookiePaths = (await readPersistedCookieJar(page))
-    .filter(
-      (c) =>
-        c.name.startsWith("wordpress_") &&
-        !c.name.startsWith("wordpress_logged_in_") &&
-        c.name !== "wordpress_test_cookie",
+  // (.../wp-admin) and PLUGINS_COOKIE_PATH (.../wp-content/plugins). Cookies
+  // are identified by name AND path (RFC 6265), so a jar keyed by name alone
+  // collapses the two into one and drops auth for the plugins subtree. Read
+  // the machine's jar in the owning tab and confirm both survive.
+  const authCookiePaths = (await machineJarEntries(page, appPrefix))
+    .filter((cookie) =>
+      cookie.name.startsWith("wordpress_") &&
+      !cookie.name.startsWith("wordpress_logged_in_") &&
+      cookie.name !== "wordpress_test_cookie"
     )
-    .map((c) => c.path);
+    .map((cookie) => cookie.path);
+  expect(
+    authCookiePaths.some((path) => path.includes("/wp-admin")),
+    `auth cookie paths: ${JSON.stringify(authCookiePaths)}`,
+  ).toBe(true);
+  expect(
+    authCookiePaths.some((path) => path.includes("/wp-content/plugins")),
+    `auth cookie paths: ${JSON.stringify(authCookiePaths)}`,
+  ).toBe(true);
 
-  expect(
-    authCookiePaths.some((p) => p.includes("/wp-admin")),
-    `auth cookie paths: ${JSON.stringify(authCookiePaths)}`,
-  ).toBe(true);
-  expect(
-    authCookiePaths.some((p) => p.includes("/wp-content/plugins")),
-    `auth cookie paths: ${JSON.stringify(authCookiePaths)}`,
-  ).toBe(true);
+  // None of them reached the browser's own store, and admin pages stay
+  // signed in through the jar.
+  expect(await browserCookieNames(page)).toEqual([]);
+  await gotoInPreview(frame, appPrefix, "wp-admin/plugins.php");
+  await expect(frame.locator("body.plugins-php, body.wp-admin").first()).toBeVisible({
+    timeout: 180_000,
+  });
+  await expect(frame.locator("#loginform")).toHaveCount(0);
 });

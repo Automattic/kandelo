@@ -205,6 +205,7 @@ if [ "${1:-}" = run ] && [ "${2:-}" = build ]; then
         dist/pages/network
     : > dist/index.html
     : > dist/pages/kandelo/index.html
+    : > dist/pages/kandelo/viewer.html
     : > dist/pages/network/index.html
     : > dist/service-worker.js
 fi
@@ -416,6 +417,7 @@ check_premerge_browser_production_contract() {
     for output in \
         'index.html' \
         'pages/kandelo/index.html' \
+        'pages/kandelo/viewer.html' \
         'pages/network/index.html' \
         'service-worker.js'
     do

@@ -46,12 +46,23 @@ a single-file update. Choose the definition that owns a name before parsing
 it. A malformed user override must remain disabled rather than unexpectedly
 restoring a different shipped command; removal can restore the fallback.
 
-Distinguish guest account permissions from browser origin authority. The
-native WebMCP API lets same-origin frames discover and invoke tools.
-Registering only in the app document and limiting a service worker's scope
-do not isolate guest preview scripts from that origin. Keep this browser
-trust boundary explicit; do not claim preview isolation without testing an
-actual origin boundary.
+Distinguish guest account permissions from browser origin authority. Guest
+web pages run on a separate preview origin, served by its own service worker
+through the owning tab's `PreviewBridgeHost` (`apps/browser-demos/lib/preview/`,
+`apps/browser-demos/preview-origin/`). Never serve guest bytes from the app's
+origin, never add a same-origin fallback when a deployment has no preview
+origin (fail with the explicit error), and keep the preview frame sandboxed
+without top navigation. Treat every message from the preview origin as
+untrusted: guest pages share that origin, can script the relay frame and
+forge its messages, and are not isolated from each other. The preview
+worker must not route by URL alone: it refuses a request it attributes to
+one machine's page for another machine's address, and its broadcasts name
+a machine only by a hash of its name; keep both when changing the worker.
+Keep the guest's cookie jar in the owning tab, never in a service worker
+or persistent storage. Changes to the preview path must keep
+`apps/browser-demos/test/preview-isolation.spec.ts` and
+`preview-service-worker.spec.ts` passing on all three engines; see
+`docs/browser-support.md`, "Guest web previews run on their own origin".
 
 The service worker's credential gate is a second gate behind the kernel
 worker's, not a replacement for it. Keep it accepting tags only from the
@@ -59,7 +70,8 @@ kernel worker's entry script (whose URL the build injects), keep its
 answers in memory only, never let the grant tag leave the browser, and
 never serve a CORS proxy's answer as anything but `fetch()` data. Do not
 describe it as protecting against code the app's origin runs: that code
-can start its own kernel worker. Its names mirror host constants; the parity
+can start its own kernel worker. The app's origin is trusted because guest
+previews do not run on it. Its names mirror host constants; the parity
 test in `host/test/browser-cors-proxy-service-worker-parity.test.ts` and
 `apps/browser-demos/test/credential-gate.spec.ts` on all three engines
 cover it (see `docs/browser-support.md`, "Per-process credential

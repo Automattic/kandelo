@@ -1,5 +1,4 @@
 import { WebPreviewConnection } from "./web-preview-connection";
-import { observePreviewRequest } from "../panes/preview-progress";
 // Builds a LiveKernelHost over a real BrowserKernel for the Kandelo page.
 
 import { BrowserKernel } from "@host/browser-kernel-host";
@@ -21,7 +20,10 @@ import {
   experimentalTerminalSessionPolicy,
 } from "../../../../../web-libs/kandelo-session/src/experimental-terminal-session";
 import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
-import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
+import { openMachinePreview } from "./machine-preview";
+import { configuredPreviewOrigin } from "../../../lib/preview/config";
+import { PreviewRelay } from "../../../lib/preview/preview-relay";
+import type { PreviewBridgeHost } from "../../../lib/preview/preview-bridge";
 import {
   imageOwnedLazyAssetDirectory,
   type ImageOwnedRuntimeLazyAssets,
@@ -47,7 +49,6 @@ import {
   type GalleryItem,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { validateBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
-import { webPreviewForMachineChromeMessage } from "../../../../../web-libs/kandelo-session/src/machine-chrome-message";
 import { resolveInitArgv } from "../../../../../web-libs/kandelo-session/src/init-boot-identity";
 import {
   genericDemoPresentation,
@@ -487,12 +488,13 @@ interface WebReadinessState {
   failed: boolean;
 }
 
-// The public URL segment for a booted machine's web surface:
-// <base>/computer/<name>/. Machines are "computers" in the product vocabulary;
-// the per-machine <name> is minted by the service worker at bridge handshake.
-// APP_PREFIX here is only the pre-mint placeholder (used by error states that
-// never mount the iframe); live web previews use the minted /computer/<name>/.
-const APP_PREFIX = import.meta.env.BASE_URL + "computer/";
+// A booted machine's web surface lives at <scope>computer/<name>/ on the
+// deployment's preview origin (guest pages) and on Kandelo's origin (the
+// viewer shell). The owning tab mints <name> when it opens the preview.
+// Error states that never mount a frame carry this placeholder.
+const NO_PREVIEW_URL = "about:blank";
+// Fallback guest prefix for servers that read no forwarded prefix
+// (WordPress's WP_APP_PATH); the bridge always sends the minted one.
 const APP_PATH = import.meta.env.BASE_URL + "computer";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
@@ -1123,7 +1125,7 @@ function reportInitError(
   if (webPaneLabel !== null) {
     host.setWebPreview({
       label: webPaneLabel,
-      url: APP_PREFIX,
+      url: NO_PREVIEW_URL,
       port: HTTP_PORT,
       status: "error",
       message,
@@ -1422,14 +1424,10 @@ async function bootProfile(
   tick("instantiating kernel...");
   const seenPorts = new Set<number>();
   let bridgeSent = false;
-  // The service worker mints this machine's app prefix (/base/computer/<name>/) and
-  // returns it from the bridge handshake. Every web-preview URL must use the
-  // minted value: the bare /computer/ no longer routes to any machine, so the SW
-  // serves it as the Kandelo shell — mounting the whole app inside its own
-  // web-preview iframe and recursing (stacked docks). Until the handshake
-  // returns, this holds the base prefix (only used by error states, which
-  // never mount the iframe).
-  let machineAppPrefix = APP_PREFIX;
+  // This machine's web preview, once its bridge is bound on the preview
+  // origin. Every web-preview URL comes from it (the minted name); until then
+  // only error states, which never mount a frame, set the preview.
+  let machinePreview: PreviewBridgeHost | null = null;
   maybeUpdateWebReadiness = () => {
     maybeMarkWebReady(
       host,
@@ -1438,7 +1436,7 @@ async function bootProfile(
       requiredServices,
       seenPorts,
       bridgeSent,
-      machineAppPrefix,
+      machinePreview,
       webReadiness,
       dinitBootTracker,
       tick,
@@ -1526,7 +1524,7 @@ async function bootProfile(
     assertCurrent();
     host.attachKernel(kernel);
     let disposeLocalWebBridge = () => {};
-    const previewConnection = new WebPreviewConnection(host, kernel, SW_URL, SW_SCOPE, isCurrent);
+    const previewConnection = new WebPreviewConnection(host, kernel, isCurrent);
     host.setWebPreviewHandler({ open: target => previewConnection.open(target), closeNetwork: () => previewConnection.closeNetwork(),
       dispose: () => { previewConnection.dispose(); disposeLocalWebBridge(); } });
     setWebMcpSession(host, agentIdentity());
@@ -1537,62 +1535,48 @@ async function bootProfile(
     if (web !== null) {
       tick("initializing HTTP bridge...");
       try {
-        // Unique id for this machine instance. Scopes the service worker's
-        // cookie jar so sessions never share cookies. Temporary instances get a
-        // fresh random id per boot; when machines become persistable this is
-        // where their durable id would be passed instead.
-        const sessionId = crypto.randomUUID();
-        // The service worker mints the machine name and app prefix; the
-        // web-preview URL comes from the returned prefix, not a static
-        // constant, so this tab addresses its own machine.
-        const { name, appPrefix, dispose } = await setupServiceWorkerFetchBridge(
-          SW_URL,
-          SW_SCOPE,
-          kernel,
-          HTTP_PORT,
-          sessionId,
-          {
-            timeoutMs: 90_000,
-            onRequestStart: (request) => isCurrent() ? observePreviewRequest(host, request.url) : undefined,
-            debugLog: (line) => tick(line),
-            onPendingRequests: (count) => {
-              if (isCurrent()) host.setWebPreviewPendingRequests(count);
-            },
-          },
-        );
-        assertCurrent();
-        disposeLocalWebBridge = dispose;
-        // Every later web-preview update (readiness "running", probe URL) must
-        // address this machine's minted prefix, not the bare /computer/ constant.
-        machineAppPrefix = appPrefix;
+        // The preview bridge mints the machine's name, binds it in the
+        // preview origin's service worker, and answers guest requests with
+        // fetchInKernel. The web-preview URL is that machine's root on the
+        // preview origin; guest pages never run on Kandelo's origin.
+        const preview = await openMachinePreview(host, kernel, {
+          port: HTTP_PORT,
+          timeoutMs: 90_000,
+          isCurrent,
+          debugLog: (line) => tick(line),
+        });
+        if (!isCurrent()) {
+          preview.dispose();
+          assertCurrent();
+        }
+        machinePreview = preview;
         host.setWebPreview({
           label: machineTitle,
-          url: appPrefix,
+          url: preview.url,
+          viewerUrl: preview.viewerUrl,
           port: HTTP_PORT,
           status: "starting",
           message: "Waiting for services",
         });
         bridgeSent = true;
         maybeUpdateWebReadiness();
-        // The service worker pushes machine-offline (owning tab closed) and
-        // machine-reconnecting (transient SW restart) to viewer clients. React
-        // to pushes for THIS machine's SW-minted name only, and let the shared
-        // mapping decide whether the pane should change — it enforces the
-        // strict name match, the isCurrent() supersession guard, and preserves
-        // the preview identity while switching status/message.
-        const onMachineMessage = (event: MessageEvent) => {
-          const next = webPreviewForMachineChromeMessage({
-            data: (event as MessageEvent).data,
-            mintedName: name,
-            current: host.getWebPreview(),
-            isCurrent,
-          });
-          if (next !== null) host.setWebPreview(next);
-        };
-        navigator.serviceWorker.addEventListener("message", onMachineMessage);
+        // The preview origin reports a machine offline (no tab answered for
+        // it). Any page on the preview origin can forge that message, and
+        // this tab is the machine's owner: it never takes its own live
+        // machine offline on that word, but checks its own port to the
+        // preview worker and binds it again (with the machine's secret) if
+        // it is gone. A rebind the preview origin never confirms shows as an
+        // error in the pane (see openMachinePreview).
+        const previewOrigin = configuredPreviewOrigin();
+        const stopStatus = previewOrigin === null
+          ? () => {}
+          : PreviewRelay.forPage(previewOrigin, import.meta.env.BASE_URL)
+            .onMachineStatus(preview.name, () => {
+              if (isCurrent()) void preview.verify();
+            });
         disposeLocalWebBridge = () => {
-          navigator.serviceWorker.removeEventListener("message", onMachineMessage);
-          dispose();
+          stopStatus();
+          preview.dispose();
         };
       } catch (err) {
         if (!isCurrent()) throw err;
@@ -1600,10 +1584,10 @@ async function bootProfile(
         tick(`HTTP bridge failed: ${message}`);
         host.setWebPreview({
           label: machineTitle,
-          url: APP_PREFIX,
+          url: NO_PREVIEW_URL,
           port: HTTP_PORT,
           status: "error",
-          message: "HTTP bridge unavailable",
+          message,
         });
       }
     }
@@ -2131,7 +2115,7 @@ function maybeMarkWebReady(
   requiredServices: Set<string>,
   seenPorts: Set<number>,
   bridgeSent: boolean,
-  appPrefix: string,
+  preview: PreviewBridgeHost | null,
   readiness: WebReadinessState,
   dinitBootTracker: DinitBootStatusTracker,
   tick: (msg: string) => void,
@@ -2143,7 +2127,8 @@ function maybeMarkWebReady(
   const servicesReady = [...requiredServices].every((serviceName) =>
     dinitBootTracker.hasSucceeded(serviceName),
   );
-  if (!portsReady || !servicesReady || !bridgeSent) return;
+  if (!portsReady || !servicesReady || !bridgeSent || preview === null) return;
+  const urls = { url: preview.url, viewerUrl: preview.viewerUrl };
   const readyMessage = web.probeHttp
     ? "HTTP bridge ready"
     : "Service stack ready";
@@ -2151,7 +2136,7 @@ function maybeMarkWebReady(
     if (!isCurrent()) return;
     host.setWebPreview({
       label,
-      url: appPrefix,
+      ...urls,
       port: HTTP_PORT,
       status: "running",
       message: readyMessage,
@@ -2163,7 +2148,7 @@ function maybeMarkWebReady(
     tick("Web preview ready");
     host.setWebPreview({
       label,
-      url: appPrefix,
+      ...urls,
       port: HTTP_PORT,
       status: "running",
       message: readyMessage,
@@ -2172,17 +2157,16 @@ function maybeMarkWebReady(
   }
   if (readiness.probing) return;
   readiness.probing = true;
-  const probeUrl = previewUrlForPath(appPrefix, web.probePath ?? "/");
   host.setWebPreview({
     label,
-    url: appPrefix,
+    ...urls,
     port: HTTP_PORT,
     status: "starting",
     message: web.probePath
       ? "Waiting for application readiness"
       : "Waiting for HTTP response",
   });
-  void waitForHttpPreview(probeUrl, 90_000, {
+  void waitForHttpPreview(preview, web.probePath ?? "/", 90_000, {
     requireOk: Boolean(web.probePath),
   })
     .then(
@@ -2192,7 +2176,7 @@ function maybeMarkWebReady(
         tick("HTTP preview ready");
         host.setWebPreview({
           label,
-          url: appPrefix,
+          ...urls,
           port: HTTP_PORT,
           status: "running",
           message: "HTTP bridge ready",
@@ -2203,7 +2187,7 @@ function maybeMarkWebReady(
         const message = err instanceof Error ? err.message : String(err);
         host.setWebPreview({
           label,
-          url: appPrefix,
+          ...urls,
           port: HTTP_PORT,
           status: "error",
           message: "HTTP preview did not become ready",
@@ -2217,19 +2201,27 @@ function maybeMarkWebReady(
     });
 }
 
+/**
+ * Wait until the machine's web server answers `path`. The probe goes through
+ * the same preview bridge as the guest frame (cookie jar, forwarded headers,
+ * redirects inside the machine), so it sees what the frame will see.
+ */
 async function waitForHttpPreview(
-  url: string,
+  preview: PreviewBridgeHost,
+  path: string,
   timeoutMs = 90_000,
   options: { requireOk?: boolean } = {},
 ): Promise<void> {
   const started = performance.now();
   let delayMs = 250;
   let lastError = "";
+  const probePath = path.startsWith("/") ? path : `/${path}`;
 
   while (performance.now() - started < timeoutMs) {
     try {
-      const response = await fetchWithTimeout(url, 5_000);
-      if (options.requireOk ? response.ok : response.status < 500) return;
+      const response = await withTimeout(preview.probe(probePath), 5_000);
+      const ok = response.status >= 200 && response.status < 300;
+      if (options.requireOk ? ok : response.status < 500) return;
       lastError = `HTTP ${response.status}`;
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
@@ -2241,27 +2233,14 @@ async function waitForHttpPreview(
   throw new Error(lastError || "timed out");
 }
 
-function previewUrlForPath(appPrefix: string, path: string): string {
-  const root = new URL(appPrefix, window.location.href);
-  const normalized = path.startsWith("/") ? path.slice(1) : path;
-  return new URL(normalized || ".", root).href;
-}
-
-async function fetchWithTimeout(
-  url: string,
-  timeoutMs: number,
-): Promise<Response> {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, {
-      cache: "no-store",
-      redirect: "follow",
-      signal: controller.signal,
-    });
-  } finally {
-    window.clearTimeout(timer);
-  }
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error("timed out")), timeoutMs);
+    promise.then(
+      (value) => { window.clearTimeout(timer); resolve(value); },
+      (error) => { window.clearTimeout(timer); reject(error); },
+    );
+  });
 }
 
 function sleep(ms: number): Promise<void> {
