@@ -148,14 +148,23 @@ export function releaseSurfaceResources(b: GlBinding): void {
   selectSurfaceResources(b, null, null);
 }
 
+/** An active frame keeps its captured allocation until dispatch ends. A
+ * logical resize must not replace the physical selectors underneath it. */
+export function surfaceExecutionUsesFramebuffer(s: GlSurfaceResources, owner: GlBinding,
+  framebuffer: WebGLFramebuffer | null, read: boolean): boolean {
+  if (!framebuffer) return false;
+  for (const b of s.users) if ((read ? b.executionDrawable?.readFramebuffer : b.executionDrawable?.drawFramebuffer) === framebuffer) return true;
+  return (read ? owner.executionDrawable?.readFramebuffer : owner.executionDrawable?.drawFramebuffer) === framebuffer;
+}
+
 /** A resize replaces native allocation, not the logical drawable. Update
  * every selecting context, including one which currently uses a user FBO. */
 export function prepareSurfaceTargetReplacement(s: GlSurfaceResources, target: GlPresentTarget, owner: GlBinding): () => void {
   const previous = s.renderTargetFbo;
   const size = {width:target.w,height:target.h};
   const updates = [...new Set([...s.users,owner])].map(b => ({b,
-    draw:(b.drawSurface === s || (b === owner && !b.drawSurface)) && b.shadow.fbo === previous,
-    read:(b.readSurface === s || (b === owner && !b.readSurface)) && b.shadow.readFbo === previous,
+    draw:(b.drawSurface === s || (b === owner && !b.drawSurface)) && b.shadow.fbo === previous && b.executionDrawable?.drawFramebuffer !== previous,
+    read:(b.readSurface === s || (b === owner && !b.readSurface)) && b.shadow.readFbo === previous && b.executionDrawable?.readFramebuffer !== previous,
   }));
   // Reserve every selecting context update before native allocation. Commit
   // must not fail after replacing the physical default-framebuffer bindings.
@@ -178,8 +187,8 @@ export function prepareBorrowedSurfaceTarget(owner: GlBinding,
   const size = {width:target.w,height:target.h};
   const users = new Set([...s.users,owner]);
   const updates = [...users].map(b => ({b,
-    draw: (b.drawSurface === s || (b === owner && !b.drawSurface)) && b.shadow.fbo === previous,
-    read: (b.readSurface === s || (b === owner && !b.readSurface)) && b.shadow.readFbo === previous,
+    draw: (b.drawSurface === s || (b === owner && !b.drawSurface)) && b.shadow.fbo === previous && b.executionDrawable?.drawFramebuffer !== previous,
+    read: (b.readSurface === s || (b === owner && !b.readSurface)) && b.shadow.readFbo === previous && b.executionDrawable?.readFramebuffer !== previous,
     drawable: b.currentDrawable?.drawSurfaceId === s.surfaceId ? {...b.currentDrawable,width:target.w,height:target.h} : b.currentDrawable,
   }));
   return () => {

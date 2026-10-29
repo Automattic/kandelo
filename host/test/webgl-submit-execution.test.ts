@@ -5,6 +5,9 @@ import { SubmitFrame, SubmitQueue } from "../src/webgl/submit-queue.js";
 import { drainSubmitQueue } from "../src/webgl/submit-drain.js";
 import { defaultFramebuffer } from "../src/webgl/framebuffer.js";
 import { resizeSurfaceTarget } from "../src/webgl/present-target.js";
+import { setupMainForward, type GlForwardMessage } from "../src/webgl/main-forward.js";
+import { createGlForwardQueryMailbox, prepareGlForwardQuery, waitForGlForwardQuery } from "../src/webgl/main-forward-query.js";
+import { OP_CLEAR, QOP_GET_ERROR } from "../src/webgl/ops.js";
 import { applyCurrentDrawable } from "../src/webgl/current.js";
 
 function fixture() {
@@ -163,4 +166,191 @@ it("failed native retirement remains retryable without deleting an accepted pref
   f.queue.retryRetirements();
   expect(f.deleted.filter(value => value === old.fbo)).toHaveLength(1);
   f.registry.unbind(7);
+});
+
+it("in-frame resize preserves both accepted native and logical default selectors", () => {
+  const f = fixture(), old = f.binding.presentTarget!;
+  let draw: WebGLFramebuffer | null = null, read: WebGLFramebuffer | null = null;
+  const get = f.gl.getParameter.bind(f.gl);
+  f.gl.getParameter = (p: number) => p === 0x8caa ? read : p === 0x8ca6 ? draw : get(p);
+  f.gl.bindFramebuffer = (target, value) => {
+    if (target === 0x8d40 || target === 0x8ca9) draw = value;
+    if (target === 0x8d40 || target === 0x8ca8) read = value;
+  };
+  f.queue.enqueue(f.binding, frame());
+  expect(drainSubmitQueue(f.queue, () => f.muxer, b => {
+    expect([draw, read]).toEqual([old.fbo, old.fbo]);
+    expect(resizeSurfaceTarget(b, 9, 7)).toBe(true);
+    expect([draw, read]).toEqual([old.fbo, old.fbo]);
+    expect([b.shadow.fbo, b.shadow.readFbo]).toEqual([old.fbo, old.fbo]);
+    expect(defaultFramebuffer(b)).toBe(old.fbo);
+  })).toBe(0);
+  expect([f.binding.shadow.fbo, f.binding.shadow.readFbo])
+    .toEqual([f.binding.presentTarget!.fbo, f.binding.presentTarget!.fbo]);
+  f.registry.unbind(7);
+});
+
+it("independent read allocation retains its own dimensions and lifetime", () => {
+  const f = fixture();
+  f.registry.bind({ pid: 7, sessionId: 12, cmdbufAddr: 0, cmdbufLen: 0 });
+  const reader = f.registry.get(7, 12)!;
+  reader.gl = f.gl; reader.contextId = 2; reader.surfaceId = 32;
+  expect(resizeSurfaceTarget(reader, 2, 5)).toBe(true);
+  expect(applyCurrentDrawable(f.binding, { drawSurfaceId: 31, readSurfaceId: 32, width: 4, height: 3 },
+    { draw: f.binding.surface, read: reader.surface })).toBe(true);
+  const oldRead = reader.presentTarget!;
+  f.queue.enqueue(f.binding, frame());
+  expect(resizeSurfaceTarget(reader, 8, 10)).toBe(true);
+  f.registry.destroySurface(7, 12);
+  expect(f.live.has(oldRead.fbo)).toBe(true);
+  expect(drainSubmitQueue(f.queue, () => f.muxer, b => {
+    expect(defaultFramebuffer(b, true)).toBe(oldRead.fbo);
+    expect([b.executionDrawable!.readWidth, b.executionDrawable!.readHeight]).toEqual([2, 5]);
+    expect(defaultFramebuffer(b)).toBe(f.binding.presentTarget!.fbo);
+  })).toBe(0);
+  expect(f.live.has(oldRead.fbo)).toBe(false);
+  f.registry.unbind(7);
+});
+
+it("throwing cleanup receipts cannot replace the admission failure", () => {
+  const f = fixture();
+  let blocked = true;
+  const release = vi.fn(() => { if (blocked) throw new Error("cleanup callback failed"); return true; });
+  const queue = new SubmitQueue(undefined, b => ({ binding:b, admitted:false, run: work => work(), release }));
+  expect(() => queue.enqueue(f.binding, frame())).toThrow("GL drawable capture failed");
+  expect(queue.isEmpty()).toBe(true);
+  expect(queue.pendingRetirements).toBe(1);
+  blocked = false;
+  queue.removeSession(7, 11);
+  expect(queue.pendingRetirements).toBe(0);
+  expect(release).toHaveBeenCalled();
+  f.registry.unbind(7);
+});
+
+it("empty repeated session purges retry failed native retirement receipts", () => {
+  const f = fixture(), old = f.binding.presentTarget!;
+  f.queue.enqueue(f.binding, frame());
+  expect(resizeSurfaceTarget(f.binding, 8, 6)).toBe(true);
+  const destroy = f.gl.deleteFramebuffer.bind(f.gl);
+  let blocked = true;
+  f.gl.deleteFramebuffer = value => { if (value === old.fbo && blocked) throw new Error("blocked"); destroy(value); };
+  f.queue.removeSession(7, 11);
+  expect(f.queue.isEmpty()).toBe(true);
+  expect(f.queue.pendingRetirements).toBe(1);
+  blocked = false;
+  f.queue.removeSession(7, 11);
+  expect(f.live.has(old.fbo)).toBe(false);
+  expect(f.queue.pendingRetirements).toBe(0);
+  f.registry.unbind(7);
+});
+
+it("unchanged consecutive execution selectors do not force full logical state replay", () => {
+  const f = fixture(), replay = vi.fn();
+  f.gl.viewport = replay;
+  f.queue.enqueue(f.binding, frame()); f.queue.enqueue(f.binding, frame());
+  expect(drainSubmitQueue(f.queue, () => f.muxer, () => 0)).toBe(0);
+  expect(replay).toHaveBeenCalledTimes(1);
+  f.registry.unbind(7);
+});
+
+it("reentrant drain leaves later frames queued until the current frame tail completes", () => {
+  const f = fixture(), events: string[] = [];
+  f.queue.enqueue(f.binding, frame());
+  const dispatch = (b: GlBinding) => {
+    if (events.length) { events.push("later"); return; }
+    events.push("prefix");
+    expect(resizeSurfaceTarget(b, 8, 6)).toBe(true);
+    // Admission observes the new logical target, not the active old snapshot.
+    f.queue.enqueue(b, frame());
+    expect(drainSubmitQueue(f.queue, () => f.muxer, dispatch)).toBe(0);
+    events.push("tail");
+  };
+  expect(drainSubmitQueue(f.queue, () => f.muxer, dispatch)).toBe(0);
+  expect(events).toEqual(["prefix", "tail", "later"]);
+  expect(f.queue.isEmpty()).toBe(true);
+  f.registry.unbind(7);
+});
+
+
+it.each([false, true])("forwarded submit preserves resize ownership or rejects partial capture (reject=%s)", reject => {
+  const f = fixture();
+  let listener: ((e: MessageEvent) => void) | null = null;
+  const worker = { addEventListener: (_type: "message", callback: (e: MessageEvent) => void) => { listener = callback; },
+    removeEventListener: () => { listener = null; } };
+  const fire = (message: GlForwardMessage) => listener!({ data:message } as MessageEvent);
+  const canvas = { width:4, height:3, getContext: () => f.gl } as unknown as HTMLCanvasElement;
+  const dispose = setupMainForward(worker,canvas,8);
+  let captured: GlBinding | null = null;
+  const original = GlContextRegistry.prototype.retainSubmitExecution;
+  const capture = vi.spyOn(GlContextRegistry.prototype,"retainSubmitExecution").mockImplementation(function(this: GlContextRegistry, b, muxer) {
+    captured = b; b.surfaceId = 71;
+    expect(resizeSurfaceTarget(b,4,3)).toBe(true);
+    expect(applyCurrentDrawable(b,{drawSurfaceId:71,readSurfaceId:71,width:4,height:3})).toBe(true);
+    if (reject) b.readSurface = {...b.surface,renderTargetFbo:{} as WebGLFramebuffer,presentTarget:null};
+    return original.call(this,b,muxer);
+  });
+  const clears: WebGLFramebuffer[] = [];
+  let accepted: WebGLFramebuffer | null = null;
+  f.gl.clear = () => {
+    const b = captured!;
+    accepted ??= defaultFramebuffer(b);
+    clears.push(defaultFramebuffer(b)!);
+    expect(resizeSurfaceTarget(b,8,6)).toBe(true);
+    expect(b.shadow.fbo).toBe(accepted);
+  };
+  try {
+    const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox,0);
+    fire({type:"gl_forward_create_context",pid:8,sessionId:0,mailbox});
+    expect(waitForGlForwardQuery(mailbox).rc).toBe(0);
+    const bytes = new Uint8Array(16), view = new DataView(bytes.buffer);
+    for (const offset of [0,8]) { view.setUint16(offset,OP_CLEAR,true); view.setUint16(offset+2,4,true); view.setUint32(offset+4,0x4000,true); }
+    fire({type:"gl_forward_submit",pid:8,sessionId:0,bytes});
+    expect(clears).toEqual(reject ? [] : [accepted,accepted]);
+    const query = createGlForwardQueryMailbox(); prepareGlForwardQuery(query,4);
+    fire({type:"gl_forward_query",pid:8,sessionId:0,op:QOP_GET_ERROR,input:new Uint8Array(),mailbox:query});
+    const result = waitForGlForwardQuery(query);
+    expect(result.rc).toBe(4);
+    expect(new DataView(result.bytes.buffer,result.bytes.byteOffset,4).getUint32(0,true)).toBe(reject ? 0x502 : 0);
+    if (reject) {
+      const b = captured!, old = b.presentTarget!;
+      b.readSurface = b.surface;
+      expect(resizeSurfaceTarget(b,8,6)).toBe(true);
+      expect(f.live.has(old.fbo)).toBe(false);
+    } else expect(f.live.has(accepted!)).toBe(false);
+  } finally { capture.mockRestore(); dispose(); f.registry.unbind(7); }
+});
+
+
+it("a throwing consumed receipt does not block peer dispatch or cleanup", () => {
+  const f = fixture();
+  let serial = 0, blocked = true;
+  const retired: number[] = [], ran: number[] = [];
+  const queue = new SubmitQueue(undefined,b => {
+    const id = ++serial;
+    return { binding:b, admitted:true, run: work => { ran.push(id); return work(); }, release: () => {
+      if (id === 1 && blocked) throw new Error("first receipt blocked");
+      retired.push(id); return true;
+    } };
+  });
+  queue.enqueue(f.binding,frame()); queue.enqueue(f.binding,frame());
+  expect(drainSubmitQueue(queue,() => f.muxer,() => 0)).toBe(0);
+  expect(ran).toEqual([1,2]); expect(retired).toEqual([2]);
+  expect(queue.pendingRetirements).toBe(1);
+  blocked = false; queue.removePid(7);
+  expect(retired).toEqual([2,1]); expect(queue.pendingRetirements).toBe(0);
+  f.registry.unbind(7);
+});
+
+it("cancelling retained storage captures flags for the selected peer's error owner", () => {
+  const f = fixture();
+  f.registry.bind({pid:8,sessionId:1,cmdbufAddr:0,cmdbufLen:0});
+  const peer = f.registry.get(8,1)!; peer.gl = f.gl; peer.contextId = 2;
+  f.queue.enqueue(f.binding,frame());
+  expect(resizeSurfaceTarget(f.binding,8,6)).toBe(true);
+  f.muxer.switchTo(peer);
+  let error = 0x500;
+  f.gl.getError = () => { const pending = error; error = 0; return pending; };
+  f.queue.removePid(7);
+  expect(peer.errors).toEqual([0x500]); expect(f.binding.errors).toEqual([]);
+  f.registry.unbind(7); f.registry.unbind(8);
 });

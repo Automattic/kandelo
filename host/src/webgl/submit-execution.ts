@@ -1,7 +1,7 @@
 import type { GlBinding, GlContextExecutionLease, GlContextRegistry } from "./registry.js";
 import type { GlMuxer } from "./muxer.js";
 import type { GlDrawableBinding } from "./current.js";
-import { defaultFramebuffer, isDefaultFramebuffer } from "./framebuffer.js";
+import { defaultFramebuffer, logicalDefaultFramebuffer, isDefaultFramebuffer } from "./framebuffer.js";
 import { retainSurfaceStorage, type GlSurfaceStorageLease } from "./surface-resources.js";
 
 /** Per-work selectors contain native handles and copied scalars only. The
@@ -50,8 +50,8 @@ export class GlSubmitExecution {
       const current = binding.currentDrawable;
       const drawable = current ? Object.freeze({ drawSurfaceId: current.drawSurfaceId,
         readSurfaceId: current.readSurfaceId, width: current.width, height: current.height }) : null;
-      const drawFramebuffer = defaultFramebuffer(binding);
-      const readFramebuffer = defaultFramebuffer(binding, true);
+      const drawFramebuffer = logicalDefaultFramebuffer(binding);
+      const readFramebuffer = logicalDefaultFramebuffer(binding, true);
       const draw = binding.drawSurface ?? binding.surface;
       const read = binding.readSurface ?? binding.surface;
       if (drawable?.drawSurfaceId !== 0 && drawFramebuffer) {
@@ -95,20 +95,25 @@ export class GlSubmitExecution {
     const previous = b.executionDrawable;
     const drawDefault = isDefaultFramebuffer(b, b.shadow.fbo);
     const readDefault = isDefaultFramebuffer(b, b.shadow.readFbo);
+    const selectorsChanged = (drawDefault && b.shadow.fbo !== selectors.drawFramebuffer)
+      || (readDefault && b.shadow.readFbo !== selectors.readFramebuffer);
     b.executionDrawable = selectors;
     if (drawDefault) b.shadow.fbo = selectors.drawFramebuffer;
     if (readDefault) b.shadow.readFbo = selectors.readFramebuffer;
-    muxer.invalidateExecutionSelection();
-    try { return work(); }
+    try {
+      if (selectorsChanged) muxer.invalidateExecutionSelection();
+      return work();
+    }
     finally {
       // GL commands can select a user FBO. Preserve that state while mapping
       // the temporary default back onto the live logical drawable afterward.
+      const drawBefore = b.shadow.fbo, readBefore = b.shadow.readFbo;
       if (b.executionDrawable === selectors) {
         b.executionDrawable = previous;
         if (b.shadow.fbo === selectors.drawFramebuffer) b.shadow.fbo = defaultFramebuffer(b);
         if (b.shadow.readFbo === selectors.readFramebuffer) b.shadow.readFbo = defaultFramebuffer(b, true);
       }
-      muxer.invalidateExecutionSelection();
+      if (drawBefore !== b.shadow.fbo || readBefore !== b.shadow.readFbo) muxer.invalidateExecutionSelection();
     }
   }
 

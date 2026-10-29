@@ -63,7 +63,10 @@ export class SubmitFrame {
   retryCleanup(): boolean {
     if (this.#running) return false;
     if (!this.#execution) return true;
-    if (!this.#execution.release()) return false;
+    // Cleanup is a retryable receipt, including a custom owner that throws.
+    // It must not replace the dispatch result or abort retirement of peers.
+    try { if (!this.#execution.release()) return false; }
+    catch { return false; }
     this.#execution = null;
     return true;
   }
@@ -191,6 +194,7 @@ export class SubmitQueue {
   removePid(pid: number): void { this.removeSession(pid); }
 
   removeSession(pid: number, sessionId?: number): void {
+    this.retryRetirements();
     if (sessionId !== undefined) sessionId >>>= 0;
     for (const [key, entry] of Array.from(this.byKey)) {
       if (entry.binding.pid !== pid || (sessionId !== undefined && entry.binding.sessionId !== sessionId)) continue;
@@ -212,6 +216,14 @@ export class SubmitQueue {
 
   retryRetirements(): void {
     for (const frame of this.ownedFrames) this.complete(frame);
+  }
+
+  /** Consumed frames whose native cleanup is still unproved. Queue emptiness
+   * alone describes dispatch, not retirement of its accepted resources. */
+  get pendingRetirements(): number {
+    let count = 0;
+    for (const frame of this.ownedFrames) if (frame.consumed) count++;
+    return count;
   }
 
   isEmpty(): boolean {

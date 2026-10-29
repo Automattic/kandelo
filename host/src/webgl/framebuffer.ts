@@ -11,6 +11,11 @@ export function validFramebufferTarget(target: number): boolean {
 
 export function defaultFramebuffer(b: GlBinding, read = false): WebGLFramebuffer | null {
   if (b.executionDrawable) return read ? b.executionDrawable.readFramebuffer : b.executionDrawable.drawFramebuffer;
+  return logicalDefaultFramebuffer(b, read);
+}
+
+/** Public drawable selection, independent of a currently executing snapshot. */
+export function logicalDefaultFramebuffer(b: GlBinding, read = false): WebGLFramebuffer | null {
   const surface = read ? b.currentDrawable?.readSurfaceId : b.currentDrawable?.drawSurfaceId;
   const selected = read ? b.readSurface : b.drawSurface;
   return surface === 0 ? b.undefinedDefaultFbo : selected ? selected.renderTargetFbo : b.renderTargetFbo;
