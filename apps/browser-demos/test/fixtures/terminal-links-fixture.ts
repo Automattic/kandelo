@@ -17,6 +17,7 @@ import type {
   PtyHandle,
   WebPreviewState,
 } from "../../../../web-libs/kandelo-session/src/kernel-host";
+import { ExchangeSession } from "../../../../web-libs/kandelo-session/src/exchange-session";
 
 export interface TerminalLinkFixture {
   /** Write bytes into the PTY as if a program had printed them. */
@@ -46,12 +47,17 @@ export function mountLinkShell(
     resize() {},
     write() {},
   };
+  const exchange = new ExchangeSession();
   const host = {
     attachPty: () => Promise.resolve(pty),
     getStatus: () => "running",
     subscribeStatus: () => () => {},
     getWebPreview: () => webPreview,
     subscribeWebPreview: () => () => {},
+    // Shell's drop target reads the machine's exchange while rendering. No
+    // kernel backs this fixture, so give it an exchange attached to none (no
+    // consumer) rather than omitting the method.
+    getExchange: () => exchange,
   } as unknown as KernelHost;
 
   const root = ReactDOM.createRoot(container);
