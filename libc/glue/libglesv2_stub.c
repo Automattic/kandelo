@@ -281,6 +281,7 @@ struct wpk_gles_context {
     GLint unpack_skip_rows;
     /* First client-side error, consumed before a host query. */
     GLenum client_error;
+    GLenum generate_mipmap_hint, fragment_derivative_hint;
     uint32_t next_shader_upload;
     uint32_t next_uniform_lookup;
     GLuint array_buffer;
@@ -357,6 +358,7 @@ struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *
     state->texture_units = state->initial_texture_units;
     state->texture_unit_count = WPK_GL_INITIAL_TEXTURE_UNITS;
     state->unpack_alignment = 4;
+    state->generate_mipmap_hint = state->fragment_derivative_hint = GL_DONT_CARE;
     state->next_framebuffer = state->next_vertex_array = 1;
     state->current_vertex_array = &state->default_vertex_array;
     for (unsigned i=0; i<WPK_GL_MAX_ATTRIBS; i++) {
@@ -2482,6 +2484,16 @@ const GLubyte *glGetString(GLenum name) {
     }
 }
 
+/* Hint quality may be ignored, but the selected state and invalid-enum
+ * behavior are observable. Keep this execution-local state with the context,
+ * including the advertised OES derivative hint. Shared-object peers retain
+ * independent values even when their native renderer is multiplexed. */
+static GLenum *hint_slot(struct wpk_gles_context *state, GLenum target) {
+    if (target == GL_GENERATE_MIPMAP_HINT) return &state->generate_mipmap_hint;
+    if (target == GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES) return &state->fragment_derivative_hint;
+    return NULL;
+}
+
 /* Scalar and vector pnames use the same query with their complete width. */
 void glGetIntegerv(GLenum pname, GLint *data) {
     if (!_wpk_gl_current_encoder()) return;
@@ -2490,6 +2502,8 @@ void glGetIntegerv(GLenum pname, GLint *data) {
     if (pname == GL_UNPACK_ROW_LENGTH_EXT) { *data = g_unpack_row_length; return; }
     if (pname == GL_UNPACK_SKIP_ROWS_EXT) { *data = g_unpack_skip_rows; return; }
     if (pname == GL_UNPACK_SKIP_PIXELS_EXT) { *data = g_unpack_skip_pixels; return; }
+    const GLenum *hint = hint_slot(_wpk_gl_current_encoder(), pname);
+    if (hint) { *data = (GLint)*hint; return; }
     uint32_t p = (uint32_t)pname;
     uint32_t count = query_value_count(pname);
     if (count == 0) return;
@@ -2513,12 +2527,15 @@ void glGetShaderPrecisionFormat(GLenum shadertype, GLenum precisiontype,
     if (precision) *precision = out[2];
 }
 
-/* GLES2 §5.2: hints are advisory and an implementation may ignore
- * them; dropping the call client-side is conforming. */
 void glHint(GLenum target, GLenum mode) {
-    if (!_wpk_gl_current_encoder()) return;
-    (void)target;
-    (void)mode;
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    if (!state) return;
+    GLenum *slot = hint_slot(state, target);
+    if (!slot || (mode != GL_DONT_CARE && mode != GL_FASTEST && mode != GL_NICEST)) {
+        raise_client_error(GL_INVALID_ENUM);
+        return;
+    }
+    *slot = mode;
 }
 
 // Native GLES renderer entry points.
@@ -2738,6 +2755,8 @@ void glGetFloatv(GLenum pname, GLfloat *data) {
     if (pname == GL_UNPACK_ROW_LENGTH_EXT) { *data = (GLfloat)g_unpack_row_length; return; }
     if (pname == GL_UNPACK_SKIP_ROWS_EXT) { *data = (GLfloat)g_unpack_skip_rows; return; }
     if (pname == GL_UNPACK_SKIP_PIXELS_EXT) { *data = (GLfloat)g_unpack_skip_pixels; return; }
+    const GLenum *hint = hint_slot(_wpk_gl_current_encoder(), pname);
+    if (hint) { *data = (GLfloat)*hint; return; }
     uint32_t p = (uint32_t)pname;
     uint32_t count = query_value_count(pname);
     if (count == 0) return;
@@ -2751,6 +2770,8 @@ void glGetBooleanv(GLenum pname, GLboolean *data) {
     if (pname == GL_UNPACK_ROW_LENGTH_EXT) { *data = g_unpack_row_length != 0; return; }
     if (pname == GL_UNPACK_SKIP_ROWS_EXT) { *data = g_unpack_skip_rows != 0; return; }
     if (pname == GL_UNPACK_SKIP_PIXELS_EXT) { *data = g_unpack_skip_pixels != 0; return; }
+    const GLenum *hint = hint_slot(_wpk_gl_current_encoder(), pname);
+    if (hint) { *data = *hint != 0 ? GL_TRUE : GL_FALSE; return; }
     uint32_t count = query_value_count(pname);
     if (count == 0) return;
     GLfloat small[4];

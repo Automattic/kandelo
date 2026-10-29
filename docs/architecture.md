@@ -4232,8 +4232,13 @@ ownership. Release and thread exit flush before dropping current references;
 destroy-current and terminate-current defer backend retirement until release.
 Each created EGL context also owns an opaque heap encoder record. The
 current thread binding selects that record; it contains the cursor, client
-arrays, upload layout, errors, image siblings and returned strings. An
-unbound thread cannot mutate another context's client state. Release preserves the record for transfer
+arrays, upload layout, errors, image siblings and returned strings. Each
+encoder also owns the mipmap-generation and advertised OES derivative hint
+values. Both start at DONT_CARE and remain independent in contexts that
+share objects. Hint quality is advisory, but valid values remain queryable
+through integer, float and boolean getters; invalid targets or modes raise
+INVALID_ENUM without changing either value.
+An unbound thread cannot mutate another context's client state. Release preserves the record for transfer
 to another thread; final destruction retires its image references and
 frees it without selecting it or emitting into another command stream.
 Allocation failure precedes backend creation and leaves no published

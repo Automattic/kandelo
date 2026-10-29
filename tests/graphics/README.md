@@ -133,7 +133,7 @@ The source WebGL contract suite also compiles selected current native C
 cases through this harness, captures actual submitted bytes and replays them
 through the browser decoder. Its float/fixed and maximum-index client-array cases are cross-layer
 source evidence, not guest execution or unmodified CTS. Selection uses
-`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 211 cases.
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 214 cases.
 `KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
 file for those test-only replays. Each browser test owns and removes its
 private trace directory.
@@ -727,3 +727,13 @@ and is never used by the browser cases. The normal `gbm_surface_smoke`
 program now checks the valid pre-render contract: a window has available
 storage but no lockable produced front. Its previous count-valued two-BO
 locking oracle did not represent rendered GBM behavior.
+
+
+The native hint cases and normal SDK `gles-hints` guest check both the
+core mipmap and advertised OES derivative targets: initial/selected state,
+integer/float/boolean conversions with untouched neighboring elements,
+invalid-enum errors, shared-context independence, deferred current
+retirement and release/restoration. These are authored regressions, not
+unmodified CTS. Node runs both widths with its renderer double; browser
+runs both widths in Chromium, Firefox and WebKit through BrowserKernel.
+The guest checks observable hint semantics, not rendering-quality effects.

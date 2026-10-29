@@ -1574,6 +1574,18 @@ static void *sync_wait_thread(void *data) {
     input->error = eglGetError();
     return NULL;
 }
+static void check_hint_value(GLenum target, GLenum expected) {
+    GLint integer[2] = {-1, 91};
+    GLfloat floating[2] = {-1, 92};
+    GLboolean boolean[2] = {GL_FALSE, 93};
+    glGetIntegerv(target, integer);
+    assert(integer[0] == (GLint)expected && integer[1] == 91);
+    glGetFloatv(target, floating);
+    assert(floating[0] == (GLfloat)expected && floating[1] == 92);
+    glGetBooleanv(target, boolean);
+    assert(boolean[0] == GL_TRUE && boolean[1] == 93);
+    assert(glGetError() == GL_NO_ERROR);
+}
 int main(int argc, char **argv) {
     assert(argc == 2);
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -2394,6 +2406,56 @@ int main(int argc, char **argv) {
         fail_make_current = 0;
     }
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strncmp(argv[1], "encoder-hint-",13)) {
+        const GLenum targets[] = {GL_GENERATE_MIPMAP_HINT, GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES};
+        if (!strcmp(argv[1], "encoder-hint-errors")) {
+            for (unsigned i = 0; i < 2; ++i) {
+                glHint(targets[i], GL_FASTEST);
+                assert(glGetError() == GL_NO_ERROR);
+                for (unsigned j = 0; j < 3; ++j) {
+                    const GLenum invalid_modes[] = {0, GL_LINEAR, 0xffffffffu};
+                    glHint(targets[i], invalid_modes[j]);
+                    assert(glGetError() == GL_INVALID_ENUM);
+                    check_hint_value(targets[i], GL_FASTEST);
+                }
+            }
+            for (unsigned i = 0; i < 3; ++i) {
+                const GLenum invalid_targets[] = {0, 0x0c50u, 0xdeadbeefu};
+                glHint(invalid_targets[i], GL_NICEST);
+                assert(glGetError() == GL_INVALID_ENUM);
+                check_hint_value(GL_GENERATE_MIPMAP_HINT, GL_FASTEST);
+                check_hint_value(GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES, GL_FASTEST);
+            }
+            glBindBuffer(0xdead, 17);
+            glHint(GL_GENERATE_MIPMAP_HINT, GL_NICEST);
+            assert(glGetError() == GL_INVALID_ENUM);
+            check_hint_value(GL_GENERATE_MIPMAP_HINT, GL_NICEST);
+        } else {
+            assert(!strcmp(argv[1], "encoder-hint-state"));
+            for (unsigned i = 0; i < 2; ++i) check_hint_value(targets[i], GL_DONT_CARE);
+            glHint(GL_GENERATE_MIPMAP_HINT, GL_FASTEST);
+            glHint(GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES, GL_NICEST);
+            check_hint_value(GL_GENERATE_MIPMAP_HINT, GL_FASTEST);
+            check_hint_value(GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES, GL_NICEST);
+            EGLContext peer = eglCreateContext(dpy, (EGLConfig)1, ctx, attrs);
+            assert(peer && eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, peer));
+            for (unsigned i = 0; i < 2; ++i) check_hint_value(targets[i], GL_DONT_CARE);
+            glHint(GL_GENERATE_MIPMAP_HINT, GL_NICEST);
+            glHint(GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES, GL_FASTEST);
+            assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+            check_hint_value(GL_GENERATE_MIPMAP_HINT, GL_FASTEST);
+            check_hint_value(GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES, GL_NICEST);
+            assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, peer) && eglDestroyContext(dpy, peer));
+            check_hint_value(GL_GENERATE_MIPMAP_HINT, GL_NICEST);
+            check_hint_value(GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES, GL_FASTEST);
+            assert(eglReleaseThread() && eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+            check_hint_value(GL_GENERATE_MIPMAP_HINT, GL_FASTEST);
+            check_hint_value(GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES, GL_NICEST);
+        }
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        printf("PASS %s\n", argv[1]); return 0;
+    }
     if (!strncmp(argv[1], "raw-discard-",12)) {
         binding_model = 1;
         EGLImageKHR img = image(dpy);
