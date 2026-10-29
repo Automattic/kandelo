@@ -13,8 +13,9 @@ Kandelo adapter must supply a GBM display, native window and executable
 entry point through the ordinary SDK; it must not change assertions or
 replace guest EGL/GLES calls with direct host WebGL calls.
 
-Enabled upstream assertions: the surfaceless method described below.
-No guest CTS execution result is claimed until its runner has completed.
+Enabled upstream assertions: the surfaceless method and four complete
+current/context-query classes described below. Execution evidence belongs
+to the named artifact/engine run in the compatibility ledger.
 Do not label translated or inspired regressions as unmodified CTS tests.
 Track enabled cases and exact source hashes here as they are integrated.
 
@@ -24,10 +25,29 @@ for required coverage and separate expansions.
 The first port is `cts/surfaceless-case.inc`: the unchanged
 `SurfacelessContextCase::executeForConfig` method, with its original license
 notice. `cts/upstream.json` records the complete upstream file hash and exact
-method hash. The standalone adapter supplies GBM display/config enumeration,
+method hash. Metadata format v2 also records the complete query-context
+source file, snippet and individual helper/class hashes. The standalone
+adapter supplies GBM display/config enumeration,
 EGL dispatch, logs and results; it does not replace guest EGL calls. It runs
 this method for every enumerated configuration. This is an adapted CTS
 subset, not an execution of the complete dEQP framework or its filter groups.
+
+The second port is `cts/query-context-cases.inc`, containing unchanged
+`GetCurrentContextCase`, `GetCurrentSurfaceCase`, `GetCurrentDisplayCase`
+and `QueryContextCase` classes plus their two upstream API/version helpers.
+The adapter supplies the render-case/logging framework and constructs real
+GBM windows and pbuffers for each advertised GLES2 configuration. It makes
+an actual guest context current before executing all four classes, retains
+aggregate failure, and checks cleanup. EGL version queries and API dispatch
+use the SDK; renderer mocks and host-side WebGL calls do not replace them.
+The call-trace toggle is presentation-only in this standalone log adapter.
+
+The browser runner requires each enabled class to execute, verifies the
+reported configuration/surface/context totals and result messages, and
+records failed exit status/output before asserting success. This is still
+an adapted subset: thread, multi-context, negative API, rendering, image,
+sync and the other upstream groups remain separate coverage work. The
+normal package currently supports only wasm32.
 
 Verify the assertions with:
 
@@ -53,7 +73,7 @@ scripts/dev-shell.sh bash -c 'cd apps/browser-demos && node_modules/.bin/playwri
 ```
 
 It requires a passing result for every enumerated advertised GLES2 config,
-without changing the upstream method or accepting its optional BAD_MATCH
+without changing the imported assertions or accepting the surfaceless method's optional BAD_MATCH
 branch for this advertised capability. Collection alone is not a guest
 CTS result. Normal package/kernel provisioning must finish before execution.
 

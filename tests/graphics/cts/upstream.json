@@ -1,5 +1,5 @@
 {
-  "format": "kandelo-cts-subset-v1",
+  "format": "kandelo-cts-subset-v2",
   "repository": "https://github.com/KhronosGroup/VK-GL-CTS",
   "revision": "a119e62de3bb38dae67f05abee8acd011e0c729c",
   "file": "modules/egl/teglSurfacelessContextTests.cpp",
@@ -7,9 +7,51 @@
   "method": "SurfacelessContextCase::executeForConfig",
   "method_sha256": "cb9f5754c656c82451381bc7e3efc6c2be02a4d3ed5f24f46907142c9cfa1245",
   "enabled": [
-    "dEQP-EGL.functional.surfaceless_context: advertised GLES2 configs"
+    "dEQP-EGL.functional.surfaceless_context: advertised GLES2 configs",
+    "dEQP-EGL.functional.query_context: get_current_context, get_current_surface, get_current_display, query_context; advertised GLES2 window/pbuffer configurations"
   ],
   "adaptations": [
-    "Standalone GBM display/config enumeration and result/log adapter in egl-adapter.cpp; upstream test method unchanged."
+    "Standalone GBM display/config enumeration and result/log adapter in egl-adapter.cpp; upstream test method unchanged.",
+    "Query-context class setup supplies actual GBM windows/pbuffers, current ES2 contexts, EGL dispatch/version queries and log/result framework adapters; upstream helpers and four complete classes are unchanged."
+  ],
+  "additional_sources": [
+    {
+      "file": "modules/egl/teglQueryContextTests.cpp",
+      "file_sha256": "86a9b962c7cf6e97b4df547f1687d188b126de7bcd3fff1ba2c806b2d29742f6",
+      "snippet": "query-context-cases.inc",
+      "snippet_sha256": "6d42aa7ef25fb399ec7dd505124b6a80a75ececb5d8815702ce8a2818c2b389d",
+      "definitions": [
+        {
+          "declaration": "static EGLint getClientTypeFromAPIBit(",
+          "terminator": "",
+          "sha256": "3728f7ee28cba048ff5e5e193d6d27e63947c40f7ef7b613c4fe665e68826734"
+        },
+        {
+          "declaration": "static EGLint getMinClientMajorVersion(",
+          "terminator": "",
+          "sha256": "9e586145d0d827a6f2551eb0b5dc401b00c22cb05cabcaa34e38b8858f9cd672"
+        },
+        {
+          "declaration": "class GetCurrentContextCase :",
+          "terminator": ";",
+          "sha256": "4aaf77f878c40cb4b6bdfbd4980bf40521d4b8c34aa4df54d92ec939e17efefe"
+        },
+        {
+          "declaration": "class GetCurrentSurfaceCase :",
+          "terminator": ";",
+          "sha256": "5e6dc1a4567dc4dd0dc021f57965f1542f70438e3030bd11ab06c383d9da55d0"
+        },
+        {
+          "declaration": "class GetCurrentDisplayCase :",
+          "terminator": ";",
+          "sha256": "d9d61348f6761b49cf5c387975255c62273ff363650fa7b4eb80dd5a11c1abe5"
+        },
+        {
+          "declaration": "class QueryContextCase :",
+          "terminator": ";",
+          "sha256": "778c131ae849f10694211eaabedca6a501345002240be7a6603d99965f6a8920"
+        }
+      ]
+    }
   ]
 }

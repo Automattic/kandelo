@@ -11,7 +11,7 @@ test.use({ serviceWorkers: "block" });
 // This package contains the pinned, unchanged upstream assertion method.
 // Run its ordinary SDK binary through the real worker/kernel/EGL path;
 // source command replays and renderer doubles cannot satisfy this gate.
-test("rebuilt upstream EGL surfaceless subset covers every advertised GLES2 config", async ({ page, baseURL, browserName, browser }) => {
+test("rebuilt upstream EGL surfaceless and context query subsets cover every advertised GLES2 config", async ({ page, baseURL, browserName, browser }) => {
   test.setTimeout(120_000);
   const program = readFileSync(resolveBinary("programs/graphics-cts-egl.wasm"));
   const kernelBytes = readFileSync(resolveBinary("kernel.wasm"));
@@ -57,19 +57,30 @@ test("rebuilt upstream EGL surfaceless subset covers every advertised GLES2 conf
     }, { moduleUrl: new URL(`/@fs${modulePath}`, baseURL).href, kernelUrl, imageUrl });
     await expect.poll(() => page.evaluate(() => (globalThis as any).__graphicsCtsState), {
       timeout: 60_000,
-    }).toMatchObject({ exit: 0 });
-    const { output } = await page.evaluate(() => (globalThis as any).__graphicsCtsState);
+    }).toMatchObject({ exit: expect.any(Number) });
+    const { output, exit, diagnostics } = await page.evaluate(() => (globalThis as any).__graphicsCtsState);
     writeFileSync(new URL(`../../../.context/graphics-cts-guest-${browserName}.json`, import.meta.url), JSON.stringify({
       engine: browserName, version: browser.version(),
       programSha256: createHash("sha256").update(program).digest("hex"),
-      kernelSha256: createHash("sha256").update(kernelBytes).digest("hex"), output,
+      kernelSha256: createHash("sha256").update(kernelBytes).digest("hex"), output, exit, diagnostics,
     }, null, 2) + "\n");
+    expect(exit, output).toBe(0);
+    expect(diagnostics, output).toEqual([]);
     const summary = /CTS-SUBSET PASS surfaceless_context configs=(\d+)/.exec(output);
     expect(summary, output).not.toBeNull();
     const configs = Number(summary![1]);
     expect(configs, output).toBeGreaterThan(0);
     expect(output.match(/Creating OpenGL ES 2 context with config ID /g), output).toHaveLength(configs);
-    expect(output.match(/^  Pass$/gm), output).toHaveLength(configs);
+    const querySummary = /CTS-SUBSET PASS query_context configs=(\d+) windows=(\d+) pbuffers=(\d+) contexts=(\d+) checks=(\d+)/.exec(output);
+    expect(querySummary, output).not.toBeNull();
+    const [,queryConfigs,windows,pbuffers,contexts,checks] = querySummary!.map(Number);
+    expect(queryConfigs, output).toBe(configs);
+    expect(windows, output).toBeGreaterThan(0);
+    expect(pbuffers, output).toBeGreaterThan(0);
+    expect(contexts, output).toBe(windows+pbuffers);
+    expect(contexts, output).toBeGreaterThanOrEqual(configs);
+    expect(checks, output).toBe(contexts*4);
+    expect(output.match(/^  Pass$/gm), output).toHaveLength(configs+checks);
     expect(output, output).not.toMatch(/CTS-SUBSET FAIL|eglMakeCurrent\(\) failed|Failed to make context current/);
   } finally {
     await page.evaluate(() => (globalThis as any).__graphicsCtsKernel?.destroy());
