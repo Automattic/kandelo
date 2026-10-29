@@ -2,6 +2,10 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { centralizedWorkerMain } from "../src/worker-main";
 import { tryResolveBinary } from "../src/binary-resolver";
+import { extractHeapBase } from "../src/constants";
+import { ForkExternrefProcessOwner } from "../src/fork-externref-process-owner";
+import { ForkHostImportOwnerRuntime } from "../src/fork-host-import-runtime";
+import { computeProcessMemoryLayout, createProcessMemory } from "../src/process-memory";
 import type { CentralizedWorkerInitMessage } from "../src/worker-protocol";
 
 const helloWasm = tryResolveBinary("programs/wasm64/hello64.wasm");
@@ -68,5 +72,59 @@ describe.skipIf(!hasBinary)("centralizedWorkerMain", () => {
     expect(errorPort.messages).toHaveLength(1);
     expect((errorPort.messages[0] as any).type).toBe("error");
     expect((errorPort.messages[0] as any).pid).toBe(101);
+  });
+});
+
+describe("centralizedWorkerMain program bytes", () => {
+  it.each([
+    ["an SDK module", new URL("../../examples/hello.wasm", import.meta.url)],
+    [
+      "a fork-instrumented SDK module",
+      new URL("../../examples/wait_lifecycle_test.wasm", import.meta.url),
+    ],
+  ])("detaches the program bytes of %s before it reports ready", async (_kind, path) => {
+    const pid = 102;
+    const buf = readFileSync(path);
+    const programBytes = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    const layout = computeProcessMemoryLayout({
+      ptrWidth: 4,
+      programBytes,
+      heapBase: extractHeapBase(programBytes),
+    });
+    const externrefOwner = new ForkExternrefProcessOwner();
+    const generation = externrefOwner.startGeneration(pid);
+    const hostImports = new ForkHostImportOwnerRuntime(externrefOwner).createWorker({
+      pid,
+      generationId: generation.id,
+      authorizeSender: () => {},
+    });
+    let detachedAtReady: boolean | undefined;
+    const port = {
+      postMessage(msg: { type: string }) {
+        if (msg.type !== "ready") return;
+        detachedAtReady = programBytes.detached;
+        throw new Error("stop before _start: no kernel serves its syscalls");
+      },
+      on(_event: string, _handler: Function) {},
+    };
+
+    try {
+      await centralizedWorkerMain(port as any, {
+        type: "centralized_init",
+        pid,
+        programBytes,
+        memory: createProcessMemory(4, layout),
+        channelOffset: layout.channelOffset,
+        secureExec: false,
+        ptrWidth: 4,
+        externrefGenerationId: generation.id,
+        forkHostImports: hostImports.init,
+      });
+    } finally {
+      hostImports.close();
+      externrefOwner.releaseGeneration(generation);
+    }
+
+    expect(detachedAtReady).toBe(true);
   });
 });

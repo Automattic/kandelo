@@ -3008,6 +3008,12 @@ export async function centralizedWorkerMain(
   let kernelExitStatus: number | null = null;
   try {
     const { memory, programBytes, channelOffset, pid } = initData;
+    // WHY: the kernel keeps its own copy of the program bytes, and a running
+    // process never reads them again. Detaching frees them at once: an idle
+    // process worker waits in Atomics.wait and rarely collects garbage.
+    const releaseProgramBytes = () => {
+      programBytes.transfer(0);
+    };
     const ptrWidth = initData.ptrWidth ?? 4;
     const artifactFailures = describeWasmArtifactPolicyFailures(programBytes, {
       expectedAbi: initData.kernelAbiVersion,
@@ -3078,6 +3084,7 @@ export async function centralizedWorkerMain(
       wasiShim.init();
 
       // Signal ready
+      releaseProgramBytes();
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
 
       // Run _start
@@ -4116,6 +4123,7 @@ export async function centralizedWorkerMain(
       }
 
       // Signal ready
+      releaseProgramBytes();
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
 
       // Run with wpk_fork_* instrumentation
@@ -4335,6 +4343,7 @@ export async function centralizedWorkerMain(
         ptrWidth,
       );
 
+      releaseProgramBytes();
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
 
       let exitCode = 0;
