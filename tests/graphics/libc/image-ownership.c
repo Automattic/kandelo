@@ -275,7 +275,8 @@ static unsigned buffer_uploads;
 static unsigned draw_commands;
 static int indexed_queries;
 static uint32_t indexed_max, query_scalar, query_gl_error, query_status;
-static unsigned string_queries;
+static unsigned string_queries, uniform_commands;
+static GLint last_uniform_location;
 static unsigned image_failure, image_queries, fail_image_storage, image_pixel_updates;
 static unsigned bind_failure, bind_queries;
 static unsigned buffer_bind_failure, buffer_delete_failure;
@@ -776,6 +777,10 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             }
             if (capture_array_upload && op == OP_VERTEX_ATTRIB_POINTER) {
                 memcpy(&captured_type,commands+at+12,4); memcpy(&captured_stride,commands+at+20,4);
+            }
+            if (op >= OP_UNIFORM1I && op <= OP_UNIFORM_MATRIX3FV) {
+                uniform_commands++;
+                last_uniform_location = (GLint)words[0];
             }
             if (op == OP_DRAW_ARRAYS || op == OP_DRAW_ELEMENTS) draw_commands++;
             if (op == OP_TEX_IMAGE_2D) redefined_texture = bound_texture;
@@ -1589,6 +1594,34 @@ static void check_hint_value(GLenum target, GLenum expected) {
     assert(boolean[0] == GL_TRUE && boolean[1] == 93);
     assert(glGetError() == GL_NO_ERROR);
 }
+/* Exercise every GLES2 setter signature with the same location category. */
+static void call_uniform_setter(unsigned variant, GLint location) {
+    const GLfloat f[16] = {1, 2, 3, 4};
+    const GLint i[4] = {1, 2, 3, 4};
+    switch (variant) {
+    case 0: glUniform1f(location, f[0]); break;
+    case 1: glUniform2f(location, f[0], f[1]); break;
+    case 2: glUniform3f(location, f[0], f[1], f[2]); break;
+    case 3: glUniform4f(location, f[0], f[1], f[2], f[3]); break;
+    case 4: glUniform1i(location, i[0]); break;
+    case 5: glUniform2i(location, i[0], i[1]); break;
+    case 6: glUniform3i(location, i[0], i[1], i[2]); break;
+    case 7: glUniform4i(location, i[0], i[1], i[2], i[3]); break;
+    case 8: glUniform1fv(location, 1, f); break;
+    case 9: glUniform2fv(location, 1, f); break;
+    case 10: glUniform3fv(location, 1, f); break;
+    case 11: glUniform4fv(location, 1, f); break;
+    case 12: glUniform1iv(location, 1, i); break;
+    case 13: glUniform2iv(location, 1, i); break;
+    case 14: glUniform3iv(location, 1, i); break;
+    case 15: glUniform4iv(location, 1, i); break;
+    case 16: glUniformMatrix2fv(location, 1, GL_FALSE, f); break;
+    case 17: glUniformMatrix3fv(location, 1, GL_FALSE, f); break;
+    case 18: glUniformMatrix4fv(location, 1, GL_FALSE, f); break;
+    default: assert(!"unknown uniform setter");
+    }
+}
+
 int main(int argc, char **argv) {
     assert(argc == 2);
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -3430,6 +3463,29 @@ int main(int argc, char **argv) {
         assert(buffer_uploads == 1 && glGetError() == GL_NO_ERROR);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-vao-attribs"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-uniform-location-errors")) {
+        const GLint invalid_locations[] = {-2, INT_MIN};
+        for (unsigned variant = 0; variant < 19; ++variant) {
+            const unsigned submitted = uniform_commands, batches = submit_batches;
+            for (unsigned j = 0; j < sizeof invalid_locations / sizeof invalid_locations[0]; ++j) {
+                call_uniform_setter(variant, invalid_locations[j]);
+                assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            }
+            call_uniform_setter(variant, -1);
+            assert(glGetError() == GL_NO_ERROR);
+            glGetString(0);
+            call_uniform_setter(variant, -1);
+            assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+            glFlush();
+            assert(uniform_commands == submitted && submit_batches == batches);
+            call_uniform_setter(variant, 37);
+            assert(glGetError() == GL_NO_ERROR);
+            assert(uniform_commands == submitted + 1 && last_uniform_location == 37);
+        }
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        puts("PASS encoder-uniform-location-errors"); return 0;
     }
     if (!strcmp(argv[1], "encoder-generation-counts")) {
         void (*const generators[])(GLsizei, GLuint *) = {

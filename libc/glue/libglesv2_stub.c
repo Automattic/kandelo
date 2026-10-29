@@ -2031,9 +2031,17 @@ static uint32_t query_value_count(GLenum pname);
 
 /* ----- uniforms ----------------------------------------------------- */
 
+/* Only -1 denotes an ignored inactive uniform. Other negative locations
+ * cannot identify a uniform and must not silently suppress an API error. */
+static int uniform_location_accepted(GLint location) {
+    if (location >= 0) return 1;
+    if (location != -1) raise_client_error(GL_INVALID_OPERATION);
+    return 0;
+}
+
 void glUniform1i(GLint location, GLint v) {
     if (!_wpk_gl_current_encoder()) return;
-    if (location < 0) return;
+    if (!uniform_location_accepted(location)) return;
     EMIT_BEGIN(OP_UNIFORM1I, 8)
     w_i32(&_c, location);
     w_i32(&_c, v);
@@ -2041,7 +2049,7 @@ void glUniform1i(GLint location, GLint v) {
 }
 void glUniform1f(GLint location, GLfloat v) {
     if (!_wpk_gl_current_encoder()) return;
-    if (location < 0) return;
+    if (!uniform_location_accepted(location)) return;
     EMIT_BEGIN(OP_UNIFORM1F, 8)
     w_i32(&_c, location);
     w_f32(&_c, v);
@@ -2049,7 +2057,7 @@ void glUniform1f(GLint location, GLfloat v) {
 }
 void glUniform2f(GLint location, GLfloat x, GLfloat y) {
     if (!_wpk_gl_current_encoder()) return;
-    if (location < 0) return;
+    if (!uniform_location_accepted(location)) return;
     EMIT_BEGIN(OP_UNIFORM2F, 12)
     w_i32(&_c, location);
     w_f32(&_c, x); w_f32(&_c, y);
@@ -2057,7 +2065,7 @@ void glUniform2f(GLint location, GLfloat x, GLfloat y) {
 }
 void glUniform3f(GLint location, GLfloat x, GLfloat y, GLfloat z) {
     if (!_wpk_gl_current_encoder()) return;
-    if (location < 0) return;
+    if (!uniform_location_accepted(location)) return;
     EMIT_BEGIN(OP_UNIFORM3F, 16)
     w_i32(&_c, location);
     w_f32(&_c, x); w_f32(&_c, y); w_f32(&_c, z);
@@ -2065,7 +2073,7 @@ void glUniform3f(GLint location, GLfloat x, GLfloat y, GLfloat z) {
 }
 void glUniform4f(GLint location, GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
     if (!_wpk_gl_current_encoder()) return;
-    if (location < 0) return;
+    if (!uniform_location_accepted(location)) return;
     EMIT_BEGIN(OP_UNIFORM4F, 20)
     w_i32(&_c, location);
     w_f32(&_c, x); w_f32(&_c, y); w_f32(&_c, z); w_f32(&_c, w);
@@ -2081,7 +2089,7 @@ void glUniform4f(GLint location, GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
 void glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose,
                         const GLfloat *value) {
     if (!_wpk_gl_current_encoder()) return;
-    if (location < 0) return;
+    if (!uniform_location_accepted(location)) return;
     if (count < 0 || !value) return;
     uint32_t floats = (uint32_t)count * 16u;
     /* The TLV payload-length field is u16 — a single record holds at
@@ -2884,7 +2892,7 @@ void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffse
 
 static void emit_uniform_fv(uint16_t op, GLint location, GLsizei count,
                             const GLfloat *value, uint32_t components) {
-    if (location < 0) return;
+    if (!uniform_location_accepted(location)) return;
     if (count < 0 || (count > 0 && !value)) {
         if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
         return;
@@ -2904,7 +2912,7 @@ static void emit_uniform_fv(uint16_t op, GLint location, GLsizei count,
 
 static void emit_uniform_iv(uint16_t op, GLint location, GLsizei count,
                             const GLint *value, uint32_t components) {
-    if (location < 0) return;
+    if (!uniform_location_accepted(location)) return;
     if (count < 0 || (count > 0 && !value)) {
         if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
         return;
@@ -2925,7 +2933,7 @@ static void emit_uniform_iv(uint16_t op, GLint location, GLsizei count,
 static void emit_uniform_matrix(uint16_t op, GLint location, GLsizei count,
                                 GLboolean transpose, const GLfloat *value,
                                 uint32_t components) {
-    if (location < 0) return;
+    if (!uniform_location_accepted(location)) return;
     if (count < 0 || (count > 0 && !value)) {
         if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
         return;
@@ -2961,7 +2969,7 @@ void glUniform3fv(GLint location, GLsizei count, const GLfloat *value) {
 
 void glUniform4fv(GLint location, GLsizei count, const GLfloat *value) {
     if (!_wpk_gl_current_encoder()) return;
-    if (location < 0) return; emit_uniform_fv(OP_UNIFORM4FV, location, count, value, 4); }
+    if (!uniform_location_accepted(location)) return; emit_uniform_fv(OP_UNIFORM4FV, location, count, value, 4); }
 
 void glUniform1iv(GLint location, GLsizei count, const GLint *value) {
     if (!_wpk_gl_current_encoder()) return;
@@ -2985,15 +2993,15 @@ void glUniform4iv(GLint location, GLsizei count, const GLint *value) {
 
 void glUniform2i(GLint location, GLint x, GLint y) {
     if (!_wpk_gl_current_encoder()) return;
-    if (location < 0) return; GLint v[2] = {x, y}; glUniform2iv(location, 1, v); }
+    if (!uniform_location_accepted(location)) return; GLint v[2] = {x, y}; glUniform2iv(location, 1, v); }
 
 void glUniform3i(GLint location, GLint x, GLint y, GLint z) {
     if (!_wpk_gl_current_encoder()) return;
-    if (location < 0) return; GLint v[3] = {x, y, z}; glUniform3iv(location, 1, v); }
+    if (!uniform_location_accepted(location)) return; GLint v[3] = {x, y, z}; glUniform3iv(location, 1, v); }
 
 void glUniform4i(GLint location, GLint x, GLint y, GLint z, GLint w) {
     if (!_wpk_gl_current_encoder()) return;
-    if (location < 0) return; GLint v[4] = {x, y, z, w}; glUniform4iv(location, 1, v); }
+    if (!uniform_location_accepted(location)) return; GLint v[4] = {x, y, z, w}; glUniform4iv(location, 1, v); }
 
 void glUniformMatrix2fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) {
     if (!_wpk_gl_current_encoder()) return;

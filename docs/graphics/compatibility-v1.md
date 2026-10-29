@@ -8318,3 +8318,35 @@ Evidence is the file-owner checkout's
 claim upstream CTS execution, fresh linked products, browser behavior or
 complete object allocation/name/error conformance. Those broader gates
 and inventory rows remain open under follow-up #1594.
+
+### Uniform setter negative-location family, 2026-10-29
+
+The follow-up closes a shared G05/G09 error gap across all 19 GLES2
+uniform setters: scalar float/integer, vector float/integer arrays and
+2x2/3x3/4x4 matrices. The old C guards ignored every negative location.
+Only `-1` is the ignored sentinel; a location below `-1` cannot designate
+a uniform and requires `GL_INVALID_OPERATION` under the
+[Khronos uniform contract](https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glUniform.xml).
+Five pinned CTS negative-location families exercise that distinction.
+All setter paths now share the same C guard, which rejects those invalid
+locations before command publication and preserves `-1` as an ignored
+call. Nonnegative locations retain the existing command and host
+validation paths. No wire layout, host operation or ABI changed.
+
+The authored `encoder-uniform-location-errors` case failed on
+`465fcfdc3f` at the first missing-error assertion. After implementation,
+all 217 native C cases passed with undefined-behavior sanitization under
+the declared dev shell. The new case tests each of the 19 signatures at
+`-2`, `INT_MIN` and `-1`, preserves an earlier error through ignored
+calls, and checks no submitted uniform records or batches for those
+calls. Each signature then emits one unchanged nonnegative-location
+record. Context cleanup leaves no native allocations. The existing
+normal sysroot headers also passed wasm32 and wasm64 syntax checks with
+the declared LLVM compiler. Evidence is the file-owner checkout's
+`.context/gles-uniform-locations-{before,after,syntax}.log`.
+
+These are focused native-encoder and compile-only checks, not actual
+uniform rendering, upstream CTS execution, rebuilt normal guests or
+browser validation. Positive-location ownership/type/count validation,
+matrix argument/size behavior, complete G05/G09 semantics and final
+combined conformance remain ordinary follow-up work.
