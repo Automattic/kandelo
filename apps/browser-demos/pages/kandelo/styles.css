@@ -682,6 +682,7 @@
 .kdock-site-link img {
   height: 18px;
   display: block;
+  filter: grayscale(1);
 }
 
 .kdock-collapse-btn svg {
