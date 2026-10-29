@@ -633,3 +633,4 @@ web-libs/kandelo-session/test/sized-download.test.ts	source-only
 web-libs/kandelo-session/test/terminal-links.test.ts	source-only
 web-libs/kandelo-session/test/tracked-demo-parity.test.ts	prepared-product
 web-libs/kandelo-session/test/vfs-asset-group.test.ts	source-only
+host/test/webgl-operation-stream.test.ts	source-only

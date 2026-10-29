@@ -12,6 +12,7 @@
  * lane and `byKey` promptly instead of lingering until the next rotation
  * cycles it back to the head.
  */
+import type { GlOperationTicket } from "./operation-stream.js";
 import type { GlBinding } from "./registry.js";
 
 export interface SubmitExecutionOwner {
@@ -36,6 +37,7 @@ export class SubmitFrame {
   #claimed = false;
   #running = false;
   #execution: SubmitExecutionOwner | null = null;
+  #operation: GlOperationTicket | null = null;
   readonly byteLength: number;
   constructor(source: Uint8Array, offset: number, length: number) {
     const size = apply(lengthOf,source,[]) as number;
@@ -59,6 +61,11 @@ export class SubmitFrame {
     if (this.#execution) throw new Error("GL submission already owns an execution");
     this.#execution = owner;
   }
+  attachOperation(operation: GlOperationTicket): void {
+    if (this.#operation) throw new Error("GL submission already owns stream order");
+    this.#operation = operation;
+  }
+  get ready(): boolean { return this.#operation?.ready ?? true; }
   get consumed(): boolean { return this.#bytes === null && !this.#running; }
   retryCleanup(): boolean {
     if (this.#running) return false;
@@ -76,6 +83,10 @@ export class SubmitFrame {
   run<T>(binding: GlBinding, work: () => T): T {
     const bytes = this.#bytes;
     if (!bytes) throw new Error("GL submission already consumed");
+    if (this.#operation && !this.#operation.start()) {
+      this.discard();
+      throw new Error("GL submission stream is not ready");
+    }
     this.#bytes = null;
     this.#running = true;
     const previous = binding.cmdbufView;
@@ -86,10 +97,11 @@ export class SubmitFrame {
     } finally {
       if (binding.cmdbufView === bytes) binding.cmdbufView = previous;
       this.#running = false;
-      this.retryCleanup();
+      try { this.retryCleanup(); }
+      finally { this.#operation?.finish(); }
     }
   }
-  discard(): void { this.#bytes = null; this.retryCleanup(); }
+  discard(): void { this.#bytes = null; this.#operation?.cancel(); this.retryCleanup(); }
 }
 
 export interface QueueEntry {
@@ -121,6 +133,11 @@ export class SubmitQueue {
     let lane = this.clients;
     try {
       lane = this.isCompositor(binding) ? this.compositor : this.clients;
+      if (binding.operations) {
+        const operation = binding.operations.reserve("commands");
+        if (!operation) throw new Error("GL submission stream is unavailable");
+        frame.attachOperation(operation);
+      }
       if (this.captureExecution) {
         const execution = this.captureExecution(binding);
         if (!execution) throw new Error("GL execution capture failed");
@@ -153,28 +170,30 @@ export class SubmitQueue {
    *  frames buffered. */
   pickNext(): QueueEntry | null {
     this.retryRetirements();
-    while (this.compositor.length > 0) {
-      const e = this.compositor[0];
-      if (e.frames.length > 0) return e;
-      this.compositor.shift();
-      this.byKey.delete(e.key);
+    // A blocked logical head cannot be bypassed by a later frame of that
+    // same session; runnable peer streams still get their ordinary lane turn.
+    for (let index = 0; index < this.compositor.length;) {
+      const entry = this.compositor[index];
+      if (!entry.frames.length) { this.releaseIfEmpty(entry); continue; }
+      if (entry.frames[0].ready) return entry;
+      index++;
     }
-    while (this.clients.length > 0) {
-      const e = this.clients[0];
-      if (e.frames.length > 0) {
-        this.clients.shift();
-        this.clients.push(e);
-        return e;
+    const count = this.clients.length;
+    for (let index = 0; index < count; index++) {
+      const entry = this.clients.shift()!;
+      if (!entry.frames.length) {
+        if (this.byKey.get(entry.key) === entry) this.byKey.delete(entry.key);
+        continue;
       }
-      this.clients.shift();
-      this.byKey.delete(e.key);
+      this.clients.push(entry);
+      if (entry.frames[0].ready) return entry;
     }
     return null;
   }
 
   releaseIfEmpty(entry: QueueEntry): void {
     if (entry.frames.length > 0) return;
-    this.byKey.delete(entry.key);
+    if (this.byKey.get(entry.key) === entry) this.byKey.delete(entry.key);
     // Admission chose a lane using the exact binding's then-current file
     // authority. Cleanup must remove that owned entry even after handoff,
     // without consulting a changed classifier or retaining its guest view.

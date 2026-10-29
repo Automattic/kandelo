@@ -1,6 +1,7 @@
 import { CpuImageStorage } from "./cpu-image-storage.js";
 import { allocateGpuStorage, type GlGpuAllocation } from "./gpu-allocation.js";
 import { revokeForeignBo } from "./foreign-retirement.js";
+import { GlOperationStream } from "./operation-stream.js";
 import { GlFenceOwner } from "./fences.js";
 import type { GlClientArrayFields } from "./client-array.js";
 import { repairNativeState, retireNativeRepair, retireNativeObject, reserveNativeRetirement, retireNativeRetirement, type NativeRetirement, type NativeDeletion } from "./native-recovery.js";
@@ -112,6 +113,7 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlC
   gl: WebGL2RenderingContext | null;
   /** Fence lifetime is independent of context-local state. */
   fences: GlFenceOwner;
+  operations: GlOperationStream;
   /** The canvas backing this binding's WebGL2 context. Set by
    *  `attachCanvas` before the program calls `eglCreateContext`. */
   canvas: HTMLCanvasElement | OffscreenCanvas | null;
@@ -321,6 +323,7 @@ export class GlContextRegistry {
       cmdbufView: null,
       gl: null,
       fences: new GlFenceOwner(),
+      operations: new GlOperationStream(),
       canvas,
       contextId: null,
       errors: [],
@@ -386,6 +389,7 @@ export class GlContextRegistry {
     for (const b of this.list()) {
       if (b.pid !== pid || (sessionId !== undefined && b.sessionId !== sessionId)) continue;
       b.cmdbufView = null;
+      b.operations.close();
       const forward = b.forward;
       try {
         this.retireContextBinding(b,false);
@@ -422,6 +426,7 @@ export class GlContextRegistry {
       next.forward = b.forward;
       if (b.surfaceId !== null) next.surface = b.surface;
       next.fences = b.fences;
+      next.operations = b.operations;
       next.objects.nextUniformLoc = b.objects.nextUniformLoc;
       next.objects.nextForeignTexId = b.objects.nextForeignTexId;
       next.objects.nextImageSource = b.objects.nextImageSource;

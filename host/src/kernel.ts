@@ -47,9 +47,10 @@ import { applyCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable } f
 import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
 import { isFenceQuery, validFenceQuery, prepareFenceQuery, type PreparedFenceQuery } from "./webgl/fence-query";
+import { queryOperationKind } from "./webgl/operation-stream";
 import { SubmitFrame, SubmitQueue } from "./webgl/submit-queue";
 import { GlMuxer } from "./webgl/muxer";
-import { drainSubmitQueue } from "./webgl/submit-drain";
+import { drainSubmitQueue, glSubmitExecuting } from "./webgl/submit-drain";
 import { resolveIoctlContract } from "./ioctl-contract";
 import {
   KERNEL_SCRATCH_FD_PAIR_BYTES,
@@ -2885,6 +2886,10 @@ export class WasmPosixKernel {
         ): number => {
           ctxId >>>= 0; drawId >>>= 0; readId >>>= 0;
           const b = this.gl.get(pid, sessionId);
+          if (b?.gl && glSubmitExecuting(this.gl_muxers.get(b.gl))) return -5;
+          const operation = b?.operations.tryBeginImmediate("make-current");
+          if (b && !operation) return -5;
+          try {
           if (ctxId === 0) {
             if (drawId !== 0 || readId !== 0) return -22;
             // Revoking a kernel binding does not alter the cached native
@@ -2917,6 +2922,7 @@ export class WasmPosixKernel {
           try { if (!applyCurrentDrawable(b, drawable, surfaces ?? undefined)) return -12; }
           catch { return -5; }
           return 0;
+          } finally { operation?.finish(); }
         },
         host_gl_submit: (
           pid: number, offset: KernelPointer, length: KernelPointer, sessionId?: number,
@@ -2999,6 +3005,10 @@ export class WasmPosixKernel {
           // `markKmsCanvasGlReleased`).
           const b = this.gl.get(pid, sessionId);
           if (!b) return sessionId !== undefined || this.gl.list().some(b => b.pid === pid) ? -5 : 0;
+          if (b.gl && glSubmitExecuting(this.gl_muxers.get(b.gl))) return -5;
+          const operation = b.operations.tryBeginImmediate("present");
+          if (!operation) return -5;
+          try {
           if (!b.gl && !b.forward) return -5;
           if (!this.prepareForeignRetirements(b)) return -5;
           if (b?.gl?.isContextLost()) return -5; // EIO
@@ -3053,6 +3063,7 @@ export class WasmPosixKernel {
             }
             return 0;
           } catch { return -5; }
+          } finally { operation.finish(); }
         },
         host_gl_query: (
           pid: number, op: number,
@@ -3061,6 +3072,10 @@ export class WasmPosixKernel {
         ): number => {
           const b = this.gl.get(pid, sessionId);
           if (!b || (!b.gl && !b.forward && op !== QOP_SURFACE_CAPABILITIES && !isFenceQuery(op))) return -1;
+          if (b.gl && glSubmitExecuting(this.gl_muxers.get(b.gl))) return -5;
+          const operation = b.operations.tryBeginImmediate(queryOperationKind(op));
+          if (!operation) return -5;
+          try {
           let inputLength: number;
           let outputLength: number;
           let outputDestination: RustLentKernelDestination | null = null;
@@ -3155,6 +3170,7 @@ export class WasmPosixKernel {
             if (preparedFence?.candidate && !preparedFence.candidate.publish()) return -5;
             return written;
           } finally { preparedFence?.candidate?.cancel(); }
+          } finally { operation.finish(); }
         },
         // DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE: upload a CPU-tier bo's
         // pixels (canonical storage: the DRI registry SAB) into a

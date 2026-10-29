@@ -354,3 +354,92 @@ it("cancelling retained storage captures flags for the selected peer's error own
   expect(peer.errors).toEqual([0x500]); expect(f.binding.errors).toEqual([]);
   f.registry.unbind(7); f.registry.unbind(8);
 });
+
+it("accepted command tickets hold session order across public context replacement", () => {
+  const f = fixture();
+  f.queue.enqueue(f.binding,frame());
+  const order = Reflect.get(f.binding,"operations");
+  expect(order?.pending).toBe(1);
+  expect(order.tryBeginImmediate("present")).toBeNull();
+  f.registry.destroyContext(7,11);
+  const replacement = f.registry.get(7,11)!;
+  expect(Reflect.get(replacement,"operations")).toBe(order);
+  expect(drainSubmitQueue(f.queue,() => f.muxer,() => 0)).toBe(0);
+  const present = order.tryBeginImmediate("present"); expect(present).not.toBeNull(); present.finish();
+  f.registry.unbind(7);
+});
+
+it("forwarded result queries cannot overtake the unfinished tail of a command frame", () => {
+  const f = fixture();
+  let listener: ((e: MessageEvent) => void) | null = null;
+  const fire = (message: GlForwardMessage) => listener!({data:message} as MessageEvent);
+  const worker = {addEventListener: (_type:"message", callback:(e:MessageEvent)=>void) => {listener=callback;}, removeEventListener:()=>{listener=null;}};
+  const canvas = {width:4,height:3,getContext:()=>f.gl} as unknown as HTMLCanvasElement;
+  const dispose = setupMainForward(worker,canvas,8);
+  const result = () => {
+    const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox,4);
+    fire({type:"gl_forward_query",pid:8,sessionId:0,op:QOP_GET_ERROR,input:new Uint8Array(),mailbox});
+    return waitForGlForwardQuery(mailbox).rc;
+  };
+  const nested: number[] = [];
+  f.gl.clear = () => { nested.push(result()); };
+  try {
+    const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox,0);
+    fire({type:"gl_forward_create_context",pid:8,sessionId:0,mailbox});
+    expect(waitForGlForwardQuery(mailbox).rc).toBe(0);
+    const bytes = new Uint8Array(8), view = new DataView(bytes.buffer);
+    view.setUint16(0,OP_CLEAR,true); view.setUint16(2,4,true); view.setUint32(4,0x4000,true);
+    fire({type:"gl_forward_submit",pid:8,sessionId:0,bytes});
+    expect(nested).toEqual([-5]);
+    expect(result()).toBe(4);
+  } finally { dispose(); f.registry.unbind(7); }
+});
+
+it("a busy logical stream leaves runnable peers drainable and resumes its exact frame", () => {
+  const f = fixture();
+  f.registry.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0});
+  const peer = f.registry.get(7,12)!; peer.gl = f.gl; peer.contextId = 2;
+  expect(f.registry.shareObjects(7,12,11)).toBe(true);
+  expect(peer.operations).not.toBe(f.binding.operations);
+  const active = f.binding.operations.tryBeginImmediate("query")!;
+  f.queue.enqueue(f.binding,frame()); f.queue.enqueue(peer,frame());
+  const seen: number[] = [];
+  expect(drainSubmitQueue(f.queue,() => f.muxer,b => {seen.push(b.sessionId);})).toBe(0);
+  expect(seen).toEqual([12]); expect(f.queue.isEmpty()).toBe(false);
+  active.finish();
+  expect(drainSubmitQueue(f.queue,() => f.muxer,b => {seen.push(b.sessionId);})).toBe(0);
+  expect(seen).toEqual([12,11]); expect(f.queue.isEmpty()).toBe(true);
+  f.registry.unbind(7);
+});
+
+it("a forwarded peer query cannot switch physical selectors inside another session's frame", () => {
+  const f = fixture();
+  let listener: ((e: MessageEvent) => void) | null = null;
+  const fire = (message: GlForwardMessage) => listener!({data:message} as MessageEvent);
+  const worker = {addEventListener: (_type:"message", callback:(e:MessageEvent)=>void) => {listener=callback;}, removeEventListener:()=>{listener=null;}};
+  const canvas = {width:4,height:3,getContext:()=>f.gl} as unknown as HTMLCanvasElement;
+  const dispose = setupMainForward(worker,canvas,8);
+  const query = () => {
+    const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox,4);
+    fire({type:"gl_forward_query",pid:8,sessionId:1,op:QOP_GET_ERROR,input:new Uint8Array(),mailbox});
+    return waitForGlForwardQuery(mailbox).rc;
+  };
+  const nested: number[] = [];
+  let tail = false;
+  f.gl.clear = () => {
+    nested.push(query());
+    fire({type:"gl_forward_query",pid:8,sessionId:1,op:QOP_GET_ERROR,input:new Uint8Array(),mailbox:new SharedArrayBuffer(4)});
+    tail = true;
+  };
+  try {
+    for (const sessionId of [0,1]) {
+      const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox,0);
+      fire({type:"gl_forward_create_context",pid:8,sessionId,mailbox});
+      expect(waitForGlForwardQuery(mailbox).rc).toBe(0);
+    }
+    const bytes = new Uint8Array(8), view = new DataView(bytes.buffer);
+    view.setUint16(0,OP_CLEAR,true); view.setUint16(2,4,true); view.setUint32(4,0x4000,true);
+    fire({type:"gl_forward_submit",pid:8,sessionId:0,bytes});
+    expect(nested).toEqual([-5]); expect(tail).toBe(true); expect(query()).toBe(4);
+  } finally { dispose(); f.registry.unbind(7); }
+});

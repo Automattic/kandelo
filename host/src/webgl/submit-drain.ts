@@ -22,6 +22,12 @@ import type { SubmitQueue } from "./submit-queue.js";
 // on that same physical renderer until the active frame's tail has finished.
 const executingMuxers = new WeakSet<GlMuxer>();
 
+/** Result-bearing reentry must not switch selectors underneath a frame from
+ * another logical owner on the same physical renderer. */
+export function glSubmitExecuting(muxer: GlMuxer | undefined): boolean {
+  return !!muxer && executingMuxers.has(muxer);
+}
+
 export type GlMuxerFor = (b: GlBinding) => GlMuxer | null;
 export type GlDispatch = (b: GlBinding, off: number, len: number) => number | void;
 

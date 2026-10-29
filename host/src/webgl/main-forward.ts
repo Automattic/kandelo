@@ -1,9 +1,10 @@
+import { queryOperationKind } from "./operation-stream.js";
 import { blitPresentTarget } from "./present-target.js";
 import { prepareSurfaceCreation, validSurfaceCreation, type GlSurfaceCreation } from "./surface-create.js";
 import { GlContextRegistry, type GlForwardChannel } from "./registry.js";
 import { decodeAndDispatch, validateCommandBuffer } from "./bridge.js";
 import { SubmitFrame, SubmitQueue } from "./submit-queue.js";
-import { drainSubmitQueue } from "./submit-drain.js";
+import { drainSubmitQueue, glSubmitExecuting } from "./submit-drain.js";
 import { recordGlError } from "./errors.js";
 import { runGlQuery } from "./query.js";
 import { isFenceQuery, validFenceQuery, prepareFenceQuery, type PreparedFenceQuery } from "./fence-query.js";
@@ -157,7 +158,17 @@ export function setupMainForward(
       }
       return;
     }
-    switch (msg.type) {
+    const kind = msg.type === "gl_forward_query" ? queryOperationKind(msg.op)
+      : msg.type === "gl_forward_present" ? "present"
+      : msg.type === "gl_forward_make_current" ? "make-current" : null;
+    const physicalBusy = !!kind && !!b.gl && glSubmitExecuting(muxers.get(b.gl));
+    const operation = kind && !physicalBusy ? b.operations.tryBeginImmediate(kind) : null;
+    if (kind && !operation) {
+      try { if ("mailbox" in msg) completeGlForwardQuery(msg.mailbox,-5,new Uint8Array()); }
+      catch { /* Refused malformed requests have no reply authority. */ }
+      return;
+    }
+    try { switch (msg.type) {
       case "gl_forward_create_surface": {
         try {
           if (!glForwardRequestPending(msg.mailbox)) return;
@@ -358,7 +369,7 @@ export function setupMainForward(
         reg.unbind(pid, msg.sessionId);
         return;
       }
-    }
+    } } finally { operation?.finish(); }
   };
 
   worker.addEventListener("message", onMessage);
