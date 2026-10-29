@@ -135,6 +135,8 @@ FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
 # Stamp each compiled test program with this checkout's ABI-contract digest.
 source "$REPO_ROOT/scripts/abi-contract-stamp.sh"
+# shellcheck source=scripts/browser-runner-accounting.sh
+source "$REPO_ROOT/scripts/browser-runner-accounting.sh"
 
 instrument_wasm() {
     local wasm="$1"
@@ -253,25 +255,6 @@ ERROR_COUNT=0
 RESULTS=()
 TOTAL=0
 
-record_missing_browser_results() {
-    local start_idx="$1"
-    local runner_rc="$2"
-    local reason
-
-    if [ "$runner_rc" -ne 0 ]; then
-        reason="browser runner exited with status $runner_rc before reporting result"
-    else
-        reason="browser runner did not report a result"
-    fi
-
-    while [ "$start_idx" -lt "${#TEST_META[@]}" ]; do
-        local test_id="${TEST_META[$start_idx]}"
-        echo "ERROR ${test_id}: $reason"
-        RESULTS+=("ERROR ${test_id}")
-        ERROR_COUNT=$((ERROR_COUNT + 1))
-        start_idx=$((start_idx + 1))
-    done
-}
 
 # Build all tests first, then run them all in the browser in one session
 WASM_FILES=()
@@ -411,11 +394,9 @@ if [ ${#WASM_FILES[@]} -gt 0 ]; then
     done < "$RESULT_FILE"
 
     if [ "$idx" -lt "${#TEST_META[@]}" ]; then
-        record_missing_browser_results "$idx" "$RUNNER_RC"
-    elif [ "$RUNNER_RC" -ne 0 ]; then
-        echo "ERROR browser-runner: browser runner exited with status $RUNNER_RC after reporting all results"
-        RESULTS+=("ERROR browser-runner")
-        ERROR_COUNT=$((ERROR_COUNT + 1))
+        record_missing_browser_results "$idx" "$RUNNER_RC" "${TEST_META[@]}"
+    else
+        record_runner_exit_after_results "$RUNNER_RC" "browser-runner"
     fi
 fi
 
