@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { gotoMachine } from "./support/kandelo-machine";
+import { cageShellTextColumns } from "./support/cage-shell-frame";
 
 /** Show the Internals syslog, the demo canvas, or the machine's terminal.
  *  Internals is an overlay toggle in the dock; showing another view means
@@ -64,7 +65,8 @@ async function chipText(page: Page): Promise<string> {
  *      rendered with GLES2 and the page flip blitted.
  *   3. The canvas shows a frame, not a blank: wlterm's window compresses
  *      to a PNG far larger than an all-black canvas.
- *   4. Only typing changes the frame: the frame holds still for a second
+ *   4. After the shell's first output appears, only typing changes the
+ *      frame: the frame holds still for a second
  *      (wlterm draws nothing on a timer), then a keystroke goes through
  *      libinput, cage's seat, wl_keyboard and wlterm's PTY, and the
  *      shell's echo is drawn into wlterm's wl_shm buffer, which wlroots
@@ -102,6 +104,16 @@ test("Kandelo cage renders a wlterm session with wlroots' GLES2 renderer", async
     .toBeGreaterThan(8_000);
 
   // Gate 4.
+  // The first committed frame is an empty grid. Wait for actual shell
+  // output before testing idle stability: loading the shell and drawing its
+  // prompt is a legitimate change after WLTERM_READY, without any input.
+  const mode = (await chipText(page)).match(/(\d+)×(\d+)/);
+  expect(mode, "the Modeset chip reports the connector mode").not.toBeNull();
+  const output = { width: Number(mode![1]), height: Number(mode![2]) };
+  await expect.poll(
+    async () => cageShellTextColumns(page, await canvas.screenshot(), output),
+    { timeout: 60_000, message: "wlterm has rendered the shell's first output" },
+  ).toBeGreaterThan(24);
   await page.locator("body").click({ position: { x: 5, y: 5 } });
   const frame = () => canvas.screenshot({ animations: "disabled" });
   const before = await frame();
