@@ -1384,6 +1384,12 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_BUILD_GIT_<NAME>_DIR`    | Read-only detached checkout for a `build.toml` `[[git_inputs]]` declaration. `<NAME>` is the injective uppercase form of the validated lowercase name.                                                                                                                                                                                           |
 | `WASM_POSIX_BUILD_GIT_<NAME>_COMMIT` | Exact declared commit corresponding to that checkout.                                                                                                                                                                                                                                                                                            |
 
+`local-build` passes its current executable as `WASM_POSIX_XTASK_BIN` to
+recipes. Runtime-file metadata queries reuse that source-built driver rather
+than compiling another xtask inside every recipe's private Cargo roots.
+Standalone callers still prepare xtask through Cargo and use its reported
+artifact path.
+
 Scripts that accept the optional sealed-build roots should source
 `scripts/package-build-roots.sh`. Explicit source, work, and output roots must
 be absolute, normalized, real non-symlink directories with no pairwise overlap.

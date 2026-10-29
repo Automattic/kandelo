@@ -4406,7 +4406,12 @@ fn run_child_process(
 ) -> Result<ValidatedChildResultV1, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("resolve current xtask executable: {error}"))?;
-    let mut command = Command::new(executable);
+    let mut command = Command::new(&executable);
+    // WHY: this exact xtask is already the source-built local-build driver.
+    // Recipes have private Cargo roots; rebuilding metadata tooling there
+    // would compile xtask and download its dependencies for every recipe.
+    // Override any inherited path so a stale outer binary cannot win.
+    command.env("WASM_POSIX_XTASK_BIN", &executable);
     command
         .arg("local-build")
         .arg("run-node")
