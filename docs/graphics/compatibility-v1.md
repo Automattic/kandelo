@@ -85,13 +85,13 @@ reproduction and correct observable failure; none is inferred from a stub.
 | E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. ABI 56 separates revocable display-generation roots from object sessions. C generation records retain old current descriptors, mappings, encoders and imported images while a new generation initializes. Host surface records retain native draw/read targets across context destruction and owner retirement. ABI 57 returns fresh surface IDs and acknowledged dimensions. Kernel/host cross-session draw/read selection validates process, live generation and TID, with canonical surface storage retained after owner retirement. Creation/bind failure preserves prior state. Public independent context/surface records route separate draw/read selectors. ABI 58 kernel/renderer construction joins live same-generation object groups; public C construction joins the same retained owner and native group; the full error/lifecycle audit remains open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
 | E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Public window queries expose accepted dimensions and fixed attributes. Operation table 16 adds immutable renderer limits before context creation, cached per display generation without changing current ownership. Pbuffer creation, zero logical dimensions, stored query attributes and no-post swaps are implemented in source; native/forwarded storage setup and retirement retain failed cleanup. Largest requests honor limits and search definite allocation failures. Core/EXT GBM platform windows, live format/usage validation, surface setters and configuration-specific texture/pixmap/client-buffer failures are implemented in source. Requested render-buffer/colorspace attributes are retained. Broader lifecycle/negative coverage and normal guest CTS remain open | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | partial |
 | E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context / OES_surfaceless_context | Explicit kernel/host bind, initial zero viewport/scissor, undefined framebuffer-zero status and native operation errors implemented; user FBOs remain usable. Real source-browser checks pass; guest CTS/current artifacts remain pending | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | partial |
-| E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/FBO holds retain GEM backing; separate private source handles and logical native views preserve object state and storage identity. Confirmed C holds belong to retained shared object records with revision-ordered publication; uncertain import/attachment candidates belong to the shared group. Raw GPU views use the same independent storage model; BO retirement tracks every retained raw generation and retries native cleanup. CPU coherence, forwarded BO registration and complete lifecycle validation remain open | EGL, GLES object/storage model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | partial |
-| E06 | Respecification orphans sibling without altering others; OES_EGL_image | GPU view replacement preserves sibling parameters and canonical pixels, retargets logical FBOs and handles definite rejection before C backing release. C retains backing by object identity and rejects stale association completions. Raw GPU respecification and refresh preserve private canonical storage and independent parameters. CPU coherence, multi-failure recovery and guest CTS remain open | GLES storage model, host object/attachment tracking | Redefine imported texture, sample both siblings, retained FBO | partial |
-| E07 | dma-buf validation, multiple import and format/modifier enumeration; EXT import | Core EGLAttrib and KHR EGLint image creation share retained dma-buf storage and destruction. Parsing rejects wide aliases, missing mandatory fields and malformed modifier pairs before import, validates preservation and hint values, and ignores valid YUV hints for supported RGB formats. Full backing metadata, CPU coherence, format and rollback validation remain open | EGL, PRIME, GBM | CPU/GPU imports, bad fd/stride/offset/modifier; repeated import lifetime | open |
+| E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/FBO holds retain GEM backing; separate private source handles and logical native views preserve object state and storage identity. Confirmed C holds belong to retained shared object records with revision-ordered publication; uncertain import/attachment candidates belong to the shared group. Raw GPU views use the same independent storage model; BO retirement tracks every retained raw generation and retries native cleanup. CPU layout mirrors now retain mapped/native siblings with changed-byte publication and retryable readback/writeback; four-format normal guest evidence is recorded below. Forwarded BO registration and complete lifecycle validation remain open | EGL, GLES object/storage model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | partial |
+| E06 | Respecification orphans sibling without altering others; OES_EGL_image | GPU view replacement preserves sibling parameters and canonical pixels, retargets logical FBOs and handles definite rejection before C backing release. C retains backing by object identity and rejects stale association completions. Raw GPU respecification and refresh preserve private canonical storage and independent parameters. CPU native mirrors retain distinct layout identities and backing storage; full CPU respecification, multi-failure recovery and guest CTS remain open | GLES storage model, host object/attachment tracking | Redefine imported texture, sample both siblings, retained FBO | partial |
+| E07 | dma-buf validation, multiple import and format/modifier enumeration; EXT import | Core EGLAttrib and KHR EGLint image creation share retained dma-buf storage and destruction. Parsing rejects wide aliases, missing mandatory fields and malformed modifier pairs before import, validates preservation and hint values, and ignores valid YUV hints for supported RGB formats. The explicit CPU import request validates dimensions, format, pitch, offset and backing bounds before publication; normal four-format mapped/native checks pass. Full negative/rollback coverage remains open | EGL, PRIME, GBM | CPU/GPU imports, bad fd/stride/offset/modifier; repeated import lifetime | open |
 | E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve for retained dma-buf imports. Native fence candidates, waiter leases and retryable cleanup now have retained source models. Table 17 adds caller-known create/status/release tokens, accepted-reply publication, cancellation and mapped object-session authority without a current context. Native and forwarded source rendering pass. Core C create/destroy/query/client-wait now use generation-owned records, retained sessions, serialized replies, monotonic timeouts and cancellation-safe waiter references; public glFlush requests acknowledged native flush. Focused C and three-engine source evidence is recorded below. The four KHR_fence_sync aliases share these records with width-correct lists/output and 64-bit timeouts; EGL_KHR_fence_sync and client GL_OES_EGL_sync are declared. eglWaitSync server ordering remains open; EGL_KHR_wait_sync is not advertised. GL-source images and full lifecycle/errors/guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
-| B01 | GBM allocation/import/export and plane metadata | Dumb/GPU tiers; cage adds modifier allocators. Native GPU allocation and restoration use checked receipts; borrowed surface leases preserve old GPU storage after public retirement/ID reuse. CPU coherence, format/layout and full guest validation remain open | GBM, DRM BOs, host registry | SDK guest fixtures both widths; unsupported format/flags | partial |
+| B01 | GBM allocation/import/export and plane metadata | Dumb/GPU tiers and modifier admission use checked metadata; borrowed surface leases preserve old GPU storage after public retirement/ID reuse. Explicit CPU layout mirrors retain native/mapped siblings. Distinct GBM wrappers over one duplicated/transferred DRM file now share GEM-name lifetime while retaining separate private descriptors; focused both-width/three-engine guests pass. Full negative/lifecycle and combined validation remain open | GBM, DRM BOs, host registry | SDK guest fixtures both widths; unsupported format/flags | partial |
 | B02 | GBM map/unmap coherence and authority | Kernel-owned mapping BO references and live-parent fork/vfork inheritance; independent host aliases by process/address with post-clone priming, changed-run publication, and successful frozen-retry/kernel-wait visibility boundaries. Focused both-width Node/browser checks pass; partial VMA transforms, broader cleanup/failure and combined conformance remain open | GBM, kernel maps, DRI registry | Importer writes, stale readers, unmap/exit/exec; browser pixels | partial |
-| B03 | Surface ring lock/release/destroy ownership | Retained EGL leases and a bounded GPU pool publish a top-row-first copy only after accepted swaps, preserving the private render back and locked fronts. Rendered retention/exhaustion/retirement and asymmetric KMS visibility/orientation pass both guest widths in all three engines, through WebGL and 2D scanout. CPU-facing windows, forwarding and broader combined validation remain open | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks; asymmetric KMS pixels | partial |
+| B03 | Surface ring lock/release/destroy ownership | Retained EGL leases and a bounded GPU pool publish a top-row-first copy only after accepted swaps, preserving the private render back and locked fronts. Rendered retention/exhaustion/retirement and asymmetric KMS visibility/orientation pass both guest widths in all three engines, through WebGL and 2D scanout. WRITE/LINEAR/CURSOR fronts retain CPU storage with a private GPU render back, with normal both-width/three-engine image and scanout evidence below. Forwarding and broader combined validation remain open | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks; asymmetric KMS pixels | partial |
 | K01 | Single display resources and consistent object IDs | Integrated dynamic mode catalog, properties and device-wide IDs; broader device/host validation pending | kernel dri/kms, host mode metadata | Rust ioctl and Node mode tests; preserve preferred/catalog semantics | partial |
 | K02 | Probe all nested outputs before writing | Property, enum and expanded connector outputs now preprobe all destinations; focused Rust regressions pass | syscall nested-output helpers | Valid first/invalid later buffers, unchanged sentinels and top-level bytes | open |
 | K03 | Shared OFD GEM/FB authority, PRIME and final references | Shared GEM namespace/allocator, KMS FBs and inherited graphics cleanup/BO holds are implemented; final combined guest validation and remaining KMS-file authority gaps stay open | OFD, process/fork/spawn/exec/close, BO registry | Rust + real Node lifecycle/dup/fork/spawn tests | open |
@@ -101,7 +101,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Canonical surface BO holds and image-owned renderer cleanup now survive descriptor inheritance/local close; focused native lifecycle checks pass. Raw BO retirement retains failed native cleanup across final member teardown and blocks affected operations until retry. Combined guest/memory-cycle validation remains pending | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
 | A01 | ABI and generated declarations match combined implementation | Main `cb0a8226c965` program ABI 55/kernel-host 2 and graphics development contracts are consolidated under program ABI 56/kernel-host 3. Regeneration and combined validation are in progress; operation table stays 17. Previous ABI 54/55 results remain historical evidence. Normal artifacts and combined consumer/conformance gates remain pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
-| P01 | Real upstream compositor integration | Normal selected graph59 and actual ABI55 cage/sway GLES2 sessions pass all three engines; default Node, full gallery and browser-memory gates remain pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
+| P01 | Real upstream compositor integration | At 9a9dec0bf4, normal selected graph60 and 239 program stamps support Node20/20 and browser54/54, including six actual ABI56 cage/sway GLES2 sessions across all three engines. Newer CPU/fork combined compositor, full gallery and browser-memory gates remain pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
 
 ## Separate expansions
 
@@ -7362,3 +7362,145 @@ or substituting bytes. Full combined cage/sway, memory, POSIX and broader CTS
 remain pending. Partial munmap fragments, MAP_FIXED/mremap device mapping
 transitions and distinct GBM wrappers over aliased DRM files remain ordinary
 mapping/ownership gaps; these focused passes do not close inventory B02.
+
+
+### Completed retained-front conformance and combined consumer provisioning
+
+The original `graphics-retained-front-conformance-1028-211445-7ed5` job
+completed successfully after 1h59m against `9a9dec0bf4`, with its own normal
+SDKs, kernel, host and rootfs. The exact suite counts are:
+
+| Suite | Pass | Unexpected fail | Expected fail | Other | Total |
+| --- | ---: | ---: | ---: | --- | ---: |
+| libc-test | 306 | 0 | 17 | 1 known-flaky test passed | 324 |
+| Open POSIX | 174 | 0 | 3 | 2 skips | 179 |
+| Sortix | 5,065 | 0 | 23 | 50 skips | 5,138 |
+
+All three exit statuses are zero. There are no build failures, timeouts or
+unexpected passes. `ALLOW_RAISE_RACE=1` was selected explicitly for the
+existing libc race classification. The pinned libc-test source is the
+checkout's recorded submodule, and Sortix is
+`7e8f0082ab0b58ad3383a8abbf47dc4b40dcf25d` in the dedicated case-sensitive
+source tree. Logs and the exact runner are under
+`.context/graphics-current-conformance/.context/retained-front-current-*`.
+These are earlier-checkpoint results and do not validate the CPU/fork or
+subsequent file-owner changes.
+
+The normal combined consumer graph for `08d0713f33` built cage, sway and its
+selected dependency closure. Its first Node gate passed 15 loaded cases but
+four files could not load: `wlclient-test`, `kms-pageflip-smoke` and
+`libdrm-kms-smoke` were missing standalone programs. That run is not a full
+Node pass. A subsequent 114-case browser selection passed 108 cases; all six
+cage/sway cases failed before startup on the same absent `wlclient-test`
+artifact. Trace evidence confirms this is provisioning, not a rendered
+assertion failure. No assertion or enabled case was weakened. Logs are
+`.context/gbm-fork-aliases/.context/fork-map-consumers-{node,browser}.log`.
+
+The 108 passing browser cases include the normal CPU layout/front matrix,
+retained rings, inherited mappings, scanout formats, DRM inheritance and the
+pinned EGL CTS subset across all three engines. Their full-source checkpoint
+includes the multiple-map and fork repairs. This is still not complete
+compositor validation. `graphics-fork-consumers-complete-1028-231632-846c`
+is running the normal full program builder before repeating the original
+Node and browser selections. The earlier CPU checkpoint's own full program
+and broader consumer gate remains separately active. Browser-memory still
+targets `9a9dec0bf4` and remains running; it must not be reported as current
+file-owner evidence.
+
+
+### GBM file identities and queued DRM ownership, 2026-10-28
+
+Two GBM device wrappers built from aliases of the same DRM file shared one
+kernel GEM name but retired it independently. The native source regression
+failed when the first BO's destructor closed the surviving peer's handle
+(`file-alias-gbm-before.log`). Devices now retain an explicit shared file
+owner through BO retirement, including after public device withdrawal. Each
+wrapper keeps its own private CLOEXEC descriptor. Peer retirement compares
+the file identity and GEM handle, without merging independent opens of the
+same device. An initial prototype shared the private descriptor too; an
+existing ring-retirement assertion caught that change, and independent
+private aliases were restored before final validation.
+
+The kernel implements `F_DUPFD_QUERY` (1027), comparing stable machine-wide
+`OfdId` values rather than descriptor numbers, table slots or inode identity.
+The corrected pre-change Rust control returned EINVAL instead of 1.
+Self/dup/transferred-slot identity, independent opens, invalid descriptors,
+reused descriptor numbers and unchanged flags now have focused Rust evidence.
+The command and behavior follow Linux v6.16's
+[UAPI definition](https://github.com/torvalds/linux/blob/v6.16/include/uapi/linux/fcntl.h)
+and [fcntl implementation](https://github.com/torvalds/linux/blob/v6.16/fs/fcntl.c).
+The earlier control command initially used an incorrect Cargo package name;
+that setup failure is not the reproduced API failure. The actual failed
+assertion is `file-alias-query-before-corrected.log`.
+
+Extending the normal SDK guest from dup to SCM_RIGHTS exposed a separate
+EOPNOTSUPP restriction on sending DRM descriptions. Queued descriptors now
+carry validated weak reconstruction metadata, upgraded to owned shared GEM,
+KMS and native-cleanup records only during the send ownership transaction.
+Metadata is bound to the exact open-file identity and DRM kind. Receivers
+adopt these live resources with no sender GL command mapping/current-context
+authority. Peek acquires an independent queue hold; receive transfers its
+hold; discarded entries defer cleanup until global table borrows end.
+
+The forced-removal control then reproduced a real leak after a datagram's
+last queued DRM owner disappeared (`file-alias-forced-cleanup-before.log`).
+The common deferred-release primitive now returns graphics retirement effects
+for both DRM and PRIME holds. Normal syscall cleanup applies them; forced
+process removal collects them for its host adapter. Both paths release the
+same kernel references and destroy backing exactly once. The regression
+covers a DRM-file sidecar and a queued PRIME descriptor. Additional Rust
+checks cover sender close, peek, discard, live card capabilities, mismatched
+identity rejection and absence of transferred GL execution authority.
+
+`graphics-file-alias-complete-1028-233805-07b0` passed in 4m10s:
+
+- Full workspace Rust selection, excluding the separately tested xtask:
+  runtime-core 2,612 plus six compile-fail documentation cases; shared 87;
+  remaining workspace suites passed as recorded in the complete log.
+- Normal kernel and host builds, ABI/generated-output verification, and
+  matching SDKs at both widths. The earlier SDK-provisioned xtask run passed
+  809 unit and eight integration cases; that result predates the SCM cleanup
+  additions and is not a new full xtask result for those additions.
+- Four Node guests with no skipped or unloaded cases: file aliases and
+  inherited mappings at both widths.
+- Twelve real browser guests in Chromium, Firefox and WebKit (56.7s): the
+  same two fixtures at both widths. File-alias cases exercise dup and
+  SCM_RIGHTS, both BO destruction orders, a publicly retired wrapper,
+  descriptor closure/reuse, live mapping and PRIME export, and independent
+  file opens whose numeric GEM handles happen to match. Teardown/message
+  boundary assertions remain enabled.
+
+The native GBM harness also passes and all 38 public symbols remain defined.
+Its macOS descriptor double models actual duplicate operations, not inode
+comparison; the normal SDK guests exercise the real kernel query/transfer.
+Browser dependencies were provisioned normally after a missing executable,
+and an occupied test port was replaced with a free port. These were setup
+failures, not outside runtime defects. All preceding failed runs remain in
+`.context/gbm-file-aliases/.context/`.
+
+Exact source/engine/program/image identities and the 12 JSON results are in
+that checkout's `file-alias-complete-identities.json`, with `file-alias-*`
+logs and the original failed controls. The final kernel SHA-256 is
+`e038ca1b98be06ed49ac31b061528a3da57dc32b9443756969cf437c40e0cf6f`.
+Generated outputs retain ABI56/kernel-host3, GL table17 and fork record21;
+the new fcntl constant changes the program digest, so old artifacts cannot
+be restamped or treated as validation of this checkpoint. Main was fetched
+again and remains `cb0a8226c965` (ABI55/kernel-host2).
+
+This closes the focused same-file GBM wrapper and queued-DRM ownership gaps,
+not inventory B01/B02/K03 as a whole. Partial VMA changes, broader failure
+recovery, forwarding, full CTS and combined consumer/memory/conformance
+validation remain open. The ongoing compositor build targets `08d0713f33`,
+and the full memory gate targets `9a9dec0bf4`.
+
+The older CPU checkpoint's normal program builder completed 239 stamps.
+Its subsequent 10-file Node gate loaded every case but timed out in the
+five-second outer test budgets of the standalone surface and fork-roundtrip
+cases (22 passed, two failed). Both pass unchanged in isolation with one
+worker (2.6s and 2.9s), but the complete one-worker repeat still times out in
+those same cases. This is an unresolved full-selection failure, not proof of
+an outside runtime defect, a repaired fork bug, or an obsolete smoke oracle.
+No timeout or pixel assertion was changed. The independent expanded browser
+selection is running separately; its result cannot turn the failed Node gate
+into a complete pass. Logs are the CPU checkout's
+`cpu-image-broad-node-{v2,serial}.log` and `cpu-smoke-timeout-control.log`.

@@ -1359,6 +1359,8 @@ pub mod fcntl_cmd {
     pub const F_SETLKW: u32 = 14;
     pub const F_SETOWN: u32 = 8;
     pub const F_GETOWN: u32 = 9;
+    /// Test whether two descriptors refer to the same open file description.
+    pub const F_DUPFD_QUERY: u32 = 1027;
     pub const F_DUPFD_CLOEXEC: u32 = 1030;
     pub const F_DUPFD_CLOFORK: u32 = 1028;
     pub const F_OFD_GETLK: u32 = 36;

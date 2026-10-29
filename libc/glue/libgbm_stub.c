@@ -72,8 +72,20 @@ struct wpk_drm_gpu_bo_create {
     uint32_t usage;    /* in: GBM_BO_USE_*.  out: stride (bytes) */
 };
 
+/* Devices over dup/SCM_RIGHTS aliases share the DRM file's GEM namespace.
+ * Retain a shared file identity through all wrapper/BO lifetimes, including
+ * wrappers withdrawn from the public registry. Each wrapper still owns its
+ * own private descriptor; the file registry compares live private aliases. */
+struct gbm_file {
+    unsigned references;
+    struct gbm_device *devices;
+    struct gbm_file *next;
+};
+
 struct gbm_device {
-    int fd;          /* retained file alias, owned until the last object retires */
+    struct gbm_file *file;
+    int fd;          /* independently owned private alias */
+    struct gbm_device *file_next;
     int public_fd;   /* caller's original descriptor, returned by the public API */
     unsigned references;
     uint64_t identity;
@@ -82,6 +94,7 @@ struct gbm_device {
 
 static pthread_mutex_t device_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct gbm_device *live_devices;
+static struct gbm_file *owned_files;
 static uint64_t next_device_identity = 1;
 
 static int retain_device(struct gbm_device *device) {
@@ -111,13 +124,26 @@ static int retain_owned_device(struct gbm_device *device) {
 /* A public device name can disappear while BOs or windows still own its
  * file. Retire the private alias only after their independent holds end. */
 static void release_device(struct gbm_device *device) {
+    struct gbm_file *retired_file = NULL;
     pthread_mutex_lock(&device_mutex);
     int retired = --device->references == 0;
+    if (retired) {
+        struct gbm_device **member = &device->file->devices;
+        while (*member != device) member = &(*member)->file_next;
+        *member = device->file_next;
+        if (--device->file->references == 0) {
+            retired_file = device->file;
+            struct gbm_file **slot = &owned_files;
+            while (*slot != retired_file) slot = &(*slot)->next;
+            *slot = retired_file->next;
+        }
+    }
     pthread_mutex_unlock(&device_mutex);
     if (retired) {
         close(device->fd);
         free(device);
     }
+    free(retired_file);
 }
 
 /* EGL receives an opaque native handle. Resolve only our live devices;
@@ -270,29 +296,48 @@ char *gbm_format_get_name(uint32_t format, struct gbm_format_name_desc *desc) {
 }
 
 struct gbm_device *gbm_create_device(int fd) {
-    if (fcntl(fd, F_GETFD) < 0) return NULL;
-    struct gbm_device *d = (struct gbm_device *) calloc(1, sizeof(*d));
-    if (!d) {
-        errno = ENOMEM;
-        return NULL;
+    /* Snapshot the caller's description before comparing it. Its descriptor
+     * can then close/recycle without changing this transaction's identity. */
+    int private_fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+    if (private_fd < 0) return NULL;
+    struct gbm_device *d = calloc(1, sizeof *d);
+    struct gbm_file *candidate = calloc(1, sizeof *candidate);
+    if (!d || !candidate) {
+        close(private_fd); free(d); free(candidate); errno = ENOMEM; return NULL;
     }
-    d->fd = fcntl(fd, F_DUPFD_CLOEXEC, 0);
-    if (d->fd < 0) { int save = errno; free(d); errno = save; return NULL; }
-    d->public_fd = fd;
-    d->references = 1;
+    int error = 0;
     pthread_mutex_lock(&device_mutex);
-    if (next_device_identity == 0) {
-        pthread_mutex_unlock(&device_mutex);
-        close(d->fd);
-        free(d);
-        errno = EOVERFLOW;
-        return NULL;
+    struct gbm_file *file = owned_files;
+    for (; file; file = file->next) {
+        int same = fcntl(private_fd, F_DUPFD_QUERY, (unsigned long)file->devices->fd);
+        if (same < 0) { error = errno; break; }
+        if (same) break;
     }
-    d->identity = next_device_identity;
-    next_device_identity = next_device_identity == UINT64_MAX ? 0 : next_device_identity + 1;
-    d->live_next = live_devices;
-    live_devices = d;
+    if (!error && (next_device_identity == 0 || (file && file->references == UINT_MAX)))
+        error = EOVERFLOW;
+    if (!error) {
+        if (!file) {
+            candidate->next = owned_files;
+            owned_files = file = candidate;
+            candidate = NULL;
+        }
+        ++file->references;
+        d->file = file;
+        d->fd = private_fd;
+        private_fd = -1;
+        d->file_next = file->devices;
+        file->devices = d;
+        d->public_fd = fd;
+        d->references = 1;
+        d->identity = next_device_identity;
+        next_device_identity = next_device_identity == UINT64_MAX ? 0 : next_device_identity + 1;
+        d->live_next = live_devices;
+        live_devices = d;
+    }
     pthread_mutex_unlock(&device_mutex);
+    if (private_fd >= 0) close(private_fd);
+    free(candidate);
+    if (error) { free(d); errno = error; return NULL; }
     return d;
 }
 
@@ -648,7 +693,7 @@ void gbm_bo_destroy(struct gbm_bo *bo) {
     if (*link) *link = bo->handle_next;
     int retained = 0;
     for (struct gbm_bo *peer = live_bos; peer; peer = peer->handle_next) {
-        if (peer->dev == bo->dev && peer->handle == bo->handle) {
+        if (peer->dev->file == bo->dev->file && peer->handle == bo->handle) {
             retained = 1;
             break;
         }

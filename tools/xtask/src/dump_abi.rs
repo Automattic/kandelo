@@ -4772,7 +4772,7 @@ fn fd_flags() -> [(&'static str, u32); 2] {
     [("FD_CLOEXEC", FD_CLOEXEC), ("FD_CLOFORK", FD_CLOFORK)]
 }
 
-fn fcntl_commands() -> [(&'static str, u32); 15] {
+fn fcntl_commands() -> [(&'static str, u32); 16] {
     use shared::fcntl_cmd::*;
 
     [
@@ -4786,6 +4786,7 @@ fn fcntl_commands() -> [(&'static str, u32); 15] {
         ("F_SETLKW", F_SETLKW),
         ("F_SETOWN", F_SETOWN),
         ("F_GETOWN", F_GETOWN),
+        ("F_DUPFD_QUERY", F_DUPFD_QUERY),
         ("F_DUPFD_CLOEXEC", F_DUPFD_CLOEXEC),
         ("F_DUPFD_CLOFORK", F_DUPFD_CLOFORK),
         ("F_OFD_GETLK", F_OFD_GETLK),
@@ -8871,7 +8872,7 @@ mod tests {
         assert_eq!(metadata["open_flags"].as_array().unwrap().len(), 16);
         assert_eq!(metadata["at_flags"].as_array().unwrap().len(), 4);
         assert_eq!(metadata["fd_flags"].as_array().unwrap().len(), 2);
-        assert_eq!(metadata["fcntl_commands"].as_array().unwrap().len(), 15);
+        assert_eq!(metadata["fcntl_commands"].as_array().unwrap().len(), 16);
         assert_eq!(metadata["access_modes"].as_array().unwrap().len(), 4);
         assert_eq!(metadata["statfs_flags"].as_array().unwrap().len(), 1);
         assert_eq!(metadata["file_modes"].as_array().unwrap().len(), 24);
@@ -8886,6 +8887,7 @@ mod tests {
             ("at_flags", "AT_EMPTY_PATH", json!(0x1000)),
             ("fd_flags", "FD_CLOFORK", json!(2)),
             ("fcntl_commands", "F_DUPFD_CLOFORK", json!(1028)),
+            ("fcntl_commands", "F_DUPFD_QUERY", json!(1027)),
             ("access_modes", "X_OK", json!(1)),
             ("statfs_flags", "ST_NOSUID", json!(2)),
             ("file_modes", "S_IFREG", json!(0o100000)),

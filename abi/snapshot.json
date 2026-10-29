@@ -11556,6 +11556,10 @@
         "value": 9
       },
       {
+        "name": "F_DUPFD_QUERY",
+        "value": 1027
+      },
+      {
         "name": "F_DUPFD_CLOEXEC",
         "value": 1030
       },

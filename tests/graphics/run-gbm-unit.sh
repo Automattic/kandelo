@@ -32,9 +32,11 @@ if not declared or missing:
     raise SystemExit(f"GBM public symbol inventory failed: {missing}")
 print(f"PASS all {len(declared)} public GBM header symbols defined (native source)")
 PY
+clang "${native_flags[@]}" -include "$repo_root/tests/graphics/libc/gbm-map-double.h" \
+    -DKANDELO_GBM_TEST_PROCESS=1 -c "$repo_root/tests/graphics/libc/gbm-surface-metadata.c" -o "$output_dir/test.o"
 clang "${native_flags[@]}" \
-    "$output_dir/gbm.o" \
-    "$repo_root/tests/graphics/libc/gbm-surface-metadata.c" \
+    "$output_dir/gbm.o" "$output_dir/test.o" \
+    "$repo_root/tests/graphics/libc/gbm-file-double.c" \
     -o "$output_dir/gbm-metadata"
 python3 - "$output_dir/gbm-metadata" <<'PY'
 import subprocess, sys

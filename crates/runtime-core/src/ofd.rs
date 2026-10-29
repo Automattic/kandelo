@@ -505,6 +505,42 @@ pub enum DriOfdState {
     Card { dri: DriFdState, kms: SharedKmsFile },
 }
 
+/// Non-owning reconstruction metadata for a DRM description in SCM_RIGHTS.
+/// The send transaction upgrades this only after validating its complete batch.
+#[derive(Clone)]
+pub struct DriTransferSnapshot {
+    identity: OfdId,
+    gem: Weak<RefCell<GemNamespace>>,
+    resources: Weak<RefCell<GlResources>>,
+    kms: Option<Weak<RefCell<KmsFdState>>>,
+}
+impl DriTransferSnapshot {
+    pub fn from_state(identity: OfdId, state: &DriOfdState) -> Option<Self> {
+        let (dri, kms) = match state {
+            DriOfdState::RenderNode(dri) => (dri, None),
+            DriOfdState::Card { dri, kms } => (dri, Some(Rc::downgrade(&kms.0))),
+            DriOfdState::PrimeBo(_) => return None,
+        };
+        Some(Self { identity, gem: Rc::downgrade(&dri.gem.0),
+            resources: Rc::downgrade(&dri.gl_resources.0), kms })
+    }
+    pub fn identity(&self) -> OfdId { self.identity }
+    pub fn is_card(&self) -> bool { self.kms.is_some() }
+    pub fn retain(&self) -> Result<Box<DriOfdState>, Errno> {
+        let gem = self.gem.upgrade().ok_or(Errno::EBADF)?;
+        let resources = self.resources.upgrade().ok_or(Errno::EBADF)?;
+        let kms = self.kms.as_ref().map(|kms| kms.upgrade().ok_or(Errno::EBADF)).transpose()?;
+        // File resources are shared; command addresses/current-thread authority
+        // belong to the sending process and must never cross this boundary.
+        let dri = DriFdState { gem: SharedGemNamespace(gem), gl: None,
+            gl_resources: SharedGlResources(resources) };
+        Ok(Box::new(match kms {
+            Some(kms) => DriOfdState::Card { dri, kms: SharedKmsFile(kms) },
+            None => DriOfdState::RenderNode(dri),
+        }))
+    }
+}
+
 /// Per-OFD ring cap: 1024 `struct input_event` records (24 KiB).
 pub const INPUT_RING_MAX_RECORDS: usize = 1024;
 /// Per-OFD ring cap in bytes — `INPUT_RING_MAX_RECORDS * size_of::<WpkInputEvent>()`.

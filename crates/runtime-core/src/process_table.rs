@@ -1001,6 +1001,7 @@ impl ProcessTable {
         let mut deferred_lock_state_changed = false;
         while let Some(release) = crate::pipe::pop_deferred_in_flight_release() {
             let released = crate::pipe::release_deferred_in_flight_resource(release);
+            dri_effects.extend(released.dri_effects);
             if let Some(handle) = released.host_close {
                 host_closes.push(handle);
             }

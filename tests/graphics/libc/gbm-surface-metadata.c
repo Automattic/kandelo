@@ -203,6 +203,32 @@ static void imported_handle_lifetime(struct gbm_device *device) {
     gbm_bo_destroy(second); assert(closed == before + 1);
     imported_handle = 0;
 }
+static void aliased_device_handle_lifetime(void) {
+    graphics_gbm_fail_file_query = 1;
+    assert(!gbm_create_device(device_fd) && errno == EIO);
+    assert(fcntl(device_fd, F_GETFD) >= 0);
+    for (int reverse = 0; reverse < 2; ++reverse) {
+        unsigned before = closed;
+        int input = dup(device_fd); assert(input >= 0);
+        struct gbm_device *a = gbm_create_device(device_fd);
+        struct gbm_device *b = gbm_create_device(input);
+        assert(a && b && a != b);
+        struct gbm_bo *source = gbm_bo_create(a, 4, 3, GBM_FORMAT_ABGR8888, GBM_BO_USE_WRITE);
+        assert(source);
+        imported_handle = gbm_bo_get_handle(source).u32;
+        struct gbm_import_fd_data data = {.fd = 42, .width = 4, .height = 3,
+            .stride = gbm_bo_get_stride(source), .format = GBM_FORMAT_ABGR8888};
+        struct gbm_bo *peer = gbm_bo_import(b, GBM_BO_IMPORT_FD, &data, 0); assert(peer);
+        gbm_device_destroy(a); gbm_device_destroy(b); assert(!close(input));
+        struct gbm_bo *first = reverse ? peer : source;
+        struct gbm_bo *last = reverse ? source : peer;
+        gbm_bo_destroy(first);
+        assert(closed == before); /* Both wrappers share this GEM name. */
+        int prime = gbm_bo_get_fd(last); assert(prime >= 0); assert(!close(prime));
+        gbm_bo_destroy(last); assert(closed == before + 1);
+        imported_handle = 0;
+    }
+}
 static void public_format_queries(struct gbm_device *device) {
     unsigned before = created;
     const uint32_t formats[] = {GBM_FORMAT_XRGB8888, GBM_FORMAT_ARGB8888,
@@ -387,6 +413,7 @@ int main(void) {
     modifier_requests(device);
     public_format_queries(device);
     imported_handle_lifetime(device);
+    aliased_device_handle_lifetime();
     cpu_mapping();
     retained_device_file();
     rendered_ring_ownership();

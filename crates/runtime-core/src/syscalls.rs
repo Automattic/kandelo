@@ -5726,13 +5726,7 @@ pub fn drain_deferred_scm_rights_releases(
         if let Some(handle) = released.host_close {
             let _ = host.host_close(handle);
         }
-        // A batch discarded before recvmsg still owns the bo reference
-        // `retain_reference` took; give it back and destroy at zero.
-        if let Some(bo_id) = released.prime_bo_id {
-            if crate::dri::with_registry(|r| r.decref(bo_id)) == Some(0) {
-                host.gbm_bo_destroy(0, bo_id);
-            }
-        }
+        apply_dri_release_effects(0, released.dri_effects, host);
     }
 }
 
@@ -5796,7 +5790,9 @@ pub fn validate_scm_rights_transfer_metadata(
                     VirtualDevice::Null
                     | VirtualDevice::Zero
                     | VirtualDevice::Urandom
-                    | VirtualDevice::Full,
+                    | VirtualDevice::Full
+                    | VirtualDevice::DriRenderD128
+                    | VirtualDevice::DriCard0,
                 ) => Ok(()),
                 // Framebuffer, input, audio, and DRI virtual handles name state
                 // owned by the sending process. Copying the integer would
@@ -5846,15 +5842,11 @@ pub fn snapshot_scm_rights_fd(
     let fd_entry = proc.fd_table.get(fd_num).map_err(|_| Errno::EBADF)?;
     let ofd = proc.ofd_table.get(fd_entry.ofd_ref.0).ok_or(Errno::EBADF)?;
 
-    // DRI open-file descriptions carry GEM/KMS namespaces in a sidecar that
-    // InFlightFd cannot reproduce. The one transferable kind is a prime-bo
-    // fd: its sidecar is the (bo_id, cookie) pair itself, carried below so a
-    // cross-process wl_shm buffer composites correctly.
     let prime_bo = match ofd.dri_state.as_deref() {
-        None => None,
         Some(crate::ofd::DriOfdState::PrimeBo(pb)) => Some(pb.clone()),
-        Some(_) => return Err(Errno::EOPNOTSUPP),
+        _ => None,
     };
+    let dri_snapshot = ofd.dri_state.as_deref().and_then(|state| crate::ofd::DriTransferSnapshot::from_state(ofd.ofd_id, state));
     validate_scm_rights_transfer_metadata(ofd.file_type, ofd.host_handle)?;
 
     let mut path = Vec::new();
@@ -5881,6 +5873,8 @@ pub fn snapshot_scm_rights_fd(
         }
     }
     in_flight.prime_bo = prime_bo;
+    in_flight.dri_snapshot = dri_snapshot;
+    validate_scm_rights_in_flight_fd(&in_flight)?;
 
     Ok(in_flight)
 }
@@ -5918,6 +5912,17 @@ pub fn validate_scm_rights_in_flight_fd(
     let is_prime = entry.file_type == FileType::CharDevice
         && entry.host_handle == crate::ofd::PRIME_FD_HOST_HANDLE;
     if is_prime != entry.prime_bo.is_some() {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    let expected_dri = if entry.file_type == FileType::CharDevice {
+        match VirtualDevice::from_host_handle(entry.host_handle) {
+            Some(VirtualDevice::DriRenderD128) => Some(false),
+            Some(VirtualDevice::DriCard0) => Some(true),
+            _ => None,
+        }
+    } else { None };
+    if entry.dri_snapshot.as_ref().is_some_and(|snapshot| snapshot.identity() != entry.ofd_id)
+        || expected_dri != entry.dri_snapshot.as_ref().map(|snapshot| snapshot.is_card()) {
         return Err(Errno::EOPNOTSUPP);
     }
     Ok(())
@@ -5973,6 +5978,9 @@ pub fn install_scm_rights_fds_with_flags(
         );
         match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
             Ok(new_fd) => {
+                if let Some(state) = entry.take_dri_state() {
+                    proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state = Some(state);
+                }
                 // Take a bo refcount for the receiver's new fd; its close
                 // drops it (dri_release_ofd_state). The queued entry holds
                 // its own reference across the hop (see
@@ -9616,6 +9624,15 @@ pub fn procfs_fd_target_stat(
 /// fcntl operations on a file descriptor.
 pub fn sys_fcntl(proc: &mut Process, fd: i32, cmd: u32, arg: u32) -> Result<i32, Errno> {
     match cmd {
+        F_DUPFD_QUERY => {
+            let first = proc.fd_table.get(fd)?.ofd_ref.0;
+            let second = proc.fd_table.get(arg as i32)?.ofd_ref.0;
+            let first = proc.ofd_table.get(first).ok_or(Errno::EBADF)?;
+            let second = proc.ofd_table.get(second).ok_or(Errno::EBADF)?;
+            // Transferred SCM_RIGHTS descriptions can occupy distinct local
+            // slots while retaining the same machine-wide open-file identity.
+            Ok(i32::from(first.ofd_id == second.ofd_id))
+        }
         F_DUPFD | F_DUPFD_CLOEXEC | F_DUPFD_CLOFORK => {
             let entry = proc.fd_table.get(fd)?;
             let ofd_ref = entry.ofd_ref;
@@ -26827,6 +26844,39 @@ mod tests {
     }
 
     #[test]
+    fn test_fcntl_dupfd_query_uses_open_description_identity() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/query", O_RDWR, 0o644).unwrap();
+        let alias = sys_fcntl(&mut proc, fd, F_DUPFD_CLOEXEC, 10).unwrap();
+        let other = sys_open(&mut proc, &mut host, b"/tmp/query", O_RDWR, 0o644).unwrap();
+        // Linux F_DUPFD_QUERY, including identity rather than inode equality.
+        let query = F_DUPFD_QUERY;
+        assert_eq!(sys_fcntl(&mut proc, fd, query, fd as u32), Ok(1));
+        assert_eq!(sys_fcntl(&mut proc, fd, query, alias as u32), Ok(1));
+        assert_eq!(sys_fcntl(&mut proc, alias, query, fd as u32), Ok(1));
+        assert_eq!(sys_fcntl(&mut proc, fd, query, other as u32), Ok(0));
+        assert_eq!(sys_fcntl(&mut proc, -1, query, alias as u32), Err(Errno::EBADF));
+        assert_eq!(sys_fcntl(&mut proc, fd, query, u32::MAX), Err(Errno::EBADF));
+        let source = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap().clone();
+        let transferred = proc.ofd_table.create_transferred(
+            source.ofd_id, source.file_id, source.file_type,
+            source.status_flags(), source.host_handle, source.offset(),
+            source.shared_state(), source.path.clone(),
+        );
+        let received = proc.fd_table.alloc(OpenFileDescRef(transferred), 0).unwrap();
+        assert_ne!(transferred, proc.fd_table.get(fd).unwrap().ofd_ref.0);
+        assert_eq!(sys_fcntl(&mut proc, fd, query, received as u32), Ok(1));
+        sys_close(&mut proc, &mut host, other).unwrap();
+        assert_eq!(sys_fcntl(&mut proc, fd, query, other as u32), Err(Errno::EBADF));
+        let replacement = sys_open(&mut proc, &mut host, b"/tmp/query", O_RDWR, 0o644).unwrap();
+        assert_eq!(replacement, other);
+        assert_eq!(sys_fcntl(&mut proc, fd, query, replacement as u32), Ok(0));
+        assert_eq!(sys_fcntl(&mut proc, fd, F_GETFD, 0), Ok(0));
+        assert_eq!(sys_fcntl(&mut proc, alias, F_GETFD, 0), Ok(FD_CLOEXEC as i32));
+    }
+
+    #[test]
     fn test_fcntl_cloexec() {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
@@ -31739,6 +31789,8 @@ mod tests {
             VirtualDevice::Zero,
             VirtualDevice::Urandom,
             VirtualDevice::Full,
+            VirtualDevice::DriRenderD128,
+            VirtualDevice::DriCard0,
         ] {
             assert_eq!(
                 validate_scm_rights_transfer_metadata(FileType::CharDevice, device.host_handle()),
@@ -31838,8 +31890,6 @@ mod tests {
             VirtualDevice::Fb0,
             VirtualDevice::Mice,
             VirtualDevice::Dsp,
-            VirtualDevice::DriRenderD128,
-            VirtualDevice::DriCard0,
         ] {
             assert_eq!(
                 validate_scm_rights_transfer_metadata(FileType::CharDevice, device.host_handle()),
@@ -52241,6 +52291,104 @@ impl HostIO for RelSymlinkMock {
             crate::dri::with_registry(|r| r.get(bo_id).is_none()),
             "a discarded batch must not leak the bo",
         );
+    }
+
+    #[test]
+    fn queued_dri_file_keeps_namespace_across_sender_close_peek_and_discard() {
+        use wasm_posix_shared::dri::*;
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = SCM_RIGHTS_LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for receive in [false, true] {
+            let mut sender = Process::new(81_001);
+            let mut receiver = Process::new(81_002);
+            let mut host = MockHostIO::new();
+            let fd = sys_open(&mut sender, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+            let created = kms_ioctl(&mut sender, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB,
+                WpkDrmModeCreateDumb { width: 8, height: 8, bpp: 32, ..Default::default() }).unwrap();
+            let bo_id = sender.ofd_table.get(sender.fd_table.get(fd).unwrap().ofd_ref.0)
+                .unwrap().dri().unwrap().gem.borrow().handles[&created.handle];
+            let mut queued = snapshot_scm_rights_fd(&sender, fd).unwrap();
+            let identity = queued.ofd_id;
+            queued.retain_reference().unwrap();
+            sys_close(&mut sender, &mut host, fd).unwrap();
+            assert!(crate::dri::with_registry(|r| r.get(bo_id).is_some()));
+            if receive {
+                let peek = queued.try_clone_retained().unwrap();
+                let installed = install_scm_rights_fds(&mut receiver, vec![peek]);
+                assert_eq!(installed.len(), 1);
+                let received = receiver.ofd_table.get(receiver.fd_table.get(installed[0]).unwrap().ofd_ref.0).unwrap();
+                assert_eq!(received.ofd_id, identity);
+                assert!(received.dri().unwrap().gl.is_none());
+                assert_eq!(received.dri().unwrap().gem.borrow().handles[&created.handle], bo_id);
+                drop(queued);
+                drain_deferred_scm_rights_releases(&mut AdvisoryLockManager::new(), &mut host);
+                assert!(crate::dri::with_registry(|r| r.get(bo_id).is_some()));
+                sys_close(&mut receiver, &mut host, installed[0]).unwrap();
+            } else {
+                drop(queued);
+                drain_deferred_scm_rights_releases(&mut AdvisoryLockManager::new(), &mut host);
+            }
+            assert!(crate::dri::with_registry(|r| r.get(bo_id).is_none()));
+        }
+    }
+
+    #[test]
+    fn forced_removal_drains_queued_dri_and_prime_namespaces() {
+        use wasm_posix_shared::dri::*;
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_DGRAM};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = SCM_RIGHTS_LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for prime in [false, true] {
+            let mut table = crate::process_table::ProcessTable::new();
+            let pid = table.create_process().unwrap();
+            let mut host = MockHostIO::new();
+            let proc = table.get_mut(pid).unwrap();
+            let fd = sys_open(proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+            let created = kms_ioctl(proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB,
+                WpkDrmModeCreateDumb { width: 8, height: 8, bpp: 32, ..Default::default() }).unwrap();
+            let bo_id = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0)
+                .unwrap().dri().unwrap().gem.borrow().handles[&created.handle];
+            let carried = if prime {
+                kms_ioctl(proc, &mut host, fd, DRM_IOCTL_PRIME_HANDLE_TO_FD,
+                    WpkDrmPrimeHandle { handle: created.handle, flags: 0, fd: -1 }).unwrap().fd
+            } else { fd };
+            let (send, _) = sys_socketpair(proc, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+            let snapshot = snapshot_scm_rights_fd(proc, carried).unwrap();
+            assert_eq!(sys_sendmsg(proc, &mut host, send, b"Q", 0, None, vec![snapshot]), Ok(1));
+            if prime { sys_close(proc, &mut host, carried).unwrap(); }
+            sys_close(proc, &mut host, fd).unwrap();
+            assert!(crate::dri::with_registry(|r| r.get(bo_id).is_some()));
+            let removed = table.remove_process(pid).unwrap();
+            assert!(crate::dri::with_registry(|r| r.get(bo_id).is_none()), "queued DRM resource leaked on forced removal");
+            assert_eq!(removed.dri_effects.iter().filter(|effect|
+                **effect == DriReleaseEffect::DestroyBo(bo_id)).count(), 1);
+        }
+    }
+
+    #[test]
+    fn scm_rights_card_preserves_live_caps_and_rejects_mismatched_identity() {
+        let _g_master = crate::dri::master::lock_for_test();
+        let _guard = SCM_RIGHTS_LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut sender = Process::new(81_011);
+        let mut receiver = Process::new(81_012);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut sender, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let index = sender.fd_table.get(fd).unwrap().ofd_ref.0;
+        let mut queued = snapshot_scm_rights_fd(&sender, fd).unwrap();
+        let identity = queued.ofd_id;
+        queued.ofd_id = OfdId(identity.0 + 1);
+        assert_eq!(queued.retain_reference(), Err(Errno::EOPNOTSUPP));
+        queued.ofd_id = identity;
+        queued.retain_reference().unwrap();
+        sender.ofd_table.get_mut(index).unwrap().kms_mut().unwrap().universal_planes = true;
+        sys_close(&mut sender, &mut host, fd).unwrap();
+        let installed = install_scm_rights_fds(&mut receiver, vec![queued]);
+        assert_eq!(installed.len(), 1);
+        let state = receiver.ofd_table.get(receiver.fd_table.get(installed[0]).unwrap().ofd_ref.0).unwrap();
+        assert_eq!(state.ofd_id, identity);
+        assert!(state.kms().unwrap().universal_planes);
+        assert!(state.dri().unwrap().gl.is_none());
+        sys_close(&mut receiver, &mut host, installed[0]).unwrap();
     }
 
     #[test]
