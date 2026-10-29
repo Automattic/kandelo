@@ -8,6 +8,23 @@ tests retain both guest address widths. It is not a conformance
 claim. An ordinary defect remains open until implementation and executable
 validation cover it; a passing demo does not close an API family.
 
+## Landing scope
+
+On 2026-10-29 the user split delivery into the bounded cage/sway landing
+in [PR #1574](https://github.com/Automattic/kandelo/pull/1574) and a
+follow-up for the remaining graphics baseline. The landing runtime cut is
+`21f3d451bb`; its contract, executable acceptance and pending evidence are
+in [Cage and sway landing](cage-sway-landing.md). This changes delivery
+scope, not the API inventory or its completion standard. All incomplete
+rows below remain open or partial.
+
+The follow-up branch `brandonpayton/graphics-baseline-follow-up` preserves
+`65b498d284`, including the later expanded upstream EGL query harness
+(`ed1856dbb4`) and context-local GLES hint implementation (`65b498d284`).
+Its PR is not open yet. Neither increment is part of the landing runtime
+cut. Remaining baseline implementation and broad conformance belong to
+that follow-up; no missing API is reclassified as a platform boundary.
+
 ## Unpublished ABI policy
 
 Use one ABI above current main for the combined effort, as requested by
@@ -7979,3 +7996,46 @@ Primary `.context/current-graphics-*` logs and
 `graphics-cts-guest-{chromium,firefox,webkit}.json` identify the artifacts.
 This closes the named missing-package run, not broad upstream CTS or
 validation of the later two-config implementation.
+
+### Cage/sway landing and completed mapping conformance, 2026-10-29
+
+`graphics-fixed-device-current-conformanc-1029-084119-0165` completed on
+`d081e6d453` with zero unexpected failures, unexpected passes, build
+failures or timeouts. The normal SourceOnly kernel/rootfs/dash/bash build,
+host bootstrap and `verify-fresh` completed before the suites. The kernel
+SHA-256 is
+`6a947799436bccea9209a4bf53eb6ba71457cd3d0a47d8c76c7f0ec32587958f`.
+
+| Suite | Pass | Expected fail | Known-flaky pass | Skip | Total |
+|---|---:|---:|---:|---:|---:|
+| libc-test | 306 | 17 | 1 | 0 | 324 |
+| Open POSIX | 174 | 3 | 0 | 2 | 179 |
+| Sortix | 5,065 | 23 | 0 | 50 | 5,138 |
+
+The ordinary runners were `scripts/run-libc-tests.sh`,
+`scripts/run-posix-tests.sh` and `scripts/run-sortix-tests.sh --all
+--parallel=4`, under `scripts/dev-shell.sh` with SourceOnly resolution and
+the documented `ALLOW_RAISE_RACE=1` setting. libc-test was pinned to
+`790f94c7b6feb8ade25868c10fba46233f783a0b`; Sortix was pinned to
+`7e8f0082ab0b58ad3383a8abbf47dc4b40dcf25d` on a case-sensitive volume.
+Exact commands, output and zero exit statuses are retained in the
+mapping checkout's `.context/fixed-device-current-conformance.sh` and
+`.context/fixed-device-conformance-{products,host,fresh,libc,posix,sortix}.log`
+and `fixed-device-conformance-status.txt`.
+
+This validates the mapping checkpoint, not every later runtime change.
+The landing cut adds `21f3d451bb`'s positive ARGB native-window config and
+front-format support over that checkpoint. Its 212 native C cases, 717
+graphics source checks, workspace Rust, matching normal dual-width SDK/
+kernel/host and ABI checks, and 8/8 Node cases are recorded above. The
+89/90 browser selection and 11/12 comparison retain their Firefox capture
+failures. Those focused results identify the delta; they are not a
+final-source combined conformance or memory pass.
+
+The normal complete product rebuild and Freeciv/combined-consumer/memory
+job `graphics-native-visual-combined-products-1029-091514-85bc` is still
+pending on runtime source `21f3d451bb`. Current full gallery and manual
+browser checks also remain pending. The inherited Firefox GPU-to-2D
+capture failure remains open with its unchanged assertions, original
+deadlines and preserved evidence. No boundary, waiver, performance claim
+or full-baseline completion is inferred from this landing split.
