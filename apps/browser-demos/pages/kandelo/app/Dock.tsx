@@ -23,6 +23,13 @@ interface DockItem<T extends string> {
   icon: React.ReactNode;
 }
 
+const TERMINAL_ITEM: DockItem<DockViewId> = {
+  id: "terminal",
+  label: "Terminal",
+  title: "Terminal",
+  icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 4.5 6.5 8 3 11.5" /><path d="M8 11.5h5" /></svg>,
+};
+
 const VIEW_ITEMS: DockItem<DockViewId>[] = [
   {
     id: "demo",
@@ -30,12 +37,7 @@ const VIEW_ITEMS: DockItem<DockViewId>[] = [
     title: "Demo surface",
     icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="3" width="12" height="8" rx="1.2" /><path d="M5 13.5h6M8 11v2.5" /></svg>,
   },
-  {
-    id: "terminal",
-    label: "Terminal",
-    title: "Terminal",
-    icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 4.5 6.5 8 3 11.5" /><path d="M8 11.5h5" /></svg>,
-  },
+  TERMINAL_ITEM,
 ];
 
 const SHARE_ITEM: DockItem<"share"> = {
@@ -105,6 +107,8 @@ export const Dock: React.FC<{
   onSendFiles?: () => void;
   networkPhase?: SessionPhase;
   onOpenNetwork?: () => void;
+  /** Keep only the header buttons, at full width. */
+  minimal?: boolean;
   activePane: DockPaneId | null;
   activeView: DockViewId | null;
   viewControls?: React.ReactNode;
@@ -135,6 +139,7 @@ export const Dock: React.FC<{
   onSendFiles,
   networkPhase = "offline",
   onOpenNetwork,
+  minimal = false,
   activePane,
   activeView,
   viewControls,
@@ -447,6 +452,34 @@ export const Dock: React.FC<{
                   </svg>
                 </button>
               )}
+              {minimal && (
+                <>
+                  <button
+                    ref={internalsButtonRef}
+                    type="button"
+                    className="kdock-header-btn"
+                    aria-label={INTERNALS_ITEM.title}
+                    aria-pressed={internalsOpen}
+                    aria-expanded={internalsOpen}
+                    title={INTERNALS_ITEM.title}
+                    disabled={!internalsAvailable}
+                    onClick={onToggleInternals}
+                  >
+                    {INTERNALS_ITEM.icon}
+                  </button>
+                  <button
+                    type="button"
+                    className="kdock-header-btn"
+                    aria-label={TERMINAL_ITEM.title}
+                    aria-pressed={activeView === "terminal"}
+                    title={TERMINAL_ITEM.title}
+                    disabled={viewDisabled.terminal === true}
+                    onClick={() => onSelectView(activeView === "terminal" ? "demo" : "terminal")}
+                  >
+                    {TERMINAL_ITEM.icon}
+                  </button>
+                </>
+              )}
               <a
                 className="kdock-header-btn kdock-github-link"
                 href={REPOSITORY_URL}
@@ -459,35 +492,39 @@ export const Dock: React.FC<{
                   <path d="M8 1.5a6.5 6.5 0 0 0-2.06 12.67c.33.06.45-.14.45-.32v-1.27c-1.83.4-2.22-.78-2.22-.78-.3-.76-.73-.96-.73-.96-.6-.41.05-.4.05-.4.66.05 1.01.68 1.01.68.59 1.01 1.54.72 1.92.55.06-.43.23-.72.42-.89-1.46-.17-3-.73-3-3.21 0-.71.25-1.29.68-1.75-.07-.17-.3-.83.06-1.72 0 0 .55-.18 1.79.67A6.2 6.2 0 0 1 8 4.75c.55 0 1.1.07 1.62.22 1.24-.85 1.79-.67 1.79-.67.36.89.13 1.55.06 1.72.42.46.68 1.04.68 1.75 0 2.49-1.54 3.04-3 3.2.24.21.44.61.44 1.23v1.65c0 .18.12.38.45.32A6.5 6.5 0 0 0 8 1.5Z" />
                 </svg>
               </a>
-              <button
-                type="button"
-                className="kdock-header-btn kdock-collapse-btn"
-                aria-label={collapsed ? "Show dock tools" : "Hide dock tools"}
-                aria-expanded={!collapsed}
-                title={collapsed ? "Show dock tools" : "Hide dock tools"}
-                onClick={onToggleCollapsed}
-              >
-                <svg viewBox="0 0 16 16" aria-hidden="true">
-                  <path d="M4.5 6.5 8 10l3.5-3.5" />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className="kdock-header-btn"
-                aria-label={fullWidth ? "Use compact dock" : "Use full-width dock"}
-                aria-pressed={fullWidth}
-                title={fullWidth ? "Use compact dock" : "Use full-width dock"}
-                onClick={onToggleFullWidth}
-              >
-                <svg viewBox="0 0 16 16" aria-hidden="true">
-                  <rect x="2.5" y="4" width="11" height="8" rx="1.2" />
-                  <path d="M5 6.5H3M11 6.5h2M5 9.5H3M11 9.5h2" />
-                </svg>
-              </button>
+              {!minimal && (
+                <>
+                  <button
+                    type="button"
+                    className="kdock-header-btn kdock-collapse-btn"
+                    aria-label={collapsed ? "Show dock tools" : "Hide dock tools"}
+                    aria-expanded={!collapsed}
+                    title={collapsed ? "Show dock tools" : "Hide dock tools"}
+                    onClick={onToggleCollapsed}
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M4.5 6.5 8 10l3.5-3.5" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className="kdock-header-btn"
+                    aria-label={fullWidth ? "Use compact dock" : "Use full-width dock"}
+                    aria-pressed={fullWidth}
+                    title={fullWidth ? "Use compact dock" : "Use full-width dock"}
+                    onClick={onToggleFullWidth}
+                  >
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <rect x="2.5" y="4" width="11" height="8" rx="1.2" />
+                      <path d="M5 6.5H3M11 6.5h2M5 9.5H3M11 9.5h2" />
+                    </svg>
+                  </button>
+                </>
+              )}
             </div>
           </div>
 
-          <div ref={rowRef} className="kdock-row">
+          {!minimal && <div ref={rowRef} className="kdock-row">
             <button
               type="button"
               className="kdock-status"
@@ -562,6 +599,7 @@ export const Dock: React.FC<{
                   aria-pressed={themeOpen}
                   aria-expanded={themeOpen}
                   title={THEME_ITEM.title}
+                  disabled={!themePopup}
                   onClick={onToggleTheme}
                 >
                   <span className="kdock-icon">{THEME_ITEM.icon}</span>
@@ -594,7 +632,7 @@ export const Dock: React.FC<{
                 </button>
               </div>
             </div>
-          </div>
+          </div>}
         </div>
       </nav>
 

@@ -213,6 +213,12 @@ Every block below belongs to a profile. Only `version`, `defaultProfile`,
 and `profiles` may appear at the top level; a machine block declared there
 is rejected.
 
+`presentation` may also set `dock` to `"minimal"`, which keeps only the
+dock's header buttons, with Terminal and Internals among them, at full
+width. It may set `theme` to
+`{ "family": "ubuntu" | "wordpress" | "kandelo", "mode": "light" | "dark" }`,
+which the app shows in place of the visitor's choice.
+
 A profile may also declare:
 
 - `identity` — `title`, `summary`, `accent` (`#rrggbb`), `glyph` (1–4

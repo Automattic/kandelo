@@ -788,6 +788,14 @@ export interface DemoPresentation {
    * A value of 1.5 gives all guest content the same 150% presentation scale,
    * independently of browser density; the virtual display reports 96 DPI. */
   displayScale?: number;
+  /**
+   * "minimal" leaves only the dock's header buttons, with Terminal and
+   * Internals among them, at full width.
+   * Defaults to "full".
+   */
+  dock?: "full" | "minimal";
+  /** The theme the demo always shows, in place of the visitor's choice. */
+  theme?: { family: "ubuntu" | "wordpress" | "kandelo"; mode: "light" | "dark" };
 }
 
 // ── Process lifecycle events ──────────────────────────────────────────────

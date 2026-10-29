@@ -5,7 +5,7 @@ import activityClientImageUrl from "@binaries/programs/wasm32/shell.vfs.zst?url"
 
 import * as React from "react";
 import { flushSync } from "react-dom";
-import { useDemoGuide, useKernelHost, useLazyDownloads, useMachineProgress } from "../kernel-host/react";
+import { useDemoGuide, useKernelHost, useLazyDownloads, useMachineProgress, usePresentation } from "../kernel-host/react";
 import { useVfsTools } from "../webmcp/use-vfs-tools";
 import { Dock, DockPane, type DockLayoutState, type DockPaneId, type DockViewId } from "./Dock";
 import { MachineView, useMachineSurfaceController } from "../views/MachineView";
@@ -88,7 +88,9 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
   const autoOpenedDemoGuideKey = React.useRef<string | null>(null);
 
   const desc = host.getBootDescriptor();
-  const resolvedThemeMode = theme.mode === "auto" ? systemThemeMode : theme.mode;
+  const presentation = usePresentation();
+  const shownTheme = presentation.theme ?? theme;
+  const resolvedThemeMode = shownTheme.mode === "auto" ? systemThemeMode : shownTheme.mode;
 
   // Keep the machine and the address bar in agreement across back/forward.
   //
@@ -157,7 +159,10 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
   }, []);
 
   React.useEffect(() => {
-    applyTheme(theme, resolvedThemeMode);
+    applyTheme(shownTheme, resolvedThemeMode);
+  }, [resolvedThemeMode, shownTheme]);
+
+  React.useEffect(() => {
     try {
       window.localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify({
         ...theme,
@@ -166,7 +171,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
     } catch {
       // User preference storage can be unavailable in private or restricted contexts.
     }
-  }, [resolvedThemeMode, theme]);
+  }, [theme]);
 
   React.useEffect(() => {
     const key = `${desc.id}:${demoGuide?.title ?? "no-guide"}`;
@@ -523,12 +528,13 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
             : undefined}
           networkPhase={networkSession.state.phase}
           onOpenNetwork={() => networkSession.setOpen(true)}
+          minimal={presentation.dock === "minimal"}
           activePane={dockPane}
           activeView={dockActiveView}
           viewControls={viewControls}
           guidePopup={demoGuidePopup}
           internalsPopup={internalsPopup}
-          themePopup={<ThemePopup theme={theme} resolvedMode={resolvedThemeMode} onThemeChange={setTheme} />}
+          themePopup={presentation.theme ? undefined : <ThemePopup theme={theme} resolvedMode={resolvedThemeMode} onThemeChange={setTheme} />}
           guideAvailable={!isEmpty && demoGuide !== null}
           guideOpen={!isEmpty && demoGuide !== null && demoGuideOpen}
           internalsAvailable={!isEmpty && surface.canUseInternals}

@@ -404,6 +404,11 @@
   outline: none;
 }
 
+.kdock-header-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
 .kdock-header-btn[aria-pressed="true"] {
   background: var(--kdock-active-fill);
   color: var(--kdock-active-text);

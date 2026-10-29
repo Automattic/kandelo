@@ -14,6 +14,8 @@ export interface DemoPresentationConfig {
   touchControls?: boolean;
   hostPointer?: boolean;
   displayScale?: number;
+  dock?: DemoPresentation["dock"];
+  theme?: DemoPresentation["theme"];
 }
 
 /**
@@ -387,6 +389,9 @@ const PRIMARY_SURFACES = new Set<PrimarySurface>([
   "kms",
 ]);
 const ACCESS_MODES = new Set(["primary", "drawer", "side"]);
+const DOCK_LAYOUTS = new Set(["full", "minimal"]);
+const THEME_FAMILIES = new Set(["ubuntu", "wordpress", "kandelo"]);
+const THEME_MODES = new Set(["light", "dark"]);
 const ACTION_KINDS = new Set<DemoActionKind>([
   "terminal.run",
   "terminal.write",
@@ -1121,7 +1126,27 @@ function normalizePresentationConfig(config: unknown): DemoPresentation {
     ...(typeof config.touchControls === "boolean" ? { touchControls: config.touchControls } : {}),
     ...(typeof config.hostPointer === "boolean" ? { hostPointer: config.hostPointer } : {}),
     ...(config.displayScale !== undefined ? { displayScale: config.displayScale as number } : {}),
+    ...(config.dock !== undefined ? { dock: dockLayout(config.dock) } : {}),
+    ...(config.theme !== undefined ? { theme: demoTheme(config.theme) } : {}),
   };
+}
+
+function dockLayout(value: unknown): NonNullable<DemoPresentation["dock"]> {
+  if (typeof value === "string" && DOCK_LAYOUTS.has(value)) {
+    return value as NonNullable<DemoPresentation["dock"]>;
+  }
+  throw new Error(`presentation.dock must be one of: ${Array.from(DOCK_LAYOUTS).join(", ")}`);
+}
+
+function demoTheme(value: unknown): NonNullable<DemoPresentation["theme"]> {
+  if (isRecord(value) && typeof value.family === "string" && THEME_FAMILIES.has(value.family) &&
+      typeof value.mode === "string" && THEME_MODES.has(value.mode)) {
+    return { family: value.family, mode: value.mode } as NonNullable<DemoPresentation["theme"]>;
+  }
+  throw new Error(
+    `presentation.theme must be { family: ${Array.from(THEME_FAMILIES).join(" | ")}, ` +
+    `mode: ${Array.from(THEME_MODES).join(" | ")} }`,
+  );
 }
 
 function normalizeAssets(value: unknown, field: string): DemoAssetConfig[] {
