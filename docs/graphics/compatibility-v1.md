@@ -7696,3 +7696,38 @@ byte-sorted GBM position; its prepared-product classification is unchanged.
 timeouts or product runtime behavior changed in this correction. The
 primary checkout's running jobs still use their earlier frozen source;
 this corrected audit is not evidence that their complete gates passed.
+
+
+### Independent Firefox capture control, 2026-10-29
+
+The manual diagnostic now lives at
+`tests/browser-tooling/firefox-offscreen-capture/`. It imports only the
+declared Playwright dependency and uses ordinary browser APIs, without
+Kandelo modules, Wasm, shared memories, SDK programs or VFS images. The
+final model explicitly retains both transferred planes and waits for their
+visible pixels before repeated captures. Early scratch color mismatches
+without those ownership/readiness guards are not evidence for this failure.
+
+On macOS 27.0.1 arm64, Playwright 1.63.0 / Firefox 155.0, the fixed three-run
+continuous GPU-readback selection timed out in all three runs after visible
+readiness, during steady capture rounds 7, 1 and 9. A clipped-page capture
+control also timed out. The corrected 2D-only control passed three runs
+(180 steady exact-pixel captures), and the once-painted GPU control passed
+three runs (another 180). The final files have run from their registered
+repository path. A prior registered scratch run passed, while a later
+three-run scratch selection contained startup mismatches; those remain
+preserved and cannot be substituted for the corrected controls.
+
+Exact traces and per-request stages/pixels are in the file-owner checkout's
+`.context/offscreen-capture-retained-{gpu,viewport,2d,once}-results/`, with
+matching `.log` and status files. The independent failure is specifically
+capture timing, not a Kandelo API/guest failure. Responsibility between
+tooling and the engine remains unresolved. It does not prove that every
+Kandelo rendering failure shares that cause or close the product gates.
+
+Temporary PNG-decoder and browser-preference controls did not resolve the
+failure. Those changes remain private diagnostics; normal product tests,
+assertions, deadlines, browser preferences and runtime behavior are intact.
+No upstream report was filed. No product workaround or hard platform
+boundary is claimed, and the tooling-only diagnostic does not get a runtime
+workaround registry entry under that registry's explicit exclusion.
