@@ -1814,11 +1814,13 @@ Reaping on init's behalf uses the same Rust removal and host-cleanup path as a
 `waitpid()` reap, including the resource-free `Limbo` record kept for a
 group leader that still has group members. That `Limbo` record is not a
 process, so `kernel_get_parent_pid` reports `ESRCH` for it, as
-`kernel_get_process_state` does. Only the first acknowledgement of an exit
-has effects; a repeat, such as the second arrival for a spawn child that
-exited before its spawn result was published, changes nothing. Removing a
-process record for any other reason (for example forced teardown) also
-reparents that process's remaining children to init.
+`kernel_get_process_state` and `kernel_take_process_timer_cleanup` do. The
+leader's timers ended with the reaped process; the host retires its own
+timer handles for that pid when the take reports `ESRCH`. Only the first
+acknowledgement of an exit has effects; a repeat, such as the second arrival
+for a spawn child that exited before its spawn result was published, changes
+nothing. Removing a process record for any other reason (for example forced
+teardown) also reparents that process's remaining children to init.
 
 Host launches follow the same rule. A process launched directly by the host
 has the `ppid=0` sentinel as its parent, but its own children are ordinary
