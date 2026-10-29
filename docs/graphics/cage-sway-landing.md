@@ -99,6 +99,11 @@ manual browser and final combined checks are also pending. This document
 defines the landing target; it does not declare the PR merge-ready.
 Performance has not been measured.
 
+The Sway recipe now declares Python 3.11+ and native Clang 21+ for its
+required upstream status-reader regression helper. This corrects package
+preflight metadata without changing target build flags or source. The
+normal package rebuild against this corrected manifest remains pending.
+
 ## Follow-up graphics baseline
 
 The pushed branch `brandonpayton/graphics-baseline-follow-up` preserves
