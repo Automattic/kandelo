@@ -8290,3 +8290,31 @@ is `.context/gles-string-errors-syntax.log`.
 This is focused native-library evidence, not a newly run upstream CTS
 case or normal guest/browser validation. The complete G09 audit and
 combined product/conformance gates remain open under the follow-up.
+
+### GLES object generation count validation, 2026-10-29
+
+The follow-up closes another focused G09 gap: `glGenFramebuffers` used to
+silently ignore negative counts. The
+[Khronos ES2 contract](https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glGenFramebuffers.xml)
+requires `GL_INVALID_VALUE`; the pinned upstream negative-buffer CTS
+`gen_framebuffers` case checks this with a null output pointer. The
+encoder now rejects the count before output writes or name publication,
+including when the output pointer is null. Zero remains a no-op, matching
+the other three core GLES2 object generators. No host, wire or ABI change.
+
+The authored `encoder-generation-counts` regression failed on
+`72d6ba7982` at its first missing-error assertion. It covers `-1` and
+`INT_MIN` counts with null and non-null outputs across framebuffer,
+buffer, texture and renderbuffer generators; zero counts; unchanged
+output sentinels, allocation counts and submitted command batches; and
+subsequent successful generation of distinct nonzero names. Full context
+cleanup leaves no native allocations.
+
+All 216 native C cases then passed under the declared dev shell with
+undefined-behavior sanitization, and both Wasm pointer-width syntax checks
+passed with the declared LLVM compiler and existing sysroot headers.
+Evidence is the file-owner checkout's
+`.context/gles-generation-counts-{before,after,syntax}.log`. This does not
+claim upstream CTS execution, fresh linked products, browser behavior or
+complete object allocation/name/error conformance. Those broader gates
+and inventory rows remain open under follow-up #1594.

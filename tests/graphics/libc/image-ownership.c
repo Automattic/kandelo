@@ -9,6 +9,7 @@
 #include <gbm.h>
 #include <assert.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -3429,6 +3430,36 @@ int main(int argc, char **argv) {
         assert(buffer_uploads == 1 && glGetError() == GL_NO_ERROR);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-vao-attribs"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-generation-counts")) {
+        void (*const generators[])(GLsizei, GLuint *) = {
+            glGenFramebuffers, glGenBuffers, glGenTextures, glGenRenderbuffers,
+        };
+        const GLsizei negative[] = {-1, INT_MIN};
+        for (unsigned i = 0; i < sizeof generators / sizeof generators[0]; ++i) {
+            GLuint names[3] = {0x12345678u, 0x87654321u, 0xdecafbadu};
+            assert(glGetError() == GL_NO_ERROR);
+            const unsigned submits = submit_batches, allocations_before = allocation_count();
+            for (unsigned j = 0; j < sizeof negative / sizeof negative[0]; ++j) {
+                generators[i](negative[j], names);
+                assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+                assert(names[0] == 0x12345678u && names[1] == 0x87654321u && names[2] == 0xdecafbadu);
+                generators[i](negative[j], NULL);
+                assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+            }
+            generators[i](0, names);
+            generators[i](0, NULL);
+            assert(glGetError() == GL_NO_ERROR);
+            assert(names[0] == 0x12345678u && names[1] == 0x87654321u && names[2] == 0xdecafbadu);
+            glFlush();
+            assert(submit_batches == submits && allocation_count() == allocations_before);
+            generators[i](2, names);
+            assert(glGetError() == GL_NO_ERROR);
+            assert(names[0] && names[1] && names[0] != names[1] && names[2] == 0xdecafbadu);
+        }
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        puts("PASS encoder-generation-counts"); return 0;
     }
     if (!strcmp(argv[1], "encoder-string-errors")) {
         string_generation = 1;

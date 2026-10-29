@@ -2100,7 +2100,11 @@ void glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose,
 
 void glGenFramebuffers(GLsizei n, GLuint *out) {
     if (!_wpk_gl_current_encoder()) return;
-    if (n <= 0 || !out) return;
+    if (n < 0) {
+        raise_client_error(GL_INVALID_VALUE);
+        return;
+    }
+    if (!n || !out) return;
     for (GLsizei i = 0; i < n; i++) out[i] = g_next_framebuffer++;
     emit_name_array(OP_GEN_FRAMEBUFFERS, n, out);
 }
