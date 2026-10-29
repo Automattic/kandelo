@@ -1854,13 +1854,14 @@ trust. Adding a package to an image needs only the image recipe and the
 package's entry in the supported set.
 
 Binaries the browser app imports directly (`@binaries/...`) are the other
-consumer. Each must be an output of a package in
+consumer. The Node CLI's literal `optionalBinary` built-ins are consumers
+too, including each alternative entry point. Each must be an output of a package in
 `packages/sets/local-supported.toml`;
 `scripts/check-browser-binary-supply.ts` enforces this, and
 `tests/package-system/browser-binary-supply.test.ts` runs it in CI. A
-default `./run.sh local-build` selects the owners of those imports beside
+default `./run.sh local-build` selects the owners of those host demands beside
 the active products. After every supported-tree build the engine also
-checks the published projection: each browser import, the kernel, rootfs
+checks the published projection: each host program demand, the kernel, rootfs
 and image-writer artifacts, and every lazy body each product image
 references must be present at its declared size, or setup fails naming the
 path and its consumer. Optional gallery globs are outside this rule; their

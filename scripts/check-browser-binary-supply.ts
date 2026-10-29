@@ -11,6 +11,8 @@
  *     relative import into a binary mirror), as
  *     apps/browser-demos/browser-binary-imports.mjs finds them. Nothing else
  *     declares those, so they are checked here.
+ *   - The Node CLI declares package-backed built-ins with optionalBinary.
+ *     Each path is resolved during startup, so those owners are selected too.
  *
  * Modes (repo root, inside scripts/dev-shell.sh):
  *   node node_modules/tsx/dist/cli.mjs scripts/check-browser-binary-supply.ts
@@ -26,6 +28,7 @@
  *       regular file of the declared size in <dir>.
  */
 import { createHash } from "node:crypto";
+import { parse } from "@babel/parser";
 import { lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,6 +63,46 @@ export function browserImportDemands(repoRoot = defaultRepoRoot): BinaryDemand[]
   return browserBinariesImports(repoRoot, { includeOptionalGlobs: false })
     .filter((binary: string) => !localOnlyBrowserImports.has(binary))
     .map((binary: string) => ({ binary, consumers: ["browser @binaries import"] }));
+}
+
+/** The Node CLI's package-backed built-ins are consumers too. Read their
+ * literal declarations without importing the CLI (which would run it).
+ * snapshotOptionalBinaryWithFallback is an explicit local-fixture boundary,
+ * not a package demand. Every optionalBinary alternative is independently
+ * resolved by the CLI, so each must have an authoritative projection. */
+export function nodeRunnerDemandsFromSource(source: string): BinaryDemand[] {
+  const ast = parse(source, { sourceType: "module", plugins: ["typescript"] });
+  const demands = new Map<string, BinaryDemand>();
+  for (const statement of ast.program.body) {
+    if (statement.type !== "VariableDeclaration") continue;
+    for (const declaration of statement.declarations) {
+      const call = declaration.init;
+      if (call?.type !== "CallExpression" || call.callee.type !== "Identifier"
+          || call.callee.name !== "optionalBinary") continue;
+      if (call.arguments.length === 0) throw new Error("Node optionalBinary demand has no paths");
+      for (const argument of call.arguments) {
+        if (argument.type !== "StringLiteral" || !argument.value.startsWith("programs/")) {
+          throw new Error("Node optionalBinary demands must be literal programs/ paths");
+        }
+        const suffix = argument.value.slice("programs/".length);
+        const binary = /^wasm(?:32|64)\//.test(suffix)
+          ? argument.value : `programs/wasm32/${suffix}`;
+        if (binary.split("/").some((part) => part === "" || part === "." || part === "..")) {
+          throw new Error(`Invalid Node program demand ${JSON.stringify(binary)}`);
+        }
+        demands.set(binary, { binary, consumers: ["Node runner built-in"] });
+      }
+    }
+  }
+  return [...demands.values()].sort((a, b) => a.binary.localeCompare(b.binary));
+}
+
+export function nodeRunnerDemands(repoRoot = defaultRepoRoot): BinaryDemand[] {
+  return nodeRunnerDemandsFromSource(readFileSync(join(repoRoot, "examples/run-example.ts"), "utf8"));
+}
+
+export function hostProgramDemands(repoRoot = defaultRepoRoot): BinaryDemand[] {
+  return mergeDemands([...browserImportDemands(repoRoot), ...nodeRunnerDemands(repoRoot)]);
 }
 
 function readSupportedSet(repoRoot: string) {
@@ -101,7 +144,7 @@ export function classifyUnsupplied(
 
 export function unsuppliedBinaryDemands(
   repoRoot = defaultRepoRoot,
-  demands = browserImportDemands(repoRoot),
+  demands = hostProgramDemands(repoRoot),
 ): string[] {
   return classifyUnsupplied(
     demands,
@@ -274,13 +317,13 @@ function main(argv: string[]): number {
   if (argv.length === 2 && argv[0] === "--published") {
     const published = resolve(argv[1]!);
     const unpublished = unpublishedBinaryDemands(published, mergeDemands([
-      ...browserImportDemands(),
+      ...hostProgramDemands(),
       ...virtualModuleDemands(),
       ...productImageDemands(published),
     ]));
     if (unpublished.length === 0) return 0;
     process.stderr.write(
-      `Binaries the browser app or a VFS image needs that ${published} does not contain:\n` +
+      `Binaries a host consumer or a VFS image needs that ${published} does not contain:\n` +
         unpublished.map((line) => `  ${line}\n`).join("") +
         "The build did not publish them. Rebuild with ./run.sh local-build.\n",
     );
@@ -290,7 +333,7 @@ function main(argv: string[]): number {
     process.stderr.write(usage);
     return 2;
   }
-  const demands = browserImportDemands();
+  const demands = hostProgramDemands();
   const owners = packageOutputOwners(defaultRepoRoot) as Map<string, Owner>;
   const unsupplied = classifyUnsupplied(demands, owners, supportedPackageNames());
   if (unsupplied.length === 0) {
@@ -298,7 +341,7 @@ function main(argv: string[]): number {
     return 0;
   }
   process.stderr.write(
-    "Binaries the browser app imports that no supported package produces:\n" +
+    "Binaries a host consumer names that no supported package produces:\n" +
       unsupplied.map((line) => `  ${line}\n`).join("") +
       "Add the producing package to packages/sets/local-supported.toml, or remove the import.\n",
   );
