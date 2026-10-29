@@ -113,6 +113,32 @@ impl MemoryManager {
         self.mappings = mappings;
     }
 
+    /// Reserve metadata before an operation can replace live regions.
+    pub(crate) fn reserve_mapping_slots(&mut self, additional: usize) -> Result<(), Errno> {
+        self.mappings
+            .try_reserve(additional)
+            .map_err(|_| Errno::ENOMEM)
+    }
+
+    pub(crate) fn reserve_unmap_split(&mut self, addr: usize, len: usize) -> Result<(), Errno> {
+        let end = addr.checked_add(len).ok_or(Errno::EINVAL)?;
+        if self
+            .mappings
+            .iter()
+            .any(|mapping| mapping.addr < addr && mapping.addr.saturating_add(mapping.len) > end)
+        {
+            self.reserve_mapping_slots(1)?;
+        }
+        Ok(())
+    }
+
+    /// Restore an owned, already sorted snapshot after rejected device admission.
+    /// Sorting or allocating during rollback could itself lose the old mapping.
+    pub(crate) fn restore_mapping_snapshot(&mut self, mappings: Vec<MappedRegion>) {
+        debug_assert!(mappings.windows(2).all(|pair| pair[0].addr <= pair[1].addr));
+        self.mappings = mappings;
+    }
+
     /// Allocate an anonymous mapping. Returns the base address.
     /// If `hint` is non-zero and MAP_FIXED is set, maps at exactly that address
     /// (unmapping any overlapping regions first).
@@ -130,7 +156,8 @@ impl MemoryManager {
             None => return wasm_posix_shared::mmap::MAP_FAILED, // overflow → too large
         };
 
-        let addr = if hint != 0 && (flags & MAP_FIXED) != 0 {
+        let fixed = hint != 0 && (flags & MAP_FIXED) != 0;
+        let addr = if fixed {
             // MAP_FIXED: use the exact address, carving the range out of any
             // overlapping mappings. A fixed map over part of a mapping splits
             // it and keeps the remainder mapped, as munmap does — dropping the
@@ -147,7 +174,6 @@ impl MemoryManager {
             {
                 return wasm_posix_shared::mmap::MAP_FAILED;
             }
-            self.munmap(hint, aligned_len);
             hint
         } else {
             // A non-null address without MAP_FIXED is a placement hint. Wasm
@@ -172,6 +198,14 @@ impl MemoryManager {
             }
         };
 
+        // A middle replacement can add one fragment and the new mapping.
+        // Reserve both slots before carving any existing address-space region.
+        if self.reserve_mapping_slots(if fixed { 2 } else { 1 }).is_err() {
+            return wasm_posix_shared::mmap::MAP_FAILED;
+        }
+        if fixed {
+            self.munmap(addr, aligned_len);
+        }
         // Insert sorted by address
         let pos = self.mappings.partition_point(|m| m.addr < addr);
         self.mappings.insert(

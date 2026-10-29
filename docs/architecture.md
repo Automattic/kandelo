@@ -3428,17 +3428,22 @@ that retirement itself. GPU textures follow the same final destruction
 event. All guest mappings and snapshots stay inside disposable workers.
 The host bind import includes the canonical offset; it ships with the
 matching kernel within the single unpublished ABI 56 / kernel-host 3 epoch.
-Fixed anonymous and private-file replacements retire the affected device
-interval after allocation succeeds, before the host populates replacement
-bytes. A failed allocation returns temporary split references and preserves
-the old device bindings. Device `mremap` shrink retires only its tail through
+Fixed anonymous, private-file and new device mappings retire the affected
+device interval before the host populates replacement bytes. DRI admission
+stages new metadata, flushes the old aliases, then commits clipped views
+with their canonical offsets. This preserves dirty storage when the same
+BO is remapped through a PRIME descriptor. Allocation or bind rejection
+returns temporary references and restores the old allocator and device
+bindings; accepted retirement cannot revoke the newly installed view.
+Framebuffer and GL command replacements install their new owner after
+retiring old device bindings. Device `mremap` shrink retires only its tail through
 that same plan, and an unchanged-size remap retains the existing binding.
 GEM mappings cannot expand: growth, including `MREMAP_MAYMOVE`, fails with
 `EFAULT` without changing the mapping or storage references, following
 Linux GEM's fixed-size VMA model. The fixed framebuffer/GL command mappings
 also reject expansion. Ordinary moved mappings preserve their protection
-and shared-publication metadata. Replacement by another device mapping and
-broader remap flag/partial-file coverage remain separate work; see the
+and shared-publication metadata. Broader remap flag/partial-file coverage
+remains separate work; see the
 compatibility ledger.
 
 The host's independent display statistics buffer publishes the current

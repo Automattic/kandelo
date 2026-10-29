@@ -162,23 +162,95 @@ export class GbmBoRegistry {
     for (const l of this.listeners) l(pid, bo_id, "destroy");
   }
 
-  bind(pid: number, bo_id: number, addr: number, len: number, boOffset = 0): number {
-    const e = this.bos.get(bo_id);
-    if (!e || !Number.isSafeInteger(addr) || !Number.isSafeInteger(len) ||
+  bind(pid: number, bo_id: number, addr: number, len: number, boOffset = 0,
+    allocationLength?: number): number {
+    const entry = this.bos.get(bo_id);
+    if (!entry || !Number.isSafeInteger(addr) || !Number.isSafeInteger(len) ||
         !Number.isSafeInteger(boOffset) || addr < 0 || len < 0 || boOffset < 0 ||
-        boOffset > e.size || !Number.isSafeInteger(addr + len)) return -1;
-    // First bind for an importer pid registers it in the bo's pids
-    // set — PRIME_FD_TO_HANDLE doesn't fire a host-side create.
-    // Pure metadata at this point: the actual SAB→Memory prime is
-    // deferred to `primeBindFromSab`, called after the kernel-worker
-    // post-syscall path has grown the Memory and zero-filled the
-    // mmap region. If we wrote here, the zero-fill would clobber
-    // our primed bytes.
-    e.pids.add(pid);
-    this.setBinding(e, pid, {pid, addr, len, boOffset, primed: false,
-      snapshot: new Uint8Array(Math.min(len, e.size - boOffset))});
-    for (const l of this.listeners) l(pid, bo_id, "bind");
-    return 0;
+        boOffset > entry.size || !Number.isSafeInteger(addr + len)) return -1;
+    if (allocationLength !== undefined && (!Number.isSafeInteger(allocationLength) ||
+        allocationLength <= 0 || allocationLength < len || !Number.isSafeInteger(addr + allocationLength))) return -1;
+
+    const previousBos = this.bos, previousCounts = this.bindingCounts;
+    try {
+      // Stage complete metadata before publishing a replacement. Canonical
+      // publication may happen during admission, but failed admission must
+      // preserve every old mapping and its independent baseline.
+      const nextBos = new Map(this.bos);
+      const changed = new Map<number, {original: InternalEntry; next: InternalEntry}>();
+      const cloneEntry = (original: InternalEntry) => {
+        let staged = changed.get(original.bo_id);
+        if (!staged) {
+          staged = {original, next: {...original, pids: new Set(original.pids),
+            bindingsByPid: new Map(original.bindingsByPid)}};
+          const aliases = original.bindingsByPid.get(pid);
+          staged.next.bindingsByPid.set(pid, new Map(aliases));
+          changed.set(original.bo_id, staged);
+          nextBos.set(original.bo_id, staged.next);
+        }
+        return staged.next;
+      };
+      const retiring: {entry: InternalEntry; binding: InternalBinding}[] = [];
+      const fragments: {snapshot: Uint8Array; source: Uint8Array}[] = [];
+      const unbound = new Set<number>();
+      if (allocationLength !== undefined) {
+        const end = addr + allocationLength;
+        for (const original of this.bos.values()) {
+          for (const binding of original.bindingsByPid.get(pid)?.values() ?? []) {
+            const start = Math.max(addr, binding.addr);
+            const stop = Math.min(end, binding.addr + binding.len);
+            if (start >= stop) continue;
+            const next = cloneEntry(original);
+            const aliases = next.bindingsByPid.get(pid)!;
+            aliases.delete(binding.addr);
+            const fragment = (offset: number, length: number) => {
+              const source = binding.snapshot.subarray(offset, offset + length);
+              const snapshot = new Uint8Array(source.byteLength);
+              aliases.set(binding.addr + offset, {...binding, addr: binding.addr + offset,
+                len: length, boOffset: binding.boOffset + offset, snapshot});
+              fragments.push({snapshot,source});
+            };
+            if (start > binding.addr) fragment(0, start - binding.addr);
+            if (stop < binding.addr + binding.len) fragment(stop - binding.addr, binding.addr + binding.len - stop);
+            retiring.push({entry: original,binding});
+            unbound.add(original.bo_id);
+          }
+        }
+      }
+      const target = cloneEntry(entry);
+      target.pids.add(pid);
+      target.bindingsByPid.get(pid)!.set(addr, {pid,addr,len,boOffset,primed:false,
+        snapshot:new Uint8Array(Math.min(len,entry.size-boOffset))});
+      const nextCounts = new Map(this.bindingCounts);
+      let count = 0;
+      for (const candidate of nextBos.values()) count += candidate.bindingsByPid.get(pid)?.size ?? 0;
+      if (count) nextCounts.set(pid,count);
+      else nextCounts.delete(pid);
+
+      // The process bytes still contain the old mappings here. The kernel
+      // worker zero-fills/populates the accepted mmap only after this return.
+      for (const record of retiring) this.flushMemoryToSab(record.entry,record.binding);
+      for (const {snapshot,source} of fragments) snapshot.set(source);
+      for (const {original,next} of changed.values()) {
+        next.pendingReaders = new Set(original.pendingReaders);
+        if (!next.bindingsByPid.get(pid)?.size) {
+          next.bindingsByPid.delete(pid);
+          next.pendingReaders.delete(pid);
+        }
+      }
+      this.bos = nextBos;
+      this.bindingCounts = nextCounts;
+      for (const oldBo of unbound) for (const listener of this.listeners) listener(pid,oldBo,"unbind");
+      for (const listener of this.listeners) listener(pid,bo_id,"bind");
+      return 0;
+    } catch {
+      // Flushes above can legitimately publish old dirty bytes. Restoring the
+      // old metadata retains those updated baselines, without admitting the
+      // replacement or losing any old alias if a later allocation/observer fails.
+      this.bos = previousBos;
+      this.bindingCounts = previousCounts;
+      return -1;
+    }
   }
 
   unbind(pid: number, bo_id: number, addr?: number, len?: number): void {

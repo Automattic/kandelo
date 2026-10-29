@@ -11,6 +11,7 @@
 #include <unistd.h>
 struct dumb {uint32_t height,width,bpp,flags,handle,pitch;uint64_t size;};
 struct mapping {uint32_t handle,pad;uint64_t offset;};
+struct prime {uint32_t handle,flags;int32_t fd;};
 #define CHECK(x) do {if (!(x)) {fprintf(stderr,"line %d: %s errno=%d\n",__LINE__,#x,errno);exit(1);}} while (0)
 static void ready(int fd) {
     struct pollfd p={.fd=fd,.events=POLLIN};
@@ -139,6 +140,67 @@ static void remapped_mapping(void) {
     puts("OK device remap shrink retains storage and rejects expansion without side effects");
 }
 
+static void replaced_device_mapping(int same_bo) {
+    const size_t page=65536;
+    int fd=open("/dev/dri/renderD128",O_RDWR|O_CLOEXEC);CHECK(fd>=0);
+    struct dumb old={.width=256,.height=192,.bpp=32};CHECK(ioctl(fd,0xc02064b2u,&old)==0);
+    struct mapping old_map={.handle=old.handle};CHECK(ioctl(fd,0xc01064b3u,&old_map)==0);
+    unsigned char *base=mmap(NULL,4*page,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);
+    CHECK(base!=MAP_FAILED);
+    CHECK(mmap(base,3*page,PROT_READ|PROT_WRITE,MAP_SHARED|MAP_FIXED,fd,old_map.offset)==base);
+    unsigned char *mirror=mmap(NULL,3*page,PROT_READ|PROT_WRITE,MAP_SHARED,fd,old_map.offset);
+    CHECK(mirror!=MAP_FAILED);
+    int replacement=-1;uint64_t replacement_offset=0;
+    if (same_bo) {
+        struct prime export={.handle=old.handle,.fd=-1};
+        CHECK(ioctl(fd,0xc00c642du,&export)==0 && export.fd>=0);
+        replacement=export.fd;
+    }
+    CHECK(close(fd)==0);
+    if (!same_bo) {
+        replacement=open("/dev/dri/renderD128",O_RDWR|O_CLOEXEC);CHECK(replacement>=0);
+        struct dumb next={.width=256,.height=64,.bpp=32};CHECK(ioctl(replacement,0xc02064b2u,&next)==0);
+        struct mapping next_map={.handle=next.handle};CHECK(ioctl(replacement,0xc01064b3u,&next_map)==0);
+        replacement_offset=next_map.offset;
+    }
+    base[0]=41;base[page]=55;base[2*page]=61;
+    unsigned char *next=mmap(base+page,same_bo?3*page:page,PROT_READ|PROT_WRITE,
+        MAP_SHARED|MAP_FIXED,replacement,replacement_offset);
+    CHECK(next==base+page && close(replacement)==0);
+    if (same_bo) CHECK(next[0]==41 && next[page]==55 && next[2*page]==61);
+    else CHECK(next[0]==0);
+    int parent_gate[2],child_gate[2];CHECK(pipe(parent_gate)==0 && pipe(child_gate)==0);
+    pid_t child=fork();CHECK(child>=0);
+    if (child==0) {
+        CHECK(close(parent_gate[1])==0 && close(child_gate[0])==0);
+        ready(parent_gate[0]);
+        if (same_bo) {
+            CHECK(base[0]==71 && next[0]==71 && next[page]==81 && next[2*page]==61);
+            CHECK(mirror[0]==71 && mirror[page]==81 && mirror[2*page]==61);
+            next[1]=59;mirror[2*page+2]=93;base[3]=101;
+        } else {
+            CHECK(base[0]==71 && next[0]==91 && base[2*page]==81);
+            CHECK(mirror[0]==71 && mirror[page]==55 && mirror[2*page]==81);
+            next[1]=59;base[2*page+2]=93;base[3]=101;
+        }
+        CHECK(write(child_gate[1],"c",1)==1);
+        CHECK(munmap(base,4*page)==0 && munmap(mirror,3*page)==0);
+        CHECK(close(parent_gate[0])==0 && close(child_gate[1])==0);
+        _exit(0);
+    }
+    CHECK(close(parent_gate[0])==0 && close(child_gate[1])==0);
+    if (same_bo) {next[0]=71;next[page]=81;}
+    else {base[0]=71;base[2*page]=81;next[0]=91;}
+    CHECK(write(parent_gate[1],"p",1)==1);
+    ready(child_gate[0]);CHECK(next[1]==59 && base[3]==101 && mirror[2*page+2]==93);
+    if (!same_bo) CHECK(mirror[page]==55);
+    int status=0;CHECK(waitpid(child,&status,0)==child && WIFEXITED(status) && WEXITSTATUS(status)==0);
+    CHECK(munmap(base,4*page)==0 && munmap(mirror,3*page)==0);
+    CHECK(close(parent_gate[1])==0 && close(child_gate[0])==0);
+    puts(same_bo ? "OK fixed PRIME replacement preserves alias storage across fork" :
+        "OK fixed device replacement preserves unrelated BO bytes across fork");
+}
+
 int main(void) {
     full_mapping();
     fragmented_mapping(1);
@@ -146,5 +208,7 @@ int main(void) {
     fragmented_mapping(2);
     fragmented_mapping(3);
     remapped_mapping();
+    replaced_device_mapping(0);
+    replaced_device_mapping(1);
     return 0;
 }

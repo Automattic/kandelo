@@ -58,6 +58,8 @@ test("normal DRI mappings survive descriptor close and synchronize across fork",
       "OK fixed anonymous replacement retires only the replaced DRI interval",
       "OK fixed file replacement retires only the replaced DRI interval",
       "OK device remap shrink retains storage and rejects expansion without side effects",
+      "OK fixed device replacement preserves unrelated BO bytes across fork",
+      "OK fixed PRIME replacement preserves alias storage across fork",
     ]);
     expect(result.stderr).toBe("");
     expect(result.diagnostics).toEqual([]);

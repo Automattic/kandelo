@@ -631,3 +631,61 @@ it("preserves a pending reader created while retiring another alias", () => {
   registry.syncImportsForPid(100,memory);
   expect(bytes[4*page]).toBe(59);
 });
+
+it("retires replaced VMA bytes before a different BO can overwrite them", () => {
+  const page=65536, memory=new WebAssembly.Memory({initial:6,maximum:6});
+  const bytes=new Uint8Array(memory.buffer);
+  const registry=new GbmBoRegistry({getProcessMemory:()=>memory});
+  registry.create({pid:100,bo_id:910,size:3*page,w:256,h:192,stride:1024});
+  registry.create({pid:100,bo_id:911,size:page,w:256,h:64,stride:1024});
+  registry.bind(100,910,page,3*page);
+  registry.primeBindFromSab(100,910,memory,page);
+  bytes[page]=41;bytes[2*page]=55;bytes[3*page]=61;
+  registry.pixelView(911)![0]=99;
+  expect(registry.bind(100,911,2*page,page,0,page)).toBe(0);
+  bytes.fill(0,2*page,3*page); // Normal mmap population happens after bind admission.
+  registry.primeBindFromSab(100,911,memory,2*page);
+  registry.syncToSab(910);
+  expect(registry.pixelView(910)![page]).toBe(55);
+  expect(registry.get(100,910)?.binding).toEqual({addr:3*page,len:page,boOffset:2*page});
+  bytes[2*page]=101;registry.syncToSab(911);
+  const device=registry.pixelView(910)!.slice();
+  device[0]=31;device[page]=77;device[2*page]=93;
+  expect(registry.publishDevicePixels(910,device)).toBe(true);
+  expect([bytes[page],bytes[2*page],bytes[3*page]]).toEqual([31,101,93]);
+  expect(registry.pixelView(911)![0]).toBe(101);
+  registry.destroy(100,910);
+  expect(registry.get(100,911)?.binding).toEqual({addr:2*page,len:page});
+});
+
+it("flushes overlapping aliases before the same BO is remapped and zero-filled", () => {
+  const page=65536, memory=new WebAssembly.Memory({initial:6,maximum:6});
+  const bytes=new Uint8Array(memory.buffer);
+  const registry=new GbmBoRegistry({getProcessMemory:()=>memory});
+  registry.create({pid:100,bo_id:912,size:3*page,w:256,h:192,stride:1024});
+  registry.bind(100,912,page,3*page);
+  registry.primeBindFromSab(100,912,memory,page);
+  bytes[page]=41;bytes[2*page]=55;bytes[3*page]=61;
+  expect(registry.bind(100,912,2*page,3*page,0,3*page)).toBe(0);
+  bytes.fill(0,2*page,5*page);
+  registry.primeBindFromSab(100,912,memory,2*page);
+  expect([bytes[2*page],bytes[3*page],bytes[4*page]]).toEqual([41,55,61]);
+  bytes[2*page]=88;registry.syncImportsForPid(100,memory);
+  expect(bytes[page]).toBe(88);
+  expect(registry.get(100,912)?.binding).toEqual({addr:2*page,len:3*page});
+});
+
+it("preserves all prior VMA metadata when a replacement observer rejects admission", () => {
+  const page=65536, memory=new WebAssembly.Memory({initial:6,maximum:6});
+  const registry=new GbmBoRegistry({getProcessMemory:()=>memory});
+  registry.create({pid:100,bo_id:913,size:3*page,w:256,h:192,stride:1024});
+  registry.create({pid:100,bo_id:914,size:page,w:256,h:64,stride:1024});
+  registry.bind(100,913,page,3*page);registry.primeBindFromSab(100,913,memory,page);
+  const remove=registry.onChange(()=>{throw new Error("rejected observer");});
+  let result=-1;
+  try {result=registry.bind(100,914,2*page,page,0,page);} catch {}
+  remove();
+  expect(result).toBeLessThan(0);
+  expect(registry.get(100,913)?.binding).toEqual({addr:page,len:3*page});
+  expect(registry.get(100,914)?.binding).toBeNull();
+});

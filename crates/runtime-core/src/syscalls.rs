@@ -12814,6 +12814,8 @@ pub fn sys_mremap(
     // `WebAssembly.Memory` and runs after this function returns but before
     // the user process resumes.
     if flags & MREMAP_MAYMOVE != 0 {
+        // A moved subrange can add the destination plus a source fragment.
+        proc.memory.reserve_mapping_slots(2)?;
         let new_addr = proc.memory.mmap_anonymous(
             0, aligned_new, original.prot,
             original.flags & !wasm_posix_shared::mmap::MAP_FIXED,
@@ -12978,11 +12980,9 @@ pub fn sys_mmap(
             if len != FB_SMEM_LEN as usize {
                 return Err(Errno::EINVAL);
             }
-            let alloc_flags = flags | MAP_ANONYMOUS;
-            let addr_out = proc.memory.mmap_anonymous(addr, len, prot, alloc_flags);
-            if addr_out == MAP_FAILED {
-                return Err(Errno::ENOMEM);
-            }
+            let allocation = DeviceMapAllocation::prepare(proc, addr, len, prot, flags)?;
+            let addr_out = allocation.addr;
+            allocation.commit(proc, host, false);
             proc.fb_binding = Some(crate::process::FbBinding {
                 addr: addr_out,
                 len,
@@ -13023,23 +13023,7 @@ pub fn sys_mmap(
             if len > aligned_bo_size {
                 return Err(Errno::EINVAL);
             }
-            proc.dri_bindings.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
-            let addr_out = proc.memory.mmap_anonymous(addr, len, prot, flags | MAP_ANONYMOUS);
-            if addr_out == MAP_FAILED {
-                return Err(Errno::ENOMEM);
-            }
-            if crate::dri::with_registry(|registry| registry.incref(bo_id)).is_none() {
-                proc.memory.munmap(addr_out, len);
-                return Err(Errno::ENOMEM);
-            }
-            let bind_len = len.min(bo_size as usize);
-            if host.gbm_bo_bind(proc.pid as i32, bo_id, addr_out, bind_len, 0) < 0 {
-                proc.memory.munmap(addr_out, len);
-                crate::dri::with_registry(|registry| registry.decref(bo_id));
-                return Err(Errno::ENOMEM);
-            }
-            proc.dri_bindings.push(crate::process::DriBoBinding { addr: addr_out, len, bo_id, bo_offset: 0 });
-            return Ok(addr_out);
+            return mmap_dri_bo(proc, host, addr, len, prot, flags, bo_id, len.min(bo_size as usize));
         }
 
         // /dev/dri/{renderD128,card0}: the caller obtained `offset` from
@@ -13075,12 +13059,11 @@ pub fn sys_mmap(
                 if len != wasm_posix_shared::gl::CMDBUF_LEN {
                     return Err(Errno::EINVAL);
                 }
-                let alloc_flags = flags | MAP_ANONYMOUS;
-                proc.dri_bindings.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
-            let addr_out = proc.memory.mmap_anonymous(addr, len, prot, alloc_flags);
-                if addr_out == MAP_FAILED {
-                    return Err(Errno::ENOMEM);
-                }
+                let ofd_idx = proc.fd_table.get(fd)?.ofd_ref.0;
+                let session_id = gl_session_id(proc, ofd_idx)?;
+                let allocation = DeviceMapAllocation::prepare(proc, addr, len, prot, flags)?;
+                let addr_out = allocation.addr;
+                allocation.commit(proc, host, false);
                 // Re-borrow the OFD mutably to record the binding. The
                 // earlier `ofd` borrow goes out of scope at the start
                 // of this block; entry remains valid.
@@ -13107,7 +13090,7 @@ pub fn sys_mmap(
                     owner.native_live = true;
                     owner.cmdbuf_range = Some((addr_out, len));
                 }
-                host.gl_bind(proc.pid as i32, addr_out, len, gl_session_id(proc, ofd_idx)?, display_file_id.0);
+                host.gl_bind(proc.pid as i32, addr_out, len, session_id, display_file_id.0);
                 return Ok(addr_out);
             }
             if (offset as u64) & 0xFFF != 0 {
@@ -13148,28 +13131,7 @@ pub fn sys_mmap(
             if len != bo_size as usize && len != aligned_bo_size {
                 return Err(Errno::EINVAL);
             }
-            let alloc_flags = flags | MAP_ANONYMOUS;
-            let addr_out = proc.memory.mmap_anonymous(addr, len, prot, alloc_flags);
-            if addr_out == MAP_FAILED {
-                return Err(Errno::ENOMEM);
-            }
-            if crate::dri::with_registry(|registry| registry.incref(bo_id)).is_none() {
-                proc.memory.munmap(addr_out, len);
-                return Err(Errno::ENOMEM);
-            }
-            let bind_rc = host.gbm_bo_bind(proc.pid as i32, bo_id, addr_out, len, 0);
-            if bind_rc < 0 {
-                proc.memory.munmap(addr_out, len);
-                crate::dri::with_registry(|registry| registry.decref(bo_id));
-                return Err(Errno::ENOMEM);
-            }
-            proc.dri_bindings.push(crate::process::DriBoBinding {
-                addr: addr_out,
-                len,
-                bo_id,
-                bo_offset: 0,
-            });
-            return Ok(addr_out);
+            return mmap_dri_bo(proc, host, addr, len, prot, flags, bo_id, len);
         }
 
         // A rootfs file whose bytes the image only names (a URL-backed lazy
@@ -13197,27 +13159,120 @@ pub fn sys_mmap(
     // Allocate the region. Both anonymous and file-backed use the same
     // address space allocator. The host populates file-backed regions after
     // allocation and tracks MAP_SHARED regions for msync writeback.
-    let alloc_flags = flags | MAP_ANONYMOUS;
-    let replacement = if flags & wasm_posix_shared::mmap::MAP_FIXED != 0 && addr != 0 {
-        if addr & 0xFFFF != 0 {
-            return Err(Errno::EINVAL);
-        }
-        let aligned_len = len.checked_add(0xFFFF).ok_or(Errno::ENOMEM)? & !0xFFFF;
-        if aligned_len == 0 {
+    let allocation = DeviceMapAllocation::prepare(proc, addr, len, prot, flags)?;
+    let result = allocation.addr;
+    allocation.commit(proc, host, false);
+    Ok(result)
+}
+
+/// An allocator reservation whose previous regions survive failed host admission.
+struct DeviceMapAllocation {
+    addr: usize,
+    len: usize,
+    previous: Option<Vec<crate::memory::MappedRegion>>,
+    retirement: Option<DeviceUnmapPlan>,
+}
+
+impl DeviceMapAllocation {
+    fn prepare(
+        proc: &mut Process,
+        addr: usize,
+        len: usize,
+        prot: u32,
+        flags: u32,
+    ) -> Result<Self, Errno> {
+        let (previous, retirement) = if flags & wasm_posix_shared::mmap::MAP_FIXED != 0 && addr != 0
+        {
+            if addr & 0xFFFF != 0 {
+                return Err(Errno::EINVAL);
+            }
+            let aligned_len = len.checked_add(0xFFFF).ok_or(Errno::ENOMEM)? & !0xFFFF;
+            if aligned_len == 0 {
+                return Err(Errno::ENOMEM);
+            }
+            let retirement = DeviceUnmapPlan::prepare(proc, addr, aligned_len)?;
+            let mut previous = Vec::new();
+            previous
+                .try_reserve_exact(proc.memory.mappings().len())
+                .map_err(|_| Errno::ENOMEM)?;
+            previous.extend_from_slice(proc.memory.mappings());
+            (Some(previous), Some(retirement))
+        } else {
+            (None, None)
+        };
+        let mapped = proc
+            .memory
+            .mmap_anonymous(addr, len, prot, flags | MAP_ANONYMOUS);
+        if mapped == MAP_FAILED {
             return Err(Errno::ENOMEM);
         }
-        Some(DeviceUnmapPlan::prepare(proc, addr, aligned_len)?)
-    } else {
-        None
-    };
-    let result = proc.memory.mmap_anonymous(addr, len, prot, alloc_flags);
-    if result == MAP_FAILED {
+        Ok(Self {
+            addr: mapped,
+            len,
+            previous,
+            retirement,
+        })
+    }
+
+    fn rollback(self, proc: &mut Process) {
+        if let Some(previous) = self.previous {
+            proc.memory.restore_mapping_snapshot(previous);
+        } else {
+            proc.memory.munmap(self.addr, self.len);
+        }
+        // Dropping retirement returns its provisional split references.
+    }
+
+    fn commit(self, proc: &mut Process, host: &mut dyn HostIO, host_replaced_bindings: bool) {
+        if let Some(retirement) = self.retirement {
+            retirement.commit_with_host(proc, host, host_replaced_bindings);
+        }
+    }
+}
+
+/// The validated descriptor retains the BO while admission reserves another hold.
+struct DriMappingHold(Option<crate::dri::BoId>);
+impl Drop for DriMappingHold {
+    fn drop(&mut self) {
+        if let Some(bo_id) = self.0 {
+            crate::dri::with_registry(|registry| registry.decref(bo_id));
+        }
+    }
+}
+
+fn mmap_dri_bo(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    addr: usize,
+    len: usize,
+    prot: u32,
+    flags: u32,
+    bo_id: crate::dri::BoId,
+    bind_len: usize,
+) -> Result<usize, Errno> {
+    proc.dri_bindings
+        .try_reserve(1)
+        .map_err(|_| Errno::ENOMEM)?;
+    crate::dri::with_registry(|registry| registry.incref(bo_id)).ok_or(Errno::ENOMEM)?;
+    let mut hold = DriMappingHold(Some(bo_id));
+    let allocation = DeviceMapAllocation::prepare(proc, addr, len, prot, flags)?;
+    let mapped = allocation.addr;
+    if host.gbm_bo_bind(proc.pid as i32, bo_id, mapped, bind_len, 0) < 0 {
+        allocation.rollback(proc);
         return Err(Errno::ENOMEM);
     }
-    if let Some(replacement) = replacement {
-        replacement.commit(proc, host);
-    }
-    Ok(result)
+    // Host bind atomically retires overlapping VMA aliases before admitting
+    // this view. Do not unbind that newly admitted view while retiring old
+    // kernel references, especially when the same BO is mapped again.
+    allocation.commit(proc, host, true);
+    proc.dri_bindings.push(crate::process::DriBoBinding {
+        addr: mapped,
+        len,
+        bo_id,
+        bo_offset: 0,
+    });
+    hold.0 = None;
+    Ok(mapped)
 }
 
 /// Reserve device-mapping retirement before the address allocator changes.
@@ -13234,9 +13289,18 @@ impl DeviceUnmapPlan {
         let end = addr.checked_add(len).ok_or(Errno::EINVAL)?;
         let mut fragments = Vec::new();
         let mut split_holds = Vec::new();
-        fragments.try_reserve_exact(proc.dri_bindings.len().checked_mul(2).ok_or(Errno::ENOMEM)?)
+        fragments
+            .try_reserve_exact(
+                proc.dri_bindings
+                    .len()
+                    .checked_mul(2)
+                    .and_then(|count| count.checked_add(1))
+                    .ok_or(Errno::ENOMEM)?,
+            )
             .map_err(|_| Errno::ENOMEM)?;
-        split_holds.try_reserve_exact(proc.dri_bindings.len()).map_err(|_| Errno::ENOMEM)?;
+        split_holds
+            .try_reserve_exact(proc.dri_bindings.len())
+            .map_err(|_| Errno::ENOMEM)?;
         for binding in &proc.dri_bindings {
             let binding_end = binding.addr.checked_add(binding.len).ok_or(Errno::EINVAL)?;
             if binding_end <= addr || binding.addr >= end {
@@ -13244,13 +13308,22 @@ impl DeviceUnmapPlan {
                 continue;
             }
             if binding.addr < addr {
-                fragments.push(crate::process::DriBoBinding { len: addr - binding.addr, ..*binding });
+                fragments.push(crate::process::DriBoBinding {
+                    len: addr - binding.addr,
+                    ..*binding
+                });
             }
             if binding_end > end {
                 let delta = end - binding.addr;
-                let bo_offset = binding.bo_offset.checked_add(delta as u64).ok_or(Errno::EOVERFLOW)?;
+                let bo_offset = binding
+                    .bo_offset
+                    .checked_add(delta as u64)
+                    .ok_or(Errno::EOVERFLOW)?;
                 fragments.push(crate::process::DriBoBinding {
-                    addr: end, len: binding_end - end, bo_offset, ..*binding
+                    addr: end,
+                    len: binding_end - end,
+                    bo_offset,
+                    ..*binding
                 });
                 if binding.addr < addr {
                     split_holds.push(binding.bo_id);
@@ -13259,21 +13332,37 @@ impl DeviceUnmapPlan {
         }
         // Reserve all split references before any destructive cleanup. A failed
         // fixed allocation drops this plan and returns these temporary holds.
-        crate::dri::with_registry(|registry| {
-            for (index, bo_id) in split_holds.iter().enumerate() {
-                if registry.incref(*bo_id).is_none() {
-                    for previous in &split_holds[..index] {
-                        registry.decref(*previous);
+        if !split_holds.is_empty() {
+            crate::dri::with_registry(|registry| {
+                for (index, bo_id) in split_holds.iter().enumerate() {
+                    if registry.incref(*bo_id).is_none() {
+                        for previous in &split_holds[..index] {
+                            registry.decref(*previous);
+                        }
+                        return Err(Errno::EOVERFLOW);
                     }
-                    return Err(Errno::EOVERFLOW);
                 }
-            }
-            Ok(())
-        })?;
-        Ok(Self { addr, end, fragments, split_holds })
+                Ok(())
+            })?;
+        }
+        Ok(Self {
+            addr,
+            end,
+            fragments,
+            split_holds,
+        })
     }
 
-    fn commit(mut self, proc: &mut Process, host: &mut dyn HostIO) {
+    fn commit(self, proc: &mut Process, host: &mut dyn HostIO) {
+        self.commit_with_host(proc, host, false);
+    }
+
+    fn commit_with_host(
+        mut self,
+        proc: &mut Process,
+        host: &mut dyn HostIO,
+        host_replaced_bindings: bool,
+    ) {
         let Self { addr, end, .. } = self;
         // A fixed replacement has reserved its new allocator interval, but the
         // host has not overwritten the process bytes yet. Flush the retiring
@@ -13291,7 +13380,14 @@ impl DeviceUnmapPlan {
             if removed_start >= removed_end {
                 continue;
             }
-            host.gbm_bo_unbind(pid, binding.bo_id, removed_start, removed_end - removed_start);
+            if !host_replaced_bindings {
+                host.gbm_bo_unbind(
+                    pid,
+                    binding.bo_id,
+                    removed_start,
+                    removed_end - removed_start,
+                );
+            }
             if removed_start == binding.addr && removed_end == binding.addr + binding.len {
                 if crate::dri::with_registry(|registry| registry.decref(binding.bo_id)) == Some(0) {
                     host.gbm_bo_destroy(pid, binding.bo_id);
@@ -13308,11 +13404,13 @@ impl Drop for DeviceUnmapPlan {
     fn drop(&mut self) {
         // Original mappings remain live on an aborted plan, so returning a
         // temporary split hold cannot destroy backing or notify the host.
-        crate::dri::with_registry(|registry| {
-            for bo_id in &self.split_holds {
-                registry.decref(*bo_id);
-            }
-        });
+        if !self.split_holds.is_empty() {
+            crate::dri::with_registry(|registry| {
+                for bo_id in &self.split_holds {
+                    registry.decref(*bo_id);
+                }
+            });
+        }
     }
 }
 
@@ -13340,6 +13438,7 @@ pub fn sys_munmap(
         return Err(Errno::EINVAL);
     }
 
+    proc.memory.reserve_unmap_split(addr, aligned_len)?;
     DeviceUnmapPlan::prepare(proc, addr, aligned_len)?.commit(proc, host);
 
     // Linux munmap succeeds (returns 0) even if no mappings overlap the range,
@@ -53595,6 +53694,196 @@ impl HostIO for RelSymlinkMock {
         assert!(crate::dri::with_registry(|r| r.get(bo_id).is_some()));
         sys_munmap(&mut proc, &mut host, address + 2 * page, page).unwrap();
         assert!(crate::dri::with_registry(|r| r.get(bo_id).is_none()));
+    }
+
+    #[test]
+    fn fixed_dri_mmap_retires_only_replaced_old_mapping_fragments() {
+        use wasm_posix_shared::mmap::{MAP_FIXED, MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let page = 65536;
+        let (old_fd, old_offset, old_size) =
+            dri_alloc_dumb_for_mmap(&mut proc, &mut host, 256, 192);
+        let address = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            old_size,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            old_fd,
+            old_offset as i64,
+        )
+        .unwrap();
+        let old_bo = proc.dri_bindings[0].bo_id;
+        sys_close(&mut proc, &mut host, old_fd).unwrap();
+        let (new_fd, new_offset, new_size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 256, 64);
+        assert_eq!(new_size, page);
+        assert_eq!(
+            sys_mmap(
+                &mut proc,
+                &mut host,
+                address + page,
+                new_size,
+                PROT_READ | PROT_WRITE,
+                MAP_SHARED | MAP_FIXED,
+                new_fd,
+                new_offset as i64
+            ),
+            Ok(address + page)
+        );
+        assert_eq!(proc.dri_bindings.len(), 3);
+        assert_eq!(
+            proc.dri_bindings
+                .iter()
+                .filter(|b| b.bo_id == old_bo)
+                .count(),
+            2
+        );
+        assert!(proc.dri_bindings.iter().any(|b| b.bo_id == old_bo
+            && b.addr == address + 2 * page
+            && b.bo_offset == (2 * page) as u64));
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(old_bo).unwrap().refcount),
+            2
+        );
+        sys_munmap(&mut proc, &mut host, address, page).unwrap();
+        sys_munmap(&mut proc, &mut host, address + 2 * page, page).unwrap();
+        assert!(
+            crate::dri::with_registry(|r| r.get(old_bo).is_none()),
+            "the old BO must die after its last real fragment, while the replacement stays live"
+        );
+        assert_eq!(host.gbm_bo_destroy_calls, [(1, old_bo)]);
+        sys_close(&mut proc, &mut host, new_fd).unwrap();
+        sys_munmap(&mut proc, &mut host, address + page, page).unwrap();
+        assert_eq!(host.gbm_bo_destroy_calls.len(), 2);
+    }
+
+    #[test]
+    fn fixed_command_mapping_keeps_its_new_owner_after_retiring_old_bo_bytes() {
+        use wasm_posix_shared::{
+            gl,
+            mmap::{MAP_FIXED, MAP_SHARED, PROT_READ, PROT_WRITE},
+        };
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let page = 65536;
+        let (old_fd, offset, size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 256, 1088);
+        assert_eq!(size, gl::CMDBUF_LEN + page);
+        let address = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            size,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            old_fd,
+            offset as i64,
+        )
+        .unwrap();
+        sys_close(&mut proc, &mut host, old_fd).unwrap();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+        assert_eq!(
+            sys_mmap(
+                &mut proc,
+                &mut host,
+                address,
+                gl::CMDBUF_LEN,
+                PROT_READ | PROT_WRITE,
+                MAP_SHARED | MAP_FIXED,
+                fd,
+                0
+            ),
+            Ok(address)
+        );
+        assert_eq!(proc.dri_bindings.len(), 1);
+        assert_eq!(proc.dri_bindings[0].addr, address + gl::CMDBUF_LEN);
+        assert_eq!(proc.dri_bindings[0].bo_offset, gl::CMDBUF_LEN as u64);
+        let ofd = proc
+            .ofd_table
+            .get(proc.fd_table.get(fd).unwrap().ofd_ref.0)
+            .unwrap();
+        assert_eq!(
+            ofd.dri().unwrap().gl.as_ref().unwrap().cmdbuf.unwrap().addr,
+            address
+        );
+        assert!(
+            host.gl_unbind_calls.is_empty(),
+            "retirement must not revoke the newly installed command owner"
+        );
+        sys_exit(&mut proc, &mut host, 0);
+    }
+
+    #[test]
+    fn fixed_dri_mmap_rejection_restores_previous_allocator_and_device_state() {
+        use wasm_posix_shared::mmap::{MAP_FIXED, MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let page = 65536;
+        let (old_fd, old_offset, old_size) =
+            dri_alloc_dumb_for_mmap(&mut proc, &mut host, 256, 192);
+        let address = sys_mmap(
+            &mut proc,
+            &mut host,
+            0,
+            old_size,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            old_fd,
+            old_offset as i64,
+        )
+        .unwrap();
+        let old_bo = proc.dri_bindings[0].bo_id;
+        sys_close(&mut proc, &mut host, old_fd).unwrap();
+        let previous: Vec<_> = proc
+            .memory
+            .mappings()
+            .iter()
+            .map(|m| (m.addr, m.len, m.prot, m.flags))
+            .collect();
+        let (new_fd, new_offset, new_size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 256, 64);
+        host.gbm_bo_bind_rc = -(Errno::ENOMEM as i32);
+        assert_eq!(
+            sys_mmap(
+                &mut proc,
+                &mut host,
+                address + page,
+                new_size,
+                PROT_READ | PROT_WRITE,
+                MAP_SHARED | MAP_FIXED,
+                new_fd,
+                new_offset as i64
+            ),
+            Err(Errno::ENOMEM)
+        );
+        assert_eq!(
+            proc.memory
+                .mappings()
+                .iter()
+                .map(|m| (m.addr, m.len, m.prot, m.flags))
+                .collect::<Vec<_>>(),
+            previous
+        );
+        assert_eq!(proc.dri_bindings.len(), 1);
+        assert_eq!(proc.dri_bindings[0].len, old_size);
+        assert_eq!(
+            crate::dri::with_registry(|r| r.get(old_bo).unwrap().refcount),
+            1
+        );
+        assert!(host.gbm_bo_unbind_calls.is_empty());
+        assert!(host.gbm_bo_destroy_calls.is_empty());
+        sys_close(&mut proc, &mut host, new_fd).unwrap();
+        sys_munmap(&mut proc, &mut host, address, old_size).unwrap();
     }
 
     #[test]

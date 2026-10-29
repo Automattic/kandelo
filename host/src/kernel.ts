@@ -80,7 +80,7 @@ import {
   ensurePresentTarget,
 } from "./webgl/present-target";
 import { buildVirtualConnectorMode, connectorModeSize } from "./dri/kms-registry";
-import { DEFAULT_KERNEL_MAX_PAGES, detectPtrWidth } from "./constants";
+import { DEFAULT_KERNEL_MAX_PAGES, detectPtrWidth, WASM_PAGE_SIZE } from "./constants";
 import {
   allocateKernelScratchRegion,
   checkedMemoryRange,
@@ -2655,6 +2655,7 @@ export class WasmPosixKernel {
               binding.offset,
               binding.length,
               Number(boOffset),
+              Math.ceil(binding.length / WASM_PAGE_SIZE) * WASM_PAGE_SIZE,
             );
           } catch {
             return -75; // EOVERFLOW
