@@ -81,9 +81,9 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | Default/user identities and read/draw state remain distinct; C and host attachment records retain deleted texture/RBO identities, including unbound containers; host records also retain native storage and separate packed depth/stencil points. Core attachment/renderbuffer queries, acknowledged C attachment/deletion and texture/RBO allocation are implemented. Metadata capacity precedes native effects; definite failures preserve ownership. Failed deletion/selector inverses are retained per physical context and block dependent work until restored. Image utility/retarget/orphan rollback now retains native inverse plans across peer ownership and pending candidate/retired-view cleanup. Owned surface storage now reserves candidate/retirement receipts and selector inverses before allocation and retains failed cleanup after creator retirement. Other rollback sites, full negative coverage and CTS remain open | encoder, registry, image references, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
 | G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Definite C buffer/texture/RBO bind rejection preserves prior references. Native buffer/image deletion and FBO selector/container rollback now retain failed inverses, block dependent queries/batches and repair before muxer switching. Buffer binding/copy-view, vertex pointer and image utility/retarget recovery retain failed inverses and cleanup receipts; private ARRAY completion reconciles before query/muxer use. Raw upload and BO revocation retain failed utility/attachment/unit inverses through owner retirement. Indeterminate transport and other recovery sites remain open. Full C/native error validation remains open; some guest paths silently return and missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
 | G10 | Every core function resolves; ES2 API | All 142 GLES2 core symbols are defined and resolved; native/private-Wasm audit passes. Full semantic and guest conformance remain pending | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | partial |
-| E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | One shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
-| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. ABI 56 separates revocable display-generation roots from object sessions. C generation records retain old current descriptors, mappings, encoders and imported images while a new generation initializes. Host surface records retain native draw/read targets across context destruction and owner retirement. ABI 57 returns fresh surface IDs and acknowledged dimensions. Kernel/host cross-session draw/read selection validates process, live generation and TID, with canonical surface storage retained after owner retirement. Creation/bind failure preserves prior state. Public independent context/surface records route separate draw/read selectors. ABI 58 kernel/renderer construction joins live same-generation object groups; public C construction joins the same retained owner and native group; the full error/lifecycle audit remains open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
-| E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Public window queries expose accepted dimensions and fixed attributes. Operation table 16 adds immutable renderer limits before context creation, cached per display generation without changing current ownership. Pbuffer creation, zero logical dimensions, stored query attributes and no-post swaps are implemented in source; native/forwarded storage setup and retirement retain failed cleanup. Largest requests honor limits and search definite allocation failures. Core/EXT GBM platform windows, live format/usage validation, surface setters and configuration-specific texture/pixmap/client-buffer failures are implemented in source. Requested render-buffer/colorspace attributes are retained. Broader lifecycle/negative coverage and normal guest CTS remain open | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | partial |
+| E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | Two RGBA8 configs describe ABGR8888/ARGB8888 windows; one shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
+| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. ABI 56 separates revocable display-generation roots from object sessions. C generation records retain old current descriptors, mappings, encoders and imported images while a new generation initializes. Host surface records retain native draw/read targets across context destruction and owner retirement. Fresh surface IDs and acknowledged dimensions belong to the same unpublished epoch. Kernel/host cross-session draw/read selection validates process, live generation and TID, with canonical surface storage retained after owner retirement. Creation/bind failure preserves prior state. Public independent context/surface records route separate draw/read selectors. Kernel/renderer construction joins live same-generation object groups; public C construction joins the same retained owner and native group; the full error/lifecycle audit remains open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
+| E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Public window queries expose accepted dimensions and fixed attributes. Operation table 16 adds immutable renderer limits before context creation, cached per display generation without changing current ownership. Pbuffer creation, zero logical dimensions, stored query attributes and no-post swaps are implemented in source; native/forwarded storage setup and retirement retain failed cleanup. Largest requests honor limits and search definite allocation failures. Legacy/core/EXT GBM windows match their config native visual; CPU fronts pack the accepted byte order. Live format/usage validation, surface setters and configuration-specific texture/pixmap/client-buffer failures are implemented in source. Requested render-buffer/colorspace attributes are retained. Broader lifecycle/negative coverage and normal guest CTS remain open | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | partial |
 | E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context / OES_surfaceless_context | Explicit kernel/host bind, initial zero viewport/scissor, undefined framebuffer-zero status and native operation errors implemented; user FBOs remain usable. Real source-browser checks pass; guest CTS/current artifacts remain pending | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | partial |
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/FBO holds retain GEM backing; separate private source handles and logical native views preserve object state and storage identity. Confirmed C holds belong to retained shared object records with revision-ordered publication; uncertain import/attachment candidates belong to the shared group. Raw GPU views use the same independent storage model; BO retirement tracks every retained raw generation and retries native cleanup. CPU layout mirrors now retain mapped/native siblings with changed-byte publication and retryable readback/writeback; four-format normal guest evidence is recorded below. Forwarded BO registration and complete lifecycle validation remain open | EGL, GLES object/storage model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | partial |
 | E06 | Respecification orphans sibling without altering others; OES_EGL_image | GPU view replacement preserves sibling parameters and canonical pixels, retargets logical FBOs and handles definite rejection before C backing release. C retains backing by object identity and rejects stale association completions. Raw GPU respecification and refresh preserve private canonical storage and independent parameters. CPU native mirrors retain distinct layout identities and backing storage; full CPU respecification, multi-failure recovery and guest CTS remain open | GLES storage model, host object/attachment tracking | Redefine imported texture, sample both siblings, retained FBO | partial |
@@ -101,7 +101,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | H02 | Synchronous query ordering and main forwarding parity | Forwarded queries now use copied input and one bounded reusable mailbox per channel, with timeout retirement; shared native contexts use the same muxer model | worker protocols, query, main-forward | Kernel import preflight at both pointer widths; rendered alternating forwarded owners on three engines | partial; full guest and memory-cycle gate pending |
 | H03 | Process/worker/machine cleanup and resource retirement | Canonical surface BO holds and image-owned renderer cleanup now survive descriptor inheritance/local close; focused native lifecycle checks pass. Raw BO retirement retains failed native cleanup across final member teardown and blocks affected operations until retry. Combined guest/memory-cycle validation remains pending | kernel and shared lifecycle, registries, muxer | fork/spawn/exec/close/death/crash; browser-memory repeated cycles including KMS consumers | partial |
 | A01 | ABI and generated declarations match combined implementation | Main `cb0a8226c965` program ABI 55/kernel-host 2 and graphics development contracts are consolidated under program ABI 56/kernel-host 3. Regeneration and combined validation are in progress; operation table stays 17. Previous ABI 54/55 results remain historical evidence. Normal artifacts and combined consumer/conformance gates remain pending | shared ABI, snapshots, generated C/TS, package closure | ABI checker, generation diffs, normal SourceOnly rebuild | open |
-| P01 | Real upstream compositor integration | At 9a9dec0bf4, normal selected graph60 and 239 program stamps support Node20/20 and browser54/54, including six actual ABI56 cage/sway GLES2 sessions across all three engines. Newer CPU/fork combined compositor, full gallery and browser-memory gates remain pending | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
+| P01 | Real upstream compositor integration | At d081e6d453, explicitly provisioned CTS and actual cage/sway sessions pass all nine cases across three engines. The older combined consumer run passed Node21/21 and browser110/114; the newest two-config source still needs normal complete products, gallery and browser-memory validation | SDK, package recipes, resolver, VFS | Source builds both declared widths; Node semantics; rendered cage/sway and existing apps | open |
 
 ## Separate expansions
 
@@ -7888,3 +7888,94 @@ with its own normal products, pinned libc-test
 newer source remains necessary. Optional CTS provisioning, Freeciv's
 window failure, Firefox capture attribution, full current combined
 validation and the remaining GLES/EGL/CTS inventory stay open.
+
+### Native visual configuration selection and front byte order, 2026-10-29
+
+The preserved three-engine memory-switch failure stopped at Freeciv's
+GBM/EGL window construction. The upstream
+[SDL 2.32.10 KMS backend](https://github.com/libsdl-org/SDL/blob/release-2.32.10/src/video/kmsdrm/SDL_kmsdrmvideo.c#L1088-L1133)
+requests an ARGB8888 window. Kandelo exposed only an ABGR8888 EGL config
+and rejected other GBM window formats. The
+[KHR GBM platform contract](https://registry.khronos.org/EGL/extensions/KHR/EGL_KHR_platform_gbm.txt)
+requires the window format to match its config's native visual. This is
+an ordinary missing platform capability, not an SDL patch or boundary.
+
+Two public ES2 configurations now describe ABGR8888 and ARGB8888 windows.
+They share the same RGBA8/depth24/stencil8 backend storage; the public
+config ID and native format remain distinct. Enumeration/selection,
+context/surface query IDs, legacy/core/EXT window construction and
+format-mismatch rejection use that shared configuration model. Native
+GPU fronts retain logical RGBA colors. CPU front publication packs the
+requested channel order after restoring native readback state, preserving
+alpha, row orientation and padding bounds. Kernel and host admission
+accept both alpha-bearing formats with checked allocation geometry and
+pitch. Opaque native-window configs remain outside this increment.
+
+The new native config case failed before implementation, and the expanded
+Rust front-copy case rejected ARGB with EINVAL before admission was
+completed. Before logs are the file-owner checkout's
+`.context/native-visual-before.log` and
+`.context/native-visual-front-before.log`. All 212 native C graphics cases
+passed after the config implementation. The unchanged workspace selection
+passed with 2,622 runtime-core cases, six compile-fail documentation cases
+and 87 shared cases; the complete graphics source gate passed 717/717,
+including new independent color/alpha/padding conversion checks.
+
+`graphics-native-visual-full-sdk-guests-1029-090200-b6da` rebuilt both
+SDK graphics sets through normal `build-musl.sh --ensure`, matching
+kernel/side-module/host and ABI checks. Node passed 8/8, with zero skips
+or unloaded files. The expanded browser selection passed 89/90 in 5.1m:
+all Chromium/WebKit cases, both-width Firefox CPU fronts, and the earlier
+mapping/file-owner/ring guests passed. One Firefox wasm32 ARGB GPU-to-2D
+case recorded black selected samples and hit the original 10-second pixel
+deadline; no guest diagnostics or page errors were recorded. This failure
+is retained and is not attributed to an outside runtime by inference.
+The fixed three-repetition comparison of original/ARGB GPU-to-2D guests
+passed 11/12 with unchanged assertions/deadlines: all six ARGB cases
+passed; one original ABGR wasm64 case captured black selected samples.
+Both failures remain recorded. The comparison demonstrates that the
+failure is not exclusive to the new native visual; it does not establish
+its runtime/tooling cause. Logs/traces are
+`.context/native-visual-firefox-control*`.
+
+The matching kernel SHA-256 is
+`3b255f7f652d520fae5a24a3f8ff377a79ccb151b352204c9b052ecfc5f7de91`.
+Logs and exact program/image identities are the file-owner checkout's
+`.context/native-visual-*` and `gbm-native-kms-guests/`. The failing case's
+record is `1793279287351-firefox-wasm32-2d-argb-gpu.json`; screenshot and
+trace are preserved in `native-visual-browser-results/`. Early SDK runs
+caught incomplete local graphics provisioning and a missing new fixture
+extension declaration; those were corrected through the ordinary full
+SDK build and public headers. Final native C validation again passed all
+212 cases, including pbuffer config-ID queries for both configurations.
+
+Freeciv's complete normal package/image rebuild and repeated memory-switch
+validation remain necessary. These focused native-window results do not
+claim that the Freeciv application or complete memory gate passed.
+The recurring Firefox inherited-display capture remains open, as do the
+broader GLES/EGL/CTS inventory and complete final combined validation.
+Program ABI 56 / kernel-host 3 / GL table 17 / fork record 21 are unchanged.
+Performance was not measured.
+
+### Completed focused regressions on the mapping checkpoint, 2026-10-29
+
+On `d081e6d453`, the complete graphics source gate passed 714/714 in 32
+files, and the evidence registry agreed with all 628 collected files.
+The 66-case rendered selection passed 65/66: all native-window and ring
+cases passed, with the same Firefox inherited render-node-2D white-marker
+capture failure. Evidence is the file-owner checkout's
+`.context/fixed-device-{graphics-source,rendered,evidence-classes}.log`
+and rendered-results directory. This failure remains recorded.
+
+Explicit normal provisioning of the optional CTS package then completed.
+`graphics-current-cts-compositor-1029-084119-763e` passed all nine actual
+browser cases in Chromium, Firefox and WebKit, including cage/sway
+sessions and the pinned upstream surfaceless method over the one config
+advertised at that checkpoint. Kernel SHA-256 is
+`6a947799436bccea9209a4bf53eb6ba71457cd3d0a47d8c76c7f0ec32587958f`;
+CTS program SHA-256 is
+`c5d10d0661d2e7ca082451e315e08e558676ca6280630e00c5e0aee318d26d1e`.
+Primary `.context/current-graphics-*` logs and
+`graphics-cts-guest-{chromium,firefox,webkit}.json` identify the artifacts.
+This closes the named missing-package run, not broad upstream CTS or
+validation of the later two-config implementation.

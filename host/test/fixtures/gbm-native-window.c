@@ -1,5 +1,7 @@
+#define EGL_EGLEXT_PROTOTYPES
 #include <gbm.h>
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -37,6 +39,30 @@ int main(void) {
     EGLSurface surface = eglCreateWindowSurface(display, config, (EGLNativeWindowType)second, NULL);
     CHECK(surface != EGL_NO_SURFACE);
     CHECK(eglDestroySurface(display, surface));
+    /* SDL's KMS backend selects ARGB by enumerating native visual IDs. */
+    EGLConfig configs[4], argb_config = NULL;
+    CHECK(eglGetConfigs(display, configs, 4, &count) && count == 2);
+    for (EGLint i = 0; i < count; ++i) {
+        CHECK(eglGetConfigAttrib(display, configs[i], EGL_NATIVE_VISUAL_ID, &native_visual));
+        if (native_visual == GBM_FORMAT_ARGB8888) argb_config = configs[i];
+    }
+    CHECK(argb_config != NULL && argb_config != config);
+    struct gbm_surface *argb_window = gbm_surface_create(device, 96, 48, GBM_FORMAT_ARGB8888,
+        GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+    CHECK(argb_window);
+    CHECK(eglCreateWindowSurface(display, config, (EGLNativeWindowType)argb_window, NULL) == EGL_NO_SURFACE);
+    CHECK(eglGetError() == EGL_BAD_MATCH);
+    for (int entry = 0; entry < 3; ++entry) {
+        EGLSurface argb_surface = entry == 0 ? eglCreateWindowSurface(display, argb_config, (EGLNativeWindowType)argb_window, NULL) :
+            entry == 1 ? eglCreatePlatformWindowSurface(display, argb_config, argb_window, NULL) :
+            eglCreatePlatformWindowSurfaceEXT(display, argb_config, argb_window, NULL);
+        CHECK(argb_surface != EGL_NO_SURFACE);
+        EGLint selected_id, surface_id;
+        CHECK(eglGetConfigAttrib(display, argb_config, EGL_CONFIG_ID, &selected_id));
+        CHECK(eglQuerySurface(display, argb_surface, EGL_CONFIG_ID, &surface_id) && surface_id == selected_id);
+        CHECK(eglDestroySurface(display, argb_surface));
+    }
+    gbm_surface_destroy(argb_window);
     CHECK(eglTerminate(display));
     gbm_surface_destroy(first);
     CHECK(!_wpk_gbm_surface_dimensions(first, &width, &height));

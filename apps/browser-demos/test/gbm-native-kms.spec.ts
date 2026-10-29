@@ -7,17 +7,21 @@ import { compileSdkFixture } from "../../../host/test/support/compile-sdk-fixtur
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./support/browser-memory-boundary";
 
-const usages = [["gpu",0],["write",8],["linear",16],["cursor",2]] as const;
+const usages = [
+  ["gpu",0,"GBM_FORMAT_ABGR8888"], ["write",8,"GBM_FORMAT_ABGR8888"],
+  ["linear",16,"GBM_FORMAT_ABGR8888"], ["cursor",2,"GBM_FORMAT_ABGR8888"],
+  ["argb-gpu",0,"GBM_FORMAT_ARGB8888"], ["argb-write",8,"GBM_FORMAT_ARGB8888"],
+] as const;
 const fixtures = new Map<string, ReturnType<typeof compileSdkFixture>>();
 const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 test.use({ serviceWorkers: "block", viewport: { width: 400, height: 300 } });
 test.beforeAll(() => {
   for (const arch of ["wasm32", "wasm64"] as const) {
-    for (const [usage, flags] of usages) {
+    for (const [usage, flags, format] of usages) {
     const sysroot = arch === "wasm64" ? "sysroot64" : "sysroot";
     fixtures.set(`${arch}-${usage}`, compileSdkFixture(new URL("../../../host/test/fixtures/gbm-native-kms.c", import.meta.url), [
       `-I${fileURLToPath(new URL(`../../../${sysroot}/include/drm`, import.meta.url))}`,
-      `-DKANDELO_GBM_CPU_WINDOW_FLAGS=${flags}`, "-lEGL", "-lGLESv2", "-lgbm", "-ldrm",
+      `-DKANDELO_GBM_CPU_WINDOW_FLAGS=${flags}`, `-DKANDELO_GBM_WINDOW_FORMAT=${format}`, "-lEGL", "-lGLESv2", "-lgbm", "-ldrm",
     ], { arch }));
     }
   }

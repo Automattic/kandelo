@@ -4894,6 +4894,42 @@ int main(int argc, char **argv) {
         puts("PASS api-error");
         return 0;
     }
+    if (!strcmp(argv[1], "config-native-visuals")) {
+        EGLConfig configs[3] = {0, 0, (EGLConfig)(uintptr_t)0x1234};
+        EGLint count = 17, visual = 0;
+        assert(eglGetConfigs(dpy, NULL, 0, &count) && count == 2);
+        assert(eglGetConfigs(dpy, configs, 3, &count) && count == 2);
+        assert(configs[0] != configs[1] && configs[2] == (EGLConfig)(uintptr_t)0x1234);
+        const EGLint formats[] = {GBM_FORMAT_ABGR8888, GBM_FORMAT_ARGB8888};
+        for (unsigned i = 0; i < 2; ++i) {
+            assert(eglGetConfigAttrib(dpy, configs[i], EGL_NATIVE_VISUAL_ID, &visual));
+            assert(visual == formats[i]);
+            EGLint id = 0;
+            assert(eglGetConfigAttrib(dpy, configs[i], EGL_CONFIG_ID, &id) && id == (EGLint)i + 1);
+            const EGLint choose[] = {EGL_CONFIG_ID, id, EGL_NONE};
+            EGLConfig selected = NULL;
+            assert(eglChooseConfig(dpy, choose, &selected, 1, &count) && count == 1 && selected == configs[i]);
+            record_format = formats[i];
+            EGLSurface window = eglCreatePlatformWindowSurface(dpy, configs[i], (void *)&record_windows[0], NULL);
+            assert(window != EGL_NO_SURFACE);
+            assert(eglQuerySurface(dpy, window, EGL_CONFIG_ID, &id) && id == (EGLint)i + 1);
+            assert(eglDestroySurface(dpy, window));
+            EGLContext context = eglCreateContext(dpy, configs[i], EGL_NO_CONTEXT, attrs);
+            assert(context != EGL_NO_CONTEXT);
+            assert(eglQueryContext(dpy, context, EGL_CONFIG_ID, &id) && id == (EGLint)i + 1);
+            assert(eglDestroyContext(dpy, context));
+            const EGLint pbuffer_attrs[] = {EGL_WIDTH, 8, EGL_HEIGHT, 4, EGL_NONE};
+            EGLSurface pbuffer = eglCreatePbufferSurface(dpy, configs[i], pbuffer_attrs);
+            assert(pbuffer != EGL_NO_SURFACE);
+            assert(eglQuerySurface(dpy, pbuffer, EGL_CONFIG_ID, &id) && id == (EGLint)i + 1);
+            assert(eglDestroySurface(dpy, pbuffer));
+        }
+        record_format = GBM_FORMAT_ARGB8888;
+        assert(eglCreatePlatformWindowSurface(dpy, configs[0], (void *)&record_windows[0], NULL) == EGL_NO_SURFACE);
+        assert(eglGetError() == EGL_BAD_MATCH);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS config-native-visuals"); return 0;
+    }
     if (!strcmp(argv[1], "config-selection")) {
         const EGLint requests[][7] = {
             { EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_RED_SIZE, 9, EGL_NONE },
@@ -4916,7 +4952,7 @@ int main(int argc, char **argv) {
         const EGLint by_id[] = { EGL_CONFIG_ID, 1, EGL_RED_SIZE, 99, EGL_NONE };
         assert(eglChooseConfig(dpy, by_id, &selected, 1, &count));
         assert(count == 1 && selected == (EGLConfig)1);
-        const EGLint by_missing_id[] = { EGL_CONFIG_ID, 2, EGL_NONE };
+        const EGLint by_missing_id[] = { EGL_CONFIG_ID, 3, EGL_NONE };
         assert(eglChooseConfig(dpy, by_missing_id, &selected, 1, &count));
         assert(count == 0);
         /* Default renderable type is ES1; this config already advertises
@@ -4947,7 +4983,7 @@ int main(int argc, char **argv) {
             assert(count == 17 && selected == (EGLConfig)(uintptr_t)0x1234);
         }
         EGLint value = 17;
-        assert(!eglGetConfigAttrib(dpy, (EGLConfig)2, EGL_RED_SIZE, &value));
+        assert(!eglGetConfigAttrib(dpy, (EGLConfig)3, EGL_RED_SIZE, &value));
         assert(eglGetError() == EGL_BAD_CONFIG && value == 17);
         assert(!eglGetConfigAttrib(dpy, (EGLConfig)1, 0, &value));
         assert(eglGetError() == EGL_BAD_ATTRIBUTE && value == 17);
@@ -4972,12 +5008,12 @@ int main(int argc, char **argv) {
         PFNEGLGETCONFIGSPROC enumerate = (PFNEGLGETCONFIGSPROC)eglGetProcAddress("eglGetConfigs");
         assert(enumerate != NULL);
         EGLint count = 17;
-        assert(enumerate(dpy, NULL, 0, &count) && count == 1);
-        EGLConfig configs[2] = { NULL, (EGLConfig)(uintptr_t)0x1234 };
+        assert(enumerate(dpy, NULL, 0, &count) && count == 2);
+        EGLConfig configs[3] = { NULL, NULL, (EGLConfig)(uintptr_t)0x1234 };
         assert(enumerate(dpy, configs, 0, &count) && count == 0);
         assert(configs[0] == NULL);
-        assert(enumerate(dpy, configs, 2, &count) && count == 1);
-        assert(configs[0] == (EGLConfig)1 && configs[1] == (EGLConfig)(uintptr_t)0x1234);
+        assert(enumerate(dpy, configs, 3, &count) && count == 2);
+        assert(configs[0] == (EGLConfig)1 && configs[1] == (EGLConfig)2 && configs[2] == (EGLConfig)(uintptr_t)0x1234);
         EGLint buffer_bits = 17;
         assert(eglGetConfigAttrib(dpy, configs[0], EGL_BUFFER_SIZE, &buffer_bits));
         assert(buffer_bits == 32);

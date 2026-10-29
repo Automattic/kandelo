@@ -2237,7 +2237,8 @@ fn handle_dri_ioctl(
                         // Existing GPU-only copy requests have no linear view.
                         attrs.reserved[3] == 0 && target.tier == crate::dri::BoTier::GpuTexture
                     } else {
-                        attrs.reserved[2] == wasm_posix_shared::dri::DRM_FORMAT_ABGR8888
+                        [wasm_posix_shared::dri::DRM_FORMAT_ABGR8888,
+                            wasm_posix_shared::dri::DRM_FORMAT_ARGB8888].contains(&attrs.reserved[2])
                             && attrs.reserved[3] == target.stride
                     };
                     Some(format_valid && source.tier == crate::dri::BoTier::GpuTexture
@@ -55982,12 +55983,15 @@ impl HostIO for RelSymlinkMock {
                 bytes.copy_from_slice(&value.to_le_bytes());
             }
             if bpp == 32 {
-                for rc in [-(Errno::ENOMEM as i32),0] {
-                    host.gl_update_surface_rc = rc;
-                    assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_UPDATE_SURFACE,&mut attrs),
-                        if rc == 0 { Ok(()) } else { Err(Errno::ENOMEM) });
-                    assert_eq!(glio_surface_bo_count(source),Some(2));
-                    assert_eq!(glio_surface_bo_count(target),Some(1));
+                for format in [DRM_FORMAT_ABGR8888, DRM_FORMAT_ARGB8888] {
+                    attrs[24..28].copy_from_slice(&format.to_le_bytes());
+                    for rc in [-(Errno::ENOMEM as i32),0] {
+                        host.gl_update_surface_rc = rc;
+                        assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_UPDATE_SURFACE,&mut attrs),
+                            if rc == 0 { Ok(()) } else { Err(Errno::ENOMEM) });
+                        assert_eq!(glio_surface_bo_count(source),Some(2));
+                        assert_eq!(glio_surface_bo_count(target),Some(1));
+                    }
                 }
                 let calls = host.gl_update_surface_calls.len();
                 for (format, stride) in [(0,0),(DRM_FORMAT_XRGB8888,pitch),(DRM_FORMAT_ABGR8888,pitch+4)] {

@@ -105,7 +105,7 @@ struct egl_surface_record {
     unsigned current_references;
     int delete_pending, gbm_window, pbuffer;
     EGLint largest_pbuffer, mipmap_texture;
-    EGLint render_buffer, gl_colorspace;
+    EGLint render_buffer, gl_colorspace, config_id;
     void *native_window, *gbm_lease;
     struct egl_surface_record *next;
 };
@@ -456,6 +456,22 @@ static const struct config_attribute config_attributes[] = {
     { EGL_MATCH_NATIVE_PIXMAP, EGL_NONE, EGL_NONE, CFG_PIXMAP },
 };
 #define CONFIG_ATTRIBUTE_COUNT (sizeof config_attributes / sizeof config_attributes[0])
+/* Both native byte orders use identical RGBA8/depth24/stencil8 renderer
+ * storage. Public config IDs describe their GBM window format; backend
+ * surface config 1 describes that common storage. Front publication and
+ * dma-buf import own byte-order conversion, not GL channel semantics. */
+static const uint32_t config_formats[] = {GBM_FORMAT_ABGR8888, GBM_FORMAT_ARGB8888};
+#define CONFIG_COUNT (sizeof config_formats / sizeof config_formats[0])
+static int config_index(EGLConfig config) {
+    uintptr_t id = (uintptr_t)config;
+    return id >= 1 && id <= CONFIG_COUNT ? (int)id - 1 : -1;
+}
+static EGLint config_value(unsigned config, unsigned attribute) {
+    if (config_attributes[attribute].name == EGL_CONFIG_ID) return (EGLint)config + 1;
+    if (config_attributes[attribute].name == EGL_NATIVE_VISUAL_ID) return (EGLint)config_formats[config];
+    return config_attributes[attribute].value;
+}
+
 
 static int config_attribute_index(EGLint name) {
     for (unsigned i = 0; i < CONFIG_ATTRIBUTE_COUNT; i++)
@@ -478,8 +494,12 @@ static EGLBoolean return_configs(EGLConfig *configs, EGLint config_size,
         g_last_error = EGL_BAD_PARAMETER;
         return EGL_FALSE;
     }
-    const EGLint count = matches && (!configs || config_size > 0) ? 1 : 0;
-    if (configs && count) configs[0] = EGL_CONFIG_HANDLE;
+    EGLint count = 0;
+    for (unsigned i = 0; i < CONFIG_COUNT; ++i) {
+        if (!(matches & (1u << i))) continue;
+        if (!configs) ++count;
+        else if (count < config_size) configs[count++] = (EGLConfig)(uintptr_t)(i + 1);
+    }
     *num_config = count;
     return EGL_TRUE;
 }
@@ -487,7 +507,7 @@ static EGLBoolean return_configs(EGLConfig *configs, EGLint config_size,
 EGLBoolean eglGetConfigs(EGLDisplay dpy, EGLConfig *configs,
                          EGLint config_size, EGLint *num_config) {
     if (!config_display_ready(dpy)) return EGL_FALSE;
-    return return_configs(configs, config_size, num_config, 1);
+    return return_configs(configs, config_size, num_config, (1u << CONFIG_COUNT) - 1);
 }
 
 EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
@@ -509,9 +529,9 @@ EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
         }
     }
     const EGLint id = wanted[config_attribute_index(EGL_CONFIG_ID)];
-    if (id != EGL_DONT_CARE) return return_configs(configs, config_size, num_config, id == 1);
+    if (id != EGL_DONT_CARE) return return_configs(configs, config_size, num_config, id >= 1 && id <= CONFIG_COUNT ? 1u << (id - 1) : 0);
     const EGLint transparency = wanted[config_attribute_index(EGL_TRANSPARENT_TYPE)];
-    int matches = 1;
+    unsigned matches = (1u << CONFIG_COUNT) - 1;
     for (unsigned i = 0; i < CONFIG_ATTRIBUTE_COUNT; i++) {
         const struct config_attribute *attribute = &config_attributes[i];
         const EGLint value = wanted[i];
@@ -532,9 +552,12 @@ EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
             EGL_PIXMAP_BIT | EGL_PBUFFER_BIT | EGL_VG_COLORSPACE_LINEAR_BIT |
             EGL_VG_ALPHA_FORMAT_PRE_BIT | EGL_MULTISAMPLE_RESOLVE_BOX_BIT | EGL_SWAP_BEHAVIOR_PRESERVED_BIT));
         if (!valid) { g_last_error = EGL_BAD_ATTRIBUTE; return EGL_FALSE; }
-        if (kind == CFG_MINIMUM) matches &= attribute->value >= value;
-        else if (kind == CFG_API_MASK || kind == CFG_SURFACE_MASK) matches &= (attribute->value & value) == value;
-        else matches &= attribute->value == value;
+        for (unsigned config = 0; config < CONFIG_COUNT; ++config) {
+            EGLint available = config_value(config, i);
+            int accepts = kind == CFG_MINIMUM ? available >= value :
+                kind == CFG_API_MASK || kind == CFG_SURFACE_MASK ? (available & value) == value : available == value;
+            if (!accepts) matches &= ~(1u << config);
+        }
     }
     return return_configs(configs, config_size, num_config, matches);
 }
@@ -557,7 +580,7 @@ static int surface_limits_locked(struct egl_generation *generation) {
 EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config,
                               EGLint attribute, EGLint *value) {
     if (!config_display_ready(dpy)) return EGL_FALSE;
-    if (config != EGL_CONFIG_HANDLE) { g_last_error = EGL_BAD_CONFIG; return EGL_FALSE; }
+    if (config_index(config) < 0) { g_last_error = EGL_BAD_CONFIG; return EGL_FALSE; }
     if (!value) { g_last_error = EGL_BAD_PARAMETER; return EGL_FALSE; }
     const int i = config_attribute_index(attribute);
     if (i < 0 || attribute == EGL_MATCH_NATIVE_PIXMAP) { g_last_error = EGL_BAD_ATTRIBUTE; return EGL_FALSE; }
@@ -571,7 +594,7 @@ EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config,
         unlock_context();
         return accepted ? EGL_TRUE : EGL_FALSE;
     }
-    *value = config_attributes[i].value;
+    *value = config_value((unsigned)config_index(config), (unsigned)i);
     return EGL_TRUE;
 }
 
@@ -692,7 +715,7 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
         g_last_error = EGL_NOT_INITIALIZED;
         return EGL_NO_CONTEXT;
     }
-    if (config != EGL_CONFIG_HANDLE && config != EGL_NO_CONFIG_KHR) {
+    if (config_index(config) < 0 && config != EGL_NO_CONFIG_KHR) {
         g_last_error = EGL_BAD_CONFIG;
         return EGL_NO_CONTEXT;
     }
@@ -743,7 +766,7 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
     context->session = session;
     context->backend_id = attrs.context_id;
     context->client_version = version;
-    context->config_id = config == EGL_NO_CONFIG_KHR ? 0 : 1;
+    context->config_id = config == EGL_NO_CONFIG_KHR ? 0 : config_index(config) + 1;
     context->next = generation->contexts;
     generation->contexts = context;
     session->context_used = 1;
@@ -765,7 +788,7 @@ EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config, EGLContext share,
 static int surface_config_locked(EGLDisplay dpy, EGLConfig config) {
     if (!display_record(dpy)) g_last_error = EGL_BAD_DISPLAY;
     else if (!active_generation(dpy) || !active_generation(dpy)->initialized) g_last_error = EGL_NOT_INITIALIZED;
-    else if (config != EGL_CONFIG_HANDLE) g_last_error = EGL_BAD_CONFIG;
+    else if (config_index(config) < 0) g_last_error = EGL_BAD_CONFIG;
     else return 1;
     return 0;
 }
@@ -784,7 +807,7 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
         g_last_error = EGL_NOT_INITIALIZED;
         return EGL_NO_SURFACE;
     }
-    if (config != EGL_CONFIG_HANDLE) {
+    if (config_index(config) < 0) {
         g_last_error = EGL_BAD_CONFIG;
         return EGL_NO_SURFACE;
     }
@@ -851,7 +874,7 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
             if (errno == EOPNOTSUPP) error = EGL_BAD_MATCH;
             goto fail;
         }
-        if (frame.format != GBM_FORMAT_ABGR8888) {
+        if (frame.format != config_formats[config_index(config)]) {
             error = EGL_BAD_MATCH;
             goto fail;
         }
@@ -885,6 +908,7 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
                                            .backend_id = request.surface_id,
                                            .width = request.attrs.width,
                                            .height = request.attrs.height,
+                                           .config_id = config_index(config) + 1,
                                            .render_buffer = render_buffer,
                                            .gl_colorspace = gl_colorspace,
                                            .native_window = (void *)win,
@@ -952,7 +976,7 @@ static EGLSurface create_platform_window_locked(EGLDisplay dpy, EGLConfig config
         !_wpk_gbm_surface_metadata(window,&native.width,&native.height,&native.format,&native.flags)) {
         g_last_error = EGL_BAD_NATIVE_WINDOW; return EGL_NO_SURFACE;
     }
-    if (!(native.flags & GBM_BO_USE_RENDERING) || native.format != GBM_FORMAT_ABGR8888) {
+    if (!(native.flags & GBM_BO_USE_RENDERING) || native.format != config_formats[config_index(config)]) {
         g_last_error = EGL_BAD_MATCH; return EGL_NO_SURFACE;
     }
     return create_window_surface_locked(dpy,config,(EGLNativeWindowType)window,normalized,&native);
@@ -1168,7 +1192,7 @@ EGLBoolean eglQuerySurface(EGLDisplay dpy, EGLSurface handle, EGLint attribute, 
             EGLint out;
             switch (attribute) {
             case EGL_CONFIG_ID:
-                out = 1;
+                out = surface->config_id;
                 break;
             case EGL_WIDTH:
                 out = (EGLint)surface->width;
@@ -2129,7 +2153,7 @@ static EGLSurface create_pbuffer_locked(EGLDisplay dpy, EGLConfig config, const 
     struct egl_generation *generation = active_generation(dpy);
     if (!display_record(dpy)) { g_last_error = EGL_BAD_DISPLAY; return EGL_NO_SURFACE; }
     if (!generation || !generation->initialized) { g_last_error = EGL_NOT_INITIALIZED; return EGL_NO_SURFACE; }
-    if (config != EGL_CONFIG_HANDLE) { g_last_error = EGL_BAD_CONFIG; return EGL_NO_SURFACE; }
+    if (config_index(config) < 0) { g_last_error = EGL_BAD_CONFIG; return EGL_NO_SURFACE; }
     EGLint width = 0, height = 0, largest = EGL_FALSE, mipmap = EGL_FALSE;
     EGLint format = EGL_NO_TEXTURE, target = EGL_NO_TEXTURE, gl_colorspace = EGL_GL_COLORSPACE_LINEAR;
     for (const EGLint *a = list; a && a[0] != EGL_NONE; a += 2) {
@@ -2206,7 +2230,8 @@ static EGLSurface create_pbuffer_locked(EGLDisplay dpy, EGLConfig config, const 
     *surface = (struct egl_surface_record){.handle = (EGLSurface)g_next_object_handle++,
         .session = session, .backend_id = request.surface_id,
         .width = request.attrs.width, .height = request.attrs.height,
-        .pbuffer = 1, .largest_pbuffer = largest, .mipmap_texture = mipmap,
+        .pbuffer = 1, .config_id = config_index(config) + 1,
+        .largest_pbuffer = largest, .mipmap_texture = mipmap,
         .render_buffer = EGL_BACK_BUFFER, .gl_colorspace = gl_colorspace};
     surface->next = generation->surfaces; generation->surfaces = surface;
     session->surface_used = 1;

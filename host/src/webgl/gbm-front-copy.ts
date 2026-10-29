@@ -121,3 +121,29 @@ export function readGbmFront(surface: GlSurfaceResources,
     return accepted ? {rc: 0, pixels} : failed();
   } catch { return {rc: -5}; }
 }
+
+/** Pack independent bottom-row-first RGBA readback into a top-row-first
+ * linear GBM front. GPU fronts keep logical RGBA channels; only CPU byte
+ * storage applies the native visual's channel order. */
+export function packGbmFront(pixels: Uint8Array, destination: Uint8Array,
+  width: number, height: number, pitch: number, format: number): void {
+  const rowBytes = width * 4;
+  if (![width,height,pitch,rowBytes,width*height*4,pitch*height].every(Number.isSafeInteger) ||
+      width <= 0 || height <= 0 || pitch < rowBytes || pitch % 4 ||
+      pixels.byteLength !== rowBytes * height || destination.byteLength !== pitch * height ||
+      (format !== 0x34324241 && format !== 0x34325241))
+    throw new RangeError("Invalid GBM front layout");
+  for (let y = 0; y < height; ++y) {
+    const start = (height - 1 - y) * rowBytes, target = y * pitch;
+    if (format === 0x34324241) {
+      destination.set(pixels.subarray(start,start+rowBytes),target);
+    } else {
+      for (let x = 0; x < rowBytes; x += 4) {
+        destination[target+x] = pixels[start+x+2];
+        destination[target+x+1] = pixels[start+x+1];
+        destination[target+x+2] = pixels[start+x];
+        destination[target+x+3] = pixels[start+x+3];
+      }
+    }
+  }
+}

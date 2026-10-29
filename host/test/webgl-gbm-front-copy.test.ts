@@ -1,5 +1,5 @@
 import { expect,it } from "vitest";
-import { copyGbmFront, readGbmFront } from "../src/webgl/gbm-front-copy";
+import { copyGbmFront, readGbmFront, packGbmFront } from "../src/webgl/gbm-front-copy";
 import { createSurfaceResources } from "../src/webgl/surface-resources";
 import { captureNativeGlErrors } from "../src/webgl/errors";
 import { hasNativeRepair,repairNativeState } from "../src/webgl/native-recovery";
@@ -111,4 +111,21 @@ it("retains failed pack/read restoration before allowing another CPU readback",(
   const f=readFixture();f.fault("restore");expect(f.copy()).toEqual({rc:-5});
   expect(hasNativeRepair(f.gl)).toBe(true);f.fault("");expect(f.copy().rc).toBe(0);
   f.check();expect(hasNativeRepair(f.gl)).toBe(false);expect(f.publicErrors.errors).toEqual([]);
+});
+
+it.each([0x34324241,0x34325241])("packs top-first front rows with native format %i and independent alpha",format=>{
+  const rgba=Uint8Array.from([255,0,0,17, 0,255,0,33, 0,0,255,49, 1,2,3,65]);
+  const output=new Uint8Array(24).fill(0xa5);
+  packGbmFront(rgba,output,2,2,12,format);
+  expect([...output]).toEqual(format===0x34324241 ?
+    [0,0,255,49, 1,2,3,65, 165,165,165,165, 255,0,0,17, 0,255,0,33, 165,165,165,165] :
+    [255,0,0,49, 3,2,1,65, 165,165,165,165, 0,0,255,17, 0,255,0,33, 165,165,165,165]);
+  expect([...rgba]).toEqual([255,0,0,17, 0,255,0,33, 0,0,255,49, 1,2,3,65]);
+});
+it("rejects invalid front layouts before mutating destination bytes",()=>{
+  const output=new Uint8Array(16).fill(91), pixels=new Uint8Array(16);
+  for (const [w,h,pitch,format] of [[2,2,8,0],[2,2,4,0x34325241],[0,2,8,0x34325241],[2,3,8,0x34325241]]) {
+    expect(()=>packGbmFront(pixels,output,w,h,pitch,format)).toThrow(RangeError);
+    expect([...output]).toEqual(Array(16).fill(91));
+  }
 });

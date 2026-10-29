@@ -70,7 +70,7 @@ import {
   WASM_POLL_FD_REVENTS_OFFSET,
   CH_ERRNO, CH_RETURN, CH_STATUS, CHANNEL_STATUS_COMPLETE,
 } from "./generated/abi";
-import { copyGbmFront, readGbmFront } from "./webgl/gbm-front-copy";
+import { copyGbmFront, readGbmFront, packGbmFront } from "./webgl/gbm-front-copy";
 import { registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
 import { repairNativeState } from "./webgl/native-recovery";
 import { bindForeignTexture, bindGpuForeignTexture } from "./webgl/foreign-texture";
@@ -2833,14 +2833,14 @@ export class WasmPosixKernel {
               const copy = this.gl.gpuBo(copyId), size = b.surfaceSize, gl = b.surface.gl;
               if (!size || !gl || copyId === b.pendingRenderTargetBoId ||
                   view.getUint32(4,true) !== size.width || view.getUint32(8,true) !== size.height ||
-                  (format !== 0 && format !== 0x34324241) || (!format && pitch)) return -22;
+                  (format !== 0 && format !== 0x34324241 && format !== 0x34325241) || (!format && pitch)) return -22;
               if (!this.prepareForeignRetirements(b)) return -5;
               const muxer = this.glMuxerFor(gl);
               const capture = () => { muxer.captureCurrentErrors(); muxer.invalidateCurrent(); };
               if (copy) return copyGbmFront(b.surface, copy, capture);
               const dimensions = this.bos.dims(copyId), canonical = this.bos.pixelView(copyId);
               const rowBytes = size.width * 4;
-              if (!dimensions || !canonical || format !== 0x34324241 || pitch !== dimensions.stride ||
+              if (!dimensions || !canonical || (format !== 0x34324241 && format !== 0x34325241) || pitch !== dimensions.stride ||
                   dimensions.w !== size.width || dimensions.h !== size.height ||
                   !Number.isSafeInteger(rowBytes) || pitch < rowBytes ||
                   !Number.isSafeInteger(pitch * size.height) || canonical.byteLength !== pitch * size.height)
@@ -2850,10 +2850,7 @@ export class WasmPosixKernel {
               const read = readGbmFront(b.surface, capture);
               if (read.rc !== 0 || !read.pixels) return read.rc || -5;
               try {
-                for (let y = 0; y < size.height; y++) {
-                  const start = (size.height - 1 - y) * rowBytes;
-                  linear.set(read.pixels.subarray(start, start + rowBytes), y * pitch);
-                }
+                packGbmFront(read.pixels,linear,size.width,size.height,pitch,format);
               } catch { return -12; }
               return this.bos.publishDevicePixels(copyId, linear) ? 0 : -5;
             }

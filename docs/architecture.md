@@ -4124,18 +4124,20 @@ a successful short reply leaves the unused destination tail untouched.
 The host-memory bridge still permits address zero as an ordinary byte;
 the query ioctl owns its null-pointer semantics.
 
-The combined graphics branch uses ABI 55, one version above current main's
-ABI 54. It joins main's kernel-owned waits, executable admission and lifecycle
-contracts with the graphics interfaces from earlier development versions.
+The combined graphics branch uses ABI 56, one version above current main's
+ABI 55, with kernel-host version 3. It joins main's kernel-owned waits,
+executable admission and lifecycle contracts with the graphics interfaces
+from earlier development versions.
 Operation table 17 remains independently versioned. Generated source metadata
 and normal SDK/program/package/image artifacts must be regenerated and
 validated together after integration with main.
 
-EGL's single ES2 config uses one attribute table for enumeration,
+EGL exposes two RGBA8/depth24/stencil8 ES2 configs for ABGR8888 and
+ARGB8888 native windows, using one attribute table for enumeration,
 selection and queries. Selection honors size minima, masks, exact values,
 defaults and explicit config IDs. Config operations require an initialized
-display and publish outputs only after validation. The config's renderable
-mask remains ES2-only; EGL's default ES1 selection filter consequently matches
+display and publish outputs only after validation. Both configs' renderable
+masks remain ES2-only; EGL's default ES1 selection filter consequently matches
 none. Tools enumerating all configurations use eglGetConfigs. The source
 facade supports independent window and pbuffer surfaces. Other EGL core
 gaps and normal rebuilt-guest validation remain tracked in the graphics
@@ -4154,7 +4156,7 @@ querying, without selecting a logical context, changing drawable bindings,
 resizing a canvas or claiming KMS presentation. A host without an available
 renderer reports failure.
 
-The config now advertises PBUFFER_BIT. Pbuffer creation validates attributes,
+Both configs advertise PBUFFER_BIT. Pbuffer creation validates attributes,
 uses generation-owned offscreen storage and preserves the pending native
 window target. It stores accepted dimensions and query attributes. Largest
 requests obey native dimensions/pixel limits and search smaller pixel budgets
@@ -4172,8 +4174,13 @@ its private target to the visible canvas.
 Core and EXT platform-window constructors validate live GBM dimensions,
 format and rendering usage before allocating a backend surface. GBM lookup
 uses its locked live registry without dereferencing foreign pointers. The
-config's native visual is ABGR8888, matching its RGBA8 storage. The core
-attribute parser checks pointer-width EGLAttrib keys/values before narrowing;
+window format must match its config's native visual; mismatches fail with
+BAD_MATCH. Public config IDs remain distinct in context/surface queries.
+Both byte orders use canonical RGBA8 native storage. Exported CPU fronts
+pack ABGR or ARGB bytes after successful native readback/restoration,
+including top-row-first orientation and independent alpha. GPU fronts
+preserve logical native color channels. The core attribute parser checks
+pointer-width EGLAttrib keys/values before narrowing;
 EXT attributes retain their EGLint layout. Requested render buffer and GL
 colorspace are stored separately from actual rendering: QueryContext reports
 BACK_BUFFER even for a SINGLE_BUFFER request. Public ES2 contexts do not
@@ -4186,8 +4193,8 @@ Texture bind/release, pixmap creation/copy and OpenVG client-buffer creation
 now expose entry points and the specific errors required by the current
 configuration and GBM platform. They preserve queued GL work and thread
 ownership. Implemented EGL functions resolve through GetProcAddress; core
-sync objects, GL-source images and broader wait/lifecycle semantics remain
-inventory gaps.
+server waits, GL-source images and broader error/lifecycle semantics
+remain inventory gaps.
 
 Core EGL image creation reads pointer-width EGLAttrib lists, while the KHR
 entry point reads EGLint lists. Both use one retained-image registry and
@@ -4215,7 +4222,7 @@ paths acknowledge only after acceptance. The C wait keeps current ownership
 and reports failure without holding the EGL metadata mutex during completion.
 GLES glFinish also exposes failed completion instead of discarding it. Swap
 interval validates display/context/draw ownership; every request clamps to the
-single config's zero bounds. Retained EGL fence client waits are described
+configs' zero bounds. Retained EGL fence client waits are described
 below; server-side wait ordering remains separate compatibility work.
 
 EGL error status and bound client API are thread-local; an unsupported API
