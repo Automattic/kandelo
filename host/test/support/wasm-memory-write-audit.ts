@@ -7586,6 +7586,11 @@ function isOrdinaryTestHarness(relativePath: string): boolean {
     // Test-runner configs extend Vitest/Vite's large configuration graphs;
     // they are harnesses, not guest-memory consumers. Keep this exact so a
     // similarly named production module remains inside the ownership audit.
+    // Offline compiler fixtures and artifact inspection instantiate private
+    // synthetic modules, never a live kernel. Keep these exact: runtime
+    // browser fixtures above and other scripts remain audited.
+    relativePath.startsWith("crates/fork-instrument/tests/fixtures/") ||
+    relativePath === "scripts/check-fork-memory-artifact.ts" ||
     relativePath === "host/vitest.config.ts" ||
     relativePath === "host/vitest.browser-memory.config.ts" ||
     relativePath.startsWith("host/test/") ||

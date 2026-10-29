@@ -5192,6 +5192,14 @@ describe("WebAssembly memory write audit", () => {
         "export {};\n",
       );
 
+      for (const relative of [
+        "crates/fork-instrument/tests/fixtures/private-module.mjs",
+        "scripts/check-fork-memory-artifact.ts",
+      ]) {
+        mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
+        writeFileSync(path.join(root, relative), "export {};\n");
+      }
+
       expect(
         repositoryRuntimeSourceFiles(root).map((file) =>
           path.relative(root, file).split(path.sep).join("/"),
