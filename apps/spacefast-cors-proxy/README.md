@@ -23,6 +23,54 @@ implementation of its public protocol, not a copy of the PHP source.
 - Authorization is forwarded only when explicitly named, case-insensitively,
   in `X-Cors-Proxy-Allowed-Request-Headers`. Cookies, proxy credentials,
   transport framing and internal proxy headers are never forwarded.
+- The CORS preflight allows Playground's request fields (`Accept`,
+  `Authorization`, `Content-Type`, `git-protocol`, `Range`, `wp_blog`,
+  `wp_install` and the `X-Cors-Proxy-*` fields), Kandelo's quota field
+  `X-Kandelo-Proxy-Session`, and the fields signed-in Codex sends:
+  `Cache-Control`, `ChatGPT-Account-ID`, `Content-Encoding`,
+  `OAI-Product-Sku`, `OpenAI-Beta`, `originator`, `session-id`,
+  `thread-id`, `version`, `x-client-request-id`, `x-codex-beta-features`,
+  `x-codex-parent-thread-id`, `x-codex-routing-hint`,
+  `x-codex-turn-metadata`, `x-codex-turn-state`, `x-codex-window-id`,
+  `x-openai-account-routing-override`, `x-openai-fedramp`,
+  `x-openai-internal-codex-responses-lite`, `x-openai-product-sku` and
+  `x-openai-subagent`. They are listed by name,
+  never `*`. It never allows `X-Kandelo-Credential-Grant`: Kandelo's
+  service worker removes that tag after checking it, so a request still
+  carrying one skipped that check and must fail its preflight. Like any
+  other field, `ChatGPT-Account-ID` is forwarded without the opt-in that
+  `Authorization` needs.
+- Request bodies are relayed as received, without decoding: a
+  `Content-Encoding: zstd` body (every signed-in Codex model turn) reaches
+  the target byte-for-byte with its `Content-Encoding`. The body is
+  streamed upstream, so its framing is chunked or an exact length.
+- `Access-Control-Expose-Headers` is `*` followed by named fields:
+  Playground's (`X-Playground-Cors-Proxy`, `Content-Range`,
+  `Accept-Ranges`, `ETag`), `Content-Length`, `Last-Modified`, `Date`,
+  `Retry-After`, `X-Kandelo-Proxy-Session`, and the fields Codex reads:
+  `x-codex-turn-state`, `openai-model`, `x-models-etag`,
+  `x-reasoning-included`, the `x-codex-primary-*`/`x-codex-secondary-*`
+  rate-limit fields (`-used-percent`, `-window-minutes`, `-reset-at`),
+  `x-codex-limit-name`, `x-codex-credits-has-credits`,
+  `x-codex-credits-unlimited`, `x-codex-credits-balance`,
+  `x-codex-promo-message`, `x-codex-rate-limit-reached-type`,
+  `x-codex-active-limit`, `x-codex-safety-buffering-enabled`,
+  `x-codex-safety-buffering-faster-model`, and for diagnostics
+  `x-request-id`, `x-oai-request-id`, `cf-ray`,
+  `x-openai-authorization-error` and `x-error-json`. Why `*`: Fetch
+  exposes every field for `*` only when the request's credentials mode is
+  not `include`, which is the case for every Kandelo proxy request
+  (`omit`, or `same-origin` toward a cross-origin proxy); a script-set
+  `Authorization` does not change that. This covers rate-limit families
+  Codex reads whose names cannot be listed in advance
+  (`x-<family>-primary-used-percent`, ...). A client that fetches with
+  `credentials: "include"` gets the named fields only, because Fetch then
+  reads `*` as a name. `Set-Cookie` is never exposed, and the authority
+  fields below are dropped before any exposure applies. Observed in
+  Chromium 153, Firefox 155 and WebKit 26.6 (Playwright) on 2026-10-29.
+  The wildcard applies to every approved origin, so their scripts can
+  now read any upstream field that survives the response deny list
+  (a redirect's `Location`, for example), not only the named ones.
 - Range and `X-Cors-Proxy-Range`, including suffix ranges. Conflicting values
   return 400. Range values are opaque. The original upstream status,
   Content-Range, Accept-Ranges and ETag survive.
@@ -45,6 +93,8 @@ implementation of its public protocol, not a copy of the PHP source.
 - Errors preserve the proxy's own CORS headers and discard target headers.
   Upstream disconnects and malformed bodies error the stream without adding
   error text to target bytes. Client cancellation aborts the owning fetch.
+- Responses stream: each upstream chunk is passed on as it arrives, so a
+  `text/event-stream` answer reaches the client event by event.
 
 The request and response limits match Playground: bodies must be smaller
 than 1 MiB and 100 MiB respectively. Unlike Playground's declared-length-only
@@ -52,6 +102,29 @@ response check, both limits also count streamed bytes. An oversized unknown-
 length response fails mid-stream. An oversized streamed upload closes its
 connection; bytes already sent may have reached the target. No entire body
 is buffered to determine its size.
+
+### Spacefast's 30-second Functions limit
+
+Spacefast's runtime, not this proxy, stops a Functions request 30 seconds
+after dispatching it to the worker
+(`STATTIC_FUNCTIONS_DISPATCH_TIMEOUT_SECONDS = 30` and the dispatch's
+`timeout`, which bounds the whole transfer, in
+[`functions-dispatch.php`](https://github.com/spacefast/stattic/blob/9217af5ad9f6f551d2af88af3fa224f664c3b10f/runtime/engine/runtime/functions-dispatch.php#L28)).
+The limit covers the whole response, including a streamed body, not just
+the time to the first byte. Before the response headers are sent, the
+client gets a 502 from Spacefast. After they are sent, Spacefast stops
+relaying and ends the response
+([`_stattic_relay_abort_after_headers`](https://github.com/spacefast/stattic/blob/9217af5ad9f6f551d2af88af3fa224f664c3b10f/runtime/engine/shared/upstream-relay.php#L188)),
+so the client can see a body that simply ends early, with no error status.
+A Codex model turn whose server-sent events stream for longer than 30
+seconds is therefore cut before its `response.completed` event; Codex
+reports the stream as interrupted and retries by sending the whole
+request again, which meets the same limit. This is a hosting boundary of
+Spacefast Functions, read from the runtime source and not yet measured
+live; the proxy cannot raise it. The Playground proxy on WP Cloud has its
+own boundary: in Kandelo's 2026-10-27 probe through it, a streamed
+response arrived only when it completed, and a 150-second response got
+`504` at 120 seconds.
 
 ## Destination security and the Spacefast workaround
 

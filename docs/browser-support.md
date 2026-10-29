@@ -1462,8 +1462,9 @@ dispatch, naming it. It copies `Range` into `X-Cors-Proxy-Range` (see
 "Byte-range reads through the proxy" below). The Codex fields are relayed
 for any request, granted or not. A proxy whose preflight does not allow
 one fails a request that carries it at the browser's CORS check rather
-than dropping the field; today that includes the default Playground proxy
-and the Spacefast proxy, whose allow-lists have not been extended yet.
+than dropping the field; today that includes the default Playground proxy,
+whose allow-list has not been extended yet. The Spacefast proxy in
+`apps/spacefast-cors-proxy` allows all of them (and `Cache-Control`).
 `Cache-Control` is deliberately not relayed: Codex sends it only on its
 user-settings call (`GET .../wham/settings/user`), which a model turn
 does not need and which is refused before dispatch, naming the field. If
@@ -1505,7 +1506,8 @@ a `zstd` body. Signed-in Codex compresses every model turn
 (`POST .../responses`) with zstd, and those bytes reach the proxy
 byte-for-byte, with a `Content-Length` the browser derives from them; the
 proxy must relay them the same way (browsers have no zstd decoder, and a
-decoded body would be two to four times larger). One exception remains
+decoded body would be two to four times larger), as the Spacefast proxy
+does. One exception remains
 at the default proxy's boundary: a `gzip` or `deflate` body that reaches
 the TLS bridge is decoded and sent without `Content-Encoding`, because
 git compresses its `git-upload-pack` request with gzip and the Playground
@@ -1807,8 +1809,12 @@ tag, in Chromium, Firefox and WebKit, against a local proxy
 holds in the browser app after "Allow for this process"
 (`apps/browser-demos/test/credential-request-dialog.spec.ts`, a
 declared test program against a local proxy). Codex itself does not
-reach its service through the deployed proxies yet: neither the
-Playground nor the Spacefast proxy's preflight allows Codex's fields.
+reach its service through the default Playground proxy yet: its
+preflight does not allow Codex's fields. The Spacefast proxy allows them
+and exposes the response fields Codex reads, but a Codex turn through a
+deployed Spacefast proxy has not been verified, and Spacefast ends any
+proxied response 30 seconds after dispatch, so a model turn that streams
+longer is cut (see the proxy's README).
 On a loopback development server, requests to
 OpenAI's origins take the same path to the
 [development credential relay](#development-credential-relay) instead,
@@ -3009,7 +3015,10 @@ The app's build command can select this proxy explicitly, and its packager
 can colocate the app and `/cors-proxy` in one Space. A live Chromium check on 2026-10-15 verified a guest `curl`
 request through the same-origin proxy with HTTP 200 and exit status 0. The live
 serving path requires the range alias, omits HEAD Content-Length, and did not
-preserve the worker's CORS origin grant in private-Space probes. See that app's
+preserve the worker's CORS origin grant in private-Space probes. Spacefast's
+runtime also ends every Functions request 30 seconds after dispatch, streamed
+body included, so a longer response (such as a long model turn's
+server-sent events) is cut. See that app's
 README for commands and the precise scope of validation.
 The packager applies isolation headers to document URLs and worker scripts,
 including clean document aliases. It leaves large binary downloads on

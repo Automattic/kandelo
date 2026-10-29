@@ -178,10 +178,14 @@ a granted Codex process's credentials are routed with the proxy's opt-in and
 a grant tag (see
 [per-process credential grants](../../../docs/browser-support.md#per-process-credential-grants)).
 The app's service worker verifies that tag with the kernel worker and
-removes it before the request leaves the browser. Browser model requests
-still fail today even after "Allow for this process": neither the default
-Playground proxy nor the Spacefast proxy allows Codex's headers in its
-preflight yet.
+removes it before the request leaves the browser. Through the default
+Playground proxy, browser model requests still fail even after "Allow for
+this process": its preflight does not allow Codex's headers yet. The
+Spacefast proxy (`apps/spacefast-cors-proxy`) allows them and relays the
+response fields Codex reads, but no Codex turn through a deployed one has
+been verified, and Spacefast ends every proxied response 30 seconds after
+dispatch: a model turn that streams longer is cut, and Codex's retry
+meets the same limit.
 On a loopback development server (`./run.sh browser`), requests to the
 three origins go to a local
 [development credential relay](../../../docs/browser-support.md#development-credential-relay)

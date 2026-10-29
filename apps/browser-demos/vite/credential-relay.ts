@@ -17,16 +17,20 @@ const OPT_IN = CORS_PROXY_ALLOWED_REQUEST_HEADERS_HEADER.toLowerCase();
 const TAG = CREDENTIAL_GRANT_REQUEST_HEADER.toLowerCase();
 // What the relay copies back. It answers from Kandelo's own origin, so an
 // arbitrary upstream header would gain that origin's authority (cookies,
-// Clear-Site-Data, ...). These are inert payload and Codex protocol fields.
+// Clear-Site-Data, ...). These are inert payload and Codex protocol fields:
+// the Codex fields the Spacefast proxy exposes by name. Unlike that proxy it
+// cannot expose `*`, so rate-limit families other than `x-codex-` do not
+// reach the guest here.
 const SAFE_RESPONSE_HEADERS = new Set([
   'content-type', 'retry-after', 'x-request-id', 'request-id',
   'x-codex-primary-used-percent', 'x-codex-primary-window-minutes',
   'x-codex-primary-reset-at', 'x-codex-secondary-used-percent',
-  'x-codex-secondary-window-minutes', 'x-codex-secondary-reset-at',
+  'x-codex-secondary-window-minutes', 'x-codex-secondary-reset-at', 'x-codex-limit-name',
   'x-codex-turn-state', 'x-models-etag', 'x-reasoning-included', 'openai-model',
-  'x-codex-active-limit', 'x-codex-rate-limit-reached-type',
+  'x-codex-active-limit', 'x-codex-rate-limit-reached-type', 'x-codex-promo-message',
   'x-codex-credits-has-credits', 'x-codex-credits-unlimited', 'x-codex-credits-balance',
   'x-codex-safety-buffering-enabled', 'x-codex-safety-buffering-faster-model',
+  'x-oai-request-id', 'cf-ray', 'x-openai-authorization-error', 'x-error-json',
 ]);
 
 function headerValue(value: string | string[] | undefined): string | undefined {

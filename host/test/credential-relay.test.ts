@@ -168,6 +168,24 @@ describe('development credential relay server', () => {
     expect(await response.text()).toBe('ok');
   });
 
+  it('copies back every response field Codex reads, as the Spacefast proxy exposes them', async () => {
+    const codexFields = [
+      'x-codex-turn-state', 'openai-model', 'x-models-etag', 'x-reasoning-included',
+      'x-codex-primary-used-percent', 'x-codex-primary-window-minutes', 'x-codex-primary-reset-at',
+      'x-codex-secondary-used-percent', 'x-codex-secondary-window-minutes', 'x-codex-secondary-reset-at',
+      'x-codex-limit-name', 'x-codex-credits-has-credits', 'x-codex-credits-unlimited',
+      'x-codex-credits-balance', 'x-codex-promo-message', 'x-codex-rate-limit-reached-type',
+      'x-codex-active-limit', 'x-codex-safety-buffering-enabled', 'x-codex-safety-buffering-faster-model',
+      'retry-after', 'x-request-id', 'x-oai-request-id', 'cf-ray', 'x-openai-authorization-error',
+      'x-error-json',
+    ];
+    const app = await setup(vi.fn(async () => new Response('ok', {
+      headers: Object.fromEntries(codexFields.map(name => [name, `synthetic-${name}`])),
+    })));
+    const response = await app.relay(GRANTED);
+    for (const name of codexFields) expect(response.headers.get(name), name).toBe(`synthetic-${name}`);
+  });
+
   it('streams the first response chunk before the upstream response completes', async () => {
     let controller!: ReadableStreamDefaultController<Uint8Array>;
     const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });

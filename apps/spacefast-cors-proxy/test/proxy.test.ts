@@ -260,10 +260,10 @@ test("header forwarding includes git/custom headers and strips ambient credentia
     Host: "wrong.example", Cookie: "ambient", Cookie2: "old", Authorization: "Basic ambient",
     "Proxy-Authorization": "secret", Connection: "X-Hop", "X-Hop": "strip",
     "Keep-Alive": "1", TE: "trailers", Trailer: "X-Trailer", Upgrade: "websocket",
-    "Accept-Encoding": "gzip",
+    "Accept-Encoding": "gzip", "X-Kandelo-Credential-Grant": "tag",
   } }), { fetch: async (_url, init) => { sent = new Headers(init.headers); return new Response("ok"); } });
   assert.equal(body, "ok");
-  for (const name of ["host", "cookie", "cookie2", "authorization", "proxy-authorization", "connection", "x-hop", "keep-alive", "te", "trailer", "upgrade"]) assert.equal(sent.get(name), null, name);
+  for (const name of ["host", "cookie", "cookie2", "authorization", "proxy-authorization", "connection", "x-hop", "keep-alive", "te", "trailer", "upgrade", "x-kandelo-credential-grant"]) assert.equal(sent.get(name), null, name);
   assert.equal(sent.get("git-protocol"), "version=2");
   assert.equal(sent.get("x-custom"), "opaque");
   assert.equal(sent.get("wp_blog"), "blog");
@@ -283,6 +283,87 @@ test("Authorization requires explicit case-insensitive opt-in; internal headers 
   assert.equal(sent.get("content-type"), "multipart/form-data; boundary=test");
   assert.equal(sent.get("range"), "bytes=0-15");
   for (const name of ["cookie", "x-cors-proxy-allowed-request-headers", "x-cors-proxy-content-type", "x-cors-proxy-range"]) assert.equal(sent.get(name), null);
+});
+
+// The request fields signed-in Codex 0.163.0 sends (observed against local
+// mocks, plus the US-residency/FedRAMP fields from its source).
+const CODEX_REQUEST_HEADERS = ["Authorization", "ChatGPT-Account-ID", "Content-Encoding", "OpenAI-Beta",
+  "originator", "version", "session-id", "thread-id", "x-client-request-id", "x-codex-window-id",
+  "x-codex-turn-metadata", "x-codex-turn-state", "x-codex-beta-features", "x-codex-routing-hint",
+  "x-codex-parent-thread-id", "x-openai-subagent", "x-openai-account-routing-override", "x-openai-fedramp",
+  "x-openai-internal-codex-responses-lite",
+  "OAI-Product-Sku", "x-openai-product-sku", "Cache-Control", "Accept", "Content-Type"];
+// The response fields Codex reads to change its behavior, and for diagnostics.
+const CODEX_RESPONSE_HEADERS = ["x-codex-turn-state", "openai-model", "x-models-etag", "x-reasoning-included",
+  "x-codex-primary-used-percent", "x-codex-primary-window-minutes", "x-codex-primary-reset-at",
+  "x-codex-secondary-used-percent", "x-codex-secondary-window-minutes", "x-codex-secondary-reset-at",
+  "x-codex-limit-name", "x-codex-credits-has-credits", "x-codex-credits-unlimited", "x-codex-credits-balance",
+  "x-codex-promo-message", "x-codex-rate-limit-reached-type", "x-codex-active-limit",
+  "x-codex-safety-buffering-enabled", "x-codex-safety-buffering-faster-model", "retry-after",
+  "x-request-id", "x-oai-request-id", "cf-ray", "x-openai-authorization-error", "x-error-json"];
+const tokens = (value: string | null) => new Set((value ?? "").split(",").map(name => name.trim().toLowerCase()));
+
+test("preflight allows Codex request headers and never the Kandelo credential grant tag", async () => {
+  const preflight = await createCorsProxy()(new Request(PROXY, { method: "OPTIONS", headers: {
+    Origin: "https://playground.wordpress.net", "Access-Control-Request-Method": "POST",
+    "Access-Control-Request-Headers": CODEX_REQUEST_HEADERS.join(", ").toLowerCase(),
+  } }));
+  assert.equal(preflight.status, 204);
+  const allowed = tokens(preflight.headers.get("access-control-allow-headers"));
+  for (const name of CODEX_REQUEST_HEADERS) assert.ok(allowed.has(name.toLowerCase()), name);
+  // Kandelo's service worker removes this tag; a proxy that allowed it would
+  // let a request that bypassed that gate through the browser's CORS check.
+  assert.equal(allowed.has("x-kandelo-credential-grant"), false);
+  // A wildcard would allow the tag too (for non-credentialed requests).
+  assert.equal(allowed.has("*"), false);
+});
+
+test("credentialed request without opt-in drops Authorization", async () => {
+  let sent!: Headers;
+  const headers = { Authorization: "Bearer synthetic", "ChatGPT-Account-ID": "acct-synthetic", "session-id": "s",
+    "Content-Type": "application/json", "Content-Encoding": "zstd" };
+  const relayed = async (extra: Record<string, string>) => {
+    const { response } = await outcome(request(TARGET, { method: "POST", body: "x", headers: { ...headers, ...extra } }),
+      { fetch: async (_url, init) => { sent = new Headers(init.headers); return new Response("ok"); } });
+    assert.equal(response.status, 200);
+    return sent;
+  };
+  const without = await relayed({});
+  assert.equal(without.get("authorization"), null);
+  assert.equal(without.get("chatgpt-account-id"), "acct-synthetic");
+  assert.equal(without.get("session-id"), "s");
+  assert.equal(without.get("content-encoding"), "zstd");
+  const opted = await relayed({ "X-Cors-Proxy-Allowed-Request-Headers": "Authorization" });
+  assert.equal(opted.get("authorization"), "Bearer synthetic");
+  assert.equal(opted.get("x-cors-proxy-allowed-request-headers"), null);
+});
+
+test("responses expose Codex's fields by name, and all others to non-credentialed fetches", async () => {
+  const { response } = await outcome(request(TARGET, { headers: { Origin: "https://playground.wordpress.net" } }));
+  const exposed = tokens(response.headers.get("access-control-expose-headers"));
+  // Fetch treats `*` as "every field" only for a request whose credentials
+  // mode is not "include", which covers rate-limit families whose names
+  // cannot be listed in advance. A credentialed fetch reads `*` as a name
+  // and still gets every field listed here.
+  assert.ok(exposed.has("*"));
+  for (const name of [...CODEX_RESPONSE_HEADERS, "x-playground-cors-proxy", "content-range", "accept-ranges", "etag",
+    "content-length", "last-modified", "date", "x-kandelo-proxy-session"]) assert.ok(exposed.has(name), name);
+});
+
+test("a zstd request body reaches the target byte-for-byte without decoding", async () => {
+  // A zstd frame header and bytes that text or framing treatment would alter.
+  const body = new Uint8Array([0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x0d, 0x0a, 0xff, 0x30, 0x0d, 0x0a, 0x7f]);
+  const { response } = await outcome(request(TARGET, { method: "POST", body, headers: {
+    "Content-Type": "application/json", "Content-Encoding": "zstd", "Content-Length": String(body.length) } }), {
+    fetch: async (_url, init) => {
+      const sent = new Headers(init.headers);
+      assert.equal(sent.get("content-encoding"), "zstd");
+      assert.equal(sent.get("content-type"), "application/json");
+      assert.deepEqual(new Uint8Array(await new Response(init.body).arrayBuffer()), body);
+      return new Response("ok");
+    },
+  });
+  assert.equal(response.status, 200);
 });
 
 test("Range alias alone, matching Range, empty alias and conflicts", async () => {
@@ -622,6 +703,47 @@ test("actual HTTP transport: binary POST, multipart, ranges, HEAD, gzip and earl
   const hints = await proxy(request("https://public.example/hints"));
   assert.deepEqual(Buffer.from(await hints.arrayBuffer()), entity);
   assert.equal(hints.headers.get("x-interim"), null); assert.equal(hints.headers.get("x-final"), "yes");
+});
+
+test("actual HTTP transport: a zstd POST arrives verbatim and server-sent events stream as sent", async t => {
+  const body = Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x0d, 0x0a, 0xff, 0x30, 0x0d, 0x0a, 0x7f]);
+  const received: { headers: Record<string, unknown>; body: Buffer }[] = [];
+  let finish!: () => void;
+  const finished = new Promise<void>(done => { finish = done; });
+  const server = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    received.push({ headers: req.headers, body: Buffer.concat(chunks) });
+    res.writeHead(200, { "Content-Type": "text/event-stream", "x-codex-turn-state": "synthetic" });
+    res.write("event: response.created\ndata: {}\n\n");
+    await finished;
+    res.end("event: response.completed\ndata: {}\n\n");
+  });
+  server.listen(0, "127.0.0.1"); await once(server, "listening");
+  t.after(() => { finish(); server.closeAllConnections(); server.close(); });
+  const address = server.address(); assert.ok(address && typeof address !== "string");
+  const local = `http://127.0.0.1:${address.port}`;
+  const proxy = relay({ upstreamBodyEncoding: "raw", fetch: (url, init) => {
+    const parsed = new URL(url); return fetch(local + parsed.pathname + parsed.search, init);
+  } });
+  const response = await proxy(request("https://chatgpt.example/backend-api/codex/responses", {
+    method: "POST", body, headers: { "Content-Type": "application/json", "Content-Encoding": "zstd",
+      Accept: "text/event-stream", Origin: "https://playground.wordpress.net" } }));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "text/event-stream");
+  assert.equal(response.headers.get("x-codex-turn-state"), "synthetic");
+  const reader = response.body!.getReader();
+  // The first event arrives while the target is still holding the stream open.
+  assert.match(new TextDecoder().decode((await reader.read()).value), /response\.created/);
+  const record = received.at(-1)!;
+  assert.equal(record.headers["content-encoding"], "zstd");
+  assert.deepEqual(record.body, body);
+  // Streamed upstream, so framed by chunking or an exact length, never a stale one.
+  if (record.headers["content-length"] !== undefined) assert.equal(record.headers["content-length"], String(body.length));
+  finish();
+  let rest = "";
+  for (let next = await reader.read(); !next.done; next = await reader.read()) rest += new TextDecoder().decode(next.value);
+  assert.match(rest, /response\.completed/);
 });
 
 test("restricted proxy admits only exact approved Referer origins before spending budget or fetching", async () => {
