@@ -1,27 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build NetHack 3.6.7 for wasm32-posix-kernel.
+# Build NetHack 3.6.7 for Kandelo, inside a Kandelo machine.
 #
-# NetHack's build has two distinct phases:
+# NetHack's build compiles generators (util/makedefs, dgn_comp, lev_comp,
+# dlb) and runs them to write headers (onames.h, pm.h, date.h, vis_tab.c)
+# and the packed data archive `nhdat`, then compiles the game. Run on the
+# build machine, those generators described the build machine: its OS in
+# the banner, and 8-byte `long` fields in data files the 32-bit game reads
+# as 4 bytes. So the whole build runs inside a Kandelo build machine
+# (scripts/guest-build.sh) with the guest compiler, and the generators run
+# on the target the game runs on.
 #
-#   1. Host build: util/ produces code-generation tools
-#      (makedefs, dgn_comp, lev_comp, dlb, recover) that run on the
-#      *host* to emit generated headers (onames.h, pm.h, date.h,
-#      vis_tab.c) and the dlb-packed data archive `nhdat`.
+# This script, on the build machine, stages the verified source, applies the
+# target patches, runs upstream's setup.sh, and hands the tree to
+# build-nethack-guest.sh in the guest. It compiles nothing itself. It then
+# installs nethack.wasm (fork-instrumented by install_local_binary, because
+# the SDK inside Kandelo has no instrumenter yet) and runtime/share/nethack/
+# {nhdat,symbols,license}.
 #
-#   2. Cross build: src/ compiles the game binary with wasm32posix-cc,
-#      linking against our ncurses.
-#
-# The util phase runs first with plain `cc`, then src/ is cleaned and
-# rebuilt with the wasm toolchain. Everything util/ already produced
-# (headers in include/, nhdat in dat/) is kept.
-#
-# Output for a direct build:
-#   packages/registry/nethack/bin/nethack.wasm
-#   packages/registry/nethack/runtime/share/nethack/nhdat   (and symbols/license)
-# Resolver and Formula builds instead write only below their declared work and
-# output roots.
+# Resolver-only: the machine boots the declared kernel and build image.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -30,12 +28,13 @@ kandelo_package_load_source_metadata "$SCRIPT_DIR"
 # shellcheck source=/dev/null
 kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32
 WORK_DIR="$KANDELO_PACKAGE_WORK_DIR"
-# Reproducibility: NetHack's host makedefs bakes the build date/time into
+# Reproducibility: NetHack's makedefs bakes the build date/time into
 # include/date.h — BUILD_DATE, BUILD_TIME, VERSION_ID ("... last build <when>")
 # and the copyright banner all derive from it. makedefs uses the wall clock
 # unless it is compiled with REPRODUCIBLE_BUILD, in which case it takes the date
 # from SOURCE_DATE_EPOCH instead (see util/makedefs.c do_date()). We enable
-# REPRODUCIBLE_BUILD on the util build below.
+# REPRODUCIBLE_BUILD on the util build below, and the guest build machine
+# passes SOURCE_DATE_EPOCH through.
 #
 # makedefs sanity-checks SOURCE_DATE_EPOCH and rejects anything before 3.6.0's
 # release (7-Dec-2015) or >24h in the future, reverting to the wall clock. The
@@ -50,7 +49,6 @@ fi
 SRC_DIR="$WORK_DIR/nethack-src"
 BIN_DIR="$WORK_DIR/bin"
 RUNTIME_DIR="$WORK_DIR/runtime"
-SYSROOT="$REPO_ROOT/sysroot"
 NETHACK_VERSION="$WASM_POSIX_DEP_VERSION"
 NETHACK_SHORT="${NETHACK_VERSION//./}" # Upstream tarballs drop the dots.
 SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
@@ -65,7 +63,6 @@ NETHACK_VAR_PLAYGROUND="${NETHACK_VAR_PLAYGROUND:-/var/games/nethack}"
 # The platform name in the version banner and help menu. See the
 # include/unixconf.h patch for why it is pinned rather than detected.
 NETHACK_PORT_ID="Kandelo"
-SOURCE_MARKER="$SRC_DIR/.kandelo-nethack-source"
 
 validate_guest_path() {
     local label="$1"
@@ -85,67 +82,40 @@ validate_guest_path() {
 validate_guest_path NETHACK_HACKDIR "$NETHACK_HACKDIR"
 validate_guest_path NETHACK_VAR_PLAYGROUND "$NETHACK_VAR_PLAYGROUND"
 
-# A resolver/Formula caller owns the declared work and output roots. Keep the
-# reviewed checkout read-only and suppress the developer-only local mirror.
-if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
-    export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
-fi
+for var in WASM_POSIX_DEP_WORK_DIR WASM_POSIX_DEP_OUT_DIR WASM_POSIX_DEP_NCURSES_DIR \
+    WASM_POSIX_DEP_KERNEL_DIR WASM_POSIX_DEP_KANDELO_BUILD_IMAGE_DIR; do
+    if [ -z "${!var:-}" ]; then
+        echo "ERROR: $var is required; build with ./run.sh build nethack" >&2
+        exit 2
+    fi
+done
+# The resolver owns the declared work and output roots. Keep the reviewed
+# checkout read-only and suppress the developer-only local mirror.
+export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
+export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
 
-# --- Prerequisites ---
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
-    exit 1
-fi
-
-if [ ! -f "$SYSROOT/lib/libc.a" ]; then
-    echo "ERROR: sysroot not found. Run: bash build.sh && bash scripts/build-musl.sh" >&2
-    exit 1
-fi
-
-export WASM_POSIX_SYSROOT="$SYSROOT"
-
-# --- Resolve ncurses via the dep cache (provides libncursesw, libtinfow, ncursesw headers) ---
-NCURSES_PREFIX="${WASM_POSIX_DEP_NCURSES_DIR:-}"
-if [ -z "$NCURSES_PREFIX" ]; then
-    echo "==> Resolving ncurses via cargo xtask build-deps..."
-    HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
-    NCURSES_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TARGET" --quiet -- build-deps resolve ncurses)"
-fi
+NCURSES_PREFIX="$WASM_POSIX_DEP_NCURSES_DIR"
 if [ ! -f "$NCURSES_PREFIX/lib/libncursesw.a" ]; then
-    echo "ERROR: ncurses resolve returned '$NCURSES_PREFIX' but libncursesw.a missing" >&2
+    echo "ERROR: ncurses dependency at '$NCURSES_PREFIX' has no lib/libncursesw.a" >&2
     exit 1
 fi
-echo "==> ncurses at $NCURSES_PREFIX"
-export CPPFLAGS="${CPPFLAGS:-} -I$NCURSES_PREFIX/include"
-export LDFLAGS="${LDFLAGS:-} -L$NCURSES_PREFIX/lib"
+# Where the guest build sees the ncurses dependency (mounted read-only).
+GUEST_NCURSES=/deps/ncurses
 
 # --- Stage verified NetHack source ---
-expected_source_marker="$(printf '%s\n%s\n%s\n%s\n%s\n%s' \
-    "$NETHACK_VERSION" "$SOURCE_URL" "$SOURCE_SHA256" \
-    "$NETHACK_HACKDIR" "$NETHACK_VAR_PLAYGROUND" "$NETHACK_PORT_ID")"
-if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$expected_source_marker" ]; then
-    rm -rf "$SRC_DIR" "$BIN_DIR" "$RUNTIME_DIR"
-fi
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Staging verified NetHack $NETHACK_VERSION source..."
-    kandelo_package_stage_verified_source nethack "$SRC_DIR" "$VERIFIED_SOURCE_DIR" \
-        "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
-    printf '%s\n' "$expected_source_marker" > "$SOURCE_MARKER"
-    echo "==> Source staged at $SRC_DIR"
-fi
+rm -rf "$SRC_DIR" "$BIN_DIR" "$RUNTIME_DIR"
+echo "==> Staging verified NetHack $NETHACK_VERSION source..."
+kandelo_package_stage_verified_source nethack "$SRC_DIR" "$VERIFIED_SOURCE_DIR" \
+    "$SOURCE_URL" "$SOURCE_SHA256" "$WORK_DIR"
+echo "==> Source staged at $SRC_DIR"
 
 cd "$SRC_DIR"
-NETHACK_REGEN_DATA=0
 
 # --- Setup ---
 # setup.sh rewrites top-level Makefile and sub-Makefiles from the chosen
 # hints file. hints/linux is the closest match to our musl-based target.
-if [ ! -f Makefile.configured ]; then
-    echo "==> Running sys/unix/setup.sh hints/linux..."
-    (cd sys/unix && sh setup.sh hints/linux)
-    touch Makefile.configured
-fi
+echo "==> Running sys/unix/setup.sh hints/linux..."
+(cd sys/unix && sh setup.sh hints/linux)
 
 # --- Patch include/config.h ---
 #
@@ -187,16 +157,12 @@ fi
 
 # --- Patch include/unixconf.h ---
 #
-# Override HACKDIR and add VAR_PLAYGROUND so a Formula can compile the exact
-# poured opt-prefix data path while a direct registry build retains its
-# historical /usr/share/nethack default.
+# Override HACKDIR and add VAR_PLAYGROUND (defaults /usr/share/nethack and
+# /var/games/nethack; overridable through the environment).
 #
 # Pin PORT_ID. NetHack's global.h picks it from the compiler's OS macros
-# unless a *conf.h already set it, and this header is included first. The
-# version banner comes from include/date.h, which the host-built makedefs
-# writes, so without a pinned value the banner named the build machine's OS
-# ("MacOSX" from a Mac, "Unix" from Linux) while the wasm game's own code
-# said "Unix". Both are built from this header, so both now say the same.
+# unless a *conf.h already set it, and this header is included first.
+# Without it the banner would say "Unix"; "Kandelo" is the product label.
 UNIXCONF_H="include/unixconf.h"
 if [ -f "$UNIXCONF_H" ] && ! grep -q "wasm32posix patch" "$UNIXCONF_H"; then
     echo "==> Patching include/unixconf.h..."
@@ -285,125 +251,15 @@ if [ -f "$TERMCAP_C" ] && ! grep -q "wasm32posix backspace fallback patch" "$TER
     echo "/* wasm32posix backspace fallback patch */" >> "$TERMCAP_C"
 fi
 
-# --- Patch quest text serialization layout ---
-#
-# quest.dat is generated by host-built makedefs and read by the wasm game.
-# The upstream format writes structs containing `long`, which is 8 bytes on
-# common host builders and 4 bytes on wasm32. Pin the serialized offsets and
-# sizes to int32_t on both sides so com_pager()/qt_pager() read the same
-# tables makedefs wrote.
-QTEXT_H="include/qtext.h"
-if [ -f "$QTEXT_H" ] && ! grep -q "wasm32posix quest text layout patch" "$QTEXT_H"; then
-    echo "==> Patching include/qtext.h (portable quest text layout)..."
-    awk '
-        /^#define LEN_HDR / {
-            print;
-            print "";
-            print "#include <stdint.h>";
-            print "typedef int32_t qt_offset_t;";
-            next;
-        }
-        /long offset, size, summary_size;/ {
-            sub("long offset, size, summary_size;", "qt_offset_t offset, size, summary_size;");
-        }
-        /long offset\[N_HDR\];/ {
-            sub("long offset\\[N_HDR\\];", "qt_offset_t offset[N_HDR];");
-        }
-        { print }
-    ' "$QTEXT_H" > "$QTEXT_H.new"
-    mv "$QTEXT_H.new" "$QTEXT_H"
-    echo "/* wasm32posix quest text layout patch */" >> "$QTEXT_H"
-    NETHACK_REGEN_DATA=1
-fi
-
-QUESTPGR_C="src/questpgr.c"
-if [ -f "$QUESTPGR_C" ] && ! grep -q "wasm32posix quest text layout patch" "$QUESTPGR_C"; then
-    echo "==> Patching src/questpgr.c (portable quest text layout)..."
-    sed -i.bak -E \
-        -e 's|STATIC_DCL struct qtmsg \*FDECL\(construct_qtlist, \(long\)\);|STATIC_DCL struct qtmsg *FDECL(construct_qtlist, (qt_offset_t));|' \
-        -e 's|^long hdr_offset;$|qt_offset_t hdr_offset;|' \
-        -e 's|^    long qt_offsets\[N_HDR\];$|    qt_offset_t qt_offsets[N_HDR];|' \
-        -e 's|Fread\(qt_offsets, sizeof \(long\), n_classes, msg_file\);|Fread(qt_offsets, sizeof qt_offsets[0], n_classes, msg_file);|' \
-        "$QUESTPGR_C"
-    echo "/* wasm32posix quest text layout patch */" >> "$QUESTPGR_C"
-    rm -f "$QUESTPGR_C.bak"
-fi
-
-MAKEDEFS_C="util/makedefs.c"
-if [ -f "$MAKEDEFS_C" ] && ! grep -q "wasm32posix quest text layout patch" "$MAKEDEFS_C"; then
-    echo "==> Patching util/makedefs.c (portable quest text layout)..."
-    sed -i.bak -E \
-        -e 's|sizeof\(char\) \* LEN_HDR \+ sizeof\(long\)|sizeof(char) * LEN_HDR + sizeof qt_hdr.offset[0]|' \
-        -e 's|sizeof\(long\),$|sizeof qt_hdr.offset[0],|' \
-        -e 's|Fprintf\(stderr, "%s @ %ld, ", qt_hdr.id\[i\], qt_hdr.offset\[i\]\);|Fprintf(stderr, "%s @ %ld, ", qt_hdr.id[i], (long) qt_hdr.offset[i]);|' \
-        "$MAKEDEFS_C"
-    echo "/* wasm32posix quest text layout patch */" >> "$MAKEDEFS_C"
-    rm -f "$MAKEDEFS_C.bak"
-    NETHACK_REGEN_DATA=1
-fi
-
-# --- Patch include/global.h ---
-#
-# `struct version_info` is written to data files by host-built dgn_comp
-# / lev_comp / dlb and read back by the cross-built game binary. It uses
-# `unsigned long` which is 8 bytes on macOS/Linux hosts but 4 bytes on
-# wasm32. The 40-byte file header gets read as a 20-byte struct and
-# check_version() reports "Dungeon description not valid" even though
-# the values are correct — the serialization is just off. Pin the
-# fields to `uint32_t` so the layout is identical on host and target.
-#
-# `struct savefile_info` has the same hazard for save files; patch it
-# the same way for consistency.
-GLOBAL_H="include/global.h"
-if [ -f "$GLOBAL_H" ] && ! grep -q "wasm32posix patch" "$GLOBAL_H"; then
-    echo "==> Patching include/global.h (portable version_info)..."
-    awk '
-        /^struct version_info \{/ || /^struct savefile_info \{/ { in_struct=1 }
-        in_struct && /unsigned long/ { gsub("unsigned long", "uint32_t      ") }
-        /^\};/ && in_struct { in_struct=0 }
-        { print }
-    ' "$GLOBAL_H" > "$GLOBAL_H.new"
-    # Ensure stdint.h is visible; global.h already pulls in config.h which
-    # eventually reaches stdint. Add an explicit include to be safe.
-    if ! grep -q '^#include <stdint.h>' "$GLOBAL_H.new"; then
-        awk 'NR==1 && /^\/\* NetHack/ { print; print "#include <stdint.h>"; next } { print }' "$GLOBAL_H.new" > "$GLOBAL_H.new2"
-        mv "$GLOBAL_H.new2" "$GLOBAL_H.new"
-    fi
-    mv "$GLOBAL_H.new" "$GLOBAL_H"
-    echo "/* wasm32posix patch */" >> "$GLOBAL_H"
-fi
-
-# --- Patch include/tradstdc.h ---
-#
-# NetHack defines `warn_unused_result` to empty on non-Linux hosts to
-# suppress GCC's warn_unused_result attribute. This breaks macOS SDK
-# headers because sys/cdefs.h does `#if __has_attribute(warn_unused_result)`:
-# once the token is a (empty) macro, it expands to nothing, and
-# __has_attribute() trips on the missing argument. Stub the empty
-# defines out — we never enable -Werror on host compiles and the
-# downstream wasm cross build targets musl, not macOS.
-TRADSTDC_H="include/tradstdc.h"
-if [ -f "$TRADSTDC_H" ] && ! grep -q "wasm32posix patch" "$TRADSTDC_H"; then
-    echo "==> Patching include/tradstdc.h..."
-
-    sed -i.bak -E \
-        -e 's|^#define __warn_unused_result__.*|/* __warn_unused_result__ empty-define suppressed for macOS SDK compatibility */|' \
-        -e 's|^#define warn_unused_result.*|/* warn_unused_result empty-define suppressed for macOS SDK compatibility */|' \
-        "$TRADSTDC_H"
-
-    echo "/* wasm32posix patch */" >> "$TRADSTDC_H"
-    rm -f "$TRADSTDC_H.bak"
-fi
-
 # --- Patch src/Makefile for ncursesw + include path ---
 #
 # src/Makefile was generated by setup.sh (populated from sys/unix/hints/linux
 # + Makefile.src). It hardcodes:
 #   WINTTYLIB=-lncurses -ltinfo
 #   WINCURSESLIB=-lncurses
-# Our sysroot ships the wide-character flavor (libncursesw, libtinfow),
-# matching vim's build. We also need to teach the compiler where to find
-# the ncursesw headers, which are under $SYSROOT/include/ncursesw.
+# The ncurses package ships the wide-character flavor (libncursesw,
+# libtinfow), matching vim's build, with its headers under
+# include/ncursesw.
 SRC_MAKEFILE="src/Makefile"
 if [ -f "$SRC_MAKEFILE" ] && ! grep -q "wasm32posix patch" "$SRC_MAKEFILE"; then
     echo "==> Patching src/Makefile..."
@@ -423,15 +279,15 @@ if [ -f "$SRC_MAKEFILE" ] && ! grep -q "wasm32posix patch" "$SRC_MAKEFILE"; then
         "$SRC_MAKEFILE"
 
     # Append an additional CFLAGS line after the hints-supplied block so
-    # ncursesw (from the resolver cache) and sysroot headers resolve when
-    # cross-compiling. The hints set LFLAGS=-rdynamic with `=` (not `+=`)
+    # the ncursesw headers and libraries resolve where the guest mounts
+    # them. The hints set LFLAGS=-rdynamic with `=` (not `+=`)
     # later in the Makefile, which would clobber a `LFLAGS+=...` that
     # appeared earlier — so rewrite `LFLAGS=-rdynamic` to `LFLAGS+=...`
     # that prepends our `-L` to whatever was set previously.
-    awk -v ncurses="$NCURSES_PREFIX" -v sysroot="$SYSROOT" '
+    awk -v ncurses="$GUEST_NCURSES" '
         /^CFLAGS\+=-DCURSES_GRAPHICS/ {
             print;
-            print "CFLAGS+=-I" ncurses "/include/ncursesw -I" ncurses "/include -I" sysroot "/include";
+            print "CFLAGS+=-I" ncurses "/include/ncursesw -I" ncurses "/include";
             print "LFLAGS+=-L" ncurses "/lib";
             next;
         }
@@ -459,110 +315,35 @@ if [ -f "$UTIL_MAKEFILE" ] && ! grep -q "wasm32posix patch" "$UTIL_MAKEFILE"; th
     printf '\nCFLAGS+=-DREPRODUCIBLE_BUILD\n# wasm32posix patch\n' >> "$UTIL_MAKEFILE"
 fi
 
-# --- Phase 1: host build of util tools + data generation ---
-#
-# Build only the code-generation tools and data files. We deliberately
-# avoid the top-level `all` / `update` targets because they'd build the
-# game binary with host CC — wasted work, since phase 2 rebuilds it
-# with wasm32posix-cc.
-if [ "$NETHACK_REGEN_DATA" = 1 ]; then
-    echo "==> Host phase: invalidating regenerated data archives..."
-    rm -f "$SRC_DIR/dat/quest.dat" "$SRC_DIR/dat/nhdat"
-fi
-
-if [ "$NETHACK_REGEN_DATA" = 1 ] || [ ! -f "$SRC_DIR/dat/nhdat" ]; then
-    rm -f "$SRC_DIR"/util/makedefs "$SRC_DIR"/util/dgn_comp \
-        "$SRC_DIR"/util/lev_comp "$SRC_DIR"/util/dlb "$SRC_DIR"/util/recover
-fi
-
-if [ ! -f "$SRC_DIR/dat/nhdat" ]; then
-    echo "==> Host phase: building util tools..."
-    # `$(MAKE)` in top-level Makefile recurses with no CC override; the
-    # Linux hints default is gcc, which we override on the command line.
-    # On macOS cc=clang works for these tools. The yacc rules for dgn_comp
-    # and lev_comp share y.tab.c/y.tab.h scratch names, so override ambient
-    # MAKEFLAGS and serialize this phase even when a package manager builds
-    # Formulae in parallel.
-    make -j1 CC=cc LD=cc -C util makedefs dgn_comp lev_comp dlb recover 2>&1 | tail -20
-
-    echo "==> Host phase: generating data files (dat/)..."
-    # dat/Makefile's `all` builds $(VARDAT) + spec_levs + quest_levs + dungeon
-    # using the tools built above. No CC needed — these are data files.
-    make CC=cc LD=cc -C dat all 2>&1 | tail -20
-
-    echo "==> Host phase: packing nhdat via dlb..."
-    # Top-level `make dlb` runs dlb in dat/ to produce nhdat.
-    make CC=cc LD=cc dlb 2>&1 | tail -10
-
-    if [ ! -f "$SRC_DIR/dat/nhdat" ]; then
-        echo "ERROR: dat/nhdat not produced by host build" >&2
-        exit 1
-    fi
-fi
-
-# --- Phase 2: cross build of src/nethack ---
-#
-# util/makedefs (and friends) are linked against ../src/monst.o and
-# ../src/objects.o. `make -C src clean` removes those .o files; the next
-# `make -C src` rebuilds them with the wasm toolchain, and make would
-# then consider util/makedefs stale and relink it with wasm CC too,
-# breaking future host-side regenerations.
-#
-# Future-date the host-built util binaries and generated headers so
-# nothing below them looks stale, regardless of what happens to src/*.o.
-echo "==> Cross phase: locking host artifacts..."
-touch -t 204001010101 \
-    util/makedefs util/dgn_comp util/lev_comp util/dlb util/recover \
-    include/onames.h include/pm.h include/date.h include/vis_tab.h \
-    dat/nhdat 2>/dev/null || true
-
-echo "==> Cross phase: building nethack binary..."
-make -C src clean 2>&1 | tail -5 || true
-
-# Pass CC/LD/AR/RANLIB via command line; DO NOT override CFLAGS — the
-# Makefile already has the right include paths and defines for this
-# port after the src/Makefile patch above.
-make -C src \
-    CC=wasm32posix-cc \
-    LINK=wasm32posix-cc \
-    AR=wasm32posix-ar \
-    RANLIB=wasm32posix-ranlib \
-    nethack 2>&1 | tail -30
-
-if [ ! -f "$SRC_DIR/src/nethack" ]; then
-    echo "ERROR: src/nethack binary not produced" >&2
-    exit 1
-fi
+# --- Build inside Kandelo ---
+cp "$SCRIPT_DIR/build-nethack-guest.sh" "$SRC_DIR/build-nethack-guest.sh"
+source "$REPO_ROOT/scripts/guest-build.sh"
+echo "==> Building NetHack inside a Kandelo machine..."
+kandelo_guest_build --workspace "$SRC_DIR" \
+    --input "$GUEST_NCURSES=$NCURSES_PREFIX" \
+    -- /bin/sh /build/build-nethack-guest.sh
 
 # --- Stage outputs ---
 echo "==> Staging outputs..."
 
+# The guest's files reach the host as mode 0600; set modes while installing.
 mkdir -p "$BIN_DIR"
-cp "$SRC_DIR/src/nethack" "$BIN_DIR/nethack.wasm"
+install -m 0755 "$SRC_DIR/src/nethack" "$BIN_DIR/nethack.wasm"
 
-# Install into local-binaries/ (resolver priority 1) and the resolver
-# scratch dir when invoked by xtask build-deps / archive-stage.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary nethack "$BIN_DIR/nethack.wasm"
 
 mkdir -p "$RUNTIME_DIR/share/nethack"
-cp "$SRC_DIR/dat/nhdat" "$RUNTIME_DIR/share/nethack/nhdat"
-[ -f "$SRC_DIR/dat/symbols" ] && cp "$SRC_DIR/dat/symbols" "$RUNTIME_DIR/share/nethack/symbols"
-[ -f "$SRC_DIR/dat/license" ] && cp "$SRC_DIR/dat/license" "$RUNTIME_DIR/share/nethack/license"
-find "$RUNTIME_DIR/share/nethack" -type f -exec chmod 0644 {} +
+for file in nhdat symbols license; do
+    install -m 0644 "$SRC_DIR/dat/$file" "$RUNTIME_DIR/share/nethack/$file"
+done
 
-# Stage the runtime tree into the resolver scratch so it lands in the
-# cache canonical path (and from there, the .tar.zst release archive).
-# archive_stage packs every file under WASM_POSIX_DEP_OUT_DIR, so writing
-# runtime/ here is enough — the resulting archive contains nethack.wasm +
-# runtime/share/nethack/* and is self-sufficient. Outside the resolver,
-# WASM_POSIX_DEP_OUT_DIR is unset and this is a no-op. Mirrors
+# Stage the runtime tree into the resolver output so it lands in the cache
+# canonical path (and from there, the .tar.zst release archive): the
+# archive then holds nethack.wasm and runtime/share/nethack/*. Mirrors
 # packages/registry/vim/build-vim.sh.
-if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ] && [ -d "$RUNTIME_DIR" ]; then
-    rm -rf "$WASM_POSIX_DEP_OUT_DIR/runtime"
-    cp -R "$RUNTIME_DIR" "$WASM_POSIX_DEP_OUT_DIR/runtime"
-    echo "  staged runtime tree into resolver scratch"
-fi
+rm -rf "$WASM_POSIX_DEP_OUT_DIR/runtime"
+cp -R "$RUNTIME_DIR" "$WASM_POSIX_DEP_OUT_DIR/runtime"
 
 SIZE=$(wc -c < "$BIN_DIR/nethack.wasm" | tr -d ' ')
 echo "==> Final size: $(echo "$SIZE" | numfmt --to=iec 2>/dev/null || echo "${SIZE} bytes")"

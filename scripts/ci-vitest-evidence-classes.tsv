@@ -258,6 +258,7 @@ host/test/multi-worker.test.ts	prepared-product
 host/test/native-lazy-integrity-recovery.test.ts	prepared-product
 host/test/native-open-create-race.test.ts	source-only
 host/test/nethack-shared-playground.test.ts	prepared-product
+host/test/nethack-special-levels.test.ts	prepared-product
 host/test/network-hostname.test.ts	source-only
 host/test/network-readiness-generation.test.ts	source-only
 host/test/node-compat-builtin-exports.test.ts	prepared-product
