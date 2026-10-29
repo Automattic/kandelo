@@ -151,6 +151,13 @@ export class GlMuxer {
     return true;
   }
 
+  /** A work item's temporary drawable selectors have changed. Native GL is
+   * still owned by the same error flags, even though selectors must replay. */
+  invalidateExecutionSelection(): void {
+    try { captureNativeGlErrors(this.gl, this.errorOwner); }
+    finally { this.forgetCurrent(); }
+  }
+
   invalidateCurrent(): void {
     try {
       captureNativeGlErrors(this.gl, this.errorOwner);

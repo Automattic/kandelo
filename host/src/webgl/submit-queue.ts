@@ -14,6 +14,13 @@
  */
 import type { GlBinding } from "./registry.js";
 
+export interface SubmitExecutionOwner {
+  readonly binding: GlBinding;
+  readonly admitted: boolean;
+  run<T>(work: () => T): T;
+  release(): boolean;
+}
+
 const Bytes = Uint8Array;
 const apply = Reflect.apply;
 const typedArray = Object.getPrototypeOf(Uint8Array.prototype);
@@ -27,6 +34,8 @@ const setBytes = Uint8Array.prototype.set;
 export class SubmitFrame {
   #bytes: Uint8Array | null;
   #claimed = false;
+  #running = false;
+  #execution: SubmitExecutionOwner | null = null;
   readonly byteLength: number;
   constructor(source: Uint8Array, offset: number, length: number) {
     const size = apply(lengthOf,source,[]) as number;
@@ -46,6 +55,18 @@ export class SubmitFrame {
     if (this.#claimed || !this.#bytes) throw new Error("GL submission already admitted");
     this.#claimed = true;
   }
+  attachExecution(owner: SubmitExecutionOwner): void {
+    if (this.#execution) throw new Error("GL submission already owns an execution");
+    this.#execution = owner;
+  }
+  get consumed(): boolean { return this.#bytes === null && !this.#running; }
+  retryCleanup(): boolean {
+    if (this.#running) return false;
+    if (!this.#execution) return true;
+    if (!this.#execution.release()) return false;
+    this.#execution = null;
+    return true;
+  }
   /** The temporary device view never becomes the binding's cached guest view.
    * A rebind/teardown during dispatch owns its replacement; do not revive the
    * old guest backing in finally. A consumed or failed frame cannot replay. */
@@ -53,12 +74,19 @@ export class SubmitFrame {
     const bytes = this.#bytes;
     if (!bytes) throw new Error("GL submission already consumed");
     this.#bytes = null;
+    this.#running = true;
     const previous = binding.cmdbufView;
     binding.cmdbufView = bytes;
-    try { return work(); }
-    finally { if (binding.cmdbufView === bytes) binding.cmdbufView = previous; }
+    try {
+      if (this.#execution && this.#execution.binding !== binding) throw new Error("GL execution identity mismatch");
+      return this.#execution ? this.#execution.run(work) : work();
+    } finally {
+      if (binding.cmdbufView === bytes) binding.cmdbufView = previous;
+      this.#running = false;
+      this.retryCleanup();
+    }
   }
-  discard(): void { this.#bytes = null; }
+  discard(): void { this.#bytes = null; this.retryCleanup(); }
 }
 
 export interface QueueEntry {
@@ -71,20 +99,31 @@ export class SubmitQueue {
   private compositor: QueueEntry[] = [];
   private clients: QueueEntry[] = [];
   private byKey = new Map<string, QueueEntry>();
+  private ownedFrames = new Set<SubmitFrame>();
 
   /** Only the caller's exact binding authority selects the compositor lane.
    * Unclassified bindings remain ordinary FIFO clients. */
   constructor(
     private isCompositor: (binding: GlBinding) => boolean = () => false,
+    private captureExecution?: (binding: GlBinding) => SubmitExecutionOwner | null,
   ) {}
 
   enqueue(binding: GlBinding, frame: SubmitFrame): void {
     frame.claim();
+    // Reserve retry ownership before acquiring context/native storage holds.
+    this.ownedFrames.add(frame);
     const key = `${binding.pid}:${binding.sessionId}:${binding.contextId ?? "_"}`;
     const existing = this.byKey.get(key);
     let entry: QueueEntry | undefined;
-    const lane = this.isCompositor(binding) ? this.compositor : this.clients;
+    let lane = this.clients;
     try {
+      lane = this.isCompositor(binding) ? this.compositor : this.clients;
+      if (this.captureExecution) {
+        const execution = this.captureExecution(binding);
+        if (!execution) throw new Error("GL execution capture failed");
+        frame.attachExecution(execution);
+        if (!execution.admitted) throw new Error("GL drawable capture failed");
+      }
       if (existing) existing.frames.push(frame);
       else {
         entry = {key,binding,frames:[frame]};
@@ -93,6 +132,7 @@ export class SubmitQueue {
       }
     } catch (error) {
       frame.discard();
+      this.complete(frame);
       if (entry) {
         const index = lane.indexOf(entry);
         if (index >= 0) lane.splice(index,1);
@@ -109,6 +149,7 @@ export class SubmitQueue {
    *  next pickNext lands on the next client even if this one still has
    *  frames buffered. */
   pickNext(): QueueEntry | null {
+    this.retryRetirements();
     while (this.compositor.length > 0) {
       const e = this.compositor[0];
       if (e.frames.length > 0) return e;
@@ -153,7 +194,7 @@ export class SubmitQueue {
     if (sessionId !== undefined) sessionId >>>= 0;
     for (const [key, entry] of Array.from(this.byKey)) {
       if (entry.binding.pid !== pid || (sessionId !== undefined && entry.binding.sessionId !== sessionId)) continue;
-      for (const frame of entry.frames) frame.discard();
+      for (const frame of entry.frames) { frame.discard(); this.complete(frame); }
       entry.frames.length = 0;
       this.byKey.delete(key);
       const compositorIndex = this.compositor.indexOf(entry);
@@ -163,6 +204,14 @@ export class SubmitQueue {
       const clientIndex = this.clients.indexOf(entry);
       if (clientIndex >= 0) this.clients.splice(clientIndex, 1);
     }
+  }
+
+  complete(frame: SubmitFrame): void {
+    if (frame.consumed && frame.retryCleanup()) this.ownedFrames.delete(frame);
+  }
+
+  retryRetirements(): void {
+    for (const frame of this.ownedFrames) this.complete(frame);
   }
 
   isEmpty(): boolean {
