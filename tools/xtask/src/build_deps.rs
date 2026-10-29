@@ -34658,6 +34658,13 @@ spdx = "TestLicense"
             return;
         }
 
+        // WHY: the public resolve preflight may first build the native SDK
+        // driver, whose Cargo cache follows HOME. Provision that prerequisite
+        // before replacing HOME/XDG solely to detect ordinary package-cache
+        // access; the child still performs the normal freshness check.
+        crate::local_build::ensure_package_sysroot(&repo_root(), default_target_arch().unwrap())
+            .unwrap();
+
         let registry_root = tempdir("source-handoff-public-cli-registry");
         let (archive, digest) = fixture_source_archive(&registry_root);
         write_source_archive_fixture(&registry_root, "consumer-source", &archive, &digest);
@@ -34715,7 +34722,9 @@ printf 'PUBLIC\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
         assert!(selected_base.join("source-archives/sha256").is_dir());
         assert!(
             !ordinary_cache_home.exists() && !ordinary_home.exists(),
-            "source-only CLI consulted an ordinary cache default",
+            "source-only CLI consulted an ordinary cache default:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
         );
 
         let origin_trap = registry_root.join("top-level-origin-must-not-open.tar.gz");
