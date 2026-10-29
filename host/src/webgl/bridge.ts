@@ -18,6 +18,7 @@
  * returns a negative errno so `GLIO_SUBMIT` can fail like any other
  * ioctl-style device operation instead of hiding the failure in host code.
  */
+import { acceptedUniformCount } from "./uniform-setters.js";
 import { imageTextureOperation, imageRenderbufferStorage, prepareImageDraw } from "./image-storage.js";
 import { repairNativeState } from "./native-recovery.js";
 import { bindImageObject } from "./image-bindings.js";
@@ -29,7 +30,7 @@ import { drawGlesElements } from "./index-data.js";
 import { installVertexAttribute } from "./vertex-data.js";
 import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
-import { checkedGlCall, currentProgramName, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted } from "./program-objects.js";
+import { checkedGlCall, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted } from "./program-objects.js";
 import { stateArgumentError } from "./state-validation.js";
 import { combinedTextureUnits, maxViewport } from "./limits.js";
 import * as O from "./ops.js";
@@ -492,18 +493,11 @@ function dispatch(
       if (!prepareTextureOperation(b,v.getUint32(p,true))) return;
       break;
   }
+  let uniformCount=1;
   if (op >= O.OP_UNIFORM1I && op <= O.OP_UNIFORM_MATRIX3FV) {
-    const location = v.getInt32(p, true);
-    // GLES requires an installed executable even for inactive uniforms.
-    // WebGL's null-location no-op cannot judge this GLES requirement, and
-    // the logical owner may differ from the physical context's installation.
-    const program = currentProgramName(b);
-    if (!program || (location !== -1 && (!b.uniformLocations.has(location) ||
-        b.uniformLocationPrograms.get(location) !== program))) {
-      recordGlError(b, 0x502); // INVALID_OPERATION
-      return;
-    }
-    if (location === -1) return;
+    const count=acceptedUniformCount(b,op,v,p);
+    if(count===null || count===0) return;
+    uniformCount=count;
   }
   switch (op) {
     // ----- state ----------------------------------------------------------
@@ -1054,7 +1048,7 @@ function dispatch(
     // Payload: i32 location, u32 count, u32 transposeBool, f32 mat[count*16]
     case O.OP_UNIFORM_MATRIX4FV: {
       const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const count = uniformCount;
       const transpose = v.getUint32(p + 8, true) !== 0;
       gl.uniformMatrix4fv(loc, transpose, floatsAt(v, p + 12, count * 16));
       return;
@@ -1062,64 +1056,64 @@ function dispatch(
     // Payload: i32 location, u32 count, f32 v[count*4]
     case O.OP_UNIFORM4FV: {
       const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const count = uniformCount;
       gl.uniform4fv(loc, floatsAt(v, p + 8, count * 4));
       return;
     }
     case O.OP_UNIFORM1FV: {
       const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const count = uniformCount;
       gl.uniform1fv(loc, copyFloat32Array(v, p + 8, count));
       return;
     }
     case O.OP_UNIFORM2FV: {
       const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const count = uniformCount;
       gl.uniform2fv(loc, copyFloat32Array(v, p + 8, count * 2));
       return;
     }
     case O.OP_UNIFORM3FV: {
       const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const count = uniformCount;
       gl.uniform3fv(loc, copyFloat32Array(v, p + 8, count * 3));
       return;
     }
     case O.OP_UNIFORM1IV: {
       const locIndex = v.getInt32(p, true);
       const loc = b.uniformLocations.get(locIndex) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const count = uniformCount;
       const values = copyInt32Array(v, p + 8, count);
       gl.uniform1iv(loc, values);
       return;
     }
     case O.OP_UNIFORM2IV: {
       const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const count = uniformCount;
       gl.uniform2iv(loc, copyInt32Array(v, p + 8, count * 2));
       return;
     }
     case O.OP_UNIFORM3IV: {
       const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const count = uniformCount;
       gl.uniform3iv(loc, copyInt32Array(v, p + 8, count * 3));
       return;
     }
     case O.OP_UNIFORM4IV: {
       const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const count = uniformCount;
       gl.uniform4iv(loc, copyInt32Array(v, p + 8, count * 4));
       return;
     }
     case O.OP_UNIFORM_MATRIX2FV: {
       const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const count = uniformCount;
       const transpose = v.getUint32(p + 8, true) !== 0;
       gl.uniformMatrix2fv(loc, transpose, copyFloat32Array(v, p + 12, count * 4));
       return;
     }
     case O.OP_UNIFORM_MATRIX3FV: {
       const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const count = uniformCount;
       const transpose = v.getUint32(p + 8, true) !== 0;
       gl.uniformMatrix3fv(loc, transpose, copyFloat32Array(v, p + 12, count * 9));
       return;

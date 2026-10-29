@@ -133,7 +133,7 @@ The source WebGL contract suite also compiles selected current native C
 cases through this harness, captures actual submitted bytes and replays them
 through the browser decoder. Its float/fixed and maximum-index client-array cases are cross-layer
 source evidence, not guest execution or unmodified CTS. Selection uses
-`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 214 cases.
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 227 cases.
 `KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
 file for those test-only replays. Each browser test owns and removes its
 private trace directory.
@@ -737,3 +737,16 @@ retirement and release/restoration. These are authored regressions, not
 unmodified CTS. Node runs both widths with its renderer double; browser
 runs both widths in Chromium, Firefox and WebKit through BrowserKernel.
 The guest checks observable hint semantics, not rendering-quality effects.
+
+
+Positive-location uniform validation keeps reflection with the precise native
+executable that issued each location. The source gate checks compatible
+float/integer/boolean/sampler signatures, positive zero-count validation,
+non-array count errors, ignored array tails, reduced struct fields, failed
+use/link, deferred deletion, shared executable identity and publication rollback.
+The native `encoder-uniform-zero-headers` case protects an unreadable page and
+null sources across all eleven vector/matrix signatures, requiring only the
+original command header and no current-program query. These are encoder/host
+model checks. The normal `gles-hints` guest additionally uses active real GLSL
+uniform declarations; execution after the positive-location increment remains
+required. Larger valid-array transport beyond one command record remains open.

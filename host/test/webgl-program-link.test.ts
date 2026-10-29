@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
+import { uniformLocation } from "../src/webgl/uniform-queries.js";
 import { GlMuxer } from "../src/webgl/muxer.js";
 import * as O from "../src/webgl/ops.js";
 import { runGlQuery } from "../src/webgl/query.js";
@@ -32,7 +33,10 @@ class NativePrograms {
   }
   bindAttribLocation(p: Program, index: number, name: string) { p.attributes.set(name, index); }
   linkProgram(p: Program) { p.linked = p.shaders.size === 2 && [...p.shaders].every(s => s.compiled); }
-  getProgramParameter(p: Program, name: number) { return name === 0x8b82 ? p.linked : 0; }
+  uniforms = [{name:"color",size:1,type:0x1406},{name:"colors[0]",size:2,type:0x8b52},
+    {name:"other",size:1,type:0x1406},{name:"A",size:1,type:0x1406}];
+  getActiveUniform(_p:Program,index:number) { return this.uniforms[index] ?? null; }
+  getProgramParameter(p: Program, name: number) { return name === 0x8b82 ? p.linked : name===0x8b86?this.uniforms.length:0; }
   useProgram(p: Program | null) {
     if (p && (!p.linked || this.deleted.has(p))) this.error = 0x502;
     else this.current = p;
@@ -119,6 +123,126 @@ describe("program link attempts and installed executables", () => {
     send(op, words);
     expect(query(O.QOP_GET_ERROR)).toBe(0);
     expect(native.uniformWrites).toBe(0);
+  });
+
+  it("validates positive zero-count setters against executable, type and location before ignoring data", () => {
+    const {b,native,send,query} = setup();
+    (native as any).getActiveUniform=()=>({name:"color",size:1,type:0x8b52});
+    const parameter=native.getProgramParameter.bind(native);
+    native.getProgramParameter=(program,pname)=>pname===0x8b86?1:parameter(program,pname);
+    const location=uniformLocation(b,20,"color")!;
+    send(O.OP_UNIFORM4FV,[location,0]);
+    expect(query(O.QOP_GET_ERROR)).toBe(0);
+    send(O.OP_UNIFORM3FV,[location,0]);
+    expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+    send(O.OP_UNIFORM4FV,[location+99,0]);
+    expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+    send(O.OP_USE_PROGRAM,[0]);
+    send(O.OP_UNIFORM4FV,[location,0]);
+    expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+  });
+
+  it("rejects non-array counts and ignores only an array's excess tail", () => {
+    const {b,native,send,query} = setup();
+    const infos=[{name:"value",size:1,type:0x1406},{name:"colors[0]",size:3,type:0x8b52}];
+    (native as any).getActiveUniform=(_program:Program,index:number)=>infos[index];
+    const parameter=native.getProgramParameter.bind(native);
+    native.getProgramParameter=(program,pname)=>pname===0x8b86?infos.length:parameter(program,pname);
+    const scalar=uniformLocation(b,20,"value")!, array=uniformLocation(b,20,"colors[0001]")!;
+    send(O.OP_UNIFORM1FV,[scalar,2,0,0]);
+    expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+    let values:number[]=[];(native as any).uniform4fv=(_location:unknown,data:Float32Array)=>{values=[...data];};
+    send(O.OP_UNIFORM4FV,[array,4,...Array(16).fill(0)]);
+    expect(query(O.QOP_GET_ERROR)).toBe(0);
+    expect(values).toHaveLength(8);
+  });
+
+  const positiveSignatures: [string,number,number,number][] = [
+    ["1f",O.OP_UNIFORM1F,0x1406,1],["2f",O.OP_UNIFORM2F,0x8b50,2],
+    ["3f",O.OP_UNIFORM3F,0x8b51,3],["4f",O.OP_UNIFORM4F,0x8b52,4],
+    ["1i",O.OP_UNIFORM1I,0x1404,1],
+    ...[1,2,3,4].map((n):[string,number,number,number]=>[`${n}fv`,
+      [O.OP_UNIFORM1FV,O.OP_UNIFORM2FV,O.OP_UNIFORM3FV,O.OP_UNIFORM4FV][n-1],
+      [0x1406,0x8b50,0x8b51,0x8b52][n-1],n]),
+    ...[1,2,3,4].map((n):[string,number,number,number]=>[`${n}iv`,
+      [O.OP_UNIFORM1IV,O.OP_UNIFORM2IV,O.OP_UNIFORM3IV,O.OP_UNIFORM4IV][n-1],
+      [0x1404,0x8b53,0x8b54,0x8b55][n-1],n]),
+    ...[2,3,4].map((n):[string,number,number,number]=>[`Matrix${n}fv`,
+      [O.OP_UNIFORM_MATRIX2FV,O.OP_UNIFORM_MATRIX3FV,O.OP_UNIFORM_MATRIX4FV][n-2],0x8b5a+n-2,n*n]),
+  ];
+  it.each(positiveSignatures)("validates %s without native reflection on each setter", (_name,op,type,components)=>{
+    const {b,native,send,query}=setup();native.uniforms=[{name:"value",size:1,type}];
+    const location=uniformLocation(b,20,"value")!;
+    const scalar=op<=O.OP_UNIFORM4F,matrix=type>=0x8b5a && type<=0x8b5c;
+    const words=scalar?[location,...Array(components).fill(0)]:[location,0,...(matrix?[0]:[])];
+    native.getActiveUniform=()=>{throw new Error("setter queried reflection");};
+    send(op,words);expect(query(O.QOP_GET_ERROR)).toBe(0);
+    if(!scalar) {
+      send(op,[location,2,...(matrix?[0]:[]),...Array(components*2).fill(0)]);
+      expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+    }
+    b.uniformMetadata.set(location,{...b.uniformMetadata.get(location)!,type:0x8b60});
+    send(op,words);expect(query(O.QOP_GET_ERROR)).toBe(type===0x1404?0:0x502);
+  });
+  it.each([1,2,3,4])("allows both float and integer signatures for boolean width %s",n=>{
+    const {b,native,send,query}=setup();native.uniforms=[{name:"flag",size:1,type:0x8b55+n}];
+    const location=uniformLocation(b,20,"flag")!;
+    for(const op of [[O.OP_UNIFORM1FV,O.OP_UNIFORM2FV,O.OP_UNIFORM3FV,O.OP_UNIFORM4FV][n-1],
+      [O.OP_UNIFORM1IV,O.OP_UNIFORM2IV,O.OP_UNIFORM3IV,O.OP_UNIFORM4IV][n-1]]) {
+      send(op,[location,0]);expect(query(O.QOP_GET_ERROR)).toBe(0);
+    }
+  });
+  it("captures reduced struct fields and only the final array's remaining elements",()=>{
+    const {b,native}=setup();native.uniforms=[{name:"lights[2].colors[0]",size:4,type:0x8b52},
+      {name:"lights[1].enabled",size:1,type:0x8b56}];
+    const location=uniformLocation(b,20,"lights[0002].colors[0003]")!;
+    expect(b.uniformMetadata.get(location)).toEqual({executable:b.currentProgram,type:0x8b52,array:true,remaining:1});
+    const field=uniformLocation(b,20,"lights[1].enabled")!;
+    expect(b.uniformMetadata.get(field)?.array).toBe(false);
+  });
+  it("preserves metadata through failed use, failed relink and deleted-current ownership",()=>{
+    const {b,native,send,query,original}=setup();const location=uniformLocation(b,20,"color")!;
+    send(O.OP_CREATE_PROGRAM,[21]);send(O.OP_USE_PROGRAM,[21]);expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+    (b.shaders.get(11) as unknown as Shader).compiled=false;send(O.OP_LINK_PROGRAM,[20]);
+    send(O.OP_UNIFORM1FV,[location,0]);expect(query(O.QOP_GET_ERROR)).toBe(0);
+    expect(b.uniformMetadata.get(location)?.executable).toBe(original);
+    send(O.OP_DELETE_PROGRAM,[20]);send(O.OP_UNIFORM1FV,[location,0]);expect(query(O.QOP_GET_ERROR)).toBe(0);
+    send(O.OP_USE_PROGRAM,[0]);expect(b.uniformMetadata.has(location)).toBe(false);
+    expect(native.deleted.has(original)).toBe(true);
+  });
+  it("rejects a newer program executable's location against an older shared current executable",()=>{
+    const parent=setup(),peer=sharePeer(parent);
+    const old=uniformLocation(parent.b,20,"color")!;
+    linkProgramRetainingExecutable(peer,20);
+    expect(parent.b.currentProgram).toBe(parent.original);
+    const fresh=uniformLocation(peer,20,"color")!;
+    expect(parent.b.uniformMetadata.has(old)).toBe(false);
+    expect(parent.b.uniformMetadata.get(fresh)?.executable).not.toBe(parent.original);
+    parent.send(O.OP_UNIFORM1FV,[fresh,0]);expect(parent.query(O.QOP_GET_ERROR)).toBe(0x502);
+    useProgramIfAccepted(parent.b,20);parent.send(O.OP_UNIFORM1FV,[fresh,0]);expect(parent.query(O.QOP_GET_ERROR)).toBe(0);
+    parent.registry.destroyContext(1,0);parent.registry.destroyContext(1,12);expect(peer.uniformMetadata.size).toBe(0);
+  });
+  it("rolls back every location map if immutable metadata publication fails",()=>{
+    const {b}=setup();const before=b.nextUniformLoc;
+    b.uniformMetadata.set=()=>{throw new Error("allocation failed");};
+    expect(uniformLocation(b,20,"color")).toBeNull();expect(b.errors).toEqual([0x505]);
+    expect(b.nextUniformLoc).toBe(before);
+    for(const map of [b.uniformLocations,b.uniformLocationPrograms,b.uniformLocationNames,b.uniformMetadata]) expect(map.has(before+1)).toBe(false);
+  });
+
+  it("keeps transpose errors observable before zero-count or inactive no-ops",()=>{
+    const {send,query}=setup();
+    for(const op of [O.OP_UNIFORM_MATRIX2FV,O.OP_UNIFORM_MATRIX3FV,O.OP_UNIFORM_MATRIX4FV]) {
+      send(op,[-1,0,1]);expect(query(O.QOP_GET_ERROR)).toBe(0x501);
+    }
+  });
+  it("preserves pending errors and treats declared single-element arrays as arrays",()=>{
+    const {b,native,send,query}=setup();native.uniforms=[{name:"single[0]",size:1,type:0x1406}];
+    const location=uniformLocation(b,20,"single")!;
+    let values:number[]=[];(native as any).uniform1fv=(_location:unknown,data:Float32Array)=>{values=[...data];};
+    b.errors.push(0x500);send(O.OP_UNIFORM1FV,[location,3,0,0,0]);
+    expect(query(O.QOP_GET_ERROR)).toBe(0x500);expect(query(O.QOP_GET_ERROR)).toBe(0);expect(values).toHaveLength(1);
+    send(O.OP_UNIFORM2FV,[location,0]);expect(query(O.QOP_GET_ERROR)).toBe(0x502);
   });
 
   it("deduplicates pending invalid-operation flags and preserves distinct earlier errors", () => {
@@ -249,6 +373,8 @@ describe("program link attempts and installed executables", () => {
     expect(lookup(peer,1,1,bytes.length).status).toBe(0);
     for(let offset=0;offset<bytes.length;offset+=65520)expect(lookup(peer,2,1,offset,bytes.subarray(offset,offset+65520)).status).toBe(0);
     expect(seen).toEqual([]);const done=lookup(peer,3,1);expect(done.status).toBe(0);expect(seen).toEqual([name]);expect(peer.uniformLookup).toBeNull();
+    parent.native.getProgramParameter=original;
+    (parent.native as any).getActiveUniform=(_p:Program,index:number)=>parent.native.uniforms[index];
     const short=new TextEncoder().encode("color");const first=lookup(parent.b,0,1,short.length,short);
     expect(lookup(peer,0,2,short.length,short).location).toBe(first.location);
     expect(done.location).not.toBe(first.location);

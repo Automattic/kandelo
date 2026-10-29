@@ -3,6 +3,10 @@ import type { GlImageSource, GlTextureView, GlRenderbufferView } from "./image-s
 import type { GlBufferStore } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 
+/** Immutable reflection for one accepted native executable. The public numeric
+ * program can name a later failed/successful link while an older one is current. */
+export type GlUniformMetadata = Readonly<{ executable: WebGLProgram; type: number; array: boolean; remaining: number }>;
+
 /** Shareable object names and metadata. Bindings, FBOs, VAOs and errors
  * belong to individual contexts even when these objects are shared. */
 export type GlSharedObjects = {
@@ -37,6 +41,7 @@ export type GlSharedObjects = {
   uniformLocations: Map<number, WebGLUniformLocation>;
   uniformLocationPrograms: Map<number, number>;
   uniformLocationNames: Map<number, string>;
+  uniformMetadata: Map<number, GlUniformMetadata>;
   /** Monotonic counter for `uniformLocations`; never decremented. */
   nextUniformLoc: number;
 
@@ -69,7 +74,7 @@ export function createGlObjectGroup(): GlObjectGroup {
     members: new Set(), buffers: new Map(), bufferStores: new Map(), bufferViewOwners: new Map(), textures: new Map(), shaders: new Map(), programs: new Map(),
     rbos: new Map(), shaderSources: new Map(), shaderDeletePending: new Set(), programDeletePending: new Set(),
     programShaders: new Map(), programAttributeBindings: new Map(),
-    uniformLocations: new Map(), uniformLocationPrograms: new Map(), uniformLocationNames: new Map(), nextUniformLoc: 0,
+    uniformLocations: new Map(), uniformLocationPrograms: new Map(), uniformLocationNames: new Map(), uniformMetadata: new Map(), nextUniformLoc: 0,
     foreignTextures: new Map(), nextForeignTexId: 0x4000_0000, foreignTextureBos: new Map(),
     retiredTextures: new Map(), retiredBuffers: new Map(), retiredRenderbuffers: new Map(), externallyOwnedTextures: new WeakSet(),
   };

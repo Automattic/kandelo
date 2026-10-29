@@ -1,3 +1,4 @@
+import type { GlUniformMetadata } from "./object-group.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
@@ -11,6 +12,30 @@ function validProgram(b: GlBinding, name: number): WebGLProgram | null {
   if (!checkedGlCall(b,() => { linked = !!b.gl!.getProgramParameter(program,0x8b82); })) return null;
   if (!linked) { recordGlError(b,0x502); return null; }
   return program;
+}
+
+/** Structs/struct arrays are reduced by native reflection to fundamental
+ * fields. Only a final array selector denotes the remaining uniform array;
+ * an earlier selector is part of that field's exact identity (ES2 2.10.4). */
+function reflectedUniform(b: GlBinding, program: WebGLProgram, text: string): GlUniformMetadata | null {
+  let count = 0;
+  if (!checkedGlCall(b,()=>{count=Number(b.gl!.getProgramParameter(program,0x8b86));})) return null;
+  for(let index=0;index<count;index++) {
+    let info: WebGLActiveInfo | null = null;
+    if(!checkedGlCall(b,()=>{info=b.gl!.getActiveUniform(program,index);})) return null;
+    if(!info) continue;
+    const {name,type,size}=info as WebGLActiveInfo;
+    const array=name.endsWith("[0]");
+    if(array) {
+      const base=name.slice(0,-3), match=/^(.*)\[(\d+)\]$/.exec(text);
+      const element=text===base?0:match?.[1]===base?Number(match[2]):-1;
+      if(Number.isSafeInteger(element) && element>=0 && element<size)
+        return {executable:program,type,array:true,remaining:size-element};
+    } else if(name===text) return {executable:program,type,array:false,remaining:1};
+  }
+  // A non-null native location without reflection cannot be safely assigned
+  // a setter signature. Do not publish a partially described location.
+  recordGlError(b,0x502); return null;
 }
 
 /** Names denote locations for one successful link, including array aliases.
@@ -40,9 +65,11 @@ export function uniformLocation(b: GlBinding, name: number, text: string): numbe
   if (!checkedGlCall(b,() => { native = b.gl!.getUniformLocation(program,nativeText); })) return null;
   if (!native) return -1;
   try {
+    const metadata=reflectedUniform(b,program,nativeText);
+    if (!metadata) return null;
     const canonical = nativeText.replace(/\[0\]$/,"");
     for (const [index,known] of b.uniformLocationNames) {
-      if (known === canonical && b.uniformLocationPrograms.get(index) === name && b.uniformLocations.has(index)) return index;
+      if (known === canonical && b.uniformLocationPrograms.get(index) === name && b.uniformMetadata.get(index)?.executable === program && b.uniformLocations.has(index)) return index;
     }
     if (b.nextUniformLoc >= 0x7fffffff) { recordGlError(b,0x505); return null; }
     const index = b.nextUniformLoc+1;
@@ -50,8 +77,9 @@ export function uniformLocation(b: GlBinding, name: number, text: string): numbe
       b.uniformLocations.set(index,native);
       b.uniformLocationPrograms.set(index,name);
       b.uniformLocationNames.set(index,canonical);
+      b.uniformMetadata.set(index,metadata);
     } catch(error) {
-      b.uniformLocations.delete(index); b.uniformLocationPrograms.delete(index); b.uniformLocationNames.delete(index); throw error;
+      b.uniformLocations.delete(index); b.uniformLocationPrograms.delete(index); b.uniformLocationNames.delete(index); b.uniformMetadata.delete(index); throw error;
     }
     b.nextUniformLoc = index;
     return index;

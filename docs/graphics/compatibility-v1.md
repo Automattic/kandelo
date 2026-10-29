@@ -8818,3 +8818,64 @@ real native/forwarded browser rendering, browser-memory and conformance
 remain unrun for this checkpoint and its combined integration. No ABI,
 wire operation or advertised capability changed. Both PRs remain drafts;
 full graphics compatibility and merge readiness are not claimed.
+
+
+### Positive uniform validation source increment (2026-10-29)
+
+The follow-up now preserves an immutable native executable, GLSL type,
+array declaration and remaining element count with each public uniform
+location. Native active-uniform reflection is read at the existing synchronous
+location lookup; setters use that accepted metadata without an optimistic C
+program cache or another synchronous query. Reduced struct fields keep exact
+selectors, and only the final reflected array selector denotes its array.
+Location publication rolls back all maps and the allocator on failure.
+Successful relink/final deletion/group retirement clear metadata through the
+existing location lifetime paths. Failed relink and deletion while current
+retain it with the older executable. A location issued for a newer executable
+cannot be used by a sharing context still running an older one.
+
+Positive zero-count vector and matrix calls now publish only their original
+8- or 12-byte payload header, after ordinary count/transpose validation, without
+reading null or protected caller data. The host validates its logical current
+executable, location, compatible scalar/vector/matrix type and non-array count
+before the zero-count no-op. Boolean uniforms accept matching float or integer
+signatures; samplers accept only scalar integer signatures. Within the existing
+record capacity, extra array elements are ignored by clamping the native call
+to the reflected remaining array elements. Declared arrays of size one remain
+arrays. No empty typed array is submitted to WebGL, whose validation differs
+from GLES. No opcode, payload layout or unpublished ABI epoch changes.
+
+The new native header case fails against the pre-increment encoder at the
+first missing-record assertion. Two authored decoder cases fail before the
+host change at wrong-type zero count and non-array count greater than one.
+After implementation the declared-shell native suite passes all 227 cases
+under undefined-behavior sanitization. The full graphics source gate passes
+776 tests in 33 files, including pending errors, transpose ordering, sampler
+and boolean compatibility, array tails, shared/retained executable identity,
+reflection metadata rollback and final cleanup. Logs in the positive-uniform
+checkout are `.context/positive-native-{before,after}.log`,
+`.context/positive-host-before.log` and
+`.context/positive-graphics-source-final.log`; the final strengthened focused
+rerun passes 191/191 in `.context/positive-host-final.log`. Native tests use a device double;
+host tests execute the actual decoder with a controlled GL model.
+
+The normal both-width `gles-hints` guest is prepared with active GLSL scalar,
+vector, matrix and array uniforms. It checks all eleven zero-count signatures
+with invalid/null pointers, wrong-type zero calls, non-array count errors,
+invalid positive locations and excess array tails. Its Node allocation double
+models the declared active reflection explicitly; browser cases use actual
+GLSL compilation and retain their independent framebuffer pixel assertions.
+Normal SDK rebuilds and guest execution, browser rendering, upstream CTS and
+combined memory/POSIX conformance are still pending for this increment.
+Full-host TypeScript checking was attempted and reports 42 diagnostics
+(including Vite imports, external root-directory imports and existing bridge
+view types). An in-memory compiler comparison against pre-increment tracked
+sources reports the same 42 diagnostic file/code/message entries, with none
+introduced or resolved (`.context/positive-types-compare.json`); no passing
+full-host type-check claim is made. A direct Wasm syntax attempt
+used the Nix native compiler wrapper and was rejected by its host-only flag;
+this is not SDK compilation evidence. Both ordinary and rendered guest variants
+pass native C syntax using isolated public GL headers; actual Wasm-width checks
+remain pending normal SDK provisioning. Larger valid-array transport, combined
+C/host argument-error flags and the remaining full G05/G09 inventory are ordinary
+open work, not hard platform boundaries.

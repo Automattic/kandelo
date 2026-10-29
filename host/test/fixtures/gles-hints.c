@@ -84,7 +84,11 @@ static void generation_counts(void) {
  * uniform data, and does not exempt the API's current-program requirement. */
 static GLuint uniform_test_program(void) {
     const char *sources[] = {
-        "void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }",
+        "uniform float f1; uniform vec2 f2; uniform vec3 f3; uniform vec4 f4;"
+        "uniform int i1; uniform ivec2 i2; uniform ivec3 i3; uniform ivec4 i4;"
+        "uniform mat2 m2; uniform mat3 m3; uniform mat4 m4; uniform vec4 tail[3];"
+        "void main() { float x=f1+f2.x+f3.x+f4.x+float(i1+i2.x+i3.x+i4.x)"
+        "+m2[0][0]+m3[0][0]+m4[0][0]+tail[0].x+tail[1].x+tail[2].x; gl_Position=vec4(x); }",
         "precision mediump float; void main() { gl_FragColor = vec4(1.0); }",
     };
     const GLenum types[] = {GL_VERTEX_SHADER, GL_FRAGMENT_SHADER};
@@ -150,6 +154,31 @@ static void uniform_locations(void) {
     puts("OK GLES uniform negative locations: 19 setters");
 }
 
+static void positive_uniforms(GLuint program) {
+    void (*const fv[])(GLint, GLsizei, const GLfloat *) = {glUniform1fv,glUniform2fv,glUniform3fv,glUniform4fv};
+    void (*const iv[])(GLint, GLsizei, const GLint *) = {glUniform1iv,glUniform2iv,glUniform3iv,glUniform4iv};
+    void (*const matrix[])(GLint, GLsizei, GLboolean, const GLfloat *) = {glUniformMatrix2fv,glUniformMatrix3fv,glUniformMatrix4fv};
+    const void *unreadable=(const void *)(UINTPTR_MAX & ~(uintptr_t)3u);
+    const GLfloat f[16]={0}; const GLint integers[8]={0};
+    for(unsigned i=0;i<11;i++) {
+        const char *names[]={"f1","f2","f3","f4","i1","i2","i3","i4","m2","m3","m4"};
+        const GLint location=glGetUniformLocation(program,names[i]); CHECK(location>=0);no_error();
+        for(unsigned j=0;j<2;j++) {
+            const void *data=j?NULL:unreadable;
+            if(i<4)fv[i](location,0,data);else if(i<8)iv[i-4](location,0,data);else matrix[i-8](location,0,GL_FALSE,data);
+            no_error();
+        }
+        if(i<4)iv[i](location,0,NULL);else if(i<8)fv[i-4](location,0,NULL);else glUniform1fv(location,0,NULL);
+        expected_error(GL_INVALID_OPERATION);
+        if(i<4)fv[i](location,2,f);else if(i<8)iv[i-4](location,2,integers);else continue;
+        expected_error(GL_INVALID_OPERATION);
+    }
+    GLint tail=glGetUniformLocation(program,"tail[0002]"); CHECK(tail>=0);no_error();
+    glUniform4fv(tail,4,f);no_error();
+    glUniform4fv(INT_MAX,0,unreadable);expected_error(GL_INVALID_OPERATION);
+    puts("OK GLES positive uniforms: type, zero count and array tails");
+}
+
 static void uniforms_without_program(void) {
     for (unsigned variant = 0; variant < 19; ++variant) {
         uniform_setter(variant, -1);
@@ -175,7 +204,9 @@ static void matrix_arguments(void) {
             expected_error(GL_INVALID_VALUE);
         }
         setters[i](0, 0, GL_FALSE, unreadable);
+        expected_error(GL_INVALID_OPERATION);
         setters[i](0, 0, GL_FALSE, NULL);
+        expected_error(GL_INVALID_OPERATION);
         setters[i](-1, 1, GL_FALSE, unreadable);
         no_error();
         for (unsigned j = 0; j < 3; ++j) {
@@ -294,6 +325,7 @@ int main(void) {
     uniform_locations();
     matrix_arguments();
     vector_arguments();
+    positive_uniforms(uniform_program);
     glUseProgram(0);
     glDeleteProgram(uniform_program);
     no_error();

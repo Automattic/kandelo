@@ -157,6 +157,7 @@ class RecordingGl {
   getAttribLocation(_p: unknown, _name: string) { return 7; }
   getShaderParameter(_s: unknown, _p: number) { return true; }
   getShaderInfoLog(_s: unknown) { return "shader log"; }
+  getActiveUniform() { return {name:"u_color",type:0x8b52,size:1}; }
   getProgramParameter(_p: unknown, _q: number) { return 1; }
   getProgramInfoLog(_p: unknown) { return "program log"; }
   readPixels(_x: number, _y: number, _w: number, _h: number, _f: number, _t: number, dst: Uint8Array) {
@@ -175,13 +176,14 @@ function setupBinding(gl: RecordingGl, capacity = 4096) {
   return { reg, b };
 }
 
-function seedUniform(b: ReturnType<typeof setupBinding>["b"]): void {
+function seedUniform(b: ReturnType<typeof setupBinding>["b"], type=0x8b5c, location=1): void {
   const program = {} as WebGLProgram;
   b.programs.set(1, program);
   b.shadow.currentProgram = b.currentProgram = program;
   b.currentProgramId = 1;
-  b.uniformLocations.set(1, { kind: "uloc", name: "u" } as unknown as WebGLUniformLocation);
-  b.uniformLocationPrograms.set(1, 1);
+  b.uniformLocations.set(location, { kind: "uloc", name: "u" } as unknown as WebGLUniformLocation);
+  b.uniformLocationPrograms.set(location, 1);
+  b.uniformMetadata.set(location,{executable:program,type,array:true,remaining:4});
 }
 
 it("preserves legacy extension queries and gates new capabilities by table version", () => {
@@ -1093,7 +1095,7 @@ describe("cmdbuf decoder — TLV walker", () => {
   it("UniformMatrix3fv reads nine floats per matrix", () => {
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);
-    seedUniform(b);
+    seedUniform(b,0x8b5b);
     const mat: number[] = [];
     for (let i = 0; i < 18; i++) mat.push(i * 0.25);
 
@@ -1172,8 +1174,11 @@ describe("cmdbuf decoder — TLV walker", () => {
     t.view.setUint32(m.p + 4, 1, true);
     t.view.setUint32(m.p + 8, 0, true);
     for (let i = 0; i < 16; i++) t.view.setFloat32(m.p + 12 + i * 4, mat[i], true);
+    b.uniformLocations.set(2,{} as WebGLUniformLocation);
+    b.uniformLocationPrograms.set(2,1);
+    b.uniformMetadata.set(2,{executable:b.currentProgram!,type:0x8b52,array:false,remaining:1});
     const u = t.op(O.OP_UNIFORM4FV, 8 + 4 * 4);
-    t.view.setInt32(u.p, 1, true);
+    t.view.setInt32(u.p, 2, true);
     t.view.setUint32(u.p + 4, 1, true);
     for (let i = 0; i < 4; i++) t.view.setFloat32(u.p + 8 + i * 4, vec[i], true);
     const d = t.op(O.OP_DRAW_ARRAYS, 12);

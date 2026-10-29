@@ -59,6 +59,7 @@ function invalidateProgramLocations(b: GlBinding, name: number): void {
     b.uniformLocationPrograms.delete(location);
     b.uniformLocations.delete(location);
     b.uniformLocationNames.delete(location);
+    b.uniformMetadata.delete(location);
   }
 }
 

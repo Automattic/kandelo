@@ -57,6 +57,7 @@ test("normal GLES guests validate error families, hint state and real framebuffe
       "OK GLES uniform negative locations: 19 setters",
       "OK GLES uniform matrix validation: 3 sizes",
       "OK GLES uniform vector validation: 8 setters",
+      "OK GLES positive uniforms: type, zero count and array tails",
       "OK GLES inactive uniforms require current program: 19 setters",
       "OK GLES real framebuffer pixels after validation",
       "OK GLES hints retain context state, conversions and invalid-enum errors",

@@ -2882,22 +2882,23 @@ void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffse
 
 /* An inactive location ignores data, not an invalid sizei argument. Validate
  * count first; zero and ignored calls must not read even an invalid pointer.
+ * Positive zero-count calls still publish their original-op header so the
+ * host can judge the accepted executable, location and signature in order.
  * Vector records have an eight-byte header, unlike matrix records' twelve. */
 static uint32_t uniform_vector_length(GLint location, GLsizei count,
                                       const void *value, uint32_t components) {
     if (count < 0) {
         raise_client_error(GL_INVALID_VALUE);
-        return 0;
+        return UINT32_MAX;
     }
-    if (!uniform_location_accepted(location)) return 0;
-    if (count == 0) return 0;
-    if (!value) {
+    if (!uniform_location_accepted(location)) return UINT32_MAX;
+    if (count && !value) {
         raise_client_error(GL_INVALID_VALUE);
-        return 0;
+        return UINT32_MAX;
     }
     if ((uint32_t)count > (WPK_GL_MAX_TLV_PAYLOAD - 8u) / (4u * components)) {
         raise_client_error(GL_OUT_OF_MEMORY);
-        return 0;
+        return UINT32_MAX;
     }
     return (uint32_t)count * components;
 }
@@ -2905,7 +2906,7 @@ static uint32_t uniform_vector_length(GLint location, GLsizei count,
 static void emit_uniform_fv(uint16_t op, GLint location, GLsizei count,
                             const GLfloat *value, uint32_t components) {
     uint32_t n = uniform_vector_length(location, count, value, components);
-    if (!n) return;
+    if (n == UINT32_MAX) return;
     EMIT_BEGIN(op, 8u + n * 4u)
     w_i32(&_c, location);
     w_u32(&_c, (uint32_t)count);
@@ -2916,7 +2917,7 @@ static void emit_uniform_fv(uint16_t op, GLint location, GLsizei count,
 static void emit_uniform_iv(uint16_t op, GLint location, GLsizei count,
                             const GLint *value, uint32_t components) {
     uint32_t n = uniform_vector_length(location, count, value, components);
-    if (!n) return;
+    if (n == UINT32_MAX) return;
     EMIT_BEGIN(op, 8u + n * 4u)
     w_i32(&_c, location);
     w_u32(&_c, (uint32_t)count);
@@ -2934,8 +2935,7 @@ static void emit_uniform_matrix(uint16_t op, GLint location, GLsizei count,
         return;
     }
     if (!uniform_location_accepted(location)) return;
-    if (count == 0) return;
-    if (!value) {
+    if (count && !value) {
         raise_client_error(GL_INVALID_VALUE);
         return;
     }

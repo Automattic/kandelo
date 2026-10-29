@@ -3637,6 +3637,26 @@ int main(int argc, char **argv) {
         assert(allocation_count() == 0);
         printf("PASS %s\n", argv[1]); return 0;
     }
+    if (!strcmp(argv[1], "encoder-uniform-zero-headers")) {
+        (void)prepare_native_uniform_program();
+        void (*const fv[])(GLint, GLsizei, const GLfloat *) = {glUniform1fv,glUniform2fv,glUniform3fv,glUniform4fv};
+        void (*const iv[])(GLint, GLsizei, const GLint *) = {glUniform1iv,glUniform2iv,glUniform3iv,glUniform4iv};
+        void (*const matrix[])(GLint, GLsizei, GLboolean, const GLfloat *) = {glUniformMatrix2fv,glUniformMatrix3fv,glUniformMatrix4fv};
+        const size_t page=(size_t)sysconf(_SC_PAGESIZE);
+        void *guard=mmap(NULL,page,PROT_NONE,MAP_PRIVATE|MAP_ANON,-1,0); assert(guard!=MAP_FAILED);
+        for(unsigned i=0;i<11;i++) for(unsigned null_source=0;null_source<2;null_source++) {
+            const unsigned before=uniform_commands,queries=current_program_queries;
+            const void *data=null_source?NULL:guard;
+            if(i<4)fv[i](37,0,data); else if(i<8)iv[i-4](37,0,data); else matrix[i-8](37,0,GL_FALSE,data);
+            assert(glGetError()==GL_NO_ERROR);
+            assert(uniform_commands==before+1 && current_program_queries==queries);
+            assert(last_uniform_location==37 && !last_uniform_count);
+            assert(last_uniform_payload==(i<8?8:12));
+        }
+        assert(!munmap(guard,page));
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count()==0); printf("PASS %s\n",argv[1]);return 0;
+    }
     /* These native cases judge encoder records/errors with a device double,
      * not GLSL execution or the host's current-program validation. The normal
      * SDK fixture separately establishes a real linked current program. */
@@ -3702,10 +3722,11 @@ int main(int argc, char **argv) {
             glFlush();
             const unsigned ignored = !strcmp(argv[1], "encoder-uniform-vector-counts") ? 0 :
                                      !strcmp(argv[1], "encoder-uniform-vector-null-zero") ? 2 : 1;
-            assert(uniform_commands == submitted && inactive_uniform_checks == checks + ignored);
+            const unsigned zero_records = !strcmp(argv[1], "encoder-uniform-vector-null-zero") ? 2 : 0;
+            assert(uniform_commands == submitted + zero_records && inactive_uniform_checks == checks + ignored);
             assert(submit_batches == batches + (ignored ? 1u : 0u));
             VECTOR_CALL(37, 1, fvalue, ivalue);
-            assert(glGetError() == GL_NO_ERROR && uniform_commands == submitted + 1);
+            assert(glGetError() == GL_NO_ERROR && uniform_commands == submitted + zero_records + 1);
             assert(last_uniform_location == 37 && last_uniform_count == 1);
             assert(last_uniform_payload == 8 + components * sizeof(GLfloat));
             if (!strcmp(argv[1], "encoder-uniform-vector-bounds")) {
@@ -3775,10 +3796,11 @@ int main(int argc, char **argv) {
             }
             glFlush();
             const unsigned ignored = !strcmp(argv[1], "encoder-uniform-matrix-transpose") ? 0 : 1;
-            assert(uniform_commands == submitted && inactive_uniform_checks == checks + ignored);
+            const unsigned zero_records = !strcmp(argv[1], "encoder-uniform-matrix-counts") ? 2 : 0;
+            assert(uniform_commands == submitted + zero_records && inactive_uniform_checks == checks + ignored);
             assert(submit_batches == batches + ignored);
             setters[i](37, 1, GL_FALSE, value);
-            assert(glGetError() == GL_NO_ERROR && uniform_commands == submitted + 1);
+            assert(glGetError() == GL_NO_ERROR && uniform_commands == submitted + zero_records + 1);
             assert(last_uniform_location == 37 && last_uniform_count == 1 && !last_uniform_transpose);
             assert(last_uniform_payload == 12 + components[i] * sizeof(GLfloat));
             if (!strcmp(argv[1], "encoder-uniform-matrix-bounds")) {
