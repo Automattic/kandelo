@@ -2,6 +2,7 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 import {
   LiveKernelHost,
   type BootDescriptor,
+  type CredentialRequest,
   type KernelLike,
   type LazyDownloadEvent,
   type MachineStatus,
@@ -37,6 +38,7 @@ import {
 } from "../src/boot-descriptor";
 import { webPreviewForMachineChromeMessage } from "../src/machine-chrome-message";
 import { followShellOutput } from "../src/demo-dock-action";
+import { CredentialRequestRelay } from "../../../host/src/credential-request-relay";
 
 /**
  * Vitest coverage for the kandelo-session kernel-host surface:
@@ -269,6 +271,173 @@ describe("LiveKernelHost: status", () => {
     host.subscribeStatus(cb);
     host.setStatus("running");
     expect(cb).not.toHaveBeenCalled();
+  });
+});
+
+describe("LiveKernelHost: credential prompt", () => {
+  const request = {
+    pid: 42,
+    title: "Codex",
+    program: "/usr/bin/codex",
+    argv: ["codex"],
+    parentChain: [{ pid: 7, program: "/usr/bin/bash" }],
+    destinations: ["https://chatgpt.com"],
+    imageSource: "https://example.test/shell.vfs.zst",
+    programChangedSinceBoot: false,
+    enforcement: "proxy-gate" as const,
+    transport: [{
+      kind: "proxy" as const,
+      via: "https://kandelo-codex-test.space.fast/cors-proxy",
+      destinations: ["https://chatgpt.com"],
+    }],
+  };
+
+  it("hands the handler the intermediary the kernel worker named, through the main-thread relay", async () => {
+    // The path a question takes in the app: kernel worker message, the
+    // host's main-thread relay (which structured-clones it), the session
+    // host, the installed prompt.
+    const host = new LiveKernelHost();
+    const seen: CredentialRequest[] = [];
+    host.setCredentialRequestHandler(async (asked) => {
+      seen.push(asked);
+      return false;
+    });
+    const transport = [
+      {
+        kind: "relay" as const,
+        via: "http://127.0.0.1:5481/__kandelo_credential_relay",
+        destinations: ["https://chatgpt.com"],
+      },
+      {
+        kind: "proxy" as const,
+        via: "https://kandelo-codex-test.space.fast/cors-proxy",
+        destinations: ["https://example.test"],
+      },
+    ];
+    const answers: unknown[] = [];
+    const relay = new CredentialRequestRelay(
+      (asked, options) => host.askCredentialRequest(asked, options),
+      (message) => answers.push(message),
+      () => {},
+    );
+    relay.request({
+      type: "credential_request",
+      requestId: 9,
+      request: { ...request, destinations: ["https://chatgpt.com", "https://example.test"], transport },
+    });
+    await vi.waitFor(() => expect(answers).toHaveLength(1));
+    expect(seen.map((asked) => asked.transport)).toEqual([transport]);
+    expect(answers).toEqual([{ type: "credential_answer", requestId: 9, allow: false }]);
+  });
+
+  it("denies at once when no handler is installed", async () => {
+    const host = new LiveKernelHost();
+    await expect(host.askCredentialRequest(request, {
+      signal: new AbortController().signal,
+    })).resolves.toBe(false);
+  });
+
+  it("asks the handler installed when the question arrives", async () => {
+    const host = new LiveKernelHost();
+    const handler = vi.fn(async () => true);
+    host.setCredentialRequestHandler(handler);
+    await expect(host.askCredentialRequest(request, {
+      signal: new AbortController().signal,
+    })).resolves.toBe(true);
+    expect(handler).toHaveBeenCalledWith(request, { signal: expect.any(AbortSignal) });
+    host.setCredentialRequestHandler(null);
+    await expect(host.askCredentialRequest(request, {
+      signal: new AbortController().signal,
+    })).resolves.toBe(false);
+  });
+
+  it("allows only on an explicit true", async () => {
+    const host = new LiveKernelHost();
+    host.setCredentialRequestHandler(async () => "yes" as unknown as boolean);
+    await expect(host.askCredentialRequest(request, {
+      signal: new AbortController().signal,
+    })).resolves.toBe(false);
+  });
+
+  it("withdraws a question the kernel withdraws, as deny", async () => {
+    const host = new LiveKernelHost();
+    let handlerSignal: AbortSignal | undefined;
+    host.setCredentialRequestHandler((_request, { signal }) => {
+      handlerSignal = signal;
+      return new Promise<boolean>(() => {});
+    });
+    const kernelQuestion = new AbortController();
+    const answer = host.askCredentialRequest(request, { signal: kernelQuestion.signal });
+    kernelQuestion.abort();
+    await expect(answer).resolves.toBe(false);
+    expect(handlerSignal?.aborted).toBe(true);
+  });
+
+  it("withdraws the previous handler's open questions when it is replaced or removed", async () => {
+    const host = new LiveKernelHost();
+    const signals: AbortSignal[] = [];
+    const pendingForever = (_request: unknown, { signal }: { signal: AbortSignal }) => {
+      signals.push(signal);
+      return new Promise<boolean>(() => {});
+    };
+    host.setCredentialRequestHandler(pendingForever);
+    const first = host.askCredentialRequest(request, { signal: new AbortController().signal });
+    // Installing the same handler again changes nothing.
+    host.setCredentialRequestHandler(pendingForever);
+    expect(signals[0].aborted).toBe(false);
+    let answerLater!: (allow: boolean) => void;
+    const replacement = vi.fn(() => new Promise<boolean>((resolve) => { answerLater = resolve; }));
+    host.setCredentialRequestHandler(replacement);
+    await expect(first).resolves.toBe(false);
+    expect(signals[0].aborted).toBe(true);
+
+    const second = host.askCredentialRequest(request, { signal: new AbortController().signal });
+    expect(replacement).toHaveBeenCalledTimes(1);
+    host.setCredentialRequestHandler(null);
+    // A late allow from the removed handler is not an answer.
+    answerLater(true);
+    await expect(second).resolves.toBe(false);
+  });
+
+  it("stops asking for this machine: denies open and later questions until the kernel is detached", async () => {
+    const host = new LiveKernelHost();
+    const signals: AbortSignal[] = [];
+    const handler = vi.fn((_request: unknown, { signal }: { signal: AbortSignal }) => {
+      signals.push(signal);
+      return new Promise<boolean>(() => {});
+    });
+    host.setCredentialRequestHandler(handler);
+    const open = [1, 2].map(() =>
+      host.askCredentialRequest(request, { signal: new AbortController().signal })
+    );
+    host.stopCredentialRequests();
+    await expect(Promise.all(open)).resolves.toEqual([false, false]);
+    expect(signals.map((signal) => signal.aborted)).toEqual([true, true]);
+    // Later questions are denied without reaching the handler.
+    await expect(host.askCredentialRequest(request, {
+      signal: new AbortController().signal,
+    })).resolves.toBe(false);
+    expect(handler).toHaveBeenCalledTimes(2);
+    // Memory only, for this machine: a detached kernel (teardown, switch
+    // or reboot) starts asking again.
+    host.detachKernel();
+    void host.askCredentialRequest(request, { signal: new AbortController().signal });
+    expect(handler).toHaveBeenCalledTimes(3);
+  });
+
+  it("withdraws every open question when the kernel is detached", async () => {
+    const host = new LiveKernelHost();
+    const signals: AbortSignal[] = [];
+    host.setCredentialRequestHandler((_request, { signal }) => {
+      signals.push(signal);
+      return new Promise<boolean>(() => {});
+    });
+    const answers = [1, 2].map(() =>
+      host.askCredentialRequest(request, { signal: new AbortController().signal })
+    );
+    host.detachKernel();
+    await expect(Promise.all(answers)).resolves.toEqual([false, false]);
+    expect(signals.map((signal) => signal.aborted)).toEqual([true, true]);
   });
 });
 

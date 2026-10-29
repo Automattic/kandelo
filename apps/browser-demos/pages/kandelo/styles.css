@@ -4137,6 +4137,103 @@
   margin-top: 1px;
 }
 
+/* Credential prompt (app/CredentialRequestDialog.tsx). */
+.kcred { width: min(560px, 100%); }
+.kcred-lead,
+.kcred-scope,
+.kcred-waiting {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.kcred-scope,
+.kcred-waiting { color: var(--k-text-muted); }
+.kcred-changed {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--k-err-ink);
+  background: color-mix(in oklch, var(--k-err) 12%, var(--k-surface));
+  border: 1px solid color-mix(in oklch, var(--k-err) 52%, var(--k-border));
+  border-radius: var(--k-radius-sm);
+}
+.kcred-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+.kcred-more .kcred-waiting { flex: 1 1 auto; }
+.kcred-secondary {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.kcred-destinations {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.kcred-destinations li {
+  font-family: var(--k-font-mono);
+  font-size: 12.5px;
+  padding: 6px 10px;
+  background: var(--k-surface-sunk);
+  border: 1px solid var(--k-border);
+  border-radius: var(--k-radius-sm);
+  word-break: break-all;
+}
+/* Who the credentials pass through: main body, not the details. */
+.kcred-transport {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.kcred-leg {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--k-warn-ink);
+  background: color-mix(in oklch, var(--k-warn) 12%, var(--k-surface));
+  border: 1px solid color-mix(in oklch, var(--k-warn) 45%, var(--k-border));
+  border-radius: var(--k-radius-sm);
+}
+.kcred-via {
+  font-family: var(--k-font-mono);
+  font-size: 12.5px;
+  word-break: break-all;
+}
+.kcred .kshare-prev { max-height: none; }
+.kcred-clip {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.kcred-details summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--k-text-muted);
+}
+.kcred-details dl {
+  margin: 8px 0 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  font-size: 12px;
+}
+.kcred-details dt { color: var(--k-text-muted); }
+.kcred-details dd {
+  margin: 0;
+  font-family: var(--k-font-mono);
+  word-break: break-all;
+}
+
 .kshare-script textarea {
   width: 100%;
   resize: vertical;

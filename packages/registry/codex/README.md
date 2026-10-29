@@ -149,16 +149,19 @@ it once at boot (a malformed one fails the boot). When a process starts
 `onCredentialRequest` handler whether that one process may send
 credentials, and holds Codex's first instruction until the answer. A
 declined request, or a host with no handler, still starts Codex, without a
-grant. The
-browser app does not install that handler yet, so in the browser app Codex
-is denied at once and starts immediately. With a grant, the browser's guest
-network backend lets that one Codex process's `Authorization` and
-`ChatGPT-Account-ID` through to the three declared origins, tagged for the
-service worker; any other process, including a child Codex starts or one
-writing to a socket Codex opened, is refused. See
-[credential grants](../../../docs/architecture.md#credential-grants). The
-local credential relay's origin list is configured separately and is not
-derived from this file.
+grant. The browser app asks in its own dialog, "Codex wants to use your
+sign-in credentials", listing the three origins, `/usr/bin/codex`, and
+where the machine's image came from; the choices are "Allow for this
+process" and "Don't allow" (see
+[the prompt](../../../docs/browser-support.md#per-process-credential-grants)).
+Every Codex process asks again; nothing is remembered. With a grant, the
+browser's guest network backend lets that one Codex process's
+`Authorization` and `ChatGPT-Account-ID` through to the three declared
+origins, tagged for the service worker; any other process, including a
+child Codex starts or one writing to a socket Codex opened, is refused.
+See [credential grants](../../../docs/architecture.md#credential-grants).
+The local credential relay's origin list is configured separately and is
+not derived from this file.
 
 ## Networking boundaries
 
@@ -176,9 +179,9 @@ a grant tag (see
 [per-process credential grants](../../../docs/browser-support.md#per-process-credential-grants)).
 The app's service worker verifies that tag with the kernel worker and
 removes it before the request leaves the browser. Browser model requests
-still fail today: the app installs no prompt handler, so Codex holds no
-grant, and neither the default Playground proxy nor the Spacefast proxy
-allows Codex's headers in its preflight yet.
+still fail today even after "Allow for this process": neither the default
+Playground proxy nor the Spacefast proxy allows Codex's headers in its
+preflight yet.
 For local development, the app now has a separate credential relay with an
 explicit permission page on an isolated loopback origin. App and guest-preview
 scripts cannot read or submit the approval form. It checks consent before receiving guest request

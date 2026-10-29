@@ -17,6 +17,7 @@ import { createShellTerminal, type ShellTerminal } from "../panes/Shell";
 import { Inspector, INSPECTOR_TABS } from "../panes/Inspector";
 import { galleryItemUrl } from "../url-state";
 import { ShareDialog } from "../dialogs/ShareDialog";
+import { CredentialRequestPrompt } from "./CredentialRequestDialog";
 import type {
   BootDescriptor,
   GalleryItem,
@@ -514,6 +515,8 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
         )}
 
         {shareOpen && <ShareDialog onClose={() => setShareOpen(false)} />}
+
+        <CredentialRequestPrompt />
 
         {networkSession.open && <NetworkPanel session={networkSession} activity={packageSessions} running={surface.status === "running"} failed={surface.status === "error"} />}
 

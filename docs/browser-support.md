@@ -1528,23 +1528,80 @@ does not import host credential files.
 `BrowserKernel` asks its `onCredentialRequest` option before a program
 whose package declared credential destinations starts (see
 [credential grants](architecture.md#credential-grants)); the Node host
-asks identically. The browser app does not install that handler yet, so
-every declared program is denied at once: Codex, declared
-`launch = "wait"`, starts immediately without a grant. A grant is recorded
-in the kernel and lasts for the process's life.
+asks identically. A grant is recorded in the kernel and lasts for the
+process's life: until it exits or runs another program (any exec ends
+it). A child it starts never inherits it.
 
-The guest's HTTPS requests consult it. Each request belongs to the
-process whose system call wrote its bytes, and to the grant that process
-held when it wrote them; not the process that opened the connection, and
-not a grant the same pid receives later, after an exec (see [which
-process a request belongs to](architecture.md#credential-grants)). When
-exactly one process wrote the request over TLS and the grant it held is
-still live and names the request's exact origin, `BrowserCorsProxy`
-relays the request's `Authorization` and `ChatGPT-Account-ID`, adds the
-proxy protocol's opt-in `X-Cors-Proxy-Allowed-Request-Headers:
-Authorization` (only when `Authorization` is present), and adds
-`X-Kandelo-Credential-Grant: <token>`, the grant's unguessable token. A
-granted request that carries neither credential gets neither header.
+**The prompt.** In the browser app the question is asked in Kandelo's
+own interface, never in the terminal the program controls. Embedders
+reach it through `KernelHost.setCredentialRequestHandler(handler |
+null)` (`web-libs/kandelo-session`). The app's live setup passes every
+question from its `BrowserKernel` to whichever handler is installed
+when the question arrives. The app installs its dialog
+(`apps/browser-demos/pages/kandelo/app/CredentialRequestDialog.tsx`)
+when it mounts, queueing questions in `CredentialRequestQueue`. The
+dialog shows:
+
+- the title `<title> wants to use your sign-in credentials`, where the
+  title comes from the program's declaration;
+- every destination origin the grant would cover;
+- the program's path, its process id, and where the machine's image
+  came from (`credentialImageSource`): whether this site ships that
+  image, then the URL the image bytes were fetched from. The label
+  comes first so that a long URL is what gets clipped; the full value
+  is in the details. A declared program is known only by its path
+  inside the image, so these are shown outright, not only in the
+  details;
+- one sentence saying what Allow means: only this running process,
+  until it exits or runs another program, and programs it starts never
+  inherit it;
+- a "Details" disclosure with the program path, the command line, the
+  parent processes up to init, the destinations, and the image source.
+
+The choices are **Allow for this process** and **Don't allow**. Focus
+starts on "Don't allow", which is the last control, so Tab from it
+wraps to the top of the dialog. "Allow for this process" is disabled
+for 750 ms after each question appears, including each queued question
+that replaces the one just answered, the same input delay browsers put
+on their own permission prompts. Without it, keys typed into the
+terminal as the dialog opens (Tab for completion, then Enter), or the
+second click of a double-click landing on the next queued dialog's
+identical button, could answer a question the user never read. "Don't
+allow" works at once. Escape answers "Don't allow", and a click outside
+the dialog answers nothing. There is no "remember" choice and no
+persistent grant state: every process, and every new image a process
+runs, asks again. Questions are queued and asked one at a time; the
+dialog says how many more are waiting.
+
+A question closes as deny when its process exits or runs another
+program before it is answered, when the handler that holds it is
+replaced or removed, and when the machine is torn down or switched
+(`LiveKernelHost.detachKernel` withdraws open questions, and the kernel
+host's destroy denies them on the worker side). A declined program
+still runs, without a grant; Codex, declared `launch = "wait"`, runs no
+instruction until the user answers.
+
+With no handler installed, every question is denied at once. That is
+the default for any embedder that never installs one, and it also
+covers a declared program the machine starts before the app's interface
+mounts (for example from init). The dialog is app UI on the app's
+origin, so it is only as trustworthy as that origin: same-origin guest
+web previews can script the page today (see the service-worker gate
+below), and isolating them is separate work.
+
+The guest's HTTPS requests consult the grant. Each request belongs to
+the process whose system call wrote its bytes, and to the grant that
+process held when it wrote them; not the process that opened the
+connection, and not a grant the same pid receives later, after an exec
+(see [which process a request belongs
+to](architecture.md#credential-grants)). When exactly one process wrote
+the request over TLS and the grant it held is still live and names the
+request's exact origin, `BrowserCorsProxy` relays the request's
+`Authorization` and `ChatGPT-Account-ID`, adds the proxy protocol's
+opt-in `X-Cors-Proxy-Allowed-Request-Headers: Authorization` (only when
+`Authorization` is present), and adds `X-Kandelo-Credential-Grant:
+<token>`, the grant's unguessable token. A granted request that carries
+neither credential gets neither header.
 
 Every other credentialed request fails before dispatch; credentials are
 never stripped and sent anyway. Through the proxy (no grant, a grant for
@@ -1670,10 +1727,13 @@ host has no service worker (see below).
 With a handler that allows, a granted guest request now reaches the
 configured proxy with its credentials and the opt-in and without the
 tag, in Chromium, Firefox and WebKit, against a local proxy
-(`apps/browser-demos/test/credential-gate.spec.ts`). It does not yet
-work in the browser app: the app installs no prompt handler, and
-neither the Playground nor the Spacefast proxy's preflight allows
-Codex's fields yet. On a loopback development server, the kernel
+(`apps/browser-demos/test/credential-gate.spec.ts`), and the same
+holds in the browser app after "Allow for this process"
+(`apps/browser-demos/test/credential-request-dialog.spec.ts`, a
+declared test program against a local proxy). Codex itself does not
+reach its service through the deployed proxies yet: neither the
+Playground nor the Spacefast proxy's preflight allows Codex's fields.
+On a loopback development server, the kernel
 worker sends requests to the local credential relay's origins to that
 relay directly, which does not consult grants. On Node, programs open
 real sockets, so credentials flow as on any Unix machine and no grant

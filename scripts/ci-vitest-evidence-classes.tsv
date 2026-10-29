@@ -592,6 +592,7 @@ tests/package-system/vitest-evidence-classes.test.ts	source-only
 tests/package-system/wasm-artifact-guards.test.ts	prepared-product
 web-libs/kandelo-session/test/boot-descriptor.test.ts	source-only
 web-libs/kandelo-session/test/boot-inputs.test.ts	source-only
+web-libs/kandelo-session/test/credential-request-queue.test.ts	source-only
 web-libs/kandelo-session/test/demo-config.test.ts	prepared-product
 web-libs/kandelo-session/test/demo-dock-action.test.ts	source-only
 web-libs/kandelo-session/test/deployment-scope.test.ts	source-only

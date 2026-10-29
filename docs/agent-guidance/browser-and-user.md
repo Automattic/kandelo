@@ -65,6 +65,20 @@ test in `host/test/browser-cors-proxy-service-worker-parity.test.ts` and
 cover it (see `docs/browser-support.md`, "Per-process credential
 grants").
 
+The credential prompt belongs to the app, behind
+`KernelHost.setCredentialRequestHandler`. Keep it in Kandelo's own UI,
+never in terminal output; keep deny the default (no handler, Escape, a
+withdrawn question, a replaced handler, a detached kernel); keep Allow
+disarmed for its input delay after every question appears, queued ones
+included, so input aimed elsewhere cannot answer it; never add a
+"remember" choice or any persistent grant state; and keep the program
+path and the image's provenance visible, because a declared program is
+identified only by its path. The image source the app passes
+(`credentialImageSource`) must be where the bytes were actually fetched
+from, never something the image says about itself.
+`apps/browser-demos/test/credential-request-dialog.spec.ts` covers it on
+all three engines.
+
 Boot descriptors and shared URLs are untrusted input. They need explicit
 versioning, size caps, mount limits, path validation, allowed source kinds, and
 loud failures for malformed or oversized payloads. Do not relax validation to

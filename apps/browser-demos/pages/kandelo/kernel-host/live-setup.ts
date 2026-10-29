@@ -1486,6 +1486,14 @@ async function bootProfile(
       onProcessEvent: (event) => {
         if (isCurrent()) host.emitProcessEvent(event);
       },
+      // The app installs its prompt on the session host after it mounts
+      // (`KernelHost.setCredentialRequestHandler`); until then, and for a
+      // superseded boot, the answer is deny.
+      onCredentialRequest: (request, options) =>
+        isCurrent()
+          ? host.askCredentialRequest(request, options)
+          : Promise.resolve(false),
+      credentialImageSource: credentialImageSource(profile, loadedVfs.sourceUrl),
       onHttpBridgePendingRequests: (count) => {
         if (isCurrent()) host.setWebPreviewPendingRequests(count);
       },
@@ -1926,6 +1934,8 @@ function attachDeclaredInputSource(
 interface LoadedVfsImage {
   imageBytes: ArrayBuffer;
   lazyAssets?: ImageOwnedRuntimeLazyAssets;
+  /** The absolute URL the image bytes were fetched from. */
+  sourceUrl: string;
 }
 
 /**
@@ -1957,7 +1967,10 @@ async function loadVfsImage(
     }
     const off = profile.candidateVfsPlacement.subscribeProgress(reportProgress);
     try {
-      return { imageBytes: await profile.candidateVfsPlacement.bytes() };
+      return {
+        imageBytes: await profile.candidateVfsPlacement.bytes(),
+        sourceUrl: absoluteUrl(profile.candidateEvidence.vfs.url),
+      };
     } finally {
       off();
     }
@@ -1972,6 +1985,7 @@ async function loadVfsImage(
       const activation = await CANONICAL_PAGES_VFS_LOADER.activate(productId);
       return {
         imageBytes: activation.imageBytes.slice(0),
+        sourceUrl: absoluteUrl(activation.imageUrl),
         lazyAssets:
           activation.lazyAssets === undefined
             ? undefined
@@ -1996,7 +2010,10 @@ async function loadVfsImage(
       totalBytes: bytes.byteLength,
       status: "complete",
     });
-    return { imageBytes: bytes.buffer as ArrayBuffer };
+    return {
+      imageBytes: bytes.buffer as ArrayBuffer,
+      sourceUrl: absoluteUrl(vfsUrl),
+    };
   } catch (error) {
     reportProgress({
       loadedBytes: 0,
@@ -2011,6 +2028,30 @@ async function resolveProfileVfsUrl(profile: LiveProfile): Promise<string> {
   if (profile.vfsSource) return resolveVfsProductUrl(profile.vfsSource);
   if (profile.vfsUrl) return profile.vfsUrl;
   throw new Error("this boot descriptor names no VFS image to load");
+}
+
+function absoluteUrl(url: string): string {
+  return new URL(url, window.location.href).href;
+}
+
+/**
+ * Where this machine's image came from, as the credential prompt shows it
+ * (`BrowserKernelOptions.credentialImageSource`). A declared program is
+ * known only by its path inside the image, so the user needs the image's
+ * provenance to judge the request: the URL the bytes were fetched from, and
+ * whether this deployment ships that image. Nothing here is read from the
+ * image itself, which could claim anything.
+ */
+function credentialImageSource(profile: LiveProfile, sourceUrl: string): string {
+  // The label leads: the prompt clips a long value at its end, and the URL
+  // is the part that can be arbitrarily long.
+  if (profile.candidateEvidence !== undefined) {
+    return `ABI-staging candidate image under test: ${sourceUrl}`;
+  }
+  if (profile.productId !== null) {
+    return `This site's ${profile.productId} image: ${sourceUrl}`;
+  }
+  return `Not an image this site ships: ${sourceUrl}`;
 }
 
 /** What to call this image in a boot log or a failure. Never a machine id:
