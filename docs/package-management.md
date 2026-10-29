@@ -68,6 +68,15 @@ programs, we need:
 
 ## Local DAG build
 
+Default builds select the packages consumed by both hosts. Browser imports
+and image dependency declarations are joined with the Node runner's literal
+`optionalBinary` declarations in `examples/run-example.ts`. Each alternative
+is selected because the runner resolves every declared path at startup; a
+local-file fallback declared with `snapshotOptionalBinaryWithFallback` stays
+a developer fixture rather than becoming a package demand. The supply check
+also verifies those package members are published in the authoritative
+projection. Artifact admission rules remain the same for both hosts.
+
 From the repository root, build what the supported products demand with:
 
 ```bash
