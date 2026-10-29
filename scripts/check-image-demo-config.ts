@@ -165,11 +165,12 @@ export const COMPOSED_TRACKED_SOURCES = new Set<string>([
  * images/vfs/scripts/build-*-vfs-image.ts). This maps the tracked path to
  * that image's `programs/<architecture>/<output>` artifact path, i.e. the
  * relPath `tryResolveBinary` / `snapshotSourceOnlyBinary` expect. Adding a
- * tenth tracked source without adding it here (or to
+ * new tracked source without adding it here (or to
  * COMPOSED_TRACKED_SOURCES) is a hard failure in `checkBakedEqualsTracked`
  * rather than a silent skip — see the "not classified" check below.
  */
 export const SINGLE_SOURCE_IMAGE_ARTIFACTS: Record<string, string> = {
+  "packages/registry/redis-vfs/redis-demo.json": "programs/wasm32/redis-vfs.vfs.zst",
   "packages/registry/nginx/nginx-demo.json": "programs/wasm32/nginx-vfs.vfs.zst",
   "packages/registry/nginx/nginx-php-demo.json": "programs/wasm32/nginx-php-vfs.vfs.zst",
   "packages/registry/nginx-python-vfs/nginx-python-demo.json":

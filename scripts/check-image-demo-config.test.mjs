@@ -122,7 +122,7 @@ describe("baked-equals-tracked", () => {
 
   // Review requirement: every tracked source must be classified as either
   // composed (cannot be byte-compared) or single-source (has exactly one
-  // built-image artifact). A gap here is exactly what would let a tenth
+  // built-image artifact). A gap here is exactly what would let a new
   // tracked source silently skip the byte-identity check forever, so this
   // must hold for the REAL tracked-source list, not just a fixture.
   it("classifies every real tracked source as composed XOR single-source", () => {
