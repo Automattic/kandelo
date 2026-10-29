@@ -131,11 +131,13 @@ describe("parseGalleryRoster", () => {
       "wordpress-mariadb",
       "doom",
       "quake",
+      "freeciv",
       "modeset",
       "sdl2",
       "scummvm",
       "love",
       "omarchy",
+      "redis",
     ]);
     // The floating Wayland desktop left the gallery when Omarchy joined it;
     // it still boots by URL (?profile=wayland) for its compositor specs.
