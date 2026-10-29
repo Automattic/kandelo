@@ -8532,3 +8532,39 @@ semantics, positive location ownership and larger-array transport also
 remain open. Oversized positive arrays still fail with
 `GL_OUT_OF_MEMORY`; record capacity is not a demonstrated hard platform
 boundary and does not close G05/G09.
+
+### Uniform-vector normal guest validation (2026-10-29)
+
+Source `7ec1954a54` was validated in the clean file-alias checkout by
+`gles-uniform-vectors-linked-1029-154856-6e3f` (exit 0, 4m29s).
+Normal dual-width SDK rebuilding, kernel/host bootstrap, ABI and freshness
+checks completed before execution. Node passed 4/4 cases in two files,
+including the independent GBM rendered-ring ownership checks. The Node
+renderer remains an allocation/ownership double; it is not pixel evidence.
+
+The matching browser selection passed 12/12 in 25.1 seconds across
+Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6. Both normal SDK
+widths establish a compiled, linked current program before testing the
+uniform sentinel/count families. Browser guests additionally require the
+unchanged actual framebuffer clear/scissor/readback colors. All six guest
+runs exited 0 with empty stderr, host diagnostics and page errors, and
+passed post-destroy worker-message ownership checks.
+
+| Artifact | SHA-256 |
+|---|---|
+| Resolved kernel | `0f80723c5b7d90942e16186def0d1a20dd232d1ec1c97d0d88f32105c3b44978` |
+| wasm32 rendered guest | `ad40d23a801be46f7d3d621bc66cfc58266303fdf8adc2c5c34997ea1a9a55a3` |
+| wasm32 guest image | `25b2e68d8ef2930c1dd410b687eb6b6facb3f84cef05405668ba390a26ba459b` |
+| wasm64 rendered guest | `4749fe5ee48c8bc2672159d126bda983330adf2d2474ba582ca6b6dd535e5356` |
+| wasm64 guest image | `b27c5ca6dbcc8cb0c44f6b16b9b0de06a5c360ed3dab5d7acf5a3742877d0266` |
+
+Each width's program and image hashes agree across all three engines.
+Timestamped records are retained privately in
+`.context/gbm-file-aliases/.context/gles-hints-guests/`, with build and
+execution logs named `.context/gles-uniform-vectors-*` in that checkout.
+This closes normal linked-guest validation for this increment. It does
+not close current-program validation without a bound program, uniform
+location ownership/type models, larger positive-array transport, broad
+upstream CTS, or full combined graphics-baseline acceptance. These remain
+ordinary implementation and validation work. The unchanged unpublished
+ABI is program 56 / host 3 / GL table 17 / fork record 21.
