@@ -395,6 +395,9 @@ if [ ! -f "$KERNEL_WASM" ]; then
     exit 1
 fi
 abi_contract_stamp_prepare || exit 1
+# shellcheck source=scripts/conformance-program-index.sh
+source "$REPO_ROOT/scripts/conformance-program-index.sh"
+conformance_program_index_prepare || exit 1
 
 PASS=0
 FAIL=0
