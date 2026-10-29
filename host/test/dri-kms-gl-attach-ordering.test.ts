@@ -128,8 +128,9 @@ it.each([false, true])("rebuilds a recreated EGL window before drawing (new cont
   if (newContext) imports.env.host_gl_create_context(PID, 2, 0, 0);
   // SDL creates the resized EGL surface/context before its next SETCRTC.
   // The old scanout must not override that new drawable and clear the
-  // completed first frame when the new FB is finally latched.
-  expect([canvas.width, canvas.height]).toEqual([800, 600]);
+  // completed first frame when the new FB is finally latched. A retained
+  // context keeps showing its last frame until the next present.
+  expect([canvas.width, canvas.height]).toEqual(newContext ? [800, 600] : [640, 480]);
   expect([binding.presentTarget!.w, binding.presentTarget!.h]).toEqual([800, 600]);
   expect(binding.presentTarget, "the next frame needs a target before any draws").not.toBeNull();
   expect(binding.presentTarget!.fbo).not.toBe(oldTarget);
@@ -137,12 +138,57 @@ it.each([false, true])("rebuilds a recreated EGL window before drawing (new cont
   expect(drawFramebuffer, "the muxer must replay the new default target").toBe(binding.presentTarget!.fbo);
   expect(presented).toEqual([]);
   expect(imports.env.host_gl_present(PID)).toBe(0);
+  expect([canvas.width, canvas.height]).toEqual([800, 600]);
   expect(imports.env.host_gl_present(PID)).toBe(0);
   expect(presented).toEqual([1, 1]);
   contextLost = true;
   expect(imports.env.host_gl_present(PID)).toBe(-5);
   expect(imports.env.host_gl_present(PID + 1)).toBe(0);
   expect(presented).toEqual([1, 1]);
+});
+
+it("keeps a mode change's canvas until the flip, unless no target can be built", () => {
+  let complete = true;
+  const gl = new Proxy({
+    ...fakeCanvas().getContext() as object,
+    checkFramebufferStatus: () => complete ? 0x8cd5 : 0x8cd6,
+    FRAMEBUFFER_COMPLETE: 0x8cd5,
+    isContextLost: () => false,
+  }, {
+    get: (target, key) => key in target ? target[key as keyof typeof target] : () => {},
+  });
+  const canvas = { width: 640, height: 480, getContext: () => gl };
+  const { kernel, imports, memory } = harness({
+    getKmsCanvas: () => canvas,
+    getKmsCrtcIds: () => [1],
+    markKmsCanvasGlOwned: () => {},
+  });
+  kernel.gl.bind({ pid: PID, cmdbufAddr: 128, cmdbufLen: 0 });
+  kernel.gl.get(PID)!.cmdbufView = new Uint8Array(memory.buffer, 128, 0);
+  const attrs = new DataView(memory.buffer, 64, 20);
+  const surface = (id: number, width: number, height: number) => {
+    imports.env.host_gl_destroy_surface(PID, id - 1);
+    attrs.setUint32(4, width, true);
+    attrs.setUint32(8, height, true);
+    imports.env.host_gl_create_surface(PID, id, 64, 20);
+  };
+  imports.env.host_kms_set_master(PID);
+  imports.env.host_kms_addfb(PID, 10, 100, 640, 480, 0x34325258, 2560);
+  imports.env.host_kms_set_fb(PID, 1, 10);
+  imports.env.host_gl_create_context(PID, 1, 0, 0);
+
+  // wlcompositor's mode change: a new window surface, then SETCRTC.
+  surface(2, 800, 600);
+  imports.env.host_kms_addfb(PID, 11, 101, 800, 600, 0x34325258, 3200);
+  imports.env.host_kms_set_fb(PID, 1, 11);
+  expect([canvas.width, canvas.height]).toEqual([640, 480]);
+  expect(imports.env.host_gl_present(PID)).toBe(0);
+  expect([canvas.width, canvas.height]).toEqual([800, 600]);
+
+  complete = false;
+  surface(3, 1024, 768);
+  expect(kernel.gl.get(PID)!.presentTarget).toBeNull();
+  expect([canvas.width, canvas.height]).toEqual([1024, 768]);
 });
 
 describe("KMS GL canvas auto-attach — ordering independence", () => {

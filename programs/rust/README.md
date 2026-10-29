@@ -11,7 +11,10 @@ link against musl → syscall channel → kernel).
   (bin crate, SDK-linked directly) exercising stdio, args, env, fs,
   time, and HashMap on the kernel.
 - `thread-demo/` — P4: std::thread + std::sync::Mutex/Arc (pthread ->
-  clone, futex-backed locking), deterministic shared-counter total.
+  clone, futex-backed locking), deterministic shared-counter total,
+  and `available_parallelism`.
+- `fd-demo/` — `OwnedFd::try_clone` (F_DUPFD_CLOEXEC) and stdout
+  redirection through `StdioExt` (dup2).
 - `net-demo/` — P5: std::net TCP loopback (bind/accept/connect/echo).
 - `proc-demo/` — P3: std::process::Command (fork+exec self-spawn).
   REQUIRES fork instrumentation (see the fixture header).

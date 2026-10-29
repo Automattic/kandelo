@@ -157,7 +157,7 @@ export const Modeset: React.FC<ModesetProps> = ({ active = true, crtcId = KMS_PR
     if (handleRef.current) return;
 
     try {
-      const attached = host.attachKmsDisplay(canvas, crtcId);
+      const attached = host.attachKmsDisplay(canvas, crtcId, { sizeElement: stageRef.current ?? undefined });
       if (!attached) {
         setError("Kernel does not expose kmsAttachCanvas (older ABI?)");
         return;

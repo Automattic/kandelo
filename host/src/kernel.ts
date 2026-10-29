@@ -34,6 +34,7 @@ import { FramebufferRegistry } from "./framebuffer/registry";
 import { GbmBoRegistry } from "./dri/registry";
 import { KmsRegistry } from "./dri/kms-registry";
 import { GlContextRegistry } from "./webgl/registry";
+import { createBindingWebGl2Context } from "./webgl/context";
 import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
 import { SubmitQueue } from "./webgl/submit-queue";
@@ -1058,31 +1059,7 @@ export class WasmPosixKernel {
       attachedCrtc = crtc;
     }
     if (!b.canvas) return;
-    const ctx = b.canvas.getContext("webgl2", {
-      antialias: false,
-      premultipliedAlpha: false,
-      depth: true,
-      stencil: true,
-      preserveDrawingBuffer: true,
-    }) as WebGL2RenderingContext | null;
-    if (ctx) {
-      // Mirror main-forward.ts: enable the WebGL2 float extensions so
-      // RGBA16F framebuffers are renderable and float textures accept
-      // LINEAR filtering. Without these, ping-pong sims (Pavel-style
-      // fluid, GPU-side image processing) hit
-      // GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT silently.
-      ctx.getExtension("EXT_color_buffer_float");
-      ctx.getExtension("OES_texture_float_linear");
-      ctx.getExtension("EXT_float_blend");
-      // Seed the shadow viewport with the actual WebGL2 default (the
-      // canvas drawing-buffer size). Otherwise `defaultShadow()`'s
-      // [0,0,0,0] reaches the context through `GlMuxer.switchTo` the
-      // first time sessions share it and clobbers the implicit default
-      // viewport, so a program that never calls glViewport (SDL2's
-      // KMSDRM/OpenGLES backend) draws into a 0×0 region.
-      b.shadow.viewport = [0, 0, b.canvas.width, b.canvas.height];
-    }
-    b.gl = ctx;
+    const ctx = createBindingWebGl2Context(b, b.canvas);
     // Claim the canvas for GL (disabling the vblank 2D-blit pump for this
     // CRTC) only once a WebGL2 context truly exists. Marking it earlier
     // would strand the canvas with neither GL nor the 2D blit if
@@ -2556,6 +2533,14 @@ export class WasmPosixKernel {
               this.gl.applyRenderTarget(b);
               return;
             }
+            // No display and no compositor: a headless client (surfaceless
+            // or pbuffer rendering) gets a context of its own on an
+            // offscreen canvas. Hosts without OffscreenCanvas (Node) leave
+            // the binding inert, so its GL queries fail.
+            if (typeof OffscreenCanvas !== "undefined") {
+              createBindingWebGl2Context(b, new OffscreenCanvas(1, 1));
+              return;
+            }
           }
           // Auto-attach the KMS scanout canvas and build the WebGL2
           // context. This handles both the modeset ordering (SETCRTC
@@ -2597,7 +2582,11 @@ export class WasmPosixKernel {
             const w = dv.getUint32(4, true);
             const h = dv.getUint32(8, true);
             if (w > 0 && h > 0) b.surfaceSize = { width: w, height: h };
-            if (b.canvas && w > 0 && h > 0 && (b.canvas.width !== w || b.canvas.height !== h)) {
+            // A claimed KMS session gets a present target below, and its
+            // canvas takes the new size at the flip (blitPresentTarget).
+            // Resizing it here would clear the shown frame until then.
+            const flips = b.gl !== null && b.claimedKmsCrtc != null;
+            if (!flips && b.canvas && w > 0 && h > 0 && (b.canvas.width !== w || b.canvas.height !== h)) {
               b.canvas.width = w;
               b.canvas.height = h;
             }
@@ -2626,7 +2615,11 @@ export class WasmPosixKernel {
             // then blit an empty offscreen target on subsequent presents.
             const previousDefault = b.renderTargetFbo;
             const previousFramebuffer = b.shadow.fbo;
-            ensurePresentTarget(b);
+            const size = b.surfaceSize;
+            if (!ensurePresentTarget(b) && b.canvas && size && (b.canvas.width !== size.width || b.canvas.height !== size.height)) {
+              b.canvas.width = size.width;
+              b.canvas.height = size.height;
+            }
             if (previousFramebuffer !== null && previousFramebuffer !== previousDefault) {
               b.shadow.fbo = previousFramebuffer;
             }
@@ -2648,6 +2641,7 @@ export class WasmPosixKernel {
           if (b.renderTargetFbo) {
             b.renderTargetFbo = null;
             b.shadow.fbo = null;
+            b.shadow.readFbo = null;
           }
           // The canvas-backed present target IS owned by this binding, so
           // dropping the redirect above has to free it as well; a later
@@ -3060,8 +3054,10 @@ export class WasmPosixKernel {
           const b = this.gl.get(pid);
           const fb = this.kms.currentFb(crtc_id);
           if (fb) this.callbacks.onKmsScanoutFb?.(crtc_id, fb.width, fb.height);
+          // A sized surface's present target sizes the canvas at the flip.
+          const flips = b?.presentTarget != null && b.surfaceSize !== null;
           if (
-            b?.canvas && fb &&
+            b?.canvas && fb && !flips &&
             (b.canvas.width !== fb.width || b.canvas.height !== fb.height)
           ) {
             b.canvas.width = fb.width;

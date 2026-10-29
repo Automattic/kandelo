@@ -50,6 +50,20 @@ class StubGl {
   useProgram() {}
   bindVertexArray() {}
   bindFramebuffer() {}
+  colorMask() {}
+  depthMask() {}
+  stencilFuncSeparate() {}
+  stencilOpSeparate() {}
+  stencilMaskSeparate() {}
+  polygonOffset() {}
+  blendColor() {}
+  depthRange() {}
+  clearDepth() {}
+  clearStencil() {}
+  bindSampler() {}
+  bindBuffer() {}
+  bindBufferRange() {}
+  bindBufferBase() {}
   createTexture() { return {}; }
   createProgram() { return {}; }
   createVertexArray() { return {}; }

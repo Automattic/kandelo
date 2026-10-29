@@ -1,0 +1,11 @@
+# errno 0.3.14: Kandelo's libc is musl; errno lives at __errno_location.
+--- a/src/unix.rs
++++ b/src/unix.rs
+@@ -94,6 +94,7 @@
+             target_os = "hurd",
+             target_os = "redox",
+             target_os = "dragonfly",
++            target_os = "kandelo",
+             target_os = "emscripten",
+         ),
+         link_name = "__errno_location"

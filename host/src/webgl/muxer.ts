@@ -1,5 +1,5 @@
-// Texture-unit replay assumes TEXTURE_2D (no cube/3D targets in the
-// current op set).
+// TEXTURE_2D units replay from `textureUnits`; the other texture targets
+// (3D, 2D array, cube map) from `textureUnitsByTarget`.
 import {
   GL_BLEND,
   GL_BACK,
@@ -9,16 +9,25 @@ import {
   GL_FRONT,
   GL_PACK_ALIGNMENT,
   GL_POLYGON_OFFSET_FILL,
+  GL_READ_FRAMEBUFFER,
   GL_SCISSOR_TEST,
   GL_STENCIL_TEST,
   GL_TEXTURE0,
   GL_TEXTURE_2D,
+  GL_UNIFORM_BUFFER,
   GL_UNPACK_ALIGNMENT,
   type GlShadowState,
 } from "./shadow.js";
 
 export class GlMuxer {
   private current: { shadow: GlShadowState } | null = null;
+  /** State keys any binding ever set on this context: replay resets them
+   *  for bindings that never set them. */
+  private textureTargets = new Set<number>();
+  private bufferTargets = new Set<number>();
+  private uniformIndices = new Set<number>();
+  private pixelStoreNames = new Set<number>();
+  private readonly unitCount = 32;
 
   constructor(private gl: WebGL2RenderingContext) {}
 
@@ -90,12 +99,48 @@ export class GlMuxer {
       gl.activeTexture(GL_TEXTURE0 + i);
       gl.bindTexture(GL_TEXTURE_2D, s.textureUnits[i]);
     }
-    gl.activeTexture(GL_TEXTURE0 + s.activeTexture);
-
     gl.pixelStorei(GL_UNPACK_ALIGNMENT, s.unpackAlignment);
     gl.pixelStorei(GL_PACK_ALIGNMENT, s.packAlignment);
 
+    this.replayGles3(s);
+
     this.current = target;
+  }
+
+  /** GLES 3.0 context state. Every field is applied, so state a previous
+   *  binding left behind never reaches this one. */
+  private replayGles3(s: GlShadowState): void {
+    const gl = this.gl;
+    gl.bindFramebuffer(GL_READ_FRAMEBUFFER, s.readFbo);
+
+    for (const target of new Set([...this.textureTargets, ...s.textureUnitsByTarget.keys()])) {
+      this.textureTargets.add(target);
+      const units = s.textureUnitsByTarget.get(target) ?? [];
+      for (let i = 0; i < Math.max(units.length, this.unitCount); i++) {
+        gl.activeTexture(GL_TEXTURE0 + i);
+        gl.bindTexture(target, units[i] ?? null);
+      }
+    }
+    for (let i = 0; i < s.samplerUnits.length; i++) gl.bindSampler(i, s.samplerUnits[i]);
+    gl.activeTexture(GL_TEXTURE0 + s.activeTexture);
+
+    for (const target of new Set([...this.bufferTargets, ...s.bufferBindings.keys()])) {
+      this.bufferTargets.add(target);
+      gl.bindBuffer(target, s.bufferBindings.get(target) ?? null);
+    }
+    for (const index of new Set([...this.uniformIndices, ...s.uniformBufferRanges.keys()])) {
+      this.uniformIndices.add(index);
+      const r = s.uniformBufferRanges.get(index);
+      if (r && r.size >= 0) gl.bindBufferRange(GL_UNIFORM_BUFFER, index, r.buffer, r.offset, r.size);
+      else gl.bindBufferBase(GL_UNIFORM_BUFFER, index, r?.buffer ?? null);
+    }
+    // The generic binding is the last one glBindBufferRange/Base set.
+    gl.bindBuffer(GL_UNIFORM_BUFFER, s.bufferBindings.get(GL_UNIFORM_BUFFER) ?? null);
+
+    for (const pname of new Set([...this.pixelStoreNames, ...s.pixelStore.keys()])) {
+      this.pixelStoreNames.add(pname);
+      gl.pixelStorei(pname, s.pixelStore.get(pname) ?? 0);
+    }
   }
 
   invalidateCurrent(): void {

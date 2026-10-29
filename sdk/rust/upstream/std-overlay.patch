@@ -215,3 +215,53 @@
              ),
              all(
                  target_env = "sgx",
+--- a/library/std/src/os/fd/owned.rs
++++ b/library/std/src/os/fd/owned.rs
+@@ -12,7 +12,7 @@
+ use crate::marker::PhantomData;
+ use crate::mem::ManuallyDrop;
+ #[cfg(not(any(
+-    target_arch = "wasm32",
++    all(target_arch = "wasm32", not(target_os = "kandelo")),
+     target_env = "sgx",
+     target_os = "hermit",
+     target_os = "trusty",
+@@ -104,7 +104,7 @@
+     /// Creates a new `OwnedFd` instance that shares the same underlying file
+     /// description as the existing `BorrowedFd` instance.
+     #[cfg(not(any(
+-        target_arch = "wasm32",
++        all(target_arch = "wasm32", not(target_os = "kandelo")),
+         target_os = "hermit",
+         target_os = "trusty",
+         target_os = "motor"
+@@ -131,7 +131,7 @@
+ 
+     /// Creates a new `OwnedFd` instance that shares the same underlying file
+     /// description as the existing `BorrowedFd` instance.
+-    #[cfg(any(target_arch = "wasm32", target_os = "hermit", target_os = "trusty"))]
++    #[cfg(any(all(target_arch = "wasm32", not(target_os = "kandelo")), target_os = "hermit", target_os = "trusty"))]
+     #[stable(feature = "io_safety", since = "1.63.0")]
+     pub fn try_clone_to_owned(&self) -> io::Result<OwnedFd> {
+         Err(io::Error::UNSUPPORTED_PLATFORM)
+--- a/library/std/src/os/unix/io/mod.rs
++++ b/library/std/src/os/unix/io/mod.rs
+@@ -214,7 +214,7 @@
+             cvt(unsafe { libc::__wasilibc_fd_renumber(other.as_raw_fd(), this.as_raw_fd()) }).map(|_| ())
+         }
+         not(any(
+-            target_arch = "wasm32",
++            all(target_arch = "wasm32", not(target_os = "kandelo")),
+             target_os = "hermit",
+             target_os = "trusty",
+             target_os = "motor"
+--- a/library/std/src/sys/thread/unix.rs
++++ b/library/std/src/sys/thread/unix.rs
+@@ -151,6 +151,7 @@
+             target_os = "emscripten",
+             target_os = "fuchsia",
+             target_os = "hurd",
++            target_os = "kandelo",
+             target_os = "linux",
+             target_os = "aix",
+             target_vendor = "apple",

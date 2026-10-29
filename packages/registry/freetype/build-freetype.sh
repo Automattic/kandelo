@@ -57,6 +57,14 @@ else
 fi
 mkdir -p "$BUILD_DIR"
 
+# configure builds a native helper (apinames) with CC_BUILD, which it
+# otherwise finds as the first `gcc` on PATH: on macOS that is the Xcode
+# shim, which fails when no gcc is installed.
+HOST_CC="${CC_FOR_BUILD:-cc}"
+if [ -n "${NIX_CC_FOR_BUILD:-}" ] && [ -x "$NIX_CC_FOR_BUILD/bin/cc" ]; then
+    HOST_CC="$NIX_CC_FOR_BUILD/bin/cc"
+fi
+
 echo "==> Configuring freetype for wasm32 (zlib at $ZLIB_PREFIX)..."
 (
     cd "$BUILD_DIR"
@@ -75,6 +83,7 @@ echo "==> Configuring freetype for wasm32 (zlib at $ZLIB_PREFIX)..."
         --with-brotli=no \
         --with-bzip2=no \
         CC=wasm32posix-cc \
+        CC_BUILD="$HOST_CC" \
         AR=wasm32posix-ar \
         RANLIB=wasm32posix-ranlib \
         ZLIB_CFLAGS="-I$ZLIB_PREFIX/include" \

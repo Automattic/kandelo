@@ -1,0 +1,50 @@
+# glow 0.17.0: target_arch = "wasm32" means WebGL here; Kandelo uses
+# the native GL loader (GLES through libGLESv2), as Emscripten does.
+--- a/Cargo.toml	2026-10-08 15:41:34
++++ b/Cargo.toml	2026-10-08 15:41:34
+@@ -52,16 +52,16 @@
+ version = "0.4.16"
+ optional = true
+ 
+-[target.'cfg(target_arch = "wasm32")'.dependencies.js-sys]
++[target.'cfg(all(target_arch = "wasm32", not(target_os = "kandelo")))'.dependencies.js-sys]
+ version = "~0.3"
+ 
+-[target.'cfg(target_arch = "wasm32")'.dependencies.slotmap]
++[target.'cfg(all(target_arch = "wasm32", not(target_os = "kandelo")))'.dependencies.slotmap]
+ version = "1"
+ 
+-[target.'cfg(target_arch = "wasm32")'.dependencies.wasm-bindgen]
++[target.'cfg(all(target_arch = "wasm32", not(target_os = "kandelo")))'.dependencies.wasm-bindgen]
+ version = "~0.2"
+ 
+-[target.'cfg(target_arch = "wasm32")'.dependencies.web_sys]
++[target.'cfg(all(target_arch = "wasm32", not(target_os = "kandelo")))'.dependencies.web_sys]
+ version = "~0.3.60"
+ features = [
+     "Document",
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -12,17 +12,17 @@
+ mod version;
+ pub use version::Version;
+ 
+-#[cfg(any(not(target_arch = "wasm32"), target_os = "emscripten"))]
++#[cfg(any(not(target_arch = "wasm32"), target_os = "emscripten", target_os = "kandelo"))]
+ mod native;
+-#[cfg(any(not(target_arch = "wasm32"), target_os = "emscripten"))]
++#[cfg(any(not(target_arch = "wasm32"), target_os = "emscripten", target_os = "kandelo"))]
+ pub use native::*;
+-#[cfg(any(not(target_arch = "wasm32"), target_os = "emscripten"))]
++#[cfg(any(not(target_arch = "wasm32"), target_os = "emscripten", target_os = "kandelo"))]
+ mod gl46;
+ 
+-#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
++#[cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "kandelo"))))]
+ #[path = "web_sys.rs"]
+ mod web;
+-#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
++#[cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "kandelo"))))]
+ pub use web::*;
+ 
+ pub type Shader = <Context as HasContext>::Shader;

@@ -11,7 +11,7 @@ revision    = 1
 # a separate input.
 inputs = [
   "packages/registry/librsvg/build-librsvg.sh",
-  "packages/registry/librsvg/rust-build-env.sh",
+  "sdk/rust/build-env.sh",
   "packages/registry/librsvg/patches",
   "scripts/build-rust-sysroot.sh",
   "sdk/rust/wasm32-unknown-kandelo-std.json",

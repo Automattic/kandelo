@@ -1,5 +1,8 @@
 #!/bin/sh
 # Start the Wayland desktop and stay in the foreground until it ends.
+# With a program named on the command line (wldesktop PROGRAM [ARG...]),
+# the compositor runs that program alone as the session, in kiosk mode:
+# its window fills the screen, and the desktop lives as long as it does.
 #
 # The compositor must be up before any client connects: it takes DRM master
 # on /dev/dri/card0, creates the wl_shm/xdg-shell globals, and binds the
@@ -14,6 +17,14 @@
 set -u
 
 SOCKET=/tmp/wayland-0
+# Stock clients (winit, SDL, GTK) dial $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY;
+# a session script provides both, and this script is the session.
+export XDG_RUNTIME_DIR=/tmp
+export WAYLAND_DISPLAY=wayland-0
+
+if [ "$#" -gt 0 ]; then
+    exec wlcompositor "$@"
+fi
 
 wlcompositor &
 compositor_pid=$!

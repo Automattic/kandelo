@@ -2324,6 +2324,11 @@
   visibility: hidden;
   pointer-events: none;
 }
+/* The terminal view lets the shell run under the dock. The KMS pane shows
+   above it, so the size it reports must leave the dock out. */
+.kdocked-app.is-terminal-view.is-dock-space-reserved .kmachine-primary-slot.is-measured {
+  bottom: var(--kdock-height, 0px);
+}
 .kmachine-primary-slot > * {
   flex: 1;
 }
