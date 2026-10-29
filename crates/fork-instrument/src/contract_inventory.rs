@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result, bail};
 use std::fmt::{self, Write};
-use wasm_posix_shared::abi::{
+use wasm_posix_program_abi::abi::{
     ABI_KERNEL_EXPORT, WPK_FORK_CAPABILITIES_SECTION, WPK_FORK_EXPORT_ABORT_BEGIN,
     WPK_FORK_EXPORT_ABORT_END, WPK_FORK_EXPORT_REWIND_BEGIN, WPK_FORK_EXPORT_REWIND_END,
     WPK_FORK_EXPORT_STATE, WPK_FORK_EXPORT_UNWIND_BEGIN, WPK_FORK_EXPORT_UNWIND_END,

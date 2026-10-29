@@ -20,11 +20,17 @@ For motivation, tradeoffs, and the rollout plan that led here, read
 for the post-rollout switch-dispatch redesign and non-fork-path-call gating
 that fix the kernel-side-effect re-fire bug, read
 [`plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md`](plans/2026-04-22-fork-instrument-switch-dispatch-redesign.md).
-ABI version: `50` (see
-[`crates/shared/src/lib.rs`](../crates/shared/src/lib.rs) — see
-[abi-versioning.md](abi-versioning.md) for the policy).
+ABI version: `ABI_VERSION` in
+[`crates/program-abi/src/lib.rs`](../crates/program-abi/src/lib.rs) — see
+[abi-versioning.md](abi-versioning.md) for the policy.
 
 ## Policy
+
+The instrumenter reads program artifact constants and types from the
+dependency-free `wasm-posix-program-abi` crate. `wasm-posix-shared` re-exports
+those declarations for the kernel, host generators, and other Rust consumers.
+The tool's source closure therefore follows program contracts without hashing
+shared kernel-host-only metadata into every instrumented package's cache key.
 
 - `wasm-fork-instrument` is mandatory for any program that performs `fork()` or
   fork-like operations. That includes `fork()`, `vfork()`, `_Fork()`, shell

@@ -2610,7 +2610,7 @@ The kernel no longer reads `KLZY`. Its decoder was removed on 2026-10-02, and
 section (header bit 4) with `EINVAL`: such an image can only have been built
 before that change, so it is a stale artifact to
 rebuild rather than a format to keep reading. The bit and the section's
-structural constants (`VFS_IMAGE_KERNEL_LAZY_*` in `crates/shared/src/lib.rs`)
+structural constants (`VFS_IMAGE_KERNEL_LAZY_*` in `crates/program-abi/src/lib.rs`)
 remain defined so the refusal can name what it found.
 
 ## Networking

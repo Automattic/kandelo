@@ -4,7 +4,7 @@ use crate::{
     static_reference_catalog, streaming::Scan,
 };
 use anyhow::{Result, ensure};
-use wasm_posix_shared::abi;
+use wasm_posix_program_abi::abi;
 use wasmparser::{Parser, Payload};
 
 pub(super) fn reject_instrumented(scan: &Scan<'_>) -> Result<()> {

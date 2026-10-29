@@ -23,7 +23,7 @@ fn descriptor(bytes: &[u8]) -> Vec<u8> {
         .parse_all(bytes)
         .find_map(|payload| {
             if let wasmparser::Payload::CustomSection(section) = payload.unwrap() {
-                (section.name() == wasm_posix_shared::abi::WPK_FORK_IMPORTED_TABLES_SECTION)
+                (section.name() == wasm_posix_program_abi::abi::WPK_FORK_IMPORTED_TABLES_SECTION)
                     .then(|| section.data().to_vec())
             } else {
                 None

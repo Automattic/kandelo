@@ -3,7 +3,7 @@
 use super::*;
 use std::collections::BTreeMap;
 use wasm_encoder::{FuncType, Function, HeapType, Instruction};
-use wasm_posix_shared::abi;
+use wasm_posix_program_abi::abi;
 mod discover;
 #[cfg(test)]
 mod tests;
