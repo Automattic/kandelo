@@ -45,7 +45,9 @@ async function chipText(page: Page): Promise<string> {
 
 /** The DRM master published by the machine's display statistics. */
 async function displayOwner(page: Page): Promise<number> {
-  const owner = await page.locator(".kmachine-primary-slot:not(.is-hidden) .kmodeset-surface")
+  // KMS stays mounted and publishes statistics while Terminal hides its slot;
+  // the release check runs there, independently of the visible canvas.
+  const owner = await page.locator(".kmachine-primary .kmodeset-surface")
     .getAttribute("data-kms-owner-pid");
   return owner === null ? Number.NaN : Number(owner);
 }
