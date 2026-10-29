@@ -2808,7 +2808,7 @@ mod wait_tests {
             let mut table = ProcessTable::new();
             let parent_pid = table.create_process().unwrap();
             let bo = crate::dri::with_registry(|registry| registry.try_alloc(4,4,32).unwrap().id);
-            table.get_mut(parent_pid).unwrap().dri_bindings.push(crate::process::DriBoBinding {addr:65536,len:65536,bo_id:bo});
+            table.get_mut(parent_pid).unwrap().dri_bindings.push(crate::process::DriBoBinding {addr:65536,len:65536,bo_id:bo,bo_offset:0});
             let child_pid = table.fork_process_for_caller_with_mode(parent_pid,parent_pid,mode).unwrap();
             let bindings = &table.get(child_pid).unwrap().dri_bindings;
             assert_eq!(bindings.len(),1); assert_eq!((bindings[0].addr,bindings[0].len,bindings[0].bo_id),(65536,65536,bo));

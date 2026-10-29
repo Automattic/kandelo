@@ -453,13 +453,13 @@ pub trait HostIO {
     #[allow(unused_variables)]
     fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {}
 
-    /// Bind a bo's SAB slice into a process's wasm `Memory` at `addr`
-    /// for `len` bytes. Called from the mmap path once
-    /// `mmap_anonymous` has reserved the wasm pages. After this
-    /// returns, writes to `[addr, addr+len)` go directly to the SAB.
+    /// Register a process mapping of `len` bytes starting at `bo_offset` in
+    /// canonical BO storage. The host primes it after reserving/growing the
+    /// process Memory, then synchronizes changed bytes at device/readiness
+    /// boundaries. Wasm memories do not directly alias the device backing.
     /// Returns 0 on success, negative errno on failure.
     #[allow(unused_variables)]
-    fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
+    fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize, bo_offset: u64) -> i32 {
         -(Errno::ENOSYS as i32)
     }
 
@@ -752,6 +752,8 @@ pub struct DriBoBinding {
     pub addr: usize,
     /// Length in bytes (aligned to wasm page).
     pub len: usize,
+    /// Byte offset in canonical BO storage for the first mapped byte.
+    pub bo_offset: u64,
     /// Bo currently bound at `[addr, addr+len)`.
     pub bo_id: crate::dri::BoId,
 }

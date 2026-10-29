@@ -3416,9 +3416,20 @@ refresh after the last writer unmaps, exits, or replaces its address space.
 This remains boundary synchronization,
 not live aliasing between Wasm memories. A snapshot is bounded by the
 mapping length and BO size and retired with its mapping; backing is retired
-only by the kernel's final-reference destroy notification. GPU textures
-follow that same destruction event. All guest mappings and snapshots stay
-inside disposable workers. No guest ABI layout or import is changed.
+only by the kernel's final-reference destroy notification. Partial DRI
+`munmap` trims or splits that ownership instead of revoking the whole
+mapping. Each surviving fragment retains its canonical BO byte offset and
+one kernel reference; fork registers those offsets before priming the
+child's memory. A replaced hole no longer participates in device coherence.
+Split metadata and additional references are acquired before destructive
+cleanup, so reference overflow leaves the mappings unchanged. Pending
+reader refresh survives alias retirement, including publications made by
+that retirement itself. GPU textures follow the same final destruction
+event. All guest mappings and snapshots stay inside disposable workers.
+The host bind import includes the canonical offset; it ships with the
+matching kernel within the single unpublished ABI 56 / kernel-host 3 epoch.
+`MAP_FIXED` over live device mappings and device `mremap` transitions still
+need separate work; see the compatibility ledger.
 
 The host's independent display statistics buffer publishes the current
 DRM master PID in slot 8 (zero when unowned), alongside presentation and

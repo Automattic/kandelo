@@ -314,7 +314,7 @@ unsafe extern "C" {
         usage: u32,
     ) -> i32;
     fn host_gbm_bo_destroy(pid: i32, bo_id: u32);
-    fn host_gbm_bo_bind(pid: i32, bo_id: u32, addr: usize, len: usize) -> i32;
+    fn host_gbm_bo_bind(pid: i32, bo_id: u32, addr: usize, len: usize, bo_offset: u64) -> i32;
     fn host_gbm_bo_unbind(pid: i32, bo_id: u32, addr: usize, len: usize);
     fn host_gl_bind(pid: i32, addr: usize, len: usize, session_id: u32, display_file_id: u64);
     fn host_gl_unbind(pid: i32, session_id: u32);
@@ -1121,8 +1121,8 @@ impl HostIO for WasmHostIO {
         unsafe { host_gbm_bo_destroy(pid, bo_id) }
     }
 
-    fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
-        unsafe { host_gbm_bo_bind(pid, bo_id, addr, len) }
+    fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize, bo_offset: u64) -> i32 {
+        unsafe { host_gbm_bo_bind(pid, bo_id, addr, len, bo_offset) }
     }
 
     fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {
@@ -3195,8 +3195,8 @@ pub extern "C" fn kernel_fork_process(parent_pid: u32, caller_tid: u32, mode: u3
             // pending. The host primes them only after cloning child Memory.
             let accepted = table.get(child_pid).unwrap().dri_bindings.iter().all(|binding| {
                 let len = crate::dri::with_registry(|registry| registry.get(binding.bo_id)
-                    .map(|bo| binding.len.min(usize::try_from(bo.size).unwrap_or(usize::MAX)))).expect("retained child CPU BO");
-                host.gbm_bo_bind(child_pid as i32, binding.bo_id, binding.addr, len) >= 0
+                    .map(|bo| binding.len.min(usize::try_from(bo.size.saturating_sub(binding.bo_offset)).unwrap_or(usize::MAX)))).expect("retained child CPU BO");
+                host.gbm_bo_bind(child_pid as i32, binding.bo_id, binding.addr, len, binding.bo_offset) >= 0
             });
             if !accepted {
                 if let Some(result) = table.remove_process(child_pid) { finish_removed_process(child_pid,result); }

@@ -2635,8 +2635,10 @@ export class WasmPosixKernel {
           bo_id: number,
           addr: KernelPointer,
           len: KernelPointer,
+          boOffset: bigint,
         ): number => {
           try {
+            if (typeof boOffset !== "bigint" || boOffset < 0n || boOffset > BigInt(Number.MAX_SAFE_INTEGER)) return -75;
             // The worker grows and primes process memory after this callback,
             // so current process-memory bounds are not yet meaningful. The
             // Rust BO owns this mapping contract; the registry caps later
@@ -2652,6 +2654,7 @@ export class WasmPosixKernel {
               bo_id,
               binding.offset,
               binding.length,
+              Number(boOffset),
             );
           } catch {
             return -75; // EOVERFLOW
@@ -2664,7 +2667,7 @@ export class WasmPosixKernel {
           len: KernelPointer,
         ): void => {
           const range = this.#checkedKernelSpan(addr,len,Number.MAX_SAFE_INTEGER,"host_gbm_bo_unbind BO range");
-          this.bos.unbind(pid, bo_id, range.offset);
+          this.bos.unbind(pid, bo_id, range.offset, range.length);
         },
         // /dev/dri/renderD128 GL hooks. The cmdbuf lives in the process's
         // wasm Memory SAB; submit/query reach into it via the embedder-

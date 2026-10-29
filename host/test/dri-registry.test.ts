@@ -583,3 +583,51 @@ it("primes inherited aliases only after clone bytes are ready and rejects an inv
   new Uint8Array(child.buffer,1024,16)[1]=81;registry.syncImportsForPid(7,parent);
   expect([...new Uint8Array(parent.buffer,1024,2)]).toEqual([71,81]);
 });
+
+it("retains canonical offsets and coherence in both partial-unmap fragments", () => {
+  const page = 65536;
+  const memory = new WebAssembly.Memory({initial: 4, maximum: 4, shared: true});
+  const bytes = new Uint8Array(memory.buffer);
+  const registry = new GbmBoRegistry({getProcessMemory: pid => pid === 100 ? memory : undefined});
+  registry.create({pid: 100, bo_id: 901, size: 3*page, w: 256, h: 192, stride: 1024});
+  registry.pixelView(901)![0] = 17;
+  registry.pixelView(901)![page] = 29;
+  registry.pixelView(901)![2*page] = 59;
+  expect(registry.bind(100,901,page,3*page)).toBe(0);
+  registry.primeBindFromSab(100,901,memory,page);
+  registry.unbind(100,901,2*page,page);
+  expect(registry.get(100,901)?.binding).toEqual({addr:3*page,len:page,boOffset:2*page});
+  bytes[2*page] = 88; // This removed page no longer owns any device bytes.
+  bytes[3*page] = 99;
+  registry.syncToSab(901);
+  expect(registry.pixelView(901)![page]).toBe(29);
+  expect(registry.pixelView(901)![2*page]).toBe(99);
+  const device = registry.pixelView(901)!.slice(); device[0]=41; device[2*page]=61;
+  expect(registry.publishDevicePixels(901,device)).toBe(true);
+  expect(bytes[page]).toBe(41);
+  expect(bytes[2*page]).toBe(88);
+  expect(bytes[3*page]).toBe(61);
+  const child = new WebAssembly.Memory({initial:2,maximum:2,shared:true});
+  expect(registry.bind(101,901,page,page,2*page)).toBe(0);
+  expect(registry.primeProcessMappings(101,child)).toBe(true);
+  expect(new Uint8Array(child.buffer)[page]).toBe(61);
+});
+
+it("preserves a pending reader created while retiring another alias", () => {
+  const page = 65536;
+  const memory = new WebAssembly.Memory({initial: 5, maximum: 5});
+  const bytes = new Uint8Array(memory.buffer);
+  const registry = new GbmBoRegistry({getProcessMemory: () => memory});
+  registry.create({pid: 100, bo_id: 902, size: 2*page, w: 256, h: 128, stride: 1024});
+  registry.pixelView(902)![page] = 17;
+  for (const addr of [page, 3*page]) {
+    registry.bind(100,902,addr,2*page);
+    registry.primeBindFromSab(100,902,memory,addr);
+  }
+  bytes[2*page] = 59;
+  registry.unbind(100,902,page,3*page);
+  expect(bytes[4*page]).toBe(17);
+  expect(registry.hasStaleableImports(100)).toBe(true);
+  registry.syncImportsForPid(100,memory);
+  expect(bytes[4*page]).toBe(59);
+});

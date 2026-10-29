@@ -7,6 +7,10 @@ it.each(["wasm32","wasm64"] as const)("retains and synchronizes inherited CPU ma
     const result=await runCentralizedProgram({programPath:fixture.programPath,useDefaultRootfs:false,timeout:30000});
     expect(result.exitCode,result.stdout+result.stderr).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout.trim()).toBe("OK inherited DRI mapping survives descriptor and writer retirement");
+    expect(result.stdout.trim().split("\n")).toEqual([
+      "OK inherited DRI mapping survives descriptor and writer retirement",
+      "OK middle-unmap fragments retain storage offsets across fork",
+      "OK prefix and suffix unmaps preserve the surviving mapping across fork",
+    ]);
   } finally {fixture.cleanup();}
 },90000);

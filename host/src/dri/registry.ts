@@ -26,6 +26,8 @@ export type GbmBoBinding = {
   addr: number;
   /** Length in bytes — equal to or less than `size`. */
   len: number;
+  /** Offset in canonical BO storage; omitted for the original zero-offset view. */
+  boOffset?: number;
 };
 
 /** Metadata for a BO observed by a process. `binding` is its most recently
@@ -51,6 +53,7 @@ export type GbmBoChangeListener = (
 
 type InternalBinding = GbmBoBinding & {
   pid: number;
+  boOffset: number;
   /** Independent baseline; never a guest memory view. */
   snapshot: Uint8Array;
   primed: boolean;
@@ -159,9 +162,11 @@ export class GbmBoRegistry {
     for (const l of this.listeners) l(pid, bo_id, "destroy");
   }
 
-  bind(pid: number, bo_id: number, addr: number, len: number): number {
+  bind(pid: number, bo_id: number, addr: number, len: number, boOffset = 0): number {
     const e = this.bos.get(bo_id);
-    if (!e) return -1;
+    if (!e || !Number.isSafeInteger(addr) || !Number.isSafeInteger(len) ||
+        !Number.isSafeInteger(boOffset) || addr < 0 || len < 0 || boOffset < 0 ||
+        boOffset > e.size || !Number.isSafeInteger(addr + len)) return -1;
     // First bind for an importer pid registers it in the bo's pids
     // set — PRIME_FD_TO_HANDLE doesn't fire a host-side create.
     // Pure metadata at this point: the actual SAB→Memory prime is
@@ -170,24 +175,41 @@ export class GbmBoRegistry {
     // mmap region. If we wrote here, the zero-fill would clobber
     // our primed bytes.
     e.pids.add(pid);
-    this.setBinding(e, pid, {pid, addr, len, primed: false,
-      snapshot: new Uint8Array(Math.min(len, e.size))});
+    this.setBinding(e, pid, {pid, addr, len, boOffset, primed: false,
+      snapshot: new Uint8Array(Math.min(len, e.size - boOffset))});
     for (const l of this.listeners) l(pid, bo_id, "bind");
     return 0;
   }
 
-  unbind(pid: number, bo_id: number, addr?: number): void {
+  unbind(pid: number, bo_id: number, addr?: number, len?: number): void {
     const e = this.bos.get(bo_id);
     if (!e) return;
-    // Flush the unbinding pid's current bytes into the SAB before
-    // dropping the binding — a subsequent bind (in another pid or
-    // the same pid re-importing) needs to see the latest writes.
-    // The kernel fires `gbm_bo_unbind` BEFORE `proc.memory.munmap`
-    // releases pages (see crates/kernel/src/syscalls.rs sys_munmap),
-    // so the Memory still has the bytes here.
-    for (const binding of e.bindingsByPid.get(pid)?.values() ?? [])
-      if (addr === undefined || binding.addr === addr) this.flushMemoryToSab(e, binding);
-    this.deleteBinding(e, pid, addr);
+    if (addr !== undefined && (!Number.isSafeInteger(addr) || addr < 0 ||
+        (len !== undefined && (!Number.isSafeInteger(len) || len < 0 || !Number.isSafeInteger(addr + len))))) return;
+    const removed: InternalBinding[] = [], fragments: InternalBinding[] = [];
+    for (const binding of e.bindingsByPid.get(pid)?.values() ?? []) {
+      if (addr !== undefined && len === undefined && binding.addr !== addr) continue;
+      const start = addr === undefined || len === undefined ? binding.addr : Math.max(addr,binding.addr);
+      const end = addr === undefined || len === undefined ? binding.addr + binding.len : Math.min(addr + len,binding.addr + binding.len);
+      if (start >= end) continue;
+      // Flush while the retiring bytes still belong to this address space.
+      // Snapshot fragments remain independent storage, never guest views.
+      this.flushMemoryToSab(e,binding);
+      removed.push(binding);
+      if (start > binding.addr) fragments.push({...binding, len: start - binding.addr,
+        snapshot: binding.snapshot.slice(0,start-binding.addr)});
+      if (end < binding.addr + binding.len) {
+        const delta = end - binding.addr;
+        fragments.push({...binding, addr: end, len: binding.addr + binding.len - end,
+          boOffset: binding.boOffset + delta, snapshot: binding.snapshot.slice(delta)});
+      }
+    }
+    // A flush above can make a surviving alias stale. Preserve that wakeup
+    // even when removing the last original entry temporarily clears the pid.
+    const pending = e.pendingReaders.has(pid);
+    for (const binding of removed) this.deleteBinding(e,pid,binding.addr);
+    for (const binding of fragments) this.setBinding(e,pid,binding);
+    if (pending && e.bindingsByPid.has(pid)) e.pendingReaders.add(pid);
     for (const l of this.listeners) l(pid, bo_id, "unbind");
   }
 
@@ -240,10 +262,10 @@ export class GbmBoRegistry {
     const binding = addr === undefined ? this.latestBinding(e,pid) : e.bindingsByPid.get(pid)?.get(addr);
     if (!binding) return;
     for (const other of this.bindings(e)) if (other !== binding) this.flushMemoryToSab(e, other);
-    const copyLen = Math.min(binding.len, e.size);
+    const copyLen = Math.min(binding.len, e.size - binding.boOffset);
     if (binding.addr + copyLen > memory.buffer.byteLength) return;
     const dst = new Uint8Array(memory.buffer, binding.addr, copyLen);
-    const src = new Uint8Array(e.sab, 0, copyLen);
+    const src = new Uint8Array(e.sab, binding.boOffset, copyLen);
     dst.set(src);
     binding.snapshot.set(src);
     binding.primed = true;
@@ -264,10 +286,10 @@ export class GbmBoRegistry {
         this.syncToSab(entry.bo_id);
         for (const binding of aliases.values()) {
           if (binding.primed) continue;
-          const length = Math.min(binding.len, entry.size);
+          const length = Math.min(binding.len, entry.size - binding.boOffset);
           if (binding.addr + length > memory.buffer.byteLength || binding.snapshot.length !== length) return false;
           targets.push({entry, binding, length,
-            destination: new Uint8Array(memory.buffer,binding.addr,length), source: new Uint8Array(entry.sab,0,length)});
+            destination: new Uint8Array(memory.buffer,binding.addr,length), source: new Uint8Array(entry.sab,binding.boOffset,length)});
         }
       }
       if (targets.some(target => target.destination.byteLength !== target.length)) return false;
@@ -288,9 +310,9 @@ export class GbmBoRegistry {
     if (!resolver || !binding.primed) return;
     const mem = resolver(binding.pid);
     if (!mem) return;
-    const copyLen = Math.min(binding.len, e.size, byteLimit);
+    const copyLen = Math.max(0, Math.min(binding.len, e.size - binding.boOffset, byteLimit - binding.boOffset));
     if (binding.addr + copyLen > mem.buffer.byteLength) return;
-    const dst = new Uint8Array(e.sab, 0, copyLen);
+    const dst = new Uint8Array(e.sab, binding.boOffset, copyLen);
     const src = new Uint8Array(mem.buffer, binding.addr, copyLen);
     const snapshot = binding.snapshot;
     if (mergeChangedByteRuns(src, 0, snapshot, 0, dst, 0, copyLen)) {
@@ -337,12 +359,12 @@ export class GbmBoRegistry {
         const pid = binding.pid;
         const memory = this.getProcessMemory?.(pid);
         if (!memory) continue;
-        const length = Math.min(binding.len, e.size);
+        const length = Math.min(binding.len, e.size - binding.boOffset);
         const snapshot = binding.snapshot;
         if (!snapshot || snapshot.byteLength !== length ||
             binding.addr + length > memory.buffer.byteLength) return false;
         targets.push({pid, length, view: new Uint8Array(memory.buffer, binding.addr, length),
-          source: canonical.subarray(0, length), snapshot});
+          source: canonical.subarray(binding.boOffset, binding.boOffset + length), snapshot});
       }
       // A resolver callback may replace or grow an unshared test memory.
       // Allocate every source view and recheck all destinations before writing.
@@ -407,10 +429,10 @@ export class GbmBoRegistry {
       let complete = true;
       for (const binding of aliases.values()) {
         if (!binding.primed) continue;
-        const copyLen = Math.min(binding.len, e.size);
+        const copyLen = Math.min(binding.len, e.size - binding.boOffset);
         if (binding.addr + copyLen > memory.buffer.byteLength) { complete = false; continue; }
         const dst = new Uint8Array(memory.buffer, binding.addr, copyLen);
-        dst.set(new Uint8Array(e.sab, 0, copyLen));
+        dst.set(new Uint8Array(e.sab, binding.boOffset, copyLen));
         binding.snapshot.set(dst);
       }
       if (complete) e.pendingReaders.delete(pid);
@@ -432,7 +454,7 @@ export class GbmBoRegistry {
       w: e.w,
       h: e.h,
       stride: e.stride,
-      binding: (() => { const value = this.latestBinding(e,pid); return value ? {addr:value.addr,len:value.len} : null; })(),
+      binding: (() => { const value = this.latestBinding(e,pid); return value ? {addr:value.addr,len:value.len,...(value.boOffset ? {boOffset:value.boOffset} : {})} : null; })(),
     };
   }
 }
