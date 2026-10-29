@@ -3775,6 +3775,13 @@ Signals are delivered at syscall boundaries. When a process has a pending signal
    `siglongjmp` then applies the jump buffer's saved mask when requested.
 5. If the signal interrupted a blocking syscall, EINTR is returned
 
+PTY input follows the same completion path as other signal ingress on both
+Node and browser hosts. After the line discipline queues an ISIG signal to
+the foreground process group, the host drains kernel wakeup events and
+retires signal-killed workers before notifying terminal observers. This also
+collects interrupted kernel-owned sleeps immediately; a nanosleep has no
+host retry callback that keyboard input could otherwise wake.
+
 The host distinguishes the kernel's internal `EAGAIN` retry sentinel from a
 completed nonblocking `EAGAIN`. When a caught signal is prepared while an
 internal retry is still blocked, the host publishes `EINTR` without discarding

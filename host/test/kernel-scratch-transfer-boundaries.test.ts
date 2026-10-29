@@ -294,6 +294,8 @@ function makeScratchHarness(
     kernel_blocking_retry_token: blockingRetryToken,
     kernel_blocking_retry_release: blockingRetryRelease,
     kernel_dequeue_signal: () => 0,
+    // PTY input drains kernel wakeup events; these fixtures queue none.
+    kernel_drain_wakeup_events: () => 0,
     kernel_get_socket_timeout_ms: () => -1n,
     kernel_is_fd_nonblock: () => 0,
     kernel_get_process_exit_signal: () => 0,
