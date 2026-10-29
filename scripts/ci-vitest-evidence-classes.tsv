@@ -79,7 +79,6 @@ host/test/dri-kms-registry.test.ts	source-only
 host/test/dri-kms-stats-sab.test.ts	source-only
 host/test/dri-libdrm-kms.test.ts	prepared-product
 host/test/dri-mapping-fork.test.ts	prepared-product
-host/test/gbm-file-aliases.test.ts	prepared-product
 host/test/dri-modeset.test.ts	prepared-product
 host/test/dri-multiplex.test.ts	source-only
 host/test/dri-registry.test.ts	source-only
@@ -157,6 +156,7 @@ host/test/futex-kernel-wait.test.ts	prepared-product
 host/test/gallery-descriptor.test.ts	source-only
 host/test/gbm-cpu-map.test.ts	prepared-product
 host/test/gbm-device-retirement.test.ts	prepared-product
+host/test/gbm-file-aliases.test.ts	prepared-product
 host/test/gbm-import-lifetime.test.ts	prepared-product
 host/test/gbm-modifiers.test.ts	prepared-product
 host/test/gbm-rendered-ring.test.ts	prepared-product

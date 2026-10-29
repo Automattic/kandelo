@@ -7682,3 +7682,17 @@ replacement increment; results cannot be counted as complete combined
 validation of the newer source. Device-target replacement, device mremap,
 full combined gates and broader API/CTS work remain open. No performance
 claim or hard platform boundary is inferred from these focused passes.
+
+
+### Corrected source/prepared evidence ordering, 2026-10-29
+
+The explicit evidence-class audit found a sorting mistake introduced by
+`730a0132c0`: the GBM file-alias test row was placed among DRI rows. Direct
+focused Vitest invocations still executed their cases, but the CI-shaped
+registry check correctly rejected that inventory. The row now lives in its
+byte-sorted GBM position; its prepared-product classification is unchanged.
+`scripts/dev-shell.sh bash scripts/check-vitest-evidence-classes.sh` passes:
+628 files, registry and actual Vitest inventory agree. No tests, assertions,
+timeouts or product runtime behavior changed in this correction. The
+primary checkout's running jobs still use their earlier frozen source;
+this corrected audit is not evidence that their complete gates passed.
