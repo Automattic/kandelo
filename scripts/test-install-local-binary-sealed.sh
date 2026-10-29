@@ -2,6 +2,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$REPO_ROOT/scripts/package-test-fixtures.sh"
 
 for tool in wasm-objdump wat2wasm; do
     if ! command -v "$tool" >/dev/null 2>&1; then
@@ -22,9 +23,10 @@ source_dir="$work/read-only-source"
 out_dir="$work/output"
 fake_bin="$work/fake-bin"
 probe_marker="$work/rust-probed"
-mkdir -p "$fake_repo/scripts" "$source_dir" "$out_dir" "$fake_bin"
+mkdir -p "$fake_repo/scripts" "$fake_repo/libc/glue" "$source_dir" "$out_dir" "$fake_bin"
 cp "$REPO_ROOT/scripts/install-local-binary.sh" "$fake_repo/scripts/"
-cp "$REPO_ROOT/scripts/wasm-artifact-guards.sh" "$fake_repo/scripts/"
+cp "$REPO_ROOT/libc/glue/kandelo-host-imports.txt" "$fake_repo/libc/glue/"
+package_test_copy_artifact_guards "$REPO_ROOT" "$fake_repo"
 
 # A valid empty Wasm module is enough to exercise the ordinary no-fork policy.
 printf '\000asm\001\000\000\000' > "$source_dir/python.wasm"
