@@ -80,6 +80,33 @@ static void generation_counts(void) {
     puts("OK GLES object-generation counts");
 }
 
+/* Sentinel/error tests need an actual current program: -1 only ignores the
+ * uniform data, and does not exempt the API's current-program requirement. */
+static GLuint uniform_test_program(void) {
+    const char *sources[] = {
+        "void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }",
+        "precision mediump float; void main() { gl_FragColor = vec4(1.0); }",
+    };
+    const GLenum types[] = {GL_VERTEX_SHADER, GL_FRAGMENT_SHADER};
+    GLuint shaders[2], program = glCreateProgram();
+    CHECK(program);
+    for (unsigned i = 0; i < 2; ++i) {
+        GLint compiled = GL_FALSE;
+        shaders[i] = glCreateShader(types[i]); CHECK(shaders[i]);
+        glShaderSource(shaders[i], 1, &sources[i], NULL);
+        glCompileShader(shaders[i]);
+        glGetShaderiv(shaders[i], GL_COMPILE_STATUS, &compiled); CHECK(compiled);
+        glAttachShader(program, shaders[i]);
+    }
+    GLint linked = GL_FALSE;
+    glLinkProgram(program);
+    glGetProgramiv(program, GL_LINK_STATUS, &linked); CHECK(linked);
+    glUseProgram(program);
+    for (unsigned i = 0; i < 2; ++i) glDeleteShader(shaders[i]);
+    no_error();
+    return program;
+}
+
 static void uniform_setter(unsigned variant, GLint location) {
     const GLfloat f[16] = {1, 2, 3, 4};
     const GLint i[4] = {1, 2, 3, 4};
@@ -164,6 +191,48 @@ static void matrix_arguments(void) {
     puts("OK GLES uniform matrix validation: 3 sizes");
 }
 
+static void vector_arguments(void) {
+    void (*const floating[])(GLint, GLsizei, const GLfloat *) = {
+        glUniform1fv, glUniform2fv, glUniform3fv, glUniform4fv,
+    };
+    void (*const integer[])(GLint, GLsizei, const GLint *) = {
+        glUniform1iv, glUniform2iv, glUniform3iv, glUniform4iv,
+    };
+    const void *unreadable = (const void *)(UINTPTR_MAX & ~(uintptr_t)3u);
+    for (unsigned variant = 0; variant < 8; ++variant) {
+        const unsigned index = variant % 4, components = index + 1;
+#define VECTOR_CALL(location, count, value) do { \
+    if (variant < 4) floating[index](location, count, value); \
+    else integer[index](location, count, value); \
+} while (0)
+        const GLsizei negative[] = {-1, INT_MIN};
+        for (unsigned j = 0; j < 2; ++j) {
+            VECTOR_CALL(-1, negative[j], unreadable);
+            expected_error(GL_INVALID_VALUE);
+            VECTOR_CALL(-1, negative[j], NULL);
+            expected_error(GL_INVALID_VALUE);
+        }
+        VECTOR_CALL(-1, 0, unreadable);
+        VECTOR_CALL(-1, 0, NULL);
+        VECTOR_CALL(-1, 1, unreadable);
+        VECTOR_CALL(-1, 1, NULL);
+        VECTOR_CALL(-1, INT_MAX, unreadable);
+        no_error();
+        /* The encoder's existing defensive transport checks are tested
+         * separately from shader type/location validation. */
+        VECTOR_CALL(0, 1, NULL);
+        expected_error(GL_INVALID_VALUE);
+        const GLsizei maximum = (65535u - 8u) / (sizeof(GLfloat) * components);
+        const GLsizei oversized[] = {maximum + 1, INT_MAX, 0x04000000, 0x10000000};
+        for (unsigned j = 0; j < 4; ++j) {
+            VECTOR_CALL(0, oversized[j], unreadable);
+            expected_error(GL_OUT_OF_MEMORY);
+        }
+#undef VECTOR_CALL
+    }
+    puts("OK GLES uniform vector validation: 8 setters");
+}
+
 #ifdef GLES_VALIDATE_RENDERED_PIXELS
 static void rendered_pixels(void) {
     GLuint texture, framebuffer;
@@ -213,8 +282,13 @@ int main(void) {
     CHECK(extensions && strstr(extensions,"GL_OES_standard_derivatives"));
     string_query_errors();
     generation_counts();
+    GLuint uniform_program = uniform_test_program();
     uniform_locations();
     matrix_arguments();
+    vector_arguments();
+    glUseProgram(0);
+    glDeleteProgram(uniform_program);
+    no_error();
     const GLenum targets[] = {GL_GENERATE_MIPMAP_HINT,GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES};
     const GLenum modes[] = {GL_FASTEST,GL_NICEST,GL_DONT_CARE};
     for (unsigned i=0;i<2;++i) {

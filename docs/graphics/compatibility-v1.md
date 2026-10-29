@@ -8482,3 +8482,53 @@ positive uniform shader/type/array conformance, the larger-array transport
 repair, full graphics compatibility, or final combined POSIX conformance.
 The native 220-case evidence remains attached to `d771bf71d1`; this later
 commit adds guest tests without changing those library implementations.
+
+### Uniform vector count validation, 2026-10-29
+
+All eight float/integer vector setters now validate negative counts
+before handling inactive location `-1`. Previously the inactive guard
+silently discarded a negative count; `glUniform4fv` also had a redundant
+wrapper guard that bypassed shared validation. This follows the general
+negative-`sizei` rule in ES2 §2.5 and the inactive-data rule in §2.10.4 of
+the [Khronos ES2 specification](https://registry.khronos.org/OpenGL/specs/es/2.0/es_full_spec_2.0.pdf).
+A shared length check preserves zero/ignored calls without source reads,
+the existing defensive null-pointer rejection, and overflow rejection
+before multiplication or copying. Vector records now use their actual
+eight-byte header when checking capacity. This admits the largest
+single-component payload previously rejected by a twelve-byte matrix
+header calculation. Existing opcodes, payload layouts and ABI are unchanged.
+
+Against `8d63265bf4`, the new count regression fails at the missing
+inactive-location error, and the capacity regression fails on the
+largest fitting single-component record. The null/zero control already
+passes. After implementation, all 223 native cases pass under the
+declared dev shell with undefined-behavior sanitization. Each new case
+exercises all eight signatures. Protected-page pointers prove that
+negative, zero, ignored and oversized calls do not read source data;
+exact maximum fitting records end at that page. Rejected/ignored calls
+publish no uniform record or batch, prior errors survive, valid calls
+retain location/count/length, and cleanup retains no native allocations.
+Evidence is `.context/gles-uniform-vectors-{before,after,syntax}.log` in
+the file-owner checkout. Both Wasm pointer-width library syntax checks
+and both ordinary/rendered guest fixture variants compile, the 629-file
+source evidence inventory agrees, and all six browser cases collect.
+
+The pinned [CTS shader API source](https://github.com/KhronosGroup/VK-GL-CTS/blob/a119e62de3bb38dae67f05abee8acd011e0c729c/modules/gles2/functional/es2fNegativeShaderApiTests.cpp)
+separately requires a current program even for location `-1`; its vector
+count cases cover a non-array count above one rather than this negative
+count. The normal guest fixture now compiles, links and binds a program
+before sentinel/matrix/vector checks, and both host harnesses require the
+new eight-setter marker. These new guest changes have compile/collection
+evidence only: linked execution, rendering, browsers and upstream CTS
+have not been rerun for this increment. Native device-double cases
+remain isolated encoder contracts, not GLSL or current-program evidence.
+
+Production no-current-program checks on ignored locations remain an
+ordinary gap. `glUseProgram` is asynchronously encoded, so an unchecked
+C binding cache would misrepresent rejected use/link operations; an
+acknowledged query on the ignored path or a coherent private program
+model needs separate failure/lifecycle tests. Shader types, array
+semantics, positive location ownership and larger-array transport also
+remain open. Oversized positive arrays still fail with
+`GL_OUT_OF_MEMORY`; record capacity is not a demonstrated hard platform
+boundary and does not close G05/G09.

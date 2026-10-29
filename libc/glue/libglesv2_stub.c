@@ -2866,19 +2866,32 @@ void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffse
     EMIT_END()
 }
 
+/* An inactive location ignores data, not an invalid sizei argument. Validate
+ * count first; zero and ignored calls must not read even an invalid pointer.
+ * Vector records have an eight-byte header, unlike matrix records' twelve. */
+static uint32_t uniform_vector_length(GLint location, GLsizei count,
+                                      const void *value, uint32_t components) {
+    if (count < 0) {
+        raise_client_error(GL_INVALID_VALUE);
+        return 0;
+    }
+    if (!uniform_location_accepted(location)) return 0;
+    if (count == 0) return 0;
+    if (!value) {
+        raise_client_error(GL_INVALID_VALUE);
+        return 0;
+    }
+    if ((uint32_t)count > (WPK_GL_MAX_TLV_PAYLOAD - 8u) / (4u * components)) {
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return 0;
+    }
+    return (uint32_t)count * components;
+}
+
 static void emit_uniform_fv(uint16_t op, GLint location, GLsizei count,
                             const GLfloat *value, uint32_t components) {
-    if (!uniform_location_accepted(location)) return;
-    if (count < 0 || (count > 0 && !value)) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
-        return;
-    }
-    if (count == 0) return;
-    if ((uint32_t)count > (WPK_GL_MAX_TLV_PAYLOAD - 12u) / (4u * components)) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
-        return;
-    }
-    uint32_t n = (uint32_t)count * components;
+    uint32_t n = uniform_vector_length(location, count, value, components);
+    if (!n) return;
     EMIT_BEGIN(op, 8u + n * 4u)
     w_i32(&_c, location);
     w_u32(&_c, (uint32_t)count);
@@ -2888,17 +2901,8 @@ static void emit_uniform_fv(uint16_t op, GLint location, GLsizei count,
 
 static void emit_uniform_iv(uint16_t op, GLint location, GLsizei count,
                             const GLint *value, uint32_t components) {
-    if (!uniform_location_accepted(location)) return;
-    if (count < 0 || (count > 0 && !value)) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
-        return;
-    }
-    if (count == 0) return;
-    if ((uint32_t)count > (WPK_GL_MAX_TLV_PAYLOAD - 12u) / (4u * components)) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
-        return;
-    }
-    uint32_t n = (uint32_t)count * components;
+    uint32_t n = uniform_vector_length(location, count, value, components);
+    if (!n) return;
     EMIT_BEGIN(op, 8u + n * 4u)
     w_i32(&_c, location);
     w_u32(&_c, (uint32_t)count);
@@ -2951,7 +2955,8 @@ void glUniform3fv(GLint location, GLsizei count, const GLfloat *value) {
 
 void glUniform4fv(GLint location, GLsizei count, const GLfloat *value) {
     if (!_wpk_gl_current_encoder()) return;
-    if (!uniform_location_accepted(location)) return; emit_uniform_fv(OP_UNIFORM4FV, location, count, value, 4); }
+    emit_uniform_fv(OP_UNIFORM4FV, location, count, value, 4);
+}
 
 void glUniform1iv(GLint location, GLsizei count, const GLint *value) {
     if (!_wpk_gl_current_encoder()) return;
