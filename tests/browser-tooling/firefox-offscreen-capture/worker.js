@@ -1,4 +1,4 @@
-onmessage = ({ data: { scene, cursor, source } }) => {
+onmessage = ({ data: { scene, cursor, source, readbackTimings, contextHint } }) => {
   const width = 640, height = 480;
   let gl = null;
   if (source !== "2d") {
@@ -22,9 +22,15 @@ onmessage = ({ data: { scene, cursor, source } }) => {
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.disable(gl.SCISSOR_TEST);
   }
-  const context = scene.getContext("2d");
-  const pointer = cursor.getContext("2d");
+  const options = contextHint === "will-read-frequently" ? { willReadFrequently: true }
+    : contextHint === "desynchronized" ? { desynchronized: true } : undefined;
+  const context = options ? scene.getContext("2d", options) : scene.getContext("2d");
+  const pointer = options ? cursor.getContext("2d", options) : cursor.getContext("2d");
   if (!context || !pointer) throw new Error("2D context unavailable");
+  postMessage({ kind: "contexts", requested2d: options ?? {},
+    scene2d: context.getContextAttributes?.() ?? null,
+    cursor2d: pointer.getContextAttributes?.() ?? null,
+    sourceGl: gl?.getContextAttributes() ?? null });
   pointer.fillStyle = "#00ff00";
   pointer.fillRect(30, 40, 10, 10);
   // Keep both transferred planes and their contexts alive for the complete
@@ -38,12 +44,20 @@ onmessage = ({ data: { scene, cursor, source } }) => {
     }
     pixels.set([255, 255, 255, 255], (19 * width + 17) * 4);
   }
+  let sequence = 0;
   function paint() {
+    const start = readbackTimings ? performance.now() : 0;
+    let readPixelsDone = start;
     if (gl) {
       gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      if (readbackTimings) readPixelsDone = performance.now();
       if (gl.getError() !== gl.NO_ERROR) throw new Error("Readback failed");
     }
     context.putImageData(new ImageData(new Uint8ClampedArray(pixels), width, height), 0, 0);
+    if (readbackTimings) {
+      postMessage({ kind: "readback", sequence: ++sequence, start,
+        readPixelsMs: readPixelsDone - start, paintMs: performance.now() - start });
+    }
   }
   paint();
   postMessage("ready");
