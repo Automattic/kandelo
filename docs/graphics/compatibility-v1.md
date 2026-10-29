@@ -21,9 +21,10 @@ rows below remain open or partial.
 The follow-up branch `brandonpayton/graphics-baseline-follow-up` preserves
 `65b498d284`, including the later expanded upstream EGL query harness
 (`ed1856dbb4`) and context-local GLES hint implementation (`65b498d284`).
-Its PR is not open yet. Neither increment is part of the landing runtime
-cut. Remaining baseline implementation and broad conformance belong to
-that follow-up; no missing API is reclassified as a platform boundary.
+[Follow-up PR #1594](https://github.com/Automattic/kandelo/pull/1594) is
+stacked on #1574. Neither increment is part of the landing runtime cut.
+Remaining baseline implementation and broad conformance belong to that
+follow-up; no missing API is reclassified as a platform boundary.
 
 ## Unpublished ABI policy
 
@@ -8039,3 +8040,65 @@ browser checks also remain pending. The inherited Firefox GPU-to-2D
 capture failure remains open with its unchanged assertions, original
 deadlines and preserved evidence. No boundary, waiver, performance claim
 or full-baseline completion is inferred from this landing split.
+
+### Landing build provisioning and follow-up ownership, 2026-10-29
+
+[PR #1594](https://github.com/Automattic/kandelo/pull/1594) now owns the
+remaining graphics baseline, stacked on the bounded cage/sway landing in
+#1574. Landing build source `e58d19f98a` retains runtime `21f3d451bb` and
+adds corrected Sway native-tool metadata. Python 3.11+ and native Clang
+21+ are declared for the upstream status-reader regression helper;
+target flags and runtime behavior are unchanged.
+
+`cage-sway-declared-tools-1029-114926-36f1` completed the normal Sway
+package rebuild in 12m05s with status zero. This proves package build
+acceptance, not a compositor session or final image/memory result.
+
+| Job | Source | Result | Scope |
+|---|---|---|---|
+| `graphics-native-visual-combined-products-1029-091514-85bc` | `21f3d451bb` | Deliberately stopped, 143 | Stopped before application acceptance during debug-built artifact validation |
+| `cage-sway-final-candidate-1029-120243-4ad8` | `e58d19f98a` | Deliberately stopped, 143, after 5m10s | Same investigation; no application acceptance result |
+| `cage-sway-final-release-bootstrap-1029-120817-225e` | `e58d19f98a` | Failed, 1, after 1m04s | Missing `sdk/rust/libc-upstream` submodule; provisioning only |
+| `cage-sway-final-provisioned-1029-121133-541f` | `e58d19f98a` | Running | Complete normal pipeline after submodule initialization |
+
+The missing submodule was initialized through the normal repository
+path at pinned revision `71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8`.
+The final pipeline uses the release-built xtask and the normal bootstrap
+graph/cache, then explicitly builds CTS and programs and checks ABI,
+freshness, artifact closures, evidence classes and native/source tests.
+Application acceptance includes actual Freeciv, the combined Node and
+three-engine browser selection, six cage/sway gallery cases and the
+unmodified full browser-memory gate. Its script and logs are retained in
+the fork-owner checkout under `.context/cage-sway-final-*`. No application
+acceptance result is available from this run yet; manual browser checks
+also remain pending. The earlier interrupted run above remains historical
+evidence, not a continuing job or a passing acceptance gate.
+
+Actual port, existing-consumer and memory failures remain landing
+blockers. The broader inherited GPU-to-2D capture failure and candidate
+presentation-worker isolation mitigation are assigned to #1594. Their
+exact failed evidence remains retained, and the broader combined test
+continues to execute; a failing result is not reported as a passing suite.
+There is no blanket waiver or demonstrated hard platform boundary.
+
+The independent diagnostic on tooling source `15852902cd` provides
+bounded new evidence: same-owner continuous GPU readback with bitmap
+capture passed 0/3 runs; separating continuous real readback
+and visible 2D ownership into two workers passed 3/3 with unchanged
+displayed-pixel assertions and at most one owned frame in flight.
+The separate-owner private variant SHA-256 is
+`fee2994b963341059672d573a5d021a2c6348145deb33be8bbd3b5bc8ef52d1e`.
+The default source was restored after that discriminator.
+
+One local startup profile records simultaneous content-main
+`DrawSnapshot`/paint/condition waits and worker `readPixels`/event waits
+for about 20 seconds; short completed native readback IPC markers are
+separate. The specific internal permission/snapshot cycle remains an
+inference from pinned Firefox source, because private native frames
+could not be symbolicated. No profile was uploaded. Official source
+links and the local analysis are retained in primary
+`.context/firefox-capture-source-mechanism.md`; the file-owner checkout's
+`.context/firefox-landing-profile*` and
+`.context/firefox-landing-separated*` retain the actual evidence. This
+does not establish a product repair or causation for every Kandelo
+capture failure, and does not close any baseline inventory row.
