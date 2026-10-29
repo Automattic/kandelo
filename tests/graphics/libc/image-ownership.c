@@ -146,13 +146,13 @@ int _wpk_gbm_window_acquire(const void *window, void **lease, struct wpk_gbm_fra
     unsigned i = (const int *)window-record_windows;
     if (window_leases[i]) { errno = EBUSY; return 0; }
     window_leases[i] = 1; *lease = &window_leases[i];
-    *frame = (struct wpk_gbm_frame){10,77,width,height};
+    *frame = (struct wpk_gbm_frame){10,77+i,width,height};
     return 1;
 }
 int _wpk_gbm_window_prepare(void *lease, struct wpk_gbm_frame *frame) {
     unsigned i = (unsigned *)lease-window_leases;
     assert(i < 3 && window_leases[i]);
-    *frame = (struct wpk_gbm_frame){10,88,32+i,24+i};
+    *frame = (struct wpk_gbm_frame){10,88+i,32+i,24+i};
     return 1;
 }
 void _wpk_gbm_window_finish(void *lease, int accepted) { (void)lease; (void)accepted; }
@@ -168,6 +168,7 @@ static struct {
     int source_fd;
 } prime_exports[8];
 static uint32_t transferred_handles[8];
+static uint32_t transferred_sources[8];
 static int imported_owners[8];
 static unsigned transfers, transfer_closes, export_closes;
 static int fail_prime_export, fail_prime_import, fail_foreign_texture, fail_dmabuf_import;
@@ -562,7 +563,8 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             return -1;
         }
         uint32_t *words = arg;
-        assert(words[0] == 77 || words[0] == 88 || words[0] == 99);
+        assert((words[0] >= 77 && words[0] <= 79) ||
+               (words[0] >= 88 && words[0] <= 90) || words[0] == 99);
         unsigned i = 0;
         while (i < 8 && prime_exports[i].handle)
             i++;
@@ -590,6 +592,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             }
             assert(!transferred_handles[fd - 10]);
             words[0] = transferred_handles[fd - 10] = 1000 + fd;
+            transferred_sources[fd - 10] = prime_exports[words[2] - 200].handle;
             transfers++;
         }
     } else if (request == 0x40086409u) {
@@ -597,6 +600,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         if (handle >= 1000) {
             assert(handle == transferred_handles[fd - 10]);
             transferred_handles[fd - 10] = 0;
+            transferred_sources[fd - 10] = 0;
             transfer_closes++;
         } else {
             assert(handle == 77 && imported_owners[fd - 10]);
@@ -807,6 +811,17 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             if (!request->attrs.width) request->attrs.width = 64;
             if (!request->attrs.height) request->attrs.height = 32;
         } else assert(request->attrs.kind == WPK_SURFACE_PBUFFER && !surface_target);
+        if (surface_target) {
+            /* Model the Rust GEM-name -> canonical storage translation in
+             * the replay, including names acquired on another object fd.
+             * Allocations carry no prescribed pixels; C draws fill them. */
+            uint32_t canonical = surface_target == transferred_handles[fd - 10]
+                ? transferred_sources[fd - 10] : surface_target;
+            uint32_t storage[4] = {surface_target, canonical,
+                request->attrs.width, request->attrs.height};
+            assert(canonical);
+            egl_trace(20, fd, storage, sizeof storage);
+        }
         egl_trace(3, fd, request, sizeof *request);
     } else if (request == GLIO_UPDATE_SURFACE) {
         if (fail_surface_update) { errno = ENOMEM; return -1; }

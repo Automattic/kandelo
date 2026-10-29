@@ -7062,3 +7062,38 @@ the required stable DRM-file identity and forwarded replay rejects native
 BO targets. These are preserved in `.context/graphics-gbm-copy-c-replay.log`
 and `.context/graphics-gbm-copy-c-replay-results/`. They are ordinary replay
 adapter/forwarding work, not a demonstrated host platform boundary.
+
+
+### Source replay follows retained GBM storage, 2026-10-28
+
+The source-C replay now supplies its synthetic stable DRM-file identity
+when binding distinct context sessions. The native C double records each
+accepted window allocation, its per-file GEM name and its canonical BO
+identity. Its three windows have distinct backing names. The browser adapter
+provisions real native storage from those records and translates the names
+before surface creation; it does not invent allocations from an unverified
+surface request or preset any expected pixels. Public C commands still
+produce every rendered color. These remain source-operation replay checks;
+the separate SDK guests validate real Rust marshalling and device ownership.
+
+`graphics-source-replay-identities-1028-195157-7a0f` initially passed 53/72:
+eighteen native cases failed for absent backing storage after the identity
+repair, and one Chromium forwarded cross-session case changed its read pixel
+after a rejected current-surface request. After adding the storage records,
+`graphics-source-replay-storage-1028-195729-1b39` passed all 211 native C cases
+and 71/72 browser cases across Chromium, Firefox and WebKit. All eighteen
+missing-storage cases now pass their original pixel/lifetime assertions.
+The Chromium forwarding failure reproduced and remains open; the other
+engines passed that case. Logs and traces remain in the matching
+`.context/graphics-source-replay-{identities,storage}*` paths. Forwarded
+native BO-source transport also remains unimplemented. This is not a fully
+passing source-replay selection or evidence of an outside engine defect.
+
+The separate logical-image-view source selection passes all three engines
+in 11.9s (`.context/graphics-replay-image.log`), exercising the fourth updated
+import adapter. The enclosing diagnostic job
+`graphics-forward-routing-diagnostic-1028-200248-b477` is still a failure:
+its five routing diagnostics never reached rendering because moving the
+wrapper config changed Vite's working directory and the page returned HTTP
+failure. Fixing that diagnostic server root is provisioning, not a graphics
+repair or a passing routing result.

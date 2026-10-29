@@ -24,7 +24,8 @@ self.onmessage=({data})=>{
       const native=createWasmPosixKernelTestHarness({io:{} as any,callbacks:{getProcessMemory:()=>memory!},memory,pointerWidth:4,
         instance:createKernelScratchTestInstance(4,memory,()=>({}),()=>4096)});
       imports=(native.testAuthority.buildImportObject(memory) as {env:typeof imports}).env;
-      for(let i=0;i<4;i++)imports!.host_gl_bind(7,4096,65536,11+i);
+      // The source fixture models distinct sessions on one stable DRM file.
+      for(let i=0;i<4;i++)imports!.host_gl_bind(7,4096,65536,11+i,1n);
       native.gl.attachCanvas(7,canvas);
     }
     const requireZero=(rc:number,label:string)=>{if(rc!==0)throw new Error(`${label}: ${rc}`);};

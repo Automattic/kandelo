@@ -98,6 +98,7 @@ self.onmessage = async ({data}) => {
     const frames=new Uint8Array(data.trace),view=new DataView(frames.buffer),observed:number[][]=[];
     const retiredContexts:number[]=[],retiredSurfaces:number[]=[];
     const rawBos=new Set<number>();
+    const gemBos=new Map<string,number>();
     const limits:number[][]=[];
     let completionRead=false;
     for(let offset=0;offset<frames.length;) {
@@ -107,7 +108,9 @@ self.onmessage = async ({data}) => {
       const bytes=frames.slice(offset,offset+length),words=new DataView(bytes.buffer);offset+=length;
       if(kind===1) {
         if(forwarded)channels.set(fd,createMainForwardChannel({postMessage:message=>postMessage(message)},7,fd));
-        else imports!.host_gl_bind(7,4096,65536,fd);
+        // This source replay models one native DRM file. Session identities
+        // differ; its synthetic stable file identity is shared by all of them.
+        else imports!.host_gl_bind(7,4096,65536,fd,1n);
       } else if(kind===2) {
         const id=words.getUint32(12,true);
         const sharedId=words.getUint32(4,true);
@@ -123,17 +126,32 @@ self.onmessage = async ({data}) => {
           sourceContext=id;
           if(forwarded){channels.set(peer,createMainForwardChannel({postMessage:message=>postMessage(message)},7,peer));requireZero(channel(peer).onCreateContext(peer,fd),"create peer");}
           else {
-            imports!.host_gl_bind(7,4096,65536,peer);new Uint32Array(memory!.buffer,64,4).set([2,id,0,0]);
+            imports!.host_gl_bind(7,4096,65536,peer,1n);new Uint32Array(memory!.buffer,64,4).set([2,id,0,0]);
             requireZero(imports!.host_gl_create_context(7,900,64,16,peer),"create peer");
           }
           prepareProgram(fd);
         }
+      } else if(kind===20) {
+        // The native C double records accepted storage and per-file names.
+        // Provision independent native pixels and replay the kernel's name
+        // translation; never infer a valid allocation from a surface request.
+        if(forwarded)throw new Error("native BO-source forwarding remains unimplemented");
+        const name=words.getUint32(0,true),bo=words.getUint32(4,true);
+        const width=words.getUint32(8,true),height=words.getUint32(12,true);
+        if(native!.gl.createGpuBo(bo,gl!,width,height)===null)throw new Error("window canonical storage");
+        rawBos.add(bo);gemBos.set(`${fd}:${name}`,bo);
       } else if(kind===3) {
         const surfaceId=words.getUint32(32,true),width=words.getUint32(4,true),height=words.getUint32(8,true);
         sizes.set(surfaceId,{width,height});
         if(forwarded)requireZero(channel(fd).onCreateSurface!({surfaceId,kind:words.getUint32(0,true),width,height,
           configId:words.getUint32(12,true),targetBoId:words.getUint32(16,true)}).rc,"create surface");
         else {
+          const name=words.getUint32(16,true);
+          if(name) {
+            const bo=gemBos.get(`${fd}:${name}`);
+            if(bo===undefined)throw new Error("unregistered window GEM name");
+            words.setUint32(16,bo,true);
+          }
           // The Rust kernel supplies the fresh identity separately and keeps
           // the output field zero in the host's private request copy.
           words.setUint32(32,0,true);new Uint8Array(memory!.buffer,64,bytes.length).set(bytes);

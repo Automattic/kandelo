@@ -39,7 +39,8 @@ self.onmessage = ({ data }) => {
         throw new Error(label);
     };
     for (const session of [11, 12])
-      api.host_gl_bind(7, 4096, 65536, session);
+      // Distinct context sessions retain this fixture's one native file.
+      api.host_gl_bind(7, 4096, 65536, session, 1n);
     kernel.gl.attachCanvas(7, canvas);
     require(api.host_gl_create_context(7, 21, 0, 0, 11) === 0, "context");
     new Uint32Array(memory.buffer, 64, 4).set([2, 21, 0, 0]);

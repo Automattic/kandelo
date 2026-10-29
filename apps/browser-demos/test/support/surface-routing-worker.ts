@@ -62,7 +62,7 @@ self.onmessage = ({data}) => {
     };
     for (let i=0;i<3;i++) {
       if (forwarded) requireZero(channels[i].onCreateContext(),"create context");
-      else {imports!.host_gl_bind(7,256,64,11+i);requireZero(imports!.host_gl_create_context(7,21+i,0,0,11+i),"native context");}
+      else {imports!.host_gl_bind(7,256,64,11+i,1n);requireZero(imports!.host_gl_create_context(7,21+i,0,0,11+i),"native context");}
       if (i<2) {
         if (forwarded) requireZero(channels[i].onCreateSurface!({surfaceId:71+i,kind:1,width:1,height:1,configId:1,targetBoId:0}).rc,"surface");
         else {
