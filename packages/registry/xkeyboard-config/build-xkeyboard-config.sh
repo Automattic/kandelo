@@ -37,8 +37,6 @@ STAGE_DIR="$WORK_DIR/xkeyboard-config-stage"
 
 XKC_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/xkeyboard-config-install}"
-SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
-SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 for tool in meson ninja python3 perl; do
     if ! command -v "$tool" &>/dev/null; then
@@ -47,12 +45,8 @@ for tool in meson ninja python3 perl; do
     fi
 done
 
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Staging verified xkeyboard-config $XKC_VERSION source..."
-    kandelo_package_stage_verified_source xkeyboard-config "$SRC_DIR" \
-        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
-        "$WORK_DIR"
-fi
+echo "==> Staging verified xkeyboard-config $XKC_VERSION source..."
+kandelo_package_stage_primary_source xkeyboard-config "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
 rm -rf "$BUILD_DIR" "$STAGE_DIR"
 # The resolver-created output directory is itself publication authority, so

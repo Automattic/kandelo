@@ -176,6 +176,19 @@ correction. Target sources, flags and revisions are unchanged. Normal
 rebuilding against these recipe inputs passed on `9088f31021`; fresh
 combined-main validation remains pending.
 
+### Verified package source reuse
+
+The compositor recipes restage their manifest-selected, verified primary
+source on every invocation through the shared package helper. An existing
+private source directory cannot override a newer manifest or resolver
+input. Sway reapplies its reviewed patches once to that fresh copy.
+Resolver source trees remain immutable. Recipe changes invalidate their
+normal cache identities; current products require a normal rebuild.
+
+The canonical shell fixture includes the required xkeyboard-config
+archive, verifies its composer argument, and checks that a missing
+archive fails before publication.
+
 ### Cage idle-frame fixture prerequisite
 
 The `e58d19f98a` Firefox gallery trace failed idle-frame equality while

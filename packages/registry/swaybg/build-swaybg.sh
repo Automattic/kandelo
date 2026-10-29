@@ -30,8 +30,6 @@ SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/swaybg-src"
 
 SWAYBG_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/swaybg-install}"
-SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
-SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/swaybg-build"
 CROSS_FILE="$REPO_ROOT/sdk/meson/wasm32posix.ini"
@@ -54,12 +52,8 @@ SCANNER_PC_DIR="$(pkg-config --variable=pcfiledir wayland-scanner)" || {
 }
 
 # --- Stage verified source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Staging verified swaybg $SWAYBG_VERSION source..."
-    kandelo_package_stage_verified_source swaybg "$SRC_DIR" \
-        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
-        "$KANDELO_PACKAGE_WORK_DIR"
-fi
+echo "==> Staging verified swaybg $SWAYBG_VERSION source..."
+kandelo_package_stage_primary_source swaybg "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
 rm -rf "$BUILD_DIR"
 # The resolver-created output directory is itself publication authority, so
