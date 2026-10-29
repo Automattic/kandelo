@@ -5024,6 +5024,7 @@ fn dispatch_channel_mremap(
     let mut host = WasmHostIO;
     let result = syscalls::sys_mremap(
         proc,
+        &mut host,
         old_address,
         checked_channel_process_size(126, args, 1)?,
         checked_channel_process_size(126, args, 2)?,

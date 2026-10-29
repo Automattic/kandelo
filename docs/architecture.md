@@ -3431,8 +3431,15 @@ matching kernel within the single unpublished ABI 56 / kernel-host 3 epoch.
 Fixed anonymous and private-file replacements retire the affected device
 interval after allocation succeeds, before the host populates replacement
 bytes. A failed allocation returns temporary split references and preserves
-the old device bindings. Replacement by another device mapping and device
-`mremap` transitions still need separate work; see the compatibility ledger.
+the old device bindings. Device `mremap` shrink retires only its tail through
+that same plan, and an unchanged-size remap retains the existing binding.
+GEM mappings cannot expand: growth, including `MREMAP_MAYMOVE`, fails with
+`EFAULT` without changing the mapping or storage references, following
+Linux GEM's fixed-size VMA model. The fixed framebuffer/GL command mappings
+also reject expansion. Ordinary moved mappings preserve their protection
+and shared-publication metadata. Replacement by another device mapping and
+broader remap flag/partial-file coverage remain separate work; see the
+compatibility ledger.
 
 The host's independent display statistics buffer publishes the current
 DRM master PID in slot 8 (zero when unowned), alongside presentation and

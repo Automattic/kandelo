@@ -750,7 +750,7 @@ pub struct FbBinding {
 pub struct DriBoBinding {
     /// Start address in the process's wasm `Memory`.
     pub addr: usize,
-    /// Length in bytes (aligned to wasm page).
+    /// Caller-visible BO span; the address allocator rounds it to a Wasm page.
     pub len: usize,
     /// Byte offset in canonical BO storage for the first mapped byte.
     pub bo_offset: u64,

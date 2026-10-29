@@ -13,6 +13,7 @@ it.each(["wasm32","wasm64"] as const)("retains and synchronizes inherited CPU ma
       "OK prefix and suffix unmaps preserve the surviving mapping across fork",
       "OK fixed anonymous replacement retires only the replaced DRI interval",
       "OK fixed file replacement retires only the replaced DRI interval",
+      "OK device remap shrink retains storage and rejects expansion without side effects",
     ]);
   } finally {fixture.cleanup();}
 },90000);

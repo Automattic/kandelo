@@ -99,11 +99,52 @@ static void fragmented_mapping(int middle_hole) {
         middle_hole ? "OK middle-unmap fragments retain storage offsets across fork" :
         "OK prefix and suffix unmaps preserve the surviving mapping across fork");
 }
+static void remapped_mapping(void) {
+    const size_t page=65536;
+    int fd=open("/dev/dri/renderD128",O_RDWR|O_CLOEXEC);CHECK(fd>=0);
+    struct dumb bo={.width=256,.height=192,.bpp=32};CHECK(ioctl(fd,0xc02064b2u,&bo)==0);
+    struct mapping map={.handle=bo.handle};CHECK(ioctl(fd,0xc01064b3u,&map)==0);
+    unsigned char *pixels=mmap(NULL,3*page,PROT_READ|PROT_WRITE,MAP_SHARED,fd,map.offset);
+    CHECK(pixels!=MAP_FAILED && close(fd)==0);
+    pixels[0]=17;
+    CHECK(mremap(pixels,3*page,3*page,MREMAP_MAYMOVE)==pixels);
+    for (int move=0;move<2;move++) {
+        errno=0;
+        CHECK(mremap(pixels,3*page,4*page,move?MREMAP_MAYMOVE:0)==MAP_FAILED && errno==EFAULT);
+        CHECK(pixels[0]==17);
+    }
+    CHECK(mremap(pixels,3*page,page,0)==pixels);
+    errno=0;CHECK(mremap(pixels+1,page,page,0)==MAP_FAILED && errno==EINVAL);
+    errno=0;CHECK(mremap(pixels+page,page,page,0)==MAP_FAILED && errno==EFAULT);
+    CHECK(mmap(pixels+page,2*page,PROT_READ|PROT_WRITE,
+        MAP_FIXED|MAP_PRIVATE|MAP_ANONYMOUS,-1,0)==pixels+page);
+    pixels[page]=55;
+    errno=0;
+    CHECK(mremap(pixels,page,2*page,MREMAP_MAYMOVE)==MAP_FAILED && errno==EFAULT);
+    int parent_gate[2],child_gate[2];CHECK(pipe(parent_gate)==0 && pipe(child_gate)==0);
+    pid_t child=fork();CHECK(child>=0);
+    if (child==0) {
+        CHECK(close(parent_gate[1])==0 && close(child_gate[0])==0);
+        ready(parent_gate[0]);CHECK(pixels[0]==41 && pixels[page]==55);
+        pixels[1]=59;CHECK(write(child_gate[1],"c",1)==1);
+        CHECK(munmap(pixels,page)==0 && munmap(pixels+page,2*page)==0);
+        CHECK(close(parent_gate[0])==0 && close(child_gate[1])==0);
+        _exit(0);
+    }
+    CHECK(close(parent_gate[0])==0 && close(child_gate[1])==0);
+    pixels[0]=41;pixels[page]=81;CHECK(write(parent_gate[1],"p",1)==1);
+    ready(child_gate[0]);CHECK(pixels[0]==41 && pixels[1]==59 && pixels[page]==81);
+    int status=0;CHECK(waitpid(child,&status,0)==child && WIFEXITED(status) && WEXITSTATUS(status)==0);
+    CHECK(munmap(pixels,3*page)==0 && close(parent_gate[1])==0 && close(child_gate[0])==0);
+    puts("OK device remap shrink retains storage and rejects expansion without side effects");
+}
+
 int main(void) {
     full_mapping();
     fragmented_mapping(1);
     fragmented_mapping(0);
     fragmented_mapping(2);
     fragmented_mapping(3);
+    remapped_mapping();
     return 0;
 }

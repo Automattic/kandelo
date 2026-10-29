@@ -90,7 +90,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | E07 | dma-buf validation, multiple import and format/modifier enumeration; EXT import | Core EGLAttrib and KHR EGLint image creation share retained dma-buf storage and destruction. Parsing rejects wide aliases, missing mandatory fields and malformed modifier pairs before import, validates preservation and hint values, and ignores valid YUV hints for supported RGB formats. The explicit CPU import request validates dimensions, format, pitch, offset and backing bounds before publication; normal four-format mapped/native checks pass. Full negative/rollback coverage remains open | EGL, PRIME, GBM | CPU/GPU imports, bad fd/stride/offset/modifier; repeated import lifetime | open |
 | E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve for retained dma-buf imports. Native fence candidates, waiter leases and retryable cleanup now have retained source models. Table 17 adds caller-known create/status/release tokens, accepted-reply publication, cancellation and mapped object-session authority without a current context. Native and forwarded source rendering pass. Core C create/destroy/query/client-wait now use generation-owned records, retained sessions, serialized replies, monotonic timeouts and cancellation-safe waiter references; public glFlush requests acknowledged native flush. Focused C and three-engine source evidence is recorded below. The four KHR_fence_sync aliases share these records with width-correct lists/output and 64-bit timeouts; EGL_KHR_fence_sync and client GL_OES_EGL_sync are declared. eglWaitSync server ordering remains open; EGL_KHR_wait_sync is not advertised. GL-source images and full lifecycle/errors/guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
 | B01 | GBM allocation/import/export and plane metadata | Dumb/GPU tiers and modifier admission use checked metadata; borrowed surface leases preserve old GPU storage after public retirement/ID reuse. Explicit CPU layout mirrors retain native/mapped siblings. Distinct GBM wrappers over one duplicated/transferred DRM file now share GEM-name lifetime while retaining separate private descriptors; focused both-width/three-engine guests pass. Full negative/lifecycle and combined validation remain open | GBM, DRM BOs, host registry | SDK guest fixtures both widths; unsupported format/flags | partial |
-| B02 | GBM map/unmap coherence and authority | Kernel-owned mapping BO references and live-parent fork/vfork inheritance; independent host aliases by process/address with post-clone priming, changed-run publication, and successful frozen-retry/kernel-wait visibility boundaries. Partial munmap trims/splits retain canonical offsets and references across fork, including anonymous reuse of the hole; focused both-width Node/browser checks pass. Fixed anonymous/private-file replacement retires only the replaced device interval, with failed-allocation rollback. Replacement by another device mapping, device mremap, broader cleanup/failure and combined conformance remain open | GBM, kernel maps, DRI registry | Importer writes, stale readers, unmap/exit/exec; browser pixels | partial |
+| B02 | GBM map/unmap coherence and authority | Kernel-owned mapping BO references and live-parent fork/vfork inheritance; independent host aliases by process/address with post-clone priming, changed-run publication, and successful frozen-retry/kernel-wait visibility boundaries. Partial munmap trims/splits retain canonical offsets and references across fork, including anonymous reuse of the hole; focused both-width Node/browser checks pass. Fixed anonymous/private-file replacement retires only the replaced device interval, with failed-allocation rollback. Device mremap shrink/no-op retain backing; growth has Linux GEM EFAULT behavior. Replacement by another device mapping, broader remap flags/partial-file coverage, cleanup/failure and combined conformance remain open | GBM, kernel maps, DRI registry | Importer writes, stale readers, unmap/exit/exec; browser pixels | partial |
 | B03 | Surface ring lock/release/destroy ownership | Retained EGL leases and a bounded GPU pool publish a top-row-first copy only after accepted swaps, preserving the private render back and locked fronts. Rendered retention/exhaustion/retirement and asymmetric KMS visibility/orientation pass both guest widths in all three engines, through WebGL and 2D scanout. WRITE/LINEAR/CURSOR fronts retain CPU storage with a private GPU render back, with normal both-width/three-engine image and scanout evidence below. Forwarding and broader combined validation remain open | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks; asymmetric KMS pixels | partial |
 | K01 | Single display resources and consistent object IDs | Integrated dynamic mode catalog, properties and device-wide IDs; broader device/host validation pending | kernel dri/kms, host mode metadata | Rust ioctl and Node mode tests; preserve preferred/catalog semantics | partial |
 | K02 | Probe all nested outputs before writing | Property, enum and expanded connector outputs now preprobe all destinations; focused Rust regressions pass | syscall nested-output helpers | Valid first/invalid later buffers, unchanged sentinels and top-level bytes | open |
@@ -7731,3 +7731,66 @@ assertions, deadlines, browser preferences and runtime behavior are intact.
 No upstream report was filed. No product workaround or hard platform
 boundary is claimed, and the tooling-only diagnostic does not get a runtime
 workaround registry entry under that registry's explicit exclusion.
+
+
+### Device remap ownership and fixed-size GEM semantics, 2026-10-29
+
+Two new regressions reproduced incorrect device `mremap` behavior on
+`5e938e0efa`: shrinking left a three-page DRI binding after the allocator
+kept one page, and growth silently extended it with anonymous pages. The
+before log is the file-owner checkout's `.context/device-remap-before.log`.
+
+Shrink now uses the prepared device-unmap plan, flushing/retiring only its
+tail before the old bytes can be reused. Equal-sized remap preserves the
+binding. Checked rounding and source-range validation reject unaligned,
+overflowing or untracked requests. Generic moved mappings retain their
+original protection and shared-publication flags. No kernel-host wire
+signature, generated snapshot or ABI epoch changed in this increment.
+
+Device growth is a rejected operation, not a missing allocation fallback:
+[Linux v6.16 GEM mapping](https://github.com/torvalds/linux/blob/v6.16/drivers/gpu/drm/drm_gem.c#L1054-L1081)
+requires a non-expandable VMA, and its
+[shmem mapper](https://github.com/torvalds/linux/blob/v6.16/drivers/gpu/drm/drm_gem_shmem_helper.c#L596-L606)
+sets `VM_DONTEXPAND`/`VM_PFNMAP`.
+[Linux remap validation](https://github.com/torvalds/linux/blob/v6.16/mm/mremap.c#L1227-L1241)
+returns `EFAULT` when expanding that mapping. Kandelo follows that behavior
+for fixed-size BO mappings, including MAYMOVE and a shrunken view whose BO
+still has unused backing. Its framebuffer/GL command mappings also reject
+expansion rather than inventing unrelated device bytes. This is ordinary
+API failure semantics, not a hard platform boundary closing other gaps.
+
+The unchanged earlier guest cases remain enabled. New normal SDK cases
+close the final descriptor, verify equal-size remap and rejected growth,
+shrink the BO, reject malformed/untracked remaps, reuse the tail privately,
+and fork. They verify shared surviving BO writes, private replacement
+bytes and writer/storage retirement in both address widths.
+
+`graphics-device-remap-final-1029-011342-bb5b` passed the workspace Rust
+selection (2,618 runtime-core tests, six compile-fail documentation cases,
+87 shared cases), normal matching kernel/side-module/host builds, the ABI
+check, 35 Node/source cases and 12 three-engine browser guests. A final
+source-only metadata regression was then added to ensure moving the sole
+shared mapping does not disable shared publication or change protection.
+All eight focused remap tests passed. Normal kernel/host and ABI checks
+were repeated by `graphics-device-remap-metadata-final-1029-012657-bc86`.
+
+The resulting kernel metadata changed, so the guest evidence was repeated
+against that fresh artifact, rather than carrying forward the prior hash.
+`graphics-device-remap-final-guests-1029-013601-e44e` passed after 4m26s:
+35/35 Node/source cases (77.46s), zero skips or unloaded files; 12/12 real
+browser guest cases (2.0m), wasm32/wasm64 in Chromium, Firefox and WebKit.
+The final kernel SHA-256 is
+`3118c427ac0e108aa8c958b8e548aa6f89d708aba595d55115cff3c05710bd60`.
+Logs, traces and identity-bearing guest records are in the file-owner
+checkout's `.context/device-remap-*`, `dri-mapping-fork-guests/` and
+`gbm-file-aliases-guests/`. The optional Vite gallery rootfs scan warning
+remains outside these image-owning focused guests; no gallery pass is
+claimed. The additional source regression has focused evidence, not a
+claim that the entire workspace ran again with 2,619 runtime-core cases.
+
+Broader product/conformance jobs still run on `5eedcb9aa7` and cannot stand
+in for final combined validation of these later changes. Replacement by
+another device mapping, broader remap flags/partial-file behavior, full
+cleanup/negative coverage and the remaining GLES/EGL/CTS/rendering work
+stay open. ABI 56 / kernel-host 3 / GL table 17 / fork record 21 remain
+unchanged, above main `cb0a8226c965` (rechecked remotely this checkpoint).
