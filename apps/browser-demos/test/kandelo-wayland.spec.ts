@@ -295,6 +295,14 @@ test("Kandelo wayland desktop composites three clients, routes typing and window
   // derive from it.
   await readDesktopDims(page);
 
+  // The compositor reads the connector once, at its start: the size the boot
+  // reported is its first mode, and that mode must fill the pane.
+  const [, bootW, bootH] = bootLog.match(/display: (\d+)×(\d+) device px/)!;
+  expect(Math.abs(Number(bootW) - DESKTOP_W), "first mode width").toBeLessThanOrEqual(4);
+  expect(Math.abs(Number(bootH) - DESKTOP_H), "first mode height").toBeLessThanOrEqual(4);
+  const viewport = (await page.locator(".kmodeset-viewport").boundingBox())!;
+  expect(DESKTOP_W / DESKTOP_H, "mode aspect").toBeCloseTo(viewport.width / viewport.height, 1);
+
   // Gate 1b: the full desktop composited. The Modeset pane uses
   // transferControlToOffscreen, so PNG byteLength stands in for pixel
   // readback. Reference sizes from real runs on a ~1280×612 mode: all-black

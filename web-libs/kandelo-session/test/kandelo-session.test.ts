@@ -2878,7 +2878,9 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
       FakeResizeObserver.instances.push(this);
     }
     observing = false;
-    observe(): void {
+    target: unknown = null;
+    observe(target: unknown): void {
+      this.target = target;
       this.observing = true;
       this.disconnected = false;
     }
@@ -2980,6 +2982,25 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
       expect(host.getKmsDisplaySize()).toEqual({ width: 720, height: 480 });
     });
     expect(await sized).toEqual({ width: 960, height: 540 });
+  });
+
+  it("measures the size element of the latest attach, not the canvas", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      const kernel = makeKmsKernel();
+      host.attachKernel(kernel as any);
+      host.setKmsDisplayMode("webgl2-scanout");
+      const canvas = makeCanvas(), foo = {} as Element, bar = {} as Element;
+      host.attachKmsDisplay(canvas, 1, { sizeElement: foo })!.close();
+      const ro = FakeResizeObserver.instances[0];
+      expect(ro.target).toBe(foo);
+      expect(kernel.kmsAttachCanvas.mock.calls[0][3]).not.toHaveProperty("sizeElement");
+      host.attachKmsDisplay(canvas, 1, { sizeElement: bar });
+      expect(ro.target).toBe(bar);
+      ro.target = null;
+      host.setKmsDisplayScale(1.5);
+      expect(ro.target).toBe(bar);
+    });
   });
 
   it("does not revive a closed display or carry a launch scale into another kernel", () => {
