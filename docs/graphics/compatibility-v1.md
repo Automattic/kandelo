@@ -8,6 +8,23 @@ tests retain both guest address widths. It is not a conformance
 claim. An ordinary defect remains open until implementation and executable
 validation cover it; a passing demo does not close an API family.
 
+## Landing scope
+
+On 2026-10-29 the user split delivery into the bounded cage/sway landing
+in [PR #1574](https://github.com/Automattic/kandelo/pull/1574) and a
+follow-up for the remaining graphics baseline. The landing runtime cut is
+`21f3d451bb`; its contract, executable acceptance and pending evidence are
+in [Cage and sway landing](cage-sway-landing.md). This changes delivery
+scope, not the API inventory or its completion standard. All incomplete
+rows below remain open or partial.
+
+The follow-up branch `brandonpayton/graphics-baseline-follow-up` preserves
+`65b498d284`, including the later expanded upstream EGL query harness
+(`ed1856dbb4`) and context-local GLES hint implementation (`65b498d284`).
+Its PR is not open yet. Neither increment is part of the landing runtime
+cut. Remaining baseline implementation and broad conformance belong to
+that follow-up; no missing API is reclassified as a platform boundary.
+
 ## Unpublished ABI policy
 
 Use one ABI above current main for the combined effort, as requested by
@@ -70,8 +87,8 @@ product rebuild is running on `21f3d451bb`; the shell image includes the
 SDK, so its dependency graph includes Clang. The recurring Firefox
 inherited-display pixel-capture failure remains unresolved.
 
-Pinned conformance on `d081e6d453` has completed libc-test with zero
-unexpected failures; POSIX and Sortix are still pending. The later hint
+Pinned libc-test, Open POSIX and Sortix conformance on `d081e6d453`
+have all completed with zero unexpected failures; exact counts are below. The later hint
 increment has focused dual-width Node/three-engine evidence below and
 still requires final combined artifacts and gates. Broader implementation
 work remains in server waits, GL-source/forwarded images, GLES/EGL
@@ -8095,3 +8112,87 @@ libc-test has completed with 306 passes and zero unexpected failures;
 POSIX and Sortix remain pending. Full combined final validation and the
 remaining G02/G09 state/error and broader baseline inventory stay open.
 Performance was not measured.
+
+
+### Cage/sway landing and completed mapping conformance, 2026-10-29
+
+`graphics-fixed-device-current-conformanc-1029-084119-0165` completed on
+`d081e6d453` with zero unexpected failures, unexpected passes, build
+failures or timeouts. The normal SourceOnly kernel/rootfs/dash/bash build,
+host bootstrap and `verify-fresh` completed before the suites. The kernel
+SHA-256 is
+`6a947799436bccea9209a4bf53eb6ba71457cd3d0a47d8c76c7f0ec32587958f`.
+
+| Suite | Pass | Expected fail | Known-flaky pass | Skip | Total |
+|---|---:|---:|---:|---:|---:|
+| libc-test | 306 | 17 | 1 | 0 | 324 |
+| Open POSIX | 174 | 3 | 0 | 2 | 179 |
+| Sortix | 5,065 | 23 | 0 | 50 | 5,138 |
+
+The ordinary runners were `scripts/run-libc-tests.sh`,
+`scripts/run-posix-tests.sh` and `scripts/run-sortix-tests.sh --all
+--parallel=4`, under `scripts/dev-shell.sh` with SourceOnly resolution and
+the documented `ALLOW_RAISE_RACE=1` setting. libc-test was pinned to
+`790f94c7b6feb8ade25868c10fba46233f783a0b`; Sortix was pinned to
+`7e8f0082ab0b58ad3383a8abbf47dc4b40dcf25d` on a case-sensitive volume.
+Exact commands, output and zero exit statuses are retained in the
+mapping checkout's `.context/fixed-device-current-conformance.sh` and
+`.context/fixed-device-conformance-{products,host,fresh,libc,posix,sortix}.log`
+and `fixed-device-conformance-status.txt`.
+
+This validates the mapping checkpoint, not every later runtime change.
+The landing cut adds `21f3d451bb`'s positive ARGB native-window config and
+front-format support over that checkpoint. Its 212 native C cases, 717
+graphics source checks, workspace Rust, matching normal dual-width SDK/
+kernel/host and ABI checks, and 8/8 Node cases are recorded above. The
+89/90 browser selection and 11/12 comparison retain their Firefox capture
+failures. Those focused results identify the delta; they are not a
+final-source combined conformance or memory pass.
+
+The normal complete product rebuild and Freeciv/combined-consumer/memory
+job `graphics-native-visual-combined-products-1029-091514-85bc` is still
+pending on runtime source `21f3d451bb`. Current full gallery and manual
+browser checks also remain pending. The inherited Firefox GPU-to-2D
+capture failure remains open with its unchanged assertions, original
+deadlines and preserved evidence. No boundary, waiver, performance claim
+or full-baseline completion is inferred from this landing split.
+
+
+### Separate landing and follow-up delivery, 2026-10-29
+
+The cage/sway landing is now bounded by `cage-sway-landing.md`; the full
+inventory remains the objective of this follow-up. The landing candidate
+`e58d19f98a` retains runtime `21f3d451bb` and adds scope documentation and
+honest Python/Clang tool declarations for Sway's existing regression
+helper. The normal corrected Sway build passed in
+`cage-sway-declared-tools-1029-114926-36f1` (12m05s). Manifest parsing,
+program-index freshness and tool probes passed. The broader registry
+host-tool consistency check fails with byte-identical output using the
+original and corrected Sway manifests; its cross-package disagreements
+remain outside that correction.
+
+The earlier primary product run and first candidate run were deliberately
+stopped before application acceptance (exit 143), after compilation while
+the debug bootstrap tool was checking artifact closure/publication. They
+are not passing setup or application results. Their logs remain intact;
+the first candidate's script/logs are archived under the fork-owner
+checkout's `.context/cage-sway-final-stopped-debug-bootstrap/`. The same
+normal bootstrap command is now run with the repository's release-built
+xtask, preserving graph selection, artifact validation and source cache.
+`cage-sway-final-release-bootstrap-1029-120817-225e` runs the complete
+candidate on `e58d19f98a`, including Freeciv, combined consumers, actual
+cage/sway gallery interactions and full browser-memory. Results remain
+pending. The hint/query-CTS work is preserved unchanged in this follow-up.
+
+The independent Firefox diagnostic also now compares canvas bitmap
+serialization with screenshot capture, records bounded readback timing,
+and checks positive and deliberate wrong-color controls. Same-worker
+continuous GPU readback stalls both observations. A private fixed
+three-run separate-owner control passes unchanged screenshot/pixel
+checks while keeping real GPU readback and both visible 2D planes.
+Source/profile inspection supports a main/worker synchronization-cycle
+hypothesis; exact private native frames remain unsymbolicated. No product
+mitigation, complete attribution or broad compatibility boundary is
+claimed. The failed inherited GPU-to-2D product case remains recorded;
+its bounded presentation-worker mitigation is follow-up work unless
+actual compositor or memory acceptance establishes a landing blocker.

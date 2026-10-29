@@ -52,6 +52,20 @@ version_constraint = ">=1.20.0"
 probe = { args = ["--modversion", "wayland-scanner"], version_regex = "(?m)^(\\d+\\.\\d+(?:\\.\\d+)?)$" }
 install_hints = { darwin = "wayland-scanner is provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "wayland-scanner is provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh" }
 
+# The build's upstream status-reader regression extracts C with Python and
+# compiles it for the build machine before configuring the target binaries.
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.11"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "clang"
+version_constraint = ">=21.0"
+probe = { args = ["--version"], version_regex = "clang version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
 [source]
 url = "https://github.com/swaywm/sway/releases/download/1.12/sway-1.12.tar.gz"
 sha256 = "a7b1becc217433c11c6284d36bcea0687b87b77b0ed26a384565292ec321f2b1"
