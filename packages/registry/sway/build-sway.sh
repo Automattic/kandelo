@@ -30,8 +30,6 @@ SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/sway-src"
 
 SWAY_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/sway-install}"
-SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
-SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/sway-build"
 CROSS_FILE="$REPO_ROOT/sdk/meson/wasm32posix.ini"
@@ -59,17 +57,13 @@ SCANNER_PC_DIR="$(pkg-config --variable=pcfiledir wayland-scanner)" || {
 }
 
 # --- Stage verified source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Staging verified sway $SWAY_VERSION source..."
-    kandelo_package_stage_verified_source sway "$SRC_DIR" \
-        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
-        "$KANDELO_PACKAGE_WORK_DIR"
+echo "==> Staging verified sway $SWAY_VERSION source..."
+kandelo_package_stage_primary_source sway "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
-    for patch_file in "$SCRIPT_DIR"/patches/*.patch; do
-        echo "==> Applying $(basename "$patch_file")..."
-        kandelo_package_git_apply_patch "$SRC_DIR" "$patch_file"
-    done
-fi
+for patch_file in "$SCRIPT_DIR"/patches/*.patch; do
+    echo "==> Applying $(basename "$patch_file")..."
+    kandelo_package_git_apply_patch "$SRC_DIR" "$patch_file"
+done
 
 bash "$SCRIPT_DIR/tests/check-status-line-eof.sh" \
     "$SRC_DIR/swaybar/status_line.c" "$KANDELO_PACKAGE_WORK_DIR/status-line-eof-test"

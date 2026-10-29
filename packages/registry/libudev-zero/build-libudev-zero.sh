@@ -29,8 +29,6 @@ SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/libudev-zero-src"
 
 LIBUDEV_ZERO_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libudev-zero-install}"
-SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
-SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/libudev-zero-build"
 CROSS_FILE="$REPO_ROOT/sdk/meson/wasm32posix.ini"
@@ -41,12 +39,8 @@ if ! command -v wasm32posix-cc &>/dev/null; then
 fi
 
 # --- Stage verified source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Staging verified libudev-zero $LIBUDEV_ZERO_VERSION source..."
-    kandelo_package_stage_verified_source libudev-zero "$SRC_DIR" \
-        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
-        "$KANDELO_PACKAGE_WORK_DIR"
-fi
+echo "==> Staging verified libudev-zero $LIBUDEV_ZERO_VERSION source..."
+kandelo_package_stage_primary_source libudev-zero "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
 # Fresh build dir each run — meson bakes --prefix into the build tree.
 rm -rf "$BUILD_DIR"

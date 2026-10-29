@@ -29,8 +29,6 @@ SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/libdisplay-info-src"
 
 DI_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/libdisplay-info-install}"
-SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
-SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/libdisplay-info-build"
 CROSS_FILE="$REPO_ROOT/sdk/meson/wasm32posix.ini"
@@ -53,12 +51,8 @@ HWDATA_PC_DIR="$(pkg-config --variable=pcfiledir hwdata)" || {
 }
 
 # --- Stage verified source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Staging verified libdisplay-info $DI_VERSION source..."
-    kandelo_package_stage_verified_source libdisplay-info "$SRC_DIR" \
-        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
-        "$KANDELO_PACKAGE_WORK_DIR"
-fi
+echo "==> Staging verified libdisplay-info $DI_VERSION source..."
+kandelo_package_stage_primary_source libdisplay-info "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
 # Fresh build dir each run — meson bakes --prefix into the build tree.
 rm -rf "$BUILD_DIR"

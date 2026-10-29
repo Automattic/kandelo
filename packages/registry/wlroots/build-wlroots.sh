@@ -29,8 +29,6 @@ SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/wlroots-src"
 
 WLROOTS_VERSION="$WASM_POSIX_DEP_VERSION"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/wlroots-install}"
-SOURCE_URL="$WASM_POSIX_DEP_SOURCE_URL"
-SOURCE_SHA256="$WASM_POSIX_DEP_SOURCE_SHA256"
 
 BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/wlroots-build"
 CROSS_FILE="$REPO_ROOT/sdk/meson/wasm32posix.ini"
@@ -63,12 +61,8 @@ for native in hwdata wayland-scanner; do
 done
 
 # --- Stage verified source ---
-if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Staging verified wlroots $WLROOTS_VERSION source..."
-    kandelo_package_stage_verified_source wlroots "$SRC_DIR" \
-        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
-        "$KANDELO_PACKAGE_WORK_DIR"
-fi
+echo "==> Staging verified wlroots $WLROOTS_VERSION source..."
+kandelo_package_stage_primary_source wlroots "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
 
 # Fresh build dir each run — meson bakes --prefix into the build tree.
 rm -rf "$BUILD_DIR"
