@@ -42,7 +42,7 @@ impl ProvenanceImports {
             scan,
             &mut inputs.imports,
             abi::HOST_IMPORT_MODULE,
-            wasm_posix_shared::abi::WPK_FORK_EXCEPTION_IMPORT_ACTIVATION,
+            wasm_posix_program_abi::abi::WPK_FORK_EXCEPTION_IMPORT_ACTIVATION,
         )?;
         let transit = if let Some((ordinal, import)) =
             inputs.imports.iter().enumerate().find(|(_, import)| {

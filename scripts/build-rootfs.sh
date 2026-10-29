@@ -61,10 +61,10 @@ ROOTFS_SOURCE_TREE_PATH="${ROOTFS_SOURCE_TREE:-images/rootfs}"
 if [ -n "${ROOTFS_ABI_VERSION:-}" ]; then
     ABI_VERSION="$ROOTFS_ABI_VERSION"
 else
-    ABI_VERSION="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' crates/shared/src/lib.rs)"
+    ABI_VERSION="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' crates/program-abi/src/lib.rs)"
 fi
 if [ -z "$ABI_VERSION" ]; then
-    echo "ERROR: could not read ABI_VERSION from crates/shared/src/lib.rs" >&2
+    echo "ERROR: could not read ABI_VERSION from crates/program-abi/src/lib.rs" >&2
     exit 1
 fi
 case "$ABI_VERSION" in
@@ -127,7 +127,7 @@ generate_package_fragment() {
 # stamp noticing. The fragment also carries the package mapping and the
 # `--default-install` choice, which the old input list omitted.
 #
-# `crates/shared/src/lib.rs` is hashed directly too (harmless
+# `crates/program-abi/src/lib.rs` is hashed directly too (harmless
 # over-inclusion) even though only its `ABI_VERSION` line matters here — the
 # `literal:ABI_VERSION=...` entry is what actually captures the RESOLVED ABI
 # value the build below uses, including an `ROOTFS_ABI_VERSION` override
@@ -155,7 +155,7 @@ rootfs_input_hash() {
         scripts/build-rootfs.sh \
         scripts/generate-rootfs-package-manifest.mjs \
         scripts/build-step-input-hash.sh \
-        crates/shared/src/lib.rs \
+        crates/program-abi/src/lib.rs \
         "literal:ABI_VERSION=$ABI_VERSION"
 }
 

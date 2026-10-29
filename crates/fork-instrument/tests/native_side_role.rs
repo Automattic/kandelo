@@ -49,7 +49,7 @@ fn leading_dylink_selects_state_only_side_role_and_invalid_abi_is_rejected() {
         );
         assert_eq!(
             artifact_identity(&output).unwrap().abi_version,
-            ArtifactAbiVersion::Present(wasm_posix_shared::ABI_VERSION)
+            ArtifactAbiVersion::Present(wasm_posix_program_abi::ABI_VERSION)
         );
         assert!(
             scan(&output)

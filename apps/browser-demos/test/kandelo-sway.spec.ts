@@ -242,15 +242,18 @@ test("Kandelo sway tiles foot terminals under swaybar with wlroots' GLES2 render
     }, { timeout: 120_000, intervals: [1_000] })
     .toBeGreaterThan(0);
   await clickOutput(out, out.width - 105, (band[0] + band[band.length - 1]) / 2);
-  await openSurface(page, "Terminal");
-  // The disconnected foot clients can print after the shell's prompt.
-  await expect
-    .poll(async () => (await terminalText(page)).match(/kandelo\$/g)?.length ?? 0, { timeout: 60_000 })
-    .toBeGreaterThan(1);
+  // Display release must hand the visible view back to the launching
+  // terminal automatically. Do not select it manually or count prompts:
+  // disconnected foot clients can interleave stderr within a shell prompt.
+  // A real command below proves the parent shell resumed and records the
+  // foreground job's status without relying on that prompt's presentation.
+  await expect.poll(() => displayOwner(page), { timeout: 60_000 }).toBe(0);
+  await expect(page.getByLabel("Computer views")
+    .getByRole("button", { name: "Terminal", exact: true }))
+    .toHaveAttribute("aria-current", "true", { timeout: 60_000 });
   await page.locator(".xterm").first().click();
   await page.keyboard.type("echo sway-exit=$?\n", { delay: 40 });
   await expect.poll(() => terminalText(page), { timeout: 30_000 }).toMatch(/sway-exit=0/);
-  await expect.poll(() => displayOwner(page), { timeout: 60_000 }).toBe(0);
 
   // Gate 7.
   await page.keyboard.type(

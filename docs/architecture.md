@@ -2091,6 +2091,15 @@ graceful detach attempt fails or times out. That realm boundary is the final
 release fallback; a false graceful result never asks the main thread to keep a
 partially detached kernel Worker alive.
 
+A pthread Worker is terminated when its `memory_quiescent` arrives, except on
+JavaScriptCore browsers: there the exited thread's Worker stays idle, holding
+its instances, and is terminated with its process (exit, exec, forced
+termination or destroy). JavaScriptCore crashes when process memory grows
+while another thread destroys an instance of it
+([`JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN`](../tests/runtime-workarounds/JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN/entry.md)).
+The thread's slot and channel are reclaimed at `memory_quiescent` on every
+host.
+
 The allocator applies a hard live-address-space count and samples a live-byte
 admission budget before each new allocation. Uninstrumented
 `WebAssembly.Memory.grow()` does not call JavaScript, so simultaneous live
@@ -2610,7 +2619,7 @@ The kernel no longer reads `KLZY`. Its decoder was removed on 2026-10-02, and
 section (header bit 4) with `EINVAL`: such an image can only have been built
 before that change, so it is a stale artifact to
 rebuild rather than a format to keep reading. The bit and the section's
-structural constants (`VFS_IMAGE_KERNEL_LAZY_*` in `crates/shared/src/lib.rs`)
+structural constants (`VFS_IMAGE_KERNEL_LAZY_*` in `crates/program-abi/src/lib.rs`)
 remain defined so the refusal can name what it found.
 
 ## Networking
@@ -3980,6 +3989,13 @@ Signals are delivered at syscall boundaries. When a process has a pending signal
    `EINTR`. `longjmp` and `siglongjmp` retire abandoned handler/wait contexts;
    `siglongjmp` then applies the jump buffer's saved mask when requested.
 5. If the signal interrupted a blocking syscall, EINTR is returned
+
+PTY input follows the same completion path as other signal ingress on both
+Node and browser hosts. After the line discipline queues an ISIG signal to
+the foreground process group, the host drains kernel wakeup events and
+retires signal-killed workers before notifying terminal observers. This also
+collects interrupted kernel-owned sleeps immediately; a nanosleep has no
+host retry callback that keyboard input could otherwise wake.
 
 The host distinguishes the kernel's internal `EAGAIN` retry sentinel from a
 completed nonblocking `EAGAIN`. When a caught signal is prepared while an

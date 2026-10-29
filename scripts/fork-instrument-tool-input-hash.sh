@@ -20,7 +20,7 @@ fork_instrument_tool_input_hash() {
                     printf '%s\n' "$relative_path"
                 fi
             done
-            find crates/fork-instrument crates/shared -type f -print
+            find crates/fork-instrument crates/program-abi -type f -print
         } | LC_ALL=C sort -u | while IFS= read -r relative_path; do
             printf '%s\0' "$relative_path"
             git hash-object -- "$relative_path"

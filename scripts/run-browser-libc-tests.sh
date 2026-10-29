@@ -28,22 +28,17 @@ KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
 
 MATH_EXPECTED_FAIL=(acosh asinh erfc j0 jn jnf lgamma lgammaf lgammaf_r sinh tgamma y0 y0f ynf)
 
+# Mirrors scripts/run-libc-tests.sh, which records why each entry fails.
+# tls_init, popen, spawn, vfork, raise-race, fflush-exit, daemon-failure,
+# execle-env and sigaltstack left both lists once they passed on Node and in
+# the browser; keep the two lists in step.
 FUNCTIONAL_EXPECTED_FAIL=(
     pthread_cancel
-    tls_init
-    popen
-    spawn
-    vfork
     # (ipc_msg/ipc_sem/ipc_shm pass — SYS_ipc removed from sysroot, uses direct syscalls)
 )
 REGRESSION_EXPECTED_FAIL=(
     malloc-brk-fail
-    raise-race
     tls_get_new-dtv
-    fflush-exit
-    daemon-failure
-    execle-env
-    sigaltstack
 )
 
 # ── Browser-specific expected failures ──────────────────────────

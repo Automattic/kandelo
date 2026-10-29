@@ -160,11 +160,11 @@ impl Components<'_> {
                 self.exception.descriptor()?,
             ),
             (
-                wasm_posix_shared::abi::WPK_FORK_IMPORTED_GLOBALS_SECTION,
+                wasm_posix_program_abi::abi::WPK_FORK_IMPORTED_GLOBALS_SECTION,
                 self.state.roots.imported_globals_descriptor().to_vec(),
             ),
             (
-                wasm_posix_shared::abi::WPK_FORK_IMPORTED_TABLES_SECTION,
+                wasm_posix_program_abi::abi::WPK_FORK_IMPORTED_TABLES_SECTION,
                 self.state.tables.imported_tables_descriptor().to_vec(),
             ),
             (

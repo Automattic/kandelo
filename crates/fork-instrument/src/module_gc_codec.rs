@@ -1,6 +1,6 @@
 //! Garbage-collected reference recipe wire format and runtime names.
 
-use wasm_posix_shared::abi::{
+use wasm_posix_program_abi::abi::{
     WPK_FORK_GC_CODEC_FIELD_RECORD_SIZE, WPK_FORK_GC_CODEC_HEADER_SIZE,
     WPK_FORK_GC_CODEC_LAYOUT_RECORD_SIZE, WPK_FORK_GC_CODEC_MAGIC, WPK_FORK_GC_CODEC_SECTION,
     WPK_FORK_GC_CODEC_VERSION, WPK_FORK_REFERENCE_CODEC_IMPORT_MODULE,

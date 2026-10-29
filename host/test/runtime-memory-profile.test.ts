@@ -5,6 +5,7 @@ import {
   declaredMachineReservationBytes,
   DESKTOP_MEMORY_PROFILE,
   detectRuntimeMemoryProfile,
+  isJavaScriptCoreUserAgent,
   runtimeMemoryProfileById,
   runtimeMemoryProfileSignals,
 } from "../src/runtime-memory-profile";
@@ -104,6 +105,15 @@ describe("detectRuntimeMemoryProfile", () => {
     expect(mac.smallReservationPool).toBe(false);
     const chrome = runtimeMemoryProfileSignals({ userAgent: CHROME_MAC });
     expect(chrome.chargesDeclaredCeilings).toBe(false);
+  });
+
+  it("identifies JavaScriptCore only from a real WebKit user agent", () => {
+    expect(isJavaScriptCoreUserAgent(SAFARI_MAC)).toBe(true);
+    expect(isJavaScriptCoreUserAgent(SAFARI_IOS)).toBe(true);
+    expect(isJavaScriptCoreUserAgent(CHROME_MAC)).toBe(false);
+    expect(isJavaScriptCoreUserAgent(CHROME_ANDROID)).toBe(false);
+    expect(isJavaScriptCoreUserAgent(FIREFOX_MAC)).toBe(false);
+    expect(isJavaScriptCoreUserAgent(undefined)).toBe(false);
   });
 
   it("falls back to the desktop budget with no user agent (Node)", () => {

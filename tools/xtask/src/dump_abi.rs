@@ -974,7 +974,7 @@ fn check_file(path: &std::path::Path, expected: &str, label: &str) -> Result<(),
         eprintln!(
             "{label} at {} is out of date.\n\
              Run `bash scripts/check-abi-version.sh update` to regenerate,\n\
-             and bump `ABI_VERSION` in crates/shared/src/lib.rs if the\n\
+             and bump `ABI_VERSION` in crates/program-abi/src/lib.rs if the\n\
              contract actually changed.",
             path.display()
         );

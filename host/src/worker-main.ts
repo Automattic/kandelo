@@ -161,6 +161,7 @@ import {
 // everything compiled by wasm32-posix) never trigger.
 import { isWasiModule, wasiModuleDefinesMemory } from "./wasi-detect";
 import { synchronizeReceivedSharedWasmMemory } from "./shared-wasm-memory-growth";
+import { noteProcessMemoryInstance } from "./wasm-instance-retention";
 import {
   registerWasmModuleReflection,
   wasmModuleExports,
@@ -5840,6 +5841,7 @@ export async function centralizedThreadWorkerMain(
     const threadInstanceImports = (threadMainImportedState?.imports ??
       routedThreadImportObject) as WebAssembly.Imports;
     const instance = new WebAssembly.Instance(module, threadInstanceImports);
+    noteProcessMemoryInstance(instance);
     threadInstance = instance;
     threadMainImportedState?.complete(instance);
     if (

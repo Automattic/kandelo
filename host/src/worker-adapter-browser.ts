@@ -8,6 +8,9 @@ export class BrowserWorkerAdapter implements WorkerAdapter {
   }
 
   createWorker(workerData: unknown): WorkerHandle {
+    // Keep process and thread Workers module Workers: Firefox crashes when a
+    // Worker terminates a nested classic Worker that is still starting
+    // (docs/measurements/2026-10-28-firefox-nested-classic-worker-termination.md).
     const worker = new Worker(this.entryUrl, { type: "module" });
     // Web Workers don't have workerData — send init data via postMessage
     try {

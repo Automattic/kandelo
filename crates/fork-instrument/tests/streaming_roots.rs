@@ -23,7 +23,7 @@ fn fresh_instances_restore_typed_roots_and_original_segment_lifetimes() {
         let input = input(wide);
         let output = native::emit_roots(&input);
         assert_eq!(native::emit_roots(&input), output);
-        let section = wasm_posix_shared::abi::WPK_FORK_IMPORTED_GLOBALS_SECTION;
+        let section = wasm_posix_program_abi::abi::WPK_FORK_IMPORTED_GLOBALS_SECTION;
         let descriptor = |bytes: &[u8]| {
             wasmparser::Parser::new(0)
                 .parse_all(bytes)
