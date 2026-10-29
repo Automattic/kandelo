@@ -23,7 +23,6 @@ LIBC_TEST="$REPO_ROOT/tests/libc/libc-test"
 BUILD_DIR="$REPO_ROOT/tests/libc/libc-test/build"
 RUNNER_FIXTURE_ROOT="$BUILD_DIR/runner-fixture"
 KERNEL_WASM="$("$REPO_ROOT/scripts/resolve-binary.sh" kernel.wasm)"
-PROGRAM_INDEX_CHECKER=""
 
 # ── Expected failures ──────────────────────────────────────
 # Tests known to fail due to wasm32 soft-float precision limits (no hardware FPU rounding control).
@@ -376,7 +375,6 @@ run_test() {
     output=$(cd "$REPO_ROOT" && \
         KERNEL_CWD= \
         KERNEL_PATH="$kernel_path" \
-        WASM_POSIX_XTASK_BIN="$PROGRAM_INDEX_CHECKER" \
         KANDELO_RUNNER_FIXTURE_ROOT="$fixture_root" \
         KANDELO_RUNNER_FIXTURE_CWD="$fixture_cwd" \
         KANDELO_RUNNER_GUEST_PROGRAM= \
@@ -482,21 +480,10 @@ if [ ! -f "$KERNEL_WASM" ]; then
     exit 1
 fi
 
-# Prepare source-projection policy once outside the per-test timeout. Every
-# runner process still executes this exact checker, so package freshness stays
-# authoritative without charging a cold release build to guest runtime.
-RUST_HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
-if [ -z "$RUST_HOST_TARGET" ]; then
-    echo "Error: could not determine the Rust host target." >&2
-    exit 1
-fi
-cargo build --release -p xtask --target "$RUST_HOST_TARGET" --quiet
-PROGRAM_INDEX_CHECKER="$REPO_ROOT/target/$RUST_HOST_TARGET/release/xtask"
-if [ ! -f "$PROGRAM_INDEX_CHECKER" ]; then
-    echo "Error: prepared xtask was not found at $PROGRAM_INDEX_CHECKER" >&2
-    exit 1
-fi
 abi_contract_stamp_prepare || exit 1
+# shellcheck source=scripts/conformance-program-index.sh
+source "$REPO_ROOT/scripts/conformance-program-index.sh"
+conformance_program_index_prepare || exit 1
 
 if ! build_example_program echo; then
     err=$(head -5 /tmp/libc-test-build-err.txt 2>/dev/null || echo "(no error output)")
