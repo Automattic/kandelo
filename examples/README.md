@@ -36,6 +36,13 @@ does not claim, so the guest sees the seeded tree); the guest cannot mutate
 the source, and ambient host executable lookup is disabled. These controls are
 runner plumbing, not guest environment variables.
 
+`KANDELO_RUNNER_NETWORK=offline-egress` boots the machine with the internet
+egress link the browser host always provides (eth0 at 10.0.2.15/24 behind a
+NAT gateway), but with nothing behind the gateway: connections beyond the
+machine fail with EHOSTUNREACH, and the host's network is never reached. The
+Node conformance runners set it so they observe the same machine as the
+browser runners. Unset, the machine has loopback only.
+
 See [docs/sdk-guide.md](../docs/sdk-guide.md) for full SDK documentation.
 
 ## Programs

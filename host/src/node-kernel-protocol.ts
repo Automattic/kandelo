@@ -182,6 +182,9 @@ export interface InitMessage {
   /** Attach a real-TCP backend (TcpNetworkBackend) to the worker's PlatformIO
    *  so wasm programs can dial external hosts via Node `net.Socket`. */
   enableTcpNetwork?: boolean;
+  /** Attach the egress link with nothing behind its gateway
+   *  (OfflineEgressBackend). Exclusive with `enableTcpNetwork`. */
+  offlineEgressLink?: boolean;
 }
 
 /** Read, cancel or release one worker-owned command family. */
