@@ -7,6 +7,7 @@ export type DockPaneId = "gallery";
 export type DockViewId = "demo" | "terminal";
 
 const REPOSITORY_URL = "https://github.com/Automattic/kandelo";
+const SITE_URL = "https://kandelo.dev";
 
 export const NETWORK_PHASE_LABEL: Record<SessionPhase, string> = {
   offline: "not connected",
@@ -492,6 +493,18 @@ export const Dock: React.FC<{
                   <path d="M8 1.5a6.5 6.5 0 0 0-2.06 12.67c.33.06.45-.14.45-.32v-1.27c-1.83.4-2.22-.78-2.22-.78-.3-.76-.73-.96-.73-.96-.6-.41.05-.4.05-.4.66.05 1.01.68 1.01.68.59 1.01 1.54.72 1.92.55.06-.43.23-.72.42-.89-1.46-.17-3-.73-3-3.21 0-.71.25-1.29.68-1.75-.07-.17-.3-.83.06-1.72 0 0 .55-.18 1.79.67A6.2 6.2 0 0 1 8 4.75c.55 0 1.1.07 1.62.22 1.24-.85 1.79-.67 1.79-.67.36.89.13 1.55.06 1.72.42.46.68 1.04.68 1.75 0 2.49-1.54 3.04-3 3.2.24.21.44.61.44 1.23v1.65c0 .18.12.38.45.32A6.5 6.5 0 0 0 8 1.5Z" />
                 </svg>
               </a>
+              {minimal && (
+                <a
+                  className="kdock-header-btn kdock-site-link"
+                  href={SITE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="Visit kandelo.dev"
+                  title="Visit kandelo.dev"
+                >
+                  <img src={markUrl} alt="" />
+                </a>
+              )}
               {!minimal && (
                 <>
                   <button

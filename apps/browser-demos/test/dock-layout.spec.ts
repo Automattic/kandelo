@@ -7,6 +7,7 @@ test("full dock keeps its layout buttons and its tool row", async ({ page }) => 
   await expect(page.locator(".kdock-row")).toBeVisible();
   await expect(page.locator(".kdock-top-row").getByRole("button", { name: "Terminal" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Theme" })).toBeEnabled();
+  await expect(page.getByRole("link", { name: "Visit kandelo.dev" })).toHaveCount(0);
 });
 
 test("minimal dock keeps only header buttons, with Terminal and Internals", async ({ page }) => {
@@ -15,6 +16,8 @@ test("minimal dock keeps only header buttons, with Terminal and Internals", asyn
   await expect(page.getByRole("button", { name: "Hide dock tools" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Use compact dock" })).toHaveCount(0);
   await expect(page.locator(".kdock-shell")).toHaveClass(/kdock-full-width/);
+  await expect(page.locator(".kdock-top-row .kdock-header-btn").last())
+    .toHaveAttribute("href", "https://kandelo.dev");
 
   const terminal = page.locator(".kdock-top-row").getByRole("button", { name: "Terminal" });
   await terminal.click();

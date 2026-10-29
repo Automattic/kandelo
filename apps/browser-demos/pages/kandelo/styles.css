@@ -679,6 +679,11 @@
   stroke: none;
 }
 
+.kdock-site-link img {
+  height: 18px;
+  display: block;
+}
+
 .kdock-collapse-btn svg {
   transition: transform 0.18s ease;
 }
