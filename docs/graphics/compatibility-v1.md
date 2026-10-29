@@ -90,7 +90,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | E07 | dma-buf validation, multiple import and format/modifier enumeration; EXT import | Core EGLAttrib and KHR EGLint image creation share retained dma-buf storage and destruction. Parsing rejects wide aliases, missing mandatory fields and malformed modifier pairs before import, validates preservation and hint values, and ignores valid YUV hints for supported RGB formats. The explicit CPU import request validates dimensions, format, pitch, offset and backing bounds before publication; normal four-format mapped/native checks pass. Full negative/rollback coverage remains open | EGL, PRIME, GBM | CPU/GPU imports, bad fd/stride/offset/modifier; repeated import lifetime | open |
 | E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve for retained dma-buf imports. Native fence candidates, waiter leases and retryable cleanup now have retained source models. Table 17 adds caller-known create/status/release tokens, accepted-reply publication, cancellation and mapped object-session authority without a current context. Native and forwarded source rendering pass. Core C create/destroy/query/client-wait now use generation-owned records, retained sessions, serialized replies, monotonic timeouts and cancellation-safe waiter references; public glFlush requests acknowledged native flush. Focused C and three-engine source evidence is recorded below. The four KHR_fence_sync aliases share these records with width-correct lists/output and 64-bit timeouts; EGL_KHR_fence_sync and client GL_OES_EGL_sync are declared. eglWaitSync server ordering remains open; EGL_KHR_wait_sync is not advertised. GL-source images and full lifecycle/errors/guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
 | B01 | GBM allocation/import/export and plane metadata | Dumb/GPU tiers and modifier admission use checked metadata; borrowed surface leases preserve old GPU storage after public retirement/ID reuse. Explicit CPU layout mirrors retain native/mapped siblings. Distinct GBM wrappers over one duplicated/transferred DRM file now share GEM-name lifetime while retaining separate private descriptors; focused both-width/three-engine guests pass. Full negative/lifecycle and combined validation remain open | GBM, DRM BOs, host registry | SDK guest fixtures both widths; unsupported format/flags | partial |
-| B02 | GBM map/unmap coherence and authority | Kernel-owned mapping BO references and live-parent fork/vfork inheritance; independent host aliases by process/address with post-clone priming, changed-run publication, and successful frozen-retry/kernel-wait visibility boundaries. Partial munmap trims/splits retain canonical offsets and references across fork, including anonymous reuse of the hole; focused both-width Node/browser checks pass. Device MAP_FIXED/mremap transforms, broader cleanup/failure and combined conformance remain open | GBM, kernel maps, DRI registry | Importer writes, stale readers, unmap/exit/exec; browser pixels | partial |
+| B02 | GBM map/unmap coherence and authority | Kernel-owned mapping BO references and live-parent fork/vfork inheritance; independent host aliases by process/address with post-clone priming, changed-run publication, and successful frozen-retry/kernel-wait visibility boundaries. Partial munmap trims/splits retain canonical offsets and references across fork, including anonymous reuse of the hole; focused both-width Node/browser checks pass. Fixed anonymous/private-file replacement retires only the replaced device interval, with failed-allocation rollback. Replacement by another device mapping, device mremap, broader cleanup/failure and combined conformance remain open | GBM, kernel maps, DRI registry | Importer writes, stale readers, unmap/exit/exec; browser pixels | partial |
 | B03 | Surface ring lock/release/destroy ownership | Retained EGL leases and a bounded GPU pool publish a top-row-first copy only after accepted swaps, preserving the private render back and locked fronts. Rendered retention/exhaustion/retirement and asymmetric KMS visibility/orientation pass both guest widths in all three engines, through WebGL and 2D scanout. WRITE/LINEAR/CURSOR fronts retain CPU storage with a private GPU render back, with normal both-width/three-engine image and scanout evidence below. Forwarding and broader combined validation remain open | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks; asymmetric KMS pixels | partial |
 | K01 | Single display resources and consistent object IDs | Integrated dynamic mode catalog, properties and device-wide IDs; broader device/host validation pending | kernel dri/kms, host mode metadata | Rust ioctl and Node mode tests; preserve preferred/catalog semantics | partial |
 | K02 | Probe all nested outputs before writing | Property, enum and expanded connector outputs now preprobe all destinations; focused Rust regressions pass | syscall nested-output helpers | Valid first/invalid later buffers, unchanged sentinels and top-level bytes | open |
@@ -7630,3 +7630,55 @@ Device `MAP_FIXED`/`mremap`, complete combined compositor/gallery/memory and
 POSIX reruns, broader CTS/API negative/lifecycle work and the unexplained
 rendering failures remain required. This increment closes only the focused
 partial-unmap ownership/coherence gap; B02 stays partial.
+
+
+### Fixed anonymous/private-file replacement of DRI mappings, 2026-10-29
+
+A new kernel regression on source `5eedcb9aa7` reproduced a distinct gap:
+fixed anonymous replacement of the middle page updated the allocator but
+left one complete DRI binding instead of two surviving fragments. The
+failed-allocation control passed. The actual before result is preserved
+as the file-owner checkout's `.context/fixed-anonymous-before.log`.
+
+A prepared device-unmap transaction now reserves fragment metadata and BO
+split references before allocation. Only a successful anonymous/regular-file
+fixed allocation commits the old device interval's retirement. The old
+process bytes remain readable for final device publication until host
+post-syscall population begins. Aborted allocation returns every temporary
+BO hold, including a split hold acquired before an allocator rejection;
+it leaves the old device binding and host views intact. `munmap` uses the
+same retirement plan. Fixed unaligned addresses in this path fail with
+EINVAL. Replacement by another device mapping is a separate remaining gap.
+
+The ordinary dual-width SDK guest now replaces the middle of a live BO
+directly with anonymous memory and with a private memfd mapping, without
+an intermediate unmap. It checks file population, fd retirement, private
+replacement bytes across fork, shared left/right BO writes and opposite
+retirement orders. Earlier full-map, partial-unmap and hole-reuse checks
+remain enabled with their original assertions.
+
+`graphics-fixed-mapping-final-1029-003756-2848` passed in the file-owner
+checkout after 19m15s. It ran the complete workspace Rust selection,
+including 2,616 runtime-core tests, 87 shared tests and six compile-fail
+runtime-core documentation cases, then normal matching kernel/side-module/
+host builds and the ABI check. All 35 selected Node/source cases passed
+with zero skips/unloaded files (295.42s including preparation). All 12
+browser guest cases passed (2.8m), both pointer widths in Chromium,
+Firefox and WebKit. No ABI/snapshot/generated definitions changed in this
+increment: ABI 56 / host 3 / GL table 17 / fork record 21 stay fixed.
+
+The kernel SHA-256 is
+`bbacec8e939d8e0beb75c55f06cc5384cb8d741c90b6fbb7850a6358e019bd38`.
+Logs and traces are the file-owner checkout's `.context/fixed-mapping-*`;
+normal browser guest JSON records retain image, program and kernel hashes,
+engine versions, exit statuses and diagnostics. The optional Vite gallery
+scan again reports the absent rootfs in this focused checkout. All selected
+guests build their own normal images and ran; no gallery claim is made.
+
+The primary checkout remains frozen at `5eedcb9aa7` while its normal
+products/complete consumer/browser-memory job runs. Its separate pinned
+libc/POSIX/Sortix job is also still running. Those jobs predate this fixed
+replacement increment; results cannot be counted as complete combined
+validation of the newer source. Device-target replacement, device mremap,
+full combined gates and broader API/CTS work remain open. No performance
+claim or hard platform boundary is inferred from these focused passes.

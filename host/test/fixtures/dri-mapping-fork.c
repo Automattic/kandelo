@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -54,9 +55,15 @@ static void fragmented_mapping(int middle_hole) {
     pixels[0]=17;pixels[page]=23;pixels[2*page]=29;
     unsigned char *left,*right;
     if (middle_hole) {
-        CHECK(munmap(pixels+page,page)==0);
+        if (middle_hole==1) CHECK(munmap(pixels+page,page)==0);
         left=pixels;right=pixels+2*page;
-        CHECK(mmap(pixels+page,page,PROT_READ|PROT_WRITE,
+        if (middle_hole==3) {
+            int replacement=memfd_create("fixed-file",MFD_CLOEXEC);CHECK(replacement>=0);
+            CHECK(ftruncate(replacement,page)==0 && write(replacement,"x",1)==1);
+            CHECK(mmap(pixels+page,page,PROT_READ|PROT_WRITE,
+                MAP_FIXED|MAP_PRIVATE,replacement,0)==pixels+page);
+            CHECK(close(replacement)==0 && pixels[page]=='x');
+        } else CHECK(mmap(pixels+page,page,PROT_READ|PROT_WRITE,
             MAP_FIXED|MAP_PRIVATE|MAP_ANONYMOUS,-1,0)==pixels+page);
         pixels[page]=55;
     } else {
@@ -87,12 +94,16 @@ static void fragmented_mapping(int middle_hole) {
     if (middle_hole) CHECK(munmap(right,page)==0 && munmap(left,page)==0);
     else CHECK(munmap(left,page)==0);
     CHECK(close(parent_gate[1])==0 && close(child_gate[0])==0);
-    puts(middle_hole ? "OK middle-unmap fragments retain storage offsets across fork" :
+    puts(middle_hole==3 ? "OK fixed file replacement retires only the replaced DRI interval" :
+        middle_hole==2 ? "OK fixed anonymous replacement retires only the replaced DRI interval" :
+        middle_hole ? "OK middle-unmap fragments retain storage offsets across fork" :
         "OK prefix and suffix unmaps preserve the surviving mapping across fork");
 }
 int main(void) {
     full_mapping();
     fragmented_mapping(1);
     fragmented_mapping(0);
+    fragmented_mapping(2);
+    fragmented_mapping(3);
     return 0;
 }

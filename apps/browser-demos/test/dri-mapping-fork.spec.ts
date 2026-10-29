@@ -55,6 +55,8 @@ test("normal DRI mappings survive descriptor close and synchronize across fork",
       "OK inherited DRI mapping survives descriptor and writer retirement",
       "OK middle-unmap fragments retain storage offsets across fork",
       "OK prefix and suffix unmaps preserve the surviving mapping across fork",
+      "OK fixed anonymous replacement retires only the replaced DRI interval",
+      "OK fixed file replacement retires only the replaced DRI interval",
     ]);
     expect(result.stderr).toBe("");
     expect(result.diagnostics).toEqual([]);

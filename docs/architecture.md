@@ -3428,8 +3428,11 @@ that retirement itself. GPU textures follow the same final destruction
 event. All guest mappings and snapshots stay inside disposable workers.
 The host bind import includes the canonical offset; it ships with the
 matching kernel within the single unpublished ABI 56 / kernel-host 3 epoch.
-`MAP_FIXED` over live device mappings and device `mremap` transitions still
-need separate work; see the compatibility ledger.
+Fixed anonymous and private-file replacements retire the affected device
+interval after allocation succeeds, before the host populates replacement
+bytes. A failed allocation returns temporary split references and preserves
+the old device bindings. Replacement by another device mapping and device
+`mremap` transitions still need separate work; see the compatibility ledger.
 
 The host's independent display statistics buffer publishes the current
 DRM master PID in slot 8 (zero when unowned), alongside presentation and

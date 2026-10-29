@@ -13166,11 +13166,122 @@ pub fn sys_mmap(
     // address space allocator. The host populates file-backed regions after
     // allocation and tracks MAP_SHARED regions for msync writeback.
     let alloc_flags = flags | MAP_ANONYMOUS;
+    let replacement = if flags & wasm_posix_shared::mmap::MAP_FIXED != 0 && addr != 0 {
+        if addr & 0xFFFF != 0 {
+            return Err(Errno::EINVAL);
+        }
+        let aligned_len = len.checked_add(0xFFFF).ok_or(Errno::ENOMEM)? & !0xFFFF;
+        if aligned_len == 0 {
+            return Err(Errno::ENOMEM);
+        }
+        Some(DeviceUnmapPlan::prepare(proc, addr, aligned_len)?)
+    } else {
+        None
+    };
     let result = proc.memory.mmap_anonymous(addr, len, prot, alloc_flags);
     if result == MAP_FAILED {
         return Err(Errno::ENOMEM);
     }
+    if let Some(replacement) = replacement {
+        replacement.commit(proc, host);
+    }
     Ok(result)
+}
+
+/// Reserve device-mapping retirement before the address allocator changes.
+/// Until commit, the old mappings still own their references and host views.
+struct DeviceUnmapPlan {
+    addr: usize,
+    end: usize,
+    fragments: Vec<crate::process::DriBoBinding>,
+    split_holds: Vec<crate::dri::BoId>,
+}
+
+impl DeviceUnmapPlan {
+    fn prepare(proc: &Process, addr: usize, len: usize) -> Result<Self, Errno> {
+        let end = addr.checked_add(len).ok_or(Errno::EINVAL)?;
+        let mut fragments = Vec::new();
+        let mut split_holds = Vec::new();
+        fragments.try_reserve_exact(proc.dri_bindings.len().checked_mul(2).ok_or(Errno::ENOMEM)?)
+            .map_err(|_| Errno::ENOMEM)?;
+        split_holds.try_reserve_exact(proc.dri_bindings.len()).map_err(|_| Errno::ENOMEM)?;
+        for binding in &proc.dri_bindings {
+            let binding_end = binding.addr.checked_add(binding.len).ok_or(Errno::EINVAL)?;
+            if binding_end <= addr || binding.addr >= end {
+                fragments.push(*binding);
+                continue;
+            }
+            if binding.addr < addr {
+                fragments.push(crate::process::DriBoBinding { len: addr - binding.addr, ..*binding });
+            }
+            if binding_end > end {
+                let delta = end - binding.addr;
+                let bo_offset = binding.bo_offset.checked_add(delta as u64).ok_or(Errno::EOVERFLOW)?;
+                fragments.push(crate::process::DriBoBinding {
+                    addr: end, len: binding_end - end, bo_offset, ..*binding
+                });
+                if binding.addr < addr {
+                    split_holds.push(binding.bo_id);
+                }
+            }
+        }
+        // Reserve all split references before any destructive cleanup. A failed
+        // fixed allocation drops this plan and returns these temporary holds.
+        crate::dri::with_registry(|registry| {
+            for (index, bo_id) in split_holds.iter().enumerate() {
+                if registry.incref(*bo_id).is_none() {
+                    for previous in &split_holds[..index] {
+                        registry.decref(*previous);
+                    }
+                    return Err(Errno::EOVERFLOW);
+                }
+            }
+            Ok(())
+        })?;
+        Ok(Self { addr, end, fragments, split_holds })
+    }
+
+    fn commit(mut self, proc: &mut Process, host: &mut dyn HostIO) {
+        let Self { addr, end, .. } = self;
+        // A fixed replacement has reserved its new allocator interval, but the
+        // host has not overwritten the process bytes yet. Flush the retiring
+        // device views now, before post-syscall population of the new mapping.
+        if proc.fb_binding.is_some_and(|binding| {
+            addr <= binding.addr && end >= binding.addr.saturating_add(binding.len)
+        }) {
+            release_process_fb_binding(proc, host);
+        }
+        unbind_gl_cmdbufs_in_range(proc, host, addr, end - addr);
+        let pid = proc.pid as i32;
+        for binding in &proc.dri_bindings {
+            let removed_start = addr.max(binding.addr);
+            let removed_end = end.min(binding.addr + binding.len);
+            if removed_start >= removed_end {
+                continue;
+            }
+            host.gbm_bo_unbind(pid, binding.bo_id, removed_start, removed_end - removed_start);
+            if removed_start == binding.addr && removed_end == binding.addr + binding.len {
+                if crate::dri::with_registry(|registry| registry.decref(binding.bo_id)) == Some(0) {
+                    host.gbm_bo_destroy(pid, binding.bo_id);
+                }
+            }
+        }
+        proc.dri_bindings = core::mem::take(&mut self.fragments);
+        // The committed fragments now own these holds.
+        self.split_holds.clear();
+    }
+}
+
+impl Drop for DeviceUnmapPlan {
+    fn drop(&mut self) {
+        // Original mappings remain live on an aborted plan, so returning a
+        // temporary split hold cannot destroy backing or notify the host.
+        crate::dri::with_registry(|registry| {
+            for bo_id in &self.split_holds {
+                registry.decref(*bo_id);
+            }
+        });
+    }
 }
 
 /// munmap -- unmap a previously mapped region.
@@ -13197,81 +13308,7 @@ pub fn sys_munmap(
         return Err(Errno::EINVAL);
     }
 
-    let end = addr + aligned_len;
-    let mut fragments = Vec::new();
-    fragments.try_reserve_exact(proc.dri_bindings.len().checked_mul(2).ok_or(Errno::ENOMEM)?)
-        .map_err(|_| Errno::ENOMEM)?;
-    for binding in &proc.dri_bindings {
-        let binding_end = binding.addr.checked_add(binding.len).ok_or(Errno::EINVAL)?;
-        if binding_end <= addr || binding.addr >= end {
-            fragments.push(*binding);
-            continue;
-        }
-        if binding.addr < addr {
-            fragments.push(crate::process::DriBoBinding { len: addr - binding.addr, ..*binding });
-        }
-        if binding_end > end {
-            let delta = end - binding.addr;
-            let bo_offset = binding.bo_offset.checked_add(delta as u64).ok_or(Errno::EOVERFLOW)?;
-            fragments.push(crate::process::DriBoBinding { addr: end, len: binding_end - end, bo_offset, ..*binding });
-        }
-    }
-
-    // Acquire every split hold before retiring any mapping or host view. A
-    // saturated refcount must leave the complete address space unchanged.
-    crate::dri::with_registry(|registry| {
-        for (index, binding) in proc.dri_bindings.iter().enumerate() {
-            if binding.addr < addr && binding.addr + binding.len > end {
-                if registry.incref(binding.bo_id).is_none() {
-                    for previous in &proc.dri_bindings[..index] {
-                        if previous.addr < addr && previous.addr + previous.len > end {
-                            registry.decref(previous.bo_id);
-                        }
-                    }
-                    return Err(Errno::EOVERFLOW);
-                }
-            }
-        }
-        Ok(())
-    })?;
-
-    // /dev/fb0 cleanup: if this munmap fully covers the framebuffer
-    // binding, drop it and tell the host. We check before the actual
-    // munmap so the host stops reading the region before its address
-    // space is freed.
-    let fb_release = if let Some(b) = proc.fb_binding {
-        let end = addr.saturating_add(aligned_len);
-        let b_end = b.addr.saturating_add(b.len);
-        addr <= b.addr && end >= b_end
-    } else {
-        false
-    };
-    if fb_release {
-        release_process_fb_binding(proc, host);
-    }
-
-    // GL cmdbuf cleanup: any munmap overlap invalidates the host's
-    // single cmdbuf view for this pid. The GL session itself may remain
-    // initialized, but it must mmap the cmdbuf again before submitting.
-    unbind_gl_cmdbufs_in_range(proc, host, addr, aligned_len);
-
-    // A surviving VMA fragment keeps its original byte position and one BO
-    // hold. Splitting into two fragments acquires exactly one additional hold.
-    // The host trims the same interval after flushing the old mapped bytes.
-    let pid = proc.pid as i32;
-    for binding in &proc.dri_bindings {
-        let binding_end = binding.addr + binding.len;
-        let removed_start = addr.max(binding.addr);
-        let removed_end = end.min(binding_end);
-        if removed_start >= removed_end { continue; }
-        host.gbm_bo_unbind(pid, binding.bo_id, removed_start, removed_end - removed_start);
-        if removed_start == binding.addr && removed_end == binding_end {
-            if crate::dri::with_registry(|registry| registry.decref(binding.bo_id)) == Some(0) {
-                host.gbm_bo_destroy(pid, binding.bo_id);
-            }
-        }
-    }
-    proc.dri_bindings = fragments;
+    DeviceUnmapPlan::prepare(proc, addr, aligned_len)?.commit(proc, host);
 
     // Linux munmap succeeds (returns 0) even if no mappings overlap the range,
     // as long as the address is valid and page-aligned.
@@ -53502,6 +53539,58 @@ impl HostIO for RelSymlinkMock {
         assert!(crate::dri::with_registry(|r| r.get(bo_id).is_some()));
         sys_munmap(&mut proc, &mut host, address + 2 * page, page).unwrap();
         assert!(crate::dri::with_registry(|r| r.get(bo_id).is_none()));
+    }
+
+    #[test]
+    fn fixed_anonymous_mmap_retires_only_the_replaced_dri_interval() {
+        use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_FIXED, MAP_PRIVATE, MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let page = 65536;
+        let (fd, offset, size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 256, 192);
+        let address = sys_mmap(&mut proc, &mut host, 0, size, PROT_READ | PROT_WRITE,
+            MAP_SHARED, fd, offset as i64).unwrap();
+        let bo_id = proc.dri_bindings[0].bo_id;
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(sys_mmap(&mut proc, &mut host, address + page, page, PROT_READ | PROT_WRITE,
+            MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0), Ok(address + page));
+        assert_eq!(proc.dri_bindings.len(), 2);
+        assert_eq!(proc.dri_bindings[0].addr, address);
+        assert_eq!(proc.dri_bindings[0].len, page);
+        assert_eq!(proc.dri_bindings[1].addr, address + 2 * page);
+        assert_eq!(proc.dri_bindings[1].bo_offset, (2 * page) as u64);
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo_id).unwrap().refcount), 2);
+        assert_eq!(host.gbm_bo_unbind_calls, [(1, bo_id, address + page, page)]);
+        assert!(host.gbm_bo_destroy_calls.is_empty());
+        sys_munmap(&mut proc, &mut host, address, 3 * page).unwrap();
+        assert!(crate::dri::with_registry(|r| r.get(bo_id).is_none()));
+    }
+
+    #[test]
+    fn fixed_anonymous_mmap_failure_preserves_dri_storage_and_bindings() {
+        use wasm_posix_shared::mmap::{MAP_ANONYMOUS, MAP_FIXED, MAP_PRIVATE, MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, offset, size) = dri_alloc_dumb_for_mmap(&mut proc, &mut host, 256, 192);
+        let address = sys_mmap(&mut proc, &mut host, 0, size, PROT_READ | PROT_WRITE,
+            MAP_SHARED, fd, offset as i64).unwrap();
+        let bo_id = proc.dri_bindings[0].bo_id;
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(sys_mmap(&mut proc, &mut host, address + 65536, 0x40000000,
+            PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0), Err(Errno::ENOMEM));
+        // Force a rejected middle replacement after the split plan has
+        // acquired its extra BO hold; abort must return that hold too.
+        proc.memory.set_max_addr(address + 65536);
+        assert_eq!(sys_mmap(&mut proc, &mut host, address + 65536, 65536,
+            PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0), Err(Errno::ENOMEM));
+        assert_eq!(proc.dri_bindings.len(), 1);
+        assert_eq!(proc.dri_bindings[0].addr, address);
+        assert_eq!(proc.dri_bindings[0].len, size);
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo_id).unwrap().refcount), 1);
+        assert!(host.gbm_bo_unbind_calls.is_empty());
+        assert!(host.gbm_bo_destroy_calls.is_empty());
     }
 
     #[test]

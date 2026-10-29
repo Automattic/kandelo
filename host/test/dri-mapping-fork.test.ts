@@ -11,6 +11,8 @@ it.each(["wasm32","wasm64"] as const)("retains and synchronizes inherited CPU ma
       "OK inherited DRI mapping survives descriptor and writer retirement",
       "OK middle-unmap fragments retain storage offsets across fork",
       "OK prefix and suffix unmaps preserve the surviving mapping across fork",
+      "OK fixed anonymous replacement retires only the replaced DRI interval",
+      "OK fixed file replacement retires only the replaced DRI interval",
     ]);
   } finally {fixture.cleanup();}
 },90000);
