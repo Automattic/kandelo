@@ -7188,3 +7188,68 @@ Twenty fresh-page Chromium repetitions of the captured native-API standalone
 replay also pass (`graphics-standalone-fresh-api-read-1028-203042-f4ca`).
 Together with the earlier 100-cycle controls, this still supplies no outside
 fault reproduction for the original forwarded pixel failure.
+
+
+### Current checkpoint gates and CPU image layout work, 2026-10-28
+
+The validated compositor checkpoint is commit `9a9dec0bf4`. Its full
+browser-memory gate is `graphics-retained-front-memory-1028-211051-11ed`;
+current libc/POSIX/Sortix provisioning and suites run in the owned detached
+checkout `.context/graphics-current-conformance` through
+`graphics-retained-front-conformance-1028-211445-7ed5`. Both are pending;
+neither is a passing result. The conformance checkout owns its SDK, host,
+kernel and normal product projection, pinned libc-test revision
+`790f94c7b6feb8ade25868c10fba46233f783a0b`, and a separate case-sensitive
+Sortix checkout at revision `7e8f0082ab0b58ad3383a8abbf47dc4b40dcf25d`.
+An unnecessary second provisioning attempt failed when its clone destination
+already existed; the original registered job remained active.
+
+CPU-image work remains isolated under `.context/gbm-cpu-fronts`. Its first
+host mirror prototype does not resolve the normal guest failure: libc's
+`_wpk_egl_image_texture` explicitly refuses mapped images and its renderbuffer
+entry point rejects them before requesting any host source. The legacy CPU
+texture entry point makes a one-time row upload, without retained shared
+storage. Simply removing these guards would be wrong: the existing raw-BO
+request omits the image's declared format, pitch, dimensions and byte offset.
+The candidate now introduces an explicit layout-bearing private request,
+CPU-storage native mirrors separate from GPU-tier scanout objects, and
+ordered publication between image siblings. This code is not integrated,
+not yet rendered-validated and does not establish full CPU-image support.
+Its draft ABI remains the single ABI56/kernel-host3 epoch; matching candidate
+artifacts must be regenerated rather than reusing primary artifacts.
+
+The first source-only selection ran 98 tests: 97 passed and one failed
+because the initial prototype changed the existing unknown-source errno.
+The old raw request's failure is restored while the new layout request owns
+CPU image imports. The first new wire validation caught an unsorted ioctl
+contract-table entry (86 shared tests passed, one failed); its placement is
+corrected before retry. These are ordinary implementation failures, not
+platform boundaries. Normal guest pixel/import assertions remain intact.
+
+
+The isolated layout candidate's normal run
+`graphics-cpu-image-layout-v2-1028-212801-f47e` passed in 7m17s: shared wire
+checks, normal kernel, SDKs at both widths, generated snapshot check, and
+one real Chromium wasm32 WRITE-window/KMS case with the original imported
+renderbuffer and selected/unselected pixel assertions. This follows the
+preserved failing CPU case; it is not a full engine/width/layout result.
+Source/kernel/program identities and the successful case evidence are under
+that checkout's `.context/cpu-image-first-v3*` and
+`.context/gbm-native-kms-guests/`.
+
+The expanded candidate adds a normal guest check that destroys the public
+EGLImage while its renderbuffer sibling survives, writes mapped bytes then
+reads through GL, writes through GL then observes the live mapping, and
+restores the original KMS test pixels. Its run is
+`graphics-cpu-image-expanded-1028-213732-edcc`, still pending. Its preliminary
+checks pass: the new Rust layout/no-write-on-rejection test, all 211 native
+EGL cases, the native GBM harness, evidence-class registration, and 109/109
+focused source host cases (zero skipped/unloaded). The source checks include
+layout identity, four advertised channel layouts, disjoint/unchanged sibling
+publication, rejected readback/publication, native deletion retries, and
+XRGB implicit alpha. The latter failed before its repair and is preserved
+in `cpu-image-source-v4.log`; all original assertions remain. The candidate
+host type check reports 42 baseline diagnostics, with no additions or removals
+by normalized file/code/message against the prior retained-front checkpoint;
+it is not a clean type check. Evidence is
+`.context/gbm-cpu-fronts/.context/cpu-image-*`.
