@@ -2035,7 +2035,21 @@ static uint32_t query_value_count(GLenum pname);
  * cannot identify a uniform and must not silently suppress an API error. */
 static int uniform_location_accepted(GLint location) {
     if (location >= 0) return 1;
-    if (location != -1) raise_client_error(GL_INVALID_OPERATION);
+    if (location != -1) {
+        raise_client_error(GL_INVALID_OPERATION);
+        return 0;
+    }
+    /* All signatures ignore inactive data but still require a current
+     * executable. An existing scalar record carries that identical check
+     * without reading caller data. The host owns accepted use/link/delete
+     * state and deduplicated errors; an optimistic C cache or a local error
+     * derived from a state query would split that authority. Count/transpose
+     * validation happens before this helper for vector/matrix signatures. */
+    uint8_t *record = reserve(12);
+    if (!record) return 0;
+    w_u16(&record, OP_UNIFORM1F); w_u16(&record, 8);
+    w_i32(&record, -1); w_f32(&record, 0);
+    g_cursor = record;
     return 0;
 }
 

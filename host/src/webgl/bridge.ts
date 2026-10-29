@@ -494,11 +494,16 @@ function dispatch(
   }
   if (op >= O.OP_UNIFORM1I && op <= O.OP_UNIFORM_MATRIX3FV) {
     const location = v.getInt32(p, true);
-    if (location !== -1 && (!b.uniformLocations.has(location) ||
-        b.uniformLocationPrograms.get(location) !== currentProgramName(b))) {
+    // GLES requires an installed executable even for inactive uniforms.
+    // WebGL's null-location no-op cannot judge this GLES requirement, and
+    // the logical owner may differ from the physical context's installation.
+    const program = currentProgramName(b);
+    if (!program || (location !== -1 && (!b.uniformLocations.has(location) ||
+        b.uniformLocationPrograms.get(location) !== program))) {
       recordGlError(b, 0x502); // INVALID_OPERATION
       return;
     }
+    if (location === -1) return;
   }
   switch (op) {
     // ----- state ----------------------------------------------------------

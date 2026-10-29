@@ -193,6 +193,7 @@ struct device_slot {
     uint32_t array_binding, element_binding, saved_array_binding;
     int array_saved;
     uint32_t texture_active, texture_2d[128], texture_cube[128], renderbuffer_binding;
+    uint32_t current_program;
 
     struct {
         GLuint name;
@@ -200,14 +201,64 @@ struct device_slot {
     } texture_targets[128];
 };
 static struct device_slot device_slots[8];
+struct native_program { uint32_t name; int live, linked, deleted; };
 static struct {
     struct {
         uint32_t kind, name, source, revision;
     } image_sources[128];
     uint32_t raw_name;
     int raw_live;
+    struct native_program programs[32];
 } image_groups[64];
 static unsigned next_image_group;
+static unsigned program_model, current_program_queries, inactive_uniform_checks;
+static int program_link_failure;
+static uint32_t query_gl_error;
+
+static struct native_program *native_program(struct device_slot *slot, uint32_t name) {
+    for (unsigned i = 0; i < 32; ++i)
+        if (image_groups[slot->image_group].programs[i].live &&
+            image_groups[slot->image_group].programs[i].name == name)
+            return &image_groups[slot->image_group].programs[i];
+    return NULL;
+}
+
+/* Model acknowledged device state, independently of the C encoder's queued
+ * commands. Shader execution itself belongs to normal guest/browser tests. */
+static void native_program_command(struct device_slot *slot, uint16_t op, uint32_t name) {
+    struct native_program *program = native_program(slot, name);
+    if (op == OP_CREATE_PROGRAM) {
+        assert(!program);
+        for (unsigned i = 0; i < 32; ++i) {
+            program = &image_groups[slot->image_group].programs[i];
+            if (!program->live) {
+                *program = (struct native_program){.name = name, .live = 1};
+                return;
+            }
+        }
+        assert(!"native program model exhausted");
+    } else if (op == OP_LINK_PROGRAM) {
+        assert(program);
+        program->linked = !program_link_failure;
+    } else if (op == OP_USE_PROGRAM) {
+        if (name && (!program || !program->linked)) {
+            if (!query_gl_error) query_gl_error = program ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
+            return;
+        }
+        slot->current_program = name;
+    } else if (op == OP_DELETE_PROGRAM && program) {
+        program->deleted = 1;
+    }
+    for (unsigned i = 0; i < 32; ++i) {
+        program = &image_groups[slot->image_group].programs[i];
+        if (!program->live || !program->deleted) continue;
+        int retained = 0;
+        for (unsigned j = 0; j < 8; ++j)
+            if (device_slots[j].image_group == slot->image_group &&
+                device_slots[j].current_program == program->name) retained = 1;
+        if (!retained) program->live = 0;
+    }
+}
 
 static struct {
     int open, live;
@@ -274,7 +325,7 @@ static unsigned context_create_calls;
 static unsigned buffer_uploads;
 static unsigned draw_commands;
 static int indexed_queries;
-static uint32_t indexed_max, query_scalar, query_gl_error, query_status;
+static uint32_t indexed_max, query_scalar, query_status;
 static unsigned string_queries, uniform_commands;
 static GLint last_uniform_location;
 static uint32_t last_uniform_count, last_uniform_transpose;
@@ -780,7 +831,11 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             if (capture_array_upload && op == OP_VERTEX_ATTRIB_POINTER) {
                 memcpy(&captured_type,commands+at+12,4); memcpy(&captured_stride,commands+at+20,4);
             }
-            if (op >= OP_UNIFORM1I && op <= OP_UNIFORM_MATRIX3FV) {
+            if (op == OP_UNIFORM1F && (GLint)words[0] == -1) {
+                assert(len == 8 && words[1] == 0);
+                inactive_uniform_checks++;
+                if (!slot->current_program && !query_gl_error) query_gl_error = GL_INVALID_OPERATION;
+            } else if (op >= OP_UNIFORM1I && op <= OP_UNIFORM_MATRIX3FV) {
                 uniform_commands++;
                 last_uniform_location = (GLint)words[0];
                 if (op == OP_UNIFORM_MATRIX2FV || op == OP_UNIFORM_MATRIX3FV || op == OP_UNIFORM_MATRIX4FV) {
@@ -813,6 +868,9 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 shader_names[shaders_created++] = words[1];
             if (op == OP_CREATE_PROGRAM && programs_created < 2)
                 program_names[programs_created++] = words[0];
+            if (program_model && (op == OP_CREATE_PROGRAM || op == OP_LINK_PROGRAM ||
+                op == OP_USE_PROGRAM || op == OP_DELETE_PROGRAM))
+                native_program_command(slot, op, words[0]);
             at += 4 + len;
         }
     } else if (request == GLIO_CREATE_SURFACE) {
@@ -1285,6 +1343,13 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 memcpy(latest_allocation, values, q->out_buf_len < 16 ? q->out_buf_len : 16);
             return 0;
         }
+        if (q->op == QOP_GET_INTEGERV && q->in_buf_len == 4 &&
+            *(const uint32_t *)(uintptr_t)q->in_buf_ptr == GL_CURRENT_PROGRAM) {
+            assert(q->out_buf_len == 4 && latest_allocation);
+            current_program_queries++;
+            memcpy(latest_allocation, &slot->current_program, 4);
+            return 0;
+        }
         if (advertised_texture_units && q->op == QOP_GET_INTEGERV && !binding_query_kind) {
             assert(q->out_buf_len == 4 && latest_allocation);
             memcpy(latest_allocation, &advertised_texture_units, 4);
@@ -1634,6 +1699,15 @@ static void call_uniform_setter(unsigned variant, GLint location) {
     case 18: glUniformMatrix4fv(location, 1, GL_FALSE, f); break;
     default: assert(!"unknown uniform setter");
     }
+}
+
+static GLuint prepare_native_uniform_program(void) {
+    program_model = 1;
+    GLuint program = glCreateProgram(); assert(program);
+    glLinkProgram(program); glUseProgram(program); glFlush();
+    GLint current = 0; glGetIntegerv(GL_CURRENT_PROGRAM, &current);
+    assert(current == (GLint)program && glGetError() == GL_NO_ERROR);
+    return program;
 }
 
 int main(int argc, char **argv) {
@@ -3478,10 +3552,96 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-vao-attribs"); return 0;
     }
+    if (!strncmp(argv[1], "encoder-uniform-current-", 24)) {
+        program_model = 1;
+        call_uniform_setter(0, -1);
+        assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        GLuint program = prepare_native_uniform_program();
+        if (!strcmp(argv[1], "encoder-uniform-current-basic")) {
+            for (unsigned variant = 0; variant < 19; ++variant) {
+                const unsigned queries = current_program_queries, submitted = uniform_commands,
+                               checks = inactive_uniform_checks;
+                call_uniform_setter(variant, -1);
+                assert(glGetError() == GL_NO_ERROR && uniform_commands == submitted);
+                assert(inactive_uniform_checks == checks + 1 && current_program_queries == queries);
+                call_uniform_setter(variant, 37);
+                glFlush();
+                assert(glGetError() == GL_NO_ERROR && uniform_commands == submitted + 1);
+                assert(current_program_queries == queries);
+                glUseProgram(0);
+                call_uniform_setter(variant, -1);
+                assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+                glUseProgram(program);
+            }
+        } else if (!strcmp(argv[1], "encoder-uniform-current-lifecycle")) {
+            glUseProgram(UINT_MAX); glFlush();
+            assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            GLuint unlinked = glCreateProgram(); glUseProgram(unlinked); glFlush();
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            program_link_failure = 1; glLinkProgram(program); glFlush();
+            program_link_failure = 0;
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            glUseProgram(program); glFlush();
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            glLinkProgram(program); glDeleteProgram(program);
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            glUseProgram(0);
+            call_uniform_setter(0, -1);
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            program = prepare_native_uniform_program();
+            EGLContext peer = eglCreateContext(dpy, (EGLConfig)1, ctx, attrs);
+            assert(peer && eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, peer));
+            call_uniform_setter(0, -1);
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            glUseProgram(program);
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            glDeleteProgram(program); glUseProgram(0);
+            call_uniform_setter(0, -1);
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            assert(eglDestroyContext(dpy, peer));
+        } else {
+            assert(!strcmp(argv[1], "encoder-uniform-current-failure"));
+            /* Inactive validation has no allocation or synchronous query. */
+            fail_malloc = 1; call_uniform_setter(0, -1); fail_malloc = 0;
+            assert(glGetError() == GL_NO_ERROR);
+            glUseProgram(0);
+            const unsigned checks = inactive_uniform_checks;
+            call_uniform_setter(0, -1);
+            fail_submit = 1; glFlush(); fail_submit = 0;
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            assert(inactive_uniform_checks == checks);
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            glUseProgram(0); glFlush();
+            glUseProgram(program);
+            call_uniform_setter(0, -1);
+            fail_submit = 1; glFlush(); fail_submit = 0;
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            call_uniform_setter(0, -1);
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            glUseProgram(program);
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            glGetString(0);
+            call_uniform_setter(0, -1);
+            assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+            glUseProgram(0);
+            GLuint unlinked = glCreateProgram(); glUseProgram(unlinked);
+            call_uniform_setter(0, -1);
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        }
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        printf("PASS %s\n", argv[1]); return 0;
+    }
     /* These native cases judge encoder records/errors with a device double,
      * not GLSL execution or the host's current-program validation. The normal
      * SDK fixture separately establishes a real linked current program. */
     if (!strncmp(argv[1], "encoder-uniform-vector-", 23)) {
+        (void)prepare_native_uniform_program();
         void (*const floating[])(GLint, GLsizei, const GLfloat *) = {
             glUniform1fv, glUniform2fv, glUniform3fv, glUniform4fv,
         };
@@ -3499,7 +3659,8 @@ int main(int argc, char **argv) {
         const GLint ivalue[4] = {1, 2, 3, 4};
         for (unsigned variant = 0; variant < 8; ++variant) {
             const unsigned index = variant % 4, components = index + 1;
-            const unsigned submitted = uniform_commands, batches = submit_batches;
+            const unsigned submitted = uniform_commands, batches = submit_batches,
+                           checks = inactive_uniform_checks;
             const GLsizei maximum = (65535u - 8u) / (sizeof(GLfloat) * components);
 #define VECTOR_CALL(location, count, f, i) do { \
     if (variant < 4) floating[index](location, count, f); \
@@ -3539,7 +3700,10 @@ int main(int argc, char **argv) {
                 }
             }
             glFlush();
-            assert(uniform_commands == submitted && submit_batches == batches);
+            const unsigned ignored = !strcmp(argv[1], "encoder-uniform-vector-counts") ? 0 :
+                                     !strcmp(argv[1], "encoder-uniform-vector-null-zero") ? 2 : 1;
+            assert(uniform_commands == submitted && inactive_uniform_checks == checks + ignored);
+            assert(submit_batches == batches + (ignored ? 1u : 0u));
             VECTOR_CALL(37, 1, fvalue, ivalue);
             assert(glGetError() == GL_NO_ERROR && uniform_commands == submitted + 1);
             assert(last_uniform_location == 37 && last_uniform_count == 1);
@@ -3559,6 +3723,7 @@ int main(int argc, char **argv) {
         printf("PASS %s\n", argv[1]); return 0;
     }
     if (!strncmp(argv[1], "encoder-uniform-matrix-", 23)) {
+        (void)prepare_native_uniform_program();
         void (*const setters[])(GLint, GLsizei, GLboolean, const GLfloat *) = {
             glUniformMatrix4fv, glUniformMatrix2fv, glUniformMatrix3fv,
         };
@@ -3571,7 +3736,8 @@ int main(int argc, char **argv) {
         const GLfloat *guard = (const GLfloat *)(mapping + readable);
         const GLfloat value[16] = {1, 2, 3, 4};
         for (unsigned i = 0; i < 3; ++i) {
-            const unsigned submitted = uniform_commands, batches = submit_batches;
+            const unsigned submitted = uniform_commands, batches = submit_batches,
+                           checks = inactive_uniform_checks;
             const GLsizei maximum = (65535u - 12u) / (sizeof(GLfloat) * components[i]);
             if (!strcmp(argv[1], "encoder-uniform-matrix-counts")) {
                 const GLsizei negative[] = {-1, INT_MIN};
@@ -3608,7 +3774,9 @@ int main(int argc, char **argv) {
                 }
             }
             glFlush();
-            assert(uniform_commands == submitted && submit_batches == batches);
+            const unsigned ignored = !strcmp(argv[1], "encoder-uniform-matrix-transpose") ? 0 : 1;
+            assert(uniform_commands == submitted && inactive_uniform_checks == checks + ignored);
+            assert(submit_batches == batches + ignored);
             setters[i](37, 1, GL_FALSE, value);
             assert(glGetError() == GL_NO_ERROR && uniform_commands == submitted + 1);
             assert(last_uniform_location == 37 && last_uniform_count == 1 && !last_uniform_transpose);
@@ -3627,9 +3795,11 @@ int main(int argc, char **argv) {
         printf("PASS %s\n", argv[1]); return 0;
     }
     if (!strcmp(argv[1], "encoder-uniform-location-errors")) {
+        (void)prepare_native_uniform_program();
         const GLint invalid_locations[] = {-2, INT_MIN};
         for (unsigned variant = 0; variant < 19; ++variant) {
-            const unsigned submitted = uniform_commands, batches = submit_batches;
+            const unsigned submitted = uniform_commands, batches = submit_batches,
+                           checks = inactive_uniform_checks;
             for (unsigned j = 0; j < sizeof invalid_locations / sizeof invalid_locations[0]; ++j) {
                 call_uniform_setter(variant, invalid_locations[j]);
                 assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
@@ -3640,7 +3810,8 @@ int main(int argc, char **argv) {
             call_uniform_setter(variant, -1);
             assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
             glFlush();
-            assert(uniform_commands == submitted && submit_batches == batches);
+            assert(uniform_commands == submitted && submit_batches == batches + 2);
+            assert(inactive_uniform_checks == checks + 2);
             call_uniform_setter(variant, 37);
             assert(glGetError() == GL_NO_ERROR);
             assert(uniform_commands == submitted + 1 && last_uniform_location == 37);

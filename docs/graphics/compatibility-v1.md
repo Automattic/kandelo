@@ -8568,3 +8568,68 @@ location ownership/type models, larger positive-array transport, broad
 upstream CTS, or full combined graphics-baseline acceptance. These remain
 ordinary implementation and validation work. The unchanged unpublished
 ABI is program 56 / host 3 / GL table 17 / fork record 21.
+
+### Inactive uniforms require a current executable, 2026-10-29
+
+The follow-up implements the current-program requirement for all 19
+GLES2 uniform setters at inactive location `-1`. The
+[ES2 uniform contract](https://registry.khronos.org/OpenGL/specs/es/2.0/es_full_spec_2.0.pdf)
+requires `GL_INVALID_OPERATION` without an installed program, even
+though inactive data is ignored. The pinned
+[CTS shader API cases](https://github.com/KhronosGroup/VK-GL-CTS/blob/a119e62de3bb38dae67f05abee8acd011e0c729c/modules/gles2/functional/es2fNegativeShaderApiTests.cpp)
+check that distinction across scalar, vector and matrix families.
+Previously C discarded every inactive call before the host could
+validate it; raw host commands also delegated the inactive case to
+WebGL's null-location behavior.
+
+After ordinary count/transpose validation, C now emits an existing
+12-byte `uniform1f(-1, 0)` record for any inactive setter. Every signature
+has the same inactive-data and current-executable semantics, so this
+bounded representation needs no caller-data read, allocation, new
+opcode or wire-layout change. The host checks the selected logical
+context's accepted executable before ignoring an inactive record. The
+same guard applies to every raw uniform command, including vector and
+matrix records. Queued program changes and validation run in order;
+errors stay in the host's existing deduplicated flags and become visible
+through normal `glGetError` submission. No optimistic C program cache or
+synchronous uniform query is introduced. Positive calls keep their
+existing command path. The unpublished ABI remains unchanged.
+
+Three authored native cases fail against `05bdd99d51` at the initial
+missing-error assertion. All 226 native cases pass after implementation
+under the declared dev shell with undefined-behavior sanitization.
+Native coverage checks every setter, refused submissions in both
+binding directions, failed program uses, retained failed-link/deleted
+executables, independent shared-context bindings, exact bounded inactive
+validation records and zero retained allocations. Protected-page tests
+still prove ignored data is never read. Negative counts, invalid
+transpose and invalid negative locations remain rejected without
+publishing a validation record. Older no-record assertions for legal
+inactive calls now distinguish validation from uniform-storage writes.
+
+Before the host guard, 21 new focused tests fail: all 19 API signature
+representations plus pending-error/lifecycle controls. Afterward the
+complete pure graphics source gate passes 740 tests in 32 files. It
+also verifies all 19 raw forms across logical context switches, retained
+executables after rejected use/relink/deletion, distinct earlier errors,
+deduplicated repeated `GL_INVALID_OPERATION`, and program changes within
+one command batch. These tests execute the real host decoder and error
+state with a controlled native GL double; they do not claim rendered
+driver evidence. Logs are the file-owner checkout's
+`.context/gles-uniform-current-{before,after,host-before,host-after,syntax}.log`.
+
+Both library pointer-width syntax checks and ordinary/rendered guest
+fixture variants compile. The 629-file source evidence inventory agrees,
+and all six browser cases collect. Normal guests now require a new marker
+after checking every setter both before any program is bound and after
+unbinding the real linked program. Those new linked guests, browser
+rendering, upstream CTS and combined conformance have not been rerun for
+this increment. Positive-location zero-count vector/matrix calls still
+return in C before the host checks its current program. Positive location
+ownership, shader types, array/count validation and larger positive-array
+transport remain open. The separate C argument-error and host error
+stores also still need unification: a locally rejected negative count
+can duplicate the same error already pending at the host. This change
+keeps inactive current-program errors entirely host-owned, without
+claiming complete uniform or G05/G09 acceptance. Those remaining gaps are
+ordinary follow-up work; no hard platform boundary is asserted.

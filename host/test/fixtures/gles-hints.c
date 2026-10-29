@@ -150,6 +150,13 @@ static void uniform_locations(void) {
     puts("OK GLES uniform negative locations: 19 setters");
 }
 
+static void uniforms_without_program(void) {
+    for (unsigned variant = 0; variant < 19; ++variant) {
+        uniform_setter(variant, -1);
+        expected_error(GL_INVALID_OPERATION);
+    }
+}
+
 static void matrix_arguments(void) {
     void (*const setters[])(GLint, GLsizei, GLboolean, const GLfloat *) = {
         glUniformMatrix2fv, glUniformMatrix3fv, glUniformMatrix4fv,
@@ -282,6 +289,7 @@ int main(void) {
     CHECK(extensions && strstr(extensions,"GL_OES_standard_derivatives"));
     string_query_errors();
     generation_counts();
+    uniforms_without_program();
     GLuint uniform_program = uniform_test_program();
     uniform_locations();
     matrix_arguments();
@@ -289,6 +297,8 @@ int main(void) {
     glUseProgram(0);
     glDeleteProgram(uniform_program);
     no_error();
+    uniforms_without_program();
+    puts("OK GLES inactive uniforms require current program: 19 setters");
     const GLenum targets[] = {GL_GENERATE_MIPMAP_HINT,GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES};
     const GLenum modes[] = {GL_FASTEST,GL_NICEST,GL_DONT_CARE};
     for (unsigned i=0;i<2;++i) {

@@ -90,6 +90,95 @@ function setup() {
 }
 
 describe("program link attempts and installed executables", () => {
+  const inactiveSetters = [
+    ["glUniform1f", O.OP_UNIFORM1F, [-1, 0]],
+    ["glUniform2f", O.OP_UNIFORM2F, [-1, 0, 0]],
+    ["glUniform3f", O.OP_UNIFORM3F, [-1, 0, 0, 0]],
+    ["glUniform4f", O.OP_UNIFORM4F, [-1, 0, 0, 0, 0]],
+    ["glUniform1i", O.OP_UNIFORM1I, [-1, 0]],
+    ...[2, 3, 4].map(n => [`glUniform${n}i`,
+      [O.OP_UNIFORM2IV, O.OP_UNIFORM3IV, O.OP_UNIFORM4IV][n - 2], [-1, 1, ...Array(n).fill(0)]]),
+    ...[1, 2, 3, 4].map(n => [`glUniform${n}fv`,
+      [O.OP_UNIFORM1FV, O.OP_UNIFORM2FV, O.OP_UNIFORM3FV, O.OP_UNIFORM4FV][n - 1],
+      [-1, 1, ...Array(n).fill(0)]]),
+    ...[1, 2, 3, 4].map(n => [`glUniform${n}iv`,
+      [O.OP_UNIFORM1IV, O.OP_UNIFORM2IV, O.OP_UNIFORM3IV, O.OP_UNIFORM4IV][n - 1],
+      [-1, 1, ...Array(n).fill(0)]]),
+    ...[2, 3, 4].map(n => [`glUniformMatrix${n}fv`,
+      [O.OP_UNIFORM_MATRIX2FV, O.OP_UNIFORM_MATRIX3FV, O.OP_UNIFORM_MATRIX4FV][n - 2],
+      [-1, 1, 0, ...Array(n * n).fill(0)]]),
+  ] as [string, number, number[]][];
+
+  it.each(inactiveSetters)("requires an accepted current executable for inactive %s", (_name, op, words) => {
+    const { send, query, native } = setup();
+    send(O.OP_USE_PROGRAM, [0]);
+    send(op, words);
+    expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+    expect(query(O.QOP_GET_ERROR)).toBe(0);
+    send(O.OP_USE_PROGRAM, [20]);
+    send(op, words);
+    expect(query(O.QOP_GET_ERROR)).toBe(0);
+    expect(native.uniformWrites).toBe(0);
+  });
+
+  it("deduplicates pending invalid-operation flags and preserves distinct earlier errors", () => {
+    const { send, query } = setup();
+    send(O.OP_USE_PROGRAM, [0]);
+    send(O.OP_CREATE_PROGRAM, [21]);
+    send(O.OP_USE_PROGRAM, [21]);
+    for (const [, op, words] of inactiveSetters) send(op, words);
+    expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+    expect(query(O.QOP_GET_ERROR)).toBe(0);
+    send(O.OP_USE_PROGRAM, [999]);
+    for (const [, op, words] of inactiveSetters) send(op, words);
+    expect(new Set([query(O.QOP_GET_ERROR), query(O.QOP_GET_ERROR)])).toEqual(new Set([0x501, 0x502]));
+    expect(query(O.QOP_GET_ERROR)).toBe(0);
+  });
+
+  it("validates inactive uniforms in order with program changes in the same command batch", () => {
+    const { b, query, native } = setup();
+    const commands: [number, number[]][] = [
+      [O.OP_USE_PROGRAM, [0]], [O.OP_UNIFORM1F, [-1, 0]],
+      [O.OP_USE_PROGRAM, [20]], [O.OP_UNIFORM1F, [-1, 0]],
+    ];
+    const view = new DataView(b.cmdbufView!.buffer);
+    let offset = 0;
+    for (const [op, words] of commands) {
+      view.setUint16(offset, op, true); view.setUint16(offset + 2, words.length * 4, true);
+      words.forEach((word, i) => view.setUint32(offset + 4 + i * 4, word, true));
+      offset += 4 + words.length * 4;
+    }
+    expect(decodeAndDispatch(b, 0, offset)).toBe(0);
+    expect(query(O.QOP_GET_INTEGERV, [0x8b8d])).toBe(20);
+    expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+    expect(query(O.QOP_GET_ERROR)).toBe(0);
+    expect(native.uniformWrites).toBe(0);
+  });
+
+  it("judges inactive uniforms against retained executables after failed use, relink and deletion", () => {
+    const { b, native, send, query, original } = setup();
+    send(O.OP_CREATE_PROGRAM, [21]);
+    send(O.OP_USE_PROGRAM, [21]);
+    for (const [, op, words] of inactiveSetters) send(op, words);
+    expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+    expect(query(O.QOP_GET_ERROR)).toBe(0);
+    (b.shaders.get(11) as unknown as Shader).compiled = false;
+    send(O.OP_LINK_PROGRAM, [20]);
+    send(O.OP_USE_PROGRAM, [20]);
+    for (const [, op, words] of inactiveSetters) send(op, words);
+    expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+    expect(query(O.QOP_GET_ERROR)).toBe(0);
+    expect(b.currentProgram).toBe(original);
+    send(O.OP_DELETE_PROGRAM, [20]);
+    for (const [, op, words] of inactiveSetters) send(op, words);
+    expect(query(O.QOP_GET_ERROR)).toBe(0);
+    send(O.OP_USE_PROGRAM, [0]);
+    for (const [, op, words] of inactiveSetters) send(op, words);
+    expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+    expect(query(O.QOP_GET_ERROR)).toBe(0);
+    expect(native.uniformWrites).toBe(0);
+  });
+
   function sharePeer(parent: ReturnType<typeof setup>) {
     parent.b.contextId = 21;
     parent.registry.bind({pid:1,sessionId:12,cmdbufAddr:0,cmdbufLen:32});
@@ -99,6 +188,34 @@ describe("program link attempts and installed executables", () => {
     expect(parent.registry.shareObjects(1,12,0)).toBe(true);
     return peer;
   }
+
+  it("uses each logical context's accepted program rather than the physical installation", () => {
+    const parent = setup(), peer = sharePeer(parent);
+    // The physical WebGL context still has the parent's executable, while a
+    // newly created sharing context has no logical current program.
+    expect(parent.native.current).toBe(parent.original);
+    peer.cmdbufLen = 4096;
+    peer.cmdbufView = new Uint8Array(4096);
+    const sendPeer = (op: number, words: number[]) => {
+      const view = new DataView(peer.cmdbufView!.buffer);
+      view.setUint16(0, op, true); view.setUint16(2, words.length * 4, true);
+      words.forEach((word, i) => view.setUint32(4 + i * 4, word, true));
+      expect(decodeAndDispatch(peer, 0, 4 + words.length * 4)).toBe(0);
+    };
+    for (const [, op, words] of inactiveSetters) sendPeer(op, words);
+    expect(peer.errors).toEqual([0x502]);
+    expect(parent.b.errors).toEqual([]);
+    peer.errors.length = 0;
+    sendPeer(O.OP_USE_PROGRAM, [20]);
+    for (const [, op, words] of inactiveSetters) sendPeer(op, words);
+    expect(peer.errors).toEqual([]);
+    sendPeer(O.OP_USE_PROGRAM, [0]);
+    for (const [, op, words] of inactiveSetters) sendPeer(op, words);
+    expect(peer.errors).toEqual([0x502]);
+    for (const [, op, words] of inactiveSetters) parent.send(op, words);
+    expect(parent.query(O.QOP_GET_ERROR)).toBe(0);
+    expect(parent.native.uniformWrites).toBe(0);
+  });
 
   it("keeps repeated uniform locations stable across a sharing peer until successful relink",()=>{
     const parent=setup(),peer=sharePeer(parent);parent.b.nextUniformLoc=1;
