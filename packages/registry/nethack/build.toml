@@ -1,8 +1,16 @@
 script_path = "packages/registry/nethack/build-nethack.sh"
 inputs = [
   "packages/registry/nethack/build-nethack.sh",
+  "packages/registry/nethack/build-nethack-guest.sh",
   "scripts/package-build-roots.sh",
+  # The build runs inside a Kandelo machine: the runner and the host runtime
+  # it boots are part of the output's identity (docs/package-management.md,
+  # "Building inside Kandelo").
+  "scripts/guest-build.sh",
+  "scripts/guest-build.ts",
+  "host/src",
+  "cargo:runtime-core",
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "8c53383229fab78f97b098c3207a655159c03041"
-revision    = 7
+revision    = 8

@@ -81,10 +81,6 @@ name = "ipcs"
 wasm = "ipcs.wasm"
 
 [[outputs]]
-name = "lex"
-wasm = "lex.wasm"
-
-[[outputs]]
 name = "locale"
 wasm = "locale.wasm"
 
@@ -160,6 +156,3 @@ wasm = "what.wasm"
 name = "xgettext"
 wasm = "xgettext.wasm"
 
-[[outputs]]
-name = "yacc"
-wasm = "yacc.wasm"

@@ -1643,7 +1643,8 @@ build runs them on the build machine, so what they generate describes the
 build machine rather than the wasm32 target. NetHack's `makedefs` named the
 maintainer's OS in the game's banner and wrote 8-byte `long` fields that the
 32-bit game reads as 4 bytes. A recipe can instead run its whole build, helpers
-included, inside a Kandelo machine through the guest toolchain:
+included, inside a Kandelo machine through the guest toolchain, as
+`packages/registry/nethack` now does:
 
 ```bash
 source "$REPO_ROOT/scripts/guest-build.sh"

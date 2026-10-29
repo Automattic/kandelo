@@ -61,6 +61,14 @@ name = "bc"
 class = "user-software"
 
 [[packages]]
+name = "byacc"
+class = "user-software"
+
+[[packages]]
+name = "flex"
+class = "user-software"
+
+[[packages]]
 name = "binaryen"
 class = "platform"
 

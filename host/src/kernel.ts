@@ -955,7 +955,7 @@ export class WasmPosixKernel {
    */
   private pendingDirectoryEntries = new Map<
     number,
-    { name: string; type: number; ino: number }
+    { name: string; type: number; ino: number | bigint }
   >();
   /**
    * Extra host-handle ownership held by regular-file MAP_SHARED backings.
