@@ -19,6 +19,8 @@ depends_on = [
   "bc@1.07.1",
   "file@5.45",
   "m4@1.4.19",
+  "byacc@20241231",
+  "flex@2.6.4",
   "make@4.4.1",
   "findutils@4.10.0",
   "diffutils@3.10",

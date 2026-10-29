@@ -584,6 +584,39 @@ Systematic audit of all subsystems against POSIX specifications. Gaps are catego
 | ~~**`*at()` functions with real dirfd**~~ | filesystem | **Resolved.** All *at() syscalls now support real dirfd via stored OFD paths. |
 | ~~**No seekdir/telldir/rewinddir**~~ | directory | **Resolved.** DirStream now tracks path and position. rewinddir/telldir/seekdir implemented. |
 
+### Base-image utilities that are placeholders
+
+The base rootfs installs a compact utility set, `posix-utils-lite`
+(`packages/registry/posix-utils-lite`), for POSIX utilities no ported
+package provides yet. Several of its programs are placeholders that do not
+do what the utility is specified to do, and most still exit 0. Do not rely
+on them in builds or scripts; a real package should replace each one, as
+Berkeley yacc (`byacc`) and flex now replace its `yacc` and `lex`.
+
+| Utility | What it actually does |
+|---|---|
+| `patch` | Prints `patching file X` for each file a unified diff names, changes nothing, and exits 0. |
+| `compress`, `uncompress` | Copy the bytes unchanged: `compress f` writes an uncompressed `f.Z`. |
+| `iconv` | Copies its input; `-f` and `-t` are ignored. |
+| `msgfmt` | Writes the source text behind a comment line, not a binary message catalog. |
+| `nm` | Prints every identifier-like string in the file as `00000000 T name`, not the symbol table. |
+| `pax` | Reads and writes a private `FILE name`/`END` text format, not `ustar` or `cpio`; files containing NUL bytes do not survive. |
+| `ed`, `ex` | Supports only `a`, `i`, `p`, `,p`, `w`, `q` and line numbers; other commands (`s`, `d`, `c`, `g`, ...) are ignored with exit 0, and unsaved changes are written on exit. `ex` runs the same reduced `ed`. |
+| `ipcs` | Prints an empty table, although System V message queues, semaphores and shared memory are implemented. |
+| `ipcrm` | Refuses, saying System V IPC removal is unavailable, although it is implemented. |
+| `xgettext` | Extracts every string literal, not only the ones passed to `gettext` calls. |
+| `ar` | `r` and `q` rewrite the archive with only the named members (existing members are lost); writes no symbol index. |
+| `uuencode`, `uudecode` | `uuencode` always writes base64 (as with `-m`); `uudecode` decodes only base64. |
+| `logger` | Writes the message to standard output or standard error, not the system log (Kandelo has no `/dev/log` receiver). |
+| `cflow`, `cxref` | List function definitions found by a line pattern; no call graph and no cross-reference. |
+| `more` | Copies its input without paging. |
+| `getconf` | Prints built-in fallback values when `sysconf` fails. |
+
+The real `yacc` and `lex` come without their libraries: there is no
+`-ly` (POSIX `main` and `yyerror`) or `-ll`/`-lfl` (`main` and `yywrap`) in
+the SDK sysroot, so a program must define those functions itself (or use
+`%option noyywrap`). flex runs `/usr/bin/m4` to write each scanner.
+
 ### Medium — Spec deviations with limited practical impact
 
 | Gap | Subsystem | Description |

@@ -282,6 +282,23 @@ path = "/usr/bin/m4"
 aliases = ["/bin/m4"]
 
 [[packages]]
+name = "byacc"
+
+[[packages.outputs]]
+binary = "programs/wasm32/yacc.wasm"
+path = "/usr/bin/yacc"
+aliases = ["/bin/yacc"]
+
+# flex is the POSIX lex. It runs /usr/bin/m4 (above) to write each scanner.
+[[packages]]
+name = "flex"
+
+[[packages.outputs]]
+binary = "programs/wasm32/flex.wasm"
+path = "/usr/bin/flex"
+aliases = ["/bin/flex", "/usr/bin/lex", "/bin/lex"]
+
+[[packages]]
 name = "make"
 
 [[packages.outputs]]
@@ -409,11 +426,6 @@ path = "/usr/bin/ipcs"
 aliases = ["/bin/ipcs"]
 
 [[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/lex.wasm"
-path = "/usr/bin/lex"
-aliases = ["/bin/lex"]
-
-[[packages.outputs]]
 binary = "programs/wasm32/posix-utils-lite/locale.wasm"
 path = "/usr/bin/locale"
 aliases = ["/bin/locale"]
@@ -507,11 +519,6 @@ aliases = ["/bin/what"]
 binary = "programs/wasm32/posix-utils-lite/xgettext.wasm"
 path = "/usr/bin/xgettext"
 aliases = ["/bin/xgettext"]
-
-[[packages.outputs]]
-binary = "programs/wasm32/posix-utils-lite/yacc.wasm"
-path = "/usr/bin/yacc"
-aliases = ["/bin/yacc"]
 
 # Kandelo exchange: the agent the kernel starts on demand, its helpers, and
 # the catch-all `99-save` handler (see docs/architecture.md).
