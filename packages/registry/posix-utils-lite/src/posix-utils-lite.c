@@ -1275,59 +1275,6 @@ static int util_c_scan(const char *mode, int argc, char **argv) {
     return rc;
 }
 
-static int util_lex(int argc, char **argv) {
-    const char *out_path = "lex.yy.c";
-    int to_stdout = 0;
-    for (int i = 1; i < argc; i++) {
-        if (streq(argv[i], "-t")) {
-            to_stdout = 1;
-        }
-    }
-    FILE *out = to_stdout ? stdout : fopen(out_path, "wb");
-    if (!out) {
-        perror(out_path);
-        return 1;
-    }
-    fputs("#include <stdio.h>\nint yylex(void){int c;while((c=getchar())!=EOF)putchar(c);return 0;}\nint yywrap(void){return 1;}\n", out);
-    if (!to_stdout && fclose(out) != 0) {
-        perror(out_path);
-        return 1;
-    }
-    return 0;
-}
-
-static int util_yacc(int argc, char **argv) {
-    const char *out_path = "y.tab.c";
-    int header = 0;
-    for (int i = 1; i < argc; i++) {
-        if (streq(argv[i], "-o") && i + 1 < argc) {
-            out_path = argv[++i];
-        } else if (streq(argv[i], "-d")) {
-            header = 1;
-        }
-    }
-    FILE *out = fopen(out_path, "wb");
-    if (!out) {
-        perror(out_path);
-        return 1;
-    }
-    fputs("#include <stdio.h>\nint yyparse(void){return 0;}\nint yylex(void){return 0;}\nvoid yyerror(const char*s){fprintf(stderr,\"%s\\n\",s);}\n", out);
-    if (fclose(out) != 0) {
-        perror(out_path);
-        return 1;
-    }
-    if (header) {
-        FILE *h = fopen("y.tab.h", "wb");
-        if (!h) {
-            perror("y.tab.h");
-            return 1;
-        }
-        fputs("int yyparse(void);\n", h);
-        fclose(h);
-    }
-    return 0;
-}
-
 static int util_ipcs(int argc, char **argv) {
     (void)argc;
     (void)argv;
@@ -2103,7 +2050,6 @@ static int dispatch(const char *name, int argc, char **argv) {
     if (streq(name, "iconv")) return util_iconv(argc, argv);
     if (streq(name, "ipcrm")) return util_ipcrm(argc, argv);
     if (streq(name, "ipcs")) return util_ipcs(argc, argv);
-    if (streq(name, "lex")) return util_lex(argc, argv);
     if (streq(name, "locale")) return util_locale(argc, argv);
     if (streq(name, "logger")) return util_logger(argc, argv);
     if (streq(name, "man")) return util_man(argc, argv);
@@ -2125,7 +2071,6 @@ static int dispatch(const char *name, int argc, char **argv) {
     if (streq(name, "uuencode")) return util_uuencode(argc, argv);
     if (streq(name, "what")) return util_what(argc, argv);
     if (streq(name, "xgettext")) return util_xgettext(argc, argv);
-    if (streq(name, "yacc")) return util_yacc(argc, argv);
     return -1;
 }
 
