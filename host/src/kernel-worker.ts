@@ -7709,6 +7709,11 @@ export class CentralizedKernelWorker {
       "PTY input chunks",
       (entry) => {
         this.#writePtyMasterChunks(ptyIdx, input, entry);
+        // WHY: ISIG queues signals in Rust just like kill/timer ingress.
+        // A kernel-parked sleep has no host retry to wake below; consume the
+        // kernel's completion event now, rather than waiting for its deadline.
+        // The scratch lease used for input has already been released.
+        this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
         return undefined;
       },
     );
