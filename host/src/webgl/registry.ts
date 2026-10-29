@@ -33,6 +33,8 @@ import type { GlSurfaceCreation } from "./surface-create.js";
  */
 import { defaultShadow, type GlShadowState } from "./shadow.js";
 import type { GlDrawableBinding } from "./current.js";
+import { GlSubmitExecution, type GlExecutionDrawable } from "./submit-execution.js";
+import type { GlMuxer } from "./muxer.js";
 import { replaceDefaultFramebuffer } from "./framebuffer.js";
 import { createGlObjectGroup, exposeGlSharedObjects, type GlObjectGroup, type GlSharedObjects } from "./object-group.js";
 import { finalizeProgram, releaseRetainedExecutable } from "./program-objects.js";
@@ -87,6 +89,8 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlC
   sessionId: number;
   displayFileId: bigint | null;
   currentDrawable: GlDrawableBinding | null;
+  /** Present only while an accepted work item selects its retained storage. */
+  executionDrawable?: GlExecutionDrawable;
   hasBeenCurrent: boolean;
   /** Undefined means no driver savepoint; null captures the zero binding.
    * This pin survives submit boundaries and is never a public object name. */
@@ -360,6 +364,11 @@ export class GlContextRegistry {
       }
       return lease;
     } catch { return null; }
+  }
+
+  retainSubmitExecution(binding: GlBinding, muxer: GlMuxer): GlSubmitExecution | null {
+    if (this.get(binding.pid, binding.sessionId) !== binding) return null;
+    return GlSubmitExecution.capture(this, binding, muxer);
   }
 
   /** Only failed, unreferenced retirement blocks admission on its physical

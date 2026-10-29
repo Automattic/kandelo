@@ -2,7 +2,8 @@ import { blitPresentTarget } from "./present-target.js";
 import { prepareSurfaceCreation, validSurfaceCreation, type GlSurfaceCreation } from "./surface-create.js";
 import { GlContextRegistry, type GlForwardChannel } from "./registry.js";
 import { decodeAndDispatch, validateCommandBuffer } from "./bridge.js";
-import { SubmitFrame } from "./submit-queue.js";
+import { SubmitFrame, SubmitQueue } from "./submit-queue.js";
+import { drainSubmitQueue } from "./submit-drain.js";
 import { recordGlError } from "./errors.js";
 import { runGlQuery } from "./query.js";
 import { isFenceQuery, validFenceQuery, prepareFenceQuery, type PreparedFenceQuery } from "./fence-query.js";
@@ -124,6 +125,8 @@ export function setupMainForward(
   pid: number,
 ): () => void {
   const reg = new GlContextRegistry();
+  const queue = new SubmitQueue(undefined,
+    binding => binding.gl ? reg.retainSubmitExecution(binding, muxer(binding.gl)) : null);
 
   const onMessage = (e: MessageEvent) => {
     const msg = e.data as GlForwardMessage;
@@ -304,10 +307,9 @@ export function setupMainForward(
           const frame = new SubmitFrame(msg.bytes,0,msg.bytes.byteLength);
           if (frame.validate(validateCommandBuffer) < 0) { frame.discard(); recordGlError(b,0x502); return; }
           if (!reg.retryExecutionRetirements(b.gl)) { frame.discard(); recordGlError(b,0x502); return; }
-          frame.run(b, () => {
-            muxer(b.gl!).switchTo(b);
-            if (decodeAndDispatch(b,0,frame.byteLength) < 0) recordGlError(b,0x502);
-          });
+          queue.enqueue(b, frame);
+          if (drainSubmitQueue(queue, binding => binding.gl ? muxer(binding.gl) : null,
+            (binding, offset, length) => decodeAndDispatch(binding, offset, length)) < 0) recordGlError(b,0x502);
         } catch { recordGlError(b,0x502); }
         return;
       }
@@ -352,6 +354,7 @@ export function setupMainForward(
         const contexts = b.fences.contexts();
         if (b.gl) contexts.add(b.gl);
         for (const gl of contexts) muxers.get(gl)?.invalidateCurrent();
+        queue.removeSession(pid, msg.sessionId);
         reg.unbind(pid, msg.sessionId);
         return;
       }
@@ -366,6 +369,7 @@ export function setupMainForward(
       if (b.gl) contexts.add(b.gl);
       for (const gl of contexts) muxers.get(gl)?.invalidateCurrent();
     }
+    queue.removePid(pid);
     reg.unbind(pid);
   };
 }

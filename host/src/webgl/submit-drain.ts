@@ -41,6 +41,7 @@ export function drainSubmitQueue(
       // Renderer failure is an I/O result, not an exception into kernel Wasm.
       return -5;
     } finally {
+      queue.complete(frame);
       queue.releaseIfEmpty(entry);
     }
     if (typeof rc === "number" && rc < 0) return rc;

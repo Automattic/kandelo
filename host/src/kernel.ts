@@ -1004,7 +1004,10 @@ export class WasmPosixKernel {
    * Muxers keyed by `WebGL2RenderingContext` so pids sharing a canvas
    * share a muxer; `WeakMap` drops the muxer when the context is GC'd.
    */
-  private gl_submit_queue = new SubmitQueue(binding => this.#isMasterGlBinding(binding));
+  private gl_submit_queue = new SubmitQueue(
+    binding => this.#isMasterGlBinding(binding),
+    binding => binding.gl ? this.gl.retainSubmitExecution(binding, this.glMuxerFor(binding.gl)) : null,
+  );
   private gl_muxers = new WeakMap<WebGL2RenderingContext, GlMuxer>();
   // Physical GPU resource ownership is device-wide, independent of DRM master
   // and of the first process that happens to create an EGL context.
@@ -2758,7 +2761,8 @@ export class WasmPosixKernel {
           const b = this.gl.getContext(pid, ctxId);
           if (!b) return;
           this.releaseClaimedKmsCanvas(pid, b.sessionId);
-          this.gl_submit_queue.removeSession(pid, b.sessionId);
+          // Accepted commands retain their old context independently of the
+          // revoked public slot; process/session unbind still cancels them.
           if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
           this.gl.destroyContext(pid, b.sessionId);
           b.forward?.onDestroyContext(b.sessionId);
