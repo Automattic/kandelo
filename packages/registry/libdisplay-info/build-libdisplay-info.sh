@@ -43,6 +43,10 @@ fi
 # In a cross build meson resolves native dependencies with the build
 # machine's pkg-config and build.pkg_config_path, not PKG_CONFIG_PATH.
 # Without hwdata, upstream falls back to /usr/share/hwdata/pnp.ids.
+if ! pkg-config --atleast-version=0.300 hwdata; then
+    echo "ERROR: native hwdata >=0.300 is required. Enter scripts/dev-shell.sh." >&2
+    exit 1
+fi
 HWDATA_PC_DIR="$(pkg-config --variable=pcfiledir hwdata)" || {
     echo "ERROR: hwdata not found by the build machine's pkg-config. Enter scripts/dev-shell.sh." >&2
     exit 1

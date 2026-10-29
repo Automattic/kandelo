@@ -15,7 +15,7 @@ kernel_abi = 47
 
 [[host_tools]]
 name = "meson"
-version_constraint = ">=0.60.0"
+version_constraint = ">=1.4.0"
 install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
 
 [[host_tools]]
@@ -35,7 +35,6 @@ install_hints = { darwin = "provided by flake.nix (pkgs.python3); enter scripts/
 [[host_tools]]
 name = "patch"
 version_constraint = ">=2.7"
-probe = { args = ["--version"], version_regex = "patch (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
 [source]
