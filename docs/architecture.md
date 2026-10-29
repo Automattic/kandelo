@@ -1595,6 +1595,27 @@ and hanging in `__wasm_call_ctors`.
 
 ### posix_spawn() (non-forking)
 
+The Node compatibility runtime's asynchronous `child_process.spawn` and
+`execFile` search bare command names using the child's `PATH`, falling back to
+`/usr/bin:/bin` when that environment omits `PATH`. A name containing `/` skips
+that search. Relative candidates are anchored to the requested child working
+directory without collapsing symlinks or `..`. Each candidate goes through ordinary `posix_spawn` with the
+same child environment and file actions, so relative or empty path entries
+resolve against the child's working directory. Missing paths and non-directory
+components allow the search to continue; a permission denial is retained if no
+candidate succeeds. This shared runtime behavior applies on Node and browser
+hosts and lets npm lifecycle scripts find `sh` and package-local commands.
+
+The shared Node bootstrap also owns application exit-code absence, stdin
+read readiness, and the URL/Web Streams classes used by HTTP clients.
+SpiderMonkey embeds the integrity-locked JavaScript bundle under
+`third_party/node-web-platform/`; this code runs in the guest and does not
+substitute host networking or host process state.
+Its filesystem adapter translates negative operating-system results into Node
+errors, including `ENOSPC` from the bounded in-kernel filesystem. Whole-file
+writes consume partial writes until completion or an error; npm must not
+mistake a failed write for a successful byte count.
+
 POSIX `posix_spawn` is normally fork+exec done atomically. Our kernel
 ships a custom syscall (`SYS_SPAWN = 500`, host-intercepted in
 `host/src/kernel-worker.ts`) that builds the child directly — no fork,

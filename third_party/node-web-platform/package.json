@@ -1,0 +1,12 @@
+{
+  "name": "kandelo-node-web-platform-vendor",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "whatwg-url": "14.2.0",
+    "web-streams-polyfill": "4.3.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

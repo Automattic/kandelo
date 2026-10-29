@@ -1,8 +1,8 @@
 # Third-party vendored assets
 
-Upstream files vendored once and shared by every in-tree consumer. Both
-ship under permissive licenses compatible with this repo. Neither file is
-modified from upstream.
+Upstream assets vendored once and shared by in-tree consumers. They ship
+under permissive licenses compatible with this repo. The header and font
+are unmodified; the web platform implementation is a generated bundle.
 
 Keep one copy here. A consumer that needs one of these references this
 directory rather than vendoring its own — two byte-identical copies can
@@ -43,6 +43,14 @@ the license statement and URL (name IDs 13 and 14, SIL OFL 1.1). This
 NOTICE records the same attribution for the source tree.
 
 ## Consumers
+
+**Shared Node compatibility runtime** embeds
+[`node-web-platform/node-web-platform.js`](node-web-platform/README.md), a bundle of MIT licensed
+`whatwg-url`, `webidl-conversions`, `tr46`, `punycode`, and
+`web-streams-polyfill`. Its factory
+provides WHATWG URL and Web Streams classes. The bundle includes
+the full licenses; its directory records integrity-locked inputs and the
+regeneration command.
 
 **SDL2 GLSL playground** (`programs/sdl2/`). `renderer.c` defines
 `STB_TRUETYPE_IMPLEMENTATION` and includes `stb_truetype.h` from this

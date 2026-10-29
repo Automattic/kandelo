@@ -198,6 +198,8 @@
         lstat(path) { return tupleFromFileCall(() => shellFile.lstat(pathToString(path)), 2); },
         readdir(path) { return tupleFromFileCall(() => shellFile.listDir(pathToString(path)), 2); },
         mkdir(path, mode) { return typeof shellFile.mkdir === 'function' ? shellFile.mkdir(pathToString(path), mode || 0o777) : -38; },
+        chmod(path, mode) { return typeof shellFile.chmod === 'function' ? shellFile.chmod(pathToString(path), mode) : -38; },
+        fsync(fd) { return typeof shellFile.fsync === 'function' ? shellFile.fsync(fd) : -38; },
         remove(path) { return typeof shellFile.remove === 'function' ? shellFile.remove(pathToString(path)) : -38; },
         rename(oldPath, newPath) { return typeof shellFile.rename === 'function' ? shellFile.rename(pathToString(oldPath), pathToString(newPath)) : -38; },
         symlink(target, linkpath) { return typeof shellFile.symlink === 'function' ? shellFile.symlink(pathToString(target), pathToString(linkpath)) : -38; },
@@ -409,7 +411,12 @@
         socketClose(fd) { return native.socketClose(fd); },
         __kandeloPipe() { return native.__kandeloPipe(); },
         __kandeloSpawn(file, argv, env, actions, attrs) { return native.__kandeloSpawn(file, argv, env, actions, attrs); },
-        __kandeloFdRead(fd, max) { return native.__kandeloFdRead(fd, max); },
+        __kandeloFdRead(fd, max, nonblocking) {
+            return nonblocking === true ? native.__kandeloFdRead(fd, max, true) : native.__kandeloFdRead(fd, max);
+        },
+        __kandeloFdReadControl: typeof native.__kandeloFdReadControl === 'function'
+            ? function (promise, mode) { return native.__kandeloFdReadControl(promise, mode); }
+            : undefined,
         __kandeloFdWrite(fd, bytes) { return native.__kandeloFdWrite(fd, bytes); },
         __kandeloFdClose(fd) { return native.__kandeloFdClose(fd); },
         __kandeloWaitPid(pid) { return native.__kandeloWaitPid(pid); },
