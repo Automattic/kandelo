@@ -17,7 +17,8 @@ Saying "WebKit has a bug" blames someone else's software. Kandelo only makes tha
 4. Start the entry at `suspected`. Only a standalone, self-judging reproduction that has actually reproduced the defect on a named runtime version supports `confirmed` (README "Statuses"). A reproduction that only fails inside Kandelo is evidence, not a reproduction.
 5. Tag every code site in a comment, in the file's own comment syntax, with exactly `[RUNTIME-WORKAROUND: <ID>]` followed by why the line exists. Sites that cannot hold a comment go in `sites_without_tags`. Show the tag in this exact form only, since `check` rejects other bracketed variants (README "The tag").
 6. Word anything unreduced as "suspected" in code comments, docs and PR text. Do not write "WebKit bug" or "the engine leaks" for a suspected entry.
-7. Run `check` (and `run --id <ID>` for an entry past `suspected`), then link the entry from the user-facing explanation, usually `docs/browser-support.md`.
+7. If the reproduction creates shared memory or Wasm instances (`new WebAssembly.Memory({ shared: true })`, `new WebAssembly.Instance`, `WebAssembly.instantiate`), the kernel-memory ownership audit in `host/test/kernel-scratch-contract.test.ts` reports each such line as an unreviewed finding, because it audits every runtime source in the tree, reproductions included. Add one reviewed entry per line to `auditAllowances` there, like the existing `tests/runtime-workarounds/` entries: `disposition: "non-kernel"`, `authorityOwner: "shared-memory"`, and a `why` that says the reproduction contains no Kandelo code. Print the exact keys with `KANDELO_DEBUG_SCRATCH_AUDIT=keys` (README "Adding an entry").
+8. Run `check` (and `run --id <ID>` for an entry past `suspected`), then link the entry from the user-facing explanation, usually `docs/browser-support.md`.
 
 ## Commands
 

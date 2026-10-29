@@ -386,7 +386,18 @@ comments say "suspected".
 3. Put the reproduction in `repro/` and run it with the driver on every
    target it declares that this machine has; record each result in
    `observed`.
-4. Choose the status the evidence supports (see the table above).
-5. Run `check`, and `run --id <ID>` for an entry past `suspected`.
-6. Link the entry from the user-facing explanation, usually a section of
+4. If the reproduction creates shared memory or Wasm instances
+   (`new WebAssembly.Memory({ shared: true })`, `new WebAssembly.Instance`,
+   `WebAssembly.instantiate`), add a reviewed allowance for each such line
+   to `auditAllowances` in `host/test/kernel-scratch-contract.test.ts`.
+   That test audits who may create or hold WebAssembly memory and instances
+   across every runtime source in the tree, `repro/` directories included,
+   and reports an unreviewed line as a finding. Follow the existing
+   `tests/runtime-workarounds/` allowances: `disposition: "non-kernel"`,
+   `authorityOwner: "shared-memory"`, and a `why` stating that the
+   reproduction contains no Kandelo code. To print the exact keys, run the
+   test with `KANDELO_DEBUG_SCRATCH_AUDIT=keys`.
+5. Choose the status the evidence supports (see the table above).
+6. Run `check`, and `run --id <ID>` for an entry past `suspected`.
+7. Link the entry from the user-facing explanation, usually a section of
    `docs/browser-support.md`.
