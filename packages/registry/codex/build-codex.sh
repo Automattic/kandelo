@@ -76,3 +76,4 @@ fi
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary codex "$WORK_DIR/codex.wasm" codex.wasm
 install_local_runtime_file codex "$SCRIPT_DIR/system-config.toml" config.toml
+install_local_runtime_file codex "$SCRIPT_DIR/credential-requests.json" credential-requests.json

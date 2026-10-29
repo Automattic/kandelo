@@ -25,6 +25,10 @@ wasm = "codex.wasm"
 artifact = "config.toml"
 guest_path = "/etc/codex/config.toml"
 
+[[runtime_files]]
+artifact = "credential-requests.json"
+guest_path = "/etc/kandelo/credential-requests.d/codex.json"
+
 [[host_tools]]
 name = "cargo"
 version_constraint = ">=1.95.0"

@@ -129,6 +129,24 @@ and network restrictions inside a Kandelo machine would need a platform
 policy interface and a corresponding Codex backend; this port does not
 claim those restrictions or select another OS's sandbox.
 
+## Credential request declaration
+
+The package also installs `/etc/kandelo/credential-requests.d/codex.json`
+(`credential-requests.json`, mode 0644). It declares that `/usr/bin/codex`,
+titled "Codex", sends account credentials to exactly three HTTPS origins,
+`https://auth.openai.com`, `https://chatgpt.com`, and
+`https://api.openai.com`, and that its launch waits for the user's answer
+(`"launch": "wait"`). It is the declaration the platform's credential
+prompt reads; a program that declares nothing is never offered
+credentials. The path is the real file, not the `/bin/codex` symlink.
+
+The declaration only names who may receive credentials. It does not grant
+anything, and nothing in the platform reads it at runtime as of this
+change. The shell image builder validates it with
+`parseCredentialRequests` (`host/src/credential-requests.ts`), so a
+malformed declaration fails the image build. The local credential relay's
+origin list is configured separately and is not derived from this file.
+
 ## Networking boundaries
 
 The browser host's existing TLS/fetch bridge transports HTTP(S), rather

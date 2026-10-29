@@ -51,6 +51,7 @@ host/test/connect-pending-retry.test.ts	source-only
 host/test/cors-proxy-session.test.ts	source-only
 host/test/cpp-throw-test.test.ts	prepared-product
 host/test/credential-relay.test.ts	source-only
+host/test/credential-requests.test.ts	source-only
 host/test/cxx-runtime-guest.test.ts	prepared-product
 host/test/datagram-wakeup.test.ts	source-only
 host/test/dbus-smoke.test.ts	prepared-product

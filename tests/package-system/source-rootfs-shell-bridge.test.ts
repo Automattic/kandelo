@@ -89,6 +89,7 @@ const roots: string[] = [];
 const SHELL_PACKAGE_RUNTIME_FILE_SOURCES: Record<string, Record<string, string>> = {
   codex: {
     "config.toml": "system-config.toml",
+    "credential-requests.json": "credential-requests.json",
   },
 };
 const MiB = 1024 * 1024;
@@ -342,7 +343,8 @@ function fixturePaths(root: string) {
     }
   }
   // Package-owned configuration the shell installs: each artifact is the
-  // real file the package's build installs under that name.
+  // real file the package's build installs under that name, because the
+  // composer parses some of them (credential declarations).
   for (const [name, artifacts] of Object.entries(SHELL_PACKAGE_RUNTIME_FILES)) {
     for (const artifact of artifacts) {
       const source = SHELL_PACKAGE_RUNTIME_FILE_SOURCES[name]?.[artifact];

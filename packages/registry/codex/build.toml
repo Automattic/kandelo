@@ -5,6 +5,7 @@ revision = 2
 inputs = [
   "packages/registry/codex/build-codex.sh",
   "packages/registry/codex/prepare-rust-deps.sh",
+  "packages/registry/codex/credential-requests.json",
   "packages/registry/codex/system-config.toml",
   "packages/registry/codex/patches",
   "packages/registry/codex/kandelo.patch",

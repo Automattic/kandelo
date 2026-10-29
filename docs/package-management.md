@@ -787,6 +787,22 @@ forms, and launch arguments; images install their manifests for runtime
 discovery even when the executables remain lazy. They are package capabilities
 and do not require adding demo profiles.
 
+A program that sends account credentials declares which HTTPS origins
+may receive them in a runtime file installed at
+`/etc/kandelo/credential-requests.d/<package>.json`. The file is one JSON
+object: `program` (the real executable path, not a symlink to it), `title`
+(one line of at most 128 characters that shows something: no control,
+bidirectional or other format characters except the zero-width non-joiner and
+joiner that Persian, Indic writing and emoji need, and not only whitespace,
+joiners or blank filler letters such as U+3164),
+`destinations` (a non-empty list of exact HTTPS origins: no path, query,
+fragment, userinfo, or trailing slash), and `launch` (`"wait"` or
+`"continue"`); unknown keys are rejected. `parseCredentialRequests` in
+`host/src/credential-requests.ts` is the authoritative parser, and VFS image
+builders that install such a file run it so a malformed declaration fails the
+build. The declaration names destinations only; it grants nothing and does not
+by itself make credentials flow.
+
 Build scripts install declared artifacts through
 `scripts/install-local-binary.sh`. When
 `WASM_POSIX_INSTALL_LOCAL_MIRROR=0` and `WASM_POSIX_DEP_OUT_DIR` are set,
