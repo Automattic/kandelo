@@ -8,7 +8,6 @@ import type { PackageSessionControls } from "./use-package-sessions";
 import { ActivityJoinForm, ActivityOfferForm, ActivityClientForm, ActivityMetadata } from "./ActivityForms";
 import { SessionNotice } from "./SessionNotice";
 import { randomSessionName } from "./session-name";
-import { resolveBrowserCorsProxyConfig } from "../../../lib/browser-cors-proxy";
 
 export const NetworkPanel: React.FC<{ session: NetworkSession; activity: PackageSessionControls; running: boolean; failed?: boolean }> = ({ session, activity, running, failed }) => {
   const { state, invitation } = session;
@@ -59,15 +58,6 @@ export const NetworkPanel: React.FC<{ session: NetworkSession; activity: Package
           </>}
           {!active && !invitation && state.phase === "connected" && <button className="kshare-btn" disabled={busy} onClick={() => setEditing(null)}>Back to active session</button>}
         </>}>
-
-          {import.meta.env.DEV && ['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname) && (
-            <p className="knetwork-note">
-              <a href={resolveBrowserCorsProxyConfig({ development: true,
-                baseUrl: import.meta.env.BASE_URL, pageUrl: window.location.href }).credentialRelay?.url}
-                target="_blank" rel="noopener noreferrer">Review signed-in networking permission</a>
-              {' '}before sending credentials to online services. Opening this page does not grant permission.
-            </p>
-          )}
 
           {state.error && <div className="knetwork-error" role="alert">
             {state.error}

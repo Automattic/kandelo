@@ -1012,7 +1012,6 @@ if (typeof window !== "undefined") {
   var CORS_PROXY_CONFIG = "__CORS_PROXY_CONFIG__";
   var proxySessionFactory = "__CORS_PROXY_SESSION_TRANSPORT__";
   var proxySessionFetch = typeof proxySessionFactory === "function" ? proxySessionFactory() : null;
-  var credentialRelayFetch = "__CREDENTIAL_RELAY_TRANSPORT__";
   var corsProxyWarningKeys = new Set();
 
   // Mirror of the credential field set (ANONYMOUS_OMISSION_EXCLUDED_NAMES,
@@ -1050,6 +1049,44 @@ if (typeof window !== "undefined") {
   function normalizedCorsProxyUrl() {
     var config = normalizedCorsProxyConfig();
     return config ? new URL(config.url, self.location.href).href : "";
+  }
+
+  // The development credential relay (loopback development servers only):
+  // it carries its HTTPS destinations' requests in the proxy's place, with
+  // the same projection, so a credential reaches it only with a verified
+  // grant and the opt-in this worker re-derives. Mirror of
+  // host/src/networking/credential-relay.ts.
+  function credentialRelayConfig() {
+    var config = normalizedCorsProxyConfig();
+    var relay = config && config.credentialRelay;
+    if (!relay || typeof relay.url !== "string" || !Array.isArray(relay.allowedOrigins)) {
+      return null;
+    }
+    return relay;
+  }
+
+  // Mirror of credentialRelayCarries().
+  function credentialRelayFor(targetUrl) {
+    var relay = credentialRelayConfig();
+    if (!relay) return null;
+    try {
+      return relay.allowedOrigins.indexOf(new URL(targetUrl).origin) >= 0 ? relay : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  // Mirror of credentialRelayFetchUrl().
+  function credentialRelayFetchUrl(relay, targetUrl) {
+    return new URL(relay.url, self.location.href).href + "?url=" +
+      encodeURIComponent(targetUrl);
+  }
+
+  function isCredentialRelayUrl(url) {
+    var relay = credentialRelayConfig();
+    if (!relay) return false;
+    var endpoint = new URL(relay.url, self.location.href);
+    return url.origin === endpoint.origin && url.pathname === endpoint.pathname;
   }
 
   function isCorsProxyFetchUrl(targetUrl) {
@@ -1283,30 +1320,19 @@ if (typeof window !== "undefined") {
   // resource. Several If-Range fields reach here joined, which never match.
   function fetchThroughCorsProxy(request, outgoingUrl, targetUrl, grant) {
     var config = normalizedCorsProxyConfig();
-    if (config && config.credentialRelay &&
-        config.credentialRelay.allowedOrigins.includes(new URL(targetUrl).origin)) {
-      if (typeof credentialRelayFetch !== "function") {
-        return Promise.resolve(new Response("Credential relay transport unavailable", { status: 502 }));
-      }
-      return credentialRelayFetch(config.credentialRelay, {
-        targetUrl: targetUrl, method: request.method,
-        // The development relay keeps its own consent; the gate's tag and
-        // the proxy's opt-in mean nothing to it and never leave the browser.
-        headers: Array.from(request.headers.entries()).filter(function (entry) {
-          var lower = entry[0].toLowerCase();
-          return lower !== CREDENTIAL_GRANT_HEADER && lower !== CREDENTIAL_OPT_IN_HEADER;
-        }), signal: request.signal,
-        body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
-      }).catch(function () {
-        return new Response("Credential relay requires permission or could not complete the request", { status: 502 });
-      });
-    }
+    // The development relay's destinations go to the relay instead, projected
+    // exactly as for the proxy (mirrors BrowserCorsProxy.fetch).
+    var relay = credentialRelayFor(targetUrl);
+    if (relay) outgoingUrl = credentialRelayFetchUrl(relay, targetUrl);
     var ifRange = config && !proxyAllowedHeaderNames(config).has("if-range")
       ? request.headers.get("if-range")
       : null;
     return projectCorsProxyRequest(request, outgoingUrl, targetUrl, grant || null).then(function (projected) {
       if (projected instanceof Response) return projected;
       function send(projected) {
+        // Same-origin, so say so: the browser's own cookies are not the
+        // guest's. The relay has no proxy session protocol.
+        if (relay) return fetch(new Request(projected, { credentials: "omit" }));
         if (!proxySessionFetch) return fetch(projected);
         // Firefox can retain POST bytes internally while Request.body is null.
         // Read by method instead of using that getter to decide body presence.
@@ -1605,7 +1631,10 @@ if (typeof window !== "undefined") {
   // one, pose as Kandelo code.
   function proxyDestinationRefusal(request, url) {
     if (request.destination === "") return null;
-    if (!isCorsProxyRequestUrl(url.href) && !isDevCorsProxyUrl(url)) return null;
+    if (
+      !isCorsProxyRequestUrl(url.href) && !isDevCorsProxyUrl(url) &&
+      !isCredentialRelayUrl(url)
+    ) return null;
     return new Response(
       "Kandelo refused this request: the CORS proxy's answers are data for " +
         "fetch(), not for a load as " + request.destination + ".\n",
@@ -1878,6 +1907,28 @@ if (typeof window !== "undefined") {
     }).then(function (response) {
       var headers = corsSafeResponseHeaders(response);
       return responseWithHeaders(response, headers);
+    });
+  }
+
+  // A request to the development credential relay (the kernel worker's, or
+  // any script's) passes the same gate as one to the proxy, then goes on
+  // projected: credentials and the re-derived opt-in only with a verified
+  // grant, never the tag. The relay's own answer, already limited to inert
+  // fields, comes back unchanged.
+  function fetchGatedThroughCredentialRelay(event, url) {
+    var targetUrl = null;
+    try {
+      targetUrl = new URL(url.searchParams.get("url")).href;
+    } catch (_error) {
+      targetUrl = null;
+    }
+    var relayable = targetUrl !== null && credentialRelayFor(targetUrl) !== null;
+    return credentialGate(event, relayable ? targetUrl : null).then(function (gate) {
+      if (gate instanceof Response) return gate;
+      // Nothing to relay (the relay answers 404, 400 or 403 itself), and
+      // nothing credentialed to forward.
+      if (!relayable) return fetch(event.request);
+      return fetchThroughCorsProxy(event.request, url.href, targetUrl, gate);
     });
   }
 
@@ -2187,8 +2238,14 @@ if (typeof window !== "undefined") {
       return;
     }
 
-    // A grant's tag is meaningful only on the way to the configured proxy;
-    // anywhere else it is refused rather than sent on.
+    if (!isCrossOrigin(url) && isCredentialRelayUrl(url)) {
+      event.respondWith(fetchGatedThroughCredentialRelay(event, url));
+      return;
+    }
+
+    // A grant's tag is meaningful only on the way to the configured proxy
+    // (or the development relay, above); anywhere else it is refused rather
+    // than sent on.
     if (
       event.request.headers.has(CREDENTIAL_GRANT_HEADER) &&
       !isCorsProxyRequestUrl(url.href)

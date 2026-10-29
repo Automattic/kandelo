@@ -7,7 +7,7 @@
  * destination directly: the kernel worker's `BrowserCorsProxy` sends it to
  * the configured CORS proxy, or, on a loopback development server, to the
  * development credential relay for the origins the relay carries
- * (`BrowserCorsProxy.fetch`). Whoever operates that proxy or relay receives
+ * (`credentialRelayCarries`). Whoever operates that proxy or relay receives
  * the credentials in clear text. Without a proxy, every credentialed request
  * is refused before dispatch (`PROXYLESS_CREDENTIAL_REASON`), so nothing is
  * sent at all. On Node, programs open real sockets and connect directly.
@@ -24,6 +24,7 @@ import {
   type BrowserCorsProxyConfig,
   validateBrowserCorsProxyConfig,
 } from "./networking/browser-cors-proxy";
+import { credentialRelayCarries } from "./networking/credential-relay";
 
 /**
  * An endpoint as a prompt names it: origin and path, without the query the
@@ -66,8 +67,7 @@ export function browserCredentialTransport(
   const relay = config.credentialRelay;
   const relayName = relay === undefined ? undefined : endpointName(relay.url);
   return (destinations) => group(destinations, (destination) =>
-    // The routing rule `BrowserCorsProxy.fetch` applies.
-    relay?.allowedOrigins.includes(new URL(destination).origin)
+    credentialRelayCarries(relay, destination)
       ? { kind: "relay", via: relayName }
       : { kind: "proxy", via: proxy }
   );

@@ -2,8 +2,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { createCredentialRelayHandler } from '../../apps/browser-demos/vite/credential-relay';
-import { createCredentialRelayTransport } from '../src/networking/credential-relay';
-import { BrowserCorsProxy } from '../src/networking/browser-cors-proxy';
+import {
+  BrowserCorsProxy,
+  BrowserCorsProxyRequestError,
+} from '../src/networking/browser-cors-proxy';
+import { createProxySessionTransport } from '../src/networking/cors-proxy-session';
+
+// The development credential relay carries credentials only for a request
+// the service worker's gate produced: one with the proxy protocol's opt-in
+// and without the grant's tag. It has no approval page and no site-wide
+// session; a per-process credential grant is the only permission.
 
 const destination = 'https://provider.example';
 const path = '/__kandelo_credential_relay';
@@ -16,184 +24,60 @@ afterEach(async () => {
   }
 });
 
-async function setup(upstream = vi.fn(async () => new Response('ok'))) {
-  let handler!: ReturnType<typeof createCredentialRelayHandler>;
-  const permissionServer = createServer((req, res) => {
-    handler(req, res, path, 'permission').then(handled => { if (!handled) { res.statusCode = 404; res.end(); } });
-  });
-  servers.push(permissionServer);
-  await new Promise<void>(resolve => permissionServer.listen(0, '127.0.0.1', resolve));
-  const permissionAddress = permissionServer.address();
-  if (!permissionAddress || typeof permissionAddress === 'string') throw new Error('missing permission address');
-  const permissionOrigin = `http://127.0.0.1:${permissionAddress.port}`;
-  handler = createCredentialRelayHandler({ allowedOrigins: [destination], fetch: upstream, permissionOrigin: () => permissionOrigin });
+async function setup(upstream = vi.fn(async (_url: URL, _init: RequestInit) => new Response('ok'))) {
+  const handler = createCredentialRelayHandler({ allowedOrigins: [destination], fetch: upstream });
   const server = createServer((req, res) => {
-    handler(req, res, path).then(handled => { if (!handled) { res.statusCode = 404; res.end(); } });
+    handler(req, res, path).then(handled => { if (!handled) { res.statusCode = 200; res.end('app shell'); } });
   });
   servers.push(server);
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('missing server address');
   const origin = `http://127.0.0.1:${address.port}`;
-  const page = await fetch(origin + path, { redirect: 'manual' });
-  const permissionUrl = page.headers.get('location')!;
-  expect(new URL(permissionUrl).origin).toBe(permissionOrigin);
-  expect(permissionOrigin).not.toBe(origin);
-  const cookie = page.headers.get('set-cookie')!.split(';')[0];
-  const html = await (await fetch(permissionUrl)).text();
-  const csrf = html.match(/name="csrf" value="([^"]+)"/)![1];
-  async function decide(decision: string, nonce = csrf, from = permissionOrigin) {
-    return fetch(permissionOrigin + path + '/consent' + new URL(permissionUrl).search, { method: 'POST', redirect: 'manual',
-      headers: { Origin: from, Cookie: cookie, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ csrf: nonce, decision }) });
+  const relayUrl = (target = destination + '/responses') => `${origin}${path}?url=${encodeURIComponent(target)}`;
+  function relay(headers: Record<string, string> = {}, init: RequestInit = {}, target?: string) {
+    return fetch(relayUrl(target), { method: 'POST', body: 'synthetic body', ...init,
+      headers: { 'Content-Type': 'application/json', ...headers } });
   }
-  async function send(url: string, init: RequestInit = {}) {
-    const headers = new Headers(init.headers);
-    headers.set('Cookie', cookie);
-    headers.set('Origin', origin);
-    return fetch(url, { ...init, headers });
+  function forwarded(index = 0) {
+    const [url, init] = upstream.mock.calls[index] as unknown as [URL, RequestInit];
+    return { url, init, headers: new Headers(init.headers) };
   }
-  const envelope = { version: 1, targetUrl: destination + '/responses', method: 'POST',
-    headers: [['Authorization', 'Bearer synthetic-test-token'], ['originator', 'codex_cli_rs']],
-    body: btoa('synthetic body') };
-  function relay(value = envelope, extra: Record<string, string> = {}) {
-    return send(origin + path + '/request', { method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...extra }, body: JSON.stringify(value) });
-  }
-  return { origin, cookie, html, decide, send, relay, envelope, upstream, csrf, permissionUrl, permissionOrigin, handler };
+  return { origin, relayUrl, relay, upstream, forwarded };
 }
 
-describe('explicit local credential relay', () => {
-  it.each(['kernel worker', 'service worker'])('%s requires consent before dispatching guest headers and body', async transport => {
-    const relay = { url: 'http://localhost:5499/relay', allowedOrigins: [destination] };
-    const config = { url: 'https://anonymous.example/?', allowedRequestHeaderNames: [],
-      allowAnonymousGetHeaderOmission: true, credentialRelay: relay };
-    let approved = false;
-    const sent: Array<{ url: string; init: RequestInit }> = [];
-    const send = async (url: string, init: RequestInit) => {
-      sent.push({ url, init });
-      return url.endsWith('/status')
-        ? Response.json({ approved, allowedOrigins: [destination] }) : new Response('provider');
-    };
-    const request = { method: 'POST', targetUrl: destination + '/responses',
-      headers: [['Authorization', 'Bearer synthetic-test-token']] as [string, string][],
-      body: 'synthetic body' };
-    let dispatch: () => Promise<Response>;
-    if (transport === 'kernel worker') {
-      dispatch = () => new BrowserCorsProxy(config).fetch(request, send);
-    } else {
-      const source = readFileSync(new URL('../../apps/browser-demos/public/service-worker.js', import.meta.url), 'utf8');
-      const start = source.indexOf('  var CORS_PROXY_CONFIG =');
-      const end = source.indexOf('  /**\n   * Check if a URL is cross-origin', start);
-      if (start < 0 || end < start) throw new Error('service worker proxy section missing');
-      const section = source.slice(start, end)
-        .replace('"__CORS_PROXY_CONFIG__"', JSON.stringify(config))
-        .replace('"__CREDENTIAL_RELAY_TRANSPORT__"', `(${createCredentialRelayTransport.toString()})()`);
-      const worker = new Function('globalThis', 'self', 'fetch', `${section}; return fetchThroughCorsProxy;`)(
-        { fetch: send, location: { origin: 'http://localhost:5499' } },
-        { location: { href: 'http://localhost:5499/' } }, send,
-      );
-      dispatch = () => worker(new Request(request.targetUrl, request), 'unused', request.targetUrl);
+const GRANTED = {
+  Authorization: 'Bearer synthetic-test-token',
+  'ChatGPT-Account-ID': 'synthetic-account',
+  'X-Cors-Proxy-Allowed-Request-Headers': 'Authorization',
+};
+
+describe('development credential relay server', () => {
+  it('has no approval page, status, or consent endpoint', async () => {
+    const app = await setup();
+    for (const [method, suffix] of [['GET', ''], ['GET', '/'], ['GET', '/status'], ['POST', '/consent'], ['POST', '/request']]) {
+      const response = await fetch(app.origin + path + suffix, { method, redirect: 'manual' });
+      expect(response.status, `${method} ${suffix}`).toBe(404);
+      expect(response.headers.has('set-cookie')).toBe(false);
+      expect(response.headers.get('content-security-policy')).toBe('sandbox');
     }
-    await dispatch().catch(() => {});
-    expect(sent).toHaveLength(1);
-    expect(sent[0].url).toBe(relay.url + '/status');
-    expect(JSON.stringify(sent)).not.toContain('synthetic');
-    approved = true;
-    sent.length = 0;
-    expect(await (await dispatch()).text()).toBe('provider');
-    expect(sent.map(s => s.url)).toEqual([relay.url + '/status', relay.url + '/request']);
-    const envelope = JSON.parse(sent[1].init.body as string);
-    expect(envelope.headers.map(([name, value]: string[]) => [name.toLowerCase(), value]))
-      .toContainEqual(['authorization', 'Bearer synthetic-test-token']);
-    expect(atob(envelope.body)).toBe('synthetic body');
-  });
-
-  it('does not send guest headers or body to a relay before consent', async () => {
-    const send = vi.fn(async () => Response.json({ approved: false, allowedOrigins: [destination] }));
-    await expect(createCredentialRelayTransport()({ url: 'http://localhost:5499' + path,
-      allowedOrigins: [destination] }, { targetUrl: destination + '/responses', method: 'POST',
-      headers: [['authorization', 'Bearer synthetic-test-token']], body: 'synthetic secret' }, send))
-      .rejects.toThrow('requires your permission');
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(send.mock.calls)).not.toContain('synthetic');
-  });
-
-  it('rejects remote relays and non-allowlisted destinations before any dispatch', async () => {
-    const send = vi.fn();
-    const request = { targetUrl: destination, method: 'GET', headers: [] };
-    await expect(createCredentialRelayTransport()({ url: 'https://untrusted.example/relay',
-      allowedOrigins: [destination] }, request, send)).rejects.toThrow('local');
-    await expect(createCredentialRelayTransport()({ url: 'http://localhost:5499' + path,
-      allowedOrigins: [] }, request, send)).rejects.toThrow('not permitted');
-    expect(send).not.toHaveBeenCalled();
-  });
-
-  it('does not consume a streaming body before consent and bounds it after consent', async () => {
-    for (const approved of [false, true]) {
-      let pulled = false;
-      let cancelled = false;
-      const body = new ReadableStream({ pull(controller) {
-        pulled = true;
-        controller.enqueue(new Uint8Array(8 * 1024 * 1024 + 1));
-        controller.close();
-      }, cancel() { cancelled = true; } }, { highWaterMark: 0 });
-      const send = vi.fn(async () => Response.json({ approved, allowedOrigins: [destination] }));
-      await expect(createCredentialRelayTransport()({ url: 'http://localhost:5499' + path,
-        allowedOrigins: [destination] }, { targetUrl: destination, method: 'POST', headers: [], body }, send))
-        .rejects.toThrow(approved ? 'exceeds 8 MiB' : 'requires your permission');
-      expect(pulled).toBe(approved);
-      expect(send).toHaveBeenCalledTimes(1);
-      if (!approved) expect(cancelled).toBe(false);
-    }
-  });
-
-  it('starts blocked and provides an explicit, framed-out permission page', async () => {
-    const app = await setup();
-    expect(await (await app.send(app.origin + path + '/status')).json()).toMatchObject({ approved: false });
-    expect(app.html).toContain('The local relay can read this information');
-    expect(app.html).toContain(destination);
-    const page = await fetch(app.origin + path);
-    expect(page.headers.get('x-frame-options')).toBe('DENY');
-    expect((await app.relay()).status).toBe(403);
     expect(app.upstream).not.toHaveBeenCalled();
   });
 
-  it('requires the same origin, a valid CSRF token and an explicit decision', async () => {
+  it('forwards credentials for a request carrying the opt-in', async () => {
     const app = await setup();
-    expect((await app.decide('allow', 'wrong')).status).toBe(403);
-    expect((await app.decide('allow', undefined, 'https://untrusted.example')).status).toBe(403);
-    expect((await app.decide('implicit')).status).toBe(403);
-    expect((await app.decide('deny')).status).toBe(303);
-    expect((await app.relay()).status).toBe(403);
-    expect(app.upstream).not.toHaveBeenCalled();
-  });
-
-  it('rejects app-origin consent even with a known permission nonce', async () => {
-    const app = await setup();
-    expect((await app.decide('allow', app.csrf, app.origin)).status).toBe(403);
-    const response = await app.send(app.origin + path + '/consent', { method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ csrf: app.csrf, decision: 'allow' }) });
-    expect(response.status).toBe(403);
-    expect((await app.relay()).status).toBe(403);
-    expect(app.upstream).not.toHaveBeenCalled();
-  });
-
-  it('preserves explicit guest credentials while excluding ambient browser credentials', async () => {
-    const app = await setup();
-    await app.decide('allow');
-    const result = await createCredentialRelayTransport()({ url: app.origin + path,
-      allowedOrigins: [destination] }, { targetUrl: destination + '/responses', method: 'POST',
-      headers: [['Authorization', 'Bearer synthetic-test-token'], ['originator', 'codex_cli_rs']],
-      body: 'synthetic body' }, app.send);
-    expect(await result.text()).toBe('ok');
+    const response = await app.relay({ ...GRANTED, originator: 'codex_cli_rs', Cookie: 'ambient=browser' });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('ok');
     expect(app.upstream).toHaveBeenCalledTimes(1);
-    const [url, init] = app.upstream.mock.calls[0] as unknown as [URL, RequestInit];
+    const { url, init, headers } = app.forwarded();
     expect(url.href).toBe(destination + '/responses');
-    const headers = new Headers(init.headers);
     expect(headers.get('authorization')).toBe('Bearer synthetic-test-token');
+    expect(headers.get('chatgpt-account-id')).toBe('synthetic-account');
     expect(headers.get('originator')).toBe('codex_cli_rs');
+    // The opt-in instructs the relay; the browser's own cookie and Origin are
+    // not the guest's and are never forwarded.
+    expect(headers.has('x-cors-proxy-allowed-request-headers')).toBe(false);
     expect(headers.has('cookie')).toBe(false);
     expect(headers.has('origin')).toBe(false);
     expect(Buffer.from(init.body as Uint8Array).toString()).toBe('synthetic body');
@@ -201,42 +85,82 @@ describe('explicit local credential relay', () => {
     expect(init.redirect).toBe('error');
   });
 
-  it('revokes previously granted permission', async () => {
+  it('refuses credentials without the opt-in, visibly and without stripping them', async () => {
     const app = await setup();
-    await app.decide('allow');
-    expect((await app.relay()).status).toBe(200);
-    await app.decide('deny');
-    expect((await app.relay()).status).toBe(403);
-    expect(app.upstream).toHaveBeenCalledTimes(1);
-  });
-
-  it('clears permission when the local server restarts', async () => {
-    const app = await setup();
-    await app.decide('allow');
-    app.handler.clearPermissions();
-    expect((await app.relay()).status).toBe(403);
+    for (const headers of [
+      { Authorization: 'Bearer synthetic-test-token' },
+      { 'ChatGPT-Account-ID': 'synthetic-account' },
+      // An opt-in that names nothing is no opt-in.
+      { 'ChatGPT-Account-ID': 'synthetic-account', 'X-Cors-Proxy-Allowed-Request-Headers': '' },
+      // The opt-in must name Authorization for Authorization to pass.
+      { Authorization: 'Bearer synthetic-test-token', 'X-Cors-Proxy-Allowed-Request-Headers': 'Content-Type' },
+      // The opt-in may name only what a grant relays.
+      { 'X-Cors-Proxy-Allowed-Request-Headers': 'Authorization, Cookie' },
+    ]) {
+      const response = await app.relay(headers);
+      expect(response.status, JSON.stringify(headers)).toBe(403);
+      const body = await response.text();
+      expect(body).toContain('opt-in');
+      expect(body).not.toContain('synthetic');
+    }
     expect(app.upstream).not.toHaveBeenCalled();
   });
 
-  it('expires consent instead of silently renewing permission', async () => {
+  it('refuses a request that still carries a grant tag: it bypassed the service worker gate', async () => {
     const app = await setup();
-    await app.decide('allow');
-    const later = Date.now() + 60 * 60 * 1000 + 1;
-    vi.spyOn(Date, 'now').mockReturnValue(later);
-    expect((await app.relay()).status).toBe(403);
+    const response = await app.relay({ ...GRANTED, 'X-Kandelo-Credential-Grant': 'synthetic-tag' });
+    expect(response.status).toBe(403);
+    const body = await response.text();
+    expect(body).toContain('service worker');
+    expect(body).not.toContain('synthetic-tag');
     expect(app.upstream).not.toHaveBeenCalled();
+  });
+
+  it('relays an anonymous request without any opt-in', async () => {
+    const app = await setup();
+    const response = await fetch(app.relayUrl(destination + '/models?client=1'));
+    expect(response.status).toBe(200);
+    expect(app.forwarded().url.href).toBe(destination + '/models?client=1');
+    expect(app.forwarded().headers.has('authorization')).toBe(false);
+  });
+
+  it('forwards only to its exact HTTPS destinations', async () => {
+    const app = await setup();
+    for (const target of ['https://untrusted.example/x', 'http://provider.example/x',
+      'https://user:secret@provider.example/x', 'not a url']) {
+      const response = await app.relay(GRANTED, {}, target);
+      expect(response.status, target).toBeGreaterThanOrEqual(400);
+      expect(response.status, target).toBeLessThan(500);
+      expect(await response.text()).not.toContain('secret');
+    }
+    expect(app.upstream).not.toHaveBeenCalled();
+  });
+
+  it('answers only fetch(), from its own origin, as inert data', async () => {
+    const app = await setup();
+    const script = await app.relay({ ...GRANTED, 'Sec-Fetch-Dest': 'script' }, { method: 'GET', body: undefined });
+    expect(script.status).toBe(403);
+    expect(script.headers.get('content-security-policy')).toBe('sandbox');
+    expect(script.headers.get('x-content-type-options')).toBe('nosniff');
+    const crossSite = await app.relay({ ...GRANTED, 'Sec-Fetch-Site': 'cross-site' });
+    expect(crossSite.status).toBe(403);
+    const otherOrigin = await app.relay({ ...GRANTED, Origin: 'https://untrusted.example' });
+    expect(otherOrigin.status).toBe(403);
+    expect(app.upstream).not.toHaveBeenCalled();
+    const ok = await app.relay({ ...GRANTED, 'Sec-Fetch-Dest': 'empty', 'Sec-Fetch-Site': 'same-origin', Origin: app.origin });
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get('content-security-policy')).toBe('sandbox');
+    expect(ok.headers.get('x-content-type-options')).toBe('nosniff');
   });
 
   it('does not follow redirects or forward privileged upstream response headers', async () => {
     const redirected = await setup(vi.fn(async () => Response.redirect('https://untrusted.example')));
-    await redirected.decide('allow');
-    expect((await redirected.relay()).status).toBe(502);
+    expect((await redirected.relay(GRANTED)).status).toBe(502);
     const safe = await setup(vi.fn(async () => new Response('ok', { headers: {
       'Set-Cookie': 'ambient=forged', 'Clear-Site-Data': '"*"', 'Content-Type': 'text/event-stream',
       'x-codex-turn-state': 'synthetic-turn-state',
     } })));
-    await safe.decide('allow');
-    const response = await safe.relay();
+    const response = await safe.relay(GRANTED);
     expect(response.headers.has('set-cookie')).toBe(false);
     expect(response.headers.has('clear-site-data')).toBe(false);
     expect(response.headers.get('content-type')).toBe('text/event-stream');
@@ -244,29 +168,124 @@ describe('explicit local credential relay', () => {
     expect(await response.text()).toBe('ok');
   });
 
-  it('rejects non-allowlisted or credential-bearing destination URLs server-side', async () => {
-    const app = await setup();
-    await app.decide('allow');
-    for (const targetUrl of ['https://untrusted.example', 'http://provider.example', 'https://user:secret@provider.example']) {
-      const response = await app.relay({ ...app.envelope, targetUrl });
-      expect(response.status).toBe(502);
-      expect(await response.text()).not.toContain('secret');
-    }
-    expect(app.upstream).not.toHaveBeenCalled();
-  });
-
   it('streams the first response chunk before the upstream response completes', async () => {
     let controller!: ReadableStreamDefaultController<Uint8Array>;
     const stream = new ReadableStream<Uint8Array>({ start(value) { controller = value; } });
     const app = await setup(vi.fn(async () => new Response(stream, { headers: { 'Content-Type': 'text/event-stream' } })));
-    await app.decide('allow');
     controller.enqueue(new TextEncoder().encode('data: first\n\n'));
-    const response = await app.relay();
+    const response = await app.relay(GRANTED);
     const reader = response.body!.getReader();
     expect(new TextDecoder().decode((await reader.read()).value)).toContain('data: first');
     controller.enqueue(new TextEncoder().encode('data: last\n\n'));
     controller.close();
     expect(new TextDecoder().decode((await reader.read()).value)).toContain('data: last');
     expect((await reader.read()).done).toBe(true);
+  });
+});
+
+const relayConfig = { url: 'http://localhost:5499' + path, allowedOrigins: [destination] };
+const proxyConfig = { url: 'https://anonymous.example/?', allowedRequestHeaderNames: ['content-type', 'originator'],
+  allowAnonymousGetHeaderOmission: true, credentialRelay: relayConfig };
+const relayed = `${relayConfig.url}?url=${encodeURIComponent(destination + '/responses')}`;
+
+describe('kernel worker transport to the development relay', () => {
+  function capture() {
+    const sent: Array<{ url: string; init: RequestInit }> = [];
+    const send = async (url: string, init: RequestInit) => { sent.push({ url, init }); return new Response('provider'); };
+    return { sent, send };
+  }
+  const request = { method: 'POST', targetUrl: destination + '/responses',
+    headers: [['Authorization', 'Bearer synthetic-test-token'], ['originator', 'codex_cli_rs']] as [string, string][],
+    body: 'synthetic body' };
+
+  it('sends a granted request to the relay with the opt-in and the tag', async () => {
+    const { sent, send } = capture();
+    const response = await new BrowserCorsProxy(proxyConfig).fetch(request, send, { token: 'synthetic-tag' });
+    expect(await response.text()).toBe('provider');
+    expect(sent).toHaveLength(1);
+    expect(sent[0].url).toBe(relayed);
+    const headers = new Headers(sent[0].init.headers);
+    expect(headers.get('authorization')).toBe('Bearer synthetic-test-token');
+    expect(headers.get('x-cors-proxy-allowed-request-headers')).toBe('Authorization');
+    // The service worker verifies and removes the tag on its way to the relay.
+    expect(headers.get('x-kandelo-credential-grant')).toBe('synthetic-tag');
+    expect(sent[0].init.credentials).toBe('omit');
+    expect(sent[0].init.body).toBe('synthetic body');
+  });
+
+  it('refuses an ungranted credential before anything reaches the relay', async () => {
+    const { sent, send } = capture();
+    await expect(new BrowserCorsProxy(proxyConfig).fetch(request, send))
+      .rejects.toBeInstanceOf(BrowserCorsProxyRequestError);
+    expect(sent).toEqual([]);
+  });
+
+  it('keeps anonymous requests to relay destinations on the relay, and others on the proxy', async () => {
+    const { sent, send } = capture();
+    await new BrowserCorsProxy(proxyConfig).fetch({ method: 'GET', targetUrl: destination + '/models', headers: [] }, send);
+    await new BrowserCorsProxy(proxyConfig).fetch({ method: 'GET', targetUrl: 'https://other.example/a', headers: [] }, send);
+    expect(sent.map(({ url }) => url)).toEqual([
+      `${relayConfig.url}?url=${encodeURIComponent(destination + '/models')}`,
+      'https://anonymous.example/?https://other.example/a',
+    ]);
+    expect(new Headers(sent[0].init.headers).has('x-cors-proxy-allowed-request-headers')).toBe(false);
+  });
+});
+
+describe('service worker transport to the development relay', () => {
+  // Run the service worker's own proxy-dispatch code, as the parity test does.
+  function serviceWorkerDispatch() {
+    const source = readFileSync(new URL('../../apps/browser-demos/public/service-worker.js', import.meta.url), 'utf8');
+    const start = source.indexOf('  var CORS_PROXY_CONFIG =');
+    const end = source.indexOf('  /**\n   * Check if a URL is cross-origin', start);
+    if (start < 0 || end < start) throw new Error('service worker proxy section missing');
+    const section = source.slice(start, end)
+      .replace('"__CORS_PROXY_CONFIG__"', JSON.stringify(proxyConfig))
+      .replace('"__CORS_PROXY_SESSION_TRANSPORT__"', `(${createProxySessionTransport.toString()})`);
+    const sent: Array<{ url: string; credentials: RequestCredentials; headers: Record<string, string>; body: string }> = [];
+    const send = async (input: Request) => {
+      sent.push({ url: input.url, credentials: input.credentials,
+        headers: Object.fromEntries(input.headers.entries()), body: await input.text() });
+      return new Response('provider');
+    };
+    const dispatch = new Function('self', 'console', 'fetch', `${section}; return fetchThroughCorsProxy;`)(
+      { location: new URL('http://localhost:5499/') }, console, send,
+    ) as (request: Request, outgoingUrl: string, targetUrl: string, grant?: { token: string } | null) => Promise<Response>;
+    return { dispatch, sent };
+  }
+
+  function guestRequest(extra: Record<string, string> = {}) {
+    return new Request(destination + '/responses', { method: 'POST', body: 'synthetic body',
+      headers: { Authorization: 'Bearer synthetic-test-token', originator: 'codex_cli_rs', ...extra } });
+  }
+
+  it('relays a verified grant with the re-derived opt-in and without the tag', async () => {
+    const { dispatch, sent } = serviceWorkerDispatch();
+    const response = await dispatch(guestRequest({
+      'X-Kandelo-Credential-Grant': 'synthetic-tag',
+      'X-Cors-Proxy-Allowed-Request-Headers': 'Authorization, Cookie',
+    }), relayed, destination + '/responses', { token: 'synthetic-tag' });
+    expect(await response.text()).toBe('provider');
+    expect(sent).toHaveLength(1);
+    expect(sent[0].url).toBe(relayed);
+    expect(sent[0].credentials).toBe('omit');
+    expect(sent[0].headers.authorization).toBe('Bearer synthetic-test-token');
+    expect(sent[0].headers['x-cors-proxy-allowed-request-headers']).toBe('Authorization');
+    expect(sent[0].headers['x-kandelo-credential-grant']).toBeUndefined();
+    expect(sent[0].body).toBe('synthetic body');
+  });
+
+  it('never sends an unverified credential to the relay', async () => {
+    const { dispatch, sent } = serviceWorkerDispatch();
+    const response = await dispatch(guestRequest(), relayed, destination + '/responses', null);
+    expect(response.status).toBe(502);
+    expect(sent).toEqual([]);
+  });
+
+  it('routes a proxy-bound request for a relay destination to the relay', async () => {
+    const { dispatch, sent } = serviceWorkerDispatch();
+    await dispatch(new Request(destination + '/models'), 'https://anonymous.example/?' + destination + '/models',
+      destination + '/models', null);
+    expect(sent.map(({ url }) => url)).toEqual([`${relayConfig.url}?url=${encodeURIComponent(destination + '/models')}`]);
   });
 });

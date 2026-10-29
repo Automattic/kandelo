@@ -160,8 +160,8 @@ browser's guest network backend lets that one Codex process's
 origins, tagged for the service worker; any other process, including a
 child Codex starts or one writing to a socket Codex opened, is refused.
 See [credential grants](../../../docs/architecture.md#credential-grants).
-The local credential relay's origin list is configured separately and is
-not derived from this file.
+The development credential relay's origin list is configured separately
+and is not derived from this file.
 
 ## Networking boundaries
 
@@ -182,26 +182,27 @@ removes it before the request leaves the browser. Browser model requests
 still fail today even after "Allow for this process": neither the default
 Playground proxy nor the Spacefast proxy allows Codex's headers in its
 preflight yet.
-For local development, the app now has a separate credential relay with an
-explicit permission page on an isolated loopback origin. App and guest-preview
-scripts cannot read or submit the approval form. It checks consent before receiving guest request
-envelopes and forwards only to its configured OpenAI HTTPS origins. The user
-must approve the local relay before signing in; approval can be revoked and
-does not enable credential forwarding through the public anonymous proxy.
-See [local relay permission](../../../docs/browser-support.md#local-credential-relay-permission).
+On a loopback development server (`./run.sh browser`), requests to the
+three origins go to a local
+[development credential relay](../../../docs/browser-support.md#development-credential-relay)
+instead of the public proxy. It has no approval page of its own: the
+per-process grant is its only permission. The relay carries a credential
+only for a request that passed the service worker's grant check, and
+forwards only to the three OpenAI HTTPS origins. A process that was not
+granted is refused before its request reaches the relay.
 Guest Codex integration and actual subscription use remain unverified.
 
-To sign in from a local development server, open
-`<app origin>/__kandelo_credential_relay` (for example
-`http://127.0.0.1:5499/__kandelo_credential_relay`), review the disclosure,
-and choose whether to allow it. Without approval, sign-in fails at the
-relay's credential-free permission check and sends no request envelope.
-Then run `codex login --device-auth` and complete the displayed URL and
-code in a host browser; Codex finishes signing in on its own. Device-code
-login must be enabled for the user's account or workspace. Codex's browser
-sign-in redirects to `http://127.0.0.1:1455/auth/callback`, a port of the
-user's computer that a browser machine cannot listen on, so it does not
-complete in a browser machine.
+To sign in from a local development server, run
+`codex login --device-auth` in the browser machine. The app asks "Codex
+wants to use your sign-in credentials"; choose "Allow for this process".
+Then complete the displayed URL and code in a host browser; Codex finishes
+signing in on its own. Every later `codex` process asks again. Declining
+still starts Codex, but every request it sends with credentials fails.
+Device-code login must be enabled for the user's account or workspace.
+Codex's browser sign-in redirects to
+`http://127.0.0.1:1455/auth/callback`, a port of the user's computer that a
+browser machine cannot listen on, so it does not complete in a browser
+machine.
 
 Signing in does not copy host credentials. See
 [OpenAI authentication](https://learn.chatgpt.com/docs/auth).

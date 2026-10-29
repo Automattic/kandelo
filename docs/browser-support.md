@@ -1482,46 +1482,81 @@ dispatch. Direct Fetch
 attempts remain unprojected. The development same-origin relay enforces the same
 profile as production.
 
-#### Local credential relay permission
+#### Development credential relay
 
-Loopback development servers also provide a separate, opt-in credential
-relay at `<base>/__kandelo_credential_relay`. The public anonymous proxy
-profile is unchanged. The development configuration routes requests to
+Loopback development servers (`./run.sh browser`, `vite` on `localhost`,
+`127.0.0.1` or `[::1]`) also run a credential relay at
+`<base>/__kandelo_credential_relay`. It carries requests to
 `https://auth.openai.com`, `https://chatgpt.com`, and
-`https://api.openai.com` through this local transport. Other destinations
-retain the ordinary proxy rules. Production builds do not enable it.
+`https://api.openai.com` in the CORS proxy's place, so a signed-in
+program such as Codex can reach its service from a developer's own
+machine. Other destinations keep the ordinary proxy. Production builds
+and `vite preview` do not run it, and the public proxies are unchanged.
 
-Open the relay's permission page before signing in from a guest. It names
-the local relay and allowed destinations and explains that the relay can
-read guest credentials, headers, and request bodies. Permission starts
-blocked, lasts at most one hour, ends when the development server restarts,
-and can be revoked on that page. It applies to the page's relay session,
-including all programs using that session; it is not a per-process grant.
-The permission link redirects to a dedicated, ephemeral loopback origin
-serving only the approval document. App-origin scripts, including guest
-previews, cannot read its CSRF token or grant consent. The relay itself
-remains same-origin with the app. Its private session cookie is set before
-the redirect; approval on the isolated origin changes only that session.
-The isolated server has no CORS access, proxy routes, or guest content and
-closes with the development server. This isolates permission approval;
-it does not make ordinary same-origin guest previews a security boundary.
+There is no approval page and no site-wide permission. A
+[per-process credential grant](#per-process-credential-grants) is the
+relay's only permission, exactly as for the proxy:
 
-The shared worker/service-worker transport checks consent before sending
-the guest request envelope to the relay. The server independently checks
-consent, the outer Origin, the exact HTTPS destination, and expiry before
-dispatch. Consent changes require a form from the isolated permission origin and a
-CSRF token; the app-origin relay endpoint cannot accept consent changes.
-Guest headers are inside the envelope, separate from browser cookies and
-other outer-request authentication. Upstream requests use no ambient cookie
-jar, refuse redirects, and responses expose only selected inert headers.
-Requests are limited to 8 MiB of decoded body, responses to 64 MiB and ten
-minutes; response bodies stream. This is HTTP(S) transport, not WebSocket
-or arbitrary TCP forwarding. The Node host's direct networking is unchanged.
+- The kernel worker projects a request to these origins as it does for
+  the proxy and sends it to `<base>/__kandelo_credential_relay?url=<target>`
+  instead, with the guest's fields as request fields. A credential without
+  a grant for the target origin fails there, before anything reaches the
+  relay. A granted request carries `Authorization`, `ChatGPT-Account-ID`,
+  the opt-in `X-Cors-Proxy-Allowed-Request-Headers: Authorization` and the
+  grant's tag.
+- The service worker gates a request to the relay exactly as one to the
+  proxy (see the service-worker gate below): credentials or the opt-in
+  without a tag it has verified with the kernel worker get `403`, and so
+  does a tag from anything but the kernel worker's script. It removes the
+  tag and writes the opt-in itself, then sends the request on with no
+  browser cookies (`credentials: "omit"`). Cross-origin requests for
+  these origins, and requests for them to a cross-origin configured
+  proxy (`VITE_CORS_PROXY_URL`), are rerouted to the relay after the
+  same gate.
+- The relay carries a credential only on a request that carries the
+  opt-in. `Authorization` passes only when the opt-in names it, and the
+  opt-in may name nothing else. A request with `Authorization` or
+  `ChatGPT-Account-ID` and no opt-in gets `403` with a short reason; the
+  credential is never stripped and sent on. A request that still carries
+  `X-Kandelo-Credential-Grant` gets `403`: the gate removes the tag, so a
+  tagged request never passed it. Requests without credentials are
+  relayed without any opt-in. Because the opt-in is written only when
+  `Authorization` is present, a granted request that carries
+  `ChatGPT-Account-ID` alone is refused here.
 
-The local relay is intended for user-controlled testing. It does not enable
-credential forwarding through the public proxy or establish subscription
-entitlement. Sign in inside the guest after granting permission; the app
-does not import host credential files.
+What it sends and answers:
+
+- It forwards to the exact HTTPS origins above and nowhere else, without
+  following redirects, and only the fields the development CORS proxy
+  allows (the default proxy profile), plus the granted credentials. It
+  never forwards the browser's `Cookie`, `Origin`, `Sec-*` fields, the
+  opt-in, or the tag.
+- It answers only its own loopback origin: a request whose `Origin` is
+  another origin, or whose `Sec-Fetch-Site` is present and not
+  `same-origin`, gets `403`, as does a `Sec-Fetch-Dest` that is present
+  and not `empty`. The service worker also refuses any load of the relay
+  that is not `fetch()`.
+- Every answer, errors included, carries `Content-Security-Policy:
+  sandbox` and `X-Content-Type-Options: nosniff`, and only selected inert
+  response fields (content type and Codex's protocol fields) are copied
+  back.
+- Request bodies are limited to 8 MiB, responses to 64 MiB and ten
+  minutes, and response bodies stream. It is HTTP(S) transport, not
+  WebSocket or arbitrary TCP forwarding.
+- `GET <base>/__kandelo_credential_relay` without a target, and the
+  former `/status` and `/consent` paths, answer `404`.
+
+The boundary. The relay cannot tell a request the service worker
+produced from one any other script on the app's origin writes with the
+opt-in itself, for example in a page loaded with a forced reload, which
+the service worker does not control. A shared secret would not help: the
+service worker's source is readable by every same-origin script. The
+app's origin is therefore the trusted boundary here, as it is for the
+service-worker gate. Within it, the kernel worker still refuses every
+ungranted credential, and a granted request from a kernel worker the
+service worker does not control reaches the relay with its tag and is
+refused, visibly. Sign in inside the guest; the app does not import host
+credential files.
 
 #### Per-process credential grants
 
@@ -1687,16 +1722,18 @@ cross-origin `GET`/`HEAD` requests it wraps in the proxy itself.
   app's own quota token, which the session transport attaches, and a
   caller's value is dropped as before.
 - A proxy answers with a third party's bytes, so the service worker
-  serves a request to the configured proxy, or to the development relay's
-  path, only to `fetch()` (`request.destination` empty). A load as a
+  serves a request to the configured proxy, to the development CORS
+  relay's path (`__kandelo_cors_proxy`), or to the
+  [development credential relay](#development-credential-relay), only to
+  `fetch()` (`request.destination` empty). A load as a
   document, frame, script, worker, style or anything else gets `403`.
   From a same-origin proxy such a load would run a third party's code
   with the app's authority, for example as a worker posing as Kandelo
-  code. The development relay itself refuses a request whose
-  `Sec-Fetch-Dest` is present and not `empty`, and marks every answer
+  code. Both development relays themselves refuse a request whose
+  `Sec-Fetch-Dest` is present and not `empty`, and mark every answer
   `Content-Security-Policy: sandbox` and `X-Content-Type-Options: nosniff`,
   for loads the service worker does not see. A fetch the service worker
-  passes on reaches the relay as `empty`, so in a controlled page the
+  passes on reaches a relay as `empty`, so in a controlled page the
   service worker's check is the one that holds.
 
 Why a broadcast question and a fetch answer: measured on 2026-10-29
@@ -1733,9 +1770,11 @@ holds in the browser app after "Allow for this process"
 declared test program against a local proxy). Codex itself does not
 reach its service through the deployed proxies yet: neither the
 Playground nor the Spacefast proxy's preflight allows Codex's fields.
-On a loopback development server, the kernel
-worker sends requests to the local credential relay's origins to that
-relay directly, which does not consult grants. On Node, programs open
+On a loopback development server, requests to
+OpenAI's origins take the same path to the
+[development credential relay](#development-credential-relay) instead,
+which carries credentials only for a granted process.
+On Node, programs open
 real sockets, so credentials flow as on any Unix machine and no grant
 is consulted (a documented host boundary).
 

@@ -2,7 +2,8 @@ import { corsProxyFetchUrl } from "./cors-proxy-url";
 import { fetchWithProxySession } from "./cors-proxy-session";
 import {
   type CredentialRelayConfig,
-  fetchWithCredentialRelay,
+  credentialRelayCarries,
+  credentialRelayFetchUrl,
   validateCredentialRelayConfig,
 } from "./credential-relay";
 
@@ -10,7 +11,11 @@ export type HttpHeaderOccurrence =
   readonly [name: string, value: string];
 
 export interface BrowserCorsProxyConfig {
-  /** Local development transport, blocked until the user explicitly consents. */
+  /**
+   * Loopback development servers only: the local relay that carries its
+   * destinations' requests in this proxy's place, with the same projection
+   * (credentials only for a granted process). See `credential-relay.ts`.
+   */
   readonly credentialRelay?: CredentialRelayConfig;
   readonly url: string;
   readonly allowedRequestHeaderNames: readonly string[];
@@ -316,10 +321,11 @@ export class BrowserCorsProxy {
       (input, init) => globalThis.fetch(input, init),
     grant?: BrowserCorsProxyCredentialGrant,
   ): Promise<Response> {
+    // The development relay takes its destinations' requests in the proxy's
+    // place. Projection is the same, so an ungranted credential fails here,
+    // before anything reaches it.
     const relay = this.config.credentialRelay;
-    if (relay?.allowedOrigins.includes(new URL(request.targetUrl).origin)) {
-      return fetchWithCredentialRelay(relay, request, fetchImpl);
-    }
+    const viaRelay = credentialRelayCarries(relay, request.targetUrl);
     const ifRangeValues: string[] = [];
     const occurrences = this.isAllowed("if-range")
       ? request.headers
@@ -338,8 +344,22 @@ export class BrowserCorsProxy {
       targetUrl: request.targetUrl,
       grant,
     });
-    const url = this.urlFor(request.targetUrl);
-    const init: RequestInit = { method: request.method, headers, body: request.body };
+    const url = viaRelay
+      ? credentialRelayFetchUrl(relay!, request.targetUrl)
+      : this.urlFor(request.targetUrl);
+    const init: RequestInit = {
+      method: request.method,
+      headers,
+      body: request.body,
+      // The relay is same-origin: the browser's own cookies are not the
+      // guest's and must not ride along.
+      ...(viaRelay ? { credentials: "omit" as const } : {}),
+    };
+    // The proxy session is the public proxy's quota protocol; the local
+    // relay has none.
+    const send = (input: string, sendInit: RequestInit) => viaRelay
+      ? fetchImpl(input, sendInit)
+      : fetchWithProxySession(input, sendInit, fetchImpl);
     const alias = this.config.rangeRequestHeaderAlias;
     if (alias !== undefined && headers.has(alias)) {
       // WORKAROUND, part of the X-Cors-Proxy-Range alias for WP Cloud (see
@@ -353,7 +373,7 @@ export class BrowserCorsProxy {
       // with the alias, as soon as WP Cloud relays Range headers to PHP.
       init.cache = "no-store";
     }
-    const response = await fetchWithProxySession(url, init, fetchImpl);
+    const response = await send(url, init);
     if (
       ifRange === undefined ||
       request.method !== "GET" ||
@@ -366,7 +386,7 @@ export class BrowserCorsProxy {
     headers.delete("range");
     if (alias !== undefined) headers.delete(alias);
     const { cache: _cache, ...wholeInit } = init;
-    return fetchWithProxySession(url, { ...wholeInit, headers }, fetchImpl);
+    return send(url, { ...wholeInit, headers });
   }
 
   /**

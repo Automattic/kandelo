@@ -1,4 +1,3 @@
-import { createServer as createPermissionServer } from "node:http";
 import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
@@ -46,11 +45,11 @@ import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 import { devSignallingServer } from "./vite/dev-signalling";
 import { batchedFsServePath, devLazyAssets } from "./vite/dev-lazy-assets";
 import { createCredentialRelayHandler } from "./vite/credential-relay";
-import { createCredentialRelayTransport, type CredentialRelayConfig } from "../../host/src/networking/credential-relay";
 import {
   bundleIncludesModule,
   kernelWorkerScriptPathsForServiceWorker,
 } from "./vite/kernel-worker-scripts";
+import type { CredentialRelayConfig } from "../../host/src/networking/credential-relay";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
   createVfsProductDeploymentPlugin,
@@ -365,7 +364,6 @@ function injectCorsProxyConfigPlaceholder(
     '"__CORS_PROXY_CONFIG__"',
     JSON.stringify(corsProxyConfig),
   ).replace('"__CORS_PROXY_SESSION_TRANSPORT__"', `(${createProxySessionTransport.toString()})`)
-    .replace('"__CREDENTIAL_RELAY_TRANSPORT__"', `(${createCredentialRelayTransport.toString()})()`)
     .replace('"__KERNEL_WORKER_SCRIPT_PATHS__"', JSON.stringify(kernelWorkerScriptPaths));
 }
 
@@ -1025,6 +1023,12 @@ function injectCorsProxyConfig(): Plugin {
       attachMiddleware(server.middlewares, () => [devKernelWorkerScriptPath(base)]);
     },
     configurePreviewServer(server) {
+      // `vite preview` runs the development CORS proxy but not the
+      // credential relay (devCorsProxyMiddleware), so its service worker
+      // must not route to one.
+      servedCorsProxyConfig = browserCorsProxyConfig(
+        configuredCorsProxyUrl() || devCorsProxyFetchUrlForBase(base),
+      );
       attachMiddleware(server.middlewares, builtKernelWorkerScriptPaths);
     },
     writeBundle(_options, bundle) {
@@ -1058,22 +1062,12 @@ function injectCorsProxyConfig(): Plugin {
 
 function devCorsProxyMiddleware(): Plugin {
   let base = "/";
-  let permissionOrigin: string | undefined;
-  let permissionServer: ReturnType<typeof createPermissionServer> | undefined;
+  // The development credential relay. A per-process credential grant is its
+  // only permission: it carries a credential only with the opt-in the
+  // service worker's gate writes (see vite/credential-relay.ts).
   const handleCredentials = createCredentialRelayHandler({
     allowedOrigins: DEVELOPMENT_CREDENTIAL_RELAY_ORIGINS,
-    permissionOrigin: () => {
-      if (!permissionOrigin) throw new Error("Permission server is not ready");
-      return permissionOrigin;
-    },
   });
-  const closePermissionServer = () => {
-    handleCredentials.clearPermissions();
-    permissionServer?.closeAllConnections();
-    permissionServer?.close();
-    permissionServer = undefined;
-    permissionOrigin = undefined;
-  };
 
   function attachMiddleware(
     middlewares: ViteDevServer["middlewares"] | PreviewServer["middlewares"],
@@ -1091,32 +1085,12 @@ function devCorsProxyMiddleware(): Plugin {
     configResolved(config) {
       base = config.base;
     },
-    async configureServer(server) {
-      // Guest previews share the app origin. Keep approval on an origin with
-      // no app scripts, preview content, CORS, or upstream response bodies.
-      const isolatedServer = createPermissionServer((req, res) => {
-        void handleCredentials(req, res, `${normalizeDeploymentBase(base)}__kandelo_credential_relay`, "permission")
-          .then(handled => { if (!handled) { res.statusCode = 404; res.end(); } })
-          .catch(() => { if (!res.headersSent) res.statusCode = 500; res.end("Permission request failed"); });
-      });
-      permissionServer = isolatedServer;
-      await new Promise<void>((resolve, reject) => {
-        isolatedServer.once("error", reject);
-        isolatedServer.listen(0, "127.0.0.1", () => {
-          isolatedServer.off("error", reject);
-          resolve();
-        });
-      });
-      const address = isolatedServer.address();
-      if (!address || typeof address === "string") throw new Error("No permission server address");
-      permissionOrigin = `http://127.0.0.1:${address.port}`;
-      server.httpServer?.once("close", closePermissionServer);
+    configureServer(server) {
       attachMiddleware(server.middlewares, true);
     },
     configurePreviewServer(server) {
       attachMiddleware(server.middlewares);
     },
-    closeBundle() { closePermissionServer(); },
   };
 }
 

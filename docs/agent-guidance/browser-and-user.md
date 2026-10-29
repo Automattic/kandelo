@@ -65,6 +65,16 @@ test in `host/test/browser-cors-proxy-service-worker-parity.test.ts` and
 cover it (see `docs/browser-support.md`, "Per-process credential
 grants").
 
+The development credential relay (`apps/browser-demos/vite/credential-relay.ts`)
+has no permission of its own: the per-process grant is its only
+permission. Keep the service worker gating requests to it like requests
+to the proxy, keep it carrying a credential only with the opt-in and
+refusing a request that still carries a tag, and do not add back an
+approval page, session or site-wide consent.
+`host/test/credential-relay.test.ts` and
+`apps/browser-demos/test/credential-relay.spec.ts` (all three engines)
+cover it.
+
 The credential prompt belongs to the app, behind
 `KernelHost.setCredentialRequestHandler`. Keep it in Kandelo's own UI,
 never in terminal output; keep deny the default (no handler, Escape, a
