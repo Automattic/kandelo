@@ -106,6 +106,11 @@ with fresh memories.
 | Chromium 153.0.8010.12 | 0 / 3 × 60 s, 52,866 thread teardowns, about 41,000 grows |
 | Firefox 155.0 | 0 / 3 × 60 s, 31,883 thread teardowns, about 41,000 grows |
 
+An earlier version of the faithful page used classic workers, unlike
+Kandelo, and crashed Firefox even with no grows. That is a separate Firefox
+defect that only classic nested workers reach; see
+[`docs/measurements/2026-10-28-firefox-nested-classic-worker-termination.md`](../../../docs/measurements/2026-10-28-firefox-nested-classic-worker-termination.md).
+
 ## Why this is not a Kandelo defect
 
 `repro.html` and `repro-faithful.html` contain no Kandelo code: plain

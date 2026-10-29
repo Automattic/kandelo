@@ -3334,6 +3334,16 @@ reused. The cost is one idle worker per thread a process has created, held
 until that process ends. Chromium, Firefox and Node.js terminate thread
 workers as soon as the thread exits.
 
+### Firefox crash when a Worker ends a starting classic Worker
+
+Playwright's Firefox 155 crashes its content process when a dedicated
+Worker terminates a nested classic Worker that is still starting. Module
+Workers do not crash, and Kandelo creates only module Workers on Firefox (its
+kernel Worker and every process and thread Worker), so Kandelo is not
+affected and has no workaround for it. Nested Workers must stay module
+Workers. The standalone reproduction and measurements are in
+[`docs/measurements/2026-10-28-firefox-nested-classic-worker-termination.md`](measurements/2026-10-28-firefox-nested-classic-worker-termination.md).
+
 ### Compiler engine limits
 
 The base shell lazily loads its C/C++ SDK on first use. Compiler acceptance
