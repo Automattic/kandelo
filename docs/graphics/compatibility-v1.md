@@ -7097,3 +7097,94 @@ its five routing diagnostics never reached rendering because moving the
 wrapper config changed Vite's working directory and the page returned HTTP
 failure. Fixing that diagnostic server root is provisioning, not a graphics
 repair or a passing routing result.
+
+
+Forwarded cross-session diagnosis preserves the original failure. Ten plain
+Chromium repetitions passed five and failed five in
+`graphics-forward-routing-plain-1028-200441-8e61`. Adding native state queries
+made five diagnostic repetitions pass; that instrumentation is not a repair.
+A trace without extra GPU queries passed seven/ten, a storage-operation
+trace passed three/ten, and a complete 832-call native API trace passed
+six/ten. Failing traces retain green followed by blue at the same logical
+read/draw framebuffer bindings; only getError/isContextLost calls intervene.
+The complete failing call stream is `.context/routing-full-failing.json`.
+No diagnostic instrumentation was added to production or the original test.
+
+Three self-judging reductions contain no Kandelo runtime code: a minimal
+asynchronous WebGL page, a worker/mailbox-driven page and a replay of the
+captured native API calls and task groups. Each passed 100 cycles per engine
+in Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6. Their jobs are
+`graphics-standalone-read-framebuffer-1028-200840-5688`,
+`graphics-standalone-worker-read-http-1028-201201-ecdc` and
+`graphics-standalone-api-read-1028-201545-c611`; HTML, runner, per-engine
+results and logs remain in `.context/standalone-*-read-framebuffer*` and
+`.context/graphics-standalone-*`. Initial worker reductions lacked the
+required isolated HTTP document (one was stopped with status143); they
+are setup failures, not standalone passes. The proper HTTP runs pass all
+three engines. No outside defect is demonstrated, no workaround is shipped,
+and the forwarded pixel failure remains ordinary unresolved work.
+
+### Current normal compositor/CTS consumer checkpoint, 2026-10-28
+
+The primary implementation now has a fresh normal program, package and
+focused consumer checkpoint after the retained-front, wasm64-query and
+native-device file-acquisition repairs. Program ABI56/kernel-host3 remain
+the single unpublished epoch. Main was fetched again and remains
+cb0a8226c965, already merged. No branch or contributor history was rewritten.
+
+`graphics-gbm-current-consumers-1028-195118-e1ab` completed all 239 normal
+program stamps (zero already-current) and built 59/60 selected package
+nodes, including cage, sway, foot and rootfs. The sole failed node was
+upstream graphics-cts-egl: the new GBM archive references
+`drmCloseBufferHandle`, but that recipe did not declare/link libdrm. This
+was a real normal-build failure; the later consumer tests in that job did
+not run. The recipe now declares libdrm 2.4.134, overlays that resolved direct
+dependency into its private sysroot and places -ldrm after its graphics
+archives. Neither upstream assertions nor published capabilities changed.
+An initial manifest edit used the old 2.4.124 version and was correctly
+rejected before building; that failed retry is preserved separately.
+
+`graphics-gbm-current-consumers-resumed-v-1028-205510-6d0c` then passed in
+7m43s. All 60 graph nodes succeeded: 59 cached and CTS newly published.
+Normal host/rootfs refresh and verify-fresh passed. The normal Node selection
+passed 20/20 in nine files, zero skipped/unloaded cases, in 213.32s. It covers
+cage/sway/foot sessions, GBM ring bookkeeping, both widths of native EGL
+windows, BO teardown, KMS modes/page flips and libdrm requests. The renderer
+double is lifecycle/input evidence, not pixel proof.
+
+The rendered browser selection passed 54/54 in 3.6m across Chromium,
+Firefox and WebKit. Six actual upstream cage/sway sessions render a normal
+client through GLES2, route input and exit with checked status and retirement.
+Other cases exercise inherited DRM authority, all five scanout formats,
+primary GPU scanout and the pinned upstream EGL surfaceless subset on every
+advertised GLES2 configuration. Exact pixel, diagnostic and memory-message
+checks remain unchanged. This passing inherited-display run does not resolve
+the separately preserved intermittent Firefox cursor-capture failure.
+
+The six compositor runs share kernel SHA256
+`d67643211332aa1ed71f879571fd89cb3b33305b806b25b2bb7cbd6de09f9a1c`.
+Per-engine kernel/compositor/client/image identities, statuses, device stats
+and actual PNGs are under `.context/wlroots-rendered-sessions/`; the current
+batch spans `1793235600473-chromium-cage` through
+`1793235769836-webkit-sway`. The source/archive/package identities and exact
+six evidence paths are `.context/graphics-gbm-current-consumer-identities.json`.
+Logs and results are `.context/graphics-gbm-current-*`, including preserved
+initial failure logs and the resumed-v2 result paths. These are automated
+focused package consumers, not manual browser or current full-gallery proof.
+
+The full current-source gallery, browser-memory, broader upstream CTS and
+POSIX gates still remain. The current CTS package covers only its pinned
+surfaceless subset; 54 passing consumers do not establish full GLES2/EGL
+conformance. Forwarded BO sources and its reproduced cross-session pixel
+failure remain ordinary gaps. CPU-facing native windows are still rejected
+on the primary branch. Their isolated candidate has passing native ownership,
+format/pitch contracts and host-store tests, but its actual CPU guest exposes
+the pre-existing rejected CPU EGLImage/renderbuffer source path. A separate
+pending-map zero-fill race was reproduced and repaired in that candidate's
+source store; neither change is integrated or current consumer validation.
+The candidate and its work notes remain at `.context/gbm-cpu-fronts/`.
+
+Twenty fresh-page Chromium repetitions of the captured native-API standalone
+replay also pass (`graphics-standalone-fresh-api-read-1028-203042-f4ca`).
+Together with the earlier 100-cycle controls, this still supplies no outside
+fault reproduction for the original forwarded pixel failure.
