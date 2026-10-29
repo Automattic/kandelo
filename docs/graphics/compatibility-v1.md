@@ -8737,3 +8737,51 @@ can duplicate the same error already pending at the host. This change
 keeps inactive current-program errors entirely host-owned, without
 claiming complete uniform or G05/G09 acceptance. Those remaining gaps are
 ordinary follow-up work; no hard platform boundary is asserted.
+
+### Current-program normal validation and maintenance checkpoint (2026-10-29)
+
+Normal guest job `gles-uniform-current-linked-1029-161528-f1d5` passed
+at clean source `dd625e24f9` in 9m37s after rebuilding the current-main
+release xtask, both SDKs, kernel and host, then ABI and freshness checks.
+Node passed 4/4, including both-width validation and independent GBM ring
+ownership. Browser selection passed 12/12 in 40.9 seconds, including
+both-width current-program assertions and real framebuffer pixels in
+Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6. All validation
+guests exited 0 with empty stderr/diagnostics/page errors and passed
+post-destroy worker-message ownership checks. Node's renderer remains
+an allocation/ownership double rather than pixel evidence.
+
+| Artifact | SHA-256 |
+|---|---|
+| Resolved kernel | `6fdb1118176500dbfbd01aba0a736bfe2563e0505eff5df162859633631fe0f7` |
+| wasm32 rendered guest | `79add52735c74ce5ab41f90da4f81fd1c97105cb6bcb14ef13df52746e954a2a` |
+| wasm32 guest image | `1563986abc12556d54bde32fdf132b8229c4925bde8169c8f8cb2a00bbdbccec` |
+| wasm64 rendered guest | `19104314232e6f0427846a35eb775dd5edef81f611e331676451ebc41828030c` |
+| wasm64 guest image | `253ca086d4bcbf1c03a001f1ff98bddba136850f2ef043caac69ba4fba090b59` |
+
+This validates the named inactive-current-program increment, not the
+remaining positive-location/type/count/large-array models or full CTS.
+
+The user requested a security-update maintenance window. The current-main
+landing product run `cage-sway-main-integrated-1029-160528-36b9` was
+intentionally stopped during normal bootstrap after 22m44s (signal 15,
+status 143). No current-main application acceptance result is claimed.
+The repaired full xtask run
+`graphics-current-main-xtask-after-1029-162150-83da` was intentionally
+stopped after 6m22s (143) during later integration targets. Its unit
+portion passed 811/811, but the complete suite remains unfinished. The
+original full-run failure remains recorded: 810/811 at the cache-isolation
+assertion. Test-only fix `3100b70af8` provisions the normal native SDK
+before isolating HOME/XDG; the child still runs the real CLI preflight
+and strict no-directory assertions. A normal cold driver build showed
+Cargo creates HOME/.cargo; the original failed temporary leaf was removed
+by Nix cleanup, so that specific leaf was not independently inspected.
+
+Full workspace Rust at `0537eafffd` passed; the aggregate test-result
+summaries report 3,377 passes with no failures or ignored cases. The Rust
+tree is identical to landing `cc215b9291`. Its graphics source gate
+passed 717/717 in 32 files. A separate server-wait execution-ownership
+foundation is checkpointed on a WIP branch at `43b9f60e388d`, with
+725/725 source checks and normal/browser/lifecycle validation still
+unrun; it is not merged into either PR. Public EGL server waits remain
+open. Exact resume state is retained privately under `.context/`.
