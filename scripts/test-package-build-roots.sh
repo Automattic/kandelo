@@ -978,9 +978,18 @@ if grep -F 'git clone' "$dinit_script" >/dev/null; then
     fail "dinit build still clones instead of consuming resolver-verified source"
 fi
 
-grep -F 'make -j1 CC=cc LD=cc -C util makedefs dgn_comp lev_comp dlb recover' \
-    "$REPO_ROOT/packages/registry/nethack/build-nethack.sh" >/dev/null ||
-    fail "NetHack host generators do not override ambient parallel MAKEFLAGS"
+# NetHack compiles and runs its generators inside a Kandelo machine, so the
+# build machine's recipe must not compile anything itself.
+nethack_script="$REPO_ROOT/packages/registry/nethack/build-nethack.sh"
+if grep -En '^[[:space:]]*(make|cc|clang|wasm32posix-cc)[[:space:]]' \
+    "$nethack_script" >/dev/null; then
+    fail "NetHack recipe compiles on the build machine"
+fi
+grep -F 'kandelo_guest_build --workspace "$SRC_DIR"' "$nethack_script" >/dev/null ||
+    fail "NetHack recipe does not build inside a Kandelo machine"
+grep -F 'make -j"$JOBS" CC=cc LINK=cc -C src nethack' \
+    "$REPO_ROOT/packages/registry/nethack/build-nethack-guest.sh" >/dev/null ||
+    fail "NetHack guest build does not compile the game with the guest compiler"
 
 for package in lsof modeset netcat; do
     if grep -F 'scripts/run-wasm-fork-instrument.sh' \
