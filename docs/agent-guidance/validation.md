@@ -93,7 +93,20 @@ Core validation surface:
 | musl libc-test | `scripts/run-libc-tests.sh` | libc, syscall, and kernel semantic changes |
 | Open POSIX Test Suite | `scripts/run-posix-tests.sh` | POSIX API behavior |
 | Sortix os-test | `scripts/run-sortix-tests.sh --all` | Broad POSIX/kernel regression coverage |
+| Browser conformance | `scripts/run-browser-libc-tests.sh`, `scripts/run-browser-posix-tests.sh`, `scripts/run-browser-sortix-tests.sh --all` | The same suites through the browser host (Chromium) |
 | ABI snapshot | `bash scripts/check-abi-version.sh` | ABI-adjacent changes |
+
+The browser conformance wrappers start their own Vite server on a free
+loopback port each run, so concurrent worktrees do not collide; set
+`KANDELO_BROWSER_TEST_RUNNER_PORT` only to pin one (a pinned port that is
+taken fails the run), inside `scripts/dev-shell.sh bash -c '...'`, since the
+dev shell does not pass it through. A section whose browser runner cannot start counts
+every test in it as an ERROR and fails the run;
+`scripts/test-browser-runner-accounting.sh` checks that for all three
+wrappers. The Node and browser Sortix runners share their expected
+failures, failure reasons and expectation lookup through
+`scripts/sortix-expectations.sh`, so an XPASS or a test that fails on one
+host only is a host divergence to explain, not a list to edit.
 
 For CI-shaped local runs, prefer:
 
