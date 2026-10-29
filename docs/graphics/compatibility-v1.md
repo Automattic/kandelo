@@ -29,7 +29,7 @@ follow-up; no missing API is reclassified as a platform boundary.
 ## Unpublished ABI policy
 
 Use one ABI above current main for the combined effort, as requested by
-the user on 2026-10-24. Main `35164686062c` uses program ABI 55 and kernel-host version 2. The
+the user on 2026-10-24. Main `e4bca8639e4b` uses program ABI 55 and kernel-host version 2. The
 combined source uses **program ABI 56 and kernel-host version 3**, preserving
 main's program-only contract digest and exact host/kernel version check.
 Keep these numbers across increments
@@ -81,11 +81,13 @@ artifact sets or compatibility promises between those source revisions.
 
 ## Current completion checkpoints, 2026-10-29
 
-The cage/sway landing integrates main `35164686062c` via
-`5a54da5635`. The unpublished program ABI remains 56, now declared in
+The cage/sway landing integrates main `e4bca8639e4b` via
+`30dfe6bb0d`; `85c56d342d` additionally restages verified port sources. The unpublished program ABI remains 56, now declared in
 main's program-ABI crate, with host 3 / GL table 17 / fork record 21.
-Generated outputs and focused ABI/Rust/host checks pass. Combined-main
-normal builds and acceptance remain pending.
+Earlier generated-output and focused ABI/Rust/host checks remain recorded
+at their exact sources. The resumed full xtask suite passes at
+`ba845edaf4`, including all 811 unit cases and later integration targets.
+Combined-main normal builds and acceptance are running and remain pending.
 
 Prior candidate `9088f31021` passed normal product/freshness/closure/ABI
 checks, Freeciv and the complete three-engine browser-memory gate. Its
@@ -8879,3 +8881,66 @@ pass native C syntax using isolated public GL headers; actual Wasm-width checks
 remain pending normal SDK provisioning. Larger valid-array transport, combined
 C/host argument-error flags and the remaining full G05/G09 inventory are ordinary
 open work, not hard platform boundaries.
+
+
+### Resumed current-main and execution-model work (2026-10-29)
+
+The user resumed work after security maintenance. Landing merge
+`30dfe6bb0d` preserves main `e4bca8639e4b`, including real Berkeley yacc
+and flex, the guest NetHack build and host-directory inode behavior. No
+ABI increment was made: program 56 / host 3 / GL table 17 / fork record 21.
+The additional main source selection passes 60/60 host cases in three
+files; six imported manifests parse, eight imported scripts pass syntax,
+and the sealed-install check passes. These are bounded source checks.
+The package-build-roots guard still fails on duplicate primary-source
+defaults in main-inherited hyprland-protocols; independent audit also
+identifies libdbus. Both recipes are byte-identical to main, and this
+failure is not waived or described as graphics acceptance.
+
+Landing `85c56d342d` repairs eight new compositor recipes so each
+invocation restages its manifest-selected verified source before patches
+or configuration. Source URLs, checksums, versions, flags and attribution
+are preserved. Nine script syntax checks, the complete shell image
+contract fixture and all eight source-identity comparisons pass. The shell
+fixture now includes its required xkeyboard-config archive and checks
+missing-input failure. Normal rebuilding is required for these changed
+recipe inputs.
+
+The initial resumed product job
+`cage-sway-resumed-integrated-1029-192652-5732`, source `30dfe6bb0d`, was
+intentionally stopped after 8m51s (143) during bootstrap to include that
+repair. Its process group was confirmed empty before changing the
+checkout. Completed cache entries remain normally reusable. Replacement
+job `cage-sway-restaged-integrated-1029-193557-5d2b` is running at frozen
+source `85c56d342d`, including full standalone fixture builds and current
+Node, three-engine compositor/CTS and browser-memory acceptance. No
+completed acceptance result is claimed for either source yet.
+
+Full xtask job `graphics-xtask-resumed-1029-192653-f9c1` completed with
+status 0 after 14m04s at `ba845edaf4`. The unit target passes 811/811;
+cache-GC source isolation and both program-index source-root integration
+targets also pass. This completes the previously interrupted full suite,
+including the repaired strict cache-isolation assertion. The exact log
+is `.context/graphics-xtask-resumed.log`; the short persistent temporary
+root is recorded in `.context/graphics-xtask-resumed-tmp.txt`.
+
+Follow-up `8b359af92a`, derived from `a8e8e922a8`, repairs retained
+submission execution through in-frame resize and reentrant admission.
+Independent draw/read allocation selectors survive logical replacement;
+new admissions capture logical defaults, and the active physical muxer
+finishes its frame tail before a recursive drain runs later work.
+Throwing cleanup remains a retryable receipt, empty purges retry pending
+retirements, and selected peer errors remain owned. Before controls expose
+four lifetime/cleanup/replay failures plus recursive prefix/later/tail
+ordering. The final source selection passes 758/758 in 33 files with zero
+skips. This is not public EGL server-wait support or measured performance.
+
+Combined follow-up `97e0aaf98a` additionally includes the positive-uniform
+increment recorded above. Its first canonical host build emits JavaScript
+but fails declaration generation at `muxer.ts`: the narrow muxer owner is
+passed to a renderbuffer helper typed as a complete guest binding. This
+is a real failed build; native/source/ownership stages after it did not
+run in that script. Correcting the helper's actual authority contract and
+rerunning the canonical build are required. Normal guests, real native
+and forwarded rendering, browser-memory and final conformance remain
+pending for the combined execution/uniform model.
