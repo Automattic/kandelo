@@ -2582,7 +2582,11 @@ export class WasmPosixKernel {
             const w = dv.getUint32(4, true);
             const h = dv.getUint32(8, true);
             if (w > 0 && h > 0) b.surfaceSize = { width: w, height: h };
-            if (b.canvas && w > 0 && h > 0 && (b.canvas.width !== w || b.canvas.height !== h)) {
+            // A claimed KMS session gets a present target below, and its
+            // canvas takes the new size at the flip (blitPresentTarget).
+            // Resizing it here would clear the shown frame until then.
+            const flips = b.gl !== null && b.claimedKmsCrtc != null;
+            if (!flips && b.canvas && w > 0 && h > 0 && (b.canvas.width !== w || b.canvas.height !== h)) {
               b.canvas.width = w;
               b.canvas.height = h;
             }
@@ -2611,7 +2615,11 @@ export class WasmPosixKernel {
             // then blit an empty offscreen target on subsequent presents.
             const previousDefault = b.renderTargetFbo;
             const previousFramebuffer = b.shadow.fbo;
-            ensurePresentTarget(b);
+            const size = b.surfaceSize;
+            if (!ensurePresentTarget(b) && b.canvas && size && (b.canvas.width !== size.width || b.canvas.height !== size.height)) {
+              b.canvas.width = size.width;
+              b.canvas.height = size.height;
+            }
             if (previousFramebuffer !== null && previousFramebuffer !== previousDefault) {
               b.shadow.fbo = previousFramebuffer;
             }
@@ -3046,8 +3054,10 @@ export class WasmPosixKernel {
           const b = this.gl.get(pid);
           const fb = this.kms.currentFb(crtc_id);
           if (fb) this.callbacks.onKmsScanoutFb?.(crtc_id, fb.width, fb.height);
+          // A sized surface's present target sizes the canvas at the flip.
+          const flips = b?.presentTarget != null && b.surfaceSize !== null;
           if (
-            b?.canvas && fb &&
+            b?.canvas && fb && !flips &&
             (b.canvas.width !== fb.width || b.canvas.height !== fb.height)
           ) {
             b.canvas.width = fb.width;
