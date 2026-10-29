@@ -2979,6 +2979,15 @@ export class CentralizedKernelWorker {
   /** Tracks the pid currently being serviced by kernel_handle_channel */
   private currentHandlePid = 0;
   /**
+   * The pid whose system call the kernel is serving now, or 0 outside one.
+   * Network backends read it while `host_net_send` hands them a process's
+   * bytes, to attribute outgoing requests to the process that wrote them
+   * (networking/request-attribution.ts).
+   */
+  get servingPid(): number {
+    return this.currentHandlePid;
+  }
+  /**
    * Bind the kernel's view of "which thread is executing this syscall" to the
    * already-selected channel. The channel offset is the transport identity; TID
    * is the guest-visible pthread identity used by the kernel/libc ABI.

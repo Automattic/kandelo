@@ -417,7 +417,7 @@ test("Vite serves a service worker with the complete proxy profile", async ({
   expect(source).not.toContain("__CORS_PROXY_SESSION_TRANSPORT__");
   expect(source).toContain("kandelo-proxy-sessions-v1");
   expect(source).toContain(
-    '"allowedRequestHeaderNames":["accept","content-type","git-protocol","range","wp_blog","wp_install"]',
+    '"allowedRequestHeaderNames":["accept","content-type","git-protocol","openai-beta","originator","range","session_id","version","wp_blog","wp_install","x-client-request-id","x-codex-installation-id","x-codex-parent-thread-id","x-codex-turn-metadata","x-codex-turn-state","x-openai-subagent"]',
   );
   expect(source).toContain('"allowAnonymousGetHeaderOmission":true');
   expect(source).toContain('"rangeRequestHeaderAlias":"x-cors-proxy-range"');

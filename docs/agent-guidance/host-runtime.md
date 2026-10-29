@@ -223,6 +223,18 @@ question rather than leave the launch waiting. The kernel's
 only while the kernel reports the same grant id. See
 [credential grants](../architecture.md#credential-grants).
 
+A guest request's credentials belong to the process whose system call
+wrote its bytes and the grant it held then, never the one that opened
+the connection or a grant the pid gets later. A network backend that can
+carry a credentialed request must capture the serving pid (`currentPid`)
+and the host-side grant id (`peekCredentialGrantId`, no kernel entry)
+when `send` hands it bytes, treat bytes from more than one writer as
+ungranted, and ask `credentialGrantFor(pid, grantId, origin)` only when
+it dispatches, outside any kernel entry
+(`host/src/networking/request-attribution.ts`). Refuse ungranted,
+cleartext, and proxyless credentials visibly; never strip them and send
+the request.
+
 Stdio descriptor type is chosen when the process is created. Hosts that launch
 without a PTY must create fds 0, 1, and 2 as pipe-backed descriptors so
 `isatty()` and terminal ioctls observe non-terminal semantics; hosts that

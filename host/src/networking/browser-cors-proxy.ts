@@ -46,12 +46,74 @@ export class BrowserCorsProxyRequestError extends Error {
 
 const HTTP_FIELD_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
+// Credential fields. They are never silently dropped: a request that carries
+// one the proxy will not relay fails before dispatch, so it can never go out
+// unauthenticated. `chatgpt-account-id` names the signed-in ChatGPT account;
+// it only means something next to that account's bearer token.
 const ANONYMOUS_OMISSION_EXCLUDED_NAMES = new Set([
   "authorization",
+  "chatgpt-account-id",
   "cookie",
   "cookie2",
   "proxy-authorization",
 ]);
+
+/**
+ * The credential fields a per-process credential grant lets through. A
+ * grant covers a bearer token and the account it names, nothing else:
+ * cookies and proxy credentials stay refused for every request.
+ */
+export const GRANTED_CREDENTIAL_REQUEST_HEADER_NAMES: ReadonlySet<string> =
+  new Set(["authorization", "chatgpt-account-id"]);
+
+/**
+ * Tags a granted request with its grant's token. The browser app's service
+ * worker verifies the tag with the kernel worker that owns the machine and
+ * removes it before the request leaves the browser.
+ */
+export const CREDENTIAL_GRANT_REQUEST_HEADER = "X-Kandelo-Credential-Grant";
+
+/**
+ * The CORS proxy protocol's opt-in: the proxy relays `Authorization` only
+ * when the request names it here (apps/spacefast-cors-proxy/README.md, and
+ * the Playground PHP proxy's `X-Cors-Proxy-Allowed-Request-Headers`).
+ */
+export const CORS_PROXY_ALLOWED_REQUEST_HEADERS_HEADER =
+  "X-Cors-Proxy-Allowed-Request-Headers";
+
+/** A grant's tag for one request; see `BrowserCorsProxy.fetch`. */
+export interface BrowserCorsProxyCredentialGrant {
+  readonly token: string;
+}
+
+// Fields that instruct the proxy or the service worker rather than the
+// destination. Only projection writes them, so a caller that sends one is
+// trying to forge the grant tag or the proxy's credential opt-in (or its
+// range alias) and is refused, granted or not, never relayed or omitted.
+function isReservedRequestHeader(lowerName: string): boolean {
+  return lowerName === "x-kandelo-credential-grant" ||
+    lowerName.startsWith("x-cors-proxy-");
+}
+
+/** The credential fields a request carries, lowercased, sorted, unique. */
+export function credentialRequestHeaderNames(
+  headers: readonly HttpHeaderOccurrence[],
+): string[] {
+  return [...sortedUnique(
+    headers
+      .map(([name]) => asciiLowercase(name))
+      .filter((name) => ANONYMOUS_OMISSION_EXCLUDED_NAMES.has(name)),
+  )];
+}
+
+/** Whether a request carries a field only a credential grant can relay. */
+export function requestCarriesGrantableCredential(
+  headers: readonly HttpHeaderOccurrence[],
+): boolean {
+  return headers.some(([name]) =>
+    GRANTED_CREDENTIAL_REQUEST_HEADER_NAMES.has(asciiLowercase(name))
+  );
+}
 
 // Request-header names the browser sets or forbids on every fetch(). A guest's
 // value for one of these can never reach the origin no matter what the proxy
@@ -164,6 +226,26 @@ export function validateBrowserCorsProxyConfig(
       );
     }
   }
+  // Projection refuses these from every caller, so allowing one would be a
+  // capability the profile can never exercise.
+  const reserved = allowedRequestHeaderNames.find((name) =>
+    isReservedRequestHeader(asciiLowercase(name))
+  );
+  if (reserved !== undefined) {
+    throw new TypeError(
+      `browser CORS proxy request header ${reserved} is a reserved proxy-control field`,
+    );
+  }
+  // Only a per-process credential grant relays credentials. A profile that
+  // allowed one would send it for every process, granted or not.
+  const credential = allowedRequestHeaderNames.find((name) =>
+    ANONYMOUS_OMISSION_EXCLUDED_NAMES.has(asciiLowercase(name))
+  );
+  if (credential !== undefined) {
+    throw new TypeError(
+      `browser CORS proxy request header ${credential} is a credential field; only a credential grant relays it`,
+    );
+  }
 
   return Object.freeze({
     url: value.url,
@@ -205,6 +287,12 @@ export class BrowserCorsProxy {
    * have ignored the unsatisfiable range and sent the whole representation.
    * Several `If-Range` occurrences are joined as Fetch joins them, which
    * never matches a single validator, so the service worker agrees.
+   *
+   * `grant` is the caller's finding that the process that wrote this request
+   * holds a credential grant whose destinations include the target origin.
+   * Only then do `Authorization` and `ChatGPT-Account-ID` pass, with the
+   * proxy's opt-in and the grant's tag (see `project`). The caller owns that
+   * finding; this class cannot see processes.
    */
   async fetch(
     request: {
@@ -218,6 +306,7 @@ export class BrowserCorsProxy {
     },
     fetchImpl: (input: string, init: RequestInit) => Promise<Response> =
       (input, init) => globalThis.fetch(input, init),
+    grant?: BrowserCorsProxyCredentialGrant,
   ): Promise<Response> {
     const relay = this.config.credentialRelay;
     if (relay?.allowedOrigins.includes(new URL(request.targetUrl).origin)) {
@@ -239,6 +328,7 @@ export class BrowserCorsProxy {
       headers: occurrences,
       bodyPresent: request.bodyPresent ?? request.body !== undefined,
       targetUrl: request.targetUrl,
+      grant,
     });
     const url = this.urlFor(request.targetUrl);
     const init: RequestInit = { method: request.method, headers, body: request.body };
@@ -271,21 +361,51 @@ export class BrowserCorsProxy {
     return fetchWithProxySession(url, { ...wholeInit, headers }, fetchImpl);
   }
 
+  /**
+   * The headers the proxy receives for a request, or a
+   * `BrowserCorsProxyRequestError` when the request cannot be relayed as the
+   * caller made it.
+   *
+   * With `grant`, `Authorization` and `ChatGPT-Account-ID` pass; a request
+   * carrying either also gets the grant's tag, and one carrying
+   * `Authorization` gets the proxy's opt-in for it. A granted credential
+   * still makes the request credentialed, so no other field is omitted from
+   * it. Every other credential field, and every credential without a grant,
+   * fails the request. Reserved proxy-control fields fail it whatever the
+   * grant.
+   */
   project(input: {
     method: string;
     headers: readonly HttpHeaderOccurrence[];
     bodyPresent: boolean;
     targetUrl: string;
+    grant?: BrowserCorsProxyCredentialGrant;
   }): Headers {
     const headers = new Headers();
     const unsupportedNames: string[] = [];
+    const reservedNames: string[] = [];
     let hasAnonymousOmissionExcludedName = false;
+    let carriesGrantedCredential = false;
+    let carriesGrantedAuthorization = false;
 
     for (const [name, value] of input.headers) {
       const lowerName = asciiLowercase(name);
+      if (isReservedRequestHeader(lowerName)) {
+        reservedNames.push(lowerName);
+        continue;
+      }
       const isCredential = ANONYMOUS_OMISSION_EXCLUDED_NAMES.has(lowerName);
       if (isCredential) {
         hasAnonymousOmissionExcludedName = true;
+      }
+      if (
+        input.grant !== undefined &&
+        GRANTED_CREDENTIAL_REQUEST_HEADER_NAMES.has(lowerName)
+      ) {
+        headers.append(name, value);
+        carriesGrantedCredential = true;
+        if (lowerName === "authorization") carriesGrantedAuthorization = true;
+        continue;
       }
       if (this.isAllowed(name)) {
         headers.append(name, value);
@@ -306,10 +426,22 @@ export class BrowserCorsProxy {
       unsupportedNames.push(lowerName);
     }
 
+    const origin = new URL(input.targetUrl).origin;
+    if (reservedNames.length > 0) {
+      throw new BrowserCorsProxyRequestError(
+        `Browser CORS proxy ${this.config.url} cannot relay ${input.method} request to ${origin} with reserved request headers: ${sortedUnique(reservedNames).join(", ")}`,
+      );
+    }
+
     this.mirrorRange(headers);
+    if (carriesGrantedCredential) {
+      if (carriesGrantedAuthorization) {
+        headers.set(CORS_PROXY_ALLOWED_REQUEST_HEADERS_HEADER, "Authorization");
+      }
+      headers.set(CREDENTIAL_GRANT_REQUEST_HEADER, input.grant!.token);
+    }
     if (unsupportedNames.length === 0) return headers;
 
-    const origin = new URL(input.targetUrl).origin;
     const names = sortedUnique(unsupportedNames);
     const canOmit =
       input.method === "GET" &&

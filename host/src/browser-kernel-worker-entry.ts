@@ -895,6 +895,16 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     createTlsBackend: (options) => new TlsNetworkBackend({
       dnsAliases: msg.config.dnsAliases,
       ...options,
+      // A request belongs to the process the kernel was serving when its
+      // bytes were sent, and to the grant it held then (a host-side peek,
+      // no kernel entry). Whether that same grant still covers the request
+      // is decided when the backend dispatches it, outside any kernel
+      // entry, so contention with another entry is only waited out.
+      currentPid: () => kernelWorker?.servingPid ?? 0,
+      peekCredentialGrantId: (pid) => credentialPolicy?.grants.peekGrantId(pid) ?? 0,
+      credentialGrantFor: (pid, grantId, origin) => retryKernelEntryResult(() =>
+        credentialPolicy?.grants.tagFor(pid, grantId, origin) ?? null
+      ),
     }),
     reportHostDiagnostic,
   });

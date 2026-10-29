@@ -55,7 +55,11 @@ VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
 
 That proxy must preflight the application's current request-header profile:
 `Accept`, `Content-Type`, `git-protocol`, `Range`, `wp_blog`, `wp_install`,
-and `X-Cors-Proxy-Range`. Kandelo sends a byte range in both `Range` and
+and `X-Cors-Proxy-Range`, plus, for signed-in Codex, `OpenAI-Beta`,
+`originator`, `session_id`, `version`, `x-client-request-id`,
+`x-codex-installation-id`, `x-codex-parent-thread-id`,
+`x-codex-turn-metadata`, `x-codex-turn-state`, and `x-openai-subagent`
+(a request that carries one the proxy does not allow fails its preflight). Kandelo sends a byte range in both `Range` and
 `X-Cors-Proxy-Range` with the same value, so the proxy must forward one of
 them to the target as `Range` and must not forward `X-Cors-Proxy-Range`
 itself. A proxy that ignores both answers ranged reads with the whole entity;

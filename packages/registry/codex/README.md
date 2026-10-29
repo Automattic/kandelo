@@ -151,8 +151,11 @@ credentials, and holds Codex's first instruction until the answer. A
 declined request, or a host with no handler, still starts Codex, without a
 grant. The
 browser app does not install that handler yet, so in the browser app Codex
-is denied at once and starts immediately. A grant does not yet change what
-any transport forwards. See
+is denied at once and starts immediately. With a grant, the browser's guest
+network backend lets that one Codex process's `Authorization` and
+`ChatGPT-Account-ID` through to the three declared origins, tagged for the
+service worker; any other process, including a child Codex starts or one
+writing to a socket Codex opened, is refused. See
 [credential grants](../../../docs/architecture.md#credential-grants). The
 local credential relay's origin list is configured separately and is not
 derived from this file.
@@ -167,8 +170,15 @@ keepalive options are represented by the kernel but do not currently send
 keepalive probes. Neither behavior is changed or hidden by this package.
 The default proxy profile is anonymous: it rejects credential fields such as
 `Authorization` and rejects unsupported application headers on body-bearing
-requests. Codex sends additional request headers, so browser model requests
-are blocked by this transport contract even before account authentication.
+requests. The profile now lists Codex's non-credential request headers, and
+a granted Codex process's credentials are routed with the proxy's opt-in and
+a grant tag (see
+[per-process credential grants](../../../docs/browser-support.md#per-process-credential-grants)).
+Browser model requests still fail today: the app installs no prompt
+handler, so Codex holds no grant; the service worker does not yet verify
+and remove the grant tag, so it would refuse a granted request too; and
+neither the default Playground proxy nor the Spacefast proxy allows
+Codex's headers in its preflight yet.
 For local development, the app now has a separate credential relay with an
 explicit permission page on an isolated loopback origin. App and guest-preview
 scripts cannot read or submit the approval form. It checks consent before receiving guest request

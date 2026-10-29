@@ -116,6 +116,189 @@ describe("validateBrowserCorsProxyConfig", () => {
       rangeRequestHeaderAlias: alias,
     })).toThrow(message);
   });
+
+  it.each([
+    "X-Kandelo-Credential-Grant",
+    "X-Cors-Proxy-Allowed-Request-Headers",
+    "x-cors-proxy-content-type",
+  ])("rejects the reserved proxy-control field %s as an allowed request header", (name) => {
+    expect(() => validateBrowserCorsProxyConfig({
+      url: PROXY_URL,
+      allowedRequestHeaderNames: ["accept", name],
+      allowAnonymousGetHeaderOmission: true,
+    })).toThrow(/reserved/);
+  });
+
+  it.each([
+    "Authorization",
+    "ChatGPT-Account-ID",
+    "cookie",
+    "Cookie2",
+    "Proxy-Authorization",
+  ])("rejects the credential field %s as an allowed request header", (name) => {
+    // Only a per-process credential grant relays credentials; a profile
+    // that allowed one would send it for every process.
+    expect(() => validateBrowserCorsProxyConfig({
+      url: PROXY_URL,
+      allowedRequestHeaderNames: ["accept", name],
+      allowAnonymousGetHeaderOmission: true,
+    })).toThrow(/credential field/);
+  });
+});
+
+describe("BrowserCorsProxy credential grants", () => {
+  const CODEX_URL = "https://chatgpt.com/backend-api/codex/responses";
+  const CODEX_ORIGIN = "https://chatgpt.com";
+  const GRANT = { token: "grant-token-for-pid-41" };
+  const codexHeaders: Array<[string, string]> = [
+    ["Authorization", "Bearer secret"],
+    ["ChatGPT-Account-ID", "account-1"],
+    ["Content-Type", "application/json"],
+    ["originator", "codex_cli_rs"],
+  ];
+  const codexProxy = () => proxy({
+    url: PROXY_URL,
+    allowedRequestHeaderNames: ["accept", "content-type", "originator"],
+    allowAnonymousGetHeaderOmission: true,
+  });
+
+  async function sentHeaders(
+    request: {
+      method: string;
+      headers: Array<[string, string]>;
+      body?: string;
+      targetUrl: string;
+    },
+    grant?: { token: string },
+  ): Promise<Array<[string, string]>> {
+    const sent: Headers[] = [];
+    await codexProxy().fetch(request, async (_url, init) => {
+      sent.push(new Headers(init.headers));
+      return new Response("ok");
+    }, grant);
+    expect(sent).toHaveLength(1);
+    return [...sent[0]!.entries()];
+  }
+
+  it("passes a granted request's credentials with the proxy opt-in and the grant tag", async () => {
+    expect(await sentHeaders({
+      method: "POST",
+      headers: codexHeaders,
+      body: "{}",
+      targetUrl: CODEX_URL,
+    }, GRANT)).toEqual([
+      ["authorization", "Bearer secret"],
+      ["chatgpt-account-id", "account-1"],
+      ["content-type", "application/json"],
+      ["originator", "codex_cli_rs"],
+      ["x-cors-proxy-allowed-request-headers", "Authorization"],
+      ["x-kandelo-credential-grant", GRANT.token],
+    ]);
+  });
+
+  it("refuses the same request without a grant, naming both credentials", async () => {
+    await expect(codexProxy().fetch({
+      method: "POST",
+      headers: codexHeaders,
+      body: "{}",
+      targetUrl: CODEX_URL,
+    }, async () => new Response("must not be sent"))).rejects.toThrow(
+      new BrowserCorsProxyRequestError(
+        `Browser CORS proxy ${PROXY_URL} cannot relay POST request to ${CODEX_ORIGIN} with unsupported request headers: authorization, chatgpt-account-id`,
+      ),
+    );
+  });
+
+  it("never omits an ungranted ChatGPT-Account-ID, even on an anonymous GET", () => {
+    const onDiagnostic = vi.fn();
+    expect(() => proxy(undefined, onDiagnostic).project({
+      method: "GET",
+      headers: [["ChatGPT-Account-ID", "account-1"]],
+      bodyPresent: false,
+      targetUrl: CODEX_URL,
+    })).toThrow(new BrowserCorsProxyRequestError(
+      `Browser CORS proxy ${PROXY_URL} cannot relay GET request to ${CODEX_ORIGIN} with unsupported request headers: chatgpt-account-id`,
+    ));
+    expect(onDiagnostic).not.toHaveBeenCalled();
+  });
+
+  it("grants only Authorization and ChatGPT-Account-ID, never cookies", () => {
+    expect(() => codexProxy().project({
+      method: "POST",
+      headers: [...codexHeaders, ["Cookie", "session=1"]],
+      bodyPresent: true,
+      targetUrl: CODEX_URL,
+      grant: GRANT,
+    })).toThrow(new BrowserCorsProxyRequestError(
+      `Browser CORS proxy ${PROXY_URL} cannot relay POST request to ${CODEX_ORIGIN} with unsupported request headers: cookie`,
+    ));
+  });
+
+  it("adds neither the opt-in nor the tag to a granted request that carries no credential", async () => {
+    expect(await sentHeaders({
+      method: "GET",
+      headers: [["Accept", "application/json"]],
+      targetUrl: CODEX_URL,
+    }, GRANT)).toEqual([["accept", "application/json"]]);
+  });
+
+  it("tags ChatGPT-Account-ID without opting in to an Authorization that is absent", async () => {
+    expect(await sentHeaders({
+      method: "GET",
+      headers: [["ChatGPT-Account-ID", "account-1"]],
+      targetUrl: CODEX_URL,
+    }, GRANT)).toEqual([
+      ["chatgpt-account-id", "account-1"],
+      ["x-kandelo-credential-grant", GRANT.token],
+    ]);
+  });
+
+  it.each([
+    ["X-Kandelo-Credential-Grant", "forged-token"],
+    ["X-Cors-Proxy-Allowed-Request-Headers", "Authorization"],
+    ["x-cors-proxy-content-type", "application/json"],
+  ])("refuses a guest-supplied %s with or without a grant", (name, value) => {
+    for (const grant of [undefined, GRANT]) {
+      expect(() => codexProxy().project({
+        method: "GET",
+        headers: [["Accept", "*/*"], [name, value]],
+        bodyPresent: false,
+        targetUrl: CODEX_URL,
+        grant,
+      })).toThrow(new BrowserCorsProxyRequestError(
+        `Browser CORS proxy ${PROXY_URL} cannot relay GET request to ${CODEX_ORIGIN} with reserved request headers: ${name.toLowerCase()}`,
+      ));
+    }
+  });
+
+  it("keeps the grant tag on the whole-representation retry after a stale If-Range", async () => {
+    const sent: Headers[] = [];
+    const response = await proxy({
+      url: PROXY_URL,
+      allowedRequestHeaderNames: ["range"],
+      allowAnonymousGetHeaderOmission: true,
+    }).fetch({
+      method: "GET",
+      headers: [
+        ["Authorization", "Bearer secret"],
+        ["Range", "bytes=0-3"],
+        ["If-Range", '"v1"'],
+      ],
+      targetUrl: CODEX_URL,
+    }, async (_url, init) => {
+      const headers = new Headers(init.headers);
+      sent.push(headers);
+      return headers.has("range")
+        ? new Response("0123", { status: 206, headers: { ETag: '"v2"' } })
+        : new Response("0123456789", { status: 200 });
+    }, GRANT);
+    expect(response.status).toBe(200);
+    expect(sent).toHaveLength(2);
+    for (const headers of sent) {
+      expect(headers.get("authorization")).toBe("Bearer secret");
+      expect(headers.get("x-kandelo-credential-grant")).toBe(GRANT.token);
+    }
+  });
 });
 
 describe("BrowserCorsProxy", () => {
@@ -245,10 +428,10 @@ describe("BrowserCorsProxy", () => {
     },
   );
 
-  it("does not anonymously omit another unsupported header when an allowed credential header is present", () => {
+  it("does not anonymously omit another unsupported header when a granted credential header is present", () => {
     expect(() => proxy({
       url: PROXY_URL,
-      allowedRequestHeaderNames: ["authorization"],
+      allowedRequestHeaderNames: [],
       allowAnonymousGetHeaderOmission: true,
     }).project({
       method: "GET",
@@ -258,6 +441,7 @@ describe("BrowserCorsProxy", () => {
       ],
       bodyPresent: false,
       targetUrl: TARGET_URL,
+      grant: { token: "grant-token" },
     })).toThrow(new BrowserCorsProxyRequestError(
       `Browser CORS proxy ${PROXY_URL} cannot relay GET request to ${TARGET_ORIGIN} with unsupported request headers: x-unsupported`,
     ));
@@ -405,9 +589,12 @@ describe("BrowserCorsProxy", () => {
       expect([...headers.entries()]).toEqual([]);
     });
 
-    it("never relays a caller's own alias value", () => {
+    it("refuses a caller's own alias value instead of relaying or omitting it", () => {
+      // X-Cors-Proxy-* fields instruct the proxy itself. Only projection
+      // writes them, so a guest that sends one is refused, even on an
+      // anonymous GET where an ordinary unsupported field would be omitted.
       const diagnostics: string[] = [];
-      const headers = aliased((message) => diagnostics.push(message)).project({
+      expect(() => aliased((message) => diagnostics.push(message)).project({
         method: "GET",
         headers: [
           ["X-Cors-Proxy-Range", "bytes=0-0"],
@@ -415,11 +602,10 @@ describe("BrowserCorsProxy", () => {
         ],
         bodyPresent: false,
         targetUrl: TARGET_URL,
-      });
-      expect(headers.get("x-cors-proxy-range")).toBe("bytes=10-19");
-      expect(diagnostics).toEqual([
-        `Browser CORS proxy omitted unsupported request headers for ${TARGET_ORIGIN}: x-cors-proxy-range`,
-      ]);
+      })).toThrow(new BrowserCorsProxyRequestError(
+        `Browser CORS proxy ${PROXY_URL} cannot relay GET request to ${TARGET_ORIGIN} with reserved request headers: x-cors-proxy-range`,
+      ));
+      expect(diagnostics).toEqual([]);
     });
 
     it("does not mirror a Range the profile does not forward", () => {
@@ -441,12 +627,12 @@ describe("BrowserCorsProxy", () => {
   it("passes allowed-only body-bearing and state-changing requests without judging header or method meaning", () => {
     const headers = proxy({
       url: PROXY_URL,
-      allowedRequestHeaderNames: ["authorization", "content-type"],
+      allowedRequestHeaderNames: ["x-api-token", "content-type"],
       allowAnonymousGetHeaderOmission: false,
     }).project({
       method: "PATCH",
       headers: [
-        ["Authorization", "Bearer opaque"],
+        ["X-Api-Token", "opaque"],
         ["Content-Type", "application/json"],
       ],
       bodyPresent: true,
@@ -454,8 +640,8 @@ describe("BrowserCorsProxy", () => {
     });
 
     expect([...headers.entries()]).toEqual([
-      ["authorization", "Bearer opaque"],
       ["content-type", "application/json"],
+      ["x-api-token", "opaque"],
     ]);
   });
 

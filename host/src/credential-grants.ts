@@ -209,6 +209,34 @@ export class CredentialGrants {
   }
 
   /**
+   * The id of the grant this host holds for `pid`, or 0, WITHOUT entering
+   * the kernel: safe inside a kernel entry (the network backends call it
+   * from `host_net_send`). It may name a grant the kernel has already
+   * ended; `tagFor` asks the kernel before anything is sent.
+   */
+  peekGrantId(pid: number): number {
+    return this.#byPid.get(pid)?.grant.id ?? 0;
+  }
+
+  /**
+   * The tag a request carries that `pid` wrote while holding grant
+   * `grantId`, sent to `origin`; null unless `pid` still holds that very
+   * grant (the kernel confirms) and its destinations include that exact
+   * origin (`new URL(url).origin`). Grant ids are never reused, so a grant
+   * issued after the write, e.g. after an exec kept the pid, never matches.
+   * The network backends ask this when they dispatch a request, outside any
+   * kernel entry (request-attribution.ts).
+   */
+  tagFor(pid: number, grantId: number, origin: string): { token: string } | null {
+    if (grantId === 0) return null;
+    const grant = this.grantFor(pid);
+    return grant !== null && grant.id === grantId &&
+        grant.destinations.includes(origin)
+      ? { token: grant.token }
+      : null;
+  }
+
+  /**
    * Whether `token` is a live grant whose destinations include `origin`, an
    * exact origin string such as `new URL(url).origin`.
    */

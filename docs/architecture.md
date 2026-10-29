@@ -1960,9 +1960,44 @@ Both kernel workers run the same policy (`host/src/credential-grants.ts`):
    question (`credential_request_cancel`), and teardown denies every open
    question so no launch waits forever.
 
-What a grant permits is still being built: nothing consumes one yet. On
-Node, programs open real sockets, so there is no request path to gate; the
-prompt and grant exist there for host parity.
+**Which process a request belongs to.** The browser's guest network
+backend (`host/src/networking/request-attribution.ts`) attributes each
+outgoing HTTPS request to the process whose system call wrote its bytes,
+and to the grant that process held at that moment: when `host_net_send`
+hands bytes to the backend, it reads the pid the kernel worker is
+serving (`CentralizedKernelWorker.servingPid`) and the id of the grant
+the host holds for it (`CredentialGrants.peekGrantId`, a host-side read
+that does not enter the kernel). It is not the process that opened the
+connection, so a socket a granted parent opened and a child inherited
+does not carry the parent's grant. It is not whatever grant the pid
+holds at dispatch either: exec keeps the pid, so bytes a process wrote
+before exec'ing a declared program must not leave under the new image's
+grant. On a TLS connection the backend follows the guest's TLS record
+framing, so each decrypted application-data record keeps the writers of
+the ciphertext that carried it, and the TLS handshake's writer never
+counts. A request whose bytes more than one (process, grant) wrote, or
+whose writer is unknown, belongs to no one and is never granted.
+
+**When a request is granted.** The backend decides when it dispatches
+the finished request, not when the bytes arrive: dispatch runs on the
+TLS engine's decrypt continuation, outside any kernel entry, and
+`CredentialGrants.tagFor(pid, grantId, origin)` enters the kernel to
+confirm the grant (retried if another entry holds the gate). A request
+is granted only when exactly one process wrote it over TLS, holding a
+grant, and that same grant id is still the one the kernel reports and
+names the request's exact origin. Grant ids are never reused, so a grant
+issued after the write never matches. Only a request that carries
+`Authorization` or `ChatGPT-Account-ID` asks at all. A credentialed
+request the guest wrote in cleartext (even to an HTTPS DNS alias, or on
+the plain fetch backend's port 443), or sent over TLS with no CORS proxy
+configured, is refused before any fetch. What a granted request sends is
+described in [browser
+support](browser-support.md#per-process-credential-grants).
+
+On Node, programs open real sockets and TLS sessions themselves, so there
+is no proxy or request path to gate: credentials flow as on any Unix
+machine, and the prompt and grant exist there for host parity. This is a
+documented host boundary, not a Node-side gate.
 
 ### clone() (threads)
 

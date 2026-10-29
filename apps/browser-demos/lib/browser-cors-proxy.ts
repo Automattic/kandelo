@@ -15,13 +15,32 @@ const defaultConfig = validateBrowserCorsProxyConfig({
   // request that carries it fail preflight. Unlisted, it is never sent;
   // BrowserCorsProxy.fetch() and the service worker apply its semantics to
   // the answer instead (RFC 9110 section 13.1.5).
+  //
+  // WHY the openai/codex names: they are the ordinary (non-credential)
+  // request fields signed-in Codex sends, which the Kandelo CORS proxies
+  // allow. They are relayed for any request, granted or not. Codex's
+  // credentials (Authorization, ChatGPT-Account-ID) are deliberately absent:
+  // BrowserCorsProxy relays them only for a process holding a credential
+  // grant for the target origin. A proxy whose preflight does not allow one
+  // of these names fails a request that carries it at the browser's CORS
+  // check instead of dropping the field.
   allowedRequestHeaderNames: [
     "accept",
     "content-type",
     "git-protocol",
+    "openai-beta",
+    "originator",
     "range",
+    "session_id",
+    "version",
     "wp_blog",
     "wp_install",
+    "x-client-request-id",
+    "x-codex-installation-id",
+    "x-codex-parent-thread-id",
+    "x-codex-turn-metadata",
+    "x-codex-turn-state",
+    "x-openai-subagent",
   ],
   allowAnonymousGetHeaderOmission: true,
   // WORKAROUND: WP Cloud, which hosts the Playground CORS proxy, strips the

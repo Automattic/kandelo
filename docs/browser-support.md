@@ -1444,8 +1444,16 @@ Direct same-origin artifact requests keep their caller's credential policy.
 The Node.js host is unaffected and continues to fetch its lazy URLs directly.
 
 The current profile allows `Accept`, `Content-Type`, `git-protocol`,
-`Range`, `wp_blog`, and `wp_install`, and copies `Range` into
-`X-Cors-Proxy-Range` (see "Byte-range reads through the proxy" below). Every
+`Range`, `wp_blog`, and `wp_install`, plus the ordinary (non-credential)
+fields signed-in Codex sends: `OpenAI-Beta`, `originator`, `session_id`,
+`version`, `x-client-request-id`, `x-codex-installation-id`,
+`x-codex-parent-thread-id`, `x-codex-turn-metadata`, `x-codex-turn-state`,
+and `x-openai-subagent`. It copies `Range` into `X-Cors-Proxy-Range` (see
+"Byte-range reads through the proxy" below). The Codex fields are relayed
+for any request, granted or not. A proxy whose preflight does not allow
+one fails a request that carries it at the browser's CORS check rather
+than dropping the field; today that includes the default Playground proxy
+and the Spacefast proxy, whose allow-lists have not been extended yet. Every
 actual proxy boundary projects by case-insensitive field name only and
 preserves browser-representable values and occurrences as far as Fetch
 permits. Request fields the browser sets or
@@ -1460,10 +1468,17 @@ succeeds because only the application-owned fields, all of which are
 allow-listed (`Accept`, `Content-Type`, `git-protocol`), are forwarded. An
 anonymous bodyless GET may additionally omit an
 application-owned unsupported field and emits a deduplicated diagnostic.
-Credential fields (`Authorization`, `Cookie`, `Cookie2`, `Proxy-Authorization`)
-are never silently dropped; a request carrying an unsupported one fails before
-dispatch. Any other application-owned unsupported field still fails a
-credentialed, body-bearing, or non-GET request before dispatch. Direct Fetch
+Credential fields (`Authorization`, `ChatGPT-Account-ID`, `Cookie`, `Cookie2`,
+`Proxy-Authorization`) are never silently dropped; a request carrying one the
+proxy will not relay fails before dispatch. Only a
+[per-process credential grant](#per-process-credential-grants) relays
+`Authorization` or `ChatGPT-Account-ID`. Fields that instruct the proxy or
+the service worker (`X-Kandelo-Credential-Grant` and every `X-Cors-Proxy-*`
+field) are written only by projection: a guest request that carries one is
+refused before dispatch, granted or not, even as an anonymous GET, and a
+profile may not allow one. Any other application-owned unsupported field
+still fails a credentialed, body-bearing, or non-GET request before
+dispatch. Direct Fetch
 attempts remain unprojected. The development same-origin relay enforces the same
 profile as production.
 
@@ -1516,9 +1531,47 @@ whose package declared credential destinations starts (see
 asks identically. The browser app does not install that handler yet, so
 every declared program is denied at once: Codex, declared
 `launch = "wait"`, starts immediately without a grant. A grant is recorded
-in the kernel and lasts for the process's life, but no request path
-consults it yet, so it does not change what the anonymous proxy or the
-local relay forward.
+in the kernel and lasts for the process's life.
+
+The guest's HTTPS requests consult it. Each request belongs to the
+process whose system call wrote its bytes, and to the grant that process
+held when it wrote them; not the process that opened the connection, and
+not a grant the same pid receives later, after an exec (see [which
+process a request belongs to](architecture.md#credential-grants)). When
+exactly one process wrote the request over TLS and the grant it held is
+still live and names the request's exact origin, `BrowserCorsProxy`
+relays the request's `Authorization` and `ChatGPT-Account-ID`, adds the
+proxy protocol's opt-in `X-Cors-Proxy-Allowed-Request-Headers:
+Authorization` (only when `Authorization` is present), and adds
+`X-Kandelo-Credential-Grant: <token>`, the grant's unguessable token. A
+granted request that carries neither credential gets neither header.
+
+Every other credentialed request fails before dispatch; credentials are
+never stripped and sent anyway. Through the proxy (no grant, a grant for
+other origins, a grant that changed since the write, bytes written by
+more than one process, or a credential other than those two) it fails
+with the same `BrowserCorsProxyRequestError` as before. A request the
+guest sent in cleartext, even to an HTTPS alias, and an HTTPS request
+when no CORS proxy is configured fail with
+`CredentialRequestRefusedError`: there is no grant that could cover the
+first, and nothing to carry the opt-in and tag for the second, so
+neither is sent directly with credentials. An HTTPS guest sees each
+refusal as a `502 Bad Gateway` naming the refused fields. A guest cannot
+forge the tag or the opt-in: a request that already carries either is
+refused, and a proxy profile may list neither a reserved field nor a
+credential field.
+
+Nothing downstream honors the tag yet, so a granted request does not
+succeed end to end. The service worker still re-projects a proxy-bound
+kernel-worker fetch it intercepts with the anonymous profile, and so
+answers `502` to one that carries `Authorization`, the opt-in, or the
+tag. Verifying the tag with the owning kernel worker and removing it
+before the request leaves the browser is not built yet, and neither the
+Playground nor the Spacefast proxy's preflight allows Codex's fields
+yet. On a loopback development server, requests to the local credential
+relay's origins still take that relay, which does not consult grants. On
+Node, programs open real sockets, so credentials flow as on any Unix
+machine and no grant is consulted (a documented host boundary).
 
 #### Byte-range reads through the proxy
 
@@ -1539,7 +1592,10 @@ proxy dispatch (`BrowserCorsProxy.project()` for guest traffic, and the
 service worker for page and worker fetches) copies an outgoing `Range` into
 it. Both fields carry the same value, which the proxy documents as safe once
 `Range` gets through. The alias workaround can be removed as soon as WP Cloud
-relays `Range` headers to PHP. A caller's own `X-Cors-Proxy-Range` is never relayed.
+relays `Range` headers to PHP. A guest request that carries its own
+`X-Cors-Proxy-Range` is refused before dispatch; the service worker, which
+also receives Kandelo's own already-projected requests, re-derives the
+alias from `Range` instead.
 
 **The HTTP cache must stay out of aliased requests.** The browser's HTTP
 cache may rewrite `Range` on the wire to fetch only the bytes it has not

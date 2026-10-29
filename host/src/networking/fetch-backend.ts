@@ -12,6 +12,10 @@ import {
   type HttpHeaderOccurrence,
   validateBrowserCorsProxyConfig,
 } from "./browser-cors-proxy";
+import {
+  CLEARTEXT_CREDENTIAL_REASON,
+  refuseCredentialRequest,
+} from "./request-attribution";
 
 /** Error with errno property for EAGAIN propagation to the kernel host imports. */
 export class EagainError extends Error {
@@ -139,6 +143,11 @@ export class FetchNetworkBackend implements NetworkIO {
     // after yielding the event loop (allowing this promise to resolve).
     const doFetch = async () => {
       try {
+        // This backend carries the guest's bytes as written, in the clear (it
+        // terminates no TLS, even on port 443), so no credential grant can
+        // cover them: a credentialed request is refused before either the
+        // direct or the proxied attempt.
+        refuseCredentialRequest(method, url, browserHeaders, CLEARTEXT_CREDENTIAL_REASON);
         let response: Response;
         try {
           response = await fetch(url, {

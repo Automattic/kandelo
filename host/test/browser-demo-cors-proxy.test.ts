@@ -15,9 +15,19 @@ describe("browser demo CORS proxy configuration", () => {
         "accept",
         "content-type",
         "git-protocol",
+        "openai-beta",
+        "originator",
         "range",
+        "session_id",
+        "version",
         "wp_blog",
         "wp_install",
+        "x-client-request-id",
+        "x-codex-installation-id",
+        "x-codex-parent-thread-id",
+        "x-codex-turn-metadata",
+        "x-codex-turn-state",
+        "x-openai-subagent",
       ],
       allowAnonymousGetHeaderOmission: true,
       rangeRequestHeaderAlias: "x-cors-proxy-range",
@@ -29,6 +39,10 @@ describe("browser demo CORS proxy configuration", () => {
     const lowerNames = DEFAULT_BROWSER_CORS_PROXY_CONFIG
       .allowedRequestHeaderNames.map((name) => name.toLowerCase());
     expect(lowerNames).not.toContain("authorization");
+    // Grant-only credentials: BrowserCorsProxy relays them only for a
+    // process that holds a credential grant for the target origin.
+    expect(lowerNames).not.toContain("chatgpt-account-id");
+    expect(lowerNames).not.toContain("x-kandelo-credential-grant");
     expect(lowerNames).not.toContain("x-cors-proxy-allowed-request-headers");
     expect(lowerNames).not.toContain("x-cors-proxy-content-type");
   });
