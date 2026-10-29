@@ -1,5 +1,6 @@
 import { corsProxyFetchUrl } from "./cors-proxy-url";
 import { fetchWithProxySession } from "./cors-proxy-session";
+import { anonymousGetFallback } from "./cors-proxy-get-fallback";
 
 export type HttpHeaderOccurrence =
   readonly [name: string, value: string];
@@ -8,6 +9,8 @@ export interface BrowserCorsProxyConfig {
   readonly url: string;
   readonly allowedRequestHeaderNames: readonly string[];
   readonly allowAnonymousGetHeaderOmission: boolean;
+  /** Permit a credential-free direct CORS GET after a relay HTTP 413. */
+  readonly allowDirectGetFallback?: boolean;
   /**
    * A second request field this proxy reads a byte range from.
    *
@@ -134,6 +137,9 @@ export function validateBrowserCorsProxyConfig(
   );
 
   const alias = value.rangeRequestHeaderAlias;
+  if (value.allowDirectGetFallback !== undefined && typeof value.allowDirectGetFallback !== "boolean") {
+    throw new TypeError("browser CORS proxy allowDirectGetFallback must be a boolean");
+  }
   if (alias !== undefined) {
     if (typeof alias !== "string" || !HTTP_FIELD_NAME.test(alias)) {
       throw new TypeError(
@@ -162,6 +168,7 @@ export function validateBrowserCorsProxyConfig(
     url: value.url,
     allowedRequestHeaderNames: Object.freeze(allowedRequestHeaderNames),
     allowAnonymousGetHeaderOmission: value.allowAnonymousGetHeaderOmission,
+    ...(value.allowDirectGetFallback === undefined ? {} : { allowDirectGetFallback: value.allowDirectGetFallback }),
     ...(alias === undefined ? {} : { rangeRequestHeaderAlias: alias }),
   });
 }
@@ -241,7 +248,15 @@ export class BrowserCorsProxy {
       // with the alias, as soon as WP Cloud relays Range headers to PHP.
       init.cache = "no-store";
     }
-    const response = await fetchWithProxySession(url, init, fetchImpl);
+    const send = async (options: RequestInit) => anonymousGetFallback(
+      await fetchWithProxySession(url, options, fetchImpl),
+      request.targetUrl, options, {
+        allowDirectGetFallback: this.config.allowDirectGetFallback &&
+          !(request.bodyPresent ?? request.body !== undefined),
+        rangeRequestHeaderAlias: alias,
+      }, fetchImpl,
+    );
+    const response = await send(init);
     if (
       ifRange === undefined ||
       request.method !== "GET" ||
@@ -254,7 +269,7 @@ export class BrowserCorsProxy {
     headers.delete("range");
     if (alias !== undefined) headers.delete(alias);
     const { cache: _cache, ...wholeInit } = init;
-    return fetchWithProxySession(url, { ...wholeInit, headers }, fetchImpl);
+    return send({ ...wholeInit, headers });
   }
 
   project(input: {

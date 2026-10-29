@@ -479,6 +479,10 @@ name = "nginx-vfs"
 class = "browser-product"
 
 [[packages]]
+name = "bun-run"
+class = "user-software"
+
+[[packages]]
 name = "node"
 class = "user-software"
 

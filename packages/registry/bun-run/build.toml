@@ -1,0 +1,13 @@
+script_path = "packages/registry/bun-run/build-bun-run.sh"
+inputs = [
+  "packages/registry/bun-run/build-bun-run.sh",
+  "programs/bun-run.c",
+  "programs/bun-extract.c",
+  "runtime/bun-run/bun-run.js",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/wasm-artifact-guards.sh",
+]
+repo_url = "https://github.com/brandonpayton/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1

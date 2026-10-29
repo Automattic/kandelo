@@ -153,6 +153,23 @@ const ShellTerminalHost: React.FC<{
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(containerRef.current);
+    const container = containerRef.current;
+    // The DOM renderer only contains viewport rows. Read-only inspection must
+    // include retained scrollback and join soft-wrapped rows without newlines.
+    const readTranscript = () => {
+      const buffer = term.buffer.active;
+      let text = "";
+      for (let row = 0; row < buffer.length; row++) {
+        const line = buffer.getLine(row);
+        if (!line) continue;
+        if (row > 0 && !line.isWrapped) text += "\n";
+        text += line.translateToString(!buffer.getLine(row + 1)?.isWrapped);
+      }
+      return text;
+    };
+    Object.defineProperty(container, "readTerminalTranscript", {
+      configurable: true, value: readTranscript,
+    });
     const applyTheme = () => {
       term.options.theme = readShellTheme(containerRef.current);
     };
@@ -291,6 +308,7 @@ const ShellTerminalHost: React.FC<{
 
     return () => {
       disposed = true;
+      delete (container as HTMLElement & { readTerminalTranscript?: () => string }).readTerminalTranscript;
       try { unsubData(); } catch { /* noop */ }
       if (ptyRef.current) {
         try { ptyRef.current.close(); } catch { /* noop */ }

@@ -1443,6 +1443,22 @@ artifact destination. Redirects to another origin cannot carry those cookies.
 Direct same-origin artifact requests keep their caller's credential policy.
 The Node.js host is unaffected and continues to fetch its lazy URLs directly.
 
+The default profile also enables `allowDirectGetFallback`. After a relay
+answers HTTP 413, an anonymous, bodyless GET may retry the original target
+with ordinary CORS fetch, `credentials: "omit"`, and no Referer. The target
+must grant CORS itself. The retry retains the projected guest headers and
+Range, removes the relay-only range alias, and never carries a proxy session
+token. Authenticated requests, POST, HEAD, and other response statuses keep
+their original route. A failed CORS read or a non-successful origin response
+preserves the relay's 413; caller cancellation still aborts. The response
+body streams without assembling another whole-file copy. Embedders that
+require every read to use their relay can omit this option or set it false.
+The kernel-worker transport and the classic service worker share the same
+fallback implementation. A direct retry contacts the target from the user's
+browser and exposes that connection's network address to the target.
+This changes neither the relay's response-size cap
+nor any guest memory ceiling.
+
 The current profile allows `Accept`, `Content-Type`, `git-protocol`,
 `Range`, `wp_blog`, and `wp_install`, and copies `Range` into
 `X-Cors-Proxy-Range` (see "Byte-range reads through the proxy" below). Every
@@ -1558,8 +1574,11 @@ line, so a guest's failed download says whether a name, a connection or a
 timeout failed.
 
 **Cancellation through the service worker.** Cancelling a proxied read
-reaches the relay once response headers have arrived: cancelling the body
-cancels the proxied transfer. Before headers it depends on the browser. The
+after response headers reaches the relay in the Chromium and WebKit checks.
+The Firefox after-headers acceptance check currently fails to observe the
+upstream transfer closing; this also reproduces with the unchanged main
+service worker, and the failing layer remains unresolved. Before headers
+it depends on the browser. The
 service worker copies the page request's abort signal onto the proxied
 request, but measured on 2026-09-26 in Playwright Chromium and WebKit, a page
 abort before headers never fired that signal (a plain pass-through
@@ -3426,3 +3445,140 @@ The separate legacy `url.parse`, `url.format`, and `url.resolve` helpers
 remain partial compatibility implementations. The vendored source bundle
 records its licenses, integrity-locked dependencies, and regeneration steps
 under `third_party/node-web-platform/`.
+
+#### Package compatibility and lifecycle scripts
+
+Lifecycle scripts use the ordinary child process API: command lookup honors
+the child's `PATH` and working directory, and executable reads follow the
+kernel namespace across symlinks and mounts. The runtime's `fs.chmod` calls
+update real permission bits, including npm's installed package commands.
+
+The shell ships a SpiderMonkey-based Node compatibility runtime, compiled for
+wasm32. Installing a package and running its command are separate checks:
+JavaScript dependencies can use the implemented Node APIs. Native machine code
+needs a compatible WebAssembly port. Bun standalone executables have another
+path: `bun-extract` extracts their embedded JavaScript module graph, and
+`runtime/bun-run/bun-run.js` loads it on SpiderMonkey with a Bun compatibility
+shim. This runs the embedded JavaScript, rather than the executable's native
+machine code; compatibility depends on the APIs and bundle format it uses.
+
+In particular, [`@anthropic-ai/claude-code@2.1.300`](https://registry.npmjs.org/@anthropic-ai/claude-code/2.1.300)
+is a wrapper for optional native binary packages for x64 and arm64; it ships
+no wasm32 executable or
+JavaScript CLI fallback. npm correctly omits those incompatible optional
+dependencies. Its postinstall script may still exit successfully after warning
+that the platform is unsupported, leaving a non-working command placeholder.
+An npm success status therefore does not establish Claude Code support.
+The shell's lazy Node archive includes the packaged `bun-run` launcher,
+`bun-extract`, and the JavaScript bootstrap. The launcher runs as the calling
+user and caches extracted modules under a private
+`/tmp/kandelo-bun-run-<effective-uid>` directory. It rejects symlinks, foreign
+ownership, and group/other permissions there. Cache publication uses a POSIX
+file lock, checks write errors, and publishes the completion manifest
+atomically. The cache is ephemeral. Executables use this path only when
+invoked explicitly through `bun-run`; this does not add native executable
+emulation or a kernel binary-format handler.
+
+To install the Bun payload directly, select its download architecture with
+npm's explicit options, then run its embedded JavaScript:
+
+```sh
+npm install --cpu=x64 --libc=glibc @anthropic-ai/claude-code-linux-x64@2.1.300
+bun-run ./node_modules/@anthropic-ai/claude-code-linux-x64/claude --version
+bun-run ./node_modules/@anthropic-ai/claude-code-linux-x64/claude --help
+```
+
+The development CORS relay limits each response to 100 MiB; the 2.1.300
+linux-x64 tarball is 119,473,462 bytes. The default profile's anonymous GET
+fallback handles that relay's HTTP 413 by reading the original npm registry
+URL directly. The registry grants CORS, and npm still verifies the tarball's
+registry integrity digest. No manual download or archive extraction is needed
+for this npm route. The relay limit remains unchanged. With the fallback
+disabled, the request still receives 413.
+
+The compressed download, npm's cache, extracted executable, lazy runtime
+files, and temporary allocations share the kernel's filesystem memory budget.
+An offline npm install can therefore exhaust that budget even when the archive
+itself was downloaded correctly. Node filesystem writes propagate `ENOSPC`
+instead of reporting a negative errno as a successful byte count. An install
+that fails this way does not establish a usable executable; a truncated Bun
+payload will fail extraction. Clearing disposable files can release memory;
+the default memory ceilings are not increased for Claude.
+
+The pinned npm also carries a generic extraction-error correction. npm 10.9.2's
+pacote treats filesystem errors on tar entries as warnings and can finish an
+incomplete install successfully. The shipped copy rejects those real entry
+errors; informational tar warnings remain warnings. The standalone reproduction
+under `packages/registry/node-browser-bundle/test/npm-write-error-repro.cjs`
+uses native Node and an ordinary unpacked npm distribution. It redirects one
+entry write through a real read-only descriptor to demonstrate the upstream
+failure independently of Kandelo. The shell regressions use `/dev/full` to
+exercise the same failure policy with a real `ENOSPC` error.
+
+For a relay/profile without a usable direct CORS fallback, bounded ranges
+can retrieve this version's archive. The verified download can be extracted
+directly with the shipped tools, avoiding npm's additional archive cache.
+If a previous failed install consumed memory, first remove its failed
+payload files and any disposable temporary npm cache. The archive is removed
+after extraction to release its memory before loading the module graph:
+
+```sh
+(
+set -eu
+payload_url=https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.300.tgz
+curl -fsS --range 0-67108863 "$payload_url" -o /tmp/claude-code-payload.tgz
+curl -fsS --range 67108864-119473461 "$payload_url" >> /tmp/claude-code-payload.tgz
+printf '%s  %s\n' a16e3f8b880177463bbea293a0af9168efdf666e28656000f35089d6cd1a7e0f9b3fe387f5025d3972830f043d7a2cdc57bf1ae3899001b71ee5662c375f0203 /tmp/claude-code-payload.tgz | sha512sum -c -
+mkdir -p ./claude-payload
+tar -xzf /tmp/claude-code-payload.tgz -C ./claude-payload --strip-components=1
+rm /tmp/claude-code-payload.tgz
+bun-run ./claude-payload/claude --version
+bun-run ./claude-payload/claude --help
+)
+```
+
+The npm acceptance check passes in Chromium, Firefox, and WebKit. It executes
+the registry-installed payload cold, before diagnostic reads of the installed
+executable, and verifies its complete checksum after the version/help calls.
+It retains npm's cache and
+does not create a second standalone archive in `/tmp`. The separate ranged
+download recipe was also verified in Chromium. These are explicit Bun
+payload routes; neither replaces the upstream wrapper's unsupported-platform
+placeholder.
+
+The shipped npm 10.9.2 has a generic option-handling correction: its required
+package platform check receives the same CPU, OS, and libc options already
+used for optional packages. Upstream defines these options but omits them at
+that check in `@npmcli/arborist/lib/arborist/build-ideal-tree.js`. Without an
+override, packages are still checked against the actual guest architecture;
+`process.arch` remains `wasm32`. This changes package selection, not which
+machine instructions the guest can execute. No package metadata, registry
+URLs, or Claude-specific installation scripts are rewritten.
+
+The shell terminal element exposes a read-only `readTerminalTranscript()`
+snapshot of xterm's active buffer, including retained scrollback. It joins
+soft-wrapped rows and preserves hard newlines. Command-collection tests use
+this snapshot because the DOM renderer contains only the visible viewport;
+input and command execution still use the visible terminal and real PTY.
+The snapshot reader is removed when its terminal is disposed.
+
+`host/test/npm-shell-image.test.ts` and
+`apps/browser-demos/test/npm-lifecycle.spec.ts` exercise explicit payload
+selection, extraction, concurrent cache use, exit statuses, file
+synchronization, and real wasm32 identity through the shell as `maker`.
+`host/test/claude-run-native-guest.test.ts` exercises a real Claude executable
+with `--version`, `--help`, and one streamed turn against a local Messages API
+fixture as that user when `CLAUDE_BUN_ELF` is supplied. The prompt fixture
+disables tools and checks the streamed response and valid configuration JSON.
+That optional acceptance input is not vendored. These checks do not establish
+interactive, authenticated, or tool-using Claude sessions. `Bun.spawn` remains
+unsupported and throws when invoked. Ordinary installation of
+the upstream wrapper still leaves its unsupported-platform placeholder.
+
+`apps/browser-demos/test/claude-npm.spec.ts` opts into a real registry install
+with `KANDELO_TEST_CLAUDE_NPM=1`. It installs the pinned platform payload,
+starts version/help cold, and verifies the installed executable's full
+checksum without manual archive handling or npm cache removal. It is separate
+from the normal offline/synthetic suite because it downloads a large upstream
+artifact. `browser-cors-proxy.spec.ts` checks direct-fallback CORS enforcement,
+credential omission, and relay-only header removal in all three engines.

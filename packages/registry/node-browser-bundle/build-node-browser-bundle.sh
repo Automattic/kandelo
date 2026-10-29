@@ -11,6 +11,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-}"
 WORK_DIR="${WASM_POSIX_DEP_WORK_DIR:-}"
 NODE_DIR="${WASM_POSIX_DEP_NODE_DIR:-}"
+BUN_RUN_DIR="${WASM_POSIX_DEP_BUN_RUN_DIR:-}"
 SOURCE_DIR="${WASM_POSIX_DEP_SOURCE_DIR:-}"
 TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-}"
 
@@ -26,6 +27,7 @@ require_real_directory() {
 require_real_directory WASM_POSIX_DEP_OUT_DIR "$OUT_DIR"
 require_real_directory WASM_POSIX_DEP_WORK_DIR "$WORK_DIR"
 require_real_directory WASM_POSIX_DEP_NODE_DIR "$NODE_DIR"
+require_real_directory WASM_POSIX_DEP_BUN_RUN_DIR "$BUN_RUN_DIR"
 require_real_directory WASM_POSIX_DEP_SOURCE_DIR "$SOURCE_DIR"
 
 node_wasm="$NODE_DIR/node.wasm"
@@ -47,7 +49,7 @@ archive="$WORK_DIR/node.zip"
 TMPDIR="$TSX_TMP" PATH="$DECLARED_TOOL_PATH" \
     "$NODE_BIN" "$TSX_CLI" \
     "$REPO_ROOT/images/vfs/scripts/build-node-zip.ts" \
-    "$node_wasm" "$SOURCE_DIR" "$archive"
+    "$node_wasm" "$SOURCE_DIR" "$archive" "$BUN_RUN_DIR"
 
 export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
 export WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=disabled

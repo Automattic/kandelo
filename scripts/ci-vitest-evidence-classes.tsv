@@ -280,6 +280,7 @@ host/test/node-rootfs-lazy-cohort.test.ts	prepared-product
 host/test/node-worker-adapter.test.ts	prepared-product
 host/test/non-pty-stdio.test.ts	prepared-product
 host/test/nosuid-exec.test.ts	source-only
+host/test/npm-shell-image.test.ts	prepared-product
 host/test/opcache-prewarm.test.ts	prepared-product
 host/test/opfs-channel.test.ts	source-only
 host/test/opfs-readdir-atomicity.test.ts	source-only

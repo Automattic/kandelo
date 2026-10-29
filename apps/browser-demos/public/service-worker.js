@@ -996,6 +996,7 @@ if (typeof window !== "undefined") {
   var CORS_PROXY_CONFIG = "__CORS_PROXY_CONFIG__";
   var proxySessionFactory = "__CORS_PROXY_SESSION_TRANSPORT__";
   var proxySessionFetch = typeof proxySessionFactory === "function" ? proxySessionFactory() : null;
+  var proxyGetFallback = "__CORS_PROXY_GET_FALLBACK__";
   var corsProxyWarningKeys = new Set();
 
   function normalizedCorsProxyConfig() {
@@ -1004,6 +1005,8 @@ if (typeof window !== "undefined") {
       typeof CORS_PROXY_CONFIG.url !== "string" ||
       !Array.isArray(CORS_PROXY_CONFIG.allowedRequestHeaderNames) ||
       typeof CORS_PROXY_CONFIG.allowAnonymousGetHeaderOmission !== "boolean" ||
+      (CORS_PROXY_CONFIG.allowDirectGetFallback !== undefined &&
+        typeof CORS_PROXY_CONFIG.allowDirectGetFallback !== "boolean") ||
       (CORS_PROXY_CONFIG.rangeRequestHeaderAlias !== undefined &&
         typeof CORS_PROXY_CONFIG.rangeRequestHeaderAlias !== "string")
     ) {
@@ -1237,16 +1240,34 @@ if (typeof window !== "undefined") {
     return projectCorsProxyRequest(request, outgoingUrl, targetUrl).then(function (projected) {
       if (projected instanceof Response) return projected;
       function send(projected) {
-        if (!proxySessionFetch) return fetch(projected);
+        function fetchRequest(url, init) { return fetch(new Request(url, init)); }
+        // Keep the original Request's cancellation path when no quota
+        // transport is installed. Only a direct retry needs a new Request.
+        if (!proxySessionFetch) {
+          var response = fetch(projected);
+          if (typeof proxyGetFallback !== "function") return response;
+          return response.then(function (response) {
+            return proxyGetFallback(response, targetUrl, {
+              method: projected.method, headers: projected.headers,
+              cache: projected.cache, redirect: projected.redirect, signal: projected.signal,
+            }, config, fetchRequest);
+          });
+        }
         // Firefox can retain POST bytes internally while Request.body is null.
         // Read by method instead of using that getter to decide body presence.
         return (projected.method === "GET" || projected.method === "HEAD"
           ? Promise.resolve(undefined) : projected.arrayBuffer()).then(function (body) {
-          return proxySessionFetch(projected.url, {
+          var init = {
             method: projected.method, headers: projected.headers, body: body,
             credentials: projected.credentials, referrerPolicy: projected.referrerPolicy,
             mode: projected.mode, redirect: projected.redirect, cache: projected.cache, signal: projected.signal,
-          }, function (url, init) { return fetch(new Request(url, init)); });
+          };
+          var relayed = proxySessionFetch(projected.url, init, fetchRequest);
+          return relayed.then(function (response) {
+            return typeof proxyGetFallback === "function"
+              ? proxyGetFallback(response, targetUrl, init, config, fetchRequest)
+              : response;
+          });
         });
       }
       return send(projected).then(function (response) {

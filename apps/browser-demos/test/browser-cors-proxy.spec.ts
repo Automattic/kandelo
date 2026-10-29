@@ -8,6 +8,73 @@ import { createHmac } from "node:crypto";
 import { createCorsProxy } from "../../spacefast-cors-proxy/src/proxy.ts";
 import { createDatabaseRateLimit } from "../../spacefast-cors-proxy/src/rate-limit.ts";
 import { createProxySessionTransport } from "../../../host/src/networking/cors-proxy-session";
+import { anonymousGetFallback } from "../../../host/src/networking/cors-proxy-get-fallback";
+
+test("size-rejected GETs use direct CORS without cookies, referrers or relay-only range headers", async ({ page, context }) => {
+  const { build } = await import("esbuild");
+  const client = await build({ stdin: {
+    contents: 'export { BrowserCorsProxy } from "./host/src/networking/browser-cors-proxy.ts";',
+    resolveDir: fileURLToPath(new URL("../../../", import.meta.url)),
+  }, bundle: true, write: false, format: "esm", platform: "browser" });
+  const observed: Array<{ path: string; cookie?: string; referer?: string; alias?: string; range?: string }> = [];
+  const target = createServer((request, response) => {
+    observed.push({ path: request.url!, cookie: request.headers.cookie, referer: request.headers.referer,
+      alias: request.headers["x-cors-proxy-range"] as string | undefined, range: request.headers.range });
+    response.writeHead(200, {
+      ...(request.url === "/open" ? { "Access-Control-Allow-Origin": "*" } : {}),
+      "Content-Type": "text/plain",
+    });
+    response.end("asset bytes");
+  });
+  let origin = "";
+  const config = () => ({ url: origin + "/proxy?url=", allowedRequestHeaderNames: ["range"],
+    allowAnonymousGetHeaderOmission: true, allowDirectGetFallback: true, rangeRequestHeaderAlias: "x-cors-proxy-range" });
+  const rawWorker = await readFile(serviceWorkerPath, "utf8");
+  const app = createServer((request, response) => {
+    if (request.url!.startsWith("/proxy?")) {
+      response.writeHead(413); response.end("relay limit");
+    } else if (request.url === "/client.js") {
+      response.writeHead(200, { "Content-Type": "text/javascript" }); response.end(client.outputFiles[0].text);
+    } else if (request.url === "/service-worker.js") {
+      response.writeHead(200, { "Content-Type": "text/javascript" });
+      response.end(rawWorker.replace('"__CORS_PROXY_CONFIG__"', JSON.stringify(config()))
+        .replace('"__CORS_PROXY_SESSION_TRANSPORT__"', `(${createProxySessionTransport.toString()})`)
+        .replace('"__CORS_PROXY_GET_FALLBACK__"', `(${anonymousGetFallback.toString()})`));
+    } else { response.writeHead(200, { "Content-Type": "text/html" }); response.end("<!doctype html><title>Direct CORS fallback</title>"); }
+  });
+  try {
+    const targetOrigin = await listen(target);
+    origin = await listen(app);
+    await context.addCookies([{ name: "application-session", value: "must-not-reach-target", url: origin }]);
+    await page.goto(origin);
+    const results = await page.evaluate(async ({ config, targetOrigin }) => {
+      const { BrowserCorsProxy } = await import("/client.js");
+      const proxy = new BrowserCorsProxy(config);
+      const results = [];
+      for (const path of ["/open", "/closed"]) {
+        const response = await proxy.fetch({ method: "GET", targetUrl: targetOrigin + path, headers: [["Range", "bytes=0-3"]] });
+        results.push({ status: response.status, body: await response.text() });
+      }
+      await navigator.serviceWorker.register("/service-worker.js", { scope: "/" });
+      await navigator.serviceWorker.ready;
+      if (!navigator.serviceWorker.controller) await new Promise<void>(resolve => navigator.serviceWorker.addEventListener("controllerchange", () => resolve(), { once: true }));
+      for (const path of ["/open", "/closed"]) {
+        const response = await fetch(targetOrigin + path, { headers: { Range: "bytes=0-3" } });
+        results.push({ status: response.status, body: await response.text() });
+      }
+      return results;
+    }, { config: config(), targetOrigin });
+    expect(results).toEqual([
+      { status: 200, body: "asset bytes" }, { status: 413, body: "relay limit" },
+      { status: 200, body: "asset bytes" }, { status: 413, body: "relay limit" },
+    ]);
+    expect(observed).toHaveLength(4);
+    for (const request of observed) {
+      expect(request.cookie).toBeUndefined(); expect(request.referer).toBeUndefined();
+      expect(request.alias).toBeUndefined(); expect(request.range).toBe("bytes=0-3");
+    }
+  } finally { await Promise.all([close(app), close(target)]); }
+});
 
 test("Spacefast quota sessions survive cookie-free requests, reload and service-worker reprojection", async ({ page }) => {
   const { build } = await import("esbuild");
@@ -415,6 +482,7 @@ test("Vite serves a service worker with the complete proxy profile", async ({
   expect(source).not.toContain("__CORS_PROXY_CONFIG__");
   expect(source).not.toContain("__CORS_PROXY_URL__");
   expect(source).not.toContain("__CORS_PROXY_SESSION_TRANSPORT__");
+  expect(source).not.toContain("__CORS_PROXY_GET_FALLBACK__");
   expect(source).toContain("kandelo-proxy-sessions-v1");
   expect(source).toContain(
     '"allowedRequestHeaderNames":["accept","content-type","git-protocol","range","wp_blog","wp_install"]',

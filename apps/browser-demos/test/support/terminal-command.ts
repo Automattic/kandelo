@@ -159,7 +159,12 @@ async function terminalText(page: Page): Promise<string> {
   return page
     .locator(".kshell-host:visible .xterm-rows")
     .first()
-    .evaluate((node) => node.textContent ?? "");
+    .evaluate((node) => {
+      const host = node.closest(".kshell-host") as HTMLElement & {
+        readTerminalTranscript?: () => string;
+      };
+      return host.readTerminalTranscript?.() ?? node.textContent ?? "";
+    });
 }
 
 export async function runTerminalCommand(

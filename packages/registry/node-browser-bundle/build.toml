@@ -8,4 +8,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "4ba37eb0769bac8f448d711943d6454b62eb6933"
-revision    = 2
+revision    = 4

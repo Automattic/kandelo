@@ -123,6 +123,33 @@ export function stageSpiderMonkeyNpmRuntime(fs: VfsImageFilesystem): void {
 }
 
 export function patchNpmForSpiderMonkey(fs: VfsImageFilesystem): void {
+  // npm 10.9.2's pacote logs tar entry I/O failures as warnings and can
+  // successfully install incomplete files. This also reproduces on native
+  // Node (see node-browser-bundle/test/npm-write-error-repro.cjs). Keep tar's
+  // informational warnings, but make real entry errors reject extraction.
+  patchVfsText(fs, "/usr/local/lib/npm/node_modules/pacote/lib/fetcher.js", [
+    [
+      "      tarball.on('error', er => reject(er))",
+      `      extractor.on('warn', (code, msg, data) => {
+        if (code === 'TAR_ENTRY_ERROR' && data instanceof Error) {
+          extractor.emit('error', data)
+        }
+      })
+      tarball.on('error', reject)`,
+      "tarball.on('error', er =>",
+    ],
+  ]);
+  // npm 10.9.2 defines --cpu/--os/--libc and honors them when reifying
+  // optional packages, but omits the environment argument for required ones.
+  // Pass the same explicit options to both checks. Defaults still use the
+  // real guest platform; no package names or architecture aliases are added.
+  patchVfsText(fs, "/usr/local/lib/npm/node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js", [
+    [
+      "checkPlatform(node.package, this.options.force)",
+      "checkPlatform(node.package, this.options.force, this.options)",
+      "checkPlatform(node.package, this.options.force)",
+    ],
+  ]);
   patchVfsText(fs, "/usr/local/lib/npm/lib/utils/display.js", [
     [
       `const [{ Chalk }, { createSupportsColor }] = await Promise.all([

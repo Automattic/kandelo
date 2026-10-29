@@ -689,3 +689,90 @@ describe("ifRangeMatches", () => {
     expect(ifRangeMatches(ifRange, new Headers(headers))).toBe(expected);
   });
 });
+
+describe("size-rejected anonymous GETs", () => {
+  const config: BrowserCorsProxyConfig = {
+    url: PROXY_URL, allowedRequestHeaderNames: ["accept", "range", "authorization"],
+    allowAnonymousGetHeaderOmission: true, allowDirectGetFallback: true,
+    rangeRequestHeaderAlias: "x-cors-proxy-range",
+  };
+
+  it("streams a direct CORS response without forwarding relay credentials or the range alias", async () => {
+    const rejected = new Response("relay limit", { status: 413 });
+    const sent: Array<{ url: string; init: RequestInit }> = [];
+    const response = await proxy(config).fetch({
+      method: "GET", targetUrl: TARGET_URL, headers: [["Range", "bytes=4-7"]],
+    }, async (url, init) => {
+      sent.push({ url, init });
+      return sent.length === 1 ? rejected : new Response("4567", {
+        status: 206, headers: { "Content-Range": "bytes 4-7/16" },
+      });
+    });
+    expect(response.status).toBe(206);
+    expect(await response.text()).toBe("4567");
+    expect(rejected.bodyUsed).toBe(true);
+    expect(sent).toHaveLength(2);
+    expect(sent[1].url).toBe(TARGET_URL);
+    expect(sent[1].init).toMatchObject({ credentials: "omit", referrerPolicy: "no-referrer", mode: "cors" });
+    expect(Object.fromEntries(new Headers(sent[1].init.headers))).toEqual({ range: "bytes=4-7" });
+  });
+
+  it.each(["POST", "HEAD", "authenticated", "disabled", "body", "dropped-body", "not-size-rejected"])(
+    "does not change the route for %s", async (reason) => {
+      const send = vi.fn(async () => new Response("original", { status: reason === "not-size-rejected" ? 429 : 413 }));
+      await proxy({ ...config, allowDirectGetFallback: reason !== "disabled" }).fetch({
+        method: reason === "POST" || reason === "HEAD" ? reason : "GET",
+        targetUrl: TARGET_URL,
+        headers: reason === "authenticated" ? [["Authorization", "Bearer guest-token"]] : [],
+        ...(reason === "body" ? { body: "payload" } : {}),
+        ...(reason === "dropped-body" ? { bodyPresent: true } : {}),
+      }, send);
+      expect(send).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("returns the direct stream before EOF and propagates body cancellation", async () => {
+    let cancelled = false;
+    const direct = new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode("first bytes")); },
+      cancel() { cancelled = true; },
+    }));
+    let calls = 0;
+    const response = await proxy(config).fetch({ method: "GET", targetUrl: TARGET_URL, headers: [] }, async () =>
+      ++calls === 1 ? new Response(null, { status: 413 }) : direct);
+    expect(response).toBe(direct);
+    const reader = response.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("first bytes");
+    await reader.cancel();
+    expect(cancelled).toBe(true);
+  });
+
+  it.each(["CORS failure", "origin error"])("retains the relay's error after %s", async (reason) => {
+    const rejected = new Response("relay limit", { status: 413 });
+    let calls = 0;
+    const response = await proxy(config).fetch({ method: "GET", targetUrl: TARGET_URL, headers: [] }, async () => {
+      if (++calls === 1) return rejected;
+      if (reason === "CORS failure") throw new TypeError("Failed to fetch");
+      return new Response("denied", { status: 403 });
+    });
+    expect(response).toBe(rejected);
+    expect(await response.text()).toBe("relay limit");
+    expect(calls).toBe(2);
+  });
+
+  it("retains caller cancellation instead of returning the relay error", async () => {
+    const controller = new AbortController();
+    // The public fetch input does not yet accept a signal; test the shared
+    // transport directly, also used by Request-based service-worker callers.
+    const { anonymousGetFallback } = await import("../src/networking/cors-proxy-get-fallback");
+    await expect(anonymousGetFallback(new Response(null, { status: 413 }), TARGET_URL,
+      { method: "GET", signal: controller.signal }, config, async () => {
+        controller.abort(); throw controller.signal.reason;
+      })).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("rejects malformed fallback configuration", () => {
+    expect(() => validateBrowserCorsProxyConfig({ ...config, allowDirectGetFallback: "true" as never }))
+      .toThrow(/allowDirectGetFallback must be a boolean/);
+  });
+});

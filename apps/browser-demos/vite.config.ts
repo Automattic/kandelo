@@ -41,6 +41,7 @@ import {
 } from "./vite-binary-resolution";
 import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "./lib/browser-cors-proxy";
 import { createProxySessionTransport } from "../../host/src/networking/cors-proxy-session";
+import { anonymousGetFallback } from "../../host/src/networking/cors-proxy-get-fallback";
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 import { devSignallingServer } from "./vite/dev-signalling";
 import { batchedFsServePath, devLazyAssets } from "./vite/dev-lazy-assets";
@@ -308,7 +309,8 @@ function injectCorsProxyConfigPlaceholder(
   return content.replace(
     '"__CORS_PROXY_CONFIG__"',
     JSON.stringify(corsProxyConfig),
-  ).replace('"__CORS_PROXY_SESSION_TRANSPORT__"', `(${createProxySessionTransport.toString()})`);
+  ).replace('"__CORS_PROXY_SESSION_TRANSPORT__"', `(${createProxySessionTransport.toString()})`)
+    .replace('"__CORS_PROXY_GET_FALLBACK__"', `(${anonymousGetFallback.toString()})`);
 }
 
 const blobIframeInterceptorPath = path.resolve(

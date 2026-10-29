@@ -1606,6 +1606,14 @@ components allow the search to continue; a permission denial is retained if no
 candidate succeeds. This shared runtime behavior applies on Node and browser
 hosts and lets npm lifecycle scripts find `sh` and package-local commands.
 
+Bun standalone payloads have an explicit userland execution path. The packaged
+`bun-run` launcher uses ordinary `execv` to run `/usr/bin/node` with the
+bootstrap, which spawns `bun-extract` through the same process machinery and
+loads the extracted ESM graph. It does not change executable-format detection
+in the kernel or hosts. The launcher checks a per-user private tmpfs cache;
+the extractor serializes publishers with a POSIX record lock and atomically
+publishes its manifest after checked writes. Both hosts consume these same
+package artifacts from the shell's lazy Node archive.
 The shared Node bootstrap also owns application exit-code absence, stdin
 read readiness, and the URL/Web Streams classes used by HTTP clients.
 SpiderMonkey embeds the integrity-locked JavaScript bundle under
@@ -2777,6 +2785,15 @@ Browsers cannot create external raw TCP or UDP sockets. Local loopback and `Loca
 1. **FetchNetworkBackend**: Buffers an entire HTTP request from the Wasm process, sends it via `fetch()`, and returns the raw HTTP response bytes. Works for simple HTTP clients.
 
 2. **TlsNetworkBackend**: Terminates the guest's TLS connection with a generated, in-VFS CA and sends the decoded HTTP request through browser `fetch()`. Service-worker-controlled apps may proxy cross-origin fetches transparently. Other embedders set `BrowserKernelOptions.corsProxyUrl`; the option crosses the main-thread/worker protocol and routes backend fetches through the application's CORS proxy.
+
+   A proxy profile may enable `allowDirectGetFallback` for bodyless anonymous
+   GETs rejected with HTTP 413. The shared browser transport retries the
+   unchanged target with CORS, no credentials or Referer, and no relay-only
+   headers. Only a successful, readable CORS response replaces the relay
+   error. Both the kernel-worker transport and the service worker use the
+   same implementation. The default demo profile enables it; explicit
+   embedders may leave it disabled. Relay caps and Wasm memory ceilings are
+   unchanged. Node's ordinary TCP networking is unaffected.
 
    The browser bridge deliberately declines TLS 1.2 session resumption.
    TLS 1.3-capable clients can send a nonempty legacy session ID even without

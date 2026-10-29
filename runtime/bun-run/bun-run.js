@@ -3,7 +3,10 @@
 const cp = require("child_process");
 const fs = require("fs");
 
-const CACHE_ROOT = "/var/cache/kandelo/bun-run"; // volatile; never persisted (see spec)
+// The launcher supplies a private per-user tmpfs directory. Direct bootstrap
+// invocation gets a fresh private directory instead of a root-owned cache.
+const CACHE_ROOT = process.env.KANDELO_BUN_CACHE ||
+  fs.mkdtempSync(require("os").tmpdir() + "/kandelo-bun-run-");
 
 function fail(msg, code) { process.stderr.write("bun-run: " + msg + "\n"); process.exit(code || 1); }
 
@@ -52,7 +55,13 @@ globalThis.__breq = (id) =>
   require(typeof id === "string" && id.indexOf("file://") === 0 ? require("url").fileURLToPath(id) : id);
 globalThis.Bun = {
   version: (process.versions && process.versions.node) || "0",
-  isStandaloneExecutable: false,
+  // Extraction succeeded: this app came from a standalone module graph.
+  // Preserve its bundled/source mode without claiming native CPU execution.
+  isStandaloneExecutable: true,
+  main: entry,
+  // JSC-specific controls are absent on SpiderMonkey. Keep the namespace
+  // available so callers can detect optional controls without invoking a stub.
+  unsafe: Object.freeze({}),
   which(cmd) { try { const o = cp.spawnSync("sh", ["-lc", "command -v " + cmd], { encoding: "utf8" }); return String(o.stdout || "").trim() || null; } catch (_) { return null; } },
   file(p) { return { text: () => fs.promises.readFile(p, "utf8"), arrayBuffer: () => fs.promises.readFile(p), exists: () => Promise.resolve(fs.existsSync(p)) }; },
   write() { return ni("write")(); },

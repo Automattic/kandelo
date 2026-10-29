@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { createProxySessionTransport } from "../src/networking/cors-proxy-session";
+import { anonymousGetFallback } from "../src/networking/cors-proxy-get-fallback";
 
 import {
   BROWSER_CONTROLLED_REQUEST_HEADER_NAMES,
@@ -113,7 +114,7 @@ interface SentRequest {
 
 // Run the service worker's own proxy-dispatch code, not a copy: the section
 // from the injected profile through fetchThroughCorsProxy, with a fake fetch.
-function serviceWorkerDispatch(answer: (sent: SentRequest) => Response) {
+function serviceWorkerDispatch(answer: (sent: SentRequest) => Response, allowDirectGetFallback = false) {
   const start = serviceWorkerSource.indexOf(
     'var CORS_PROXY_CONFIG = "__CORS_PROXY_CONFIG__";',
   );
@@ -129,9 +130,11 @@ function serviceWorkerDispatch(answer: (sent: SentRequest) => Response) {
       url: "https://proxy.example/?",
       allowedRequestHeaderNames: ["accept", "content-type", "range"],
       allowAnonymousGetHeaderOmission: true,
+      allowDirectGetFallback,
       rangeRequestHeaderAlias: "x-cors-proxy-range",
     }),
-  ).replace('"__CORS_PROXY_SESSION_TRANSPORT__"', `(${createProxySessionTransport.toString()})`);
+  ).replace('"__CORS_PROXY_SESSION_TRANSPORT__"', `(${createProxySessionTransport.toString()})`)
+    .replace('"__CORS_PROXY_GET_FALLBACK__"', `(${anonymousGetFallback.toString()})`);
   const warnings: string[] = [];
   const sent: SentRequest[] = [];
   const fakeFetch = async (request: Request) => {
@@ -186,6 +189,19 @@ function partial(etag: string) {
 }
 
 describe("service worker proxy dispatch", () => {
+  it("uses the shared direct GET fallback without application credentials or relay fields", async () => {
+    const { dispatch, sent } = serviceWorkerDispatch(request => new URL(request.url).origin === "https://proxy.example"
+      ? new Response("too large", { status: 413 })
+      : new Response("asset bytes"), true);
+    const response = await dispatch(new Request(TARGET, {
+      credentials: "include", headers: { Range: "bytes=0-3" },
+    }), PROXIED, TARGET);
+    expect(await response.text()).toBe("asset bytes");
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toMatchObject({ url: TARGET, credentials: "omit", referrerPolicy: "no-referrer" });
+    expect(sent[1].headers).toEqual({ range: "bytes=0-3" });
+  });
+
   it("authenticates only to same-origin proxies, including already-projected requests", async () => {
     const { dispatch, sent } = serviceWorkerDispatch(() => new Response("ok"));
     for (const proxy of ["https://kandelo.test/proxy?url=", "https://proxy.example/?"]) {

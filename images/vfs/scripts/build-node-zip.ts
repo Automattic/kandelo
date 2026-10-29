@@ -1,8 +1,9 @@
 #!/usr/bin/env -S npx tsx
 /**
  * Build node.zip for the browser shell demo: a root-relative archive of
- * bin/node (the SpiderMonkey-based Node.js interpreter) plus npm + npx and
- * the npm dist. The shell overlay mounts it at /usr/, so entries become
+ * bin/node (the SpiderMonkey-based Node.js interpreter), the Bun payload
+ * launcher and extractor, plus npm + npx and the npm dist.
+ * The shell overlay mounts it at /usr/, so entries become
  * /usr/bin/node, /usr/bin/npm, /usr/local/lib/npm/... On first exec the archive
  * is fetched and unpacked in one go.
  *
@@ -15,7 +16,7 @@
  * `walkAndWrite` + `stageSpiderMonkeyNpmRuntime` on a `KandeloImageFs` and
  * then exports the /usr subtree to a deterministic zip.
  *
- *   build-node-zip.ts <node.wasm> <npm-source-dir> <output.zip>
+ *   build-node-zip.ts <node.wasm> <npm-source-dir> <output.zip> <bun-run-dir>
  */
 import { execFileSync } from "node:child_process";
 import {
@@ -39,9 +40,9 @@ const { S_IFMT, S_IFDIR, S_IFLNK, S_IFREG } = FILE_MODES;
 
 const SCRIPT_DIR = new URL(".", import.meta.url).pathname;
 
-const [nodeWasmPath, npmSourceDir, outputZip] = process.argv.slice(2);
-if (!nodeWasmPath || !npmSourceDir || !outputZip) {
-  console.error("usage: build-node-zip.ts <node.wasm> <npm-source-dir> <output.zip>");
+const [nodeWasmPath, npmSourceDir, outputZip, bunRunDir] = process.argv.slice(2);
+if (!nodeWasmPath || !npmSourceDir || !outputZip || !bunRunDir) {
+  console.error("usage: build-node-zip.ts <node.wasm> <npm-source-dir> <output.zip> <bun-run-dir>");
   process.exit(2);
 }
 
@@ -58,6 +59,11 @@ ensureDirRecursive(fs, "/usr/local/lib");
 ensureDirRecursive(fs, "/etc/ssl");
 
 writeVfsBinary(fs, "/usr/bin/node", new Uint8Array(readFileSync(nodeWasmPath)), 0o755);
+for (const program of ["bun-run", "bun-extract"]) {
+  writeVfsBinary(fs, `/usr/bin/${program}`, new Uint8Array(readFileSync(join(bunRunDir, `${program}.wasm`))), 0o755);
+}
+ensureDirRecursive(fs, "/usr/lib/kandelo");
+writeVfsBinary(fs, "/usr/lib/kandelo/bun-run.js", new Uint8Array(readFileSync(join(bunRunDir, "bun-run.js"))), 0o644);
 
 console.log("==> Mounting npm dist...");
 const written = walkAndWrite(fs, npmSourceDir, "/usr/local/lib/npm", {

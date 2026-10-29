@@ -57,7 +57,7 @@ function buildFixture(): Uint8Array {
 }
 
 describe("bun-extract guest program", () => {
-  const wasm = tryResolveBinary("programs/bun-extract.wasm");
+  const wasm = tryResolveBinary("programs/bun-run/bun-extract.wasm");
   it.runIf(wasm != null && existsSync(wasm!))(
     "extracts a Bun module graph into the guest VFS",
     async () => {

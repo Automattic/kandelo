@@ -43,6 +43,7 @@ const C_TEST_FIXTURES = [
     src: join(fixturesDir, "heap-safepoint-blocking-wait.c"),
     out: join(fixturesDir, "heap-safepoint-blocking-wait.wasm"),
   },
+  { src: join(fixturesDir, "claude-api-fixture.c"), out: join(fixturesDir, "claude-api-fixture.wasm") },
   {src:join(fixturesDir,"tcp-state-observation.c"),out:join(fixturesDir,"tcp-state-observation.wasm")},
   {
     src: join(fixturesDir, "udp-state-observation.c"),

@@ -24,6 +24,7 @@ const defaultConfig = validateBrowserCorsProxyConfig({
     "wp_install",
   ],
   allowAnonymousGetHeaderOmission: true,
+  allowDirectGetFallback: true,
   // WORKAROUND: WP Cloud, which hosts the Playground CORS proxy, strips the
   // Range header before the request reaches the proxy's PHP, so ranges are
   // also sent as X-Cors-Proxy-Range (see

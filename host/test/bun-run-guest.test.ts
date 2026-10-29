@@ -58,8 +58,8 @@ function buildFixture(): Uint8Array {
 }
 
 describe("bun-run bootstrap (extract -> run) on spidermonkey-node", () => {
-  const extractWasm = tryResolveBinary("programs/bun-extract.wasm");
-  const nodeWasm = tryResolveBinary("programs/spidermonkey-node.wasm");
+  const extractWasm = tryResolveBinary("programs/bun-run/bun-extract.wasm");
+  const nodeWasm = tryResolveBinary("programs/node.wasm");
   const ready = extractWasm != null && existsSync(extractWasm!)
     && nodeWasm != null && existsSync(nodeWasm!);
 
@@ -82,7 +82,7 @@ describe("bun-run bootstrap (extract -> run) on spidermonkey-node", () => {
           // libc popen(), which execs /bin/sh; stage it so bun-run.js can
           // spawn bun-extract in this minimal (non-default) test rootfs. A
           // full rootfs image already carries /bin/sh.
-          ["/bin/sh", tryResolveBinary("programs/sh.wasm")!],
+          ["/bin/sh", tryResolveBinary("programs/bash.wasm")!],
         ]),
         useDefaultRootfs: false,
         timeout: 60_000,

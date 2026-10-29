@@ -195,6 +195,7 @@ static char *utf16le_to_utf8(const unsigned char *in, size_t inlen, size_t *outl
 
 int main(int argc, char **argv) {
     int prepare = 0;
+    int cache_lock = -1;
     const char *cache_root = NULL;
     const char *exe = NULL, *outdir = NULL;
     if (argc == 4 && strcmp(argv[1], "--prepare") == 0) {
@@ -261,6 +262,19 @@ int main(int argc, char **argv) {
     char cachedir[8192] = "";
     int is_hit = 0;
     if (prepare) {
+        // Serialize publishers before checking the completion marker. Two
+        // concurrent cache misses must not truncate modules another run loads.
+        char lock_path[8192];
+        int n = snprintf(lock_path, sizeof(lock_path), "%s/.lock", cache_root);
+        if (n < 0 || n >= (int)sizeof(lock_path)) { fprintf(stderr, "cache path too long\n"); return 1; }
+        mkparents(lock_path);
+        cache_lock = open(lock_path, O_CREAT | O_RDWR | O_NOFOLLOW, 0600);
+        if (cache_lock < 0) { perror("bun-extract: open cache lock"); return 1; }
+        struct flock lock = { .l_type = F_WRLCK, .l_whence = SEEK_SET };
+        while (fcntl(cache_lock, F_SETLKW, &lock) != 0) {
+            if (errno == EINTR) continue;
+            perror("bun-extract: lock cache"); return 1;
+        }
         /* Hash the module-graph blob region [base, base+byte_count) streaming
          * in chunks so peak memory stays bounded regardless of exe size. */
         uint64_t h = 1469598103934665603ULL;      /* FNV offset basis */
@@ -399,11 +413,12 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "bun-extract: out of memory remapping %s\n", nm);
                 return 1;
             }
-            fwrite(remapped, 1, outlen, f); free(remapped);
+            size_t count = fwrite(remapped, 1, outlen, f); free(remapped);
+            if (count != outlen) { perror("bun-extract: write module"); fclose(f); return 1; }
         } else {
-            fwrite(text, 1, tlen, f);
+            if (fwrite(text, 1, tlen, f) != tlen) { perror("bun-extract: write asset"); fclose(f); return 1; }
         }
-        fclose(f);
+        if (fclose(f) != 0) { perror("bun-extract: close module"); return 1; }
 
         if (prepare && !is_js) {
             const char *cls = loader_class(loader);
@@ -424,14 +439,26 @@ int main(int argc, char **argv) {
             return 1;
         }
         if (!is_hit) {
-            snprintf(dest, sizeof(dest), "%s/manifest.json", cachedir);
-            FILE *mf = fopen(dest, "wb");
-            if (mf) { fprintf(mf, "{\"entry\":\"%s\",\"format\":%d,\"loaders\":{%s}}\n",
-                              entry_rel, entry_fmt, loaders ? loaders : ""); fclose(mf); }
-
             snprintf(dest, sizeof(dest), "%s/package.json", cachedir);
             FILE *pf = fopen(dest, "wb");
-            if (pf) { fprintf(pf, "{\"type\":\"module\"}\n"); fclose(pf); }
+            if (!pf) { perror("bun-extract: open package metadata"); return 1; }
+            int package_result = fprintf(pf, "{\"type\":\"module\"}\n");
+            int package_close = fclose(pf);
+            if (package_result < 0 || package_close != 0) { perror("bun-extract: write package metadata"); return 1; }
+
+            // The manifest is the completion marker. Publish it atomically
+            // only after every module and package metadata write succeeded.
+            char marker[8192];
+            snprintf(marker, sizeof(marker), "%s/manifest.json", cachedir);
+            snprintf(dest, sizeof(dest), "%s/.manifest.tmp", cachedir);
+            FILE *mf = fopen(dest, "wb");
+            if (!mf) { perror("bun-extract: open manifest"); return 1; }
+            int manifest_result = fprintf(mf, "{\"entry\":\"%s\",\"format\":%d,\"loaders\":{%s}}\n",
+                                          entry_rel, entry_fmt, loaders ? loaders : "");
+            int manifest_close = fclose(mf);
+            if (manifest_result < 0 || manifest_close != 0 || rename(dest, marker) != 0) {
+                perror("bun-extract: publish manifest"); return 1;
+            }
 
             printf("MANIFEST_LOADERS {%s}\n", loaders ? loaders : "");
             if (unknown_loaders) {

@@ -1,81 +1,120 @@
-/**
- * End-to-end proof: the real Claude Code Bun standalone executable runs
- * through the whole `bun-run` pipeline on spidermonkey-node inside the
- * kernel. `bun-run.js` (Task 2) spawns `bun-extract --prepare` (Task 1) to
- * extract the plaintext ESM module graph from the real ~207 MB Claude ELF,
- * installs a thin `Bun` global shim, and natively `import()`s the cached
- * entry point. The platform fixes (Tasks 3-5 — bare-specifier ESM
- * resolution, `import.meta.{url,dirname,require}`, and `using` declaration
- * support) let the full ~1819-module graph load with no esbuild and no CJS
- * bundling.
- *
- * Skips unless CLAUDE_BUN_ELF points at a real Claude Code Bun executable
- * (the ~207 MB binary is not in the repo).
+/** Optional real-artifact acceptance for the packaged Bun execution path.
+ * Supply CLAUDE_BUN_ELF explicitly; the upstream binary is not vendored.
+ * Synthetic shell tests cover the normal path without this large input.
  */
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { resolveBinary } from "../src/binary-resolver";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
-const ELF = process.env.CLAUDE_BUN_ELF ?? "/tmp/cc-inspect/lx259/package/claude";
+const executable = process.env.CLAUDE_BUN_ELF;
 
-describe("bun-run: real Claude Code ELF end-to-end on spidermonkey-node", () => {
-  const nodeWasm = tryResolveBinary("programs/spidermonkey-node.wasm");
-  const extractWasm = tryResolveBinary("programs/bun-extract.wasm");
-  const shWasm = tryResolveBinary("programs/sh.wasm");
-  const ready = nodeWasm != null && existsSync(nodeWasm)
-    && extractWasm != null && existsSync(extractWasm)
-    && shWasm != null && existsSync(shWasm)
-    && existsSync(ELF);
-
-  it.runIf(ready)(
-    "bun-run /usr/bin/claude --version prints the real Claude Code version",
-    async () => {
-      const elfBytes = readFileSync(ELF);
-
-      // Empty rootfs with capacity for the ELF input + ~1819 extracted JS
-      // modules + bun-extract's cache/manifest bookkeeping + the small
-      // staged programs + slack. Mirrors the 360MB budget proven sufficient
-      // for extraction alone in bun-extract-real-guest.test.ts, with
-      // headroom for the additional staged files and bun-run.js's own
-      // bookkeeping under /var/cache/kandelo/bun-run.
-      const cap = 420 * 1024 * 1024;
+describe("packaged bun-run with a real Claude Code standalone", () => {
+  it.runIf(executable !== undefined).each(["--version", "--help"])(
+    "runs Claude %s as the ordinary guest user",
+    async (argument) => {
+      // Account for input growth across releases, plus extracted source and
+      // runtime files. This fixture does not change the product memory budget.
       const fs = KandeloImageFs.create();
-      fs.setImageCapacity(cap);
-      const emptyImage = await fs.saveImage();
-
+      fs.setImageCapacity(readFileSync(executable!).byteLength + 245 * 1024 * 1024);
+      const image = await fs.saveImage();
+      const launcher = resolveBinary("programs/bun-run/bun-run.wasm");
       const result = await runCentralizedProgram({
-        programPath: nodeWasm!,
-        argv: ["node", "/usr/lib/kandelo/bun-run.js", "/usr/bin/claude", "--version"],
-        env: ["HOME=/root", "CLAUDE_CONFIG_DIR=/root/.claude", "PATH=/usr/bin:/bin"],
-        rootfsImage: emptyImage, // preserves the 420MB capacity
+        programPath: launcher,
+        argv: ["bun-run", "/usr/bin/claude", argument],
+        uid: 1000, gid: 1000,
+        env: ["HOME=/home/maker", "CLAUDE_CONFIG_DIR=/home/maker/.claude", "PATH=/usr/bin:/bin"],
+        rootfsImage: image,
         execPrograms: new Map([
-          ["/usr/bin/claude", ELF],
-          ["/usr/bin/bun-extract", extractWasm!],
-          ["/usr/lib/kandelo/bun-run.js", join(__dirname, "../../runtime/bun-run/bun-run.js")],
-          // spidermonkey-node's child_process.spawnSync shim runs commands
-          // via libc popen(), which execs /bin/sh; bun-run.js uses it to
-          // spawn bun-extract (see Task 2). A full rootfs image already
-          // carries /bin/sh; this minimal (non-default) test rootfs needs
-          // it staged explicitly.
-          ["/bin/sh", shWasm!],
+          ["/usr/bin/claude", executable!],
+          ["/usr/bin/node", resolveBinary("programs/node.wasm")],
+          ["/usr/bin/bun-extract", resolveBinary("programs/bun-run/bun-extract.wasm")],
+          ["/usr/lib/kandelo/bun-run.js", resolveBinary("programs/bun-run/bun-run.js")],
+          ["/bin/sh", resolveBinary("programs/bash.wasm")],
         ]),
         useDefaultRootfs: false,
-        timeout: 240_000,
+        stdin: "",
+        timeout: 120_000,
       });
-
-      // eslint-disable-next-line no-console
-      console.log("STDOUT:", result.stdout.trim());
-      // eslint-disable-next-line no-console
-      console.log("STDERR:", result.stderr.trim().split("\n").slice(-60).join("\n"));
-      // eslint-disable-next-line no-console
-      console.log("input bytes:", elfBytes.byteLength);
-
-      expect(result.exitCode).toBe(0);
-      expect(result.stdout).toMatch(/2\.1\.\d+ \(Claude Code\)/);
+      console.log("Claude", argument, "exit", result.exitCode, "stdout", result.stdout, "stderr", result.stderr);
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(result.stdout).toMatch(argument === "--version"
+        ? /2\.1\.\d+ \(Claude Code\)/ : /Usage: claude/);
     },
-    260_000,
+    150_000,
   );
 });
+
+// This acceptance uses a local protocol fixture, not a live model or account.
+// It exercises the real CLI's startup, config writes, HTTP client and SSE path.
+it.runIf(executable !== undefined)("runs a headless prompt against a local Messages API fixture", async () => {
+  const { createHash } = await import("node:crypto");
+  const { NodeKernelHost } = await import("../src/node-kernel-host");
+  const lazyBase = "https://kandelo.invalid/";
+  const assets = ([
+    ["assets/programs/wasm32/node.zip", "programs/wasm32/node.zip"],
+    ["assets/programs/wasm32/coreutils.wasm", "programs/coreutils.wasm"],
+    ["assets/programs/wasm32/git/git.wasm", "programs/git/git.wasm"],
+    ["assets/programs/wasm32/curl.wasm", "programs/curl.wasm"],
+  ] as const).map(([url, path]) => {
+    const bytes = new Uint8Array(readFileSync(resolveBinary(path)));
+    return { url: lazyBase + url, bytes, size: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex") };
+  });
+  let stdout = "", stderr = "";
+  let readyResolve!: () => void;
+  const ready = new Promise<void>(resolve => {readyResolve = resolve;});
+  const host = new NodeKernelHost({
+    rootfsImage:new Uint8Array(readFileSync(resolveBinary("programs/wasm32/shell.vfs.zst"))),
+    rootfsLazyUrlBase: lazyBase,
+    rootfsLazyAssets: assets,
+    rootfsLazyAssetDirectory: lazyBase,
+    onStdout:(_pid, bytes) => {
+      stdout += new TextDecoder().decode(bytes);
+      if (stdout.includes("claude-api-fixture-ready")) readyResolve();
+    },
+    onStderr:(_pid, bytes) => {stderr += new TextDecoder().decode(bytes);},
+  });
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let serverPid: number | undefined;
+  try {
+    await host.init();
+    await host.writeFileToVfs("/tmp/claude-native", new Uint8Array(readFileSync(executable!)));
+    const serverPath = new URL("./fixtures/claude-api-fixture.wasm", import.meta.url);
+    const timeout = new Promise<never>((_resolve,reject) => {
+      timeoutId = setTimeout(() => reject(new Error("Claude fixture timed out")), 120_000);
+    });
+    const serverBytes = new Uint8Array(readFileSync(serverPath));
+    const server = host.spawn(serverBytes.buffer, ["claude-api-fixture"], {
+      uid:1000,gid:1000,stdin:new Uint8Array(),
+      onStarted:pid => {serverPid = pid;},
+    });
+    await Promise.race([ready, timeout, server.then(code => {throw new Error(`API fixture exited ${code}`);})]);
+    const {exit} = await host.spawnFromVfs("/usr/bin/bash", ["bash","-lc",
+      'exec bun-run /tmp/claude-native --debug-file /tmp/claude-debug.log -p "say hi" --model claude-sonnet-4-6 --tools "" --no-session-persistence'], {
+      uid:1000,gid:1000,cwd:"/home/maker",stdin:new Uint8Array(),
+      env:["PATH=/usr/local/bin:/usr/bin:/bin","HOME=/home/maker","USER=maker","TERM=dumb","TMPDIR=/tmp",
+        "CLAUDE_CONFIG_DIR=/home/maker/.claude","ANTHROPIC_API_KEY=sk-ant-kandelo-local-fixture",
+        "ANTHROPIC_BASE_URL=http://127.0.0.1:34321","CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"],
+    });
+    const status = await Promise.race([exit,timeout]);
+    console.log("HEADLESS stdout",stdout,"stderr",stderr);
+    expect(status,`${stdout}\n${stderr}`).toBe(0);
+    expect(stdout).toContain("claude-api-fixture-messages");
+    expect(stdout).toContain("claude-api-fixture-stream");
+    expect(stdout).not.toContain("claude-api-fixture-nonstream");
+    expect(stdout).toContain("kandelo-mock-response");
+    const config = await host.readFileFromVfs("/home/maker/.claude/.claude.json");
+    expect(config).not.toBeNull();
+    expect(() => JSON.parse(new TextDecoder().decode(config!))).not.toThrow();
+  } finally {
+    clearTimeout(timeoutId);
+    try {
+      const debug = await host.readFileFromVfs("/tmp/claude-debug.log");
+      if(debug) console.log("HEADLESS DEBUG",new TextDecoder().decode(debug).slice(-16000));
+    } catch { /* Preserve the original startup failure if the host is gone. */ }
+    if(serverPid!==undefined) await host.signalProcess(serverPid,15).catch(()=>false);
+    await host.destroy();
+  }
+}, 150_000);
