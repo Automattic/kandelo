@@ -8,7 +8,7 @@ use crate::{
 use anyhow::{Result, ensure};
 use std::io::Write;
 use wasm_encoder::{CustomSection, Encode, ValType};
-use wasm_posix_shared::abi;
+use wasm_posix_program_abi::abi;
 
 pub(super) fn write(
     runtime: &NativeRuntime,

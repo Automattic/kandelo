@@ -367,7 +367,7 @@ dependencies = [
  "tempfile",
  "walrus",
  "wasm-encoder 0.247.0",
- "wasm-posix-shared",
+ "wasm-posix-program-abi",
  "wasmparser 0.247.0",
  "wasmprinter",
  "wat",
@@ -1422,8 +1422,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-posix-program-abi"
+version = "0.1.0"
+
+[[package]]
 name = "wasm-posix-shared"
 version = "0.1.0"
+dependencies = [
+ "wasm-posix-program-abi",
+]
 
 [[package]]
 name = "wasmparser"

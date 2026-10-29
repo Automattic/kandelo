@@ -87,7 +87,7 @@ wasm_drop_compiler_facts() {
 # Reject unresolved imports in the namespaces Kandelo reserves for itself
 # unless the host deliberately implements that exact API. The approved names
 # are the generated host-import allowance (libc/glue/kandelo-host-imports.txt,
-# from HOST_ENV_IMPORTS in crates/shared/src/lib.rs) — the same list the SDK
+# from HOST_ENV_IMPORTS in crates/program-abi/src/lib.rs) — the same list the SDK
 # links against — so the guard and the linker cannot disagree. Executables
 # linked by the SDK already fail on any other undefined symbol; this guard
 # still covers artifacts linked some other way, and side modules, which link
@@ -197,7 +197,7 @@ wasm_require_approved_reserved_env_imports() {
 wasm_current_abi_version() {
     local repo_root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
     sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);/\1/p' \
-        "$repo_root/crates/shared/src/lib.rs" | head -1
+        "$repo_root/crates/program-abi/src/lib.rs" | head -1
 }
 
 # Run a producer into awk without inheriting either errexit or pipefail from

@@ -1597,7 +1597,7 @@ impl DepsManifest {
             return Err(
                 "source package.toml has [build] but no top-level kernel_abi — \
                  declare kernel_abi = N (matching ABI_VERSION in \
-                 crates/shared/src/lib.rs) at the top of the file. \
+                 crates/program-abi/src/lib.rs) at the top of the file. \
                  See docs/plans/2026-05-05-decoupled-package-builds-design.md \
                  §3.1."
                     .into(),

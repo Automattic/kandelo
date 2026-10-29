@@ -54,7 +54,7 @@ if [ "$MODE" = "update" ]; then
     echo
     echo "abi/snapshot.json regenerated."
     echo "If the ABI contract actually changed, bump ABI_VERSION in"
-    echo "crates/shared/src/lib.rs in the same commit."
+    echo "crates/program-abi/src/lib.rs in the same commit."
     exit 0
 fi
 
@@ -90,14 +90,12 @@ base_ref="${ABI_CHECK_BASE_REF:-origin/main}"
 version_bumped=0
 snapshot_changed=0
 if git rev-parse --verify --quiet "$base_ref" >/dev/null ; then
-    if ! git diff --quiet "$base_ref" -- crates/shared/src/lib.rs 2>/dev/null ; then
-        # WHY: do not use grep -q here. Under pipefail, an early successful
-        # grep closes the pipe, git diff receives SIGPIPE, and a real bump is
-        # misclassified as absent.
-        if git diff "$base_ref" -- crates/shared/src/lib.rs \
-            | grep -E '^\+pub const ABI_VERSION: u32 = ' >/dev/null ; then
-            version_bumped=1
-        fi
+    # Compare values, not added source lines: moving the declaration between
+    # crates must not grant an incompatible snapshot change a false bump.
+    old_version="$(git show "$base_ref:abi/snapshot.json" | sed -nE 's/^  "abi_version": ([0-9]+),$/\1/p')"
+    new_version="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' crates/program-abi/src/lib.rs)"
+    if [ -n "$old_version" ] && [ -n "$new_version" ] && [ "$old_version" != "$new_version" ]; then
+        version_bumped=1
     fi
     if ! git diff --quiet "$base_ref" -- abi/snapshot.json 2>/dev/null ; then
         snapshot_changed=1

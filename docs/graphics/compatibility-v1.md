@@ -8125,3 +8125,48 @@ Playwright collection passes for all three engines; executing the
 strengthened gate is still pending. The original failure remains
 retained under `.context/cage-sway-final-gallery-results/` in the
 fork-owner checkout and is not reported as a passing run.
+
+### Main integration and program-ABI extraction, 2026-10-29
+
+The landing integrates main `35164686062cad97a660452e3d445373e4cfc519`
+into candidate `9088f31021`, preserving all nine newer main commits and
+their contributor attribution. Main's dependency-free program-ABI crate
+owns the single unpublished `ABI_VERSION = 56`; shared re-exports that
+declaration, while kernel-host version 3, GL operation table 17 and
+runtime-core fork record version 21 remain unchanged. The moved program
+declarations match main exactly apart from the graphics epoch's version
+and history comment. The browser support documentation retains both the
+graphics texture-respecification boundary and main's new thread-worker
+retirement and nested-worker findings.
+
+Normal `check-abi-version.sh update` and check both pass after compiling
+the integrated kernel and xtask. Regenerated ABI snapshot, TypeScript and
+C outputs, host import allowance and standalone resolver bundle match
+the prior landing byte for byte; the resolver bundle regression passes.
+The snapshot SHA-256 is
+`df64f6c6a2ca1ea26a89b9720a5a14aec5354850f729445ff3ec488dd1c7cc12`.
+Program-ABI/shared crate test targets pass (87 shared cases; the new
+program-ABI crate has no unit cases). Focused xtask extraction and ABI
+source-gate checks pass (9 + 5 + 1 cases), including the actual fork
+package key's independence from kernel-host source edits.
+
+Focused host source checks pass all 357 cases in six files: scratch
+contract/transfer boundaries, large transfers, readiness wakeups, runtime
+memory profiles and the memory-write audit. The initial combined run
+passed 356 cases and failed the static audit solely for 44 stale
+allowances for offline fork fixtures and the artifact verifier. Main now
+classifies those exact paths as test harnesses, so their old per-site
+allowances were removed; production ownership coverage and graphics
+allowances remain. The subsequent complete six-file run passes with zero
+skips. These source-only checks use the normal host Vitest configuration
+with global fixture compilation disabled, as the repository's source
+gates do. An earlier direct Vitest invocation was stopped during global
+fixture provisioning before any test result, and is not counted as a
+passing run.
+
+These are source and ABI checks. Main also changes live host behavior
+(terminal-input wakeups and WebKit thread-worker lifetime), package build
+input closures and default Node program demand. The older candidate's
+product, browser-memory, compositor and conformance evidence does not
+validate this combined source. Normal products and acceptance must be
+rebuilt and rerun before the landing is declared ready.

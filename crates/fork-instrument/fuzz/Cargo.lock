@@ -292,7 +292,7 @@ dependencies = [
  "stacker",
  "tempfile",
  "wasm-encoder",
- "wasm-posix-shared",
+ "wasm-posix-program-abi",
  "wasmparser",
 ]
 
@@ -707,7 +707,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "wasm-posix-shared"
+name = "wasm-posix-program-abi"
 version = "0.1.0"
 
 [[package]]

@@ -50,7 +50,7 @@ fn frozen_plan_repeats_and_does_not_claim_production_certification() {
     }
     assert_eq!(
         output
-            .custom_data(wasm_posix_shared::abi::WPK_FORK_CAPABILITIES_SECTION)
+            .custom_data(wasm_posix_program_abi::abi::WPK_FORK_CAPABILITIES_SECTION)
             .count(),
         0
     );
@@ -192,8 +192,8 @@ fn selected_sink_boundary_reserves_one_runtime_callback() {
         scan.functions
             .iter()
             .filter(|f| f.import.as_ref().is_some_and(|(module, name)| module
-                == wasm_posix_shared::abi::WPK_FORK_FRAME_IMPORT_MODULE
-                && name == wasm_posix_shared::abi::WPK_FORK_BOUNDARY_IMPORT))
+                == wasm_posix_program_abi::abi::WPK_FORK_FRAME_IMPORT_MODULE
+                && name == wasm_posix_program_abi::abi::WPK_FORK_BOUNDARY_IMPORT))
             .count(),
         1
     );

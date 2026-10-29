@@ -7,6 +7,8 @@ Kandelo is organized as a kernel-first monorepo. The kernel and host runtimes ar
 | Path | Owns | Does not own |
 |------|------|--------------|
 | `crates/kernel/` | Rust kernel implementation: syscalls, process table, fd tables, signals, sockets, PTY, devices | Host runtime, package builds |
+| `crates/program-abi/` | Program ABI version and artifact declarations consumed by the fork instrumenter | Kernel-host-only metadata |
+| `crates/shared/` | Platform contracts and re-exports of program ABI declarations | Fork instrumentation implementation |
 | `host/src/` | TypeScript host runtime shared by Node.js and browser environments | Browser demo UI |
 | `apps/browser-demos/` | Vite app, demo pages, Kandelo web UI, app-local helpers | Core browser host runtime |
 | `web-libs/` | Browser-independent reusable UI/session contracts | App-specific page code |

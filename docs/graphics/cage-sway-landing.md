@@ -3,9 +3,11 @@
 [PR #1574](https://github.com/Automattic/kandelo/pull/1574) lands the
 infrastructure and normal package/image integration for upstream cage
 0.3.1 and sway 1.12 on wlroots 0.20.2. Its runtime source cut is
-`21f3d451bb`, above main `cb0a8226c965`. Current build source
-`e58d19f98a` also corrects Sway's declared native build tools without a
-runtime change. This is a bounded compositor consumer contract; complete
+`21f3d451bb`; the landing also integrates main `35164686062c` and its
+program-ABI crate extraction, package build fixes, terminal signal wakeup
+and WebKit thread-worker retirement policy. Existing consumer evidence
+predates that main integration; normal combined rebuilds and acceptance
+remain required. This is a bounded compositor consumer contract; complete
 GLES 2.0 and advertised EGL 1.5/extensions conformance continue in
 [follow-up PR #1594](https://github.com/Automattic/kandelo/pull/1594),
 tracked by the [graphics baseline](compatibility-v1.md).

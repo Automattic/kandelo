@@ -163,14 +163,7 @@ export function runtimeMemoryProfileSignals(
   env: RuntimeMemoryEnvironment,
 ): RuntimeMemoryProfileSignals {
   const userAgent = env.userAgent;
-  if (userAgent === undefined) {
-    return { chargesDeclaredCeilings: false, smallReservationPool: false };
-  }
-  // Chromium and Firefox both advertise "Safari"; only the absence of their
-  // own tokens identifies real WebKit.
-  const isWebKit = /Safari/.test(userAgent) &&
-    !/Chrome|Chromium|Android|Firefox/.test(userAgent);
-  if (!isWebKit) {
+  if (!isJavaScriptCoreUserAgent(userAgent)) {
     return { chargesDeclaredCeilings: false, smallReservationPool: false };
   }
   const claimsIos = /iPhone|iPod|iPad/.test(userAgent);
@@ -181,6 +174,21 @@ export function runtimeMemoryProfileSignals(
     chargesDeclaredCeilings: true,
     smallReservationPool: claimsIos || isTouchMac,
   };
+}
+
+/**
+ * Whether a browser user agent names a WebKit browser, whose engine is
+ * JavaScriptCore on every platform it ships.
+ *
+ * Chromium and Firefox both advertise "Safari"; only the absence of their own
+ * tokens identifies real WebKit. Engine-specific host behavior keys on this
+ * one check so every JavaScriptCore boundary follows the same detection.
+ */
+export function isJavaScriptCoreUserAgent(
+  userAgent: string | undefined,
+): userAgent is string {
+  return userAgent !== undefined && /Safari/.test(userAgent) &&
+    !/Chrome|Chromium|Android|Firefox/.test(userAgent);
 }
 
 /**

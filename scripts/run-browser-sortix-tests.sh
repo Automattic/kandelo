@@ -43,12 +43,9 @@ INCLUDE_EXPECTED_FAIL=(
 BASIC_EXPECTED_FAIL=(
     "devctl/posix_devctl"
     # (exec/spawn/popen/system/wordexp now pass — browser exec support with tool binaries)
-    "aio/aio_fsync"
-    "pthread/pthread_barrierattr_setpshared"
-    "pthread/pthread_create"
-    "threads/thrd_create"
+    # (aio_fsync, pthread_create, thrd_create and the two setpshared tests now
+    # pass, as they do on Node)
     "pthread/pthread_attr_setinheritsched"
-    "pthread/pthread_mutexattr_setpshared"
     "strings/ffsll"
     # (spawn addchdir/addfchdir now pass — exec path normalization fix)
 )
@@ -96,8 +93,7 @@ BROWSER_BASIC_EXPECTED_FAIL=(
     "dlfcn/dlclose" "dlfcn/dlopen" "dlfcn/dlsym"
     # (pthread_atfork now passes — fork() calls __fork_handler in channel_syscall.c)
     # (terminal/PTY tests now pass — grantpt, posix_openpt, ptsname, unlockpt in PR #181)
-    # aio_read: timeout (needs pthread_create for aio worker thread)
-    "aio/aio_read"
+    # (aio_read now passes — pthread_create works for its aio worker thread)
 )
 
 BROWSER_INCLUDE_EXPECTED_FAIL=()

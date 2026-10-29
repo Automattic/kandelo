@@ -50,6 +50,7 @@ function createWakeHarness(
   channels: TestChannel[];
   retrySyscall: ReturnType<typeof vi.fn>;
   takePtyReadiness: ReturnType<typeof vi.fn>;
+  drainWakeupEvents: ReturnType<typeof vi.fn>;
   scheduleWakeBlockedRetries: ReturnType<typeof vi.fn>;
   state: MutableWorkerState;
   worker: TestWorker;
@@ -102,6 +103,7 @@ function createWakeHarness(
     channels,
     retrySyscall,
     takePtyReadiness,
+    drainWakeupEvents,
     scheduleWakeBlockedRetries,
     state: mutableState(worker),
     worker,
@@ -172,6 +174,7 @@ describe("readiness wakeup targeting", () => {
 
     harness.worker.ptyMasterWrite(3, new Uint8Array([0x61]));
 
+    expect(harness.drainWakeupEvents).toHaveBeenCalled();
     expect(harness.retrySyscall).toHaveBeenCalledOnce();
     expect(harness.retrySyscall).toHaveBeenCalledWith(channel);
     expect(harness.state.pendingPollRetries.has(channel!)).toBe(false);

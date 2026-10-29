@@ -11,7 +11,7 @@ Every incompatible change needs a version bump and a regenerated
 the change:
 
 - A change a running program can observe (the program surface) bumps
-  `ABI_VERSION` in `crates/shared/src/lib.rs`. Every program carries it, so
+  `ABI_VERSION` in `crates/program-abi/src/lib.rs`. Every program carries it, so
   every program is rebuilt.
 - A change only the kernel and host can see (kernel exports, kernel host
   imports, host-adapter metadata, the export filter, kernel-host wire
@@ -77,7 +77,7 @@ ABI workflow:
 bash scripts/check-abi-version.sh update
 git diff abi/snapshot.json
 # Decide: no ABI change, additive-compatible snapshot change, or incompatible change.
-# If incompatible: bump ABI_VERSION in crates/shared/src/lib.rs.
+# If incompatible: bump ABI_VERSION in crates/program-abi/src/lib.rs.
 bash scripts/check-abi-version.sh
 ```
 

@@ -50,7 +50,7 @@ fi
 CHECKED_OUT_SHA=$(git rev-parse HEAD)
 platform_abi=$(sed -nE \
   's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
-  "$REPO_ROOT/crates/shared/src/lib.rs")
+  "$REPO_ROOT/crates/program-abi/src/lib.rs")
 if ! [[ "$platform_abi" =~ ^[1-9][0-9]*$ ]]; then
   echo "clone-rejected-merge-candidate: checked-out platform ABI_VERSION is missing or ambiguous" >&2
   exit 1

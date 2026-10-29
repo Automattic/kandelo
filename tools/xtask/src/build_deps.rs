@@ -16981,7 +16981,8 @@ fn env_key(name: &str) -> String {
 /// one site.
 const DEFAULT_ARCH: TargetArch = TargetArch::Wasm32;
 
-/// Read the current kernel ABI version from `crates/shared`. Resolver
+/// Read the current program ABI version (`crates/program-abi`, re-exported
+/// by `wasm-posix-shared`). Resolver
 /// uses this as a hash input; ABI bumps therefore auto-invalidate every
 /// dependent cache entry without any explicit cache-busting work.
 fn current_abi_version() -> u32 {
@@ -24328,11 +24329,7 @@ allow_uninitialized_gitlinks = true
     }
 
     #[test]
-    fn fork_instrument_tool_input_paths_include_cargo_config_and_both_crate_dirs() {
-        // This is the exact omission Stage 2 fixes: the old hand-maintained
-        // input list omitted crates/shared AND .cargo/config.toml, so edits
-        // to either could leave a stale cached fork-instrument tool
-        // undetected.
+    fn fork_instrument_tool_input_paths_include_only_program_contract_dependencies() {
         let root = repo_root();
         let paths = fork_instrument_tool_input_paths(&root).expect("closure");
         assert!(
@@ -24340,8 +24337,8 @@ allow_uninitialized_gitlinks = true
             "fork-instrument dir missing: {paths:?}"
         );
         assert!(
-            paths.iter().any(|p| p == "crates/shared"),
-            "shared dir missing: {paths:?}"
+            paths.iter().any(|p| p == "crates/program-abi"),
+            "program ABI dir missing: {paths:?}"
         );
         assert!(
             paths.iter().any(|p| p == ".cargo/config.toml"),
@@ -24355,6 +24352,82 @@ allow_uninitialized_gitlinks = true
         sorted.sort();
         sorted.dedup();
         assert_eq!(paths, sorted, "must be sorted and deduped");
+    }
+
+    #[test]
+    fn fork_package_key_tracks_program_contract_but_not_kernel_host_sources() {
+        let root = tempdir("fork-program-surface-key");
+        // Derive the real tool closure, then place representative authored
+        // bytes at those paths in a private tree. Mutations never touch the
+        // checkout or another test's memoized source digests.
+        let paths = fork_instrument_tool_input_paths(&repo_root()).unwrap();
+        assert!(!paths.iter().any(|p| p == "crates/shared"));
+        let refs = paths.iter().map(String::as_str).collect::<Vec<_>>();
+        for path in &paths {
+            let file = if path.starts_with("crates/") {
+                root.join(path).join("src/lib.rs")
+            } else {
+                root.join(path)
+            };
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, "original source\n").unwrap();
+        }
+        let shared = root.join("crates/shared/src/lib.rs");
+        fs::create_dir_all(shared.parent().unwrap()).unwrap();
+        fs::write(&shared, "pub const HOST_ADAPTER_VERSION: u32 = 2;\n").unwrap();
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+        let manifest = DepsManifest::parse(
+            r#"kind = "program"
+name = "fork-prog"
+version = "1.0.0"
+[source]
+url = "https://example.test/fork.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+[license]
+spdx = "MIT"
+[[outputs]]
+name = "fork-prog"
+wasm = "fork-prog.wasm"
+fork_instrumentation = "auto"
+"#,
+            root.join("fork-prog"),
+        )
+        .unwrap();
+        let key = || {
+            let inputs = global_package_build_input_digests_for(&root, &refs).unwrap();
+            compute_sha_with_identity_context(
+                &manifest,
+                &registry,
+                TEST_ARCH,
+                TEST_ABI,
+                ResolvePolicy::Default,
+                &mut BTreeMap::new(),
+                &mut Vec::new(),
+                Some(&[]),
+                &root,
+                Some(&inputs),
+            )
+            .unwrap()
+        };
+        let before = key();
+        fs::write(&shared, "pub const HOST_ADAPTER_VERSION: u32 = 3;\n").unwrap();
+        assert_eq!(
+            before,
+            key(),
+            "kernel-host-only changes must not re-key programs"
+        );
+        fs::write(
+            root.join("crates/program-abi/src/lib.rs"),
+            "changed program contract\n",
+        )
+        .unwrap();
+        assert_ne!(
+            before,
+            key(),
+            "program contract changes must re-key programs"
+        );
     }
 
     /// Extracts the whitespace-separated root arguments of the script's
