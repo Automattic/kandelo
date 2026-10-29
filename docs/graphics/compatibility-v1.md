@@ -8386,3 +8386,34 @@ transport/compatibility gap, not a hard platform boundary or complete
 G05/G09 conformance. Larger-array transport, positive uniform ownership,
 types and array semantics, actual rendering, fresh linked products,
 browser validation and upstream CTS execution remain follow-up work.
+
+### Linked validation-family guest coverage authored, 2026-10-29
+
+The normal dual-width `gles-hints` SDK fixture now also asserts the four
+recent C validation increments: string-query enums/cache preservation,
+all four object-generation count paths, all 19 uniform setter negative
+locations, and count/transpose/overflow checks for all three matrix sizes.
+Both Node and browser tests require an explicit success marker for each
+family, in addition to the existing hint/lifecycle assertions. Invalid
+matrix sources use a target-width out-of-bounds pointer: rejected or
+ignored calls must not read it. Object generators retain their output
+sentinels on rejection and support subsequent valid generation/deletion.
+
+The Node harness retains its existing allocation/ownership GL double and
+claims C/error-path coverage only. Browser compilation additionally
+requires actual texture-FBO clear/scissor/readback colors and a separate
+pixel-success marker; no mock pixels are introduced. The existing GBM
+rendered-ring cases remain unchanged and retain their independent actual
+browser pixel assertions.
+
+This checkpoint is authored coverage, not an execution result. Under the
+declared dev shell, the fixture passed warning-clean wasm32/wasm64 syntax
+checks in both Node and browser modes. The evidence registry agrees with
+all 629 collected files. The Node parameterized test template and six
+browser cases collect successfully. Logs are the file-owner checkout's
+`.context/gles-validation-guest-source-checks.log`,
+`gles-validation-node-collection.json` and
+`gles-validation-browser-collection.log`. Fresh normal SDK32/64 graphics,
+kernel/host preparation and actual Node/three-engine runs are still
+required; no package builds or linked-guest execution occurred here.
+This coverage does not claim full positive uniform transport conformance.

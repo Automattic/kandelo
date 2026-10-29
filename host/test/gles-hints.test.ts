@@ -3,7 +3,7 @@ import { compileSdkFixture } from "./support/compile-sdk-fixture";
 import { runCentralizedProgram } from "./centralized-test-helper";
 import { loggingGraphicsGl } from "./support/logging-graphics-gl";
 
-it.each(["wasm32", "wasm64"] as const)("retains GLES hint state and errors through the normal %s SDK", async arch => {
+it.each(["wasm32", "wasm64"] as const)("validates GLES hint state and four error families through the normal %s SDK", async arch => {
   const fixture = compileSdkFixture(new URL("./fixtures/gles-hints.c", import.meta.url),
     ["-lEGL", "-lGLESv2"], { arch });
   try {
@@ -16,6 +16,14 @@ it.each(["wasm32", "wasm64"] as const)("retains GLES hint state and errors throu
     });
     expect(result.exitCode, result.stdout + result.stderr).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout.trim()).toBe("OK GLES hints retain context state, conversions and invalid-enum errors");
+    // Node verifies the actual linked C error paths with its existing GL
+    // allocation double. Exact framebuffer pixels belong to browser cases.
+    expect(result.stdout.trim().split("\n")).toEqual([
+      "OK GLES string-query enums and cached state",
+      "OK GLES object-generation counts",
+      "OK GLES uniform negative locations: 19 setters",
+      "OK GLES uniform matrix validation: 3 sizes",
+      "OK GLES hints retain context state, conversions and invalid-enum errors",
+    ]);
   } finally { fixture.cleanup(); }
 }, 90_000);

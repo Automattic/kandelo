@@ -12,11 +12,11 @@ for (const arch of ["wasm32","wasm64"] as const) {
 test.describe(arch,()=>{
 test.use({ serviceWorkers: "block" });
 test.beforeAll(() => {
-  fixture = compileSdkFixture(new URL("../../../host/test/fixtures/gles-hints.c", import.meta.url), ["-lEGL", "-lGLESv2"], {arch});
+  fixture = compileSdkFixture(new URL("../../../host/test/fixtures/gles-hints.c", import.meta.url), ["-DGLES_VALIDATE_RENDERED_PIXELS", "-lEGL", "-lGLESv2"], {arch});
 });
 test.afterAll(() => fixture?.cleanup());
 
-test("normal GLES hints retain per-context state and reject invalid enums", async ({ page, baseURL, browser }) => {
+test("normal GLES guests validate error families, hint state and real framebuffer pixels", async ({ page, baseURL, browser }) => {
   test.setTimeout(90_000);
   const program = readFileSync(fixture.programPath);
   const kernelBytes = readFileSync(resolveBinary("kernel.wasm"));
@@ -51,7 +51,14 @@ test("normal GLES hints retain per-context state and reject invalid enums", asyn
       return { ...state, status };
     }, new URL(`/@fs${module}`, baseURL).href);
     expect(result.status, JSON.stringify(result)).toBe(0);
-    expect(result.stdout.trim()).toBe("OK GLES hints retain context state, conversions and invalid-enum errors");
+    expect(result.stdout.trim().split("\n")).toEqual([
+      "OK GLES string-query enums and cached state",
+      "OK GLES object-generation counts",
+      "OK GLES uniform negative locations: 19 setters",
+      "OK GLES uniform matrix validation: 3 sizes",
+      "OK GLES real framebuffer pixels after validation",
+      "OK GLES hints retain context state, conversions and invalid-enum errors",
+    ]);
     expect(result.stderr).toBe("");
     expect(result.diagnostics).toEqual([]);
     const evidence = fileURLToPath(new URL("../../../.context/gles-hints-guests/", import.meta.url));
