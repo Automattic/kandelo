@@ -146,6 +146,29 @@ disagreements are eliminated. This is a metadata and prerequisite-check
 correction. Target sources, flags and revisions are unchanged; normal
 rebuilding against these recipe inputs is pending.
 
+### Cage idle-frame fixture prerequisite
+
+The `e58d19f98a` Firefox gallery trace failed idle-frame equality while
+the shell was still starting. Its first sample shows the empty terminal
+grid and four flips; the second shows the `kandelo$` prompt and six
+flips. Both captures completed promptly. `WLTERM_READY` is emitted after
+the empty grid is committed, before the terminal reads the shell's PTY
+output, so it does not establish an idle shell session.
+
+The browser fixture now waits for visible first-row shell text before
+taking its idle baseline. It decodes the public canvas screenshot,
+maps output coordinates using the connector mode, and samples below
+libkwl's 28-pixel titlebar in wlterm's 16-pixel text row. The first
+8-pixel character cell is excluded because the initial empty grid
+already draws an underline cursor there. More than 24 occupied output
+columns distinguishes substantial shell text from that cursor. Saved
+trace controls yield zero columns for the empty grid and 38.4 for the
+rendered prompt after scaling the trace's 680-pixel canvas to its
+1088-pixel output. The exact one-second idle equality, typing change,
+nonblank-frame and clean-exit assertions remain unchanged, with no
+deadline increase. The corrected full browser case remains to be run;
+these observation controls alone do not establish compositor acceptance.
+
 ## Follow-up graphics baseline
 
 The pushed branch `brandonpayton/graphics-baseline-follow-up` preserves
