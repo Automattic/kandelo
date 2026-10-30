@@ -28,11 +28,12 @@ notifications, idle protocols and keyboard layout are disabled explicitly.
 They are not required for this panel configuration. The recipe does not
 substitute successful no-ops for those services.
 
-The callback patch supplies all arguments required by three GTK signal
-signatures. Native calling conventions can tolerate omitted arguments;
+The callback patches supply complete GTK signal signatures, boolean
+event results and GLib source callback results. Adapter functions retain
+helper signatures used by direct callers. Native calling conventions can tolerate omitted arguments;
 WebAssembly's typed indirect calls cannot. Clean patch application and
-Wasm32 syntax/type controls pass, with all three type controls failing on
-the original source. These checks do not establish a working application.
+Wasm32 syntax/type controls pass, with the original three type controls and six further registration
+controls failing on the original source. These checks do not establish a working application.
 
 Normal package and image builds, Node sessions, real headless Chromium,
 Firefox and WebKit menu/launch/focus/close checks, and repeated memory

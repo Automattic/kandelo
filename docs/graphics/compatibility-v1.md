@@ -8988,3 +8988,31 @@ Evidence is retained under .context/sfwbar-quick-664-provisioned and
 .context/sfwbar-startup-observe; the latter includes exact upstream source
 identities, process/terminal captures and the startup handoff. No GUI or
 performance success is claimed from CLI admission or startup diagnosis.
+
+### SFWBar callback contract review (2026-10-30)
+
+The retained Labwc trace establishes that SFWBar actually starts, then
+traps with a function-signature mismatch. Its immutable main-program
+identity matches the normal before-owner record. The captured stack
+passes through Wayland closure dispatch and the shared libffi dispatcher;
+it does not establish a GTK signal callback as this trap's cause. Exact
+listener investigation remains open. The combined 32071f6afd rebuild is
+stopped deliberately after 2m with signal 15, preserving normal cache
+outputs before addressing the known unresolved failure. No consumer runs
+in that stopped attempt and no build success is claimed.
+
+A separate source registration review finds six additional definite
+callback type errors: two GdkDisplay monitor handlers omit closure data,
+FlowGrid's enter event omits its boolean propagation result, the swapped
+icon-theme handler uses a boolean one-argument helper instead of a void
+two-argument callback, the sensor timeout uses a void helper instead of
+a boolean source, and Wayfire's monitor handler omits closure data. The
+portable patch includes unused signal parameters, returns FALSE to allow
+event propagation, and uses adapters preserving the direct helpers and
+one-shot timeout removal. It does not change shared dispatch or relax
+WebAssembly types. All five complete source files pass Wasm32 syntax and
+six exact callback-type controls; each original registration fails its
+corresponding static assertion. Actual immutable normal dependency headers
+are used. Evidence: .context/sfwbar-callback-extended/check.log and check.py.
+These controls establish API type corrections, not resolution of the
+distinct captured Wayland listener trap or GUI acceptance.
