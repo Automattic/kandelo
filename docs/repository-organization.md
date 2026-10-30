@@ -74,6 +74,7 @@ Package behavior tests live with the package so future CI can map changes to rel
 | `packages/registry/<name>/test/` | Behavior of a specific ported package |
 | `tests/package-system/` | Package registry and binary-fetching automation |
 | `tests/test-artifacts/` | Shared host/kernel test artifact ownership manifests |
+| `tests/baselines/` | Generated per-suite/host results and input/provenance evidence; not test expectations |
 | `tests/libc/`, `tests/posix/`, `tests/sortix/` | External conformance suites and overlays |
 | `apps/browser-demos/test/` | Browser app and demo-page integration behavior |
 
