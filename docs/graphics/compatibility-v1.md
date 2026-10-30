@@ -10705,3 +10705,127 @@ production query/test source is identical to that validated checkout;
 other follow-up changes concern the independent query-delivery path.
 Program56/host3/GL17/fork21 remain unchanged. This repair stays on the
 broader follow-up and does not invalidate the desktop port's input cohort.
+
+
+### Private host final render-node retirement foundation (2026-10-30)
+
+Final query-pin release remains incomplete. The Rust private driver still
+returns `EBUSY` when its pin is the final open-file-description reference;
+it retains the exact token, request, device reference and host registration.
+This increment adds a host receiver for part of the missing physical
+cleanup contract. It does not consume that Rust pin or enable public
+query parking. Program56/host3/GL17/fork21 and generated ABI are unchanged.
+
+The receiver accepts a copied, bounded batch of typed own-session unbind
+and buffer-object destruction effects under an existing authenticated
+owner grant. It captures actual GPU allocation, CPU mirror, foreign-view,
+context-execution, owned surface and fence retirement capabilities before
+revoking roots. Native journal observation adds no storage reference.
+`Retired` requires actual scoped deletion journals and context execution
+cleanup, including already-retired contexts whose public slot was replaced.
+Map removal, ownership transfer, releasing only the receiver's own lease
+or returning from a metadata callback cannot establish that proof. A
+borrowed buffer remains live under its independent legitimate kernel owner
+unless the batch also explicitly destroys it.
+
+Initial capture failure enters `Rejecting`, retaining exact partial
+capabilities and budget through failed rollback. Capture is never retried
+against a numeric replacement object. Only successful rollback yields
+`Rejected`, which means no new final-device effects were accepted; it is
+not a physical-cleanup acknowledgement permitting Rust pin release. A
+CPU-buffer batch with an accepted owner-ledger prefix is refused before
+capture and retains a bounded terminal rejection identity. The prefix can
+still prepare its CPU mirror. Supporting deferred CPU mirror preparation
+under an accepted final batch remains an ordinary follow-up gap. GPU
+batches retain their accepted-prefix ordering control.
+
+The optional shared host transport uses existing exact endpoint epochs
+and owner registrations with private
+`gl_owned_final_begin/poll/forget/reply/notify` messages. Tokens are exact
+positive signed-64-bit values split into two unsigned words; effect input
+is an independent copy capped at 65,536 bytes. Records, copied input bytes
+and capability metadata have injected bounds. Wrong peers, registrations,
+changed retry bytes and replayed terminal tokens cannot redirect effects.
+Lost acknowledgements and throwing posts retain custody. Terminal state
+stays observable until Forget; unresolved rollback cannot be forgotten.
+Actual lease-release progress and explicit renewed controls drive bounded
+drains; unchanged failed cleanup does not schedule a retry loop. Every
+terminal pre-admission rejection records the exact owner's monotonic
+admission floor before sending its reply, even when payload or request
+capacity is exhausted. This bounded scalar survives Forget. It keeps all
+not-yet-admitted tokens at or below that floor nonexecuting; existing
+accepted physical records are checked first and retain their custody.
+Missing or uncopyable message bytes receive no terminal acknowledgement.
+A previously missing buffer, newly available capacity or changed retry
+bytes cannot resurrect a refused token. The
+actual main-forward factory retains its endpoint receiver through cleanup.
+
+Physical-proof capture rejects executable-release journals that may skip
+program deletion because another owner retains that executable, including
+such dependency journals. An ownership-transfer dependency cannot turn a
+parent journal into physical proof. Ordinary actual program-deletion
+journals remain eligible. This does not implement a general retained
+executable retirement receiver.
+
+Focused source evidence uses native graphics API doubles and paired
+structured-copy endpoints with real registries, sender/controller and
+main-forward factory. It proves these host contracts, not browser pixels,
+real MessagePort teardown or full operating-system lifecycle completion.
+Both hosts share this optional implementation; normal Node/browser,
+browser-memory, performance, upstream CTS, POSIX and normal consumer gates
+remain required after integration. No SDK, package, image or browser
+products were rebuilt for this host-only increment.
+
+Missing integration remains explicit: an actual Rust final-device
+retirement record and acknowledgement bridge; close/exec/death scheduling;
+Card/KMS, mapping-pointer and independent external-presenter receivers;
+and complete public query-intent activation. Foreign process/session
+effects are not accepted by this private typed batch. No kernel selector,
+export or numeric wire assignment was added.
+
+| Focused evidence | Result | Private log in follow-up checkout |
+| --- | --- | --- |
+| Native/paired physical retirement, rollback and CPU-prefix controls | 32 passed | `.context/final-native-paired.log` |
+| Complete graphics source inventory | 1,078 passed, 45 files, zero skipped | `.context/final-graphics.log` |
+| Existing actual compiled-kernel/channel controls | 22 passed; unchanged kernel artifact | `.context/final-actual-kernel.log` |
+| Strict shared worker/fixture TypeScript | passed | `.context/final-types.log` |
+| Canonical host JavaScript and declarations | passed | `.context/final-host-build.log` |
+| Exact evidence inventory | 646 files agree | `.context/final-evidence.log` |
+| Pre-review ownership audits | 120 passed; 154.95 seconds total, complete-graph case 141.852 seconds under its unchanged 180-second limit | `.context/final-audits-before-review.log` |
+| Post-review ownership audits | 119 passed, one unchanged 180-second full-graph timeout at 358.874 seconds; zero skipped | `.context/final-audits-final.log` |
+
+The independent review also exposed two retained causal failures:
+`final-replay-before.log` deletes a replacement buffer after an absent-
+buffer refusal, Forget and replay; `final-program-before.log` reports
+physical completion when a live program's release journal skips deletion.
+Both controls now pass, with capacity/query/validation refusal and
+transferred-dependency negative controls.
+
+Causal failures are retained in `final-retired-source-before.log`
+(premature completion while an old execution remained),
+`final-replacement-before.log` (recaptured replacement buffer), and
+`final-cpu-prefix-before.log` (accepted CPU final batch before prefix
+completion). Counterfactual weakened-proof controls are separately labelled
+in `final-boolean-negative.log`; they are not unmodified-platform failures.
+
+The initial ownership scan naturally failed two timing limits: 118/120
+passed, a synthetic five-second case timed out at 6.5 seconds and the
+unchanged complete-graph case timed out at 370.1 seconds against 180. No
+own process was terminated and no assertion or timeout was changed. A
+later frozen-source profiled run passed all 120 cases in 137.73 seconds.
+Its complete-case CPU trace spans 122.22 seconds and predominantly samples
+the audit's own type-property/expression graph traversal. Earlier partial
+worker profiles did not capture that case. These differing source/load
+runs do not establish a performance comparison or an analyzer/runtime
+defect. The pre-review unprofiled scan passed all 120 cases in 154.95
+seconds, with the complete-graph case at 141.852 seconds. Assertions,
+source inventory and time limits remain unchanged.
+
+The post-review scan naturally finished with 119/120 passing. Its only
+failure is the unchanged 180-second complete-graph timeout, reported when
+the synchronous case returned after 358.874 seconds (373.05 seconds total).
+No process was killed. The 86 synthetic audit cases and 25 entry-gate cases
+passed; no audit assertion failed. Source and concurrent load differ from
+the earlier passing scan, so the cause of the timing difference is not
+established. This final ownership timing gate remains unresolved; the
+earlier passing run is not claimed as current-source acceptance.

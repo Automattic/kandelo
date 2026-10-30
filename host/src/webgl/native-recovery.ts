@@ -25,8 +25,53 @@ export type NativeDeletion = ["deleteTexture", WebGLTexture | null] | ["deleteRe
   | ["deleteFramebuffer", WebGLFramebuffer | null] | ["deleteBuffer", WebGLBuffer | null]
   | ["deleteSync", WebGLSync | null] | ["deleteShader", WebGLShader | null]
   | ["deleteProgram", WebGLProgram | null] | ["deleteVertexArray", WebGLVertexArrayObject | null];
-export type NativeRetirement = {owner: CheckedGlOwner; calls: NativeDeletion[]; pending: boolean; complete: boolean; references: number; dependencies: readonly NativeRetirement[]; ordered?: boolean; uninstallPrograms?: boolean; unusedProgramOwners?: WeakRef<GlObjectGroup>};
+export type NativeRetirement = {owner: CheckedGlOwner; calls: NativeDeletion[]; pending: boolean; complete: boolean; references: number; dependencies: readonly NativeRetirement[]; ordered?: boolean; uninstallPrograms?: boolean; unusedProgramOwners?: WeakRef<GlObjectGroup>; disposition?: "deleted" | "transferred"};
 const retirements = new WeakMap<WebGL2RenderingContext, Set<NativeRetirement>>();
+const issuedRetirements = new WeakSet<NativeRetirement>();
+const retirementObservers = new WeakMap<NativeRetirement, Set<NativeRetirementReceipt>>();
+
+/** An actual deletion-journal capability, without another storage reference.
+ * Public map removal and ownership transfer are not physical deletion proof. */
+export class NativeRetirementReceipt {
+  private listener: (() => void) | undefined;
+  private constructor(private actual: NativeRetirement) {}
+  static capture(actual: NativeRetirement): NativeRetirementReceipt | null {
+    if (!physicalRetirementEligible(actual)) return null;
+    try {
+      const receipt = new NativeRetirementReceipt(actual);
+      let observers = retirementObservers.get(actual);
+      if (!observers) { observers = new Set(); retirementObservers.set(actual,observers); }
+      observers.add(receipt); return receipt;
+    } catch { return null; }
+  }
+  get context(): WebGL2RenderingContext { return this.actual.owner.gl!; }
+  get complete(): boolean { return physicalRetirementDeleted(this.actual); }
+  retry(): boolean { retireNativeRetirement(this.actual); return this.complete; }
+  watch(listener: () => void): void {
+    if(this.listener===listener)return;
+    this.listener=listener;
+    if (this.complete || (this.actual.pending && this.actual.references === 0)) this.changed();
+  }
+  changed(): void {
+    try { this.listener?.(); }
+    catch(error) { if(isKernelExportFailure(error))throw error; /* Notification is not cleanup. */ }
+  }
+  forget(): void { this.listener=undefined;retirementObservers.get(this.actual)?.delete(this); }
+}
+// Executable-release journals may deliberately skip deleteProgram because
+// another retained owner still owns that handle. Their completion is transfer,
+// not physical proof. The same restriction applies through dependencies.
+function physicalRetirementEligible(actual:NativeRetirement,ancestors=new Set<NativeRetirement>()):boolean {
+  if(!issuedRetirements.has(actual)||actual.unusedProgramOwners||ancestors.has(actual))return false;
+  ancestors.add(actual);const eligible=actual.dependencies.every(dependency=>physicalRetirementEligible(dependency,ancestors));ancestors.delete(actual);return eligible;
+}
+function physicalRetirementDeleted(actual:NativeRetirement,ancestors=new Set<NativeRetirement>()):boolean {
+  if(!issuedRetirements.has(actual)||actual.unusedProgramOwners||!actual.complete||actual.disposition!=="deleted"||ancestors.has(actual))return false;
+  ancestors.add(actual);const deleted=actual.dependencies.every(dependency=>physicalRetirementDeleted(dependency,ancestors));ancestors.delete(actual);return deleted;
+}
+function retirementChanged(actual: NativeRetirement): void {
+  for (const receipt of retirementObservers.get(actual) ?? []) receipt.changed();
+}
 export type NativeInverse = { owner: CheckedGlOwner; groups: NativeCall[][] };
 export type NativeChange = { apply(): boolean; restore: NativeInverse };
 export type NativeCompletion = {submitted: boolean; complete: boolean};
@@ -86,16 +131,23 @@ export function reserveNativeRetirement(b: CheckedGlOwner, calls: NativeDeletion
     let owners = retirements.get(b.gl);
     if (!owners) { owners = new Set(); retirements.set(b.gl,owners); }
     owners.add(retirement);
+    issuedRetirements.add(retirement);
     return retirement;
   } catch (error) {
     if (isKernelExportFailure(error)) throw error;
     recordGlError(b,0x505); return null;
   }
 }
-export function transferNativeRetirement(retirement: NativeRetirement): void {
+function finishNativeRetirement(retirement: NativeRetirement, disposition: "deleted" | "transferred"): void {
+  if (retirement.complete) return;
+  retirement.disposition=disposition;
   if (retirement.references !== 0) throw new Error("Cannot transfer retained native storage");
   retirements.get(retirement.owner.gl!)?.delete(retirement);
   retirement.complete = true;
+  retirementChanged(retirement);
+}
+export function transferNativeRetirement(retirement: NativeRetirement): void {
+  finishNativeRetirement(retirement,"transferred");
 }
 function programStillOwned(group: GlObjectGroup, program: WebGLProgram): boolean {
   if (group.programQueryPins.has(program)) return true;
@@ -141,7 +193,7 @@ function collectNativeRetirements(gl: WebGL2RenderingContext): boolean {
         if (retirement.ordered) break;
       }
     }
-    if (retirement.calls.every(call => call[1] === null) && retirement.dependencies.every(dependency => dependency.complete)) transferNativeRetirement(retirement);
+    if (retirement.calls.every(call => call[1] === null) && retirement.dependencies.every(dependency => dependency.complete)) finishNativeRetirement(retirement,"deleted");
     else accepted = false;
   }
   return accepted;
@@ -187,6 +239,9 @@ export class NativeRetirementLease {
   }
   get context(): WebGL2RenderingContext | null { return this.#retirement?.owner.gl ?? null; }
   get active(): boolean { return this.#retirement !== null && !this.#released; }
+  observeRetirement(): NativeRetirementReceipt | null {
+    return this.#retirement ? NativeRetirementReceipt.capture(this.#retirement) : null;
+  }
   clone(): NativeRetirementLease | null {
     return this.active ? NativeRetirementLease.take(this.#retirement!,true) : null;
   }
@@ -197,8 +252,10 @@ export class NativeRetirementLease {
     const gl = retirement.owner.gl!;
     try { captureNativeGlErrors(gl,selectedErrors); }
     catch { return false; }
-    if (!this.#released) { this.#released = true; retirement.references--; }
+    const releasedNow=!this.#released;
+    if (releasedNow) { this.#released = true; retirement.references--; }
     if (!repairs.has(gl)) collectNativeRetirements(gl);
+    if(releasedNow && retirement.references===0 && !retirement.complete)retirementChanged(retirement);
     if (retirement.pending && !retirement.complete && retirement.references === 0) return false;
     this.#retirement = null;
     return true;

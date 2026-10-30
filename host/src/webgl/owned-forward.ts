@@ -1,5 +1,6 @@
 /** Optional owned query transport. This composes the real renderer adapter;
  * it does not enable public pending syscalls or infer completion from timeouts. */
+import { GlFinalRenderNodeReceiver, type GlFinalRenderNodeState } from "./final-render-node.js";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { GlNativeQueryAdapter } from "./native-query-adapter.js";
 import { GlOwnedResultStore, GlRemoteResultCustody, GlResultPeer,
@@ -24,8 +25,15 @@ export interface GlOwnedForwardEndpoint {
 type Route = {pid:number;sessionId:number;clientRegistration:number};
 type Grant = Route & {epoch:number;registration:number};
 type Wire = Route & {type:string;epoch?:number;registration?:number;bytes?:ArrayBuffer;control?:QueryControl;token?:bigint;error?:number;
-  retirement?:GlForwardRetirementKind;sequence?:number;source?:number;complete?:boolean;endpointRegistration?:number};
+  retirement?:GlForwardRetirementKind;sequence?:number;source?:number;complete?:boolean;endpointRegistration?:number;tokenLow?:number;tokenHigh?:number;finalState?:GlFinalRenderNodeState|"rejected"};
 const CAP = 65536;
+function finalToken(message:Wire):bigint|null {
+  const lo=message.tokenLow,hi=message.tokenHigh;
+  if(!Number.isInteger(lo)||!Number.isInteger(hi)||lo!<0||lo!>0xffff_ffff||hi!<0||hi!>0x7fff_ffff)return null;
+  const token=(BigInt(hi!)<<32n)|BigInt(lo!);return token>0n?token:null;
+}
+function finalWords(token:bigint):{tokenLow:number;tokenHigh:number} {return {tokenLow:Number(token&0xffff_ffffn),tokenHigh:Number(token>>32n)};}
+
 const apply=Reflect.apply;
 let epochSerial = 0;
 let clientRegistrationSerial = 0;
@@ -128,6 +136,7 @@ type ServerOwner = {grant:Grant;owner:GlResultOwner;closed:boolean;forgotten:boo
  * only explicit Open against a known live binding grants a generation. */
 export class GlOwnedMainForwardController {
   private adapter:GlNativeQueryAdapter;
+  private finals:GlFinalRenderNodeReceiver;
   private epoch:number;
   private owners=new Map<number,ServerOwner>();
   private records=0;
@@ -152,6 +161,7 @@ export class GlOwnedMainForwardController {
     if(epochSerial===Number.MAX_SAFE_INTEGER)throw new RangeError("owned renderer epoch exhausted");
     this.epoch=++epochSerial;
     this.limits=Object.freeze({maxOwners:limits.maxOwners,maxRequests:limits.maxRequests,maxRetainedBytes:limits.maxRetainedBytes});
+    this.finals=new GlFinalRenderNodeReceiver(registry,bos,muxers,limits.maxRequests,limits.maxRetainedBytes,limits.maxRequests*32);
     this.adapter=new GlNativeQueryAdapter(registry,bos,muxers,limits,(p,s,registration,token)=>{
       const owner=this.owners.get(s);
       if(owner && p===pid && owner.owner.registration===registration)
@@ -170,6 +180,12 @@ export class GlOwnedMainForwardController {
     finally {this.requesting--;}
   }
   private send(message:unknown):void {try {this.endpoint.postMessage(message);} catch {/* Lost ACK never drops native authority. */}}
+  private rejectFinal(owner:ServerOwner,token:bigint):void {
+    // Record the exact owner's admission floor BEFORE a fallible terminal ACK.
+    // Capacity/validation refusal cannot leave the same token free to execute.
+    if(this.finals.rejectUnaccepted(owner.owner,token))
+      this.send({...owner.grant,...finalWords(token),type:"gl_owned_final_reply",finalState:"rejected"});
+  }
   private receive(data:unknown):void {
     if(!data || typeof data!=="object")return;
     const message=data as Wire;
@@ -228,6 +244,45 @@ export class GlOwnedMainForwardController {
     // Later controls never create or replace an owner, including Cancel.
     if(!owner || message.clientRegistration!==owner.grant.clientRegistration || message.epoch!==this.epoch
       || message.registration!==owner.grant.registration)return;
+    if(message.type.startsWith("gl_owned_final_")) {
+      const token=finalToken(message);if(token===null||owner.forgotten)return;
+      if(message.type==="gl_owned_final_begin") {
+        const old=this.finals.poll(owner.owner,token);
+        if(old===null && this.finals.admissionRevoked(owner.owner,token)){this.rejectFinal(owner,token);return;}
+        const bytes=independentBytes(message.bytes,CAP);if(!bytes)return;
+        if(old===null) {
+          if(owner.closed || this.records+this.finals.pending>=this.limits.maxRequests
+            ||bytes.length>this.limits.maxRetainedBytes-this.adapter.retainedBytes-this.finals.retainedBytes
+            ||[...owner.receipts.values()].some(receipt=>receipt.terminal?.phase!=="retired")) {
+            this.rejectFinal(owner,token);return;
+          }
+        }
+        if(!this.finals.begin(owner.owner,token,bytes)) {
+          if(old===null)this.rejectFinal(owner,token);return;
+        }
+        const sessionReceiver=this.finals.sessionReceiver(owner.owner);
+        if(sessionReceiver) {
+          owner.closed=true;this.adapter.retireOwner(owner.owner);
+          const legacy=this.legacy.get(owner.owner.sessionId);
+          if(legacy)legacy.receiver=sessionReceiver;
+          owner.retirements.session.receiver=sessionReceiver;
+        }
+        if(old===null) {
+          const weak=new WeakRef(this),grant=Object.freeze({...owner.grant});
+          this.finals.watch(owner.owner,token,()=>{
+            const controller=weak.deref();if(!controller)return;
+            controller.send({...grant,...finalWords(token),type:"gl_owned_final_notify"});controller.requestWork();
+          });
+        }
+      } else if(message.type==="gl_owned_final_poll") {
+        if(!this.finals.retry(owner.owner,token)){if(this.finals.admissionRevoked(owner.owner,token))this.rejectFinal(owner,token);return;}
+      } else if(message.type==="gl_owned_final_forget") {
+        if(!this.finals.forget(owner.owner,token)&&!this.finals.admissionRevoked(owner.owner,token))return;this.maybeRelease();return;
+      } else return;
+      const state=this.finals.poll(owner.owner,token);
+      if(state)this.send({...owner.grant,...finalWords(token),type:"gl_owned_final_reply",finalState:state});
+      this.requestWork();return;
+    }
     if(message.type==="gl_owned_release_owner" && owner.forgotten) {
       this.retiredRegistrationFloor=Math.max(this.retiredRegistrationFloor,owner.grant.clientRegistration);
       this.owners.delete(message.sessionId);this.maybeRelease();return;
@@ -240,9 +295,10 @@ export class GlOwnedMainForwardController {
       // Only clean scalar metadata can disappear. The authenticated client
       // requests this after observing every individual retirement ACK.
       for(const receipt of owner.receipts.values())if(receipt.terminal?.phase!=="retired")return;
+      if(!this.finals.retirementComplete(owner.owner))return;
       for(const retirement of Object.values(owner.retirements))if(retirement.receiver && !retirement.receiver.complete
         && !(retirement.receiver.revoke(this.registry,this.muxers) && retirement.receiver.retry(this.muxers)))return;
-      if(!this.adapter.forgetOwner(owner.owner))return;
+      if(!this.finals.forgetOwner(owner.owner)||!this.adapter.forgetOwner(owner.owner))return;
       this.records-=owner.receipts.size;owner.receipts.clear();owner.forgotten=true;
       this.send({...owner.grant,type:"gl_owned_owner_forgotten"});this.maybeRelease();return;
       } catch(error) {failure=error;throw error;}
@@ -282,7 +338,7 @@ export class GlOwnedMainForwardController {
     try {
     let receipt=owner.receipts.get(request.token);
     if(!receipt) {
-      if(request.token<=owner.floor || this.records>=this.limits.maxRequests)return;
+      if(request.token<=owner.floor || this.records+this.finals.pending>=this.limits.maxRequests)return;
       if(request.control!=="begin" && request.control!=="cancel")return;
       // Reserve metadata before invoking any native capture. After entered is
       // set, Unknown cannot prove that capture/admission never happened.
@@ -366,7 +422,7 @@ export class GlOwnedMainForwardController {
       clientRegistration:message.clientRegistration,epoch:this.epoch,error:13});
   }
   private retireScalar(owner:ServerOwner,kind:GlForwardRetirementKind,slot:ServerRetirement):void {
-    const receiver=slot.receiver;if(!receiver)return;
+    const receiver=slot.receiver;if(!receiver||!this.finals.retirementComplete(owner.owner))return;
     // A scalar request never releases outstanding query custody. Its sender
     // waits for individual query ACKs; verify that proof at this receiver too.
     for(const receipt of owner.receipts.values())if(receipt.terminal?.phase!=="retired")return;
@@ -393,6 +449,7 @@ export class GlOwnedMainForwardController {
     const commandResult=drainSubmitQueue(this.submits,muxerFor,(binding,offset,length)=>decodeAndDispatch(binding,offset,length),maxVisits);
     if(commandResult<0 && selected)recordGlError(selected,0x502);
     nativeVisits+=this.adapter.drain(maxVisits);
+    nativeVisits+=this.finals.drain(maxVisits);
     const scalars:Array<[ServerOwner,GlForwardRetirementKind,ServerRetirement]>=[];
     for(const owner of this.owners.values())for(const kind of ["context","surface","session"] as const) {
       const slot=owner.retirements[kind];if(slot.receiver && !slot.receiver.complete)scalars.push([owner,kind,slot]);
@@ -402,7 +459,8 @@ export class GlOwnedMainForwardController {
       const [owner,kind,slot]=scalars[this.scalarCursor];this.scalarCursor=(this.scalarCursor+1)%scalars.length;
       this.retireScalar(owner,kind,slot);
     }
-    const legacy=[...this.legacy.values()].filter(entry=>entry.retiring && !entry.receiver.complete);
+    const legacy=[...this.legacy.values()].filter(entry=>entry.retiring && !entry.receiver.complete
+      && [...this.owners.values()].every(owner=>owner.owner.operations!==entry.operations||this.finals.retirementComplete(owner.owner)));
     for(let i=0;i<Math.min(maxVisits,legacy.length);i++) {
       this.legacyCursor%=legacy.length;const entry=legacy[this.legacyCursor];this.legacyCursor=(this.legacyCursor+1)%legacy.length;
       entry.receiver.revoke(this.registry,this.muxers) && entry.receiver.retry(this.muxers);
@@ -412,7 +470,7 @@ export class GlOwnedMainForwardController {
     if(this.endpointReleased && !this.endpointReleaseAcknowledged)this.send({type:"gl_owned_endpoint_released",pid:this.pid,
       epoch:this.epoch,endpointRegistration:this.endpointReleased});
     this.maybeRelease();
-    return {nativeVisits,nativeRunnable:this.adapter.runnableAfterDrain,commandResult,commands:glSubmitQueueDisposition(this.submits,muxerFor)};
+    return {nativeVisits,nativeRunnable:this.adapter.runnableAfterDrain||this.finals.runnable,commandResult,commands:glSubmitQueueDisposition(this.submits,muxerFor)};
     } finally {this.draining=false;}
   }
   /** Session unbind closes admission but leaves exact retirement controls live. */
@@ -427,7 +485,7 @@ export class GlOwnedMainForwardController {
     }
     owner.closed=true;this.adapter.retireOwner(owner.owner);
     this.send({...owner.grant,type:"gl_owned_closing"});
-    if(receiver) {
+    if(receiver && this.finals.retirementComplete(owner.owner)) {
       this.submits.removeSession(this.pid,session);
       receiver.revoke(this.registry,this.muxers);receiver.retry(this.muxers);
     }
@@ -483,15 +541,16 @@ export class GlOwnedMainForwardController {
     this.legacy.clear();this.endpoint.removeEventListener("message",this.onMessage);this.detached=true;this.retirements.release(this);
   }
   get released():boolean {return this.detached;}
-  get retainedBytes():number {return this.adapter.retainedBytes;}
-  get pendingRequests():number {return this.records;}
+  get retainedBytes():number {return this.adapter.retainedBytes+this.finals.retainedBytes;}
+  get pendingRequests():number {return this.records+this.finals.pending;}
 }
 
 type ClientReceipt={token:bigint;begin:Omit<QueryBegin,"input">;custody:GlRemoteResultCustody;
   execution:GlResultExecution|null;admission:"unsent"|"awaiting-native-admission"|"native-admitted";
   mode:GlResultMode|null;rejected:boolean;announced?:string};
 type ClientRetirement={sequence:number;source:number;state:"empty"|"queued"|"pending"|"complete"};
-type ClientOwner={owner:GlResultOwner;clientRegistration:number;grant:Grant|null;openRejected:boolean;closed:boolean;forgetting:boolean;receipts:Map<bigint,ClientReceipt>;
+type ClientFinal={bytes:Uint8Array<ArrayBuffer>;state:"unsent"|"awaiting-native-admission"|"pending"|"rejecting"|"retired"|"rejected";closesSession:boolean;dirty:boolean;wake?:()=>void};
+type ClientOwner={owner:GlResultOwner;clientRegistration:number;grant:Grant|null;openRejected:boolean;closed:boolean;forgetting:boolean;receipts:Map<bigint,ClientReceipt>;finals:Map<bigint,ClientFinal>;
   serial:number;retirements:RetirementSlots<ClientRetirement>;ownerWake:((pid:number,session:number,registration:number)=>void)|undefined;workWake?:((pid:number,session:number,registration:number)=>void)};
 /** Kernel-side paired endpoint. Until the actual renderer Begin ACK this owns
  * copied ordered intent and endpoint cleanup responsibility, not native storage.
@@ -499,6 +558,9 @@ type ClientOwner={owner:GlResultOwner;clientRegistration:number;grant:Grant|null
  * queueWakeup must schedule a later worker turn rather than reentering Rust. */
 export class GlOwnedForwardClient {
   private store:GlOwnedResultStore;
+  private finalBytes=0;
+  private finalCount=0;
+  private finalFloors=new WeakMap<GlResultOwner,bigint>();
   private peer=new GlResultPeer(1);
   private owners=new Map<GlResultOwner,ClientOwner>();
   private onMessage:(event:MessageEvent)=>void;
@@ -511,11 +573,11 @@ export class GlOwnedForwardClient {
   private endpointClosed=false;
   private endpointReleasing=false;
   private endpointReleased=false;
-  constructor(private endpoint:GlOwnedForwardEndpoint,private pid:number,limits:GlResultLimits,
+  constructor(private endpoint:GlOwnedForwardEndpoint,private pid:number,private limits:GlResultLimits,
     private queueWakeup:(pid:number,session:number,registration:number,token:bigint)=>void) {
     if(clientRegistrationSerial===Number.MAX_SAFE_INTEGER)throw new RangeError("owned endpoint registration exhausted");
     this.endpointRegistration=++clientRegistrationSerial;
-    this.store=new GlOwnedResultStore(limits);
+    this.limits=Object.freeze({...limits});this.store=new GlOwnedResultStore(this.limits);
     this.onMessage=event=>this.receive(event.data);endpoint.addEventListener("message",this.onMessage);
     this.legacyReady();
   }
@@ -530,7 +592,7 @@ export class GlOwnedForwardClient {
     if(this.endpointClosed || clientRegistrationSerial===Number.MAX_SAFE_INTEGER)return null;
     const owner=this.store.openOwner(this.pid,session,operations);if(!owner)return null;
     if(!this.owners.has(owner))this.owners.set(owner,{owner,clientRegistration:++clientRegistrationSerial,
-      grant:null,openRejected:false,closed:false,forgetting:false,receipts:new Map(),serial:0,ownerWake:undefined,
+      grant:null,openRejected:false,closed:false,forgetting:false,receipts:new Map(),finals:new Map(),serial:0,ownerWake:undefined,
       retirements:{context:{sequence:0,source:0,state:"empty"},surface:{sequence:0,source:0,state:"empty"},session:{sequence:0,source:0,state:"empty"}}});
     this.open(this.owners.get(owner)!);return owner;
   }
@@ -539,6 +601,36 @@ export class GlOwnedForwardClient {
   }
   private post(message:unknown):void {try {this.endpoint.postMessage(message);} catch {/* Any attempted post can have been enqueued. */}}
   private open(owner:ClientOwner):void {if(!owner.grant)this.post({...this.route(owner.owner),type:"gl_owned_open"});}
+  beginFinal(owner:GlResultOwner,token:bigint,input:Uint8Array):boolean {
+    const entry=this.owners.get(owner),old=entry?.finals.get(token);
+    if(old)return old.bytes.length===input.length&&old.bytes.every((v,i)=>v===input[i]);
+    if(!entry||entry.closed||typeof token!=="bigint"||token<=(this.finalFloors.get(owner)??0n)||token>0x7fff_ffff_ffff_ffffn||!input.length||input.length%8||input.length>CAP
+      ||this.pendingRequests>=this.limits.maxRequests||input.length>this.limits.maxRetainedBytes-this.retainedBytes
+      ||[...entry.receipts.values()].some(receipt=>this.store.poll(owner,receipt.token).state!=="retired")
+      ||owner.operations.immediateState()!=="idle")return false;
+    try {
+      const bytes=new Uint8Array(input),view=new DataView(bytes.buffer);let closesSession=false;
+      for(let i=0;i<bytes.length;i+=8)if(view.getUint32(i,true)===1)closesSession=true;
+      entry.finals.set(token,{bytes,state:"unsent",closesSession,dirty:true});
+    }
+    catch{return false;}
+    this.finalBytes+=input.length;this.finalCount++;this.continueDrain=true;this.notifyWork(entry);return true;
+  }
+  pollFinal(owner:GlResultOwner,token:bigint):ClientFinal["state"]|null {return this.owners.get(owner)?.finals.get(token)?.state??null;}
+  watchFinal(owner:GlResultOwner,token:bigint,wake:()=>void):boolean {
+    const receipt=this.owners.get(owner)?.finals.get(token);if(!receipt)return false;
+    receipt.wake=wake;if(receipt.dirty||receipt.state==="retired"||receipt.state==="rejected")wake();return true;
+  }
+  retryFinal(owner:GlResultOwner,token:bigint):boolean {
+    const entry=this.owners.get(owner),receipt=entry?.finals.get(token);if(!entry||!receipt)return false;
+    receipt.dirty=true;this.continueDrain=true;this.notifyWork(entry);return true;
+  }
+  forgetFinal(owner:GlResultOwner,token:bigint):boolean {
+    const entry=this.owners.get(owner),receipt=entry?.finals.get(token);
+    if(!entry||!receipt||(receipt.state!=="retired"&&receipt.state!=="rejected"))return false;
+    if(entry.grant)this.post({...entry.grant,...finalWords(token),type:"gl_owned_final_forget"});
+    this.finalBytes-=receipt.bytes.length;this.finalCount--;entry.finals.delete(token);this.finalFloors.set(owner,token>(this.finalFloors.get(owner)??0n)?token:this.finalFloors.get(owner)!);return true;
+  }
   begin(owner:GlResultOwner,token:bigint,begin:QueryBegin):boolean {
     const entry=this.owners.get(owner);if(!entry || entry.closed)return false;
     const existing=entry.receipts.get(token);
@@ -546,6 +638,7 @@ export class GlOwnedForwardClient {
       && existing.begin.hasCurrent===begin.hasCurrent && existing.begin.context===begin.context
       && existing.begin.draw===begin.draw && existing.begin.read===begin.read
       && this.store.matchesRequest(owner,token,begin.op,begin.input,begin.capacity);
+    if(this.finalBytes+this.store.retainedBytes+begin.input.length+begin.capacity>this.limits.maxRetainedBytes || this.pendingRequests>=this.limits.maxRequests)return false;
     // Validate before reserving/copying. The store owns the frozen first input;
     // retries cannot replace it even if their caller buffer changes.
     try {encodeQueryRequest({control:"begin",token,begin});} catch {return false;}
@@ -568,6 +661,7 @@ export class GlOwnedForwardClient {
   hasBarrier(session:number):boolean {
     if(!this.legacyReady())return true;
     const owner=this.session(session);if(!owner)return false;
+    if(owner.finals.size)return true;
     for(const receipt of owner.receipts.values())if(this.store.poll(owner.owner,receipt.token).state!=="retired")return true;
     for(const slot of Object.values(owner.retirements))if(slot.state!=="empty" && slot.state!=="complete")return true;
     return owner.closed;
@@ -597,6 +691,7 @@ export class GlOwnedForwardClient {
   }
   retirementComplete(owner:GlResultOwner):boolean {
     const entry=this.owners.get(owner);if(!entry?.closed)return false;
+    if(entry.finals.size)return false;
     for(const receipt of entry.receipts.values())if(this.store.poll(owner,receipt.token).state!=="retired")return false;
     for(const slot of Object.values(entry.retirements))if(slot.state!=="empty" && slot.state!=="complete")return false;
     return true;
@@ -683,6 +778,7 @@ export class GlOwnedForwardClient {
       if(this.endpointEpoch===null || message.epoch!==this.endpointEpoch || !positive(message.registration))return;
       if(entry.grant && (entry.grant.epoch!==message.epoch || entry.grant.registration!==message.registration))return;
       const changed=!entry.grant;
+      if(changed)for(const receipt of entry.finals.values())receipt.dirty=true;
       entry.grant={...this.route(entry.owner),epoch:message.epoch,registration:message.registration};
       if(changed)this.notifyWork(entry);return;
     }
@@ -709,6 +805,18 @@ export class GlOwnedForwardClient {
       if(slot.state!=="pending" || slot.sequence!==message.sequence || slot.source!==message.source)return;
       if(message.complete) {slot.state="complete";this.notifyOwner(entry);}
       return;
+    }
+    if(message.type==="gl_owned_final_notify"||message.type==="gl_owned_final_reply") {
+      const token=finalToken(message),receipt=token===null?undefined:entry.finals.get(token);if(!receipt)return;
+      if(message.type==="gl_owned_final_notify") {
+        if(receipt.state==="retired"||receipt.state==="rejected")return;
+        receipt.dirty=true;this.continueDrain=true;this.notifyWork(entry);receipt.wake?.();return;
+      }
+      const state=message.finalState;if(state!=="pending"&&state!=="rejecting"&&state!=="retired"&&state!=="rejected")return;
+      if(receipt.state==="retired"||receipt.state==="rejected")return;
+      const changed=receipt.state!==state;receipt.state=state;
+      if(receipt.closesSession && (state==="pending"||state==="retired"))this.retireOwner(entry.owner);
+      if(changed){receipt.wake?.();this.notifyWork(entry);}return;
     }
     if(message.type==="gl_owned_notify") {
       if(typeof message.token==="bigint" && entry.receipts.has(message.token)) {
@@ -788,7 +896,7 @@ export class GlOwnedForwardClient {
     for(let i=0;i<Math.min(maxVisits,scalarOwners.length);i++) {
       this.scalarCursor%=scalarOwners.length;
       const entry=scalarOwners[this.scalarCursor];this.scalarCursor=(this.scalarCursor+1)%scalarOwners.length;
-      let retired=true;
+      let retired=[...entry.finals.values()].every(receipt=>receipt.state==="retired"||receipt.state==="rejected");
       for(const receipt of entry.receipts.values())if(this.store.poll(entry.owner,receipt.token).state!=="retired")retired=false;
       if(!retired)continue;
       let selected:GlForwardRetirementKind|null=null;
@@ -801,8 +909,20 @@ export class GlOwnedForwardClient {
       const slot=entry.retirements[selected];slot.state="pending";
       this.post({...entry.grant,type:"gl_owned_retire",retirement:selected,sequence:slot.sequence,source:slot.source});
     }
+    let finalVisits=0;
+    for(const entry of this.owners.values())for(const [token,receipt] of entry.finals) {
+      if(finalVisits>=maxVisits) {if(receipt.dirty)this.continueDrain=true;continue;}
+      if(!receipt.dirty||receipt.state==="retired"||receipt.state==="rejected")continue;
+      receipt.dirty=false;finalVisits++;
+      if(!entry.grant){this.open(entry);continue;}
+      const first=receipt.state==="unsent"||receipt.state==="awaiting-native-admission";
+      // Freeze uncertain admission BEFORE any fallible post.
+      if(first)receipt.state="awaiting-native-admission";
+      this.post({...entry.grant,...finalWords(token),type:first?"gl_owned_final_begin":"gl_owned_final_poll",
+        ...(first?{bytes:buffer(receipt.bytes)}:{})});
+    }
     for(const entry of this.owners.values())if(entry.forgetting && this.retirementComplete(entry.owner))this.forgetOwner(entry.owner);
-    this.continueDrain=records.some(([entry,receipt])=>!visited.has(receipt) && !!entry.grant
+    this.continueDrain ||=records.some(([entry,receipt])=>!visited.has(receipt) && !!entry.grant
       && receipt.admission==="unsent" && this.store.canTake(entry.owner,receipt.token));
     return visits;
   }
@@ -849,7 +969,7 @@ export class GlOwnedForwardClient {
     this.endpoint.removeEventListener("message",this.onMessage);return true;
   }
   get runnableAfterDrain():boolean {return this.continueDrain;}
-  get retainedBytes():number {return this.store.retainedBytes;}
-  get pendingRequests():number {return this.store.pendingRequests;}
+  get retainedBytes():number {return this.store.retainedBytes+this.finalBytes;}
+  get pendingRequests():number {return this.store.pendingRequests+this.finalCount;}
   get idle():boolean {return this.owners.size===0;}
 }

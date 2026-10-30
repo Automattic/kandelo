@@ -3,7 +3,7 @@ import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
 import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
 import {
   reserveNativeRetirement, repairNativeState, retireNativeRetirement,
-  type NativeRetirement,
+  type NativeRetirement, NativeRetirementReceipt,
 } from "./native-recovery.js";
 
 type Fence = {
@@ -97,6 +97,18 @@ export class GlFenceOwner {
   private source: GlFenceSource | null;
   constructor(source?: GlFenceSource) {
     this.source = source ? Object.freeze({pid:source.pid,sessionId:source.sessionId,operations:source.operations}) : null;
+  }
+  get retirementCaptureCost():number {return this.fences.size;}
+  captureRetirements():NativeRetirementReceipt[]|null {
+    const receipts:NativeRetirementReceipt[]=[];
+    try {
+      for(const fence of this.fences.values()) {
+        const receipt=NativeRetirementReceipt.capture(fence.retirement);
+        if(!receipt){for(const old of receipts)old.forget();return null;}
+        receipts.push(receipt);
+      }
+      return receipts;
+    }catch {for(const old of receipts)old.forget();return null;}
   }
   matchesSource(source: GlFenceSource): boolean {
     return !!this.source && this.source.pid === source.pid && this.source.sessionId === source.sessionId

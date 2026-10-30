@@ -2,7 +2,7 @@ import type { GbmBoRegistry } from "../dri/registry.js";
 import type { GlBinding } from "./registry.js";
 import { allocateGpuStorage, type GlGpuAllocation } from "./gpu-allocation.js";
 import { readGbmFront } from "./gbm-front-copy.js";
-import { applyNativeChanges, nativeInverse, retireNativeRetirement } from "./native-recovery.js";
+import { applyNativeChanges, nativeInverse, retireNativeRetirement, NativeRetirementReceipt } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 
 export type CpuImageLayout = {width: number; height: number; format: number; pitch: number; offset: number};
@@ -21,9 +21,29 @@ type Mirror = {
  * mirrors, never GPU-tier BOs or public texture names. Submission boundaries
  * serialize CPU publication, native execution, and device writeback. */
 export class CpuImageStorage {
+  private reservedRetirements=new Set<number>();
   private mirrors = new Map<number, Map<WebGL2RenderingContext, Map<string, Mirror>>>();
 
+  /** Snapshot actual mirror journals before any root is revoked. No storage
+   * reference is added, so observation cannot prevent final deletion. */
+  retirementCaptureCost(bo:number):number {
+    let count=0;for(const views of this.mirrors.get(bo)?.values()??[])count+=views.size;return count;
+  }
+  captureRetirements(bo: number): NativeRetirementReceipt[] | null {
+    const receipts: NativeRetirementReceipt[]=[];
+    try {
+      for(const views of this.mirrors.get(bo)?.values() ?? []) for(const mirror of views.values()) {
+        const receipt=NativeRetirementReceipt.capture(mirror.allocation.retirement);
+        if(!receipt) {for(const old of receipts)old.forget();return null;}
+        receipts.push(receipt);
+      }
+      this.reservedRetirements.add(bo);return receipts;
+    } catch {for(const old of receipts)old.forget();return null;}
+  }
+
+  forgetRetirement(bo:number):void {this.reservedRetirements.delete(bo);}
   acquire(b: GlBinding, bo: number, store: GbmBoRegistry, layout: CpuImageLayout): GlGpuAllocation | null {
+    if(this.reservedRetirements.has(bo))return null;
     const gl = b.gl, bytes = store.pixelView(bo);
     const {width, height, format, pitch, offset} = layout;
     const span = offset + (height - 1) * pitch + width * 4;

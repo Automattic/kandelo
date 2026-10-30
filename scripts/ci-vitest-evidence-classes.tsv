@@ -478,6 +478,7 @@ host/test/webgl-cpu-image-storage.test.ts	source-only
 host/test/webgl-error-query.test.ts	source-only
 host/test/webgl-fence-query.test.ts	source-only
 host/test/webgl-fences.test.ts	source-only
+host/test/webgl-final-render-node.test.ts	source-only
 host/test/webgl-foreign-texture.test.ts	source-only
 host/test/webgl-gbm-front-copy.test.ts	source-only
 host/test/webgl-gpu-bo.test.ts	source-only

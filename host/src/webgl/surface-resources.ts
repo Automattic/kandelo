@@ -1,5 +1,5 @@
 import type { GlBinding } from "./registry.js";
-import { retireNativeRetirement, retainNativeRetirement, type NativeRetirement, type NativeRetirementLease } from "./native-recovery.js";
+import { retireNativeRetirement, retainNativeRetirement, type NativeRetirement, type NativeRetirementLease, type NativeRetirementReceipt } from "./native-recovery.js";
 import type { GlErrorState } from "./errors.js";
 
 export type GlPresentTarget = {
@@ -102,6 +102,7 @@ export class GlSurfaceStorageLease {
     if (!this.#hold?.active) throw new Error("Surface storage lease is released");
     return this.#framebuffer;
   }
+  observeRetirement():NativeRetirementReceipt|null {return this.#hold?.observeRetirement() ?? null;}
   clone(): GlSurfaceStorageLease | null {
     if (!this.#hold?.active) return null;
     try {
