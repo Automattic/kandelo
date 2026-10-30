@@ -3451,3 +3451,12 @@ The Node demo uses npm's canonical `https://registry.npmjs.org/` registry.
 Registry metadata and tarballs traverse the ordinary browser TLS and configured
 proxy boundary. Kandelo does not rewrite registry URLs, package metadata, or
 tarball locations and has no npm- or package-specific proxy routing.
+
+### Firefox worker-canvas extraction investigation
+
+A standalone pixel-judging [reproduction](../tests/runtime-workarounds/FIREFOX-OFFSCREEN-EXTRACTION/entry.md)
+tracks transparent `drawImage`/`getImageData` results from an opaque
+worker-painted canvas during native readback. No product workaround is
+implemented. The separate Cage whole-frame screenshot failure and Firefox
+cursor rendering failure remain open; this extraction evidence does not
+establish their cause or waive their acceptance assertions.

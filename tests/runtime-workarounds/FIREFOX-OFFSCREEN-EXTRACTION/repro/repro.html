@@ -1,0 +1,89 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Offscreen canvas extraction reproduction</title>
+<style>
+body { margin: 0; background: rgb(255, 248, 232); }
+#scene { display: block; width: 1090px; height: 613px; margin-left: 95px; }
+#cursor { position: absolute; left: 200px; top: 100px; width: 64px; height: 64px; }
+</style>
+<canvas id="scene" width="1920" height="1080"></canvas>
+<canvas id="cursor" width="64" height="64"></canvas>
+<pre id="result">Running pixel assertions…</pre>
+<script type="module">
+const scene = document.querySelector('#scene');
+const cursor = document.querySelector('#cursor');
+const result = document.querySelector('#result');
+const worker = new Worker('./worker.js');
+const sampleCanvas = new OffscreenCanvas(1, 1);
+const sample = sampleCanvas.getContext('2d');
+const records = [];
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+function finish(verdict, reason) {
+  worker.terminate();
+  window.__reproVerdict = {verdict, details: JSON.stringify({reason, records})};
+  result.textContent = JSON.stringify(window.__reproVerdict, null, 2);
+  document.title = verdict;
+}
+function health() {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => {
+      worker.removeEventListener('message', receive);
+      resolve(null);
+    }, 5000);
+    function receive({data}) {
+      if (data.kind !== 'health') return;
+      clearTimeout(timer);
+      worker.removeEventListener('message', receive);
+      resolve(data);
+    }
+    worker.addEventListener('message', receive);
+    worker.postMessage({kind: 'health'});
+  });
+}
+function extract(phase) {
+  const start = performance.now();
+  sample.clearRect(0, 0, 1, 1);
+  sample.drawImage(scene, 50, 50, 1, 1, 0, 0, 1, 1);
+  const pixels = [...sample.getImageData(0, 0, 1, 1).data];
+  const record = {phase, pixels, ms: performance.now() - start};
+  records.push(record);
+  return record;
+}
+const opaqueRed = pixels => pixels.join(',') === '255,0,0,255';
+worker.onerror = event => finish('inconclusive', event.message);
+worker.onmessage = async ({data}) => {
+  if (data.kind === 'error') return finish('inconclusive', data.message);
+  if (data.kind !== 'ready') return;
+  try {
+    // The same source, destination, coordinates and shader-free pixels must
+    // first work without competing readback. Startup is not a defect verdict.
+    for (let i = 0; i < 5; i++) {
+      await sleep(100);
+      if (!opaqueRed(extract('sanity').pixels))
+        return finish('inconclusive', 'Opaque-red sanity check failed');
+    }
+    const enabled = new URL(location.href).searchParams.get('control') !== '1';
+    worker.postMessage({kind: 'readback', enabled});
+    for (let i = 0; i < 20; i++) {
+      await sleep(1000);
+      const record = extract(enabled ? 'readback' : 'control');
+      if (record.pixels.every(value => value === 0)) {
+        record.health = await health();
+        const state = record.health;
+        if (!state || state.sceneLost || state.sourceLost || state.sceneError ||
+            state.sourceError || state.width !== 1088 || state.height !== 612)
+          return finish('inconclusive', 'Worker/context health check failed');
+        return finish('reproduced', 'Opaque source extracted as transparent');
+      }
+      if (!opaqueRed(record.pixels))
+        return finish('inconclusive', 'Unexpected nontransparent source pixels');
+    }
+    finish('not-reproduced', 'All 20 extractions preserved opaque red');
+  } catch (error) {
+    finish('inconclusive', String(error));
+  }
+};
+const offscreen = scene.transferControlToOffscreen();
+const pointer = cursor.transferControlToOffscreen();
+worker.postMessage({scene: offscreen, cursor: pointer}, [offscreen, pointer]);
+</script>
