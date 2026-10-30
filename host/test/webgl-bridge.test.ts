@@ -218,6 +218,48 @@ class Tlv {
   }
 }
 
+describe("ordered client error flags", () => {
+  it("merges repeated client/native flags once while retaining unrelated flags", () => {
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    const pending = [0x500,0x505,0];
+    gl.getError = () => pending.shift() ?? 0;
+    const t = new Tlv(b.cmdbufView!.buffer);
+    for (const mask of [0x03,0x01]) {
+      const h = t.op(O.OP_CLIENT_ERRORS,4); t.view.setUint32(h.p,mask,true);
+    }
+    expect(decodeAndDispatch(b,0,t.p)).toBe(0);
+    expect(gl.log).toEqual([]);
+    const results: number[] = [], out = new Uint8Array(4);
+    for (let i=0;i<4;i++) {
+      expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+      results.push(new DataView(out.buffer).getUint32(0,true));
+    }
+    expect(results).toEqual([0x500,0x501,0x505,0]);
+  });
+
+  it.each([0x08,0x10,0x80,0xffff_ffff])("rejects unsupported mask %i before any batch effect", mask => {
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    let h = t.op(O.OP_CLEAR,4); t.view.setUint32(h.p,0x4000,true);
+    h = t.op(O.OP_CLIENT_ERRORS,4); t.view.setUint32(h.p,mask,true);
+    expect(decodeAndDispatch(b,0,t.p)).toBe(GL_SUBMIT_EINVAL);
+    expect(gl.log).toEqual([]); expect(b.errors).toEqual([]);
+  });
+
+  it("keeps flags on the selected context rather than a shared object peer", () => {
+    const gl = new RecordingGl(), { reg,b } = setupBinding(gl);
+    reg.bind({pid:1,sessionId:2,cmdbufAddr:0,cmdbufLen:64});
+    const peer = reg.get(1,2)!;
+    b.contextId=1;peer.contextId=2;peer.gl=b.gl;
+    expect(reg.shareObjects(1,2,0)).toBe(true);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const h = t.op(O.OP_CLIENT_ERRORS,4); t.view.setUint32(h.p,0x67,true);
+    expect(decodeAndDispatch(b,0,t.p)).toBe(0);
+    expect(b.errors).toEqual([0x500,0x501,0x502,0x505,0x506]);
+    expect(peer.errors).toEqual([]);
+  });
+});
+
 describe("logical framebuffer bindings", () => {
   function setup() {
     const gl = new RecordingGl(), { b } = setupBinding(gl);

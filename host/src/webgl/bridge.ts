@@ -19,6 +19,7 @@
  * ioctl-style device operation instead of hiding the failure in host code.
  */
 import { interruptUniformUpload, runUniformUpload, uniformUploadOp, validUniformUploadPayload } from "./uniform-upload.js";
+import { GL_CLIENT_ERROR_MASK, mergeClientGlErrors } from "./errors.js";
 import { acceptedUniformCount } from "./uniform-setters.js";
 import { imageTextureOperation, imageRenderbufferStorage, prepareImageDraw } from "./image-storage.js";
 import { repairNativeState } from "./native-recovery.js";
@@ -102,6 +103,12 @@ export function decodeAndDispatch(
   const validation = validateCommandBuffer(b.cmdbufView, offset, length);
   if (validation !== GL_SUBMIT_OK) {b.uniformUpload=null;return validation;}
   const result = walkCommandBuffer(b.cmdbufView, offset, length, (payload, op) => {
+    // Flags have no native effects and may accompany a partial upload batch.
+    // Merge before repair/utility work without interrupting that transaction.
+    if (op === O.OP_CLIENT_ERRORS) {
+      mergeClientGlErrors(b,payload.getUint32(0,true));
+      return GL_SUBMIT_OK;
+    }
     if (!uniformUploadOp(op) && interruptUniformUpload(b)) return GL_SUBMIT_OK;
     try {
       if (!repairNativeState(b.gl!) || !reconcileClientArrayRestore(b,b.gl!)) return GL_SUBMIT_EIO;
@@ -308,6 +315,7 @@ function normalizeTextureInternalFormat(internal: number, format: number, type: 
 }
 
 function validPayload(op: number, v: DataView): boolean {
+  if (op === O.OP_CLIENT_ERRORS) return exact(v,4) && (v.getUint32(0,true) & ~GL_CLIENT_ERROR_MASK) === 0;
   if (uniformUploadOp(op)) return validUniformUploadPayload(op,v);
   switch (op) {
     case O.OP_BEGIN_CLIENT_ARRAY:

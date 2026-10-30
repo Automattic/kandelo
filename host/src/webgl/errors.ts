@@ -4,6 +4,14 @@ export function recordGlError(owner: GlErrorState, error: number): void {
   if (error !== 0 && !owner.errors.includes(error)) owner.errors.push(error);
 }
 
+/** ES2's five error flags; no unadvertised desktop stack errors. */
+export const GL_CLIENT_ERROR_MASK = 0x67;
+export function mergeClientGlErrors(owner: GlErrorState, mask: number): void {
+  for (let bit = 0; bit <= 6; bit++) {
+    if (mask & (1 << bit)) recordGlError(owner, 0x500 + bit);
+  }
+}
+
 /** Native error flags belong to the selected logical context. Drain before
  * losing that identity; errors from unowned host operations have no guest
  * owner and must not be inherited by the next context. */

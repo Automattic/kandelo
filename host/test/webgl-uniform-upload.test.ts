@@ -60,6 +60,16 @@ function setup(type=0x1406,size=20000,array=true) {
 }
 
 describe("atomic large uniform uploads",()=>{
+  it("merges a client error trailer between upload batches without interrupting custody",()=>{
+    const t=setup(0x1406,2);
+    expect(t.begin(2)).toBe(0);expect(t.chunk(0,t.bits([3]))).toBe(0);
+    const pending=t.b.uniformUpload;
+    expect(t.send(O.OP_CLIENT_ERRORS,[0x03])).toBe(0);
+    expect(t.b.uniformUpload).toBe(pending);expect(t.b.errors).toEqual([0x500,0x501]);
+    expect(t.chunk(1,t.bits([4]))).toBe(0);expect(t.commit()).toBe(0);
+    expect(t.calls).toEqual([{name:"uniform1fv",values:[3,4]}]);
+    expect(t.b.errors).toEqual([0x500,0x501]);
+  });
   it.each(signatures)("submits opcode%s exactly once after data beyond one TLV is complete",(op,type,name)=>{
     const components=uniformUploadComponents(op),maximum=Math.floor((65535-16)/(components*4)),count=maximum+2;
     const t=setup(type,count),integer=op>=O.OP_UNIFORM1IV && op<=O.OP_UNIFORM4IV;

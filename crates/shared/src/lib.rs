@@ -4150,6 +4150,8 @@ pub mod gl {
     pub const OP_POLYGON_OFFSET: u16 = 0x001B;
     pub const OP_DEPTH_RANGEF: u16 = 0x001C;
     pub const OP_SAMPLE_COVERAGE: u16 = 0x001D;
+    /// Ordered transfer of the five ES2 client error flags (bits 0,1,2,5,6).
+    pub const OP_CLIENT_ERRORS: u16 = 0x001E;
     pub const OP_TEX_PARAMETERF: u16 = 0x0208;
     pub const OP_COMPRESSED_TEX_IMAGE_2D: u16 = 0x0209;
     pub const OP_COMPRESSED_TEX_SUB_IMAGE_2D: u16 = 0x020A;
@@ -5935,6 +5937,7 @@ mod gl_tests {
             OP_PIXEL_STOREI,
             OP_BLEND_FUNC_SEPARATE,
             OP_BLEND_EQUATION_SEPARATE,
+            OP_CLIENT_ERRORS,
             OP_GEN_BUFFERS,
             OP_DELETE_BUFFERS,
             OP_BIND_BUFFER,
