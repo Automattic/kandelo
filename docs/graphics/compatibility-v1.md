@@ -8472,3 +8472,48 @@ Playwright discovery of all nine Sway cases across three engines. Evidence:
 These checks do not establish repaired Sway rendering or input. Normal
 consumer execution remains an integration gate; application, host sizing,
 artifacts and ABI are unchanged by this test-only correction.
+
+### Rendered GPU cursor backing (2026-10-30)
+
+The normal e570 Sway trace contains repeated `Page-flip failed` messages
+while swaybg and foot start. In upstream wlroots 0.20.2, a legacy commit
+acquires the cursor framebuffer's GEM handle, assigns and moves the cursor,
+then submits the primary page flip. Its generic GBM modifier allocator can
+allocate rendered GPU storage for the cursor without a CPU-access usage
+hint. The prior kernel rejected that storage at cursor assignment with
+`EINVAL`, aborting the enclosing commit before the primary flip.
+
+Cursor assignment now accepts validated GPU backing through both legacy
+cursor and cursor-plane ioctls. The original BO reference remains the
+lifetime authority through GEM handle closure. The shared host reads only
+that retained native framebuffer, bounded to 64x64 pixels, using the existing
+checked readback and native-state restoration path. GPU RGBA and CPU ARGB
+both convert premultiplied pixels to the cursor canvas's straight alpha;
+context loss hides the previous image, and readback/restoration failures
+remain visible and retryable. GBM allocation policy, master-grant checks,
+wire records and ABI versions are unchanged. Performance was not measured.
+
+Source evidence in `.context/graphics-gpu-cursor/.context/`: the new Rust
+case fails before the fix at cursor assignment with `EINVAL`, and the new
+host case fails before the fix because GPU backing has no CPU pixel view.
+After repair, `gpu-cursor-final-rust.log` passes 44 focused KMS controls;
+`gpu-cursor-final-source.log` passes 34 focused host controls and the complete
+720-case graphics source gate. Coverage includes actual host GPU allocation
+and readback, channel order and partial alpha, live content refresh, context
+loss, retryable restoration, GPU cursor assignment through both ioctl
+families, geometry rejection, handle closure and subsequent primary flip.
+`gpu-cursor-host-build.log`, `gpu-cursor-wasm-check.log` and
+`gpu-cursor-evidence.log` pass canonical host JS/DTS, Wasm32 runtime-core
+checking and the 631-file evidence registry respectively.
+
+Two existing CPU pixel fixtures now perform the real post-mmap
+`primeBindFromSab` step before writing. The d081 mapping replacement model
+correctly refuses to flush an unprimed mapping; the fixtures had omitted the
+worker's corresponding post-zero-fill step. Their live-update and bounded
+cursor-image assertions remain intact.
+
+This is source/model evidence, not repaired Sway browser-rendering evidence.
+Normal kernel/products, real Sway cursor/foot and ScummVM-in-Sway execution,
+Node/browser integration, browser-memory and relevant conformance remain
+required combined validation. The original failed browser trace and its
+144 unique terminal rows are retained in the private handoff.
