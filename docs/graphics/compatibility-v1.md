@@ -10661,3 +10661,47 @@ Focused evidence in `.context/graphics-current-conformance`:
 | Full runtime ownership and entry-context audits | 120 passed; complete graph 97.5s, unchanged 180s watchdog | `owned-paired-audits.log` |
 | Exact test evidence registry | 645 files agree | `owned-paired-evidence.log` |
 | Unchanged actual compiled kernel SHA256 | matches preceding build | `owned-paired-kernel-sha256.log` |
+
+
+### GTK fixture instrumenter convergence repair (2026-10-30)
+
+The ordinary standalone program suite remains required for the full
+baseline. It is not an input to the selected packaged SFWBar/ScummVM
+browser consumers. Its GTK smoke input exposed an expensive convergence
+query in Kandelo's own fork instrumenter. All 1,444 main-thread samples
+of the original process were in the four `EXCEPT` set comparisons in
+`facts/flow.rs`; that process was deliberately stopped with its owning
+build after 38 minutes. Its completion time and output are unknown.
+This is not evidence of an external SQLite/runtime defect.
+
+The repair uses bidirectional indexed `NOT EXISTS` probes over the same
+non-null primary-key sets. It preserves comparison semantics, four-round
+feedback policy, analysis budgets and continuation format. The tests
+compare the original query, replacement and independent set masks across
+1,024 combinations, verify null-key rejection and require all four indexed
+probes without temporary set trees. All 122 focused native fork tests
+pass, including facts, native policy, streaming facts and target groups.
+
+An isolated optimized build transformed the exact 108,238,279-byte GTK
+input through the default CLI in 1,050.98 seconds wall time under
+concurrent machine load. Its output was successfully read by the
+instrumenter's artifact-identity command. The output is diagnostic only
+and was never installed in a resolver/product tree. The previous run is
+censored, so no before/after speedup or general performance claim is made.
+Normal SDK/program/image and consumer validation remains required after
+integrating the tool source; neither test assertions nor budgets changed.
+
+| Diagnostic identity | SHA256 |
+| --- | --- |
+| GTK input | `a7074cd06c1b03b024c0d0921b5ef214f49780a8d05abb17d8fb3b3b8a5395f1` |
+| Candidate optimized tool | `f1bec930ad2c20c362648297eb35729124990a875c2f2b0e4846489e20e5140c` |
+| Diagnostic output | `ce9bd550adad9c5d6a49b0201d2f3d3f016d8e3e5b83f6f938f30a4b9d52d408` |
+
+Evidence: private job `fork-convergence-be9-1030-095508-cfe8`, exit 0 after
+19m04s, `.context/fork-convergence/.context/check-convergence.sh`, its
+`candidate.stderr.log`/`candidate.identity.txt`, and the original sampling
+record `.context/gtk3-smoke-instrument-48254-findings.md`. The copied
+production query/test source is identical to that validated checkout;
+other follow-up changes concern the independent query-delivery path.
+Program56/host3/GL17/fork21 remain unchanged. This repair stays on the
+broader follow-up and does not invalidate the desktop port's input cohort.

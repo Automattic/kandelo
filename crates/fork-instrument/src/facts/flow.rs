@@ -5,6 +5,18 @@ use super::storage::FactsStore;
 use anyhow::{Context, Result, ensure};
 use rusqlite::params;
 
+// Both snapshots have non-null primary keys (flow.sql). Probe those keys in
+// both directions instead of materializing EXCEPT's temporary result trees.
+const CONVERSIONS_CHANGED: &str = "SELECT
+    EXISTS(SELECT 1 FROM conversion_reach n WHERE NOT EXISTS(
+        SELECT 1 FROM old_conversion_reach o WHERE o.name=n.name AND o.ty=n.ty))
+    OR EXISTS(SELECT 1 FROM old_conversion_reach o WHERE NOT EXISTS(
+        SELECT 1 FROM conversion_reach n WHERE n.name=o.name AND n.ty=o.ty))
+    OR EXISTS(SELECT 1 FROM conversion_name n WHERE NOT EXISTS(
+        SELECT 1 FROM old_conversion_name o WHERE o.name=n.name))
+    OR EXISTS(SELECT 1 FROM old_conversion_name o WHERE NOT EXISTS(
+        SELECT 1 FROM conversion_name n WHERE n.name=o.name))";
+
 impl FactsStore {
     /// Preserve the oracle's pass-through fixed point and its four slot/type
     /// feedback rounds. All intermediate relations remain file backed.
@@ -43,11 +55,7 @@ impl FactsStore {
                     self.trace(&progress, "conversion reach");
                     self.conversions()
                         .context("solving conversion reach feedback")?;
-                    let changed: bool = self.db.query_row("SELECT
-                        EXISTS(SELECT * FROM conversion_reach EXCEPT SELECT * FROM old_conversion_reach)
-                        OR EXISTS(SELECT * FROM old_conversion_reach EXCEPT SELECT * FROM conversion_reach)
-                        OR EXISTS(SELECT * FROM conversion_name EXCEPT SELECT * FROM old_conversion_name)
-                        OR EXISTS(SELECT * FROM old_conversion_name EXCEPT SELECT * FROM conversion_name)", [], |r| r.get(0))?;
+                    let changed: bool = self.db.query_row(CONVERSIONS_CHANGED, [], |r| r.get(0))?;
                     if !changed {
                         break;
                     }
@@ -369,5 +377,140 @@ impl FactsStore {
             [],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ORIGINAL_CHANGED: &str = "SELECT
+        EXISTS(SELECT * FROM conversion_reach EXCEPT SELECT * FROM old_conversion_reach)
+        OR EXISTS(SELECT * FROM old_conversion_reach EXCEPT SELECT * FROM conversion_reach)
+        OR EXISTS(SELECT * FROM conversion_name EXCEPT SELECT * FROM old_conversion_name)
+        OR EXISTS(SELECT * FROM old_conversion_name EXCEPT SELECT * FROM conversion_name)";
+
+    #[test]
+    fn convergence_matches_set_difference_for_every_small_snapshot_pair() {
+        let store = FactsStore::empty(Default::default()).unwrap();
+        store.db.execute_batch(include_str!("flow.sql")).unwrap();
+        // Equal/empty sets, either direction of change, and pairs differing in
+        // either component. Name-only differences must remain observable even
+        // when the reach sets agree.
+        let pairs = [(1, 1), (1, 2), (2, 1)];
+        for current_pairs in 0..8 {
+            for old_pairs in 0..8 {
+                for current_names in 0..4 {
+                    for old_names in 0..4 {
+                        store
+                            .db
+                            .execute_batch(
+                                "DELETE FROM conversion_reach;
+                            DELETE FROM old_conversion_reach; DELETE FROM conversion_name;
+                            DELETE FROM old_conversion_name;",
+                            )
+                            .unwrap();
+                        for (table, mask) in [
+                            ("conversion_reach", current_pairs),
+                            ("old_conversion_reach", old_pairs),
+                        ] {
+                            for (bit, (name, ty)) in pairs.iter().enumerate() {
+                                if mask & (1 << bit) != 0 {
+                                    store
+                                        .db
+                                        .execute(
+                                            &format!("INSERT INTO {table} VALUES(?,?)"),
+                                            params![name, ty],
+                                        )
+                                        .unwrap();
+                                }
+                            }
+                        }
+                        for (table, mask) in [
+                            ("conversion_name", current_names),
+                            ("old_conversion_name", old_names),
+                        ] {
+                            for name in 1..=2 {
+                                if mask & (1 << (name - 1)) != 0 {
+                                    store
+                                        .db
+                                        .execute(&format!("INSERT INTO {table} VALUES(?)"), [name])
+                                        .unwrap();
+                                }
+                            }
+                        }
+                        let query = |sql| {
+                            store
+                                .db
+                                .query_row(sql, [], |r| r.get::<_, bool>(0))
+                                .unwrap()
+                        };
+                        let expected = current_pairs != old_pairs || current_names != old_names;
+                        assert_eq!(query(ORIGINAL_CHANGED), expected);
+                        assert_eq!(
+                            query(CONVERSIONS_CHANGED),
+                            expected,
+                            "reach {current_pairs}/{old_pairs}, names {current_names}/{old_names}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn convergence_uses_non_null_primary_key_probes_without_temporary_set_trees() {
+        let store = FactsStore::empty(Default::default()).unwrap();
+        store.db.execute_batch(include_str!("flow.sql")).unwrap();
+        for table in ["conversion_reach", "old_conversion_reach"] {
+            for values in ["NULL,1", "1,NULL"] {
+                assert!(
+                    store
+                        .db
+                        .execute(&format!("INSERT INTO {table} VALUES({values})"), [])
+                        .is_err()
+                );
+            }
+        }
+        for table in ["conversion_name", "old_conversion_name"] {
+            assert!(
+                store
+                    .db
+                    .execute(&format!("INSERT INTO {table} VALUES(NULL)"), [])
+                    .is_err()
+            );
+        }
+        let plan = |sql| {
+            store
+                .db
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        let current = plan(CONVERSIONS_CHANGED);
+        assert_eq!(
+            current
+                .iter()
+                .filter(|line| line.contains("SEARCH") && line.contains("USING PRIMARY KEY"))
+                .count(),
+            4,
+            "{current:?}"
+        );
+        assert!(
+            !current.iter().any(|line| line.contains("TEMP B-TREE")),
+            "{current:?}"
+        );
+        let original = plan(ORIGINAL_CHANGED);
+        assert_eq!(
+            original
+                .iter()
+                .filter(|line| line.contains("EXCEPT USING TEMP B-TREE"))
+                .count(),
+            4,
+            "{original:?}"
+        );
     }
 }
