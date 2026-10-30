@@ -175,7 +175,7 @@ test("@slow games, cage, sway, labwc, tmux and WordPress survive repeated constr
     );
     // Only execution in the real terminal paints the ANSI red background;
     // echoing the typed command or a blinking cursor cannot satisfy this.
-    await typePhysicalText(page, `printf '\\033[41mLABWC_MEMORY_${cycle}\\033[0m\\n'\n`, { delay: 20 });
+    await typePhysicalText(page, `printf '\\033[48;2;220;30;30mLABWC_MEMORY_${cycle}\\033[0m\\n'\n`, { delay: 20 });
     await expect.poll(async () => {
       const frame = await footFrame(page);
       return frame.ink > 200 && frame.red > 200;

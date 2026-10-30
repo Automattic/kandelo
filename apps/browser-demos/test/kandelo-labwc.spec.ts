@@ -73,7 +73,7 @@ test("Kandelo labwc moves decorated foot windows, changes focus and exits cleanl
   }, { timeout: 180_000, intervals: [1_000] }).toBe(true);
   // The initial prompt is short. Require executed, rendered output instead
   // of assuming it occupies an arbitrary number of white pixels.
-  await typePhysicalText(page, "printf '\\033[41mLABWC_RENDERED_READY\\033[0m\\n'\n", { delay: 40 });
+  await typePhysicalText(page, "printf '\\033[48;2;220;30;30mLABWC_RENDERED_READY\\033[0m\\n'\n", { delay: 40 });
   await expect.poll(async () => {
     const frame = await footFrame(page);
     return frame.ink > 200 && frame.red > 200;
