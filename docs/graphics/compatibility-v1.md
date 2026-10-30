@@ -9791,3 +9791,59 @@ General immediate whole-context teardown still has direct shader/program native
 deletions outside these receivers; its failure custody remains an ordinary open
 lifecycle item. The parent's complete host build, normal artifacts, guests,
 real browsers, browser-memory, CTS and combined conformance remain unrun here.
+
+### Current untraced compositor selection and checked launches (2026-10-29)
+
+The frozen landing source `0b0b69b196` now passes the full 25-case Node
+compositor/device selection across 11 files, with zero skips and unchanged
+deadlines. Cage, sway and foot all pass. The run was explicitly untraced
+(`KANDELO_SWAY_TRACE` unset), used normal resolver policy and completed in
+158.40 seconds. Job `cage-sway-early-node4-rootfs-1029-222317-858c` succeeded
+in 3m04s; its final status reports `node=0` and `identities=0`.
+
+A preceding traced selection passed all compositors but failed two DRM cases
+because the default rootfs image was absent. The normal declared
+`platform-rootfs` product closure and canonical rootfs builder provisioned
+that image before the successful untraced repeat. No fixture was copied or
+restamped. The seven selected owners, kernel, SDKs, metadata, source and
+aggregate artifact inventories are identical before and after the passing
+run; only collection time differs. Evidence is
+`.context/cage-sway-early-node4-artifacts-before.json`, its `-after.json`
+peer and the file-alias checkout's
+`.context/cage-sway-early-node4.log`. The historical `9088f31021` sway
+timeouts retain no demonstrated cause; this new pass does not explain them.
+
+New private reruns use `.context/graphics-job.py` with named records in
+`.context/graphics-jobs.json`, documented in `.context/graphics-jobs.md`.
+All manifest paths resolve from the primary workspace, independently of the
+caller's working directory. Launch preflight verifies the actual checkout
+root, expected commit, tracked source changes, exact script hash and Bash
+syntax, rejects changed inputs during validation and checks existing job
+ownership immediately before launch. It prints the resolved absolute paths
+and reviewed identities. Existing already-scheduled orchestration remains
+unchanged; this is neither a new public build API nor an atomic checkout lock.
+
+Declared-shell validation passes ten launcher checks: identical resolution
+from workspace/nested checkout/`/tmp`, four invalid-input rejections, an
+actual harmless smoke launch from `/tmp`, and two controls for changing
+manifest inputs or a writer appearing during preflight. Review found and
+corrected both latter ordering gaps before final validation. Evidence:
+`.context/graphics-job-validation.log`. These checks do not run graphics
+assertions or establish graphics compatibility.
+
+The next three-engine rendered compositor selection is launched through the
+named launcher with before/after artifact collection. Its first invocation
+stopped at the collector's missing explicit xtask-environment guard before
+any browser test. The corrected script declares this checkout's built xtask;
+`cage-sway-rendered-current-1029-225237-5c76` reaches the six real browser
+cases. It finished 3/6: cage passes in Chromium, Firefox and WebKit; all
+three sway cases stop before launch because the normal swaybg package is
+absent. Its artifact identities are unchanged before/after. This is
+provisioning, not a demonstrated compositor defect. Normal bootstrap now
+materializes verified swaybg/coreutils cache entries before the named
+repeat `cage-sway-rendered-current-1029-225521-080b`; its result is pending.
+The failed run and its traces remain retained. No assertion is weakened.
+Full current landing products, gallery acceptance, browser-memory and POSIX
+conformance remain required. Follow-up source increments through `5eea9ca9f4`
+have their individual evidence above; latest combined validation remains
+pending. No ABI increment or public asynchronous activation is included.
