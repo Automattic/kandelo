@@ -1,6 +1,9 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { gotoMachine } from "./support/kandelo-machine";
+import { readFileSync } from "node:fs";
+import { resolveBinary } from "../../../host/src/binary-resolver";
+import { extractZipEntry, parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 
 /** Show the Internals syslog, the demo canvas, or the machine's terminal.
  *  Internals is an overlay toggle in the dock; showing another view means
@@ -111,7 +114,34 @@ const middle = (out: Output) => outputShot(out, out.width / 4, out.height / 4, o
 
 /** The right half of swaybar, where the status line is: upstream's config
  *  puts the bar at the top. */
-const statusLine = (out: Output) => outputShot(out, out.width / 2, 0, out.width / 2, 16);
+async function barHeight(out: Output): Promise<number> {
+  const height = Math.min(128, out.height);
+  const png = await outputShot(out, out.width / 2, 0, out.width / 2, height);
+  const rows = await out.canvas.page().evaluate(async base64 => {
+    const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+    const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
+    context.drawImage(bitmap, 0, 0);
+    const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
+    bitmap.close();
+    return Array.from({ length: image.height }, (_, y) => {
+      let black = 0;
+      for (let x = 0; x < image.width; x++) {
+        const p = (y * image.width + x) * 4;
+        if (image.data[p] < 20 && image.data[p + 1] < 20 && image.data[p + 2] < 20) black++;
+      }
+      return black / image.width;
+    });
+  }, png.toString("base64"));
+  // Read the actual painted bar boundary, not a fixed font-dependent height.
+  // The status text occupies less than half a row; foot/wallpaper is lighter.
+  const boundary = rows.findIndex(black => black < 0.5);
+  expect(boundary, "swaybar has painted a nonempty top band").toBeGreaterThan(0);
+  return boundary * height / rows.length;
+}
+async function statusLine(out: Output) {
+  return outputShot(out, out.width / 2, 0, out.width / 2, await barHeight(out));
+}
 
 /** The columns at the middle of the output, where two tiles meet. */
 const seam = (out: Output) => outputShot(out, out.width / 2 - 8, out.height / 4, 16, out.height / 2);
@@ -282,3 +312,61 @@ test("Kandelo sway tiles foot terminals under swaybar with wlroots' GLES2 render
     )
     .toBe(false);
 });
+
+
+for (const deviceScaleFactor of [1, 2]) {
+  test.describe(`Sway logical desktop at ${deviceScaleFactor}x`, () => {
+    test.use({ headless: true, deviceScaleFactor, viewport: { width: 1100, height: 650 } });
+    test("keeps readable fonts, actual output scale and click targets on a small pane", async ({ page }) => {
+      test.setTimeout(300_000);
+      // These are the normal resolver-owned archive bytes mounted by the
+      // shell image at /usr/share/kandelo, not a test-only substitute config.
+      const zip = new Uint8Array(readFileSync(resolveBinary("programs/wayland-demo/kandelo-desktop-data.zip")));
+      const entries = parseZipCentralDirectory(zip);
+      const member = (path: string) => {
+        const entry = entries.find(entry => entry.fileName === path);
+        expect(entry, `production archive contains ${path}`).toBeDefined();
+        return new TextDecoder().decode(extractZipEntry(zip, entry!));
+      };
+      expect(member("sway/config")).toContain("font pango:monospace 12");
+      expect(member("sway/config")).toContain("set $term foot --config=/usr/share/kandelo/sway/foot.ini");
+      expect(member("sway/config")).toContain("bindsym --no-warn $mod+Return exec $term");
+      expect(member("sway/config")).toContain("bindsym Ctrl+Return exec $term");
+      expect(member("sway/foot.ini")).toContain("font=monospace:size=14");
+      expect(member("sway/foot.ini")).toContain("dpi-aware=no");
+
+      await gotoMachine(page, "sway");
+      await openSurface(page, "Demo");
+      await expect.poll(() => chipText(page), { timeout: 180_000 }).toMatch(/webgl2-gl/i);
+      const out = await output(page);
+      await expect.poll(async () => isFoot(await meanColor(page, await middle(out))),
+        { timeout: 180_000, intervals: [1_000] }).toBe(true);
+      const box = (await out.canvas.boundingBox())!;
+      // The mode remains native pixels. In particular, the 2x pane must
+      // exercise the old automatic-scale policy's <1200-pixel failure case.
+      expect(Math.abs(out.width - box.width * deviceScaleFactor)).toBeLessThanOrEqual(2);
+      if (deviceScaleFactor === 2) expect(out.height).toBeLessThan(1200);
+      const cssBarHeight = await barHeight(out) * box.height / out.height;
+      expect(cssBarHeight, "12pt Sway UI remains readable in CSS pixels").toBeGreaterThanOrEqual(18);
+      expect(cssBarHeight).toBeLessThan(32);
+
+      // Click an actual rendered client using CSS→mode coordinates. Query
+      // Sway's real IPC state through its shell; preserve it across exit so
+      // the parent terminal can report scale and the committed input marker.
+      await clickOutput(out, out.width / 3, out.height / 3);
+      await page.keyboard.type(`echo HIDPI_CLICK_${deviceScaleFactor} > /tmp/sway-hidpi-click\n`, { delay: 40 });
+      await page.keyboard.type("swaymsg -t get_outputs > /tmp/sway-hidpi-outputs\n", { delay: 40 });
+      await page.keyboard.type("swaymsg exit\n", { delay: 40 });
+      await expect.poll(() => displayOwner(page), { timeout: 60_000 }).toBe(0);
+      await expect(page.getByLabel("Computer views").getByRole("button", { name: "Terminal", exact: true }))
+        .toHaveAttribute("aria-current", "true", { timeout: 60_000 });
+      await page.locator(".xterm").first().click();
+      await page.keyboard.type("echo HIDPI_EXIT=$?; cat /tmp/sway-hidpi-click; "
+        + `while IFS= read -r line; do case "$line" in *'"scale"'*) echo HIDPI_SCALE:$line;; esac; done < /tmp/sway-hidpi-outputs\n`, { delay: 20 });
+      await expect.poll(() => terminalText(page), { timeout: 30_000 }).toContain("HIDPI_EXIT=0");
+      await expect.poll(() => terminalText(page), { timeout: 30_000 }).toContain(`HIDPI_CLICK_${deviceScaleFactor}`);
+      await expect.poll(() => terminalText(page), { timeout: 30_000 })
+        .toMatch(new RegExp(`HIDPI_SCALE:.*"scale":\\s*${deviceScaleFactor}(?:\\.0)?(?:,|\\s|$)`));
+    });
+  });
+}

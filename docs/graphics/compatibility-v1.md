@@ -8315,3 +8315,33 @@ It is reattached without opening Finder. The selected Sortix checkout
 `/Volumes/KandeloCaseBuild/moscow-vma-fragments-os-test` is pristine at
 `7e8f0082ab0b58ad3383a8abbf47dc4b40dcf25d`; current-worktree SDK, kernel
 and overrides remain required for the later normal conformance run.
+
+### Sway density policy and readable defaults (2026-10-30)
+
+Sway's generic automatic scale policy now rounds measured native connector
+DPI/96 instead of requiring both DPI axes strictly above 192 and a
+1200-pixel output height. Unknown, invalid and aspect-only physical sizes
+still select scale 1. No mode, synthetic physical dimension, evdev range,
+SDL behavior, renderer or browser-specific DPI environment is changed.
+Sway's production UI font is 12pt; its separate terminal config selects
+14pt with `dpi-aware=no`, through both terminal bindings and startup. The
+shared 12pt terminal config remains unchanged. The actual desktop archive
+assembly places `sway/foot.ini` at the shell archive mount's declared
+`/usr/share/kandelo/sway/foot.ini` path.
+
+Focused source evidence uses the manifest-verified Sway 1.12 archive and
+compiles its actual output-scale functions in the declared shell. The
+unpatched source fails the native density controls; the patched source
+passes the full focused matrix, including small 2x outputs, millimetre
+rounding, pending modes, rotation and unknown/aspect-only fallback. The
+actual recipe's archive phase separately verifies UI12/foot14 membership
+and preserved shared foot12. Browser TypeScript transpilation checks syntax
+only. Logs: `.context/sway-hidpi-before.log`, `sway-hidpi-after.log`, and
+`sway-hidpi-final.log` in the file-alias checkout.
+
+Normal Sway/wayland-demo/shell artifacts, browser 1x/2x rendering/input/IPC,
+full browser-memory and conformance are not run by this focused batch.
+The existing browser spec replaces its fixed 16-pixel bar crop with the
+actual painted bar boundary and adds explicit 1x/2x small-pane cases.
+Normal artifact and combined runtime validation remain integration gates.
+Program 56 / host 3 / GL 17 / fork 21 remain fixed.
