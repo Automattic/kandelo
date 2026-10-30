@@ -84,6 +84,14 @@ From the repository root, build what the supported products demand with:
 ./run.sh local-build --all   # every package the supported set declares
 ```
 
+`./run.sh build rootfs` (or `xtask bootstrap rootfs`) first selects the
+registered rootfs package and its dependencies, then composes the canonical
+`host/wasm/rootfs.vfs.zst` image from the published artifacts. An existing
+published tree may contain only an earlier narrow package selection; its
+presence does not establish that the rootfs dependencies are available.
+The image generator continues to reject missing selected artifacts rather
+than falling back to another cache or local override.
+
 By default the build selects the closure of every active product in
 `packages/sets/local-supported.toml`, plus the packages that own the browser
 app's own `@binaries` imports (the `demanded` selection). Packages that only
