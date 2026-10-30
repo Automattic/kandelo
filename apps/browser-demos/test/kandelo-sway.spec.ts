@@ -120,33 +120,39 @@ const middle = (out: Output) => outputShot(out, out.width / 4, out.height / 4, o
  * is at the bottom; Sway's focused 12pt title remains at the top. */
 async function paintedBandHeight(out: Output, edge: "top" | "bottom", color: Rgb): Promise<number> {
   const height = Math.min(128, out.height);
-  const png = await outputShot(out, out.width / 2, edge === "top" ? 0 : out.height - height,
-    out.width / 2, height);
-  const rows = await out.canvas.page().evaluate(async ([base64, color]) => {
-    const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
-    const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
-    const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
-    context.drawImage(bitmap, 0, 0);
-    const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
-    bitmap.close();
-    return Array.from({ length: image.height }, (_, y) => {
-      let background = 0;
-      for (let x = 0; x < image.width; x++) {
-        const p = (y * image.width + x) * 4;
-        if ([0, 1, 2].every(channel => Math.abs(image.data[p + channel] - color[channel]) <= 3)) background++;
-      }
-      return background / image.width;
-    });
-  }, [png.toString("base64"), color] as const);
-  if (edge === "bottom") rows.reverse();
-  // Permit a thin toolkit/window border, but require a contiguous painted
-  // band adjoining the actual output edge. Text occupies under half a row.
-  const first = rows.findIndex(background => background >= 0.5);
-  expect(first, `${edge} band reaches the output edge`).toBeGreaterThanOrEqual(0);
-  expect(first * height / rows.length).toBeLessThanOrEqual(4);
-  const boundary = rows.findIndex((background, row) => row > first && background < 0.5);
-  expect(boundary, `${edge} band has a measured nonempty boundary`).toBeGreaterThan(first);
-  return boundary * height / rows.length;
+  let measured = 0;
+  // The renderer can claim its CRTC before a lazy panel/title client paints.
+  // Measure the same actual edge band only after its first repaint.
+  await expect(async () => {
+    const png = await outputShot(out, out.width / 2, edge === "top" ? 0 : out.height - height,
+      out.width / 2, height);
+    const rows = await out.canvas.page().evaluate(async ([base64, color]) => {
+      const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+      const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
+      context.drawImage(bitmap, 0, 0);
+      const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
+      bitmap.close();
+      return Array.from({ length: image.height }, (_, y) => {
+        let background = 0;
+        for (let x = 0; x < image.width; x++) {
+          const p = (y * image.width + x) * 4;
+          if ([0, 1, 2].every(channel => Math.abs(image.data[p + channel] - color[channel]) <= 3)) background++;
+        }
+        return background / image.width;
+      });
+    }, [png.toString("base64"), color] as const);
+    if (edge === "bottom") rows.reverse();
+    // Permit a thin toolkit/window border, but require a contiguous painted
+    // band adjoining the actual output edge. Text occupies under half a row.
+    const first = rows.findIndex(background => background >= 0.5);
+    expect(first, `${edge} band reaches the output edge`).toBeGreaterThanOrEqual(0);
+    expect(first * height / rows.length).toBeLessThanOrEqual(4);
+    const boundary = rows.findIndex((background, row) => row > first && background < 0.5);
+    expect(boundary, `${edge} band has a measured nonempty boundary`).toBeGreaterThan(first);
+    measured = boundary * height / rows.length;
+  }).toPass({ timeout: 120_000, intervals: [100, 500, 1_000] });
+  return measured;
 }
 
 const barHeight = (out: Output) => paintedBandHeight(out, "bottom", [50, 50, 50]);

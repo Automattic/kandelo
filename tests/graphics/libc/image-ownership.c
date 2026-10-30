@@ -107,7 +107,8 @@ static int native_window, record_windows[3];
 static const void *wayland_native_display=(void *)(uintptr_t)0x576100u;
 static int wayland_native_live=1,native_window_live=1,native_window_active;
 static uint64_t wayland_native_identity=1;
-static unsigned native_window_holds,native_window_presents;
+static unsigned native_window_holds,native_window_presents,native_window_copies,native_window_prepare_presents;
+static int native_window_present_active;
 static uint32_t native_window_bo;
 static int native_window_fd = 10;
 static uint32_t native_window_width = 64, native_window_height = 32;
@@ -131,6 +132,11 @@ int _wpk_wlegl_prepare(void *lease,struct wpk_wlegl_frame *frame) {
     *frame=(struct wpk_wlegl_frame){.fd=native_window_fd,.handle=native_window_bo,
         .width=native_window_width,.height=native_window_height};return 1;
 }
+int _wpk_wlegl_prepare_present(void *lease,struct wpk_wlegl_frame *frame) {
+    if(!_wpk_wlegl_prepare(lease,frame))return 0;
+    native_window_prepare_presents++;native_window_present_active=1;
+    frame->handle=native_window_bo+100;return 1;
+}
 int _wpk_wlegl_acquire(const void *window,const void *display,uint64_t identity,void **lease,struct wpk_wlegl_frame *frame) {
     if(window!=&native_window || (display && (display!=wayland_native_display || identity!=wayland_native_identity))
       || !_wpk_wlegl_prepare((void *)window,frame))return 0;
@@ -139,7 +145,8 @@ int _wpk_wlegl_acquire(const void *window,const void *display,uint64_t identity,
 int _wpk_wlegl_finish(void *lease,int present) {
     assert(lease==&native_window && native_window_holds && native_window_active);
     native_window_active=0;
-    if(present) {if(!native_window_live || !wayland_native_live)return 0;native_window_presents++;}
+    if(present) {assert(native_window_present_active);if(!native_window_live || !wayland_native_live)return 0;native_window_presents++;}
+    native_window_present_active=0;
     return 1;
 }
 void _wpk_wlegl_release(void *lease) {assert(lease==&native_window && native_window_holds);native_window_holds--;}
@@ -864,6 +871,12 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         if (fail_surface_update) { errno = ENOMEM; return -1; }
         uint32_t words[8]; memcpy(words,arg,sizeof words);
         if (!words[5]) surface_target = words[4];
+        else if(native_window_present_active) {
+            assert(words[0]==WPK_SURFACE_DEFAULT && words[1]==native_window_width && words[2]==native_window_height && words[3]==1);
+            assert(words[4]==0 && words[6]==0 && words[7]==0);
+            assert((fd==native_window_fd ? words[5] : transferred_sources[fd-10])==native_window_bo+100 && surface_target!=words[5]);
+            native_window_copies++;
+        }
     } else if (request == GLIO_MAKE_CURRENT) {
         if (fail_make_current) { errno = make_current_errno; return -1; }
         assert(arg);
@@ -1624,9 +1637,15 @@ int main(int argc, char **argv) {
         EGLContext context=eglCreateContext(client,(EGLConfig)1,EGL_NO_CONTEXT,attrs);assert(context!=EGL_NO_CONTEXT);
         assert(eglMakeCurrent(client,window,window,context));
         assert(eglSwapBuffers(client,window) && native_window_presents==1 && !native_window_active);
+        assert(native_window_copies==1 && native_window_prepare_presents==1);
+        // Copy failure must cancel the reserved front without attaching it.
+        fail_surface_update=1;
+        assert(!eglSwapBuffers(client,window));(void)eglGetError();fail_surface_update=0;
+        assert(native_window_copies==1 && native_window_presents==1 && !native_window_active && !native_window_present_active);
+        assert(eglSwapBuffers(client,window) && native_window_copies==2 && native_window_presents==2);
         wayland_native_live=0;
         assert(!eglSwapBuffers(client,window) && eglGetError()==EGL_BAD_NATIVE_WINDOW);
-        assert(native_window_presents==1 && native_window_holds==1 && wayland_holds==1);
+        assert(native_window_presents==2 && native_window_holds==1 && wayland_holds==1);
         assert(eglDestroySurface(client,window) && eglDestroyContext(client,context));
         assert(eglReleaseThread() && eglTerminate(client));
         assert(native_window_holds==0 && wayland_holds==0);
@@ -4811,6 +4830,7 @@ int main(int argc, char **argv) {
         fail_surface_update = 1; native_window_bo = 79;
         assert(!_wpk_egl_window_retarget(&native_window));
         assert(surface_target == 78 && destroyed_surfaces == 0);
+        fail_surface_update=0;
         assert(eglGetCurrentSurface(EGL_DRAW) == surface && eglSwapBuffers(dpy, surface));
         assert(eglDestroySurface(dpy, surface));
         assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
