@@ -7,6 +7,13 @@ import { footFrame, menuChange, type Frame } from "./support/labwc-frame";
 test.use({ headless: true });
 
 async function openSurface(page: Page, label: "Internals" | "Demo" | "Terminal") {
+  // Real display clicks capture the browser pointer. Follow the shipped
+  // Escape-to-release interaction before selecting controls outside the guest.
+  if (await page.evaluate(() => document.pointerLockElement !== null)) {
+    await page.keyboard.press("Escape");
+    await expect.poll(() => page.evaluate(() => document.pointerLockElement === null))
+      .toBe(true);
+  }
   const internals = page.getByRole("button", { name: "Internals", exact: true });
   await internals.waitFor({ state: "visible", timeout: 30_000 });
   if (((await internals.getAttribute("aria-pressed")) === "true") !== (label === "Internals")) {
@@ -133,8 +140,24 @@ test("Kandelo labwc moves decorated foot windows, changes focus and exits cleanl
   // Upstream's default ignoreButtonReleasePeriod is 250 ms, not readiness.
   await page.waitForTimeout(300);
   const terminalItem = (await menuChange(page, rootBefore))!;
-  await movePointer(page, movedFrame, terminalItem.x + terminalItem.width / 2, terminalItem.y + 10);
+  const menuPoint = { x: terminalItem.x + terminalItem.width / 2, y: terminalItem.y + 10 };
+  const menuCanvas = (await canvas(page).boundingBox())!;
+  await test.info().attach("labwc-menu-input", { contentType: "application/json",
+    body: JSON.stringify({ dpr: await page.evaluate(() => window.devicePixelRatio),
+      frame: { width: movedFrame.width, height: movedFrame.height }, canvas: menuCanvas,
+      item: terminalItem, point: menuPoint,
+      cssPoint: { x: menuCanvas.x + menuPoint.x * menuCanvas.width / movedFrame.width,
+        y: menuCanvas.y + menuPoint.y * menuCanvas.height / movedFrame.height } }) });
+  await movePointer(page, movedFrame, menuPoint.x, menuPoint.y);
   await page.mouse.down(); await page.mouse.up();
+  // Observe the menu action in the guest before sending Escape to release
+  // host pointer capture. The new foreground terminal paints at its initial
+  // placement, independently of the first window's interior drag.
+  await expect.poll(async () => {
+    const foreground = (await footFrame(page)).foot;
+    return foreground !== null && Math.abs(foreground.x - movedBounds.x) > 40
+      && Math.abs(foreground.y - movedBounds.y) > 25;
+  }, { timeout: 60_000, intervals: [500] }).toBe(true);
   await footProcesses(page, 2);
   await page.keyboard.press("Alt+F4");
   await footProcesses(page, 1);

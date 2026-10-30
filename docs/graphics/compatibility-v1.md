@@ -8563,3 +8563,47 @@ the original log, screenshot and trace are retained at
 `desktop-preview-current-results/`. This is not a repaired cursor or
 ScummVM rendering result. A new normal combined product build and separate
 headless preview verification remain required before offering that fix.
+
+### Labwc fixture releases real pointer capture before dock selection
+
+The original three-case Chromium preview run remains preserved at
+`.context/desktop-preview-current.log` in the positive checkout: both Sway
+DPI cases pass, while Labwc times out after opening its second real foot
+window because the canvas intercepts the Internals dock click. Its
+original screenshot and trace are unchanged. This is a fixture interaction
+error, rather than an overlapping dock layout: the display deliberately
+requests browser pointer lock after trusted canvas clicks.
+
+A separate headless Chromium causal probe against the unchanged port-5639
+preview confirms the actual canvas owns pointer lock. The canvas ends at
+CSS y613 and Internals begins at y664. An ordinary dock trial click fails
+with the original interception; a real Escape releases capture, after
+which the ordinary Internals click succeeds. The fixture now follows that
+shipped Escape-to-release interaction and observes capture retirement
+before selecting an external control. It neither force-clicks nor invokes
+`exitPointerLock` through evaluation. Production source and normal guest
+artifacts are unchanged.
+
+Evidence is in the isolated `labwc-fixture-input` checkout's `.context/`:
+`original-failure-evidence.json` records hashes of the original log,
+screenshot and trace; `labwc-pointer-proof.json`, `labwc-pointer-before.png`
+and `labwc-pointer-after.png` record the causal probe. An Escape-only
+full-spec variant reaches Internals but fails the two-foot count after
+4m08s; its separate `labwc-fixed-results` trace remains preserved. The
+fixture therefore observes a newly painted foreground foot after the menu
+action before leaving the guest display. With that readiness assertion,
+the complete original Chromium scenario passes in 30.4s: drag, root menu,
+Terminal action, process counts, focus-specific shell variables and clean
+compositor exit. This records the input-ordering observation without
+attributing it to a particular kernel or browser delivery stage.
+
+The final source also attaches actual DPR, screenshot and canvas bounds,
+menu bounds and converted click coordinates as `labwc-menu-input` JSON.
+The final repeated full Chromium run passes in 42.7s, retaining its
+successful trace under `.context/labwc-final-results`; the exported
+attachment is `.context/labwc-menu-input.json`. Actual DPR is 1, the
+screenshot is 1090×613 and the canvas occupies 1089×613 CSS pixels. Other
+engines, broader browser-memory and graphics conformance are not rerun by
+this fixture batch. Production/artifacts stay at the preview's existing c268 source;
+this batch changes only the fixture and evidence ledger. This check makes
+no cursor-performance claim.
