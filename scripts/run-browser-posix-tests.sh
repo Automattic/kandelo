@@ -247,7 +247,11 @@ if [ ${#WASM_FILES[@]} -gt 0 ]; then
     # only explanation a run with missing results has.
     RUNNER_RC=0
     set +e
+    # --data-prefix stages each program in the guest filesystem under the
+    # path its argv[0] names, as the Node runner's fixture does; tests that
+    # exec themselves (sigaltstack/9-1) need that file to exist.
     npx tsx scripts/browser-test-runner.ts --json --timeout "$TEST_TIMEOUT" \
+        --data-prefix "$BUILD_DIR" \
         "${WASM_FILES[@]}" > "$RESULT_FILE"
     RUNNER_RC=$?
     set -e
