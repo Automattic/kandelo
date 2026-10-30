@@ -1,3 +1,4 @@
+import type { GlOperationStream } from "./operation-stream.js";
 import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
 import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
 import {
@@ -31,11 +32,33 @@ export class GlFenceCandidate {
   }
 }
 
+export type GlFenceSource = Readonly<{pid:number;sessionId:number;operations:GlOperationStream}>;
+
 /** A waiter owns this lease independently of the public handle and creator.
  * It contains native/scalar ownership only, never a guest binding or memory. */
+const fenceLeaseMint = Symbol("retained GL fence lease");
 export class GlFenceLease {
   private released = false;
-  constructor(private store: GlFenceOwner, private fence: Fence) {}
+  constructor(private store: GlFenceOwner, private fence: Fence, authority: typeof fenceLeaseMint) {
+    if (authority !== fenceLeaseMint) throw new Error("GL fence lease requires native owner authority");
+  }
+  get context(): WebGL2RenderingContext { return this.fence.owner.gl!; }
+  get token(): number { return this.fence.token; }
+  matchesSource(source: GlFenceSource): boolean {
+    return !this.released && this.store.matchesSource(source);
+  }
+  /** Remove precisely the captured public fence, even after creator retirement.
+   * Our reference keeps its native handle alive until subsequent retirement. */
+  publishRelease(): boolean {
+    return !this.released && this.store.destroyCaptured(this.fence);
+  }
+  releaseRetirement(): boolean {
+    if (!this.released) {
+      this.released = true;
+      return this.store.release(this.fence);
+    }
+    return this.store.retryRetirement(this.fence);
+  }
   poll(currentErrors: GlErrorState | null): boolean | null {
     if (this.released) return null;
     const gl = this.fence.owner.gl!;
@@ -55,8 +78,7 @@ export class GlFenceLease {
   }
   release(): void {
     if (this.released) return;
-    this.released = true;
-    this.store.release(this.fence);
+    this.releaseRetirement();
   }
 }
 
@@ -71,6 +93,14 @@ export class GlFenceOwner {
   private fences = new Map<number, Fence>();
   private serial = 0;
   private closed = false;
+  private source: GlFenceSource | null;
+  constructor(source?: GlFenceSource) {
+    this.source = source ? Object.freeze({pid:source.pid,sessionId:source.sessionId,operations:source.operations}) : null;
+  }
+  matchesSource(source: GlFenceSource): boolean {
+    return !!this.source && this.source.pid === source.pid && this.source.sessionId === source.sessionId
+      && this.source.operations === source.operations;
+  }
 
   prepare(source: CheckedGlOwner, requestToken?: number): GlFenceCandidate | null {
     this.pruneCompleted();
@@ -120,7 +150,7 @@ export class GlFenceOwner {
     if (!fence?.published || fence.destroyed || fence.references >= Number.MAX_SAFE_INTEGER) return null;
     // A failed lease allocation must not increment its reference count.
     try {
-      const lease = new GlFenceLease(this, fence);
+      const lease = new GlFenceLease(this, fence, fenceLeaseMint);
       fence.references++;
       return lease;
     } catch { return null; }
@@ -149,17 +179,27 @@ export class GlFenceOwner {
     this.collect(fence);
     return true;
   }
-  release(fence: Fence): void {
-    fence.references--;
-    this.collect(fence);
+  destroyCaptured(fence: Fence): boolean {
+    if (this.fences.get(fence.token) !== fence || !fence.published) return false;
+    // An already-destroyed captured public name is an accepted idempotent
+    // release; its retained lease still owns the exact original native fence.
+    fence.destroyed = true;
+    return true;
   }
-  private collect(fence: Fence): void {
-    if (!fence.destroyed || fence.references !== 0) return;
+  release(fence: Fence): boolean {
+    fence.references--;
+    return this.collect(fence);
+  }
+  retryRetirement(fence: Fence): boolean { return this.collect(fence); }
+  private collect(fence: Fence): boolean {
+    if (!fence.destroyed || fence.references !== 0) return true;
     // Rejected native deletion remains in the preallocated retirement owner,
     // fences physical-context admission and survives this session's removal.
     // Keep failed receipts discoverable by teardown even after the logical
     // context disappears. Public lookup already rejects destroyed records.
-    if (retireNativeRetirement(fence.retirement)) this.fences.delete(fence.token);
+    if (!retireNativeRetirement(fence.retirement)) return false;
+    this.fences.delete(fence.token);
+    return true;
   }
   private pruneCompleted(): void {
     for (const [token, fence] of this.fences) {

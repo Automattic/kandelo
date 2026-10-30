@@ -311,6 +311,7 @@ export class GlContextRegistry {
 
   private newBinding(b: GlBindingInput, canvas: GlBinding["canvas"], forward: GlForwardChannel | null): GlBinding {
     const sessionId = (b.sessionId ?? 0) >>> 0;
+    const operations = new GlOperationStream();
     const binding: GlBinding = exposeSurfaceResources(exposeGlSharedObjects({
       surface: createSurfaceResources(b.pid), drawSurface: null, readSurface: null,
       objects: createGlObjectGroup(),
@@ -327,8 +328,8 @@ export class GlContextRegistry {
       undefinedDefaultFbo: null,
       cmdbufView: null,
       gl: null,
-      fences: new GlFenceOwner(),
-      operations: new GlOperationStream(),
+      fences: new GlFenceOwner({pid:b.pid,sessionId,operations}),
+      operations,
       canvas,
       contextId: null,
       errors: [],

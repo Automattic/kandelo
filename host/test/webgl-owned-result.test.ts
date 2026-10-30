@@ -1,5 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { GlOwnedResultStore, GlResultOwner, GlNativeResultCustody, GlRemoteResultCustody, GlResultPeer } from "../src/webgl/owned-result.js";
+import * as resultTypes from "../src/webgl/owned-result.js";
+import { QOP_FENCE_STATUS, QOP_RELEASE_FENCE } from "../src/webgl/ops.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { resizeSurfaceTarget } from "../src/webgl/present-target.js";
 import { applyCurrentDrawable } from "../src/webgl/current.js";
@@ -18,7 +20,7 @@ function open(s: GlOwnedResultStore,pid: number,sessionId: number,operations?: G
 }
 
 function begin(s: GlOwnedResultStore, owner: GlResultOwner, token: bigint, op: number,
-  input: Uint8Array, capacity: number, custody: GlNativeResultCustody | GlRemoteResultCustody | null = null) {
+  input: Uint8Array, capacity: number, custody: GlNativeResultCustody | resultTypes.GlFenceResultCustody | GlRemoteResultCustody | null = null) {
   return s.begin(owner,token,op,input,capacity,custody);
 }
 
@@ -116,7 +118,7 @@ function native() {
   const make=()=>{const value={serial:++serial}; live.add(value); return value;};
   const remove=(value:object)=>{ if (reject) throw new Error("native deletion blocked"); live.delete(value); };
   const gl=new Proxy({getError:()=>flags.shift()??0,isContextLost:()=>false,getParameter:(p:number)=>p===0x84e0?0x84c0:null,checkFramebufferStatus:()=>0x8cd5,
-    createTexture:make,createVertexArray:make,createFramebuffer:make,createRenderbuffer:make,createSync:make,fenceSync:make,
+    getSyncParameter:()=>0x9119,createTexture:make,createVertexArray:make,createFramebuffer:make,createRenderbuffer:make,createSync:make,fenceSync:make,
     deleteTexture:remove,deleteVertexArray:remove,deleteFramebuffer:remove,deleteRenderbuffer:remove,deleteSync:remove,
   },{get:(target,key)=>Reflect.get(target,key)??(()=>null)}) as unknown as WebGL2RenderingContext;
   const registry=new GlContextRegistry();registry.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
@@ -360,4 +362,120 @@ it("owner metadata teardown cannot discard unresolved actual custody", () => {
   f.block(false); expect(s.acknowledgeRetired(owner,1n).state).toBe("retired");
   expect(s.forgetOwner(owner)).toBe(true); expect(s.pendingRequests).toBe(0);
   expect(open(s,7,11)!.registration).toBeGreaterThan(owner.registration); f.registry.unbind(7);
+});
+
+
+function fenceInput(f: ReturnType<typeof native>) { const input=new Uint8Array(4); new DataView(input.buffer).setUint32(0,f.candidate.token,true); return input; }
+
+function fenceCustody(f: ReturnType<typeof native>, owner: GlResultOwner, kind: "status" | "release", lease = f.binding.fences.acquire(f.candidate.token)!) {
+  return new resultTypes.GlFenceResultCustody(owner,lease,kind,f.muxer);
+}
+
+it("retains exact source fence status after creator context retirement without current execution custody", () => {
+  const f=native(), s=store(), owner=open(s,7,11,f.binding.operations)!;
+  f.candidate.publish(); const custody=fenceCustody(f,owner,"status");
+  expect(f.execution.release()).toBe(true); f.registry.destroyContext(7,11);
+  expect(f.binding.contextId).toBeNull();
+  expect(begin(s,owner,1n,QOP_FENCE_STATUS,fenceInput(f),16,custody)).toBe("admitted");
+  const execution=s.take(owner,1n)!;
+  expect(custody.poll()).toBe(true); execution.complete(0); s.commit(owner,1n);
+  expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"retired",mode:"commit",accepted:true});
+  expect(f.binding.fences.has(f.candidate.token)).toBe(true); f.registry.unbind(7);
+});
+
+it("fence-release EFAULT cancellation preserves public sync while Commit removes it exactly once", () => {
+  const f=native(), s=store(), owner=open(s,7,11,f.binding.operations)!;
+  f.candidate.publish(); const cancelledLease=f.binding.fences.acquire(f.candidate.token)!;
+  const cancel=fenceCustody(f,owner,"release",cancelledLease), cancelledPublication=vi.spyOn(cancelledLease,"publishRelease");
+  begin(s,owner,1n,QOP_RELEASE_FENCE,fenceInput(f),16,cancel);
+  s.take(owner,1n)!.complete(16); s.cancel(owner,1n);
+  expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"retired",mode:"cancel",accepted:true});
+  expect(f.binding.fences.has(f.candidate.token)).toBe(true);
+  expect(cancelledPublication).not.toHaveBeenCalled();
+  const committedLease=f.binding.fences.acquire(f.candidate.token)!;
+  const commit=fenceCustody(f,owner,"release",committedLease), committedPublication=vi.spyOn(committedLease,"publishRelease");
+  begin(s,owner,2n,QOP_RELEASE_FENCE,fenceInput(f),16,commit); s.take(owner,2n)!.complete(16);
+  expect(f.binding.fences.has(f.candidate.token)).toBe(true); s.commit(owner,2n);
+  expect(s.acknowledgeRetired(owner,2n)).toEqual({state:"retired",mode:"commit",accepted:true});
+  expect(f.binding.fences.has(f.candidate.token)).toBe(false);
+  expect(s.acknowledgeRetired(owner,2n)).toEqual({state:"retired",mode:"commit",accepted:true});
+  expect(committedPublication).toHaveBeenCalledTimes(1);
+  f.registry.unbind(7);
+});
+
+it("fence lease custody rejects foreign source ledger, stale lease and opcode mismatch", () => {
+  const f=native(), s=store(), owner=open(s,7,11,f.binding.operations)!, foreign=open(s,7,12)!;
+  f.candidate.publish(); const lease=f.binding.fences.acquire(f.candidate.token)!;
+  expect(()=>fenceCustody(f,foreign,"release",lease)).toThrow("source");
+  const foreignLedger=new GlResultOwner(owner.registration,7,11,new GlOperationStream());
+  expect(()=>fenceCustody(f,foreignLedger,"release",lease)).toThrow("source");
+  const custody=fenceCustody(f,owner,"release",lease);
+  expect(begin(s,owner,1n,QOP_FENCE_STATUS,fenceInput(f),16,custody)).toBe("rejected");
+  expect(begin(s,owner,1n,QOP_RELEASE_FENCE,new Uint8Array([255,0,0,0]),16,custody)).toBe("rejected");
+  expect(begin(s,owner,1n,QOP_RELEASE_FENCE,fenceInput(f),16,custody)).toBe("admitted");
+  expect(()=>fenceCustody(f,owner,"release",lease)).toThrow("transferred");
+  s.take(owner,1n)!.complete(0); s.cancel(owner,1n); s.acknowledgeRetired(owner,1n);
+  expect(()=>fenceCustody(f,owner,"release",lease)).toThrow();
+  f.execution.release(); f.registry.unbind(7);
+});
+
+it("fence release retirement retries actual deletion and preserves selected peer flags", () => {
+  const f=native(), s=store(), owner=open(s,7,11,f.binding.operations)!;
+  f.candidate.publish(); const custody=fenceCustody(f,owner,"release"), deletion=vi.spyOn(f.gl,"deleteSync");
+  f.registry.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0}); const peer=f.registry.get(7,12)!;
+  peer.gl=f.gl;peer.contextId=2;f.muxer.switchTo(peer);
+  begin(s,owner,1n,QOP_RELEASE_FENCE,fenceInput(f),16,custody); s.take(owner,1n)!.complete(0);
+  f.execution.release(); f.registry.destroyContext(7,11); f.block(true); f.flags.push(0x501); s.commit(owner,1n);
+  expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"pending"});
+  expect(peer.errors).toEqual([0x501]); expect(f.binding.errors).toEqual([]);
+  expect(s.retainedBytes).toBe(36); expect(f.binding.fences.has(f.candidate.token)).toBe(false);
+  const nativeSync=deletion.mock.calls[0][0]!; expect(f.live.has(nativeSync)).toBe(true);
+  f.block(false); expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"retired",mode:"commit",accepted:true});
+  expect(s.retainedBytes).toBe(0); expect(f.live.has(nativeSync)).toBe(false); f.registry.unbind(7);
+});
+
+
+it("creatorless status polling preserves source renderer's selected peer error owner", () => {
+  const f=native(), s=store(), owner=open(s,7,11,f.binding.operations)!;
+  f.candidate.publish(); const custody=fenceCustody(f,owner,"status");
+  f.execution.release(); f.registry.destroyContext(7,11);
+  f.registry.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0}); const peer=f.registry.get(7,12)!;
+  peer.gl=f.gl;peer.contextId=2;f.muxer.switchTo(peer); f.flags.push(0x500);
+  begin(s,owner,1n,QOP_FENCE_STATUS,fenceInput(f),16,custody); const execution=s.take(owner,1n)!;
+  expect(custody.poll()).toBe(true); expect(peer.errors).toEqual([0x500]); expect(f.binding.errors).toEqual([]);
+  execution.complete(0); s.cancel(owner,1n);
+  expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"retired",mode:"cancel",accepted:true}); f.registry.unbind(7);
+});
+
+it("admitted source status survives public session closure until its lease quiesces", () => {
+  const f=native(), s=store(), owner=open(s,7,11,f.binding.operations)!;
+  f.candidate.publish(); const custody=fenceCustody(f,owner,"status");
+  begin(s,owner,1n,QOP_FENCE_STATUS,fenceInput(f),16,custody); const execution=s.take(owner,1n)!;
+  f.execution.release(); f.registry.unbind(7);
+  expect(custody.poll()).toBe(true); execution.complete(0); s.commit(owner,1n); f.block(true);
+  expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"pending"});
+  f.block(false); expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"retired",mode:"commit",accepted:true});
+});
+
+
+it("rejects a lease released between custody capture and admission without destroying the public fence", () => {
+  const f=native(), s=store(), owner=open(s,7,11,f.binding.operations)!;
+  f.candidate.publish(); const lease=f.binding.fences.acquire(f.candidate.token)!, custody=fenceCustody(f,owner,"release",lease);
+  lease.release();
+  expect(begin(s,owner,1n,QOP_RELEASE_FENCE,fenceInput(f),16,custody)).toBe("rejected");
+  expect(f.binding.fences.has(f.candidate.token)).toBe(true); expect(s.pendingRequests).toBe(0);
+  f.execution.release(); f.registry.unbind(7);
+});
+
+
+it("committed source release preserves an independent waiter until its own final retirement", () => {
+  const f=native(), s=store(), owner=open(s,7,11,f.binding.operations)!;
+  f.candidate.publish(); const waiter=f.binding.fences.acquire(f.candidate.token)!;
+  const custody=fenceCustody(f,owner,"release"), deletion=vi.spyOn(f.gl,"deleteSync");
+  begin(s,owner,1n,QOP_RELEASE_FENCE,fenceInput(f),16,custody); s.take(owner,1n)!.complete(0); s.commit(owner,1n);
+  expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"retired",mode:"commit",accepted:true});
+  expect(f.binding.fences.has(f.candidate.token)).toBe(false); expect(deletion).not.toHaveBeenCalled();
+  expect(waiter.poll(null)).toBe(true); waiter.release(); expect(deletion).toHaveBeenCalledTimes(1);
+  expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"retired",mode:"commit",accepted:true});
+  expect(deletion).toHaveBeenCalledTimes(1); f.execution.release(); f.registry.unbind(7);
 });

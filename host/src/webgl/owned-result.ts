@@ -1,7 +1,8 @@
 import { GlOperationStream, type GlOperationTicket, queryOperationKind } from "./operation-stream.js";
 import type { GlSubmitExecution } from "./submit-execution.js";
-import type { GlFenceCandidate } from "./fences.js";
+import type { GlFenceCandidate, GlFenceLease } from "./fences.js";
 import type { GlMuxer } from "./muxer.js";
+import { QOP_FENCE_STATUS, QOP_RELEASE_FENCE } from "./ops.js";
 import { captureNativeGlErrors } from "./errors.js";
 
 const MAX_BYTES = 64 * 1024;
@@ -95,6 +96,54 @@ export class GlNativeResultCustody {
   }
 }
 
+const claimedFenceLeases = new WeakSet<GlFenceLease>();
+/** A status/release source outlives current context/display selection. This
+ * custody owns only its actual native lease, immutable source and weak muxer. */
+export class GlFenceResultCustody {
+  private muxer: WeakRef<GlMuxer>;
+  private mode: GlResultMode | null = null;
+  private claimed = false;
+  private publicationAttempted = false;
+  private publicationAccepted = false;
+  constructor(private owner: GlResultOwner, private lease: GlFenceLease,
+    private kind: "status" | "release", muxer: GlMuxer) {
+    if (!lease.matchesSource(owner)) throw new Error("GL fence result source mismatch or stale lease");
+    if (lease.context !== muxer.context) throw new Error("GL fence result renderer mismatch");
+    if (claimedFenceLeases.has(lease)) throw new Error("GL fence result lease already transferred");
+    if (kind !== "status" && kind !== "release") throw new Error("invalid GL fence result kind");
+    this.muxer = new WeakRef(muxer); claimedFenceLeases.add(lease);
+  }
+  matches(owner: GlResultOwner): boolean { return this.owner === owner && this.lease.matchesSource(owner); }
+  matchesRequest(op: number, input: Uint8Array, capacity: number): boolean {
+    return op === (this.kind === "status" ? QOP_FENCE_STATUS : QOP_RELEASE_FENCE)
+      && input.byteLength === 4 && capacity === 16
+      && new DataView(input.buffer,input.byteOffset,4).getUint32(0,true) === this.lease.token;
+  }
+  claim(): boolean { if (this.claimed) return false; this.claimed = true; return true; }
+  private captureErrors(): void {
+    const muxer = this.muxer.deref();
+    if (muxer) muxer.captureCurrentErrors(); else captureNativeGlErrors(this.lease.context,null);
+  }
+  poll(): boolean | null {
+    if (!this.claimed || this.kind !== "status" || this.mode) return null;
+    try { this.captureErrors(); return this.lease.poll(null); } catch { return null; }
+  }
+  retire(mode: GlResultMode): NativeRetirementResult {
+    if (this.mode && this.mode !== mode) return {complete:false,publicationAccepted:this.publicationAccepted};
+    this.mode = mode;
+    try {
+      this.captureErrors();
+      if (!this.publicationAttempted) {
+        this.publicationAttempted = true;
+        // EFAULT/Cancel must not destroy a published fence. Source authority,
+        // not a later current-context lookup, owns this captured release.
+        this.publicationAccepted = mode === "cancel" || this.kind === "status" || this.lease.publishRelease();
+      }
+      return {complete:this.lease.releaseRetirement(),publicationAccepted:this.publicationAccepted};
+    } catch { return {complete:false,publicationAccepted:this.publicationAccepted}; }
+  }
+}
+
 /** The transport adapter owns the realm/port outside this record. Only its
  * exact capability may acknowledge remote native retirement; ids are not enough. */
 export class GlResultPeer {
@@ -132,7 +181,7 @@ type ResultRecord = {
   accepted: boolean;
   state: RecordState; mode: GlResultMode | null; rc: number;
   execution: GlResultExecution | null; executing: boolean;
-  custody: GlNativeResultCustody | GlRemoteResultCustody | null;
+  custody: GlNativeResultCustody | GlFenceResultCustody | GlRemoteResultCustody | null;
 };
 type OwnerRecord = { owner: GlResultOwner; closed: boolean; highWater: bigint; requests: Map<bigint,ResultRecord> };
 
@@ -187,7 +236,7 @@ export class GlOwnedResultStore {
    * later context/drawable. Explicit null is for copied-byte-only operations;
    * rejection leaves any supplied native/remote custody with the caller. */
   begin(owner: GlResultOwner, token: bigint, op: number, input: Uint8Array, capacity: number,
-    custody: GlNativeResultCustody | GlRemoteResultCustody | null): "admitted" | "existing" | "rejected" {
+    custody: GlNativeResultCustody | GlFenceResultCustody | GlRemoteResultCustody | null): "admitted" | "existing" | "rejected" {
     const entry = this.owner(owner);
     if (!entry || entry.closed || typeof token !== "bigint" || token < 1n || token > MAX_TOKEN) return "rejected";
     // Retry can observe an existing receipt, but can never replace its input,
@@ -211,6 +260,7 @@ export class GlOwnedResultStore {
       const source = new Uint8Array(apply(arrayBuffer,input,[]) as ArrayBufferLike,
         apply(arrayOffset,input,[]) as number,inputLength);
       apply(setBytes,copied,[source]);
+      if (custody instanceof GlFenceResultCustody && !custody.matchesRequest(op,copied,capacity)) return "rejected";
       const workspace = new Uint8Array(capacity), result = new Uint8Array(capacity);
       order = owner.operations.reserve(queryOperationKind(op));
       if (!order) return "rejected";
@@ -304,7 +354,8 @@ export class GlOwnedResultStore {
       if (!record.custody.complete(record.mode!)) return {state:"pending"};
       accepted = record.custody.accepted;
     } else if (record.custody) {
-      const retirement = record.custody.retire(record.mode!,!entry.closed);
+      const retirement = record.custody instanceof GlNativeResultCustody
+        ? record.custody.retire(record.mode!,!entry.closed) : record.custody.retire(record.mode!);
       if (!retirement.complete) return {state:"pending"};
       accepted = record.mode === "cancel" || retirement.publicationAccepted;
     }
