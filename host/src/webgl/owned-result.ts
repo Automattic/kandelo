@@ -172,21 +172,36 @@ export class GlRemoteResultCustody {
   private acknowledged: {mode:GlResultMode;accepted:boolean} | null = null;
   private requested: GlResultMode | null = null;
   private claimed = false;
+  private attempted = true;
+  private revokedUnsent = false;
   constructor(private authority: GlResultPeer, private owner: GlResultOwner, private token: bigint) {}
+  /** Copied transport intent has no native authority before its first post.
+   * Mark before postMessage, including a call which might throw after enqueue. */
+  static unposted(authority: GlResultPeer, owner: GlResultOwner, token: bigint): GlRemoteResultCustody {
+    const custody = new GlRemoteResultCustody(authority,owner,token);
+    custody.attempted = false; return custody;
+  }
+  markSendAttempt(authority: GlResultPeer, owner: GlResultOwner, token: bigint): boolean {
+    if (!this.accepts(authority,owner,token) || this.revokedUnsent || this.requested) return false;
+    this.attempted = true; return true;
+  }
   claim(): boolean { if (this.claimed) return false; this.claimed = true; return true; }
   matches(owner: GlResultOwner, token: bigint): boolean { return owner === this.owner && token === this.token; }
   accepts(authority: GlResultPeer, owner: GlResultOwner, token: bigint): boolean {
     return authority === this.authority && this.matches(owner,token);
   }
-  request(mode: GlResultMode): void { this.requested ??= mode; }
+  request(mode: GlResultMode): void {
+    this.requested ??= mode;
+    if (this.requested === "cancel" && !this.attempted) this.revokedUnsent = true;
+  }
   acknowledge(authority: GlResultPeer, owner: GlResultOwner, token: bigint, mode: GlResultMode, accepted: boolean): boolean {
     if (!this.accepts(authority,owner,token) || this.requested !== mode || typeof accepted !== "boolean"
       || (mode === "cancel" && !accepted) || (this.acknowledged &&
       (this.acknowledged.mode !== mode || this.acknowledged.accepted !== accepted))) return false;
     this.acknowledged = {mode,accepted}; return true;
   }
-  complete(mode: GlResultMode): boolean { return this.acknowledged?.mode === mode; }
-  get accepted(): boolean { return this.acknowledged?.accepted ?? false; }
+  complete(mode: GlResultMode): boolean { return (mode === "cancel" && this.revokedUnsent) || this.acknowledged?.mode === mode; }
+  get accepted(): boolean { return this.revokedUnsent || (this.acknowledged?.accepted ?? false); }
 }
 
 type RecordState = "queued" | "running" | "ready" | "retiring" | "retired";

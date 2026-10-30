@@ -490,6 +490,7 @@ host/test/webgl-muxer.test.ts	source-only
 host/test/webgl-native-query-adapter.test.ts	source-only
 host/test/webgl-op-contract.test.ts	source-only
 host/test/webgl-operation-stream.test.ts	source-only
+host/test/webgl-owned-forward.test.ts	source-only
 host/test/webgl-owned-result.test.ts	source-only
 host/test/webgl-present-target.test.ts	source-only
 host/test/webgl-program-link.test.ts	source-only

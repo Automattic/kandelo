@@ -12,6 +12,7 @@ import { isFenceQuery, validFenceQuery, prepareFenceQuery, type PreparedFenceQue
 import { querySurfaceCapabilities, surfaceCapabilityRenderer } from "./surface-capabilities.js";
 import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH } from "./ops.js";
 import { GlMuxer } from "./muxer.js";
+import { GlOwnedMainForwardController, type GlOwnedMainForwardOptions } from "./owned-forward.js";
 import { prepareCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable, type GlDrawableBinding } from "./current.js";
 import {
   completeGlForwardQuery, createGlForwardQueryMailbox, glForwardQueryCapacity,
@@ -127,14 +128,19 @@ export function createMainForwardChannel(
   };
 }
 
+export type GlMainForwardDisposer = (() => void) & { readonly ownedQueries: GlOwnedMainForwardController | null };
 export function setupMainForward(
   worker: ForwardWorkerLike,
   canvas: HTMLCanvasElement,
   pid: number,
-): () => void {
+  owned?: GlOwnedMainForwardOptions,
+): GlMainForwardDisposer {
+  if (owned && owned.endpoint !== worker) throw new Error("Owned queries require the legacy ordered endpoint");
   const reg = new GlContextRegistry();
   const queue = new SubmitQueue(undefined,
     binding => binding.gl ? reg.retainSubmitExecution(binding, muxer(binding.gl)) : null);
+  const ownedQueries = owned ? new GlOwnedMainForwardController(owned.endpoint,pid,reg,owned.bos,muxers,
+    owned.limits,owned.retirements,queue,owned.queueDrain) : null;
 
   const onMessage = (e: MessageEvent) => {
     const msg = e.data as GlForwardMessage;
@@ -388,6 +394,7 @@ export function setupMainForward(
         return;
       }
       case "gl_forward_unbind": {
+        ownedQueries?.retireSession(msg.sessionId);
         const contexts = b.fences.contexts();
         if (b.gl) contexts.add(b.gl);
         for (const gl of contexts) muxers.get(gl)?.invalidateCurrent();
@@ -399,7 +406,10 @@ export function setupMainForward(
   };
 
   worker.addEventListener("message", onMessage);
-  return () => {
+  const dispose = () => {
+    // Native receipt controls retain their own listener until actual cleanup
+    // and the paired client's retirement acknowledgement complete.
+    ownedQueries?.close();
     worker.removeEventListener("message", onMessage);
     for (const b of reg.list()) {
       const contexts = b.fences.contexts();
@@ -409,4 +419,5 @@ export function setupMainForward(
     queue.removePid(pid);
     reg.unbind(pid);
   };
+  return Object.assign(dispose,{ownedQueries});
 }

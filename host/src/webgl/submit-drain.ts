@@ -40,12 +40,25 @@ export function runGlRendererOperation<T>(muxer: GlMuxer, work: () => T): {enter
 export type GlMuxerFor = (b: GlBinding) => GlMuxer | null;
 export type GlDispatch = (b: GlBinding, off: number, len: number) => number | void;
 
+/** Inspect the actual queued head and physical renderer after a bounded pump.
+ * pickNext also retries existing consumed-frame retirement; an unresolved
+ * retirement is not runnable work and must not trigger a scheduling spin. */
+export function glSubmitQueueDisposition(queue: SubmitQueue, muxerFor: GlMuxerFor):
+  "empty" | "blocked" | "runnable" | "retiring" {
+  const entry = queue.pickNext();
+  if (!entry) return queue.isEmpty() ? (queue.pendingRetirements ? "retiring" : "empty") : "blocked";
+  try { return glSubmitExecuting(muxerFor(entry.binding) ?? undefined) ? "blocked" : "runnable"; }
+  catch { return "blocked"; }
+}
+
 export function drainSubmitQueue(
   queue: SubmitQueue,
   muxerFor: GlMuxerFor,
   dispatch: GlDispatch,
+  maxFrames = Infinity,
 ): number {
-  while (true) {
+  if (maxFrames !== Infinity && (!Number.isSafeInteger(maxFrames) || maxFrames < 0)) return -22;
+  for (let frames = 0; frames < maxFrames; frames++) {
     const entry = queue.pickNext();
     if (!entry) return 0;
     let mux: GlMuxer | null = null, lookupFailed = false, lookupError: unknown;
@@ -70,4 +83,5 @@ export function drainSubmitQueue(
     }
     if (typeof rc === "number" && rc < 0) return rc;
   }
+  return 0;
 }
