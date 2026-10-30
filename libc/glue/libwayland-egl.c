@@ -48,6 +48,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <limits.h>
+#include "wayland-native.h"
 
 #include <wayland-client.h>
 #include <wayland-client-protocol.h>
@@ -63,6 +66,15 @@
  * contract). Both this file (producer) and libEGL (consumer, via the accessor
  * hooks below) reach it only through the accessors, never by layout. */
 struct wpk_wlegl {
+    struct wl_egl_window *window;
+    const void *display;
+    uint64_t display_identity;
+    void *surface_hold;
+    unsigned references;
+    int owner_alive, resizing, active;
+    pthread_t resize_thread;
+    uint32_t width,height;
+    struct wpk_wlegl *next;
     struct gbm_device            *gbm;
     struct gbm_bo                *bo;
     uint32_t bo_handle;                        /* per-fd handle on gbm's device */
@@ -125,13 +137,17 @@ static struct zwp_linux_dmabuf_v1 *bind_dmabuf(struct wl_display *dpy,
     /* Two roundtrips: the first delivers the global, the second drains the
      * format/modifier burst the compositor emits on bind (harmless to skip,
      * but keeps the private queue tidy). */
-    if (wl_display_roundtrip_queue(dpy, queue) < 0) { wl_registry_destroy(reg); return NULL; }
+    if (wl_display_roundtrip_queue(dpy, queue) < 0) goto fail;
     if (b.dmabuf) {
         zwp_linux_dmabuf_v1_add_listener(b.dmabuf, &dmabuf_listener, &b);
-        wl_display_roundtrip_queue(dpy, queue);
+        if (wl_display_roundtrip_queue(dpy, queue) < 0) goto fail;
     }
     wl_registry_destroy(reg);
     return b.dmabuf;
+fail:
+    if (b.dmabuf) zwp_linux_dmabuf_v1_destroy(b.dmabuf);
+    wl_registry_destroy(reg);
+    return NULL;
 }
 
 /* ---- buffer allocation -------------------------------------------------- */
@@ -168,6 +184,8 @@ static int alloc_buffer(struct wpk_wlegl *w, struct wl_egl_window *win,
 
     struct zwp_linux_buffer_params_v1 *params =
         zwp_linux_dmabuf_v1_create_params(w->dmabuf);
+    /* The exported descriptor is still ours if proxy allocation failed. */
+    if (!params) { close(prime); return -1; }
     zwp_linux_buffer_params_v1_add(
         params, prime, 0, 0, stride,
         (uint32_t)(DRM_FORMAT_MOD_LINEAR >> 32),
@@ -182,7 +200,8 @@ static int alloc_buffer(struct wpk_wlegl *w, struct wl_egl_window *win,
     zwp_linux_buffer_params_v1_destroy(params);
     close(prime);   /* the compositor dup'd it into its own bo */
 
-    return w->buffer ? 0 : -1;
+    if(!w->buffer)return -1;
+    w->width=(uint32_t)width;w->height=(uint32_t)height;return 0;
 }
 
 static void free_device(struct gbm_device *device) {
@@ -211,146 +230,147 @@ static void free_buffer(struct wpk_wlegl *w) {
     w->bo_handle = 0;
 }
 
-/* ---- public libwayland-egl API ------------------------------------------ */
-
-struct wl_egl_window *
-wl_egl_window_create(struct wl_surface *surface, int width, int height) {
-    if (!surface || width <= 0 || height <= 0) return NULL;
-
-    struct wl_egl_window *win = calloc(1, sizeof(*win));
-    struct wpk_wlegl     *w   = calloc(1, sizeof(*w));
-    if (!win || !w) { free(win); free(w); return NULL; }
-
-    struct wl_display *dpy = wl_proxy_get_display((struct wl_proxy *)surface);
-    if (!dpy) { free(win); free(w); return NULL; }
-    w->queue = wl_display_create_queue(dpy);
-    if (!w->queue) { free(win); free(w); return NULL; }
-
-    w->dmabuf = bind_dmabuf(dpy, w->queue);
-    if (!w->dmabuf || alloc_buffer(w, win, width, height) != 0) {
-        free_buffer(w);
-        if (w->dmabuf) zwp_linux_dmabuf_v1_destroy(w->dmabuf);
-        wl_event_queue_destroy(w->queue);
-        free(win); free(w);
-        return NULL;
-    }
-
-    /* Fill the canonical backend struct. `version` is a const field, so cast
-     * through the address to initialise it once at construction. */
-    *(intptr_t *)&win->version = WL_EGL_WINDOW_VERSION;
-    win->width = width;
-    win->height = height;
-    win->dx = win->dy = 0;
-    win->attached_width = width;
-    win->attached_height = height;
-    win->surface = surface;
-    win->driver_private = w;
-    win->resize_callback = NULL;
-    win->destroy_window_callback = NULL;
+/* Native windows have independent public and EGL lease lifetimes. Only
+ * list membership validates untrusted pointers; never inspect their memory. */
+static pthread_mutex_t window_mutex=PTHREAD_MUTEX_INITIALIZER;
+static struct wpk_wlegl *windows;
+static struct wpk_wlegl *find_window(const void *native) {
+    for(struct wpk_wlegl *w=windows;w;w=w->next)if(w->window==native && w->owner_alive)return w;
+    return NULL;
+}
+static struct wpk_wlegl *readable_window(const void *native) {
+    struct wpk_wlegl *w=find_window(native);
+    return w && w->resizing && !pthread_equal(w->resize_thread,pthread_self()) ? NULL : w;
+}
+static struct wpk_wlegl *find_lease(void *lease) {
+    for(struct wpk_wlegl *w=windows;w;w=w->next)if(w==lease && w->references)return w;
+    return NULL;
+}
+static struct wpk_wlegl *collect_window(struct wpk_wlegl *w) {
+    if(w->owner_alive || w->references || w->active || w->resizing)return NULL;
+    struct wpk_wlegl **link=&windows;while(*link && *link!=w)link=&(*link)->next;
+    if(*link)*link=w->next;
+    return w;
+}
+static void free_window(struct wpk_wlegl *w) {
+    if(!w)return;
+    free_buffer(w);
+    if(w->dmabuf)zwp_linux_dmabuf_v1_destroy(w->dmabuf);
+    if(w->queue)wl_event_queue_destroy(w->queue);
+    // The physical display and original proxy remain alive through all
+    // native queue/buffer teardown, even after public disconnect/destroy.
+    _wpk_wl_surface_release(w->surface_hold);
+    free(w->window);free(w);
+}
+struct wl_egl_window *wl_egl_window_create(struct wl_surface *surface,int width,int height) {
+    if(!surface || width<=0 || height<=0)return NULL;
+    struct wl_egl_window *win=calloc(1,sizeof *win);
+    struct wpk_wlegl *w=calloc(1,sizeof *w);
+    if(!win || !w) {free(win);free(w);return NULL;}
+    w->window=win;
+    w->surface_hold=_wpk_wl_surface_acquire(surface,&w->display,&w->display_identity);
+    if(!w->surface_hold) {free(win);free(w);return NULL;}
+    struct wl_display *display=(struct wl_display *)w->display;
+    w->queue=wl_display_create_queue(display);
+    if(!w->queue) {free_window(w);return NULL;}
+    w->dmabuf=bind_dmabuf(display,w->queue);
+    if(!w->dmabuf || alloc_buffer(w,win,width,height)!=0) {free_window(w);return NULL;}
+    *(intptr_t *)&win->version=WL_EGL_WINDOW_VERSION;
+    win->width=win->attached_width=width;win->height=win->attached_height=height;
+    win->surface=surface;win->driver_private=w;w->owner_alive=1;
+    pthread_mutex_lock(&window_mutex);w->next=windows;windows=w;pthread_mutex_unlock(&window_mutex);
     return win;
 }
-
 void wl_egl_window_destroy(struct wl_egl_window *win) {
-    if (!win) return;
-    struct wpk_wlegl *w = win->driver_private;
-    if (w) {
-        free_buffer(w);
-        if (w->dmabuf) zwp_linux_dmabuf_v1_destroy(w->dmabuf);
-        if (w->queue)  wl_event_queue_destroy(w->queue);
-        free(w);
+    pthread_mutex_lock(&window_mutex);
+    struct wpk_wlegl *w=find_window(win),*retired=NULL;
+    if(w) {w->owner_alive=0;retired=collect_window(w);}
+    pthread_mutex_unlock(&window_mutex);free_window(retired);
+}
+static void copy_allocation(struct wpk_wlegl *to,const struct wpk_wlegl *from) {
+    to->gbm=from->gbm;to->bo=from->bo;to->bo_handle=from->bo_handle;to->buffer=from->buffer;
+    to->width=from->width;to->height=from->height;
+}
+void wl_egl_window_resize(struct wl_egl_window *win,int width,int height,int dx,int dy) {
+    pthread_mutex_lock(&window_mutex);
+    struct wpk_wlegl *w=find_window(win);
+    if(!w || w->resizing || w->active || !_wpk_wl_surface_alive(w->surface_hold)) {
+        pthread_mutex_unlock(&window_mutex);return;
     }
-    free(win);
-}
-
-/* Mesa applies a resize to the next frame; so does this. The window gets a
- * bo at the new size now, and libEGL re-targets the live window surface at
- * it, so the frame the client draws next lands in a buffer of the size it
- * draws at. The replaced buffer stays alive until the next present has
- * attached its successor. If allocation or backend retargeting fails the window
- * keeps rendering into the old one at the old size, and the attached size
- * (which SDL can read back) still reports it. */
-void wl_egl_window_resize(struct wl_egl_window *win, int width, int height,
-                          int dx, int dy) {
-    if (!win) return;
-    win->dx = dx;
-    win->dy = dy;
-    if (width > 0)  win->width = width;
-    if (height > 0) win->height = height;
-
-    struct wpk_wlegl *w = win->driver_private;
-    if (!w || (win->width == win->attached_width &&
-               win->height == win->attached_height))
-        return;
-
-    /* A second resize before any present: the buffer it replaces was never
-     * committed, so nothing references it — drop it now. */
-    if (w->retired_buffer) {
-        free_retired(w);
+    if(width<=0)width=(int)w->width;if(height<=0)height=(int)w->height;
+    if(width==(int)w->width && height==(int)w->height) {pthread_mutex_unlock(&window_mutex);return;}
+    w->resizing=1;w->resize_thread=pthread_self();
+    struct wpk_wlegl old={.gbm=w->gbm,.bo=w->bo,.buffer=w->buffer,.bo_handle=w->bo_handle,.width=w->width,.height=w->height};
+    pthread_mutex_unlock(&window_mutex);
+    // No window lock across the EGL callback: EGL always precedes native
+    // window locking. Other resize/present admission refuses while this exact
+    // resize owns its candidate; destruction retains it until we finish.
+    free_retired(w);
+    w->gbm=NULL;w->bo=NULL;w->buffer=NULL;w->bo_handle=0;
+    int accepted=alloc_buffer(w,win,width,height)==0;
+    if(accepted && _wpk_egl_window_retarget)accepted=_wpk_egl_window_retarget(win);
+    if(!accepted) {free_buffer(w);copy_allocation(w,&old);}
+    else {
+        w->retired_gbm=old.gbm;w->retired_bo=old.bo;w->retired_buffer=old.buffer;
     }
-    struct wpk_wlegl old = *w;
-    w->gbm = NULL; w->bo = NULL; w->buffer = NULL; w->bo_handle = 0;
-    if (alloc_buffer(w, win, win->width, win->height) != 0) {
-        free_buffer(w);
-        w->gbm = old.gbm; w->bo = old.bo; w->buffer = old.buffer;
-        w->bo_handle = old.bo_handle;
-        return;
-    }
-    if (_wpk_egl_window_retarget && !_wpk_egl_window_retarget(win)) {
-        free_buffer(w);
-        *w = old;
-        return;
-    }
-    w->retired_gbm = old.gbm;
-    w->retired_bo = old.bo;
-    w->retired_buffer = old.buffer;
-    win->attached_width = win->width;
-    win->attached_height = win->height;
+    pthread_mutex_lock(&window_mutex);
+    if(accepted) {win->width=win->attached_width=width;win->height=win->attached_height=height;win->dx=dx;win->dy=dy;}
+    w->resizing=0;
+    struct wpk_wlegl *retired=collect_window(w);pthread_mutex_unlock(&window_mutex);free_window(retired);
 }
-
-void wl_egl_window_get_attached_size(struct wl_egl_window *win,
-                                     int *width, int *height) {
-    if (!win) { if (width) *width = 0; if (height) *height = 0; return; }
-    if (width)  *width  = win->attached_width;
-    if (height) *height = win->attached_height;
+void wl_egl_window_get_attached_size(struct wl_egl_window *win,int *width,int *height) {
+    pthread_mutex_lock(&window_mutex);struct wpk_wlegl *w=find_window(win);
+    if(width)*width=w ? win->attached_width : 0;if(height)*height=w ? win->attached_height : 0;
+    pthread_mutex_unlock(&window_mutex);
 }
-
-/* ---- hooks called by libEGL (libegl_stub.c) ----------------------------- */
-
-/* Return the GPU-tier bo handle an eglCreateWindowSurface should target for
- * this native window, or 0 if it isn't one of ours. */
-uint32_t _wpk_wlegl_bo_handle(void *egl_window) {
-    if (!egl_window) return 0;
-    struct wl_egl_window *win = egl_window;
-    struct wpk_wlegl *w = win->driver_private;
-    return w ? w->bo_handle : 0;
-}
-
-int _wpk_wlegl_device_fd(void *egl_window) {
-    struct wl_egl_window *win = egl_window;
-    struct wpk_wlegl *w = win ? win->driver_private : NULL;
-    return w && w->gbm ? gbm_device_get_fd(w->gbm) : -1;
-}
-
-int _wpk_wlegl_dimensions(void *egl_window, uint32_t *width, uint32_t *height) {
-    struct wl_egl_window *win = egl_window;
-    if (!win || win->width <= 0 || win->height <= 0)
-        return 0;
-    *width = (uint32_t)win->width;
-    *height = (uint32_t)win->height;
+static int prepare_window(struct wpk_wlegl *w,struct wpk_wlegl_frame *frame) {
+    if(!w || !w->owner_alive || w->active || (w->resizing && !pthread_equal(w->resize_thread,pthread_self()))
+      || !_wpk_wl_surface_alive(w->surface_hold))return 0;
+    w->active=1;
+    *frame=(struct wpk_wlegl_frame){.fd=gbm_device_get_fd(w->gbm),.handle=w->bo_handle,.width=w->width,.height=w->height};
     return 1;
 }
-
-/* Present: attach the (already-rendered, already-flushed) buffer to the
- * surface and commit. libEGL's eglSwapBuffers has issued the GL flush +
- * GLIO_PRESENT fence before calling this, so the frame is complete on the
- * shared context by the time the compositor samples it. */
-void _wpk_wlegl_present(void *egl_window) {
-    struct wl_egl_window *win = egl_window;
-    struct wpk_wlegl *w = win ? win->driver_private : NULL;
-    if (!egl_window) return;
-    if (!w || !w->buffer || !win->surface) return;
-    wl_surface_attach(win->surface, w->buffer, 0, 0);
-    wl_surface_damage(win->surface, 0, 0, win->width, win->height);
-    wl_surface_commit(win->surface);
-    free_retired(w);
+int _wpk_wlegl_acquire(const void *window,const void *display,uint64_t identity,void **lease,struct wpk_wlegl_frame *frame) {
+    pthread_mutex_lock(&window_mutex);struct wpk_wlegl *w=find_window(window);
+    int ok=w && (!display || (w->display==display && w->display_identity==identity))
+        && w->references<UINT_MAX && prepare_window(w,frame);
+    if(ok) {w->references++;*lease=w;}
+    pthread_mutex_unlock(&window_mutex);return ok;
+}
+int _wpk_wlegl_prepare(void *lease,struct wpk_wlegl_frame *frame) {
+    pthread_mutex_lock(&window_mutex);int ok=prepare_window(find_lease(lease),frame);
+    pthread_mutex_unlock(&window_mutex);return ok;
+}
+int _wpk_wlegl_finish(void *lease,int present) {
+    pthread_mutex_lock(&window_mutex);struct wpk_wlegl *w=find_lease(lease);
+    int ok=w && w->active;
+    if(ok && present) {
+        ok=w->owner_alive && !w->resizing && _wpk_wl_surface_present(w->surface_hold,w->buffer,(int)w->width,(int)w->height);
+        if(ok)free_retired(w);
+    }
+    if(w)w->active=0;
+    pthread_mutex_unlock(&window_mutex);return ok;
+}
+void _wpk_wlegl_release(void *lease) {
+    pthread_mutex_lock(&window_mutex);struct wpk_wlegl *w=find_lease(lease),*retired=NULL;
+    if(w) {w->references--;retired=collect_window(w);}
+    pthread_mutex_unlock(&window_mutex);free_window(retired);
+}
+/* Legacy metadata entry points stay safe for callers that only inspect a
+ * live native window. EGL itself uses the retained typed lease above. */
+uint32_t _wpk_wlegl_bo_handle(void *window) {
+    pthread_mutex_lock(&window_mutex);struct wpk_wlegl *w=readable_window(window);
+    uint32_t result=w ? w->bo_handle : 0;pthread_mutex_unlock(&window_mutex);return result;
+}
+int _wpk_wlegl_device_fd(void *window) {
+    pthread_mutex_lock(&window_mutex);struct wpk_wlegl *w=readable_window(window);
+    int result=w ? gbm_device_get_fd(w->gbm) : -1;pthread_mutex_unlock(&window_mutex);return result;
+}
+int _wpk_wlegl_dimensions(void *window,uint32_t *width,uint32_t *height) {
+    pthread_mutex_lock(&window_mutex);struct wpk_wlegl *w=readable_window(window);
+    if(w) {*width=w->width;*height=w->height;}pthread_mutex_unlock(&window_mutex);return w!=NULL;
+}
+void _wpk_wlegl_present(void *window) {
+    void *lease=NULL;struct wpk_wlegl_frame frame;
+    if(_wpk_wlegl_acquire(window,NULL,0,&lease,&frame)) {_wpk_wlegl_finish(lease,1);_wpk_wlegl_release(lease);}
 }

@@ -8399,3 +8399,31 @@ zero, so exit status alone cannot establish a repaired launch. Evidence:
 `.context/gbm-fork-aliases/.context/scummvm-sway-reproduction.txt` and
 `.png`. The shared EGL native display/window lifetime repair is being
 validated separately; no ScummVM-specific bypass is used.
+
+### Registered Wayland native ownership checkpoint (2026-10-30)
+
+Commit `dca2752353` brings the shared native display/window lifetime repair
+into this landing branch. Only actual registered live Wayland connection
+identities are admitted through `eglGetDisplay`. Display generations own
+separate DRM files and retained connection leases; native windows retain
+the original surface proxy and allocation through disconnect, destruction
+and deferred EGL cleanup. Explicit GBM platform selection remains typed.
+No additional ABI number or extension advertisement is introduced.
+
+The independently validated source commit `aae31469e5` passed 249 native
+EGL/GLES cases, actual pinned upstream socket/proxy lifetime tests, native
+window resize/rollback tests, GBM retention controls and wasm32 object
+compilation. Its parent includes additional follow-up fixtures. The landing
+branch's distinct native inventory is 214 cases; all 214 pass after the
+cherry-pick. Evidence is retained in
+`.context/landing-evidence-fix/.context/wayland-egl-landing-native.log` and
+`.context/gbm-cpu-fronts/.context/wayland-egl-native-handoff.md`.
+These are native source controls, not a rebuilt ScummVM rendering claim.
+Normal SDK/package/image rebuilds, real ScummVM rendering inside Sway,
+repeated browser-memory and combined conformance remain required.
+
+The pre-repair normal `0b0b69b196` Sway session reproduces the reported
+ScummVM graphics warning using actual physical-key input and captured guest
+files. ScummVM exits zero despite `Could not load any graphics mode`, so a
+successful exit cannot substitute for visible application rendering.
+Evidence: `.context/gbm-fork-aliases/.context/scummvm-sway-reproduction.txt`.
