@@ -10075,3 +10075,37 @@ that gap. Both computed-key controls fail before repair; the final
 canonical two-file rerun passes110/110 with zero skips, recorded in
 `.context/memory-performance-authority-computed-key-rerun.log`. This does
 not change the frozen737 performance runtime.
+
+### Experimental performance preview737 (2026-10-30)
+
+The normal desktop/kernel/image/host and C SDK32/64 stages pass at exact
+runtime737212cb4a. The original producer0192 is deliberately stopped143
+after38m32s during GTK3 regression-test instrumentation: the full test
+program batch is incomplete, not passed. That batch was unnecessarily
+blocking early preview access. Its original logs and all completed stage
+results remain retained.
+
+Same-checkout desktop completion job
+`preview5664-737212cb4a-desktop-finish-1030-182733-dfa5` passes in37s.
+It rechecks the original producer/source/stages, all84 actual GObject
+results with74 focused passes and six upstream failures, and all14
+fixture/image/kernel member hashes without overwriting evidence. Normal
+rootfs refresh, freshness, all93 owners/245 members, C SDK identities and
+selected-kernel ABI checks pass. The selected kernel SHA256 is
+`0cc747635b92b626b1a120788d6e7d77aed8b4c8ac874f4ab007e330b1af2554`;
+owner capture SHA256 is
+`ca4f851694a979b67721c45b7f749fb48371e4a3c3034ce8cd19a3bb6bbc7298`.
+The four tested GLib/libffi/core dependency tuples match the actual
+SFWBar owner exactly. No ABI version changes or borrowed products are
+introduced by this completion.
+
+Immutable server `preview5664-737212cb4a-serve-1030-182819-791d` serves
+`http://127.0.0.1:5664/pages/kandelo/`. Actual HTML200 and required
+COOP/COEP headers pass at22:28:49 UTC; the user is notified immediately,
+before browser acceptance. Port5663 remains the earlier86db runtime.
+Receipt and HTTP evidence are in the candidate's `.context/preview5664-*`
+files; cancellation and continuation inputs are recorded in
+`.context/preview5664-prep/`. Startup/Start-menu, matched desktop/HiDPI
+performance, full program fixtures, Node/browser benchmark suites,
+browser-memory and POSIX gates remain unrun or incomplete. No application
+speed or Start-menu repair is claimed from build/HTTP success.
