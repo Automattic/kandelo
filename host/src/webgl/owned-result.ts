@@ -1,4 +1,7 @@
+import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { GlOperationStream, type GlOperationTicket, queryOperationKind } from "./operation-stream.js";
+import { GlUniformQueryCandidate } from "./uniform-query-candidate.js";
+import { GlContextExecutionLease } from "./registry.js";
 import type { GlErrorQueryCandidate } from "./error-query.js";
 import type { GlSubmitExecution } from "./submit-execution.js";
 import type { GlFenceCandidate, GlFenceLease } from "./fences.js";
@@ -31,15 +34,18 @@ export class GlResultOwner {
 const claimedExecutions = new WeakSet<GlSubmitExecution>();
 const claimedCandidates = new WeakSet<GlFenceCandidate>();
 const claimedErrorCandidates = new WeakSet<GlErrorQueryCandidate>();
+const claimedUniformCandidates = new WeakSet<GlUniformQueryCandidate>();
 type NativeRetirementResult = { complete: boolean; publicationAccepted: boolean };
 /** Fixed typed custody, never an arbitrary cleanup/execute closure. Other
  * mutating query candidates require their own typed publication model before
- * they can be deferred; this class currently covers execution and fence creation. */
+ * they can be deferred; this class covers execution, fences, error consumption
+ * and prepared uniform-location publication. */
 export class GlNativeResultCustody {
   private muxer: WeakRef<GlMuxer>;
   private mode: GlResultMode | null = null;
   private publicationAttempted = false;
   private errorCandidate: GlErrorQueryCandidate | null = null;
+  private uniformCandidate: GlUniformQueryCandidate | null = null;
   private publicationAccepted: boolean;
   private claimed = false;
   private pid: number | null;
@@ -68,16 +74,24 @@ export class GlNativeResultCustody {
   }
   claim(): boolean { if (this.claimed) return false; this.claimed = true; return true; }
   adoptCandidate(candidate: GlFenceCandidate): boolean {
-    if (this.mode || this.candidate || this.errorCandidate || this.publicationAttempted || claimedCandidates.has(candidate)
+    if (this.mode || this.candidate || this.errorCandidate || this.uniformCandidate || this.publicationAttempted || claimedCandidates.has(candidate)
       || candidate.context !== this.execution?.context) return false;
     claimedCandidates.add(candidate); this.candidate = candidate; this.publicationAccepted = false;
     return true;
   }
   adoptErrorCandidate(candidate: GlErrorQueryCandidate): boolean {
-    if (this.mode || this.candidate || this.errorCandidate || this.publicationAttempted
+    if (this.mode || this.candidate || this.errorCandidate || this.uniformCandidate || this.publicationAttempted
       || !this.execution || !candidate.owns(this.execution.binding.errors) || claimedErrorCandidates.has(candidate)) return false;
     claimedErrorCandidates.add(candidate);
     this.errorCandidate = candidate; this.publicationAccepted = false; return true;
+  }
+  adoptUniformCandidate(candidate: GlUniformQueryCandidate, source: GlContextExecutionLease): boolean {
+    if (!(candidate instanceof GlUniformQueryCandidate) || !(source instanceof GlContextExecutionLease)
+      || this.mode || this.candidate || this.errorCandidate || this.uniformCandidate || this.publicationAttempted
+      || !this.execution || source.context !== this.execution.context || source.binding !== this.execution.binding
+      || !candidate.awaitingPublication || !candidate.matchesExecution(source) || claimedUniformCandidates.has(candidate)) return false;
+    claimedUniformCandidates.add(candidate);
+    this.uniformCandidate = candidate; this.publicationAccepted = false; return true;
   }
   retire(mode: GlResultMode, publicationAllowed = true): NativeRetirementResult {
     if (this.mode && this.mode !== mode) return { complete:false,publicationAccepted:this.publicationAccepted };
@@ -87,6 +101,17 @@ export class GlNativeResultCustody {
       const selected = this.muxer.deref();
       if (selected) selected.captureCurrentErrors();
       else if (gl) captureNativeGlErrors(gl,null);
+      if (this.uniformCandidate) {
+        if (mode === "commit" && !this.publicationAttempted) {
+          this.publicationAttempted = true;
+          this.publicationAccepted = publicationAllowed && this.uniformCandidate.publish();
+        }
+        // A denied Commit still needs a terminal decision before retirement.
+        // Never leave an unpublished owner perpetually awaiting publication.
+        if (mode === "cancel" || !this.publicationAccepted) this.uniformCandidate.cancel();
+        if (!this.uniformCandidate.retire()) return {complete:false,publicationAccepted:this.publicationAccepted};
+        this.uniformCandidate = null;
+      }
       if (this.errorCandidate) {
         if (mode === "commit" && !this.publicationAttempted) {
           this.publicationAttempted = true;
@@ -108,7 +133,10 @@ export class GlNativeResultCustody {
       if (this.execution && !this.execution.release()) return {complete:false,publicationAccepted:this.publicationAccepted};
       this.execution = null;
       return {complete:true,publicationAccepted:this.publicationAccepted};
-    } catch { return {complete:false,publicationAccepted:this.publicationAccepted}; }
+    } catch (error) {
+      if (isKernelExportFailure(error)) throw error;
+      return {complete:false,publicationAccepted:this.publicationAccepted};
+    }
   }
 }
 

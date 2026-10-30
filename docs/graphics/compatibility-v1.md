@@ -9860,3 +9860,38 @@ Normal bootstrap materialized verified swaybg/coreutils entries; no hand
 copy or restamp occurred. This passes the focused rendered contract at
 `0b0b69b196`, not the full gallery/browser-memory/conformance acceptance.
 Historical failures and the two preceding setup failures remain retained.
+
+### Native receipt adoption of prepared uniform queries
+
+The internal native query adapter now prepares both uniform-location families
+against its captured execution lease. Pure request framing validation runs
+before lease capture. The preallocated receipt retains an actual bootstrap lease
+and typed preparation receiver, including when native preparation or transfer
+throws. Native custody accepts a real candidate once, checks its exact logical
+source and retains it until terminal publication or cancellation and cleanup.
+
+Ready and Poll expose copied replies without publishing locations or changing
+name assembly. Commit publishes once, then retries real cleanup independently;
+a refused publication still cancels undecided staging and retires its owners.
+Cancel preserves the preceding assembly and reclaims unpublished identities.
+Native pin/context deletion failures retain real custody and result charges
+until cleanup accepts. Branded preparation failures propagate while their
+bounded execution record reaches quiescence and keeps rollback ownership.
+
+Focused source evidence in the positive checkout is
+`.context/uniform-native-source.log`: 219/219 cases in six files, zero skips,
+including 17 added adapter controls. These cover native lookup once, private
+Ready, lost Commit acknowledgement, Cancel, peer relinks, actual failed native
+pin/context cleanup, staged assembly, source replacement, denied publication,
+failed bootstrap release and thrown preparation/transfer. Two controls fail
+against exact pre-adoption adapter/custody sources in
+`.context/uniform-native-before.log`. Forwarding regressions separately pass
+55/55 in two files, `.context/uniform-native-forward.log`. Strict helper graph
+checking passes in `.context/uniform-native-strict.log`; the canonical host
+JavaScript and declaration build passes in `.context/uniform-native-host-build.log`.
+
+This is an internal native adapter increment. No production pending branch,
+wire/ABI change, forwarded uniform admission or kernel copyout integration is
+activated. Copyout cancellation is modeled with receipt Cancel; actual kernel
+fault/lost-delivery integration, normal artifacts, real browsers, CTS,
+browser-memory and POSIX validation remain required on the combined tree.

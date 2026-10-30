@@ -9,6 +9,21 @@ const EMPTY=new Uint8Array(0);
 type Stage = {kind:"none"} | {kind:"replace";next:GlUniformLookup|null;serial:number}
   | {kind:"chunk";pending:GlUniformLookup;offset:number;data:GlUniformLookupBytes};
 
+/** Copied request framing only: no lease, native query or GL flag mutation. */
+export function validGlUniformQueryShape(op:number,input:Uint8Array,capacity:number):boolean {
+  if(input.byteLength>65536 || !Number.isSafeInteger(capacity) || capacity<0 || capacity>65536) return false;
+  if(op===O.QOP_GET_UNIFORM_LOC) return input.length>=8 && capacity>=4 &&
+    new DataView(input.buffer,input.byteOffset,input.byteLength).getUint32(4,true)<=input.length-8;
+  if(op!==O.QOP_LOOKUP_UNIFORM || input.length<16 || capacity<16) return false;
+  const v=new DataView(input.buffer,input.byteOffset,input.byteLength);
+  const action=v.getUint32(0,true),token=v.getUint32(8,true),arg=v.getUint32(12,true);
+  return action<=4 && token!==0 && !(((action===1 || action>=3)&&input.length!==16)
+    || (action>=3 && arg!==0) || (action===2 && input.length===16)
+    || (action===0 && arg!==input.length-16));
+}
+/** Preallocated typed rollback receiver, populated before native preparation. */
+export type GlUniformQueryPreparation = {uniformCandidate:GlUniformQueryCandidate|null};
+
 /** Prepared once at the captured operation-stream head. No guest view enters
  * this owner. Publication only changes already allocated objects; retirement
  * keeps the exact context/executable leases until native cleanup succeeds. */
@@ -45,16 +60,9 @@ export class GlUniformQueryCandidate {
   /** Adapter copies these bounded bytes into its retained Ready result once. */
   get bytes():Uint8Array<ArrayBuffer> {return this.resultCode<0?EMPTY:this.reply?.bytes??EMPTY;}
 
-  static prepare(execution:GlContextExecutionLease,op:number,input:Uint8Array,capacity:number):GlUniformQueryCandidate|null {
-    if(input.byteLength>65536 || !Number.isSafeInteger(capacity) || capacity<0 || capacity>65536) return null;
-    if(op===O.QOP_GET_UNIFORM_LOC) {
-      if(input.length<8 || capacity<4 || new DataView(input.buffer,input.byteOffset,input.byteLength).getUint32(4,true)>input.length-8) return null;
-    } else if(op===O.QOP_LOOKUP_UNIFORM) {
-      if(input.length<16 || capacity<16) return null;
-      const v=new DataView(input.buffer,input.byteOffset,input.byteLength),action=v.getUint32(0,true),token=v.getUint32(8,true),arg=v.getUint32(12,true);
-      if(action>4 || !token || ((action===1 || action>=3)&&input.length!==16)
-        || (action>=3 && arg!==0) || (action===2 && input.length===16) || (action===0 && arg!==input.length-16)) return null;
-    } else return null;
+  static prepare(execution:GlContextExecutionLease,op:number,input:Uint8Array,capacity:number,
+      receiver?:GlUniformQueryPreparation):GlUniformQueryCandidate|null {
+    if(!validGlUniformQueryShape(op,input,capacity) || receiver?.uniformCandidate) return null;
     const b=execution.binding,retained=execution.clone();
     if(!retained) {recordGlError(b,0x505);return null;}
     const reply=b.uniformLookupBudget.allocate(op===O.QOP_GET_UNIFORM_LOC?4:16);
@@ -62,6 +70,7 @@ export class GlUniformQueryCandidate {
     let candidate:GlUniformQueryCandidate;
     try {candidate=new GlUniformQueryCandidate(retained,b,reply,op);}
     catch (error) { if(isKernelExportFailure(error)) throw error;reply.release();retained.release();recordGlError(b,0x505);return null;}
+    if(receiver) receiver.uniformCandidate=candidate;
     try {candidate.prepare(input);}
     catch (error) { if(isKernelExportFailure(error)) throw error;candidate.fail(0x505);}
     return candidate;
@@ -185,6 +194,7 @@ export class GlUniformQueryCandidate {
     return true;
   }
 }
-export function prepareGlUniformQuery(execution:GlContextExecutionLease,op:number,input:Uint8Array,capacity:number):GlUniformQueryCandidate|null {
-  return GlUniformQueryCandidate.prepare(execution,op,input,capacity);
+export function prepareGlUniformQuery(execution:GlContextExecutionLease,op:number,input:Uint8Array,capacity:number,
+    receiver?:GlUniformQueryPreparation):GlUniformQueryCandidate|null {
+  return GlUniformQueryCandidate.prepare(execution,op,input,capacity,receiver);
 }

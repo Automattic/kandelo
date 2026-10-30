@@ -1,8 +1,9 @@
 /** Internal callable native receipt adapter. No production import dispatch,
  * channel retry, forwarding or public EGL wait is activated by this module. */
+import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { ERRNO as E } from "../generated/abi.js";
 import type { GbmBoRegistry } from "../dri/registry.js";
-import type { GlContextRegistry, GlBinding } from "./registry.js";
+import type { GlContextRegistry, GlBinding, GlContextExecutionLease } from "./registry.js";
 import type { GlMuxer } from "./muxer.js";
 import type { GlSubmitExecution } from "./submit-execution.js";
 import type { GlFenceCandidate, GlFenceLease } from "./fences.js";
@@ -13,6 +14,7 @@ import { decodeQueryRequest, encodeQueryReply, type QueryBegin, type QueryReceip
 import { glSubmitExecuting, runGlRendererOperation } from "./submit-drain.js";
 import { interruptUniformUpload } from "./uniform-upload.js";
 import { runGlQuery } from "./query.js";
+import { prepareGlUniformQuery, validGlUniformQueryShape, type GlUniformQueryCandidate } from "./uniform-query-candidate.js";
 import { prepareGlErrorQuery } from "./error-query.js";
 import { GL_CLIENT_ERROR_MASK, captureNativeGlErrors } from "./errors.js";
 import { repairNativeState } from "./native-recovery.js";
@@ -27,7 +29,8 @@ type Receipt = {
   hasCurrent:boolean; context:number|null; draw:number; read:number;
   state:"queued"|"executed"|"rollback"|"retired"; mode:GlResultMode|null; stored:boolean;
   work:GlSubmitExecution|null; lease:GlFenceLease|null; custody:Custody|null;
-  candidate:GlFenceCandidate|null; gl:WebGL2RenderingContext|null;
+  candidate:GlFenceCandidate|null; uniformCandidate:GlUniformQueryCandidate|null; bootstrapLease:GlContextExecutionLease|null;
+  gl:WebGL2RenderingContext|null;
   announced:string|null;
 };
 type Owner = {owner:GlResultOwner;closed:boolean;highWater:bigint;receipts:Map<bigint,Receipt>};
@@ -44,6 +47,8 @@ function sourceFence(op:number):boolean { return op===O.QOP_FENCE_STATUS || op==
 function validShape(b:QueryBegin):number {
   if (!Number.isInteger(b.op) || b.op<0 || b.op>0xffff_ffff || !Number.isSafeInteger(b.capacity)
     || b.capacity<0 || b.capacity>65536 || b.input.byteLength>65536) return E.EINVAL;
+  if (b.op===O.QOP_GET_UNIFORM_LOC || b.op===O.QOP_LOOKUP_UNIFORM)
+    return validGlUniformQueryShape(b.op,b.input,b.capacity) ? 0 : E.EINVAL;
   if (b.op===O.QOP_GET_ERROR) {
     if (b.capacity!==4 || (b.input.byteLength!==0 && b.input.byteLength!==4)) return E.EINVAL;
     return b.input.byteLength && (new DataView(b.input.buffer,b.input.byteOffset,4).getUint32(0,true)&~GL_CLIENT_ERROR_MASK) ? E.EINVAL : 0;
@@ -146,7 +151,7 @@ export class GlNativeQueryAdapter {
         // Even failed Begin cleanup owns actual custody, not a numeric promise.
         try {
           receipt={owner,token:request.token,op:b.op,capacity:b.capacity,hasCurrent:b.hasCurrent,
-            context:b.context,draw:b.draw,read:b.read,state:"rollback",mode:"cancel",stored:false,work:null,lease:null,custody:null,candidate:null,gl:null,announced:null};
+            context:b.context,draw:b.draw,read:b.read,state:"rollback",mode:"cancel",stored:false,work:null,lease:null,custody:null,candidate:null,uniformCandidate:null,bootstrapLease:null,gl:null,announced:null};
           authority.receipts.set(request.token,receipt); authority.highWater=request.token; this.count++;
         } catch { return this.rejected(request,E.ENOMEM); }
         try {
@@ -209,7 +214,7 @@ export class GlNativeQueryAdapter {
       default:return null;
     }
   }
-  private clearCustody(r:Receipt):void { r.work=null;r.lease=null;r.custody=null;r.candidate=null;r.gl=null;r.state="retired"; }
+  private clearCustody(r:Receipt):void { r.work=null;r.lease=null;r.custody=null;r.candidate=null;r.uniformCandidate=null;r.bootstrapLease=null;r.gl=null;r.state="retired"; }
   private retire(r:Receipt):void {
     if (r.state==="retired" || !r.mode) return;
     const muxer=r.gl && this.muxers.get(r.gl);
@@ -222,13 +227,25 @@ export class GlNativeQueryAdapter {
       muxer?.captureCurrentErrors();
       if (r.candidate && !r.candidate.cancelRetirement()) return;
       r.candidate=null;
+      if (r.uniformCandidate) {
+        r.uniformCandidate.cancel();
+        if (!r.uniformCandidate.retire()) return;
+        r.uniformCandidate=null;
+      }
+      // Kept in the preallocated receipt until terminal cleanup, including
+      // preparation throws and failed candidate adoption. Never reacquire live.
+      if (r.bootstrapLease && !r.bootstrapLease.release()) return;
+      r.bootstrapLease=null;
       if (r.state==="rollback") {
         if (r.custody) { if (!r.custody.retire("cancel").complete) return; }
         else if (r.lease) { if (!r.lease.releaseRetirement()) return; }
         else if (r.work && !r.work.release()) return;
         this.clearCustody(r);
       } else if (this.store.acknowledgeRetired(r.owner,r.token).state==="retired") this.clearCustody(r);
-    } catch { /* Actual custody remains in this bounded receiver for retry. */ }
+    } catch (error) {
+      if (isKernelExportFailure(error)) throw error;
+      // Actual custody remains in this bounded receiver for retry.
+    }
   }
   private prepare(binding:GlBinding):boolean {
     const gl=binding.gl; if (!gl) return false;
@@ -290,20 +307,33 @@ export class GlNativeQueryAdapter {
                   const capture=(gl:WebGL2RenderingContext)=>this.muxers.get(gl)?.captureCurrentErrors();
                   if (!this.registry.cpuImages.prepare(binding,this.bos,capture)) return -E.EIO;
                   this.registry.cpuImages.begin(binding);
-                  let rc:number;
+                  let rc:number, queryFailure:unknown;
                   try {
-                    if (r.op===O.QOP_GET_ERROR) {
+                    if (r.op===O.QOP_GET_UNIFORM_LOC || r.op===O.QOP_LOOKUP_UNIFORM) {
+                      r.bootstrapLease=r.work!.cloneContextExecution();
+                      if (!r.bootstrapLease) return -E.ENOMEM;
+                      const candidate=prepareGlUniformQuery(r.bootstrapLease,r.op,execution.input,execution.output.length,r);
+                      if (!candidate || !custody.adoptUniformCandidate(candidate,r.bootstrapLease)) return -E.EIO;
+                      r.uniformCandidate=null;
+                      execution.output.set(candidate.bytes);rc=candidate.result;
+                    } else if (r.op===O.QOP_GET_ERROR) {
                       captureNativeGlErrors(binding.gl!,binding);
                       const candidate=prepareGlErrorQuery(binding,execution.input);
                       if (!candidate || !custody.adoptErrorCandidate(candidate)) {candidate?.cancel();return -E.EIO;}
                       new DataView(execution.output.buffer,execution.output.byteOffset,4).setUint32(0,candidate.value,true);rc=4;
                     } else rc=runGlQuery(binding,r.op,execution.input,execution.output);
-                  } finally { if (!this.registry.cpuImages.publish(binding,this.bos,capture)) return -E.EIO; }
+                  } catch (error) { queryFailure=error; throw error; }
+                  finally {
+                    try { if (!this.registry.cpuImages.publish(binding,this.bos,capture)) return -E.EIO; }
+                    finally { if (isKernelExportFailure(queryFailure)) throw queryFailure; }
+                  }
                   return rc;
                 });
               }
-            } catch { result=-E.EIO; }
-            execution.complete(result);
+            } catch (error) {
+              if (isKernelExportFailure(error)) throw error;
+              result=-E.EIO;
+            } finally { execution.complete(result); }
           });
         }
         const phase=this.phase(r)?.phase;
