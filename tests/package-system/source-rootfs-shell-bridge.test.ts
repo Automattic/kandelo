@@ -762,12 +762,14 @@ describe("canonical source-rootfs shell", () => {
       ["sfwbar.config", "/etc/xdg/sfwbar/sfwbar.config", 0o644],
       ["sway.config", "/etc/xdg/sfwbar/sway.config", 0o644],
       ["winops.widget", "/etc/xdg/sfwbar/winops.widget", 0o644],
+      ["kandelo-sfwbar", "/usr/local/bin/kandelo-sfwbar", 0o755],
       ["kandelo-terminal", "/usr/local/bin/kandelo-terminal", 0o755],
       ["kandelo-terminal.desktop", "/usr/share/applications/kandelo-terminal.desktop", 0o644],
       ["scummvm.desktop", "/usr/share/applications/scummvm.desktop", 0o644],
       ["wayland-demo.desktop", "/usr/share/applications/wayland-demo.desktop", 0o644],
     ] as const) {
       const spec = SHELL_LAZY_BINARY_SPECS.find(entry => entry.vfsPath === guest)!;
+      expect(spec, guest).toBeDefined();
       expect(shellLazySpecDependency(spec), guest).toBe("sfwbar");
       expect(fs.lazyEntries().files.find(file => file.path === guest), guest)
         .toMatchObject({ uri: `kandelo-lazy:programs/sfwbar/${artifact}` });

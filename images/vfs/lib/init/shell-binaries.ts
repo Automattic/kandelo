@@ -188,6 +188,14 @@ export const SHELL_LAZY_BINARY_SPECS = [
   // launchers. Keep optional desktop bytes lazy in the ordinary shell image.
   { id: "sfwbar", resolverPath: "programs/sfwbar/sfwbar.wasm", vfsPath: "/usr/local/bin/sfwbar", symlinks: [] },
   {
+    id: "kandelo-sfwbar",
+    dependency: "sfwbar",
+    resolverPath: "programs/sfwbar/kandelo-sfwbar",
+    vfsPath: "/usr/local/bin/kandelo-sfwbar",
+    symlinks: [],
+    mode: 0o755,
+  },
+  {
     id: "sfwbar-appmenu",
     dependency: "sfwbar",
     resolverPath: "programs/sfwbar/appmenu.so",

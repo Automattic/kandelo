@@ -9193,3 +9193,52 @@ Gtk shim, production repair and timeouts remain unchanged. Exact final
 tracked evidence: .context/sfwbar-six-patch-native-v4.log and its
 *-results/results.json; .context/sfwbar-six-patch-classifier-all-collapse.log.
 Normal product and rendered browser acceptance remain pending.
+
+### SFWBar launcher inclusion in the normal shell image (2026-10-30)
+
+The complete e5ca69190a normal build succeeds, including shell/rootfs/host,
+SDK64, ABI and freshness checks. Before consumer execution, exact image
+inspection fails because `/usr/local/bin/kandelo-sfwbar` is absent. The
+SFWBar package declares and publishes the launcher, but the shell's explicit
+lazy-file inventory omits it. No graphical acceptance ran in that cohort.
+This is an image-composition defect, not an execution or browser boundary.
+
+The shell now installs that declared package artifact lazily at its real
+guest path with mode `0755`. The existing composed-image assertion includes
+it alongside the panel/module/configuration/desktop entries. Adding that
+expectation to the old composer fails; the source repair and normal image
+rebuild are validated separately. Shell revision 66 invalidates changed
+image bytes; SFWBar source and the ABI56 family remain unchanged.
+
+Private evidence: Kms `.context/desktop-candidate-e5ca69190a-v2/` and primary
+`.context/sfwbar-shell-launcher-before.log`. The complete normal build and
+ABI/freshness successes do not establish rendered SFWBar acceptance. A fresh
+normal image and current all-owner/actual-member identity checks must precede
+headless compositor and ScummVM consumers. Earlier ENOSPC and deliberately
+cancelled duplicate-producer cohorts remain failures, with raw evidence kept.
+
+All 18 existing shell composition/bridge checks pass after the launcher
+mapping repair, with zero skips (`sfwbar-shell-launcher-after.log`). The
+before run intentionally selects the affected composed-image case: one
+failure, 17 filtered cases. Normal artifact and browser validation of the
+repaired image still follows; the source check is not a rendered result.
+
+The preceding current narrow package run
+`sfwbar-package-smoke-e5ca-v2-1030-083815-d3a0` passes in 1m06s: normal
+rootfs/host, selected SFWBar/kernel, SDK64, ABI, actual main/menu-module
+admission and Node help exit0. Its selected source/dependency/SDK/package
+and actual host/rootfs bytes agree before/after. The first narrow attempt
+rejects an internal noncatalog image-module selector before consumers;
+the corrected script validates all public selectors from the catalog.
+
+Earlier c194 normal attempts encounter local ENOSPC. Scoped supported
+Cargo dev-profile cleanup of owned idle targets restores space while
+preserving release products, preview products and raw evidence. Shared
+cache collection remains unapplied. A later e5ca full graph publishes
+SFWBar's ten outputs, Sway and Qt, but fails when its duplicate same-key
+Clang producer is deliberately stopped. SourceOnly protects publication
+with no-replace semantics; it does not coalesce live producers. The
+original producer drains and publishes Clang, the build image and NetHack
+before the successful normal e5ca build is launched. Exact producer jobs,
+commands and disk-recovery logs remain in `.context`; no failed cohort
+is relabelled as current consumer acceptance.
