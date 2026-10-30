@@ -1763,6 +1763,28 @@ SIGCHLD, so the kernel reaps them as they exit, as a Linux init does. They
 are the kernel-started Kandelo exchange agent and every orphan adopted as
 described next.
 
+The graphics integration also has an internal kernel-owned lifecycle intent
+registry; no host export uses it yet. It retains the actual non-Clone driver
+intent with its existing PID/exec generation and exact request. Its 64-entry
+budget includes completed and taken scalar records. Admission reserves an
+entry fallibly before lifecycle work, and positive handles never wrap or reuse.
+Pending/faulted cleanup preserves the intent and process-table resources.
+Repeated completed steps observe a scalar summary without repeating effects.
+Actual removal lists, clear-TID pointer, exit status and executable completion
+remain held until `take_completion` moves them to a real Rust effects owner.
+The resulting Taken record means custody moved; it is not a host cleanup ACK
+or proof of execution. Only Taken or fully abandoned records can be forgotten.
+
+Abandonment distinguishes an unstarted instruction from irreversible query
+cancellation. Once cleanup starts, abandonment must await its real retirement
+acknowledgment. Abandoned exec/spawn instructions also cancel their exact
+prepared target through the ordinary target/OFD cleanup path. Normal exec or
+removal invalidates an old intent; its token cannot cancel a replacement
+image's resources. The existing prepared-target cancel path's ignored release
+error remains an ordinary cleanup gap, not new retryable cleanup proof.
+Kernel-held intent exports, effect receivers and worker scheduling still need
+integration before public asynchronous graphics activation.
+
 ### Orphan adoption
 
 POSIX requires that when a process terminates, each of its children,

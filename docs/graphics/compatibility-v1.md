@@ -9718,3 +9718,41 @@ controls, normal guests, browsers, CTS and conformance remain required. No publi
 pending behavior, ABI bump, generated-output claim or normal build is included.
 The broader program-link clone rollback still has unchecked candidate-deletion
 paths; its general lifecycle repair remains an ordinary open item.
+
+### Kernel-held lifecycle intent registry (2026-10-29)
+
+The internal registry retains the actual non-Clone lifecycle driver behind
+positive monotonic i64 handles. It has a fixed 64-entry budget, a fallible
+try-lock against reentry and fallible entry reservation before effects.
+Existing PID allocation and exec generation remain identity authority.
+Pending/fault and pre-consumption refusals retain the exact intent/resources;
+finished results remain stable without repeating exec, exit, removal or CTID
+effects. Actual Completion ownership stays in the registry until explicit
+`take_completion` transfers it to a must-use Rust effects owner. The Taken
+scalar record means custody transfer, not host/native acknowledgment or effect
+execution, and remains budgeted until Forget.
+
+Unstarted ordinary abandonment leaves independent query ownership untouched.
+Started cancellation stays visibly irreversible and waits for actual cleanup
+ACK before abandonment can finish. Exec/spawn abandonment validates and
+cancels the real prepared-target OFD. It does not silently discard the target
+or release a guest query's terminal retry binding. Old-generation or removed
+process intents cannot touch a replacement image. Completed effects cannot be
+abandoned/forgotten before their explicit Rust custody move. The existing
+prepared-target cancel path's ignored release errno remains a cleanup gap;
+this registry does not invent a retryable close receipt or claim that gap fixed.
+
+An init-reap admission test found that the parent waitability predicate excludes
+unpublished spawn children, while actual init rollback reaping permits them.
+Its preflight now matches `reap_for_init` exactly, preserving that behavior.
+Declared-shell kernel validation passes 31 checks: 12 new registry cases,
+ten existing lifecycle driver cases, five source guards and four channel
+pointer contracts. Actual Wasm32 kernel compilation passes. Evidence in VMA:
+`.context/kernel-intent-registry-final.log` and
+`.context/kernel-intent-registry-wasm.log`.
+
+No export, wire tag, public pending/sentinel or ABI change is enabled. Real
+effects receivers, frozen signal scheduling, worker/forward progress and
+actual teardown custody or fatal containment remain integration work. Combined
+Rust/ABI, normal products, browser/browser-memory and conformance validation
+remain required before public async activation.

@@ -6,6 +6,8 @@ use crate::process_table::{ProcessTable, RemoveProcessResult};
 use crate::syscalls::{self, GlQueryTeardown};
 use wasm_posix_shared::Errno;
 
+pub(crate) mod registry;
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Request {
     Exec {
@@ -181,9 +183,11 @@ impl Intent {
                 Ok(true)
             }
             Request::Remove { .. } | Request::SignalExit { .. } => Ok(true),
-            Request::ReapInit { pid } => {
-                Ok(table.is_exited_child_of(crate::process_table::SYNTHETIC_INIT_PID, pid))
-            }
+            // Init also reaps an exited unpublished launch during rollback.
+            // Match reap_for_init itself, not the parent waitability predicate
+            // that deliberately excludes spawn_publication_pending children.
+            Request::ReapInit { .. } => Ok(proc.ppid == crate::process_table::SYNTHETIC_INIT_PID
+                && proc.state == crate::process::ProcessState::Exited),
         }
     }
     pub(crate) fn step(
@@ -282,6 +286,7 @@ pub(crate) fn legacy(
 
 #[cfg(test)]
 mod tests {
+    mod registry_tests;
     use super::*;
     use crate::{
         blocked_retry::{BlockingRetryOperation, BlockingRetryTarget, StableOfdTarget},
