@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,32 +9,45 @@ import { NodeKernelHost } from "../../../../host/src/node-kernel-host";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../../..");
 
+let temp = "";
+let wasm = "";
+
+// The guest is a real SDK build linked against the resolved SDL2, Wayland,
+// xkbcommon, libffi and libdrm packages and then fork-instrumented, which
+// takes minutes on a loaded machine. Build it before the test, so the
+// test's own budget covers only the guest's run.
+beforeAll(() => {
+  temp = mkdtempSync(join(tmpdir(), "kandelo-sdl-text-"));
+  // Enter through the resolver, including its active cache policy and
+  // receipt checks; never scan caches or assume a staged library prefix.
+  const xtask = process.env.WASM_POSIX_XTASK_BIN;
+  const command = xtask ?? "cargo";
+  const hostTarget = execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (.+)$/m)![1];
+  const prefix = xtask ? [] : ["run", "-p", "xtask", "--target", hostTarget, "--quiet", "--"];
+  const paths = new Map<string, string>();
+  for (const name of ["sdl2", "libwayland", "libxkbcommon", "libffi", "libdrm"]) {
+    paths.set(name, execFileSync(command, [...prefix, "build-deps", "resolve", name, "--arch", "wasm32"],
+      { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }).trim().split("\n").at(-1)!);
+  }
+  wasm = join(temp, "text-input.wasm");
+  execFileSync(join(root, "sdk/bin/wasm32posix-cc"), [
+    "-O2", `-I${paths.get("sdl2")}/include`, join(here, "text-input.c"),
+    ...[...paths.values()].map(path => `-L${path}/lib`),
+    "-lSDL2", "-lwayland-client", "-lwayland-egl", "-lwayland-cursor", "-lxkbcommon", "-lffi", "-lgbm", "-ldrm", "-lEGL", "-lGLESv2", "-lm", "-o", `${wasm}.linked`,
+  ], { cwd: root, stdio: "inherit" });
+  execFileSync("bash", [join(root, "scripts/run-wasm-fork-instrument.sh"), `${wasm}.linked`, "-o", wasm],
+    { cwd: root, stdio: "inherit" });
+  execFileSync(command, [...prefix, "stamp-abi-contract", wasm], { cwd: root, stdio: "inherit" });
+}, 600_000);
+afterAll(() => {
+  if (temp) rmSync(temp, { recursive: true, force: true });
+});
+
 it("evdev preserves text, event order, overflow recovery, and inclusive pointer bounds", async () => {
-  const temp = mkdtempSync(join(tmpdir(), "kandelo-sdl-text-"));
   let output = "";
   const record = (_pid: number, bytes: Uint8Array) => { output += new TextDecoder().decode(bytes); };
   const host = new NodeKernelHost({ onStdout: record, onStderr: record });
   try {
-    // Enter through the resolver, including its active cache policy and
-    // receipt checks; never scan caches or assume a staged library prefix.
-    const xtask = process.env.WASM_POSIX_XTASK_BIN;
-    const command = xtask ?? "cargo";
-    const hostTarget = execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (.+)$/m)![1];
-    const prefix = xtask ? [] : ["run", "-p", "xtask", "--target", hostTarget, "--quiet", "--"];
-    const paths = new Map<string, string>();
-    for (const name of ["sdl2", "libwayland", "libxkbcommon", "libffi", "libdrm"]) {
-      paths.set(name, execFileSync(command, [...prefix, "build-deps", "resolve", name, "--arch", "wasm32"],
-        { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }).trim().split("\n").at(-1)!);
-    }
-    const wasm = join(temp, "text-input.wasm");
-    execFileSync(join(root, "sdk/bin/wasm32posix-cc"), [
-      "-O2", `-I${paths.get("sdl2")}/include`, join(here, "text-input.c"),
-      ...[...paths.values()].map(path => `-L${path}/lib`),
-      "-lSDL2", "-lwayland-client", "-lwayland-egl", "-lwayland-cursor", "-lxkbcommon", "-lffi", "-lgbm", "-ldrm", "-lEGL", "-lGLESv2", "-lm", "-o", `${wasm}.linked`,
-    ], { cwd: root, stdio: "inherit" });
-    execFileSync("bash", [join(root, "scripts/run-wasm-fork-instrument.sh"), `${wasm}.linked`, "-o", wasm],
-      { cwd: root, stdio: "inherit" });
-    execFileSync(command, [...prefix, "stamp-abi-contract", wasm], { cwd: root, stdio: "inherit" });
     await host.init();
     let pid = 0;
     const exit = host.spawn(new Uint8Array(readFileSync(wasm)).buffer, ["sdl-text-input"], {
@@ -123,6 +136,5 @@ it("evdev preserves text, event order, overflow recovery, and inclusive pointer 
     expect(output).not.toContain("TEXT:1:");
   } finally {
     await host.destroy();
-    rmSync(temp, { recursive: true, force: true });
   }
-}, 180_000);
+}, 120_000);
