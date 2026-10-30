@@ -3435,6 +3435,7 @@ export class CentralizedKernelWorker {
     this.#kernel = new WasmPosixKernel(config, io, {
       onGlQueryWork: () => this.#requestGlQueryDrain(),
       onGlQueryWake:(pid,session,registration,token)=>this.#wakeOwnedGlQuery(pid,session,registration,token),
+      onGlQueryOwnerWake:(pid,session,registration)=>this.#wakeOwnedGlQuery(pid,session,registration),
       // Process-lifecycle callbacks are handled by the kernel worker: the
       // kernel returns EAGAIN and JS performs the host-side action.
       getProcessMemory: (pid: number): WebAssembly.Memory | undefined => {
@@ -4978,6 +4979,8 @@ export class CentralizedKernelWorker {
         kernel.mergeCallbacks({ onGlQueryWork: wake,
           onGlQueryWake:(pid,session,registration,token)=>{
             if(generation===this.#glQueryBackendGeneration)this.#wakeOwnedGlQuery(pid,session,registration,token);
+          },onGlQueryOwnerWake:(pid,session,registration)=>{
+            if(generation===this.#glQueryBackendGeneration)this.#wakeOwnedGlQuery(pid,session,registration);
           } });
         this.#kernel = kernel;
       },
@@ -10760,9 +10763,9 @@ export class CentralizedKernelWorker {
     return true;
   }
 
-  #wakeOwnedGlQuery(pid:number,session:number,registration:number,token:bigint):void {
+  #wakeOwnedGlQuery(pid:number,session:number,registration:number,token?:bigint):void {
     for(const row of this.#ownedGlQueries.values()) {
-      if(row.generation!==this.#glQueryBackendGeneration||row.kernel!==this.#kernel||row.token!==token
+      if(row.generation!==this.#glQueryBackendGeneration||row.kernel!==this.#kernel||(token!==undefined && row.token!==token)
         ||row.channel.pid!==pid||row.session!==session||row.owner?.registration!==registration
         ||!row.kernel.ownsGlQueryControlOwner(row.owner))continue;
       row.dirty=true;this.#requestGlQueryDrain();

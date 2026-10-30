@@ -670,7 +670,7 @@ export class GlOwnedForwardClient {
       // Without a grant this client could never send a native query. This
       // exact endpoint may refuse old/unregistered intent without pretending
       // that an attempted native request has retired.
-      if(entry.grant || !positive(message.epoch) || message.error!==13)return;
+      if(entry.grant || this.endpointEpoch===null || message.epoch!==this.endpointEpoch || message.error!==13)return;
       entry.openRejected=true;entry.closed=true;this.store.retireOwner(entry.owner);
       for(const receipt of entry.receipts.values()) {
         receipt.mode??="cancel";this.wake(entry.owner,receipt.token);
@@ -680,7 +680,7 @@ export class GlOwnedForwardClient {
     }
     if(message.type==="gl_owned_opened") {
       if(entry.openRejected)return;
-      if(!positive(message.epoch) || !positive(message.registration))return;
+      if(this.endpointEpoch===null || message.epoch!==this.endpointEpoch || !positive(message.registration))return;
       if(entry.grant && (entry.grant.epoch!==message.epoch || entry.grant.registration!==message.registration))return;
       const changed=!entry.grant;
       entry.grant={...this.route(entry.owner),epoch:message.epoch,registration:message.registration};
@@ -741,8 +741,9 @@ export class GlOwnedForwardClient {
         this.store.acknowledgeRetired(entry.owner,token);
     }
     const progress=reply.phase+(reply.phase==="retired"?`/${reply.mode}/${reply.accepted}`:"");
-    if(receipt.announced!==progress) {receipt.announced=progress;this.notifyWork(entry);}
-    this.wake(entry.owner,token);
+    if(receipt.announced!==progress) {
+      receipt.announced=progress;this.notifyWork(entry);this.wake(entry.owner,token);
+    }
   }
   private wake(owner:GlResultOwner,token:bigint):void {
     try {this.queueWakeup(this.pid,owner.sessionId,owner.registration,token);} catch {/* Durable phase can be polled later. */}
@@ -763,7 +764,8 @@ export class GlOwnedForwardClient {
         // A failed encoding/allocation can leave a started local ticket which
         // provably never attempted a post. Report that synchronous quiescence.
         receipt.execution?.complete(-5);
-        this.store.acknowledgeRetired(entry.owner,receipt.token);continue;
+        if(this.store.acknowledgeRetired(entry.owner,receipt.token))this.wake(entry.owner,receipt.token);
+        continue;
       }
       if(!entry.grant) {this.open(entry);continue;}
       if(!receipt.execution) {

@@ -153,7 +153,13 @@ export class GlKernelQueryControls {
       case "pending":reply={phase:"pending"};break;
       case "ready":reply={phase:"ready",result:state.rc,bytes:state.bytes};break;
       case "retiring":reply={phase:"retiring",mode:state.mode};break;
-      case "retired":reply={phase:"retired",mode:state.mode,accepted:state.accepted};break;
+      case "retired":
+        // Owner closure can retire provably unposted work before Rust has
+        // requested cancellation. Teach that mode first; a Poll with no mode
+        // cannot authenticate a terminal cancellation ACK.
+        reply=request.control==="poll" && !record.mode && state.mode==="cancel"
+          ? {phase:"retiring",mode:"cancel"}
+          : {phase:"retired",mode:state.mode,accepted:state.accepted};break;
       default:return {error:E.EIO};
     }
     const bytes=encodeQueryReply(reply,{control:request.control,token:request.token,capacity:record.capacity,

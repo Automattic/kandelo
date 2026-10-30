@@ -10605,3 +10605,59 @@ the remaining baseline inventory. Normal SDK/package/image products, full
 Rust/POSIX/CTS, real Node/browser consumer, browser-memory and performance
 acceptance remain integration requirements. This increment runs none of those
 normal consumer suites and makes no performance or rendering claim.
+
+### Private paired-renderer channel delivery (2026-10-30)
+
+The private actual-kernel fixture now drives the production worker, control
+router, owned forward client and main renderer receiver together. Both guest
+pointer widths complete real Rust result copyout, then Commit and strict
+retirement acknowledgement, before the original channel completes. The test
+endpoint copies messages and delivers owned controls asynchronously; native GL
+calls use an API double. This proves the private protocol composition, not real
+MessagePort/browser rendering or normal product acceptance.
+
+Three shared scheduling/authentication defects are repaired:
+
+- Duplicate Pending/Retiring replies no longer create fresh query wakes. A
+  paused renderer remains owned without a Poll/reply loop; real renewed work
+  can resume it.
+- Owner Open grants and rejections must match the already authenticated
+  endpoint epoch. A wrong-epoch reply cannot reject retained intent or prevent
+  recovery when the real grant arrives.
+- Actual owner-retirement notifications reach the worker by their exact scalar
+  registration. Provably unposted local cancellation wakes its query, and Poll
+  establishes cancellation mode before Rust accepts a strict Retired ACK.
+
+Ordinary asynchronous owner Open was already compatible with unsent intent;
+no speculative admission or storage-custody shortcut was added. The tests also
+cover synchronous grants before waiter registration, lost/wrong Begin and
+Commit ACKs, immutable first input after guest header mutation, unchanged
+Pending no-spin, and native fence-candidate cleanup throwing until explicit
+renewed cancellation. A late held Ready reply cannot revive that cancelled
+candidate or write the guest output. Query candidate retirement and independent
+endpoint/session retirement remain distinct obligations.
+
+The focused kernel Wasm is unchanged from the preceding increment (SHA256
+`c05991320409be55828003de41ad1a19fc894cbe717364ba21113c1ab40df15a`). No
+Rust, export, codec wire, generated ABI or epoch changes are needed. Public
+syscall72 dispatch and public asynchronous query parking remain disabled.
+**The ACK-capable final-OFD physical-effects receiver is still missing;
+last-pin EBUSY retains actual custody and is not completion.** Full lifecycle
+intent scheduling, old-memory teardown, unsupported typed mutation candidates,
+public error/admission mapping and remaining graphics inventory stay open.
+Normal SDK/package/image, full Rust/POSIX/CTS, real Node/browser consumers,
+browser-memory and performance acceptance were not run by this increment.
+
+Focused evidence in `.context/graphics-current-conformance`:
+
+| Check | Result | Private log |
+| --- | --- | --- |
+| Actual compiled-kernel/paired-renderer channel fixture | 22 passed | `owned-paired-candidate.log` |
+| Paused renderer before phase-wake fix | 2 passed, 1 failed; 15 to20 posts over five turns | `owned-paired-pending-before.log` |
+| Wrong epoch and unposted closure before fixes | 2 executed controls failed | `owned-paired-open-before.log` |
+| Complete graphics source gate | 1046 passed, 44 files, no skips | `owned-paired-graphics.log` |
+| Strict worker and actual-kernel fixture types | passed | `owned-paired-types.log` |
+| Canonical host JavaScript/declarations | passed | `owned-paired-host-build.log` |
+| Full runtime ownership and entry-context audits | 120 passed; complete graph 97.5s, unchanged 180s watchdog | `owned-paired-audits.log` |
+| Exact test evidence registry | 645 files agree | `owned-paired-evidence.log` |
+| Unchanged actual compiled kernel SHA256 | matches preceding build | `owned-paired-kernel-sha256.log` |

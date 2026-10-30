@@ -7,10 +7,13 @@ import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch.js"
 import { VirtualPlatformIO } from "../src/vfs/vfs.js";
 import { NodeTimeProvider } from "../src/vfs/time.js";
 import { FixedTreeBackend } from "./support/fixed-tree-backend.js";
-import { decodeQueryRequest, encodeQueryRequest } from "../src/webgl/query-receipt-codec.js";
+import { decodeQueryRequest, decodeQueryReply, encodeQueryRequest } from "../src/webgl/query-receipt-codec.js";
+import { setupMainForward, createMainForwardChannel } from "../src/webgl/main-forward.js";
+import { GlOwnedForwardClient, GlOwnedForwardRetirements } from "../src/webgl/owned-forward.js";
+import { GbmBoRegistry } from "../src/dri/registry.js";
 import { GlNativeQueryAdapter } from "../src/webgl/native-query-adapter.js";
 import { ABI_SYSCALLS as S, CH_ARGS, CH_ARG_SIZE, CH_DATA, CH_ERRNO, CH_RETURN, CH_STATUS, CH_SYSCALL, CH_TOTAL_SIZE } from "../src/generated/abi.js";
-import { QOP_GET_ERROR, OP_VERSION } from "../src/webgl/ops.js";
+import { QOP_GET_ERROR, QOP_CREATE_FENCE, OP_VERSION } from "../src/webgl/ops.js";
 
 // Normal prepared runs use the normal resolver. Focused bridge development can
 // explicitly name its actual compiler output without claiming normal product
@@ -20,7 +23,26 @@ afterEach(()=>vi.restoreAllMocks());
 async function turn() {await new Promise<void>(resolve=>setImmediate(resolve));}
 async function until(predicate:()=>boolean) {for(let index=0;index<20&&!predicate();index++)await turn();expect(predicate()).toBe(true);}
 function words(...values:number[]) {const out=new Uint8Array(values.length*4),view=new DataView(out.buffer);values.forEach((value,index)=>view.setUint32(index*4,value,true));return out;}
-async function fixture(width:4|8=4) {
+class OrderedEndpoint {
+  other!:OrderedEndpoint;
+  listeners=new Set<(event:MessageEvent)=>void>();
+  sent:any[]=[];
+  hold:((message:any)=>boolean)|null=null;
+  held:any[]=[];
+  synchronous=false;
+  postMessage(message:any):void {
+    const copy=structuredClone(message);this.sent.push(copy);
+    if(this.hold?.(copy)){this.held.push(copy);return;}
+    if(copy.type.startsWith("gl_owned_") && !this.synchronous)queueMicrotask(()=>this.other.fire(copy));
+    else this.other.fire(copy);
+  }
+  fire(data:unknown):void {for(const listener of [...this.listeners])listener({data} as MessageEvent);}
+  addEventListener(_type:"message",listener:(event:MessageEvent)=>void):void {this.listeners.add(listener);}
+  removeEventListener(_type:"message",listener:(event:MessageEvent)=>void):void {this.listeners.delete(listener);}
+  flush():void {const held=this.held;this.held=[];for(const value of held)queueMicrotask(()=>this.other.fire(value));}
+}
+async function pairedUntil(predicate:()=>boolean) {for(let i=0;i<40&&!predicate();i++)await new Promise<void>(resolve=>setTimeout(resolve,0));expect(predicate()).toBe(true);}
+async function fixture(width:4|8=4,forwarded=false,pauseRenderer=false,synchronousOwned=false) {
   const memory=new WebAssembly.Memory({initial:64,maximum:64,shared:true}),channelOffset=0x10000;
   const io=new VirtualPlatformIO([{mountPoint:"/",backend:new FixedTreeBackend({"/":{mode:0o040755,ino:1}})}],new NodeTimeProvider());
   const kernel=new WasmPosixKernel({maxWorkers:1,dataBufferSize:65536,useSharedMemory:true},io,{getProcessMemory:()=>memory});
@@ -51,11 +73,23 @@ async function fixture(width:4|8=4) {
   const fd=open();ioctl(fd,0x40,words(OP_VERSION,2,display,displayId));
   issue(S.Mmap,[0,1<<20,3,1,fd,0]);
   const binding=kernel.gl.get(pid)!;
-  let blocked=false;const nativeErrors:number[]=[];
+  let blocked=false;const nativeErrors:number[]=[],liveSyncs=new Set<object>();
   const gl=new Proxy({getError:()=>nativeErrors.shift()??0,isContextLost:()=>false,
+    fenceSync:()=>{const sync={};liveSyncs.add(sync);return sync;},getSyncParameter:()=>0x9119,
+    deleteSync:(sync:object)=>{if(blocked)throw new Error("native sync cleanup refused");liveSyncs.delete(sync);},
     getParameter:(p:number)=>p===0x84e0?0x84c0:0,checkFramebufferStatus:()=>0x8cd5,
   },{get:(target,key)=>Reflect.get(target,key)??(String(key).startsWith("create")?()=>({}):String(key).startsWith("delete")?()=>{if(blocked)throw new Error("native cleanup refused");}:()=>null)}) as unknown as WebGL2RenderingContext;
-  binding.gl=gl;
+  let pair:null|{sender:OrderedEndpoint;receiver:OrderedEndpoint;client:GlOwnedForwardClient;dispose:ReturnType<typeof setupMainForward>;retirements:GlOwnedForwardRetirements}=null;
+  if(forwarded) {
+    const sender=new OrderedEndpoint(),receiver=new OrderedEndpoint();sender.other=receiver;receiver.other=sender;sender.synchronous=receiver.synchronous=synchronousOwned;
+    const limits={maxOwners:8,maxRequests:16,maxRetainedBytes:4096},retirements=new GlOwnedForwardRetirements(2);
+    const dispose=setupMainForward(receiver,{width:4,height:3,getContext:()=>gl} as unknown as HTMLCanvasElement,pid,
+      {endpoint:receiver,bos:new GbmBoRegistry(),limits,retirements,...(pauseRenderer?{queueDrain:()=>{}}:{})});
+    const client=new GlOwnedForwardClient(sender,pid,limits,wake);
+    await pairedUntil(()=>client.legacyReady());
+    kernel.gl.attachMainForward(pid,createMainForwardChannel(sender,pid,0,client));
+    pair={sender,receiver,client,dispose,retirements};
+  } else binding.gl=gl;
   const context=ioctl(fd,0x42,words(2,0,0,0));ioctl(fd,0x46,words(new DataView(context.buffer).getUint32(12,true),0,0));
   const native=access.instance()!.exports;
   expect((native.kernel_set_current_tid as (pid:number,tid:number)=>number)(pid,pid)).toBe(0);
@@ -75,11 +109,12 @@ async function fixture(width:4|8=4) {
     (instance.exports.kernel_handle_channel as (p:number,n:number,pid:number,token:bigint)=>number)(scratch,CH_TOTAL_SIZE,pid,0n);
     expect(out.getUint32(CH_ERRNO,true)).toBe(0);return Number(out.getBigInt64(CH_RETURN,true));
   };
-  const start=()=>{
-    bytes(8192,width===4?words(QOP_GET_ERROR,0,0,12288,4,0):words(QOP_GET_ERROR,0,0,0,0,0,12288,0,4,0));bytes(12288,words(0xfeedface));
+  const start=(mask=0)=>{
+    if(mask)bytes(16384,words(mask));
+    bytes(8192,width===4?words(QOP_GET_ERROR,mask?16384:0,mask?4:0,12288,4,0):words(QOP_GET_ERROR,0,mask?16384:0,0,mask?4:0,0,12288,0,4,0));bytes(12288,words(0xfeedface));
     prepare(S.Ioctl,[fd,0x49,8192]);return worker.testAuthority.beginOwnedGlQueryForTest(channel!);
   };
-  return {kernel,worker,memory,pid,fd,channel:channel!,view,issue,prepare,bytes,binding,gl,nativeErrors,start,rawIssue,access,wake,block:(value:boolean)=>{blocked=value;}};
+  return {kernel,worker,memory,pid,fd,channel:channel!,view,issue,prepare,bytes,binding,gl,nativeErrors,liveSyncs,start,rawIssue,access,wake,pair,block:(value:boolean)=>{blocked=value;}};
 }
 
 it.each([4,8] as const)("publishes a real Rust %s-byte captured result once, then releases only after channel publication",async width=>{
@@ -242,4 +277,111 @@ it("drives the first Commit on a later turn when actual retained native storage 
   expect(new DataView(f.memory.buffer).getUint32(12288,true)).toBe(0x501);expect(f.binding.errors).toEqual([0x501]);
   await until(()=>f.worker.testAuthority.ownedGlQueryStateForTest(f.channel)===null);
   expect(commits).toBe(1);expect(f.binding.errors).toEqual([]);
+});
+
+
+it.each([4,8] as const)("delivers an actual Rust %s-byte query through asynchronous paired owner Open and renderer Commit",async width=>{
+  const f=await fixture(width,true);f.start(1);
+  expect(f.view().getUint32(CH_STATUS,true)).toBe(1);
+  expect(f.pair!.sender.sent.some(message=>message.type==="gl_owned_open")).toBe(true);
+  await pairedUntil(()=>f.worker.testAuthority.ownedGlQueryStateForTest(f.channel)===null);
+  expect(new DataView(f.memory.buffer).getUint32(12288,true)).toBe(0x500);
+  expect(f.view().getUint32(CH_ERRNO,true)).toBe(0);
+  expect(f.pair!.sender.sent.some(message=>message.type==="gl_forward_query")).toBe(false);
+  f.pair!.dispose();
+});
+
+
+it("does not spin on repeated renderer Pending replies while actual accepted work awaits a renderer turn",async()=>{
+  const f=await fixture(4,true,true);f.start(1);
+  try {
+    await pairedUntil(()=>f.pair!.receiver.sent.some(message=>message.type==="gl_owned_reply"));
+    for(let i=0;i<4;i++)await turn();const count=f.pair!.sender.sent.length;
+    for(let i=0;i<5;i++)await turn();expect(f.pair!.sender.sent).toHaveLength(count);
+    expect(f.view().getUint32(CH_STATUS,true)).toBe(1);
+  } finally {
+    f.pair!.dispose.ownedQueries!.drain(16);
+    await pairedUntil(()=>f.worker.testAuthority.ownedGlQueryStateForTest(f.channel)===null);
+    f.pair!.dispose();
+  }
+});
+
+it("ignores a wrong-epoch owner Open ACK and recovers the exact held grant",async()=>{
+  const f=await fixture(4,true);f.pair!.receiver.hold=message=>message.type==="gl_owned_opened";
+  f.start(1);await pairedUntil(()=>f.pair!.receiver.held.length>0);
+  const ack=f.pair!.receiver.held[0];
+  f.pair!.sender.fire({...ack,type:"gl_owned_open_rejected",epoch:ack.epoch+1,error:13});
+  f.pair!.sender.fire({...ack,epoch:ack.epoch+1});
+  expect(f.pair!.sender.sent.some(message=>message.type==="gl_owned_control")).toBe(false);
+  f.worker.testAuthority.retryOwnedGlQueryForTest(f.channel);
+
+  for(let i=0;i<3;i++)await turn();
+  f.pair!.receiver.hold=null;f.pair!.receiver.flush();
+  await pairedUntil(()=>f.worker.testAuthority.ownedGlQueryStateForTest(f.channel)===null);
+  expect(new DataView(f.memory.buffer).getUint32(12288,true)).toBe(0x500);f.pair!.dispose();
+});
+
+it("retires an accepted but unposted query when its actual endpoint closes before owner Open completes",async()=>{
+  const f=await fixture(4,true);f.pair!.sender.hold=message=>message.type==="gl_owned_open";
+  f.start(1);expect(f.pair!.sender.held.length).toBeGreaterThan(0);
+  f.pair!.dispose();
+  await pairedUntil(()=>f.worker.testAuthority.ownedGlQueryStateForTest(f.channel)===null);
+  expect(f.view().getUint32(CH_STATUS,true)).toBe(2);
+  expect(f.view().getUint32(CH_ERRNO,true)).not.toBe(0);
+  expect(new DataView(f.memory.buffer).getUint32(12288,true)).toBe(0xfeedface);
+  expect(f.pair!.sender.sent.some(message=>message.type==="gl_owned_control")).toBe(false);
+});
+
+
+it("handles synchronous owner grant before watch registration without losing the actual query wake",async()=>{
+  const f=await fixture(4,true,false,true);f.start(1);
+  await pairedUntil(()=>f.worker.testAuthority.ownedGlQueryStateForTest(f.channel)===null);
+  expect(new DataView(f.memory.buffer).getUint32(12288,true)).toBe(0x500);
+  expect(f.view().getUint32(CH_ERRNO,true)).toBe(0);f.pair!.dispose();
+});
+
+it("retains actual Rust copyout and physical custody through lost and wrong forwarded Begin/Commit ACKs",async()=>{
+  const f=await fixture(4,true);let stage:"begin"|"commit"="begin";
+  f.pair!.receiver.hold=message=>message.type==="gl_owned_reply" && message.control===stage;
+  const token=f.start(1);f.bytes(16384,words(2));f.bytes(8192,new Uint8Array(24).fill(0xff));
+  const readyReply=(message:any)=>decodeQueryReply(new Uint8Array(message.bytes),{control:"begin",token,capacity:4}).phase==="ready";
+  await pairedUntil(()=>f.pair!.receiver.held.some(readyReply)); // Actual native Ready, Begin ACK still absent.
+  expect(new DataView(f.memory.buffer).getUint32(12288,true)).toBe(0xfeedface);
+  const ready=f.pair!.receiver.held.find(readyReply)!;
+  f.pair!.sender.fire({...ready,registration:ready.registration+1});
+  await turn();expect(new DataView(f.memory.buffer).getUint32(12288,true)).toBe(0xfeedface);
+  stage="commit";f.pair!.receiver.flush();
+  await pairedUntil(()=>f.pair!.receiver.held.some(message=>message.control==="commit"));
+  expect(new DataView(f.memory.buffer).getUint32(12288,true)).toBe(0x500);
+  expect(f.view().getUint32(CH_STATUS,true)).toBe(1);
+  const commit=f.pair!.receiver.held.find(message=>message.control==="commit")!;
+  f.pair!.sender.fire({...commit,registration:commit.registration+1});
+  for(let i=0;i<3;i++)await turn();expect(f.worker.testAuthority.ownedGlQueryStateForTest(f.channel)?.terminal).toBe(null);
+  const count=f.pair!.sender.sent.length;for(let i=0;i<4;i++)await turn();expect(f.pair!.sender.sent).toHaveLength(count);
+  f.pair!.receiver.hold=null;f.pair!.receiver.flush();
+  await pairedUntil(()=>f.worker.testAuthority.ownedGlQueryStateForTest(f.channel)===null);
+  expect(f.view().getUint32(CH_STATUS,true)).toBe(2);expect(f.view().getUint32(CH_ERRNO,true)).toBe(0);
+  expect(f.pair!.sender.sent.some(message=>message.type==="gl_forward_query")).toBe(false);f.pair!.dispose();
+});
+
+it("keeps real failed native candidate cancellation owned without spin until explicit renewed cancellation",async()=>{
+  const f=await fixture(4,true);
+  f.pair!.receiver.hold=message=>message.type==="gl_owned_reply" && new DataView(message.bytes).getUint16(6,true)===2;
+  f.bytes(16384,words(9));f.bytes(8192,words(QOP_CREATE_FENCE,16384,4,12288,16,0));f.bytes(12288,new Uint8Array(16).fill(0xa5));
+  f.prepare(S.Ioctl,[f.fd,0x49,8192]);f.worker.testAuthority.beginOwnedGlQueryForTest(f.channel);
+  await pairedUntil(()=>f.liveSyncs.size===1 && f.pair!.receiver.held.length>0);
+  f.block(true);f.worker.testAuthority.retryOwnedGlQueryForTest(f.channel,true);
+  await pairedUntil(()=>f.pair!.receiver.sent.some(message=>message.type==="gl_owned_reply" && message.control==="cancel"));
+  for(let i=0;i<5;i++)await turn();
+  expect(f.worker.testAuthority.ownedGlQueryStateForTest(f.channel)).not.toBe(null);
+  expect(f.view().getUint32(CH_STATUS,true)).toBe(1);expect(f.liveSyncs.size).toBe(1);
+  const count=f.pair!.sender.sent.length;
+  for(let i=0;i<6;i++)await turn();expect(f.pair!.sender.sent).toHaveLength(count);
+  f.block(false);f.worker.testAuthority.retryOwnedGlQueryForTest(f.channel,true);
+  await pairedUntil(()=>f.worker.testAuthority.ownedGlQueryStateForTest(f.channel)===null);
+  expect(f.view().getUint32(CH_ERRNO,true)).toBe(4);expect(f.liveSyncs.size).toBe(0);
+  expect([...new Uint8Array(f.memory.buffer,12288,16)]).toEqual(Array(16).fill(0xa5));
+  f.pair!.receiver.hold=null;f.pair!.receiver.flush();for(let i=0;i<3;i++)await turn();
+  expect(f.liveSyncs.size).toBe(0);expect(f.view().getUint32(CH_ERRNO,true)).toBe(4);
+  f.pair!.dispose();
 });
