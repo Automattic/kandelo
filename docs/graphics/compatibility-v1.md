@@ -9872,3 +9872,27 @@ lifecycle execution, normal desktop rebuild and actual headless
 pager/menu/focus/exit acceptance remain pending. The broader six red
 upstream targets are retained. Performance remains unmeasured; quiet
 Cage/Sway/Labwc profiling follows functional panel integration.
+
+The normal repaired-library gate now runs at clean86db in job
+`preview5663-86dbd4708b-build-1030-162558-fac8`. Revision3 publishes all12
+GObject outputs through the normal engine, alongside the selected kernel
+and image-loader module: three owners/14 members. The single actual Node
+execution finishes in121.45s: all74 focused cases pass, including all12
+binding lifecycle cases that trapped against GLib6. Four upstream targets
+pass and the same six fail: basic-signals, signals, closure, defaultiface,
+dynamictype and accumulator. Combined78/84, zero pending/todo; full exit1
+is retained. No target or assertion was removed and no filtered rerun was
+used to manufacture a green full suite. The strict parser checks actual
+assertion results before permitting the desktop build to proceed.
+
+Every selected fixture/image/kernel member is freshly rehashed unchanged
+after Node execution. Raw report SHA256 is
+`9663e4d044b29a4f550cd5653f914496279b0a52e794f0ccf86ef412c087a55e`;
+focused-gate SHA256 is
+`7126f0859c6f7189d2dd488d63f729b878d2c7c2eb7030c43c04df7e0be2bf6b`.
+Evidence lives in
+`.context/sfwbar-notifier-preview/.context/preview5663-stages/` and
+`.context/glib-notifier-normal-node-result.json`. The normal desktop
+reverse-dependency/image build is still running. Actual SFWBar browser
+acceptance and performance measurement remain pending; this CPU gate
+proves the property-binding repair, not compositor or speed claims.
