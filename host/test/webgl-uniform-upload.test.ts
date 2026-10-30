@@ -122,6 +122,19 @@ describe("atomic large uniform uploads",()=>{
     t.send(O.OP_UNIFORM_UPLOAD_CANCEL,[0xffffffff]);t.begin(1,O.OP_UNIFORM1FV,1);
     expect(t.b.uniformUploadSerial).toBe(0xffffffff);expect(t.b.uniformUpload).toBeNull();
   });
+  it("reports an abandoned call when a newer BEGIN replaces its unfinished owner",()=>{
+    const t=setup();t.begin(2);t.chunk(0,t.bits([1]));const abandoned=t.b.uniformUpload;
+    expect(t.calls).toEqual([]);expect(t.b.errors).toEqual([]);
+    t.begin(1,O.OP_UNIFORM1FV,2);const replacement=t.b.uniformUpload;
+    expect(replacement).not.toBe(abandoned);expect(replacement?.token).toBe(2);
+    expect(t.b.errors).toEqual([0x502]);expect(t.calls).toEqual([]);
+    t.begin(2,O.OP_UNIFORM1FV,1);t.chunk(1,t.bits([2]),O.OP_UNIFORM1FV,1);
+    t.send(O.OP_UNIFORM_UPLOAD_CANCEL,[1]);t.commit(1);
+    expect(t.b.uniformUpload).toBe(replacement);
+    t.chunk(0,t.bits([9]),O.OP_UNIFORM1FV,2);t.commit(2);
+    expect(t.calls).toEqual([{name:"uniform1fv",values:[9]}]);expect(t.b.errors).toEqual([0x502]);
+    expect(t.b.uniformUpload).toBeNull();
+  });
   it("preserves earlier errors and consumes allocation failures without native writes",()=>{
     const t=setup();t.b.errors.push(0x500);
     const Original=globalThis.Uint8Array;

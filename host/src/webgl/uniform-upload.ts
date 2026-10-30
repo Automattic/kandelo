@@ -67,8 +67,10 @@ export function runUniformUpload(b: GlBinding, command: number, view: DataView,
   }
   if (command===O.OP_UNIFORM_UPLOAD_BEGIN) {
     if (token<=b.uniformUploadSerial) {invalid(false);return;}
+    // A fresh token may recover custody, but cannot make the abandoned
+    // earlier API call disappear as success. Stale tokens were refused above.
+    interruptUniformUpload(b);
     b.uniformUploadSerial=token;
-    b.uniformUpload=null;
     const op=view.getUint32(4,true), location=view.getInt32(8,true), total=view.getUint32(12,true);
     const stride=uniformUploadComponents(op)*4, header=matrix(op)?12:8;
     // A rejection tombstone consumes this call's records without retaining

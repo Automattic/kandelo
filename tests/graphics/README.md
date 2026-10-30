@@ -765,3 +765,9 @@ forwarded query/present/current tests check refusal without native effects after
 an interrupted call while sharing peers stay independent. Normal both-width
 `gles-hints` guests are prepared to read actual accepted array values in browsers
 and retain their independent framebuffer pixels; execution remains required.
+
+An overlapping newer uniform BEGIN explicitly reports the abandoned call as
+`GL_INVALID_OPERATION`, releases its staging and takes new custody. Stale
+BEGIN/CHUNK/COMMIT/CANCEL traffic cannot erase that newer owner. The focused
+control proves the abandoned prefix never reaches the native setter while the
+replacement can still commit; ordinary C recovery sends CANCEL first.

@@ -9161,3 +9161,21 @@ clipboard headers, host ABI module and host-import list. No old release xtask
 or prior artifact's ABI stamp establishes that claim. The C/host argument-error
 flag unification and remaining G05/G09 lifecycle/query/CTS inventory stay
 ordinary open work; no new hard platform boundary is asserted.
+
+#### Protocol audit: overlapping uniform BEGIN (2026-10-29)
+
+A newer valid BEGIN now records `GL_INVALID_OPERATION` for an older incomplete
+uniform call, releases that call's staging and admits the new owner. The old
+prefix cannot disappear as apparent success. Stale BEGIN, CHUNK, COMMIT and
+CANCEL tokens still leave newer custody intact. This is explicit recovery from
+an invalid internal command sequence; the normal C encoder queues cancellation
+before beginning another call after failed submission.
+
+The new causal control fails against `3e36a06cf5` at its missing interruption
+error assertion; the other 28 transaction cases pass. After the host-only fix,
+all 29 transaction cases pass, including committing the replacement's value
+without any native write from the abandoned prefix. Evidence is
+`.context/uniform-overlap-{before,after}.log` in the positive-uniform checkout.
+No C, opcode, ABI or generated file changes are involved. Full source, normal
+SDK/guest/browser and combined conformance gates were not rerun for this audit;
+those checks remain in the parent integration phase.
