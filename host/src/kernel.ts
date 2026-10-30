@@ -1,3 +1,4 @@
+import { interruptUniformUpload } from "./webgl/uniform-upload.js";
 import { cpuImageKey } from "./webgl/cpu-image-storage.js";
 import { drawGpuScanout, readGpuScanout } from "./webgl/kms-scanout.js";
 import { captureNativeGlErrors } from "./webgl/errors.js";
@@ -5,7 +6,9 @@ import type { HostFb } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
 import { querySurfaceCapabilities, surfaceCapabilityRenderer } from "./webgl/surface-capabilities.js";
-import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH } from "./webgl/ops.js";
+import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, KERNEL_GL_QUERY_CONTROL } from "./webgl/ops.js";
+import { GlKernelQueryControls } from "./webgl/kernel-query-controls.js";
+import { QUERY_RECEIPT_REQUEST_HEADER, QUERY_RECEIPT_REPLY_HEADER } from "./webgl/query-receipt-codec.js";
 /**
  * WasmPosixKernel — Loads the kernel Wasm module and provides host
  * import functions that bridge Wasm syscalls to the PlatformIO backend.
@@ -47,9 +50,10 @@ import { applyCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable } f
 import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
 import { isFenceQuery, validFenceQuery, prepareFenceQuery, type PreparedFenceQuery } from "./webgl/fence-query";
+import { queryOperationKind } from "./webgl/operation-stream";
 import { SubmitFrame, SubmitQueue } from "./webgl/submit-queue";
 import { GlMuxer } from "./webgl/muxer";
-import { drainSubmitQueue } from "./webgl/submit-drain";
+import { drainSubmitQueue, glSubmitExecuting, glSubmitQueueDisposition } from "./webgl/submit-drain";
 import { resolveIoctlContract } from "./ioctl-contract";
 import {
   KERNEL_SCRATCH_FD_PAIR_BYTES,
@@ -788,6 +792,13 @@ export interface KmsDisplaySize {
 }
 
 export interface KernelCallbacks {
+  /** Durable owned-query state changed. Schedule a later worker turn; never
+   * reenter Rust from this callback or retain a guest-memory view. */
+  onGlQueryWake?: (pid:number,session:number,registration:number,token:bigint)=>void;
+  onGlQueryOwnerWake?: (pid:number,session:number,registration:number)=>void;
+  /** Accepted private work or authenticated backend progress. This is a hint
+   * for a bounded later host turn, never permission to retry a guest channel. */
+  onGlQueryWork?: (pid:number,session:number,registration:number)=>void;
   onAlarm?: (seconds: number) => number;
   onPosixTimer?: (timerId: number, signo: number, valueMs: number, intervalMs: number) => number;
   onNetListen?: (fd: number, port: number, addr: [number, number, number, number]) => number;
@@ -1004,8 +1015,34 @@ export class WasmPosixKernel {
    * Muxers keyed by `WebGL2RenderingContext` so pids sharing a canvas
    * share a muxer; `WeakMap` drops the muxer when the context is GC'd.
    */
-  private gl_submit_queue = new SubmitQueue(binding => this.#isMasterGlBinding(binding));
+  private gl_submit_queue = new SubmitQueue(
+    binding => this.#isMasterGlBinding(binding),
+    binding => binding.gl ? this.gl.retainSubmitExecution(binding, this.glMuxerFor(binding.gl)) : null,
+  );
   private gl_muxers = new WeakMap<WebGL2RenderingContext, GlMuxer>();
+  // Independent copied-byte budgets, not shared-memory reservation ceilings.
+  // These private controls remain disconnected from public ioctl parking.
+  private gl_query_controls=new GlKernelQueryControls(this.gl,this.bos,this.gl_muxers,
+    {maxOwners:256,maxRequests:1024,maxRetainedBytes:8*1024*1024},
+    (pid,session,registration,token)=>this.callbacks.onGlQueryWake?.(pid,session,registration,token),
+    (pid,session,registration)=>this.callbacks.onGlQueryOwnerWake?.(pid,session,registration),
+    (pid,session,registration)=>this.callbacks.onGlQueryWork?.(pid,session,registration));
+
+  drainGlQueryControls(maxVisits:number):number {
+    if(!Number.isSafeInteger(maxVisits)||maxVisits<0)return 0;
+    let visits=this.gl_query_controls.drain(maxVisits);
+    this.drainGlSubmits(maxVisits);
+    visits+=this.gl_query_controls.drainNative(maxVisits);
+    return visits;
+  }
+  /** Inspect only after the bounded drain. The submit classifier can retry
+   * consumed-frame retirement; a remaining retirement is not runnable work. */
+  glQueryWorkRunnableAfterDrain():boolean {
+    return this.gl_query_controls.runnableAfterDrain || glSubmitQueueDisposition(this.gl_submit_queue,
+      binding=>binding.gl ? this.glMuxerFor(binding.gl) : null)==="runnable";
+  }
+  prepareGlQueryControlTeardown(pid:number):boolean {return this.gl_query_controls.prepareTeardown(pid);}
+  forgetGlQueryControlsAfterKernelLifecycle(pid:number):boolean {return this.gl_query_controls.forgetAfterKernelLifecycle(pid);}
   // Physical GPU resource ownership is device-wide, independent of DRM master
   // and of the first process that happens to create an EGL context.
   #deviceGl: WebGL2RenderingContext | null = null;
@@ -1033,6 +1070,21 @@ export class WasmPosixKernel {
       this.gl_muxers.set(gl, muxer);
     }
     return muxer;
+  }
+
+  private drainGlSubmits(maxFrames=Infinity):number {
+    return drainSubmitQueue(this.gl_submit_queue,
+      binding=>binding.gl ? this.glMuxerFor(binding.gl) : null,
+      (binding,offset,length)=>{
+        const capture=(gl:WebGL2RenderingContext)=>this.gl_muxers.get(gl)?.captureCurrentErrors();
+        return decodeAndDispatch(binding,offset,length,{
+          before:()=>{
+            if(!this.gl.cpuImages.prepare(binding,this.bos,capture))return false;
+            this.gl.cpuImages.begin(binding);return true;
+          },
+          after:()=>this.gl.cpuImages.publish(binding,this.bos,capture),
+        });
+      },maxFrames);
   }
 
 
@@ -2724,7 +2776,7 @@ export class WasmPosixKernel {
           let failure = -19;
           try {
             if (b.forward) {
-              const rc = b.forward.onCreateContext(b.sessionId, source?.sessionId);
+              const rc = b.forward.onCreateContext(b.sessionId, source?.sessionId, ctxId);
               if (rc !== 0) return Number.isInteger(rc) && rc < 0 ? rc : -5;
               b.contextId = ctxId;
               return 0;
@@ -2758,10 +2810,11 @@ export class WasmPosixKernel {
           const b = this.gl.getContext(pid, ctxId);
           if (!b) return;
           this.releaseClaimedKmsCanvas(pid, b.sessionId);
-          this.gl_submit_queue.removeSession(pid, b.sessionId);
+          // Accepted commands retain their old context independently of the
+          // revoked public slot; process/session unbind still cancels them.
           if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
           this.gl.destroyContext(pid, b.sessionId);
-          b.forward?.onDestroyContext(b.sessionId);
+          b.forward?.onDestroyContext(b.sessionId,ctxId);
         },
         host_gl_create_surface: (
           pid: number, surfaceId: number,
@@ -2881,6 +2934,11 @@ export class WasmPosixKernel {
         ): number => {
           ctxId >>>= 0; drawId >>>= 0; readId >>>= 0;
           const b = this.gl.get(pid, sessionId);
+          if (b?.gl && glSubmitExecuting(this.gl_muxers.get(b.gl))) return -5;
+          const operation = b?.operations.tryBeginImmediate("make-current");
+          if (b && !operation) return -5;
+          try {
+          if (b && interruptUniformUpload(b)) return -5;
           if (ctxId === 0) {
             if (drawId !== 0 || readId !== 0) return -22;
             // Revoking a kernel binding does not alter the cached native
@@ -2913,12 +2971,16 @@ export class WasmPosixKernel {
           try { if (!applyCurrentDrawable(b, drawable, surfaces ?? undefined)) return -12; }
           catch { return -5; }
           return 0;
+          } finally { operation?.finish(); }
         },
         host_gl_submit: (
           pid: number, offset: KernelPointer, length: KernelPointer, sessionId?: number,
         ): number => {
           const b = this.gl.get(pid, sessionId);
           if (!b) return -5; // EIO: kernel/host GL state diverged.
+          // This private-only increment refuses before command admission;
+          // accepted outbound command queueing needs its own typed model.
+          if(b.forward?.ownedQueries?.hasBarrier(b.sessionId))return -16;
           if (!b.forward && !b.gl) return 0;
           let submission: { offset: number; length: number; end: number };
           try {
@@ -2967,24 +3029,7 @@ export class WasmPosixKernel {
           }
           try { this.gl_submit_queue.enqueue(b,frame); }
           catch { frame.discard(); return -12; }
-          return drainSubmitQueue(
-            this.gl_submit_queue,
-            (bb) => {
-              if (!bb.gl) return null;
-              return this.glMuxerFor(bb.gl);
-            },
-            (bb, off, len) => {
-              const capture = (gl: WebGL2RenderingContext) => this.gl_muxers.get(gl)?.captureCurrentErrors();
-              return decodeAndDispatch(bb, off, len, {
-                before: () => {
-                  if (!this.gl.cpuImages.prepare(bb, this.bos, capture)) return false;
-                  this.gl.cpuImages.begin(bb);
-                  return true;
-                },
-                after: () => this.gl.cpuImages.publish(bb, this.bos, capture),
-              });
-            },
-          );
+          return this.drainGlSubmits();
         },
         host_gl_present: (pid: number, sessionId?: number): number => {
           // A lost WebGL context silently no-ops every GL call, so a
@@ -2995,6 +3040,11 @@ export class WasmPosixKernel {
           // `markKmsCanvasGlReleased`).
           const b = this.gl.get(pid, sessionId);
           if (!b) return sessionId !== undefined || this.gl.list().some(b => b.pid === pid) ? -5 : 0;
+          if (b.gl && glSubmitExecuting(this.gl_muxers.get(b.gl))) return -5;
+          const operation = b.operations.tryBeginImmediate("present");
+          if (!operation) return -5;
+          try {
+          if (interruptUniformUpload(b)) return -5;
           if (!b.gl && !b.forward) return -5;
           if (!this.prepareForeignRetirements(b)) return -5;
           if (b?.gl?.isContextLost()) return -5; // EIO
@@ -3049,14 +3099,38 @@ export class WasmPosixKernel {
             }
             return 0;
           } catch { return -5; }
+          } finally { operation.finish(); }
         },
         host_gl_query: (
           pid: number, op: number,
           inPtr: KernelPointer, inLen: KernelPointer,
           outPtr: KernelPointer, outLen: KernelPointer, sessionId?: number,
         ): number => {
+          // Retirement controls must remain reachable after context/current
+          // removal. Validate Rust scratch before native admission or cleanup.
+          if (op===KERNEL_GL_QUERY_CONTROL) {
+            let destination:RustLentKernelDestination,input:Uint8Array,capacity:number;
+            try {
+              const length=this.#checkedKernelIndex(inLen,"owned GL control length");
+              capacity=this.#checkedKernelIndex(outLen,"owned GL control reply length");
+              if (length<QUERY_RECEIPT_REQUEST_HEADER||length>QUERY_RECEIPT_REQUEST_HEADER+65536
+                ||capacity<QUERY_RECEIPT_REPLY_HEADER||capacity>QUERY_RECEIPT_REPLY_HEADER+65536) return -22;
+              destination=this.#rustLentKernelDestination(outPtr,outLen,"owned GL control reply");
+              input=this.#readKernelBytes(inPtr,length);
+            }catch{return -14;}
+            const reply=this.gl_query_controls.control(pid,sessionId===undefined?0:sessionId>>>0,input,capacity);
+            if ("error" in reply) return -reply.error;
+            if (reply.bytes.byteLength>capacity) return -5;
+            try {this.#writeKernelBytes(destination,reply.bytes);}catch{return -14;}
+            return reply.bytes.byteLength;
+          }
           const b = this.gl.get(pid, sessionId);
           if (!b || (!b.gl && !b.forward && op !== QOP_SURFACE_CAPABILITIES && !isFenceQuery(op))) return -1;
+          if (b.gl && glSubmitExecuting(this.gl_muxers.get(b.gl))) return -5;
+          const operation = b.operations.tryBeginImmediate(queryOperationKind(op));
+          if (!operation) return -5;
+          try {
+          if (interruptUniformUpload(b)) return -5;
           let inputLength: number;
           let outputLength: number;
           let outputDestination: RustLentKernelDestination | null = null;
@@ -3151,6 +3225,7 @@ export class WasmPosixKernel {
             if (preparedFence?.candidate && !preparedFence.candidate.publish()) return -5;
             return written;
           } finally { preparedFence?.candidate?.cancel(); }
+          } finally { operation.finish(); }
         },
         // DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE: upload a CPU-tier bo's
         // pixels (canonical storage: the DRI registry SAB) into a

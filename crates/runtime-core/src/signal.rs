@@ -73,17 +73,79 @@ pub fn default_action(signum: u32) -> DefaultAction {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DefaultSignalOutcome {
     Continue,
     Stopped,
     Exited,
 }
 
+/// Internal delivery disposition. Pending cleanup still owns the exact query
+/// receipt; it is neither a delivered signal nor permission to resume a task.
+#[must_use]
+#[derive(Debug, PartialEq, Eq)]
+pub enum SignalProgress<T> {
+    Complete(T),
+    PendingOwned,
+    ProtocolFaultOwned,
+}
+
+impl<T> SignalProgress<T> {
+    /// Legacy callers have no pending result contract. Contain the call before
+    /// signal consumption or handler/mask mutation instead of reporting success.
+    pub fn require_complete(self) -> T {
+        match self {
+            Self::Complete(value) => value,
+            Self::PendingOwned => {
+                panic!("signal delivery requires pending query cleanup scheduling")
+            }
+            Self::ProtocolFaultOwned => {
+                panic!("signal delivery requires query protocol containment")
+            }
+        }
+    }
+}
+
+/// Run before consuming a terminating default signal. Process termination
+/// cancels receipts for every task, including a query owned by a sibling.
+pub fn preflight_default_signal_action(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    signum: u32,
+) -> SignalProgress<()> {
+    if matches!(
+        default_action(signum),
+        DefaultAction::Terminate | DefaultAction::CoreDump
+    ) {
+        preflight_signal_termination(proc, host)
+    } else {
+        SignalProgress::Complete(())
+    }
+}
+
+fn preflight_signal_termination(proc: &mut Process, host: &mut dyn HostIO) -> SignalProgress<()> {
+    if proc.prepared_exec_targets.has_retiring() {
+        return SignalProgress::ProtocolFaultOwned;
+    }
+    match crate::syscalls::preflight_gl_query_teardown(proc, host, None) {
+        crate::syscalls::GlQueryTeardown::Ready => SignalProgress::Complete(()),
+        crate::syscalls::GlQueryTeardown::PendingOwned => SignalProgress::PendingOwned,
+        crate::syscalls::GlQueryTeardown::ProtocolFaultOwned => SignalProgress::ProtocolFaultOwned,
+    }
+}
+
 /// Finish a signal-caused process exit, including resource cleanup, before
 /// publishing the parent-visible exit record.
 pub fn terminate_process_by_signal(proc: &mut Process, host: &mut dyn HostIO, signum: u32) {
-    terminate_process_by_signal_impl(proc, None, host, signum);
+    try_terminate_process_by_signal(proc, host, signum).require_complete();
+}
+
+pub fn try_terminate_process_by_signal(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    signum: u32,
+) -> SignalProgress<()> {
+    try_terminate_process_by_signal_impl(proc, None, host, signum)
 }
 
 pub fn terminate_process_by_signal_with_locks(
@@ -92,7 +154,30 @@ pub fn terminate_process_by_signal_with_locks(
     host: &mut dyn HostIO,
     signum: u32,
 ) {
-    terminate_process_by_signal_impl(proc, Some(locks), host, signum);
+    try_terminate_process_by_signal_with_locks(proc, locks, host, signum).require_complete();
+}
+
+pub fn try_terminate_process_by_signal_with_locks(
+    proc: &mut Process,
+    locks: &mut crate::lock::AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    signum: u32,
+) -> SignalProgress<()> {
+    try_terminate_process_by_signal_impl(proc, Some(locks), host, signum)
+}
+
+fn try_terminate_process_by_signal_impl(
+    proc: &mut Process,
+    locks: Option<&mut crate::lock::AdvisoryLockManager>,
+    host: &mut dyn HostIO,
+    signum: u32,
+) -> SignalProgress<()> {
+    match preflight_signal_termination(proc, host) {
+        SignalProgress::Complete(()) => (),
+        pending => return pending,
+    }
+    terminate_process_by_signal_impl(proc, locks, host, signum);
+    SignalProgress::Complete(())
 }
 
 fn terminate_process_by_signal_impl(
@@ -122,7 +207,15 @@ pub fn apply_default_signal_action(
     host: &mut dyn HostIO,
     signum: u32,
 ) -> DefaultSignalOutcome {
-    apply_default_signal_action_impl(proc, None, host, signum)
+    try_apply_default_signal_action(proc, host, signum).require_complete()
+}
+
+pub fn try_apply_default_signal_action(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    signum: u32,
+) -> SignalProgress<DefaultSignalOutcome> {
+    try_apply_default_signal_action_impl(proc, None, host, signum)
 }
 
 pub fn apply_default_signal_action_with_locks(
@@ -131,7 +224,30 @@ pub fn apply_default_signal_action_with_locks(
     host: &mut dyn HostIO,
     signum: u32,
 ) -> DefaultSignalOutcome {
-    apply_default_signal_action_impl(proc, Some(locks), host, signum)
+    try_apply_default_signal_action_with_locks(proc, locks, host, signum).require_complete()
+}
+
+pub fn try_apply_default_signal_action_with_locks(
+    proc: &mut Process,
+    locks: &mut crate::lock::AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    signum: u32,
+) -> SignalProgress<DefaultSignalOutcome> {
+    try_apply_default_signal_action_impl(proc, Some(locks), host, signum)
+}
+
+fn try_apply_default_signal_action_impl(
+    proc: &mut Process,
+    locks: Option<&mut crate::lock::AdvisoryLockManager>,
+    host: &mut dyn HostIO,
+    signum: u32,
+) -> SignalProgress<DefaultSignalOutcome> {
+    match preflight_default_signal_action(proc, host, signum) {
+        SignalProgress::Complete(()) => (),
+        SignalProgress::PendingOwned => return SignalProgress::PendingOwned,
+        SignalProgress::ProtocolFaultOwned => return SignalProgress::ProtocolFaultOwned,
+    }
+    SignalProgress::Complete(apply_default_signal_action_impl(proc, locks, host, signum))
 }
 
 fn apply_default_signal_action_impl(
@@ -157,11 +273,20 @@ fn apply_default_signal_action_impl(
 }
 
 /// Consume one pending instance for `tid`, preferring its directed queue.
-pub fn dequeue_signal_for(
-    proc: &mut Process,
-    tid: u32,
-    signum: u32,
-) -> (u32, u64, i32, i32, i32) {
+pub fn dequeue_signal_for(proc: &mut Process, tid: u32, signum: u32) -> (u32, u64, i32, i32, i32) {
+    // The kernel's separate caught-signal dequeue path also handles defaults.
+    // It must preflight BEFORE this host-free consumer: a later exit guard is
+    // too late to preserve the pending signal or timer notification metadata.
+    assert!(
+        proc.signals.get_handler(signum) != SignalHandler::Default
+            || !matches!(
+                default_action(signum),
+                DefaultAction::Terminate | DefaultAction::CoreDump
+            )
+            || !(proc.blocked_retries.has_external_query_receipts()
+                || proc.prepared_exec_targets.has_retiring()),
+        "terminating signal dequeue requires completed query cleanup"
+    );
     if proc.state == ProcessState::Stopped && signum == wasm_posix_shared::signal::SIGKILL {
         proc.clear_signal_everywhere(signum);
         return (signum, 0, 0, proc.pid as i32, proc.real_uid() as i32);
@@ -181,8 +306,15 @@ pub fn dequeue_signal_for(
 /// signals stay queued for the guest glue. While stopped, Process selection
 /// exposes only SIGKILL; SIGCONT has already resumed at generation time.
 pub fn deliver_pending_signals(proc: &mut Process, host: &mut dyn HostIO) {
+    try_deliver_pending_signals(proc, host).require_complete();
+}
+
+pub fn try_deliver_pending_signals(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+) -> SignalProgress<()> {
     let tid = crate::syscalls::current_tid_for_process(proc);
-    deliver_pending_signals_impl(proc, None, host, tid);
+    deliver_pending_signals_impl(proc, None, host, tid)
 }
 
 pub fn deliver_pending_signals_with_locks(
@@ -190,8 +322,16 @@ pub fn deliver_pending_signals_with_locks(
     locks: &mut crate::lock::AdvisoryLockManager,
     host: &mut dyn HostIO,
 ) {
+    try_deliver_pending_signals_with_locks(proc, locks, host).require_complete();
+}
+
+pub fn try_deliver_pending_signals_with_locks(
+    proc: &mut Process,
+    locks: &mut crate::lock::AdvisoryLockManager,
+    host: &mut dyn HostIO,
+) -> SignalProgress<()> {
     let tid = crate::syscalls::current_tid_for_process(proc);
-    deliver_pending_signals_impl(proc, Some(locks), host, tid);
+    deliver_pending_signals_impl(proc, Some(locks), host, tid)
 }
 
 /// Consume default/ignored signals for one exact kernel-owned task.
@@ -206,11 +346,20 @@ pub fn deliver_pending_signals_for_tid_with_locks(
     host: &mut dyn HostIO,
     tid: u32,
 ) -> Result<(), Errno> {
+    try_deliver_pending_signals_for_tid_with_locks(proc, locks, host, tid)
+        .map(SignalProgress::require_complete)
+}
+
+pub fn try_deliver_pending_signals_for_tid_with_locks(
+    proc: &mut Process,
+    locks: &mut crate::lock::AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    tid: u32,
+) -> Result<SignalProgress<()>, Errno> {
     if !proc.is_live_explicit_tid(tid) {
         return Err(Errno::ESRCH);
     }
-    deliver_pending_signals_impl(proc, Some(locks), host, tid);
-    Ok(())
+    Ok(deliver_pending_signals_impl(proc, Some(locks), host, tid))
 }
 
 fn deliver_pending_signals_impl(
@@ -218,7 +367,7 @@ fn deliver_pending_signals_impl(
     mut locks: Option<&mut crate::lock::AdvisoryLockManager>,
     host: &mut dyn HostIO,
     tid: u32,
-) {
+) -> SignalProgress<()> {
     loop {
         let Some(signum) = proc.next_deliverable_signal(tid) else {
             break;
@@ -227,6 +376,10 @@ fn deliver_pending_signals_impl(
         match action.handler {
             SignalHandler::Handler(_) => break,
             SignalHandler::Default => {
+                match preflight_default_signal_action(proc, host, signum) {
+                    SignalProgress::Complete(()) => (),
+                    pending => return pending,
+                }
                 let _ = dequeue_signal_for(proc, tid, signum);
                 if apply_default_signal_action_impl(proc, locks.as_deref_mut(), host, signum)
                     != DefaultSignalOutcome::Continue
@@ -242,6 +395,7 @@ fn deliver_pending_signals_impl(
             break;
         }
     }
+    SignalProgress::Complete(())
 }
 
 /// Check whether setting this handler should discard pending signals.
@@ -962,6 +1116,9 @@ impl SignalState {
         handlers
     }
 }
+
+#[cfg(test)]
+mod query_retirement_tests;
 
 #[cfg(test)]
 mod tests {

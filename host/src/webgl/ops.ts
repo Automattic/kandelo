@@ -126,6 +126,7 @@ export const OP_STENCIL_OP_SEPARATE = 0x001A;
 export const OP_POLYGON_OFFSET = 0x001B;
 export const OP_DEPTH_RANGEF = 0x001C;
 export const OP_SAMPLE_COVERAGE = 0x001D;
+export const OP_CLIENT_ERRORS = 0x001E;
 export const OP_TEX_PARAMETERF = 0x0208;
 export const OP_COMPRESSED_TEX_IMAGE_2D = 0x0209;
 export const OP_COMPRESSED_TEX_SUB_IMAGE_2D = 0x020A;
@@ -140,6 +141,11 @@ export const OP_UNIFORM3IV = 0x040C;
 export const OP_UNIFORM4IV = 0x040D;
 export const OP_UNIFORM_MATRIX2FV = 0x040E;
 export const OP_UNIFORM_MATRIX3FV = 0x040F;
+// Same unpublished epoch: atomic bounded large-uniform transactions.
+export const OP_UNIFORM_UPLOAD_BEGIN = 0x0410;
+export const OP_UNIFORM_UPLOAD_CHUNK = 0x0411;
+export const OP_UNIFORM_UPLOAD_COMMIT = 0x0412;
+export const OP_UNIFORM_UPLOAD_CANCEL = 0x0413;
 export const OP_DELETE_RENDERBUFFERS = 0x0708;
 export const OP_DRAW_BUFFER = 0x0709;
 export const OP_DRAW_BUFFERS = 0x070A;
@@ -209,3 +215,7 @@ export const QOP_CREATE_FENCE = 0x002E;
 export const QOP_FENCE_STATUS = 0x002F;
 export const QOP_RELEASE_FENCE = 0x0030;
 export const QOP_FLUSH = 0x0031;
+
+// Reserved with shared::gl; no production control dispatch/pending path yet.
+export const KERNEL_GL_QUERY_CONTROL = 0x7fff_fffe;
+export const GL_QUERY_NEEDS_OWNED_ADMISSION = -2147483647;

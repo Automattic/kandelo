@@ -28,6 +28,8 @@ pub mod fifo;
 pub mod fork;
 pub mod fs_changes;
 pub mod guest_ptr;
+pub mod gl_query_request;
+pub mod gl_query_receipt;
 pub mod hostdir;
 pub mod image_build_determinism;
 pub mod image_policy;

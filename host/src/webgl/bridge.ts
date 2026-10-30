@@ -1,3 +1,4 @@
+import { publishedUniformLocation } from "./object-group.js";
 /**
  * Cmdbuf TLV walker + per-op dispatch.
  *
@@ -18,6 +19,9 @@
  * returns a negative errno so `GLIO_SUBMIT` can fail like any other
  * ioctl-style device operation instead of hiding the failure in host code.
  */
+import { interruptUniformUpload, runUniformUpload, uniformUploadOp, validUniformUploadPayload } from "./uniform-upload.js";
+import { GL_CLIENT_ERROR_MASK, mergeClientGlErrors } from "./errors.js";
+import { acceptedUniformCount } from "./uniform-setters.js";
 import { imageTextureOperation, imageRenderbufferStorage, prepareImageDraw } from "./image-storage.js";
 import { repairNativeState } from "./native-recovery.js";
 import { bindImageObject } from "./image-bindings.js";
@@ -29,7 +33,7 @@ import { drawGlesElements } from "./index-data.js";
 import { installVertexAttribute } from "./vertex-data.js";
 import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
-import { checkedGlCall, currentProgramName, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted } from "./program-objects.js";
+import { createShaderIfAccepted, createProgramIfAccepted, checkedGlCall, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted } from "./program-objects.js";
 import { stateArgumentError } from "./state-validation.js";
 import { combinedTextureUnits, maxViewport } from "./limits.js";
 import * as O from "./ops.js";
@@ -98,8 +102,15 @@ export function decodeAndDispatch(
   // Validate the entire batch before the first observable mutation. A bad
   // trailing record must not leave a partially executed, rejected batch.
   const validation = validateCommandBuffer(b.cmdbufView, offset, length);
-  if (validation !== GL_SUBMIT_OK) return validation;
+  if (validation !== GL_SUBMIT_OK) {b.uniformUpload=null;return validation;}
   const result = walkCommandBuffer(b.cmdbufView, offset, length, (payload, op) => {
+    // Flags have no native effects and may accompany a partial upload batch.
+    // Merge before repair/utility work without interrupting that transaction.
+    if (op === O.OP_CLIENT_ERRORS) {
+      mergeClientGlErrors(b,payload.getUint32(0,true));
+      return GL_SUBMIT_OK;
+    }
+    if (!uniformUploadOp(op) && interruptUniformUpload(b)) return GL_SUBMIT_OK;
     try {
       if (!repairNativeState(b.gl!) || !reconcileClientArrayRestore(b,b.gl!)) return GL_SUBMIT_EIO;
       if (storage && !storage.before()) return GL_SUBMIT_EIO;
@@ -111,8 +122,9 @@ export function decodeAndDispatch(
       return GL_SUBMIT_EIO;
     }
   });
-  if (result < 0) requestClientArrayRestore(b);
+  if (result < 0) {b.uniformUpload=null;requestClientArrayRestore(b);}
   if (!repairNativeState(b.gl) || !reconcileClientArrayRestore(b,b.gl)) {
+    b.uniformUpload=null;
     requestClientArrayRestore(b);
     return GL_SUBMIT_EIO;
   }
@@ -230,7 +242,7 @@ function countedIntPayload(
   return v.byteLength === headerLen + count * intsPerCount * 4;
 }
 
-function copyBytes(v: DataView, offset: number, length: number): Uint8Array {
+function copyBytes(v: DataView, offset: number, length: number): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(length);
   out.set(new Uint8Array(v.buffer, v.byteOffset + offset, length));
   return out;
@@ -304,6 +316,8 @@ function normalizeTextureInternalFormat(internal: number, format: number, type: 
 }
 
 function validPayload(op: number, v: DataView): boolean {
+  if (op === O.OP_CLIENT_ERRORS) return exact(v,4) && (v.getUint32(0,true) & ~GL_CLIENT_ERROR_MASK) === 0;
+  if (uniformUploadOp(op)) return validUniformUploadPayload(op,v);
   switch (op) {
     case O.OP_BEGIN_CLIENT_ARRAY:
     case O.OP_END_CLIENT_ARRAY:
@@ -473,6 +487,12 @@ function dispatch(
   p: number,
   op: number,
 ): boolean | void {
+  if (uniformUploadOp(op)) {
+    runUniformUpload(b,op,v,(original,payload)=>{dispatch(gl,b,payload,0,original);});
+    return;
+  }
+  if (interruptUniformUpload(b)) return;
+
   const error = stateArgumentError(op, v);
   if (error !== 0) {
     recordGlError(b, error);
@@ -492,13 +512,11 @@ function dispatch(
       if (!prepareTextureOperation(b,v.getUint32(p,true))) return;
       break;
   }
+  let uniformCount=1;
   if (op >= O.OP_UNIFORM1I && op <= O.OP_UNIFORM_MATRIX3FV) {
-    const location = v.getInt32(p, true);
-    if (location !== -1 && (!b.uniformLocations.has(location) ||
-        b.uniformLocationPrograms.get(location) !== currentProgramName(b))) {
-      recordGlError(b, 0x502); // INVALID_OPERATION
-      return;
-    }
+    const count=acceptedUniformCount(b,op,v,p);
+    if(count===null || count===0) return;
+    uniformCount=count;
   }
   switch (op) {
     // ----- state ----------------------------------------------------------
@@ -894,8 +912,7 @@ function dispatch(
     case O.OP_CREATE_SHADER: {
       const type = v.getUint32(p, true);
       const name = v.getUint32(p + 4, true);
-      const sh = gl.createShader(type);
-      if (sh) b.shaders.set(name, sh);
+      createShaderIfAccepted(b,type,name);
       return;
     }
     // Payload: u32 cmdbufName, u32 srcLen, u8 src[srcLen] (UTF-8)
@@ -941,11 +958,7 @@ function dispatch(
     }
     case O.OP_CREATE_PROGRAM: {
       const name = v.getUint32(p, true);
-      const prog = gl.createProgram();
-      if (prog) {
-        b.programs.set(name, prog);
-        b.programShaders.set(name, new Set());
-      }
+      createProgramIfAccepted(b,name);
       return;
     }
     case O.OP_ATTACH_SHADER: {
@@ -1011,22 +1024,22 @@ function dispatch(
     // Locations are kernel-routed indices issued by `runGlQuery` for
     // `QOP_GET_UNIFORM_LOC`; they round-trip back here as i32.
     case O.OP_UNIFORM1I: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const loc = publishedUniformLocation(b,v.getInt32(p, true))?.native ?? null;
       gl.uniform1i(loc, v.getInt32(p + 4, true));
       return;
     }
     case O.OP_UNIFORM1F: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const loc = publishedUniformLocation(b,v.getInt32(p, true))?.native ?? null;
       gl.uniform1f(loc, v.getFloat32(p + 4, true));
       return;
     }
     case O.OP_UNIFORM2F: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const loc = publishedUniformLocation(b,v.getInt32(p, true))?.native ?? null;
       gl.uniform2f(loc, v.getFloat32(p + 4, true), v.getFloat32(p + 8, true));
       return;
     }
     case O.OP_UNIFORM3F: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const loc = publishedUniformLocation(b,v.getInt32(p, true))?.native ?? null;
       gl.uniform3f(
         loc,
         v.getFloat32(p + 4, true),
@@ -1036,7 +1049,7 @@ function dispatch(
       return;
     }
     case O.OP_UNIFORM4F: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
+      const loc = publishedUniformLocation(b,v.getInt32(p, true))?.native ?? null;
       gl.uniform4f(
         loc,
         v.getFloat32(p + 4, true),
@@ -1048,73 +1061,73 @@ function dispatch(
     }
     // Payload: i32 location, u32 count, u32 transposeBool, f32 mat[count*16]
     case O.OP_UNIFORM_MATRIX4FV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const loc = publishedUniformLocation(b,v.getInt32(p, true))?.native ?? null;
+      const count = uniformCount;
       const transpose = v.getUint32(p + 8, true) !== 0;
       gl.uniformMatrix4fv(loc, transpose, floatsAt(v, p + 12, count * 16));
       return;
     }
     // Payload: i32 location, u32 count, f32 v[count*4]
     case O.OP_UNIFORM4FV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const loc = publishedUniformLocation(b,v.getInt32(p, true))?.native ?? null;
+      const count = uniformCount;
       gl.uniform4fv(loc, floatsAt(v, p + 8, count * 4));
       return;
     }
     case O.OP_UNIFORM1FV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const loc = publishedUniformLocation(b,v.getInt32(p, true))?.native ?? null;
+      const count = uniformCount;
       gl.uniform1fv(loc, copyFloat32Array(v, p + 8, count));
       return;
     }
     case O.OP_UNIFORM2FV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const loc = publishedUniformLocation(b,v.getInt32(p, true))?.native ?? null;
+      const count = uniformCount;
       gl.uniform2fv(loc, copyFloat32Array(v, p + 8, count * 2));
       return;
     }
     case O.OP_UNIFORM3FV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const loc = publishedUniformLocation(b,v.getInt32(p, true))?.native ?? null;
+      const count = uniformCount;
       gl.uniform3fv(loc, copyFloat32Array(v, p + 8, count * 3));
       return;
     }
     case O.OP_UNIFORM1IV: {
       const locIndex = v.getInt32(p, true);
-      const loc = b.uniformLocations.get(locIndex) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const loc = publishedUniformLocation(b,locIndex)?.native ?? null;
+      const count = uniformCount;
       const values = copyInt32Array(v, p + 8, count);
       gl.uniform1iv(loc, values);
       return;
     }
     case O.OP_UNIFORM2IV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const loc = publishedUniformLocation(b,v.getInt32(p, true))?.native ?? null;
+      const count = uniformCount;
       gl.uniform2iv(loc, copyInt32Array(v, p + 8, count * 2));
       return;
     }
     case O.OP_UNIFORM3IV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const loc = publishedUniformLocation(b,v.getInt32(p, true))?.native ?? null;
+      const count = uniformCount;
       gl.uniform3iv(loc, copyInt32Array(v, p + 8, count * 3));
       return;
     }
     case O.OP_UNIFORM4IV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const loc = publishedUniformLocation(b,v.getInt32(p, true))?.native ?? null;
+      const count = uniformCount;
       gl.uniform4iv(loc, copyInt32Array(v, p + 8, count * 4));
       return;
     }
     case O.OP_UNIFORM_MATRIX2FV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const loc = publishedUniformLocation(b,v.getInt32(p, true))?.native ?? null;
+      const count = uniformCount;
       const transpose = v.getUint32(p + 8, true) !== 0;
       gl.uniformMatrix2fv(loc, transpose, copyFloat32Array(v, p + 12, count * 4));
       return;
     }
     case O.OP_UNIFORM_MATRIX3FV: {
-      const loc = b.uniformLocations.get(v.getInt32(p, true)) ?? null;
-      const count = v.getUint32(p + 4, true);
+      const loc = publishedUniformLocation(b,v.getInt32(p, true))?.native ?? null;
+      const count = uniformCount;
       const transpose = v.getUint32(p + 8, true) !== 0;
       gl.uniformMatrix3fv(loc, transpose, copyFloat32Array(v, p + 12, count * 9));
       return;

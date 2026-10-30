@@ -13,8 +13,9 @@ Kandelo adapter must supply a GBM display, native window and executable
 entry point through the ordinary SDK; it must not change assertions or
 replace guest EGL/GLES calls with direct host WebGL calls.
 
-Enabled upstream assertions: the surfaceless method described below.
-No guest CTS execution result is claimed until its runner has completed.
+Enabled upstream assertions: the surfaceless method and four complete
+current/context-query classes described below. Execution evidence belongs
+to the named artifact/engine run in the compatibility ledger.
 Do not label translated or inspired regressions as unmodified CTS tests.
 Track enabled cases and exact source hashes here as they are integrated.
 
@@ -24,10 +25,29 @@ for required coverage and separate expansions.
 The first port is `cts/surfaceless-case.inc`: the unchanged
 `SurfacelessContextCase::executeForConfig` method, with its original license
 notice. `cts/upstream.json` records the complete upstream file hash and exact
-method hash. The standalone adapter supplies GBM display/config enumeration,
+method hash. Metadata format v2 also records the complete query-context
+source file, snippet and individual helper/class hashes. The standalone
+adapter supplies GBM display/config enumeration,
 EGL dispatch, logs and results; it does not replace guest EGL calls. It runs
 this method for every enumerated configuration. This is an adapted CTS
 subset, not an execution of the complete dEQP framework or its filter groups.
+
+The second port is `cts/query-context-cases.inc`, containing unchanged
+`GetCurrentContextCase`, `GetCurrentSurfaceCase`, `GetCurrentDisplayCase`
+and `QueryContextCase` classes plus their two upstream API/version helpers.
+The adapter supplies the render-case/logging framework and constructs real
+GBM windows and pbuffers for each advertised GLES2 configuration. It makes
+an actual guest context current before executing all four classes, retains
+aggregate failure, and checks cleanup. EGL version queries and API dispatch
+use the SDK; renderer mocks and host-side WebGL calls do not replace them.
+The call-trace toggle is presentation-only in this standalone log adapter.
+
+The browser runner requires each enabled class to execute, verifies the
+reported configuration/surface/context totals and result messages, and
+records failed exit status/output before asserting success. This is still
+an adapted subset: thread, multi-context, negative API, rendering, image,
+sync and the other upstream groups remain separate coverage work. The
+normal package currently supports only wasm32.
 
 Verify the assertions with:
 
@@ -53,7 +73,7 @@ scripts/dev-shell.sh bash -c 'cd apps/browser-demos && node_modules/.bin/playwri
 ```
 
 It requires a passing result for every enumerated advertised GLES2 config,
-without changing the upstream method or accepting its optional BAD_MATCH
+without changing the imported assertions or accepting the surfaceless method's optional BAD_MATCH
 branch for this advertised capability. Collection alone is not a guest
 CTS result. Normal package/kernel provisioning must finish before execution.
 
@@ -86,7 +106,9 @@ client uploads, sparse-index/prefix/stride guard pages, packed byte output,
 scratch allocation rollback and signed-size overflow rejection, early draw
 enum rejection and maximum byte/short indexed client streams, logical buffer
 and original client-attribute queries, unchanged query outputs on failure,
-single ownership of backend GL errors, and bound byte/short index buffers
+ordered context-owned client/backend error flags, deduplication, distinct
+flags, error drains without allocation, rejected-submit fallback and context
+switch ownership, and bound byte/short index buffers
 combined with client attributes (including failed-query cleanup/retry),
 chunked shader/attribute/list queries with zero-sized outputs, failure
 after a successful first chunk, core parameter queries and retained
@@ -113,7 +135,7 @@ The source WebGL contract suite also compiles selected current native C
 cases through this harness, captures actual submitted bytes and replays them
 through the browser decoder. Its float/fixed and maximum-index client-array cases are cross-layer
 source evidence, not guest execution or unmodified CTS. Selection uses
-`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 214 cases.
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 249 cases.
 `KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
 file for those test-only replays. Each browser test owns and removes its
 private trace directory.
@@ -745,3 +767,47 @@ and is never used by the browser cases. The normal `gbm_surface_smoke`
 program now checks the valid pre-render contract: a window has available
 storage but no lockable produced front. Its previous count-valued two-BO
 locking oracle did not represent rendered GBM behavior.
+
+
+The native hint cases and normal SDK `gles-hints` guest check both the
+core mipmap and advertised OES derivative targets: initial/selected state,
+integer/float/boolean conversions with untouched neighboring elements,
+invalid-enum errors, shared-context independence, deferred current
+retirement and release/restoration. These are authored regressions, not
+unmodified CTS. Node runs both widths with its renderer double; browser
+runs both widths in Chromium, Firefox and WebKit through BrowserKernel.
+The guest checks observable hint semantics, not rendering-quality effects.
+
+
+Positive-location uniform validation keeps reflection with the precise native
+executable that issued each location. The source gate checks compatible
+float/integer/boolean/sampler signatures, positive zero-count validation,
+non-array count errors, ignored array tails, reduced struct fields, failed
+use/link, deferred deletion, shared executable identity and publication rollback.
+The native `encoder-uniform-zero-headers` case protects an unreadable page and
+null sources across all eleven vector/matrix signatures, requiring only the
+original command header and no current-program query. These are encoder/host
+model checks. The normal `gles-hints` guest additionally uses active real GLSL
+uniform declarations; execution after the source increments remains required. Larger arrays use the
+transaction transport described below.
+
+
+Large uniform calls use bounded BEGIN/CHUNK/COMMIT/CANCEL command records.
+The host validates the original count/type before staging only the accepted
+reflected tail; it performs one native setter after a complete transfer with
+unchanged executable/location/context authority. Failed flushes queue replay-safe
+retirement before later valid commands. Native cases cover all eleven signatures,
+protected source ends, exact chunk bytes, multiple submissions and failure both
+during and after the setter. Host source cases additionally cover bad counts and
+types without prefix updates, ignored tails, continuation ordering, allocation,
+token replay/wrap, shared relink, native rejection and retirement. Native and
+forwarded query/present/current tests check refusal without native effects after
+an interrupted call while sharing peers stay independent. Normal both-width
+`gles-hints` guests are prepared to read actual accepted array values in browsers
+and retain their independent framebuffer pixels; execution remains required.
+
+An overlapping newer uniform BEGIN explicitly reports the abandoned call as
+`GL_INVALID_OPERATION`, releases its staging and takes new custody. Stale
+BEGIN/CHUNK/COMMIT/CANCEL traffic cannot erase that newer owner. The focused
+control proves the abandoned prefix never reaches the native setter while the
+replacement can still commit; ordinary C recovery sends CANCEL first.

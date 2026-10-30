@@ -12,7 +12,15 @@
  * lane and `byKey` promptly instead of lingering until the next rotation
  * cycles it back to the head.
  */
+import type { GlOperationTicket } from "./operation-stream.js";
 import type { GlBinding } from "./registry.js";
+
+export interface SubmitExecutionOwner {
+  readonly binding: GlBinding;
+  readonly admitted: boolean;
+  run<T>(work: () => T): T;
+  release(): boolean;
+}
 
 const Bytes = Uint8Array;
 const apply = Reflect.apply;
@@ -27,6 +35,9 @@ const setBytes = Uint8Array.prototype.set;
 export class SubmitFrame {
   #bytes: Uint8Array | null;
   #claimed = false;
+  #running = false;
+  #execution: SubmitExecutionOwner | null = null;
+  #operation: GlOperationTicket | null = null;
   readonly byteLength: number;
   constructor(source: Uint8Array, offset: number, length: number) {
     const size = apply(lengthOf,source,[]) as number;
@@ -46,19 +57,51 @@ export class SubmitFrame {
     if (this.#claimed || !this.#bytes) throw new Error("GL submission already admitted");
     this.#claimed = true;
   }
+  attachExecution(owner: SubmitExecutionOwner): void {
+    if (this.#execution) throw new Error("GL submission already owns an execution");
+    this.#execution = owner;
+  }
+  attachOperation(operation: GlOperationTicket): void {
+    if (this.#operation) throw new Error("GL submission already owns stream order");
+    this.#operation = operation;
+  }
+  get ready(): boolean { return this.#operation?.ready ?? true; }
+  get consumed(): boolean { return this.#bytes === null && !this.#running; }
+  retryCleanup(): boolean {
+    if (this.#running) return false;
+    if (!this.#execution) return true;
+    // Cleanup is a retryable receipt, including a custom owner that throws.
+    // It must not replace the dispatch result or abort retirement of peers.
+    try { if (!this.#execution.release()) return false; }
+    catch { return false; }
+    this.#execution = null;
+    return true;
+  }
   /** The temporary device view never becomes the binding's cached guest view.
    * A rebind/teardown during dispatch owns its replacement; do not revive the
    * old guest backing in finally. A consumed or failed frame cannot replay. */
   run<T>(binding: GlBinding, work: () => T): T {
     const bytes = this.#bytes;
     if (!bytes) throw new Error("GL submission already consumed");
+    if (this.#operation && !this.#operation.start()) {
+      this.discard();
+      throw new Error("GL submission stream is not ready");
+    }
     this.#bytes = null;
+    this.#running = true;
     const previous = binding.cmdbufView;
     binding.cmdbufView = bytes;
-    try { return work(); }
-    finally { if (binding.cmdbufView === bytes) binding.cmdbufView = previous; }
+    try {
+      if (this.#execution && this.#execution.binding !== binding) throw new Error("GL execution identity mismatch");
+      return this.#execution ? this.#execution.run(work) : work();
+    } finally {
+      if (binding.cmdbufView === bytes) binding.cmdbufView = previous;
+      this.#running = false;
+      try { this.retryCleanup(); }
+      finally { this.#operation?.finish(); }
+    }
   }
-  discard(): void { this.#bytes = null; }
+  discard(): void { this.#bytes = null; this.#operation?.cancel(); this.retryCleanup(); }
 }
 
 export interface QueueEntry {
@@ -71,20 +114,36 @@ export class SubmitQueue {
   private compositor: QueueEntry[] = [];
   private clients: QueueEntry[] = [];
   private byKey = new Map<string, QueueEntry>();
+  private ownedFrames = new Set<SubmitFrame>();
 
   /** Only the caller's exact binding authority selects the compositor lane.
    * Unclassified bindings remain ordinary FIFO clients. */
   constructor(
     private isCompositor: (binding: GlBinding) => boolean = () => false,
+    private captureExecution?: (binding: GlBinding) => SubmitExecutionOwner | null,
   ) {}
 
   enqueue(binding: GlBinding, frame: SubmitFrame): void {
     frame.claim();
+    // Reserve retry ownership before acquiring context/native storage holds.
+    this.ownedFrames.add(frame);
     const key = `${binding.pid}:${binding.sessionId}:${binding.contextId ?? "_"}`;
     const existing = this.byKey.get(key);
     let entry: QueueEntry | undefined;
-    const lane = this.isCompositor(binding) ? this.compositor : this.clients;
+    let lane = this.clients;
     try {
+      lane = this.isCompositor(binding) ? this.compositor : this.clients;
+      if (binding.operations) {
+        const operation = binding.operations.reserve("commands");
+        if (!operation) throw new Error("GL submission stream is unavailable");
+        frame.attachOperation(operation);
+      }
+      if (this.captureExecution) {
+        const execution = this.captureExecution(binding);
+        if (!execution) throw new Error("GL execution capture failed");
+        frame.attachExecution(execution);
+        if (!execution.admitted) throw new Error("GL drawable capture failed");
+      }
       if (existing) existing.frames.push(frame);
       else {
         entry = {key,binding,frames:[frame]};
@@ -93,6 +152,7 @@ export class SubmitQueue {
       }
     } catch (error) {
       frame.discard();
+      this.complete(frame);
       if (entry) {
         const index = lane.indexOf(entry);
         if (index >= 0) lane.splice(index,1);
@@ -109,28 +169,31 @@ export class SubmitQueue {
    *  next pickNext lands on the next client even if this one still has
    *  frames buffered. */
   pickNext(): QueueEntry | null {
-    while (this.compositor.length > 0) {
-      const e = this.compositor[0];
-      if (e.frames.length > 0) return e;
-      this.compositor.shift();
-      this.byKey.delete(e.key);
+    this.retryRetirements();
+    // A blocked logical head cannot be bypassed by a later frame of that
+    // same session; runnable peer streams still get their ordinary lane turn.
+    for (let index = 0; index < this.compositor.length;) {
+      const entry = this.compositor[index];
+      if (!entry.frames.length) { this.releaseIfEmpty(entry); continue; }
+      if (entry.frames[0].ready) return entry;
+      index++;
     }
-    while (this.clients.length > 0) {
-      const e = this.clients[0];
-      if (e.frames.length > 0) {
-        this.clients.shift();
-        this.clients.push(e);
-        return e;
+    const count = this.clients.length;
+    for (let index = 0; index < count; index++) {
+      const entry = this.clients.shift()!;
+      if (!entry.frames.length) {
+        if (this.byKey.get(entry.key) === entry) this.byKey.delete(entry.key);
+        continue;
       }
-      this.clients.shift();
-      this.byKey.delete(e.key);
+      this.clients.push(entry);
+      if (entry.frames[0].ready) return entry;
     }
     return null;
   }
 
   releaseIfEmpty(entry: QueueEntry): void {
     if (entry.frames.length > 0) return;
-    this.byKey.delete(entry.key);
+    if (this.byKey.get(entry.key) === entry) this.byKey.delete(entry.key);
     // Admission chose a lane using the exact binding's then-current file
     // authority. Cleanup must remove that owned entry even after handoff,
     // without consulting a changed classifier or retaining its guest view.
@@ -150,10 +213,11 @@ export class SubmitQueue {
   removePid(pid: number): void { this.removeSession(pid); }
 
   removeSession(pid: number, sessionId?: number): void {
+    this.retryRetirements();
     if (sessionId !== undefined) sessionId >>>= 0;
     for (const [key, entry] of Array.from(this.byKey)) {
       if (entry.binding.pid !== pid || (sessionId !== undefined && entry.binding.sessionId !== sessionId)) continue;
-      for (const frame of entry.frames) frame.discard();
+      for (const frame of entry.frames) { frame.discard(); this.complete(frame); }
       entry.frames.length = 0;
       this.byKey.delete(key);
       const compositorIndex = this.compositor.indexOf(entry);
@@ -163,6 +227,22 @@ export class SubmitQueue {
       const clientIndex = this.clients.indexOf(entry);
       if (clientIndex >= 0) this.clients.splice(clientIndex, 1);
     }
+  }
+
+  complete(frame: SubmitFrame): void {
+    if (frame.consumed && frame.retryCleanup()) this.ownedFrames.delete(frame);
+  }
+
+  retryRetirements(): void {
+    for (const frame of this.ownedFrames) this.complete(frame);
+  }
+
+  /** Consumed frames whose native cleanup is still unproved. Queue emptiness
+   * alone describes dispatch, not retirement of its accepted resources. */
+  get pendingRetirements(): number {
+    let count = 0;
+    for (const frame of this.ownedFrames) if (frame.consumed) count++;
+    return count;
   }
 
   isEmpty(): boolean {

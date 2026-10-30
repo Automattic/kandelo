@@ -9,6 +9,7 @@
 #include <gbm.h>
 #include <assert.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -52,8 +53,12 @@ static void *record_allocation(void *pointer, size_t size) {
 static void *allocation_for(uint32_t pointer, size_t size) {
     void *found = NULL;
     pthread_mutex_lock(&allocation_mutex);
-    for (unsigned i=0; i<1024; i++) if (allocations[i].pointer && (uint32_t)(uintptr_t)allocations[i].pointer == pointer) {
-        assert(!found && size <= allocations[i].size); found = allocations[i].pointer;
+    for (unsigned i=0; i<1024; i++) if (allocations[i].pointer) {
+        const uint32_t base = (uint32_t)(uintptr_t)allocations[i].pointer;
+        const uint32_t offset = pointer - base;
+        if (offset <= allocations[i].size && size <= allocations[i].size - offset) {
+            assert(!found); found = (uint8_t *)allocations[i].pointer + offset;
+        }
     }
     assert(found);
     pthread_mutex_unlock(&allocation_mutex);
@@ -216,6 +221,7 @@ struct device_slot {
     uint32_t array_binding, element_binding, saved_array_binding;
     int array_saved;
     uint32_t texture_active, texture_2d[128], texture_cube[128], renderbuffer_binding;
+    uint32_t current_program;
 
     struct {
         GLuint name;
@@ -223,14 +229,65 @@ struct device_slot {
     } texture_targets[128];
 };
 static struct device_slot device_slots[8];
+struct native_program { uint32_t name; int live, linked, deleted; };
 static struct {
     struct {
         uint32_t kind, name, source, revision;
     } image_sources[128];
     uint32_t raw_name;
     int raw_live;
+    struct native_program programs[32];
 } image_groups[64];
 static unsigned next_image_group;
+static unsigned program_model, current_program_queries, inactive_uniform_checks;
+static int program_link_failure;
+static uint32_t query_gl_error;
+static uint32_t client_error_masks[8];
+
+static struct native_program *native_program(struct device_slot *slot, uint32_t name) {
+    for (unsigned i = 0; i < 32; ++i)
+        if (image_groups[slot->image_group].programs[i].live &&
+            image_groups[slot->image_group].programs[i].name == name)
+            return &image_groups[slot->image_group].programs[i];
+    return NULL;
+}
+
+/* Model acknowledged device state, independently of the C encoder's queued
+ * commands. Shader execution itself belongs to normal guest/browser tests. */
+static void native_program_command(struct device_slot *slot, uint16_t op, uint32_t name) {
+    struct native_program *program = native_program(slot, name);
+    if (op == OP_CREATE_PROGRAM) {
+        assert(!program);
+        for (unsigned i = 0; i < 32; ++i) {
+            program = &image_groups[slot->image_group].programs[i];
+            if (!program->live) {
+                *program = (struct native_program){.name = name, .live = 1};
+                return;
+            }
+        }
+        assert(!"native program model exhausted");
+    } else if (op == OP_LINK_PROGRAM) {
+        assert(program);
+        program->linked = !program_link_failure;
+    } else if (op == OP_USE_PROGRAM) {
+        if (name && (!program || !program->linked)) {
+            if (!query_gl_error) query_gl_error = program ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
+            return;
+        }
+        slot->current_program = name;
+    } else if (op == OP_DELETE_PROGRAM && program) {
+        program->deleted = 1;
+    }
+    for (unsigned i = 0; i < 32; ++i) {
+        program = &image_groups[slot->image_group].programs[i];
+        if (!program->live || !program->deleted) continue;
+        int retained = 0;
+        for (unsigned j = 0; j < 8; ++j)
+            if (device_slots[j].image_group == slot->image_group &&
+                device_slots[j].current_program == program->name) retained = 1;
+        if (!retained) program->live = 0;
+    }
+}
 
 static struct {
     int open, live;
@@ -240,6 +297,7 @@ static unsigned pending_device;
 static unsigned char *commands;
 static unsigned mappings;
 static unsigned destroyed_contexts, destroyed_surfaces, submit_batches, clear_commands;
+static unsigned error_only_batches;
 static unsigned array_captures, array_restores;
 static int fail_make_current, fail_create_context;
 static int make_current_errno = EACCES;
@@ -297,7 +355,17 @@ static unsigned context_create_calls;
 static unsigned buffer_uploads;
 static unsigned draw_commands;
 static int indexed_queries;
-static uint32_t indexed_max, query_scalar, query_gl_error, query_status;
+static uint32_t indexed_max, query_scalar, query_status;
+static unsigned string_queries, uniform_commands;
+static GLint last_uniform_location;
+static uint32_t last_uniform_count, last_uniform_transpose;
+static uint16_t last_uniform_payload;
+#ifdef OP_UNIFORM_UPLOAD_BEGIN
+static uint32_t uniform_stream_token,uniform_stream_op,uniform_stream_total,uniform_stream_cursor,uniform_stream_stride;
+static unsigned uniform_stream_begins,uniform_stream_chunks,uniform_stream_commits,uniform_stream_cancels,uniform_stream_recovery_clears,fail_submit_on;
+static const uint8_t *uniform_stream_expected;
+static size_t uniform_stream_expected_size;
+#endif
 static unsigned image_failure, image_queries, fail_image_storage, image_pixel_updates;
 static unsigned bind_failure, bind_queries;
 static unsigned buffer_bind_failure, buffer_delete_failure;
@@ -713,6 +781,9 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             assert(fwrite(commands+frame->offset,1,frame->length,trace) == frame->length && !fclose(trace));
         }
         if (fail_submit) { errno = EIO; return -1; }
+#ifdef OP_UNIFORM_UPLOAD_BEGIN
+        if (fail_submit_on && submit_batches==fail_submit_on) {fail_submit_on=0;errno=EIO;return -1;}
+#endif
         struct gl_submit_info *submit = arg;
         protocol_trace(1,0,commands+submit->offset,submit->length,0);
         egl_trace(5, fd, commands + submit->offset, submit->length);
@@ -723,6 +794,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             assert(!fclose(trace));
         }
         size_t at = submit->offset, end = at + submit->length;
+        int only_client_errors = 1;
         while (at < end) {
             uint16_t op, len;
             memcpy(&op, commands + at, 2);
@@ -730,6 +802,40 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             assert(at + 4 + len <= end);
             uint32_t words[2] = {0};
             memcpy(words, commands + at + 4, len < 8 ? len : 8);
+            if (op != 0x001eu) only_client_errors = 0;
+            if (op == OP_ENABLE && words[0] == 0xdead) client_error_masks[fd-10] |= 1u;
+            if (op == 0x001eu) {
+                assert(len == 4 && !(words[0] & ~0x67u));
+                client_error_masks[fd-10] |= words[0];
+            }
+#ifdef OP_UNIFORM_UPLOAD_BEGIN
+            if(op==OP_CLEAR && uniform_stream_expected)uniform_stream_recovery_clears++;
+            if(op>=OP_UNIFORM_UPLOAD_BEGIN && op<=OP_UNIFORM_UPLOAD_CANCEL) {
+                uint32_t header[5]={0};memcpy(header,commands+at+4,len<20?len:20);
+                if(op==OP_UNIFORM_UPLOAD_BEGIN) {
+                    assert(len==20 && header[0] && header[2]==37 && header[3] && !header[4]);
+                    assert(header[0]>uniform_stream_token);
+                    uniform_stream_token=header[0];uniform_stream_op=header[1];uniform_stream_total=header[3];uniform_stream_cursor=0;
+                    uniform_stream_stride=uniform_stream_op==OP_UNIFORM_MATRIX4FV?64:uniform_stream_op==OP_UNIFORM_MATRIX3FV?36:
+                        uniform_stream_op==OP_UNIFORM_MATRIX2FV?16:uniform_stream_op==OP_UNIFORM4FV?16:
+                        uniform_stream_op>=OP_UNIFORM1FV && uniform_stream_op<=OP_UNIFORM3FV?(uniform_stream_op-OP_UNIFORM1FV+1)*4:
+                        (uniform_stream_op-OP_UNIFORM1IV+1)*4;
+                    assert(uniform_stream_expected_size==(size_t)uniform_stream_total*uniform_stream_stride);
+                    uniform_stream_begins++;
+                } else if(op==OP_UNIFORM_UPLOAD_CHUNK) {
+                    assert(header[0]==uniform_stream_token && header[1]==uniform_stream_op && header[2]==uniform_stream_cursor);
+                    assert(header[3] && header[3]<=uniform_stream_total-uniform_stream_cursor);
+                    const size_t bytes=(size_t)header[3]*uniform_stream_stride;
+                    assert(len==16+bytes && !memcmp(commands+at+20,uniform_stream_expected+(size_t)uniform_stream_cursor*uniform_stream_stride,bytes));
+                    uniform_stream_cursor+=header[3];uniform_stream_chunks++;
+                } else if(op==OP_UNIFORM_UPLOAD_COMMIT) {
+                    assert(len==4 && header[0]==uniform_stream_token && uniform_stream_cursor==uniform_stream_total);
+                    uniform_stream_commits++;uniform_stream_total=0;
+                } else {
+                    assert(len==4 && header[0]==uniform_stream_token);uniform_stream_cancels++;uniform_stream_total=0;
+                }
+            }
+#endif
 #ifdef OP_BEGIN_CLIENT_ARRAY
             if (op == OP_BEGIN_CLIENT_ARRAY) {
                 assert(len == 0 && !slot->array_saved);
@@ -812,6 +918,24 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             if (capture_array_upload && op == OP_VERTEX_ATTRIB_POINTER) {
                 memcpy(&captured_type,commands+at+12,4); memcpy(&captured_stride,commands+at+20,4);
             }
+            if (op == OP_UNIFORM1F && (GLint)words[0] == -1) {
+                assert(len == 8 && words[1] == 0);
+                inactive_uniform_checks++;
+                if (!slot->current_program && !query_gl_error) query_gl_error = GL_INVALID_OPERATION;
+            } else if (op >= OP_UNIFORM1I && op <= OP_UNIFORM_MATRIX3FV) {
+                uniform_commands++;
+                last_uniform_location = (GLint)words[0];
+                if (op == OP_UNIFORM_MATRIX2FV || op == OP_UNIFORM_MATRIX3FV || op == OP_UNIFORM_MATRIX4FV) {
+                    assert(len >= 12);
+                    last_uniform_count = words[1];
+                    last_uniform_payload = len;
+                    memcpy(&last_uniform_transpose, commands + at + 12, 4);
+                } else if (op == OP_UNIFORM4FV || (op >= OP_UNIFORM1FV && op <= OP_UNIFORM4IV)) {
+                    assert(len >= 8);
+                    last_uniform_count = words[1];
+                    last_uniform_payload = len;
+                }
+            }
             if (op == OP_DRAW_ARRAYS || op == OP_DRAW_ELEMENTS) draw_commands++;
             if (op == OP_TEX_IMAGE_2D) redefined_texture = bound_texture;
             if (op == OP_TEX_IMAGE_2D || op == OP_GENERATE_MIPMAP ||
@@ -831,8 +955,12 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 shader_names[shaders_created++] = words[1];
             if (op == OP_CREATE_PROGRAM && programs_created < 2)
                 program_names[programs_created++] = words[0];
+            if (program_model && (op == OP_CREATE_PROGRAM || op == OP_LINK_PROGRAM ||
+                op == OP_USE_PROGRAM || op == OP_DELETE_PROGRAM))
+                native_program_command(slot, op, words[0]);
             at += 4 + len;
         }
+        if (only_client_errors) error_only_batches++;
     } else if (request == GLIO_CREATE_SURFACE) {
         struct gl_surface_create *request = arg;
         surface_create_attempts++;
@@ -1303,6 +1431,13 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 memcpy(latest_allocation, values, q->out_buf_len < 16 ? q->out_buf_len : 16);
             return 0;
         }
+        if (q->op == QOP_GET_INTEGERV && q->in_buf_len == 4 &&
+            *(const uint32_t *)(uintptr_t)q->in_buf_ptr == GL_CURRENT_PROGRAM) {
+            assert(q->out_buf_len == 4 && latest_allocation);
+            current_program_queries++;
+            memcpy(latest_allocation, &slot->current_program, 4);
+            return 0;
+        }
         if (advertised_texture_units && q->op == QOP_GET_INTEGERV && !binding_query_kind) {
             assert(q->out_buf_len == 4 && latest_allocation);
             memcpy(latest_allocation, &advertised_texture_units, 4);
@@ -1322,6 +1457,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 memcpy(latest_allocation, &value, 4);
             return 0;
         }
+        if (q->op == QOP_GET_STRING) string_queries++;
         if (q->op == QOP_GET_STRING && string_generation) {
             const char *value = string_generation == 1 ? "renderer A" : "renderer B";
             uint32_t length = (uint32_t)strlen(value);
@@ -1331,8 +1467,22 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             return 0;
         }
         if (numeric_queries == 3) { errno = EINVAL; return -1; }
-        if (q->op == QOP_GET_ERROR && query_gl_error) {
-            memcpy(latest_allocation,&query_gl_error,4); query_gl_error = 0; return 0;
+        if (q->op == QOP_GET_ERROR) {
+            assert(q->in_buf_len == 0 || q->in_buf_len == 4);
+            if (q->in_buf_len) {
+                uint32_t pending; memcpy(&pending,allocation_for(q->in_buf_ptr,4),4);
+                assert(!(pending & ~0x67u)); client_error_masks[fd-10] |= pending;
+            }
+            if (query_gl_error) {
+                assert(query_gl_error >= GL_INVALID_ENUM && query_gl_error <= GL_INVALID_FRAMEBUFFER_OPERATION);
+                client_error_masks[fd-10] |= 1u << (query_gl_error - GL_INVALID_ENUM);
+                query_gl_error = 0;
+            }
+            uint32_t result = GL_NO_ERROR;
+            for (unsigned bit=0; bit<=6; bit++) if (client_error_masks[fd-10] & (1u << bit)) {
+                result = GL_INVALID_ENUM + bit; client_error_masks[fd-10] &= ~(1u << bit); break;
+            }
+            memcpy(allocation_for(q->out_buf_ptr,4),&result,4); return 0;
         }
         if ((q->op >= 0x18 && q->op <= 0x1d) || q->op == 0x20) {
             core_calls++;
@@ -1611,6 +1761,57 @@ static void *sync_wait_thread(void *data) {
     input->error = eglGetError();
     return NULL;
 }
+static void check_hint_value(GLenum target, GLenum expected) {
+    GLint integer[2] = {-1, 91};
+    GLfloat floating[2] = {-1, 92};
+    GLboolean boolean[2] = {GL_FALSE, 93};
+    glGetIntegerv(target, integer);
+    assert(integer[0] == (GLint)expected && integer[1] == 91);
+    glGetFloatv(target, floating);
+    assert(floating[0] == (GLfloat)expected && floating[1] == 92);
+    glGetBooleanv(target, boolean);
+    assert(boolean[0] == GL_TRUE && boolean[1] == 93);
+    assert(glGetError() == GL_NO_ERROR);
+}
+/* Exercise each encoder signature with the same location category. This
+ * device double does not validate GLSL or current programs; the linked SDK
+ * fixture establishes a real program before judging inactive sentinels. */
+static void call_uniform_setter(unsigned variant, GLint location) {
+    const GLfloat f[16] = {1, 2, 3, 4};
+    const GLint i[4] = {1, 2, 3, 4};
+    switch (variant) {
+    case 0: glUniform1f(location, f[0]); break;
+    case 1: glUniform2f(location, f[0], f[1]); break;
+    case 2: glUniform3f(location, f[0], f[1], f[2]); break;
+    case 3: glUniform4f(location, f[0], f[1], f[2], f[3]); break;
+    case 4: glUniform1i(location, i[0]); break;
+    case 5: glUniform2i(location, i[0], i[1]); break;
+    case 6: glUniform3i(location, i[0], i[1], i[2]); break;
+    case 7: glUniform4i(location, i[0], i[1], i[2], i[3]); break;
+    case 8: glUniform1fv(location, 1, f); break;
+    case 9: glUniform2fv(location, 1, f); break;
+    case 10: glUniform3fv(location, 1, f); break;
+    case 11: glUniform4fv(location, 1, f); break;
+    case 12: glUniform1iv(location, 1, i); break;
+    case 13: glUniform2iv(location, 1, i); break;
+    case 14: glUniform3iv(location, 1, i); break;
+    case 15: glUniform4iv(location, 1, i); break;
+    case 16: glUniformMatrix2fv(location, 1, GL_FALSE, f); break;
+    case 17: glUniformMatrix3fv(location, 1, GL_FALSE, f); break;
+    case 18: glUniformMatrix4fv(location, 1, GL_FALSE, f); break;
+    default: assert(!"unknown uniform setter");
+    }
+}
+
+static GLuint prepare_native_uniform_program(void) {
+    program_model = 1;
+    GLuint program = glCreateProgram(); assert(program);
+    glLinkProgram(program); glUseProgram(program); glFlush();
+    GLint current = 0; glGetIntegerv(GL_CURRENT_PROGRAM, &current);
+    assert(current == (GLint)program && glGetError() == GL_NO_ERROR);
+    return program;
+}
+
 int main(int argc, char **argv) {
     assert(argc == 2);
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -2478,6 +2679,110 @@ int main(int argc, char **argv) {
         fail_make_current = 0;
     }
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1], "encoder-error-duplicate")) {
+        glEnable(0xdead);
+        glBindBuffer(0xdead,17);
+        assert(glGetError() == GL_INVALID_ENUM);
+        assert(glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-error-duplicate"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-error-distinct")) {
+        glBindBuffer(0xdead,17);
+        glDrawArrays(GL_POINTS,0,-1);
+        GLenum first = glGetError(), second = glGetError();
+        assert((first == GL_INVALID_ENUM && second == GL_INVALID_VALUE) ||
+               (first == GL_INVALID_VALUE && second == GL_INVALID_ENUM));
+        assert(glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-error-distinct"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-error-order")) {
+        glClear(GL_COLOR_BUFFER_BIT);glBindBuffer(0xdead,17);
+        assert(clear_commands == 0);
+        assert(glGetError() == GL_INVALID_ENUM && clear_commands == 1);
+        assert(glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-error-order"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-error-allocation")) {
+        glBindBuffer(0xdead,17);fail_malloc=fail_calloc=1;
+        assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+        fail_malloc=fail_calloc=0;
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-error-allocation"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-error-submit")) {
+        glBindBuffer(0xdead,17);fail_submit=1;
+        assert(glGetError() == GL_INVALID_ENUM);
+        assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        fail_submit=0;
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-error-submit"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-error-current")) {
+        EGLContext peer=eglCreateContext(dpy,(EGLConfig)1,ctx,attrs);assert(peer);
+        glBindBuffer(0xdead,17);fail_submit=1;
+        assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,peer));fail_submit=0;
+        assert(glGetError() == GL_NO_ERROR);
+        glDrawArrays(GL_POINTS,0,-1);fail_make_current=1;
+        assert(!eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,ctx));fail_make_current=0;
+        assert(eglGetCurrentContext() == peer && glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+        assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,ctx));
+        assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,peer) && eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-error-current"); return 0;
+    }
+    if (!strncmp(argv[1], "encoder-hint-",13)) {
+        const GLenum targets[] = {GL_GENERATE_MIPMAP_HINT, GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES};
+        if (!strcmp(argv[1], "encoder-hint-errors")) {
+            for (unsigned i = 0; i < 2; ++i) {
+                glHint(targets[i], GL_FASTEST);
+                assert(glGetError() == GL_NO_ERROR);
+                for (unsigned j = 0; j < 3; ++j) {
+                    const GLenum invalid_modes[] = {0, GL_LINEAR, 0xffffffffu};
+                    glHint(targets[i], invalid_modes[j]);
+                    assert(glGetError() == GL_INVALID_ENUM);
+                    check_hint_value(targets[i], GL_FASTEST);
+                }
+            }
+            for (unsigned i = 0; i < 3; ++i) {
+                const GLenum invalid_targets[] = {0, 0x0c50u, 0xdeadbeefu};
+                glHint(invalid_targets[i], GL_NICEST);
+                assert(glGetError() == GL_INVALID_ENUM);
+                check_hint_value(GL_GENERATE_MIPMAP_HINT, GL_FASTEST);
+                check_hint_value(GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES, GL_FASTEST);
+            }
+            glBindBuffer(0xdead, 17);
+            glHint(GL_GENERATE_MIPMAP_HINT, GL_NICEST);
+            assert(glGetError() == GL_INVALID_ENUM);
+            check_hint_value(GL_GENERATE_MIPMAP_HINT, GL_NICEST);
+        } else {
+            assert(!strcmp(argv[1], "encoder-hint-state"));
+            for (unsigned i = 0; i < 2; ++i) check_hint_value(targets[i], GL_DONT_CARE);
+            glHint(GL_GENERATE_MIPMAP_HINT, GL_FASTEST);
+            glHint(GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES, GL_NICEST);
+            check_hint_value(GL_GENERATE_MIPMAP_HINT, GL_FASTEST);
+            check_hint_value(GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES, GL_NICEST);
+            EGLContext peer = eglCreateContext(dpy, (EGLConfig)1, ctx, attrs);
+            assert(peer && eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, peer));
+            for (unsigned i = 0; i < 2; ++i) check_hint_value(targets[i], GL_DONT_CARE);
+            glHint(GL_GENERATE_MIPMAP_HINT, GL_NICEST);
+            glHint(GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES, GL_FASTEST);
+            assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+            check_hint_value(GL_GENERATE_MIPMAP_HINT, GL_FASTEST);
+            check_hint_value(GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES, GL_NICEST);
+            assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, peer) && eglDestroyContext(dpy, peer));
+            check_hint_value(GL_GENERATE_MIPMAP_HINT, GL_NICEST);
+            check_hint_value(GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES, GL_FASTEST);
+            assert(eglReleaseThread() && eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+            check_hint_value(GL_GENERATE_MIPMAP_HINT, GL_FASTEST);
+            check_hint_value(GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES, GL_NICEST);
+        }
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        printf("PASS %s\n", argv[1]); return 0;
+    }
     if (!strncmp(argv[1], "raw-discard-",12)) {
         binding_model = 1;
         EGLImageKHR img = image(dpy);
@@ -2500,7 +2805,12 @@ int main(int argc, char **argv) {
         assert(!wpkEglBindBoTexture(dpy,77,GL_TEXTURE_2D) && foreign_bind_calls == 1);
         fail_malloc = fail_calloc = raw_reply_fail_malloc = raw_reply_fail_calloc = 0;
         const EGLint bind_error = eglGetError();
-        assert(glGetError() == (unknown_before || unknown_after ? GL_INVALID_OPERATION : GL_OUT_OF_MEMORY));
+        if (record_failure) {
+            const GLenum first = glGetError(), second = glGetError();
+            assert((first == GL_INVALID_OPERATION && second == GL_OUT_OF_MEMORY) ||
+                   (first == GL_OUT_OF_MEMORY && second == GL_INVALID_OPERATION));
+            assert(glGetError() == GL_NO_ERROR);
+        } else assert(glGetError() == (unknown_before || unknown_after ? GL_INVALID_OPERATION : GL_OUT_OF_MEMORY));
         assert(image_groups[group].raw_live == !unknown_after);
         if (!strcmp(argv[1],"raw-discard-block")) {
             const unsigned before = bind_queries;
@@ -2863,7 +3173,7 @@ int main(int argc, char **argv) {
         glBindBuffer(GL_ARRAY_BUFFER,buffer); glBufferData(GL_ARRAY_BUFFER,4,NULL,GL_STATIC_DRAW);
         get(GL_ARRAY_BUFFER,GL_BUFFER_SIZE,&value); assert(value == 4 && scalar_queries == 1);
         fail_submit = 1;
-        for (unsigned i=0; i<WPK_GL_CMDBUF_LEN/8+1; i++) glClear(GL_COLOR_BUFFER_BIT);
+        for (unsigned i=0; i<(WPK_GL_CMDBUF_LEN-8)/8+1; i++) glClear(GL_COLOR_BUFFER_BIT);
         fail_submit = 0; glFlush();
         assert(clear_commands == 0 && glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
         glDeleteBuffers(1,&buffer); assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
@@ -3449,6 +3759,405 @@ int main(int argc, char **argv) {
         assert(buffer_uploads == 1 && glGetError() == GL_NO_ERROR);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-vao-attribs"); return 0;
+    }
+    if (!strncmp(argv[1], "encoder-uniform-current-", 24)) {
+        program_model = 1;
+        call_uniform_setter(0, -1);
+        assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        GLuint program = prepare_native_uniform_program();
+        if (!strcmp(argv[1], "encoder-uniform-current-basic")) {
+            for (unsigned variant = 0; variant < 19; ++variant) {
+                const unsigned queries = current_program_queries, submitted = uniform_commands,
+                               checks = inactive_uniform_checks;
+                call_uniform_setter(variant, -1);
+                assert(glGetError() == GL_NO_ERROR && uniform_commands == submitted);
+                assert(inactive_uniform_checks == checks + 1 && current_program_queries == queries);
+                call_uniform_setter(variant, 37);
+                glFlush();
+                assert(glGetError() == GL_NO_ERROR && uniform_commands == submitted + 1);
+                assert(current_program_queries == queries);
+                glUseProgram(0);
+                call_uniform_setter(variant, -1);
+                assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+                glUseProgram(program);
+            }
+        } else if (!strcmp(argv[1], "encoder-uniform-current-lifecycle")) {
+            glUseProgram(UINT_MAX); glFlush();
+            assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            GLuint unlinked = glCreateProgram(); glUseProgram(unlinked); glFlush();
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            program_link_failure = 1; glLinkProgram(program); glFlush();
+            program_link_failure = 0;
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            glUseProgram(program); glFlush();
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            glLinkProgram(program); glDeleteProgram(program);
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            glUseProgram(0);
+            call_uniform_setter(0, -1);
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            program = prepare_native_uniform_program();
+            EGLContext peer = eglCreateContext(dpy, (EGLConfig)1, ctx, attrs);
+            assert(peer && eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, peer));
+            call_uniform_setter(0, -1);
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            glUseProgram(program);
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            glDeleteProgram(program); glUseProgram(0);
+            call_uniform_setter(0, -1);
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            assert(eglDestroyContext(dpy, peer));
+        } else {
+            assert(!strcmp(argv[1], "encoder-uniform-current-failure"));
+            /* Inactive validation has no allocation or synchronous query. */
+            fail_malloc = 1; call_uniform_setter(0, -1); fail_malloc = 0;
+            assert(glGetError() == GL_NO_ERROR);
+            glUseProgram(0);
+            const unsigned checks = inactive_uniform_checks;
+            call_uniform_setter(0, -1);
+            fail_submit = 1; glFlush(); fail_submit = 0;
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            assert(inactive_uniform_checks == checks);
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            glUseProgram(0); glFlush();
+            glUseProgram(program);
+            call_uniform_setter(0, -1);
+            fail_submit = 1; glFlush(); fail_submit = 0;
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            call_uniform_setter(0, -1);
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            glUseProgram(program);
+            call_uniform_setter(0, -1); assert(glGetError() == GL_NO_ERROR);
+            glGetString(0);
+            call_uniform_setter(0, -1);
+            assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+            glUseProgram(0);
+            GLuint unlinked = glCreateProgram(); glUseProgram(unlinked);
+            call_uniform_setter(0, -1);
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        }
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        printf("PASS %s\n", argv[1]); return 0;
+    }
+    if (!strncmp(argv[1], "encoder-uniform-large-", 22)) {
+        (void)prepare_native_uniform_program();
+        const int final_failure=!strcmp(argv[1]+22,"final-failure");
+        const int streaming=!strcmp(argv[1]+22,"stream")||final_failure,failure=!strcmp(argv[1]+22,"failure");
+        const unsigned variant=streaming||failure?0:(unsigned)strtoul(argv[1]+22,NULL,10); assert(variant<11);
+        void (*const fv[])(GLint,GLsizei,const GLfloat *)={glUniform1fv,glUniform2fv,glUniform3fv,glUniform4fv};
+        void (*const iv[])(GLint,GLsizei,const GLint *)={glUniform1iv,glUniform2iv,glUniform3iv,glUniform4iv};
+        void (*const matrix[])(GLint,GLsizei,GLboolean,const GLfloat *)={glUniformMatrix2fv,glUniformMatrix3fv,glUniformMatrix4fv};
+        const unsigned width=variant<8?variant%4+1:variant==8?4:variant==9?9:16;
+        const GLsizei count=failure?600000:streaming?300000:(65535u-8u)/(width*4u)+2;
+        const size_t bytes=(size_t)count*width*4u,page=(size_t)sysconf(_SC_PAGESIZE);
+        const size_t readable=(bytes+page-1)/page*page;
+        unsigned char *mapping=mmap(NULL,readable+page,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
+        assert(mapping!=MAP_FAILED && !mprotect(mapping+readable,page,PROT_NONE));
+        unsigned char *data=mapping+readable-bytes;
+        for(size_t i=0;i<bytes/4;i++) {
+            if(variant>=4 && variant<8)((GLint *)data)[i]=(GLint)(i%701)-350;
+            else ((GLfloat *)data)[i]=(GLfloat)(i%701)+.25f;
+        }
+#ifdef OP_UNIFORM_UPLOAD_BEGIN
+        uniform_stream_expected=data;uniform_stream_expected_size=bytes;
+        const unsigned old_submits=submit_batches,old_queries=current_program_queries;
+        if(failure)fail_submit_on=submit_batches+2;
+#endif
+        if(variant<4) fv[variant](37,count,(const GLfloat *)data);
+        else if(variant<8) iv[variant-4](37,count,(const GLint *)data);
+        else matrix[variant-8](37,count,GL_FALSE,(const GLfloat *)data);
+#ifdef OP_UNIFORM_UPLOAD_BEGIN
+        if(final_failure) {fail_submit_on=submit_batches+1;glFlush();}
+#endif
+        assert(glGetError()==(failure||final_failure?GL_INVALID_OPERATION:GL_NO_ERROR));
+        if(final_failure)glClear(GL_COLOR_BUFFER_BIT);
+        if(failure||final_failure)assert(glGetError()==GL_NO_ERROR); /* Flush the queued CANCEL after the local failure flag. */
+#ifdef OP_UNIFORM_UPLOAD_BEGIN
+        assert(current_program_queries==old_queries && uniform_stream_begins==1 && uniform_stream_chunks>=2);
+        if(failure||final_failure)assert(!uniform_stream_commits && uniform_stream_cancels==1);
+        else assert(uniform_stream_commits==1 && !uniform_stream_cancels);
+        assert(submit_batches>=old_submits+(streaming||failure?2:1));
+        assert(!uniform_stream_total);
+        if(final_failure)assert(uniform_stream_recovery_clears==1);
+#endif
+        assert(!munmap(mapping,readable+page));
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count()==0); printf("PASS %s\n",argv[1]);return 0;
+    }
+    if (!strcmp(argv[1], "encoder-uniform-zero-headers")) {
+        (void)prepare_native_uniform_program();
+        void (*const fv[])(GLint, GLsizei, const GLfloat *) = {glUniform1fv,glUniform2fv,glUniform3fv,glUniform4fv};
+        void (*const iv[])(GLint, GLsizei, const GLint *) = {glUniform1iv,glUniform2iv,glUniform3iv,glUniform4iv};
+        void (*const matrix[])(GLint, GLsizei, GLboolean, const GLfloat *) = {glUniformMatrix2fv,glUniformMatrix3fv,glUniformMatrix4fv};
+        const size_t page=(size_t)sysconf(_SC_PAGESIZE);
+        void *guard=mmap(NULL,page,PROT_NONE,MAP_PRIVATE|MAP_ANON,-1,0); assert(guard!=MAP_FAILED);
+        for(unsigned i=0;i<11;i++) for(unsigned null_source=0;null_source<2;null_source++) {
+            const unsigned before=uniform_commands,queries=current_program_queries;
+            const void *data=null_source?NULL:guard;
+            if(i<4)fv[i](37,0,data); else if(i<8)iv[i-4](37,0,data); else matrix[i-8](37,0,GL_FALSE,data);
+            assert(glGetError()==GL_NO_ERROR);
+            assert(uniform_commands==before+1 && current_program_queries==queries);
+            assert(last_uniform_location==37 && !last_uniform_count);
+            assert(last_uniform_payload==(i<8?8:12));
+        }
+        assert(!munmap(guard,page));
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count()==0); printf("PASS %s\n",argv[1]);return 0;
+    }
+    /* These native cases judge encoder records/errors with a device double,
+     * not GLSL execution or the host's current-program validation. The normal
+     * SDK fixture separately establishes a real linked current program. */
+    if (!strncmp(argv[1], "encoder-uniform-vector-", 23)) {
+        (void)prepare_native_uniform_program();
+        void (*const floating[])(GLint, GLsizei, const GLfloat *) = {
+            glUniform1fv, glUniform2fv, glUniform3fv, glUniform4fv,
+        };
+        void (*const integer[])(GLint, GLsizei, const GLint *) = {
+            glUniform1iv, glUniform2iv, glUniform3iv, glUniform4iv,
+        };
+        const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+        const size_t readable = ((65535u + page - 1) / page) * page;
+        unsigned char *mapping = mmap(NULL, readable + page, PROT_READ | PROT_WRITE,
+                                     MAP_PRIVATE | MAP_ANON, -1, 0);
+        assert(mapping != MAP_FAILED && !mprotect(mapping + readable, page, PROT_NONE));
+        const GLfloat *fguard = (const GLfloat *)(mapping + readable);
+        const GLint *iguard = (const GLint *)(mapping + readable);
+        const GLfloat fvalue[4] = {1, 2, 3, 4};
+        const GLint ivalue[4] = {1, 2, 3, 4};
+        for (unsigned variant = 0; variant < 8; ++variant) {
+            const unsigned index = variant % 4, components = index + 1;
+            const unsigned submitted = uniform_commands, batches = submit_batches - error_only_batches,
+                           checks = inactive_uniform_checks;
+            const GLsizei maximum = (65535u - 8u) / (sizeof(GLfloat) * components);
+#define VECTOR_CALL(location, count, f, i) do { \
+    if (variant < 4) floating[index](location, count, f); \
+    else integer[index](location, count, i); \
+} while (0)
+            if (!strcmp(argv[1], "encoder-uniform-vector-counts")) {
+                const GLsizei negative[] = {-1, INT_MIN};
+                for (unsigned j = 0; j < 2; ++j) {
+                    VECTOR_CALL(37, negative[j], fguard, iguard);
+                    assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+                    VECTOR_CALL(-1, negative[j], fguard, iguard);
+                    assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+                    VECTOR_CALL(-1, negative[j], NULL, NULL);
+                    assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+                }
+                glGetString(0);
+                VECTOR_CALL(-1, -1, fguard, iguard);
+                assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+            } else if (!strcmp(argv[1], "encoder-uniform-vector-null-zero")) {
+                VECTOR_CALL(37, 1, NULL, NULL);
+                assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+                VECTOR_CALL(37, 0, fguard, iguard);
+                VECTOR_CALL(37, 0, NULL, NULL);
+                VECTOR_CALL(-1, 1, fguard, iguard);
+                VECTOR_CALL(-1, 1, NULL, NULL);
+                assert(glGetError() == GL_NO_ERROR);
+                VECTOR_CALL(-2, 0, fguard, iguard);
+                assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            } else {
+                assert(!strcmp(argv[1], "encoder-uniform-vector-bounds"));
+                const GLsizei oversized[] = {maximum + 1, INT_MAX, 0x04000000, 0x10000000};
+                VECTOR_CALL(-1, INT_MAX, fguard, iguard);
+                assert(glGetError() == GL_NO_ERROR);
+                for (unsigned j = 0; j < 4; ++j) {
+                    VECTOR_CALL(37, oversized[j], (const GLfloat *)(UINTPTR_MAX & ~(uintptr_t)3u),
+                                (const GLint *)(UINTPTR_MAX & ~(uintptr_t)3u));
+                    assert(glGetError() == GL_OUT_OF_MEMORY && glGetError() == GL_NO_ERROR);
+                }
+            }
+            glFlush();
+            const unsigned ignored = !strcmp(argv[1], "encoder-uniform-vector-counts") ? 0 :
+                                     !strcmp(argv[1], "encoder-uniform-vector-null-zero") ? 2 : 1;
+            const unsigned zero_records = !strcmp(argv[1], "encoder-uniform-vector-null-zero") ? 2 : 0;
+            assert(uniform_commands == submitted + zero_records && inactive_uniform_checks == checks + ignored);
+            assert(submit_batches - error_only_batches == batches + (ignored ? 1u : 0u));
+            VECTOR_CALL(37, 1, fvalue, ivalue);
+            assert(glGetError() == GL_NO_ERROR && uniform_commands == submitted + zero_records + 1);
+            assert(last_uniform_location == 37 && last_uniform_count == 1);
+            assert(last_uniform_payload == 8 + components * sizeof(GLfloat));
+            if (!strcmp(argv[1], "encoder-uniform-vector-bounds")) {
+                VECTOR_CALL(37, maximum, fguard - (size_t)maximum * components,
+                            iguard - (size_t)maximum * components);
+                assert(glGetError() == GL_NO_ERROR && uniform_commands == submitted + 2);
+                assert(last_uniform_count == (uint32_t)maximum);
+                assert(last_uniform_payload == 8 + maximum * components * sizeof(GLfloat));
+            }
+#undef VECTOR_CALL
+        }
+        assert(!munmap(mapping, readable + page));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        printf("PASS %s\n", argv[1]); return 0;
+    }
+    if (!strncmp(argv[1], "encoder-uniform-matrix-", 23)) {
+        (void)prepare_native_uniform_program();
+        void (*const setters[])(GLint, GLsizei, GLboolean, const GLfloat *) = {
+            glUniformMatrix4fv, glUniformMatrix2fv, glUniformMatrix3fv,
+        };
+        const unsigned components[] = {16, 4, 9};
+        const size_t page = (size_t)sysconf(_SC_PAGESIZE);
+        const size_t readable = ((65535u + page - 1) / page) * page;
+        unsigned char *mapping = mmap(NULL, readable + page, PROT_READ | PROT_WRITE,
+                                     MAP_PRIVATE | MAP_ANON, -1, 0);
+        assert(mapping != MAP_FAILED && !mprotect(mapping + readable, page, PROT_NONE));
+        const GLfloat *guard = (const GLfloat *)(mapping + readable);
+        const GLfloat value[16] = {1, 2, 3, 4};
+        for (unsigned i = 0; i < 3; ++i) {
+            const unsigned submitted = uniform_commands, batches = submit_batches - error_only_batches,
+                           checks = inactive_uniform_checks;
+            const GLsizei maximum = (65535u - 12u) / (sizeof(GLfloat) * components[i]);
+            if (!strcmp(argv[1], "encoder-uniform-matrix-counts")) {
+                const GLsizei negative[] = {-1, INT_MIN};
+                for (unsigned j = 0; j < 2; ++j) {
+                    setters[i](37, negative[j], GL_FALSE, guard);
+                    assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+                    setters[i](-1, negative[j], GL_FALSE, guard);
+                    assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+                }
+                setters[i](37, 0, GL_FALSE, guard);
+                setters[i](37, 0, GL_FALSE, NULL);
+                setters[i](-1, 1, GL_FALSE, guard);
+                assert(glGetError() == GL_NO_ERROR);
+            } else if (!strcmp(argv[1], "encoder-uniform-matrix-transpose")) {
+                const GLboolean transpose[] = {GL_TRUE, 2, 255};
+                for (unsigned j = 0; j < 3; ++j) {
+                    setters[i](37, 1, transpose[j], value);
+                    assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+                    setters[i](37, 0, transpose[j], guard);
+                    assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+                    setters[i](-1, 1, transpose[j], guard);
+                    assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+                }
+            } else {
+                assert(!strcmp(argv[1], "encoder-uniform-matrix-bounds"));
+                /* These counts wrap the old mat4 float/byte products; the
+                 * inaccessible source makes prevalidation reads observable. */
+                const GLsizei oversized[] = {0x04000000, 0x10000000, INT_MAX, maximum + 1};
+                setters[i](-1, INT_MAX, GL_FALSE, guard);
+                assert(glGetError() == GL_NO_ERROR);
+                for (unsigned j = 0; j < 4; ++j) {
+                    setters[i](37, oversized[j], GL_FALSE, (const GLfloat *)(UINTPTR_MAX & ~(uintptr_t)3u));
+                    assert(glGetError() == GL_OUT_OF_MEMORY && glGetError() == GL_NO_ERROR);
+                }
+            }
+            glFlush();
+            const unsigned ignored = !strcmp(argv[1], "encoder-uniform-matrix-transpose") ? 0 : 1;
+            const unsigned zero_records = !strcmp(argv[1], "encoder-uniform-matrix-counts") ? 2 : 0;
+            assert(uniform_commands == submitted + zero_records && inactive_uniform_checks == checks + ignored);
+            assert(submit_batches - error_only_batches == batches + ignored);
+            setters[i](37, 1, GL_FALSE, value);
+            assert(glGetError() == GL_NO_ERROR && uniform_commands == submitted + zero_records + 1);
+            assert(last_uniform_location == 37 && last_uniform_count == 1 && !last_uniform_transpose);
+            assert(last_uniform_payload == 12 + components[i] * sizeof(GLfloat));
+            if (!strcmp(argv[1], "encoder-uniform-matrix-bounds")) {
+                const GLfloat *last = guard - (size_t)maximum * components[i];
+                setters[i](37, maximum, GL_FALSE, last);
+                assert(glGetError() == GL_NO_ERROR && uniform_commands == submitted + 2);
+                assert(last_uniform_count == (uint32_t)maximum && !last_uniform_transpose);
+                assert(last_uniform_payload == 12 + maximum * components[i] * sizeof(GLfloat));
+            }
+        }
+        assert(!munmap(mapping, readable + page));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        printf("PASS %s\n", argv[1]); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-uniform-location-errors")) {
+        (void)prepare_native_uniform_program();
+        const GLint invalid_locations[] = {-2, INT_MIN};
+        for (unsigned variant = 0; variant < 19; ++variant) {
+            const unsigned submitted = uniform_commands, batches = submit_batches - error_only_batches,
+                           checks = inactive_uniform_checks;
+            for (unsigned j = 0; j < sizeof invalid_locations / sizeof invalid_locations[0]; ++j) {
+                call_uniform_setter(variant, invalid_locations[j]);
+                assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            }
+            call_uniform_setter(variant, -1);
+            assert(glGetError() == GL_NO_ERROR);
+            glGetString(0);
+            call_uniform_setter(variant, -1);
+            assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+            glFlush();
+            assert(uniform_commands == submitted && submit_batches - error_only_batches == batches + 2);
+            assert(inactive_uniform_checks == checks + 2);
+            call_uniform_setter(variant, 37);
+            assert(glGetError() == GL_NO_ERROR);
+            assert(uniform_commands == submitted + 1 && last_uniform_location == 37);
+        }
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        puts("PASS encoder-uniform-location-errors"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-generation-counts")) {
+        void (*const generators[])(GLsizei, GLuint *) = {
+            glGenFramebuffers, glGenBuffers, glGenTextures, glGenRenderbuffers,
+        };
+        const GLsizei negative[] = {-1, INT_MIN};
+        for (unsigned i = 0; i < sizeof generators / sizeof generators[0]; ++i) {
+            GLuint names[3] = {0x12345678u, 0x87654321u, 0xdecafbadu};
+            assert(glGetError() == GL_NO_ERROR);
+            const unsigned submits = submit_batches - error_only_batches, allocations_before = allocation_count();
+            for (unsigned j = 0; j < sizeof negative / sizeof negative[0]; ++j) {
+                generators[i](negative[j], names);
+                assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+                assert(names[0] == 0x12345678u && names[1] == 0x87654321u && names[2] == 0xdecafbadu);
+                generators[i](negative[j], NULL);
+                assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+            }
+            generators[i](0, names);
+            generators[i](0, NULL);
+            assert(glGetError() == GL_NO_ERROR);
+            assert(names[0] == 0x12345678u && names[1] == 0x87654321u && names[2] == 0xdecafbadu);
+            glFlush();
+            assert(submit_batches - error_only_batches == submits && allocation_count() == allocations_before);
+            generators[i](2, names);
+            assert(glGetError() == GL_NO_ERROR);
+            assert(names[0] && names[1] && names[0] != names[1] && names[2] == 0xdecafbadu);
+        }
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        puts("PASS encoder-generation-counts"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-string-errors")) {
+        string_generation = 1;
+        const GLubyte *vendor = glGetString(GL_VENDOR);
+        assert(vendor && !strcmp((const char *)vendor, "renderer A"));
+        assert(glGetError() == GL_NO_ERROR);
+        const unsigned queried = string_queries;
+        const GLenum invalid[] = {0, GL_TEXTURE_2D, 0x821bu, 0x821du, 0xffffffffu};
+        for (unsigned i = 0; i < sizeof invalid / sizeof invalid[0]; ++i) {
+            assert(glGetString(invalid[i]) == NULL);
+            assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+            assert(glGetString(GL_VENDOR) == vendor && !strcmp((const char *)vendor, "renderer A"));
+            assert(string_queries == queried);
+        }
+        /* Successful cached queries preserve an earlier error. */
+        glDrawArrays(GL_POINTS, -1, 1);
+        assert(glGetString(GL_VENDOR) == vendor);
+        assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+        /* A shared-object peer has its own query errors and string cache. */
+        assert(glGetString(0) == NULL);
+        EGLContext peer = eglCreateContext(dpy, (EGLConfig)1, ctx, attrs);
+        assert(peer && eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, peer));
+        assert(glGetError() == GL_NO_ERROR);
+        string_generation = 2;
+        assert(!strcmp((const char *)glGetString(GL_VENDOR), "renderer B"));
+        assert(glGetString(0) == NULL && glGetError() == GL_INVALID_ENUM);
+        assert(eglDestroyContext(dpy, peer) && eglReleaseThread());
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+        assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+        assert(glGetString(GL_VENDOR) == vendor && !strcmp((const char *)vendor, "renderer A"));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        puts("PASS encoder-string-errors"); return 0;
     }
     if (!strcmp(argv[1], "encoder-strings")) {
         string_generation = 1;

@@ -4019,6 +4019,13 @@ pub mod gl {
     pub const MAX_QUERY_IN_LEN: u32 = 64 * 1024;
     pub const MAX_QUERY_OUT_LEN: u32 = 64 * 1024;
 
+    /// Kernel-only future receipt envelope selector. Guest GLIO_QUERY rejects
+    /// this value. No host control dispatch or asynchronous query is enabled.
+    pub const KERNEL_GL_QUERY_CONTROL: u32 = 0x7fff_fffe;
+    /// Reserved zero-effect preentry disposition, not an errno or replay grant.
+    /// Neither producer nor consumer is enabled until owned admission is wired.
+    pub const GL_QUERY_NEEDS_OWNED_ADMISSION: i32 = i32::MIN + 1;
+
     // --- cmdbuf opcodes (mirrored in host/src/webgl/ops.ts) ----------------
     //
     // Layout: TLV `{u16 op, u16 payload_len, payload[payload_len]}` little-
@@ -4143,6 +4150,8 @@ pub mod gl {
     pub const OP_POLYGON_OFFSET: u16 = 0x001B;
     pub const OP_DEPTH_RANGEF: u16 = 0x001C;
     pub const OP_SAMPLE_COVERAGE: u16 = 0x001D;
+    /// Ordered transfer of the five ES2 client error flags (bits 0,1,2,5,6).
+    pub const OP_CLIENT_ERRORS: u16 = 0x001E;
     pub const OP_TEX_PARAMETERF: u16 = 0x0208;
     pub const OP_COMPRESSED_TEX_IMAGE_2D: u16 = 0x0209;
     pub const OP_COMPRESSED_TEX_SUB_IMAGE_2D: u16 = 0x020A;
@@ -4157,6 +4166,10 @@ pub mod gl {
     pub const OP_UNIFORM4IV: u16 = 0x040D;
     pub const OP_UNIFORM_MATRIX2FV: u16 = 0x040E;
     pub const OP_UNIFORM_MATRIX3FV: u16 = 0x040F;
+    pub const OP_UNIFORM_UPLOAD_BEGIN: u16 = 0x0410;
+    pub const OP_UNIFORM_UPLOAD_CHUNK: u16 = 0x0411;
+    pub const OP_UNIFORM_UPLOAD_COMMIT: u16 = 0x0412;
+    pub const OP_UNIFORM_UPLOAD_CANCEL: u16 = 0x0413;
     pub const OP_DELETE_RENDERBUFFERS: u16 = 0x0708;
     pub const OP_DRAW_BUFFER: u16 = 0x0709;
     pub const OP_DRAW_BUFFERS: u16 = 0x070A;
@@ -5971,6 +5984,7 @@ mod gl_tests {
             OP_PIXEL_STOREI,
             OP_BLEND_FUNC_SEPARATE,
             OP_BLEND_EQUATION_SEPARATE,
+            OP_CLIENT_ERRORS,
             OP_GEN_BUFFERS,
             OP_DELETE_BUFFERS,
             OP_BIND_BUFFER,
@@ -6003,6 +6017,10 @@ mod gl_tests {
             OP_UNIFORM4F,
             OP_UNIFORM_MATRIX4FV,
             OP_UNIFORM4FV,
+            OP_UNIFORM_UPLOAD_BEGIN,
+            OP_UNIFORM_UPLOAD_CHUNK,
+            OP_UNIFORM_UPLOAD_COMMIT,
+            OP_UNIFORM_UPLOAD_CANCEL,
             OP_ENABLE_VERTEX_ATTRIB_ARRAY,
             OP_DISABLE_VERTEX_ATTRIB_ARRAY,
             OP_VERTEX_ATTRIB_POINTER,

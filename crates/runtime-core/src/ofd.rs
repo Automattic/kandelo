@@ -160,6 +160,12 @@ pub fn host_handle_close_ref(h: i64) -> bool {
     true
 }
 
+/// Observe the actual cross-process authority without consuming it. Internal
+/// executable cancellation uses this before its sole native close attempt.
+pub(crate) fn host_handle_is_final_reference(h: i64) -> bool {
+    get_host_handle_refs().get(&h).is_none_or(|count| *count == 1)
+}
+
 #[cfg(test)]
 pub fn host_handle_ref_count(h: i64) -> u32 {
     get_host_handle_refs().get(&h).copied().unwrap_or(0)
@@ -698,6 +704,8 @@ pub struct OpenFileDesc {
     pub shared_state: SharedOfdState,
     pub host_handle: i64,
     pub ref_count: u32,
+    /// Internal close quarantine is never serialized: fork refuses its owner.
+    pub(crate) exec_close_quarantined: bool,
     pub path: Vec<u8>, // resolved absolute path
     /// Host directory handle for getdents64 iteration (lazily opened).
     /// -1 means not yet opened, -2 means exhausted (EOF).
@@ -1008,6 +1016,7 @@ impl OfdTable {
             shared_state: SharedOfdState::new(status_flags, 0, 0),
             host_handle,
             ref_count: 1,
+            exec_close_quarantined: false,
             path,
             dir_host_handle: -1,
             dir_synth_state: 0,
@@ -1048,6 +1057,7 @@ impl OfdTable {
             shared_state,
             host_handle,
             ref_count: 1,
+            exec_close_quarantined: false,
             path,
             dir_host_handle: -1,
             dir_synth_state: 0,
@@ -1123,6 +1133,10 @@ impl OfdTable {
     /// Increment the reference count for the OFD at `idx`.
     pub fn inc_ref(&mut self, idx: usize) {
         if let Some(ofd) = self.get_mut(idx) {
+            assert!(
+                !ofd.exec_close_quarantined,
+                "cannot retain uncertain executable OFD"
+            );
             ofd.ref_count = ofd
                 .ref_count
                 .checked_add(1)
@@ -1140,6 +1154,9 @@ impl OfdTable {
         if ofd.ofd_id != id {
             return Err(Errno::EBADF);
         }
+        if ofd.exec_close_quarantined {
+            return Err(Errno::EBUSY);
+        }
         ofd.ref_count = ofd.ref_count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
         Ok(())
     }
@@ -1148,6 +1165,10 @@ impl OfdTable {
     /// Returns `true` if the OFD was freed (ref_count reached 0).
     pub fn dec_ref(&mut self, idx: usize) -> bool {
         let should_free = if let Some(ofd) = self.entries.get_mut(idx).and_then(|s| s.as_mut()) {
+            assert!(
+                !ofd.exec_close_quarantined,
+                "cannot retire uncertain executable OFD without proof"
+            );
             ofd.ref_count -= 1;
             ofd.ref_count == 0
         } else {
@@ -1160,6 +1181,28 @@ impl OfdTable {
         } else {
             false
         }
+    }
+
+    pub(crate) fn quarantine_exec_close(&mut self, idx: usize, id: OfdId) -> Result<(), Errno> {
+        let ofd = self.get_mut(idx).ok_or(Errno::EBADF)?;
+        if ofd.ofd_id != id || ofd.ref_count != 1 {
+            return Err(Errno::EBADF);
+        }
+        ofd.exec_close_quarantined = true;
+        Ok(())
+    }
+
+    pub(crate) fn clear_exec_close_quarantine(
+        &mut self,
+        idx: usize,
+        id: OfdId,
+    ) -> Result<(), Errno> {
+        let ofd = self.get_mut(idx).ok_or(Errno::EBADF)?;
+        if ofd.ofd_id != id || ofd.ref_count != 1 || !ofd.exec_close_quarantined {
+            return Err(Errno::EBADF);
+        }
+        ofd.exec_close_quarantined = false;
+        Ok(())
     }
 
     /// Iterate over all open file descriptions with their indices.
@@ -1452,6 +1495,7 @@ mod tests {
                 shared_state: ofd.shared_state(),
                 host_handle: ofd.host_handle,
                 ref_count: ofd.ref_count,
+                exec_close_quarantined: false,
                 path: ofd.path.clone(),
                 dir_host_handle: -1,
                 dir_synth_state: 0,

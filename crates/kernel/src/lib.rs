@@ -11,6 +11,9 @@ extern crate wasm_posix_shared;
 // `crate::debug_log`, `crate::current_time_secs`).
 pub use runtime_core::*;
 
+#[cfg(any(test, target_arch = "wasm32", target_arch = "wasm64"))]
+mod query_lifecycle;
+
 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
 pub mod wasm_api;
 

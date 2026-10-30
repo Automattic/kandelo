@@ -18,22 +18,59 @@ import type { GlBinding } from "./registry.js";
 import type { GlMuxer } from "./muxer.js";
 import type { SubmitQueue } from "./submit-queue.js";
 
+// A callback may enqueue work while dispatching. The later frame cannot run
+// on that same physical renderer until the active frame's tail has finished.
+const executingMuxers = new WeakSet<GlMuxer>();
+
+/** Result-bearing reentry must not switch selectors underneath a frame from
+ * another logical owner on the same physical renderer. */
+export function glSubmitExecuting(muxer: GlMuxer | undefined): boolean {
+  return !!muxer && executingMuxers.has(muxer);
+}
+
+/** Shared physical scope for internal owned queries as well as command
+ * frames. The callback remains stack-local; no request callback is queued. */
+export function runGlRendererOperation<T>(muxer: GlMuxer, work: () => T): {entered:false} | {entered:true;value:T} {
+  if (executingMuxers.has(muxer)) return {entered:false};
+  executingMuxers.add(muxer);
+  try { return {entered:true,value:work()}; }
+  finally { executingMuxers.delete(muxer); }
+}
+
 export type GlMuxerFor = (b: GlBinding) => GlMuxer | null;
 export type GlDispatch = (b: GlBinding, off: number, len: number) => number | void;
+
+/** Inspect the actual queued head and physical renderer after a bounded pump.
+ * pickNext also retries existing consumed-frame retirement; an unresolved
+ * retirement is not runnable work and must not trigger a scheduling spin. */
+export function glSubmitQueueDisposition(queue: SubmitQueue, muxerFor: GlMuxerFor):
+  "empty" | "blocked" | "runnable" | "retiring" {
+  const entry = queue.pickNext();
+  if (!entry) return queue.isEmpty() ? (queue.pendingRetirements ? "retiring" : "empty") : "blocked";
+  try { return glSubmitExecuting(muxerFor(entry.binding) ?? undefined) ? "blocked" : "runnable"; }
+  catch { return "blocked"; }
+}
 
 export function drainSubmitQueue(
   queue: SubmitQueue,
   muxerFor: GlMuxerFor,
   dispatch: GlDispatch,
+  maxFrames = Infinity,
 ): number {
-  while (true) {
+  if (maxFrames !== Infinity && (!Number.isSafeInteger(maxFrames) || maxFrames < 0)) return -22;
+  for (let frames = 0; frames < maxFrames; frames++) {
     const entry = queue.pickNext();
     if (!entry) return 0;
+    let mux: GlMuxer | null = null, lookupFailed = false, lookupError: unknown;
+    try { mux = muxerFor(entry.binding); }
+    catch (error) { lookupFailed = true; lookupError = error; }
+    if (mux && executingMuxers.has(mux)) return 0;
     const frame = entry.frames.shift()!;
+    if (mux) executingMuxers.add(mux);
     let rc: number | void;
     try {
       rc = frame.run(entry.binding, () => {
-        const mux = muxerFor(entry.binding);
+        if (lookupFailed) throw lookupError;
         if (mux) mux.switchTo(entry.binding);
         return dispatch(entry.binding,0,frame.byteLength);
       });
@@ -41,8 +78,10 @@ export function drainSubmitQueue(
       // Renderer failure is an I/O result, not an exception into kernel Wasm.
       return -5;
     } finally {
-      queue.releaseIfEmpty(entry);
+      try { queue.complete(frame); queue.releaseIfEmpty(entry); }
+      finally { if (mux) executingMuxers.delete(mux); }
     }
     if (typeof rc === "number" && rc < 0) return rc;
   }
+  return 0;
 }

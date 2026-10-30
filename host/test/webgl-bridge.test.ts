@@ -157,6 +157,7 @@ class RecordingGl {
   getAttribLocation(_p: unknown, _name: string) { return 7; }
   getShaderParameter(_s: unknown, _p: number) { return true; }
   getShaderInfoLog(_s: unknown) { return "shader log"; }
+  getActiveUniform() { return {name:"u_color",type:0x8b52,size:1}; }
   getProgramParameter(_p: unknown, _q: number) { return 1; }
   getProgramInfoLog(_p: unknown) { return "program log"; }
   readPixels(_x: number, _y: number, _w: number, _h: number, _f: number, _t: number, dst: Uint8Array) {
@@ -175,13 +176,12 @@ function setupBinding(gl: RecordingGl, capacity = 4096) {
   return { reg, b };
 }
 
-function seedUniform(b: ReturnType<typeof setupBinding>["b"]): void {
+function seedUniform(b: ReturnType<typeof setupBinding>["b"], type=0x8b5c, location=1): void {
   const program = {} as WebGLProgram;
   b.programs.set(1, program);
   b.shadow.currentProgram = b.currentProgram = program;
   b.currentProgramId = 1;
-  b.uniformLocations.set(1, { kind: "uloc", name: "u" } as unknown as WebGLUniformLocation);
-  b.uniformLocationPrograms.set(1, 1);
+  b.uniformLocationRecords.set(location,{program:1,canonical:"u",native:{kind:"uloc",name:"u"} as unknown as WebGLUniformLocation,metadata:{executable:program,type,array:true,remaining:4},state:"published",references:0});
 }
 
 it("preserves legacy extension queries and gates new capabilities by table version", () => {
@@ -215,6 +215,48 @@ class Tlv {
     return { p: start };
   }
 }
+
+describe("ordered client error flags", () => {
+  it("merges repeated client/native flags once while retaining unrelated flags", () => {
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    const pending = [0x500,0x505,0];
+    gl.getError = () => pending.shift() ?? 0;
+    const t = new Tlv(b.cmdbufView!.buffer);
+    for (const mask of [0x03,0x01]) {
+      const h = t.op(O.OP_CLIENT_ERRORS,4); t.view.setUint32(h.p,mask,true);
+    }
+    expect(decodeAndDispatch(b,0,t.p)).toBe(0);
+    expect(gl.log).toEqual([]);
+    const results: number[] = [], out = new Uint8Array(4);
+    for (let i=0;i<4;i++) {
+      expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+      results.push(new DataView(out.buffer).getUint32(0,true));
+    }
+    expect(results).toEqual([0x500,0x501,0x505,0]);
+  });
+
+  it.each([0x08,0x10,0x80,0xffff_ffff])("rejects unsupported mask %i before any batch effect", mask => {
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    let h = t.op(O.OP_CLEAR,4); t.view.setUint32(h.p,0x4000,true);
+    h = t.op(O.OP_CLIENT_ERRORS,4); t.view.setUint32(h.p,mask,true);
+    expect(decodeAndDispatch(b,0,t.p)).toBe(GL_SUBMIT_EINVAL);
+    expect(gl.log).toEqual([]); expect(b.errors).toEqual([]);
+  });
+
+  it("keeps flags on the selected context rather than a shared object peer", () => {
+    const gl = new RecordingGl(), { reg,b } = setupBinding(gl);
+    reg.bind({pid:1,sessionId:2,cmdbufAddr:0,cmdbufLen:64});
+    const peer = reg.get(1,2)!;
+    b.contextId=1;peer.contextId=2;peer.gl=b.gl;
+    expect(reg.shareObjects(1,2,0)).toBe(true);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const h = t.op(O.OP_CLIENT_ERRORS,4); t.view.setUint32(h.p,0x67,true);
+    expect(decodeAndDispatch(b,0,t.p)).toBe(0);
+    expect(b.errors).toEqual([0x500,0x501,0x502,0x505,0x506]);
+    expect(peer.errors).toEqual([]);
+  });
+});
 
 describe("logical framebuffer bindings", () => {
   function setup() {
@@ -1093,7 +1135,7 @@ describe("cmdbuf decoder — TLV walker", () => {
   it("UniformMatrix3fv reads nine floats per matrix", () => {
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);
-    seedUniform(b);
+    seedUniform(b,0x8b5b);
     const mat: number[] = [];
     for (let i = 0; i < 18; i++) mat.push(i * 0.25);
 
@@ -1172,8 +1214,9 @@ describe("cmdbuf decoder — TLV walker", () => {
     t.view.setUint32(m.p + 4, 1, true);
     t.view.setUint32(m.p + 8, 0, true);
     for (let i = 0; i < 16; i++) t.view.setFloat32(m.p + 12 + i * 4, mat[i], true);
+    b.uniformLocationRecords.set(2,{program:1,canonical:"u2",native:{} as WebGLUniformLocation,metadata:{executable:b.currentProgram!,type:0x8b52,array:false,remaining:1},state:"published",references:0});
     const u = t.op(O.OP_UNIFORM4FV, 8 + 4 * 4);
-    t.view.setInt32(u.p, 1, true);
+    t.view.setInt32(u.p, 2, true);
     t.view.setUint32(u.p + 4, 1, true);
     for (let i = 0; i < 4; i++) t.view.setFloat32(u.p + 8 + i * 4, vec[i], true);
     const d = t.op(O.OP_DRAW_ARRAYS, 12);
@@ -1529,7 +1572,7 @@ describe("query handler", () => {
     expect(runGlQuery(b, O.QOP_GET_UNIFORM_LOC, inp, o1)).toBe(4);
     const idx1 = new DataView(o1.buffer).getInt32(0, true);
     expect(idx1).toBe(1);
-    expect(b.uniformLocations.has(1)).toBe(true);
+    expect(b.uniformLocationRecords.has(1)).toBe(true);
 
     const o2 = out(4);
     expect(runGlQuery(b, O.QOP_GET_UNIFORM_LOC, inp, o2)).toBe(4);
@@ -1537,7 +1580,7 @@ describe("query handler", () => {
     expect(idx2).toBe(idx1);
 
     // Removing the live record must never recycle its published index.
-    b.uniformLocations.delete(1);
+    b.uniformLocationRecords.delete(1);
     const o3 = out(4);
     expect(runGlQuery(b, O.QOP_GET_UNIFORM_LOC, inp, o3)).toBe(4);
     expect(new DataView(o3.buffer).getInt32(0, true)).toBe(2);

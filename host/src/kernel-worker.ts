@@ -2917,6 +2917,12 @@ export class CentralizedKernelWorker {
    */
   #kernelFatalError: Error | null = null;
   #initialized = false;
+  // Scalar scheduling state only. Actual receipt/native/endpoint custody stays
+  // in #kernel even if this generation faults; cancellation is not cleanup ACK.
+  #glQueryDrainPending = false;
+  #glQueryDrainHandle: ReturnType<typeof setImmediate> | null = null;
+  #glQueryBackendGeneration = 0;
+  readonly #glQueryDrainIngress = {};
   /**
    * Maps a pthread syscall mailbox to its kernel/libc thread id.
    *
@@ -3398,6 +3404,7 @@ export class CentralizedKernelWorker {
     this.#promiseResolve = Promise.resolve;
     this.#promiseThen = Promise.prototype.then;
     this.#kernel = new WasmPosixKernel(config, io, {
+      onGlQueryWork: () => this.#requestGlQueryDrain(),
       // Process-lifecycle callbacks are handled by the kernel worker: the
       // kernel returns EAGAIN and JS performs the host-side action.
       getProcessMemory: (pid: number): WebAssembly.Memory | undefined => {
@@ -3716,6 +3723,7 @@ export class CentralizedKernelWorker {
         this.#largeTransferScratchInUse = false;
         this.#kernelFatalError = null;
         this.#initialized = true;
+        if (this.#glQueryDrainPending) this.#requestGlQueryDrain();
         if (this.kmsCanvases.size > 0 || this.kmsStatsViews.size > 0) {
           this.startVblankPump();
         }
@@ -4907,6 +4915,16 @@ export class CentralizedKernelWorker {
             "scratch-boundary test kernel must be a WasmPosixKernel",
           );
         }
+        if (this.#glQueryDrainHandle !== null) {
+          this.#cancelRegisteredImmediate(this.#glQueryDrainHandle);
+        }
+        this.#glQueryDrainHandle = null;
+        this.#glQueryDrainPending = false;
+        const generation = ++this.#glQueryBackendGeneration;
+        const wake = () => {
+          if (generation === this.#glQueryBackendGeneration) this.#requestGlQueryDrain();
+        };
+        kernel.mergeCallbacks({ onGlQueryWork: wake });
         this.#kernel = kernel;
       },
       replaceTcpScratchForScratchBoundaryTest: (scratch): void => {
@@ -4954,6 +4972,11 @@ export class CentralizedKernelWorker {
     this.#kernelEntryGate.fail(error);
     this.#kernelFatalError = error;
     this.#initialized = false;
+    if (this.#glQueryDrainHandle !== null) {
+      this.#cancelRegisteredImmediate(this.#glQueryDrainHandle);
+      this.#glQueryDrainHandle = null;
+    }
+    this.#glQueryDrainPending = false;
     // A poisoned generation can never execute or explicitly settle a parked
     // request again. Drop every detached snapshot synchronously so neither
     // guest memory nor a future kernel generation remains retained.
@@ -5941,6 +5964,7 @@ export class CentralizedKernelWorker {
     }
 
     this.#initialized = true;
+    if (this.#glQueryDrainPending) this.#requestGlQueryDrain();
     this.setInputCanvasDims(ABSOLUTE_POINTER_EXTENT, ABSOLUTE_POINTER_EXTENT);
     // The vblank pump runs only when something needs it: an attached KMS
     // canvas or stats view (attachKmsCanvas starts it too), or a program
@@ -10571,6 +10595,37 @@ export class CentralizedKernelWorker {
       this.#schedulerReceiver,
       [timer],
     );
+  }
+
+  /** Private owned-query work only. These scalar hints neither identify a
+   * guest channel nor authorize generic retry. Schedule after the import stack
+   * on the same shared Node/browser worker and acquire a fresh entry gate. */
+  #requestGlQueryDrain(): void {
+    if (this.#kernelFatalError !== null) return;
+    this.#glQueryDrainPending = true;
+    if (!this.#initialized || this.#glQueryDrainHandle !== null) return;
+    const generation = this.#glQueryBackendGeneration;
+    try {
+      this.#glQueryDrainHandle = this.#registerImmediate(() => {
+        if (generation !== this.#glQueryBackendGeneration) return;
+        this.#glQueryDrainHandle = null;
+        this.#runScheduledListenerRoot("owned GL query turn", () => {
+          if (!this.#initialized) return;
+          this.#runOrDeferKernelEntry("drain owned GL queries", () => {
+            this.#glQueryDrainPending = false;
+            this.#kernel.drainGlQueryControls(32);
+            if (this.#kernel.glQueryWorkRunnableAfterDrain()) {
+              this.#requestGlQueryDrain();
+            }
+            return undefined;
+          }, this.#glQueryDrainIngress);
+        });
+      });
+    } catch (cause) {
+      this.#failKernelInstance(kernelEntryEffectFailure(
+        "owned GL query scheduling failed", cause,
+      ));
+    }
   }
 
   #registerImmediate(

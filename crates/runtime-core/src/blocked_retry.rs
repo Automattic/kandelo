@@ -42,6 +42,9 @@ pub enum BlockingRetryOperation {
     MsgSend,
     MsgReceive,
     Semop,
+    /// Internal retained GL request; syscall72 remains unmapped until the
+    /// complete native/forward asynchronous bridge is implemented.
+    GlQuery,
 }
 
 impl BlockingRetryOperation {
@@ -153,6 +156,9 @@ pub struct StableOfdTarget {
 /// preventing a second caller from decrementing the same kernel-owned pin.
 pub enum BlockingRetryTarget {
     Ofd(StableOfdTarget),
+    /// Frozen request and exact OFD pin. An admitted host receipt must prove
+    /// retirement before generic release may consume this target.
+    GlQuery(crate::gl_query_request::GlQueryRequest),
     OfdPair {
         input: StableOfdTarget,
         output: StableOfdTarget,
@@ -225,6 +231,7 @@ pub struct PendingSysvMessage {
 impl BlockingRetryTarget {
     fn supports(&self, operation: BlockingRetryOperation) -> bool {
         match self {
+            Self::GlQuery(_) => operation == BlockingRetryOperation::GlQuery,
             Self::Ofd(_) => {
                 operation.is_single_ofd() && operation != BlockingRetryOperation::Sendmsg
             }
@@ -365,6 +372,19 @@ impl BlockingRetryState {
             Err(error) => return Err(error),
         };
         self.token_for(tid, operation)
+    }
+
+    pub fn binding_for_token(&self, token: i64) -> Option<&BlockingRetryBinding> {
+        self.bindings.iter().find(|binding| binding.token == token)
+    }
+
+    pub fn has_external_query_receipts(&self) -> bool {
+        self.bindings.iter().any(|binding| matches!(&binding.target,
+            BlockingRetryTarget::GlQuery(request) if request.owns_external_receipt()))
+    }
+
+    pub(crate) fn bindings_mut(&mut self) -> &mut [BlockingRetryBinding] {
+        &mut self.bindings
     }
 
     pub fn binding_for_token_mut(&mut self, token: i64) -> Option<&mut BlockingRetryBinding> {
@@ -595,10 +615,15 @@ impl BlockingRetryState {
             .iter()
             .position(|binding| binding.tid == tid && binding.token == token)
             .ok_or(Errno::ENOENT)?;
+        if matches!(&self.bindings[index].target, BlockingRetryTarget::GlQuery(request)
+            if request.owns_external_receipt()) { return Err(Errno::EBUSY); }
         Ok(self.bindings.swap_remove(index))
     }
 
     pub fn take_for_tid(&mut self, tid: u32) -> Option<BlockingRetryBinding> {
+        if self.bindings.iter().any(|binding| binding.tid == tid &&
+            matches!(&binding.target, BlockingRetryTarget::GlQuery(request)
+                if request.owns_external_receipt())) { return None; }
         if self.bound_tid == Some(tid) {
             self.bound_tid = None;
         }
@@ -618,6 +643,8 @@ impl BlockingRetryState {
     }
 
     pub fn take_all(&mut self) -> Vec<BlockingRetryBinding> {
+        assert!(!self.has_external_query_receipts(),
+            "owned GL receipt must retire before consuming retry registry");
         self.bound_tid = None;
         self.dispatch_tid = None;
         self.active = None;

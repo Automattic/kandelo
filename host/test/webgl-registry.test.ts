@@ -124,7 +124,7 @@ describe("GlContextRegistry", () => {
     expect(b!.contextId).toBeNull();
     expect(b!.surfaceId).toBeNull();
     expect(b!.buffers.size).toBe(0);
-    expect(b!.uniformLocations.size).toBe(0);
+    expect(b!.uniformLocationRecords.size).toBe(0);
     expect(b!.nextUniformLoc).toBe(0);
   });
 

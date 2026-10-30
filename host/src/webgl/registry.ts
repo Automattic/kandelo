@@ -1,14 +1,17 @@
 import { CpuImageStorage } from "./cpu-image-storage.js";
 import { allocateGpuStorage, type GlGpuAllocation } from "./gpu-allocation.js";
 import { revokeForeignBo } from "./foreign-retirement.js";
+import { GlOperationStream } from "./operation-stream.js";
 import { GlFenceOwner } from "./fences.js";
 import type { GlClientArrayFields } from "./client-array.js";
 import { repairNativeState, retireNativeRepair, retireNativeObject, reserveNativeRetirement, retireNativeRetirement, type NativeRetirement, type NativeDeletion } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { captureNativeGlErrors } from "./errors.js";
 import { destroyTextureView, destroyRenderbufferView } from "./image-storage.js";
-import type { GlUniformLookup } from "./uniform-queries.js";
+import type { GlUniformUpload } from "./uniform-upload.js";
+import { replaceUniformLookup, type GlUniformLookup } from "./uniform-queries.js";
 import type { GlSurfaceCreation } from "./surface-create.js";
+import type { GlOwnedForwardClient } from "./owned-forward.js";
 /**
  * Tracks live `/dev/dri/renderD128` GLES sessions reported by the kernel.
  *
@@ -33,6 +36,8 @@ import type { GlSurfaceCreation } from "./surface-create.js";
  */
 import { defaultShadow, type GlShadowState } from "./shadow.js";
 import type { GlDrawableBinding } from "./current.js";
+import { GlSubmitExecution, type GlExecutionDrawable } from "./submit-execution.js";
+import type { GlMuxer } from "./muxer.js";
 import { replaceDefaultFramebuffer } from "./framebuffer.js";
 import { createGlObjectGroup, exposeGlSharedObjects, type GlObjectGroup, type GlSharedObjects } from "./object-group.js";
 import { finalizeProgram, releaseRetainedExecutable } from "./program-objects.js";
@@ -68,9 +73,10 @@ export type GlBindingInput = {
 /** Bytes handed to `onSubmit` are non-shared — the caller copies them
  *  out of the SAB-backed cmdbuf so the channel may transfer the buffer. */
 export type GlForwardChannel = {
+  readonly ownedQueries?: GlOwnedForwardClient;
   /** Zero acknowledges a live renderer; negative errno leaves no context. */
-  onCreateContext(sessionId?: number, shareSessionId?: number): number;
-  onDestroyContext(sessionId?: number): void;
+  onCreateContext(sessionId?: number, shareSessionId?: number, contextId?: number): number;
+  onDestroyContext(sessionId?: number, contextId?: number): void;
   onCreateSurface?(surface: GlSurfaceCreation, sessionId?: number): {rc: number; width: number; height: number};
   onDestroySurface?(surfaceId: number, sessionId?: number): void;
   onUnbind?(sessionId: number): void;
@@ -87,10 +93,14 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlC
   sessionId: number;
   displayFileId: bigint | null;
   currentDrawable: GlDrawableBinding | null;
+  /** Present only while an accepted work item selects its retained storage. */
+  executionDrawable?: GlExecutionDrawable;
   hasBeenCurrent: boolean;
   /** Undefined means no driver savepoint; null captures the zero binding.
    * This pin survives submit boundaries and is never a public object name. */
   savedClientArrayBuffer: WebGLBuffer | null | undefined;
+  uniformUpload: GlUniformUpload | null;
+  uniformUploadSerial: number;
   uniformLookup: GlUniformLookup | null;
   uniformLookupSerial: number;
   shaderUpload: GlShaderSourceUpload | null;
@@ -108,6 +118,7 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlC
   gl: WebGL2RenderingContext | null;
   /** Fence lifetime is independent of context-local state. */
   fences: GlFenceOwner;
+  operations: GlOperationStream;
   /** The canvas backing this binding's WebGL2 context. Set by
    *  `attachCanvas` before the program calls `eglCreateContext`. */
   canvas: HTMLCanvasElement | OffscreenCanvas | null;
@@ -189,6 +200,7 @@ export class GlContextExecutionLease {
     catch { return null; }
   }
   get context(): WebGL2RenderingContext | null { return this.#record?.gl ?? null; }
+  get retired(): boolean { return this.#record?.retired ?? false; }
   get binding(): GlBinding {
     if (!this.#record || this.#released) throw new Error("Context execution lease is released");
     return this.#record.binding;
@@ -302,6 +314,7 @@ export class GlContextRegistry {
 
   private newBinding(b: GlBindingInput, canvas: GlBinding["canvas"], forward: GlForwardChannel | null): GlBinding {
     const sessionId = (b.sessionId ?? 0) >>> 0;
+    const operations = new GlOperationStream();
     const binding: GlBinding = exposeSurfaceResources(exposeGlSharedObjects({
       surface: createSurfaceResources(b.pid), drawSurface: null, readSurface: null,
       objects: createGlObjectGroup(),
@@ -311,12 +324,15 @@ export class GlContextRegistry {
       currentDrawable: null,
       hasBeenCurrent: false,
       savedClientArrayBuffer: undefined,
+      uniformUpload: null,
+      uniformUploadSerial: 0,
       uniformLookup: null,
       uniformLookupSerial: 0,
       undefinedDefaultFbo: null,
       cmdbufView: null,
       gl: null,
-      fences: new GlFenceOwner(),
+      fences: new GlFenceOwner({pid:b.pid,sessionId,operations}),
+      operations,
       canvas,
       contextId: null,
       errors: [],
@@ -362,6 +378,11 @@ export class GlContextRegistry {
     } catch { return null; }
   }
 
+  retainSubmitExecution(binding: GlBinding, muxer: GlMuxer): GlSubmitExecution | null {
+    if (this.get(binding.pid, binding.sessionId) !== binding) return null;
+    return GlSubmitExecution.capture(this, binding, muxer);
+  }
+
   /** Only failed, unreferenced retirement blocks admission on its physical
    * context. Retained execution is deliberate ownership, not a repair error. */
   retryExecutionRetirements(gl?: WebGL2RenderingContext): boolean {
@@ -377,6 +398,7 @@ export class GlContextRegistry {
     for (const b of this.list()) {
       if (b.pid !== pid || (sessionId !== undefined && b.sessionId !== sessionId)) continue;
       b.cmdbufView = null;
+      b.operations.close();
       const forward = b.forward;
       try {
         this.retireContextBinding(b,false);
@@ -413,6 +435,7 @@ export class GlContextRegistry {
       next.forward = b.forward;
       if (b.surfaceId !== null) next.surface = b.surface;
       next.fences = b.fences;
+      next.operations = b.operations;
       next.objects.nextUniformLoc = b.objects.nextUniformLoc;
       next.objects.nextForeignTexId = b.objects.nextForeignTexId;
       next.objects.nextImageSource = b.objects.nextImageSource;
@@ -459,10 +482,10 @@ export class GlContextRegistry {
     const target = this.get(pid,targetSession), source = this.get(pid,sourceSession);
     if (!target || !source || target === source || !target.gl || target.gl !== source.gl
         || target.contextId === null || source.contextId === null || target.hasBeenCurrent || target.savedClientArrayBuffer !== undefined
-        || target.uniformLookup !== null || target.objects.members.size !== 1) return false;
+        || target.uniformUpload !== null || target.uniformLookup !== null || target.objects.members.size !== 1) return false;
     const names = target.objects;
     if (names.bufferRetirements.size || names.imageRetirements.size || names.buffers.size || names.bufferStores.size || names.textures.size || names.shaders.size || names.programs.size
-        || names.rbos.size || names.imageSources.size || names.textureViews.size || names.renderbufferViews.size || names.uniformLocationNames.size || names.uniformLocations.size || names.foreignTextures.size
+        || names.rbos.size || names.programQueryPins.size || names.imageSources.size || names.textureViews.size || names.renderbufferViews.size || names.uniformLocationRecords.size || names.foreignTextures.size
         || names.retiredTextures.size || names.retiredBuffers.size || names.retiredRenderbuffers.size
         || names.shaderDeletePending.size || names.programDeletePending.size) return false;
     // Reserve membership before removing the old owner; allocation failure
@@ -667,7 +690,9 @@ export class GlContextRegistry {
 function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>, cleanup?: NativeRetirement): void {
   const gl = b.gl;
   if (gl) retireNativeRepair(gl, b.shadow);
-  b.uniformLookup = null;
+  b.uniformUpload = null;
+  b.uniformUploadSerial = 0;
+  replaceUniformLookup(b,null);
   b.uniformLookupSerial = 0;
   b.shaderUpload = null;
   b.shaderUploadSerial = 0;
@@ -711,9 +736,9 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
       if (cleanup && !accepted) throw new Error("Renderbuffer retirement remains pending");
       if (cleanup) for (const [name,value] of b.rbos) if (value === object) b.rbos.delete(name);
     }
-    for (const map of [b.buffers,b.textures,b.shaders,b.programs,b.rbos,b.uniformLocations,
-      b.uniformLocationPrograms,b.uniformLocationNames,b.programShaders,b.programAttributeBindings,b.foreignTextures,b.shaderSources]) map.clear();
+    for (const map of [b.buffers,b.textures,b.shaders,b.programs,b.rbos,b.uniformLocationRecords,b.programShaders,b.programAttributeBindings,b.foreignTextures,b.shaderSources]) map.clear();
     b.imageSources.clear();
+    b.programQueryPins.clear();
     b.shaderDeletePending.clear(); b.programDeletePending.clear();
   } else {
     if (installedName) finalizeProgram(b, installedName);

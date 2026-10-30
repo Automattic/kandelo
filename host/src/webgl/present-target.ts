@@ -21,7 +21,7 @@
 import type { GlBinding } from "./registry.js";
 import { applyNativeChanges, nativeInverse, repairNativeState, reserveNativeRetirement, retireNativeRetirement } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
-import { prepareSurfaceTargetReplacement, type GlPresentTarget, type GlSurfaceResources } from "./surface-resources.js";
+import { prepareSurfaceTargetReplacement, surfaceExecutionUsesFramebuffer, type GlPresentTarget, type GlSurfaceResources } from "./surface-resources.js";
 
 const GL_READ_FRAMEBUFFER = 0x8ca8;
 const GL_DRAW_FRAMEBUFFER = 0x8ca9;
@@ -91,9 +91,9 @@ export function resizeSurfaceTarget(b: GlBinding, w: number, h: number): boolean
         return checkedGlCall(owner,()=>{status = gl.checkFramebufferStatus(GL_DRAW_FRAMEBUFFER);}) && status === 0x8cd5;
       }},
       {restore:nativeInverse(owner,[["bindFramebuffer",GL_READ_FRAMEBUFFER,prevRead]]),
-        apply:()=>checkedGlCall(owner,()=>gl.bindFramebuffer(GL_READ_FRAMEBUFFER,existing && prevRead === existing.fbo ? target.fbo : prevRead))},
+        apply:()=>checkedGlCall(owner,()=>gl.bindFramebuffer(GL_READ_FRAMEBUFFER,existing && prevRead === existing.fbo && !surfaceExecutionUsesFramebuffer(b.surface,b,prevRead,true) ? target.fbo : prevRead))},
       {restore:nativeInverse(owner,[["bindFramebuffer",GL_DRAW_FRAMEBUFFER,prevDraw]]),
-        apply:()=>checkedGlCall(owner,()=>gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER,existing && prevDraw === existing.fbo ? target.fbo : prevDraw))},
+        apply:()=>checkedGlCall(owner,()=>gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER,existing && prevDraw === existing.fbo && !surfaceExecutionUsesFramebuffer(b.surface,b,prevDraw,false) ? target.fbo : prevDraw))},
     ],{shared:true,finalizer:utility});
     if (!accepted) return false;
     b.surface.gl = gl; commit(); published = true;

@@ -1,7 +1,25 @@
+import { GlUniformLookupBudget } from "./uniform-lookup-bytes.js";
 import type { NativeRetirement } from "./native-recovery.js";
 import type { GlImageSource, GlTextureView, GlRenderbufferView } from "./image-storage.js";
 import type { GlBufferStore } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
+
+/** Immutable reflection for one accepted native executable. The public numeric
+ * program can name a later failed/successful link while an older one is current. */
+export type GlUniformMetadata = Readonly<{ executable: WebGLProgram; type: number; array: boolean; remaining: number }>;
+
+/** One authoritative location identity. Reserved entries are never usable by
+ * a setter or a value query; publication changes this existing record only. */
+export type GlUniformLocationRecord = {
+  program: number; canonical: string; native: WebGLUniformLocation;
+  metadata: GlUniformMetadata;
+  state: "reserved" | "published" | "invalid";
+  references: number;
+};
+export function publishedUniformLocation(owner: Pick<GlSharedObjects,"uniformLocationRecords">, index: number): GlUniformLocationRecord | undefined {
+  const record = owner.uniformLocationRecords.get(index);
+  return record?.state === "published" ? record : undefined;
+}
 
 /** Shareable object names and metadata. Bindings, FBOs, VAOs and errors
  * belong to individual contexts even when these objects are shared. */
@@ -26,18 +44,18 @@ export type GlSharedObjects = {
   /** Original submitted bytes; native decoding must not change source queries. */
   shaderSources: Map<WebGLShader, Uint8Array>;
   programs: Map<number, WebGLProgram>;
+  /** Query leases pin one exact native link generation. */
+  programQueryPins: Map<WebGLProgram, number>;
+  programLinkGenerations: WeakMap<WebGLProgram, { value: number }>;
+  uniformLookupBudget: GlUniformLookupBudget;
   shaderDeletePending: Set<number>;
   programDeletePending: Set<number>;
   programShaders: Map<number, Set<number>>;
   programAttributeBindings: Map<number, Map<string, number>>;
   rbos: Map<number, WebGLRenderbuffer>;
-  /** Number-keyed (NOT string-keyed) so the cmdbuf int round-trips
-   *  cleanly. Indices are assigned by `++nextUniformLoc` and never
-   *  reused so insert/delete cycles cannot collide. */
-  uniformLocations: Map<number, WebGLUniformLocation>;
-  uniformLocationPrograms: Map<number, number>;
-  uniformLocationNames: Map<number, string>;
-  /** Monotonic counter for `uniformLocations`; never decremented. */
+  /** Positive public IDs are never reused after publication. */
+  uniformLocationRecords: Map<number, GlUniformLocationRecord>;
+  /** Highest index ever published; reservations may lie above it. */
   nextUniformLoc: number;
 
   /** Foreign textures bound from DRI bos (`WPK_BIND_FOREIGN_TEXTURE`),
@@ -66,10 +84,11 @@ export type GlObjectGroup = GlSharedObjects & { members: Set<GlBinding> };
 export function createGlObjectGroup(): GlObjectGroup {
   return {
     bufferRetirements:new Map(),imageRetirements:new Map(),imageSources:new Map(),nextImageSource:1,imageRevisions:new Map(),textureViews:new Map(),textureViewOwners:new Map(),renderbufferViews:new Map(),renderbufferViewOwners:new Map(),
-    members: new Set(), buffers: new Map(), bufferStores: new Map(), bufferViewOwners: new Map(), textures: new Map(), shaders: new Map(), programs: new Map(),
+    members: new Set(), buffers: new Map(), bufferStores: new Map(), bufferViewOwners: new Map(), textures: new Map(), shaders: new Map(), programs: new Map(), programQueryPins: new Map(),
+    programLinkGenerations: new WeakMap(), uniformLookupBudget: new GlUniformLookupBudget(),
     rbos: new Map(), shaderSources: new Map(), shaderDeletePending: new Set(), programDeletePending: new Set(),
     programShaders: new Map(), programAttributeBindings: new Map(),
-    uniformLocations: new Map(), uniformLocationPrograms: new Map(), uniformLocationNames: new Map(), nextUniformLoc: 0,
+    uniformLocationRecords: new Map(), nextUniformLoc: 0,
     foreignTextures: new Map(), nextForeignTexId: 0x4000_0000, foreignTextureBos: new Map(),
     retiredTextures: new Map(), retiredBuffers: new Map(), retiredRenderbuffers: new Map(), externallyOwnedTextures: new WeakSet(),
   };

@@ -118,19 +118,19 @@ reproduction and correct observable failure; none is inferred from a stub.
 | ID | Required behavior / source | Current implementation and known failure | Owner / dependencies | Executable validation | Status / boundary |
 |---|---|---|---|---|---|
 | G01 | GLES2 object name creation, binding, deletion; ES2 §§2,6 | Reference-counted C name owner reserves buffer/texture/renderbuffer names, including implicit binds; shared shader/program allocation is serialized. Checked buffer/texture/RBO binding and buffer/texture/RBO/FBO deletion preserve C ownership on definite rejection. Public C groups join the native owner; dispatch serialization spans standard name lookup/mutation/publication. Raw WPK publication shares that scope, skips native names and retries C reservations. GPU raw views retain independent object identities; BO revocation retries definite failures. Known unpublished C candidates retain one group cleanup slot and gate name/object queries until checked retirement; general indeterminate reconciliation and full query/error coverage remain open | GLES encoder, registry, query | CTS GLES2 functional state/query/object groups; host object tests | partial; no demonstrated boundary |
-| G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Multiple public contexts have focused native/source-browser coverage; full rollback, hints and CTS remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
+| G02 | Context-local full state; ES2 state tables | Client state is context-owned; host groups separate shared names from local state/containers. Deleted image/buffer names retain binding/container references and program lifetime spans current owners. C attribute/index state belongs to each VAO. Multiple public contexts have focused native/source-browser coverage. Mipmap and OES derivative hints retain independent context values, typed query conversions and invalid-enum behavior; normal guest validation is recorded below. Full rollback and CTS remain open | EGL, encoder, object groups, shadow, muxer, decoder | Alternating contexts/processes; real shared-object/deletion/viewport rendering; native thread-transfer/isolation | partial |
 | G03 | Buffer allocation/update, indexed and client-array draws; ES2 §2 | Native buffer realization now occurs on first bind; delayed reservations cannot reject or replace a peer object. Per-VAO mirrors, retained deleted buffers and coherent native vertex/index views. Fixed-point/wide-stride host views and bounded packed client staging are implemented. Maximum byte/short indices use native promotion. Bound index buffers plus client attributes use a bounded presence query; core buffer/vertex queries preserve logical state. Client staging now retains/restores actual ARRAY identity across peer deletion/reuse (operation table 6). Checked buffer binds preserve C pointer interpretation on definite rejection. Buffer deletion also waits for native acceptance; standard name-based buffer transactions serialize across peers; native binding/copy-view restoration retains failed inverses and candidate cleanup. Vertex pointer metadata/native inverses and query/muxer-driven client-array completion now have focused failure evidence. Full size/limit/negative/guest coverage remains open | GLES encoder, bridge | CTS buffer/vertex/indexed tests; invalid lengths and offsets | partial |
 | G04 | Shader source/compile/link, reflection, deletion; ES2 §2 | Deleted current objects retain references; shader/program names share a namespace; latest link state is separate from the current executable. Core attribute/source/attachment reflection, acknowledged large-source uploads and validation entrypoints are implemented; complete executable/attribute/uniform validation still needs work | encoder, query, registry | CTS shader API and reflection; delete attached/current objects; rendered alternating owners and relinking | partial |
 | G05 | Uniform scalar/vector/matrix and arrays; ES2 §2 | Checked renderer replies now supply complete element widths/values without C reflection caches and preserve failed-query outputs. Shared-peer/source-retirement/relink cases have focused evidence. Locations now remain stable across repeated/array-alias lookups, and checked chunked C lookup/reflection removes fixed buffers. Shader-name translation beyond WebGL limits and complete setter/type/array validation remain open | encoder, query | CTS uniform API/state queries; hostile reply sizes | partial |
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | Texture reservations now remain separate from native realization, including delayed shared declarations. C bindings/attachments retain typed object records, acknowledged binds publish references/dimensionality after renderer acceptance, logical image views separate per-object sampling state from canonical GPU pixels, and texture-unit storage follows the reported limit. WebGL2 normalization, core parameter queries and context-owned default texture objects are implemented in host source; complete target/state/error and guest CTS audit remain open | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
 | G07 | Raster/depth/stencil/blend/clear/readback; ES2 §§3,4 | Main provides offscreen color/depth/stencil; no broad CTS evidence | bridge, query, present-target | CTS functional render families; real pixels all three engines | partial |
 | G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | Default/user identities and read/draw state remain distinct; C and host attachment records retain deleted texture/RBO identities, including unbound containers; host records also retain native storage and separate packed depth/stencil points. Core attachment/renderbuffer queries, acknowledged C attachment/deletion and texture/RBO allocation are implemented. Metadata capacity precedes native effects; definite failures preserve ownership. Failed deletion/selector inverses are retained per physical context and block dependent work until restored. Image utility/retarget/orphan rollback now retains native inverse plans across peer ownership and pending candidate/retired-view cleanup. Owned surface storage now reserves candidate/retirement receipts and selector inverses before allocation and retains failed cleanup after creator retirement. Other rollback sites, full negative coverage and CTS remain open | encoder, registry, image references, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
-| G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Definite C buffer/texture/RBO bind rejection preserves prior references. Native buffer/image deletion and FBO selector/container rollback now retain failed inverses, block dependent queries/batches and repair before muxer switching. Buffer binding/copy-view, vertex pointer and image utility/retarget recovery retain failed inverses and cleanup receipts; private ARRAY completion reconciles before query/muxer use. Raw upload and BO revocation retain failed utility/attachment/unit inverses through owner retirement. Indeterminate transport and other recovery sites remain open. Full C/native error validation remains open; some guest paths silently return and missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
+| G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Definite C buffer/texture/RBO bind rejection preserves prior references. Native buffer/image deletion and FBO selector/container rollback now retain failed inverses, block dependent queries/batches and repair before muxer switching. Buffer binding/copy-view, vertex pointer and image utility/retarget recovery retain failed inverses and cleanup receipts; private ARRAY completion reconciles before query/muxer use. Raw upload and BO revocation retain failed utility/attachment/unit inverses through owner retirement. Indeterminate transport and other recovery sites remain open. C hint targets/modes now reject invalid enums without mutation and preserve pending errors. C argument flags now have a bounded ordered transfer into the same context error owner. Accepted error-result publication and combined negative validation remain open; some guest paths silently return and missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
 | G10 | Every core function resolves; ES2 API | All 142 GLES2 core symbols are defined and resolved; native/private-Wasm audit passes. Full semantic and guest conformance remain pending | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | partial |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | Two RGBA8 configs describe ABGR8888/ARGB8888 windows; one shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
-| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. ABI 56 separates revocable display-generation roots from object sessions. C generation records retain old current descriptors, mappings, encoders and imported images while a new generation initializes. Host surface records retain native draw/read targets across context destruction and owner retirement. Fresh surface IDs and acknowledged dimensions belong to the same unpublished epoch. Kernel/host cross-session draw/read selection validates process, live generation and TID, with canonical surface storage retained after owner retirement. Creation/bind failure preserves prior state. Public independent context/surface records route separate draw/read selectors. Kernel/renderer construction joins live same-generation object groups; public C construction joins the same retained owner and native group; the full error/lifecycle audit remains open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
+| E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. ABI 56 separates revocable display-generation roots from object sessions. C generation records retain old current descriptors, mappings, encoders and imported images while a new generation initializes. Host surface records retain native draw/read targets across context destruction and owner retirement. Fresh surface IDs and acknowledged dimensions belong to the same unpublished epoch. Kernel/host cross-session draw/read selection validates process, live generation and TID, with canonical surface storage retained after owner retirement. Creation/bind failure preserves prior state. Public independent context/surface records route separate draw/read selectors. Kernel/renderer construction joins live same-generation object groups; public C construction joins the same retained owner and native group; normal upstream current/context-query cases pass both configs on windows and pbuffers across three engines; the full error/lifecycle audit remains open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
 | E03 | Pbuffers, window/pixmap platform entry points and queries; EGL §3.5 | Public window queries expose accepted dimensions and fixed attributes. Operation table 16 adds immutable renderer limits before context creation, cached per display generation without changing current ownership. Pbuffer creation, zero logical dimensions, stored query attributes and no-post swaps are implemented in source; native/forwarded storage setup and retirement retain failed cleanup. Largest requests honor limits and search definite allocation failures. Legacy/core/EXT GBM windows match their config native visual; CPU fronts pack the accepted byte order. Live format/usage validation, surface setters and configuration-specific texture/pixmap/client-buffer failures are implemented in source. Requested render-buffer/colorspace attributes are retained. Broader lifecycle/negative coverage and normal guest CTS remain open | EGL, host drawable/GLIO metadata | CTS create/query surface and resize | partial |
-| E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context / OES_surfaceless_context | Explicit kernel/host bind, initial zero viewport/scissor, undefined framebuffer-zero status and native operation errors implemented; user FBOs remain usable. Real source-browser checks pass; guest CTS/current artifacts remain pending | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | partial |
+| E04 | Surfaceless make-current and framebuffer errors; KHR_surfaceless_context / OES_surfaceless_context | Explicit kernel/host bind, initial zero viewport/scissor, undefined framebuffer-zero status and native operation errors implemented; user FBOs remain usable. Real source-browser checks and normal dual-config guest surfaceless CTS pass; full zero-framebuffer negative/lifecycle guest coverage remains pending | EGL, host query/decoder | CTS surfaceless_context plus zero-FBO operations | partial |
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/FBO holds retain GEM backing; separate private source handles and logical native views preserve object state and storage identity. Confirmed C holds belong to retained shared object records with revision-ordered publication; uncertain import/attachment candidates belong to the shared group. Raw GPU views use the same independent storage model; BO retirement tracks every retained raw generation and retries native cleanup. CPU layout mirrors now retain mapped/native siblings with changed-byte publication and retryable readback/writeback; four-format normal guest evidence is recorded below. Forwarded BO registration and complete lifecycle validation remain open | EGL, GLES object/storage model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | partial |
 | E06 | Respecification orphans sibling without altering others; OES_EGL_image | GPU view replacement preserves sibling parameters and canonical pixels, retargets logical FBOs and handles definite rejection before C backing release. C retains backing by object identity and rejects stale association completions. Raw GPU respecification and refresh preserve private canonical storage and independent parameters. CPU native mirrors retain distinct layout identities and backing storage; full CPU respecification, multi-failure recovery and guest CTS remain open | GLES storage model, host object/attachment tracking | Redefine imported texture, sample both siblings, retained FBO | partial |
 | E07 | dma-buf validation, multiple import and format/modifier enumeration; EXT import | Core EGLAttrib and KHR EGLint image creation share retained dma-buf storage and destruction. Parsing rejects wide aliases, missing mandatory fields and malformed modifier pairs before import, validates preservation and hint values, and ignores valid YUV hints for supported RGB formats. The explicit CPU import request validates dimensions, format, pitch, offset and backing bounds before publication; normal four-format mapped/native checks pass. Full negative/rollback coverage remains open | EGL, PRIME, GBM | CPU/GPU imports, bad fd/stride/offset/modifier; repeated import lifetime | open |
@@ -8026,6 +8026,106 @@ Primary `.context/current-graphics-*` logs and
 This closes the named missing-package run, not broad upstream CTS or
 validation of the later two-config implementation.
 
+
+### Pinned upstream current/context queries on two configs, 2026-10-29
+
+The CTS subset now includes unchanged complete `GetCurrentContextCase`,
+`GetCurrentSurfaceCase`, `GetCurrentDisplayCase` and `QueryContextCase`
+classes plus their two API/version helper functions from
+`modules/egl/teglQueryContextTests.cpp` at the same upstream revision
+`a119e62de3bb38dae67f05abee8acd011e0c729c`. Original license notices are
+retained. Metadata format v2 records the complete upstream file hash,
+imported snippet hash and every helper/class hash. The source verifier
+compares all definitions byte-for-byte with the pinned checkout; the
+original surfaceless method remains unchanged.
+
+The standalone adapter replaces the dEQP framework setup/log wrapper,
+constructing actual SDK GBM windows and pbuffers matching each advertised
+GLES2 config. All four classes run with a current guest context, their
+failure flags aggregate without short-circuiting, and teardown is checked.
+Version queries use the actual EGL version string. The adapter's call-trace
+toggle is presentation-only; upstream class messages and failure conditions
+are intact. Browser accounting now requires both enabled surface kinds,
+all reported contexts and all four class invocations per context. Failed
+exit/output is recorded before success is asserted.
+
+`graphics-upstream-query-cts-1029-092443-a283` passed in 3m37s. Normal
+SourceOnly provisioning rebuilt the wasm32 CTS package with current own
+SDK graphics libraries, libdrm and libcxx. All three actual BrowserKernel
+cases passed, zero skips. Each of Chromium, Firefox and WebKit reports:
+
+- `surfaceless_context configs=2`;
+- `query_context configs=2 windows=2 pbuffers=2 contexts=4 checks=16`.
+
+The 16 checks count upstream query-class invocations, not individual
+assertions. The kernel SHA-256 is
+`3b255f7f652d520fae5a24a3f8ff377a79ccb151b352204c9b052ecfc5f7de91`;
+CTS program SHA-256 is
+`487777573f8de19144c332179342776aee7171799814e5ddd39d81bcda9aa86e`.
+The file-owner checkout's `.context/cts-query-{provenance,package,browser}.log`,
+`cts-query-browser-results/` and `graphics-cts-guest-*.json` retain the exact
+outputs, engine versions, zero exit codes and empty diagnostic lists.
+
+This increment changes only the CTS harness, provenance checks, browser
+runner and documentation. It does not change the runtime or ABI. The
+combined product/memory job remains on runtime source `21f3d451bb`, and
+pinned POSIX suites remain on `d081e6d453`; neither pending run is represented
+as a pass. Complete upstream CTS, full EGL errors/lifecycle, server waits,
+additional image sources and the other baseline inventory stay open.
+
+
+### Context-owned GLES hints and observable error state, 2026-10-29
+
+The former C `glHint` discarded all calls. Advisory rendering quality does
+not remove the required initial state, selected value, query conversions
+or invalid-enum errors. Mipmap generation and the advertised OES derivative
+hint now live in each retained context encoder, starting at DONT_CARE.
+Shared object ownership does not share these values. All three core query
+types expose exactly one converted element. Invalid targets/modes retain
+the old value and participate in the existing first-client-error model.
+No renderer command or new wire operation is required for advisory quality.
+
+Both new native cases failed before implementation in the file-owner
+checkout's `.context/hint-before.log`: one missed the initial value, and
+one missed INVALID_ENUM. All 214 native C graphics cases then passed in
+`hint-native-after.log`, including sentinels, independent shared peers,
+context switching, current destruction, release/restoration, invalid
+values and pending errors. These are authored regressions, not imported
+CTS classes. The pinned upstream `HintTestCase` remains separate porting
+work; it was inspected as an additional contract reference.
+
+`graphics-gles-hints-final-1029-095250-600b` rebuilt both complete SDK
+sets, the matching normal kernel/side modules and host. The ABI checker
+passed; the evidence registry agrees with 629 collected files. The full
+graphics source gate passed 717/717 across 32 files. Normal dual-width
+Node validation passed 4/4 (two hints and two ring ownership cases), with
+zero skips or unloaded files. Browser validation passed 12/12 in 1.6m:
+six hint guests and six rendered buffer-ring regressions, covering both
+widths in Chromium, Firefox and WebKit. Hint guests returned zero with
+empty stderr, diagnostics and page errors. The full job succeeded in
+14m43s. These are focused semantic and ring pixel checks, not evidence
+that hint quality changes rendering.
+
+The kernel SHA-256 is
+`ca0c6933cb6407535b16ae41667692bc94af777cae53ddf8f50a556f1619c857`.
+Hint program SHA-256 values are
+`dfb768af04d661e50d2f01193600e69553a97e88b0c65ce97826584330ac3938`
+(wasm32) and
+`d4b76442faefa3864f6f5dd1e6287ad057f4dad49c41327508b6cebde01dd5be`
+(wasm64). Exact image identities, engine versions and outputs are retained
+in `.context/gles-hints-guests/`; full logs are `.context/hints-*` and
+`hints-browser-results/` in the file-owner checkout.
+
+This increment retains program ABI 56 / kernel-host 3 / GL table 17 /
+fork record 21. The encoder layout is private C state. The primary combined
+application/memory build remains on `21f3d451bb`; its results will predate
+this hint increment. Current POSIX suites remain on `d081e6d453`, where
+libc-test has completed with 306 passes and zero unexpected failures;
+POSIX and Sortix remain pending. Full combined final validation and the
+remaining G02/G09 state/error and broader baseline inventory stay open.
+Performance was not measured.
+
+
 ### Cage/sway landing and completed mapping conformance, 2026-10-29
 
 `graphics-fixed-device-current-conformanc-1029-084119-0165` completed on
@@ -8068,6 +8168,48 @@ browser checks also remain pending. The inherited Firefox GPU-to-2D
 capture failure remains open with its unchanged assertions, original
 deadlines and preserved evidence. No boundary, waiver, performance claim
 or full-baseline completion is inferred from this landing split.
+
+
+### Separate landing and follow-up delivery, 2026-10-29
+
+The cage/sway landing is now bounded by `cage-sway-landing.md`; the full
+inventory remains the objective of this follow-up. The landing candidate
+`e58d19f98a` retains runtime `21f3d451bb` and adds scope documentation and
+honest Python/Clang tool declarations for Sway's existing regression
+helper. The normal corrected Sway build passed in
+`cage-sway-declared-tools-1029-114926-36f1` (12m05s). Manifest parsing,
+program-index freshness and tool probes passed. The broader registry
+host-tool consistency check fails with byte-identical output using the
+original and corrected Sway manifests; its cross-package disagreements
+remain outside that correction.
+
+The earlier primary product run and first candidate run were deliberately
+stopped before application acceptance (exit 143), after compilation while
+the debug bootstrap tool was checking artifact closure/publication. They
+are not passing setup or application results. Their logs remain intact;
+the first candidate's script/logs are archived under the fork-owner
+checkout's `.context/cage-sway-final-stopped-debug-bootstrap/`. The same
+normal bootstrap command is now run with the repository's release-built
+xtask, preserving graph selection, artifact validation and source cache.
+`cage-sway-final-release-bootstrap-1029-120817-225e` stopped at missing
+Rust SDK submodule provisioning; the normally provisioned successor is
+recorded below. The complete candidate includes Freeciv, combined consumers,
+actual cage/sway gallery interactions and full browser-memory. Results
+remain pending. The hint/query-CTS work is preserved unchanged in this follow-up.
+
+The independent Firefox diagnostic also now compares canvas bitmap
+serialization with screenshot capture, records bounded readback timing,
+and checks positive and deliberate wrong-color controls. Same-worker
+continuous GPU readback stalls both observations. A private fixed
+three-run separate-owner control passes unchanged screenshot/pixel
+checks while keeping real GPU readback and both visible 2D planes.
+Source/profile inspection supports a main/worker synchronization-cycle
+hypothesis; exact private native frames remain unsymbolicated. No product
+mitigation, complete attribution or broad compatibility boundary is
+claimed. The failed inherited GPU-to-2D product case remains recorded;
+its bounded presentation-worker mitigation is follow-up work unless
+actual compositor or memory acceptance establishes a landing blocker.
+
 
 ### Landing build provisioning and follow-up ownership, 2026-10-29
 
@@ -8131,6 +8273,162 @@ links and the local analysis are retained in primary
 does not establish a product repair or causation for every Kandelo
 capture failure, and does not close any baseline inventory row.
 
+### GLES string-query invalid enums, 2026-10-29
+
+The follow-up implements one ordinary G09 error gap. With a current
+GLES2 context, `glGetString` previously returned null for an unsupported
+name without setting a GL error. The
+[Khronos ES2 reference](https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glGetString.xml)
+requires `GL_INVALID_ENUM` for that call and a null result. The pinned
+upstream CTS negative-state `get_string` case independently exercises the
+same requirement. The encoder now raises its context-local error before
+returning null, without sending an invalid query to the host. Valid
+version/vendor/renderer/extension strings and their context-owned caches
+keep their existing behavior; no wire operation or ABI changes.
+
+The authored `encoder-string-errors` native regression failed against
+`f7b42c7123` at its first missing-error assertion. After implementation,
+all 215 native C cases passed through `scripts/dev-shell.sh` with the
+harness's undefined-behavior sanitizer. The new case covers zero,
+unrelated, ES3 state-query and maximum-width enum values, unchanged cached
+vendor strings, successful queries preserving an earlier error, and
+independent error/cache state across shared-object contexts. Both normal
+cleanup and zero retained native allocations are checked. Evidence is the
+file-owner checkout's `.context/gles-string-errors-{before,after}.log`.
+The source also passed wasm32 and wasm64 syntax checks with the declared
+LLVM compiler and existing normal sysroot headers; that compile-only log
+is `.context/gles-string-errors-syntax.log`.
+This is focused native-library evidence, not a newly run upstream CTS
+case or normal guest/browser validation. The complete G09 audit and
+combined product/conformance gates remain open under the follow-up.
+
+### GLES object generation count validation, 2026-10-29
+
+The follow-up closes another focused G09 gap: `glGenFramebuffers` used to
+silently ignore negative counts. The
+[Khronos ES2 contract](https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glGenFramebuffers.xml)
+requires `GL_INVALID_VALUE`; the pinned upstream negative-buffer CTS
+`gen_framebuffers` case checks this with a null output pointer. The
+encoder now rejects the count before output writes or name publication,
+including when the output pointer is null. Zero remains a no-op, matching
+the other three core GLES2 object generators. No host, wire or ABI change.
+
+The authored `encoder-generation-counts` regression failed on
+`72d6ba7982` at its first missing-error assertion. It covers `-1` and
+`INT_MIN` counts with null and non-null outputs across framebuffer,
+buffer, texture and renderbuffer generators; zero counts; unchanged
+output sentinels, allocation counts and submitted command batches; and
+subsequent successful generation of distinct nonzero names. Full context
+cleanup leaves no native allocations.
+
+All 216 native C cases then passed under the declared dev shell with
+undefined-behavior sanitization, and both Wasm pointer-width syntax checks
+passed with the declared LLVM compiler and existing sysroot headers.
+Evidence is the file-owner checkout's
+`.context/gles-generation-counts-{before,after,syntax}.log`. This does not
+claim upstream CTS execution, fresh linked products, browser behavior or
+complete object allocation/name/error conformance. Those broader gates
+and inventory rows remain open under follow-up #1594.
+
+### Uniform setter negative-location family, 2026-10-29
+
+The follow-up closes a shared G05/G09 error gap across all 19 GLES2
+uniform setters: scalar float/integer, vector float/integer arrays and
+2x2/3x3/4x4 matrices. The old C guards ignored every negative location.
+Only `-1` is the ignored sentinel; a location below `-1` cannot designate
+a uniform and requires `GL_INVALID_OPERATION` under the
+[Khronos uniform contract](https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glUniform.xml).
+Five pinned CTS negative-location families exercise that distinction.
+All setter paths now share the same C guard, which rejects those invalid
+locations before command publication and preserves `-1` as an ignored
+call. Nonnegative locations retain the existing command and host
+validation paths. No wire layout, host operation or ABI changed.
+
+The authored `encoder-uniform-location-errors` case failed on
+`465fcfdc3f` at the first missing-error assertion. After implementation,
+all 217 native C cases passed with undefined-behavior sanitization under
+the declared dev shell. The new case tests each of the 19 signatures at
+`-2`, `INT_MIN` and `-1`, preserves an earlier error through ignored
+calls, and checks no submitted uniform records or batches for those
+calls. Each signature then emits one unchanged nonnegative-location
+record. Context cleanup leaves no native allocations. The existing
+normal sysroot headers also passed wasm32 and wasm64 syntax checks with
+the declared LLVM compiler. Evidence is the file-owner checkout's
+`.context/gles-uniform-locations-{before,after,syntax}.log`.
+
+These are focused native-encoder and compile-only checks, not actual
+uniform rendering, upstream CTS execution, rebuilt normal guests or
+browser validation. Positive-location ownership/type/count validation,
+matrix argument/size behavior, complete G05/G09 semantics and final
+combined conformance remain ordinary follow-up work.
+
+### Shared uniform-matrix validation and bounded encoding, 2026-10-29
+
+All three GLES2 matrix setters now use the same encoder. The separate
+`glUniformMatrix4fv` path silently ignored negative counts, emitted
+zero-count records, and multiplied the count before checking its size.
+A count of `0x04000000` wrapped the byte product and read an inaccessible
+source instead of rejecting the command. The shared path validates
+negative counts and the ES2 requirement that transpose be `GL_FALSE`,
+including before an inactive `-1` location can suppress the call. Valid
+ignored locations and zero counts do not read data or publish a record.
+The shared size check bounds count before multiplication and source reads.
+No wire layout, ABI or host operation changed.
+
+Three authored native cases failed against `104f8595da`: missing count
+and transpose errors failed assertions, and the wraparound guard case
+produced an actual protected-page READ/BUS in `glUniformMatrix4fv`, with
+its undefined-behavior sanitizer stack retained. After implementation,
+all 220 native C cases passed under the declared dev shell and both Wasm
+pointer-width syntax checks passed with the declared LLVM compiler.
+The three matrix dimensions cover negative and zero counts, true and
+other nonzero transpose values, ignored-location argument validation,
+`INT_MAX`, both product-wrap counts, and the first count above the TLV
+capacity. Rejected/ignored calls emit no uniform record or batch. Valid
+one-matrix calls and each dimension's largest fitting payload preserve
+location, count, transpose and exact record length; their source ends at
+a protected page so an extra read would fail. Cleanup retains no native
+allocations. Evidence is the file-owner checkout's
+`.context/gles-uniform-matrices-{before,after,syntax}.log`.
+
+The current single-record command capacity still rejects oversized
+positive matrix arrays with `GL_OUT_OF_MEMORY`. This is an ordinary
+transport/compatibility gap, not a hard platform boundary or complete
+G05/G09 conformance. Larger-array transport, positive uniform ownership,
+types and array semantics, actual rendering, fresh linked products,
+browser validation and upstream CTS execution remain follow-up work.
+
+### Linked validation-family guest coverage authored, 2026-10-29
+
+The normal dual-width `gles-hints` SDK fixture now also asserts the four
+recent C validation increments: string-query enums/cache preservation,
+all four object-generation count paths, all 19 uniform setter negative
+locations, and count/transpose/overflow checks for all three matrix sizes.
+Both Node and browser tests require an explicit success marker for each
+family, in addition to the existing hint/lifecycle assertions. Invalid
+matrix sources use a target-width out-of-bounds pointer: rejected or
+ignored calls must not read it. Object generators retain their output
+sentinels on rejection and support subsequent valid generation/deletion.
+
+The Node harness retains its existing allocation/ownership GL double and
+claims C/error-path coverage only. Browser compilation additionally
+requires actual texture-FBO clear/scissor/readback colors and a separate
+pixel-success marker; no mock pixels are introduced. The existing GBM
+rendered-ring cases remain unchanged and retain their independent actual
+browser pixel assertions.
+
+This checkpoint is authored coverage, not an execution result. Under the
+declared dev shell, the fixture passed warning-clean wasm32/wasm64 syntax
+checks in both Node and browser modes. The evidence registry agrees with
+all 629 collected files. The Node parameterized test template and six
+browser cases collect successfully. Logs are the file-owner checkout's
+`.context/gles-validation-guest-source-checks.log`,
+`gles-validation-node-collection.json` and
+`gles-validation-browser-collection.log`. Fresh normal SDK32/64 graphics,
+kernel/host preparation and actual Node/three-engine runs are still
+required; no package builds or linked-guest execution occurred here.
+This coverage does not claim full positive uniform transport conformance.
+
 ### Sway gallery restart observation, 2026-10-29
 
 The `e58d19f98a` combined gallery run failed Chromium's Sway restart
@@ -8153,6 +8451,134 @@ Playwright collection passes for all three engines; executing the
 strengthened gate is still pending. The original failure remains
 retained under `.context/cage-sway-final-gallery-results/` in the
 fork-owner checkout and is not reported as a passing run.
+
+
+### Executed linked validation families on all browser engines, 2026-10-29
+
+The follow-up's combined validation guest at `ce27f28345` now has normal
+linked execution evidence. Job
+`gles-validation-prepared-node-1029-140117-6830` rebuilt/checks both SDKs
+through `build-musl.sh --ensure`, then normal kernel and host bootstrap,
+ABI/freshness checks and the 629-file evidence registry. Its two files
+passed all four Node cases: the validation guest and independent GBM
+rendered-ring fixture at both pointer widths. Node retains the existing
+allocation/ownership GL double and establishes C error-path behavior,
+not real framebuffer pixels.
+
+Job `gles-validation-three-engine-1029-141442-6dee` passed all 12 browser
+cases in 26.5 seconds: six dual-width validation guests and six unchanged
+rendered-ring cases. The normal BrowserKernel guests require success
+markers for string-query enums, generation counts, all 19 negative uniform
+locations, all three matrix argument/overflow paths, actual texture-FBO
+clear/scissor/readback pixels, and the original context-local hints.
+Exit status is zero, stderr/host diagnostics/page errors are empty, and
+post-destroy diagnostics and worker memory-message boundary checks pass.
+Engines were Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6.
+
+The actual kernel SHA-256 is
+`0ccaaeae4e3030075fd873a4cf545e87e599bf04d1499a7e4b832b75d7896abd`.
+Validation guest identities are identical across engines for each width:
+
+| Width | Program SHA-256 | Minimal VFS image SHA-256 |
+|---|---|---|
+| wasm32 | `db5d20a3c65d9e8b0a3f5edc47f8007e8d438f757770a6095f4906244cc6e0d1` | `83bda5c4de54baabe88760515c562d7145d7a635631f06d5b7b3c13b5ab9a9a0` |
+| wasm64 | `4d9234ee2913d770df360d448f950253d3746cad7f12ff27cbf2c16471b4c3a1` | `489d489c23919ce9d177a73902972d314f6109ac2b363e845c48199f4d5ec64f` |
+
+Evidence is the file-owner checkout's `.context/gles-validation-*.log`,
+`gles-validation-browser-results/` and six timestamped JSON records in
+`gles-hints-guests/`. Program ABI 56 / host 3 / GL table 17 / fork 21 is
+unchanged. These results validate the named C/error families and actual
+post-error framebuffer rendering. They are not new upstream CTS runs,
+positive uniform shader/type/array conformance, the larger-array transport
+repair, full graphics compatibility, or final combined POSIX conformance.
+The native 220-case evidence remains attached to `d771bf71d1`; this later
+commit adds guest tests without changing those library implementations.
+
+### Uniform vector count validation, 2026-10-29
+
+All eight float/integer vector setters now validate negative counts
+before handling inactive location `-1`. Previously the inactive guard
+silently discarded a negative count; `glUniform4fv` also had a redundant
+wrapper guard that bypassed shared validation. This follows the general
+negative-`sizei` rule in ES2 §2.5 and the inactive-data rule in §2.10.4 of
+the [Khronos ES2 specification](https://registry.khronos.org/OpenGL/specs/es/2.0/es_full_spec_2.0.pdf).
+A shared length check preserves zero/ignored calls without source reads,
+the existing defensive null-pointer rejection, and overflow rejection
+before multiplication or copying. Vector records now use their actual
+eight-byte header when checking capacity. This admits the largest
+single-component payload previously rejected by a twelve-byte matrix
+header calculation. Existing opcodes, payload layouts and ABI are unchanged.
+
+Against `8d63265bf4`, the new count regression fails at the missing
+inactive-location error, and the capacity regression fails on the
+largest fitting single-component record. The null/zero control already
+passes. After implementation, all 223 native cases pass under the
+declared dev shell with undefined-behavior sanitization. Each new case
+exercises all eight signatures. Protected-page pointers prove that
+negative, zero, ignored and oversized calls do not read source data;
+exact maximum fitting records end at that page. Rejected/ignored calls
+publish no uniform record or batch, prior errors survive, valid calls
+retain location/count/length, and cleanup retains no native allocations.
+Evidence is `.context/gles-uniform-vectors-{before,after,syntax}.log` in
+the file-owner checkout. Both Wasm pointer-width library syntax checks
+and both ordinary/rendered guest fixture variants compile, the 629-file
+source evidence inventory agrees, and all six browser cases collect.
+
+The pinned [CTS shader API source](https://github.com/KhronosGroup/VK-GL-CTS/blob/a119e62de3bb38dae67f05abee8acd011e0c729c/modules/gles2/functional/es2fNegativeShaderApiTests.cpp)
+separately requires a current program even for location `-1`; its vector
+count cases cover a non-array count above one rather than this negative
+count. The normal guest fixture now compiles, links and binds a program
+before sentinel/matrix/vector checks, and both host harnesses require the
+new eight-setter marker. These new guest changes have compile/collection
+evidence only: linked execution, rendering, browsers and upstream CTS
+have not been rerun for this increment. Native device-double cases
+remain isolated encoder contracts, not GLSL or current-program evidence.
+
+Production no-current-program checks on ignored locations remain an
+ordinary gap. `glUseProgram` is asynchronously encoded, so an unchecked
+C binding cache would misrepresent rejected use/link operations; an
+acknowledged query on the ignored path or a coherent private program
+model needs separate failure/lifecycle tests. Shader types, array
+semantics, positive location ownership and larger-array transport also
+remain open. Oversized positive arrays still fail with
+`GL_OUT_OF_MEMORY`; record capacity is not a demonstrated hard platform
+boundary and does not close G05/G09.
+
+### Uniform-vector normal guest validation (2026-10-29)
+
+Source `7ec1954a54` was validated in the clean file-alias checkout by
+`gles-uniform-vectors-linked-1029-154856-6e3f` (exit 0, 4m29s).
+Normal dual-width SDK rebuilding, kernel/host bootstrap, ABI and freshness
+checks completed before execution. Node passed 4/4 cases in two files,
+including the independent GBM rendered-ring ownership checks. The Node
+renderer remains an allocation/ownership double; it is not pixel evidence.
+
+The matching browser selection passed 12/12 in 25.1 seconds across
+Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6. Both normal SDK
+widths establish a compiled, linked current program before testing the
+uniform sentinel/count families. Browser guests additionally require the
+unchanged actual framebuffer clear/scissor/readback colors. All six guest
+runs exited 0 with empty stderr, host diagnostics and page errors, and
+passed post-destroy worker-message ownership checks.
+
+| Artifact | SHA-256 |
+|---|---|
+| Resolved kernel | `0f80723c5b7d90942e16186def0d1a20dd232d1ec1c97d0d88f32105c3b44978` |
+| wasm32 rendered guest | `ad40d23a801be46f7d3d621bc66cfc58266303fdf8adc2c5c34997ea1a9a55a3` |
+| wasm32 guest image | `25b2e68d8ef2930c1dd410b687eb6b6facb3f84cef05405668ba390a26ba459b` |
+| wasm64 rendered guest | `4749fe5ee48c8bc2672159d126bda983330adf2d2474ba582ca6b6dd535e5356` |
+| wasm64 guest image | `b27c5ca6dbcc8cb0c44f6b16b9b0de06a5c360ed3dab5d7acf5a3742877d0266` |
+
+Each width's program and image hashes agree across all three engines.
+Timestamped records are retained privately in
+`.context/gbm-file-aliases/.context/gles-hints-guests/`, with build and
+execution logs named `.context/gles-uniform-vectors-*` in that checkout.
+This closes normal linked-guest validation for this increment. It does
+not close current-program validation without a bound program, uniform
+location ownership/type models, larger positive-array transport, broad
+upstream CTS, or full combined graphics-baseline acceptance. These remain
+ordinary implementation and validation work. The unchanged unpublished
+ABI is program 56 / host 3 / GL table 17 / fork record 21.
 
 ### Main integration and program-ABI extraction, 2026-10-29
 
@@ -8249,6 +8675,276 @@ checks. Execution of that repair and combined-main products, consumer,
 memory and conformance gates remain pending. Prior-candidate acceptance
 is not transferred to the new main integration.
 
+### Inactive uniforms require a current executable, 2026-10-29
+
+The follow-up implements the current-program requirement for all 19
+GLES2 uniform setters at inactive location `-1`. The
+[ES2 uniform contract](https://registry.khronos.org/OpenGL/specs/es/2.0/es_full_spec_2.0.pdf)
+requires `GL_INVALID_OPERATION` without an installed program, even
+though inactive data is ignored. The pinned
+[CTS shader API cases](https://github.com/KhronosGroup/VK-GL-CTS/blob/a119e62de3bb38dae67f05abee8acd011e0c729c/modules/gles2/functional/es2fNegativeShaderApiTests.cpp)
+check that distinction across scalar, vector and matrix families.
+Previously C discarded every inactive call before the host could
+validate it; raw host commands also delegated the inactive case to
+WebGL's null-location behavior.
+
+After ordinary count/transpose validation, C now emits an existing
+12-byte `uniform1f(-1, 0)` record for any inactive setter. Every signature
+has the same inactive-data and current-executable semantics, so this
+bounded representation needs no caller-data read, allocation, new
+opcode or wire-layout change. The host checks the selected logical
+context's accepted executable before ignoring an inactive record. The
+same guard applies to every raw uniform command, including vector and
+matrix records. Queued program changes and validation run in order;
+errors stay in the host's existing deduplicated flags and become visible
+through normal `glGetError` submission. No optimistic C program cache or
+synchronous uniform query is introduced. Positive calls keep their
+existing command path. The unpublished ABI remains unchanged.
+
+Three authored native cases fail against `05bdd99d51` at the initial
+missing-error assertion. All 226 native cases pass after implementation
+under the declared dev shell with undefined-behavior sanitization.
+Native coverage checks every setter, refused submissions in both
+binding directions, failed program uses, retained failed-link/deleted
+executables, independent shared-context bindings, exact bounded inactive
+validation records and zero retained allocations. Protected-page tests
+still prove ignored data is never read. Negative counts, invalid
+transpose and invalid negative locations remain rejected without
+publishing a validation record. Older no-record assertions for legal
+inactive calls now distinguish validation from uniform-storage writes.
+
+Before the host guard, 21 new focused tests fail: all 19 API signature
+representations plus pending-error/lifecycle controls. Afterward the
+complete pure graphics source gate passes 740 tests in 32 files. It
+also verifies all 19 raw forms across logical context switches, retained
+executables after rejected use/relink/deletion, distinct earlier errors,
+deduplicated repeated `GL_INVALID_OPERATION`, and program changes within
+one command batch. These tests execute the real host decoder and error
+state with a controlled native GL double; they do not claim rendered
+driver evidence. Logs are the file-owner checkout's
+`.context/gles-uniform-current-{before,after,host-before,host-after,syntax}.log`.
+
+Both library pointer-width syntax checks and ordinary/rendered guest
+fixture variants compile. The 629-file source evidence inventory agrees,
+and all six browser cases collect. Normal guests now require a new marker
+after checking every setter both before any program is bound and after
+unbinding the real linked program. Those new linked guests, browser
+rendering, upstream CTS and combined conformance have not been rerun for
+this increment. Positive-location zero-count vector/matrix calls still
+return in C before the host checks its current program. Positive location
+ownership, shader types, array/count validation and larger positive-array
+transport remain open. The separate C argument-error and host error
+stores also still need unification: a locally rejected negative count
+can duplicate the same error already pending at the host. This change
+keeps inactive current-program errors entirely host-owned, without
+claiming complete uniform or G05/G09 acceptance. Those remaining gaps are
+ordinary follow-up work; no hard platform boundary is asserted.
+
+### Current-program normal validation and maintenance checkpoint (2026-10-29)
+
+Normal guest job `gles-uniform-current-linked-1029-161528-f1d5` passed
+at clean source `dd625e24f9` in 9m37s after rebuilding the current-main
+release xtask, both SDKs, kernel and host, then ABI and freshness checks.
+Node passed 4/4, including both-width validation and independent GBM ring
+ownership. Browser selection passed 12/12 in 40.9 seconds, including
+both-width current-program assertions and real framebuffer pixels in
+Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6. All validation
+guests exited 0 with empty stderr/diagnostics/page errors and passed
+post-destroy worker-message ownership checks. Node's renderer remains
+an allocation/ownership double rather than pixel evidence.
+
+| Artifact | SHA-256 |
+|---|---|
+| Resolved kernel | `6fdb1118176500dbfbd01aba0a736bfe2563e0505eff5df162859633631fe0f7` |
+| wasm32 rendered guest | `79add52735c74ce5ab41f90da4f81fd1c97105cb6bcb14ef13df52746e954a2a` |
+| wasm32 guest image | `1563986abc12556d54bde32fdf132b8229c4925bde8169c8f8cb2a00bbdbccec` |
+| wasm64 rendered guest | `19104314232e6f0427846a35eb775dd5edef81f611e331676451ebc41828030c` |
+| wasm64 guest image | `253ca086d4bcbf1c03a001f1ff98bddba136850f2ef043caac69ba4fba090b59` |
+
+This validates the named inactive-current-program increment, not the
+remaining positive-location/type/count/large-array models or full CTS.
+
+The user requested a security-update maintenance window. The current-main
+landing product run `cage-sway-main-integrated-1029-160528-36b9` was
+intentionally stopped during normal bootstrap after 22m44s (signal 15,
+status 143). No current-main application acceptance result is claimed.
+The repaired full xtask run
+`graphics-current-main-xtask-after-1029-162150-83da` was intentionally
+stopped after 6m22s (143) during later integration targets. Its unit
+portion passed 811/811, but the complete suite remains unfinished. The
+original full-run failure remains recorded: 810/811 at the cache-isolation
+assertion. Test-only fix `3100b70af8` provisions the normal native SDK
+before isolating HOME/XDG; the child still runs the real CLI preflight
+and strict no-directory assertions. A normal cold driver build showed
+Cargo creates HOME/.cargo; the original failed temporary leaf was removed
+by Nix cleanup, so that specific leaf was not independently inspected.
+
+Full workspace Rust at `0537eafffd` passed; the aggregate test-result
+summaries report 3,377 passes with no failures or ignored cases. The Rust
+tree is identical to landing `cc215b9291`. Its graphics source gate
+passed 717/717 in 32 files. A separate server-wait execution-ownership
+foundation is checkpointed on a WIP branch at `43b9f60e388d`, with
+725/725 source checks and normal/browser/lifecycle validation still
+unrun. It was initially kept on a separate checkpoint branch and is now
+published as work in progress in follow-up PR #1594, as recorded below.
+Public EGL server waits remain open.
+
+### Publishing the paused execution-ownership checkpoint
+
+At the user's request, checkpoint `43b9f60e388d` is included in draft
+follow-up PR #1594 as derived commit `96241a20da`, preserving its author.
+The cage/sway landing PR #1574 is unchanged. No work goal, build, test
+suite or implementation agent was resumed for this publication.
+
+This work in progress attaches retained context and independent draw/read
+allocation ownership to native and forwarded submissions. It preserves
+accepted allocation identity across resize or public context replacement,
+cancels queued work on session retirement, and retains failed cleanup
+receipts. The original checkpoint's graphics source selection passed
+725/725 in 33 files after three initial causal failures and repair of
+five selected-error-owner regressions. That result is at the checkpoint's
+source, not a rerun of the combined follow-up tree.
+
+Before this foundation is ready, review reentrant resize during frame
+execution, independent read surfaces, forwarding-specific admission and
+resize failures, cleanup callbacks and retry of pending retirements.
+Raw WebGL default drawing buffers still need retained storage for general
+deferred execution. Current resize rejection is a visible ordinary model
+gap, not a demonstrated platform boundary. Selection replay overhead has
+not been measured. Public server waits still require ordered command,
+query, fence and presentation streams plus source-authority validation,
+asynchronous fence polling, cancellation and query retry/wakeup.
+
+Canonical host build/declarations, ownership audit, normal SDK guests,
+real native/forwarded browser rendering, browser-memory and conformance
+remain unrun for this checkpoint and its combined integration. No ABI,
+wire operation or advertised capability changed. Both PRs remain drafts;
+full graphics compatibility and merge readiness are not claimed.
+
+
+### Positive uniform validation source increment (2026-10-29)
+
+The follow-up now preserves an immutable native executable, GLSL type,
+array declaration and remaining element count with each public uniform
+location. Native active-uniform reflection is read at the existing synchronous
+location lookup; setters use that accepted metadata without an optimistic C
+program cache or another synchronous query. Reduced struct fields keep exact
+selectors, and only the final reflected array selector denotes its array.
+Location publication rolls back all maps and the allocator on failure.
+Successful relink/final deletion/group retirement clear metadata through the
+existing location lifetime paths. Failed relink and deletion while current
+retain it with the older executable. A location issued for a newer executable
+cannot be used by a sharing context still running an older one.
+
+Positive zero-count vector and matrix calls now publish only their original
+8- or 12-byte payload header, after ordinary count/transpose validation, without
+reading null or protected caller data. The host validates its logical current
+executable, location, compatible scalar/vector/matrix type and non-array count
+before the zero-count no-op. Boolean uniforms accept matching float or integer
+signatures; samplers accept only scalar integer signatures. Within the existing
+record capacity, extra array elements are ignored by clamping the native call
+to the reflected remaining array elements. Declared arrays of size one remain
+arrays. No empty typed array is submitted to WebGL, whose validation differs
+from GLES. No opcode, payload layout or unpublished ABI epoch changes.
+
+The new native header case fails against the pre-increment encoder at the
+first missing-record assertion. Two authored decoder cases fail before the
+host change at wrong-type zero count and non-array count greater than one.
+After implementation the declared-shell native suite passes all 227 cases
+under undefined-behavior sanitization. The full graphics source gate passes
+776 tests in 33 files, including pending errors, transpose ordering, sampler
+and boolean compatibility, array tails, shared/retained executable identity,
+reflection metadata rollback and final cleanup. Logs in the positive-uniform
+checkout are `.context/positive-native-{before,after}.log`,
+`.context/positive-host-before.log` and
+`.context/positive-graphics-source-final.log`; the final strengthened focused
+rerun passes 191/191 in `.context/positive-host-final.log`. Native tests use a device double;
+host tests execute the actual decoder with a controlled GL model.
+
+The normal both-width `gles-hints` guest is prepared with active GLSL scalar,
+vector, matrix and array uniforms. It checks all eleven zero-count signatures
+with invalid/null pointers, wrong-type zero calls, non-array count errors,
+invalid positive locations and excess array tails. Its Node allocation double
+models the declared active reflection explicitly; browser cases use actual
+GLSL compilation and retain their independent framebuffer pixel assertions.
+Normal SDK rebuilds and guest execution, browser rendering, upstream CTS and
+combined memory/POSIX conformance are still pending for this increment.
+Full-host TypeScript checking was attempted and reports 42 diagnostics
+(including Vite imports, external root-directory imports and existing bridge
+view types). An in-memory compiler comparison against pre-increment tracked
+sources reports the same 42 diagnostic file/code/message entries, with none
+introduced or resolved (`.context/positive-types-compare.json`); no passing
+full-host type-check claim is made. A direct Wasm syntax attempt
+used the Nix native compiler wrapper and was rejected by its host-only flag;
+this is not SDK compilation evidence. Both ordinary and rendered guest variants
+pass native C syntax using isolated public GL headers; actual Wasm-width checks
+remain pending normal SDK provisioning. Larger valid-array transport, combined
+C/host argument-error flags and the remaining full G05/G09 inventory are ordinary
+open work, not hard platform boundaries.
+
+
+### Resumed current-main and execution-model work (2026-10-29)
+
+The user resumed work after security maintenance. Landing merge
+`30dfe6bb0d` preserves main `e4bca8639e4b`, including real Berkeley yacc
+and flex, the guest NetHack build and host-directory inode behavior. No
+ABI increment was made: program 56 / host 3 / GL table 17 / fork record 21.
+The additional main source selection passes 60/60 host cases in three
+files; six imported manifests parse, eight imported scripts pass syntax,
+and the sealed-install check passes. These are bounded source checks.
+The package-build-roots guard still fails on duplicate primary-source
+defaults in main-inherited hyprland-protocols; independent audit also
+identifies libdbus. Both recipes are byte-identical to main, and this
+failure is not waived or described as graphics acceptance.
+
+Landing `85c56d342d` repairs eight new compositor recipes so each
+invocation restages its manifest-selected verified source before patches
+or configuration. Source URLs, checksums, versions, flags and attribution
+are preserved. Nine script syntax checks, the complete shell image
+contract fixture and all eight source-identity comparisons pass. The shell
+fixture now includes its required xkeyboard-config archive and checks
+missing-input failure. Normal rebuilding is required for these changed
+recipe inputs.
+
+The initial resumed product job
+`cage-sway-resumed-integrated-1029-192652-5732`, source `30dfe6bb0d`, was
+intentionally stopped after 8m51s (143) during bootstrap to include that
+repair. Its process group was confirmed empty before changing the
+checkout. Completed cache entries remain normally reusable. Replacement
+job `cage-sway-restaged-integrated-1029-193557-5d2b` is running at frozen
+source `85c56d342d`, including full standalone fixture builds and current
+Node, three-engine compositor/CTS and browser-memory acceptance. No
+completed acceptance result is claimed for either source yet.
+
+Full xtask job `graphics-xtask-resumed-1029-192653-f9c1` completed with
+status 0 after 14m04s at `ba845edaf4`. The unit target passes 811/811;
+cache-GC source isolation and both program-index source-root integration
+targets also pass. This completes the previously interrupted full suite,
+including the repaired strict cache-isolation assertion. The exact log
+is `.context/graphics-xtask-resumed.log`; the short persistent temporary
+root is recorded in `.context/graphics-xtask-resumed-tmp.txt`.
+
+Follow-up `8b359af92a`, derived from `a8e8e922a8`, repairs retained
+submission execution through in-frame resize and reentrant admission.
+Independent draw/read allocation selectors survive logical replacement;
+new admissions capture logical defaults, and the active physical muxer
+finishes its frame tail before a recursive drain runs later work.
+Throwing cleanup remains a retryable receipt, empty purges retry pending
+retirements, and selected peer errors remain owned. Before controls expose
+four lifetime/cleanup/replay failures plus recursive prefix/later/tail
+ordering. The final source selection passes 758/758 in 33 files with zero
+skips. This is not public EGL server-wait support or measured performance.
+
+Combined follow-up `97e0aaf98a` additionally includes the positive-uniform
+increment recorded above. Its first canonical host build emits JavaScript
+but fails declaration generation at `muxer.ts`: the narrow muxer owner is
+passed to a renderbuffer helper typed as a complete guest binding. This
+is a real failed build; native/source/ownership stages after it did not
+run in that script. Correcting the helper's actual authority contract and
+rerunning the canonical build are required. Normal guests, real native
+and forwarded rendering, browser-memory and final conformance remain
+pending for the combined execution/uniform model.
+
 
 ### Narrow native renderbuffer replay contract (2026-10-29)
 
@@ -8271,6 +8967,35 @@ contract/build failure at that source, not combined application acceptance.
 The combined follow-up build and source/ownership/runtime gates still need
 rerunning after integration. No ABI or capability changes are included.
 
+
+### Shared operation ordering and combined source gates (2026-10-29)
+
+Follow-up `0c9f8f4f71`, derived from `d9368a662d`, gives each authorized
+GL session scalar-only typed FIFO tickets. Copied commands reserve order
+before acceptance. Native and forwarded queries, fence operations,
+presentation and current changes refuse immediate contention before
+native mutation or borrowed result retention. A blocked logical head
+cannot be bypassed by its later work, while runnable peers retain their
+turns. Same-physical-renderer query reentry cannot switch selectors under
+an active frame. Context replacement preserves the session ledger.
+
+Two initial production controls fail before wiring, and a separate
+same-renderer peer control fails before its guard. At that lane's exact
+source the graphics selection passes 765/765 in 34 files with zero skips.
+No asynchronous dependency or public EGL server wait is enabled. The
+kernel/forwarded pending-result protocol remains implementation work.
+
+After merging the renderbuffer repair, combined `d24b94f7de` passes the
+canonical host JavaScript/declaration build, all 227 native C cases and
+the GBM native metadata/mapping/symbol checks (38 public symbols). The
+next registry gate fails because the new operation-stream evidence row
+was appended outside byte order. The row is moved into its required
+sorted position without changing evidence class or test inventory.
+Combined graphics and static ownership stages had not run past that
+failure; their rerun remains required. Failed canonical and registry
+logs are preserved with `-before.log` suffixes in the file-owner checkout.
+Normal guests, real rendering, browser-memory and final conformance
+remain unrun for this combined follow-up model.
 
 ### Combined graphics gate and publication catch audit (2026-10-29)
 
@@ -8315,6 +9040,996 @@ It is reattached without opening Finder. The selected Sortix checkout
 `/Volumes/KandeloCaseBuild/moscow-vma-fragments-os-test` is pristine at
 `7e8f0082ab0b58ad3383a8abbf47dc4b40dcf25d`; current-worktree SDK, kernel
 and overrides remain required for the later normal conformance run.
+
+## Internal Rust query ownership foundation (2026-10-29)
+
+The synchronous GLIO_QUERY path captures its validated opcode, copied input,
+original output address/capacity, pointer width and exact process/thread,
+OFD, session, display, context and draw/read surface identities in one owned
+request. It reuses the existing query input/output allocations; immediate
+queries do not register a blocked
+retry or allocate a retry token. The publication step freshly probes the
+original destination capacity and permits only one dispatch and publication.
+All negative immediate host responses, including EAGAIN, remain EIO.
+
+The same request can own a retained kernel target through BlockingRetryState.
+Its OFD pin follows the existing exact-token release, thread, exec, exit and
+process-removal cleanup paths. Fork carries neither the request nor that pin.
+This type owns only kernel bytes and the exact OFD reference. It cannot admit
+or claim to clean up deferred native/forwarded host work; adding that authority
+requires the reviewed host receipt and acknowledged cleanup-transfer bridge.
+Syscall72 remains absent from the retry mapping, and public EGL server waits
+remain unfinished. No new public operation, host import or ABI epoch is added.
+
+Focused native validation passes 10 existing query preflight cases and five
+owned-request cases: publication after destination revocation, exact OFD
+selection through fd reuse, immutable input and one execution/publication,
+foreign/stale owner rejection, thread/exec/exit/removal cleanup, and fork
+excluding requests and their extra pins. The Wasm32 kernel compile check
+passes. Private evidence is in `gl-query-receipt-confirm.log` in the VMA
+checkout; an earlier fork-fixture errno expectation was corrected to match
+the existing omission of inherited GL command state (EINVAL).
+
+Normal artifacts, guest/browser tests, memory and conformance suites remain
+unrun for this increment. It is an internal ownership step, not evidence
+that asynchronous queries or EGL server waits are supported.
+
+### Atomic large uniform transfer source increment (2026-10-29)
+
+The follow-up replaces the one-record uniform-array limit with bounded
+asynchronous BEGIN/CHUNK/COMMIT/CANCEL commands for all eleven vector and
+matrix signatures. The original signature, location, total count and transpose
+travel with BEGIN. Every chunk carries the original signature, whole-element
+offset and count. Context-owned monotonic tokens reject replay and wrap;
+stale traffic cannot cancel a newer transfer. Existing small records remain.
+The Khronos [uniform contract](https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glUniform.xml)
+requires non-array count/type/location errors to leave storage unchanged and
+requires excess array elements to be ignored. Independently executing chunks
+would permit an invalid or interrupted call to change a prefix, so the host
+stages only the reflected accepted array tail and makes one native setter call
+at a complete COMMIT. No element-location arithmetic, per-setter synchronous
+query, optimistic C reflection cache or allocation for ignored tail data is
+introduced. C validates complete source-span arithmetic before publishing or
+reading and copies bounded whole-element chunks across ordinary submissions.
+
+COMMIT checks the exact native location, immutable reflection, accepted native
+executable, logical program, context, object group and native renderer captured
+at BEGIN. An incomplete/rejected call makes no native uniform write. Allocation
+failure retains only a bounded rejection tombstone while its records drain.
+Cancellation is replay-safe and cleanup requires no new allocation. A failed
+ordinary flush queues cancellation for the encoder's greatest upload token in
+the reset buffer, including when the final COMMIT failed after the setter had
+returned. Later valid commands therefore execute after retirement instead of
+being lost to an abandoned partial transfer. This promises no native prefix
+update; a lost acknowledgement after an already executed COMMIT does not imply
+that the complete native setter was rolled back.
+
+The per-session operation stream first protects accepted command prefixes.
+Once that prefix drains, an unrelated same-context command/query/present or
+current change cancels and visibly refuses an incomplete transfer before that
+operation's native effects. It does not block sharing peers. A shared peer's
+successful relink invalidates captured location authority; failed relink and
+deleted-current executables retain their accepted metadata. Pending storage is
+released with exact context/accepted-execution retirement, without retaining a
+guest memory view or asynchronous caller output.
+
+All eleven newly authored legal calls above one TLV fail against pinned
+`d63b24588a9abb341a3e8c54e54f41ccebd49fa2` with the old false out-of-memory
+result. The native suite passes 241 cases after implementation, including
+protected complete source buffers, exact original signatures/counts/chunk
+bytes, a 1.2 MB multi-submission call, a 2.4 MB mid-setter failed submission,
+and post-return final-COMMIT failure followed by successful command recovery.
+No per-setter current-program query is made. Prior oversized-count guards now
+exercise actual pointer-span overflow; one TLV is no longer treated as a
+platform resource boundary. Evidence is the positive-uniform checkout's
+`.context/uniform-large-native-baseline-d63.log` and
+`.context/uniform-large-native-complete2.log`.
+
+The complete pure graphics gate passes 828 tests in 35 files. The dedicated
+transaction file passes 28 cases, covering every signature, interior array
+locations, ignored tails, non-array/type rejection before mutation, zero and
+inactive calls, allocation failure, missing/duplicate/reordered/mismatched
+continuations, token cancellation/replay/wrap, native rejection, exact authority,
+actual shared-peer relink, malformed packed commands and context retirement.
+Native and main-forward entry controls also prove that accepted prefixes keep
+ownership, then incomplete calls refuse query/present/current changes without
+native effects; peers stay independent. Logs are
+`.context/uniform-large-host-complete.log` and
+`.context/uniform-large-source-complete.log`. These are C device-double and
+real host decoder/native-model evidence, not driver rendering or CTS acceptance.
+The sorted evidence-class registry also agrees with all 632 collected files
+(`.context/uniform-large-evidence-classes.log`).
+
+Normal both-width guests are prepared with actual GLSL arrays of two elements
+and valid counts above each signature's record ceiling, which exercises legal
+ignored tails without exceeding driver uniform capacity. Browser variants
+query every accepted vector/matrix component in both elements and require
+unchanged non-array storage and unchanged integer-array storage after rejected
+large count/type calls. The existing real framebuffer pixel assertions remain.
+Node explicitly models the active reflection; it does not claim native value
+or pixel evidence. Normal SDK rebuilds, both-width guest execution, actual
+three-engine driver behavior, broader upstream CTS and combined memory/POSIX
+conformance are still pending for this increment.
+
+Four hand-mirrored additive tags, `0x0410` through `0x0413`, join the existing
+unpublished epoch 56/3/17/21. The mirror/uniqueness source gate passes, but no
+ABI dump/check or generated-output claim is made here. The parent normal build
+must use current Rust xtask/kernel inputs for
+`scripts/check-abi-version.sh update` and its check, covering the snapshot,
+ABI constants, generated limit/process/channel/marshalling/thread/spawn/OSS/
+clipboard headers, host ABI module and host-import list. No old release xtask
+or prior artifact's ABI stamp establishes that claim. The C/host argument-error
+flag unification and remaining G05/G09 lifecycle/query/CTS inventory stay
+ordinary open work; no new hard platform boundary is asserted.
+
+#### Protocol audit: overlapping uniform BEGIN (2026-10-29)
+
+A newer valid BEGIN now records `GL_INVALID_OPERATION` for an older incomplete
+uniform call, releases that call's staging and admits the new owner. The old
+prefix cannot disappear as apparent success. Stale BEGIN, CHUNK, COMMIT and
+CANCEL tokens still leave newer custody intact. This is explicit recovery from
+an invalid internal command sequence; the normal C encoder queues cancellation
+before beginning another call after failed submission.
+
+The new causal control fails against `3e36a06cf5` at its missing interruption
+error assertion; the other 28 transaction cases pass. After the host-only fix,
+all 29 transaction cases pass, including committing the replacement's value
+without any native write from the abandoned prefix. Evidence is
+`.context/uniform-overlap-{before,after}.log` in the positive-uniform checkout.
+No C, opcode, ABI or generated file changes are involved. Full source, normal
+SDK/guest/browser and combined conformance gates were not rerun for this audit;
+those checks remain in the parent integration phase.
+
+#### Resumed combined Rust, ABI and receipt checkpoint (2026-10-29)
+
+At combined source `7d93136073`, job
+`graphics-resumed-rust-abi-1029-203011-af57` passes the full Rust workspace
+selection: 3,382 passed, zero failed and zero ignored across 98 result groups.
+It then regenerates the ABI snapshot and all normal generated declarations,
+and passes the ABI consistency check. The complete job exits zero after
+10m17s. Regeneration changes no tracked generated output; the recorded diff
+contains only the pre-existing Sortix submodule dirt. This uses the current
+Rust sources and normal xtask/kernel build, with no stale release override.
+The unpublished program 56 / host 3 / GL table 17 / fork 21 epoch is unchanged.
+Logs are `.context/graphics-resumed-{rust,abi-update,abi-check}.log` in the
+primary checkout. Matching normal linked SDK/program/image execution for the
+new large-uniform increment remains required; source checks do not prove it.
+
+The ordered copied-result foundation from `7dafd863a5` is now integrated.
+Admission requires exact registered pid/session/operation-ledger authority,
+bounded independent input/workspace/result bytes, and explicit native execution
+or remote cleanup custody. Head execution occurs once; Ready is distinct from
+publication. Failed native retirement retains actual handles and budget, and
+remote retirement requires exact peer/owner/token/mode acknowledgment. A bounded
+scalar terminal record survives a lost acknowledgment response until explicit
+Forget; Unknown never establishes cleanup. No live production pending branch,
+public EGL wait, import, control wire or ABI change is activated by this model.
+
+The source lane passes 795/795 across 35 graphics files with zero skips and
+its complete evidence registry agrees with 632 files. The acknowledgment-loss
+causal controls fail before repair and all 30 focused cases pass afterward.
+A strict dependency check passes with the exact temporary narrow-renderbuffer
+helper overlay, reversed before the agent commit; the parent already contains
+that helper fix. Exact commands and logs are in CPU checkout
+`.context/owned-result-handoff.md`. These are lane results, not a claim that
+the newly combined follow-up has passed its normal build, rendering, memory or
+conformance gates. Retained existing-fence custody, forced cleanup transfer and
+the actual Rust/worker/native/forwarded bridge remain ordinary implementation
+work before public waits can be enabled.
+
+Both draft PRs retain the delivery split: #1574 owns compositor infrastructure
+and its actual acceptance gates, while #1594 owns the remaining baseline.
+Current landing source is `2ccda51d7d`. Its frozen normal product build still
+runs from earlier verified-recipe source `85c56d342d`; later host fixes require
+normal current-source rebuild and acceptance. Clang is a real canonical-shell
+and guest-NetHack dependency, so a narrower compositor bootstrap cannot replace
+the unmodified full browser-memory gate. Narrow Node feedback can run first
+in a separate checkout with current kernel/SDK/packages/fixtures. No artifacts
+are copied or restamped, and earlier Node timeouts remain unexplained.
+### Strict receipt wire prefix (2026-10-29)
+
+The follow-up adds unwired Rust/host codecs for the reviewed little-endian
+48-byte request and 32-byte response headers, with at most 64KiB of payload.
+Shared wire vectors cover exact tokens through i64::MAX, bounded copied
+payloads, versions, flags, result lengths and expected retirement modes.
+A Retired response proves cleanup; its accepted bit means accepted publication
+for Commit or positively accepted cancellation for Cancel. Ready and Retiring
+never prove cleanup. Detach/Transferred remain unsupported and fail closed.
+
+The centrally reserved kernel control selector is 0x7ffffffe. Guest
+GLIO_QUERY rejects it before nested pointer access or host dispatch in both
+pointer widths. The reserved preentry sentinel (-2147483647) is not emitted
+or interpreted as retry authority; it still produces EIO through the immediate
+query path. Program56/host3 remains unchanged. No import, asynchronous adapter,
+syscall72 retry mapping or public wait is enabled by this codec increment.
+
+Declared-shell focused validation passes four Rust codec cases, eleven query
+syscall cases (including reserved control rejection and sentinel EIO), six
+host codec/opcode cases, strict standalone codec type checking, and the 635-file
+Vitest evidence registry check. The Wasm32 runtime-core compile check passes.
+The codec tests use fourteen shared wire
+vectors and independent malformed/late-ACK mutations. Host source tests use
+the normal configuration with prepared-fixture global setup disabled; their
+imports require no guest products. VMA evidence is in
+`.context/query-receipt-{rust,syscall,host,ts}-final.log` and
+`.context/query-receipt-evidence.log`. Normal product builds, real native and
+forwarded query delivery, browser-memory, ABI snapshot and conformance suites
+remain unrun for this increment; this is not bridge completion.
+
+#### Integrated receipt and existing-fence source gates (2026-10-29)
+
+Combined source `960a65b27c` includes the large-uniform overlap repair,
+acknowledged owned-result retirement, genuine retained existing-fence custody,
+strict Rust/host receipt codecs and the current base's GBM harness repair.
+Job `graphics-combined-receipt-1029-205201-9a9f` exits zero after 4m14s:
+
+| Gate | Exact combined result |
+|---|---|
+| Canonical host build | JavaScript and declarations pass |
+| Graphics source | 873/873, 37 files, zero skips |
+| Complete Vitest evidence registry | 637 files agree |
+| Full Rust workspace | 3,387 passed, zero failed or ignored, 98 result groups |
+| Normal ABI regeneration and consistency check | Pass; no tracked generated output changes |
+
+Logs are primary `.context/graphics-combined-v2-{host,registry,source,rust,abi-update,abi-check}.log`.
+The unchanged unpublished epoch is program 56 / host 3 / GL table 17 / fork 21.
+The ABI check's program-rebuild notice compares this epoch with main; it does
+not authorize using old programs. Normal current-source artifacts remain
+required. The prior `04ab151e12` combined check passes all 241 native C cases;
+their C implementation, public GBM headers, native fixture sources and libdrm
+recipe are unchanged at this source. The initial GBM harness fails on the
+fresh primary checkout's absent legacy sysroot header. Its repair resolves the
+current source-only package, normally provisions SDK/libdrm, and then passes
+all 38 public symbols plus metadata, modifier, format and retained CPU-mapping
+checks. Before/after logs are `.context/graphics-combined-receipt-gbm.log` and
+`.context/graphics-combined-receipt-gbm-after.log`. No validation input is copied
+from another checkout or falsely restamped.
+
+Existing-fence custody from `c42e61a561` is integrated as `28ad73b49c`.
+It captures a genuinely minted native lease and exact source session/ledger,
+without requiring replacement current-context state. Status can retain its
+actual source after creator retirement. Release changes the public fence only
+on Commit; Cancel preserves it. Failed native cleanup keeps actual custody and
+budget for retry, and independent waiters keep their own references. These are
+source-model behaviors, not a live asynchronous delivery claim. The lane's
+803-case source result and strict dependency check are recorded in CPU checkout
+`.context/owned-fence-lease-handoff.md`; the combined result above includes them.
+Forced custody transfer, actual native/forwarded delivery and public server waits
+remain ordinary open implementation work.
+
+Current landing head is `0b0b69b196`. Its early Node run uses a separate clean
+checkout and normal package/SDK/fixture preparation. An initial attempt fails
+before tests because the image writer's projection-owner name is not a package
+bootstrap target; the corrected run lets the normal graph provision that side
+module automatically. No compositor result is claimed for the failed launch.
+The older frozen full product run remains at `85c56d342d`. A queued stage waits
+for that writer, checks source cleanliness, moves to current landing source and
+runs normal full products, Rust, ABI, consumer/browser/memory and libc/POSIX/
+Sortix acceptance. A requested stop prevents automatic restart. Earlier Sway
+whole-test timeouts and the incomplete five-file static audit remain retained
+and unresolved until their exact current acceptance gates complete.
+
+### Forwarded kernel context identity repair (2026-10-29)
+
+The kernel allocates context and open-description session names independently.
+The forward creation request previously carried only the session name, and the
+main renderer stored that as its context name. This loses exact authority even
+though the kernel-side binding still has the correct context. A causal test
+through the actual kernel import, forward channel and main receiver fails with
+context 11 where kernel context 21 is required; the other 71 selected cases
+pass. This is a real identity mismatch, not an asynchronous receipt mock.
+
+Kernel creation now forwards its actual context name explicitly. Both sides
+validate its unsigned scalar range, duplicate live context names are refused
+before renderer acquisition, and sharing still names the reviewed source
+session. Existing unscoped embedder channels may omit the explicit kernel name
+and keep their local session naming. Messages copy only the reviewed scalar;
+no guest address-space object or view is added. The context field is part of
+the same unpublished program 56 / host 3 epoch; no version increment is added.
+
+Declared-shell validation passes the canonical JavaScript/declaration build,
+all 879 graphics source cases in 37 files with zero skips, and all 170 cases in
+the five-file entry/ownership audit selection. The context tests exercise both
+pointer widths, distinct context/session names and unsigned names arriving
+through signed Wasm import arguments. They also reject malformed and duplicate
+names without allocating a native renderer. Exact logs are primary
+`.context/graphics-forward-context-{before,both-widths,host,source-final,audit}.log`.
+The initial causal two-file run fails 1/72 before repair. Final full-source
+coverage includes the added malformed/duplicate and unsigned-width controls.
+A discarded CLI invocation with unsupported `--include` loads no tests; its
+`.context/graphics-forward-context-unused.log` is not evidence. The full audit
+uses a private configuration retaining the ordinary host settings with only
+prepared-fixture global setup disabled. Assertions and deadlines are unchanged.
+Earlier failed audit runs remain retained; they are superseded for this source
+by the complete 170/170 run, not relabeled as successful.
+
+This source repair does not establish a current SDK guest, forced-forward real
+browser, memory or conformance pass. The native/forwarded owned-query bridge,
+context-owned C/host argument-error coherence and public waits remain active
+implementation work. The cage/sway landing artifacts and consumers continue
+separately from this follow-up source change.
+### Ordered client/native error flags: bounded source increment
+
+The error contract is GLES2 §2.5 in the [Khronos ES2 specification](https://registry.khronos.org/OpenGL/specs/es/2.0/es_full_spec_2.0.pdf):
+error flags are context state, ordinary argument errors leave state unchanged,
+and draining errors must retain pending flags. The C encoder previously returned
+its single local flag before submitting the earlier native prefix. Native
+actual-API controls on `a5c7c656b7` reproduce a duplicate enum flag, loss of a
+different local flag, and a queued valid clear still unsubmitted when
+`glGetError` returns. These are ordinary implementation defects.
+
+`OP_CLIENT_ERRORS` (`0x001e`, four-byte payload) transfers only the five ES2
+flags: bits 0, 1, 2, 5 and 6 represent `0x500`, `0x501`, `0x502`, `0x505` and
+`0x506`. Rust, C and TypeScript agree; the existing unpublished program 56 /
+host 3 / GL 17 / fork 21 epoch is retained. The C context keeps unacknowledged
+flags, reserves eight bytes in its normal command buffer for a bounded error
+trailer and clears transferred bits only after successful submission. Recording
+a bad argument neither allocates nor submits or queries. The decoder validates
+all masks before any batch effect, merges them into its existing per-context
+flag owner and preserves in-progress uniform-upload custody. Shared object
+membership does not share flags.
+
+`glGetError` submits preceding work first and uses a four-byte reply embedded in
+the existing heap-owned C context. It needs no error-query allocation. After a
+failed ordinary submit, the proposed query input is either empty or a four-byte
+pending mask; accepted query completion transfers that mask. The typed error
+query candidate and immediate accepted-result publication are separate required
+integration work. The old immediate `runGlQuery` ignores that mask and consumes
+before publication, so this C change alone does **not** establish combined
+transport-failure coherence. Definite error-query rejection still retains the C
+mask; its `GL_INVALID_OPERATION` diagnostic is not separately enqueued. Exact
+error consumption across rejection, lost acknowledgements, copyout failure and
+containment remains open until the combined candidate/delivery path is active
+and tested. Permanently failed transport is not declared a platform boundary.
+
+Replacing first-error suppression also exposes wrappers that used to add a
+second `GL_INVALID_OPERATION` after their own reply allocation failed. A shared
+query result now identifies requests never dispatched because allocation or
+preceding submission failed. Checked wrappers preserve the real failure and
+release undispatched image candidates without claiming unknown native effects.
+Independent argument errors remain separate flags; a failed raw-candidate cleanup
+may correctly retain both allocation and operation flags. Native assertions now
+count error-only submissions separately from actual uniform/mutation records.
+
+Declared-shell evidence in the positive-uniform checkout:
+
+- `.context/error-coherence-before-actual-api.log`: the three actual C API
+  controls fail against `a5c7c656b7` before the implementation.
+- `.context/error-coherence-native-final.log`: all 247 native library cases pass
+  under UBSan. Six new cases cover duplicate/distinct flags, earlier valid work,
+  allocation pressure, masked fallback after failed submission, and accepted /
+  rejected context switches. Existing thread transfer and owner teardown cases
+  also pass. The device double models flags and query acceptance, not guest
+  marshalling or a real driver.
+- `.context/error-coherence-source-all.log`: 880/880 graphics source cases pass
+  in 37 files with zero skips, including transparent error trailers between
+  uniform chunks, complete mask validation and shared-peer flag isolation.
+
+The evidence registry check agrees on all 637 test files. Native syntax checks
+pass for both fixture modes using only the public EGL/GLES/KHR headers; an
+initial attempt to use the entire musl overlay directly fails at its absent
+standalone `features.h` and is not SDK evidence.
+
+The normal `gles-hints` fixture now prepares the same actual public API checks
+for both widths on Node and Chromium/Firefox/WebKit, including a deleted-current
+peer and a valid preceding state command. Its existing rendered-pixel checks
+remain. No normal SDK/kernel/program/image build, guest run, browser run,
+upstream CTS, browser-memory or POSIX conformance run is claimed for this
+increment. Parent-owned atomic query integration, regenerated-output checking,
+combined builds and those validation gates remain required.
+### Internal Rust retained-query engine (2026-10-29)
+
+An internal engine now advances captured queries through Begin/Poll,
+copyout once, Commit or Cancel, authenticated Retired, and one best-effort
+Forget. It uses the frozen first input/capacity/output address and exact
+process, thread, OFD and session. Ready freshly probes the original full
+capacity. Output faults or negative results request Cancel and retain the
+pin until positive retirement; uncertain Begin, malformed replies, unknown
+records, late tokens and failed cleanup never grant release authority.
+Cancellation after copyout preserves Commit. A lost Forget can leave bounded
+proven-clean host metadata; the prior exact Retired ACK already proves native
+cleanup, and owner teardown must clear terminal metadata with ForgetOwner.
+
+`step_retained_gl_query` returns typed internal progress, and
+`preflight_gl_query_teardown` advances cleanup without consuming owners.
+Generic release, exec and thread cleanup keep pending receipts and OFD pins;
+HostIO-free process removal refuses before removing the process. The legacy
+void exit path explicitly fails closed before mutation if its caller bypasses
+non-ready preflight. Kernel exit scheduling must use the typed preflight before
+production activation. No cleanup-transfer receiver or Detach is invented.
+
+Source fence status/release retain source-session authority after context and
+display retirement; ordinary queries still require their exact current thread.
+A captured context may exist without a current binding (HAS_CONTEXT alone,
+zero draw/read). HAS_CURRENT comes from captured current selection, including
+surfaceless zero identities, and still requires a context. The shared codec
+vectors now include this fifteenth case; the host codec correction is a
+coordinated follow-up lane.
+
+Focused declared-shell validation passes 79 Rust cases across the engine,
+codec/request, immediate query, fence, retry registry and process-table groups,
+and the Wasm32 runtime-core compile check. VMA evidence is
+`.context/retained-query-{engine-final,receipt-regression,immediate,fence,registry,process-table}.log`
+and `.context/retained-query-wasm-check.log`. The first compile's probe-result
+type mismatch was corrected before these passing runs. No public pending
+branch, syscall72 mapping, sentinel interpretation, host import, ABI epoch or
+public server wait is enabled. Actual native/forwarded/worker integration,
+forced teardown ownership, normal combined artifacts, full Rust/ABI gates,
+real browser delivery, browser-memory and conformance remain required.
+
+### Combined native query controls and ordered errors (2026-10-29)
+
+Follow-up source `67824a11b8` integrates the ordered C error flags, Rust
+retained-query engine and `GlNativeQueryAdapter`. The adapter accepts
+strict receipt bytes against an explicitly registered exact session owner.
+It captures context/object/draw/read storage before admission, executes once
+at the existing operation-ledger head, and retains copied Ready bytes until
+Commit or Cancel proves actual cleanup. Rotating bounded visits allow peer
+sessions to progress past blocked heads. No request retains guest views in a
+persistent browser realm.
+
+Admission reserves its rollback receiver before capturing native custody.
+A later allocation/admission refusal with failed cleanup reports actual
+Retiring(cancel), preserving the receiver until a positive cleanup ACK.
+Fence creation publishes only at Commit; source fence status/release retain
+independent authority after creator/current/display retirement. A prepared
+GET_ERROR snapshots the old logical queue and consumes the selected flag
+only at Commit. Cancel preserves that flag. It merges the bounded fallback
+client-error mask once and handles an interrupted uniform upload at the
+execution head. The host codec now accepts HAS_CONTEXT without HAS_CURRENT,
+matching the Rust codec and all fifteen shared wire vectors.
+
+The new adapter is callable internal infrastructure. Production query import,
+worker parking/wakeup, forwarded transport and forced lifecycle custody are
+not activated. In particular, idle GET_ERROR must still use two-sided owned
+publication: writing Rust scratch is not guest-copyout acceptance. The legacy
+immediate handler still consumes errors eagerly and ignores the fallback
+mask; the remaining rejected-query error ambiguity is an ordinary gap.
+Uniform location/lookup allocation, shader upload, image/buffer mutation
+queries and renderer setup for no-current capabilities need their own typed
+publication/custody paths. Unsupported families are rejected before admission
+by the internal adapter; this does not reduce the advertised baseline.
+
+Declared-shell combined job `graphics-owned-combined-1029-214235-5580`
+passed in 2m38s at `67824a11b8`:
+
+- Canonical host JavaScript and declaration build passed.
+- Graphics source: **904/904**, 39 files, zero skips; the evidence registry
+  agrees with all 639 collected files.
+- Native C under the existing harness: **247/247**.
+- Workspace Rust excluding xtask: **3,395 passed**, zero failed or ignored,
+  across 98 result groups.
+- Normal ABI regeneration and checking passed, with no tracked generated
+  changes. Program 56 / kernel-host 3 / GL table 17 / fork record 21 remains
+  the single unpublished epoch. The existing xtask run at `ba845edaf4`
+  remains the applicable xtask evidence; this increment changes no xtask code.
+
+Logs are `.context/graphics-owned-combined-{host,source,registry,native,rust,abi-update,abi-check,generated}.log`.
+The adapter lane's causal failures covered missing implementation, malformed
+READ_PIXELS before busy admission, and retrying a completed rollback ACK.
+The forwarded context repair at `c8391c5fe9` separately passed the complete
+170-case ownership/entry selection at unchanged deadlines; earlier failed
+runs remain retained.
+
+This source result does not establish normal guest artifacts, upstream CTS,
+real three-engine rendering, cage/sway, browser-memory or POSIX conformance
+for the combined follow-up. Those checks remain required after coherent
+production integration. Main was fetched and remains `e4bca8639e4b`; the
+separate frozen cage/sway landing builds continue at their recorded commits.
+Performance was not measured.
+
+#### Private kernel import routing and retirement (2026-10-29)
+
+The existing `host_gl_query` import now routes its private control selector
+before live-context/current lookup. `GlKernelQueryControls` reserves exact
+session/token routing metadata before native admission, preflights bounded
+Rust scratch, and preserves the original full reply capacity on each control.
+Unknown Poll/Cancel/Commit cannot register an owner, and a new binding with a
+reused numeric session cannot replace a captured owner. Forwarded Begin is
+honestly rejected before native effects pending its separate owned transport;
+it never invokes the legacy synchronous mailbox.
+
+An explicit bounded drain advances native controls. Its callback carries only
+pid/session/registration/token and must schedule a later worker turn; Begin
+never drains or reenters Rust on its import stack. The copied-byte budget is
+8 MiB with 256 owners and 1,024 request records. These limits add no shared
+memory reservation. Teardown preparation keeps failed actual native cleanup
+and terminal ACK metadata; forgetting is a separate operation requiring an
+independently completed Rust lifecycle transition. Production worker intent
+scheduling and signal-driven exit remain unimplemented integration work.
+
+Five causal import tests failed before this wiring. The final six cases pass
+for both pointer widths, including full output-span rejection before capture,
+GET_ERROR Ready/Cancel/Commit, duplicate Commit, controls after context removal,
+foreign owner rejection and real texture-deletion failure followed by cleanup
+and ACK retry. An initial assertion attempted Commit without first observing
+Ready; it now explicitly verifies that premature Commit is rejected without
+consuming a flag, then follows the actual Rust protocol. The native cleanup
+fixture uses an actual context-owned texture, independently of the surviving
+public surface's storage.
+
+The final declared-shell source gates pass: canonical host JS/declarations,
+**910/910** graphics cases across 40 files, zero skips, and **170/170** entry/
+ownership audit cases at unchanged deadlines. Logs are
+`.context/graphics-kernel-query-controls-{before,expanded,host-final,source-final,audit-final}.log`.
+The new test is registered as source-only. The preceding full Rust 3,395,
+native C 247 and normal ABI checks remain tied to `67824a11b8`; this import
+increment changes no Rust or Wasm ABI surface. It does not enable a public
+pending result, complete two-sided error handling on the legacy path, or
+establish guest/browser/memory/conformance evidence for this increment.
+
+### Uniform-location publication foundation
+
+The host now stores each uniform location in one authoritative typed record,
+including native identity, named program, canonical path, immutable reflection
+and explicit reserved/published/invalid state. Setters, uploads and value queries
+accept published records only. Successful relinking invalidates unpublished
+reservations without exposing them; retired published IDs remain monotonic.
+Immediate queries keep existing public behavior, including aliases and failed
+allocation, using one record insertion rather than four partial map updates.
+
+Focused source evidence: 349/349 cases in seven files, zero skips, in positive
+checkout `.context/location-record-focused-final.log`. Two added controls reject
+reserved/invalid records through actual setters and value queries and retain an
+invalid reservation across a shared-peer relink. Bare host `tsc --noEmit` is not
+a passing gate: `.context/location-record-tsc.log` retains existing browser,
+OpenSSL root-directory and three graphics dependency diagnostics on this older
+base. The parent's newer dependency annotations and canonical combined check
+remain necessary. This is a publication foundation; retained query preparation,
+program-generation pins, owned adapter adoption, normal guests, real browsers,
+CTS and combined conformance remain open. No ABI or public pending behavior is
+activated by this change.
+
+The publication foundation is integrated at `05680c503f`, after private
+kernel-control routing `2cb8556ac1`. Its combined canonical host JavaScript/
+declaration build and graphics source selection pass **912/912** across
+40 files with zero skips. The parent's dependency annotations are present;
+the older lane's bare-tsc diagnostics are not presented as a passing gate.
+Logs: `.context/graphics-location-record-combined-{host,source}.log`.
+Typed uniform-query candidates, executable pins and adapter adoption remain
+in progress; record migration alone does not establish retained lookup
+publication or normal linked guest behavior.
+
+### Kernel lifecycle wrapper ordering (2026-10-29)
+
+Kernel wrappers now share a non-Clone internal lifecycle intent capturing the
+existing process exec generation and exact target, task, retry token, status
+or removal mode. Pending/faulted query retirement leaves that intent resumable
+and its actual resources in the process table. Exec/spawn preflight precedes
+PreparedExecTarget consumption; exit status, signal bookkeeping, thread/CTID
+publication, retry release and remove/reap effects follow acknowledged cleanup.
+An intent from an older exec generation cannot cancel a replacement image's
+receipt. Ordinary exec still drains competing prepared targets at commit.
+
+Existing exports have no typed pending result contract. Their one-shot wrappers
+fail closed on unresolved ownership before lifecycle mutation, rather than
+returning exit success, a cleared TID or a misleading absent-process result.
+The internal driver is callable and tested; no new export, public pending
+interpretation, opcode or ABI epoch is enabled. A future kernel-held opaque
+intent handle and typed step result need review. Host code cannot retain a
+Rust intent directly. Same-generation abandoned intents still require explicit
+prepared-target cancellation or normal process cleanup; old-generation scalar
+intent metadata may retire after normal exec has invalidated its targets.
+
+Focused declared-shell validation passes 19 kernel checks: ten causal driver
+cases, five existing source guards and four channel-pointer contracts. The
+actual Wasm32 kernel compile check passes. Tests exercise real kernel table
+identities, prepared executable leases, query receipts and cleanup effects;
+they do not duplicate a separate lifecycle model. VMA evidence is
+`.context/kernel-query-lifecycle-final.log` and
+`.context/kernel-query-lifecycle-wasm-final.log`. Initial test-fixture API/type
+mismatches were corrected before the passing runs.
+
+Generic runtime-core signal delivery still reaches its void terminating path;
+that path must route through pending intent scheduling before activation.
+Worker/forwarded scheduling, actual cleanup transfer or containment, normal
+combined artifacts, full Rust/ABI checks, real browser delivery, browser-memory
+and conformance remain required. These are ordinary remaining integration
+work, not platform boundaries or completed async support.
+
+#### Combined lifecycle integration evidence (2026-10-29)
+
+At `2d05917e24`, the generation-bound kernel lifecycle driver is integrated
+with private import routing and the uniform-location record foundation.
+Declared-shell checks pass: canonical host JS/declarations, **913/913**
+graphics source cases in 40 files with zero skips, the matching **640-file**
+evidence registry, **3,405** workspace Rust cases (zero failed or ignored,
+98 result groups), actual Wasm32 kernel compilation, and normal ABI
+regeneration/checking. The full five-file entry/ownership audit separately
+passes **170/170** at unchanged deadlines. The seventh import regression
+also proves that numeric session reuse cannot admit replacement work through
+an old registration while its original retirement controls remain reachable.
+
+Logs are `.context/graphics-lifecycle-combined-{host,source,registry,rust,wasm,abi-update,abi-check,audit}.log`.
+The foreground wrapper exits 1 only at its final unscoped `git diff` guard:
+`.context/graphics-lifecycle-combined-diff.log` shows the pre-existing dirty
+Sortix fixture at the same pinned commit. All preceding checks passed. A
+separate source-owned diff check excluding the two preserved external test
+fixtures exits 0, and the generated-output diff check exits 0; those logs are
+`.context/graphics-lifecycle-combined-{source-diff,generated}.log`. No fixture
+dirt was cleared, no output was restamped, and no ABI epoch was added.
+
+This checkpoint does not activate production async queries. Owned forwarding,
+worker progress, a kernel-held intent scheduler, generic signal-delivery
+ordering, remaining typed mutation candidates and actual forced cleanup or
+containment remain ordinary implementation work. Current normal cage/sway
+products and acceptance run independently on the frozen landing branch;
+follow-up rendered guests, CTS, browser-memory and conformance remain pending.
+
+### Generic signal retirement ordering (2026-10-29)
+
+Runtime-core's actual queued delivery, direct termination and default-action
+paths now expose internal `SignalProgress` results. A terminating default
+preflights every task's owned query before consuming the signal or clearing
+mask-wait/handler bookkeeping. Pending, transport failure, malformed replies
+and a foreign token's late acknowledgment preserve the actual queued signal,
+old masks, handler depths, process status and OFD pins. Legacy calls fail
+closed before those effects. The host-free dequeue guard also protects the
+kernel's separate default branch; resumable kernel signal scheduling must
+use the typed preflight before that consumer. Caught/ignored/stop/continue
+semantics do not cancel a query.
+
+Declared-shell checks pass 43 focused cases (eight new query/signal cases,
+34 existing signal cases and one wait-signal case), plus a Wasm32 runtime-core
+compile check. The tests use actual signal queues, query requests, retry
+tokens, OFD pins and scripted HostIO receipts. A first fixture assertion used
+the leader's absent ThreadInfo instead of its actual live-task identity; it
+was corrected before the passing repeat. Evidence:
+`.context/signal-query-retirement-focused.log` and
+`.context/signal-query-retirement-wasm.log` in the VMA alias.
+
+This closes the source ordering gap; kernel-held resumable signal intent,
+worker/forward scheduling and actual teardown custody or fatal containment
+remain integration work. No public pending/sentinel interpretation, export,
+import or ABI change is enabled. Full combined Rust/ABI gates, normal products,
+real browser delivery, browser-memory and POSIX conformance remain unrun for
+this increment and required before public async activation.
+
+### Prepared uniform query ownership
+
+`GlUniformQueryCandidate` prepares either uniform-location query family at an
+actual retained context lease. It keeps reply bytes, exact executable pins and
+unpublished location reservations until acceptance or retryable retirement.
+Publication mutates existing records and staged assembly state without required
+allocation. Cancel preserves prior assembly and reclaims only never-public IDs.
+Successful relinks invalidate old reservations; failed links preserve the old
+installed executable. Link-generation snapshots also prevent a chunked name
+from resolving a later in-place executable. The source control in
+`.context/uniform-query-generation-before.log` fails against the exact four
+prior modules from `f8e3f02ff6`; it returns success after the intervening relink.
+
+Copied lookup storage has an explicit configurable 8 MiB default budget per
+shared object group, independent of the 65,536-byte wire request cap. Actual
+reply, name, chunk and accepted assembly bytes are charged and released through
+cancellation, replacement and owner retirement. Exhaustion reports
+`GL_OUT_OF_MEMORY` without attempting the oversized allocation; the valid
+140,001-byte transfer remains covered. This is resource accounting, not a new
+API-size promise or an asserted platform boundary. Program pins own cloned
+context leases; failed native deletion retains the actual pin for cleanup retry.
+
+Focused source evidence is `.context/uniform-query-source-final.log`: 375/375
+cases in eight files, zero skips, including 24 candidate cases. The strict
+candidate/submit-execution dependency graph passes in
+`.context/uniform-query-strict-final.log`; this does not replace the parent's
+canonical complete host build. The evidence registry agrees on 638 files.
+The candidate API is an internal foundation: owned-result adoption, native /
+forwarded adapter integration, lost-acknowledgement and copyout-failure delivery
+controls, normal guests, browsers, CTS and conformance remain required. No public
+pending behavior, ABI bump, generated-output claim or normal build is included.
+The broader program-link clone rollback still has unchecked candidate-deletion
+paths; its general lifecycle repair remains an ordinary open item.
+
+### Kernel-held lifecycle intent registry (2026-10-29)
+
+The internal registry retains the actual non-Clone lifecycle driver behind
+positive monotonic i64 handles. It has a fixed 64-entry budget, a fallible
+try-lock against reentry and fallible entry reservation before effects.
+Existing PID allocation and exec generation remain identity authority.
+Pending/fault and pre-consumption refusals retain the exact intent/resources;
+finished results remain stable without repeating exec, exit, removal or CTID
+effects. Actual Completion ownership stays in the registry until explicit
+`take_completion` transfers it to a must-use Rust effects owner. The Taken
+scalar record means custody transfer, not host/native acknowledgment or effect
+execution, and remains budgeted until Forget.
+
+Unstarted ordinary abandonment leaves independent query ownership untouched.
+Started cancellation stays visibly irreversible and waits for actual cleanup
+ACK before abandonment can finish. Exec/spawn abandonment validates and
+cancels the real prepared-target OFD. It does not silently discard the target
+or release a guest query's terminal retry binding. Old-generation or removed
+process intents cannot touch a replacement image. Completed effects cannot be
+abandoned/forgotten before their explicit Rust custody move. The existing
+prepared-target cancel path's ignored release errno remains a cleanup gap;
+this registry does not invent a retryable close receipt or claim that gap fixed.
+
+An init-reap admission test found that the parent waitability predicate excludes
+unpublished spawn children, while actual init rollback reaping permits them.
+Its preflight now matches `reap_for_init` exactly, preserving that behavior.
+Declared-shell kernel validation passes 31 checks: 12 new registry cases,
+ten existing lifecycle driver cases, five source guards and four channel
+pointer contracts. Actual Wasm32 kernel compilation passes. Evidence in VMA:
+`.context/kernel-intent-registry-final.log` and
+`.context/kernel-intent-registry-wasm.log`.
+
+No export, wire tag, public pending/sentinel or ABI change is enabled. Real
+effects receivers, frozen signal scheduling, worker/forward progress and
+actual teardown custody or fatal containment remain integration work. Combined
+Rust/ABI, normal products, browser/browser-memory and conformance validation
+remain required before public async activation.
+
+### Prepared-target final-close custody (2026-10-29)
+
+An actual-path failure control reproduced that cancel swallowed `host_close`
+EIO, erased target/OFD ownership and let registry abandonment Forget it.
+Final native cancellation now first proves exact regular-file target/OFD
+identity, one local reference with no descriptor/executable alias and final
+ownership in the existing cross-process host-ref authority. Nonfinal or
+kernel-backed references preserve normal successful release behavior.
+
+The target and OFD are sealed before the one native close attempt. Successful
+HostIO acceptance creates a non-Clone exact preclosed proof, allowing normal
+OFD/advisory-lock teardown without closing the number a second time. An errno
+is ambiguous: the backend can have consumed its primary fd before reporting
+a companion-close error. The actual target and OFD remain quarantined, with
+no raw-number retry, re-probe, new reference, byte access, commit, false
+Abandoned state or Forget. Process removal, exec, fork/spawn serialization,
+exit and terminating-signal consumers refuse before consuming that holder.
+Unrelated newly opened targets can reuse the same native number safely.
+
+Focused declared-shell checks pass 37 kernel cases (including six new failure,
+success, shared-reference, reuse, containment and source-guard cases), 30
+runtime exec-target cases, 43 signal cases, 22 OFD cases and 49 fork cases.
+Actual Wasm32 kernel compilation passes. VMA logs use
+`.context/exec-target-close-custody-{kernel,runtime,signal,ofd,fork,wasm}.log`;
+the original failing control and patch are saved privately as
+`.context/exec-target-close-custody-repro.{log,patch}`. The source guard was
+narrowed from an overbroad module-wide close assertion to the actual cancel
+transaction; attach-executable setup cleanup remains explicitly out of scope.
+
+This closes cancel's lost-custody/false-success path, not uncertain physical
+cleanup. A real host receiver must distinguish consumed, provably unattempted
+and uncertain native operations before resolution or containment can release
+the holder. Other release sites, including failed prepare/probe/commit,
+competing-target drain, executable replacement and ordinary final close,
+retain separate error-retention gaps. These are ordinary implementation and
+integration work, not platform boundaries. No HostIO method/import, export,
+wire tag, ABI bump or public pending activation is added. Combined Rust/ABI,
+normal artifacts, real browser delivery, browser-memory and POSIX conformance
+remain required; browser launches are currently held at the user's request.
+
+### Retryable shader/program creation and link rollback
+
+Shader/program creation and replacement linking now reserve fixed native deletion
+receivers before creating native objects. A returned handle remains owned even
+when the native call also reports an error. Failed preparation, linking or name
+publication transfers cleanup to the existing retry ledger; rejected deletions
+remain pending instead of disappearing. An accepted name receives ownership only
+once. Failed program publication also removes its unpublished attachment metadata.
+
+Relink and use-program switches reserve up to two old-executable release slots
+before they can orphan native executables. Handles still named, current in any
+sharing context or pinned by an accepted query remain with those owners. Native
+cleanup preserves its original error queue, checks the exact physical executable
+and stops before deletion if unbinding fails. Query-pin/name cleanup likewise
+keeps custody when that selector change is rejected. These helpers are shared by
+Node and browser; no ABI or public pending mode changes are included.
+
+Focused source evidence in the positive checkout is
+`.context/program-rollback-source.log`: 325/325 cases in eight files, zero skips.
+The 17 added controls inject native API failures through the production command
+and lifecycle paths, including create/preparation/link/publication rollback,
+receiver allocation refusal before effects, accepted logical switches followed
+by failed deletion, query-pin retry and shared-peer error ownership. The first
+six controls fail on the preceding source in
+`.context/program-rollback-before.log`; abandoned native handles have no retry
+owner. The strict program-objects/native-recovery dependency graph passes in
+`.context/program-rollback-strict.log`. This is source/model evidence, not real
+browser-driver validation.
+
+This closes the creation/link rollback item recorded in the preceding entry.
+General immediate whole-context teardown still has direct shader/program native
+deletions outside these receivers; its failure custody remains an ordinary open
+lifecycle item. The parent's complete host build, normal artifacts, guests,
+real browsers, browser-memory, CTS and combined conformance remain unrun here.
+
+### Current untraced compositor selection and checked launches (2026-10-29)
+
+The frozen landing source `0b0b69b196` now passes the full 25-case Node
+compositor/device selection across 11 files, with zero skips and unchanged
+deadlines. Cage, sway and foot all pass. The run was explicitly untraced
+(`KANDELO_SWAY_TRACE` unset), used normal resolver policy and completed in
+158.40 seconds. Job `cage-sway-early-node4-rootfs-1029-222317-858c` succeeded
+in 3m04s; its final status reports `node=0` and `identities=0`.
+
+A preceding traced selection passed all compositors but failed two DRM cases
+because the default rootfs image was absent. The normal declared
+`platform-rootfs` product closure and canonical rootfs builder provisioned
+that image before the successful untraced repeat. No fixture was copied or
+restamped. The seven selected owners, kernel, SDKs, metadata, source and
+aggregate artifact inventories are identical before and after the passing
+run; only collection time differs. Evidence is
+`.context/cage-sway-early-node4-artifacts-before.json`, its `-after.json`
+peer and the file-alias checkout's
+`.context/cage-sway-early-node4.log`. The historical `9088f31021` sway
+timeouts retain no demonstrated cause; this new pass does not explain them.
+
+New private reruns use `.context/graphics-job.py` with named records in
+`.context/graphics-jobs.json`, documented in `.context/graphics-jobs.md`.
+All manifest paths resolve from the primary workspace, independently of the
+caller's working directory. Launch preflight verifies the actual checkout
+root, expected commit, tracked source changes, exact script hash and Bash
+syntax, rejects changed inputs during validation and checks existing job
+ownership immediately before launch. It prints the resolved absolute paths
+and reviewed identities. Existing already-scheduled orchestration remains
+unchanged; this is neither a new public build API nor an atomic checkout lock.
+
+Declared-shell validation passes ten launcher checks: identical resolution
+from workspace/nested checkout/`/tmp`, four invalid-input rejections, an
+actual harmless smoke launch from `/tmp`, and two controls for changing
+manifest inputs or a writer appearing during preflight. Review found and
+corrected both latter ordering gaps before final validation. Evidence:
+`.context/graphics-job-validation.log`. These checks do not run graphics
+assertions or establish graphics compatibility.
+
+The next three-engine rendered compositor selection is launched through the
+named launcher with before/after artifact collection. Its first invocation
+stopped at the collector's missing explicit xtask-environment guard before
+any browser test. The corrected script declares this checkout's built xtask;
+`cage-sway-rendered-current-1029-225237-5c76` reaches the six real browser
+cases. It finished 3/6: cage passes in Chromium, Firefox and WebKit; all
+three sway cases stop before launch because the normal swaybg package is
+absent. Its artifact identities are unchanged before/after. This is
+provisioning, not a demonstrated compositor defect. Normal bootstrap now
+materializes verified swaybg/coreutils cache entries before the named
+repeat `cage-sway-rendered-current-1029-225521-080b`; its result is pending.
+The failed run and its traces remain retained. No assertion is weakened.
+Full current landing products, gallery acceptance, browser-memory and POSIX
+conformance remain required. Follow-up source increments through `5eea9ca9f4`
+have their individual evidence above; latest combined validation remains
+pending. No ABI increment or public asynchronous activation is included.
+
+The provisioned repeat `cage-sway-rendered-current-1029-225521-080b`
+succeeded in 3m34s. All six real rendered sessions pass: cage and sway in
+Chromium, Firefox and WebKit, with input and cooperative exit assertions.
+Final status is `browser=0` / `identities=0`. Before/after source, kernel,
+SDK, metadata, aggregate and all nine selected owner inventories are
+identical; only collection time differs. Evidence:
+`.context/cage-sway-early-rendered2-artifacts-before.json`, its `-after.json`
+peer and the file-alias checkout's `.context/cage-sway-early-rendered2.log`.
+Normal bootstrap materialized verified swaybg/coreutils entries; no hand
+copy or restamp occurred. This passes the focused rendered contract at
+`0b0b69b196`, not the full gallery/browser-memory/conformance acceptance.
+Historical failures and the two preceding setup failures remain retained.
+
+### Native receipt adoption of prepared uniform queries
+
+The internal native query adapter now prepares both uniform-location families
+against its captured execution lease. Pure request framing validation runs
+before lease capture. The preallocated receipt retains an actual bootstrap lease
+and typed preparation receiver, including when native preparation or transfer
+throws. Native custody accepts a real candidate once, checks its exact logical
+source and retains it until terminal publication or cancellation and cleanup.
+
+Ready and Poll expose copied replies without publishing locations or changing
+name assembly. Commit publishes once, then retries real cleanup independently;
+a refused publication still cancels undecided staging and retires its owners.
+Cancel preserves the preceding assembly and reclaims unpublished identities.
+Native pin/context deletion failures retain real custody and result charges
+until cleanup accepts. Branded preparation failures propagate while their
+bounded execution record reaches quiescence and keeps rollback ownership.
+
+Focused source evidence in the positive checkout is
+`.context/uniform-native-source.log`: 219/219 cases in six files, zero skips,
+including 17 added adapter controls. These cover native lookup once, private
+Ready, lost Commit acknowledgement, Cancel, peer relinks, actual failed native
+pin/context cleanup, staged assembly, source replacement, denied publication,
+failed bootstrap release and thrown preparation/transfer. Two controls fail
+against exact pre-adoption adapter/custody sources in
+`.context/uniform-native-before.log`. Forwarding regressions separately pass
+55/55 in two files, `.context/uniform-native-forward.log`. Strict helper graph
+checking passes in `.context/uniform-native-strict.log`; the canonical host
+JavaScript and declaration build passes in `.context/uniform-native-host-build.log`.
+
+This is an internal native adapter increment. No production pending branch,
+wire/ABI change, forwarded uniform admission or kernel copyout integration is
+activated. Copyout cancellation is modeled with receipt Cancel; actual kernel
+fault/lost-delivery integration, normal artifacts, real browsers, CTS,
+browser-memory and POSIX validation remain required on the combined tree.
+
+### Combined registry, rollback and native uniform checkpoint (2026-10-29)
+
+At `70c8d7f865`, the combined follow-up includes generic signal retirement
+ordering, actual kernel-held lifecycle intents, retryable shader/program
+rollback, optional owned forwarding and native uniform candidate adoption.
+Declared-shell canonical host JavaScript/declaration build passes. The
+complete graphics source gate passes 993/993 in 42 files with zero skips;
+the evidence registry agrees on 642 files. Full Rust workspace validation
+excluding the separately completed xtask passes 3,425 cases in 98 result
+groups, with zero failed or ignored. Actual Wasm32 kernel compilation,
+normal ABI regeneration/checking and all 170 ownership/entry audit cases
+pass. Audit deadlines are unchanged. Generated outputs are unchanged.
+
+The foreground driver exits zero. Source-owned and generated-output guards
+both produce empty diffs; only the two pre-existing external fixture paths
+are excluded from the source-owned guard. User fixture and `.serena/` state
+remain preserved. Logs have the `.context/graphics-registry-combined-`
+prefix: `host`, `source`, `registry`, `rust`, `wasm`, `abi-update`,
+`abi-check`, `audit`, `source-diff` and `generated-diff`.
+
+This validates the integrated source checkpoint, not normal guest rendering
+of the remaining baseline. Program ABI 56 / host 3 / GL 17 / fork 21 remain
+fixed. Current landing `0b0b69b196` separately passes the untraced 25-case
+Node selection and six three-engine rendered compositor sessions above.
+Its full normal products, gallery, browser-memory and conformance stage
+remains queued behind the existing normal artifact writer. Public
+asynchronous query activation, remaining mutation families, worker/lifecycle
+receivers, server waits and the rest of the baseline inventory remain
+ordinary implementation and validation work.
+
+### Executable eligibility failures keep cleanup armed
+
+Ownership filtering now runs inside the pending native retirement collector,
+so an iterator or lookup failure after an accepted relink/use switch retains
+the exact native handle for retry. Unknown ownership never permits deletion.
+The pre-reserved guard holds only a weak reference to the exact object group;
+actual bindings retain their group strongly, and query pins retain their exact
+group and context lease. The physical installed-program check and checked unbind
+still precede deletion. Cleanup attempts both receivers and preserves an earlier
+thrown operation failure even if cleanup also throws.
+
+Two production-path controls fail on the preceding source because the receiver
+remains invisible to `hasNativeRepair`; see positive-checkout
+`.context/executable-filter-before.log`. After the fix, eight added controls
+cover relink/use failures, named/shared-current/query-pin protection and original
+exception precedence. Focused source evidence is 362/362 in nine files, zero
+skips, `.context/executable-filter-source.log`; strict lifecycle graph checking
+passes in `.context/executable-filter-strict.log`. No forced-GC, real driver,
+normal artifact, browser or conformance evidence is added by this source batch.
+No ABI, public query activation or new cleanup registry is introduced.
+
+### Combined executable cleanup checkpoint (2026-10-29)
+
+At `a6b309e26b`, executable-eligibility cleanup remains armed across failed
+ownership inspection. Prepared executable cancellation also seals the actual
+target and open file description before its single native close attempt.
+An uncertain close retains custody instead of retrying a reused descriptor;
+physical resolution of uncertain ownership remains an implementation gap.
+
+The declared-shell logs `.context/graphics-close-combined-*` record canonical
+host JavaScript/declaration build, 1,001/1,001 graphics cases in 42 files
+without skips, evidence registry agreement, and 3,431 Rust cases in 98
+result groups without failures or ignored tests. Actual Wasm32 kernel
+compilation, normal ABI regeneration/check and all 170 ownership/entry audit
+cases pass. Source-owned and generated-output diff logs are empty. The
+foreground session is no longer available for a separate driver exit-status
+claim. These source checks do not establish normal guest compatibility.
+
+The user explicitly resumed browser checks with headless Playwright only.
+The older mixed coordinator was intentionally stopped after its completed
+normal products, 239 program fixtures, Freeciv case and 25 Node cases;
+its final 137 is an intentional stop, not a test result. Its queued successor
+was canceled with 143. Current landing source `0b0b69b196` is running the
+complete acceptance sequence as job
+`cage-sway-headless-landing-1029-234259-30a4`. An explicit headless wrapper
+covers the rendered selection; the unmodified browser-memory gate also has
+its launch settings checked before execution. No acceptance result is
+claimed while that job remains live.
+
+A separate headless Chromium check boots both current cage/sway gallery
+profiles on the persistent local server at `http://127.0.0.1:5630/`, observes
+actual GLES2 display ownership and nonblank rendered canvases, and records
+no page errors. Evidence is the fork checkout's
+`.context/demo-urls-verified.json`, `.context/check-cage-sway-demo-url.log`
+and `.context/demo-{cage,sway}-verified.png`. The first private check failed
+only because its renderer-label comparison was case-sensitive; its log is
+preserved as `.context/check-cage-sway-demo-url-first.log`. This quick URL
+verification supplements the earlier six full compositor cases; it does
+not replace their input, exit, or three-engine assertions.
+
+The user has requested a real labwc port now. That package and its normal
+shell/gallery consumer are being developed separately from the cage/sway
+landing. A working labwc session is not yet established, and no labwc
+performance or memory claim is made.
 
 ### Sway density policy and readable defaults (2026-10-30)
 
@@ -8472,3 +10187,207 @@ Playwright discovery of all nine Sway cases across three engines. Evidence:
 These checks do not establish repaired Sway rendering or input. Normal
 consumer execution remains an integration gate; application, host sizing,
 artifacts and ABI are unchanged by this test-only correction.
+
+
+### Concrete thread-exit effects receiver (2026-10-29)
+
+The existing synchronous `kernel_thread_exit` export consumes the actual
+kernel intent registry through its real clear-child-TID receiver. Admission
+freezes the host's clear flag; completion moves non-Clone effects into the
+same reserved entry before HostIO. The receiver checks the captured exec
+generation and pointer width, publishes the existing synchronous peer-memory
+zero store and kernel futex wake once, and preserves the original pointer,
+negative errno and ignored store-fault semantics. Repeated delivery cannot
+repeat publication. A trapped import retains actual effects and faults
+closed. The former inline publication is removed.
+
+Removal/init-reap delivery holds actual cleanup vectors and wait status as
+`PendingPhysicalReceiver`; it cannot Forget or claim physical retirement.
+Existing void/ignored-error removal consumers remain an ordinary integration
+gap. Other scalar receivers validate actual committed process-table state;
+they do not acknowledge native cleanup or worker launch. Asynchronous guest
+memory-registration authority, opaque intent scheduling, real physical
+receivers, final owned-query activation and wider baseline work remain open.
+No imports, exports, opcode, ABI epoch or public asynchronous behavior change.
+
+Focused declared-shell evidence from the VMA source checkout: `cargo test -p
+kandelo --target aarch64-apple-darwin` passes 45 kernel checks plus four
+pointer-contract checks (zero skips). Twelve added checks use the actual
+query receipt/ProcessTable/HostIO path for wrong/late ACK, pending cleanup,
+frozen clear flag, ignored write fault, trapped publication, replacement
+exec generation, pointer-width containment, retained removal/init-reap
+custody, stable scalar delivery and the single export consumer. The focused
+`cargo check -p kandelo --target wasm32-unknown-unknown -Z
+build-std=core,alloc` also passes. Logs:
+`.context/effects-native.log` and `.context/effects-wasm.log`. Normal artifacts,
+full Rust/ABI gates, browser-memory, conformance and real compositor/browser
+validation are not claimed by this focused batch; the parent integration
+owns those checks. Program 56 / host 3 / GL 17 / fork 21 remain fixed.
+
+
+### Combined owned-forward and lifecycle foundation (2026-10-30)
+
+The follow-up foundation from `767b37a63b` now includes the compositor
+landing through `e570722d11`, preserving its cursor/GETFB ownership and
+regenerated cursor ABI outputs. Merge `3587825679` preserves both histories;
+`ee107be5c5` preserves the attributed `eb5fff213b` owned-forward change, and
+`f263a87f08` preserves `af22b40812` with both evidence sections retained.
+No baseline source file or named lifecycle/request/receipt control was
+removed. Program 56 / host 3 / GL 17 / fork 21 remain fixed; cursor snapshot
+and generated outputs are byte-identical to the landing checkpoint.
+
+The private kernel query-control route can use an explicitly associated
+owned forward endpoint. It retains first-input bytes and exact source/order
+before actual renderer admission, then keeps native custody and uncertain
+sends until authenticated cleanup acknowledgements. Typed scalar retirement
+and endpoint closure preserve real receiver authority; successful posting,
+void callbacks, timeout or Unknown are never physical-cleanup proof.
+The existing synchronous thread-exit export now uses the retained actual
+kernel effects receiver for its clear-child-TID store/wake. Public pending
+queries, generic EAGAIN conversion and EGL server waits remain disabled.
+
+Focused combined declared-shell evidence in the isolated
+`.context/graphics-next-foundation` checkout:
+
+| Check | Result | Private log |
+| --- | --- | --- |
+| Graphics source gate | 1020 passed, 43 files, no skips | `foundation-graphics.log` |
+| Strict forwarding dependency types | passed | `foundation-forward-types.log` |
+| Canonical host JavaScript/declarations | passed | `foundation-host-build.log` |
+| Evidence registry | 643 files agree | `foundation-evidence-registry.log` |
+| Kernel lifecycle/source and pointer contracts | 45 + 4 passed | `foundation-kernel-native.log` |
+| Actual kernel Wasm32 check | passed | `foundation-kernel-wasm.log` |
+| Query codec/receipt, retained engine and public preflight | 9 + 8 + 11 passed | `foundation-query-rust.log`, `foundation-retained-query-rust.log`, `foundation-glio-query-rust.log` |
+| KMS ownership and fork/spawn framebuffer references | 43 + 1 + 1 passed | `foundation-kms-rust.log`, `foundation-kms-fork.log`, `foundation-kms-spawn.log` |
+| Shared DRM layout/number and ioctl contracts | 10 + 13 passed | `foundation-dri-contract.log`, `foundation-ioctl-contract.log` |
+
+These are 145 scoped Rust checks, not the whole Rust suite. Wasm checking
+compiles the actual changed export wrapper; no normal kernel artifact or
+full ABI snapshot producer was built by this source batch. Existing cursor
+ABI outputs were preserved, not regenerated from an unrelated artifact.
+
+Ordinary implementation work remains: actual worker intent scheduling and
+query wake integration, process-lifecycle physical retirement receivers,
+accepted-query/fatal-containment ownership, queued outbound command admission
+instead of bounded zero-effect refusal, broader typed publication candidates,
+coherent public owned-query activation and real EGL server waits. Native
+raw-default retention and the other inventory gaps remain open. None is
+claimed as a platform boundary or silently completed by this integration.
+Normal SDK/kernel/program/image builds, Node/browser consumer rendering,
+browser-memory, upstream CTS breadth and required POSIX conformance remain
+separate combined-implementation gates. No products, application browsers,
+full workspace Rust suite or memory-writer job ran in this batch.
+
+### Shared worker turns for private owned queries (2026-10-30)
+
+Accepted kernel-private query controls now notify the shared Node/browser
+`CentralizedKernelWorker` through a scalar work hint. The notification is
+registered after central owner/token metadata reservation and also runs after
+an uncertain backend response, so accepted native custody cannot be stranded
+by a lost Begin reply. The callback schedules a later worker turn and enters
+the existing kernel gate afresh; it never reenters Rust on the import stack,
+retains a guest-memory view, or wakes a generic blocked syscall.
+
+The bounded turn pumps the existing native/forward owners and submit queue.
+Actual ticket readiness and unvisited runnable work continue quota-limited
+turns; pending counts, a blocked prefix, uncertain remote admission and failed
+native cleanup do not trigger polling loops. Forward endpoint grants and
+fully authenticated query/owner progress notify the same driver. Duplicate
+Pending replies are deduplicated. Old backend-generation hints cannot activate
+a replacement. A worker fault cancels scheduled turns while retaining actual
+receipt/native custody; stopping a callback is not a retirement ACK.
+
+Source evidence from `.context/graphics-query-wakes`, based on `c7666be0da`:
+
+| Check | Result | Private log |
+| --- | --- | --- |
+| Four worker/import controls before the worker connection | fail: admitted queries remain Pending without manual drain | `query-wakes-before.log` |
+| Focused worker/import and paired receiver controls | 33 passed before the final lost-admission case | `query-wakes-composed.log` |
+| Complete graphics source gate, including final lost-admission and remote Pending/cleanup cases | 1030 passed, 44 files, no skips | `query-wakes-source-final.log` |
+| Strict shared worker/graphics dependency types and canonical host JS/declarations | passed | `query-wakes-types-build-final.log` |
+| Entry-authority and complete runtime memory ownership audits | 34 passed | `query-wakes-entry-audits-final.log` |
+| Evidence registry | 644 files agree | `query-wakes-evidence-registry.log` |
+
+The new controls exercise actual private imports from a gated fixture Wasm
+export, later-turn execution once at both pointer widths, 79 exact owner lanes
+with a blocked prefix, renewed cleanup retry, backend replacement, retained
+custody on worker fault, a lost native admission response, and the actual
+paired main receiver with a lost Commit ACK. They are source/model evidence,
+not normal guest, browser, compositor, memory reclamation or performance proof.
+
+The memory ownership audit also identified a missing inventory entry for the
+existing private reply destination producer from the prior owned-forward
+increment. Its exact reviewed entry now records the original full-span
+preflight and one-shot Rust-lent copyout contract; no broad ownership exception
+or audit assertion changed. The failing audit log is retained as
+`query-wakes-entry-audits-source-fixed.log`.
+
+Public query parking stays disabled. The Rust opaque intent/channel scheduler,
+operation-specific guest retry and wake authority, lifecycle physical receiver
+completion, native/forward activation and real EGL server waits still require
+coordinated implementation. The renderer endpoint remains explicitly optional;
+its normal main-thread scheduler is not activated by this batch. Other ordinary
+baseline gaps listed above remain open. No ABI epoch, import/export, control
+wire or public EAGAIN behavior changed. No normal products, full Rust suite,
+application browsers or browser-memory job ran here.
+
+### Default owned renderer factory turns (2026-10-30)
+
+The optional owned path in the actual `setupMainForward` factory now supplies
+its existing `GlOwnedForwardRetirements` holder as the default later-turn
+scheduler. The holder already owns the real endpoint/controller/native cleanup
+capabilities. It accepts only an issued retained controller epoch, captures
+`setTimeout`/`clearTimeout` at construction, and coalesces scalar work hints
+into a one-shot next-turn task. This task visits at most 32 actual controllers
+in FIFO order, then continues only actual native/command quota-runnable work.
+Elapsed time, Pending replies and failed cleanup never establish completion
+or cause timer polling. Unexpected driver/allocation failure remains visible
+and retains actual custody without an automatic retry loop.
+
+Authenticated control admission, scalar retirement and closure/release events
+request this real driver. Explicit external `queueDrain` overrides remain
+available; their exceptions are visible, and synchronous/reentrant drain
+attempts fail before native execution. Disposal retains the actual listener
+and holder until authenticated cleanup/release acknowledgement; cancelling a
+task is never treated as that proof.
+
+Causal composition found two connected lifecycle defects. A lost closing ACK
+plus failed native cleanup made duplicate endpoint-close notices continually
+wake the shared worker (10 drains grew to 15 over five otherwise idle test
+turns). Duplicate notices now retransmit the closing ACK without recreating a
+scalar intent or waking unchanged owner state. Separately, newly admitted
+scalar retirement after the last query Forget had no worker work signal.
+First/new and explicitly renewed pending scalar intent now notify the existing
+exact owner work registration. An already completed exact source on an
+irrevocably closed owner remains idempotent. These changes preserve actual
+receiver/source custody rather than inferring cleanup from a successful post.
+
+Source evidence from `.context/graphics-renderer-turns`, based on `43acfe4598`:
+
+| Check | Result | Private log |
+| --- | --- | --- |
+| Factory cases before the default connection | 2 fail: Pending/stalled command queue | `renderer-turns-before.log` |
+| Coupled worker/factory close case before duplicate-notice repair | fail: repeated drains while closing ACK is lost and cleanup fails | `renderer-closing-before.log` |
+| Complete graphics source gate | 1042 passed, 44 files, no skips | `renderer-turns-source-accepted.log` |
+| Strict worker/renderer graph and canonical host JavaScript/declarations | passed | `renderer-turns-types-host.log` |
+| Entry, full runtime memory ownership and fatal-export audits | 43 passed | `renderer-turns-authority-audits.log` |
+| Evidence registry | 644 files agree | `renderer-turns-evidence-registry.log` |
+
+The added controls use the actual exported factory and same endpoint/submit
+queue, including private kernel import and shared worker turns at both pointer
+widths with no manual drains, 70 endpoint fairness, later command execution,
+failed cleanup with explicit renewed work, lost ACK, stale/invalid authority,
+captured timer intrinsics, visible override failure, rejected inline draining,
+last-query Forget and real authenticated receiver release. This is source/model
+evidence, not real browser rendering, guest scheduling, memory reclamation or
+performance evidence.
+
+Public association and Rust opaque intent/channel scheduling, public owned
+query parking, generic retry wakeups, complete process/worker shutdown and
+failure containment, and real EGL server waits remain ordinary open work.
+This default driver applies when an owned endpoint is explicitly supplied; it
+does not activate owned association in the normal host or replace the legacy
+public query path. Other inventory gaps remain open. No ABI epoch, generated
+ABI output, import/export, control wire, sentinel or public EAGAIN activation
+changed. Normal products, full Rust tests, application browser and
+browser-memory validation were not run by this source increment.

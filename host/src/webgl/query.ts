@@ -1,3 +1,5 @@
+import { publishedUniformLocation } from "./object-group.js";
+import { interruptUniformUpload } from "./uniform-upload.js";
 import { repairNativeState } from "./native-recovery.js";
 import { reconcileClientArrayRestore } from "./client-array.js";
 import { querySurfaceCapabilities } from "./surface-capabilities.js";
@@ -117,6 +119,7 @@ export function runGlQuery(
   input: Uint8Array,
   out: Uint8Array,
 ): number {
+  if (interruptUniformUpload(b)) return -5;
   if ((op === O.QOP_FINISH || op === O.QOP_FLUSH) && (input.byteLength !== 0 || out.byteLength !== 0)) return -22;
   if (op === O.QOP_SURFACE_CAPABILITIES) {
     if (input.byteLength !== 0 || out.byteLength !== 16) return -22;
@@ -432,7 +435,8 @@ export function runGlQuery(
     case O.QOP_CHECK_FB_STATUS: {
       if (input.byteLength < 4 || out.byteLength < 4) return -22;
       const target = inDv.getUint32(0, true);
-      const surface = target === 0x8ca8 ? b.currentDrawable?.readSurfaceId : b.currentDrawable?.drawSurfaceId;
+      const drawable = b.executionDrawable?.drawable ?? b.currentDrawable;
+      const surface = target === 0x8ca8 ? drawable?.readSurfaceId : drawable?.drawSurfaceId;
       const status = validFramebufferTarget(target) && surface === 0 && isDefaultFramebuffer(b, boundFramebuffer(b, target))
         ? GL_FRAMEBUFFER_UNDEFINED : gl.checkFramebufferStatus(target);
       outDv.setUint32(0, status, true);
@@ -472,8 +476,8 @@ export function runGlQuery(
         const fail = (error: number) => { recordGlError(b,error); return -22; };
         const program = b.programs.get(name);
         if (!program) return fail(b.shaders.has(name) ? 0x502 : 0x501);
-        const location = b.uniformLocations.get(index);
-        if (!location || b.uniformLocationPrograms.get(index) !== name) return fail(0x502);
+        const location = publishedUniformLocation(b,index)?.native;
+        if (!location || publishedUniformLocation(b,index)?.program !== name) return fail(0x502);
         let linked = false, value: unknown;
         if (!checkedGlCall(b,() => { linked = !!gl.getProgramParameter(program,0x8b82); })) return -5;
         if (!linked) return fail(0x502);
@@ -496,7 +500,7 @@ export function runGlQuery(
     case O.QOP_GET_UNIFORMIV: {
       if (input.byteLength < 8 || out.byteLength < 4) return -22;
       const prog = b.programs.get(inDv.getUint32(0, true));
-      const loc = b.uniformLocations.get(inDv.getInt32(4, true)) ?? null;
+      const loc = publishedUniformLocation(b,inDv.getInt32(4, true))?.native ?? null;
       const value = prog && loc ? gl.getUniform(prog, loc) : null;
       return writeNumericValues(outDv, out.byteLength, value, op === O.QOP_GET_UNIFORMFV, 0);
     }
@@ -604,6 +608,6 @@ function normalizeNumericValues(value: unknown, pname: number): number[] {
   if (typeof value === "boolean") return [value ? 1 : 0];
   if (typeof value === "number") return [value];
   if (Array.isArray(value)) return value.map(Number);
-  if (ArrayBuffer.isView(value)) return Array.from(value as ArrayLike<number>, Number);
+  if (ArrayBuffer.isView(value)) return Array.from(value as unknown as ArrayLike<number>, Number);
   return [Number(value) || 0];
 }

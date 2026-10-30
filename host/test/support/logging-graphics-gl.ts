@@ -1,7 +1,7 @@
 import { foreignTextureGl } from "./foreign-texture-gl";
 
 /** Stateful allocation/ownership double; pixels are verified in browsers. */
-export function loggingGraphicsGl() {
+export function loggingGraphicsGl(uniforms: {name:string;size:number;type:number}[] = []) {
   const calls: [string, unknown[]][] = [];
   const native = foreignTextureGl();
   const compiled = new Set<unknown>(), linked = new Set<unknown>();
@@ -29,7 +29,20 @@ export function loggingGraphicsGl() {
         }
         if (key === "getShaderParameter" && args[1] === 0x8b81) return compiled.has(args[0]);
         if (key === "getProgramParameter" && args[1] === 0x8b82) return linked.has(args[0]);
-        if (key.startsWith("create") || key === "getUniformLocation") return {};
+        if (key === "getProgramParameter" && args[1] === 0x8b86) return uniforms.length;
+        if (key === "getActiveUniform") return uniforms[Number(args[1])] ?? null;
+        if (key === "getUniformLocation") {
+          const name=String(args[1]).replace(/\[0*(\d+)\]/g,"[$1]");
+          return uniforms.some(info=>{
+            if(info.name===name) return true;
+            if(!info.name.endsWith("[0]")) return false;
+            const base=info.name.slice(0,-3);
+            if(name===base) return true;
+            const element=name.startsWith(base)?/^\[(\d+)\]$/.exec(name.slice(base.length)):null;
+            return !!element && Number(element[1])<info.size;
+          })?{}:null;
+        }
+        if (key.startsWith("create")) return {};
         if (key.startsWith("get")) return 0;
       };
     },
