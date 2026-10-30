@@ -6,6 +6,7 @@ use crate::process_table::{ProcessTable, RemoveProcessResult};
 use crate::syscalls::{self, GlQueryTeardown};
 use wasm_posix_shared::Errno;
 
+pub(crate) mod effects;
 pub(crate) mod registry;
 
 #[derive(Clone, Copy, Debug)]
@@ -29,6 +30,7 @@ pub(crate) enum Request {
     ThreadExit {
         pid: u32,
         tid: u32,
+        clear_child_tid: bool,
     },
     SignalExit {
         pid: u32,
@@ -244,7 +246,7 @@ impl Intent {
                 }
                 Completion::Exit(proc.exit_status)
             }
-            Request::ThreadExit { pid, tid } => {
+            Request::ThreadExit { pid, tid, .. } => {
                 let (proc, locks) = table.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
                 let thread = syscalls::cleanup_exiting_thread_with_state(proc, locks, host, tid)?;
                 Completion::ThreadExit(thread.ctid_ptr)
@@ -289,6 +291,7 @@ pub(crate) fn legacy(
 
 #[cfg(test)]
 mod tests {
+    mod effects_tests;
     mod registry_tests;
     use super::*;
     use crate::{
@@ -312,6 +315,9 @@ mod tests {
         closed: Vec<i64>,
         close_error: Option<Errno>,
         preads: Vec<i64>,
+        writes: Vec<(i32, u64, Vec<u8>)>,
+        write_result: i32,
+        trap_write: bool,
     }
     impl Host {
         fn new() -> Self {
@@ -321,6 +327,9 @@ mod tests {
                 closed: Vec::new(),
                 close_error: None,
                 preads: Vec::new(),
+                writes: Vec::new(),
+                write_result: 0,
+                trap_write: false,
             }
         }
         fn reply(&mut self, token: i64, control: Control, mode: Option<Mode>, reply: Reply) {
@@ -383,6 +392,12 @@ mod tests {
         }
     }
     impl HostIO for Host {
+        fn proc_write_bytes(&mut self, pid: i32, addr: u64, bytes: &[u8]) -> i32 {
+            self.writes.push((pid, addr, bytes.to_vec()));
+            assert!(!self.trap_write, "injected peer-write trap");
+            self.write_result
+        }
+
         fn host_close(&mut self, h: i64) -> Result<(), Errno> {
             self.closed.push(h);
             if let Some(error) = self.close_error.take() {
@@ -738,7 +753,15 @@ mod tests {
         let (mut table, mut host, pid, base, _table_guard) = fixture();
         let tid = table.create_thread(pid, pid, 0, 0, 0x2000).unwrap();
         let (token, _) = admit(&mut table, &mut host, pid, tid, base);
-        let mut intent = Intent::capture(&table, Request::ThreadExit { pid, tid }).unwrap();
+        let mut intent = Intent::capture(
+            &table,
+            Request::ThreadExit {
+                pid,
+                tid,
+                clear_child_tid: false,
+            },
+        )
+        .unwrap();
         pending(&mut host, token);
         assert!(matches!(
             intent.step(&mut table, &mut host),

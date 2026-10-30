@@ -10187,3 +10187,39 @@ Playwright discovery of all nine Sway cases across three engines. Evidence:
 These checks do not establish repaired Sway rendering or input. Normal
 consumer execution remains an integration gate; application, host sizing,
 artifacts and ABI are unchanged by this test-only correction.
+
+
+### Concrete thread-exit effects receiver (2026-10-29)
+
+The existing synchronous `kernel_thread_exit` export consumes the actual
+kernel intent registry through its real clear-child-TID receiver. Admission
+freezes the host's clear flag; completion moves non-Clone effects into the
+same reserved entry before HostIO. The receiver checks the captured exec
+generation and pointer width, publishes the existing synchronous peer-memory
+zero store and kernel futex wake once, and preserves the original pointer,
+negative errno and ignored store-fault semantics. Repeated delivery cannot
+repeat publication. A trapped import retains actual effects and faults
+closed. The former inline publication is removed.
+
+Removal/init-reap delivery holds actual cleanup vectors and wait status as
+`PendingPhysicalReceiver`; it cannot Forget or claim physical retirement.
+Existing void/ignored-error removal consumers remain an ordinary integration
+gap. Other scalar receivers validate actual committed process-table state;
+they do not acknowledge native cleanup or worker launch. Asynchronous guest
+memory-registration authority, opaque intent scheduling, real physical
+receivers, final owned-query activation and wider baseline work remain open.
+No imports, exports, opcode, ABI epoch or public asynchronous behavior change.
+
+Focused declared-shell evidence from the VMA source checkout: `cargo test -p
+kandelo --target aarch64-apple-darwin` passes 45 kernel checks plus four
+pointer-contract checks (zero skips). Twelve added checks use the actual
+query receipt/ProcessTable/HostIO path for wrong/late ACK, pending cleanup,
+frozen clear flag, ignored write fault, trapped publication, replacement
+exec generation, pointer-width containment, retained removal/init-reap
+custody, stable scalar delivery and the single export consumer. The focused
+`cargo check -p kandelo --target wasm32-unknown-unknown -Z
+build-std=core,alloc` also passes. Logs:
+`.context/effects-native.log` and `.context/effects-wasm.log`. Normal artifacts,
+full Rust/ABI gates, browser-memory, conformance and real compositor/browser
+validation are not claimed by this focused batch; the parent integration
+owns those checks. Program 56 / host 3 / GL 17 / fork 21 remain fixed.

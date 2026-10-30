@@ -1764,7 +1764,8 @@ are the kernel-started Kandelo exchange agent and every orphan adopted as
 described next.
 
 The graphics integration also has an internal kernel-owned lifecycle intent
-registry; no host export uses it yet. It retains the actual non-Clone driver
+registry. The existing synchronous `kernel_thread_exit` export now uses it;
+no opaque registry handle is exported. It retains the actual non-Clone driver
 intent with its existing PID/exec generation and exact request. Its 64-entry
 budget includes completed and taken scalar records. Admission reserves an
 entry fallibly before lifecycle work, and positive handles never wrap or reuse.
@@ -1773,7 +1774,22 @@ Repeated completed steps observe a scalar summary without repeating effects.
 Actual removal lists, clear-TID pointer, exit status and executable completion
 remain held until `take_completion` moves them to a real Rust effects owner.
 The resulting Taken record means custody moved; it is not a host cleanup ACK
-or proof of execution. Only Taken or fully abandoned records can be forgotten.
+or proof of execution. An infallible effects receiver can instead install
+that actual owner in the same reserved registry entry before any publication.
+The thread-exit consumer freezes the host's clear-child-TID flag at admission,
+checks the original process generation and pointer width, and uses the existing
+synchronous peer-memory store and kernel futex wake once. A failed store keeps
+Linux's ignored clear-TID fault semantics; a trapped import retains the owner
+and prohibits replay. It does not grant asynchronous memory-registration
+authority. Delivery repeats observe a scalar result. Only Taken, delivered or
+fully abandoned records can be forgotten.
+
+Removal and init-reap receivers retain the actual resource vectors and wait
+status as `PendingPhysicalReceiver`. The legacy void or ignored-error native
+release helpers are not physical cleanup acknowledgments. Those legacy removal
+exports remain unchanged until real retirement receivers exist. Scalar
+exec/exit/retry/signal completion delivery verifies the actual process-table
+transition; it does not acknowledge worker launch or physical native cleanup.
 
 Abandonment distinguishes an unstarted instruction from irreversible query
 cancellation. Once cleanup starts, abandonment must await its real retirement
@@ -1789,8 +1805,9 @@ process teardown or mistaken for an absent target. Registry abandonment stays
 faulted and cannot Forget it. Resolving Uncertain requires real host custody
 or explicit containment. Other executable-release sites still have ordinary
 error-retention gaps; this is not a general close transaction implementation.
-Kernel-held intent exports, effect receivers and worker scheduling still need
-integration before public asynchronous graphics activation.
+Kernel-held intent exports, remaining physical effects receivers, asynchronous
+memory authority and worker scheduling still need integration before public
+asynchronous graphics activation.
 
 ### Orphan adoption
 

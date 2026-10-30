@@ -14758,17 +14758,8 @@ pub fn kernel_get_robust_list(_pid: u32, _head_ptr: usize, _len_ptr: usize) -> i
 pub extern "C" fn kernel_thread_exit(pid: u32, tid: u32, clear_child_tid: u32) -> i64 {
     let _gkl = GklGuard::acquire();
     let pt = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match kernel_thread_exit_in_table(pt, pid, tid) {
-        Ok(ctid_ptr) => {
-            if clear_child_tid != 0 && ctid_ptr != 0 {
-                let ctid = ctid_ptr as u64;
-                let mut host = WasmHostIO;
-                if host.proc_write_bytes(pid as i32, ctid, &0u32.to_le_bytes()) == 0 {
-                    crate::wait_park::with(|parks| parks.futex_wake(pid, ctid, 1, u32::MAX));
-                }
-            }
-            ctid_ptr as i64
-        }
+    match kernel_thread_exit_in_table(pt, pid, tid, clear_child_tid != 0) {
+        Ok(ctid_ptr) => ctid_ptr as i64,
         Err(e) => -(e as i64),
     }
 }
@@ -14777,15 +14768,9 @@ fn kernel_thread_exit_in_table(
     pt: &mut crate::process_table::ProcessTable,
     pid: u32,
     tid: u32,
+    clear_child_tid: bool,
 ) -> Result<usize, Errno> {
-    match query_lifecycle::legacy(
-        pt,
-        &mut WasmHostIO,
-        QueryLifecycleRequest::ThreadExit { pid, tid },
-    )? {
-        QueryLifecycleCompletion::ThreadExit(ctid) => Ok(ctid),
-        _ => unreachable!("thread exit lifecycle completion"),
-    }
+    query_lifecycle::effects::thread_exit(pt, &mut WasmHostIO, pid, tid, clear_child_tid)
 }
 
 #[cfg(test)]
@@ -14800,18 +14785,21 @@ mod thread_exit_tests {
         let tid = pt.create_thread(first, first, 0, 0, 0x2000).unwrap();
 
         assert_eq!(
-            kernel_thread_exit_in_table(&mut pt, second, tid),
+            kernel_thread_exit_in_table(&mut pt, second, tid, false),
             Err(Errno::ESRCH)
         );
         assert!(pt.get(first).unwrap().get_thread(tid).is_some());
-        assert_eq!(kernel_thread_exit_in_table(&mut pt, first, tid), Ok(0x2000));
+        assert_eq!(
+            kernel_thread_exit_in_table(&mut pt, first, tid, false),
+            Ok(0x2000)
+        );
         assert!(pt.get(first).unwrap().get_thread(tid).is_none());
         assert_eq!(
-            kernel_thread_exit_in_table(&mut pt, first, tid),
+            kernel_thread_exit_in_table(&mut pt, first, tid, false),
             Err(Errno::ESRCH)
         );
         assert_eq!(
-            kernel_thread_exit_in_table(&mut pt, 9_999, tid),
+            kernel_thread_exit_in_table(&mut pt, 9_999, tid, false),
             Err(Errno::ESRCH)
         );
     }

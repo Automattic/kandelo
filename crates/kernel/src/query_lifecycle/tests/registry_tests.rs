@@ -157,7 +157,11 @@ fn exact_thread_ctid_and_frozen_exit_status_are_owned_until_take() {
         let (token, _) = admit(&mut table, &mut host, pid, tid, base);
         let mut registry = IntentRegistry::for_test(1, 1);
         let request = if thread {
-            Request::ThreadExit { pid, tid }
+            Request::ThreadExit {
+                pid,
+                tid,
+                clear_child_tid: false,
+            }
         } else {
             Request::Exit {
                 pid,

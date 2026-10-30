@@ -1,6 +1,7 @@
 //! Kernel custody for resumable lifecycle intents. No handle is exported yet.
 //! GKL protects the accompanying process table; try-lock rejects registry
 //! reentry instead of permitting a second mutable owner across a host call.
+use super::effects::{Delivery, EffectsReceiver};
 use super::{Completion, Intent, Progress, Request};
 use crate::{
     exec_target::PreparedExecOwner, lock::OfdId, process::HostIO, process_table::ProcessTable,
@@ -37,6 +38,7 @@ impl Handle {
 pub(crate) struct Owner {
     pub(crate) pid: u32,
     pub(crate) generation: u64,
+    pub(crate) pointer_width: u8,
     pub(crate) request: Request,
 }
 
@@ -91,6 +93,7 @@ pub(crate) enum Status {
     /// Actual effects moved to a trusted Rust receiver, not executed or ACKed
     /// by the host. Scalar tombstone remains budgeted until explicit Forget.
     Taken(Result<Completed, Errno>),
+    Delivering(Delivery),
 }
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Snapshot {
@@ -131,6 +134,7 @@ enum State {
     Complete(Result<Completion, Errno>),
     Abandoned(Status),
     Taken(Result<Completed, Errno>),
+    Receiving(EffectsReceiver),
 }
 struct Entry {
     handle: Handle,
@@ -147,6 +151,7 @@ impl Entry {
             }
             State::Abandoned(status) => *status,
             State::Taken(result) => Status::Taken(*result),
+            State::Receiving(receiver) => Status::Delivering(receiver.status()),
         };
         Snapshot {
             handle: self.handle,
@@ -247,6 +252,7 @@ impl IntentRegistry {
         let owner = Owner {
             pid: request.pid(),
             generation: intent.generation,
+            pointer_width: proc.pointer_width,
             request,
         };
         self.entries.push(Entry {
@@ -417,9 +423,42 @@ impl IntentRegistry {
             self.entries[index].state,
             State::Taken(_) | State::Abandoned(_)
         ) {
+            if let State::Receiving(receiver) = &self.entries[index].state {
+                if receiver.is_delivered() {
+                    self.entries.remove(index);
+                    return Ok(());
+                }
+            }
             return Err(Errno::EBUSY);
         }
         self.entries.remove(index);
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn held_effects(&self, handle: Handle) -> Result<Option<&Completion>, Errno> {
+        match &self.entries[self.index(handle)?].state {
+            State::Receiving(receiver) => Ok(receiver.held_completion()),
+            _ => Ok(None),
+        }
+    }
+    /// Install the actual infallible Rust receiver in this same already-
+    /// reserved entry before any effect can enter HostIO. Taken is never
+    /// interpreted as a host ACK; receiving owns the real non-Clone result.
+    pub(crate) fn deliver_completion(
+        &mut self,
+        handle: Handle,
+        table: &mut ProcessTable,
+        host: &mut dyn HostIO,
+    ) -> Result<Delivery, Errno> {
+        let index = self.index(handle)?;
+        if matches!(self.entries[index].state, State::Complete(_)) {
+            let actual = self.take_completion(handle)?;
+            self.entries[index].state = State::Receiving(EffectsReceiver::new(actual));
+        }
+        let State::Receiving(receiver) = &mut self.entries[index].state else {
+            return Err(Errno::EBUSY);
+        };
+        Ok(receiver.step(table, host))
     }
 }
