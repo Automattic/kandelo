@@ -1,0 +1,60 @@
+ FAIL  ../scripts/check-image-demo-config.test.mjs > baked-equals-tracked > classifies every real tracked source as composed XOR single-source
+AssertionError: packages/registry/redis-vfs/redis-demo.json composed: expected false not to be false // Object.is equality
+ FAIL  ../scripts/check-image-demo-config.test.mjs > baked-equals-tracked > compares every single-source tracked file against a matching synthetic image
+Error: packages/registry/redis-vfs/redis-demo.json is tracked but the baked-equals-tracked check does not know which image bakes it in — add it to SINGLE_SOURCE_IMAGE_ARTIFACTS or COMPOSED_TRACKED_SOURCES in scripts/check-image-demo-config.ts
+ FAIL  ../scripts/check-image-demo-config.test.mjs > baked-equals-tracked > throws a descriptive error when the baked bytes differ from the tracked source
+AssertionError: expected [Function] to throw error matching /packages\/registry\/nginx\/n…/registry\ but got 'packages/registry/redis-vfs/redis-dem…'
+ FAIL  ../scripts/check-image-demo-config.test.mjs > baked-equals-tracked > skips cleanly, with no failure, when no image is built (fresh worktree)
+Error: packages/registry/redis-vfs/redis-demo.json is tracked but the baked-equals-tracked check does not know which image bakes it in — add it to SINGLE_SOURCE_IMAGE_ARTIFACTS or COMPOSED_TRACKED_SOURCES in scripts/check-image-demo-config.ts
+ FAIL  ../scripts/check-image-demo-config.test.mjs > baked-equals-tracked > only asks readArtifact about single-source artifacts, never a composed one
+Error: packages/registry/redis-vfs/redis-demo.json is tracked but the baked-equals-tracked check does not know which image bakes it in — add it to SINGLE_SOURCE_IMAGE_ARTIFACTS or COMPOSED_TRACKED_SOURCES in scripts/check-image-demo-config.ts
+ FAIL  test/audio-integration.test.ts > audio integration > runs upstream SDL3's dsp backend at real-time pace
+AssertionError: expected 5279.588499999998 to be less than 5000
+ FAIL  test/audio-integration.test.ts > audio integration > plays upstream SDL_mixer playwave's default S16 stereo WAV exactly
+AssertionError: expected 5167.214333999997 to be less than 5000
+ FAIL  test/audio-integration.test.ts > audio integration > plays upstream SDL_mixer playwave's requested U8 mono WAV exactly
+AssertionError: expected 5536.798834000001 to be less than 5000
+ FAIL  test/audio-integration.test.ts > audio integration > paces SDL through the production dedicated Node kernel worker
+AssertionError: expected 5370.112915999998 to be less than 5000
+ FAIL  test/dylink.test.ts > side-module fork contract > registers multiple linked side activations without module-static fork roots
+Error: Test timed out in 5000ms.
+ FAIL  test/dylink.test.ts > side-module fork contract > replays dependency-first with the parent's exact activation ids
+Error: Test timed out in 5000ms.
+ FAIL  test/kernel-worker-entry-root-contract.test.ts > kernel worker entry-root authority contract > ../src/browser-kernel-worker-entry.ts uses only the reviewed worker surface
+AssertionError: expected [ { line: 4425, …(1) } ] to deeply equal []
+ FAIL  test/kernel-worker-entry-root-contract.test.ts > kernel worker entry-root authority contract > ../src/node-kernel-worker-entry.ts uses only the reviewed worker surface
+AssertionError: expected [ { line: 3602, …(1) } ] to deeply equal []
+ FAIL  test/vfork-side-module-fixture.test.ts > vfork side-module fixture lifecycle > removes its build directory idempotently
+Error: Test timed out in 5000ms.
+ FAIL  test/wordpress-admin-rehash.test.ts > WordPress admin hash re-salting > gives each machine its own hash of the demo password and keeps it on a later boot
+TypeError: Cannot read properties of null (reading '0')
+ FAIL  ../tests/package-system/browser-binary-dependencies.test.ts > browser binary dependencies > requires a build.toml sidecar for every fetchable registry package
+AssertionError: expected [ …(3) ] to deeply equal []
+ FAIL  ../tests/package-system/build-input-import-closure.test.ts > package build input import closure > lamp declares every repository-local relative import
+AssertionError: lamp omits repository-local inputs:
+ FAIL  ../tests/package-system/build-input-import-closure.test.ts > package build input import closure > nginx-php-vfs declares every repository-local relative import
+AssertionError: nginx-php-vfs omits repository-local inputs:
+ FAIL  ../tests/package-system/build-input-import-closure.test.ts > package build input import closure > nginx-python-vfs declares every repository-local relative import
+AssertionError: nginx-python-vfs omits repository-local inputs:
+ FAIL  ../tests/package-system/build-input-import-closure.test.ts > package build input import closure > nginx-vfs declares every repository-local relative import
+AssertionError: nginx-vfs omits repository-local inputs:
+ FAIL  ../tests/package-system/build-input-import-closure.test.ts > package build input import closure > wordpress declares every repository-local relative import
+AssertionError: wordpress omits repository-local inputs:
+ FAIL  ../tests/package-system/espeak-ng-package.test.ts > espeak-ng package contract > builds the archive deterministically so the cache key follows the data
+AssertionError: expected '#!/usr/bin/env bash\n#\n# Build espea…' to contain 'compression=zipfile.ZIP_STORED'
+ FAIL  ../tests/package-system/kernel-test-fixtures.test.ts > kernel test fixture ownership > records every migrated fixture with source, output, and consumer ownership
+AssertionError: expected [ …(2) ] to deeply equal [ 'host/test/exec.test.ts' ]
+ FAIL  ../tests/package-system/program-resolver-literals.test.ts > program resolver source literals > does not name package-directory outputs through obsolete flat paths
+AssertionError: Stale package resolver literals:
+ FAIL  ../tests/package-system/sdl-dsp-packages.test.ts > SDL_mixer playwave /dev/dsp integration fixture > pins the official SDL_mixer 2.8.2 source and SDL2 dependency
+AssertionError: expected 'kind = "program"\nname = "sdl2-mixer-…' to contain 'depends_on = ["sdl2@2.32.10", "libway…'
+ FAIL  ../tests/package-system/sdl-dsp-packages.test.ts > SDL_mixer playwave /dev/dsp integration fixture > builds unmodified upstream playwave with only WAVE support
+AssertionError: expected '#!/usr/bin/env bash\n# Build the upst…' to contain 'WASM_POSIX_DEP_SDL2_DIR'
+ FAIL  ../web-libs/kandelo-session/test/demo-config.test.ts > tracked demo-config sources > declares every tracked source
+AssertionError: expected 10 to be 9 // Object.is equality
+ FAIL  ../web-libs/kandelo-session/test/gallery-roster.test.ts > parseGalleryRoster > parses the tracked gallery-roster.json in its curated order
+AssertionError: expected [ 'shell', 'node', 'nginx', …(14) ] to deeply equal [ 'shell', 'node', 'nginx', …(12) ]
+ FAIL  ../packages/registry/freeciv/test/runtime.test.ts > Freeciv package runtime > runs both shipped executables from the lazy archive
+Error: KernelScratchError: rootfs read failed: /usr/libexec/freeciv/client.wasm (errno 5)
+ FAIL  ../packages/registry/freeciv/test/runtime.test.ts > Freeciv package runtime > loads the ruleset, plays AI turns, saves, and reloads a real game
+Error: KernelScratchError: rootfs read failed: /usr/libexec/freeciv/server.wasm (errno 5)

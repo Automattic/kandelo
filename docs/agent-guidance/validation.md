@@ -72,57 +72,26 @@ header values, credentials, and referrer policy; copies do not replay a
 test subclass's `append` calls. Preserve checks for dropped fields and
 the order of repeated values.
 
-## Committed test baselines
+## Recorded failures and anomalies
 
-`tests/baselines/` holds generated results, one file per suite and host.
-See its [command and evidence contract](../../tests/baselines/README.md)
-before recording or using a baseline. Use the Rust `xtask test-baseline`
-commands; never hand-edit generated outcomes or substitute today's
-artifact/version identities into an old run. The initial records from
-PR #1600 are explicitly unverifiable historical evidence, not current
-main results. No full suites or real read-set measurements were run to
-create this infrastructure.
+`tests/baselines/` keeps failure evidence, not test allowances. See its
+[recording workflow](../../tests/baselines/README.md). Record failures,
+expected failures, unexpected passes, skips, timeouts, runner errors and
+intermittent results; omit ordinary passes and success counters. Existing
+conformance expectation lists still own accepted failures and reasons.
 
-A baseline records reality and never turns a failing run green. Its
-failures remain failures to fix or explain. Expected-failure lists and
-their checked reasons remain authoritative in the conformance runners;
-baseline records neither add allowances nor override those lists.
-Persist only failures and anomalies, with positive anomaly counts.
-Omit ordinary passing cases, success counts and overall test counts.
-Passing observations may be parsed transiently to establish retry rates.
+Consult recorded failures before repeating an expensive main run. Compare
+names, reasons, host, command and recorded commit; a known name alone does
+not establish the same defect. If the evidence is insufficient, rerun only
+the relevant failures on main through the normal build path. Historical
+results must be described as historical. Records never turn a failed run
+green, and there is no freshness check or merge requirement.
 
-Before classifying a branch failure, fetch `origin/main` and check
-`test-baseline status` against a clean main checkout and its actual
-artifacts/environment. **Never classify against a stale, unverifiable
-or unreliable baseline.** A matching commit is insufficient. A changed
-outcome/reason needs investigation even when the test's name is known.
-Missing details or a filtered main run cannot establish results outside
-its recorded coverage. Do not present historical comparison tables as
-current branch equivalence.
-
-Use the cheapest sufficient workflow: if the baseline is current,
-classify against it. Otherwise rerun only the branch's failures on main,
-using the normal artifact/build path and fresh evidence. Targeted reruns
-may be appended only to a verified baseline with the same input digest
-and environment. They do not refresh the rest of a stale baseline.
-
-Record load throughout a new run. A sample above the recorded threshold
-makes the run unreliable for classification; unknown load is not quiet
-load. Record mixed observations as intermittent, with their observed
-adverse/attempt count. Never convert a flaky test into a plain pass or
-fail by choosing a favorable retry.
-
-Keys begin with the whole tracked tree plus consumed artifacts and
-environment. Exclusions are per suite and require complete read-trace
-evidence. Run `check-reads` with each fresh trace; a newly read excluded
-path must fail the check. Module imports alone do not cover explicit
-filesystem reads. Vitest's source audits read `README.md`, documentation
-and skill files, so those changes may legitimately stale Vitest.
-Keep generated historical reports and parser fixtures out of authored
-source audits without excluding production source.
-
-This infrastructure introduces no CI merge requirement for current
-baselines. A decision to add such a requirement needs maintainer input.
+Keep raw logs and record provenance: commit, date, selection/command,
+host/runtime versions and load when available. Do not fill unknown historical
+fields from today's environment. Treat load-related failures as anomalies
+to investigate. Preserve observed retry outcomes and report mixed outcomes
+as intermittent; do not select a favorable retry and call it a pass.
 
 ## Validation scope and suite selection
 
