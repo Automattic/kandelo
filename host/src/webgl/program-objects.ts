@@ -3,6 +3,8 @@ import { isKernelExportFailure } from "../kernel-entry-gate.js";
 // generic-kms-gles-runtime, retaining main's native-object shadow layout.
 import type { GlBinding, GlContextExecutionLease } from "./registry.js";
 import { recordGlError } from "./errors.js";
+import { reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement,
+  type NativeDeletion, type NativeRetirement } from "./native-recovery.js";
 export { recordGlError } from "./errors.js";
 
 /** Keep previously pending errors observable, then commit bookkeeping only
@@ -27,6 +29,74 @@ export function checkedGlCall(b: CheckedGlOwner, call: () => void): boolean {
     recordGlError(b, 0x502); // INVALID_OPERATION
     return false;
   }
+}
+
+/** Empty native receivers are reserved before creation. Even a native call
+ * which returns a handle and an error leaves that handle owned for rollback. */
+export function createShaderIfAccepted(b: GlBinding, type: number, name: number): void {
+  if (!b.gl) return;
+  if (!name || b.shaders.has(name) || b.programs.has(name)) {
+    recordGlError(b, 0x502); return;
+  }
+  const receiver = reserveNativeRetirement(b, [["deleteShader", null]]);
+  if (!receiver) return;
+  try {
+    const accepted = checkedGlCall(b, () => { receiver.calls[0][1] = b.gl!.createShader(type); });
+    const shader = receiver.calls[0][1] as WebGLShader | null;
+    if (!accepted) return;
+    if (!shader) { recordGlError(b, 0x505); return; }
+    b.shaders.set(name, shader);
+    transferNativeRetirement(receiver);
+  } catch (error) {
+    if (isKernelExportFailure(error)) throw error;
+    recordGlError(b, 0x505);
+  } finally { retireNativeRetirement(receiver); }
+}
+
+export function createProgramIfAccepted(b: GlBinding, name: number): void {
+  if (!b.gl) return;
+  if (!name || b.shaders.has(name) || b.programs.has(name)) {
+    recordGlError(b, 0x502); return;
+  }
+  const receiver = reserveNativeRetirement(b, [["deleteProgram", null]]);
+  if (!receiver) return;
+  let metadata = false;
+  try {
+    const shaders = new Set<number>();
+    const accepted = checkedGlCall(b, () => { receiver.calls[0][1] = b.gl!.createProgram(); });
+    const program = receiver.calls[0][1] as WebGLProgram | null;
+    if (!accepted) return;
+    if (!program) { recordGlError(b, 0x505); return; }
+    b.programShaders.set(name, shaders); metadata = true;
+    b.programs.set(name, program);
+    transferNativeRetirement(receiver);
+  } catch (error) {
+    if (isKernelExportFailure(error)) throw error;
+    recordGlError(b, 0x505);
+  } finally {
+    if (!receiver.complete && metadata) b.programShaders.delete(name);
+    retireNativeRetirement(receiver);
+  }
+}
+
+/** Reserve at most two old executables before a switch can orphan either.
+ * This owner contains only native handles and the original error queue. */
+function reserveExecutableRelease(b: GlBinding, first: WebGLProgram | null,
+    second: WebGLProgram | null = null): NativeRetirement | null {
+  const calls: NativeDeletion[] = [];
+  if (first) calls.push(["deleteProgram", first]);
+  if (second && second !== first) calls.push(["deleteProgram", second]);
+  return reserveNativeRetirement(b, calls, [], { uninstallPrograms: true });
+}
+function releaseUnusedExecutables(b: GlBinding, receiver: NativeRetirement): void {
+  for (const call of receiver.calls) {
+    const program = call[1] as WebGLProgram;
+    let retained = b.programQueryPins.has(program);
+    for (const member of b.objects.members) if (member.currentProgram === program) retained = true;
+    for (const named of b.programs.values()) if (named === program) retained = true;
+    if (retained) call[1] = null;
+  }
+  retireNativeRetirement(receiver);
 }
 
 export function finalizeShader(b: GlBinding, name: number): void {
@@ -81,12 +151,12 @@ export function releaseRetainedExecutable(b: GlBinding, program: WebGLProgram | 
 }
 
 function deleteUnusedNativeProgram(b: GlBinding, program: WebGLProgram): boolean {
-  return checkedGlCall(b, () => {
-    // No logical owner retains this executable. Release a stale physical
-    // installation too, so native deletion can complete during teardown.
+  // Stop before deletion if the selector change was rejected. The name or
+  // query pin still owns the handle and must be able to retry that same step.
+  if (!checkedGlCall(b, () => {
     if (b.gl!.getParameter(0x8b8d) === program) b.gl!.useProgram(null);
-    b.gl!.deleteProgram(program);
-  });
+  })) return false;
+  return checkedGlCall(b, () => b.gl!.deleteProgram(program));
 }
 
 /** Stable generation cell; advancing an accepted link needs no allocation. */
@@ -101,75 +171,78 @@ export function programLinkGeneration(b: GlBinding, program: WebGLProgram): { va
  * object while the prior executable is installed. The logical object maps
  * to the latest attempt, independently of the executable used for draws. */
 export function linkProgramRetainingExecutable(b: GlBinding, name: number): void {
-  const gl = b.gl;
-  const previous = b.programs.get(name);
+  const gl = b.gl, previous = b.programs.get(name);
   if (!gl || !previous) {
-    recordGlError(b, b.shaders.has(name) ? 0x502 : 0x501);
-    return;
+    recordGlError(b, b.shaders.has(name) ? 0x502 : 0x501); return;
   }
-  const currentName = currentProgramName(b);
-  const installed = b.currentProgram;
+  const currentName = currentProgramName(b), installed = b.currentProgram;
+  const clone = b.programQueryPins.has(previous) ||
+    [...b.objects.members].some(member => previous === member.currentProgram);
+  const released = reserveExecutableRelease(b, previous, installed);
+  if (!released) return;
+  let candidate: NativeRetirement | null = null;
   let program = previous;
-  if (b.programQueryPins.has(previous) || [...b.objects.members].some(member => previous === member.currentProgram)) {
-    let candidate: WebGLProgram | null = null;
-    const allocated = checkedGlCall(b, () => { candidate = gl.createProgram(); });
-    if (!allocated || !candidate) {
-      if (candidate) gl.deleteProgram(candidate);
-      if (!candidate) recordGlError(b, 0x505); // OUT_OF_MEMORY
-      return;
+  try {
+    if (clone) {
+      candidate = reserveNativeRetirement(b, [["deleteProgram", null]]);
+      if (!candidate) return;
     }
-    program = candidate;
-    const prepared = checkedGlCall(b, () => {
-      for (const shaderName of b.programShaders.get(name) ?? []) {
-        const shader = b.shaders.get(shaderName);
-        if (shader) gl.attachShader(program, shader);
-      }
-      for (const [attribute, index] of b.programAttributeBindings.get(name) ?? []) {
-        gl.bindAttribLocation(program, index, attribute);
-      }
-    });
-    if (!prepared) { gl.deleteProgram(program); return; }
-  }
-  let generation: {value:number};
-  try { generation=programLinkGeneration(b,program); }
-  catch (error) { if(isKernelExportFailure(error)) throw error; recordGlError(b,0x505); if(program!==previous) gl.deleteProgram(program);return; }
-  if(generation.value>=Number.MAX_SAFE_INTEGER) {recordGlError(b,0x505);if(program!==previous)gl.deleteProgram(program);return;}
-  if (!checkedGlCall(b, () => gl.linkProgram(program))) {
-    if (program !== previous) gl.deleteProgram(program);
-    return;
-  }
-  generation.value++;
-  if (currentName === name) b.currentProgramId = name;
-  b.programs.set(name, program);
-  let linked = false;
-  if (checkedGlCall(b, () => { linked = !!gl.getProgramParameter(program, 0x8b82); }) && linked) {
-    invalidateProgramLocations(b, name);
-    if (currentName === name) {
-      if (checkedGlCall(b, () => gl.useProgram(program))) {
+    if (candidate) {
+      const slot = candidate.calls[0];
+      const allocated = checkedGlCall(b, () => { slot[1] = gl.createProgram(); });
+      const native = slot[1] as WebGLProgram | null;
+      if (!allocated) return;
+      if (!native) { recordGlError(b, 0x505); return; }
+      program = native;
+      if (!checkedGlCall(b, () => {
+        for (const shaderName of b.programShaders.get(name) ?? []) {
+          const shader = b.shaders.get(shaderName);
+          if (shader) gl.attachShader(program, shader);
+        }
+        for (const [attribute, index] of b.programAttributeBindings.get(name) ?? []) {
+          gl.bindAttribLocation(program, index, attribute);
+        }
+      })) return;
+    }
+    const generation = programLinkGeneration(b, program);
+    if (generation.value >= Number.MAX_SAFE_INTEGER) { recordGlError(b, 0x505); return; }
+    if (!checkedGlCall(b, () => gl.linkProgram(program))) return;
+    generation.value++;
+    b.programs.set(name, program);
+    if (candidate) transferNativeRetirement(candidate);
+    if (currentName === name) b.currentProgramId = name;
+    let linked = false;
+    if (checkedGlCall(b, () => { linked = !!gl.getProgramParameter(program, 0x8b82); }) && linked) {
+      invalidateProgramLocations(b, name);
+      if (currentName === name && checkedGlCall(b, () => gl.useProgram(program))) {
         b.shadow.currentProgram = b.currentProgram = program;
       }
     }
+  } catch (error) {
+    if (isKernelExportFailure(error)) throw error;
+    recordGlError(b, 0x505);
+  } finally {
+    if (candidate) retireNativeRetirement(candidate);
+    releaseUnusedExecutables(b, released);
   }
-  for (const retired of new Set([previous, installed])) releaseRetainedExecutable(b, retired);
 }
 
 export function useProgramIfAccepted(b: GlBinding, name: number): void {
   const program = name === 0 ? null : b.programs.get(name);
   if (program === undefined) {
-    recordGlError(b, b.shaders.has(name) ? 0x502 : 0x501);
-    return;
+    recordGlError(b, b.shaders.has(name) ? 0x502 : 0x501); return;
   }
-  const previous = b.currentProgram;
-  const previousName = currentProgramName(b);
+  const previous = b.currentProgram, previousName = currentProgramName(b);
   const wasRetained = previous !== null && b.programs.get(previousName) !== previous;
-  if (!checkedGlCall(b, () => b.gl!.useProgram(program))) return;
-  b.currentProgram = program;
-  b.currentProgramId = name;
-  b.shadow.currentProgram = program;
-  if (previous !== program) {
-    if (previousName !== 0) finalizeProgram(b, previousName);
-    if (wasRetained) releaseRetainedExecutable(b, previous);
-  }
+  const released = wasRetained ? reserveExecutableRelease(b, previous) : null;
+  if (wasRetained && !released) return;
+  try {
+    if (!checkedGlCall(b, () => b.gl!.useProgram(program))) return;
+    b.currentProgram = program;
+    b.currentProgramId = name;
+    b.shadow.currentProgram = program;
+    if (previous !== program && previousName !== 0) finalizeProgram(b, previousName);
+  } finally { if (released) releaseUnusedExecutables(b, released); }
 }
 
 /** A query owns its exact accepted context and native executable, independently

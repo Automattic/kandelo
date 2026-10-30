@@ -33,7 +33,7 @@ import { drawGlesElements } from "./index-data.js";
 import { installVertexAttribute } from "./vertex-data.js";
 import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
-import { checkedGlCall, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted } from "./program-objects.js";
+import { createShaderIfAccepted, createProgramIfAccepted, checkedGlCall, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted } from "./program-objects.js";
 import { stateArgumentError } from "./state-validation.js";
 import { combinedTextureUnits, maxViewport } from "./limits.js";
 import * as O from "./ops.js";
@@ -912,8 +912,7 @@ function dispatch(
     case O.OP_CREATE_SHADER: {
       const type = v.getUint32(p, true);
       const name = v.getUint32(p + 4, true);
-      const sh = gl.createShader(type);
-      if (sh) b.shaders.set(name, sh);
+      createShaderIfAccepted(b,type,name);
       return;
     }
     // Payload: u32 cmdbufName, u32 srcLen, u8 src[srcLen] (UTF-8)
@@ -959,11 +958,7 @@ function dispatch(
     }
     case O.OP_CREATE_PROGRAM: {
       const name = v.getUint32(p, true);
-      const prog = gl.createProgram();
-      if (prog) {
-        b.programs.set(name, prog);
-        b.programShaders.set(name, new Set());
-      }
+      createProgramIfAccepted(b,name);
       return;
     }
     case O.OP_ATTACH_SHADER: {

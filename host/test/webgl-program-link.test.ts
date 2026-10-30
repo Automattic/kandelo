@@ -1,11 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import { uniformLocation } from "../src/webgl/uniform-queries.js";
+import { hasNativeRepair, repairNativeState } from "../src/webgl/native-recovery.js";
 import { GlMuxer } from "../src/webgl/muxer.js";
 import * as O from "../src/webgl/ops.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
-import { linkProgramRetainingExecutable, useProgramIfAccepted } from "../src/webgl/program-objects.js";
+import { GlProgramQueryPin, createShaderIfAccepted, createProgramIfAccepted, linkProgramRetainingExecutable, useProgramIfAccepted } from "../src/webgl/program-objects.js";
 
 type Shader = { compiled: boolean; deleted: boolean };
 type Program = { linked: boolean; shaders: Set<Shader>; attributes: Map<string, number> };
@@ -18,36 +19,61 @@ class NativePrograms {
   deletions = new Map<Program, number>();
   error = 0;
   failCreate = false;
+  failCreateAfterAllocation = false;
+  failCreateShaderAfterAllocation = false;
+  failPrepare = false;
+  failLink = false;
+  failDeleteProgram = false;
+  failDeleteShader = false;
+  failUnbind = false;
+  createdPrograms: Program[] = [];
+  createdShaders: Shader[] = [];
+  deleteAttempts: object[] = [];
   uniformWrites = 0;
   uniformValue: unknown = new Float32Array([0.25,-1.75,2.5,1]);
   getUniform() { return this.uniformValue; }
   getUniformLocation(_program: Program, _name: string) { return {}; }
-  createShader() { return { compiled: true, deleted: false }; }
+  createShader() {
+    const shader={ compiled: true, deleted: false }; this.createdShaders.push(shader);
+    if(this.failCreateShaderAfterAllocation) this.error=0x505;
+    return shader;
+  }
   createProgram(): Program | null {
     if (this.failCreate) { this.error = 0x505; return null; }
-    return { linked: false, shaders: new Set(), attributes: new Map() };
+    const program:Program={ linked: false, shaders: new Set(), attributes: new Map() };
+    this.createdPrograms.push(program);
+    if(this.failCreateAfterAllocation) this.error=0x505;
+    return program;
   }
   attachShader(p: Program, s: Shader) {
+    if(this.failPrepare) {this.error=0x502;return;}
     if (s.deleted) this.error = 0x501;
     else p.shaders.add(s);
   }
   bindAttribLocation(p: Program, index: number, name: string) { p.attributes.set(name, index); }
-  linkProgram(p: Program) { p.linked = p.shaders.size === 2 && [...p.shaders].every(s => s.compiled); }
+  linkProgram(p: Program) { if(this.failLink) {this.error=0x502;return;} p.linked = p.shaders.size === 2 && [...p.shaders].every(s => s.compiled); }
   uniforms = [{name:"color",size:1,type:0x1406},{name:"colors[0]",size:2,type:0x8b52},
     {name:"other",size:1,type:0x1406},{name:"A",size:1,type:0x1406}];
   getActiveUniform(_p:Program,index:number) { return this.uniforms[index] ?? null; }
   getProgramParameter(p: Program, name: number) { return name === 0x8b82 ? p.linked : name===0x8b86?this.uniforms.length:0; }
   useProgram(p: Program | null) {
+    if(this.failUnbind && p===null) {this.error=0x502;return;}
     if (p && (!p.linked || this.deleted.has(p))) this.error = 0x502;
     else this.current = p;
   }
   getError() { const error = this.error; this.error = 0; return error; }
   getParameter(name: number) { return name === 0x8b8d ? this.current : 0; }
   deleteProgram(p: Program) {
+    this.deleteAttempts.push(p);
+    if(this.failDeleteProgram) {this.error=0x502;return;}
     this.deleted.add(p);
     this.deletions.set(p, (this.deletions.get(p) ?? 0) + 1);
   }
-  deleteShader(s: Shader) { s.deleted = true; }
+  deleteShader(s: Shader) {
+    this.deleteAttempts.push(s);
+    if(this.failDeleteShader) {this.error=0x502;return;}
+    s.deleted = true;
+  }
   uniform1f() { this.uniformWrites++; }
 }
 
@@ -94,6 +120,145 @@ function setup() {
 }
 
 describe("program link attempts and installed executables", () => {
+  it.each(["shader", "program", "first clone receiver", "second clone receiver"] as const)("refuses %s receiver allocation before native creation",kind=>{
+    const {b,native,original}=setup(),programs=native.createdPrograms.length,shaders=native.createdShaders.length;
+    const add=Set.prototype.add;let calls=0;
+    const spy=vi.spyOn(Set.prototype,"add").mockImplementation(function(this:Set<unknown>,value:unknown){
+      if(++calls===(kind==="second clone receiver"?2:1)) throw new Error("receiver allocation rejected");
+      return add.call(this,value);
+    });
+    try {
+      if(kind==="shader") createShaderIfAccepted(b,0x8b31,99);
+      else if(kind==="program") createProgramIfAccepted(b,99);
+      else linkProgramRetainingExecutable(b,20);
+    } finally {spy.mockRestore();}
+    expect(native.createdPrograms.length).toBe(programs);expect(native.createdShaders.length).toBe(shaders);
+    expect(b.programs.get(20)).toBe(original);expect(b.currentProgram).toBe(original);
+    expect(b.errors).toContain(0x505);expect(hasNativeRepair(b.gl!)).toBe(false);
+  });
+
+  it.each(["shader", "program"] as const)("owns a %s returned together with a native create error",kind=>{
+    const {b,native}=setup();native.failDeleteShader=true;native.failDeleteProgram=true;
+    if(kind==="shader") {native.failCreateShaderAfterAllocation=true;createShaderIfAccepted(b,0x8b31,99);}
+    else {native.failCreateAfterAllocation=true;createProgramIfAccepted(b,99);}
+    expect(b.shaders.has(99)||b.programs.has(99)).toBe(false);expect(hasNativeRepair(b.gl!)).toBe(true);
+    expect(b.errors).toContain(0x505);expect(b.errors).toContain(0x502);
+    native.failDeleteShader=false;native.failDeleteProgram=false;
+    expect(repairNativeState(b.gl!)).toBe(true);
+    const candidate=kind==="shader"?native.createdShaders.at(-1)!:native.createdPrograms.at(-1)!;
+    expect(kind==="shader"?(candidate as Shader).deleted:native.deletions.get(candidate as Program)).toBe(kind==="shader"?true:1);
+  });
+
+  it("reserves old-executable deletion before a successful relink publishes its replacement",()=>{
+    const {b,native,original}=setup();native.failDeleteProgram=true;
+    linkProgramRetainingExecutable(b,20);
+    const replacement=b.programs.get(20);
+    expect(replacement).not.toBe(original);expect(b.currentProgram).toBe(replacement);
+    expect(native.current).toBe(replacement);expect(native.deleted.has(original)).toBe(false);
+    expect(hasNativeRepair(b.gl!)).toBe(true);
+    const creations=native.createdPrograms.length;
+    native.failDeleteProgram=false;expect(repairNativeState(b.gl!)).toBe(true);
+    expect(native.deletions.get(original)).toBe(1);expect(native.createdPrograms.length).toBe(creations);
+    expect(b.programs.get(20)).toBe(replacement);expect(repairNativeState(b.gl!)).toBe(true);
+    expect(native.deletions.get(original)).toBe(1);
+  });
+
+  it("reserves orphaned current-executable deletion before accepting useProgram",()=>{
+    const {b,native,original}=setup();(b.shaders.get(11) as unknown as Shader).compiled=false;
+    linkProgramRetainingExecutable(b,20);const attempt=b.programs.get(20);
+    native.failDeleteProgram=true;useProgramIfAccepted(b,0);
+    expect(b.currentProgram).toBeNull();expect(native.current).toBeNull();expect(b.programs.get(20)).toBe(attempt);
+    expect(hasNativeRepair(b.gl!)).toBe(true);expect(native.deleted.has(original)).toBe(false);
+    native.failDeleteProgram=false;expect(repairNativeState(b.gl!)).toBe(true);
+    expect(native.deletions.get(original)).toBe(1);expect(native.deleted.has(attempt as unknown as Program)).toBe(false);
+  });
+
+  it("does not switch away from an orphaned current executable without a reserved receiver",()=>{
+    const {b,native,original}=setup();(b.shaders.get(11) as unknown as Shader).compiled=false;
+    linkProgramRetainingExecutable(b,20);
+    const spy=vi.spyOn(Set.prototype,"add").mockImplementationOnce(()=>{throw new Error("receiver allocation rejected");});
+    try {useProgramIfAccepted(b,0);} finally {spy.mockRestore();}
+    expect(b.currentProgram).toBe(original);expect(native.current).toBe(original);
+    expect(b.errors).toContain(0x505);expect(hasNativeRepair(b.gl!)).toBe(false);
+  });
+
+  it("keeps a real query pin and pending name when native unbind rejects deletion",()=>{
+    const {b,native,registry,gl,original,send}=setup();b.contextId=21;
+    const lease=registry.retainContextExecution(1,0,new GlMuxer(gl))!;
+    const pin=GlProgramQueryPin.acquire(lease,20)!;
+    useProgramIfAccepted(b,0);send(O.OP_DELETE_PROGRAM,[20]);
+    // Native selector replay may still have the pinned executable installed;
+    // this does not grant a logical current owner or permission to delete it.
+    gl.useProgram(original as unknown as WebGLProgram);
+    native.failUnbind=true;
+    expect(pin.release()).toBe(false);
+    expect(native.deleted.has(original)).toBe(false);
+    expect(b.programQueryPins.get(original as unknown as WebGLProgram)).toBe(1);
+    expect(b.programs.get(20)).toBe(original);expect(b.programDeletePending.has(20)).toBe(true);
+    native.failUnbind=false;expect(pin.release()).toBe(true);expect(pin.release()).toBe(true);
+    expect(native.deletions.get(original)).toBe(1);expect(b.programs.has(20)).toBe(false);
+    expect(b.programQueryPins.size).toBe(0);expect(lease.release()).toBe(true);
+  });
+
+  it("preserves selected-peer error flags and shared current ownership during rollback retries",()=>{
+    const parent=setup(),peer=sharePeer(parent),muxer=new GlMuxer(parent.gl);
+    muxer.switchTo(parent.b);parent.native.error=0x500;muxer.switchTo(peer);
+    parent.native.failPrepare=true;parent.native.failDeleteProgram=true;
+    linkProgramRetainingExecutable(peer,20);
+    const candidate=parent.native.createdPrograms.at(-1)!;
+    expect(parent.b.currentProgram).toBe(parent.original);expect(peer.currentProgram).toBeNull();
+    expect(parent.b.errors).toEqual([0x500]);expect(peer.errors).toEqual([0x502]);
+    parent.native.error=0x501;
+    expect(()=>muxer.switchTo(parent.b)).toThrow("Native GL restoration remains pending");
+    expect(peer.errors).toEqual([0x502,0x501]);expect(parent.b.errors).toEqual([0x500]);
+    parent.native.failDeleteProgram=false;muxer.switchTo(parent.b);
+    expect(parent.native.current).toBe(parent.original);expect(parent.native.deletions.get(candidate)).toBe(1);
+    expect(parent.native.deleted.has(parent.original)).toBe(false);expect(parent.b.errors).toEqual([0x500]);
+  });
+
+  it.each(["create", "prepare", "link", "publication"] as const)("retains rejected %s clone deletion until actual native retry",phase=>{
+    const {b,native,original}=setup();
+    if(phase==="create") native.failCreateAfterAllocation=true;
+    if(phase==="prepare") native.failPrepare=true;
+    if(phase==="link") native.failLink=true;
+    if(phase==="publication") b.programs.set=()=>{throw new Error("allocation rejected");};
+    native.failDeleteProgram=true;
+    linkProgramRetainingExecutable(b,20);
+    const candidate=native.createdPrograms.at(-1)!;
+    expect(candidate).not.toBe(original);
+    expect(b.programs.get(20)).toBe(original);
+    expect(b.currentProgram).toBe(original);expect(native.current).toBe(original);
+    expect(b.uniformLocationRecords.has(1)).toBe(true);
+    expect(native.deleted.has(candidate)).toBe(false);expect(hasNativeRepair(b.gl!)).toBe(true);
+    expect(repairNativeState(b.gl!)).toBe(false);
+    native.failDeleteProgram=false;
+    expect(repairNativeState(b.gl!)).toBe(true);
+    expect(native.deletions.get(candidate)).toBe(1);
+    expect(repairNativeState(b.gl!)).toBe(true);expect(native.deletions.get(candidate)).toBe(1);
+    expect(native.deleted.has(original)).toBe(false);
+  });
+
+  it.each(["shader", "program"] as const)("retains unpublished %s after publication and deletion both fail",kind=>{
+    const {b,native}=setup();
+    if(kind==="shader") {b.shaders.set=()=>{throw new Error("allocation rejected");};native.failDeleteShader=true;}
+    else {b.programs.set=()=>{throw new Error("allocation rejected");};native.failDeleteProgram=true;}
+    const view=new DataView(b.cmdbufView!.buffer);
+    view.setUint16(0,kind==="shader"?O.OP_CREATE_SHADER:O.OP_CREATE_PROGRAM,true);
+    view.setUint16(2,kind==="shader"?8:4,true);
+    view.setUint32(4,kind==="shader"?0x8b31:99,true);
+    if(kind==="shader") view.setUint32(8,99,true);
+    expect(decodeAndDispatch(b,0,kind==="shader"?12:8)).toBeLessThan(0);
+    const candidate=kind==="shader"?native.createdShaders.at(-1)!:native.createdPrograms.at(-1)!;
+    expect(b.shaders.has(99)||b.programs.has(99)).toBe(false);
+    expect(b.programShaders.has(99)).toBe(false);
+    expect(hasNativeRepair(b.gl!)).toBe(true);
+    native.failDeleteShader=false;native.failDeleteProgram=false;
+    expect(decodeAndDispatch(b,0,0)).toBe(0);
+    expect(kind==="shader"?(candidate as Shader).deleted:native.deleted.has(candidate as Program)).toBe(true);
+    const attempts=native.deleteAttempts.length;
+    expect(decodeAndDispatch(b,0,0)).toBe(0);expect(native.deleteAttempts.length).toBe(attempts);
+  });
+
   const inactiveSetters = [
     ["glUniform1f", O.OP_UNIFORM1F, [-1, 0]],
     ["glUniform2f", O.OP_UNIFORM2F, [-1, 0, 0]],

@@ -1,3 +1,4 @@
+import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
 import { recordGlError } from "./errors.js";
 import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
@@ -23,7 +24,7 @@ export type NativeDeletion = ["deleteTexture", WebGLTexture | null] | ["deleteRe
   | ["deleteFramebuffer", WebGLFramebuffer | null] | ["deleteBuffer", WebGLBuffer | null]
   | ["deleteSync", WebGLSync | null] | ["deleteShader", WebGLShader | null]
   | ["deleteProgram", WebGLProgram | null] | ["deleteVertexArray", WebGLVertexArrayObject | null];
-export type NativeRetirement = {owner: CheckedGlOwner; calls: NativeDeletion[]; pending: boolean; complete: boolean; references: number; dependencies: readonly NativeRetirement[]; ordered?: boolean};
+export type NativeRetirement = {owner: CheckedGlOwner; calls: NativeDeletion[]; pending: boolean; complete: boolean; references: number; dependencies: readonly NativeRetirement[]; ordered?: boolean; uninstallPrograms?: boolean};
 const retirements = new WeakMap<WebGL2RenderingContext, Set<NativeRetirement>>();
 export type NativeInverse = { owner: CheckedGlOwner; groups: NativeCall[][] };
 export type NativeChange = { apply(): boolean; restore: NativeInverse };
@@ -76,15 +77,18 @@ function restoreInverse(inverse: NativeInverse): boolean {
 
 /** Reserve ownership before allocation/publication. Empty slots can be filled by
  * assignment inside native creation calls, without allocating after creation. */
-export function reserveNativeRetirement(b: CheckedGlOwner, calls: NativeDeletion[], dependencies: readonly NativeRetirement[] = [], options: {ordered?: boolean} = {}): NativeRetirement | null {
+export function reserveNativeRetirement(b: CheckedGlOwner, calls: NativeDeletion[], dependencies: readonly NativeRetirement[] = [], options: {ordered?: boolean; uninstallPrograms?: boolean} = {}): NativeRetirement | null {
   if (!b.gl) return null;
   try {
-    const retirement = {owner:nativeOwner(b),calls,pending:false,complete:false,references:0,dependencies,ordered:options.ordered};
+    const retirement = {owner:nativeOwner(b),calls,pending:false,complete:false,references:0,dependencies,ordered:options.ordered,uninstallPrograms:options.uninstallPrograms};
     let owners = retirements.get(b.gl);
     if (!owners) { owners = new Set(); retirements.set(b.gl,owners); }
     owners.add(retirement);
     return retirement;
-  } catch { recordGlError(b,0x505); return null; }
+  } catch (error) {
+    if (isKernelExportFailure(error)) throw error;
+    recordGlError(b,0x505); return null;
+  }
 }
 export function transferNativeRetirement(retirement: NativeRetirement): void {
   if (retirement.references !== 0) throw new Error("Cannot transfer retained native storage");
@@ -98,6 +102,17 @@ function collectNativeRetirements(gl: WebGL2RenderingContext): boolean {
     for (const call of retirement.calls) {
       const object = call[1];
       if (!object) continue;
+      // A logical switch can orphan an executable still physically selected.
+      // Unbind only that exact handle before deleting it; failed unbind keeps
+      // the same receiver pending and cannot delete another owner's program.
+      if (retirement.uninstallPrograms && call[0] === "deleteProgram" &&
+          !checkedGlCall(retirement.owner, () => {
+            if (gl.getParameter(0x8b8d) === object) gl.useProgram(null);
+          })) {
+        accepted = false;
+        if (retirement.ordered) break;
+        continue;
+      }
       if (checkedGlCall(retirement.owner, () => Reflect.apply(gl[call[0]],gl,[object]))) {
         retireNativeObject(gl,object); call[1] = null;
       } else {

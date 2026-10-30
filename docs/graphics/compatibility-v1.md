@@ -9756,3 +9756,38 @@ effects receivers, frozen signal scheduling, worker/forward progress and
 actual teardown custody or fatal containment remain integration work. Combined
 Rust/ABI, normal products, browser/browser-memory and conformance validation
 remain required before public async activation.
+
+### Retryable shader/program creation and link rollback
+
+Shader/program creation and replacement linking now reserve fixed native deletion
+receivers before creating native objects. A returned handle remains owned even
+when the native call also reports an error. Failed preparation, linking or name
+publication transfers cleanup to the existing retry ledger; rejected deletions
+remain pending instead of disappearing. An accepted name receives ownership only
+once. Failed program publication also removes its unpublished attachment metadata.
+
+Relink and use-program switches reserve up to two old-executable release slots
+before they can orphan native executables. Handles still named, current in any
+sharing context or pinned by an accepted query remain with those owners. Native
+cleanup preserves its original error queue, checks the exact physical executable
+and stops before deletion if unbinding fails. Query-pin/name cleanup likewise
+keeps custody when that selector change is rejected. These helpers are shared by
+Node and browser; no ABI or public pending mode changes are included.
+
+Focused source evidence in the positive checkout is
+`.context/program-rollback-source.log`: 325/325 cases in eight files, zero skips.
+The 17 added controls inject native API failures through the production command
+and lifecycle paths, including create/preparation/link/publication rollback,
+receiver allocation refusal before effects, accepted logical switches followed
+by failed deletion, query-pin retry and shared-peer error ownership. The first
+six controls fail on the preceding source in
+`.context/program-rollback-before.log`; abandoned native handles have no retry
+owner. The strict program-objects/native-recovery dependency graph passes in
+`.context/program-rollback-strict.log`. This is source/model evidence, not real
+browser-driver validation.
+
+This closes the creation/link rollback item recorded in the preceding entry.
+General immediate whole-context teardown still has direct shader/program native
+deletions outside these receivers; its failure custody remains an ordinary open
+lifecycle item. The parent's complete host build, normal artifacts, guests,
+real browsers, browser-memory, CTS and combined conformance remain unrun here.
