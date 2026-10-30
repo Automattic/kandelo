@@ -434,7 +434,8 @@ export function runGlQuery(
     case O.QOP_CHECK_FB_STATUS: {
       if (input.byteLength < 4 || out.byteLength < 4) return -22;
       const target = inDv.getUint32(0, true);
-      const surface = target === 0x8ca8 ? b.currentDrawable?.readSurfaceId : b.currentDrawable?.drawSurfaceId;
+      const drawable = b.executionDrawable?.drawable ?? b.currentDrawable;
+      const surface = target === 0x8ca8 ? drawable?.readSurfaceId : drawable?.drawSurfaceId;
       const status = validFramebufferTarget(target) && surface === 0 && isDefaultFramebuffer(b, boundFramebuffer(b, target))
         ? GL_FRAMEBUFFER_UNDEFINED : gl.checkFramebufferStatus(target);
       outDv.setUint32(0, status, true);
@@ -606,6 +607,6 @@ function normalizeNumericValues(value: unknown, pname: number): number[] {
   if (typeof value === "boolean") return [value ? 1 : 0];
   if (typeof value === "number") return [value];
   if (Array.isArray(value)) return value.map(Number);
-  if (ArrayBuffer.isView(value)) return Array.from(value as ArrayLike<number>, Number);
+  if (ArrayBuffer.isView(value)) return Array.from(value as unknown as ArrayLike<number>, Number);
   return [Number(value) || 0];
 }

@@ -474,6 +474,7 @@ host/test/webgl-capabilities.test.ts	source-only
 host/test/webgl-context-creation.test.ts	source-only
 host/test/webgl-context-execution.test.ts	source-only
 host/test/webgl-cpu-image-storage.test.ts	source-only
+host/test/webgl-error-query.test.ts	source-only
 host/test/webgl-fence-query.test.ts	source-only
 host/test/webgl-fences.test.ts	source-only
 host/test/webgl-foreign-texture.test.ts	source-only
@@ -485,6 +486,7 @@ host/test/webgl-image-transactions.test.ts	source-only
 host/test/webgl-kms-scanout.test.ts	source-only
 host/test/webgl-main-forward.test.ts	source-only
 host/test/webgl-muxer.test.ts	source-only
+host/test/webgl-native-query-adapter.test.ts	source-only
 host/test/webgl-op-contract.test.ts	source-only
 host/test/webgl-operation-stream.test.ts	source-only
 host/test/webgl-owned-result.test.ts	source-only

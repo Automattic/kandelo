@@ -12,6 +12,7 @@ type Fence = {
   deletion: ["deleteSync", WebGLSync | null];
   retirement: NativeRetirement;
   published: boolean;
+  created: boolean;
   destroyed: boolean;
   references: number;
 };
@@ -103,40 +104,39 @@ export class GlFenceOwner {
   }
 
   prepare(source: CheckedGlOwner, requestToken?: number): GlFenceCandidate | null {
+    const result = this.prepareRetained(source,requestToken);
+    if (result.accepted) return result.candidate;
+    result.candidate?.cancel();
+    return null;
+  }
+  /** Allocate the private result owner before native creation. A rejected
+   * creation still returns its actual cleanup candidate to an owned receipt. */
+  prepareRetained(source: CheckedGlOwner, requestToken?: number): {candidate:GlFenceCandidate|null;accepted:boolean} {
+    const result: {candidate:GlFenceCandidate|null;accepted:boolean} = {candidate:null,accepted:false};
     this.pruneCompleted();
-    const gl = source.gl;
-    const token = requestToken ?? this.serial + 1;
-    if (this.closed || !gl || !Number.isInteger(token) || token <= this.serial || token > 0xffff_ffff) return null;
-    let fence: Fence | undefined;
+    const gl = source.gl, token = requestToken ?? this.serial + 1;
+    if (this.closed || !gl || !Number.isInteger(token) || token <= this.serial || token > 0xffff_ffff) return result;
     let retirement: NativeRetirement | null = null;
     try {
       captureNativeGlErrors(gl, source);
-      if (!repairNativeState(gl) || gl.isContextLost()) return null;
-      // Allocate publication and cleanup records before native allocation.
-      // Retirements preserve just native handles and private error flags.
-      const owner = { gl, errors: [] as number[] };
-      const deletion: ["deleteSync", WebGLSync | null] = ["deleteSync", null];
-      retirement = reserveNativeRetirement(owner, [deletion]);
-      if (!retirement) return null;
-      this.serial = token;
-      fence = { token, owner, deletion, retirement,
-        published: false, destroyed: false, references: 0 };
-      const candidate = new GlFenceCandidate(this, fence);
-      this.fences.set(fence.token, fence);
-      const accepted = checkedGlCall(owner, () => {
-        deletion[1] = gl.fenceSync(0x9117, 0); // SYNC_GPU_COMMANDS_COMPLETE
-      });
-      if (!accepted || !deletion[1]) { this.cancel(fence); return null; }
-      return candidate;
+      if (!repairNativeState(gl) || gl.isContextLost()) return result;
+      const owner = {gl,errors:[] as number[]}, deletion: ["deleteSync",WebGLSync|null] = ["deleteSync",null];
+      retirement = reserveNativeRetirement(owner,[deletion]);
+      if (!retirement) return result;
+      const fence: Fence = {token,owner,deletion,retirement,published:false,created:false,destroyed:false,references:0};
+      result.candidate = new GlFenceCandidate(this,fence);
+      this.fences.set(token,fence); this.serial = token;
+      const accepted = checkedGlCall(owner,() => { deletion[1] = gl.fenceSync(0x9117,0); });
+      fence.created = accepted && !!deletion[1]; result.accepted = fence.created;
+      return result;
     } catch {
-      if (fence) this.cancel(fence);
-      else if (retirement) retireNativeRetirement(retirement);
-      return null;
+      if (!result.candidate && retirement) retireNativeRetirement(retirement);
+      return result;
     }
   }
 
   publish(fence: Fence): boolean {
-    if (this.closed || fence.destroyed || this.fences.get(fence.token) !== fence) return false;
+    if (this.closed || !fence.created || fence.destroyed || this.fences.get(fence.token) !== fence) return false;
     fence.published = true;
     return true;
   }
@@ -154,6 +154,10 @@ export class GlFenceOwner {
       fence.references++;
       return lease;
     } catch { return null; }
+  }
+  contextFor(token: number): WebGL2RenderingContext | null {
+    const fence=this.fences.get(token);
+    return fence?.published && !fence.destroyed ? fence.owner.gl : null;
   }
   has(token: number): boolean {
     const fence = this.fences.get(token);

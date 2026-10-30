@@ -241,7 +241,7 @@ function countedIntPayload(
   return v.byteLength === headerLen + count * intsPerCount * 4;
 }
 
-function copyBytes(v: DataView, offset: number, length: number): Uint8Array {
+function copyBytes(v: DataView, offset: number, length: number): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(length);
   out.set(new Uint8Array(v.buffer, v.byteOffset + offset, length));
   return out;

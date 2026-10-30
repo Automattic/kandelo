@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { GlOperationStream, GlOperationTicket, type GlOperationKind } from "../src/webgl/operation-stream.js";
 
 it("keeps accepted commands before every immediate-result operation family", () => {
@@ -33,4 +33,15 @@ it("closing a session cancels queued authority without cancelling an active call
   stream.close(); expect(queued.start()).toBe(false); expect(active.cancel()).toBe(false);
   expect(stream.reserve("commands")).toBeNull(); expect(stream.tryBeginImmediate("present")).toBeNull();
   active.finish(); expect(stream.pending).toBe(0);
+});
+
+
+it("distinguishes busy, closed, exhaustion and allocation refusal before immediate effects",()=>{
+  const stream=new GlOperationStream(), prefix=stream.reserve("commands")!;
+  expect(stream.tryBeginImmediateTyped("query")).toEqual({state:"busy"});prefix.cancel();
+  const reserve=vi.spyOn(stream,"reserve").mockReturnValueOnce(null);
+  expect(stream.tryBeginImmediateTyped("query")).toEqual({state:"allocation-failure"});reserve.mockRestore();
+  (stream as unknown as {serial:number}).serial=Number.MAX_SAFE_INTEGER;
+  expect(stream.tryBeginImmediateTyped("query")).toEqual({state:"exhausted"});stream.close();
+  expect(stream.tryBeginImmediateTyped("query")).toEqual({state:"closed"});
 });

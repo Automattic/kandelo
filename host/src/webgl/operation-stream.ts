@@ -6,6 +6,10 @@ import { QOP_CREATE_FENCE, QOP_FENCE_STATUS, QOP_RELEASE_FENCE } from "./ops.js"
 export type GlOperationKind = "commands" | "query" | "fence-create" | "fence-status"
   | "fence-release" | "present" | "make-current";
 type State = "queued" | "running" | "complete" | "cancelled";
+const immediateRefusals = {
+  busy:Object.freeze({state:"busy" as const}),closed:Object.freeze({state:"closed" as const}),
+  exhausted:Object.freeze({state:"exhausted" as const}),allocationFailure:Object.freeze({state:"allocation-failure" as const}),
+};
 
 export class GlOperationTicket {
   constructor(private readonly stream: GlOperationStream,
@@ -36,11 +40,26 @@ export class GlOperationStream {
   /** Immediate results cannot outlive the caller's output authority. Refuse
    * before admission when an accepted prefix has not completed; a future
    * asynchronous path must own a detached result receipt instead. */
-  tryBeginImmediate(kind: Exclude<GlOperationKind, "commands">): GlOperationTicket | null {
-    if (this.tickets.length) return null;
+  immediateState(): "idle" | "busy" | "closed" | "exhausted" {
+    if (this.closed) return "closed";
+    if (this.serial === Number.MAX_SAFE_INTEGER) return "exhausted";
+    return this.tickets.length ? "busy" : "idle";
+  }
+  tryBeginImmediateTyped(kind: Exclude<GlOperationKind, "commands">):
+    {state:"entered";ticket:GlOperationTicket} | {state:"busy"|"closed"|"exhausted"|"allocation-failure"} {
+    const state = this.immediateState();
+    if (state !== "idle") return immediateRefusals[state];
     const ticket = this.reserve(kind);
-    if (!ticket?.start()) { ticket?.cancel(); return null; }
-    return ticket;
+    if (!ticket) return immediateRefusals.allocationFailure;
+    let entered:{state:"entered";ticket:GlOperationTicket};
+    try { entered={state:"entered",ticket}; }
+    catch {ticket.cancel();return immediateRefusals.allocationFailure;}
+    if (!ticket.start()) { ticket.cancel(); return this.closed ? immediateRefusals.closed : immediateRefusals.allocationFailure; }
+    return entered;
+  }
+  tryBeginImmediate(kind: Exclude<GlOperationKind, "commands">): GlOperationTicket | null {
+    const result = this.tryBeginImmediateTyped(kind);
+    return result.state === "entered" ? result.ticket : null;
   }
 
   ready(ticket: GlOperationTicket): boolean {

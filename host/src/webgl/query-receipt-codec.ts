@@ -53,7 +53,7 @@ function validBegin(b: QueryBegin): void {
   if (!uint(b.op) || b.op === KERNEL_GL_QUERY_CONTROL || !uint(b.capacity) || b.capacity > CAP
     || b.input.byteLength > CAP || !uint(b.draw) || !uint(b.read) || typeof b.hasCurrent !== "boolean"
     || (b.context !== null && (!uint(b.context) || b.context === 0))
-    || (!b.hasCurrent && (b.context !== null || b.draw !== 0 || b.read !== 0))
+    || (!b.hasCurrent && (b.draw !== 0 || b.read !== 0))
     || (b.hasCurrent && b.context === null)) malformed();
 }
 export function encodeQueryRequest(request: QueryReceiptRequest): Uint8Array {

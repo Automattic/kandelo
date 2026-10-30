@@ -1,4 +1,5 @@
 import { GlOperationStream, type GlOperationTicket, queryOperationKind } from "./operation-stream.js";
+import type { GlErrorQueryCandidate } from "./error-query.js";
 import type { GlSubmitExecution } from "./submit-execution.js";
 import type { GlFenceCandidate, GlFenceLease } from "./fences.js";
 import type { GlMuxer } from "./muxer.js";
@@ -29,6 +30,7 @@ export class GlResultOwner {
 
 const claimedExecutions = new WeakSet<GlSubmitExecution>();
 const claimedCandidates = new WeakSet<GlFenceCandidate>();
+const claimedErrorCandidates = new WeakSet<GlErrorQueryCandidate>();
 type NativeRetirementResult = { complete: boolean; publicationAccepted: boolean };
 /** Fixed typed custody, never an arbitrary cleanup/execute closure. Other
  * mutating query candidates require their own typed publication model before
@@ -37,6 +39,7 @@ export class GlNativeResultCustody {
   private muxer: WeakRef<GlMuxer>;
   private mode: GlResultMode | null = null;
   private publicationAttempted = false;
+  private errorCandidate: GlErrorQueryCandidate | null = null;
   private publicationAccepted: boolean;
   private claimed = false;
   private pid: number | null;
@@ -65,10 +68,16 @@ export class GlNativeResultCustody {
   }
   claim(): boolean { if (this.claimed) return false; this.claimed = true; return true; }
   adoptCandidate(candidate: GlFenceCandidate): boolean {
-    if (this.mode || this.candidate || this.publicationAttempted || claimedCandidates.has(candidate)
+    if (this.mode || this.candidate || this.errorCandidate || this.publicationAttempted || claimedCandidates.has(candidate)
       || candidate.context !== this.execution?.context) return false;
     claimedCandidates.add(candidate); this.candidate = candidate; this.publicationAccepted = false;
     return true;
+  }
+  adoptErrorCandidate(candidate: GlErrorQueryCandidate): boolean {
+    if (this.mode || this.candidate || this.errorCandidate || this.publicationAttempted
+      || !this.execution || !candidate.owns(this.execution.binding.errors) || claimedErrorCandidates.has(candidate)) return false;
+    claimedErrorCandidates.add(candidate);
+    this.errorCandidate = candidate; this.publicationAccepted = false; return true;
   }
   retire(mode: GlResultMode, publicationAllowed = true): NativeRetirementResult {
     if (this.mode && this.mode !== mode) return { complete:false,publicationAccepted:this.publicationAccepted };
@@ -78,6 +87,13 @@ export class GlNativeResultCustody {
       const selected = this.muxer.deref();
       if (selected) selected.captureCurrentErrors();
       else if (gl) captureNativeGlErrors(gl,null);
+      if (this.errorCandidate) {
+        if (mode === "commit" && !this.publicationAttempted) {
+          this.publicationAttempted = true;
+          this.publicationAccepted = this.errorCandidate.publish();
+        } else if (mode === "cancel") this.errorCandidate.cancel();
+        this.errorCandidate = null;
+      }
       if (this.candidate) {
         if (mode === "commit" && !this.publicationAttempted) {
           // Publication is a one-way transfer to the public fence owner. A

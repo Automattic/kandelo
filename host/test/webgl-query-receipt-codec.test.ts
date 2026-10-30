@@ -18,7 +18,7 @@ describe("unwired owned-query receipt codec", () => {
     const source = readFileSync(new URL("../../tests/graphics/gl-query-receipt-wire-v1.tsv",import.meta.url),"utf8");
     expect(source).toContain(`# reservation\t${KERNEL_GL_QUERY_CONTROL}\t${GL_QUERY_NEEDS_OWNED_ADMISSION}`);
     const vectors = source.split("\n").filter(line => line && !line.startsWith("#"));
-    expect(vectors).toHaveLength(14);
+    expect(vectors).toHaveLength(15);
     for (const line of vectors) {
       const [name,kind,tag,token,capacity,mode,hex] = line.split("\t");
       const bytes = Uint8Array.from(Buffer.from(hex,"hex"));
@@ -39,7 +39,7 @@ describe("unwired owned-query receipt codec", () => {
   it("rejects malformed header, lengths, flags, identities and unimplemented Detach", () => {
     const original = encodeQueryRequest(begin());
     for (const [offset,value] of [[0,0],[4,2],[6,5],[6,99],[8,0],[12,0x8000_0000],
-      [16,KERNEL_GL_QUERY_CONTROL],[20,3],[24,65537],[28,4],[28,2],[28,1],[32,0],[44,1]]) {
+      [16,KERNEL_GL_QUERY_CONTROL],[20,3],[24,65537],[28,4],[28,1],[32,0],[44,1]]) {
       expect(() => decodeQueryRequest(patch(original,offset,value)),`${offset}:${value}`).toThrow();
     }
     for (let len=0;len<48;len++) expect(() => decodeQueryRequest(original.slice(0,len))).toThrow();
@@ -93,4 +93,13 @@ describe("unwired owned-query receipt codec", () => {
     expect(decoded).toEqual(reply);expect(bytes.byteLength).toBe(32+65536);
     expect(() => encodeQueryReply({...reply,result:65537,bytes:new Uint8Array(65537)},context)).toThrow();
   });
+});
+
+
+it("retains source context authority without a current drawable for existing fence operations", () => {
+  const request: QueryReceiptRequest={control:"begin",token:9n,
+    begin:{op:47,capacity:16,hasCurrent:false,context:7,draw:0,read:0,input:new Uint8Array(4)}};
+  expect(decodeQueryRequest(encodeQueryRequest(request))).toEqual(request);
+  for (const surface of ["draw","read"] as const)
+    expect(()=>encodeQueryRequest({...request,begin:{...request.begin!,[surface]:1}})).toThrow();
 });
