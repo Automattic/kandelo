@@ -50,6 +50,7 @@ inputs = [
   "packages/registry/wayland-demo/desktops/hyprland/wlcompositor.conf",
   "packages/registry/wayland-demo/desktops/data/omarchy/wlcompositor.conf",
   "packages/registry/wayland-demo/desktops/data/sway/config",
+  "packages/registry/wayland-demo/desktops/data/sway/foot.ini",
   "packages/registry/wayland-demo/desktops/data/themes/catppuccin/theme.conf",
   "packages/registry/wayland-demo/desktops/data/themes/everforest/theme.conf",
   "packages/registry/wayland-demo/desktops/data/themes/gruvbox/theme.conf",
@@ -69,4 +70,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = ""
-revision    = 8
+revision    = 9

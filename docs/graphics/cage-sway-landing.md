@@ -290,3 +290,27 @@ provisions the current SDK and libdrm; all 38 public GBM symbols and the actual
 metadata, modifier, format and retained CPU-mapping checks pass under UBSan.
 The GBM implementation and public headers are unchanged. This repairs source
 validation provisioning; it does not establish a new compositor/browser pass.
+
+### Desktop density and text defaults
+
+Sway's automatic output scale now rounds the measured connector density
+against a 96-DPI logical grid. Small high-density outputs and physical
+millimetre rounding no longer force a 2x display to scale 1. Unknown,
+invalid or aspect-only physical dimensions retain scale 1. This is a
+compositor desktop policy; KMS modes, physical-size reporting and input
+coordinates remain unchanged. Native panel axes are compared consistently
+before the desktop's logical rotation.
+
+The Sway session selects a 12pt UI font and a separate 14pt foot config at
+`/usr/share/kandelo/sway/foot.ini`, using compositor scaling once. Both
+Super+Return and Ctrl+Return select that config after the upstream include.
+The shared 12pt terminal configuration for other desktops is unchanged.
+The normal wayland-demo desktop archive carries this file under `sway/`;
+the shell image mounts the archive under `/usr/share/kandelo/`.
+
+The package runs a native check of the actual extracted scale function.
+The existing browser spec also has 1x/2x small-pane cases checking native
+mode size, painted bar height, actual Sway IPC scale, rendered-client
+clicks and clean exit. These rendered cases require normal rebuilt Sway,
+wayland-demo data and shell image; source-only checks do not establish
+the new desktop's runtime acceptance.
