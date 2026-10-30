@@ -10444,3 +10444,67 @@ No public async/sentinel behavior, import/export, protocol or ABI epoch changes.
 No normal SDK/package/image products, full Rust tests, browser/application or
 browser-memory jobs were run in this increment. Existing libc-test submodule
 dirt was preserved, and the active primary/Kms build checkouts were untouched.
+
+### Actual ioctl capture into the retained Rust query engine (2026-10-30)
+
+Immediate GLIO_QUERY and the private retained admission path now share one
+Rust capture implementation. It decodes the real target-width ioctl header,
+validates the actual DRI/session/current/source-fence authority, probes the
+entire destination capacity before effects, and copies nested input. The
+private capture requires a live ProcessTable-minted task and its mirrored
+one-shot task binding. It prepares all receipt-control buffers before
+publishing the exact OFD pin and opaque retry token; it does not call Begin,
+return public EAGAIN or complete a guest channel.
+
+The retained owner now includes the process exec generation. Stepping and
+cancellation validate that generation, pointer width and exact pinned OFD
+before HostIO. A causal control against the previous implementation showed
+that a retained query still entered HostIO after the image generation changed.
+It now refuses before native work or replacement-memory copyout. Exec must
+preflight query retirement before changing generation; this check is not an
+alternative cleanup path into a replacement image.
+
+The actual retained driver also has a nonblocking cancellation entry. Unsent
+cancellation records a stable terminal result without Begin or a fabricated
+remote ACK. Uncertain/admitted work retains the same receipt and pin until
+strict Retired acknowledgement; malformed/lost acknowledgements do not
+release them. Cancellation after successful one-shot guest copyout preserves
+Commit. After task retirement, ordinary step refuses before renewed Begin or
+copyout, while explicit cancellation can still advance cleanup for the same
+captured generation. No caller fd or ioctl header is re-read to retarget an
+accepted request.
+
+Focused declared-shell evidence in `.context/graphics-current-conformance`,
+based on `5a7bdd3af8`:
+
+| Check | Result | Private log |
+| --- | --- | --- |
+| Replacement-generation control before the guard | fail: retained engine enters HostIO | `query-bridge-generation-before.log` |
+| Retained engine and six new actual-capture/retirement controls | 14 passed | `query-bridge-retained-release.log` |
+| Existing public ioctl preflight, including wasm64 addresses | 11 passed | `query-bridge-public-release.log` |
+| Existing strict codec/request controls | 9 passed | `query-bridge-request-release.log` |
+| Signal query-retirement composition | 8 passed | `query-bridge-signals-release.log` |
+| Kernel lifecycle/source guards and channel pointer contracts | 45 + 4 passed | `query-bridge-kernel-release.log` |
+| Actual kernel Wasm32 compilation check | passed | `query-bridge-wasm-release.log` |
+
+These are 91 scoped Rust checks, not the full Rust suite. New controls use the
+real ProcessTable task allocator/binding, target-width ioctl capture, existing
+HostIO read/write path and strict receipt engine. They cover nested-input and
+header mutation, numeric-fd reuse, original output address/capacity, one-shot
+copyout, lost Begin, wrong-token retirement ACK, failed copyout cancellation,
+Commit preservation, unsent cancellation, retired-task cleanup and explicit
+binding/pin release. They do not execute a normal kernel/guest artifact against
+the native or forwarded renderer.
+
+This is the Rust capture/retained-driver prerequisite, not public channel
+parking. Optional kernel exports and scalar outcome/owner inspection, exact
+ChannelInfo-generation and memory-registration custody, authenticated
+owner/token wake correlation, coordinated lifecycle intent/physical cleanup,
+and final native/forward guest delivery remain ordinary integration work.
+The syscall72 retry classifier, host ioctl snapshots and public immediate
+path remain unchanged. Legacy immediate error/candidate publication still
+needs coordinated owned delivery before failure coherence can be claimed.
+No export/import, shared layout, generated ABI output, sentinel, control wire
+or ABI epoch changed. Program56 / host3 / GL17 / fork21 remain fixed. No normal
+SDK/package/image/kernel product, full Rust suite, application browser,
+browser-memory or POSIX conformance run was performed by this increment.

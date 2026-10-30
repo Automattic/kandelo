@@ -147,6 +147,7 @@ fn admit(proc: &mut Process, host: &mut Host, tid: u32, handle: i64) -> (i64, us
                 ofd_id: id,
             },
             pid: proc.pid as i32,
+            exec_generation: proc.exec_generation,
             tid,
             session_id: 1,
             display_id: 1,

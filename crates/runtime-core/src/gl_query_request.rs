@@ -15,6 +15,7 @@ use crate::process::HostIO;
 pub struct GlQueryOwner {
     pub target: StableOfdTarget,
     pub pid: i32,
+    pub exec_generation: u64,
     pub tid: u32,
     pub session_id: u32,
     pub display_id: u32,

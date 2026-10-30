@@ -551,6 +551,7 @@ mod tests {
             GlQueryOwner {
                 target,
                 pid: pid as i32,
+                exec_generation: proc.exec_generation,
                 tid,
                 session_id: 1,
                 display_id: 1,
