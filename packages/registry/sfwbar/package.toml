@@ -67,6 +67,11 @@ artifact = "winops.widget"
 guest_path = "/etc/xdg/sfwbar/winops.widget"
 
 [[runtime_files]]
+artifact = "kandelo-sfwbar"
+guest_path = "/usr/local/bin/kandelo-sfwbar"
+mode = 0o755
+
+[[runtime_files]]
 artifact = "kandelo-terminal"
 guest_path = "/usr/local/bin/kandelo-terminal"
 mode = 0o755

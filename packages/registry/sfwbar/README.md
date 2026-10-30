@@ -5,6 +5,11 @@ demos. The configuration selects a Start menu, a task list with focus and
 window operations, and a clock. The menu enumerates actual XDG desktop
 entries for Terminal, ScummVM and Paint. It launches ordinary guest programs.
 
+Sway supervises `/usr/local/bin/kandelo-sfwbar`, which selects the packaged
+configuration and forwards its bar ID and inherited Wayland socket. Sway's
+`swaybar_command` takes an executable pathname, so arguments belong in this
+launcher. Labwc starts SFWBar through its configured shell session.
+
 The recipe uses the normal SDK, dependency resolver and fork instrumenter.
 GTK3 and SFWBar's core link statically; the unchanged `appmenu` implementation
 is a genuine shared WebAssembly module at `/usr/lib/sfwbar/appmenu.so`.

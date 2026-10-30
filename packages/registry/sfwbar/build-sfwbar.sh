@@ -85,7 +85,7 @@ if [ -n "$remaining" ]; then
     exit 1
 fi
 install_local_runtime_file sfwbar "$SRC_DIR/config/winops.widget" winops.widget
-for artifact in sfwbar.config sway.config kandelo-terminal \
+for artifact in sfwbar.config sway.config kandelo-sfwbar kandelo-terminal \
     kandelo-terminal.desktop scummvm.desktop wayland-demo.desktop; do
     install_local_runtime_file sfwbar "$SCRIPT_DIR/config/$artifact" "$artifact"
 done

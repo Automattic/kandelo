@@ -8956,3 +8956,35 @@ outputs. Exact statuses, initial/final projections and actual byte records
 are in .context/rootfs-target-closure/.context/rootfs-standalone-proof.
 This closes the standalone orchestration reproduction; it does not supply
 rendered desktop, browser-memory or POSIX acceptance for other changes.
+
+### Normal SFWBar startup checkpoint and launcher repair (2026-10-30)
+
+Exact source 6647846dda completes normal desktop products in job
+sfwbar-quick-664-1030-050503-c22b. Its later identity capture fails before
+consumers because the wasm64 graphics stamps are absent. The explicit
+normal wasm64 DRI/GLES builders supply those archives in follow-up job
+sfwbar-quick-664-provisioned-1030-054754-0e23. ABI/freshness, actual
+main/module import admission, SDK-linked GTK consumer and normal Node
+`sfwbar --help` pass. All 92 selected owners, 243 members and 27 actual
+library trees agree before/after the browser cohort. Both actual headless
+Chromium demo cases fail initial Start readiness: neither Sway nor Labwc
+paints the panel. Menu, launch, focus and close acceptance remain unproven.
+
+A separate 12.7s headless observation on the same frozen normal artifacts
+shows painted foot and live Sway, swaybg, foot and bash, with no SFWBar
+process or GTK/module error. Pinned upstream Sway 1.12 joins the configured
+bar command into one string and passes that string directly to `execvp`,
+appending `-b` and the real bar ID. The packaged command included `-f`
+arguments in that executable pathname. Its resulting failure is inferred
+from that source and the actual missing process, not a captured syscall.
+The package now installs an executable `kandelo-sfwbar` launcher selecting
+the fixed configuration and forwarding all arguments and the inherited
+Wayland socket; Sway names that executable only. No kernel or consumer
+bypass is introduced. Labwc's separate failure has not been attributed to
+this Sway-only cause. Normal combined rebuild and both GUI reruns are
+required, including the integrated shared Wayland front-lifetime repair.
+
+Evidence is retained under .context/sfwbar-quick-664-provisioned and
+.context/sfwbar-startup-observe; the latter includes exact upstream source
+identities, process/terminal captures and the startup handoff. No GUI or
+performance success is claimed from CLI admission or startup diagnosis.
