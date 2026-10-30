@@ -34,6 +34,12 @@ export class GlSubmitExecution {
   admitted = false;
   get context(): WebGL2RenderingContext | null { return this.contextLease?.context ?? null; }
 
+  /** Clone the actual captured retirement owner; never consult a replacement
+   * registry slot or the presently selected native context. */
+  cloneContextExecution(): GlContextExecutionLease | null {
+    return this.admitted && !this.closed ? this.contextLease?.clone() ?? null : null;
+  }
+
   private constructor(readonly binding: GlBinding, muxer: GlMuxer) {
     this.muxer = new WeakRef(muxer);
     this.contextId = binding.contextId;

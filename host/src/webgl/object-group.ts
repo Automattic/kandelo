@@ -1,3 +1,4 @@
+import { GlUniformLookupBudget } from "./uniform-lookup-bytes.js";
 import type { NativeRetirement } from "./native-recovery.js";
 import type { GlImageSource, GlTextureView, GlRenderbufferView } from "./image-storage.js";
 import type { GlBufferStore } from "./buffer-storage.js";
@@ -43,6 +44,10 @@ export type GlSharedObjects = {
   /** Original submitted bytes; native decoding must not change source queries. */
   shaderSources: Map<WebGLShader, Uint8Array>;
   programs: Map<number, WebGLProgram>;
+  /** Query leases pin one exact native link generation. */
+  programQueryPins: Map<WebGLProgram, number>;
+  programLinkGenerations: WeakMap<WebGLProgram, { value: number }>;
+  uniformLookupBudget: GlUniformLookupBudget;
   shaderDeletePending: Set<number>;
   programDeletePending: Set<number>;
   programShaders: Map<number, Set<number>>;
@@ -79,7 +84,8 @@ export type GlObjectGroup = GlSharedObjects & { members: Set<GlBinding> };
 export function createGlObjectGroup(): GlObjectGroup {
   return {
     bufferRetirements:new Map(),imageRetirements:new Map(),imageSources:new Map(),nextImageSource:1,imageRevisions:new Map(),textureViews:new Map(),textureViewOwners:new Map(),renderbufferViews:new Map(),renderbufferViewOwners:new Map(),
-    members: new Set(), buffers: new Map(), bufferStores: new Map(), bufferViewOwners: new Map(), textures: new Map(), shaders: new Map(), programs: new Map(),
+    members: new Set(), buffers: new Map(), bufferStores: new Map(), bufferViewOwners: new Map(), textures: new Map(), shaders: new Map(), programs: new Map(), programQueryPins: new Map(),
+    programLinkGenerations: new WeakMap(), uniformLookupBudget: new GlUniformLookupBudget(),
     rbos: new Map(), shaderSources: new Map(), shaderDeletePending: new Set(), programDeletePending: new Set(),
     programShaders: new Map(), programAttributeBindings: new Map(),
     uniformLocationRecords: new Map(), nextUniformLoc: 0,

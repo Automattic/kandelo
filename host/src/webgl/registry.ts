@@ -9,7 +9,7 @@ import { checkedGlCall } from "./program-objects.js";
 import { captureNativeGlErrors } from "./errors.js";
 import { destroyTextureView, destroyRenderbufferView } from "./image-storage.js";
 import type { GlUniformUpload } from "./uniform-upload.js";
-import type { GlUniformLookup } from "./uniform-queries.js";
+import { replaceUniformLookup, type GlUniformLookup } from "./uniform-queries.js";
 import type { GlSurfaceCreation } from "./surface-create.js";
 /**
  * Tracks live `/dev/dri/renderD128` GLES sessions reported by the kernel.
@@ -482,7 +482,7 @@ export class GlContextRegistry {
         || target.uniformUpload !== null || target.uniformLookup !== null || target.objects.members.size !== 1) return false;
     const names = target.objects;
     if (names.bufferRetirements.size || names.imageRetirements.size || names.buffers.size || names.bufferStores.size || names.textures.size || names.shaders.size || names.programs.size
-        || names.rbos.size || names.imageSources.size || names.textureViews.size || names.renderbufferViews.size || names.uniformLocationRecords.size || names.foreignTextures.size
+        || names.rbos.size || names.programQueryPins.size || names.imageSources.size || names.textureViews.size || names.renderbufferViews.size || names.uniformLocationRecords.size || names.foreignTextures.size
         || names.retiredTextures.size || names.retiredBuffers.size || names.retiredRenderbuffers.size
         || names.shaderDeletePending.size || names.programDeletePending.size) return false;
     // Reserve membership before removing the old owner; allocation failure
@@ -689,7 +689,7 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
   if (gl) retireNativeRepair(gl, b.shadow);
   b.uniformUpload = null;
   b.uniformUploadSerial = 0;
-  b.uniformLookup = null;
+  replaceUniformLookup(b,null);
   b.uniformLookupSerial = 0;
   b.shaderUpload = null;
   b.shaderUploadSerial = 0;
@@ -735,6 +735,7 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
     }
     for (const map of [b.buffers,b.textures,b.shaders,b.programs,b.rbos,b.uniformLocationRecords,b.programShaders,b.programAttributeBindings,b.foreignTextures,b.shaderSources]) map.clear();
     b.imageSources.clear();
+    b.programQueryPins.clear();
     b.shaderDeletePending.clear(); b.programDeletePending.clear();
   } else {
     if (installedName) finalizeProgram(b, installedName);

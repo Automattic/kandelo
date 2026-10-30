@@ -1,6 +1,7 @@
+import { isKernelExportFailure } from "../kernel-entry-gate.js";
 // Deferred shader/program ownership adapted from Brandon Payton's
 // generic-kms-gles-runtime, retaining main's native-object shadow layout.
-import type { GlBinding } from "./registry.js";
+import type { GlBinding, GlContextExecutionLease } from "./registry.js";
 import { recordGlError } from "./errors.js";
 export { recordGlError } from "./errors.js";
 
@@ -22,7 +23,7 @@ export function checkedGlCall(b: CheckedGlOwner, call: () => void): boolean {
     const error = gl.getError();
     recordGlError(b, error);
     return error === 0;
-  } catch {
+  } catch (error) { if(isKernelExportFailure(error)) throw error;
     recordGlError(b, 0x502); // INVALID_OPERATION
     return false;
   }
@@ -42,8 +43,12 @@ export function finalizeShader(b: GlBinding, name: number): void {
 export function finalizeProgram(b: GlBinding, name: number): void {
   if (!b.programDeletePending.has(name)) return;
   const program = b.programs.get(name);
-  if ([...b.objects.members].some(member => name === currentProgramName(member))) return;
-  if (program && b.gl && !deleteUnusedNativeProgram(b, program)) return;
+  if ([...b.objects.members].some(member => name === currentProgramName(member)) || (program && b.programQueryPins.has(program))) return;
+  finishProgramDeletion(b,name,program);
+}
+
+function finishProgramDeletion(b: GlBinding, name: number, program: WebGLProgram | undefined): boolean {
+  if (program && b.gl && !deleteUnusedNativeProgram(b, program)) return false;
   b.programDeletePending.delete(name);
   b.programs.delete(name);
   const shaders = b.programShaders.get(name);
@@ -51,12 +56,13 @@ export function finalizeProgram(b: GlBinding, name: number): void {
   b.programAttributeBindings.delete(name);
   invalidateProgramLocations(b, name);
   if (shaders) for (const shader of shaders) finalizeShader(b, shader);
+  return true;
 }
 
 function invalidateProgramLocations(b: GlBinding, name: number): void {
   for (const [location, record] of b.uniformLocationRecords) {
     if (record.program !== name) continue;
-    if (record.state === "reserved") record.state = "invalid";
+    if (record.references > 0) record.state = "invalid";
     else b.uniformLocationRecords.delete(location);
   }
 }
@@ -69,7 +75,7 @@ export function currentProgramName(b: GlBinding): number {
 }
 
 export function releaseRetainedExecutable(b: GlBinding, program: WebGLProgram | null): void {
-  if (!program || [...b.objects.members].some(member => program === member.currentProgram)) return;
+  if (!program || b.programQueryPins.has(program) || [...b.objects.members].some(member => program === member.currentProgram)) return;
   for (const object of b.programs.values()) if (object === program) return;
   deleteUnusedNativeProgram(b, program);
 }
@@ -81,6 +87,13 @@ function deleteUnusedNativeProgram(b: GlBinding, program: WebGLProgram): boolean
     if (b.gl!.getParameter(0x8b8d) === program) b.gl!.useProgram(null);
     b.gl!.deleteProgram(program);
   });
+}
+
+/** Stable generation cell; advancing an accepted link needs no allocation. */
+export function programLinkGeneration(b: GlBinding, program: WebGLProgram): { value: number } {
+  let generation=b.programLinkGenerations.get(program);
+  if(!generation) {generation={value:0};b.programLinkGenerations.set(program,generation);}
+  return generation;
 }
 
 /** A current GLES executable survives failed relinking. A native WebGL
@@ -97,7 +110,7 @@ export function linkProgramRetainingExecutable(b: GlBinding, name: number): void
   const currentName = currentProgramName(b);
   const installed = b.currentProgram;
   let program = previous;
-  if ([...b.objects.members].some(member => previous === member.currentProgram)) {
+  if (b.programQueryPins.has(previous) || [...b.objects.members].some(member => previous === member.currentProgram)) {
     let candidate: WebGLProgram | null = null;
     const allocated = checkedGlCall(b, () => { candidate = gl.createProgram(); });
     if (!allocated || !candidate) {
@@ -117,10 +130,15 @@ export function linkProgramRetainingExecutable(b: GlBinding, name: number): void
     });
     if (!prepared) { gl.deleteProgram(program); return; }
   }
+  let generation: {value:number};
+  try { generation=programLinkGeneration(b,program); }
+  catch (error) { if(isKernelExportFailure(error)) throw error; recordGlError(b,0x505); if(program!==previous) gl.deleteProgram(program);return; }
+  if(generation.value>=Number.MAX_SAFE_INTEGER) {recordGlError(b,0x505);if(program!==previous)gl.deleteProgram(program);return;}
   if (!checkedGlCall(b, () => gl.linkProgram(program))) {
     if (program !== previous) gl.deleteProgram(program);
     return;
   }
+  generation.value++;
   if (currentName === name) b.currentProgramId = name;
   b.programs.set(name, program);
   let linked = false;
@@ -151,5 +169,54 @@ export function useProgramIfAccepted(b: GlBinding, name: number): void {
   if (previous !== program) {
     if (previousName !== 0) finalizeProgram(b, previousName);
     if (wasRetained) releaseRetainedExecutable(b, previous);
+  }
+}
+
+/** A query owns its exact accepted context and native executable, independently
+ * of the live registry slot. Releasing native custody is retryable. */
+export class GlProgramQueryPin {
+  private released = false;
+  private readonly objects:GlBinding["objects"];
+  private constructor(private execution: GlContextExecutionLease | null,
+      readonly binding: GlBinding, readonly name: number, readonly program: WebGLProgram) {this.objects=binding.objects;}
+
+  static acquire(execution: GlContextExecutionLease, name: number): GlProgramQueryPin | null {
+    const b=execution.binding, program=b.programs.get(name);
+    if(!program) {recordGlError(b,b.shaders.has(name)?0x502:0x501);return null;}
+    const count=b.programQueryPins.get(program)??0;
+    if(count>=Number.MAX_SAFE_INTEGER) {recordGlError(b,0x505);return null;}
+    const retained=execution.clone();
+    if(!retained) {recordGlError(b,0x505);return null;}
+    try {
+      const pin=new GlProgramQueryPin(retained,b,name,program);
+      programLinkGeneration(b,program);
+      b.programQueryPins.set(program,count+1);
+      return pin;
+    } catch (error) { if(isKernelExportFailure(error)) throw error;
+      // The caller still owns its execution lease, so this cannot retire it.
+      retained.release();recordGlError(b,0x505);return null;
+    }
+  }
+
+  release(): boolean {
+    const b=this.binding, program=this.program;
+    if(!this.released) {
+      if(b.objects!==this.objects) return false;
+      const count=b.programQueryPins.get(program);
+      if(!count) throw new Error("Uniform query executable pin lost");
+      if(count>1) b.programQueryPins.set(program,count-1);
+      else {
+        const named=b.programs.get(this.name)===program;
+        const current=[...b.objects.members].some(member=>member.currentProgram===program);
+        if(named && b.programDeletePending.has(this.name) && !current) {
+          if(!finishProgramDeletion(b,this.name,program)) return false;
+        } else if(!named && !current && !deleteUnusedNativeProgram(b,program)) return false;
+        b.programQueryPins.delete(program);
+      }
+      this.released=true;
+    }
+    if(this.execution && !this.execution.release()) return false;
+    this.execution=null;
+    return true;
   }
 }

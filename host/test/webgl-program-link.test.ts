@@ -401,6 +401,17 @@ describe("program link attempts and installed executables", () => {
     expect(lookup(peer,0,2,short.length,short).location).toBe(first.location);
     expect(done.location).not.toBe(first.location);
   });
+  it("rejects in-place relinking between accepted lookup chunks instead of resolving a later executable",()=>{
+    const {b,send,native}=setup();send(O.OP_USE_PROGRAM,[0]);
+    const text=new TextEncoder().encode("color");
+    expect(lookup(b,1,1,text.length).status).toBe(0);
+    expect(lookup(b,2,1,0,text).status).toBe(0);
+    const program=b.programs.get(20);linkProgramRetainingExecutable(b,20);
+    expect(b.programs.get(20)).toBe(program);
+    const before=b.nextUniformLoc;
+    expect(lookup(b,3,1).status).toBe(1);
+    expect(b.nextUniformLoc).toBe(before);expect(b.uniformLookup).toBeNull();expect(b.errors).toContain(0x502);
+  });
   it("returns inactive long roots and invalid or reserved names without WebGL-only name errors",()=>{
     const {b,native}=setup();let calls=0;native.getUniformLocation=()=>{calls++;return {};};
     for(const name of ["unknown"+"x".repeat(70000),"gl_reserved","","bad name","value[-1]"]) {

@@ -39,6 +39,15 @@ function fixture() {
 }
 const frame = () => new SubmitFrame(new Uint8Array([1]), 0, 1);
 
+it("clones only its actual captured context owner and refuses new clones after release",()=>{
+  const f=fixture(),work=f.registry.retainSubmitExecution(f.binding,f.muxer)!;
+  expect(work.admitted).toBe(true);const clone=work.cloneContextExecution()!;expect(clone.binding).toBe(f.binding);
+  f.registry.destroyContext(7,11);expect(f.registry.get(7,11)).not.toBe(f.binding);
+  expect(work.release()).toBe(true);expect(work.cloneContextExecution()).toBeNull();
+  expect(clone.binding).toBe(f.binding);expect(clone.context).toBe(f.gl);expect(clone.release()).toBe(true);
+  f.registry.unbind(7,11);
+});
+
 it("queued work retains the accepted drawable allocation across resize", () => {
   const f = fixture(), old = f.binding.presentTarget!;
   f.queue.enqueue(f.binding, frame());

@@ -9684,3 +9684,37 @@ remain integration work. No public pending/sentinel interpretation, export,
 import or ABI change is enabled. Full combined Rust/ABI gates, normal products,
 real browser delivery, browser-memory and POSIX conformance remain unrun for
 this increment and required before public async activation.
+
+### Prepared uniform query ownership
+
+`GlUniformQueryCandidate` prepares either uniform-location query family at an
+actual retained context lease. It keeps reply bytes, exact executable pins and
+unpublished location reservations until acceptance or retryable retirement.
+Publication mutates existing records and staged assembly state without required
+allocation. Cancel preserves prior assembly and reclaims only never-public IDs.
+Successful relinks invalidate old reservations; failed links preserve the old
+installed executable. Link-generation snapshots also prevent a chunked name
+from resolving a later in-place executable. The source control in
+`.context/uniform-query-generation-before.log` fails against the exact four
+prior modules from `f8e3f02ff6`; it returns success after the intervening relink.
+
+Copied lookup storage has an explicit configurable 8 MiB default budget per
+shared object group, independent of the 65,536-byte wire request cap. Actual
+reply, name, chunk and accepted assembly bytes are charged and released through
+cancellation, replacement and owner retirement. Exhaustion reports
+`GL_OUT_OF_MEMORY` without attempting the oversized allocation; the valid
+140,001-byte transfer remains covered. This is resource accounting, not a new
+API-size promise or an asserted platform boundary. Program pins own cloned
+context leases; failed native deletion retains the actual pin for cleanup retry.
+
+Focused source evidence is `.context/uniform-query-source-final.log`: 375/375
+cases in eight files, zero skips, including 24 candidate cases. The strict
+candidate/submit-execution dependency graph passes in
+`.context/uniform-query-strict-final.log`; this does not replace the parent's
+canonical complete host build. The evidence registry agrees on 638 files.
+The candidate API is an internal foundation: owned-result adoption, native /
+forwarded adapter integration, lost-acknowledgement and copyout-failure delivery
+controls, normal guests, browsers, CTS and conformance remain required. No public
+pending behavior, ABI bump, generated-output claim or normal build is included.
+The broader program-link clone rollback still has unchecked candidate-deletion
+paths; its general lifecycle repair remains an ordinary open item.
