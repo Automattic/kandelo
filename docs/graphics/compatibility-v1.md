@@ -9626,3 +9626,32 @@ Worker/forwarded scheduling, actual cleanup transfer or containment, normal
 combined artifacts, full Rust/ABI checks, real browser delivery, browser-memory
 and conformance remain required. These are ordinary remaining integration
 work, not platform boundaries or completed async support.
+
+#### Combined lifecycle integration evidence (2026-10-29)
+
+At `2d05917e24`, the generation-bound kernel lifecycle driver is integrated
+with private import routing and the uniform-location record foundation.
+Declared-shell checks pass: canonical host JS/declarations, **913/913**
+graphics source cases in 40 files with zero skips, the matching **640-file**
+evidence registry, **3,405** workspace Rust cases (zero failed or ignored,
+98 result groups), actual Wasm32 kernel compilation, and normal ABI
+regeneration/checking. The full five-file entry/ownership audit separately
+passes **170/170** at unchanged deadlines. The seventh import regression
+also proves that numeric session reuse cannot admit replacement work through
+an old registration while its original retirement controls remain reachable.
+
+Logs are `.context/graphics-lifecycle-combined-{host,source,registry,rust,wasm,abi-update,abi-check,audit}.log`.
+The foreground wrapper exits 1 only at its final unscoped `git diff` guard:
+`.context/graphics-lifecycle-combined-diff.log` shows the pre-existing dirty
+Sortix fixture at the same pinned commit. All preceding checks passed. A
+separate source-owned diff check excluding the two preserved external test
+fixtures exits 0, and the generated-output diff check exits 0; those logs are
+`.context/graphics-lifecycle-combined-{source-diff,generated}.log`. No fixture
+dirt was cleared, no output was restamped, and no ABI epoch was added.
+
+This checkpoint does not activate production async queries. Owned forwarding,
+worker progress, a kernel-held intent scheduler, generic signal-delivery
+ordering, remaining typed mutation candidates and actual forced cleanup or
+containment remain ordinary implementation work. Current normal cage/sway
+products and acceptance run independently on the frozen landing branch;
+follow-up rendered guests, CTS, browser-memory and conformance remain pending.
