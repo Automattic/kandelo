@@ -110,6 +110,8 @@ if [ ! -d "$SRC_DIR" ]; then
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-application-default-vfuncs.patch"
     # Connected GTK widget signals preserve the closure userdata argument.
     patch --fuzz=0 -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-widget-signal-contracts.patch"
+    # Closure/weak cleanup retains the public two-argument notifier contract.
+    patch --fuzz=0 -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-closure-notifier-contract.patch"
 fi
 
 # Fresh build dir each run — autoconf bakes --prefix into Makefiles.

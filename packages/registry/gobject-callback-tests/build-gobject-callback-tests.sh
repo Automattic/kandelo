@@ -19,7 +19,7 @@ SRC_DIR="$WORK_DIR/source"
 kandelo_package_stage_primary_source gobject-callback-tests "$SRC_DIR" "$WORK_DIR"
 # Compile tests from the same patched source contract as the installed library.
 # Do not rebuild GLib or alter any assertions, skip list or test selection.
-for patch_name in giomodule-no-dbus-builtins wasm-callback-signatures wasm-credentials wasm-interface-init-contract wasm-closure-dispatch-contract; do
+for patch_name in giomodule-no-dbus-builtins wasm-callback-signatures wasm-credentials wasm-interface-init-contract wasm-closure-dispatch-contract wasm-closure-notifier-contract; do
     patch --fuzz=0 --batch -d "$SRC_DIR" -p1 < "$REPO_ROOT/packages/registry/glib/src/$patch_name.patch"
 done
 TEST_DIR="$SRC_DIR/gobject/tests"
@@ -43,6 +43,16 @@ libs=(-Wl,--start-group "$WASM_POSIX_DEP_GLIB_DIR/lib/libgobject-2.0.a" \
 export WASM_POSIX_INSTALL_LOCAL_MIRROR=0 WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto
 source "$REPO_ROOT/scripts/install-local-binary.sh"
 install_local_binary gobject-callback-tests "$WORK_DIR/gobject-contract.wasm" gobject-contract.wasm
+# Property-binding teardown exercises the real installed GObject library;
+# keep callback definitions in a separate translation unit and retain all
+# ordinary upstream targets below, including their currently failing cases.
+for name in binding-contract binding-callbacks; do
+    "${ARCH}posix-cc" "${cc_flags[@]}" -std=gnu11 -Wall -Wextra -Werror \
+        -I"$SCRIPT_DIR" -c "$SCRIPT_DIR/$name.c" -o "$WORK_DIR/$name.o"
+done
+"${ARCH}posix-cc" -pthread "$WORK_DIR/binding-contract.o" "$WORK_DIR/binding-callbacks.o" \
+    "${libs[@]}" -o "$WORK_DIR/gobject-binding-lifecycle.wasm"
+install_local_binary gobject-callback-tests "$WORK_DIR/gobject-binding-lifecycle.wasm" gobject-binding-lifecycle.wasm
 for name in type basic-signals signals closure defaultiface dynamictype accumulator object references signal-handler; do
     sources=("$TEST_DIR/$name.c")
     case "$name" in

@@ -1,0 +1,127 @@
+--- a/gobject/gbinding.c
++++ b/gobject/gbinding.c
+@@ -176,6 +176,16 @@
+ binding_context_unref (BindingContext *context)
+ {
+   g_atomic_rc_box_release_full (context, (GDestroyNotify) binding_context_clear);
++}
++
++/* A closure notifier has a distinct two-argument contract. Keep the
++ * unary helper for direct calls and adapt only closure finalization. */
++static void
++binding_context_closure_notify (gpointer  data,
++                                GClosure *closure)
++{
++  (void) closure;
++  binding_context_unref (data);
+ }
+
+ /* Reference counting for the transform functions to ensure that they're always
+@@ -826,7 +836,7 @@
+   source_property_detail = g_quark_from_string (binding->source_property);
+   source_notify_closure = g_cclosure_new (G_CALLBACK (on_source_notify),
+                                           binding_context_ref (binding->context),
+-                                          (GClosureNotify) binding_context_unref);
++                                          binding_context_closure_notify);
+   binding->source_notify = g_signal_connect_closure_by_id (source,
+                                                            gobject_notify_signal_id,
+                                                            source_property_detail,
+@@ -843,7 +853,7 @@
+       target_property_detail = g_quark_from_string (binding->target_property);
+       target_notify_closure = g_cclosure_new (G_CALLBACK (on_target_notify),
+                                               binding_context_ref (binding->context),
+-                                              (GClosureNotify) binding_context_unref);
++                                              binding_context_closure_notify);
+       binding->target_notify = g_signal_connect_closure_by_id (target,
+                                                                gobject_notify_signal_id,
+                                                                target_property_detail,
+--- a/gio/gdbusobjectmanagerclient.c
++++ b/gio/gdbusobjectmanagerclient.c
+@@ -1262,6 +1262,15 @@
+   g_free (weak_ref);
+ }
+
++/* Closure finalization supplies both data and the closure. */
++static void
++weak_ref_closure_notify (gpointer  data,
++                         GClosure *closure)
++{
++  (void) closure;
++  weak_ref_free (data);
++}
++
+ static void
+ on_get_managed_objects_finish (GObject      *source,
+                                GAsyncResult *result,
+@@ -1436,7 +1445,7 @@
+                             "notify::g-name-owner",
+                             G_CALLBACK (on_notify_g_name_owner),
+                             weak_ref_new (G_OBJECT (manager)),
+-                            (GClosureNotify) weak_ref_free,
++                            weak_ref_closure_notify,
+                             G_CONNECT_DEFAULT);
+
+   manager->priv->signal_signal_id =
+@@ -1444,7 +1453,7 @@
+                             "g-signal",
+                             G_CALLBACK (on_control_proxy_g_signal),
+                             weak_ref_new (G_OBJECT (manager)),
+-                            (GClosureNotify) weak_ref_free,
++                            weak_ref_closure_notify,
+                             G_CONNECT_DEFAULT);
+
+   manager->priv->name_owner = g_dbus_proxy_get_name_owner (manager->priv->control_proxy);
+--- a/gio/gdbusserver.c
++++ b/gio/gdbusserver.c
+@@ -590,6 +590,15 @@
+   return server->active;
+ }
+
++/* g_object_unref is unary; do not call it as a GClosureNotify. */
++static void
++server_closure_unref (gpointer  data,
++                      GClosure *closure)
++{
++  (void) closure;
++  g_object_unref (data);
++}
++
+ /**
+  * g_dbus_server_start:
+  * @server: A #GDBusServer.
+@@ -610,7 +619,7 @@
+                                                          "run",
+                                                          G_CALLBACK (on_run),
+                                                          g_object_ref (server),
+-                                                         (GClosureNotify) g_object_unref,
++                                                         server_closure_unref,
+                                                          G_CONNECT_DEFAULT);
+   g_socket_service_start (G_SOCKET_SERVICE (server->listener));
+   server->active = TRUE;
+--- a/gio/gtestdbus.c
++++ b/gio/gtestdbus.c
+@@ -77,6 +77,15 @@
+   return FALSE;
+ }
+
++/* Object weak notifications supply data and the finalized object. */
++static void
++quit_loop_weak_notify (gpointer data,
++                       GObject *where_the_object_was)
++{
++  (void) where_the_object_was;
++  g_main_loop_quit (data);
++}
++
+ static gboolean
+ _g_object_unref_and_wait_weak_notify (gpointer object)
+ {
+@@ -86,7 +95,7 @@
+   data.loop = g_main_loop_new (NULL, FALSE);
+   data.timed_out = FALSE;
+
+-  g_object_weak_ref (object, (GWeakNotify) g_main_loop_quit, data.loop);
++  g_object_weak_ref (object, quit_loop_weak_notify, data.loop);
+
+   /* Drop the strong ref held by the caller in an idle callback. This is to
+    * make sure the mainloop is already running when weak notify happens (when

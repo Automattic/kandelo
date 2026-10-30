@@ -34,9 +34,32 @@ emitv and emit-va: class-only, normal connected, and swapped connected routes.
 Class callbacks have no trailing data; connected callbacks check non-NULL
 instance/argument/userdata identity. Disconnect-by-function/data must remove
 exactly the connected handler while subsequent class dispatch still runs.
-These62 contract cases are separate from the ten upstream targets. The twelve
-new cases require a fresh normal fixture build; prior50-case evidence does not
-validate them.
+These62 callback cases are separate from the binding cases and ten upstream
+targets. They require a fresh normal fixture build; prior50-case evidence
+does not validate the twelve additional signal cases.
+
+Revision3 adds `gobject-binding-lifecycle.wasm`, linked to the same real
+installed GObject library, with twelve property-binding lifecycle cases.
+One-way, bidirectional, full-transform and closure-transform bindings each
+exercise explicit unbind, source finalization and target finalization. Real
+integer properties prove initial synchronization policy and propagation in
+the applicable directions. Full and closure transforms check exact invocation
+counts; endpoint values remain independently writable after binding removal.
+
+Caller-owned binding references survive teardown until explicitly released.
+The explicit closure-unbind case retains caller closure references and proves
+caller-data cleanup waits for their release; automatic endpoint cases drop
+caller closure references early and prove binding-owned retention and cleanup.
+Weak/finalization counters and owned heap-data notifiers must each run exactly
+once. All new callback signatures are statically checked, with callback and
+caller code in separate translation units. The public GObject APIs supply all
+binding behavior; this is not a private binding implementation or widget mock.
+
+The focused gate now contains74 cases, plus the ten unchanged upstream targets.
+The new twelve require a normal revision3 build and run; previous62-case
+evidence does not validate them. Native host controls are not Kandelo Wasm
+acceptance. The shared closure-notifier patch is a declared source input and
+is applied alongside the other normal GLib patches to upstream test sources.
 
 Ten pinned upstream GObject targets use original assertions/test selection:
 type, basic-signals, signals, closure, defaultiface, dynamictype, accumulator,

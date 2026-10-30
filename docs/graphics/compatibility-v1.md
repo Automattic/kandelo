@@ -9807,3 +9807,68 @@ flips advance. The failing PTY/parser/raster/commit/content layer remains
 unknown. Console evidence is limited and does not establish complete
 worker diagnostics. `.context/labwc-c87-marker-review/review.md` retains
 that distinction and the actual trace/keyboard/paint observations.
+
+### Pager-return cleanup defect and shared notifier repair (2026-10-30)
+
+Headless Chromium job `preview5662-sway-interior-1030-155634-a8e4`
+finishes red in 2m30s against unchanged normal c87/5662 products and
+03ab test source. The repaired interior comparison passes the actual
+retained gray1 and focused2 cells. Clicking1 restores FIRST_READY pixels,
+then SFWBar crashes and its panel disappears. The real worker reports a
+function-signature mismatch; the subsequent task-count assertion fails.
+Normal Node help/module admission and before/after source, SDK, selected
+kernel and all93 owner/245 member identities pass. Menu/refocus/close/exit
+acceptance is not reached. This is a product fault, not another image
+classifier failure. Labwc's earlier missing terminal marker stays open.
+
+The actual immutable SFWBar module has SHA256
+`4d0dd2ac977502d65afc701a93138197abe30569806bfb53caad134a416eae02`.
+Its captured stack includes g_closure_unref, g_signal_handler_disconnect
+and the GBinding export neighborhood. Actual compiled constructor
+expressions and function-table entries corroborate a unary cleanup
+helper registered as a two-argument GClosureNotify. The runtime indirect
+index and exact destroyed binding/widget were not captured. Static
+correlation alone does not identify that dynamic callee uniquely.
+Full evidence is `.context/sfwbar-pager-return-crash-review/HANDOFF.md`.
+
+A genuine GObject property-binding fixture now reproduces the cleanup
+failure in all12 Wasm controls against the exact normal GLib6 generation
+shared by c87. Every case first proves property propagation, then traps
+in closure cleanup when explicitly unbound or when source/target dies:
+one-way, bidirectional, full-transform and closure-transform bindings
+across three teardown paths. All exits are132 and retain the expected
+teardown marker and actual signature-mismatch diagnostic. These are
+negative controls, not passing library support. The new callbacks have
+exact public types, real heap-data ownership and separate translation
+units; no replacement GObject implementation or invalid widget is used.
+The real native host GLib2.86.3 semantic control passes12/12, separately
+from pinned2.84.4 Wasm. Complete SDK and four immutable core dependency
+inventories are verified, with historical9a inputs explicitly matched
+to the current c87 dependency identities. Before evidence is
+`.context/gobject-binding-lifecycle/before-control/`; runtime result SHA
+`faaacbd21679961df9088eb7a6dd59db2bd91b6516e18f47df3225b55bc5bb15`.
+
+The shared source repair adds typed closure and weak-notify adapters at
+13 registrations across GLib/GIO and GTK. It preserves direct unary
+helpers, signal-handler identities, retained references and exactly-once
+cleanup. The public GTK radio-action API preserves original callback
+data and uses a separate holder for the caller's unary destroy function.
+GLib revision7 and GTK revision9 invalidate changed package products
+once each; ABI remains56/3/17/21. Normal runtime registrations were
+reviewed in a bounded100-row inventory; arbitrary aliases, external
+callbacks and upstream tests are not claimed fully audited. Excluded
+X11 GtkSocket still has a unary registration and remains an ordinary gap.
+
+All nine changed source units match the official pinned archives plus
+the current normal patch chain; strict new-patch application reproduces
+the reviewed after files. Nine actual-header adapter/public-radio API
+compile checks pass. GLib patch SHA256 is
+`4c457ccbf764a903ce0eca7240ad9751201d5b5ffa122f276df88d8367c40c63`;
+GTK patch SHA256 is
+`5c08ec8b182014a367fb78e518c800350ae7e968deaca07d0d8199bf56b42fcc`.
+Details and source-scope limits are in
+`.context/closure-notifier-audit/AUDIT.md`. Repaired normal-library
+lifecycle execution, normal desktop rebuild and actual headless
+pager/menu/focus/exit acceptance remain pending. The broader six red
+upstream targets are retained. Performance remains unmeasured; quiet
+Cage/Sway/Labwc profiling follows functional panel integration.

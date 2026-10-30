@@ -48,6 +48,21 @@ describe("actual GObject/libffi callback ABI boundaries",()=>{
  },30_000);
 });
 
+describe("actual GObject property-binding lifecycle",()=>{
+ for(const family of ["oneway","bidi","full","closures"])
+  for(const teardown of ["unbind","source","target"]){
+   it(`${family} binding ${teardown}`,async()=>{
+    const result=await runCentralizedProgram({programPath:program("binding-lifecycle"),
+     argv:["/bin/gobject-binding-lifecycle",family,teardown],env:[],useDefaultRootfs:false,timeout:20_000});
+    expect(result.exitCode,`${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain(`BINDING_PROPAGATION_OK ${family} ${teardown}`);
+    expect(result.stdout).toContain(`BINDING_TEARDOWN_BEGIN ${family} ${teardown}`);
+    expect(result.stdout).toContain(`BINDING_LIFECYCLE_OK ${family} ${teardown}`);
+    expect(result.hostDiagnostics).toEqual([]);
+   },30_000);
+  }
+});
+
 describe("pinned upstream GObject CPU tests with original assertions",()=>{
  for(const name of ["type","basic-signals","signals","closure","defaultiface","dynamictype","accumulator","object","references","signal-handler"]){
   it(name,async()=>{
