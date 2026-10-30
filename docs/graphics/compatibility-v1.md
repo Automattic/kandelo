@@ -9624,13 +9624,13 @@ Normal job `preview5661-1c80c5-build-1030-141253-e514` owns the clean,
 detached `1c80c5d713` checkout
 `.context/sfwbar-workspaces-preview`. Its reviewed private helper manifest
 and stage logs retain the exact source and commands. The normal GTK8
-library and SFWBar link complete; the combined graph remains running.
-The intended coherence capture includes all projected owners and normal
-C SDK32/64 archives, with the already normal-built selected kernel's ABI
-snapshot check. This is pre-acceptance preparation, not new wasm64 runtime
-coverage or a completed preview. Experimental serving is independent of
-later browser acceptance; no acceptance pass is required to expose a
-coherent normal candidate.
+library and SFWBar link complete; all normal stages finish in 29m33s.
+The coherence capture includes all 93 projected owners / 245 members and
+normal C SDK32/64 archives, with the already normal-built selected
+kernel's ABI snapshot check. The immutable experimental preview serves at
+`http://127.0.0.1:5661/`. This is not new wasm64 runtime coverage or a
+browser acceptance pass. Experimental serving is independent of later
+consumer acceptance.
 
 ### Desktop feedback and immediate landing order (2026-10-30)
 
@@ -9667,3 +9667,62 @@ refinement hits a private terminal selector error and is not a six-case
 pass. Protocol ownership, client buffer scale, DPR2 client refinement,
 hotspots, browser-memory and responsiveness remain unvalidated. Evidence
 is `.context/cursor-preview-acceptance/HANDOFF.md` and retained screenshots.
+
+### Painted panel and keyboard eligibility checkpoint (2026-10-30)
+
+The completed normal candidate at `1c80c5d713` contains GLib6, GTK8 and
+SFWBar4. Actual Node SFWBar help and real application-menu module
+admission pass. SFWBar is 35,598,987 bytes, SHA256
+`aa99b7e47da0521e2932e3ab4b215050d3d872ec46df25eff80b9288de1e2da6`.
+All 93 owner / 245 member, SDK32/64, kernel and source identities remain
+unchanged before and after the Chromium consumer job
+`preview5661-chromium-sfwbar-1030-144249-9d04`.
+
+Both actual headless Chromium panels now paint. Sway paints the native
+Start menu, but End/Right go to Foot and fail the submenu assertion.
+Labwc's first physical marker command repeats an r and fails readiness.
+A later isolated marker with the same physical command and 20ms delay
+succeeds with balanced DOM key pairs; its launch readiness differs from
+the full test, and it does not establish a repair. Menu, workspace click,
+launch, focus, close and cooperative exit remain unaccepted. The broad
+normal fixture2 run passes 62/62 focused callback cases and four of ten
+unchanged upstream targets: combined 66/72, zero skips, six failures.
+Evidence is `.context/preview5661-acceptance/`,
+`.context/labwc-input-delivery/` and
+`.context/glib-normal-contract-1c80c5d713-v5/`.
+
+The panel's light GTK theme images cover the configured dark background
+colors, leaving light task and workspace labels unreadable. SFWBar5
+clears these images for both real button types and defines readable
+normal, focused and hover colors. This follows upstream's theme reset;
+it does not synthesize workspace state. The new normal image and rendered
+contrast check remain pending.
+
+SFWBar5 also requests on-demand keyboard eligibility before mapping,
+instead of enabling it on pointer entry and disabling it on departure.
+On-demand eligibility allows compositor click focus without exclusive
+keyboard reservation. Source review traces Sway's focus decision to the
+committed layer state at button dispatch. The full 197,470-byte protocol
+capture shows an actual Start press preceding even SFWBar's on-demand
+request; it cannot have observed that request's later surface commit.
+Its SHA256 is
+`578e73668dcb7101e8eeaec263a5ba25209714234a219b1e4b567ea556e91db1`.
+
+That instrumented run did not await earlier terminal typing: the menu
+was not painted and End/Right had not reached the captured protocol at
+EOF. It proves the late-eligibility ordering only, not a unique cause of
+the original input failure or accepted popup focus. Cooperative cleanup
+also failed. Its complete raw pages and limits are in
+`.context/sfwbar-popup-protocol-native/README.md`. Seven patches apply to
+the verified pinned archive with zero fuzz; the new policy patch has no
+line offsets and receives the byte-identical previously audited bar
+source. The first private checker stopped on pre-existing offsets in an
+earlier patch; the corrected checker retains those logs rather than
+claiming all historical patches have no offsets. Normal compilation and
+actual menu, application refocus and exit validation remain required.
+
+The single unpublished ABI remains 56/3/17/21. The current preview stays
+immutable; it does not contain the new SFWBar5 contrast or policy changes.
+After the panel's functional integration, the immediate priority remains
+quiet rendering and input profiling across Cage, Sway and Labwc. No
+performance improvement or resolution-only cause is established.

@@ -68,3 +68,20 @@ activation command. Labwc supplies its configured workspace names through
 the existing ext-workspace protocol. No synthetic workspace pins or focus
 state are supplied. The normal rebuilt panel and workspace click round trip
 remain required consumer checks.
+
+The shared dark panel clears the theme's button background images for
+pager and task buttons, so their light labels remain readable in the
+normal, focused and hovered states. This follows upstream's button reset;
+the GTK theme otherwise paints a light image above a dark background color.
+The normal image rebuild and rendered contrast checks remain required.
+
+With the pinned GTK layer-shell API, the bar requests on-demand keyboard
+focus before mapping and keeps that eligibility when the pointer leaves.
+On-demand focus lets the compositor focus the bar on a click without
+reserving the keyboard. Requesting it only on pointer entry races the
+compositor's click-time focus decision: the click can arrive before the
+request and its surface commit. The old boolean API retains upstream's
+hover policy because it has no on-demand mode. A real menu keyboard,
+application refocus and cooperative-exit check remain required for the
+rebuilt panel; the captured late request alone does not prove the cause
+of every input failure.

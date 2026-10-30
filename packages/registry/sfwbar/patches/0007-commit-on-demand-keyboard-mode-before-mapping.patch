@@ -1,0 +1,39 @@
+--- a/src/gui/bar.c
++++ b/src/gui/bar.c
+@@ -171,10 +171,7 @@
+   if(event->detail==GDK_NOTIFY_INFERIOR)
+     return TRUE;
+ 
+-#if GTK_LAYER_VER_MINOR > 5
+-  gtk_layer_set_keyboard_mode(GTK_WINDOW(self),
+-      GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
+-#else
++#if GTK_LAYER_VER_MINOR <= 5
+   gtk_layer_set_keyboard_interactivity(GTK_WINDOW(self), FALSE);
+ #endif
+ 
+@@ -228,10 +225,7 @@
+   g_return_val_if_fail(IS_BAR(self),FALSE);
+   priv = bar_get_instance_private(BAR(self));
+ 
+-#if GTK_LAYER_VER_MINOR > 5
+-  gtk_layer_set_keyboard_mode(GTK_WINDOW(self),
+-      GTK_LAYER_SHELL_KEYBOARD_MODE_ON_DEMAND);
+-#else
++#if GTK_LAYER_VER_MINOR <= 5
+   gtk_layer_set_keyboard_interactivity(GTK_WINDOW(self), TRUE);
+ #endif
+   if(!priv->sensor_timeout || priv->sensor_block)
+@@ -1069,7 +1063,11 @@
+   gtk_widget_set_name(self, priv->name);
+   gtk_layer_auto_exclusive_zone_enable (GTK_WINDOW(self));
+ #if GTK_LAYER_VER_MINOR > 5
+-  gtk_layer_set_keyboard_mode(GTK_WINDOW(self), GTK_LAYER_SHELL_KEYBOARD_MODE_NONE);
++  /* Eligibility must be committed before the first click. Changing it on
++   * pointer-enter races the compositor's button-time focus decision.
++   * ON_DEMAND permits ordinary click focus without reserving the keyboard. */
++  gtk_layer_set_keyboard_mode(GTK_WINDOW(self),
++      GTK_LAYER_SHELL_KEYBOARD_MODE_ON_DEMAND);
+ #else
+   gtk_layer_set_keyboard_interactivity(GTK_WINDOW(self), FALSE);
+ #endif
