@@ -9726,3 +9726,27 @@ immutable; it does not contain the new SFWBar5 contrast or policy changes.
 After the panel's functional integration, the immediate priority remains
 quiet rendering and input profiling across Cage, Sway and Labwc. No
 performance improvement or resolution-only cause is established.
+
+Independent pinned-source policy review finds a compositor difference:
+Labwc0.20.2 `layers.c` focuses eligible TOP/OVERLAY on-demand surfaces on
+map; Sway waits for click focus. Initial or explicit bar remap can
+therefore focus SFWBar under Labwc without keyboard exclusivity. The
+sensor autohide only swaps children and preserves the mapped window.
+The stable on-demand request does not promise unchanged initial focus;
+actual initial application typing after click, menu dismissal, refocus
+and exit remain necessary acceptance checks. The patch preserves all
+autohide/timer/reference bodies and the legacy boolean API branches.
+
+The acceptance source now excludes the separately measured real pager
+from task-label counting and adds a Sway IPC workspace round trip.
+It saves the actual focused workspace and Foot window ID/PID, switches
+with checked `swaymsg` replies, clicks the rendered retained workspace1
+cell, and requires the same focused Foot on return. It keeps the existing
+physical keyboard, native menu, two distinct shells, task focus/close and
+cooperative exit checks. Labwc uses its existing pager without synthetic
+workspaces. Canonical Playwright discovery collects all six cases;
+both generated guest commands pass Bash syntax checks. Focused strict
+TypeScript checking has no changed-test errors and the same existing
+`kernel-host.ts:2404` error as the exact baseline test. Actual rendered
+geometry and execution remain pending the normal SFWBar5 candidate.
+Source/static evidence is `.context/sfwbar-pager-acceptance/HANDOFF.md`.

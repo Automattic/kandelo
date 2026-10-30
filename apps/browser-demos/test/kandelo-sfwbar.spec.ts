@@ -46,27 +46,30 @@ async function processes(page: Page, footCount: number) {
 /** Read actual guest command results through the shipped VFS inspector.
  * This uses its kernel-owned readFile path, not a main-realm filesystem.
  */
-async function readTmp(page: Page, name: string) {
+async function readTmp(page: Page, name: string, expected: string | RegExp = "DATA_DIRS=", timeout = 60_000) {
   await surface(page, "Internals");
   await page.getByRole("tab", { name: "VFS", exact: true }).click();
   await page.getByRole("button", { name: "/", exact: true }).click();
   const row = (name: string) => page.locator(".ktable tbody tr").filter({
-    has: page.locator("td:first-child", { hasText: new RegExp(`^${name}$`) }),
+    has: page.locator("td:first-child", { hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`) }),
   }).first();
   await row("tmp/").click();
   await expect.poll(async () => {
     await page.getByRole("button", { name: "refresh", exact: true }).click();
     return row(name).count();
-  }, { timeout: 60_000 }).toBe(1);
+  }, { timeout }).toBe(1);
   await row(name).click();
-  const preview = page.locator("pre").filter({ hasText: "DATA_DIRS=" });
-  await expect(preview).toBeVisible({ timeout: 60_000 });
+  const preview = page.locator("pre").filter({ hasText: expected });
+  await expect(preview).toBeVisible({ timeout });
   return preview.innerText();
 }
 
 type PaintedRect = Rect & { pixels: number; textRows: number };
+type PagerCell = PaintedRect & { ink: string[] };
 type Paint = {
   width: number; height: number; start: PaintedRect | null;
+  pager: PagerCell | null;
+  returnPager: { sameInk: boolean; gray: boolean; focusedNext: boolean } | null;
   menus: PaintedRect[]; highlights: PaintedRect[]; tasks: Rect[];
   red: number; blue: number; green: number; purple: number;
 };
@@ -76,9 +79,9 @@ type Paint = {
  * Connected filled rectangles and separate glyph rows exclude a cursor or
  * terminal output from satisfying panel/menu readiness.
  */
-async function paint(page: Page): Promise<Paint> {
+async function paint(page: Page, savedPager?: PagerCell): Promise<Paint> {
   const png = await scene(page).screenshot({ animations: "disabled" });
-  return page.evaluate(async base64 => {
+  return page.evaluate(async ([base64, savedPager]: readonly [string, PagerCell | undefined]) => {
     const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
     const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
     const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
@@ -107,7 +110,7 @@ async function paint(page: Page): Promise<Paint> {
       }
       return result;
     }
-    function components(original: Uint8Array): PaintedRect[] {
+    function components(original: Uint8Array, minWidth = 35, rowInk = 8): PaintedRect[] {
       const mask = original.slice(), queue = new Int32Array(mask.length), result: PaintedRect[] = [];
       for (let seed = 0; seed < mask.length; seed++) {
         if (!mask[seed]) continue;
@@ -122,12 +125,12 @@ async function paint(page: Page): Promise<Paint> {
           if (y) visit(p - width); if (y + 1 < height) visit(p + width);
         }
         const w = right - left + 1, h = bottom - top + 1;
-        if (w < 35 || h < 14 || tail < w * h * 0.6) continue;
+        if (w < minWidth || h < 14 || tail < w * h * 0.6) continue;
         const rows: boolean[] = [];
         for (let y = top; y <= bottom; y++) {
           let count = 0;
           for (let x = left; x <= right; x++) count += ink[y * width + x];
-          rows.push(count >= 8);
+          rows.push(count >= rowInk);
         }
         result.push({ x: left, y: top, width: w, height: h, pixels: tail,
           textRows: runs(rows, 3).filter(([a, b]) => b - a >= 5).length });
@@ -137,6 +140,48 @@ async function paint(page: Page): Promise<Paint> {
     const colored = components(blue);
     const start = colored.find(r => r.x < 80 && r.y > height - 90 && r.width >= 45
       && r.width < 150 && r.height >= 25 && r.height < 75 && r.textRows === 1) ?? null;
+    // The default pager is the first button after Start. Its focused cell
+    // uses the shipped blue palette, including a narrow Sway numeral. This
+    // separate classifier leaves every menu/task ink threshold unchanged.
+    // A filled white button cannot supply the required blue background.
+    const pagerRect = start ? components(blue, 16, 1).find(r =>
+      r.x >= start.x + start.width && r.x <= start.x + start.width + 8
+      && Math.abs(r.y - start.y) <= 8 && r.height >= start.height - 12
+      && r.height <= start.height + 4 && r.width < 200 && r.textRows === 1) : undefined;
+    const pager: PagerCell | null = pagerRect ? { ...pagerRect,
+      ink: Array.from({ length: pagerRect.height }, (_, y) => {
+        let row = "";
+        for (let x = 0; x < pagerRect.width; x++) row += ink[(pagerRect.y + y) * width + pagerRect.x + x];
+        return row;
+      }) } : null;
+    let returnPager: Paint["returnPager"] = null;
+    if (savedPager) {
+      if (savedPager.x + savedPager.width > width || savedPager.y + savedPager.height > height)
+        throw new Error("saved pager left the rendered output");
+      const current = savedPager.ink.map((row, y) => Array.from(row, (_, x) =>
+        String(ink[(savedPager.y + y) * width + savedPager.x + x])).join(""));
+      const near = (mask: string[], x: number, y: number) => {
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++)
+          if (mask[y + dy]?.[x + dx] === "1") return true;
+        return false;
+      };
+      // Changing the focused background can alter antialiased edge pixels.
+      // Require both actual glyph masks within one pixel, not just any ink
+      // in the remembered rectangle (nor a white-filled button).
+      const included = (a: string[], b: string[]) => a.every((row, y) =>
+        Array.from(row).every((pixel, x) => pixel !== "1" || near(b, x, y)));
+      let grayPixels = 0;
+      for (let y = 0; y < savedPager.height; y++) for (let x = 0; x < savedPager.width; x++)
+        grayPixels += gray[(savedPager.y + y) * width + savedPager.x + x];
+      returnPager = {
+        sameInk: current.some(row => row.includes("1")) && included(savedPager.ink, current) && included(current, savedPager.ink),
+        gray: grayPixels >= savedPager.width * savedPager.height * 0.6,
+        focusedNext: components(blue, 16, 1).some(r =>
+          r.x >= savedPager.x + savedPager.width && r.x <= savedPager.x + savedPager.width + 8
+          && Math.abs(r.y - savedPager.y) <= 2 && Math.abs(r.height - savedPager.height) <= 2
+          && Math.abs(r.width - savedPager.width) <= 4 && r.textRows === 1),
+      };
+    }
     const menuMask = new Uint8Array(width * height);
     if (start) for (let p = 0; p < menuMask.length; p++)
       if (Math.floor(p / width) < start.y - 1) menuMask[p] = gray[p] || blue[p];
@@ -145,9 +190,9 @@ async function paint(page: Page): Promise<Paint> {
     const highlights = colored.filter(r => start && r.y + r.height < start.y
       && r.width >= 80 && r.width < 450 && r.height < 65 && r.textRows === 1);
     const tasks: Rect[] = [];
-    if (start) {
+    if (start && pager) {
       const cols: boolean[] = [];
-      const begin = start.x + start.width + 4, end = width - 120;
+      const begin = pager.x + pager.width + 2, end = width - 120;
       for (let x = begin; x < end; x++) {
         let n = 0;
         for (let y = start.y + 4; y < start.y + start.height - 4; y++) n += ink[y * width + x];
@@ -156,8 +201,8 @@ async function paint(page: Page): Promise<Paint> {
       for (const [a, b] of runs(cols, 8)) if (b - a >= 20)
         tasks.push({ x: begin + a, y: start.y, width: b - a + 1, height: start.height });
     }
-    return { width, height, start, menus, highlights, tasks, red, blue: terminalBlue, green, purple };
-  }, png.toString("base64"));
+    return { width, height, start, pager, returnPager, menus, highlights, tasks, red, blue: terminalBlue, green, purple };
+  }, [png.toString("base64"), savedPager] as const);
 }
 
 async function clickRect(page: Page, frame: Paint, rect: Rect, button: "left" | "right" = "left") {
@@ -173,6 +218,90 @@ async function clickRect(page: Page, frame: Paint, rect: Rect, button: "left" | 
 async function screenshot(page: Page, name: string, frame: Paint) {
   await test.info().attach(name, { body: await scene(page).screenshot(), contentType: "image/png" });
   await test.info().attach(`${name}-geometry`, { body: JSON.stringify(frame), contentType: "application/json" });
+}
+
+type WorkspaceEvidence = {
+  phase: string;
+  workspaces: { id: number; num: number; name: string; focused: boolean; visible: boolean }[];
+  windows: { workspace: string; id: number; pid: number; name: string; app_id: string; focused: boolean }[];
+};
+
+const shellQuote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
+
+/** Query ordinary IPC from the actual first Foot. The switch command keeps
+ * executing after its window becomes hidden; the return uses only the real
+ * painted pager. No observer process or test-only workspace pins are needed.
+ */
+async function workspaceRoundTrip(page: Page, initial: Paint) {
+  const pager = initial.pager!;
+  const projection = "{phase:$phase,workspaces:[$ws[0][]|{id,num,name,focused,visible}],"
+    + "windows:[..|objects|select(.type?==\"workspace\")|.name as $w|..|objects|"
+    + "select(.app_id?==\"foot\")|{workspace:$w,id,pid,name,app_id,focused}]}";
+  const snapshotFunction = "sfw_snap(){ "
+    + "swaymsg -r -t get_workspaces > /tmp/sfwbar-$1-workspaces.raw && "
+    + "swaymsg -r -t get_tree > /tmp/sfwbar-$1-tree.raw && "
+    + `jq -c --arg phase \"$1\" --slurpfile ws /tmp/sfwbar-$1-workspaces.raw ${shellQuote(projection)} `
+    + "/tmp/sfwbar-$1-tree.raw > /tmp/sfwbar-$1-summary; }; ";
+  const report = (phase: string, summaries: string[]) => "sfw_rc=$?; { "
+    + `if test \"$sfw_rc\" -eq 0; then cat ${summaries.map(p => `/tmp/sfwbar-${p}-summary`).join(" ")} || sfw_rc=$?; fi; `
+    + `printf 'SFWBAR_IPC:${phase}:%s\\n' \"$sfw_rc\"; } > /tmp/sfwbar-${phase}\n`;
+  const readEvidence = async (phase: string) => {
+    const text = await readTmp(page, `sfwbar-${phase}`, `SFWBAR_IPC:${phase}:`);
+    await test.info().attach(`sway-pager-${phase}-ipc`, { body: text, contentType: "text/plain" });
+    const lines = text.trim().split("\n");
+    expect(lines.pop(), "every actual swaymsg, jq and summary read must succeed").toBe(`SFWBAR_IPC:${phase}:0`);
+    expect(lines, "one complete compact IPC record per requested phase").toHaveLength(phase === "on2" ? 2 : 1);
+    return lines.map(line => JSON.parse(line) as WorkspaceEvidence);
+  };
+  const focusedWorkspace = (evidence: WorkspaceEvidence, name: string) => {
+    expect(evidence.workspaces.filter(ws => ws.focused).map(ws => ws.name)).toEqual([name]);
+    expect(evidence.workspaces.find(ws => ws.name === name)).toMatchObject({ num: Number(name), visible: true });
+  };
+  try {
+    await typePhysicalText(page, snapshotFunction + "sfw_snap before && "
+      + "swaymsg -r 'workspace 2' > /tmp/sfwbar-switch.raw && "
+      + "jq -e 'length > 0 and all(.[]; .success == true)' /tmp/sfwbar-switch.raw > /tmp/sfwbar-switch-checked && "
+      + "sfw_snap on2; " + report("on2", ["before", "on2"]), { delay: 20 });
+    const [before, on2] = await readEvidence("on2");
+    expect(before.phase).toBe("before"); expect(on2.phase).toBe("on2");
+    focusedWorkspace(before, "1"); focusedWorkspace(on2, "2");
+    expect(before.windows).toHaveLength(1);
+    const original = before.windows[0];
+    expect(original).toMatchObject({ workspace: "1", app_id: "foot", name: "FIRST", focused: true });
+    expect(original.id).toBeGreaterThan(0); expect(original.pid).toBeGreaterThan(0);
+    expect(on2.windows).toEqual([{ ...original, focused: false }]);
+
+    await surface(page, "Demo");
+    await expect.poll(async () => (await paint(page, pager)).returnPager,
+      { timeout: 60_000, intervals: [500, 1_000] }).toEqual({ sameInk: true, gray: true, focusedNext: true });
+    const on2Frame = await paint(page, pager);
+    expect([on2Frame.width, on2Frame.height]).toEqual([initial.width, initial.height]);
+    await screenshot(page, "sway-sfwbar-workspace-2-with-gray-1", on2Frame);
+    await clickRect(page, on2Frame, pager);
+    await expect.poll(async () => (await paint(page)).red, { timeout: 60_000 }).toBeGreaterThan(200);
+    await expect.poll(async () => (await paint(page)).tasks.length, { timeout: 60_000 }).toBe(1);
+    // A query typed into the returned original shell must execute there.
+    // Merely seeing a pager repaint or another client cannot satisfy this.
+    await scene(page).focus();
+    await typePhysicalText(page, "sfw_snap returned; " + report("returned", ["returned"]), { delay: 20 });
+    const [returned] = await readEvidence("returned");
+    expect(returned.phase).toBe("returned"); focusedWorkspace(returned, "1");
+    expect(returned.windows).toEqual([original]);
+    // The now-empty workspace 2 may legitimately disappear after leaving it.
+    await surface(page, "Demo");
+    await screenshot(page, "sway-sfwbar-workspace-1-returned", await paint(page));
+    await scene(page).focus();
+  } catch (error) {
+    // Keep raw native IPC as failure evidence; normal passes read only the
+    // compact projection. These are actual VFS files, never guest-memory views.
+    for (const name of ["before-workspaces", "before-tree", "on2-workspaces", "on2-tree", "returned-workspaces", "returned-tree", "switch"]) {
+      try {
+        const raw = await readTmp(page, `sfwbar-${name}.raw`, /^\s*[\[{]/, 8_000);
+        await test.info().attach(`sway-pager-${name}-raw`, { body: raw, contentType: "application/json" });
+      } catch { /* Preserve the original acceptance failure if no file exists. */ }
+    }
+    throw error;
+  }
 }
 
 for (const compositor of ["sway", "labwc"] as const) {
@@ -194,6 +323,13 @@ for (const compositor of ["sway", "labwc"] as const) {
       y: (bounds.y + 30) * box.height / first.height } });
     await typePhysicalText(page, "PS1=; mark=first; printf '\\033]0;FIRST\\007\\033[48;2;220;30;30mFIRST_READY\\033[0m\\n'\n", { delay: 20 });
     await expect.poll(async () => (await paint(page)).red, { timeout: 60_000 }).toBeGreaterThan(200);
+
+    await expect.poll(async () => (await paint(page)).pager !== null, { timeout: 60_000 }).toBe(true);
+    const desktop = await paint(page);
+    expect(desktop.tasks, "default pager label must not become a task title").toHaveLength(1);
+    await screenshot(page, `${compositor}-sfwbar-default-pager-and-first-task`, desktop);
+    if (compositor === "sway") await workspaceRoundTrip(page, desktop);
+    expect(await owner(page)).toBe(compositorOwner);
 
     // Guard the actual default desktop search path and entry inventory before
     // selecting the last sorted category. No test-only XDG or menu overrides.
@@ -239,6 +375,7 @@ for (const compositor of ["sway", "labwc"] as const) {
     // otherwise Escape can reach the still-open application menu and cancel
     // the launch. The bar-only glyph classifier excludes Start and clock;
     // its 20px minimum accepts both FIRST and foot's initial "foot" title.
+    // Only the separately measured native pager ROI is excluded.
     await expect.poll(async () => (await paint(page)).tasks.length, { timeout: 60_000 }).toBe(2);
     await processes(page, 2);
     // Inspecting processes moved browser focus to the dock. Restore only DOM

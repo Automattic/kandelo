@@ -85,3 +85,10 @@ hover policy because it has no on-demand mode. A real menu keyboard,
 application refocus and cooperative-exit check remain required for the
 rebuilt panel; the captured late request alone does not prove the cause
 of every input failure.
+
+Compositors choose when to focus an on-demand layer. The pinned Labwc
+also focuses eligible top-layer surfaces on map, so the bar can receive
+initial or remap focus. Its ordinary sensor autohide swaps child widgets
+without remapping the bar. Initial application typing after a click,
+menu dismissal and application refocus need real session checks; this
+policy is not a promise of unchanged initial focus.
