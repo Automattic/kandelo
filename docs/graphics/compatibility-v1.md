@@ -9456,3 +9456,64 @@ branch, syscall72 mapping, sentinel interpretation, host import, ABI epoch or
 public server wait is enabled. Actual native/forwarded/worker integration,
 forced teardown ownership, normal combined artifacts, full Rust/ABI gates,
 real browser delivery, browser-memory and conformance remain required.
+
+### Combined native query controls and ordered errors (2026-10-29)
+
+Follow-up source `67824a11b8` integrates the ordered C error flags, Rust
+retained-query engine and `GlNativeQueryAdapter`. The adapter accepts
+strict receipt bytes against an explicitly registered exact session owner.
+It captures context/object/draw/read storage before admission, executes once
+at the existing operation-ledger head, and retains copied Ready bytes until
+Commit or Cancel proves actual cleanup. Rotating bounded visits allow peer
+sessions to progress past blocked heads. No request retains guest views in a
+persistent browser realm.
+
+Admission reserves its rollback receiver before capturing native custody.
+A later allocation/admission refusal with failed cleanup reports actual
+Retiring(cancel), preserving the receiver until a positive cleanup ACK.
+Fence creation publishes only at Commit; source fence status/release retain
+independent authority after creator/current/display retirement. A prepared
+GET_ERROR snapshots the old logical queue and consumes the selected flag
+only at Commit. Cancel preserves that flag. It merges the bounded fallback
+client-error mask once and handles an interrupted uniform upload at the
+execution head. The host codec now accepts HAS_CONTEXT without HAS_CURRENT,
+matching the Rust codec and all fifteen shared wire vectors.
+
+The new adapter is callable internal infrastructure. Production query import,
+worker parking/wakeup, forwarded transport and forced lifecycle custody are
+not activated. In particular, idle GET_ERROR must still use two-sided owned
+publication: writing Rust scratch is not guest-copyout acceptance. The legacy
+immediate handler still consumes errors eagerly and ignores the fallback
+mask; the remaining rejected-query error ambiguity is an ordinary gap.
+Uniform location/lookup allocation, shader upload, image/buffer mutation
+queries and renderer setup for no-current capabilities need their own typed
+publication/custody paths. Unsupported families are rejected before admission
+by the internal adapter; this does not reduce the advertised baseline.
+
+Declared-shell combined job `graphics-owned-combined-1029-214235-5580`
+passed in 2m38s at `67824a11b8`:
+
+- Canonical host JavaScript and declaration build passed.
+- Graphics source: **904/904**, 39 files, zero skips; the evidence registry
+  agrees with all 639 collected files.
+- Native C under the existing harness: **247/247**.
+- Workspace Rust excluding xtask: **3,395 passed**, zero failed or ignored,
+  across 98 result groups.
+- Normal ABI regeneration and checking passed, with no tracked generated
+  changes. Program 56 / kernel-host 3 / GL table 17 / fork record 21 remains
+  the single unpublished epoch. The existing xtask run at `ba845edaf4`
+  remains the applicable xtask evidence; this increment changes no xtask code.
+
+Logs are `.context/graphics-owned-combined-{host,source,registry,native,rust,abi-update,abi-check,generated}.log`.
+The adapter lane's causal failures covered missing implementation, malformed
+READ_PIXELS before busy admission, and retrying a completed rollback ACK.
+The forwarded context repair at `c8391c5fe9` separately passed the complete
+170-case ownership/entry selection at unchanged deadlines; earlier failed
+runs remain retained.
+
+This source result does not establish normal guest artifacts, upstream CTS,
+real three-engine rendering, cage/sway, browser-memory or POSIX conformance
+for the combined follow-up. Those checks remain required after coherent
+production integration. Main was fetched and remains `e4bca8639e4b`; the
+separate frozen cage/sway landing builds continue at their recorded commits.
+Performance was not measured.
