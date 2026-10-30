@@ -9384,6 +9384,23 @@ and its actual stdout, screenshot, build input hashes and browser log.
 The preceding frozen cohort identity check is unchanged; these are
 diagnostic results, not consumer rendering or graphics completion.
 
+The next diagnostic retains two exact front buffers after public swap,
+imports them through the normal EGLImage path, and samples each with the
+byte-exact pinned wlroots 0.20.2 RGBX shaders. All eight normalized opaque
+quadrant samples match at 640 by 480 and after resize to 716 by 782;
+raw framebuffer reads also match. Both shader/selector restoration
+checks pass and the original back buffers remain correct. The actual
+headless Chromium screen still contains none of the four colors, so its
+rendering assertion fails. Five thousand recorded SDK, owner-artifact,
+metadata, kernel, tool and dependency files remain unchanged. Evidence
+is `.context/sdl-front-sampling-probe/result-summary.json`, actual guest
+stdout, retained trace and `verify-result.log`.
+
+This establishes same-process C front import and shader sampling. It
+does not establish the compositor's cross-process import, texture target,
+draw or clipping behavior. Those remain the next causal separator; no
+production graphics fix or application bypass follows from this probe.
+
 ### Rebuilt callback stack and shared-dispatch audit (2026-10-30)
 
 Normal cohort `808a13235f` completed the desktop graph, both SDK graphics
@@ -9408,11 +9425,28 @@ and pass correctly typed replacements at O0/O2. This isolated proposal
 has not yet been integrated or normally rebuilt. It does not establish
 working SFWBar startup, menu behavior or teardown.
 
-The broader callback audit also identified a source-closure ref callback
-cast with incompatible return type and a potential wasm32 truncation in
-64-bit libffi return conversion. Actual-library executable controls are
-being prepared; these findings are not yet validated root causes of a
-consumer failure. Header/library version mixing is not supported by the
+The broader callback audit identified a source-closure ref callback cast
+with incompatible return type and wasm32 truncation in GLib's conversion
+of 64-bit libffi returns. A separate-unit matrix linked against the exact
+normal GLib5/libffi3 closure reproduces nineteen failures in fifty cases:
+eighteen wide-return assertions across six generic/vtable routes, and
+one actual GSource closure signature trap. All seven raw libffi return
+cases pass. Recompiling only the two complete affected GObject source
+units with typed reads and matching source ref/unref adapters passes all
+fifty cases, retaining all thirty-one prior passes. Published archives
+remain unchanged; this is diagnostic before/after evidence, not a normal
+rebuilt consumer result. These failures are not established causes of
+the SFWBar window-realize crash. Evidence is
+`.context/glib-callback-audit/{contract-before-build,contract-after-build}.json`
+and `results-before.jsonl`, `results-after.jsonl`, and retained worker logs.
+
+The in-tree libffi generated signature families are incomplete. Source
+inspection also finds signatures admitted at preparation but missing at
+call time, ignored ABI validation and unproven true variadic lowering.
+These ordinary gaps require support and correct failure behavior; they
+are not hard platform boundaries. Broad upstream GObject tests remain
+required, separately from the focused matrix. Header/library version
+mixing is not supported by the
 recorded cohort identities. GLib 2.84.4 and GTK 3.24.34 remain the pinned
 versions. The porting guide now requires checking registration and
 eventual invocation together, with typed adapters and argument/return
@@ -9420,7 +9454,11 @@ coverage, instead of claiming all callback casts are repaired.
 
 Separately, the normal isolated b43d8a4ea2 Cage and Bibata package builds
 pass. The produced theme ZIP exactly matches the focused pack's size
-and SHA256 above. Full shell composition for that source is running;
-actual HiDPI geometry, browser cursor bounds and responsiveness remain
-unvalidated. Existing previews are immutable and do not acquire these
-fixes until a separate coherent product cohort is served.
+and SHA256 above. Normal job
+`b43-preview5660-normal-compose-v2-1030-115337-0c4e` also passes shell,
+rootfs and host builds, ABI/freshness and thirteen selected normal owner
+identities. Its immutable experimental preview is served on local port
+5660 before browser acceptance. Actual HiDPI geometry, browser cursor
+bounds and responsiveness remain unvalidated. This cohort includes the
+cursor repairs and GTK6's known later SFWBar crash. Older previews remain
+unchanged.

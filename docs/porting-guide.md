@@ -1058,7 +1058,7 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | tllist | `packages/registry/tllist/build-tllist.sh` | header-only | Staged, nothing compiles |
 | fcft | `packages/registry/fcft/build-fcft.sh` | meson bypass | Two TUs + three generated headers, no harfbuzz/SVG |
 | foot | `packages/registry/foot/build-foot.sh` | meson bypass | First stock upstream Wayland client; two patches: gbm prime-fd shm pools, serial font loading |
-| libffi | `packages/registry/libffi/build-libffi.sh` | in-tree | Full port, no upstream source: gen-dispatch.sh generates the ffi_call call_indirect switch + the static closure trampoline pool (wasm32 cannot JIT) |
+| libffi | `packages/registry/libffi/build-libffi.sh` | in-tree | Kandelo implementation, not the upstream library: gen-dispatch.sh emits a finite set of ffi_call signatures and static closure trampolines. Coverage and admission remain incomplete; see the callback section below. |
 | glib | `packages/registry/glib/build-glib.sh` | meson bypass | 2.84.4: glib/gmodule/gobject/gio incl. the gdbus client core and the GApplication/GAction/GMenu family (GtkApplication's parent types), hand-curated config.h + glibconfig.h, three patches (no dbus built-ins, wasm callback signatures, wasm credentials backend); GRegex is in, compiled against the pcre2 package — glibmm's `Glib::Error::register_init()` calls `g_regex_error_quark` at startup, so every glibmm consumer needs it |
 | pcre2 | `packages/registry/pcre2/build-pcre2.sh` | cmake | 10.44, 8-bit code unit width only, static, no JIT (wasm cannot generate code at runtime), no pcre2grep/pcre2test; backs glib's GRegex. Separate from the `pcre2-source` package, which stages the unbuilt tree MariaDB configures itself |
 | expat | `packages/registry/expat/build-expat.sh` | autoconf | dbus config-parser dependency; entropy from kernel getrandom() |
@@ -1210,6 +1210,18 @@ return values as well as argument counts, including 64-bit integers on
 wasm32. Existing focused checks cover only their named paths; upstream
 GObject tests and rebuilt consumers remain necessary. A successful demo
 startup does not establish callback completeness.
+
+The in-tree libffi implementation is also a compatibility surface to
+validate, not a complete replacement established by its exported symbols.
+Its generated calls cover up to eight arguments with at most two non-i32
+arguments, plus all-i32 calls through twenty-two arguments. Closure
+families and their slot pools have separate bounds. Currently some
+signatures pass `ffi_prep_cif` but abort when `ffi_call` finds no generated
+dispatcher. ABI validation and true variadic calls have additional gaps.
+These are ordinary implementation gaps. Required GLib signatures need
+actual support; signatures outside the supported contract need correct
+preparation failure. Do not extend one observed signature and infer full
+coverage, or describe these limits as unavoidable Wasm boundaries.
 
 For a new trap, map the exact loaded binary and its inputs before
 attributing a cause. Compare headers, static libraries and side modules
