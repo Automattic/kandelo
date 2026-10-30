@@ -4573,6 +4573,26 @@ selection, dependency ownership, query/presentation barriers and asynchronous
 retirement. Command snapshots
 and execution leases do not yet implement server ordering.
 
+The private owned-query selector of the existing `host_gl_query` import
+routes through `GlKernelQueryControls` before live-context lookup. It
+preflights the complete Rust reply span, copies bounded request bytes and
+reserves scalar routing metadata before native capture. Later controls use
+the exact registered session and token, including after public context
+removal. An unrelated or reused session cannot replace that owner. Native
+queries run only through an explicit bounded drain; its wake callback carries
+scalar identities and must schedule a later worker turn. The import never
+drains or recursively enters Rust. These controls do not yet enable public
+ioctl parking or interpret the pre-entry sentinel.
+
+The per-kernel controls budget bounds 256 owner registrations, 1,024 request
+records and 8 MiB of retained copied query bytes. These are independent heap
+budgets, not shared-memory reservation ceilings. Cleanup preparation preserves
+failed native retirement and terminal acknowledgements. Only an independently
+completed Rust lifecycle transition permits forgetting that metadata. Worker
+lifecycle intent scheduling, owned forwarding, remaining mutating-query
+candidates and ordinary signal-driven exit integration remain required before
+production asynchronous query activation.
+
 The main-thread fallback supports synchronous queries through one reusable
 65,556-byte device mailbox per channel, matching the kernel's 64 KiB query
 limit. Input and command bytes are copied out of guest memory. A timed-out

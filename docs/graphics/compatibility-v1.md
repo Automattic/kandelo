@@ -9517,3 +9517,43 @@ for the combined follow-up. Those checks remain required after coherent
 production integration. Main was fetched and remains `e4bca8639e4b`; the
 separate frozen cage/sway landing builds continue at their recorded commits.
 Performance was not measured.
+
+#### Private kernel import routing and retirement (2026-10-29)
+
+The existing `host_gl_query` import now routes its private control selector
+before live-context/current lookup. `GlKernelQueryControls` reserves exact
+session/token routing metadata before native admission, preflights bounded
+Rust scratch, and preserves the original full reply capacity on each control.
+Unknown Poll/Cancel/Commit cannot register an owner, and a new binding with a
+reused numeric session cannot replace a captured owner. Forwarded Begin is
+honestly rejected before native effects pending its separate owned transport;
+it never invokes the legacy synchronous mailbox.
+
+An explicit bounded drain advances native controls. Its callback carries only
+pid/session/registration/token and must schedule a later worker turn; Begin
+never drains or reenters Rust on its import stack. The copied-byte budget is
+8 MiB with 256 owners and 1,024 request records. These limits add no shared
+memory reservation. Teardown preparation keeps failed actual native cleanup
+and terminal ACK metadata; forgetting is a separate operation requiring an
+independently completed Rust lifecycle transition. Production worker intent
+scheduling and signal-driven exit remain unimplemented integration work.
+
+Five causal import tests failed before this wiring. The final six cases pass
+for both pointer widths, including full output-span rejection before capture,
+GET_ERROR Ready/Cancel/Commit, duplicate Commit, controls after context removal,
+foreign owner rejection and real texture-deletion failure followed by cleanup
+and ACK retry. An initial assertion attempted Commit without first observing
+Ready; it now explicitly verifies that premature Commit is rejected without
+consuming a flag, then follows the actual Rust protocol. The native cleanup
+fixture uses an actual context-owned texture, independently of the surviving
+public surface's storage.
+
+The final declared-shell source gates pass: canonical host JS/declarations,
+**910/910** graphics cases across 40 files, zero skips, and **170/170** entry/
+ownership audit cases at unchanged deadlines. Logs are
+`.context/graphics-kernel-query-controls-{before,expanded,host-final,source-final,audit-final}.log`.
+The new test is registered as source-only. The preceding full Rust 3,395,
+native C 247 and normal ABI checks remain tied to `67824a11b8`; this import
+increment changes no Rust or Wasm ABI surface. It does not enable a public
+pending result, complete two-sided error handling on the legacy path, or
+establish guest/browser/memory/conformance evidence for this increment.

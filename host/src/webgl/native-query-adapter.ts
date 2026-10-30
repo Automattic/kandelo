@@ -326,6 +326,11 @@ export class GlNativeQueryAdapter {
     for (const r of authority.receipts.values()) if (r.state!=="retired") return false;
     this.store.forgetOwner(owner);this.count-=authority.receipts.size;this.owners.delete(owner);return true;
   }
+  retirementComplete(owner:GlResultOwner):boolean {
+    const authority=this.owners.get(owner);if (!authority?.closed) return false;
+    for (const r of authority.receipts.values()) if (r.state!=="retired") return false;
+    return true;
+  }
   get retainedBytes():number {return this.store.retainedBytes;}
   get pendingRequests():number {return this.count;}
 }
