@@ -8494,9 +8494,10 @@ settlement control with the preserved nonzero offset.
 New standard requests are GETFB InOut28 and SETPLANE In48, with shared
 layout/number controls and xtask snapshot source coverage. Program 56 /
 host 3 / GL 17 / fork 21 remain fixed in this unpublished batch. Normal
-ABI/generated-output regeneration, kernel builds, actual upstream
-wlroots cursor assignment, Node/browser rendering and memory/conformance
-checks remain integration gates. Cursor latency has not been measured;
+ABI/generated-output regeneration completed at `265cb6e906`, as recorded
+below. Normal kernel/program/image products, actual upstream wlroots cursor
+assignment, Node/browser rendering and memory/conformance checks remain
+integration gates. Cursor latency has not been measured;
 this source/native evidence does not establish its cause or improvement.
 
 ### Sway native-density test setup (2026-10-30)
@@ -8526,3 +8527,39 @@ Playwright discovery of all nine Sway cases across three engines. Evidence:
 These checks do not establish repaired Sway rendering or input. Normal
 consumer execution remains an integration gate; application, host sizing,
 artifacts and ABI are unchanged by this test-only correction.
+
+### Combined cursor/Wayland validation checkpoint (2026-10-30)
+
+Landing `e570722d11` combines the Wayland display/window lifetime repair,
+allocation rollback, cursor discovery/GETFB/SETPLANE and regenerated ioctl
+outputs. Normal wasm32 and wasm64 musl preparation, ABI regeneration/check
+and standalone resolver build/tests passed before its product build. The
+program contract digest changed, so all program consumers must be rebuilt
+despite keeping the single unpublished program ABI 56 epoch. Evidence:
+`.context/gbm-file-aliases/.context/cursor-wayland-abi-prepared.log`.
+
+Full workspace Rust tests at exact clean landing source `e570722d11`
+passed: 3,384 tests, zero failed or ignored, across 98 result groups. Command:
+`cargo test --workspace --exclude xtask --target aarch64-apple-darwin`,
+through the declared development shell. Job
+`cursor-wayland-rust-1030-012425-b418` completed in 8m01s. This is native
+Rust evidence; it does not establish repaired compositor rendering.
+
+Primary Labwc source `f80ab6ec43`, incorporating the same landing runtime,
+passed 718 graphics source cases in 32 files, with no skips, and 84 entry,
+export and shared-memory inheritance source audit cases in four files.
+Both used the declared shell and one Vitest worker. Logs:
+`.context/cursor-wayland-source.log` and
+`.context/cursor-wayland-audit-source-only.log`. The separate memory-write
+audit is classified prepared-product and remains in the built acceptance
+selection; it is not included in the 84 source-only cases.
+
+The existing preview at port 5639 still uses normal production artifacts
+from `c2680bffa9`, with subsequent test-only fixes. Its Chromium Sway 1x and
+native 2x rendering/input/IPC/exit cases passed. The Labwc integration case
+failed while clicking Internals after a compositor canvas interaction;
+the original log, screenshot and trace are retained at
+`.context/gles-uniform-positive/.context/desktop-preview-current.log` and
+`desktop-preview-current-results/`. This is not a repaired cursor or
+ScummVM rendering result. A new normal combined product build and separate
+headless preview verification remain required before offering that fix.
