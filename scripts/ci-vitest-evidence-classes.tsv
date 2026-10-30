@@ -486,6 +486,7 @@ host/test/webgl-kms-scanout.test.ts	source-only
 host/test/webgl-main-forward.test.ts	source-only
 host/test/webgl-muxer.test.ts	source-only
 host/test/webgl-op-contract.test.ts	source-only
+host/test/webgl-operation-stream.test.ts	source-only
 host/test/webgl-present-target.test.ts	source-only
 host/test/webgl-program-link.test.ts	source-only
 host/test/webgl-registry.test.ts	source-only
@@ -633,4 +634,3 @@ web-libs/kandelo-session/test/sized-download.test.ts	source-only
 web-libs/kandelo-session/test/terminal-links.test.ts	source-only
 web-libs/kandelo-session/test/tracked-demo-parity.test.ts	prepared-product
 web-libs/kandelo-session/test/vfs-asset-group.test.ts	source-only
-host/test/webgl-operation-stream.test.ts	source-only

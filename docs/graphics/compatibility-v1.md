@@ -8966,3 +8966,33 @@ Logs in the VMA checkout are `.context/muxer-narrow-owner-before.log`,
 contract/build failure at that source, not combined application acceptance.
 The combined follow-up build and source/ownership/runtime gates still need
 rerunning after integration. No ABI or capability changes are included.
+
+
+### Shared operation ordering and combined source gates (2026-10-29)
+
+Follow-up `0c9f8f4f71`, derived from `d9368a662d`, gives each authorized
+GL session scalar-only typed FIFO tickets. Copied commands reserve order
+before acceptance. Native and forwarded queries, fence operations,
+presentation and current changes refuse immediate contention before
+native mutation or borrowed result retention. A blocked logical head
+cannot be bypassed by its later work, while runnable peers retain their
+turns. Same-physical-renderer query reentry cannot switch selectors under
+an active frame. Context replacement preserves the session ledger.
+
+Two initial production controls fail before wiring, and a separate
+same-renderer peer control fails before its guard. At that lane's exact
+source the graphics selection passes 765/765 in 34 files with zero skips.
+No asynchronous dependency or public EGL server wait is enabled. The
+kernel/forwarded pending-result protocol remains implementation work.
+
+After merging the renderbuffer repair, combined `d24b94f7de` passes the
+canonical host JavaScript/declaration build, all 227 native C cases and
+the GBM native metadata/mapping/symbol checks (38 public symbols). The
+next registry gate fails because the new operation-stream evidence row
+was appended outside byte order. The row is moved into its required
+sorted position without changing evidence class or test inventory.
+Combined graphics and static ownership stages had not run past that
+failure; their rerun remains required. Failed canonical and registry
+logs are preserved with `-before.log` suffixes in the file-owner checkout.
+Normal guests, real rendering, browser-memory and final conformance
+remain unrun for this combined follow-up model.
