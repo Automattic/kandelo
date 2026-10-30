@@ -9488,19 +9488,77 @@ and SHA256 above. Normal job
 `b43-preview5660-normal-compose-v2-1030-115337-0c4e` also passes shell,
 rootfs and host builds, ABI/freshness and thirteen selected normal owner
 identities. Its immutable experimental preview is served on local port
-5660 before browser acceptance. Actual HiDPI geometry, browser cursor
-bounds and responsiveness remain unvalidated. This cohort includes the
+5660 before browser acceptance. Narrow Chromium DPR1/2 cursor geometry is
+recorded below; ownership, hotspot and responsiveness remain unvalidated.
+This cohort includes the
 cursor repairs and GTK6's known later SFWBar crash. Older previews remain
 unchanged.
+
+### Rebuilt desktop callback evidence (2026-10-30, source9a7865c86d)
+
+Normal job `sfwbar-desktop-9a7865-v7-1030-125010-0662` completes in
+41 minutes52 seconds with overall exit1. The complete desktop products,
+wasm64 DRI/GLES SDK archives, ABI/freshness, all-owner capture, module
+loader, static GTK link and actual Node SFWBar help checks pass. Both
+headless Chromium SFWBar cases fail before panel paint. After-consumer
+source, SDK, dependency and artifact identities remain unchanged.
+Exact stage results and logs are in
+`.context/desktop-candidate-9a7865c86d-v7/`.
+
+Both Sway and Labwc retain the same ordinary signal-dispatch trap:
+`g_cclosure_marshal_VOID__OBJECTv` through `_g_closure_invoke_va`,
+`g_signal_emit`, `_gtk_widget_propagate_hierarchy_changed` and
+`gtk_widget_set_parent`. The verified normal SFWBar binary is
+35,595,811 bytes, SHA256
+`7e62e590dd08adc2f1ba03a860d8562c5b92b30de2de1cd355b5ace179b5fb86`.
+The top indirect-call helper has three callback arguments plus a function
+table index; its four outer parameters do not prove a four-argument
+callback contract. Parsed errors and actual network request URLs are in
+`.context/sfwbar-9a7865-actual-errors-v2.json`; the original traces remain
+under the run's `sfwbar-chromium-results/` directory.
+
+Source inspection finds a reachable mismatch in pinned GTK's
+`gtkdragdest.c`: a normal `hierarchy-changed` connection receives widget,
+previous toplevel and userdata, but its helper declares only the first
+two. Its paired `realize` helper omits userdata too. SFWBar installs these
+shared GTK handlers through `gtk_drag_dest_set`. An inspector statistics
+handler has the same hierarchy signature defect. Exact adapters and
+related registration auditing are in progress; they are not yet normal
+rebuilt fixes. Shared GObject class-vfunc dispatch already uses the
+correct two-argument adapter and is not established as faulty here.
+
+The normal fifty-case fixture and this desktop resolve identical GLib,
+libffi, PCRE2 and zlib manifest/cache identities, recorded in
+`.context/callback-desktop-shared-cohort.json`. Those fifty cases do not
+cover this ordinary generated void/object callback path. A bounded
+headless diagnostic verifies the actual served binary's size and hash
+and unchanged before/after identities, but debugger scope reads fail and
+no runtime table target is captured. Its recording harness returns0;
+that is not target proof or application success. Evidence is
+`.context/sfwbar-callback-target-9a/result.json`, job
+`sfwbar-callback-target-9a-1030-133850-aa2e`. The GTK helper remains a
+source-confirmed reachable defect consistent with the stack, not the
+uniquely demonstrated runtime target. No browser/runtime defect is
+established by this result.
+
+The native workspace pager is in the rebuilt normal image, but panel
+paint, menu use, workspace clicks and cooperative lifecycle acceptance
+remain open. No new working SFWBar preview or performance improvement is
+claimed. The next normal candidate will be built in an immutable preview
+checkout so experimental access can precede broader acceptance.
 
 ### Desktop feedback and immediate landing order (2026-10-30)
 
 User feedback on the b43 preview reports a missing numbered Sway workspace
 bar and slow cursor/rendering in all three desktops, especially Cage.
 The supplied 8.185-second recording shows Cage at 2818 by 1584, with the
-display's last-frame statistic around 370,000 microseconds. This is a
-reported symptom, not a controlled performance comparison or proof that
-resolution alone causes the delay. After SFWBar integration, the next
+display's last-frame statistic around 370,000 microseconds. That counter
+measures the interval between accepted page-flip requests, not GPU render
+duration; it can stay stale during idle. Host presentation count also
+includes repeated direct GPU pump ticks, not just unique scene frames.
+The recording is a reported symptom, not a controlled performance
+comparison or proof that resolution alone causes the delay. After
+SFWBar integration, the next
 priority is profiling and repairing the rendering/input path in a quiet
 validation window. No broader libffi replacement is added to that immediate
 desktop landing prerequisite.
