@@ -20,3 +20,24 @@ describe.each([
     expect(boottime - monotonic).toBeLessThan(100_000_000n);
   });
 });
+
+describe.each([
+  ["NodeTimeProvider", () => new NodeTimeProvider()],
+  ["BrowserTimeProvider", () => new BrowserTimeProvider()],
+] as const)("%s CLOCK_REALTIME", (_name, createProvider) => {
+  it("tracks the wall clock at the monotonic clock's resolution", () => {
+    const provider = createProvider();
+    const before = BigInt(Date.now()) * 1_000_000n;
+    const first = asNanoseconds(provider.clockGettime(0));
+    // Wait until the monotonic clock has moved by well under a millisecond.
+    const start = asNanoseconds(provider.clockGettime(1));
+    while (asNanoseconds(provider.clockGettime(1)) - start < 200_000n) { /* spin */ }
+    const second = asNanoseconds(provider.clockGettime(0));
+    const after = BigInt(Date.now()) * 1_000_000n;
+
+    // A millisecond clock (Date.now()) would return the same reading here.
+    expect(second).toBeGreaterThan(first);
+    expect(first).toBeGreaterThanOrEqual(before - 1_000_000n);
+    expect(second).toBeLessThanOrEqual(after + 1_000_000n);
+  });
+});

@@ -51,7 +51,7 @@ BROWSER_FUNCTIONAL_EXPECTED_FAIL=(
 BROWSER_REGRESSION_EXPECTED_FAIL=(
     # (regex-backref-0 now passes — fresh browser context prevents OOM)
     # (regex-bracket-icase now passes — fresh browser context prevents OOM)
-    syscall-sign-extend # clock_gettime monotonicity — browser timer resolution
+    # (syscall-sign-extend now passes — CLOCK_REALTIME uses the high-resolution timer)
 )
 BROWSER_MATH_EXPECTED_FAIL=()
 
