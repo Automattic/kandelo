@@ -1,3 +1,4 @@
+import type { GlObjectGroup } from "./object-group.js";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
 import { recordGlError } from "./errors.js";
@@ -24,7 +25,7 @@ export type NativeDeletion = ["deleteTexture", WebGLTexture | null] | ["deleteRe
   | ["deleteFramebuffer", WebGLFramebuffer | null] | ["deleteBuffer", WebGLBuffer | null]
   | ["deleteSync", WebGLSync | null] | ["deleteShader", WebGLShader | null]
   | ["deleteProgram", WebGLProgram | null] | ["deleteVertexArray", WebGLVertexArrayObject | null];
-export type NativeRetirement = {owner: CheckedGlOwner; calls: NativeDeletion[]; pending: boolean; complete: boolean; references: number; dependencies: readonly NativeRetirement[]; ordered?: boolean; uninstallPrograms?: boolean};
+export type NativeRetirement = {owner: CheckedGlOwner; calls: NativeDeletion[]; pending: boolean; complete: boolean; references: number; dependencies: readonly NativeRetirement[]; ordered?: boolean; uninstallPrograms?: boolean; unusedProgramOwners?: WeakRef<GlObjectGroup>};
 const retirements = new WeakMap<WebGL2RenderingContext, Set<NativeRetirement>>();
 export type NativeInverse = { owner: CheckedGlOwner; groups: NativeCall[][] };
 export type NativeChange = { apply(): boolean; restore: NativeInverse };
@@ -77,10 +78,11 @@ function restoreInverse(inverse: NativeInverse): boolean {
 
 /** Reserve ownership before allocation/publication. Empty slots can be filled by
  * assignment inside native creation calls, without allocating after creation. */
-export function reserveNativeRetirement(b: CheckedGlOwner, calls: NativeDeletion[], dependencies: readonly NativeRetirement[] = [], options: {ordered?: boolean; uninstallPrograms?: boolean} = {}): NativeRetirement | null {
+export function reserveNativeRetirement(b: CheckedGlOwner, calls: NativeDeletion[], dependencies: readonly NativeRetirement[] = [], options: {ordered?: boolean; uninstallPrograms?: boolean; unusedProgramOwners?: GlObjectGroup} = {}): NativeRetirement | null {
   if (!b.gl) return null;
   try {
-    const retirement = {owner:nativeOwner(b),calls,pending:false,complete:false,references:0,dependencies,ordered:options.ordered,uninstallPrograms:options.uninstallPrograms};
+    const retirement = {owner:nativeOwner(b),calls,pending:false,complete:false,references:0,dependencies,ordered:options.ordered,uninstallPrograms:options.uninstallPrograms,
+      unusedProgramOwners:options.unusedProgramOwners ? new WeakRef(options.unusedProgramOwners) : undefined};
     let owners = retirements.get(b.gl);
     if (!owners) { owners = new Set(); retirements.set(b.gl,owners); }
     owners.add(retirement);
@@ -95,6 +97,12 @@ export function transferNativeRetirement(retirement: NativeRetirement): void {
   retirements.get(retirement.owner.gl!)?.delete(retirement);
   retirement.complete = true;
 }
+function programStillOwned(group: GlObjectGroup, program: WebGLProgram): boolean {
+  if (group.programQueryPins.has(program)) return true;
+  for (const member of group.members) if (member.currentProgram === program) return true;
+  for (const named of group.programs.values()) if (named === program) return true;
+  return false;
+}
 function collectNativeRetirements(gl: WebGL2RenderingContext): boolean {
   let accepted = true;
   for (const retirement of retirements.get(gl) ?? []) {
@@ -102,6 +110,17 @@ function collectNativeRetirements(gl: WebGL2RenderingContext): boolean {
     for (const call of retirement.calls) {
       const object = call[1];
       if (!object) continue;
+      if (call[0] === "deleteProgram" && retirement.unusedProgramOwners) {
+        try {
+          const group = retirement.unusedProgramOwners.deref();
+          if (group && programStillOwned(group, object)) { call[1] = null; continue; }
+        } catch (error) {
+          if (isKernelExportFailure(error)) throw error;
+          // Pending was armed before inspection. Unknown eligibility keeps
+          // this exact handle for retry and must never authorize deletion.
+          recordGlError(retirement.owner,0x505); accepted = false; continue;
+        }
+      }
       // A logical switch can orphan an executable still physically selected.
       // Unbind only that exact handle before deleting it; failed unbind keeps
       // the same receiver pending and cannot delete another owner's program.

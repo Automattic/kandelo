@@ -86,17 +86,11 @@ function reserveExecutableRelease(b: GlBinding, first: WebGLProgram | null,
   const calls: NativeDeletion[] = [];
   if (first) calls.push(["deleteProgram", first]);
   if (second && second !== first) calls.push(["deleteProgram", second]);
-  return reserveNativeRetirement(b, calls, [], { uninstallPrograms: true });
-}
-function releaseUnusedExecutables(b: GlBinding, receiver: NativeRetirement): void {
-  for (const call of receiver.calls) {
-    const program = call[1] as WebGLProgram;
-    let retained = b.programQueryPins.has(program);
-    for (const member of b.objects.members) if (member.currentProgram === program) retained = true;
-    for (const named of b.programs.values()) if (named === program) retained = true;
-    if (retained) call[1] = null;
-  }
-  retireNativeRetirement(receiver);
+  // Bindings and query pins strongly retain their actual object group. The
+  // retry receiver only needs a weak eligibility guard, never a guest binding.
+  return reserveNativeRetirement(b, calls, [], {
+    uninstallPrograms: true, unusedProgramOwners: b.objects,
+  });
 }
 
 export function finalizeShader(b: GlBinding, name: number): void {
@@ -182,6 +176,7 @@ export function linkProgramRetainingExecutable(b: GlBinding, name: number): void
   if (!released) return;
   let candidate: NativeRetirement | null = null;
   let program = previous;
+  let primaryFailure: unknown, failed = false;
   try {
     if (clone) {
       candidate = reserveNativeRetirement(b, [["deleteProgram", null]]);
@@ -219,11 +214,13 @@ export function linkProgramRetainingExecutable(b: GlBinding, name: number): void
       }
     }
   } catch (error) {
-    if (isKernelExportFailure(error)) throw error;
+    if (isKernelExportFailure(error)) { primaryFailure = error; failed = true; throw error; }
     recordGlError(b, 0x505);
   } finally {
-    if (candidate) retireNativeRetirement(candidate);
-    releaseUnusedExecutables(b, released);
+    try {
+      try { if (candidate) retireNativeRetirement(candidate); }
+      finally { retireNativeRetirement(released); }
+    } finally { if (failed) throw primaryFailure; }
   }
 }
 
@@ -236,13 +233,18 @@ export function useProgramIfAccepted(b: GlBinding, name: number): void {
   const wasRetained = previous !== null && b.programs.get(previousName) !== previous;
   const released = wasRetained ? reserveExecutableRelease(b, previous) : null;
   if (wasRetained && !released) return;
+  let primaryFailure: unknown, failed = false;
   try {
     if (!checkedGlCall(b, () => b.gl!.useProgram(program))) return;
     b.currentProgram = program;
     b.currentProgramId = name;
     b.shadow.currentProgram = program;
     if (previous !== program && previousName !== 0) finalizeProgram(b, previousName);
-  } finally { if (released) releaseUnusedExecutables(b, released); }
+  } catch (error) { primaryFailure = error; failed = true; throw error; }
+  finally {
+    try { if (released) retireNativeRetirement(released); }
+    finally { if (failed) throw primaryFailure; }
+  }
 }
 
 /** A query owns its exact accepted context and native executable, independently

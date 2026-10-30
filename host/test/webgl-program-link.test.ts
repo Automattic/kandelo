@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import { uniformLocation } from "../src/webgl/uniform-queries.js";
 import { hasNativeRepair, repairNativeState } from "../src/webgl/native-recovery.js";
+import { KernelEntryGate } from "../src/kernel-entry-gate.js";
 import { GlMuxer } from "../src/webgl/muxer.js";
 import * as O from "../src/webgl/ops.js";
 import { runGlQuery } from "../src/webgl/query.js";
@@ -120,6 +121,90 @@ function setup() {
 }
 
 describe("program link attempts and installed executables", () => {
+  it.each(["named","current","query pin"] as const)("never deletes an unknown %s owner while eligibility inspection is failing",kind=>{
+    const parent=setup();let target=parent.b;
+    let lease:ReturnType<GlContextRegistry["retainContextExecution"]>=null,pin:GlProgramQueryPin|null=null;
+    if(kind==="current") target=sharePeer(parent);
+    else {
+      useProgramIfAccepted(target,0);
+      if(kind==="query pin") {
+        target.contextId=21;lease=parent.registry.retainContextExecution(1,0,new GlMuxer(parent.gl))!;
+        pin=GlProgramQueryPin.acquire(lease,20)!;
+      }
+    }
+    target.errors.push(0x501);
+    const nativeLink=parent.native.linkProgram.bind(parent.native);
+    let has:ReturnType<typeof vi.spyOn>|undefined;
+    const link=vi.spyOn(parent.native,"linkProgram").mockImplementation(program=>{
+      nativeLink(program);has=vi.spyOn(target.programQueryPins,"has").mockImplementation(()=>{throw new Error("ownership lookup refused");});
+    });
+    try {
+      linkProgramRetainingExecutable(target,20);
+      expect(hasNativeRepair(parent.gl)).toBe(true);expect(repairNativeState(parent.gl)).toBe(false);
+      expect(parent.native.deleted.has(parent.original)).toBe(false);expect(target.errors).toEqual([0x501,0x505]);
+    } finally {has?.mockRestore();link.mockRestore();}
+    expect(repairNativeState(parent.gl)).toBe(true);expect(parent.native.deleted.has(parent.original)).toBe(false);
+    if(kind==="current") useProgramIfAccepted(parent.b,0);
+    else if(kind==="query pin") {expect(pin!.release()).toBe(true);expect(lease!.release()).toBe(true);}
+    else parent.send(O.OP_DELETE_PROGRAM,[20]);
+    expect(parent.native.deletions.get(parent.original)).toBe(1);
+    expect(repairNativeState(parent.gl)).toBe(true);expect(parent.native.deletions.get(parent.original)).toBe(1);
+  });
+
+  it.each(["filter","delete"] as const)("preserves the original branded link failure while %s cleanup throws",phase=>{
+    const {b,native,original}=setup();
+    const branded=(label:string)=>{const gate=new KernelEntryGate();try {gate.invokeKernelExport(label,()=>{throw new Error(label);});}catch(error){return error;}};
+    const primary=branded("link failure"),secondary=branded("cleanup failure");
+    let cleanup:ReturnType<typeof vi.spyOn>|undefined;
+    const link=vi.spyOn(native,"linkProgram").mockImplementation(()=>{
+      cleanup=phase==="filter"?vi.spyOn(b.programQueryPins,"has").mockImplementation(()=>{throw secondary;})
+        :vi.spyOn(native,"deleteProgram").mockImplementation(()=>{throw secondary;});
+      throw primary;
+    });
+    let actual:unknown;
+    try {linkProgramRetainingExecutable(b,20);} catch(error) {actual=error;}
+    finally {cleanup?.mockRestore();link.mockRestore();}
+    expect(actual).toBe(primary);expect(hasNativeRepair(b.gl!)).toBe(true);
+    expect(b.programs.get(20)).toBe(original);expect(b.currentProgram).toBe(original);
+    expect(repairNativeState(b.gl!)).toBe(true);expect(native.deleted.has(original)).toBe(false);
+    const candidate=native.createdPrograms.at(-1)!;expect(native.deletions.get(candidate)).toBe(1);
+  });
+
+  it("preserves a use-program body exception while the armed cleanup guard also throws",()=>{
+    const {b,native,original}=setup();(b.shaders.get(11) as unknown as Shader).compiled=false;
+    linkProgramRetainingExecutable(b,20);
+    const primary=new Error("finalization failed"),gate=new KernelEntryGate();let secondary:unknown;
+    try {gate.invokeKernelExport("cleanup failure",()=>{throw new Error("cleanup failure");});}catch(error){secondary=error;}
+    const nativeUse=native.useProgram.bind(native);
+    let body:ReturnType<typeof vi.spyOn>|undefined,guard:ReturnType<typeof vi.spyOn>|undefined;
+    const use=vi.spyOn(native,"useProgram").mockImplementation(program=>{
+      nativeUse(program);
+      body=vi.spyOn(b.programDeletePending,"has").mockImplementation(()=>{throw primary;});
+      guard=vi.spyOn(b.programQueryPins,"has").mockImplementation(()=>{throw secondary;});
+    });
+    let actual:unknown;
+    try {useProgramIfAccepted(b,0);}catch(error){actual=error;}
+    finally {body?.mockRestore();guard?.mockRestore();use.mockRestore();}
+    expect(actual).toBe(primary);expect(b.currentProgram).toBeNull();expect(native.current).toBeNull();
+    expect(hasNativeRepair(b.gl!)).toBe(true);expect(repairNativeState(b.gl!)).toBe(true);
+    expect(native.deletions.get(original)).toBe(1);
+  });
+
+  it.each(["relink","use"] as const)("keeps %s cleanup retryable when ownership iteration throws after the accepted switch",mode=>{
+    const {b,native,original}=setup();
+    if(mode==="use") {(b.shaders.get(11) as unknown as Shader).compiled=false;linkProgramRetainingExecutable(b,20);}
+    const values=vi.spyOn(b.programs,"values").mockImplementation(()=>{throw new Error("ownership iteration refused");});
+    let failure:unknown;
+    try {if(mode==="relink")linkProgramRetainingExecutable(b,20);else useProgramIfAccepted(b,0);} catch(error) {failure=error;}
+    expect(b.currentProgram).not.toBe(original);expect(native.deleted.has(original)).toBe(false);
+    try {
+      expect(hasNativeRepair(b.gl!)).toBe(true);expect(repairNativeState(b.gl!)).toBe(false);
+    } finally {values.mockRestore();}
+    expect(repairNativeState(b.gl!)).toBe(true);expect(native.deletions.get(original)).toBe(1);
+    expect(repairNativeState(b.gl!)).toBe(true);expect(native.deletions.get(original)).toBe(1);
+    expect(failure).toBeUndefined();expect(b.errors).toContain(0x505);
+  });
+
   it.each(["shader", "program", "first clone receiver", "second clone receiver"] as const)("refuses %s receiver allocation before native creation",kind=>{
     const {b,native,original}=setup(),programs=native.createdPrograms.length,shaders=native.createdShaders.length;
     const add=Set.prototype.add;let calls=0;

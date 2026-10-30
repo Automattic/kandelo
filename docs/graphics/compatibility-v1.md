@@ -9925,3 +9925,24 @@ remains queued behind the existing normal artifact writer. Public
 asynchronous query activation, remaining mutation families, worker/lifecycle
 receivers, server waits and the rest of the baseline inventory remain
 ordinary implementation and validation work.
+
+### Executable eligibility failures keep cleanup armed
+
+Ownership filtering now runs inside the pending native retirement collector,
+so an iterator or lookup failure after an accepted relink/use switch retains
+the exact native handle for retry. Unknown ownership never permits deletion.
+The pre-reserved guard holds only a weak reference to the exact object group;
+actual bindings retain their group strongly, and query pins retain their exact
+group and context lease. The physical installed-program check and checked unbind
+still precede deletion. Cleanup attempts both receivers and preserves an earlier
+thrown operation failure even if cleanup also throws.
+
+Two production-path controls fail on the preceding source because the receiver
+remains invisible to `hasNativeRepair`; see positive-checkout
+`.context/executable-filter-before.log`. After the fix, eight added controls
+cover relink/use failures, named/shared-current/query-pin protection and original
+exception precedence. Focused source evidence is 362/362 in nine files, zero
+skips, `.context/executable-filter-source.log`; strict lifecycle graph checking
+passes in `.context/executable-filter-strict.log`. No forced-GC, real driver,
+normal artifact, browser or conformance evidence is added by this source batch.
+No ABI, public query activation or new cleanup registry is introduced.
