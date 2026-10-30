@@ -73,7 +73,7 @@ export type GlBindingInput = {
  *  out of the SAB-backed cmdbuf so the channel may transfer the buffer. */
 export type GlForwardChannel = {
   /** Zero acknowledges a live renderer; negative errno leaves no context. */
-  onCreateContext(sessionId?: number, shareSessionId?: number): number;
+  onCreateContext(sessionId?: number, shareSessionId?: number, contextId?: number): number;
   onDestroyContext(sessionId?: number): void;
   onCreateSurface?(surface: GlSurfaceCreation, sessionId?: number): {rc: number; width: number; height: number};
   onDestroySurface?(surfaceId: number, sessionId?: number): void;

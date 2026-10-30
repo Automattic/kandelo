@@ -2729,7 +2729,7 @@ export class WasmPosixKernel {
           let failure = -19;
           try {
             if (b.forward) {
-              const rc = b.forward.onCreateContext(b.sessionId, source?.sessionId);
+              const rc = b.forward.onCreateContext(b.sessionId, source?.sessionId, ctxId);
               if (rc !== 0) return Number.isInteger(rc) && rc < 0 ? rc : -5;
               b.contextId = ctxId;
               return 0;

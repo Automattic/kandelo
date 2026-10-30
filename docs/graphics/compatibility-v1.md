@@ -9308,3 +9308,43 @@ runs normal full products, Rust, ABI, consumer/browser/memory and libc/POSIX/
 Sortix acceptance. A requested stop prevents automatic restart. Earlier Sway
 whole-test timeouts and the incomplete five-file static audit remain retained
 and unresolved until their exact current acceptance gates complete.
+
+### Forwarded kernel context identity repair (2026-10-29)
+
+The kernel allocates context and open-description session names independently.
+The forward creation request previously carried only the session name, and the
+main renderer stored that as its context name. This loses exact authority even
+though the kernel-side binding still has the correct context. A causal test
+through the actual kernel import, forward channel and main receiver fails with
+context 11 where kernel context 21 is required; the other 71 selected cases
+pass. This is a real identity mismatch, not an asynchronous receipt mock.
+
+Kernel creation now forwards its actual context name explicitly. Both sides
+validate its unsigned scalar range, duplicate live context names are refused
+before renderer acquisition, and sharing still names the reviewed source
+session. Existing unscoped embedder channels may omit the explicit kernel name
+and keep their local session naming. Messages copy only the reviewed scalar;
+no guest address-space object or view is added. The context field is part of
+the same unpublished program 56 / host 3 epoch; no version increment is added.
+
+Declared-shell validation passes the canonical JavaScript/declaration build,
+all 879 graphics source cases in 37 files with zero skips, and all 170 cases in
+the five-file entry/ownership audit selection. The context tests exercise both
+pointer widths, distinct context/session names and unsigned names arriving
+through signed Wasm import arguments. They also reject malformed and duplicate
+names without allocating a native renderer. Exact logs are primary
+`.context/graphics-forward-context-{before,both-widths,host,source-final,audit}.log`.
+The initial causal two-file run fails 1/72 before repair. Final full-source
+coverage includes the added malformed/duplicate and unsigned-width controls.
+A discarded CLI invocation with unsupported `--include` loads no tests; its
+`.context/graphics-forward-context-unused.log` is not evidence. The full audit
+uses a private configuration retaining the ordinary host settings with only
+prepared-fixture global setup disabled. Assertions and deadlines are unchanged.
+Earlier failed audit runs remain retained; they are superseded for this source
+by the complete 170/170 run, not relabeled as successful.
+
+This source repair does not establish a current SDK guest, forced-forward real
+browser, memory or conformance pass. The native/forwarded owned-query bridge,
+context-owned C/host argument-error coherence and public waits remain active
+implementation work. The cage/sway landing artifacts and consumers continue
+separately from this follow-up source change.

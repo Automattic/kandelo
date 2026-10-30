@@ -69,6 +69,36 @@ function clearCmdbuf(): Uint8Array {
 }
 
 describe("setupMainForward", () => {
+  it("rejects malformed kernel context identities before renderer acquisition", () => {
+    const worker = new FakeWorker(), {canvas, getContextCalls} = fakeCanvas(new RecordingGl());
+    const dispose = setupMainForward(worker, canvas, 7);
+    const post = vi.fn((message: GlForwardMessage) => worker.fire(message));
+    const channel = createMainForwardChannel({postMessage: post}, 7);
+    try {
+      for (const contextId of [0, -1, Number.NaN, 1.5, 0x1_0000_0000]) {
+        expect(channel.onCreateContext(11, undefined, contextId)).toBe(-22);
+        expect(post).not.toHaveBeenCalled();
+        const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox, 0);
+        worker.fire({type: "gl_forward_create_context", pid: 7, sessionId: 11, contextId, mailbox});
+        expect(waitForGlForwardQuery(mailbox).rc).toBe(-22);
+      }
+      expect(getContextCalls).toHaveLength(0);
+    } finally { dispose(); }
+  });
+
+  it("keeps distinct forwarded context names independent of their session names", () => {
+    const worker = new FakeWorker(), {canvas, getContextCalls} = fakeCanvas(new RecordingGl());
+    const dispose = setupMainForward(worker, canvas, 7);
+    const channel = createMainForwardChannel({postMessage: message => worker.fire(message)}, 7);
+    try {
+      expect(channel.onCreateContext(11, undefined, 21)).toBe(0);
+      expect(channel.onCreateContext(12, undefined, 21)).toBe(-16);
+      expect(getContextCalls).toHaveLength(1);
+      expect(channel.onCreateContext(12, undefined, 22)).toBe(0);
+      expect(getContextCalls).toHaveLength(2);
+    } finally { dispose(); }
+  });
+
   it("queries renderer limits before creating a logical context and then accepts normal creation", () => {
     const worker = new FakeWorker(), stub = new RecordingGl();
     const get = vi.fn((pname:number) => pname === 0x0d33 ? 16384 : 4096);

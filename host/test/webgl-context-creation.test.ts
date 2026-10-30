@@ -6,15 +6,17 @@ import { ensurePresentTarget } from "../src/webgl/present-target.js";
 import { querySurfaceCapabilities } from "../src/webgl/surface-capabilities.js";
 import { foreignTextureGl } from "./support/foreign-texture-gl";
 import * as O from "../src/webgl/ops.js";
+import { GlContextRegistry } from "../src/webgl/registry.js";
+import { createMainForwardChannel, setupMainForward, type GlForwardMessage } from "../src/webgl/main-forward.js";
 
-function harness(callbacks = {}) {
+function harness(callbacks = {}, pointerWidth: 4 | 8 = 4) {
   const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
   const kernel = createWasmPosixKernelTestHarness({
     io: {} as any,
     callbacks: { getProcessMemory: () => memory, ...callbacks },
     memory,
-    pointerWidth: 4,
-    instance: createKernelScratchTestInstance(4, memory, () => ({}), () => 4096),
+    pointerWidth,
+    instance: createKernelScratchTestInstance(pointerWidth, memory, () => ({}), () => 4096),
   });
   const imports = kernel.testAuthority.buildImportObject(memory) as {
     env: Record<string, (...args: any[]) => any>;
@@ -23,9 +25,40 @@ function harness(callbacks = {}) {
     memory, imports: imports.env,
     setMaster: (pid: number) => imports.env.host_kms_set_master(pid, 1n, 1n),
     create: (pid: number, id = 1, sessionId?: number) =>
-      imports.env.host_gl_create_context(pid, id, 0, 0, sessionId),
+      imports.env.host_gl_create_context(pid, id, pointerWidth === 8 ? 0n : 0, pointerWidth === 8 ? 0n : 0, sessionId),
   };
 }
+
+it.each([[4, 21], [8, 21], [4, 0x8000_0005], [8, 0xffff_ffff]] as const)("preserves kernel context identity %s/%s through the real forwarding protocol", (pointerWidth, contextId) => {
+  const {kernel, create} = harness({}, pointerWidth);
+  const gl = sharingRenderer();
+  let listener: ((event: MessageEvent) => void) | undefined;
+  const worker = {
+    addEventListener(_type: "message", value: (event: MessageEvent) => void) { listener = value; },
+    removeEventListener(_type: "message", value: (event: MessageEvent) => void) {
+      if (listener === value) listener = undefined;
+    },
+  };
+  let remote: ReturnType<GlContextRegistry["get"]>;
+  const get = GlContextRegistry.prototype.get;
+  const capture = vi.spyOn(GlContextRegistry.prototype, "get").mockImplementation(function(this: GlContextRegistry, pid, session) {
+    const binding = get.call(this, pid, session);
+    if (this !== kernel.gl && pid === 7 && session === 11 && binding) remote = binding;
+    return binding;
+  });
+  const dispose = setupMainForward(worker, {width: 2, height: 2, getContext: () => gl} as unknown as HTMLCanvasElement, 7);
+  const messages: GlForwardMessage[] = [];
+  kernel.gl.attachMainForward(7, createMainForwardChannel({postMessage(message) {
+    messages.push(message); listener!({data: message} as MessageEvent);
+  }}, 7));
+  kernel.gl.bind({pid: 7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0});
+  try {
+    expect(create(7, contextId | 0, 11)).toBe(0);
+    expect(kernel.gl.get(7, 11)!.contextId).toBe(contextId);
+    expect(remote!.contextId).toBe(contextId);
+    expect(messages[0]).toMatchObject({type: "gl_forward_create_context", pid: 7, sessionId: 11, contextId});
+  } finally { dispose(); capture.mockRestore(); }
+});
 
 it("allocates device storage from an attached renderer before EGL context creation", () => {
   const { kernel, imports, create } = harness();

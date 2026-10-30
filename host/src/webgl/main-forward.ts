@@ -33,7 +33,7 @@ export interface ForwardWorkerLike {
 }
 
 export type GlForwardMessage =
-  | { type: "gl_forward_create_context"; pid: number; sessionId: number; shareSessionId?: number; mailbox: SharedArrayBuffer }
+  | { type: "gl_forward_create_context"; pid: number; sessionId: number; shareSessionId?: number; contextId?: number; mailbox: SharedArrayBuffer }
   | { type: "gl_forward_create_surface"; pid: number; sessionId: number; surface: GlSurfaceCreation; mailbox: SharedArrayBuffer }
   | { type: "gl_forward_present"; pid: number; sessionId: number; mailbox: SharedArrayBuffer }
   | { type: "gl_forward_destroy_surface"; pid: number; sessionId: number; surfaceId: number }
@@ -42,6 +42,10 @@ export type GlForwardMessage =
   | { type: "gl_forward_submit"; pid: number; sessionId: number; bytes: Uint8Array }
   | { type: "gl_forward_query"; pid: number; sessionId: number; op: number; input: Uint8Array; mailbox: SharedArrayBuffer }
   | { type: "gl_forward_unbind"; pid: number; sessionId: number };
+
+function validKernelContextId(id: number): boolean {
+  return Number.isInteger(id) && id > 0 && id <= 0xffff_ffff;
+}
 
 /** Kernel-worker adapter. Copied command/input bytes and bounded device
  * storage are the only data that may cross to the persistent main realm. */
@@ -61,12 +65,14 @@ export function createMainForwardChannel(
     }
   }
   return {
-    onCreateContext(sessionId = defaultSessionId, shareSessionId?: number) {
+    onCreateContext(sessionId = defaultSessionId, shareSessionId?: number, contextId?: number) {
       if (shareSessionId !== undefined && (!Number.isInteger(shareSessionId) || shareSessionId < 0 || shareSessionId > 0xffff_ffff)) return -22;
+      if (contextId !== undefined && !validKernelContextId(contextId)) return -22;
       const { rc } = request(0, mailbox => {
         // Copy only the reviewed identity, never structurally compatible extras.
         const message: GlForwardMessage = { type: "gl_forward_create_context", pid, sessionId, mailbox };
         if (shareSessionId !== undefined) message.shareSessionId = shareSessionId;
+        if (contextId !== undefined) message.contextId = contextId;
         port.postMessage(message);
       });
       // An unacknowledged allocation can still have reached the renderer.
@@ -134,6 +140,11 @@ export function setupMainForward(
     const msg = e.data as GlForwardMessage;
     if (!msg || typeof msg !== "object" || msg.pid !== pid) return;
     if (!Number.isInteger(msg.sessionId) || msg.sessionId < 0 || msg.sessionId > 0xffff_ffff) return;
+    if (msg.type === "gl_forward_create_context" && msg.contextId !== undefined && !validKernelContextId(msg.contextId)) {
+      try { if (glForwardRequestPending(msg.mailbox)) completeGlForwardQuery(msg.mailbox, -22, new Uint8Array()); }
+      catch { /* A malformed request grants no reply authority. */ }
+      return;
+    }
     let b = reg.get(pid, msg.sessionId);
     const capabilities = msg.type === "gl_forward_query" && msg.op === QOP_SURFACE_CAPABILITIES;
     if (!b && (msg.type === "gl_forward_create_context" || msg.type === "gl_forward_create_surface" || capabilities)) {
@@ -261,6 +272,11 @@ export function setupMainForward(
             completeGlForwardQuery(msg.mailbox, -16, new Uint8Array());
             return;
           }
+          const contextId = msg.contextId ?? msg.sessionId;
+          const existing = reg.getContext(pid, contextId);
+          if (existing && existing !== b) {
+            completeGlForwardQuery(msg.mailbox, -16, new Uint8Array()); return;
+          }
           const shareSession = msg.shareSessionId;
           if (shareSession !== undefined && (!Number.isInteger(shareSession) || shareSession < 0 || shareSession > 0xffff_ffff)) {
             completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return;
@@ -296,7 +312,10 @@ export function setupMainForward(
           // runs. Do not publish a late context into that retired channel.
           if (!glForwardRequestPending(msg.mailbox)) return;
           b.gl = gl;
-          b.contextId = msg.sessionId;
+          // The kernel allocates context and open-description identities
+          // independently. Receipt authority must match its actual context;
+          // only the unscoped embedder API omits that explicit identity.
+          b.contextId = contextId;
           publishedHere = true;
           if (source && !reg.shareObjects(pid,msg.sessionId,source.sessionId)) {
             reg.destroyContext(pid,msg.sessionId);

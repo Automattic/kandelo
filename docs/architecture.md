@@ -4580,6 +4580,11 @@ mailbox is retired permanently; a late reply cannot satisfy a later query.
 Forwarded owners sharing a native context also use the multiplexer. The
 persistent browser realm receives no guest memory or guest-backed view.
 Context creation uses this mailbox for a synchronous acknowledgement too.
+Its forwarded request carries the kernel's context identity separately from
+the open-description session identity. The receiver validates and retains
+that context name; it must not substitute the session name when later work
+proves context authority. Unscoped embedder channels may omit the explicit
+kernel identity and retain their session-based local naming convention.
 The host import returns success only after a live renderer accepts creation;
 the kernel publishes its context identity afterwards. Missing, lost or
 throwing renderers leave creation retryable and do not claim the KMS canvas.
