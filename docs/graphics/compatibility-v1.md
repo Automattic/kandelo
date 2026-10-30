@@ -8633,3 +8633,45 @@ pixels/input/teardown, browser-memory and combined conformance remain
 integration gates. No ABI number, wire layout, extension advertisement,
 consumer override or performance claim is added.
 
+### Normal three-engine cursor checkpoint and standalone rootfs (2026-10-30)
+
+Exact normal source 5aab344fe0 ran the complete 12-case Cage/Sway selection
+and three independent cursor cases in headless Chromium, Firefox and
+WebKit. Job compositor-three-engine-5a-provisioned-1030-050746-1a56
+finished with failure after 12m13s. All selected source, owner, SDK and
+aggregate identities agree before and after the consumer cohort. Before
+this run, the two normal wasm64 graphics archive builders supplied the
+missing SDK stamp files; the preceding attempt stopped during identity
+capture before any browser ran. Both attempts are retained.
+
+Seven of 12 rendered cases pass: Cage in Chromium/WebKit and Sway 1x/2x
+in Chromium/WebKit, plus Sway 1x in Firefox. Four Sway cases fail the
+first-bar repaint assertion, including Firefox 2x; the separately recorded
+readiness correction passes Chromium's complete scenario. Firefox Cage
+fails its unchanged one-second idle comparison. A separate diagnostic
+compares decoded images: the first contains wlterm and its complete shell
+prompt, the second changes 667,557 pixels to the actual page background,
+and the later full-page failure capture shows wlterm again. This is real
+captured pixel disagreement, not only different PNG encoding. It does not
+establish whether presentation or capture is responsible, nor an outside
+runtime defect. The original assertion remains unchanged.
+
+The independent cursor cases pass in Chromium and WebKit. Firefox fails
+its 30s black/white cursor-pixel predicate after movement to the first
+position. Its relationship to the separate Cage capture failure is not
+established. Exact traces, screenshots and statuses are under
+.context/kms-cursor-discovery/.context/compositor-three-engine-5a-provisioned.
+The Cage diagnostic retains before/after PNGs, decoded metrics and trace
+under .context/gbm-file-aliases/.context/cage-idle-pixels-5a-results.
+These Firefox failures remain ordinary unresolved validation gaps.
+
+The standalone rootfs target previously skipped selection of its real
+registered dependency closure when a narrower program tree already existed.
+This dispatch is also present on integrated main. The shared build plan now
+selects the rootfs engine closure before canonical composition, preserving
+missing-artifact rejection and the separate host-distribution kernel edge.
+The real registry-graph regression fails before the repair with all 21
+required nodes missing, including byacc/flex; all six focused bootstrap
+controls pass afterward. Source, exact commands and main comparison are in
+.context/rootfs-target-closure/.context/rootfs-target-handoff.md. Actual
+standalone rootfs execution with the repair remains integration validation.
