@@ -1,5 +1,5 @@
 import { connectorModeSize } from "../../../host/src/dri/kms-registry";
-import { absolutePointerValue } from "../../../host/src/input/input-source.js";
+import { absolutePointerValue, type InputEvent } from "../../../host/src/input/input-source.js";
 import type {
   DemoDockActionConfig,
   DemoGuideConfig,
@@ -290,6 +290,10 @@ export interface KernelLike {
     code: number,
     value: number,
   ): void;
+  /** Deliver one complete ordered evdev frame, including its SYN_REPORT,
+   * through the existing Node/browser batch transport. Optional adapters that
+   * only expose injectInputEvent retain the same per-record fallback. */
+  injectInputEventBatch?(records: InputEvent[]): void;
   /**
    * Hand an `OffscreenCanvas` to the kernel worker as the scanout
    * target for KMS CRTC `crtcId`. Optional `stats` SAB receives
@@ -3293,7 +3297,8 @@ export class LiveKernelHost implements KernelHost {
       },
       sendPointerAbs: (x, y, buttons) => {
         const inject = kernel.injectInputEvent;
-        if (!inject) return;
+        const injectBatch = kernel.injectInputEventBatch;
+        if (!injectBatch && !inject) return;
         const width = Atomics.load(stats, 2), height = Atomics.load(stats, 3);
         if (width <= 0 || height <= 0 || !Number.isFinite(x) || !Number.isFinite(y)) return;
         // Layout can send pointerenter before the first scanout. Never
@@ -3301,6 +3306,15 @@ export class LiveKernelHost implements KernelHost {
         // direct-display backend lose mouse focus and hide its cursor.
         const rx = absolutePointerValue(x, width);
         const ry = absolutePointerValue(y, height);
+        const sendFrame = (records: InputEvent[]): void => {
+          if (injectBatch) {
+            injectBatch.call(kernel, records);
+          } else {
+            for (const record of records) {
+              inject!.call(kernel, record.device, record.ev_type, record.code, record.value);
+            }
+          }
+        };
         // The position, then the buttons, in that order: a consumer
         // flushes motion on the SYN, so the cursor is already at (rx, ry)
         // when a press arrives in the next frame.
@@ -3313,21 +3327,27 @@ export class LiveKernelHost implements KernelHost {
         // any click that landed before the corrective frame registered at
         // (0, 0). Device values are normalized to a fixed 0..65535 range,
         // so clients that cache absinfo still work after a display modeset.
-        inject.call(kernel, 1, EV_ABS, ABS_X, rx);
-        inject.call(kernel, 1, EV_ABS, ABS_Y, ry);
-        inject.call(kernel, 1, EV_SYN, SYN_REPORT, 0);
+        // Keep complete frames together through the generic transport; the
+        // worker injects every record in order before scheduling its wake.
+        sendFrame([
+          { device: 1, ev_type: EV_ABS, code: ABS_X, value: rx },
+          { device: 1, ev_type: EV_ABS, code: ABS_Y, value: ry },
+          { device: 1, ev_type: EV_SYN, code: SYN_REPORT, value: 0 },
+        ]);
         const changed = buttons ^ prevButtons;
         if (changed) {
+          const records: InputEvent[] = [];
           // A full snapshot may repair a missed release alongside a new
           // press. End the old gesture before beginning the next one.
           for (const value of [0, 1]) {
             for (const [bit, code] of [[1, BTN_LEFT], [2, BTN_RIGHT], [4, BTN_MIDDLE]] as const) {
               if ((changed & bit) && Number(Boolean(buttons & bit)) === value) {
-                inject.call(kernel, 1, EV_KEY, code, value);
+                records.push({ device: 1, ev_type: EV_KEY, code, value });
               }
             }
           }
-          inject.call(kernel, 1, EV_SYN, SYN_REPORT, 0);
+          records.push({ device: 1, ev_type: EV_SYN, code: SYN_REPORT, value: 0 });
+          sendFrame(records);
           prevButtons = buttons;
         }
       },

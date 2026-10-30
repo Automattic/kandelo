@@ -10109,3 +10109,67 @@ files; cancellation and continuation inputs are recorded in
 performance, full program fixtures, Node/browser benchmark suites,
 browser-memory and POSIX gates remain unrun or incomplete. No application
 speed or Start-menu repair is claimed from build/HTTP success.
+
+### Persistent desktop feedback and pointer transport (2026-10-30)
+
+One headless Chromium153 startup pair compares runtime737 on5664 with
+runtime86db on5663, new first. At native1440x810/DPR1, first painted
+Start appears at11.156s/9.131s for Sway/Labwc versus21.248s/21.040s.
+After a real click, three painted menu categories are first observed at
+1.814s/1.817s versus5.145s/5.166s. Screenshot/poll overhead is included;
+these are observation bounds, not exact menu latency. First Foot frames
+appear at7.529s/6.707s versus6.835s/6.769s; a frame does not prove shell
+readiness. Both jobs4668/8abd pass with stable process/artifact identities.
+One pair on an uncontrolled host does not establish general speed or
+waive the earlier terminal marker, focus, application-launch or exit
+failures. Raw reports: `.context/desktop-performance-followup/cohorts/`.
+A later pointer launch e61a fails before browser startup because an
+archived spec was inside the test directory. The archive is moved outside
+test discovery; its original zero-test failure remains retained.
+
+The user reports progressive bogging within one Brave desktop after
+15–30 seconds, then offers to retest because the impression is uncertain.
+A headless installed Brave156.0.8078.74 observation2780 loses its page
+after about32 seconds. A standalone blank-page Playwright control also
+loses its page at30.755s without Kandelo. Its cause remains unexplained;
+this is neither a demonstrated Brave defect nor a Kandelo platform
+boundary. Brave-specific sustained validation remains open. Raw evidence:
+`.context/desktop-persistent-probe/` and
+`.context/brave-headless-control/`.
+
+The normal headless Chromium153 persistent job
+`desktop-persistent-new-native2x-120hz-ch-1030-185631-2101` passes in6m44s.
+One Sway page/context/machine retains the same Sway101, SFWBar109 and
+Foot110 through six motion/idle cycles at independently checked native
+2880x1620/DPR2. All14400 pointer moves produce trusted page events; no
+page errors, event overflow or source/owner changes are recorded. Each
+2400-move motion requests20s but actually takes40.592–40.937s, about59
+moves/s. Late moves are retained. Coarse accepted-flip differences remain
+831–853 per motion period and19–20 per idle period. These admissions are
+not unique frames, FPS, input latency or proof of guest receipt. This
+diagnostic does not reproduce progressive degradation in those counters.
+Unrelated build/user load is not controlled; renderer RSS and cumulative
+CPU do not identify retained guest memory. A blank Chromium cadence
+control is needed before attributing the dispatch overrun to Kandelo.
+
+Source tracing finds unnecessary pointer transport work: the session
+adapter sends ABS_X, ABS_Y and SYN as separate worker messages despite
+an existing generic batch API on both hosts. The shared adapter now
+sends each complete position frame, then each changed-button frame,
+through that API. Releases remain before presses, repeated updates are
+retained, live modes are reread and single-event adapters keep the same
+fallback. Transport errors propagate without replay; button state advances
+only after its accepted frame. No event dropping, application branch,
+kernel ABI or protocol shape changes are introduced.
+
+Five new controls fail before repair. After repair, three existing files
+pass168/168 pure session/transport/worker controls with zero skips. Actual
+Node/browser proxy methods feed the real gated worker batch method using
+its test scratch authority:19 ordered records require seven complete
+batch messages, with wake-scheduling observations after each complete
+frame. Promoted source bytes match those tested in the isolated checkout.
+Evidence: `.context/pointer-frame-batch/.context/pointer-frame-controls/`.
+This is not a booted guest blocked-read, desktop performance or combined
+conformance result. Normal preview construction and actual persistent
+consumer validation of this candidate remain pending. The full benchmark,
+browser-memory, POSIX and graphics inventory gates remain open.

@@ -2966,6 +2966,12 @@ ID so another finger or a hovering mouse cannot clear its button state.
 Full snapshots release old buttons before
 introducing new presses, and both KMS pointer feeds place motion before the
 button edge. Node's translated-event input API and the kernel ABI are unchanged.
+The session KMS pointer adapter sends each complete evdev frame through the
+existing Node/browser batch transport: position records and their `SYN_REPORT`
+first, then changed buttons and their own `SYN_REPORT`. The worker preserves
+record order and schedules blocked-reader wake work after each complete frame.
+Repeated updates are retained; there is no motion coalescing or frame dropping.
+Adapters without the optional batch method send the same records individually.
 
 SDL2's direct evdev backend merges pending keyboard and pointer records by
 kernel timestamp, retaining a 32-record read batch per device. Reading all
