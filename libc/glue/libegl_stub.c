@@ -884,7 +884,7 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
         request.attrs.width = frame.width;
         request.attrs.height = frame.height;
     }
-    if(!is_gbm && win && _wpk_wlegl_acquire && _wpk_wlegl_prepare && _wpk_wlegl_finish && _wpk_wlegl_release) {
+    if(!is_gbm && win && _wpk_wlegl_acquire && _wpk_wlegl_prepare && _wpk_wlegl_prepare_present && _wpk_wlegl_finish && _wpk_wlegl_release) {
         struct wpk_wlegl_frame frame;
         const struct egl_display_record *display=generation->display;
         const void *native_display=display->native_kind==NATIVE_WAYLAND ? display->native_device : NULL;
@@ -1384,10 +1384,22 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface handle) {
             g_last_error = EGL_BAD_SURFACE;
         else {
             struct wpk_wlegl_frame frame;
-            int prepared=p->wayland_lease && _wpk_wlegl_prepare(p->wayland_lease,&frame);
+            int prepared=p->wayland_lease && _wpk_wlegl_prepare_present(p->wayland_lease,&frame);
             if(p->wayland_lease && !prepared)g_last_error=EGL_BAD_NATIVE_WINDOW;
             else if (_wpk_gl_flush_checked() != 0)
                 g_last_error = current_binding_error();
+            else if (p->wayland_lease) {
+                uint32_t local=transfer_bo_handle(frame.fd,p->session->fd,frame.handle);
+                if(local) {
+                    /* GPU front copy is top-row-first, preserving the private
+                     * render back and the caller's default-FBO semantics. */
+                    struct gl_surface_front_copy attrs={.kind=WPK_SURFACE_DEFAULT,.config_id=1,
+                        .width=frame.width,.height=frame.height,.copy_target_bo=local};
+                    if(ioctl(p->session->fd,GLIO_UPDATE_SURFACE,&attrs)==0)result=EGL_TRUE;
+                    release_transferred_bo(g,frame.fd,p->session->fd,local);
+                }
+                if(result!=EGL_TRUE)g_last_error=current_binding_error();
+            }
             else if (p->gbm_lease)
                 result = swap_gbm_window_locked(g, p) ? EGL_TRUE : EGL_FALSE;
             /* The host distinguishes offscreen no-post flushes from window

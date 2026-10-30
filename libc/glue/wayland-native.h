@@ -16,6 +16,8 @@ WPK_WAYLAND_OPTIONAL void _wpk_wl_surface_release(void *);
 struct wpk_wlegl_frame {int fd; uint32_t handle, width, height;};
 WPK_WAYLAND_OPTIONAL int _wpk_wlegl_acquire(const void *, const void *, uint64_t, void **, struct wpk_wlegl_frame *);
 WPK_WAYLAND_OPTIONAL int _wpk_wlegl_prepare(void *, struct wpk_wlegl_frame *);
+/* Reserves a distinct normalized front; caller must finish on every path. */
+WPK_WAYLAND_OPTIONAL int _wpk_wlegl_prepare_present(void *, struct wpk_wlegl_frame *);
 WPK_WAYLAND_OPTIONAL int _wpk_wlegl_finish(void *, int);
 WPK_WAYLAND_OPTIONAL void _wpk_wlegl_release(void *);
 #endif

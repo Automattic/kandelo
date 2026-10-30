@@ -8518,6 +8518,7 @@ Node/browser integration, browser-memory and relevant conformance remain
 required combined validation. The original failed browser trace and its
 144 unique terminal rows are retained in the private handoff.
 
+
 ### Normal GPU cursor products and consumer checks (2026-10-30)
 
 Exact source 5aab344fe0 was built through the normal shell image, rootfs
@@ -8587,3 +8588,48 @@ The first candidate launch used the outer checkout's working directory
 and failed to locate its config before any browser ran; that log remains
 preserved separately. This fixture correction is not an application or
 runtime change, nor three-engine acceptance of the current combined tree.
+
+
+### Wayland front orientation and compositor release ownership (2026-10-30)
+
+The normal rebuilt `5aab344fe0` Sway session renders foot and passes its
+cursor smoke, but ScummVM reports linux-dmabuf protocol error 7, followed
+by its graphics-mode warning. The pinned wlroots 0.20.2
+`params_create_common` rejects every nonzero dma-buf flag before renderer
+import. Kandelo's Wayland EGL shim supplied `Y_INVERT` on every buffer.
+This identifies an internal native-buffer contract defect; it does not
+establish a browser or ScummVM defect. Runtime evidence remains under
+`.context/gbm-file-aliases/.context/compositor-preview-smoke-5a/`.
+
+The shim now uses the existing GBM surface ring: one private GPU render
+back and at most three compositor fronts. EGL uses the existing normalized
+front-copy operation before attach/commit, and ordinary Wayland buffers
+carry flags zero. Each front remains locked until its own `wl_buffer.release`;
+ring exhaustion dispatches the private queue, preserving the application's
+default queue. Stable allocation capsules retain original release identities
+across resize. Failed copy/proxy allocation leaves accepted fronts intact;
+a potentially accepted failed commit does not recycle its front. Retiring
+a whole allocation destroys its proxies and producer references rather than
+reusing compositor-owned storage. Existing imported PRIME/storage references
+remain independently owned. Native display/proxy lease checks remain intact.
+
+In `.context/graphics-wayland-dmabuf`, the new flags-zero assertion fails
+against the original shim, and the new prepared-front assertion fails
+against original EGL. After repair, the UBSan native window fixture covers
+three outstanding fronts, exact release/reuse, old-generation release after
+resize, lazy allocation and four proxy/export failure points, copy abort,
+uncertain commit, dispatch failure and disconnect. All 214 landing native
+EGL/GLES cases pass, including failed-copy/no-attach and subsequent retry.
+The actual GBM ring/retirement fixture passes. Actual pinned upstream
+Wayland socket/queue controls prove that public disconnect wakes a private
+queue reader while its native capability retains the physical descriptor.
+Actual repaired EGL and Wayland EGL sources compile to wasm32 with the
+declared SDK. Evidence and exact commands are in
+`.context/graphics-wayland-dmabuf/.context/wayland-dmabuf-handoff.md`.
+
+These are source and native device-boundary controls. Normal SDK/archive,
+SDL2/ScummVM and shell-image rebuilds, actual correctly oriented application
+pixels/input/teardown, browser-memory and combined conformance remain
+integration gates. No ABI number, wire layout, extension advertisement,
+consumer override or performance claim is added.
+
