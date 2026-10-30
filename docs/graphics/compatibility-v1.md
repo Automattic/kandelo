@@ -10277,3 +10277,56 @@ Normal SDK/kernel/program/image builds, Node/browser consumer rendering,
 browser-memory, upstream CTS breadth and required POSIX conformance remain
 separate combined-implementation gates. No products, application browsers,
 full workspace Rust suite or memory-writer job ran in this batch.
+
+### Shared worker turns for private owned queries (2026-10-30)
+
+Accepted kernel-private query controls now notify the shared Node/browser
+`CentralizedKernelWorker` through a scalar work hint. The notification is
+registered after central owner/token metadata reservation and also runs after
+an uncertain backend response, so accepted native custody cannot be stranded
+by a lost Begin reply. The callback schedules a later worker turn and enters
+the existing kernel gate afresh; it never reenters Rust on the import stack,
+retains a guest-memory view, or wakes a generic blocked syscall.
+
+The bounded turn pumps the existing native/forward owners and submit queue.
+Actual ticket readiness and unvisited runnable work continue quota-limited
+turns; pending counts, a blocked prefix, uncertain remote admission and failed
+native cleanup do not trigger polling loops. Forward endpoint grants and
+fully authenticated query/owner progress notify the same driver. Duplicate
+Pending replies are deduplicated. Old backend-generation hints cannot activate
+a replacement. A worker fault cancels scheduled turns while retaining actual
+receipt/native custody; stopping a callback is not a retirement ACK.
+
+Source evidence from `.context/graphics-query-wakes`, based on `c7666be0da`:
+
+| Check | Result | Private log |
+| --- | --- | --- |
+| Four worker/import controls before the worker connection | fail: admitted queries remain Pending without manual drain | `query-wakes-before.log` |
+| Focused worker/import and paired receiver controls | 33 passed before the final lost-admission case | `query-wakes-composed.log` |
+| Complete graphics source gate, including final lost-admission and remote Pending/cleanup cases | 1030 passed, 44 files, no skips | `query-wakes-source-final.log` |
+| Strict shared worker/graphics dependency types and canonical host JS/declarations | passed | `query-wakes-types-build-final.log` |
+| Entry-authority and complete runtime memory ownership audits | 34 passed | `query-wakes-entry-audits-final.log` |
+| Evidence registry | 644 files agree | `query-wakes-evidence-registry.log` |
+
+The new controls exercise actual private imports from a gated fixture Wasm
+export, later-turn execution once at both pointer widths, 79 exact owner lanes
+with a blocked prefix, renewed cleanup retry, backend replacement, retained
+custody on worker fault, a lost native admission response, and the actual
+paired main receiver with a lost Commit ACK. They are source/model evidence,
+not normal guest, browser, compositor, memory reclamation or performance proof.
+
+The memory ownership audit also identified a missing inventory entry for the
+existing private reply destination producer from the prior owned-forward
+increment. Its exact reviewed entry now records the original full-span
+preflight and one-shot Rust-lent copyout contract; no broad ownership exception
+or audit assertion changed. The failing audit log is retained as
+`query-wakes-entry-audits-source-fixed.log`.
+
+Public query parking stays disabled. The Rust opaque intent/channel scheduler,
+operation-specific guest retry and wake authority, lifecycle physical receiver
+completion, native/forward activation and real EGL server waits still require
+coordinated implementation. The renderer endpoint remains explicitly optional;
+its normal main-thread scheduler is not activated by this batch. Other ordinary
+baseline gaps listed above remain open. No ABI epoch, import/export, control
+wire or public EAGAIN behavior changed. No normal products, full Rust suite,
+application browsers or browser-memory job ran here.

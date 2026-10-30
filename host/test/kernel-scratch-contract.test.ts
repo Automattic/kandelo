@@ -1614,6 +1614,11 @@ const auditAllowances: AuditAllowance[] = [
     why: "Rust lends its mutable, fixed-size surface wire Vec for this synchronous import. The host checks the exact generated length and reserves the bounded destination before renderer effects; the copied width/height reply is written through that same token without an await or retained view.",
   },
   {
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination(outPtr,outLen,"owned GL control reply")',
+    disposition: "rust-lent",
+    why: "The kernel-only query control import proves a bounded full Rust reply span before backend admission; this one-shot generation-bound destination is consumed synchronously after the independent copied reply, never retained in an owned receipt.",
+  },
+  {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( outPtr, outLen, "host_gl_query destination", )',
     disposition: "rust-lent",
     why: "The graphics query import authenticates its untouched output pointer and capacity before touching WebGL state.",

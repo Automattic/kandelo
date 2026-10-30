@@ -416,10 +416,10 @@ export class GlOwnedMainForwardController {
 
 type ClientReceipt={token:bigint;begin:Omit<QueryBegin,"input">;custody:GlRemoteResultCustody;
   execution:GlResultExecution|null;admission:"unsent"|"awaiting-native-admission"|"native-admitted";
-  mode:GlResultMode|null;rejected:boolean};
+  mode:GlResultMode|null;rejected:boolean;announced?:string};
 type ClientRetirement={sequence:number;source:number;state:"empty"|"queued"|"pending"|"complete"};
 type ClientOwner={owner:GlResultOwner;clientRegistration:number;grant:Grant|null;openRejected:boolean;closed:boolean;forgetting:boolean;receipts:Map<bigint,ClientReceipt>;
-  serial:number;retirements:RetirementSlots<ClientRetirement>;ownerWake:((pid:number,session:number,registration:number)=>void)|undefined};
+  serial:number;retirements:RetirementSlots<ClientRetirement>;ownerWake:((pid:number,session:number,registration:number)=>void)|undefined;workWake?:((pid:number,session:number,registration:number)=>void)};
 /** Kernel-side paired endpoint. Until the actual renderer Begin ACK this owns
  * copied ordered intent and endpoint cleanup responsibility, not native storage.
  * No timeout, timer, Atomics.wait, guest view or native cleanup closure exists.
@@ -431,6 +431,7 @@ export class GlOwnedForwardClient {
   private onMessage:(event:MessageEvent)=>void;
   private cursor=0;
   private scalarCursor=0;
+  private continueDrain=false;
   private forgotten=new WeakSet<GlResultOwner>();
   private endpointRegistration:number;
   private endpointEpoch:number|null=null;
@@ -479,7 +480,7 @@ export class GlOwnedForwardClient {
       context:begin.context,draw:begin.draw,read:begin.read},custody,execution:null,admission:"unsent",mode:null,rejected:false};
     entry.receipts.set(token,metadata);
     if(this.store.begin(owner,token,begin.op,begin.input,begin.capacity,custody)!=="admitted") {entry.receipts.delete(token);return false;}
-    return true;
+    this.continueDrain=true;return true;
   }
   control(owner:GlResultOwner,token:bigint,mode:GlResultMode):boolean {
     const receipt=this.owners.get(owner)?.receipts.get(token);if(!receipt || !this.store[mode](owner,token))return false;
@@ -535,6 +536,17 @@ export class GlOwnedForwardClient {
       || Object.values(entry.retirements).some(slot=>slot.state==="complete"))this.notifyOwner(entry);
     return true;
   }
+  /** Durable admission/progress hints only. Pending replies are deduplicated;
+   * they must not create a Poll/reply scheduling loop. No guest view crosses. */
+  watchWork(owner:GlResultOwner,wake:ClientOwner["workWake"]):boolean {
+    const entry=this.owners.get(owner);if(!entry)return false;
+    entry.workWake=wake;
+    if(entry.grant || entry.openRejected || entry.closed)this.notifyWork(entry);
+    return true;
+  }
+  private notifyWork(entry:ClientOwner):void {
+    try {entry.workWake?.(entry.owner.pid,entry.owner.sessionId,entry.owner.registration);}catch {/* Durable state remains available. */}
+  }
   private notifyOwner(entry:ClientOwner):void {
     try {entry.ownerWake?.(entry.owner.pid,entry.owner.sessionId,entry.owner.registration);}catch {/* Durable state is inspected on registration/retry. */}
   }
@@ -587,7 +599,9 @@ export class GlOwnedForwardClient {
       if(entry.openRejected)return;
       if(!positive(message.epoch) || !positive(message.registration))return;
       if(entry.grant && (entry.grant.epoch!==message.epoch || entry.grant.registration!==message.registration))return;
-      entry.grant={...this.route(entry.owner),epoch:message.epoch,registration:message.registration};return;
+      const changed=!entry.grant;
+      entry.grant={...this.route(entry.owner),epoch:message.epoch,registration:message.registration};
+      if(changed)this.notifyWork(entry);return;
     }
     if(!entry.grant || message.epoch!==entry.grant.epoch || message.registration!==entry.grant.registration)return;
     if(message.type==="gl_owned_closing") {
@@ -614,8 +628,9 @@ export class GlOwnedForwardClient {
       return;
     }
     if(message.type==="gl_owned_notify") {
-      if(typeof message.token==="bigint" && entry.receipts.has(message.token))
-        this.wake(entry.owner,message.token);
+      if(typeof message.token==="bigint" && entry.receipts.has(message.token)) {
+        this.wake(entry.owner,message.token);this.notifyWork(entry);
+      }
       return;
     }
     if(message.type!=="gl_owned_reply" || !["begin","poll","commit","cancel","forget"].includes(message.control??""))return;
@@ -642,6 +657,8 @@ export class GlOwnedForwardClient {
       if(receipt.custody.acknowledge(this.peer,entry.owner,token,reply.mode,reply.accepted))
         this.store.acknowledgeRetired(entry.owner,token);
     }
+    const progress=reply.phase+(reply.phase==="retired"?`/${reply.mode}/${reply.accepted}`:"");
+    if(receipt.announced!==progress) {receipt.announced=progress;this.notifyWork(entry);}
     this.wake(entry.owner,token);
   }
   private wake(owner:GlResultOwner,token:bigint):void {
@@ -649,14 +666,15 @@ export class GlOwnedForwardClient {
   }
   drain(maxVisits:number):number {
     if(!Number.isSafeInteger(maxVisits)||maxVisits<0)return 0;
+    this.continueDrain=false;
     if(!this.endpointClosed)this.legacyReady();
     if(this.endpointReleasing && !this.endpointReleased && maxVisits>0)this.releaseEndpoint();
     const records:Array<[ClientOwner,ClientReceipt]>=[];
     for(const entry of this.owners.values())for(const receipt of entry.receipts.values())records.push([entry,receipt]);
-    const visits=Math.min(maxVisits,records.length);
+    const visits=Math.min(maxVisits,records.length),visited=new Set<ClientReceipt>();
     for(let i=0;i<visits;i++) {
       this.cursor%=records.length;
-      const [entry,receipt]=records[this.cursor];this.cursor=(this.cursor+1)%records.length;
+      const [entry,receipt]=records[this.cursor];this.cursor=(this.cursor+1)%records.length;visited.add(receipt);
       if(this.store.poll(entry.owner,receipt.token).state==="retired")continue;
       if(receipt.mode && receipt.admission==="unsent") {
         // A failed encoding/allocation can leave a started local ticket which
@@ -699,6 +717,8 @@ export class GlOwnedForwardClient {
       this.post({...entry.grant,type:"gl_owned_retire",retirement:selected,sequence:slot.sequence,source:slot.source});
     }
     for(const entry of this.owners.values())if(entry.forgetting && this.retirementComplete(entry.owner))this.forgetOwner(entry.owner);
+    this.continueDrain=records.some(([entry,receipt])=>!visited.has(receipt) && !!entry.grant
+      && receipt.admission==="unsent" && this.store.canTake(entry.owner,receipt.token));
     return visits;
   }
   forget(owner:GlResultOwner,token:bigint):boolean {
@@ -743,6 +763,7 @@ export class GlOwnedForwardClient {
     if(!this.endpointReleased)return false;
     this.endpoint.removeEventListener("message",this.onMessage);return true;
   }
+  get runnableAfterDrain():boolean {return this.continueDrain;}
   get retainedBytes():number {return this.store.retainedBytes;}
   get pendingRequests():number {return this.store.pendingRequests;}
   get idle():boolean {return this.owners.size===0;}

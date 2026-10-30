@@ -53,7 +53,7 @@ import { isFenceQuery, validFenceQuery, prepareFenceQuery, type PreparedFenceQue
 import { queryOperationKind } from "./webgl/operation-stream";
 import { SubmitFrame, SubmitQueue } from "./webgl/submit-queue";
 import { GlMuxer } from "./webgl/muxer";
-import { drainSubmitQueue, glSubmitExecuting } from "./webgl/submit-drain";
+import { drainSubmitQueue, glSubmitExecuting, glSubmitQueueDisposition } from "./webgl/submit-drain";
 import { resolveIoctlContract } from "./ioctl-contract";
 import {
   KERNEL_SCRATCH_FD_PAIR_BYTES,
@@ -796,6 +796,9 @@ export interface KernelCallbacks {
    * reenter Rust from this callback or retain a guest-memory view. */
   onGlQueryWake?: (pid:number,session:number,registration:number,token:bigint)=>void;
   onGlQueryOwnerWake?: (pid:number,session:number,registration:number)=>void;
+  /** Accepted private work or authenticated backend progress. This is a hint
+   * for a bounded later host turn, never permission to retry a guest channel. */
+  onGlQueryWork?: (pid:number,session:number,registration:number)=>void;
   onAlarm?: (seconds: number) => number;
   onPosixTimer?: (timerId: number, signo: number, valueMs: number, intervalMs: number) => number;
   onNetListen?: (fd: number, port: number, addr: [number, number, number, number]) => number;
@@ -1022,7 +1025,8 @@ export class WasmPosixKernel {
   private gl_query_controls=new GlKernelQueryControls(this.gl,this.bos,this.gl_muxers,
     {maxOwners:256,maxRequests:1024,maxRetainedBytes:8*1024*1024},
     (pid,session,registration,token)=>this.callbacks.onGlQueryWake?.(pid,session,registration,token),
-    (pid,session,registration)=>this.callbacks.onGlQueryOwnerWake?.(pid,session,registration));
+    (pid,session,registration)=>this.callbacks.onGlQueryOwnerWake?.(pid,session,registration),
+    (pid,session,registration)=>this.callbacks.onGlQueryWork?.(pid,session,registration));
 
   drainGlQueryControls(maxVisits:number):number {
     if(!Number.isSafeInteger(maxVisits)||maxVisits<0)return 0;
@@ -1030,6 +1034,12 @@ export class WasmPosixKernel {
     this.drainGlSubmits(maxVisits);
     visits+=this.gl_query_controls.drainNative(maxVisits);
     return visits;
+  }
+  /** Inspect only after the bounded drain. The submit classifier can retry
+   * consumed-frame retirement; a remaining retirement is not runnable work. */
+  glQueryWorkRunnableAfterDrain():boolean {
+    return this.gl_query_controls.runnableAfterDrain || glSubmitQueueDisposition(this.gl_submit_queue,
+      binding=>binding.gl ? this.glMuxerFor(binding.gl) : null)==="runnable";
   }
   prepareGlQueryControlTeardown(pid:number):boolean {return this.gl_query_controls.prepareTeardown(pid);}
   forgetGlQueryControlsAfterKernelLifecycle(pid:number):boolean {return this.gl_query_controls.forgetAfterKernelLifecycle(pid);}

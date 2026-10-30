@@ -485,6 +485,7 @@ host/test/webgl-image-storage.test.ts	source-only
 host/test/webgl-image-transactions.test.ts	source-only
 host/test/webgl-kernel-owned-forward.test.ts	source-only
 host/test/webgl-kernel-query-controls.test.ts	source-only
+host/test/webgl-kernel-query-wakes.test.ts	source-only
 host/test/webgl-kms-scanout.test.ts	source-only
 host/test/webgl-main-forward.test.ts	source-only
 host/test/webgl-muxer.test.ts	source-only

@@ -97,6 +97,7 @@ export class GlNativeQueryAdapter {
   private count=0;
   private draining=false;
   private cursor=0;
+  private continueDrain=false;
   private limits:GlResultLimits;
   constructor(private registry:GlContextRegistry,private bos:GbmBoRegistry,
     private muxers:WeakMap<WebGL2RenderingContext,GlMuxer>,limits:GlResultLimits,
@@ -171,7 +172,7 @@ export class GlNativeQueryAdapter {
             if (!receipt.work.admitted) throw new Error("Drawable lease is unavailable");
           }
           if (this.store.begin(owner,request.token,b.op,b.input,b.capacity,receipt.custody)!=="admitted") throw new Error("Result storage admission failed");
-          receipt.stored=true;receipt.state="queued";receipt.mode=null;
+          receipt.stored=true;receipt.state="queued";receipt.mode=null;this.continueDrain=true;
         } catch { /* The preallocated receiver retains every captured resource. */ }
       }
     } else if (!receipt) return {error:E.ENOENT};
@@ -262,7 +263,8 @@ export class GlNativeQueryAdapter {
    * Root integration schedules turns/wakeups; this adapter owns no timers. */
   drain(maxVisits:number):number {
     if (!Number.isSafeInteger(maxVisits) || maxVisits<1 || this.draining) return 0;
-    this.draining=true;let visited=0;
+    this.draining=true;this.continueDrain=false;let visited=0;
+    const attempted=new Set<Receipt>();
     try {
       // The metadata inventory is bounded by maxRequests, including rollback
       // receivers and terminal ACKs. Rotate visits so a large blocked owner
@@ -277,6 +279,7 @@ export class GlNativeQueryAdapter {
         else if (r.state==="queued" && r.gl) {
           const muxer=this.muxers.get(r.gl);if (!muxer) continue;
           runGlRendererOperation(muxer,()=>{
+            if (this.store.canTake(r.owner,r.token)) attempted.add(r);
             const execution=this.store.take(r.owner,r.token);if (!execution) return;
             r.state="executed";let result=-E.EIO;
             try {
@@ -342,6 +345,11 @@ export class GlNativeQueryAdapter {
           catch { /* The durable phase can be notified again on a later turn. */ }
         }
       }
+      // Continue only unvisited or newly unblocked runnable execution. A failed
+      // allocation/physical entry or retained cleanup needs a renewed external
+      // work signal, rather than an unbounded automatic polling loop.
+      this.continueDrain=records.some(r=>!r.mode && r.state==="queued" && !attempted.has(r)
+        && !!r.gl && !glSubmitExecuting(this.muxers.get(r.gl)) && this.store.canTake(r.owner,r.token));
       return Math.min(visited,maxVisits);
     } finally {this.draining=false;}
   }
@@ -361,6 +369,7 @@ export class GlNativeQueryAdapter {
     for (const r of authority.receipts.values()) if (r.state!=="retired") return false;
     return true;
   }
+  get runnableAfterDrain():boolean {return this.continueDrain;}
   get retainedBytes():number {return this.store.retainedBytes;}
   get pendingRequests():number {return this.count;}
 }

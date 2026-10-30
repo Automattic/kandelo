@@ -1,4 +1,6 @@
 import { expect, it, vi } from "vitest";
+import { createCentralizedKernelWorkerTestDouble } from "../src/kernel-worker.js";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch.js";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
 import { setupMainForward, createMainForwardChannel } from "../src/webgl/main-forward.js";
@@ -17,11 +19,15 @@ class Endpoint {
   removeEventListener(_type:"message",listener:(event:MessageEvent)=>void):void {this.listeners.delete(listener);}
 }
 const limits={maxOwners:8,maxRequests:16,maxRetainedBytes:4096};
-function fixture(width:4|8) {
+function fixture(width:4|8,automatic=false) {
   const memory=new WebAssembly.Memory({initial:2,maximum:2}),wakes:unknown[][]=[],ownerWakes:unknown[][]=[];
   const kernel=createWasmPosixKernelTestHarness({io:{} as any,memory,pointerWidth:width,
     callbacks:{getProcessMemory:()=>memory,onGlQueryWake:(...args:unknown[])=>wakes.push(args),onGlQueryOwnerWake:(...args:unknown[])=>ownerWakes.push(args)},
     instance:createKernelScratchTestInstance(width,memory,()=>({}),()=>4096)});
+  if(automatic) {
+    const worker=createCentralizedKernelWorkerTestDouble();installKernelWorkerTestScratch(worker,memory,4096,width);
+    worker.testAuthority.replaceKernelForScratchBoundaryTest(kernel);
+  }
   const env=(kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>}).env;
   const sender=new Endpoint(),receiver=new Endpoint();sender.other=receiver;receiver.other=sender;
   let blocked=false;const log:string[]=[],live=new Set<object>();
@@ -32,8 +38,12 @@ function fixture(width:4|8) {
     clear:()=>log.push("clear"),finish:()=>log.push("finish"),fenceSync:make,
   },{get:(object,key)=>Reflect.get(object,key)??(String(key).startsWith("create")?make:String(key).startsWith("delete")?remove:()=>null)}) as unknown as WebGL2RenderingContext;
   const retirements=new GlOwnedForwardRetirements(2);
+  let rendererScheduled=false,rendererPaused=false;
   const dispose=setupMainForward(receiver,{width:4,height:3,getContext:()=>gl} as unknown as HTMLCanvasElement,7,
-    {endpoint:receiver,bos:new GbmBoRegistry(),limits,retirements});
+    {endpoint:receiver,bos:new GbmBoRegistry(),limits,retirements,queueDrain:()=>{
+      if(!automatic || rendererScheduled || rendererPaused)return;rendererScheduled=true;
+      setImmediate(()=>{rendererScheduled=false;dispose.ownedQueries!.drain(16);});
+    }});
   const client=new GlOwnedForwardClient(sender,7,limits,(...args:unknown[])=>wakes.push(args));
   const channel=createMainForwardChannel(sender,7,0,client);
   const legacyQuery=vi.spyOn(channel,"onQuery");kernel.gl.attachMainForward(7,channel);
@@ -52,7 +62,7 @@ function fixture(width:4|8) {
   const drain=()=>{kernel.drainGlQueryControls(16);dispose.ownedQueries!.drain(16);kernel.drainGlQueryControls(16);};
   const submit=()=>{const bytes=new Uint8Array(memory.buffer,32768,8),v=new DataView(bytes.buffer,bytes.byteOffset,8);
     v.setUint16(0,O.OP_CLEAR,true);v.setUint16(2,4,true);v.setUint32(4,0x4000,true);return env.host_gl_submit(7,p(0),p(8),11);};
-  return {kernel,memory,env,p,client,sender,receiver,dispose,retirements,invoke,begin,drain,submit,log,live,legacyQuery,wakes,ownerWakes,channel,gl,block:(value:boolean)=>{blocked=value;}};
+  return {pauseRenderer:(value:boolean)=>{rendererPaused=value;},kernel,memory,env,p,client,sender,receiver,dispose,retirements,invoke,begin,drain,submit,log,live,legacyQuery,wakes,ownerWakes,channel,gl,block:(value:boolean)=>{blocked=value;}};
 }
 it.each([4,8] as const)("routes private owned controls through the real %s-byte kernel import and paired receiver",width=>{
   const f=fixture(width);expect(f.submit()).toBe(0);expect(f.invoke(f.begin())).toEqual({phase:"pending"});
@@ -244,4 +254,43 @@ it("keeps endpoint cleanup proof and listener ownership through a lost release a
   f.sender.fire({...released,epoch:released.epoch+1});expect(f.client.dispose()).toBe(false);
   f.sender.fire(released);expect(f.client.dispose()).toBe(true);
   expect(f.retirements.retainedEndpoints).toBe(0);expect(f.receiver.listeners.size).toBe(0);
+});
+
+it("progresses private controls through the actual worker and paired receiver without polling Pending forever",async()=>{
+  const f=fixture(4,true),drain=vi.spyOn(f.kernel,"drainGlQueryControls");
+  expect(f.submit()).toBe(0);expect(f.invoke(f.begin())).toEqual({phase:"pending"});
+  for(let i=0;i<8;i++)await new Promise<void>(resolve=>setImmediate(resolve));
+  expect(f.log).toEqual(["clear","finish"]);const settled=drain.mock.calls.length;
+  for(let i=0;i<4;i++)await new Promise<void>(resolve=>setImmediate(resolve));expect(drain).toHaveBeenCalledTimes(settled);
+  expect(f.invoke({control:"poll",token:1n})).toMatchObject({phase:"ready",result:0});
+  f.receiver.drop=m=>m.type==="gl_owned_reply" && m.control==="commit";
+  expect(f.invoke({control:"commit",token:1n},0,"commit")).toEqual({phase:"retiring",mode:"commit"});
+  for(let i=0;i<8;i++)await new Promise<void>(resolve=>setImmediate(resolve));expect(f.submit()).toBe(-16);
+  const uncertain=drain.mock.calls.length;for(let i=0;i<4;i++)await new Promise<void>(resolve=>setImmediate(resolve));
+  expect(drain).toHaveBeenCalledTimes(uncertain);f.receiver.drop=null;
+  f.invoke({control:"commit",token:1n},0,"commit");for(let i=0;i<8;i++)await new Promise<void>(resolve=>setImmediate(resolve));
+  expect(f.invoke({control:"commit",token:1n},0,"commit")).toEqual({phase:"retired",mode:"commit",accepted:true});
+  expect(f.log.filter(item=>item==="finish")).toHaveLength(1);expect(f.submit()).toBe(0);f.dispose();
+});
+
+it("sleeps on authenticated remote Pending and resumes only on an explicit later control",async()=>{
+  const f=fixture(4,true),drain=vi.spyOn(f.kernel,"drainGlQueryControls");f.pauseRenderer(true);
+  expect(f.invoke(f.begin())).toEqual({phase:"pending"});for(let i=0;i<6;i++)await new Promise<void>(resolve=>setImmediate(resolve));
+  expect(f.log).toEqual([]);const waiting=drain.mock.calls.length;expect(waiting).toBeGreaterThan(0);
+  for(let i=0;i<4;i++)await new Promise<void>(resolve=>setImmediate(resolve));expect(drain).toHaveBeenCalledTimes(waiting);
+  f.pauseRenderer(false);expect(f.invoke({control:"poll",token:1n})).toEqual({phase:"pending"});
+  for(let i=0;i<8;i++)await new Promise<void>(resolve=>setImmediate(resolve));
+  expect(f.invoke({control:"poll",token:1n})).toMatchObject({phase:"ready",result:0});expect(f.log).toEqual(["finish"]);f.dispose();
+});
+
+it("retains failed actual renderer cleanup after query retirement without spinning the worker",async()=>{
+  const f=fixture(4,true),drain=vi.spyOn(f.kernel,"drainGlQueryControls");f.invoke(f.begin());
+  for(let i=0;i<8;i++)await new Promise<void>(resolve=>setImmediate(resolve));
+  f.env.host_gl_destroy_context(7,21);f.block(true);f.invoke({control:"cancel",token:1n},0,"cancel");
+  for(let i=0;i<8;i++)await new Promise<void>(resolve=>setImmediate(resolve));
+  expect(f.client.hasBarrier(11)).toBe(true);expect(f.live.size).toBeGreaterThan(0);const waiting=drain.mock.calls.length;
+  for(let i=0;i<4;i++)await new Promise<void>(resolve=>setImmediate(resolve));expect(drain).toHaveBeenCalledTimes(waiting);
+  f.block(false);f.invoke({control:"cancel",token:1n},0,"cancel");
+  for(let i=0;i<8;i++)await new Promise<void>(resolve=>setImmediate(resolve));
+  expect(f.client.hasBarrier(11)).toBe(false);expect(f.live.size).toBe(0);f.dispose();
 });

@@ -26,7 +26,8 @@ export class GlKernelQueryControls {
   constructor(private registry:GlContextRegistry,bos:GbmBoRegistry,
     private muxers:WeakMap<WebGL2RenderingContext,GlMuxer>,private limits:GlResultLimits,
     wake:(pid:number,session:number,registration:number,token:bigint)=>void,
-    private ownerWake?:(pid:number,session:number,registration:number)=>void) {
+    private ownerWake?:(pid:number,session:number,registration:number)=>void,
+    private workWake?:(pid:number,session:number,registration:number)=>void) {
     this.limits=Object.freeze({...limits});
     this.native=new GlNativeQueryAdapter(registry,bos,muxers,this.limits,wake);
   }
@@ -70,7 +71,12 @@ export class GlKernelQueryControls {
         }
         const owner=backend instanceof GlOwnedForwardClient ? backend.register(session,binding.operations) : backend.register(pid,session);
         if (!owner) return reject(E.ENOMEM);
-        if(backend instanceof GlOwnedForwardClient)backend.watchOwner(owner,this.ownerWake);
+        if(backend instanceof GlOwnedForwardClient) {
+          backend.watchOwner(owner,(pid,session,registration)=>{
+            this.ownerWake?.(pid,session,registration);this.workWake?.(pid,session,registration);
+          });
+          backend.watchWork(owner,this.workWake);
+        }
         try {
           authority={owner,backend,closed:false,forgotten:false,records:new Map()};this.owners.set(key,authority);
         }catch{
@@ -94,6 +100,12 @@ export class GlKernelQueryControls {
     try {result=authority.backend instanceof GlOwnedForwardClient
       ? this.forward(authority.backend,authority.owner,request,record)
       : authority.backend.control(authority.owner,bytes);}catch(error){if(isKernelExportFailure(error))throw error;return {error:E.EIO};}
+    finally {
+      // Metadata was reserved before this attempt. Even a lost/malformed
+      // backend response cannot strand possibly admitted work. The callback
+      // queues a later turn, so admission finishes before execution can start.
+      if(request.control!=="forget")this.notifyWork(authority);
+    }
     if ("error" in result) return result;
     let reply:QueryReceiptReply;
     try {
@@ -107,6 +119,10 @@ export class GlKernelQueryControls {
       authority.records.delete(request.token);this.count--;
     }
     return result;
+  }
+  private notifyWork(authority:Owner):void {
+    try {this.workWake?.(authority.owner.pid,authority.owner.sessionId,authority.owner.registration);}
+    catch(error) {if(isKernelExportFailure(error))throw error; /* Actual custody stays durable. */}
   }
   private forward(client:GlOwnedForwardClient,owner:GlResultOwner,request:QueryReceiptRequest,record:Record):Reply {
     if(request.control==="begin") {
@@ -139,6 +155,7 @@ export class GlKernelQueryControls {
     return visits;
   }
   drainNative(maxVisits:number):number {return this.native.drain(maxVisits);}
+  get runnableAfterDrain():boolean {return this.native.runnableAfterDrain || [...this.clients].some(client=>client.runnableAfterDrain);}
   private retirementComplete(authority:Owner):boolean {
     if(authority.backend instanceof GlOwnedForwardClient && authority.backend.ownerForgotten(authority.owner))authority.forgotten=true;
     return authority.forgotten || authority.backend.retirementComplete(authority.owner);

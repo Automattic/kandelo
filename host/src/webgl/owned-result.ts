@@ -336,6 +336,11 @@ export class GlOwnedResultStore {
       return "admitted";
     } catch { entry.requests.delete(token); order?.cancel(); return "rejected"; }
   }
+  /** Scalar readiness only; this neither starts work nor captures replacement state. */
+  canTake(owner: GlResultOwner, token: bigint): boolean {
+    const record=this.record(owner,token);
+    return record?.state==="queued" && record.order?.ready===true;
+  }
   take(owner: GlResultOwner, token: bigint): GlResultExecution | null {
     const record = this.record(owner,token);
     if (!record || record.state !== "queued") return null;
