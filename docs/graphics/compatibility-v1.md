@@ -8517,3 +8517,52 @@ Normal kernel/products, real Sway cursor/foot and ScummVM-in-Sway execution,
 Node/browser integration, browser-memory and relevant conformance remain
 required combined validation. The original failed browser trace and its
 144 unique terminal rows are retained in the private handoff.
+
+### Normal GPU cursor products and consumer checks (2026-10-30)
+
+Exact source 5aab344fe0 was built through the normal shell image, rootfs
+and host paths in job cursor-gpu-products-5a-1030-042759-7201. It completed
+in 21m41s; ABI and artifact-freshness checks passed. The subsequent
+headless Chromium batch cursor-gpu-preview-smoke-5a-1030-045045-d4ad
+passed normal Sway cursor rendering in 17.4s and cursor transport, but
+failed its separate ScummVM rendering case. Selected artifact identities
+agreed before and after the batch. This is a partial pass, not acceptance
+of the complete combined landing.
+
+The real Sway check observes foot repaint, cursor movement between two
+positions on the independent cursor canvas, clearing of the old position,
+restoration of client pixels, cooperative compositor exit and terminal
+handoff. A separate read-only check against the persistent local preview
+passed in 11.0s, with identical artifact identities before and after.
+Evidence is under .context/gbm-file-aliases/.context/ in
+compositor-preview-smoke-5a and cursor-preview-check-5a. The first preview
+readiness check stopped before browser launch because it expected an
+explicit HTML element in the minimal fixture; its evidence is retained
+in cursor-preview-check-5a-readiness-failure. The corrected check matches
+the real fixture title. All browsers are headless; no latency measurement
+or performance improvement is claimed.
+
+ScummVM now launches inside the rendered Sway session. Its actual terminal
+reports Wayland error 7, importing the supplied dmabufs failed, followed
+by the OpenGL graphics-mode failure. This replaces the previously observed
+rejected-display symptom, but does not establish successful ScummVM
+rendering. The buffer-import failure is an ordinary shared platform gap
+under investigation, without a program-specific launcher bypass. The
+failed screenshot and trace remain in the same batch's scumm-results.
+
+The separate test-only memory-audit repair classifies the exact graphics
+Vitest runner beside the two existing test runners. All 86 analyzer
+controls pass; similarly named production sources remain audited. The
+source inventory changes from 617 to 616 by removing only the actual
+test runner. Its canonical actual-helper full-graph control passes the
+unchanged 180s deadline in 126.885s, with zero violations, unused
+allowances, unresolved seeds or contract errors. An original-helper
+profile also completes its original 617-source graph in 148.980s.
+Earlier e570, 5a and repaired-classification timeouts remain preserved;
+these later passes do not establish a timing improvement or an external
+runtime defect. Exact commands, timings and profile attribution are in
+.context/graphics-audit-scaling/.context/audit-scaling-handoff.md.
+
+Current three-engine consumer checks, the complete browser-memory gate
+and relevant POSIX conformance remain required on the combined source
+and its normal products. These narrow passes do not discharge them.
