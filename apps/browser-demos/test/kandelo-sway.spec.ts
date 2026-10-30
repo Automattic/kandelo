@@ -120,29 +120,36 @@ const middle = (out: Output) => outputShot(out, out.width / 4, out.height / 4, o
  *  puts the bar at the top. */
 async function barHeight(out: Output): Promise<number> {
   const height = Math.min(128, out.height);
-  const png = await outputShot(out, out.width / 2, 0, out.width / 2, height);
-  const rows = await out.canvas.page().evaluate(async base64 => {
-    const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
-    const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
-    const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
-    context.drawImage(bitmap, 0, 0);
-    const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
-    bitmap.close();
-    return Array.from({ length: image.height }, (_, y) => {
-      let background = 0;
-      for (let x = 0; x < image.width; x++) {
-        const p = (y * image.width + x) * 4;
-        if ([0, 1, 2].every(channel => Math.abs(image.data[p + channel] - 50) <= 3)) background++;
-      }
-      return background / image.width;
-    });
-  }, png.toString("base64"));
-  // Read the actual painted bar boundary, not a fixed font-dependent height.
-  // The shipped /etc/sway/config sets background #323232. Text occupies
-  // less than half a row; the foot client and its blue title differ.
-  const boundary = rows.findIndex(background => background < 0.5);
-  expect(boundary, "swaybar has painted a nonempty top band").toBeGreaterThan(0);
-  return boundary * height / rows.length;
+  let boundary = 0;
+  let capturedRows = 0;
+  // A claimed CRTC can precede swaybar's first repaint. Keep sampling
+  // until the real bar exists before measuring its status-line changes.
+  await expect(async () => {
+    const png = await outputShot(out, out.width / 2, 0, out.width / 2, height);
+    const rows = await out.canvas.page().evaluate(async base64 => {
+      const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+      const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
+      context.drawImage(bitmap, 0, 0);
+      const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
+      bitmap.close();
+      return Array.from({ length: image.height }, (_, y) => {
+        let background = 0;
+        for (let x = 0; x < image.width; x++) {
+          const p = (y * image.width + x) * 4;
+          if ([0, 1, 2].every(channel => Math.abs(image.data[p + channel] - 50) <= 3)) background++;
+        }
+        return background / image.width;
+      });
+    }, png.toString("base64"));
+    // Read the actual painted bar boundary, not a fixed font-dependent height.
+    // The shipped /etc/sway/config sets background #323232. Text occupies
+    // less than half a row; the foot client and its blue title differ.
+    boundary = rows.findIndex(background => background < 0.5);
+    expect(boundary, "swaybar has painted a nonempty top band").toBeGreaterThan(0);
+    capturedRows = rows.length;
+  }).toPass({ timeout: 120_000, intervals: [100, 500, 1_000] });
+  return boundary * height / capturedRows;
 }
 async function statusLine(out: Output) {
   return outputShot(out, out.width / 2, 0, out.width / 2, await barHeight(out));

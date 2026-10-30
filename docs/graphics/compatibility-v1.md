@@ -8566,3 +8566,24 @@ runtime defect. Exact commands, timings and profile attribution are in
 Current three-engine consumer checks, the complete browser-memory gate
 and relevant POSIX conformance remain required on the combined source
 and its normal products. These narrow passes do not discharge them.
+
+### Sway status-bar repaint readiness (2026-10-30)
+
+The normal 5a three-engine consumer batch first fails Chromium's status-bar
+measurement before swaybar's initial repaint. The trace records a zero
+background fraction for every sampled row, then the retained failure
+screenshot shows the real bar above the wallpaper. A claimed CRTC and
+active renderer are not completion events for every lazy client. The
+helper's assertion previously escaped its outer poll immediately.
+
+The helper now waits for the same actual painted band before measuring
+its boundary. Colour thresholds, status-clock changes, physical input,
+workspace switching, terminal tiling, cooperative exit and renderer/master
+handoff checks remain intact, with the same full-case deadline. A private
+copy of the corrected fixture passes the full headless Chromium scenario
+in 46.0s against the unchanged normal 5a cursor preview. Evidence:
+.context/gbm-file-aliases/.context/sway-bar-readiness-candidate-launch-2.log.
+The first candidate launch used the outer checkout's working directory
+and failed to locate its config before any browser ran; that log remains
+preserved separately. This fixture correction is not an application or
+runtime change, nor three-engine acceptance of the current combined tree.
