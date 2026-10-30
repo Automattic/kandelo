@@ -8498,3 +8498,31 @@ ABI/generated-output regeneration, kernel builds, actual upstream
 wlroots cursor assignment, Node/browser rendering and memory/conformance
 checks remain integration gates. Cursor latency has not been measured;
 this source/native evidence does not establish its cause or improvement.
+
+### Sway native-density test setup (2026-10-30)
+
+Standalone headless measurements with no Kandelo code distinguish native
+pixel density from context DPR emulation. Chromium 153.0.8010.12 and
+Firefox 155 report a 965x500 device-pixel content box for a 965x500 CSS
+canvas even when the context reports DPR 2. Chromium's native launch scale
+2 and Firefox's native layout density 2 instead report 1930x1000 with the
+same CSS box. WebKit 26.6 exposes no device-pixel content box in this probe,
+so its existing CSS-times-DPR fallback path remains unchanged. This is
+observed test setup behavior, not a browser fault or a production workaround.
+
+The Sway 2x cases now own headless native-density browsers for Chromium
+and Firefox, preserving project launch settings and matching context DPR.
+The ordinary 1x and WebKit context paths are unchanged. An independent
+canvas ResizeObserver delivery checks native density before the connector
+mode assertions; the original output IPC scale, rendered input and teardown
+checks remain. Manual-context failures attach the actual page screenshot.
+
+Source validation passes TypeScript syntax transpilation and canonical
+Playwright discovery of all nine Sway cases across three engines. Evidence:
+`.context/sway-native-density/.context/sway-density-syntax.log`,
+`sway-density-list.log`, `resize-native-control-project.log`, and
+`resize-native-firefox-pref.log`; Chromium's standalone matrix is in
+`.context/gbm-cpu-fronts/.context/resize-native-standalone.log`.
+These checks do not establish repaired Sway rendering or input. Normal
+consumer execution remains an integration gate; application, host sizing,
+artifacts and ABI are unchanged by this test-only correction.
