@@ -14,7 +14,7 @@ depends_on = [
 
 [[host_tools]]
 name = "node"
-version_constraint = ">=24"
+version_constraint = ">=24.0"
 install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
 
 [[host_tools]]
