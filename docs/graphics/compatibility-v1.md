@@ -10052,3 +10052,18 @@ will be announced as soon as it serves, before full validation completes.
 Raw evidence: `.context/preview5663-performance/runs/`,
 `.context/memory-byte-compare/`, `.context/shared-byte-runs-perf/` and
 `.context/process-read-copy-focused.log`.
+
+The subsequent four-file memory-authority check passes365/366 cases. Its
+repository audit rejects two unclassified standalone GLib/GTK source-test
+instances, rather than the process-read change. Exact private-memory
+classifications alone still fail because the classifier cannot bind an
+awaited destructured instantiate result. The repair supports only a single
+static `instance` binding, including renaming; computed, additional,
+defaulted, nested and non-awaited patterns remain rejected. Controls also
+prove kernel ownership still propagates to reject unreviewed writes and
+duplicate origins still require their own classification. The canonical
+two-file rerun passes108/108 with zero skips. No production source or
+package fixture is excluded from the audit. Both earlier failures remain
+in `.context/memory-performance-authority-checks.log` and
+`.context/memory-performance-authority-classification-rerun.log`; final
+evidence is `.context/memory-performance-authority-single-binding-rerun.log`.

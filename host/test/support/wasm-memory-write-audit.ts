@@ -4479,7 +4479,10 @@ export function auditWasmMemoryWrites(options: AuditOptions): AuditResult {
     ts.isStringLiteralLike(unwrapExpression(call.arguments[2]!));
 
   const authorityClassificationErrors: string[] = [];
-  const authorityBindingTarget = (origin: ts.Node): StateKey | null => {
+  const authorityBindingTarget = (
+    origin: ts.Node,
+    kind: "wasm-memory-authority" | "wasm-instance-authority",
+  ): StateKey | null => {
     let child = origin;
     for (
       let current: ts.Node | undefined = origin.parent;
@@ -4487,6 +4490,33 @@ export function auditWasmMemoryWrites(options: AuditOptions): AuditResult {
       child = current, current = current.parent
     ) {
       if (ts.isVariableDeclaration(current) && current.initializer) {
+        if (ts.isObjectBindingPattern(current.name)) {
+          // The bytes overload resolves to { module, instance }, not a bare
+          // Instance. Seed only a single exact awaited-result instance binding;
+          // extra properties might hide another computed alias. A pattern has
+          // no aggregate symbol; rest/default/nested bindings are unproven.
+          const initializer = unwrapExpression(current.initializer);
+          if (
+            kind !== "wasm-instance-authority" ||
+            current.name.elements.length !== 1 ||
+            !ts.isCallExpression(origin) ||
+            !ts.isAwaitExpression(initializer) ||
+            unwrapExpression(initializer.expression) !== origin
+          ) {
+            return null;
+          }
+          const instances = current.name.elements.filter((element) =>
+            !element.dotDotDotToken &&
+            (propertyNameText(element.propertyName) ??
+              propertyNameText(element.name)) === "instance"
+          );
+          const instance = instances.length === 1 ? instances[0] : undefined;
+          return instance &&
+              !instance.initializer &&
+              ts.isIdentifier(instance.name)
+            ? symbolForDeclaration(checker, instance) ?? null
+            : null;
+        }
         return symbolForDeclaration(checker, current) ?? null;
       }
       if (ts.isPropertyDeclaration(current) && current.initializer) {
@@ -4524,7 +4554,7 @@ export function auditWasmMemoryWrites(options: AuditOptions): AuditResult {
         const finding = findingFor(options.rootDir, sourceFile, node, kind);
         const classification = allowanceByKey.get(finding.key);
         if (classification?.authorityOwner !== undefined) {
-          const target = authorityBindingTarget(node);
+          const target = authorityBindingTarget(node, kind);
           if (!target) {
             authorityClassificationErrors.push(
               `authority origin has no stable binding: ${finding.key}`,
