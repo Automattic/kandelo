@@ -10170,6 +10170,59 @@ batch messages, with wake-scheduling observations after each complete
 frame. Promoted source bytes match those tested in the isolated checkout.
 Evidence: `.context/pointer-frame-batch/.context/pointer-frame-controls/`.
 This is not a booted guest blocked-read, desktop performance or combined
-conformance result. Normal preview construction and actual persistent
-consumer validation of this candidate remain pending. The full benchmark,
-browser-memory, POSIX and graphics inventory gates remain open.
+conformance result. The full benchmark, browser-memory, POSIX and graphics
+inventory gates remain open.
+
+The standalone blank-page Chromium153/DPR2 control then passes both
+motion/idle pairs, with4800/4800 trusted moves and no requests or page
+errors. Its2400-move motion periods take40.095s/40.261s, also roughly60
+moves/s. This establishes that requested120Hz is not achieved120Hz in
+the sequential driver; it does not assign the desktop's additional cost
+to a particular component. Concurrent builds/user load remain uncontrolled.
+Raw controls: `.context/chromium-pointer-cadence-control/`.
+
+### Pointer batching preview1c16 (2026-10-30)
+
+The new own-product preview is available at
+`http://127.0.0.1:5665/pages/kandelo/`, exact runtime1c16ee20ba. The
+original producer `preview5665-1c16ee20ba-build-1030-190443-7e40`
+finishes1 after16m35s: all seven normal xtask/desktop/SDK64/rootfs/
+freshness/identity/selected-kernel ABI stages pass, then comparison with
+the old SDK fails. Original helpers, logs and failure remain unchanged.
+The old SDK32 inventory has1099 additional package/fixture entries; all
+289 common SDK32 entries and all289 SDK64 entries match, but musl input
+stamps differ. Eight projected owner tuples also differ. These are
+recorded differences; previous GObject validation is not carried forward.
+
+Separate own-coherence completion
+`preview5665-own-coherence-1c16ee20ba-com-1030-192241-ce4b` passes in7s.
+It requires the exact original failure and seven earlier passing stages,
+then freshly verifies own normal products, all93 owners/245 members,
+C SDK32/64, source/kernel identities and selected-kernel ABI. It retains
+the full old/new tuple differences without requiring equality or claiming
+that every difference has one cause. The immutable kernel remains
+`0cc747635b92b626b1a120788d6e7d77aed8b4c8ac874f4ab007e330b1af2554`.
+Fresh owners SHA256 is
+`02ce84e9c5535e4a7608c4fd36ed0e523a7522e0f3d71d61012e38c86d1a7cb2`;
+new receipt SHA256 is
+`a411ac28dd72d1b4dbbd79d5f5225f9b3a9ac86019054a810e87bbc503e29066`.
+
+Server `preview5665-own-coherence-1c16ee20ba-ser-1030-192324-c310`
+rechecks that cohort and serves with strict port5665 and HMR disabled.
+Actual HTML200/COOP/COEP checks pass, and the user is notified immediately
+before browser acceptance. The new receipt explicitly records no prior
+GObject result carried forward or rerun. All own-coherence evidence is
+under the candidate's `.context/5665-coherence-*`; original build evidence
+stays under `.context/preview5665-*`. Port5664 remains frozen737.
+Actual candidate persistent rendering/input/performance and broader gates
+remain pending.
+
+Cache investigation reproduces checkout-dependent directory identities:
+Rust declared-input traversal includes the submodule's administrative
+`.git` file, whose gitdir path differs across otherwise identical clean
+worktrees. Changed identities propagate through Rust libraries/tools into
+Labwc and image dependencies. This explains demonstrated cache misses,
+not all SDK or output differences. A separately tested repair is being
+reviewed; it must retain actual dirty/untracked source and strict
+descriptor-relative safety while consolidating shared digest rules.
+It does not explain Brave closure or establish a desktop performance fix.
