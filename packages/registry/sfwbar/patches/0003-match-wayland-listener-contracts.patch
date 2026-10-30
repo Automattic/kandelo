@@ -1,0 +1,82 @@
+Subject: [PATCH] Match ignored Wayland events to their callback prototypes
+
+Wayland invokes every listener with its event arguments. A zero-argument
+function cast to unrelated callback types has undefined behavior and
+traps on typed indirect calls. Keep the intended ignored-event behavior
+with correctly typed handlers for surface leave, layer closure, output
+geometry and output description. Position and size share the same exact
+four-argument protocol signature; no cast or protocol override is needed.
+
+--- a/src/gui/monitor.c
++++ b/src/gui/monitor.c
+@@ -28,7 +28,36 @@
+   return gdk_display_get_monitor(gdisp, 0);
+ }
+ 
+-static void monitor_noop() {
++static void monitor_surface_leave ( void *data,
++    struct wl_surface *surface, struct wl_output *output )
++{
++  (void)data;
++  (void)surface;
++  (void)output;
++}
++
++static void monitor_layer_surface_closed ( void *data,
++    struct zwlr_layer_surface_v1 *surface )
++{
++  (void)data;
++  (void)surface;
++}
++
++static void monitor_output_logical_geometry ( void *data,
++    struct zxdg_output_v1 *output, int32_t x, int32_t y )
++{
++  (void)data;
++  (void)output;
++  (void)x;
++  (void)y;
++}
++
++static void monitor_output_description ( void *data,
++    struct zxdg_output_v1 *output, const char *description )
++{
++  (void)data;
++  (void)output;
++  (void)description;
+ }
+ 
+ static void monitor_surface_enter ( void *data,
+@@ -50,7 +79,7 @@
+ 
+ struct wl_surface_listener monitor_surface_listener = {
+   .enter = monitor_surface_enter,
+-  .leave = (void (*)(void *, struct wl_surface *, struct wl_output *))monitor_noop
++  .leave = monitor_surface_leave
+ };
+ 
+ void monitor_layer_surface_configure ( void *data,
+@@ -64,7 +93,7 @@
+ 
+ struct zwlr_layer_surface_v1_listener monitor_layer_surface_listener = {
+   .configure = monitor_layer_surface_configure,
+-  .closed = (void (*)(void *, struct zwlr_layer_surface_v1 *))monitor_noop
++  .closed = monitor_layer_surface_closed
+ };
+ 
+ void monitor_default_probe ( void )
+@@ -162,11 +191,11 @@
+ }
+ 
+ static const struct zxdg_output_v1_listener xdg_output_listener = {
+-  .logical_position = (void (*)(void *, struct zxdg_output_v1 *, int32_t,  int32_t))monitor_noop,
+-  .logical_size = (void (*)(void *, struct zxdg_output_v1 *, int32_t,  int32_t))monitor_noop,
++  .logical_position = monitor_output_logical_geometry,
++  .logical_size = monitor_output_logical_geometry,
+   .done = monitor_handle_done,
+   .name = monitor_handle_name,
+-  .description = (void (*)(void *, struct zxdg_output_v1 *, const char *))monitor_noop,
++  .description = monitor_output_description,
+ };
+ 
+ static void xdg_output_new ( GdkMonitor *monitor )

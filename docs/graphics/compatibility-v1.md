@@ -9016,3 +9016,26 @@ corresponding static assertion. Actual immutable normal dependency headers
 are used. Evidence: .context/sfwbar-callback-extended/check.log and check.py.
 These controls establish API type corrections, not resolution of the
 distinct captured Wayland listener trap or GUI acceptance.
+
+### SFWBar ignored Wayland listener repair (2026-10-30)
+
+Pinned SFWBar's monitor source casts one zero-argument empty handler to
+five different registered Wayland event callbacks: surface leave, layer
+closure, logical position, logical size and description. The package
+patch replaces these casts with exact generated-protocol signatures,
+preserving their intentional ignored-event behavior. Logical position
+and size share a compatible four-argument handler. Shared libffi, Wayland
+dispatch, protocol messages and capability declarations remain unchanged.
+
+All five original registrations trap with a signature mismatch when
+invoked through their actual generated listener fields in separate C11
+Wasm32 translation units; all five replacements return normally. Full
+monitor-source Wasm32 syntax passes before/after. C23 exact-field type
+assertions reject the five originals and accept the five replacements;
+C11 old-style empty parameter lists alone do not detect this difference,
+so the actual C11 Wasm invocation controls provide the runtime evidence.
+All three package patches apply together without fuzz. Evidence and exact
+commands: .context/sfwbar-wayland-callbacks/check-sdk.log, invoke-sdk.log
+and handoff.md. These controls prove the callback repair, while the
+original Labwc event identity and combined GUI acceptance still require
+the separate normal-image protocol capture and rebuild.
