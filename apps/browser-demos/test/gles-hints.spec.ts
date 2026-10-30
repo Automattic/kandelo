@@ -52,6 +52,7 @@ test("normal GLES guests validate error families, hint state and real framebuffe
     }, new URL(`/@fs${module}`, baseURL).href);
     expect(result.status, JSON.stringify(result)).toBe(0);
     expect(result.stdout.trim().split("\n")).toEqual([
+      "OK GLES ordered error flags retain current context ownership",
       "OK GLES string-query enums and cached state",
       "OK GLES object-generation counts",
       "OK GLES uniform negative locations: 19 setters",

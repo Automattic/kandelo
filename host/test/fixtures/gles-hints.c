@@ -31,6 +31,37 @@ static void expected_error(GLenum expected) {
     no_error();
 }
 
+static void distinct_errors(GLenum a, GLenum b) {
+    const GLenum first=glGetError(), second=glGetError();
+    CHECK((first==a && second==b) || (first==b && second==a));
+    no_error();
+}
+
+static void context_errors(EGLDisplay display,EGLConfig config,EGLContext first,const EGLint *attributes) {
+    /* Native/host validation and client argument validation set the same
+     * flag once, without losing a different error from the accepted prefix. */
+    glEnable(0xdeadbeefu);
+    glBindBuffer(0xdeadbeefu,1);
+    glDrawArrays(GL_POINTS,0,-1);
+    distinct_errors(GL_INVALID_ENUM,GL_INVALID_VALUE);
+    glEnable(GL_BLEND);
+    glHint(GL_GENERATE_MIPMAP_HINT,0xdeadbeefu);
+    expected_error(GL_INVALID_ENUM);
+    CHECK(glIsEnabled(GL_BLEND));no_error();
+    glDisable(GL_BLEND);no_error();
+
+    EGLContext peer=eglCreateContext(display,config,first,attributes);CHECK(peer);
+    glEnable(0xdeadbeefu);glBindBuffer(0xdeadbeefu,1);
+    CHECK(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,peer));no_error();
+    glDrawArrays(GL_POINTS,0,-1);
+    CHECK(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,first));
+    expected_error(GL_INVALID_ENUM);
+    CHECK(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,peer));
+    CHECK(eglDestroyContext(display,peer));expected_error(GL_INVALID_VALUE);
+    CHECK(eglReleaseThread() && eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,first));no_error();
+    puts("OK GLES ordered error flags retain current context ownership");
+}
+
 static void string_query_errors(void) {
     const GLubyte *version = glGetString(GL_VERSION);
     CHECK(version && strstr((const char *)version, "OpenGL ES 2.0"));
@@ -376,6 +407,7 @@ int main(void) {
     CHECK(first && eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,first));
     const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
     CHECK(extensions && strstr(extensions,"GL_OES_standard_derivatives"));
+    context_errors(display,config,first,attributes);
     string_query_errors();
     generation_counts();
     uniforms_without_program();

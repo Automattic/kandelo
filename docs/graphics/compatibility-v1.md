@@ -125,7 +125,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | G06 | Texture formats, cube maps, pixel storage, subimages and copy; ES2 §3 | Texture reservations now remain separate from native realization, including delayed shared declarations. C bindings/attachments retain typed object records, acknowledged binds publish references/dimensionality after renderer acceptance, logical image views separate per-object sampling state from canonical GPU pixels, and texture-unit storage follows the reported limit. WebGL2 normalization, core parameter queries and context-owned default texture objects are implemented in host source; complete target/state/error and guest CTS audit remain open | encoder, bridge, muxer | CTS texture specification/negative/cube groups; rendered pixels | partial |
 | G07 | Raster/depth/stencil/blend/clear/readback; ES2 §§3,4 | Main provides offscreen color/depth/stencil; no broad CTS evidence | bridge, query, present-target | CTS functional render families; real pixels all three engines | partial |
 | G08 | FBO attachments/completeness and renderbuffers; ES2 §4 | Default/user identities and read/draw state remain distinct; C and host attachment records retain deleted texture/RBO identities, including unbound containers; host records also retain native storage and separate packed depth/stencil points. Core attachment/renderbuffer queries, acknowledged C attachment/deletion and texture/RBO allocation are implemented. Metadata capacity precedes native effects; definite failures preserve ownership. Failed deletion/selector inverses are retained per physical context and block dependent work until restored. Image utility/retarget/orphan rollback now retains native inverse plans across peer ownership and pending candidate/retired-view cleanup. Owned surface storage now reserves candidate/retirement receipts and selector inverses before allocation and retains failed cleanup after creator retirement. Other rollback sites, full negative coverage and CTS remain open | encoder, registry, image references, presentation | CTS FBO and attachment queries; deletion/reallocation | partial |
-| G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Definite C buffer/texture/RBO bind rejection preserves prior references. Native buffer/image deletion and FBO selector/container rollback now retain failed inverses, block dependent queries/batches and repair before muxer switching. Buffer binding/copy-view, vertex pointer and image utility/retarget recovery retain failed inverses and cleanup receipts; private ARRAY completion reconciles before query/muxer use. Raw upload and BO revocation retain failed utility/attachment/unit inverses through owner retirement. Indeterminate transport and other recovery sites remain open. C hint targets/modes now reject invalid enums without mutation and preserve pending errors. Full C/native error validation remains open; some guest paths silently return and missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
+| G09 | Ordered errors and non-mutating invalid calls; ES2 §2.5 | Native pending errors now remain with the outgoing session across switches/invalidation; queries merge duplicate native/retained flags. Definite C buffer/texture/RBO bind rejection preserves prior references. Native buffer/image deletion and FBO selector/container rollback now retain failed inverses, block dependent queries/batches and repair before muxer switching. Buffer binding/copy-view, vertex pointer and image utility/retarget recovery retain failed inverses and cleanup receipts; private ARRAY completion reconciles before query/muxer use. Raw upload and BO revocation retain failed utility/attachment/unit inverses through owner retirement. Indeterminate transport and other recovery sites remain open. C hint targets/modes now reject invalid enums without mutation and preserve pending errors. C argument flags now have a bounded ordered transfer into the same context error owner. Accepted error-result publication and combined negative validation remain open; some guest paths silently return and missing-name host calls may resolve to null | encoder, decoder, query | CTS negative API; malformed TLV/span/enum tests | partial |
 | G10 | Every core function resolves; ES2 API | All 142 GLES2 core symbols are defined and resolved; native/private-Wasm audit passes. Full semantic and guest conformance remain pending | capability manifest, EGL resolver | Enumerate core header symbols, link and call; version-gated extensions | partial |
 | E01 | EGL1.5 display initialization/config selection/queries; EGL §§3.2–3.4 | Two RGBA8 configs describe ABGR8888/ARGB8888 windows; one shared attribute table drives enumeration, matching and queries; config operations validate initialization, handles and errors. Full display/config lifecycle and CTS validation remain pending; advertised 1.5 unchanged | EGL library, surface metadata | CTS query_config/choose_config/negative API | partial |
 | E02 | EGL current-thread API/context/surface lifecycle; EGL §§3.5–3.7 | Error/API/current binding are thread-local; kernel-authoritative TID ownership, acknowledged replacement, release/exit, unique C handles, context-owned encoder and deferred destruction implemented for one context/surface per backend session. ABI 56 separates revocable display-generation roots from object sessions. C generation records retain old current descriptors, mappings, encoders and imported images while a new generation initializes. Host surface records retain native draw/read targets across context destruction and owner retirement. Fresh surface IDs and acknowledged dimensions belong to the same unpublished epoch. Kernel/host cross-session draw/read selection validates process, live generation and TID, with canonical surface storage retained after owner retirement. Creation/bind failure preserves prior state. Public independent context/surface records route separate draw/read selectors. Kernel/renderer construction joins live same-generation object groups; public C construction joins the same retained owner and native group; normal upstream current/context-query cases pass both configs on windows and pbuffers across three engines; the full error/lifecycle audit remains open | EGL, GLIO, registry, encoder | CTS query_context/multi_context/thread_cleanup; destroy-current and stale handles | partial |
@@ -9348,3 +9348,72 @@ browser, memory or conformance pass. The native/forwarded owned-query bridge,
 context-owned C/host argument-error coherence and public waits remain active
 implementation work. The cage/sway landing artifacts and consumers continue
 separately from this follow-up source change.
+### Ordered client/native error flags: bounded source increment
+
+The error contract is GLES2 §2.5 in the [Khronos ES2 specification](https://registry.khronos.org/OpenGL/specs/es/2.0/es_full_spec_2.0.pdf):
+error flags are context state, ordinary argument errors leave state unchanged,
+and draining errors must retain pending flags. The C encoder previously returned
+its single local flag before submitting the earlier native prefix. Native
+actual-API controls on `a5c7c656b7` reproduce a duplicate enum flag, loss of a
+different local flag, and a queued valid clear still unsubmitted when
+`glGetError` returns. These are ordinary implementation defects.
+
+`OP_CLIENT_ERRORS` (`0x001e`, four-byte payload) transfers only the five ES2
+flags: bits 0, 1, 2, 5 and 6 represent `0x500`, `0x501`, `0x502`, `0x505` and
+`0x506`. Rust, C and TypeScript agree; the existing unpublished program 56 /
+host 3 / GL 17 / fork 21 epoch is retained. The C context keeps unacknowledged
+flags, reserves eight bytes in its normal command buffer for a bounded error
+trailer and clears transferred bits only after successful submission. Recording
+a bad argument neither allocates nor submits or queries. The decoder validates
+all masks before any batch effect, merges them into its existing per-context
+flag owner and preserves in-progress uniform-upload custody. Shared object
+membership does not share flags.
+
+`glGetError` submits preceding work first and uses a four-byte reply embedded in
+the existing heap-owned C context. It needs no error-query allocation. After a
+failed ordinary submit, the proposed query input is either empty or a four-byte
+pending mask; accepted query completion transfers that mask. The typed error
+query candidate and immediate accepted-result publication are separate required
+integration work. The old immediate `runGlQuery` ignores that mask and consumes
+before publication, so this C change alone does **not** establish combined
+transport-failure coherence. Definite error-query rejection still retains the C
+mask; its `GL_INVALID_OPERATION` diagnostic is not separately enqueued. Exact
+error consumption across rejection, lost acknowledgements, copyout failure and
+containment remains open until the combined candidate/delivery path is active
+and tested. Permanently failed transport is not declared a platform boundary.
+
+Replacing first-error suppression also exposes wrappers that used to add a
+second `GL_INVALID_OPERATION` after their own reply allocation failed. A shared
+query result now identifies requests never dispatched because allocation or
+preceding submission failed. Checked wrappers preserve the real failure and
+release undispatched image candidates without claiming unknown native effects.
+Independent argument errors remain separate flags; a failed raw-candidate cleanup
+may correctly retain both allocation and operation flags. Native assertions now
+count error-only submissions separately from actual uniform/mutation records.
+
+Declared-shell evidence in the positive-uniform checkout:
+
+- `.context/error-coherence-before-actual-api.log`: the three actual C API
+  controls fail against `a5c7c656b7` before the implementation.
+- `.context/error-coherence-native-final.log`: all 247 native library cases pass
+  under UBSan. Six new cases cover duplicate/distinct flags, earlier valid work,
+  allocation pressure, masked fallback after failed submission, and accepted /
+  rejected context switches. Existing thread transfer and owner teardown cases
+  also pass. The device double models flags and query acceptance, not guest
+  marshalling or a real driver.
+- `.context/error-coherence-source-all.log`: 880/880 graphics source cases pass
+  in 37 files with zero skips, including transparent error trailers between
+  uniform chunks, complete mask validation and shared-peer flag isolation.
+
+The evidence registry check agrees on all 637 test files. Native syntax checks
+pass for both fixture modes using only the public EGL/GLES/KHR headers; an
+initial attempt to use the entire musl overlay directly fails at its absent
+standalone `features.h` and is not SDK evidence.
+
+The normal `gles-hints` fixture now prepares the same actual public API checks
+for both widths on Node and Chromium/Firefox/WebKit, including a deleted-current
+peer and a valid preceding state command. Its existing rendered-pixel checks
+remain. No normal SDK/kernel/program/image build, guest run, browser run,
+upstream CTS, browser-memory or POSIX conformance run is claimed for this
+increment. Parent-owned atomic query integration, regenerated-output checking,
+combined builds and those validation gates remain required.

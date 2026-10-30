@@ -106,7 +106,9 @@ client uploads, sparse-index/prefix/stride guard pages, packed byte output,
 scratch allocation rollback and signed-size overflow rejection, early draw
 enum rejection and maximum byte/short indexed client streams, logical buffer
 and original client-attribute queries, unchanged query outputs on failure,
-single ownership of backend GL errors, and bound byte/short index buffers
+ordered context-owned client/backend error flags, deduplication, distinct
+flags, error drains without allocation, rejected-submit fallback and context
+switch ownership, and bound byte/short index buffers
 combined with client attributes (including failed-query cleanup/retry),
 chunked shader/attribute/list queries with zero-sized outputs, failure
 after a successful first chunk, core parameter queries and retained
@@ -133,7 +135,7 @@ The source WebGL contract suite also compiles selected current native C
 cases through this harness, captures actual submitted bytes and replays them
 through the browser decoder. Its float/fixed and maximum-index client-array cases are cross-layer
 source evidence, not guest execution or unmodified CTS. Selection uses
-`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 241 cases.
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 247 cases.
 `KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
 file for those test-only replays. Each browser test owns and removes its
 private trace directory.

@@ -29,6 +29,7 @@ it.each(["wasm32", "wasm64"] as const)("validates GLES hint state and six error 
     // Node verifies the actual linked C error paths with its existing GL
     // allocation double. Exact framebuffer pixels belong to browser cases.
     expect(result.stdout.trim().split("\n")).toEqual([
+      "OK GLES ordered error flags retain current context ownership",
       "OK GLES string-query enums and cached state",
       "OK GLES object-generation counts",
       "OK GLES uniform negative locations: 19 setters",

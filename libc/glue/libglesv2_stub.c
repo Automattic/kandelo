@@ -279,8 +279,9 @@ struct wpk_gles_context {
     GLint unpack_row_length;
     GLint unpack_skip_pixels;
     GLint unpack_skip_rows;
-    /* First client-side error, consumed before a host query. */
-    GLenum client_error;
+    /* Unacknowledged flags transfer into the same host context error owner. */
+    uint32_t client_errors;
+    uint32_t error_reply;
     GLenum generate_mipmap_hint, fragment_derivative_hint;
     uint32_t next_shader_upload;
     uint32_t next_uniform_lookup;
@@ -311,7 +312,6 @@ struct wpk_gles_context {
 #define g_unpack_row_length (_wpk_gl_current_encoder()->unpack_row_length)
 #define g_unpack_skip_pixels (_wpk_gl_current_encoder()->unpack_skip_pixels)
 #define g_unpack_skip_rows (_wpk_gl_current_encoder()->unpack_skip_rows)
-#define _wpk_gl_client_error (_wpk_gl_current_encoder()->client_error)
 #define g_array_buffer (_wpk_gl_current_encoder()->array_buffer)
 #define g_element_buffer (_wpk_gl_current_encoder()->current_vertex_array->element_buffer)
 #define g_attribs (_wpk_gl_current_encoder()->current_vertex_array->attribs)
@@ -383,16 +383,28 @@ static inline void w_f32(uint8_t **c, float v)    { memcpy(*c, &v, 4); *c += 4; 
 
 static void raise_client_error(GLenum error);
 static int flush_commands(void) {
-    if (!_wpk_gl_current_encoder()) return 0;
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    if (!state) return 0;
     int fd = _wpk_gl_fd();
     uint8_t *base = _wpk_gl_cmdbuf_base();
-    if (fd < 0 || base == NULL || g_cursor == NULL || g_cursor == base) return 0;
+    if (fd < 0 || base == NULL) return 0;
+    if (!g_cursor) g_cursor = base;
+    const uint32_t errors = state->client_errors;
+    if (g_cursor == base && !errors) return 0;
+    if (errors) {
+        /* reserve() always leaves this fixed trailer available. Error
+         * recording neither allocates nor submits at the invalid API call. */
+        uint8_t *trailer = g_cursor;
+        w_u16(&trailer, OP_CLIENT_ERRORS); w_u16(&trailer, 4); w_u32(&trailer, errors);
+        g_cursor = trailer;
+    }
 
     struct gl_submit_info si = { .offset = 0,
                                  .length = (uint32_t)(g_cursor - base) };
     int rc = ioctl(fd, GLIO_SUBMIT, &si);
     g_cursor = base;
-    if (rc != 0) {
+    if (rc == 0) state->client_errors &= ~errors;
+    else {
         raise_client_error(GL_INVALID_OPERATION);
         const uint32_t token = _wpk_gl_current_encoder()->next_uniform_upload;
         if (token) {
@@ -430,9 +442,9 @@ static uint8_t *reserve(size_t bytes) {
     uint8_t *base = _wpk_gl_cmdbuf_base();
     if (base == NULL) return NULL;
     if (g_cursor == NULL) g_cursor = base;
-    if ((size_t)(g_cursor - base) + bytes > WPK_GL_CMDBUF_LEN) {
+    if (bytes > WPK_GL_CMDBUF_LEN - 8u) return NULL;
+    if ((size_t)(g_cursor - base) + bytes > WPK_GL_CMDBUF_LEN - 8u) {
         if (flush_commands() != 0) return NULL;
-        if (bytes > WPK_GL_CMDBUF_LEN) return NULL;
     }
     return g_cursor;
 }
@@ -576,8 +588,7 @@ static GLuint next_shader_program_name(void) {
     GLuint name = 0;
     uint32_t error =
         _wpk_gl_reserve_names(_wpk_gl_current_encoder(), WPK_NAMES_SHADER_PROGRAM, 1, &name);
-    if (error && _wpk_gl_client_error == GL_NO_ERROR)
-        _wpk_gl_client_error = error;
+    if (error) raise_client_error(error);
     return name;
 }
 void glGenBuffers(GLsizei n, GLuint *out) {
@@ -585,8 +596,7 @@ void glGenBuffers(GLsizei n, GLuint *out) {
         return;
     uint32_t error = _wpk_gl_reserve_names(_wpk_gl_current_encoder(), WPK_NAMES_BUFFER, n, out);
     if (error) {
-        if (_wpk_gl_client_error == GL_NO_ERROR)
-            _wpk_gl_client_error = error;
+        raise_client_error(error);
         return;
     }
     if (n > 0 && out)
@@ -599,7 +609,7 @@ void glGenBuffers(GLsizei n, GLuint *out) {
 void glBindBuffer(GLenum target, GLuint buf) {
     if (!_wpk_gl_current_encoder()) return;
     if (target != GL_ARRAY_BUFFER && target != GL_ELEMENT_ARRAY_BUFFER) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM;
+        raise_client_error(GL_INVALID_ENUM);
         return;
     }
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
@@ -607,8 +617,7 @@ void glBindBuffer(GLenum target, GLuint buf) {
     struct wpk_object_name *object =
         buf ? object_acquire(state->objects, WPK_NAMES_BUFFER, buf) : NULL;
     if (buf && !object) {
-        if (_wpk_gl_client_error == GL_NO_ERROR)
-            _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+        raise_client_error(GL_OUT_OF_MEMORY);
         return;
     }
     uint32_t words[2] = {target, buf};
@@ -634,13 +643,13 @@ void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size,
                      const void *data) {
     if (!_wpk_gl_current_encoder()) return;
     if (target != GL_ARRAY_BUFFER && target != GL_ELEMENT_ARRAY_BUFFER) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM; return;
+        raise_client_error(GL_INVALID_ENUM); return;
     }
     if (size < 0 || offset < 0 || (uint64_t)offset+(uint64_t)size > INT32_MAX) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE; return;
+        raise_client_error(GL_INVALID_VALUE); return;
     }
     if (!(target == GL_ARRAY_BUFFER ? g_array_buffer : g_element_buffer)) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_OPERATION; return;
+        raise_client_error(GL_INVALID_OPERATION); return;
     }
     if (size == 0) {
         EMIT_BEGIN(OP_BUFFER_SUB_DATA,12u)
@@ -648,7 +657,7 @@ void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size,
         EMIT_END()
         return;
     }
-    if (!data) { if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE; return; }
+    if (!data) { raise_client_error(GL_INVALID_VALUE); return; }
     /* Payload: u32 target, i32 dstOffset, u32 dataLen, u8 data[dataLen].
      * The TLV payload-length field is u16, so larger updates split into
      * consecutive records with the destination offset advanced. */
@@ -675,13 +684,13 @@ void glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage
     if (!_wpk_gl_current_encoder()) return;
     if ((target != GL_ARRAY_BUFFER && target != GL_ELEMENT_ARRAY_BUFFER)
         || (usage != GL_STATIC_DRAW && usage != GL_STREAM_DRAW && usage != GL_DYNAMIC_DRAW)) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM; return;
+        raise_client_error(GL_INVALID_ENUM); return;
     }
     if (size < 0 || (uint64_t)size > INT32_MAX) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE; return;
+        raise_client_error(GL_INVALID_VALUE); return;
     }
     if (!(target == GL_ARRAY_BUFFER ? g_array_buffer : g_element_buffer)) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_OPERATION; return;
+        raise_client_error(GL_INVALID_OPERATION); return;
     }
     /* With data: u32 target, u32 dataLen, u8 data[dataLen], u32 usage.
      * Without data: u32 target, u32 byteLength, u32 usage. */
@@ -715,7 +724,7 @@ void glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage
 GLuint glCreateShader(GLenum type) {
     if (!_wpk_gl_current_encoder()) return 0;
     if (type != GL_VERTEX_SHADER && type != GL_FRAGMENT_SHADER) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM;
+        raise_client_error(GL_INVALID_ENUM);
         return 0;
     }
     uint8_t *_c = reserve(4u + 8u);
@@ -734,7 +743,7 @@ static void upload_shader_source(GLuint, GLsizei, const GLchar *const *, const G
 void glShaderSource(GLuint shader, GLsizei count,
                     const GLchar *const *string, const GLint *length) {
     if (!_wpk_gl_current_encoder()) return;
-    if (count < 0) { if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE; return; }
+    if (count < 0) { raise_client_error(GL_INVALID_VALUE); return; }
     if (count && !string) return;
     /* Concatenate all source strings (length[i] < 0 → strlen) and emit
      * one OP_SHADER_SOURCE with the combined UTF-8 blob. */
@@ -866,30 +875,29 @@ void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
     if (!_wpk_gl_current_encoder()) return;
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
     if (!attrib_type_size(type)) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM;
+        raise_client_error(GL_INVALID_ENUM);
         return;
     }
     if (size < 1 || size > 4 || stride < 0) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
+        raise_client_error(GL_INVALID_VALUE);
         return;
     }
     if (index >= WPK_GL_MAX_ATTRIBS) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
+        raise_client_error(GL_INVALID_VALUE);
         return;
     }
     if (g_array_buffer && ((uintptr_t)pointer % attrib_type_size(type) || (uint32_t)stride % attrib_type_size(type))) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_OPERATION;
+        raise_client_error(GL_INVALID_OPERATION);
         return;
     }
     if (state->current_vertex_array->name && g_array_buffer == 0 && pointer != NULL) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_OPERATION;
+        raise_client_error(GL_INVALID_OPERATION);
         return;
     }
     if (index < WPK_GL_MAX_ATTRIBS) {
         struct wpk_client_attrib *a = &g_attribs[index];
         if (!object_reference(state->objects, state->array_object)) {
-            if (_wpk_gl_client_error == GL_NO_ERROR)
-                _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+            raise_client_error(GL_OUT_OF_MEMORY);
             return;
         }
         object_release(state->objects, a->buffer_object);
@@ -996,7 +1004,7 @@ static int stage_client_attribs(GLint first, GLsizei count, GLuint *names,
         if (!a->client || !a->enabled) continue;
         uint32_t tsize = attrib_type_size(a->type);
         if (tsize == 0 || a->size < 1 || a->size > 4 || a->pointer == NULL) {
-            if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_OPERATION;
+            raise_client_error(GL_INVALID_OPERATION);
             goto failed;
         }
         uint32_t elem = tsize * (uint32_t)a->size;
@@ -1004,13 +1012,13 @@ static int stage_client_attribs(GLint first, GLsizei count, GLuint *names,
         uint64_t end = (uint64_t)(uint32_t)first + (uint32_t)count;
         uint64_t len = end * elem;
         if (len > INT32_MAX) {
-            if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+            raise_client_error(GL_OUT_OF_MEMORY);
             goto failed;
         }
         /* Every chunk contains whole elements and fits one TLV payload. */
         uint32_t per_chunk = 65520u / elem;
         if (stride != elem && !scratch && !(scratch = malloc(65520u))) {
-            if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+            raise_client_error(GL_OUT_OF_MEMORY);
             goto failed;
         }
         if (!capture->active && !begin_array_capture(capture))
@@ -1030,7 +1038,7 @@ static int stage_client_attribs(GLint first, GLsizei count, GLuint *names,
             uint64_t source_offset = (uint64_t)vertex*stride;
             uint64_t source_end = source_offset+(uint64_t)(run-1)*stride+elem;
             if (source_end > UINTPTR_MAX || (uintptr_t)a->pointer > UINTPTR_MAX-(uintptr_t)source_end) {
-                if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+                raise_client_error(GL_OUT_OF_MEMORY);
                 goto failed;
             }
             const uint8_t *source = (const uint8_t *)((uintptr_t)a->pointer+(uintptr_t)source_offset);
@@ -1058,11 +1066,11 @@ failed:
 void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     if (!_wpk_gl_current_encoder()) return;
     if (mode > GL_TRIANGLE_FAN) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM;
+        raise_client_error(GL_INVALID_ENUM);
         return;
     }
     if (first < 0 || count < 0) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
+        raise_client_error(GL_INVALID_VALUE);
         return;
     }
     GLuint staged[WPK_GL_MAX_ATTRIBS];
@@ -1091,15 +1099,19 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
  * forwarding heuristic suppresses the cross-thread invalidation, so a
  * tiny heap round-trip + memcpy into the caller's destination is the
  * only pattern observed to work in practice. */
+/* Pre-dispatch failures already own their precise error. Wrappers must not
+ * turn an allocation failure into an additional INVALID_OPERATION flag or
+ * quarantine a native candidate which was never submitted. */
+enum { WPK_GL_QUERY_NOT_DISPATCHED = -2 };
 static int _wpk_gl_query_into(uint32_t op,
                               const void *in, uint32_t in_len,
                               void *dst, uint32_t dst_len) {
     if (_wpk_gl_cmdbuf_base() == NULL) return -1;
     int fd = _wpk_gl_fd();
     if (fd < 0) return -1;
-    if (flush_commands() != 0) return -1;
+    if (flush_commands() != 0) return WPK_GL_QUERY_NOT_DISPATCHED;
     void *heap = malloc(dst_len ? dst_len : 1);
-    if (!heap) { if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY; return -1; }
+    if (!heap) { raise_client_error(GL_OUT_OF_MEMORY); return WPK_GL_QUERY_NOT_DISPATCHED; }
     if (dst_len) memset(heap, 0, dst_len);
     struct gl_query_info qi = {
         .op = op,
@@ -1176,18 +1188,21 @@ abort:
 }
 
 GLenum glGetError(void) {
-    if (!_wpk_gl_current_encoder()) return 0;
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    if (!state) return GL_NO_ERROR;
     if (_wpk_gl_cmdbuf_base() == NULL) return GL_NO_ERROR;
-    if (_wpk_gl_client_error != GL_NO_ERROR) {
-        GLenum e = _wpk_gl_client_error;
-        _wpk_gl_client_error = GL_NO_ERROR;
-        return e;
-    }
-    uint32_t out = 0;
-    if (_wpk_gl_query_into(QOP_GET_ERROR, NULL, 0, &out, 4) != 0) {
-        GLenum error = _wpk_gl_client_error; _wpk_gl_client_error = GL_NO_ERROR; return error;
-    }
-    return (GLenum)out;
+    (void)flush_commands();
+    const uint32_t errors = state->client_errors;
+    /* The context itself is heap-owned. This fixed reply avoids allocating
+     * while draining OUT_OF_MEMORY and remains pinned by current ownership. */
+    state->error_reply = GL_NO_ERROR;
+    struct gl_query_info info = {.op = QOP_GET_ERROR,
+        .in_buf_ptr = errors ? (uintptr_t)&state->client_errors : 0,
+        .in_buf_len = errors ? 4 : 0,
+        .out_buf_ptr = (uintptr_t)&state->error_reply, .out_buf_len = 4};
+    if (ioctl(_wpk_gl_fd(),GLIO_QUERY,&info) != 0) return GL_INVALID_OPERATION;
+    state->client_errors &= ~errors;
+    return state->error_reply;
 }
 
 /* glFinish blocks until every earlier command has completed. Commands reach
@@ -1218,7 +1233,7 @@ void glShaderBinary(GLsizei count, const GLuint *shaders, GLenum binaryformat,
                     const void *binary, GLsizei length) {
     if (!_wpk_gl_current_encoder()) return;
     (void)count; (void)shaders; (void)binaryformat; (void)binary; (void)length;
-    if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM;
+    raise_client_error(GL_INVALID_ENUM);
 }
 
 GLint glGetAttribLocation(GLuint program, const GLchar *name) {
@@ -1242,8 +1257,7 @@ void glGenTextures(GLsizei n, GLuint *out) {
     if (!_wpk_gl_current_encoder()) return;
     uint32_t error = _wpk_gl_reserve_names(_wpk_gl_current_encoder(), WPK_NAMES_TEXTURE, n, out);
     if (error) {
-        if (_wpk_gl_client_error == GL_NO_ERROR)
-            _wpk_gl_client_error = error;
+        raise_client_error(error);
         return;
     }
     if (n > 0 && out)
@@ -1277,8 +1291,14 @@ static int publish_object_image(struct wpk_object_group *group, struct wpk_objec
     return current;
 }
 
+static void record_client_error(struct wpk_gles_context *state, GLenum error) {
+    if (state && (error == GL_INVALID_ENUM || error == GL_INVALID_VALUE ||
+                  error == GL_INVALID_OPERATION || error == GL_OUT_OF_MEMORY ||
+                  error == GL_INVALID_FRAMEBUFFER_OPERATION))
+        state->client_errors |= 1u << (error - GL_INVALID_ENUM);
+}
 static void raise_client_error(GLenum error) {
-    if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = error;
+    record_client_error(_wpk_gl_current_encoder(),error);
 }
 
 /* A framebuffer attachment retains its object storage after the object name
@@ -1297,6 +1317,7 @@ static int checked_mutation_query(uint32_t op, const uint32_t *words, uint32_t c
     uint32_t reply[3] = {0};
     int rc = _wpk_gl_query_into(op, input, count * sizeof *input, reply, sizeof reply);
     free(input);
+    if (rc == WPK_GL_QUERY_NOT_DISPATCHED) return 0;
     if (!rc && reply[2] == WPK_GL_QUERY_REPLY_MAGIC) {
         if (reply[0] == 1)
             return 0;
@@ -1488,8 +1509,8 @@ uint32_t _wpk_gl_register_external_texture(struct wpk_gles_context *state, uint3
         group->names = object;
     }
     pthread_mutex_unlock(&group->mutex);
-    if (error == GL_OUT_OF_MEMORY && state->client_error == GL_NO_ERROR)
-        state->client_error = error;
+    if (error == GL_OUT_OF_MEMORY)
+        record_client_error(state,error);
     return error;
 }
 /* Raw WPK views can be revoked by their BO owner outside the C command
@@ -1578,6 +1599,12 @@ static int import_image_object(uint32_t kind, struct wpk_object_name *object, GL
     uint32_t reply[4] = {0};
     int rc = _wpk_gl_query_into(QOP_BOUND_IMAGE_TARGET, input, 12, reply, 16);
     free(input);
+    if (rc == WPK_GL_QUERY_NOT_DISPATCHED) {
+        _wpk_egl_image_release(image);
+        object_release(group, object);
+        free(pending);
+        return 0;
+    }
     if (!rc && reply[3] == WPK_GL_QUERY_REPLY_MAGIC && reply[0] == 0 && reply[1] == source &&
         reply[2] != 0) {
         (void)publish_object_image(group, object, image, source, reply[2]);
@@ -1749,8 +1776,9 @@ void glActiveTexture(GLenum unit) {
     if (!state->texture_unit_limit) {
         GLint limit = 0;
         uint32_t pname = GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS;
-        if (_wpk_gl_query_into(QOP_GET_INTEGERV, &pname, 4, &limit, 4) != 0) {
-            raise_client_error(GL_INVALID_OPERATION);
+        const int rc = _wpk_gl_query_into(QOP_GET_INTEGERV, &pname, 4, &limit, 4);
+        if (rc != 0) {
+            if (rc != WPK_GL_QUERY_NOT_DISPATCHED) raise_client_error(GL_INVALID_OPERATION);
             return;
         }
         if (limit <= 0) {
@@ -1979,8 +2007,7 @@ void glPixelStorei(GLenum pname, GLint param) {
 void glDeleteBuffers(GLsizei n, const GLuint *names) {
     if (!_wpk_gl_current_encoder()) return;
     if (n < 0) {
-        if (_wpk_gl_client_error == GL_NO_ERROR)
-            _wpk_gl_client_error = GL_INVALID_VALUE;
+        raise_client_error(GL_INVALID_VALUE);
         return;
     }
     if (!n || !names)
@@ -2793,7 +2820,7 @@ void glGetBooleanv(GLenum pname, GLboolean *data) {
     GLfloat small[4];
     GLfloat *values = count <= 4 ? small : malloc((size_t)count * sizeof *values);
     if (!values) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+        raise_client_error(GL_OUT_OF_MEMORY);
         return;
     }
     /* Boolean conversion tests the original value against zero. Integer
@@ -3086,8 +3113,7 @@ void glGenRenderbuffers(GLsizei n, GLuint *out) {
     uint32_t error =
         _wpk_gl_reserve_names(_wpk_gl_current_encoder(), WPK_NAMES_RENDERBUFFER, n, out);
     if (error) {
-        if (_wpk_gl_client_error == GL_NO_ERROR)
-            _wpk_gl_client_error = error;
+        raise_client_error(error);
         return;
     }
     if (n > 0 && out)
@@ -3266,7 +3292,7 @@ void glDrawBuffer(GLenum buf) {
 void glDrawBuffers(GLsizei n, const GLenum *bufs) {
     if (!_wpk_gl_current_encoder()) return;
     if (n < 0 || n > WPK_GL_NAMES_PER_RECORD) {
-        _wpk_gl_client_error = GL_INVALID_VALUE;
+        raise_client_error(GL_INVALID_VALUE);
         return;
     }
     if (n > 0 && !bufs) return;
@@ -3286,12 +3312,12 @@ void glReadBuffer(GLenum src) {
 void glGenVertexArrays(GLsizei n, GLuint *out) {
     if (!_wpk_gl_current_encoder()) return;
     if (n < 0) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
+        raise_client_error(GL_INVALID_VALUE);
         return;
     }
     if (n <= 0 || !out) return;
     if (g_next_vertex_array == 0 || (uint64_t)(uint32_t)n > (uint64_t)UINT32_MAX-g_next_vertex_array+1) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+        raise_client_error(GL_OUT_OF_MEMORY);
         return;
     }
     struct wpk_vertex_array *pending = NULL;
@@ -3299,7 +3325,7 @@ void glGenVertexArrays(GLsizei n, GLuint *out) {
         struct wpk_vertex_array *entry = calloc(1,sizeof *entry);
         if (!entry) {
             while (pending) { entry = pending; pending = entry->next; free(entry); }
-            if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+            raise_client_error(GL_OUT_OF_MEMORY);
             return;
         }
         entry->name = g_next_vertex_array+(GLuint)i;
@@ -3318,7 +3344,7 @@ void glGenVertexArrays(GLsizei n, GLuint *out) {
 void glDeleteVertexArrays(GLsizei n, const GLuint *names) {
     if (!_wpk_gl_current_encoder()) return;
     if (n < 0) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
+        raise_client_error(GL_INVALID_VALUE);
         return;
     }
     if (n <= 0 || !names) return;
@@ -3341,7 +3367,7 @@ void glBindVertexArray(GLuint array) {
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
     struct wpk_vertex_array *entry = array ? state->vertex_arrays : &state->default_vertex_array;
     while (entry && entry->name != array) entry = entry->next;
-    if (!entry) { if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_OPERATION; return; }
+    if (!entry) { raise_client_error(GL_INVALID_OPERATION); return; }
     state->current_vertex_array = entry;
     EMIT_BEGIN(OP_BIND_VERTEX_ARRAY, 4)
     w_u32(&_c, array);
@@ -3382,11 +3408,11 @@ void glFlush(void) {
 void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices) {
     if (!_wpk_gl_current_encoder()) return;
     if (mode > GL_TRIANGLE_FAN || (type != GL_UNSIGNED_BYTE && type != GL_UNSIGNED_SHORT)) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM;
+        raise_client_error(GL_INVALID_ENUM);
         return;
     }
     if (count < 0) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
+        raise_client_error(GL_INVALID_VALUE);
         return;
     }
     if (count <= 0) return;
@@ -3402,12 +3428,13 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices
     if (has_client && app_element_buffer != 0) {
         index_reply = malloc(WPK_GL_INDEX_REPLY_LEN);
         if (!index_reply) {
-            if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+            raise_client_error(GL_OUT_OF_MEMORY);
             return;
         }
         uint32_t input[3] = {type,(uint32_t)(uintptr_t)indices,(uint32_t)count};
-        if (_wpk_gl_query_into(QOP_GET_INDEX_USAGE,input,sizeof input,index_reply,WPK_GL_INDEX_REPLY_LEN) != 0) {
-            if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_OPERATION;
+        const int rc = _wpk_gl_query_into(QOP_GET_INDEX_USAGE,input,sizeof input,index_reply,WPK_GL_INDEX_REPLY_LEN);
+        if (rc != 0) {
+            if (rc != WPK_GL_QUERY_NOT_DISPATCHED) raise_client_error(GL_INVALID_OPERATION);
             free(index_reply); return;
         }
         uint32_t status, footer; memcpy(&status,index_reply,4); memcpy(&max_index,index_reply+4,4); memcpy(&footer,index_reply+WPK_GL_INDEX_REPLY_LEN-4,4);
@@ -3415,16 +3442,16 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices
         if (footer == WPK_GL_QUERY_REPLY_MAGIC && status == 1) { free(index_reply); return; }
         if (footer != WPK_GL_QUERY_REPLY_MAGIC || status > 1 || max_index > (type == GL_UNSIGNED_BYTE ? 255u : 65535u)
             || !(used[max_index>>3] & (1u << (max_index&7)))) {
-            if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_OPERATION;
+            raise_client_error(GL_INVALID_OPERATION);
             free(index_reply); return;
         }
     }
     if (app_element_buffer == 0) {
-        if (!indices) { _wpk_gl_client_error = GL_INVALID_VALUE; return; }
+        if (!indices) { raise_client_error(GL_INVALID_VALUE); return; }
         uint32_t index_size = type == GL_UNSIGNED_BYTE ? 1u : type == GL_UNSIGNED_SHORT ? 2u : 0u;
-        if (!index_size) { _wpk_gl_client_error = GL_INVALID_ENUM; return; }
+        if (!index_size) { raise_client_error(GL_INVALID_ENUM); return; }
         if ((uint64_t)(uint32_t)count*index_size > INT32_MAX) {
-            if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+            raise_client_error(GL_OUT_OF_MEMORY);
             return;
         }
         for (GLsizei i = 0; i < count; i++) {
@@ -3436,7 +3463,7 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices
         if (has_client) {
             used = calloc(((size_t)max_index+8)/8,1);
             if (!used) {
-                if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+                raise_client_error(GL_OUT_OF_MEMORY);
                 return;
             }
             for (GLsizei i=0; i<count; i++) {
@@ -3476,7 +3503,9 @@ done:
  * queries use the original VAO definition, never private staging buffers. */
 static int checked_query_reply(uint32_t op, const void *input, uint32_t input_len,
                                uint8_t *reply, uint32_t payload) {
-    if (_wpk_gl_query_into(op,input,input_len,reply,payload+8) != 0) goto invalid;
+    const int rc = _wpk_gl_query_into(op,input,input_len,reply,payload+8);
+    if (rc == WPK_GL_QUERY_NOT_DISPATCHED) return 0;
+    if (rc != 0) goto invalid;
     uint32_t status, footer;
     memcpy(&status,reply,4); memcpy(&footer,reply+payload+4,4);
     if (status > 1 || footer != WPK_GL_QUERY_REPLY_MAGIC) goto invalid;
@@ -3494,14 +3523,14 @@ void glGetBufferParameteriv(GLenum target, GLenum pname, GLint *params) {
     if (!_wpk_gl_current_encoder()) return;
     if (!params) return;
     if ((target != GL_ARRAY_BUFFER && target != GL_ELEMENT_ARRAY_BUFFER) || (pname != GL_BUFFER_SIZE && pname != GL_BUFFER_USAGE)) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM; return;
+        raise_client_error(GL_INVALID_ENUM); return;
     }
     uint32_t input[2] = {target,pname}; GLint value;
     if (checked_client_query(QOP_GET_BUFFER_PARAMETER,input,sizeof input,&value,sizeof value)) *params = value;
 }
 static int client_vertex_scalar(GLuint index, GLenum pname, GLuint *value) {
     if (index >= WPK_GL_MAX_ATTRIBS) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE; return 0;
+        raise_client_error(GL_INVALID_VALUE); return 0;
     }
     struct wpk_client_attrib *a = &g_attribs[index];
     switch (pname) {
@@ -3511,7 +3540,7 @@ static int client_vertex_scalar(GLuint index, GLenum pname, GLuint *value) {
         case GL_VERTEX_ATTRIB_ARRAY_TYPE: *value = a->type; return 1;
         case GL_VERTEX_ATTRIB_ARRAY_NORMALIZED: *value = a->normalized != 0; return 1;
         case GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING: *value = a->buffer_name; return 1;
-        default: if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM; return 0;
+        default: raise_client_error(GL_INVALID_ENUM); return 0;
     }
 }
 void glGetVertexAttribiv(GLuint index, GLenum pname, GLint *params) {
@@ -3534,10 +3563,10 @@ void glGetVertexAttribPointerv(GLuint index, GLenum pname, void **pointer) {
     if (!_wpk_gl_current_encoder()) return;
     if (!pointer) return;
     if (index >= WPK_GL_MAX_ATTRIBS) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE; return;
+        raise_client_error(GL_INVALID_VALUE); return;
     }
     if (pname != GL_VERTEX_ATTRIB_ARRAY_POINTER) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM; return;
+        raise_client_error(GL_INVALID_ENUM); return;
     }
     *pointer = (void *)g_attribs[index].pointer;
 }
@@ -3569,7 +3598,7 @@ GLboolean glIsEnabled(GLenum cap) {
     switch (cap) {
         case GL_BLEND: case GL_CULL_FACE: case GL_DEPTH_TEST: case GL_DITHER: case GL_POLYGON_OFFSET_FILL:
         case GL_SAMPLE_ALPHA_TO_COVERAGE: case GL_SAMPLE_COVERAGE: case GL_SCISSOR_TEST: case GL_STENCIL_TEST: break;
-        default: if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM; return GL_FALSE;
+        default: raise_client_error(GL_INVALID_ENUM); return GL_FALSE;
     }
     uint32_t value = 0, input = cap;
     if (!checked_client_query(QOP_IS_ENABLED,&input,sizeof input,&value,sizeof value)) return GL_FALSE;
