@@ -150,7 +150,7 @@ fn validate_begin(b: &Begin) -> Result<()> {
         || b.capacity > gl::MAX_QUERY_OUT_LEN
         || b.input.len() > gl::MAX_QUERY_IN_LEN as usize
         || b.context == Some(0)
-        || (!b.has_current && (b.context.is_some() || b.draw != 0 || b.read != 0))
+        || (!b.has_current && (b.draw != 0 || b.read != 0))
         || (b.has_current && b.context.is_none())
     {
         return Err(CodecError::Malformed);
@@ -409,6 +409,12 @@ mod tests {
                     );
                     assert_eq!(b.input, [0xde, 0xad]);
                 }
+                if fields[0] == "begin-source-with-context" {
+                    let b = request.begin.as_ref().unwrap();
+                    assert!(!b.has_current);
+                    assert_eq!((b.op, b.context, b.draw, b.read), (47, Some(7), 0, 0));
+                    assert_eq!(b.input, 7u32.to_le_bytes());
+                }
                 assert_eq!(encode_request(&request).unwrap(), bytes);
             } else {
                 let mode: u32 = fields[5].parse().unwrap();
@@ -436,7 +442,7 @@ mod tests {
             }
             count += 1;
         }
-        assert_eq!(count, 14);
+        assert_eq!(count, 15);
     }
     fn request() -> Request {
         Request {
@@ -467,7 +473,6 @@ mod tests {
             (20, 3),
             (24, 65537),
             (28, 4),
-            (28, 2),
             (28, 1),
             (32, 0),
             (44, 1),
@@ -486,6 +491,11 @@ mod tests {
         for len in 0..48 {
             assert!(decode_request(&original[..len]).is_err());
         }
+        let mut stray_surface = original.clone();
+        put(&mut stray_surface, 28, 2);
+        put(&mut stray_surface, 36, 1);
+        assert!(decode_request(&stray_surface).is_err());
+
         let mut trailing = original.clone();
         trailing.push(0);
         assert!(decode_request(&trailing).is_err());

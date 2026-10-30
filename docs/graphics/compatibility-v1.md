@@ -9417,3 +9417,42 @@ remain. No normal SDK/kernel/program/image build, guest run, browser run,
 upstream CTS, browser-memory or POSIX conformance run is claimed for this
 increment. Parent-owned atomic query integration, regenerated-output checking,
 combined builds and those validation gates remain required.
+### Internal Rust retained-query engine (2026-10-29)
+
+An internal engine now advances captured queries through Begin/Poll,
+copyout once, Commit or Cancel, authenticated Retired, and one best-effort
+Forget. It uses the frozen first input/capacity/output address and exact
+process, thread, OFD and session. Ready freshly probes the original full
+capacity. Output faults or negative results request Cancel and retain the
+pin until positive retirement; uncertain Begin, malformed replies, unknown
+records, late tokens and failed cleanup never grant release authority.
+Cancellation after copyout preserves Commit. A lost Forget can leave bounded
+proven-clean host metadata; the prior exact Retired ACK already proves native
+cleanup, and owner teardown must clear terminal metadata with ForgetOwner.
+
+`step_retained_gl_query` returns typed internal progress, and
+`preflight_gl_query_teardown` advances cleanup without consuming owners.
+Generic release, exec and thread cleanup keep pending receipts and OFD pins;
+HostIO-free process removal refuses before removing the process. The legacy
+void exit path explicitly fails closed before mutation if its caller bypasses
+non-ready preflight. Kernel exit scheduling must use the typed preflight before
+production activation. No cleanup-transfer receiver or Detach is invented.
+
+Source fence status/release retain source-session authority after context and
+display retirement; ordinary queries still require their exact current thread.
+A captured context may exist without a current binding (HAS_CONTEXT alone,
+zero draw/read). HAS_CURRENT comes from captured current selection, including
+surfaceless zero identities, and still requires a context. The shared codec
+vectors now include this fifteenth case; the host codec correction is a
+coordinated follow-up lane.
+
+Focused declared-shell validation passes 79 Rust cases across the engine,
+codec/request, immediate query, fence, retry registry and process-table groups,
+and the Wasm32 runtime-core compile check. VMA evidence is
+`.context/retained-query-{engine-final,receipt-regression,immediate,fence,registry,process-table}.log`
+and `.context/retained-query-wasm-check.log`. The first compile's probe-result
+type mismatch was corrected before these passing runs. No public pending
+branch, syscall72 mapping, sentinel interpretation, host import, ABI epoch or
+public server wait is enabled. Actual native/forwarded/worker integration,
+forced teardown ownership, normal combined artifacts, full Rust/ABI gates,
+real browser delivery, browser-memory and conformance remain required.

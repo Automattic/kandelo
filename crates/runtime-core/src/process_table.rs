@@ -740,6 +740,11 @@ impl ProcessTable {
         if pid == SYNTHETIC_INIT_PID {
             return None;
         }
+        if self.processes.get(&pid)?.blocked_retries.has_external_query_receipts() {
+            // No HostIO exists here. Keep the actual process/OFD/receipt owner
+            // until host-aware preflight proves retirement; IDs are not custody.
+            return None;
+        }
         let mut proc = self.processes.remove(&pid)?;
         crate::wait_park::retire_process(pid);
         // A waiter on this child may now have no matching child (ECHILD).
