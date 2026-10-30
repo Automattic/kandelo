@@ -10223,3 +10223,57 @@ build-std=core,alloc` also passes. Logs:
 full Rust/ABI gates, browser-memory, conformance and real compositor/browser
 validation are not claimed by this focused batch; the parent integration
 owns those checks. Program 56 / host 3 / GL 17 / fork 21 remain fixed.
+
+
+### Combined owned-forward and lifecycle foundation (2026-10-30)
+
+The follow-up foundation from `767b37a63b` now includes the compositor
+landing through `e570722d11`, preserving its cursor/GETFB ownership and
+regenerated cursor ABI outputs. Merge `3587825679` preserves both histories;
+`ee107be5c5` preserves the attributed `eb5fff213b` owned-forward change, and
+`f263a87f08` preserves `af22b40812` with both evidence sections retained.
+No baseline source file or named lifecycle/request/receipt control was
+removed. Program 56 / host 3 / GL 17 / fork 21 remain fixed; cursor snapshot
+and generated outputs are byte-identical to the landing checkpoint.
+
+The private kernel query-control route can use an explicitly associated
+owned forward endpoint. It retains first-input bytes and exact source/order
+before actual renderer admission, then keeps native custody and uncertain
+sends until authenticated cleanup acknowledgements. Typed scalar retirement
+and endpoint closure preserve real receiver authority; successful posting,
+void callbacks, timeout or Unknown are never physical-cleanup proof.
+The existing synchronous thread-exit export now uses the retained actual
+kernel effects receiver for its clear-child-TID store/wake. Public pending
+queries, generic EAGAIN conversion and EGL server waits remain disabled.
+
+Focused combined declared-shell evidence in the isolated
+`.context/graphics-next-foundation` checkout:
+
+| Check | Result | Private log |
+| --- | --- | --- |
+| Graphics source gate | 1020 passed, 43 files, no skips | `foundation-graphics.log` |
+| Strict forwarding dependency types | passed | `foundation-forward-types.log` |
+| Canonical host JavaScript/declarations | passed | `foundation-host-build.log` |
+| Evidence registry | 643 files agree | `foundation-evidence-registry.log` |
+| Kernel lifecycle/source and pointer contracts | 45 + 4 passed | `foundation-kernel-native.log` |
+| Actual kernel Wasm32 check | passed | `foundation-kernel-wasm.log` |
+| Query codec/receipt, retained engine and public preflight | 9 + 8 + 11 passed | `foundation-query-rust.log`, `foundation-retained-query-rust.log`, `foundation-glio-query-rust.log` |
+| KMS ownership and fork/spawn framebuffer references | 43 + 1 + 1 passed | `foundation-kms-rust.log`, `foundation-kms-fork.log`, `foundation-kms-spawn.log` |
+| Shared DRM layout/number and ioctl contracts | 10 + 13 passed | `foundation-dri-contract.log`, `foundation-ioctl-contract.log` |
+
+These are 145 scoped Rust checks, not the whole Rust suite. Wasm checking
+compiles the actual changed export wrapper; no normal kernel artifact or
+full ABI snapshot producer was built by this source batch. Existing cursor
+ABI outputs were preserved, not regenerated from an unrelated artifact.
+
+Ordinary implementation work remains: actual worker intent scheduling and
+query wake integration, process-lifecycle physical retirement receivers,
+accepted-query/fatal-containment ownership, queued outbound command admission
+instead of bounded zero-effect refusal, broader typed publication candidates,
+coherent public owned-query activation and real EGL server waits. Native
+raw-default retention and the other inventory gaps remain open. None is
+claimed as a platform boundary or silently completed by this integration.
+Normal SDK/kernel/program/image builds, Node/browser consumer rendering,
+browser-memory, upstream CTS breadth and required POSIX conformance remain
+separate combined-implementation gates. No products, application browsers,
+full workspace Rust suite or memory-writer job ran in this batch.
