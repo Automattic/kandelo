@@ -41,6 +41,7 @@ pub fn try_set_master(pid: i32, ofd_id: OfdId) -> Result<bool, Errno> {
 pub fn drop_master(ofd_id: OfdId) -> Option<MasterHolder> {
     with_master(|master| match *master {
         Some(holder) if holder.ofd_id == ofd_id => {
+            super::kms::clear_cursor_plane(holder.lease_id);
             master.take()
         }
         _ => None,
