@@ -160,3 +160,40 @@ it("keeps GPU cursor readback failures visible and restores the selected peer", 
   expect(hasNativeRepair(r.gl)).toBe(false);
   expect(r.state).toEqual(r.initial);
 });
+
+it("reuses an accepted cursor record's GPU sample while later observations see live writes and loss", () => {
+  const r = renderer();
+  const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  const kernel = createWasmPosixKernelTestHarness({io: {} as any, callbacks: {}, memory,
+    pointerWidth: 4, instance: createKernelScratchTestInstance(4, memory, () => ({}), () => 4096)});
+  kernel.gl.createGpuBo(42, r.gl, 2, 2);
+  kernel.kms.setMaster(100, 1n, 1n);
+  const record = (lease: bigint, x: number) => {
+    const bytes = new Uint8Array(40), view = new DataView(bytes.buffer);
+    view.setBigUint64(0, lease, true);
+    [42, 2, 2, x, 4, 0, 0].forEach((word, i) => view.setUint32(8 + i * 4, word, true));
+    return bytes;
+  };
+  const reads = () => r.calls.filter(call => call[0] === "readPixels").length;
+  const first = kernel.kms.applyCursorRecord(record(1n, 1)) ?? kernel.kms.cursorSnapshot();
+  expect(reads()).toBe(1);
+  expect(first.pixels!.slice(0, 4)).toEqual(new Uint8ClampedArray([255, 0, 0, 255]));
+  r.setPixels([0, 255, 0, 255]);
+  const moved = kernel.kms.applyCursorRecord(record(1n, 9)) ?? kernel.kms.cursorSnapshot();
+  expect(reads()).toBe(2);
+  expect(moved.x).toBe(9);
+  expect(moved.pixels!.slice(0, 4)).toEqual(new Uint8ClampedArray([0, 255, 0, 255]));
+  expect(first.pixels![0]).toBe(255);
+  // No new ioctl/record: observe the native BO again, including context loss.
+  r.setPixels([0, 0, 255, 255]);
+  expect(kernel.kms.cursorSnapshot().pixels!.slice(0, 4)).toEqual(new Uint8ClampedArray([0, 0, 255, 255]));
+  expect(reads()).toBe(3);
+  r.loseContext();
+  expect(kernel.kms.cursorSnapshot().pixels).toBeNull();
+  expect(reads()).toBe(3);
+  kernel.kms.dropMaster(1n, 1n);
+  const retired = kernel.kms.applyCursorRecord(record(1n, 22)) ?? kernel.kms.cursorSnapshot();
+  expect(retired.pixels).toBeNull();
+  expect(reads()).toBe(3);
+  expect(r.state).toEqual(r.initial);
+});

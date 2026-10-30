@@ -9301,3 +9301,30 @@ Exact evidence: job `sfwbar-ports-be9-v5-1030-095715-98f8` (exit 1;
 `scumm-observe-be9-v4-1030-102921-6f8a` (exit 0, diagnostic only).
 No new working SFWBar preview, three-engine acceptance, browser-memory,
 POSIX completion or performance improvement is claimed.
+
+### Cursor storage sampling during vblank (2026-10-30)
+
+The real vblank worker consumed an accepted cursor record through
+`applyCursorRecord` and eagerly sampled its buffer in `setCursor`, then
+unconditionally sampled the same buffer again in the same kernel entry.
+The shared host now returns and reuses that owned snapshot once. Ticks
+without an accepted record still read live storage, including writes to an
+already mapped buffer and native context loss. Master-lease rejection and
+eager native readback failures retain their behavior. No storage epoch or
+cross-tick image cache is assumed. Node and browser use this same path.
+
+Two source controls failed before the repair: the actual registered
+vblank timer observed two CPU synchronizations, and the shared kernel
+registry observed two native GPU readbacks instead of one. After the
+repair, 41 tests pass across `dri-kms-stats-sab`, `webgl-kms-scanout` and
+`dri-kms-registry`, including stale leases, live writes, native failure,
+owned pixels and restoration. Evidence is the isolated cursor-motion
+checkout's `.context/cursor-before.log`, `cursor-after.log` and
+`HANDOFF.md`, prepared against `808a13235f`.
+
+This proves a reduced effect count for record-bearing ticks. Real-browser
+latency, combined browser-memory and guest conformance remain unrun. The
+full-frame scanout path is unchanged: a commit-counter-only shortcut
+would incorrectly hide writes through live mappings. The tiny theme-less
+fallback cursor and Cage's missing initial density policy are separate
+unfinished distribution fixes. No user-visible smoothness is claimed.

@@ -1,6 +1,6 @@
 import { KMS_CURSOR_RECORD_BYTES } from "./dri/kms-cursor-protocol.js";
 import { mergeChangedByteRuns } from "./shared-byte-runs";
-import { KmsCursorPlane } from "./dri/cursor-plane";
+import { KmsCursorPlane, type KmsCursor } from "./dri/cursor-plane";
 import { scanoutFormat, snapshotScanout, scanoutRgba } from "./dri/scanout-format";
 import type { HostFb } from "./dri/kms-registry";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES } from "./vfs/vfs";
@@ -31123,6 +31123,7 @@ export class CentralizedKernelWorker {
         // WHY: consume coalesced state before touching the old cursor BO: a
         // newer ioctl may already have released it. All Wasm reads stay in
         // this entry, and the presenter receives only owned pixel copies.
+        let cursor: KmsCursor | undefined;
         if (typeof entry.instance.exports.kernel_kms_cursor_read === "function") {
           this.#requireMainScratchRegion().withLease(lease => {
             const pointer = lease.exportPointer(0, KMS_CURSOR_RECORD_BYTES);
@@ -31130,12 +31131,16 @@ export class CentralizedKernelWorker {
               entry, lease, "kernel_kms_cursor_read", [pointer, KMS_CURSOR_RECORD_BYTES],
             );
             if (count === KMS_CURSOR_RECORD_BYTES) {
-              this.#kernel.kms.applyCursorRecord(lease.copyOut(0, KMS_CURSOR_RECORD_BYTES));
+              cursor = this.#kernel.kms.applyCursorRecord(lease.copyOut(0, KMS_CURSOR_RECORD_BYTES));
             }
             else if (count !== 0) throw new Error(`Invalid KMS cursor record length: ${count}`);
           });
         }
-        const cursor = this.#kernel.kms.cursorSnapshot();
+        // An accepted record already sampled its live BO in this entry.
+        // Reuse that owned snapshot once; ticks without an accepted record
+        // must still observe mapping writes and native context loss.
+        cursor ??= this.#kernel.kms.cursorSnapshot();
+        const cursorSnapshot = cursor;
         const cursorPlanes = Array.from(this.kmsCursorPlanes, ([crtcId, plane]) => {
           const fb = this.#kernel.kms.currentFb(crtcId);
           const size = fb ?? connectorModeSize(this.kmsDisplaySizes.get(crtcId));
@@ -31143,7 +31148,7 @@ export class CentralizedKernelWorker {
         });
         entry.deferObserverEffect(() => {
           if (this.vblankTimer !== timer) return undefined;
-          for (const { plane, width, height } of cursorPlanes) plane.present(cursor, width, height);
+          for (const { plane, width, height } of cursorPlanes) plane.present(cursorSnapshot, width, height);
           // The pump never acquires a context here: only canvases explicitly
           // attached in 2D mode can appear in the owned snapshot.
           for (const [crtcId, frame] of gpuFrames) {
