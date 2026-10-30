@@ -224,9 +224,14 @@ test.describe("in the Omarchy desktop", () => {
 test("ffplay runs as a Wayland client in the Omarchy desktop", async ({ page }) => {
   test.setTimeout(600_000);
   await open(page, "omarchy");
-  await openSurface(page, "Terminal");
-  // Quickshell reports its workspace after attaching the desktop bar.
-  await expect.poll(() => terminalText(page), { timeout: 240_000 }).toMatch(/BAR_WORKSPACE active=1/);
+  // Quickshell reports its workspace after attaching the desktop bar. Select
+  // the terminal on every read: when the desktop starts presenting, the app
+  // hands the view to its display (#1551), and a hidden xterm keeps its old
+  // rows in the DOM.
+  await expect.poll(async () => {
+    await openSurface(page, "Terminal");
+    return terminalText(page);
+  }, { timeout: 240_000 }).toMatch(/BAR_WORKSPACE active=1/);
 
   // CTRL+Return opens foot; type the command into it with real keys.
   await expect.poll(async () => {
@@ -247,8 +252,10 @@ test("ffplay runs as a Wayland client in the Omarchy desktop", async ({ page }) 
   await page.keyboard.press("Enter");
 
   // The compositor draws ffplay's GLES2 window...
-  await openSurface(page, "Terminal");
-  await expect.poll(() => terminalText(page), { timeout: 180_000 }).toMatch(/GLDRAW app_id=SDL_App/);
+  await expect.poll(async () => {
+    await openSurface(page, "Terminal");
+    return terminalText(page);
+  }, { timeout: 180_000 }).toMatch(/GLDRAW app_id=SDL_App/);
   // ...and keeps drawing the desktop. ffplay and the compositor share one
   // WebGL context; when they shared vertex-attribute state, ffplay's draws
   // broke every compositor draw and the whole display went black.
