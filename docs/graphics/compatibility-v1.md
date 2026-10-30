@@ -26,6 +26,28 @@ stacked on #1574. Neither increment is part of the landing runtime cut.
 Remaining baseline implementation and broad conformance belong to that
 follow-up; no missing API is reclassified as a platform boundary.
 
+## Latest desktop checkpoint, 2026-10-30
+
+The desktop work is in [PR #1601](https://github.com/Automattic/kandelo/pull/1601),
+stacked on the cage/sway landing. Source `1c80c5d713` integrates shared
+GTK signal adapters and the native SFWBar workspace pager. The full normal
+GTK8 library build and SFWBar link pass in the current preview producer;
+fork instrumentation, image composition and final coherence checks are
+still running. No working SFWBar browser result is claimed yet.
+
+The actual-library callback-entry controls reproduce eight original
+connected-callback signature traps and pass all twelve repaired cases.
+Four class-dispatch controls remain working. These invalid-widget
+controls establish callback entry only. The separate GObject diagnostic
+passes62/62; fresh normal fixture publication and the six failing broader
+upstream targets remain open.
+
+Immediate order is working SFWBar/menu/workspace integration, then a
+quiet rendering/input performance investigation across Cage, Sway and
+Labwc. No measured performance improvement is claimed. ScummVM rendering,
+three-engine acceptance, browser-memory and the broader graphics baseline
+remain open; the graphics follow-up stays in PR #1594.
+
 ## Unpublished ABI policy
 
 Use one ABI above current main for the combined effort, as requested by
@@ -9566,9 +9588,19 @@ delivery and disconnect behavior. A separate-unit diagnostic passes62/62
 against the recorded normal GLib6/libffi3 libraries and complete SDK32
 inventory. Fresh normal fixture publication remains required. Existing
 upstream assertions are unchanged; the six broader failures remain open.
-The GTK before/after real-library invalid-widget entry controls are still
-being instrumented; their runtime results are pending. No repaired
-SFWBar startup, workspace or performance result is claimed yet.
+The GTK real-library invalid-widget entry controls now finish. Four
+original class controls enter the actual helper; all eight original
+normal/swapped connected cases trap at the function signature check.
+All twelve repaired cases pass, each entering the helper and producing
+exactly two expected GTK invalid-widget preconditions, with no worker
+errors or traps. The original negative judge inspected guest stderr;
+its corrected predicate checks the authoritative worker diagnostics.
+Raw results and the explicit rejudgment are retained without reexecution.
+These controls use the recorded normal GTK7/GLib6 library closure with
+extracted original/repaired helpers. They establish entry compatibility,
+not valid widgets, display behavior, lifecycle, or a uniquely captured
+SFWBar runtime target. No repaired SFWBar startup, workspace or performance
+result is claimed yet.
 
 Evidence is under
 `.context/gtk-signal-contracts/.context/signal-contracts/`: final patch
@@ -9579,6 +9611,26 @@ SHA256 `6792287cf8e2a1a83ddbf07c6157492e0e36e9b8f1888c169805647a4cb9323d`,
 argument/return/identity changes and preservation of all43 units' comments.
 GTK revision8 and fixture revision2 invalidate normal cache inputs; the
 single unpublished ABI family remains56/3/17/21.
+
+The after runtime proof is `runtime-gtk-after.json`, SHA256
+`765b20c0fed72a17049e3289bc9ef80b56aa2614198931014f620bd941d25666`.
+Its executed Wasm SHA256 is
+`d8e6d1d3aa7a24951c6d4409db48e6dc34fdce14bda051221ee70f7280cd6948`;
+`build-proof.json` binds the compiled caller and both extracted helpers
+to their normal dependency/SDK inputs. The corrected negative judgment is
+`before-negative-judgment.json`. All private control jobs are finished.
+
+Normal job `preview5661-1c80c5-build-1030-141253-e514` owns the clean,
+detached `1c80c5d713` checkout
+`.context/sfwbar-workspaces-preview`. Its reviewed private helper manifest
+and stage logs retain the exact source and commands. The normal GTK8
+library and SFWBar link complete; the combined graph remains running.
+The intended coherence capture includes all projected owners and normal
+C SDK32/64 archives, with the already normal-built selected kernel's ABI
+snapshot check. This is pre-acceptance preparation, not new wasm64 runtime
+coverage or a completed preview. Experimental serving is independent of
+later browser acceptance; no acceptance pass is required to expose a
+coherent normal candidate.
 
 ### Desktop feedback and immediate landing order (2026-10-30)
 
