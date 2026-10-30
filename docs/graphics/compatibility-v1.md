@@ -10226,3 +10226,25 @@ not all SDK or output differences. A separately tested repair is being
 reviewed; it must retain actual dirty/untracked source and strict
 descriptor-relative safety while consolidating shared digest rules.
 It does not explain Brave closure or establish a desktop performance fix.
+
+The cache repair now uses one canonical payload encoder and one child
+selection rule for both filesystem access policies. Strict descriptor
+opens, no-follow and mutation/reopen checks remain; generic symlink-target
+identity remains. Actual Git worktree controls reproduce two failures
+before repair; fifteen focused controls pass afterward. Fixed legacy
+file/tree/symlink digests pass before and after consolidation. Explicit
+Git metadata inputs, dirty/hidden/untracked payloads and strict race/
+symlink checks remain covered. Declared-input executable-bit hashing is
+an existing separate gap, documented rather than changed here.
+
+The first complete xtask run passes810/820 unit cases and fails ten
+because its isolated checkout lacks submodules/stamped SDKs. That failed
+run is retained. After normal pinned submodule initialization and own
+C SDK32/64 builds, the full suite passes820 unit plus eight integration
+cases, zero ignored, under job
+`git-admin-provisioned-full-xtask-1030-192725-ee52` in3m39s including
+provisioning. Source bytes promoted to this branch match the tested
+isolated source. Evidence is in
+`.context/git-admin-cache-fix/.context/git-admin-evidence/`.
+Normal package reuse under the new portable keys has not yet been
+validated; the serving1c16 preview is unchanged by this tooling repair.
