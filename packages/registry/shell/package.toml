@@ -42,6 +42,7 @@ depends_on = [
   "foot@1.17.2",
   "cage@0.3.1",
   "sway@1.12",
+  "labwc@0.20.2",
   "swaybg@1.2.1",
   "dbus@1.14.10",
   "qtgallery@0.1.0",

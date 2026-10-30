@@ -1,3 +1,4 @@
+import { footFrame } from "./support/labwc-frame";
 import { expect, test, type Page } from "@playwright/test";
 import { gotoMachine, gotoMachineOrSkip, previewFrame } from "./support/kandelo-machine";
 import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures, memoryBoundaryRealmId } from "./support/browser-memory-boundary";
@@ -61,7 +62,7 @@ async function leaveDetachedTmuxSession(page: Page, cycle: number): Promise<void
   // must release them through normal host teardown in this same page realm.
 }
 
-test("@slow games, cage, sway, tmux and WordPress survive repeated constrained-budget switches", async ({ page }) => {
+test("@slow games, cage, sway, labwc, tmux and WordPress survive repeated constrained-budget switches", async ({ page }) => {
   test.setTimeout(1_200_000);
   const required = process.env.KANDELO_MEMORY_SWITCH_REQUIRED === "1";
   // This follows the same external-data boundary as the Quake demo spec.
@@ -156,6 +157,28 @@ test("@slow games, cage, sway, tmux and WordPress survive repeated constrained-b
     }, { timeout: 180_000 }).toBe(true);
     // Leave sway, foot and the status-command/bar children alive too, so the
     // next switch must retire the whole session in the same browser realm.
+    await launch(page, "labwc stacking desktop", "labwc");
+    await expect(page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first())
+      .toBeVisible({ timeout: 180_000 });
+    await expect.poll(() => page.locator(".kdemo-surface-controls").allTextContents()
+      .then(text => text.join(" ")), { timeout: 180_000 }).toMatch(/webgl2-gl/);
+    await expect.poll(async () => {
+      const frame = await footFrame(page);
+      return frame.foot !== null && frame.ink > 200;
+    }, { timeout: 180_000 }).toBe(true);
+    const floating = await footFrame(page);
+    const floatingBox = (await page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first().boundingBox())!;
+    await page.mouse.click(
+      floatingBox.x + (floating.foot!.x + floating.foot!.width / 2) * floatingBox.width / floating.width,
+      floatingBox.y + (floating.foot!.y + floating.foot!.height / 2) * floatingBox.height / floating.height,
+    );
+    // Only execution in the real terminal paints the ANSI red background;
+    // echoing the typed command or a blinking cursor cannot satisfy this.
+    await page.keyboard.type(`printf '\\033[41mLABWC_MEMORY_${cycle}\\033[0m\\n'\n`, { delay: 20 });
+    await expect.poll(async () => (await footFrame(page)).red,
+      { timeout: 60_000 }).toBeGreaterThan(200);
+    // Retire the live stacking compositor and its real terminal as well.
+    // Keep all cycles in this same page realm and the existing memory budget.
     await launch(page, "Bare shell", "shell");
     await leaveDetachedTmuxSession(page, cycle);
     await launch(page, "WordPress MariaDB", "wordpress-mariadb");

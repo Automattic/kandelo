@@ -234,6 +234,7 @@ host/test/kernel-wasm-input-snapshot.test.ts	source-only
 host/test/kernel-worker-copyback.test.ts	source-only
 host/test/kernel-worker-entry-root-contract.test.ts	source-only
 host/test/kernel.test.ts	prepared-product
+host/test/labwc-smoke.test.ts	prepared-product
 host/test/lazy-fetch-bytes.test.ts	source-only
 host/test/lazy-url.test.ts	source-only
 host/test/libevdev-smoke.test.ts	prepared-product

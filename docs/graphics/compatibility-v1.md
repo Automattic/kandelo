@@ -8315,3 +8315,34 @@ It is reattached without opening Finder. The selected Sortix checkout
 `/Volumes/KandeloCaseBuild/moscow-vma-fragments-os-test` is pristine at
 `7e8f0082ab0b58ad3383a8abbf47dc4b40dcf25d`; current-worktree SDK, kernel
 and overrides remain required for the later normal conformance run.
+
+### Labwc port and normal desktop consumer in progress (2026-10-30)
+
+Labwc 0.20.2 is being added as a separate native Wayland stacking desktop,
+using the same wlroots 0.20.2 as cage/sway. Its pinned source archive is
+`fae023b6fe022f7057556707a17cdb2d98e0138c5dffaedaa1dade975699f9e8`.
+The normal recipe builds labwc and labnag with PNG/SVG support and actual
+fork instrumentation. Optional Xwayland, window-icon lookup through libsfdo,
+systemd integration and translations are disabled explicitly. No target
+identity override, source patch or runtime stub is introduced.
+
+The normal shell composition declares the package dependency and lazy
+executables/configuration; its gallery profile starts `labwc -s foot` using
+the existing shared fonts, XKB and libinput data. The existing cage/sway
+landing is unchanged. Program ABI 56 / host 3 / GL 17 / fork 21 remain fixed.
+
+Source-only gallery/lazy-address validation passes 25/25 cases, no skips;
+the evidence registry agrees on 632 files. The curated gallery assertion
+also retains the already-present Redis entry, which its prior expected list
+omitted. Playwright lists the new rendered case in all three engines.
+Node and browser tests cover floating-window input, menus, focus, clean
+exit and display reuse. Labwc is also added to all four existing memory
+switching cycles with actual rendered terminal-command output, without
+changing the budgets, timeouts, realm or failure assertions.
+
+Normal package installation is still running at this source checkpoint;
+no successful package publication, desktop session, memory result or
+performance claim is made yet. Final artifacts and real Node/three-engine
+browser validation remain required. Source logs are the positive checkout's
+`.context/labwc-source-check.log`, `.context/labwc-evidence-registry.log`,
+`.context/labwc-browser-inventory.log` and `.context/labwc-resolve.log`.

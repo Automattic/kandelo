@@ -244,6 +244,38 @@
         "internalsAccess": "drawer"
       }
     },
+    "labwc": {
+      "identity": {
+        "title": "labwc stacking desktop",
+        "summary": "A lightweight Wayland desktop with decorated, floating foot terminals. Right-click the desktop for the menu; Super or Ctrl+Return opens a terminal, Alt+Tab switches windows, Alt+F4 closes a window, and Ctrl+Shift+E exits the session.",
+        "accent": "#497a6c",
+        "glyph": "Lw",
+        "packages": [
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms",
+          "kms-gl-scanout",
+          "evdev-input"
+        ]
+      },
+      "init": {
+        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/local/bin/labwc -s foot"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "kms",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      }
+    },
     "sway": {
       "identity": {
         "title": "sway tiling desktop",

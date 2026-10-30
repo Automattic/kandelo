@@ -653,6 +653,10 @@ name = "sway"
 class = "user-software"
 
 [[packages]]
+name = "labwc"
+class = "user-software"
+
+[[packages]]
 name = "swaybg"
 class = "user-software"
 

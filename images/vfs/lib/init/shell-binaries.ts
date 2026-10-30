@@ -184,6 +184,31 @@ export const SHELL_LAZY_BINARY_SPECS = [
   },
   // swaybg draws the wallpaper sway's config names; sway execs it by name.
   { id: "swaybg", resolverPath: "programs/swaybg.wasm", vfsPath: "/usr/local/bin/swaybg", symlinks: [] },
+  // The stacking desktop and its notification client stay lazy like sway.
+  { id: "labwc", resolverPath: "programs/labwc/labwc.wasm", vfsPath: "/usr/local/bin/labwc", symlinks: [] },
+  {
+    id: "labnag",
+    dependency: "labwc",
+    resolverPath: "programs/labwc/labnag.wasm",
+    vfsPath: "/usr/local/bin/labnag",
+    symlinks: [],
+  },
+  {
+    id: "labwc-config",
+    dependency: "labwc",
+    resolverPath: "programs/labwc/labwc-rc.xml",
+    vfsPath: "/etc/xdg/labwc/rc.xml",
+    symlinks: [],
+    mode: 0o644,
+  },
+  {
+    id: "labwc-menu",
+    dependency: "labwc",
+    resolverPath: "programs/labwc/labwc-menu.xml",
+    vfsPath: "/etc/xdg/labwc/menu.xml",
+    symlinks: [],
+    mode: 0o644,
+  },
   {
     id: "sway-config",
     dependency: "sway",
