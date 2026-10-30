@@ -48,6 +48,15 @@ The [popup regression runner](test/README.md) verifies the pinned source
 archive and exercises the actual source with native GLib/GObject signals.
 It proves ownership transitions, separately from rendered GTK behavior.
 
+File-monitor finalization and tray-menu destruction also use complete
+registered signatures, releasing the retained file and removing sources
+for the actual menu widget. Optional MPD, ALSA and notification callbacks
+have typed adapters without changing the disabled-module selection.
+All five original indirect calls trap in separate-translation-unit Wasm
+controls; the repaired calls preserve their arguments and return values.
+The full 74-file core passes typed-callback syntax checks. These checks do
+not establish optional service behavior or a working desktop.
+
 Normal package and image builds, Node sessions, real headless Chromium,
 Firefox and WebKit menu/launch/focus/close checks, and repeated memory
 switching remain validation gates. No payload, memory or performance

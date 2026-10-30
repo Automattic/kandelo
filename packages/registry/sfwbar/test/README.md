@@ -29,3 +29,19 @@ partial-datum-only controls must fail after entering the actual fixture;
 timeouts are failures of the check. Every fully patched control must exit
 successfully with its own pass assertion. The partial control establishes
 that correcting the destructor datum alone does not fix signal ownership.
+
+The original and datum-only collapse and reentrant-collapse controls can
+fail before the invalid
+read (a UBSan alignment diagnostic) or on that read (a UBSan SEGV report).
+The latter counts only for those four exact negative cases, with a complete
+diagnostic,
+matching top frame and summary, and this run's exact source statement after
+synchronous hide/unmap. Generic signals, missing symbols, wrong source,
+truncated diagnostics and timeouts remain failures of the check. Repaired
+cases still require exit0 plus their own pass assertion.
+
+Classifier controls can be run separately with the verified archive:
+
+```sh
+scripts/dev-shell.sh python3 packages/registry/sfwbar/test/check-runner-diagnostics.py /path/to/sfwbar-v1.0_beta17.tar.gz
+```

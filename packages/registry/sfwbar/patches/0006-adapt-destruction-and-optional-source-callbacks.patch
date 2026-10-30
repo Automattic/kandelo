@@ -1,0 +1,115 @@
+--- a/src/actionlib.c
++++ b/src/actionlib.c
+@@ -638,6 +638,11 @@
+   return TRUE;
+ }
+ 
++static void action_file_monitor_release ( gpointer data, GObject *monitor )
++{
++  g_object_unref(data);
++}
++
+ static value_t action_file_trigger ( vm_t *vm, value_t p[], gint np )
+ {
+   GFile *f;
+@@ -661,7 +666,7 @@
+   if(np==3)
+     g_timeout_add(value_get_numeric(p[2]), (GSourceFunc)action_file_timeout_cb,
+         (gpointer)trigger_name_intern(value_get_string(p[1])));
+-  g_object_weak_ref(G_OBJECT(m), (GWeakNotify)g_object_unref, f);
++  g_object_weak_ref(G_OBJECT(m), action_file_monitor_release, f);
+   g_signal_connect(G_OBJECT(m), "changed", G_CALLBACK(action_file_trigger_cb),
+       (gpointer)trigger_name_intern(value_get_string(p[1])));
+   g_debug("FileTrigger: subscribe to '%s', trigger '%s'",
+--- a/src/snimenu.c
++++ b/src/snimenu.c
+@@ -355,6 +355,11 @@
+       sni_menu_get_layout_cb, sni);
+ }
+ 
++static void sni_menu_destroy_cb ( GtkWidget *menu, gpointer data )
++{
++  g_source_remove_by_user_data(menu);
++}
++
+ void sni_menu_init ( sni_item_t *sni )
+ {
+   if(sni->menu_obj)
+@@ -362,7 +367,7 @@
+ 
+   sni->menu_obj = gtk_menu_new();
+   g_signal_connect(G_OBJECT(sni->menu_obj), "destroy",
+-      G_CALLBACK(g_source_remove_by_user_data), NULL);
++      G_CALLBACK(sni_menu_destroy_cb), NULL);
+   g_signal_connect(G_OBJECT(sni->menu_obj), "map",
+       G_CALLBACK(sni_menu_map_cb), sni);
+ 
+--- a/modules/mpd.c
++++ b/modules/mpd.c
+@@ -329,6 +329,11 @@
+     module_idle_add(mpd_connect, NULL);
+ }
+ 
++static void mpd_reconnect_notify ( gpointer data )
++{
++  mpd_reconnect();
++}
++
+ static void mpd_connect_cb ( GSocketClient *client, GAsyncResult *res,
+     GSocketConnectable *conn )
+ {
+@@ -350,7 +355,7 @@
+     mpd_cmd_current = mpd_cmd_init;
+     module_channel_watch_add(chan, G_PRIORITY_DEFAULT,
+         G_IO_IN | G_IO_PRI | G_IO_HUP | G_IO_ERR,
+-        (GIOFunc)mpd_event, NULL, (GDestroyNotify)mpd_reconnect);
++        (GIOFunc)mpd_event, NULL, mpd_reconnect_notify);
+   }
+   else
+     mpd_reconnect();
+--- a/modules/alsactl.c
++++ b/modules/alsactl.c
+@@ -301,6 +301,11 @@
+   return G_SOURCE_REMOVE;
+ }
+ 
++static gboolean alsa_source_subscribe_idle ( gpointer data )
++{
++  return alsa_source_subscribe_all();
++}
++
+ void alsa_source_remove ( GSource *src )
+ {
+   g_source_unref(src);
+@@ -534,7 +539,7 @@
+   vm_func_add("volume", alsa_func_volume, FALSE, FALSE);
+   vm_func_add("volumeinfo", alsa_func_volume, FALSE, FALSE);
+   vm_func_add("volumectl", alsa_action_volumectl, TRUE, FALSE);
+-  module_idle_add((GSourceFunc)alsa_source_subscribe_all, NULL);
++  module_idle_add(alsa_source_subscribe_idle, NULL);
+ }
+ 
+ void alsa_deactivate ( void )
+--- a/modules/ncenter.c
++++ b/modules/ncenter.c
+@@ -167,6 +167,11 @@
+   trigger_emit("notification-group");
+ }
+ 
++static void dn_pixbuf_pixels_free ( guchar *pixels, gpointer data )
++{
++  g_free(pixels);
++}
++
+ static gchar *dn_parse_image_data ( GVariant *dict )
+ {
+   GdkPixbuf *pixbuf;
+@@ -188,7 +193,7 @@
+   copy = g_memdup2(data, len);
+ 
+   if( !(pixbuf = gdk_pixbuf_new_from_data(copy, GDK_COLORSPACE_RGB, alpha,
+-          bps, w, h, row_stride, (GdkPixbufDestroyNotify)g_free, NULL)) )
++          bps, w, h, row_stride, dn_pixbuf_pixels_free, NULL)) )
+   {
+     g_free(copy);
+     return NULL;

@@ -9119,3 +9119,77 @@ The job does not complete products or run consumers. Final combined
 normal SDK/package/image, real desktop interactions, browser-memory and
 relevant conformance remain required; these native/source controls do not
 close them. No ABI number or compatibility advertisement changes.
+
+
+### SFWBar final callback registration audit (2026-10-30)
+
+The pinned callback inventory finds five additional incompatible
+registrations after patches 0001 through 0005. Two are enabled core paths:
+file-monitor weak notification must unref the retained GFile datum rather
+than the dead monitor, and tray-menu destruction must remove sources for
+the actual menu widget while discarding the helper's boolean result.
+Three are disabled optional-module paths: MPD channel destruction, ALSA
+idle subscription and notification pixbuf pixel destruction. Typed
+adapters preserve direct helper signatures, argument ownership, source
+return values and the existing disabled-module selection. No runtime
+bypass, ABI bump or capability advertisement changes.
+
+All five original registered types fail their exact contract assertions;
+all five repaired types pass. Actual separate-translation-unit Wasm32
+calls trap for all five originals and return correctly for all five
+repairs, checking once-only effects, argument routing and return values.
+The adapter controls use scoped helper effect doubles; they are not GTK
+or service execution. The 22 focused controls pass; all 74 core files
+pass the incompatible-function-pointer syntax gate; enabled appmenu
+source/type controls pass. All six patches apply together without fuzz
+and reproduce the verified repaired bytes. Full original/repaired
+actionlib, snimenu, MPD and notification files pass syntax. ALSA's
+disabled dependency is absent from the captured closure, so only its
+real GLib callback contract and extracted adapter are checked. No
+enabled ALSA artifact or optional service claim is made.
+
+The manual inventory covers core/module signal, source, thread, IO,
+weak/destroy/pixel, traversal, async/D-Bus, custom listener and Wayland
+registrations. No further incompatible invocation signature is found
+within that scope. Identity-only FlowGrid signal-handler casts remain
+unchanged. This audit does not prove every dynamic protocol/lifecycle
+path. Normal main/module builds, actual Sway/Labwc rendering and teardown,
+three-engine checks and browser-memory remain required.
+Evidence: .context/sfwbar-final-callback-audit/handoff.md, check-six.log,
+invoke.log, audit-syntax-results.json and apply-six-check.log in the
+primary workspace. Patch 0006 SHA-256 is
+556fc7f984d99edbf809a21512558708b6380608b5b9143d24f7fddd320771bb.
+
+
+The lifecycle runner also records a stricter source-origin classification
+for the original and datum-only collapse and reentrant-collapse controls.
+Their stale-list read can yield
+an alignment runtime-error diagnostic or a fully symbolicated UBSan SEGV.
+The latter is admitted only for those exact negative cases, exit status,
+completed READ diagnostic, matching top frame/summary, exact scratch
+source and actual iterator dereference after synchronous hide/unmap.
+Unknown signals, paths, statements, cases, incomplete reports and timeouts
+remain failures. Repaired cases still require exit zero and their own
+pass assertion. The initial six classifier controls pass, including the exact earlier
+SEGV log with only its deleted scratch prefix normalized to reconstructed
+verified source. The first five-patch run's 29/30 classification failure
+is retained; it is not a failed repaired ownership case or six-patch proof.
+The private six-patch native run passes all 30 expectations; full current
+tracked-source validation follows integration. Evidence:
+.context/sfwbar-collapse-diagnostic/handoff.md and classification.log.
+
+
+Tracked six-patch validation now passes all 30 lifecycle expectations:
+ten original diagnosed failures, ten datum-only diagnosed failures and
+ten repaired exits with their own pass assertions. All four observed
+UBSan SEGV forms (original/datum-only, collapse/reentrant-collapse) have
+source-bound classifier controls; all 24 classification tests pass,
+including arbitrary-signal, timeout, unrelated-source/statement/frame,
+missing-entry, truncated-report and repaired-failure rejection. Both
+fixture cases call the same verified live-list traversal. Earlier 29/30
+and 28/30 classification failures are retained with all ten repaired
+cases passing; no unchanged-code retry is used to hide them. Fixture,
+Gtk shim, production repair and timeouts remain unchanged. Exact final
+tracked evidence: .context/sfwbar-six-patch-native-v4.log and its
+*-results/results.json; .context/sfwbar-six-patch-classifier-all-collapse.log.
+Normal product and rendered browser acceptance remain pending.
