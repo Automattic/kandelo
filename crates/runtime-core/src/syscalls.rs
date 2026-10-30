@@ -3044,8 +3044,6 @@ fn handle_dri_card_ioctl(
                     || req.crtc_w != fb.width || req.crtc_h != fb.height
                     || req.src_x != 0 || req.src_y != 0
                     || req.src_w != fb.width << 16 || req.src_h != fb.height << 16
-                    || !crate::dri::with_registry(|r| r.get(fb.bo_id)
-                        .is_some_and(|bo| bo.tier == crate::dri::BoTier::CpuShared))
                 { return Err(Errno::EINVAL); }
                 next.fb_id = req.fb_id;
                 next.fb = Some(fb);
@@ -3078,8 +3076,9 @@ fn handle_dri_card_ioctl(
                     let bo_id = *dri_state(proc, ofd_idx)?.gem.borrow().handles
                         .get(&handle).ok_or(Errno::ENOENT)?;
                     if !crate::dri::with_registry(|r| r.get(bo_id).is_some_and(|bo|
-                        bo.tier == crate::dri::BoTier::CpuShared
-                            && bo.size >= u64::from(width) * u64::from(height) * 4))
+                        bo.size >= u64::from(width) * u64::from(height) * 4
+                            && (bo.tier == crate::dri::BoTier::CpuShared
+                                || (bo.bpp == 32 && bo.width == width && bo.height >= height))))
                     { return Err(Errno::EINVAL); }
                     Some(crate::ofd::KmsFb { bo_id, width, height,
                         pixel_format: DRM_FORMAT_ARGB8888, stride: width * 4, offset: 0 })
@@ -51623,6 +51622,62 @@ impl HostIO for RelSymlinkMock {
         sys_close(&mut proc, &mut host, fd).unwrap();
         assert_eq!(bo_refcount(bo), None);
         assert!(kms::cursor_plane().is_none());
+    }
+
+    #[test]
+    fn kms_rendered_gpu_cursor_survives_getfb_close_and_primary_flip() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _master = crate::dri::master::lock_for_test();
+        let _bo = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1); let mut host = MockHostIO::new();
+        host.cursor_supported = true;
+        let fd = kms_master_card0(&mut proc, &mut host);
+        // The generic GBM modifier allocator used by a compositor's cursor
+        // swapchain allocates rendered GPU storage, without a CURSOR hint.
+        let created = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_CREATE_GPU_BO,
+            WpkDrmGpuBoCreate { width: 64, height: 64,
+                format: DRM_FORMAT_ARGB8888, usage: 5 }).unwrap();
+        let mut request = WpkDrmModeFbCmd2 { width: 64, height: 64,
+            pixel_format: DRM_FORMAT_ARGB8888, ..Default::default() };
+        request.handles[0] = created.format; request.pitches[0] = created.usage;
+        let fb = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, request).unwrap();
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let bo = *dri_state(&proc, ofd).unwrap().gem.borrow().handles.get(&created.format).unwrap();
+        let acquired = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETFB,
+            WpkDrmModeFbCmd { fb_id: fb.fb_id, ..Default::default() }).unwrap();
+        let before = bo_refcount(bo);
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CURSOR,
+            WpkDrmModeCursor { flags: DRM_MODE_CURSOR_BO, crtc_id: kms::CRTC_ID,
+                width: 63, height: acquired.height, handle: acquired.handle,
+                ..Default::default() }).map(|_| ()), Err(Errno::EINVAL));
+        assert_eq!(bo_refcount(bo), before);
+        kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CURSOR,
+            WpkDrmModeCursor { flags: DRM_MODE_CURSOR_BO, crtc_id: kms::CRTC_ID,
+                width: acquired.width, height: acquired.height,
+                handle: acquired.handle, ..Default::default() }).unwrap();
+        let plane = WpkDrmModeSetPlane { plane_id: kms::CURSOR_PLANE_ID,
+            crtc_id: kms::CRTC_ID, fb_id: fb.fb_id, crtc_w: 64, crtc_h: 64,
+            src_w: 64 << 16, src_h: 64 << 16, ..Default::default() };
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETPLANE,
+            WpkDrmModeSetPlane { src_x: 1, ..plane }).map(|_| ()), Err(Errno::EINVAL));
+        assert_eq!(bo_refcount(bo), Some(4));
+        kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETPLANE, plane).unwrap();
+        for handle in [created.format, acquired.handle] {
+            kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_GEM_CLOSE,
+                WpkDrmGemClose { handle, pad: 0 }).unwrap();
+        }
+        assert_eq!(bo_refcount(bo), Some(2)); // framebuffer + cursor
+        kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CURSOR,
+            WpkDrmModeCursor { flags: DRM_MODE_CURSOR_MOVE, crtc_id: kms::CRTC_ID,
+                x: -2, y: 7, ..Default::default() }).unwrap();
+        kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_PAGE_FLIP,
+            WpkDrmModeCrtcPageFlip { crtc_id: kms::CRTC_ID, fb_id: fb.fb_id,
+                flags: 1, ..Default::default() }).unwrap();
+        assert_eq!(kms::crtc_fb(), fb.fb_id);
+        assert_eq!(kms::cursor_plane().unwrap().fb.unwrap().bo_id, bo);
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        assert_eq!(bo_refcount(bo), None);
     }
 
     #[test]

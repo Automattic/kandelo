@@ -987,7 +987,7 @@ export class WasmPosixKernel {
    * Memory SAB (same model as the mmap-based framebuffer binding).
    */
   readonly bos = new GbmBoRegistry();
-  readonly kms = new KmsRegistry(this.bos);
+  readonly kms = new KmsRegistry(this.bos, (bo, width, height) => this.gpuCursor(bo, width, height));
   /**
    * Live `/dev/dri/renderD128` GLES sessions. The kernel reports
    * binds/unbinds via `host_gl_*`; the bridge in `webgl/bridge.ts`
@@ -1047,6 +1047,20 @@ export class WasmPosixKernel {
       if (errors.length) throw new Error(`Device graphics operation failed: ${errors.join(",")}`);
       return result;
     } finally { muxer.invalidateCurrent(); }
+  }
+
+  private gpuCursor(bo: number, width: number, height: number): Uint8Array<ArrayBuffer> | null | undefined {
+    const storage = this.gl.gpuBo(bo);
+    if (!storage) return undefined;
+    if (storage.gl.isContextLost()) return null;
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1
+        || width > 64 || height > 64 || width > storage.w || height > storage.h)
+      throw new Error("Invalid GPU cursor storage dimensions");
+    return this.withGraphicsState(storage.gl, () => {
+      const pixels = readGpuScanout(storage, width, height);
+      if (!pixels) throw new Error("GPU cursor readback failed");
+      return pixels;
+    });
   }
 
   private gpuScanout(fb: HostFb, canvas: OffscreenCanvas, allowDirect: boolean):

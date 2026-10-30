@@ -8528,6 +8528,7 @@ These checks do not establish repaired Sway rendering or input. Normal
 consumer execution remains an integration gate; application, host sizing,
 artifacts and ABI are unchanged by this test-only correction.
 
+
 ### Combined cursor/Wayland validation checkpoint (2026-10-30)
 
 Landing `e570722d11` combines the Wayland display/window lifetime repair,
@@ -8702,3 +8703,119 @@ engines, broader browser-memory and graphics conformance are not rerun by
 this fixture batch. Production/artifacts stay at the preview's existing c268 source;
 this batch changes only the fixture and evidence ledger. This check makes
 no cursor-performance claim.
+
+### Rendered GPU cursor backing (2026-10-30)
+
+The normal e570 Sway trace contains repeated `Page-flip failed` messages
+while swaybg and foot start. In upstream wlroots 0.20.2, a legacy commit
+acquires the cursor framebuffer's GEM handle, assigns and moves the cursor,
+then submits the primary page flip. Its generic GBM modifier allocator can
+allocate rendered GPU storage for the cursor without a CPU-access usage
+hint. The prior kernel rejected that storage at cursor assignment with
+`EINVAL`, aborting the enclosing commit before the primary flip.
+
+Cursor assignment now accepts validated GPU backing through both legacy
+cursor and cursor-plane ioctls. The original BO reference remains the
+lifetime authority through GEM handle closure. The shared host reads only
+that retained native framebuffer, bounded to 64x64 pixels, using the existing
+checked readback and native-state restoration path. GPU RGBA and CPU ARGB
+both convert premultiplied pixels to the cursor canvas's straight alpha;
+context loss hides the previous image, and readback/restoration failures
+remain visible and retryable. GBM allocation policy, master-grant checks,
+wire records and ABI versions are unchanged. Performance was not measured.
+
+Source evidence in `.context/graphics-gpu-cursor/.context/`: the new Rust
+case fails before the fix at cursor assignment with `EINVAL`, and the new
+host case fails before the fix because GPU backing has no CPU pixel view.
+After repair, `gpu-cursor-final-rust.log` passes 44 focused KMS controls;
+`gpu-cursor-final-source.log` passes 34 focused host controls and the complete
+720-case graphics source gate. Coverage includes actual host GPU allocation
+and readback, channel order and partial alpha, live content refresh, context
+loss, retryable restoration, GPU cursor assignment through both ioctl
+families, geometry rejection, handle closure and subsequent primary flip.
+`gpu-cursor-host-build.log`, `gpu-cursor-wasm-check.log` and
+`gpu-cursor-evidence.log` pass canonical host JS/DTS, Wasm32 runtime-core
+checking and the 631-file evidence registry respectively.
+
+Two existing CPU pixel fixtures now perform the real post-mmap
+`primeBindFromSab` step before writing. The d081 mapping replacement model
+correctly refuses to flush an unprimed mapping; the fixtures had omitted the
+worker's corresponding post-zero-fill step. Their live-update and bounded
+cursor-image assertions remain intact.
+
+This is source/model evidence, not repaired Sway browser-rendering evidence.
+Normal kernel/products, real Sway cursor/foot and ScummVM-in-Sway execution,
+Node/browser integration, browser-memory and relevant conformance remain
+required combined validation. The original failed browser trace and its
+144 unique terminal rows are retained in the private handoff.
+
+### Normal GPU cursor products and consumer checks (2026-10-30)
+
+Exact source 5aab344fe0 was built through the normal shell image, rootfs
+and host paths in job cursor-gpu-products-5a-1030-042759-7201. It completed
+in 21m41s; ABI and artifact-freshness checks passed. The subsequent
+headless Chromium batch cursor-gpu-preview-smoke-5a-1030-045045-d4ad
+passed normal Sway cursor rendering in 17.4s and cursor transport, but
+failed its separate ScummVM rendering case. Selected artifact identities
+agreed before and after the batch. This is a partial pass, not acceptance
+of the complete combined landing.
+
+The real Sway check observes foot repaint, cursor movement between two
+positions on the independent cursor canvas, clearing of the old position,
+restoration of client pixels, cooperative compositor exit and terminal
+handoff. A separate read-only check against the persistent local preview
+passed in 11.0s, with identical artifact identities before and after.
+Evidence is under .context/gbm-file-aliases/.context/ in
+compositor-preview-smoke-5a and cursor-preview-check-5a. The first preview
+readiness check stopped before browser launch because it expected an
+explicit HTML element in the minimal fixture; its evidence is retained
+in cursor-preview-check-5a-readiness-failure. The corrected check matches
+the real fixture title. All browsers are headless; no latency measurement
+or performance improvement is claimed.
+
+ScummVM now launches inside the rendered Sway session. Its actual terminal
+reports Wayland error 7, importing the supplied dmabufs failed, followed
+by the OpenGL graphics-mode failure. This replaces the previously observed
+rejected-display symptom, but does not establish successful ScummVM
+rendering. The buffer-import failure is an ordinary shared platform gap
+under investigation, without a program-specific launcher bypass. The
+failed screenshot and trace remain in the same batch's scumm-results.
+
+The separate test-only memory-audit repair classifies the exact graphics
+Vitest runner beside the two existing test runners. All 86 analyzer
+controls pass; similarly named production sources remain audited. The
+source inventory changes from 617 to 616 by removing only the actual
+test runner. Its canonical actual-helper full-graph control passes the
+unchanged 180s deadline in 126.885s, with zero violations, unused
+allowances, unresolved seeds or contract errors. An original-helper
+profile also completes its original 617-source graph in 148.980s.
+Earlier e570, 5a and repaired-classification timeouts remain preserved;
+these later passes do not establish a timing improvement or an external
+runtime defect. Exact commands, timings and profile attribution are in
+.context/graphics-audit-scaling/.context/audit-scaling-handoff.md.
+
+Current three-engine consumer checks, the complete browser-memory gate
+and relevant POSIX conformance remain required on the combined source
+and its normal products. These narrow passes do not discharge them.
+
+
+### SFWBar normal package publication (2026-10-30)
+
+At source b97ef30f69, job sfwbar-products-b97-1030-042637-b1f0
+completed the normal SFWBar bootstrap and published all nine declared
+artifacts, including the real instrumented application-menu module. The
+subsequent rootfs stage failed because the selected local tree did not
+yet contain programs/wasm32/yacc.wasm. The complete job therefore failed
+after 36m20s. The next normal shell/image build must provision its full
+program graph; the package pass does not establish image acceptance.
+
+The actual published main executable is 35,590,598 bytes, SHA256
+88ae739e7aac1ef1cb46caeb5d3fc3dadf9f980521109107ae522115aa6e4aff.
+The menu module is 28,437 bytes, SHA256
+bf403667d198890c8a04edcc148106f97940c29c89ca7c2ca68f2307c318f449.
+The normal runtime's checkSideModuleForkContract accepts these actual
+bytes. The main records assume-all-entries-fork-returning, including
+address-taken fork-returning functions. The exact check and decoded
+contract are in .context/sfwbar-b97-loader-contract.log. This is real
+loader admission evidence, not module initialization, menu rendering or
+application-launch evidence. Those consumer checks remain unrun.
