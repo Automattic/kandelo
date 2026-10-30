@@ -22,6 +22,12 @@ describe.each([
   ["Node", "host/src/node-kernel-worker-entry.ts"],
   ["browser", "host/src/browser-kernel-worker-entry.ts"],
 ])("%s fork replay launch transaction", (_host, relativePath) => {
+  it("retries secure-execution state queries after yielding in ordinary fork and vfork launch", () => {
+    const source = readFileSync(join(repoRoot, relativePath), "utf8");
+    expect(source.match(/secureExec:\s*kernelWorker\.processSecureExec\(childPid\)/g) ?? []).toHaveLength(0);
+    expect(source.match(/secureExec:\s*await retryKernelEntryResult\(\(\) =>\s*kernelWorker\.processSecureExec\(childPid\)\)/g)).toHaveLength(2);
+  });
+
   it("waits for the exact child generation before committing and resolving", () => {
     const handler = ordinaryForkHandlerSource(relativePath);
     const wait = handler.indexOf("await forkReplay.waitUntilReady()");

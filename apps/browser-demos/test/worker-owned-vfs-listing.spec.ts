@@ -1,12 +1,10 @@
+import { setInternalsOpen } from "./support/dock";
 import { expect, test, type Page } from "@playwright/test";
 import { gotoApp } from "./support/kandelo-machine";
 
 
 async function openInternals(page: Page) {
-  const internals = page.getByRole("button", { name: "Internals" });
-  if ((await internals.getAttribute("aria-pressed")) !== "true") {
-    await internals.click();
-  }
+  await setInternalsOpen(page, true);
 }
 
 test("the VFS inspector lists a worker-owned root filesystem", async ({ page }) => {

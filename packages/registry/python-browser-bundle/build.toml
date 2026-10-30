@@ -7,4 +7,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "bab3cc2f7779bca1d35c1303f89b25082e0220d4"
-revision = 2
+revision = 3

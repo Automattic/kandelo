@@ -1,0 +1,22 @@
+kind = "program"
+name = "web-stack-vfs"
+version = "0.1.0"
+kernel_abi = 55
+depends_on = ["nginx-php-vfs@0.1.0", "nginx-vfs@0.1.0", "nginx-python-vfs@0.1.0", "ruby-todo-vfs@0.1.0", "redis-vfs@0.1.0", "service-activity-tools@0.1.0"]
+
+[source]
+provider = "repository"
+url = "https://github.com/Automattic/kandelo"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "GPL-2.0-or-later"
+url = "https://github.com/Automattic/kandelo/blob/main/COPYING"
+
+[build]
+script_path = "packages/registry/web-stack-vfs/build.sh"
+
+[[outputs]]
+name = "web-stack-vfs"
+wasm = "web-stack-vfs.vfs.zst"
+fork_instrumentation = "disabled"

@@ -1,3 +1,4 @@
+import { setInternalsOpen } from "./support/dock";
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
@@ -41,10 +42,8 @@ async function installAudioProbe(page: Page) {
 }
 
 async function showDemo(page: Page) {
-  const internals = page.getByRole("button", { name: "Internals", exact: true });
-  await expect(internals).toBeVisible({ timeout: 60_000 });
-  if (await internals.getAttribute("aria-pressed") === "true") await internals.click();
-  await page.getByLabel("Computer views").getByRole("button", { name: "Demo", exact: true }).click();
+  await setInternalsOpen(page, false);
+  await page.getByLabel("Computer views").getByRole("button", { name: "Graphics", exact: true }).click();
 }
 
 async function flips(page: Page): Promise<number> {

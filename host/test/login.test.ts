@@ -302,16 +302,13 @@ describe("first-party guest login", () => {
   });
 
   it("fails instead of starting a shell outside the account's missing canonical home", async () => {
-    // `/home/maker` is one of the kernel's tmpfs scratch mounts, so it always
-    // exists on a booted machine; a missing home needs an account whose home
-    // is not a mount point.
     const result = await runLogin({
       args: "-f maker",
       stdin: "",
       uid: 0,
       gid: 0,
       createHome: false,
-      accountHome: "/home/maker-absent",
+      accountHome: "/home/maker",
     });
 
     expect(result.exitCode).toBe(1);

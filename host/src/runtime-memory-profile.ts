@@ -38,6 +38,7 @@ import {
   DEFAULT_MAX_PAGES,
   WASM_PAGE_SIZE,
 } from "./constants";
+import { MAX_REPORTABLE_TRANSFER_BYTES } from "./generated/abi";
 
 export interface RuntimeMemoryProfile {
   /** Stable identifier, surfaced in diagnostics so the choice is visible. */
@@ -65,6 +66,45 @@ export interface RuntimeMemoryProfile {
    * Sizing the pool to the host is what keeps that from happening.
    */
   readonly preforkServiceProcesses: number;
+}
+
+export function selectKernelMaxPages(requested: number | undefined, ceiling = DEFAULT_KERNEL_MAX_PAGES): number {
+  if (requested === undefined) return ceiling;
+  if (!Number.isSafeInteger(requested) || requested <= 0 || requested > ceiling) {
+    throw new RangeError(`kernelMaxPages must be a positive integer no greater than ${ceiling}`);
+  }
+  return requested;
+}
+
+export function selectRootfsMetadataBytes(requested: number | undefined, kernelMaxPages?: number): number {
+  const pages = selectKernelMaxPages(kernelMaxPages);
+  const ceiling = Math.min(64 * 1024 * 1024, Math.floor(pages * WASM_PAGE_SIZE / 8));
+  if (requested === undefined) return ceiling;
+  if (!Number.isSafeInteger(requested) || requested <= 0 || requested > ceiling) {
+    throw new RangeError(`rootfsMetadataBytes must be a positive integer no greater than ${ceiling}`);
+  }
+  return requested;
+}
+
+export function selectRootfsJournalStateBytes(kernelMaxPages?: number): number {
+  return Math.min(32 * 1024 * 1024, Math.floor(selectKernelMaxPages(kernelMaxPages) * WASM_PAGE_SIZE / 8));
+}
+
+export function selectRootfsIoBytes(kernelMaxPages?: number): number {
+  return Math.min(32 * 1024 * 1024, Math.floor(selectKernelMaxPages(kernelMaxPages) * WASM_PAGE_SIZE / 8));
+}
+
+export function selectRootfsHostMetadataBytes(kernelMaxPages?: number): number {
+  return Math.min(16 * 1024 * 1024, Math.floor(selectKernelMaxPages(kernelMaxPages) * WASM_PAGE_SIZE / 8));
+}
+
+export function selectVfsFileReadBytes(requested?: number, kernelMaxPages?: number): number {
+  const ceiling = Math.min(MAX_REPORTABLE_TRANSFER_BYTES, selectKernelMaxPages(kernelMaxPages) * WASM_PAGE_SIZE);
+  if (requested === undefined) return Math.min(64 * 1024 * 1024, Math.floor(ceiling / 4));
+  if (!Number.isSafeInteger(requested) || requested <= 0 || requested > ceiling) {
+    throw new RangeError(`maxVfsFileReadBytes must be a positive integer no greater than ${ceiling}`);
+  }
+  return requested;
 }
 
 /**

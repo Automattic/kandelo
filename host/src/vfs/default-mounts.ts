@@ -27,9 +27,6 @@ export const KERNEL_TMPFS_OWNED_PREFIXES: readonly string[] = [
   "/var/tmp",
   "/var/log",
   "/var/run",
-  "/home/maker",
-  "/root",
-  "/srv",
 ];
 
 /** True when the in-kernel tmpfs owns `mountPath` exactly (a scratch prefix). */
@@ -63,8 +60,9 @@ export interface MountSpec {
 
 /**
  * Canonical mount layout. Mirrors the top-level system directories declared
- * in `MANIFEST`: `/` is the writable rootfs image; `/tmp`, `/var/*`,
- * `/home/maker`, `/root`, and `/srv` are scratch mounts.
+ * in `MANIFEST`: `/` is the writable rootfs image; `/tmp`,
+ * `/var/log`, `/var/run`, and `/var/tmp` are scratch mounts. Homes and `/srv`
+ * belong to the root image and its persistent overlay when configured.
  */
 export const DEFAULT_MOUNT_SPEC: MountSpec[] = [
   { path: "/", source: "image", readonly: false },
@@ -84,23 +82,6 @@ export const DEFAULT_MOUNT_SPEC: MountSpec[] = [
     ephemeral: true,
     nosuid: true,
   },
-  {
-    path: "/home/maker",
-    source: "scratch",
-    mode: 0o755,
-    uid: 1000,
-    gid: 1000,
-    nosuid: true,
-  },
-  {
-    path: "/root",
-    source: "scratch",
-    mode: 0o700,
-    uid: 0,
-    gid: 0,
-    nosuid: true,
-  },
-  { path: "/srv", source: "scratch", mode: 0o755, nosuid: true },
 ];
 
 /**

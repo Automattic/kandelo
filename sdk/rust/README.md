@@ -79,6 +79,15 @@ changing a dependency. The full target reports `target_os = "kandelo"`,
 facts true: neither an application nor a build wrapper should pretend the
 target is Linux, WASI, or a browser.
 
+The sysroot applies `std-kandelo.patch` in addition to the overlaid files.
+Kandelo selects the ordinary POSIX `F_DUPFD_CLOEXEC` implementation for
+`BorrowedFd::try_clone_to_owned`, `OwnedFd::try_clone` and `File::try_clone`.
+The upstream architecture-only wasm32 fallback otherwise returns Unsupported
+even though Kandelo implements descriptor duplication. Non-Kandelo wasm32
+targets retain that fallback. The patch participates in the sysroot input
+digest and package cache identity. `std-boundaries` exercises descriptor
+lifetimes, shared offsets and positioned I/O through the ordinary SDK.
+
 ### Diagnose the first failing crate
 
 - Inspect the pinned `Cargo.lock`, enabled features, and the failing crate's

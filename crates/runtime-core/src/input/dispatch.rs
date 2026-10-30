@@ -4,13 +4,13 @@
 //! next read prepends a synthetic `SYN_DROPPED` so userspace can resync
 //! via `EVIOCG*`.
 
-use alloc::collections::VecDeque;
-
+use core::sync::atomic::{AtomicU64, Ordering};
 use wasm_posix_shared::input::WpkInputEvent;
 
 use crate::ofd::INPUT_RING_MAX_BYTES;
 
 const RECORD_SIZE: usize = core::mem::size_of::<WpkInputEvent>();
+static LAST_DELIVERY_EPOCH: AtomicU64 = AtomicU64::new(0);
 
 /// Push one `WpkInputEvent` onto every open OFD bound to `device`
 /// (0 = keyboard, 1 = pointer). Other device numbers are dropped.
@@ -52,42 +52,39 @@ pub fn push_event(
     // distinct ring exactly once — mirroring Linux, where a forked
     // `struct file` carries one `struct evdev_client`. Independent
     // `open()`s keep distinct rings and each still receive the event.
-    let mut seen: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
-    crate::process_table::with_processes(|procs| {
-        for proc in procs {
-            for (_idx, ofd) in proc.ofd_table.iter_mut() {
-                let Some(input) = ofd.input() else { continue };
-                if input.device != device {
-                    continue;
-                }
-                let ring_id = input.ring.identity();
-                if seen.contains(&ring_id) {
-                    continue;
-                }
-                seen.push(ring_id);
-                let mut ring = input.ring.borrow_mut();
-                if ring.event_ring.len() + RECORD_SIZE > INPUT_RING_MAX_BYTES {
-                    // Ring full: drop the OLDEST record to make room for the
-                    // newest and latch `dropped`, mirroring Linux
-                    // drivers/input/evdev.c::evdev_pass_values (which advances
-                    // the tail). Keeping the newest guarantees a key release is
-                    // never the record dropped; the SYN_DROPPED synthesised on
-                    // the next read tells userspace to resync.
-                    for _ in 0..RECORD_SIZE {
-                        ring.event_ring.pop_front();
-                    }
-                    ring.dropped = true;
-                }
-                push_record(&mut ring.event_ring, &ev);
-                crate::epoll::notify(crate::epoll::Source::Description(ofd.ofd_id), 0x41);
-                delivered += 1;
+    let epoch = LAST_DELIVERY_EPOCH.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
+        |previous| previous.checked_add(1)).expect("input delivery epoch exhausted") + 1;
+    crate::process_table::with_processes(|proc| {
+        for (_idx, ofd) in proc.ofd_table.iter_mut() {
+            let Some(input) = ofd.input() else { continue };
+            if input.device != device {
+                continue;
             }
+            let mut ring = input.ring.borrow_mut();
+            if !ring.begin_delivery(epoch) {
+                continue;
+            }
+            if ring.event_ring.len() + RECORD_SIZE > INPUT_RING_MAX_BYTES {
+                // Ring full: drop the OLDEST record to make room for the
+                // newest and latch `dropped`, mirroring Linux
+                // drivers/input/evdev.c::evdev_pass_values (which advances
+                // the tail). Keeping the newest guarantees a key release is
+                // never the record dropped; the SYN_DROPPED synthesised on
+                // the next read tells userspace to resync.
+                for _ in 0..RECORD_SIZE {
+                    ring.event_ring.pop_front();
+                }
+                ring.dropped = true;
+            }
+            push_record(&mut ring.event_ring, &ev);
+            crate::epoll::notify(crate::epoll::Source::Description(ofd.ofd_id), 0x41);
+            delivered += 1;
         }
     });
     delivered
 }
 
-fn push_record(ring: &mut VecDeque<u8>, ev: &WpkInputEvent) {
+fn push_record(ring: &mut crate::ofd::InputEventRing, ev: &WpkInputEvent) {
     let bytes: [u8; RECORD_SIZE] = unsafe {
         core::mem::transmute::<WpkInputEvent, [u8; RECORD_SIZE]>(*ev)
     };
@@ -102,7 +99,6 @@ mod tests {
     use crate::ofd::{FileType, InputFdState, INPUT_RING_MAX_RECORDS};
     use crate::process::Process;
     use crate::process_table::GLOBAL_PROCESS_TABLE as PROCESS_TABLE;
-    use alloc::boxed::Box;
     use wasm_posix_shared::flags::O_RDWR;
     use wasm_posix_shared::input::{EV_KEY, EV_REL, EV_SYN, KEY_A, REL_X, SYN_REPORT};
 
@@ -126,7 +122,7 @@ mod tests {
             .ofd_table
             .create(FileType::CharDevice, O_RDWR, host_handle, path);
         let ofd = proc.ofd_table.get_mut(ofd_idx).unwrap();
-        ofd.input_state = Some(Box::new(InputFdState {
+        ofd.input_state = Some(crate::IoBox::new(InputFdState {
             device,
             ..Default::default()
         }));

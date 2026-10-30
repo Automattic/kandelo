@@ -3569,10 +3569,9 @@ const KANDELO_IMAGE_MODULE_NODE_NAME: &str = "kandelo-image-module";
 /// The machinery is written over this table, rather than for that one module,
 /// so the build, freshness and projection rules live in one place.
 ///
-/// "Co-resident" names the pipeline, not the module's memory model: the image
-/// writer imports nothing, not even `env.memory`, and owns its own linear
-/// memory. Do not infer build flags or memory placement from membership in
-/// this table; each module's `build-wasm.sh` owns those.
+/// "Co-resident" names the pipeline, not the module's memory model. The
+/// standalone writer imports nothing; its positioned variant imports one
+/// byte reader. Each module's `build-wasm.sh` owns those build contracts.
 pub(crate) struct CoresidentSideModule {
     /// Projection node name; also the identity the consumer's root-level
     /// member rule admits.
@@ -3599,9 +3598,18 @@ pub(crate) const CORESIDENT_SIDE_MODULES: &[CoresidentSideModule] = &[Coresident
     // The image writer is not compiled per pointer width. It BUILDS an image
     // rather than sharing a guest's address space, so one wasm32 module writes
     // images consumed by wasm32 and wasm64 guests alike.
-    artifacts: &[("kandelo_image_module32.wasm", "wasm32", true)],
+    artifacts: &[
+        ("kandelo_image_module32.wasm", "wasm32", true),
+        ("kandelo_image_module_positioned32.wasm", "wasm32", true),
+    ],
     closure_description: "crates/kandelo-image-module, crates/runtime-core and their \
                           workspace dependencies",
+}, CoresidentSideModule {
+    node_name: "kandelo-program-policy",
+    script: "crates/program-policy/build-wasm.sh",
+    closure_crates: &["kandelo-program-policy"],
+    artifacts: &[("kandelo_program_policy32.wasm", "wasm32", true)],
+    closure_description: "crates/program-policy and its workspace dependencies",
 }];
 
 /// Whether a projection node name belongs to a co-resident side module rather
@@ -3710,27 +3718,25 @@ fn coresident_side_module_projection(
     })
 }
 
-/// One source-only projection node per co-resident artifact. Each is a single
-/// root-level member so the consumer admits it under its root-level member
-/// rule (`binary-resolver.ts`).
+/// One source-only projection node per co-resident module and architecture.
+/// Every member stays root-level and explicitly allowlisted by the consumer.
 fn coresident_side_module_nodes(
     module: &CoresidentSideModule,
     projection: &CoresidentSideModuleProjection,
 ) -> Vec<SourceOnlyProgramNodeV1> {
-    projection
-        .members
-        .iter()
-        .map(|member| {
-            let target_arch = module
-                .artifacts
-                .iter()
-                .find(|(name, _, _)| *name == member.mirror_path)
-                .map(|(_, arch, _)| *arch)
-                .unwrap_or("wasm32");
-            // The node's manifest identity is a stable declaration tag bound to
-            // the module's name (the members ARE the artifacts, not a package
-            // manifest); its cache key is the build key that gates freshness;
-            // its receipt digest binds the projected member content.
+    let mut by_arch: BTreeMap<&str, Vec<MaterializedProgramMemberV1>> = BTreeMap::new();
+    for member in &projection.members {
+        let target_arch = module
+            .artifacts
+            .iter()
+            .find(|(name, _, _)| *name == member.mirror_path)
+            .map(|(_, arch, _)| *arch)
+            .unwrap_or("wasm32");
+        by_arch.entry(target_arch).or_default().push(member.clone());
+    }
+    by_arch
+        .into_iter()
+        .map(|(target_arch, members)| {
             let manifest_sha256 = sha256_bytes(
                 format!("kandelo-coresident-side-module-node-v1\0{}", module.node_name).as_bytes(),
             );
@@ -3738,11 +3744,13 @@ fn coresident_side_module_nodes(
             receipt.update(b"kandelo-coresident-side-module-receipt-v1\0");
             receipt.update((module.node_name.len() as u64).to_le_bytes());
             receipt.update(module.node_name.as_bytes());
-            receipt.update((member.mirror_path.len() as u64).to_le_bytes());
-            receipt.update(member.mirror_path.as_bytes());
-            receipt.update(member.sha256.as_bytes());
-            receipt.update(member.size.to_le_bytes());
-            receipt.update((member.mode as u64).to_le_bytes());
+            for member in &members {
+                receipt.update((member.mirror_path.len() as u64).to_le_bytes());
+                receipt.update(member.mirror_path.as_bytes());
+                receipt.update(member.sha256.as_bytes());
+                receipt.update(member.size.to_le_bytes());
+                receipt.update((member.mode as u64).to_le_bytes());
+            }
             let cache_receipt_sha256 = crate::util::hex(&receipt.finalize());
             SourceOnlyProgramNodeV1 {
                 node: SourceOnlyProgramNodeIdentityV1 {
@@ -3753,7 +3761,7 @@ fn coresident_side_module_nodes(
                 manifest_sha256,
                 cache_key_sha256: projection.closure_sha.clone(),
                 cache_receipt_sha256,
-                members: vec![member.clone()],
+                members,
             }
         })
         .collect()
@@ -6250,7 +6258,8 @@ fn source_only_program_projection_candidate(
                     "source-only program {name:?}/{target_arch} member receipt is not canonically sorted"
                 ));
             }
-            if sorted_members.len() != package.members.len() {
+            let original_count = package.members.iter().filter(|member| member.original_wasm.is_some()).count();
+            if sorted_members.len() != package.members.len() + original_count {
                 return Err(format!(
                     "source-only program {name:?}/{target_arch} member receipt count does not match v2 projection"
                 ));
@@ -6287,6 +6296,16 @@ fn source_only_program_projection_candidate(
                         "source-only program {name:?}/{target_arch} materialized mode for {:?} does not match v2 declaration",
                         member.source_artifact
                     ));
+                }
+                if let Some(original) = &member.original_wasm {
+                    let generation = crate::build_deps::original_companion_generation_relative(name, cache_key_sha256)?;
+                    let original_mirror = format!("programs/{target_arch}/{}", generation.join(original).display());
+                    let actual = receipt_members.get(&(&original_mirror, original)).ok_or_else(|| {
+                        format!("source-only program {name:?}/{target_arch} receipt omitted declared original {original:?}")
+                    })?;
+                    if actual.mode & 0o7333 != 0 {
+                        return Err(format!("source-only program {name:?}/{target_arch} original companion has writable, executable or special mode bits"));
+                    }
                 }
             }
 
@@ -8772,6 +8791,7 @@ materialization = "lazy"
     // and known keys, so no Cargo workspace / `cargo metadata` run is needed.
 
     const IMAGE_MODULE_ARTIFACT: &str = "kandelo_image_module32.wasm";
+    const POSITIONED_IMAGE_MODULE_ARTIFACT: &str = "kandelo_image_module_positioned32.wasm";
 
     fn image_module() -> &'static CoresidentSideModule {
         CORESIDENT_SIDE_MODULES
@@ -8795,7 +8815,8 @@ materialization = "lazy"
                     "cacheKeySha256": cache_key,
                     "cacheReceiptSha256": "00",
                     "members": [
-                        { "sourceArtifact": IMAGE_MODULE_ARTIFACT, "mirrorPath": IMAGE_MODULE_ARTIFACT, "mode": 420, "size": size, "sha256": sha256 }
+                        { "sourceArtifact": IMAGE_MODULE_ARTIFACT, "mirrorPath": IMAGE_MODULE_ARTIFACT, "mode": 420, "size": size, "sha256": sha256 },
+                        { "sourceArtifact": POSITIONED_IMAGE_MODULE_ARTIFACT, "mirrorPath": POSITIONED_IMAGE_MODULE_ARTIFACT, "mode": 420, "size": size, "sha256": sha256 }
                     ]
                 }
             ]
@@ -8803,12 +8824,19 @@ materialization = "lazy"
     }
 
     #[test]
-    fn coresident_table_is_exactly_the_image_writer() {
-        assert_eq!(CORESIDENT_SIDE_MODULES.len(), 1);
+    fn coresident_table_has_the_image_writer_and_isolated_program_policy() {
+        assert_eq!(CORESIDENT_SIDE_MODULES.len(), 2);
+        let policy = CORESIDENT_SIDE_MODULES.iter().find(|module| module.node_name == "kandelo-program-policy").unwrap();
+        assert_eq!(policy.script, "crates/program-policy/build-wasm.sh");
+        assert_eq!(policy.closure_crates, &["kandelo-program-policy"]);
+        assert_eq!(policy.artifacts, &[("kandelo_program_policy32.wasm", "wasm32", true)]);
         let module = image_module();
         assert_eq!(module.script, "crates/kandelo-image-module/build-wasm.sh");
         assert_eq!(module.closure_crates, &["kandelo-image-module", "runtime-core"]);
-        assert_eq!(module.artifacts, &[(IMAGE_MODULE_ARTIFACT, "wasm32", true)]);
+        assert_eq!(module.artifacts, &[
+            (IMAGE_MODULE_ARTIFACT, "wasm32", true),
+            (POSITIONED_IMAGE_MODULE_ARTIFACT, "wasm32", true),
+        ]);
     }
 
     #[test]
@@ -8818,6 +8846,7 @@ materialization = "lazy"
         fs::create_dir_all(&output_root).unwrap();
         let bytes = b"image-module-bytes-fresh";
         fs::write(output_root.join(IMAGE_MODULE_ARTIFACT), bytes).unwrap();
+        fs::write(output_root.join(POSITIONED_IMAGE_MODULE_ARTIFACT), bytes).unwrap();
         let manifest =
             image_module_manifest("deadbeef", bytes.len() as u64, &sha256_bytes(bytes));
         check_projected_side_module_freshness(
@@ -8838,6 +8867,7 @@ materialization = "lazy"
         fs::create_dir_all(&output_root).unwrap();
         let bytes = b"image-module-bytes";
         fs::write(output_root.join(IMAGE_MODULE_ARTIFACT), bytes).unwrap();
+        fs::write(output_root.join(POSITIONED_IMAGE_MODULE_ARTIFACT), bytes).unwrap();
         let manifest =
             image_module_manifest("oldclosurekey", bytes.len() as u64, &sha256_bytes(bytes));
         let err = check_projected_side_module_freshness(
@@ -8863,6 +8893,7 @@ materialization = "lazy"
         fs::create_dir_all(&output_root).unwrap();
         let staged = b"the-actually-staged-newer-bytes";
         fs::write(output_root.join(IMAGE_MODULE_ARTIFACT), staged).unwrap();
+        fs::write(output_root.join(POSITIONED_IMAGE_MODULE_ARTIFACT), staged).unwrap();
         let manifest =
             image_module_manifest("matchingkey", 999, &sha256_bytes(b"older-manifest-bytes"));
         let err = check_projected_side_module_freshness(
@@ -8947,12 +8978,20 @@ materialization = "lazy"
         let recorded = |module: &CoresidentSideModule| Ok(format!("{}-recorded", module.node_name));
 
         let bytes = b"image-module-bytes".to_vec();
-        fs::write(repo.join("local-binaries").join(IMAGE_MODULE_ARTIFACT), &bytes).unwrap();
+        for module in CORESIDENT_SIDE_MODULES {
+            for (name, _, _) in module.artifacts {
+                fs::write(repo.join("local-binaries").join(name), &bytes).unwrap();
+            }
+        }
         assert!(
             !coresident_side_module_projection_is_current_with(&output_root, repo, recorded),
             "a module missing from the tier is not current",
         );
-        fs::write(output_root.join(IMAGE_MODULE_ARTIFACT), &bytes).unwrap();
+        for module in CORESIDENT_SIDE_MODULES {
+            for (name, _, _) in module.artifacts {
+                fs::write(output_root.join(name), &bytes).unwrap();
+            }
+        }
         assert!(
             !coresident_side_module_projection_is_current_with(&output_root, repo, recorded),
             "equal bytes without a manifest are not current",
@@ -8968,20 +9007,30 @@ materialization = "lazy"
             "a manifest that does not record the module is not current",
         );
 
-        fs::write(
-            &manifest_path,
-            serde_json::to_vec(&image_module_manifest(
-                &format!("{KANDELO_IMAGE_MODULE_NODE_NAME}-recorded"),
-                bytes.len() as u64,
-                &sha256_bytes(&bytes),
-            ))
-            .unwrap(),
-        )
-        .unwrap();
+        let nodes: Vec<_> = CORESIDENT_SIDE_MODULES.iter().map(|module| {
+            let members: Vec<_> = module.artifacts.iter().map(|(name, _, _)| serde_json::json!({
+                "sourceArtifact": name, "mirrorPath": name, "mode": 420,
+                "size": bytes.len(), "sha256": sha256_bytes(&bytes),
+            })).collect();
+            serde_json::json!({
+                "node": { "kind": "package", "name": module.node_name, "targetArch": "wasm32" },
+                "manifestSha256": "00", "cacheKeySha256": format!("{}-recorded", module.node_name),
+                "cacheReceiptSha256": "00", "members": members,
+            })
+        }).collect();
+        fs::write(&manifest_path, serde_json::to_vec(&serde_json::json!({ "nodes": nodes })).unwrap()).unwrap();
         assert!(
             coresident_side_module_projection_is_current_with(&output_root, repo, recorded),
             "bytes and manifest both current",
         );
+        let policy = CORESIDENT_SIDE_MODULES.iter().find(|module| module.node_name == "kandelo-program-policy").unwrap();
+        let policy_path = output_root.join(policy.artifacts[0].0);
+        fs::remove_file(&policy_path).unwrap();
+        assert!(
+            !coresident_side_module_projection_is_current_with(&output_root, repo, recorded),
+            "the required inspection module cannot be omitted",
+        );
+        fs::write(policy_path, &bytes).unwrap();
         let rebuilt = |_module: &CoresidentSideModule| Ok(String::from("rebuilt"));
         assert!(
             !coresident_side_module_projection_is_current_with(&output_root, repo, rebuilt),
@@ -9015,6 +9064,28 @@ materialization = "lazy"
             node.cache_receipt_sha256, second[0].cache_receipt_sha256,
             "the receipt must bind the projected member content",
         );
+    }
+
+    #[test]
+    fn coresident_node_groups_both_image_writers_under_one_architecture() {
+        let members = [IMAGE_MODULE_ARTIFACT, POSITIONED_IMAGE_MODULE_ARTIFACT]
+            .into_iter()
+            .map(|name| MaterializedProgramMemberV1 {
+                source_artifact: name.to_string(),
+                mirror_path: name.to_string(),
+                mode: 0o644,
+                size: 3,
+                sha256: "1".repeat(64),
+            })
+            .collect();
+        let projection = CoresidentSideModuleProjection {
+            closure_sha: "k".repeat(64),
+            members,
+        };
+        let nodes = coresident_side_module_nodes(image_module(), &projection);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].node.target_arch, "wasm32");
+        assert_eq!(nodes[0].members, projection.members);
     }
 
     /// A package whose build LOADS a co-resident module must key on that
@@ -9570,6 +9641,7 @@ materialization = "lazy"
                         mirror_path: "app.wasm".to_string(),
                         output_name: Some("app".to_string()),
                         fork_instrumentation: Some("auto".to_string()),
+                        original_wasm: None,
                         guest_path: None,
                         mode: None,
                     }],
@@ -9701,6 +9773,42 @@ materialization = "lazy"
         );
         assert_eq!(bytes.last(), Some(&b'\n'));
         assert!(bytes.starts_with(b"{\n  \"format\""));
+
+        let mut original_projection = authority.projection.clone();
+        original_projection.packages.get_mut("app").unwrap().members[0].original_wasm = Some("originals/app.wasm".into());
+        let mut original_receipt = receipt.clone();
+        let original = MaterializedProgramMemberV1 {
+            source_artifact: "originals/app.wasm".into(),
+            mirror_path: format!("programs/wasm32/.originals/app/{}/originals/app.wasm", original_receipt.cache_key_sha256),
+            mode: 0o444,
+            size: 8,
+            sha256: "ef".repeat(32),
+        };
+        original_receipt.materialized_members.push(original);
+        original_receipt.materialized_members.sort_by(|left, right| (&left.mirror_path, &left.source_artifact).cmp(&(&right.mirror_path, &right.source_artifact)));
+        let app_node = PlanNodeV1::package("app", "wasm32");
+        let mut original_receipts = receipts.clone();
+        original_receipts.insert(app_node.clone(), original_receipt.clone());
+        let with_original = source_only_program_projection_candidate(original_projection.clone(), &"66".repeat(32),
+            &original_receipts, &BTreeSet::from([kernel_node.clone()])).unwrap();
+        let original_json: serde_json::Value = serde_json::from_slice(&source_only_program_projection_bytes(&with_original).unwrap()).unwrap();
+        assert_eq!(original_json["projection"]["packages"]["app"]["members"][0]["originalWasm"], "originals/app.wasm");
+        for mutation in ["mode", "path", "artifact", "extra"] {
+            let mut changed = original_receipt.clone();
+            let companion = changed.materialized_members.iter_mut().find(|member| member.source_artifact == "originals/app.wasm").unwrap();
+            match mutation {
+                "mode" => companion.mode = 0o555,
+                "path" => companion.mirror_path = companion.mirror_path.replace("22".repeat(32).as_str(), &"ff".repeat(32)),
+                "artifact" => companion.source_artifact = "other.wasm".into(),
+                "extra" => { let extra = companion.clone(); changed.materialized_members.push(extra); }
+                _ => unreachable!(),
+            }
+            changed.materialized_members.sort_by(|left, right| (&left.mirror_path, &left.source_artifact).cmp(&(&right.mirror_path, &right.source_artifact)));
+            let mut changed_receipts = original_receipts.clone();
+            changed_receipts.insert(app_node.clone(), changed);
+            assert!(source_only_program_projection_candidate(original_projection.clone(), &"66".repeat(32),
+                &changed_receipts, &BTreeSet::from([kernel_node.clone()])).is_err(), "{mutation}");
+        }
 
         let rogue_node = PlanNodeV1::package("rogue", "wasm32");
         let error = source_only_program_projection_candidate(

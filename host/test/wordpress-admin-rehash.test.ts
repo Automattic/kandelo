@@ -119,6 +119,18 @@ function imageHash(): string {
 }
 
 describe.skipIf(!existsSync(imagePath))("WordPress admin hash re-salting", () => {
+  it.each(["wordpress", "lamp"])("%s ships a PHP-FPM-writable uploads directory", (image) => {
+    const filesystem = KandeloImageFs.create();
+    filesystem.loadImage(new Uint8Array(readFileSync(join(
+      repoRoot, `local-binaries/source-only-v1/programs/wasm32/${image}.vfs.zst`,
+    ))), {
+      maxDecompressedBytes: 1024 * 1024 * 1024,
+    });
+    const uploads = filesystem.stat("/var/www/html/wp-content/uploads");
+    expect({ uid: uploads.uid, gid: uploads.gid, mode: uploads.mode & 0o777 })
+      .toEqual({ uid: 65534, gid: 65534, mode: 0o775 });
+  });
+
   it("gives each machine its own hash of the demo password and keeps it on a later boot", async () => {
     const shipped = imageHash();
     const port = 39100 + (process.pid % 400);

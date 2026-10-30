@@ -10,6 +10,7 @@ import { retryKernelEntryResult } from "./kernel-entry-retry";
 const EAGAIN = 11;
 const EFBIG = 27;
 const EIO = 5;
+const ENOENT = 2;
 const ENOEXEC = 8;
 const ENOMEM = 12;
 const EOVERFLOW = 75;
@@ -50,6 +51,7 @@ export interface PreparedExecKernel {
    *  is; see `CentralizedKernelWorker.deferredFetchSettled`. Optional: a
    *  kernel without a deferred pipe never returns EAGAIN for one. */
   deferredFetchSettled?(): Promise<void> | null;
+  deferredFetchProgressAt?(): number | undefined;
 }
 
 export class PreparedExecTargetError extends Error {
@@ -62,6 +64,18 @@ export class PreparedExecTargetError extends Error {
     this.errno = errno;
     this.targetCancelled = targetCancelled;
   }
+}
+
+/**
+ * The message a failed spawn reports. A missing program keeps the
+ * `ENOENT: <path>` form that callers map to "file not found".
+ */
+export function spawnFailureMessage(error: unknown, programPath?: string): string {
+  if (!(error instanceof PreparedExecTargetError)) return String(error);
+  if (error.errno === ENOENT && programPath !== undefined) {
+    return `ENOENT: ${programPath} (errno ${ENOENT})`;
+  }
+  return `${error.name}: ${error.message} (errno ${error.errno})`;
 }
 
 function targetError(cause: unknown, fallback: string): PreparedExecTargetError {
@@ -160,8 +174,10 @@ export async function readPreparedExecTarget(
       if (read === -EAGAIN) {
         // The deferred bytes are still being fetched: retry the same offset
         // once the fetch has settled.
-        eagainSince ??= Date.now();
-        const eagainWaitedMs = Date.now() - eagainSince;
+        eagainSince ??= performance.now();
+        const inFlight = kernel.deferredFetchSettled?.() ?? null;
+        const progressAt = inFlight === null ? undefined : kernel.deferredFetchProgressAt?.();
+        const eagainWaitedMs = performance.now() - Math.max(eagainSince, progressAt ?? eagainSince);
         if (eagainWaitedMs >= EXEC_TARGET_EAGAIN_MAX_WAIT_MS) {
           throw new PreparedExecTargetError(
             "prepared exec target read did not become available after "
@@ -170,7 +186,6 @@ export async function readPreparedExecTarget(
             ETIMEDOUT,
           );
         }
-        const inFlight = kernel.deferredFetchSettled?.() ?? null;
         await waitForDeferredFetch(
           inFlight,
           inFlight === null

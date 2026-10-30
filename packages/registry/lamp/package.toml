@@ -35,3 +35,4 @@ script_path = "packages/registry/lamp/build-lamp.sh"
 [[outputs]]
 name = "lamp"
 wasm = "lamp.vfs.zst"
+fork_instrumentation = "disabled"

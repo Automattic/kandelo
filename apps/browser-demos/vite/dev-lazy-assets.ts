@@ -115,7 +115,7 @@ export interface BatchedFsServePathOptions {
   /** Every package-mirror path the projection publishes. */
   listMembers(projectionPath: string): string[];
   /** Resolve many paths at once, inside one program-index freshness check. */
-  resolveBatch(relPaths: readonly string[]): Array<string | null>;
+  resolveBatch(relPaths: readonly string[]): Array<string | null | Error>;
   /** Resolve one path the projection does not list (a fetched mirror). */
   resolveOne(relPath: string): string | null;
   /** Approve one exact file for `/@fs/`; returns its canonical path. */
@@ -139,7 +139,7 @@ export function batchedFsServePath(
   options: BatchedFsServePathOptions,
 ): DevLazyAssetOptions["servePath"] {
   let batchIdentity: string | null = null;
-  let resolved = new Map<string, string | null>();
+  let resolved = new Map<string, string | null | Error>();
   return (relPath, base) => {
     const identity = options.identity(options.projectionPath);
     if (identity !== batchIdentity) {
@@ -153,6 +153,7 @@ export function batchedFsServePath(
     }
     if (!resolved.has(relPath)) resolved.set(relPath, options.resolveOne(relPath));
     const file = resolved.get(relPath)!;
+    if (file instanceof Error) throw file;
     if (file === null) return null;
     const canonical = options.approve(file);
     // Vite decodes the `/@fs/` path with decodeURI, so encode it the same

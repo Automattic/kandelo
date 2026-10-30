@@ -38,8 +38,8 @@ async function createRootfs(): Promise<Uint8Array> {
   return fs.saveImage();
 }
 
-async function bootedHost(): Promise<NodeKernelHost> {
-  const host = new NodeKernelHost({ rootfsImage: await createRootfs() });
+async function bootedHost(onStdout?: (pid: number, bytes: Uint8Array) => void): Promise<NodeKernelHost> {
+  const host = new NodeKernelHost({ rootfsImage: await createRootfs(), onStdout });
   await host.init(asArrayBuffer(new Uint8Array(readFileSync(kernelPath!))));
   return host;
 }
@@ -97,7 +97,8 @@ describe.skipIf(!haveKernel || !havePrograms)("NodeKernelHost owned jobs", () =>
   }, 60_000);
 
   it("records the output and exit status of a whole command family", async () => {
-    const host = await bootedHost();
+    const broadcast: Uint8Array[] = [];
+    const host = await bootedHost((_pid, bytes) => broadcast.push(bytes));
     try {
       await host.spawnFromVfs("/bin/spawn-smoke", ["spawn-smoke"], {
         ownedJob: { id: "family", timeoutMs: 30_000 },
@@ -108,6 +109,7 @@ describe.skipIf(!haveKernel || !havePrograms)("NodeKernelHost owned jobs", () =>
       // The posix_spawn child is owned too, so its stdout joins the job's.
       expect(decode(read, "stdout")).toContain("spawned-ok");
       expect(decode(read, "stdout")).toContain("OK");
+      expect(broadcast).toHaveLength(0);
     } finally {
       await host.destroy();
     }

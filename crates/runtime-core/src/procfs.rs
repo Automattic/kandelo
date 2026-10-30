@@ -75,6 +75,7 @@ pub enum ProcfsEntry {
     // reader can tell at a glance which files are Kandelo's own.
     KandeloDir,             // /proc/kandelo
     KandeloWritebackLosses, // /proc/kandelo/writeback_losses
+    KandeloFilesystemMemory,
 }
 
 impl ProcfsEntry {
@@ -142,7 +143,8 @@ pub fn entry_pid(entry: &ProcfsEntry) -> Option<u32> {
         | ProcfsEntry::SelfLink
         | ProcfsEntry::ThreadSelfLink
         | ProcfsEntry::KandeloDir
-        | ProcfsEntry::KandeloWritebackLosses => None,
+        | ProcfsEntry::KandeloWritebackLosses
+        | ProcfsEntry::KandeloFilesystemMemory => None,
     }
 }
 
@@ -197,6 +199,9 @@ pub fn match_procfs(path: &[u8], current_pid: u32) -> Option<ProcfsEntry> {
     }
     if rest == b"kandelo/writeback_losses" {
         return Some(ProcfsEntry::KandeloWritebackLosses);
+    }
+    if rest == b"kandelo/fs_memory" {
+        return Some(ProcfsEntry::KandeloFilesystemMemory);
     }
     if rest.starts_with(b"kandelo/") {
         // A named directory whose contents are a closed set: an unknown name
@@ -318,9 +323,7 @@ fn match_net_path(rest: &[u8], pid: Option<u32>) -> Option<ProcfsEntry> {
 // ── Content generators ──────────────────────────────────────────────────────
 
 /// Generate /proc/<pid>/stat content.
-pub fn generate_stat(proc: &Process) -> Vec<u8> {
-    use alloc::format;
-
+pub fn generate_stat(proc: &Process) -> Result<crate::IoBuffer<u8>, Errno> {
     let name = process_name(proc);
     let state = match proc.state {
         crate::process::ProcessState::Running => 'R',
@@ -339,24 +342,28 @@ pub fn generate_stat(proc: &Process) -> Vec<u8> {
     // not have a host CPU scheduler, but exposing the stored POSIX nice value
     // in the Linux-compatible procfs slot is observable process metadata.
     let priority = 20 + proc.nice;
-    let line = format!(
+    crate::IoBuffer::formatted(format_args!(
         "{} ({}) {} {} {} {} 0 0 0 0 0 0 0 0 0 0 0 {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
         proc.pid, name, state, proc.ppid, proc.pgid, proc.sid, priority, proc.nice,
-    );
-    line.into_bytes()
+    ))
+}
+
+struct SupplementaryGroups<'a>(&'a [u32]);
+
+impl core::fmt::Display for SupplementaryGroups<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for (index, group) in self.0.iter().enumerate() {
+            if index > 0 { formatter.write_str(" ")?; }
+            write!(formatter, "{group}")?;
+        }
+        Ok(())
+    }
 }
 
 /// Generate /proc/<pid>/status content.
-pub fn generate_status(proc: &Process) -> Vec<u8> {
-    use alloc::format;
-
+pub fn generate_status(proc: &Process) -> Result<crate::IoBuffer<u8>, Errno> {
     let name = process_name(proc);
-    let groups = proc
-        .supplementary_groups()
-        .iter()
-        .map(|gid| format!("{gid}"))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let groups = SupplementaryGroups(proc.supplementary_groups());
 
     let state_str = match proc.state {
         crate::process::ProcessState::Running => "R (running)",
@@ -364,7 +371,7 @@ pub fn generate_status(proc: &Process) -> Vec<u8> {
         crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo => "Z (zombie)",
     };
 
-    let content = format!(
+    crate::IoBuffer::formatted(format_args!(
         "Name:\t{}\n\
          Umask:\t{:04o}\n\
          State:\t{}\n\
@@ -400,40 +407,45 @@ pub fn generate_status(proc: &Process) -> Vec<u8> {
         1 + proc.threads.len(), // main thread + spawned threads
         proc.pending_for(proc.pid),
         proc.signals.blocked,
-    );
-    content.into_bytes()
+    ))
 }
 
 /// Generate /proc/<pid>/cmdline content (null-separated argv).
-pub fn generate_cmdline(proc: &Process) -> Vec<u8> {
-    let mut buf = Vec::new();
-    for (i, arg) in proc.argv.iter().enumerate() {
+pub fn cmdline_len(proc: &Process) -> Result<usize, Errno> {
+    let length = proc.argv.iter().try_fold(proc.argv.len().saturating_sub(1),
+        |length, argument| length.checked_add(argument.len()).ok_or(Errno::ENOMEM))?;
+    if length == 0 { Ok(0) } else { length.checked_add(1).ok_or(Errno::ENOMEM) }
+}
+
+pub fn generate_cmdline(proc: &Process) -> Result<crate::IoBuffer<u8>, Errno> {
+    let mut buf = crate::IoBuffer::try_with_capacity(cmdline_len(proc)?)?;
+    for (index, arg) in proc.argv.iter().enumerate() {
         buf.extend_from_slice(arg);
-        if i + 1 < proc.argv.len() {
+        if index + 1 < proc.argv.len() {
             buf.push(0);
         }
     }
     if !buf.is_empty() {
         buf.push(0); // trailing NUL
     }
-    buf
+    Ok(buf)
 }
 
 /// Generate /proc/<pid>/environ content (null-separated environ).
-pub fn generate_environ(proc: &Process) -> Vec<u8> {
-    let mut buf = Vec::new();
+pub fn generate_environ(proc: &Process) -> Result<crate::IoBuffer<u8>, Errno> {
+    let length = proc.environ.iter().try_fold(0usize, |length, variable|
+        length.checked_add(variable.len()).and_then(|length| length.checked_add(1)).ok_or(Errno::ENOMEM))?;
+    let mut buf = crate::IoBuffer::try_with_capacity(length)?;
     for var in &proc.environ {
         buf.extend_from_slice(var);
         buf.push(0);
     }
-    buf
+    Ok(buf)
 }
 
 /// Generate /proc/<pid>/maps content.
-pub fn generate_maps(proc: &Process) -> Vec<u8> {
-    use alloc::format;
-
-    let mut buf = Vec::new();
+pub fn generate_maps(proc: &Process) -> Result<crate::IoBuffer<u8>, Errno> {
+    let mut buf = crate::IoBuffer::new();
     for region in proc.memory.mappings() {
         let start = region.addr as u64;
         let end = start + region.len as u64;
@@ -441,29 +453,25 @@ pub fn generate_maps(proc: &Process) -> Vec<u8> {
         let w = if region.prot & 2 != 0 { 'w' } else { '-' }; // PROT_WRITE
         let x = if region.prot & 4 != 0 { 'x' } else { '-' }; // PROT_EXEC
         let p = if region.flags & 2 != 0 { 's' } else { 'p' }; // MAP_SHARED vs MAP_PRIVATE
-        let line = format!(
+        buf.try_write_fmt(format_args!(
             "{:08x}-{:08x} {}{}{}{} 00000000 00:00 0\n",
             start, end, r, w, x, p,
-        );
-        buf.extend_from_slice(line.as_bytes());
+        ))?;
     }
-    buf
+    Ok(buf)
 }
 
 /// Generate /proc/<pid>/fdinfo/<fd> content.
-pub fn generate_fdinfo(proc: &Process, fd: i32) -> Option<Vec<u8>> {
-    use alloc::format;
-
-    let entry = proc.fd_table.get(fd).ok()?;
-    let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
+pub fn generate_fdinfo(proc: &Process, fd: i32) -> Result<crate::IoBuffer<u8>, Errno> {
+    let entry = proc.fd_table.get(fd).map_err(|_| Errno::ENOENT)?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::ENOENT)?;
     let offset =
         crate::descriptor_backing::current_offset(ofd.file_type, ofd.host_handle, ofd.offset())
-            .ok()?;
-    let content = format!(
+            .map_err(|_| Errno::ENOENT)?;
+    crate::IoBuffer::formatted(format_args!(
         "pos:\t{}\nflags:\t{:o}\nmnt_id:\t0\n",
         offset, ofd.status_flags(),
-    );
-    Some(content.into_bytes())
+    ))
 }
 
 /// Return whether a process currently owns a complete descriptor/OFD pair.
@@ -477,13 +485,13 @@ pub fn has_open_fd(proc: &Process, fd: i32) -> bool {
 
 /// Generate /proc/net/tcp content header (simplified).
 /// Content can be extended by passing socket info from the process table.
-pub fn generate_net_tcp_header() -> Vec<u8> {
-    b"  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n".to_vec()
+pub fn generate_net_tcp_header() -> Result<crate::IoBuffer<u8>, Errno> {
+    crate::IoBuffer::copy_from(b"  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n")
 }
 
 /// Generate /proc/net/unix content header (simplified).
-pub fn generate_net_unix_header() -> Vec<u8> {
-    b"Num       RefCount Protocol Flags    Type St Inode Path\n".to_vec()
+pub fn generate_net_unix_header() -> Result<crate::IoBuffer<u8>, Errno> {
+    crate::IoBuffer::copy_from(b"Num       RefCount Protocol Flags    Type St Inode Path\n")
 }
 
 // ── Stat synthesis ──────────────────────────────────────────────────────────
@@ -586,6 +594,7 @@ fn entry_ids(entry: &ProcfsEntry) -> (u32, u8) {
         ProcfsEntry::NetUnix(pid) => (pid.unwrap_or(0), 21),
         ProcfsEntry::KandeloDir => (0, 22),
         ProcfsEntry::KandeloWritebackLosses => (0, 23),
+        ProcfsEntry::KandeloFilesystemMemory => (0, 24),
     }
 }
 
@@ -618,7 +627,6 @@ pub fn procfs_open(
     resolved_path: Vec<u8>,
     oflags: u32,
 ) -> Result<i32, Errno> {
-    use crate::fd::OpenFileDescRef;
     use crate::ofd::FileType;
     use wasm_posix_shared::fd_flags::{FD_CLOEXEC, FD_CLOFORK};
     use wasm_posix_shared::flags::{
@@ -656,52 +664,26 @@ pub fn procfs_open(
         if let Some(target_pid) = entry_pid(entry) {
             validate_pid(proc, target_pid)?;
         }
-        let ofd_idx = proc.ofd_table.create(
-            FileType::Directory,
-            status_flags,
-            PROCFS_DIR_HANDLE,
-            resolved_path,
-        );
-        // Set dir_host_handle so sys_getdents64 recognizes this as a procfs dir
-        if let Some(ofd) = proc.ofd_table.get_mut(ofd_idx) {
-            ofd.dir_host_handle = PROCFS_DIR_HANDLE;
-        }
-        return match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-            Ok(fd) => Ok(fd),
-            Err(err) => {
-                proc.ofd_table.dec_ref(ofd_idx);
-                Err(err)
-            }
-        };
+        return proc.open_descriptor(FileType::Directory, status_flags, &resolved_path, fd_flags, |_, description| {
+            description.dir_host_handle = PROCFS_DIR_HANDLE;
+            Ok(PROCFS_DIR_HANDLE)
+        });
     }
 
     // Regular file: generate one snapshot backing per open file description.
     let object_id = regular_file_object_id(entry).ok_or(Errno::EINVAL)?;
-    let content = generate_content(proc, entry)?;
-    let buf_idx = crate::descriptor_backing::with_procfs_bufs(|table| {
-        table.alloc(crate::descriptor_backing::ProcfsBacking::new(content))
-    });
-    let host_handle = procfs_buf_handle(buf_idx);
-
-    let ofd_idx =
-        proc.ofd_table
-            .create(FileType::Regular, status_flags, host_handle, resolved_path);
-    proc.ofd_table.get_mut(ofd_idx).unwrap().file_id = Some(FileId::Kernel {
-        kind: KernelFileKind::ProcFsRegular,
-        object_id,
-    });
-    match proc.fd_table.alloc(OpenFileDescRef(ofd_idx), fd_flags) {
-        Ok(fd) => Ok(fd),
-        Err(err) => {
-            proc.ofd_table.dec_ref(ofd_idx);
-            crate::descriptor_backing::with_procfs_bufs(|table| table.release(buf_idx));
-            Err(err)
-        }
-    }
+    proc.open_descriptor(FileType::Regular, status_flags, &resolved_path, fd_flags, |proc, description| {
+        let content = generate_content(proc, entry)?;
+        let index = crate::descriptor_backing::with_procfs_bufs(|table| {
+            table.try_alloc(crate::descriptor_backing::ProcfsBacking::new(content))
+        })?;
+        description.file_id = Some(FileId::Kernel { kind: KernelFileKind::ProcFsRegular, object_id });
+        Ok(procfs_buf_handle(index))
+    })
 }
 
 /// Generate content for a procfs regular file entry.
-fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errno> {
+pub(crate) fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<crate::IoBuffer<u8>, Errno> {
     match entry {
         ProcfsEntry::Stat(pid)
         | ProcfsEntry::Status(pid)
@@ -711,17 +693,17 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
             validate_pid(proc, *pid)?;
             if *pid == proc.pid {
                 match entry {
-                    ProcfsEntry::Stat(_) => Ok(generate_stat(proc)),
-                    ProcfsEntry::Status(_) => Ok(generate_status(proc)),
-                    ProcfsEntry::Cmdline(_) => Ok(generate_cmdline(proc)),
-                    ProcfsEntry::Environ(_) => Ok(generate_environ(proc)),
-                    ProcfsEntry::Maps(_) => Ok(generate_maps(proc)),
+                    ProcfsEntry::Stat(_) => generate_stat(proc),
+                    ProcfsEntry::Status(_) => generate_status(proc),
+                    ProcfsEntry::Cmdline(_) => generate_cmdline(proc),
+                    ProcfsEntry::Environ(_) => generate_environ(proc),
+                    ProcfsEntry::Maps(_) => generate_maps(proc),
                     _ => unreachable!(),
                 }
             } else {
                 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
                 {
-                    crate::procfs::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT)
+                    crate::procfs::procfs_generate_for_pid(*pid, entry)
                 }
                 #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
                 {
@@ -732,11 +714,11 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
         ProcfsEntry::FdInfo(pid, fd) => {
             validate_pid(proc, *pid)?;
             if *pid == proc.pid {
-                generate_fdinfo(proc, *fd).ok_or(Errno::ENOENT)
+                generate_fdinfo(proc, *fd)
             } else {
                 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
                 {
-                    crate::procfs::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT)
+                    crate::procfs::procfs_generate_for_pid(*pid, entry)
                 }
                 #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
                 {
@@ -745,32 +727,33 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
                 }
             }
         }
-        ProcfsEntry::Mounts => Ok(MOUNTS_CONTENT.to_vec()),
+        ProcfsEntry::Mounts => crate::IoBuffer::copy_from(MOUNTS_CONTENT),
         // Kernel-wide state, not process-scoped: a shared-mapping writeback
         // loss is data corruption in one process that any operator or program
         // may need to see, so there is no pid to validate here.
         ProcfsEntry::KandeloWritebackLosses => {
-            Ok(crate::writeback_loss::render_writeback_losses())
+            crate::writeback_loss::render_writeback_losses()
         }
+        ProcfsEntry::KandeloFilesystemMemory => crate::metadata_budget::render_filesystem_memory(),
         ProcfsEntry::PidMounts(pid) => {
             validate_pid(proc, *pid)?;
-            Ok(MOUNTS_CONTENT.to_vec())
+            crate::IoBuffer::copy_from(MOUNTS_CONTENT)
         }
         ProcfsEntry::PidMountinfo(pid) => {
             validate_pid(proc, *pid)?;
-            Ok(MOUNTINFO_CONTENT.to_vec())
+            crate::IoBuffer::copy_from(MOUNTINFO_CONTENT)
         }
         ProcfsEntry::NetTcp(pid) => {
             if let Some(pid) = pid {
                 validate_pid(proc, *pid)?;
             }
-            Ok(b"  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n".to_vec())
+            generate_net_tcp_header()
         }
         ProcfsEntry::NetUnix(pid) => {
             if let Some(pid) = pid {
                 validate_pid(proc, *pid)?;
             }
-            Ok(b"Num       RefCount Protocol Flags    Type St Inode Path\n".to_vec())
+            generate_net_unix_header()
         }
         _ => Err(Errno::ENOENT),
     }
@@ -785,8 +768,8 @@ fn validate_pid(proc: &Process, pid: u32) -> Result<(), Errno> {
     // Cross-process: check if pid exists via process table
     #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
     {
-        let all_pids = crate::procfs::procfs_all_pids();
-        if all_pids.contains(&pid) {
+        let table = unsafe { &*crate::process_table::GLOBAL_PROCESS_TABLE.0.get() };
+        if table.get(pid).is_some_and(|target| target.state != crate::process::ProcessState::Limbo) {
             return Ok(());
         }
     }
@@ -836,20 +819,24 @@ pub fn validate_entry(proc: &Process, entry: &ProcfsEntry) -> Result<(), Errno> 
 /// asking a host (the in-kernel filesystems), and a host-supplied program --
 /// which never had a name in the namespace -- carries it from the moment it is
 /// attached. `ENOENT` for a process with no executable attached.
-fn exe_link_target(proc: &Process) -> Result<Vec<u8>, Errno> {
+fn exe_link_target(proc: &Process) -> Result<crate::IoBuffer<u8>, Errno> {
     let exe = proc.exe.ok_or(Errno::ENOENT)?;
     let ofd = proc.ofd_table.get(exe.0).ok_or(Errno::ENOENT)?;
-    let mut target = ofd.path.clone();
-    let unlinked = if crate::rootfs::is_rootfs_file_handle(ofd.host_handle) {
-        crate::rootfs::fstat(ofd.host_handle).is_ok_and(|st| st.st_nlink == 0)
-    } else if crate::tmpfs::is_tmpfs_file_handle(ofd.host_handle) {
-        crate::tmpfs::fstat(ofd.host_handle).is_ok_and(|st| st.st_nlink == 0)
+    let handle = if crate::executable_backing::is_executable_handle(ofd.host_handle) {
+        crate::executable_backing::source_handle(ofd.host_handle)?
+    } else { ofd.host_handle };
+    let unlinked = if crate::rootfs::is_rootfs_file_handle(handle) {
+        crate::rootfs::fstat(handle).is_ok_and(|st| st.st_nlink == 0)
+    } else if crate::tmpfs::is_tmpfs_file_handle(handle) {
+        crate::tmpfs::fstat(handle).is_ok_and(|st| st.st_nlink == 0)
     } else {
         false
     };
-    if unlinked && !target.ends_with(EXE_DELETED_SUFFIX) {
-        target.extend_from_slice(EXE_DELETED_SUFFIX);
-    }
+    let suffix = if unlinked && !ofd.path.ends_with(EXE_DELETED_SUFFIX) { EXE_DELETED_SUFFIX } else { b"" };
+    let length = ofd.path.len().checked_add(suffix.len()).ok_or(Errno::ENOMEM)?;
+    let mut target = crate::IoBuffer::try_with_capacity(length)?;
+    target.extend_from_slice(&ofd.path);
+    target.extend_from_slice(suffix);
     Ok(target)
 }
 
@@ -864,14 +851,10 @@ pub fn procfs_readlink(
 ) -> Result<usize, Errno> {
     let target = match entry {
         ProcfsEntry::SelfLink => {
-            use alloc::format;
-            let s = format!("{}", proc.pid);
-            s.into_bytes()
+            crate::IoBuffer::formatted(format_args!("{}", proc.pid))?
         }
         ProcfsEntry::ThreadSelfLink => {
-            use alloc::format;
-            let s = format!("{}/task/{}", proc.pid, proc.pid);
-            s.into_bytes()
+            crate::IoBuffer::formatted(format_args!("{}/task/{}", proc.pid, proc.pid))?
         }
         ProcfsEntry::FdLink(pid, _)
         | ProcfsEntry::Cwd(pid)
@@ -890,11 +873,11 @@ pub fn procfs_readlink(
                 ProcfsEntry::FdLink(_, fd) => {
                     let fe = proc.fd_table.get(*fd).map_err(|_| Errno::EBADF)?;
                     let ofd = proc.ofd_table.get(fe.ofd_ref.0).ok_or(Errno::EBADF)?;
-                    ofd.path.clone()
+                    crate::IoBuffer::copy_from(&ofd.path)?
                 }
-                ProcfsEntry::Cwd(_) => proc.cwd.clone(),
+                ProcfsEntry::Cwd(_) => crate::IoBuffer::copy_from(&proc.cwd)?,
                 ProcfsEntry::Exe(_) => exe_link_target(proc)?,
-                ProcfsEntry::Root_(_) => b"/".to_vec(),
+                ProcfsEntry::Root_(_) => crate::IoBuffer::copy_from(b"/")?,
                 _ => unreachable!(),
             }
         }
@@ -977,7 +960,7 @@ pub fn procfs_getdents64_for_pid(
     offset: i64,
 ) -> Result<(usize, i64, bool), Errno> {
     let proc = table.get(pid).ok_or(Errno::ENOENT)?;
-    let pids = table.procfs_pids();
+    let pids = table.procfs_pids()?;
     procfs_getdents64(proc, ofd_path, buf, offset, &pids)
 }
 
@@ -987,12 +970,12 @@ pub fn procfs_getdents64_for_pid(
 /// and two is before the first directory-specific entry. A record advances the
 /// cookie only after the complete record is copied. This keeps procfs and
 /// devfs aligned on short-buffer, retry, and large-cookie behavior.
-pub fn write_virtual_dirents64(
+pub fn write_virtual_dirents64<Name: AsRef<[u8]>>(
     buf: &mut [u8],
     offset: i64,
     dot_ino: u64,
     dotdot_ino: u64,
-    entries: &[(Vec<u8>, u8, u64)],
+    entries: &[(Name, u8, u64)],
 ) -> Result<(usize, i64, bool), Errno> {
     if offset < 0 {
         return Err(Errno::EINVAL);
@@ -1018,7 +1001,7 @@ pub fn write_virtual_dirents64(
                 // truncate even when the kernel is compiled for wasm32.
                 let index = usize::try_from(cookie - 2).map_err(|_| Errno::EOVERFLOW)?;
                 let (name, d_type, ino) = &entries[index];
-                (*ino, *d_type, name.as_slice())
+                (*ino, *d_type, name.as_ref())
             }
         };
         let next_cookie = cookie.checked_add(1).ok_or(Errno::EOVERFLOW)?;
@@ -1039,55 +1022,57 @@ pub fn write_virtual_dirents64(
 
 /// Build the list of directory entries for a procfs directory path.
 /// Returns (name, d_type, ino) tuples.
+pub(crate) type VirtualDirectoryEntries = crate::IoBuffer<(crate::IoBuffer<u8>, u8, u64)>;
+
 pub(crate) fn dir_entries(
     proc: &Process,
     path: &[u8],
     pids: &[u32],
-) -> Result<Vec<(Vec<u8>, u8, u64)>, Errno> {
-    use alloc::format;
+) -> Result<VirtualDirectoryEntries, Errno> {
 
     let entry = match_procfs(path, proc.pid).ok_or(Errno::ENOENT)?;
-    let mut entries = Vec::new();
+    let mut entries = crate::IoBuffer::new();
 
     match entry {
         ProcfsEntry::Root => {
             // /proc: self (symlink), numeric PIDs (dirs), mounts (file), net (dir)
-            entries.push((b"mounts".to_vec(), DT_REG, procfs_ino(0, 1)));
-            entries.push((b"self".to_vec(), DT_LNK, procfs_ino(0, 2)));
-            entries.push((b"thread-self".to_vec(), DT_LNK, procfs_ino(0, 3)));
+            entries.try_push((crate::IoBuffer::copy_from(b"mounts")?, DT_REG, procfs_ino(0, 1)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"self")?, DT_LNK, procfs_ino(0, 2)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"thread-self")?, DT_LNK, procfs_ino(0, 3)))?;
             for &pid in pids {
-                let name = format!("{}", pid).into_bytes();
-                entries.push((name, DT_DIR, procfs_ino(pid, 4)));
+                let name = crate::IoBuffer::formatted(format_args!("{}", pid))?;
+                entries.try_push((name, DT_DIR, procfs_ino(pid, 4)))?;
             }
-            entries.push((b"net".to_vec(), DT_DIR, procfs_ino(0, 19)));
-            entries.push((b"kandelo".to_vec(), DT_DIR, procfs_ino(0, 22)));
+            entries.try_push((crate::IoBuffer::copy_from(b"net")?, DT_DIR, procfs_ino(0, 19)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"kandelo")?, DT_DIR, procfs_ino(0, 22)))?;
         }
         ProcfsEntry::KandeloDir => {
-            entries.push((b"writeback_losses".to_vec(), DT_REG, procfs_ino(0, 23)));
+            entries.try_push((crate::IoBuffer::copy_from(b"writeback_losses")?, DT_REG, procfs_ino(0, 23)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"fs_memory")?, DT_REG, procfs_ino(0, 24)))?;
         }
         ProcfsEntry::PidDir(pid) => {
             // /proc/<pid>/: fd, fdinfo (dirs), status files, mount tables, cwd/exe/root symlinks
-            entries.push((b"fd".to_vec(), DT_DIR, procfs_ino(pid, 7)));
-            entries.push((b"fdinfo".to_vec(), DT_DIR, procfs_ino(pid, 9)));
-            entries.push((b"stat".to_vec(), DT_REG, procfs_ino(pid, 11)));
-            entries.push((b"status".to_vec(), DT_REG, procfs_ino(pid, 12)));
-            entries.push((b"cmdline".to_vec(), DT_REG, procfs_ino(pid, 13)));
-            entries.push((b"environ".to_vec(), DT_REG, procfs_ino(pid, 14)));
-            entries.push((b"maps".to_vec(), DT_REG, procfs_ino(pid, 15)));
-            entries.push((b"mounts".to_vec(), DT_REG, procfs_ino(pid, 5)));
-            entries.push((b"mountinfo".to_vec(), DT_REG, procfs_ino(pid, 6)));
-            entries.push((b"cwd".to_vec(), DT_LNK, procfs_ino(pid, 16)));
-            entries.push((b"exe".to_vec(), DT_LNK, procfs_ino(pid, 17)));
-            entries.push((b"root".to_vec(), DT_LNK, procfs_ino(pid, 18)));
-            entries.push((b"net".to_vec(), DT_DIR, procfs_ino(pid, 19)));
+            entries.try_push((crate::IoBuffer::copy_from(b"fd")?, DT_DIR, procfs_ino(pid, 7)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"fdinfo")?, DT_DIR, procfs_ino(pid, 9)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"stat")?, DT_REG, procfs_ino(pid, 11)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"status")?, DT_REG, procfs_ino(pid, 12)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"cmdline")?, DT_REG, procfs_ino(pid, 13)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"environ")?, DT_REG, procfs_ino(pid, 14)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"maps")?, DT_REG, procfs_ino(pid, 15)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"mounts")?, DT_REG, procfs_ino(pid, 5)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"mountinfo")?, DT_REG, procfs_ino(pid, 6)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"cwd")?, DT_LNK, procfs_ino(pid, 16)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"exe")?, DT_LNK, procfs_ino(pid, 17)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"root")?, DT_LNK, procfs_ino(pid, 18)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"net")?, DT_DIR, procfs_ino(pid, 19)))?;
         }
         ProcfsEntry::FdDir(pid) => {
             // /proc/<pid>/fd/: one symlink per open fd
             if pid == proc.pid {
                 for fd in 0..1024i32 {
                     if proc.fd_table.get(fd).is_ok() {
-                        let name = format!("{}", fd).into_bytes();
-                        entries.push((name, DT_LNK, procfs_ino(pid, 5)));
+                        let name = crate::IoBuffer::formatted(format_args!("{}", fd))?;
+                        entries.try_push((name, DT_LNK, procfs_ino(pid, 5)))?;
                     }
                 }
             }
@@ -1097,16 +1082,16 @@ pub(crate) fn dir_entries(
             if pid == proc.pid {
                 for fd in 0..1024i32 {
                     if proc.fd_table.get(fd).is_ok() {
-                        let name = format!("{}", fd).into_bytes();
-                        entries.push((name, DT_REG, procfs_ino(pid, 7)));
+                        let name = crate::IoBuffer::formatted(format_args!("{}", fd))?;
+                        entries.try_push((name, DT_REG, procfs_ino(pid, 7)))?;
                     }
                 }
             }
         }
         ProcfsEntry::NetDir(pid) => {
             let ino_pid = pid.unwrap_or(0);
-            entries.push((b"tcp".to_vec(), DT_REG, procfs_ino(ino_pid, 20)));
-            entries.push((b"unix".to_vec(), DT_REG, procfs_ino(ino_pid, 21)));
+            entries.try_push((crate::IoBuffer::copy_from(b"tcp")?, DT_REG, procfs_ino(ino_pid, 20)))?;
+            entries.try_push((crate::IoBuffer::copy_from(b"unix")?, DT_REG, procfs_ino(ino_pid, 21)))?;
         }
         _ => return Err(Errno::ENOTDIR),
     }
@@ -1121,9 +1106,9 @@ pub(crate) fn directory_entries_for_pid(
     table: &crate::process_table::ProcessTable,
     pid: u32,
     path: &[u8],
-) -> Result<Vec<(Vec<u8>, u8, u64)>, Errno> {
+) -> Result<VirtualDirectoryEntries, Errno> {
     let proc = table.get(pid).ok_or(Errno::ENOENT)?;
-    dir_entries(proc, path, &table.procfs_pids())
+    dir_entries(proc, path, &table.procfs_pids()?)
 }
 
 /// Called only under the serialized kernel entry used for host inspection.
@@ -1131,7 +1116,7 @@ pub(crate) fn directory_entries_for_pid(
 pub(crate) fn inspection_directory_entries(
     proc: &Process,
     path: &[u8],
-) -> Result<Vec<(Vec<u8>, u8, u64)>, Errno> {
+) -> Result<VirtualDirectoryEntries, Errno> {
     let entry = match_procfs(path, proc.pid).ok_or(Errno::ENOENT)?;
     let pid = entry_pid(&entry).unwrap_or(proc.pid);
     // SAFETY: inspection and syscall ingress share the kernel entry gate.
@@ -1188,7 +1173,7 @@ fn count_open_fds(fd_table: &crate::fd::FdTable) -> usize {
 // host.
 
 /// Get all active PIDs from the process table.
-pub fn procfs_all_pids() -> Vec<u32> {
+pub fn procfs_all_pids() -> Result<crate::IoBuffer<u32>, Errno> {
     let table = unsafe { &*crate::process_table::GLOBAL_PROCESS_TABLE.0.get() };
     table.procfs_pids()
 }
@@ -1196,17 +1181,17 @@ pub fn procfs_all_pids() -> Vec<u32> {
 /// Generate procfs content for a foreign process (cross-process access).
 /// Returns None if the pid doesn't exist or is the current process
 /// (caller should use the local Process for self-access).
-pub fn procfs_generate_for_pid(pid: u32, entry: &ProcfsEntry) -> Option<Vec<u8>> {
+pub fn procfs_generate_for_pid(pid: u32, entry: &ProcfsEntry) -> Result<crate::IoBuffer<u8>, Errno> {
     let table = unsafe { &*crate::process_table::GLOBAL_PROCESS_TABLE.0.get() };
-    let proc = table.get(pid)?;
+    let proc = table.get(pid).ok_or(Errno::ENOENT)?;
     match entry {
-        ProcfsEntry::Stat(_) => Some(generate_stat(proc)),
-        ProcfsEntry::Status(_) => Some(generate_status(proc)),
-        ProcfsEntry::Cmdline(_) => Some(generate_cmdline(proc)),
-        ProcfsEntry::Environ(_) => Some(generate_environ(proc)),
-        ProcfsEntry::Maps(_) => Some(generate_maps(proc)),
+        ProcfsEntry::Stat(_) => generate_stat(proc),
+        ProcfsEntry::Status(_) => generate_status(proc),
+        ProcfsEntry::Cmdline(_) => generate_cmdline(proc),
+        ProcfsEntry::Environ(_) => generate_environ(proc),
+        ProcfsEntry::Maps(_) => generate_maps(proc),
         ProcfsEntry::FdInfo(_, fd) => generate_fdinfo(proc, *fd),
-        _ => None,
+        _ => Err(Errno::ENOENT),
     }
 }
 
@@ -1302,7 +1287,7 @@ mod tests {
     #[test]
     fn inspection_entries_use_target_process_and_live_membership() {
         let mut table = crate::process_table::ProcessTable::new();
-        table.ensure_init();
+        table.ensure_init().unwrap();
         let pid = table.create_process().unwrap();
         let root = directory_entries_for_pid(&table, 1, b"/proc").unwrap();
         assert!(root.iter().any(|(name, _, _)| name == b"100"));
@@ -1453,9 +1438,9 @@ mod tests {
         proc.pgid = 42;
         proc.sid = 1;
         proc.nice = 5;
-        proc.argv.push(b"test_program".to_vec());
+        proc.argv.try_push(&b"test_program".to_vec()).unwrap();
 
-        let stat = generate_stat(&proc);
+        let stat = generate_stat(&proc).unwrap();
         let stat_str = core::str::from_utf8(&stat).unwrap();
         assert!(stat_str.starts_with("42 (test_program) R 1 42 1"));
         let after_comm = stat_str.split(") ").nth(1).unwrap();
@@ -1467,12 +1452,12 @@ mod tests {
     #[test]
     fn test_generate_status() {
         let mut proc = Process::new(1);
-        proc.argv.push(b"init".to_vec());
+        proc.argv.try_push(&b"init".to_vec()).unwrap();
         proc.umask = 0o022;
         proc.signals.raise(2);
         proc.main_thread_signals.raise(25);
 
-        let status = generate_status(&proc);
+        let status = generate_status(&proc).unwrap();
         let status_str = core::str::from_utf8(&status).unwrap();
         assert!(status_str.contains("Name:\tinit\n"));
         assert!(status_str.contains("Pid:\t1\n"));
@@ -1490,10 +1475,10 @@ mod tests {
             rgid: 4000,
             egid: 5000,
             sgid: 6000,
-            supplementary_groups: vec![7000, 8000, 7000],
+            supplementary_groups: crate::credentials::SupplementaryGroups::copy_from(&[7000, 8000, 7000]).unwrap(),
         });
 
-        let status = generate_status(&proc);
+        let status = generate_status(&proc).unwrap();
         let status = core::str::from_utf8(&status).unwrap();
         assert!(status.contains("Uid:\t1000\t2000\t3000\t2000\n"));
         assert!(status.contains("Gid:\t4000\t5000\t6000\t5000\n"));
@@ -1503,14 +1488,14 @@ mod tests {
     #[test]
     fn stopped_process_uses_linux_t_state_in_stat_and_status() {
         let mut proc = Process::new(44);
-        proc.argv.push(b"sleeping".to_vec());
+        proc.argv.try_push(&b"sleeping".to_vec()).unwrap();
         proc.state = crate::process::ProcessState::Stopped;
 
-        let stat = generate_stat(&proc);
+        let stat = generate_stat(&proc).unwrap();
         let stat = core::str::from_utf8(&stat).unwrap();
         assert!(stat.starts_with("44 (sleeping) T "));
 
-        let status = generate_status(&proc);
+        let status = generate_status(&proc).unwrap();
         let status = core::str::from_utf8(&status).unwrap();
         assert!(status.contains("State:\tT (stopped)\n"));
     }
@@ -1534,11 +1519,11 @@ mod tests {
     #[test]
     fn test_generate_cmdline() {
         let mut proc = Process::new(1);
-        proc.argv.push(b"/bin/sh".to_vec());
-        proc.argv.push(b"-c".to_vec());
-        proc.argv.push(b"echo hello".to_vec());
+        proc.argv.try_push(&b"/bin/sh".to_vec()).unwrap();
+        proc.argv.try_push(&b"-c".to_vec()).unwrap();
+        proc.argv.try_push(&b"echo hello".to_vec()).unwrap();
 
-        let cmdline = generate_cmdline(&proc);
+        let cmdline = generate_cmdline(&proc).unwrap();
         // Should be null-separated
         assert_eq!(cmdline, b"/bin/sh\0-c\0echo hello\0");
     }
@@ -1546,10 +1531,10 @@ mod tests {
     #[test]
     fn test_generate_environ() {
         let mut proc = Process::new(1);
-        proc.environ.push(b"HOME=/root".to_vec());
-        proc.environ.push(b"PATH=/usr/bin".to_vec());
+        proc.environ.try_push(&b"HOME=/root".to_vec()).unwrap();
+        proc.environ.try_push(&b"PATH=/usr/bin".to_vec()).unwrap();
 
-        let environ = generate_environ(&proc);
+        let environ = generate_environ(&proc).unwrap();
         assert_eq!(environ, b"HOME=/root\0PATH=/usr/bin\0");
     }
 
@@ -1694,7 +1679,7 @@ mod tests {
         let pids = [1];
         let entries = dir_entries(&proc, b"/proc", &pids).unwrap();
         let end_cookie = i64::try_from(entries.len()).unwrap() + 2;
-        let last_name = entries.last().unwrap().0.clone();
+        let last_name = entries.last().unwrap().0.as_slice().to_vec();
         let mut exact = vec![0u8; dirent_len(&last_name)];
 
         let (bytes, cookie, exhausted) =
@@ -1723,9 +1708,46 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_generators_refuse_before_publication_and_release_partial_formatting() {
+        let mut proc = Process::new(81_120);
+        proc.argv.try_push(&b"/bin/test".to_vec()).unwrap();
+        proc.argv.try_push(&b"argument".to_vec()).unwrap();
+        proc.environ.try_push(&b"ENV=value".to_vec()).unwrap();
+        let generators: [fn(&Process) -> Result<crate::IoBuffer<u8>, Errno>; 4] =
+            [generate_stat, generate_status, generate_cmdline, generate_environ];
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        for generator in generators {
+            {
+                let _limit = crate::io_buffer::test_budget(baseline);
+                assert!(matches!(generator(&proc), Err(Errno::ENOMEM)));
+                assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+            }
+            let bytes = generator(&proc).unwrap();
+            assert!(!bytes.is_empty());
+            drop(bytes);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        let prepared = proc.prepare_descriptor(crate::ofd::FileType::Regular, 0, b"/proc/81120/stat").unwrap();
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        proc.cancel_descriptor(prepared);
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(procfs_open(&mut proc, &ProcfsEntry::Stat(81_120), b"/proc/81120/stat".to_vec(), 0), Err(Errno::ENOMEM));
+            assert_eq!(proc.fd_table.iter().count(), 3);
+            assert_eq!(proc.ofd_table.iter().count(), 3);
+            assert_eq!(proc.ofd_table.reserved_count(), 0);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        let fd = procfs_open(&mut proc, &ProcfsEntry::Stat(81_120), b"/proc/81120/stat".to_vec(), 0).unwrap();
+        let mut host = crate::process::test_host::NoopHost;
+        crate::syscalls::sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
     fn test_procfs_open_read_stat() {
         let mut proc = Process::new(1);
-        proc.argv.push(b"test".to_vec());
+        proc.argv.try_push(&b"test".to_vec()).unwrap();
 
         let entry = ProcfsEntry::Stat(1);
         let fd = procfs_open(&mut proc, &entry, b"/proc/1/stat".to_vec(), 0).unwrap();
@@ -1844,6 +1866,24 @@ mod tests {
     }
 
     #[test]
+    fn filesystem_admission_report_is_kernel_owned_and_has_a_distinct_regular_identity() {
+        let entry = match_procfs(b"/proc/kandelo/fs_memory", 1).unwrap();
+        assert_eq!(entry, ProcfsEntry::KandeloFilesystemMemory);
+        assert_eq!(entry_pid(&entry), None);
+        assert!(!entry.is_dir());
+        assert!(!entry.is_symlink());
+        assert_ne!(regular_file_object_id(&entry), regular_file_object_id(&ProcfsEntry::KandeloWritebackLosses));
+        let process = crate::process::Process::new(1);
+        let report = generate_content(&process, &entry).unwrap();
+        let text = core::str::from_utf8(&report).unwrap();
+        assert!(text.starts_with("version 1\nunits admission_credits\nlifetime kernel\naggregate current="));
+        for owner in ["namespace", "journal", "journal_writeback", "io", "io_writeback"] {
+            assert!(text.lines().any(|line| line.starts_with(&alloc::format!("{owner} live="))));
+        }
+        assert_eq!(text.lines().count(), 9);
+    }
+
+    #[test]
     fn kandelo_entries_do_not_alias_another_procfs_object() {
         let dir = regular_file_object_id(&ProcfsEntry::KandeloDir);
         assert_eq!(dir, None, "a directory has no regular-file identity");
@@ -1902,7 +1942,7 @@ mod tests {
         let entry = match_procfs(b"/proc/kandelo/writeback_losses", 1).expect("path resolves");
 
         let read_report = |entry: &ProcfsEntry| -> String {
-            String::from_utf8(generate_content(&proc, entry).expect("readable"))
+            String::from_utf8(generate_content(&proc, entry).expect("readable").as_slice().to_vec())
                 .expect("ASCII report")
         };
 

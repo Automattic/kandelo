@@ -1176,7 +1176,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     );
     configureRootfsOverlayFromImage(kernelWorker, {
       imageRead: imageReadFromContainer(container),
-      imageBytes: container,
+      imageLength: container.byteLength,
       foreignPrefixes: [],
       nosuid: options.rootfsNosuid ?? false,
     });

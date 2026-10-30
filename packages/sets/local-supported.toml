@@ -16,6 +16,28 @@ dependency_only = [
 ]
 registry_non_roots = []
 
+[[packages]]
+name = "service-activity-tools"
+class = "platform"
+
+[[packages]]
+name = "web-stack-vfs"
+class = "browser-product"
+
+[[packages]]
+name = "wordpress-family-vfs"
+class = "browser-product"
+
+[[products]]
+id = "browser-web-stack"
+package = "web-stack-vfs"
+manifest = "images/vfs/products/browser-web-stack.toml"
+
+[[products]]
+id = "browser-wordpress-family"
+package = "wordpress-family-vfs"
+manifest = "images/vfs/products/browser-wordpress-family.toml"
+
 [[dormant_products]]
 name = "browser-erlang"
 reason = "deferred product"
@@ -70,6 +92,10 @@ class = "user-software"
 
 [[packages]]
 name = "binaryen"
+class = "platform"
+
+[[packages]]
+name = "wasm-fork-instrument"
 class = "platform"
 
 [[packages]]

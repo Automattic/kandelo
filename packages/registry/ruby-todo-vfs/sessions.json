@@ -15,7 +15,8 @@
         "/usr/bin/ruby",
         "/var/lib/todo/app.rb"
       ],
-      "fields": []
+      "fields": [],
+      "category": "services"
     }
   ],
   "joins": [

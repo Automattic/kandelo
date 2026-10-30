@@ -95,6 +95,7 @@ export const SHELL_LAZY_BINARY_SPECS = [
   { id: "wget", resolverPath: "programs/wget.wasm", vfsPath: "/usr/bin/wget", symlinks: ["/bin/wget"] },
   { id: "git", resolverPath: "programs/git/git.wasm", vfsPath: "/usr/bin/git", symlinks: ["/bin/git"] },
   { id: "jq", resolverPath: "programs/jq.wasm", vfsPath: "/usr/bin/jq", symlinks: ["/bin/jq"] },
+  { id: "wasm-fork-instrument", resolverPath: "programs/wasm-fork-instrument.wasm", vfsPath: "/usr/bin/wasm-fork-instrument", symlinks: ["/bin/wasm-fork-instrument"] },
   { id: "php", resolverPath: "programs/php/php.wasm", vfsPath: "/usr/bin/php", symlinks: ["/bin/php"] },
   { id: "ffmpeg", resolverPath: "programs/ffmpeg/ffmpeg.wasm", vfsPath: "/usr/bin/ffmpeg", symlinks: ["/bin/ffmpeg"] },
   { id: "ffprobe", dependency: "ffmpeg", resolverPath: "programs/ffmpeg/ffprobe.wasm", vfsPath: "/usr/bin/ffprobe", symlinks: ["/bin/ffprobe"] },

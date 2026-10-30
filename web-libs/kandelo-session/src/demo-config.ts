@@ -306,6 +306,16 @@ export interface DemoGuideConfig {
   companion?: DemoCompanionConfig;
 }
 
+export type ActivityCategory = "apps" | "services" | "demos";
+export interface DemoActivityConfig {
+  shellCommand?: string;
+  category?: ActivityCategory;
+  /** Package/offer declared by an installed activity manifest. */
+  share?: string;
+  /** Diagnostic boot profiles need not appear as user activities. */
+  visible?: boolean;
+}
+
 /**
  * A profile AS IT APPEARS ON DISK. `parseKandeloDemoConfig` only checks
  * `version`, so these declarations must describe what an author may actually
@@ -319,6 +329,7 @@ export interface KandeloDemoProfileConfig {
   dockActions?: DemoDockActionConfig[];
   runtime?: DemoRuntimeConfigInput;
   init?: DemoInitConfig;
+  activity?: DemoActivityConfig;
   web?: DemoWebConfigInput;
   identity?: DemoIdentityConfig;
   display?: DemoDisplayConfig;
@@ -337,6 +348,7 @@ export interface KandeloDemoProfileConfig {
  */
 export interface KandeloDemoConfig {
   version: 1;
+  image?: { title: string };
   defaultProfile?: string;
   profiles?: Record<string, KandeloDemoProfileConfig>;
 }
@@ -412,6 +424,7 @@ const PROFILE_ONLY_KEYS = [
   "dockActions",
   "runtime",
   "init",
+  "activity",
   "web",
   "identity",
   "display",
@@ -432,6 +445,10 @@ function retiredIngestMessage(where: string, exchangeField: string): string {
 export function validateKandeloDemoConfig(config: KandeloDemoConfig): void {
   if (!isRecord(config) || config.version !== 1) {
     throw new Error("demo config must use version 1");
+  }
+  if (config.image !== undefined) {
+    if (!isRecord(config.image) || Object.keys(config.image).some(key => key !== "title")) throw new Error("image must declare only a title");
+    requiredString(config.image.title, "image.title");
   }
   if ((config as Record<string, unknown>).ingest !== undefined) {
     throw new Error(retiredIngestMessage("ingest", "profiles.<id>.exchange"));
@@ -985,6 +1002,7 @@ function validateProfileFields(
   value: Record<string, unknown>,
   field: string,
 ): void {
+  if (value.activity !== undefined) normalizeActivity(value.activity, `${field}.activity`);
   if (value.presentation !== undefined) {
     normalizePresentationConfig(value.presentation);
   }
@@ -1021,6 +1039,37 @@ function validateProfileFields(
   if (value.dockActions !== undefined) {
     normalizeDockActions(value.dockActions, `${field}.dockActions`);
   }
+}
+
+function normalizeActivity(value: unknown, field: string): DemoActivityConfig {
+  if (!isRecord(value) || Object.keys(value).length === 0 || Object.keys(value).some(key => !["shellCommand", "category", "share", "visible"].includes(key))) {
+    throw new Error(`${field} must declare activity settings`);
+  }
+  const result: DemoActivityConfig = {};
+  if (value.shellCommand !== undefined) {
+    const command = requiredString(value.shellCommand, `${field}.shellCommand`);
+    if (command.length > MAX_SHELL_COMMAND_CHARS) throw new Error(`${field}.shellCommand is too long`);
+    if (command.includes("\0")) throw new Error(`${field}.shellCommand must not contain NUL`);
+    result.shellCommand = command;
+  }
+  if (value.category !== undefined) {
+    if (!["apps", "services", "demos"].includes(value.category as string)) throw new Error(`${field}.category is invalid`);
+    result.category = value.category as ActivityCategory;
+  }
+  if (value.share !== undefined) {
+    if (typeof value.share !== "string" || !/^[a-z0-9][a-z0-9._+-]{0,63}\/[a-z0-9][a-z0-9_-]{0,63}$/.test(value.share)) throw new Error(`${field}.share must name a package/offer`);
+    result.share = value.share;
+  }
+  if (value.visible !== undefined) {
+    if (typeof value.visible !== "boolean") throw new Error(`${field}.visible must be boolean`);
+    result.visible = value.visible;
+  }
+  return result;
+}
+
+export function resolveDemoActivity(config: KandeloDemoConfig, profileId: string): DemoActivityConfig | null {
+  const value = profileConfig(config, profileId)?.activity;
+  return value === undefined ? null : normalizeActivity(value, `profiles.${profileId}.activity`);
 }
 
 function normalizeDockActions(value: unknown, field: string): DemoDockActionConfig[] {
@@ -1147,6 +1196,10 @@ function normalizeAsset(value: unknown, field: string): DemoAssetConfig {
     ...(typeof value.sha256 === "string" ? { sha256: value.sha256 } : {}),
     ...(typeof value.mode === "number" ? { mode: value.mode } : {}),
   };
+}
+
+export function parseShortcutConfig(value: unknown): DemoGuideConfig {
+  return normalizeGuide(value, "shortcuts");
 }
 
 function normalizeGuide(value: unknown, field: string): DemoGuideConfig {

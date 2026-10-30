@@ -19,6 +19,8 @@ import {
   CH_DATA,
   CH_ERRNO,
   CH_RETURN,
+  CH_SIG_HANDLER,
+  CH_SIG_SIGNUM,
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
@@ -219,6 +221,113 @@ async function flushLifecycleContinuations(): Promise<void> {
 }
 
 describe("clone and exit entry authority", () => {
+  it.each([false, true])("rejects an obsolete clone completion after retirement (reject=%s)", async rejectLaunch => {
+    let resolveLaunch!: () => void;
+    let rejectLaunchPromise!: (error: Error) => void;
+    const launch = new Promise<void>((resolve, reject) => {
+      resolveLaunch = resolve;
+      rejectLaunchPromise = reject;
+    });
+    const rollback = vi.fn(() => 0);
+    const onExit = vi.fn();
+    const harness = makeHarness(4, { onExit, onClone: () => launch }, {
+      kernel_thread_exit: rollback,
+      kernel_handle_channel: (pointer: number | bigint) => {
+        const view = new DataView(harness.kernelMemory.buffer, Number(pointer));
+        view.setBigInt64(CH_RETURN, 73n, true);
+        view.setUint32(CH_ERRNO, 0, true);
+        return 0;
+      },
+    });
+    harness.worker.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: vi.fn() });
+    writeSyscall(harness.channel, ABI_SYSCALLS.Clone, [0n, 0x8000n, 0n, 0x9000n, 0n]);
+    harness.worker.handleSyscall(harness.channel);
+    await harness.worker.beginKernelTeardown();
+    expect(channelResult(harness.channel).status).toBe(CHANNEL_STATUS_COMPLETE);
+    writeSyscall(harness.channel, ABI_SYSCALLS.Exit, [137n]);
+    if (rejectLaunch) rejectLaunchPromise(new Error("late launch rejection"));
+    else resolveLaunch();
+    await flushLifecycleContinuations();
+    expect(channelResult(harness.channel).status).toBe(CHANNEL_STATUS_PENDING);
+    expect(rollback).not.toHaveBeenCalled();
+    expect(onExit).not.toHaveBeenCalled();
+    harness.worker.handleSyscall(harness.channel);
+    expect(onExit).toHaveBeenCalledExactlyOnceWith(harness.channel.pid, 137);
+  });
+
+  it.each([4, 8] as const)("retires parked and later sibling requests without repeating Rust exit for width %s", async width => {
+    const commit = vi.fn((status: number) => status & 0xff);
+    const onExit = vi.fn();
+    const dispatch = vi.fn(() => 0);
+    const harness = makeHarness(width, { onExit }, {
+      kernel_commit_process_exit: commit,
+      kernel_handle_channel: dispatch,
+    });
+    const sibling: TestChannel = {
+      ...harness.channel,
+      channelOffset: CH_TOTAL_SIZE,
+      handling: true,
+    };
+    const lateSibling: TestChannel = {
+      ...harness.channel,
+      channelOffset: 2 * CH_TOTAL_SIZE,
+      handling: false,
+    };
+    harness.worker.processes.get(harness.channel.pid).channels.push(sibling, lateSibling);
+    harness.worker.activeChannels.push(sibling, lateSibling);
+    harness.worker.channelTids.set(`${sibling.pid}:${sibling.channelOffset}`, 72);
+    harness.worker.channelTids.set(`${lateSibling.pid}:${lateSibling.channelOffset}`, 73);
+    const relisten = vi.fn();
+    harness.worker.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: relisten });
+    writeSyscall(sibling, ABI_SYSCALLS.Read, [99n]);
+    writeSyscall(lateSibling, ABI_SYSCALLS.Read, [98n]);
+    new DataView(lateSibling.memory.buffer, lateSibling.channelOffset)
+      .setInt32(CH_STATUS, CHANNEL_STATUS_COMPLETE, true);
+    writeSyscall(harness.channel, ABI_SYSCALLS.ExitGroup, [7n]);
+
+    harness.worker.handleSyscall(harness.channel);
+    expect(commit).toHaveBeenCalledExactlyOnceWith(7);
+    expect(onExit).toHaveBeenCalledExactlyOnceWith(harness.channel.pid, 7);
+    expect(channelResult(sibling)).toEqual({ status: CHANNEL_STATUS_COMPLETE, result: -1, errno: 4 });
+    const siblingView = new DataView(sibling.memory.buffer, sibling.channelOffset);
+    expect(siblingView.getUint32(CH_SIG_SIGNUM, true)).toBe(9);
+    expect(siblingView.getUint32(CH_SIG_HANDLER, true)).toBe(0);
+    expect(relisten).toHaveBeenCalledWith(sibling);
+
+    writeSyscall(lateSibling, ABI_SYSCALLS.Write, [98n]);
+    harness.worker.handleSyscall(lateSibling);
+    expect(channelResult(lateSibling)).toEqual({ status: CHANNEL_STATUS_COMPLETE, result: -1, errno: 4 });
+    expect(new DataView(lateSibling.memory.buffer, lateSibling.channelOffset).getUint32(CH_SIG_SIGNUM, true)).toBe(9);
+    expect(relisten).toHaveBeenCalledWith(lateSibling);
+
+    for (const retired of [sibling, lateSibling]) {
+      writeSyscall(retired, ABI_SYSCALLS.Exit, [137n]);
+      harness.worker.handleSyscall(retired);
+      expect(channelResult(retired)).toEqual({ status: CHANNEL_STATUS_COMPLETE, result: 0, errno: 0 });
+    }
+    expect(commit).toHaveBeenCalledOnce();
+    expect(onExit).toHaveBeenCalledOnce();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [4, ABI_SYSCALLS.Exit], [4, ABI_SYSCALLS.ExitGroup],
+    [8, ABI_SYSCALLS.Exit], [8, ABI_SYSCALLS.ExitGroup],
+  ] as const)("commits a pending exit exactly once after terminal admission for width %s syscall %s", async (width, syscall) => {
+    const commit = vi.fn((status: number) => status & 0xff);
+    const onExit = vi.fn();
+    const harness = makeHarness(width, { onExit }, { kernel_commit_process_exit: commit });
+    writeSyscall(harness.channel, syscall, [7n]);
+    expect(await harness.worker.beginKernelTeardown()).toEqual(new Set([harness.channel.pid]));
+    expect(commit).not.toHaveBeenCalled();
+    harness.worker.handleSyscall(harness.channel);
+    harness.worker.handleSyscall(harness.channel);
+    expect(commit).toHaveBeenCalledExactlyOnceWith(7);
+    expect(onExit).toHaveBeenCalledExactlyOnceWith(harness.channel.pid, 7);
+    expect(channelResult(harness.channel).status).toBe(CHANNEL_STATUS_COMPLETE);
+    expect(harness.worker.hostReaped.has(harness.channel.pid)).toBe(true);
+  });
+
   it.each([
     ["wasm32", 4],
     ["wasm64", 8],

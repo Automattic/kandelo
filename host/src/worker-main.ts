@@ -180,6 +180,7 @@ const SYS_MMAP_NR = ABI_SYSCALLS.Mmap;
 const PROT_READ_WRITE = 3;
 const MAP_PRIVATE_ANONYMOUS = 0x22;
 const SIGKILL = 9;
+const EINTR_ERRNO = 4;
 
 /** @internal Exported so cross-engine exit-trap recognition is tested. */
 export function isWasmUnreachableTrap(error: unknown): boolean {
@@ -207,6 +208,16 @@ function isExitedWorkerRetirement(
   const view = new DataView(memory.buffer);
   return view.getUint32(channelOffset + CH_SIG_SIGNUM, true) === SIGKILL
     && view.getUint32(channelOffset + CH_SIG_SI_CODE, true) === EXIT_RETIRE_SIGNAL_CODE;
+}
+
+/** @internal Exported so the teardown decision is tested without a live channel. */
+export function isProcessTeardownInterrupt(
+  view: DataView,
+  channelOffset: number,
+  errno: number,
+): boolean {
+  return errno === EINTR_ERRNO
+    && view.getUint32(channelOffset + CH_SIG_SIGNUM, true) === SIGKILL;
 }
 
 function clearWorkerRetirementMarker(
@@ -326,6 +337,10 @@ function continuationMunmap(
   const err = resultView.getUint32(base + CH_ERRNO, true);
   clearDeferredSignalDelivery(resultView, base);
   Atomics.store(resultI32, (base + CH_STATUS) / 4, CHANNEL_STATUS_IDLE);
+  // Teardown interrupts every channel, including this host-side call. The
+  // address space dies with the process, and the queued SIGKILL stays in place
+  // for the guest's post-syscall exit.
+  if (isProcessTeardownInterrupt(resultView, base, err || -result)) return;
   if (err || result < 0) {
     throw new Error(
       `${label}: munmap(0x${addr.toString(16)}, ${size}) failed errno=${err || -result}`,
@@ -513,7 +528,7 @@ function buildKernelImports(
       _buf: number | bigint,
       _max: number,
     ): number => 0,
-    kernel_push_argv: (_ptr: number | bigint, _len: number): void => {},
+    kernel_push_argv: (_ptr: number | bigint, _len: number): number => -38,
     kernel_clear_fork_exec: (): number => 0,
 
     // Exec dispatches through channel
