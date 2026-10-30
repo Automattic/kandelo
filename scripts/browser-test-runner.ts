@@ -181,6 +181,16 @@ function buildDataFiles(
     useWasmBytes: true,
   });
 
+  // A test that dlopens its own shared library (basic/dlfcn/*) finds it
+  // beside itself, as the Node runner's fixture stages it.
+  const sharedLibrary = resolve(dataPrefix, testName + ".so");
+  if (existsSync(sharedLibrary)) {
+    dataFiles.push({
+      path: `${cwd}/${testName}.so`,
+      data: Array.from(readFileSync(sharedLibrary)),
+    });
+  }
+
   // Add the .c source file if it exists
   if (sourceDir) {
     const srcPath = resolve(sourceDir, testName + ".c");

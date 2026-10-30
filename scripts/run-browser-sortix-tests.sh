@@ -45,10 +45,7 @@ source "$REPO_ROOT/scripts/xfail-reasons.sh"
 # difference between the hosts. Each needs a reason in
 # browser_xfail_expected_reason, like the shared entries.
 
-BROWSER_BASIC_EXPECTED_FAIL=(
-    # dlfcn: dynamic linking not supported in browser
-    "dlfcn/dlclose" "dlfcn/dlopen" "dlfcn/dlsym"
-)
+BROWSER_BASIC_EXPECTED_FAIL=()
 
 BROWSER_INCLUDE_EXPECTED_FAIL=()
 BROWSER_LIMITS_EXPECTED_FAIL=()
