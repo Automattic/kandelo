@@ -9226,3 +9226,32 @@ and guest-NetHack dependency, so a narrower compositor bootstrap cannot replace
 the unmodified full browser-memory gate. Narrow Node feedback can run first
 in a separate checkout with current kernel/SDK/packages/fixtures. No artifacts
 are copied or restamped, and earlier Node timeouts remain unexplained.
+### Strict receipt wire prefix (2026-10-29)
+
+The follow-up adds unwired Rust/host codecs for the reviewed little-endian
+48-byte request and 32-byte response headers, with at most 64KiB of payload.
+Shared wire vectors cover exact tokens through i64::MAX, bounded copied
+payloads, versions, flags, result lengths and expected retirement modes.
+A Retired response proves cleanup; its accepted bit means accepted publication
+for Commit or positively accepted cancellation for Cancel. Ready and Retiring
+never prove cleanup. Detach/Transferred remain unsupported and fail closed.
+
+The centrally reserved kernel control selector is 0x7ffffffe. Guest
+GLIO_QUERY rejects it before nested pointer access or host dispatch in both
+pointer widths. The reserved preentry sentinel (-2147483647) is not emitted
+or interpreted as retry authority; it still produces EIO through the immediate
+query path. Program56/host3 remains unchanged. No import, asynchronous adapter,
+syscall72 retry mapping or public wait is enabled by this codec increment.
+
+Declared-shell focused validation passes four Rust codec cases, eleven query
+syscall cases (including reserved control rejection and sentinel EIO), six
+host codec/opcode cases, strict standalone codec type checking, and the 635-file
+Vitest evidence registry check. The Wasm32 runtime-core compile check passes.
+The codec tests use fourteen shared wire
+vectors and independent malformed/late-ACK mutations. Host source tests use
+the normal configuration with prepared-fixture global setup disabled; their
+imports require no guest products. VMA evidence is in
+`.context/query-receipt-{rust,syscall,host,ts}-final.log` and
+`.context/query-receipt-evidence.log`. Normal product builds, real native and
+forwarded query delivery, browser-memory, ABI snapshot and conformance suites
+remain unrun for this increment; this is not bridge completion.

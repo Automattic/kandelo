@@ -4019,6 +4019,13 @@ pub mod gl {
     pub const MAX_QUERY_IN_LEN: u32 = 64 * 1024;
     pub const MAX_QUERY_OUT_LEN: u32 = 64 * 1024;
 
+    /// Kernel-only future receipt envelope selector. Guest GLIO_QUERY rejects
+    /// this value. No host control dispatch or asynchronous query is enabled.
+    pub const KERNEL_GL_QUERY_CONTROL: u32 = 0x7fff_fffe;
+    /// Reserved zero-effect preentry disposition, not an errno or replay grant.
+    /// Neither producer nor consumer is enabled until owned admission is wired.
+    pub const GL_QUERY_NEEDS_OWNED_ADMISSION: i32 = i32::MIN + 1;
+
     // --- cmdbuf opcodes (mirrored in host/src/webgl/ops.ts) ----------------
     //
     // Layout: TLV `{u16 op, u16 payload_len, payload[payload_len]}` little-

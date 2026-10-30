@@ -2483,7 +2483,8 @@ fn handle_dri_ioctl(
                 },
                 _ => return Err(Errno::EINVAL),
             };
-            if info.in_buf_len > gl::MAX_QUERY_IN_LEN
+            if info.op == gl::KERNEL_GL_QUERY_CONTROL
+                || info.in_buf_len > gl::MAX_QUERY_IN_LEN
                 || info.out_buf_len > gl::MAX_QUERY_OUT_LEN
                 || info.reserved != 0
             {
@@ -57710,6 +57711,32 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
+    fn glio_query_kernel_control_is_rejected_before_guest_pointers_or_host() {
+        use wasm_posix_shared::gl;
+        for width in [4, 8] {
+            let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+            proc.pointer_width = width;
+            let before = host.proc_memory.clone();
+            let mut bytes = if width == 4 {
+                glio_query_bytes(gl::GlQueryInfo { op:gl::KERNEL_GL_QUERY_CONTROL,
+                    in_buf_ptr:u32::MAX,in_buf_len:4,out_buf_ptr:u32::MAX,out_buf_len:4,
+                    ..Default::default() }).to_vec()
+            } else {
+                let info = gl::GlQueryInfo64 {op:gl::KERNEL_GL_QUERY_CONTROL,
+                    in_buf_ptr:u64::MAX,in_buf_len:4,out_buf_ptr:u64::MAX,out_buf_len:4,
+                    ..Default::default()};
+                let mut bytes = alloc::vec![0;40];
+                unsafe {core::ptr::write_unaligned(bytes.as_mut_ptr().cast(),info);}
+                bytes
+            };
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut bytes),Err(Errno::EINVAL));
+            assert!(host.gl_query_sessions.is_empty());
+            assert!(host.proc_write_calls.is_empty());
+            assert_eq!(host.proc_memory,before);
+        }
+    }
+
+    #[test]
     fn glio_query_wasm64_keeps_high_addresses_and_preflights_before_dispatch() {
         use wasm_posix_shared::gl;
         let (mut proc, mut host, fd) = glio_query_preflight_fixture();
@@ -57838,7 +57865,8 @@ impl HostIO for RelSymlinkMock {
         use wasm_posix_shared::gl;
         let (mut proc, mut host, fd) = glio_query_preflight_fixture();
         let before = host.proc_memory.clone();
-        for (capacity, result) in [(4, 5), (0, 1), (4, i32::MAX), (4, -5), (4, -11)] {
+        for (capacity, result) in [(4, 5), (0, 1), (4, i32::MAX), (4, -5), (4, -11),
+            (4, gl::GL_QUERY_NEEDS_OWNED_ADMISSION)] {
             host.gl_query_result = Some(result);
             let info = gl::GlQueryInfo { op: gl::QOP_GET_ERROR,
                 out_buf_ptr: 64, out_buf_len: capacity, ..Default::default() };
@@ -57847,7 +57875,7 @@ impl HostIO for RelSymlinkMock {
             assert!(host.proc_write_calls.is_empty());
             assert_eq!(host.proc_memory, before);
         }
-        assert_eq!(host.gl_query_sessions.len(), 5);
+        assert_eq!(host.gl_query_sessions.len(), 6);
     }
 
     #[test]
