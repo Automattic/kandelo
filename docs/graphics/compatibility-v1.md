@@ -8597,6 +8597,30 @@ menu launch/focus/close/exit behavior and repeated memory switching remain
 required. Existing previews and the separate frozen cursor build do not
 contain SFWBar. Payload size, memory cost and performance are unmeasured.
 
+The first normal target build at `c057ad36ac` completed GTK3 and
+gtk-layer-shell, then failed SFWBar's static link because the producers'
+pkg-config metadata omitted actual GBM dependencies. Job
+`sfwbar-products-c057-1030-021154-5e3f` exited 1 after 5m23s; its raw log is
+retained. This is a package dependency defect, not an unavailable runtime
+capability or an application rendering result.
+
+The shared repair makes both installed GDK pkg-config variants declare
+their direct private `gbm` dependency. Wayland-EGL declares its strong
+`wayland-client gbm` dependencies; its optional weak EGL retarget hook does
+not require adding an unconditional EGL library. Both producer revisions
+advance to 5. A causal declared-SDK link of `gdk_display_open`, using only
+target pkg-config flags and identical actual cached libraries, failed
+before with ten GBM undefined symbols and linked successfully after. The
+isolated controls contain metadata only; no target libraries were copied
+or restamped. Evidence: `.context/sfwbar-static-link/summary.json`,
+`before.log`, `after.log` and the recorded flag lists. Normal producer and
+SFWBar rebuilds and application validation remain required.
+
+Source review separately found that libepoxy publishes a headers-only
+`egl.pc` which can mask the canonical SDK EGL metadata. That broader
+producer/API metadata gap remains ordinary follow-up work; this static
+GBM dependency repair does not claim to close it.
+
 ### Labwc fixture releases real pointer capture before dock selection
 
 The original three-case Chromium preview run remains preserved at

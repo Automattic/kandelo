@@ -1,7 +1,7 @@
 script_path = "packages/registry/gtk3/build-gtk3.sh"
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "cf81d0f7c"
-revision    = 4
+revision    = 5
 
 # The fetched `gtk3-src/` tree lives under the build's work root; the
 # resolver hashes these tracked inputs on a clean checkout.

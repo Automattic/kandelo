@@ -219,6 +219,19 @@ echo "==> Configuring gtk+ for wasm32..."
     make install-pkgconfigDATA
 )
 
+# The Wayland pool patch gives GDK a direct GBM dependency. Configure's
+# LIBS above links GTK's own tools but is not exported by upstream's .pc
+# templates; every static GDK consumer needs this dependency too.
+for name in gdk-3.0 gdk-wayland-3.0; do
+    pc="$INSTALL_DIR/lib/pkgconfig/$name.pc"
+    if ! grep -q '^Requires.private:' "$pc"; then
+        echo "ERROR: GDK pkg-config metadata lacks Requires.private: $pc" >&2
+        exit 1
+    fi
+    sed '/^Requires.private:/s/$/ gbm/' "$pc" > "$pc.tmp"
+    mv "$pc.tmp" "$pc"
+done
+
 for lib in libgdk-3.a libgtk-3.a; do
     if [ ! -f "$INSTALL_DIR/lib/$lib" ]; then
         echo "ERROR: Build failed — library not found at $INSTALL_DIR/lib/$lib" >&2
