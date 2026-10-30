@@ -67,6 +67,9 @@ if [ ! -d "$SRC_DIR" ]; then
         "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
         "$KANDELO_PACKAGE_WORK_DIR"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/libcxx-contenttype-string.patch"
+    # Keep the upstream interface test consistent with GLib's explicit
+    # unary adapter without changing the installed C++ library sources.
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-interface-init-contract.patch"
 fi
 
 # Fresh build dir each run — autoconf bakes --prefix into Makefiles.

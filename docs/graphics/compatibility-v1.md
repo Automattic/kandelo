@@ -9242,3 +9242,62 @@ original producer drains and publishes Clang, the build image and NetHack
 before the successful normal e5ca build is launched. Exact producer jobs,
 commands and disk-recovery logs remain in `.context`; no failed cohort
 is relabelled as current consumer acceptance.
+
+
+### SFWBar menu interface contract (2026-10-30)
+
+The exact normal desktop cohort at `be9dd62d1b` now builds successfully:
+shell/rootfs/host, both 64-bit DRI/GLES SDK archives, ABI and freshness,
+all ten SFWBar guest members (including the executable launcher), actual
+module admission, static GTK consumer link and Node help. Before/after
+source, SDK, library dependency and all product identities agree. The
+selected consumer inventory excludes the unrelated standalone program
+suite, which remains a full-baseline requirement. Scope evidence is
+`.context/sfwbar-port-consumer-scope.md`.
+
+The unchanged headless Chromium Sway and Labwc application cases both
+fail before painting a panel. Actual trace and binary-section mapping
+identify `g_wasm_iface_init_thunk` calling a valid binary initializer
+through a unary indirect call during `menu_item_get` construction.
+Kandelo's GLib adaptation incorrectly wrapped every
+`G_IMPLEMENT_INTERFACE` initializer as unary. SFWBar's generated
+`void(void *, void *)` initializer is correct and remains unchanged.
+
+The shared repair restores the public two-argument static/dynamic macros
+and supplies explicit unary adapters. The dependency patches migrate 360
+real unary registrations across GLib/GIO, GTK, ATK, Pango, GdkPixbuf and
+GLibmm (including upstream tests). Full binary and NULL registrations
+retain their public contract; a zero-argument upstream thread-test
+initializer gets the proper binary signature. Five installed-library
+revisions advance once; the GLibmm test-only patch is a declared recipe
+input without changing its installed-library revision. Program56,
+host3, GL17 and fork21 remain fixed.
+
+All six manifest-pinned sources pass fresh strict patch application with
+zero fuzz/offsets and a complete registration classification. Separate-unit
+Wasm32 controls reproduce both original binary-callback traps and pass
+ten repaired cases in C/C++ at both O0 and O2. Actual native GObject
+construction passes unary, binary, typed binary and NULL cases. Manifest
+parsing, script syntax and diff checks pass. These controls do not prove
+rebuilt guest or browser behavior; normal reverse-dependency rebuild and
+SFWBar menu/launch/focus/close/exit validation remain required.
+
+The same unchanged cohort's ScummVM Wayland rendering case also fails:
+its title maps, but launcher pixels do not appear. The optional ImGui
+loader warning is not a proven cause. Initial private diagnostic readers
+hit cached file previews, formatted size fields and the current protocol
+log's `#` object syntax; their failures are retained. A corrected
+headless observer captures actual protocol/process/syscall records and
+passes identity checks, without proving rendering. The EGL lifetime
+bridge sends attach/damage/commit directly, outside proxy debug logging,
+so absence of those log lines is not evidence of absent presentation.
+ScummVM rendering remains ordinary unfinished work.
+
+Exact evidence: job `sfwbar-ports-be9-v5-1030-095715-98f8` (exit 1;
+`.context/kms-cursor-discovery/.context/desktop-candidate-be9dd62d1b-v5`),
+`.context/sfwbar-map-current.py`, `.context/interface-contract-handoff.md`,
+`.context/interface-contract-control.log`,
+`.context/interface-contract-verify-lf.log`, and corrected observer
+`scumm-observe-be9-v4-1030-102921-6f8a` (exit 0, diagnostic only).
+No new working SFWBar preview, three-engine acceptance, browser-memory,
+POSIX completion or performance improvement is claimed.

@@ -60,6 +60,7 @@ if [ ! -d "$SRC_DIR" ]; then
     # call_indirect traps on them. See docs/porting-guide.md
     # "Callback casts that change arity".
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-callback-arity.patch"
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-interface-init-contract.patch"
 fi
 
 rm -rf "$BUILD_DIR"

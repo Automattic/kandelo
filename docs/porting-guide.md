@@ -1106,11 +1106,24 @@ routes every arity-changing cast through a typed thunk:
   `iface_init` functions through 2-argument `GTypeInfo` slots. The
   patched macros generate matching `*_intern_*` wrappers, so code that
   uses the macros (all of gio, GTK later) is fixed at compile time.
-- `G_IMPLEMENT_INTERFACE` routes the conventional 1-argument interface
-  init through `g_wasm_iface_init_thunk`, carried in
-  `GInterfaceInfo.interface_data`. The thunk skips a NULL init, so the
-  common `G_IMPLEMENT_INTERFACE (TYPE, NULL)` idiom (GtkBox's
-  GtkOrientable, GtkTextView's GtkScrollable) stays valid.
+- `G_IMPLEMENT_INTERFACE` and `G_IMPLEMENT_INTERFACE_DYNAMIC` retain
+  their public `GInterfaceInitFunc` contract: two pointer arguments,
+  with NULL interface data. Typed two-argument callbacks keep that
+  arity, including callbacks whose first pointer names an interface
+  structure. Conventional one-argument callbacks explicitly use
+  Kandelo's `G_IMPLEMENT_INTERFACE_UNARY` or
+  `G_IMPLEMENT_INTERFACE_DYNAMIC_UNARY` adapter. Those macros route
+  through `g_wasm_iface_init_thunk`, carrying the unary function in
+  `GInterfaceInfo.interface_data`. NULL callbacks are valid in both
+  forms. Do not infer arity with `_Generic` against only the exact
+  typedef: a typed two-argument callback has a distinct C function
+  type and would be misclassified as unary. The GLib/GIO, GTK, ATK,
+  Pango and GdkPixbuf patches migrate their actual unary registrations
+  to the explicit adapter; GLibmm's upstream interface test does too.
+  A new consumer must choose its real signature. The focused control
+  in `packages/registry/glib/tests/check-interface-init-contract.sh`
+  exercises the actual patched macros and thunk in separate Wasm
+  translation units; it supplements normal rebuilt consumer tests.
 - `g_object_add_weak_pointer` / `g_object_remove_weak_pointer` cast
   the 1-argument `g_nullify_pointer` to `GWeakNotify` (2 arguments) —
   routed through a matching 2-argument wrapper. Every

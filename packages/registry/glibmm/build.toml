@@ -6,5 +6,6 @@ revision = 1
 inputs = [
   "packages/registry/glibmm/build-glibmm.sh",
   "packages/registry/glibmm/src/libcxx-contenttype-string.patch",
+  "packages/registry/glibmm/src/wasm-interface-init-contract.patch",
   "scripts/package-build-roots.sh",
 ]

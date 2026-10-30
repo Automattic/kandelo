@@ -105,6 +105,7 @@ if [ ! -d "$SRC_DIR" ]; then
     # no pixels. The patch allocates the pool as a DRI bo instead — the
     # same shape foot and mako already use.
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wayland-shm-gbm-pool.patch"
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-interface-init-contract.patch"
 fi
 
 # Fresh build dir each run — autoconf bakes --prefix into Makefiles.

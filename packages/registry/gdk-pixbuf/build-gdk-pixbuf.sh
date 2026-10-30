@@ -56,6 +56,9 @@ if [ ! -d "$SRC_DIR" ]; then
     kandelo_package_stage_verified_source gdk-pixbuf "$SRC_DIR" \
         "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
         "$KANDELO_PACKAGE_WORK_DIR"
+    # These icon initializers are unary; the public GLib macro preserves
+    # genuine two-argument GInterfaceInitFunc callbacks.
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-interface-init-contract.patch"
 fi
 
 # Fresh build dir each run — autoconf bakes --prefix into Makefiles.
