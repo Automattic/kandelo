@@ -1,9 +1,11 @@
 script_path = "packages/registry/sfwbar/build-sfwbar.sh"
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 1
+revision = 2
 inputs = [
   "packages/registry/sfwbar/build-sfwbar.sh",
+  "packages/registry/sfwbar/wasm-symbols.mjs",
+  "host/src/generated/abi.ts",
   "packages/registry/sfwbar/config",
   "packages/registry/sfwbar/patches",
   "sdk/meson/wasm32posix.ini",

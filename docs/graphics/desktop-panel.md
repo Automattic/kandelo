@@ -12,6 +12,13 @@ resolver package closure. The shell image installs them at the guest paths
 in the package manifest. Programs and the terminal script are executable;
 configuration, application entries and the loadable module are mode 0644.
 
+The executable supplies application symbols to the module. The dynamic
+linker supplies relocation objects, and the process activation owner
+supplies versioned fork bindings. The build checks those distinct providers
+against decoded module imports and exports; malformed artifacts and missing
+or wrongly typed symbol kinds fail. Runtime module activation and menu
+behavior still require normal consumer checks.
+
 Sway selects `/etc/xdg/sfwbar/sway.config`. That wrapper includes the
 existing `/usr/share/kandelo/sway/config`, preserving its readable fonts,
 startup and keyboard bindings, then replaces the existing bar command.

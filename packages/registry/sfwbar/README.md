@@ -8,10 +8,15 @@ entries for Terminal, ScummVM and Paint. It launches ordinary guest programs.
 The recipe uses the normal SDK, dependency resolver and fork instrumenter.
 GTK3 and SFWBar's core link statically; the unchanged `appmenu` implementation
 is a genuine shared WebAssembly module at `/usr/lib/sfwbar/appmenu.so`.
-Its imported symbols must be exported by the main executable, both before
-and after instrumentation. This avoids linking a second GTK object/type
-registry into the module. It preserves upstream module signature, version
-and initialization checks.
+Its application imports must resolve from the main executable before and
+when checked after instrumentation. Relocation objects come from the real
+dynamic linker; exact versioned fork imports come from each module's process
+activation owner. They are not application exports. The recipe decodes real
+modules with the declared Node runtime, checks symbol kinds and fails on
+malformed artifacts or missing symbols. It avoids linking a second GTK
+object/type registry and preserves upstream module signature, version and
+initialization checks. This symbol check does not instantiate the module or
+establish working runtime activation and menu behavior.
 
 Other optional modules for audio services, networking, Bluetooth,
 notifications, idle protocols and keyboard layout are disabled explicitly.

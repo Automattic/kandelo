@@ -13,6 +13,11 @@ depends_on = [
 ]
 
 [[host_tools]]
+name = "node"
+version_constraint = ">=24"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
 name = "meson"
 version_constraint = ">=1.0"
 install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }

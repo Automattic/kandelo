@@ -43,30 +43,29 @@ wasm32posix-cc -O2 -fPIC -shared \
     -I"$SRC_DIR/src" -I"$BUILD_DIR" "${MODULE_CFLAGS[@]}" \
     "$SRC_DIR/modules/appmenu.c" -o "$BUILD_DIR/appmenu.so"
 
-module_imports() {
-    wasm-objdump -x -j Import "${1:-$BUILD_DIR/appmenu.so}" \
-        | sed -n 's/.*<- env\.\([^ ]*\)$/\1/p' \
-        | grep -v -x -e memory -e __indirect_function_table \
-            -e __stack_pointer -e __memory_base -e __table_base | sort -u
-}
 program_exports() {
-    wasm-objdump -x -j Export "$1" \
-        | sed -n 's/.*-> "\([^"]*\)"$/\1/p' | sort -u
+    node "$SCRIPT_DIR/wasm-symbols.mjs" exports "$1"
 }
+missing_symbols() {
+    node "$SCRIPT_DIR/wasm-symbols.mjs" missing "$1" "$2"
+}
+# Materialize decoder output before searching it: process substitution must
+# not hide a parser failure and turn an incomplete inventory into success.
+program_exports "$BUILD_DIR/appmenu.so" > "$BUILD_DIR/appmenu-exports.txt"
 for symbol in sfwbar_module_signature sfwbar_module_version sfwbar_module_init; do
-    if ! program_exports "$BUILD_DIR/appmenu.so" | grep -Fx "$symbol" >/dev/null; then
+    if ! grep -Fx "$symbol" "$BUILD_DIR/appmenu-exports.txt" >/dev/null; then
         printf 'ERROR: application-menu module does not export %s\n' "$symbol" >&2
         exit 1
     fi
 done
-missing="$(comm -23 <(module_imports) <(program_exports "$BUILD_DIR/sfwbar"))"
+missing="$(missing_symbols "$BUILD_DIR/sfwbar" "$BUILD_DIR/appmenu.so")"
 if [ -n "$missing" ]; then
     # Only real plugin imports force archive members into the executable.
     extra="$(printf -- '-Wl,-u,%s ' $missing)"
     meson configure "$BUILD_DIR" "-Dc_link_args=-Wl,--export-all $extra"
     ninja -C "$BUILD_DIR" sfwbar
 fi
-remaining="$(comm -23 <(module_imports) <(program_exports "$BUILD_DIR/sfwbar"))"
+remaining="$(missing_symbols "$BUILD_DIR/sfwbar" "$BUILD_DIR/appmenu.so")"
 if [ -n "$remaining" ]; then
     printf 'ERROR: application-menu imports missing from main executable:\n%s\n' "$remaining" >&2
     exit 1
@@ -80,8 +79,7 @@ install_local_binary sfwbar "$BUILD_DIR/sfwbar.wasm" sfwbar.wasm
 bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \
     "$BUILD_DIR/appmenu.so" -o "$BUILD_DIR/appmenu-instrumented.so"
 install_local_runtime_file sfwbar "$BUILD_DIR/appmenu-instrumented.so" appmenu.so
-remaining="$(comm -23 <(module_imports "$INSTALL_DIR/appmenu.so") \
-    <(program_exports "$INSTALL_DIR/sfwbar.wasm"))"
+remaining="$(missing_symbols "$INSTALL_DIR/sfwbar.wasm" "$INSTALL_DIR/appmenu.so")"
 if [ -n "$remaining" ]; then
     printf 'ERROR: instrumented application-menu imports are unresolved:\n%s\n' "$remaining" >&2
     exit 1

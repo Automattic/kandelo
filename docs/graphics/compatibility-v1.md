@@ -8564,6 +8564,21 @@ the original log, screenshot and trace are retained at
 ScummVM rendering result. A new normal combined product build and separate
 headless preview verification remain required before offering that fix.
 
+The normal combined build `cursor-wayland-combined-products-1030-012148-10dc`
+completed successfully at `e570722d11` after 2h01m. Its bounded headless
+Chromium smoke `cursor-wayland-preview-smoke-e570-1030-035518-4c73` then
+failed after 6m58s. Actual Sway and ScummVM-inside-Sway cases both stop at a
+black initial desktop before client paint; Sway stderr repeatedly reports
+`Page-flip failed on output Virtual-1`. Foot and swaybg do launch. This is
+an ordinary graphics defect, not a missing application or platform boundary.
+The imported cursor transport case passes, ABI/freshness checks pass and
+selected actual product identities remain identical before/after. Those
+passes do not establish cursor movement or ScummVM rendering. Exact logs,
+screenshots and traces are preserved in the file-alias checkout's
+`.context/compositor-preview-smoke-e570/`. Existing user previews remain
+unchanged. A GPU-backed cursor allocation/commit repair is being validated
+separately before another normal consumer build.
+
 ### SFWBar desktop panel port in progress (2026-10-30)
 
 The requested SFWBar port pins upstream `v1.0_beta17` and reuses the existing
@@ -8620,6 +8635,29 @@ Source review separately found that libepoxy publishes a headers-only
 `egl.pc` which can mask the canonical SDK EGL metadata. That broader
 producer/API metadata gap remains ordinary follow-up work; this static
 GBM dependency repair does not claim to close it.
+
+The metadata retry at `079ce7af0b` rebuilt the shared producers, linked
+SFWBar and instrumented both executable and application-menu module. Job
+`sfwbar-products-079-1030-023503-aeeb` failed after 22m29s at the recipe's
+final symbol check: it compared activation-owner fork imports only with
+main-program exports. The text decoder also printed structural errors;
+process substitutions could hide its failure. This is a recipe validation
+defect; neither runtime module activation nor rendered menus ran.
+
+The recipe now uses runtime structural decoding, fails on decoder errors
+and distinguishes actual application symbols, linker relocation objects
+and exact versioned activation imports. It checks export/import kinds and
+unknown private names fail. Each side module receives its own activation,
+including bindings unused by main; main imports are not that authority.
+Generated ABI names and their provider kinds govern the fork bindings.
+Fourteen declared-shell controls pass, including missing/wrong-kind and
+invented private symbols, malformed bytes, and a real SDK-linked executable
+plus side module after normal fork instrumentation. An initial control
+caught an overly strict main-import dependency; another caught digit-bearing
+ABI constant names. Final evidence is
+`.context/sfwbar-module-symbols-accepted.log`; intermediate diagnostic logs
+remain preserved. Normal SFWBar package/image and actual loader/browser
+checks remain required. This changes no ABI epoch or runtime binding.
 
 ### Labwc fixture releases real pointer capture before dock selection
 
