@@ -8996,3 +8996,47 @@ failure; their rerun remains required. Failed canonical and registry
 logs are preserved with `-before.log` suffixes in the file-owner checkout.
 Normal guests, real rendering, browser-memory and final conformance
 remain unrun for this combined follow-up model.
+
+### Combined graphics gate and publication catch audit (2026-10-29)
+
+Combined follow-up `01bae5c346` passes all 794 graphics source cases in
+34 files with zero skips; the corrected evidence registry agrees with all
+634 collected files. Together with the canonical host build, 227 native
+C cases and GBM checks at `d24b94f7de`, this validates the named source
+increments, not normal guest or real-rendered behavior.
+
+The three-file ownership audit passes 117/120. One real audit failure
+identifies the DRI inherited-mapping publication catch, which did not
+check the branded fatal kernel-export signal before ordinary host
+rollback. The worker and audit sources are byte-identical between this
+combined source and landing `6fd1ab90c8`; this repair belongs in the
+landing. The catch now rethrows a branded failure first, preserving
+whole-generation containment before rollback writes. Ordinary host
+publication failures retain their existing rollback. No audit allowance
+is added or broadened.
+
+The other two failures are five-second deadlines in synthetic AST audit
+fixtures, not failed assertions. Their observed durations are 5.8s and
+9.4s in the preserved run with three audit workers. Rerunning the same
+assertions and unchanged deadlines with one worker is pending; the failed
+run remains `.context/graphics-resumed-model-audit.log` in the file-owner
+checkout. No external runtime defect or timeout waiver is claimed.
+
+
+The single-worker repeat at landing `6fd1ab90c8` plus the publication guard
+passes 169/170 across five files: entry gate 44/44, shared-mapping
+inheritance 6/6, export-failure audit 9/9 and entry-context audit 25/25.
+The memory audit passes 85/86: the two originally timed-out fixtures pass,
+but its separate synthetic capacity-dispatcher fixture hits the unchanged
+five-second deadline at 7.6s. No assertion fails and no deadline or
+allowance is changed. The failed repeat is retained as
+`.context/graphics-landing-fatal-audit-after.log` in the file-owner checkout;
+a full passing audit remains pending under reduced build load. Reported
+machine load is 155 at start and 106.9 at end on 18 CPUs; these observations
+do not establish a product performance or external runtime claim.
+
+Security maintenance unmounted the existing case-sensitive fixture image.
+It is reattached without opening Finder. The selected Sortix checkout
+`/Volumes/KandeloCaseBuild/moscow-vma-fragments-os-test` is pristine at
+`7e8f0082ab0b58ad3383a8abbf47dc4b40dcf25d`; current-worktree SDK, kernel
+and overrides remain required for the later normal conformance run.

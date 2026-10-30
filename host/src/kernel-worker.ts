@@ -26580,6 +26580,9 @@ export class CentralizedKernelWorker {
         throw new Error("Inherited DRI mapping publication failed");
       }
     } catch (cause) {
+      // A trapped kernel generation cannot authorize rollback writes. Its
+      // fatal boundary owns containment; ordinary host failures still unwind.
+      this.#rethrowKernelEntryFatal(cause);
       if (
         sharedPublished
         && this.sharedMappings.get(prepared.childPid) === childSharedMap

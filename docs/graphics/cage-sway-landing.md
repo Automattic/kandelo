@@ -262,3 +262,20 @@ checkout as `.context/muxer-narrow-owner-{before,after,host}.log`.
 This is bounded helper/build evidence. The current normal product run at
 `85c56d342d` predates this helper repair; combined rebuilt application,
 three-engine browser, memory and conformance acceptance remain required.
+
+
+### Inherited-mapping publication failure guard
+
+The static export-failure audit exposed a missing first fatal-signal
+check in inherited DRI mapping publication. Its catch now preserves the
+branded kernel-export failure before ordinary rollback writes, consistent
+with whole-generation containment. Ordinary host publication errors still
+restore prior bytes and reference counts; no audit allowance is added.
+
+The declared-shell selection passes entry gate 44/44, shared inheritance
+6/6, export-failure audit 9/9 and entry-context audit 25/25. The memory
+write audit passes 85/86, with one synthetic fixture timing out at its
+unchanged five-second deadline. The complete selection is 169/170 and
+remains a failed run; the full audit must pass before final readiness.
+Normal current-source artifacts, rendered consumers, browser-memory and
+conformance remain pending.

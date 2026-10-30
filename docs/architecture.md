@@ -495,6 +495,11 @@ detached callbacks, and discards queued ingress after a fatal latch. This is a
 lifetime guarantee: later work cannot overwrite the reservation or publish a
 channel completion against an uncertain Rust transition.
 
+Shared-mapping publication preserves that same fatal signal before its
+ordinary host rollback. A branded export failure must reach generation
+containment without restoring guest bytes or adjusting published mapping
+references; an ordinary host publication error still unwinds those changes.
+
 Process-launch continuations are different from one synchronous kernel entry.
 Compiling a child module, allocating process memory, or constructing a Worker
 can yield to the host event loop. When a fork, `vfork`, `posix_spawn`, `exec`,
