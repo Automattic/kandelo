@@ -1449,82 +1449,86 @@ The Node.js host is unaffected and continues to fetch its lazy URLs directly.
 The current profile allows `Accept`, `Content-Type`, `git-protocol`,
 `Range`, `wp_blog`, and `wp_install`, plus the ordinary (non-credential)
 fields signed-in Codex 0.163.0 sends: `Content-Encoding`,
-`OAI-Product-Sku`, `OpenAI-Beta`, `originator`, `session-id`, `thread-id`,
-`version`, `x-client-request-id`, `x-codex-beta-features`,
+`OAI-Product-Sku`, `OpenAI-Beta`, `originator`, `session-id`,
+`thread-id`, `version`, `x-client-request-id`, `x-codex-beta-features`,
 `x-codex-parent-thread-id`, `x-codex-routing-hint`,
 `x-codex-turn-metadata`, `x-codex-turn-state`, `x-codex-window-id`,
-`x-openai-product-sku`, and `x-openai-subagent`, and the two it sends only
-for US-residency and FedRAMP accounts, `x-openai-account-routing-override`
-and `x-openai-fedramp`. These are the fields observed from Codex 0.163.0
-against local mock servers, plus those read from its source for account
-classes and sub-agents the probe could not reach. Codex's telemetry
-(`statsig-api-key`), its internal and desktop-only fields, and
-`x-openai-memgen-request` (sent only by its `memories` feature, which is
-off by default) are not relayed; a request that carries one fails before
-dispatch, naming it. It copies `Range` into `X-Cors-Proxy-Range` (see
-"Byte-range reads through the proxy" below). The Codex fields are relayed
-for any request, granted or not. A proxy whose preflight does not allow
-one fails a request that carries it at the browser's CORS check rather
-than dropping the field; today that includes the default Playground proxy,
-whose allow-list has not been extended yet. The Spacefast proxy in
-`apps/spacefast-cors-proxy` allows all of them (and `Cache-Control`).
-`Cache-Control` is deliberately not relayed: Codex sends it only on its
-user-settings call (`GET .../wham/settings/user`), which a model turn
-does not need and which is refused before dispatch, naming the field. If
-the profile relayed it, an anonymous GET that carries it (pip, for one,
-sends `Cache-Control: max-age=0` when it revalidates a package index)
-would fail the Playground proxy's preflight instead of going out without
-the field. Every
-actual proxy boundary projects by case-insensitive field name only and
-preserves browser-representable values and occurrences as far as Fetch
-permits. Request fields the browser sets or
-forbids on every `fetch()` — the Fetch forbidden request-header names plus
+`x-openai-product-sku`, and `x-openai-subagent`, and the two it sends
+only for US-residency and FedRAMP accounts,
+`x-openai-account-routing-override` and `x-openai-fedramp`, and
+`x-openai-internal-codex-responses-lite`, which it sends with every
+model its catalog marks `use_responses_lite` (every model a ChatGPT
+account can use in 0.163.0; a live signed-in turn was refused for
+lacking it). These are the fields observed from Codex 0.163.0 against
+local mock servers and live, plus those read from its source for
+account classes and sub-agents the probe could not reach. Codex's
+telemetry (`statsig-api-key`), its attestation and desktop-only fields,
+and `x-openai-memgen-request` (sent only by its
+`memories` feature, which is off by default) are not relayed; a request
+that carries one fails before dispatch, naming it. It copies `Range`
+into `X-Cors-Proxy-Range` (see "Byte-range reads through the proxy"
+below). The Codex fields are relayed for any request, granted or not. A
+proxy whose preflight does not allow one fails a request that carries it
+at the browser's CORS check rather than dropping the field; today that
+includes the default Playground proxy, whose allow-list has not been
+extended yet. The Spacefast proxy in `apps/spacefast-cors-proxy` allows
+all of them (and `Cache-Control`). `Cache-Control` is deliberately not
+relayed: Codex sends it only on its user-settings call
+(`GET .../wham/settings/user`), which a model turn does not need and
+which is refused before dispatch, naming the field. If the profile
+relayed it, an anonymous GET that carries it (pip, for one, sends
+`Cache-Control: max-age=0` when it revalidates a package index) would
+fail the Playground proxy's preflight instead of going out without the
+field. Every actual proxy boundary projects by case-insensitive field
+name only and preserves browser-representable values and occurrences as
+far as Fetch permits. Request fields the browser sets or forbids on
+every `fetch()` — the Fetch forbidden request-header names plus
 browser-owned identity/client-hint fields such as `content-length`,
-`accept-encoding`, `transfer-encoding`, and `user-agent` — are omitted for
-**any** method, because a guest value for them can never reach the origin
-regardless of the allow-list; their omission is the browser's constraint,
-not a proxy-imposed loss. This is what lets a body-bearing smart-HTTP
-`git-upload-pack` POST traverse the proxy: a browser `git clone https://…`
-succeeds because only the application-owned fields, all of which are
-allow-listed (`Accept`, `Content-Type`, `git-protocol`), are forwarded. An
-anonymous bodyless GET may additionally omit an
-application-owned unsupported field and emits a deduplicated diagnostic.
-Credential fields (`Authorization`, `ChatGPT-Account-ID`, `Cookie`, `Cookie2`,
-`Proxy-Authorization`) are never silently dropped; a request carrying one the
-proxy will not relay fails before dispatch. Only a
-[per-process credential grant](#per-process-credential-grants) relays
-`Authorization` or `ChatGPT-Account-ID`. Fields that instruct the proxy or
-the service worker (`X-Kandelo-Credential-Grant` and every `X-Cors-Proxy-*`
-field) are written only by projection: a guest request that carries one is
+`accept-encoding`, `transfer-encoding`, and `user-agent` — are omitted
+for **any** method, because a guest value for them can never reach the
+origin regardless of the allow-list; their omission is the browser's
+constraint, not a proxy-imposed loss. This is what lets a body-bearing
+smart-HTTP `git-upload-pack` POST traverse the proxy: a browser
+`git clone https://…` succeeds because only the application-owned
+fields, all of which are allow-listed (`Accept`, `Content-Type`,
+`git-protocol`), are forwarded. An anonymous bodyless GET may
+additionally omit an application-owned unsupported field and emits a
+deduplicated diagnostic. Credential fields (`Authorization`,
+`ChatGPT-Account-ID`, `Cookie`, `Cookie2`, `Proxy-Authorization`) are
+never silently dropped; a request carrying one the proxy will not relay
+fails before dispatch. Only a [per-process credential
+grant](#per-process-credential-grants) relays `Authorization` or
+`ChatGPT-Account-ID`. Fields that instruct the proxy or the service
+worker (`X-Kandelo-Credential-Grant` and every `X-Cors-Proxy-*` field)
+are written only by projection: a guest request that carries one is
 refused before dispatch, granted or not, even as an anonymous GET, and a
 profile may not allow one. Any other application-owned unsupported field
 still fails a credentialed, body-bearing, or non-GET request before
-dispatch. Direct Fetch
-attempts remain unprojected. The development same-origin relay enforces the same
-profile as production.
+dispatch. Direct Fetch attempts remain unprojected. The development
+same-origin relay enforces the same profile as production.
 
 **Compressed request bodies.** Kandelo relays a request body and its
-`Content-Encoding` as the guest wrote them: it never decodes or re-encodes
-a `zstd` body. Signed-in Codex compresses every model turn
+`Content-Encoding` as the guest wrote them: it never decodes or
+re-encodes a `zstd` body. Signed-in Codex compresses every model turn
 (`POST .../responses`) with zstd, and those bytes reach the proxy
-byte-for-byte, with a `Content-Length` the browser derives from them; the
-proxy must relay them the same way (browsers have no zstd decoder, and a
-decoded body would be two to four times larger), as the Spacefast proxy
-does. One exception remains
-at the default proxy's boundary: a `gzip` or `deflate` body that reaches
-the TLS bridge is decoded and sent without `Content-Encoding`, because
-git compresses its `git-upload-pack` request with gzip and the Playground
-proxy's preflight does not allow `Content-Encoding` yet. That decoding
-goes away once the Playground proxy allows the field.
+byte-for-byte, with a `Content-Length` the browser derives from them;
+the proxy must relay them the same way (browsers have no zstd decoder,
+and a decoded body would be two to four times larger), as the Spacefast
+proxy does. One exception remains at the default proxy's boundary: a
+`gzip` or `deflate` body that reaches the TLS bridge is decoded and sent
+without `Content-Encoding`, because git compresses its `git-upload-pack`
+request with gzip and the Playground proxy's preflight does not allow
+`Content-Encoding` yet. That decoding goes away once the Playground
+proxy allows the field.
 
-**WebSocket handshakes.** The bridge carries HTTP requests, and `fetch()`
-cannot send `Upgrade`. A request asking to upgrade its connection to
-WebSocket therefore fails before dispatch (the guest receives `502 Bad
-Gateway` naming the reason) instead of reaching the destination as a
-plain GET. Codex tries a WebSocket first in every session and falls back
-to HTTPS with server-sent events after its retries; see the Codex
-package README. Upgrades a server may ignore, such as `h2c`, are still
-dropped as browser-controlled fields.
+**WebSocket handshakes.** The bridge carries HTTP requests, and
+`fetch()` cannot send `Upgrade`. A request asking to upgrade its
+connection to WebSocket therefore fails before dispatch (the guest
+receives `502 Bad Gateway` naming the reason) instead of reaching the
+destination as a plain GET. Codex tries a WebSocket first in every
+session and falls back to HTTPS with server-sent events after its
+retries; see the Codex package README. Upgrades a server may ignore,
+such as `h2c`, are still dropped as browser-controlled fields.
 
 #### Development credential relay
 
@@ -1537,23 +1541,24 @@ program such as Codex can reach its service from a developer's own
 machine. Other destinations keep the ordinary proxy. Production builds
 and `vite preview` do not run it, and the public proxies are unchanged.
 
-There is no approval page and no site-wide permission. A
-[per-process credential grant](#per-process-credential-grants) is the
-relay's only permission, exactly as for the proxy:
+There is no approval page and no site-wide permission. A [per-process
+credential grant](#per-process-credential-grants) is the relay's only
+permission, exactly as for the proxy:
 
 - The kernel worker projects a request to these origins as it does for
-  the proxy and sends it to `<base>/__kandelo_credential_relay?url=<target>`
-  instead, with the guest's fields as request fields. A credential without
-  a grant for the target origin fails there, before anything reaches the
-  relay. A granted request carries `Authorization`, `ChatGPT-Account-ID`,
-  the opt-in `X-Cors-Proxy-Allowed-Request-Headers: Authorization` and the
+  the proxy and sends it to
+  `<base>/__kandelo_credential_relay?url=<target>` instead, with the
+  guest's fields as request fields. A credential without a grant for the
+  target origin fails there, before anything reaches the relay. A
+  granted request carries `Authorization`, `ChatGPT-Account-ID`, the
+  opt-in `X-Cors-Proxy-Allowed-Request-Headers: Authorization` and the
   grant's tag.
 - The service worker gates a request to the relay exactly as one to the
   proxy (see the service-worker gate below): credentials or the opt-in
   without a tag it has verified with the kernel worker get `403`, and so
-  does a tag from anything but the kernel worker's script. It removes the
-  tag and writes the opt-in itself, then sends the request on with no
-  browser cookies (`credentials: "omit"`). Cross-origin requests for
+  does a tag from anything but the kernel worker's script. It removes
+  the tag and writes the opt-in itself, then sends the request on with
+  no browser cookies (`credentials: "omit"`). Cross-origin requests for
   these origins, and requests for them to a cross-origin configured
   proxy (`VITE_CORS_PROXY_URL`), are rerouted to the relay after the
   same gate.
@@ -1562,8 +1567,8 @@ relay's only permission, exactly as for the proxy:
   opt-in may name nothing else. A request with `Authorization` or
   `ChatGPT-Account-ID` and no opt-in gets `403` with a short reason; the
   credential is never stripped and sent on. A request that still carries
-  `X-Kandelo-Credential-Grant` gets `403`: the gate removes the tag, so a
-  tagged request never passed it. Requests without credentials are
+  `X-Kandelo-Credential-Grant` gets `403`: the gate removes the tag, so
+  a tagged request never passed it. Requests without credentials are
   relayed without any opt-in. Because the opt-in is written only when
   `Authorization` is present, a granted request that carries
   `ChatGPT-Account-ID` alone is refused here.
@@ -1580,10 +1585,10 @@ What it sends and answers:
   `same-origin`, gets `403`, as does a `Sec-Fetch-Dest` that is present
   and not `empty`. The service worker also refuses any load of the relay
   that is not `fetch()`.
-- Every answer, errors included, carries `Content-Security-Policy:
-  sandbox` and `X-Content-Type-Options: nosniff`, and only selected inert
-  response fields (content type and Codex's protocol fields) are copied
-  back.
+- Every answer, errors included, carries
+  `Content-Security-Policy: sandbox` and
+  `X-Content-Type-Options: nosniff`, and only selected inert response
+  fields (content type and Codex's protocol fields) are copied back.
 - Request bodies are limited to 8 MiB, responses to 64 MiB and ten
   minutes, and response bodies stream. It is HTTP(S) transport, not
   WebSocket or arbitrary TCP forwarding.
@@ -1605,18 +1610,19 @@ credential files.
 #### Per-process credential grants
 
 `BrowserKernel` asks its `onCredentialRequest` option before a program
-whose package declared credential destinations starts (see
-[credential grants](architecture.md#credential-grants)); the Node host
-asks identically. A grant is recorded in the kernel and lasts for the
+whose package declared credential destinations starts (see [credential
+grants](architecture.md#credential-grants)); the Node host asks
+identically. A grant is recorded in the kernel and lasts for the
 process's life: until it exits or runs another program (any exec ends
 it). A child it starts never inherits it.
 
 **The prompt.** In the browser app the question is asked in Kandelo's
 own interface, never in the terminal the program controls. Embedders
-reach it through `KernelHost.setCredentialRequestHandler(handler |
-null)` (`web-libs/kandelo-session`). The app's live setup passes every
-question from its `BrowserKernel` to whichever handler is installed
-when the question arrives. The app installs its dialog
+reach it through
+`KernelHost.setCredentialRequestHandler(handler | null)`
+(`web-libs/kandelo-session`). The app's live setup passes every question
+from its `BrowserKernel` to whichever handler is installed when the
+question arrives. The app installs its dialog
 (`apps/browser-demos/pages/kandelo/app/CredentialRequestDialog.tsx`)
 when it mounts, queueing questions in `CredentialRequestQueue`. The
 dialog shows:
@@ -1624,64 +1630,130 @@ dialog shows:
 - the title `<title> wants to use your sign-in credentials`, where the
   title comes from the program's declaration;
 - every destination origin the grant would cover;
-- the program's path, its process id, and where the machine's image
-  came from (`credentialImageSource`): whether this site ships that
-  image, then the URL the image bytes were fetched from. The label
-  comes first so that a long URL is what gets clipped; the full value
-  is in the details. A declared program is known only by its path
-  inside the image, so these are shown outright, not only in the
-  details;
-- one sentence saying what Allow means: only this running process,
-  until it exits or runs another program, and programs it starts never
-  inherit it;
+- right under them, in the main body rather than the details, the
+  intermediary each credentialed request passes through, and that whoever
+  operates it can read the credentials. A user may trust the destination
+  (OpenAI, say) and not a Kandelo CORS proxy, so the prompt names it, for
+  example: "Your credentials pass through
+  https://kandelo-codex-test.space.fast/cors-proxy, the CORS proxy this
+  site uses, which forwards them to these destinations. Whoever operates
+  that proxy can read them." The kernel worker computes this
+  (`CredentialRequest.transport`, `host/src/credential-transport.ts`) from
+  the same validated proxy configuration its network backends send
+  through, so it names the endpoint the request would actually reach, by
+  origin and path (a proxy at the root of its origin by its origin). Each
+  entry names its kind and the destinations it covers:
+  `"proxy"` for the deployment's CORS proxy; `"relay"` for the destinations
+  the [development credential relay](#development-credential-relay)
+  carries on a loopback development server, named as the relay of the
+  development server running on this computer, with the proxy named for
+  any other destination; `"none"` when the browser kernel has no CORS
+  proxy, where the prompt says credentials cannot be sent from this
+  deployment, because every credentialed request is then refused before
+  dispatch, granted or not; and `"direct"` on Node, where the program
+  connects to the destination itself with nothing in between;
+- the program's path, its process id, and where the machine's image came
+  from (`credentialImageSource`): whether this site ships that image,
+  then the URL the image bytes were fetched from. The label comes first
+  so that a long URL is what gets clipped; the full value is in the
+  details. A declared program is known only by its path inside the
+  image, so these are shown outright, not only in the details;
+- when the program's file is not the one the machine booted with, a
+  warning first: "This file has changed since the machine started". At
+  boot, when the kernel worker reads the declarations, it records the
+  identity of the file at each declared path (device, inode, size,
+  modification and change times, through the kernel's own stat). Each
+  question compares it with the file the image was actually executed
+  from (`programChangedSinceBoot`): the kernel keeps an open description
+  of every image's executable (the file `/proc/<pid>/exe` opens) and
+  reports that file's metadata (`kernel_get_exe_stat`), not what the
+  declared path names when the question is asked. Moving the declared
+  file aside, executing another file under its name and moving the
+  original back therefore still counts as changed; the in-kernel
+  filesystem keeps a renamed file's inode and change time, so a check of
+  the path would have seen the original. A
+  changed file, or one missing at boot, did not come from the image, so
+  the image row then says so ("Not from the image: this file changed
+  after the machine started") instead of crediting it to the image, and
+  the details keep the image's provenance under "Machine image" only.
+  Fetching a lazy program's bytes on first use is not a change;
+- one sentence saying what Allow means: only this running process, until
+  it exits or runs another program, and programs it starts never inherit
+  it;
 - a "Details" disclosure with the program path, the command line, the
   parent processes up to init, the destinations, and the image source.
 
-The choices are **Allow for this process** and **Don't allow**. Focus
-starts on "Don't allow", which is the last control, so Tab from it
-wraps to the top of the dialog. "Allow for this process" is disabled
-for 750 ms after each question appears, including each queued question
-that replaces the one just answered, the same input delay browsers put
-on their own permission prompts. Without it, keys typed into the
-terminal as the dialog opens (Tab for completion, then Enter), or the
-second click of a double-click landing on the next queued dialog's
-identical button, could answer a question the user never read. "Don't
-allow" works at once. Escape answers "Don't allow", and a click outside
-the dialog answers nothing. There is no "remember" choice and no
-persistent grant state: every process, and every new image a process
-runs, asks again. Questions are queued and asked one at a time; the
-dialog says how many more are waiting.
+The choices are **Allow for this process** and **Don't allow**, and, in
+the row that counts waiting questions, **Deny all waiting** (when more
+are queued: it denies the shown question and every queued one) and
+**Don't allow, and stop asking for this machine** (it denies every open
+question and every later one without asking, until the machine is torn
+down, switched or rebooted, or the page reloads; it is held in memory by
+`KernelHost.stopCredentialRequests`, never persisted, and never allows
+anything). Focus starts on "Don't allow", which is the last control, so
+Tab from it wraps to the top of the dialog. "Allow for this process" is
+disabled for 750 ms after each question appears, including each queued
+question that replaces the one just answered, the same input delay
+browsers put on their own permission prompts. Without it, keys typed
+into the terminal as the dialog opens (Tab for completion, then Enter),
+or the second click of a double-click landing on the next queued
+dialog's identical button, could answer a question the user never read.
+The delay starts again whenever the page becomes visible or its window
+regains focus, and Allow stays disabled while the page is hidden or
+unfocused, so input meant for another window cannot land on it. The two
+choices that answer for more than one question wait the same way: they
+only deny, but a stray Enter should not decide for the whole machine.
+"Don't allow" works at once. Escape answers "Don't allow", and a click
+outside the dialog answers nothing. Nothing that allows is remembered
+and there is no persistent grant state: every process, and every new
+image a process runs, asks again. Questions are queued and asked one at
+a time; the dialog says how many more are waiting. A machine has at most
+eight questions open at once (`MAX_OPEN_CREDENTIAL_QUESTIONS` in
+`host/src/credential-grants.ts`): a guest that starts declared programs
+in a loop gets the rest denied without a question, so the queue stays
+bounded. Denials are reported on the kernel worker's console, at most one
+line per machine every five seconds: the first denial at once, then one
+line counting the ones held back (`OverCapReport`). "Deny all waiting"
+clears the questions open now, which ends a finite burst, but against an
+endless loop (`while :; do codex & done`) the queue refills at once; only
+"Don't allow, and stop asking for this machine" stops the questions
+until the machine is torn down, switched or rebooted. The loop itself
+keeps running; stopping it is up to the user, as for any runaway
+process.
 
-A question closes as deny when its process exits or runs another
-program before it is answered, when the handler that holds it is
-replaced or removed, and when the machine is torn down or switched
+A question closes as deny when its process exits or runs another program
+before it is answered, when the handler that holds it is replaced or
+removed, and when the machine is torn down or switched
 (`LiveKernelHost.detachKernel` withdraws open questions, and the kernel
-host's destroy denies them on the worker side). A declined program
-still runs, without a grant; Codex, declared `launch = "wait"`, runs no
+host's destroy denies them on the worker side). A declined program still
+runs, without a grant; Codex, declared `launch = "wait"`, runs no
 instruction until the user answers.
 
-With no handler installed, every question is denied at once. That is
-the default for any embedder that never installs one, and it also
-covers a declared program the machine starts before the app's interface
-mounts (for example from init). The dialog is app UI on the app's
-origin, so it is only as trustworthy as that origin. Guest web
-previews run on a separate preview origin and cannot script it (see
-[Guest web previews run on their own
-origin](#guest-web-previews-run-on-their-own-origin)).
+With no handler installed, every question is denied at once. That is the
+default for any embedder that never installs one, and it also covers a
+declared program the machine starts before the app's interface mounts
+(for example from init). The dialog is app UI on the app's origin, so it
+is only as trustworthy as that origin. Guest web previews run on a
+separate preview origin and cannot script it (see [Guest web previews
+run on their own origin](#guest-web-previews-run-on-their-own-origin)).
 
 The guest's HTTPS requests consult the grant. Each request belongs to
 the process whose system call wrote its bytes, and to the grant that
 process held when it wrote them; not the process that opened the
 connection, and not a grant the same pid receives later, after an exec
 (see [which process a request belongs
-to](architecture.md#credential-grants)). When exactly one process wrote
+to](architecture.md#credential-grants)). Attribution follows the
+guest's TLS 1.2 record framing, so it holds only on a connection whose
+TLS engine negotiated TLS 1.2: the backend reads the version from the
+engine's ServerHello, and on any other or unreadable version no request
+on that connection is granted. When exactly one process wrote
 the request over TLS and the grant it held is still live and names the
 request's exact origin, `BrowserCorsProxy` relays the request's
 `Authorization` and `ChatGPT-Account-ID`, adds the proxy protocol's
 opt-in `X-Cors-Proxy-Allowed-Request-Headers: Authorization` (only when
-`Authorization` is present), and adds `X-Kandelo-Credential-Grant:
-<token>`, the grant's unguessable token. A granted request that carries
-neither credential gets neither header.
+`Authorization` is present), and adds
+`X-Kandelo-Credential-Grant: <token>`, the grant's unguessable token. A
+granted request that carries neither credential gets neither header.
 
 Every other credentialed request fails before dispatch; credentials are
 never stripped and sent anyway. Through the proxy (no grant, a grant for
@@ -1700,46 +1772,49 @@ credential field.
 
 **The service-worker gate.** The browser app's service worker is a
 second gate, independent of the kernel worker, at the browser's network
-edge. What it guarantees: only Kandelo's kernel-worker script can present
-a grant tag and vouch for it, so a page script, a guest web preview, or a
-worker started from any other script cannot send credentials through the
-proxy. What it does not guarantee: any script the app's origin runs can
-still start a genuine kernel worker of its own and answer that kernel's
-credential prompt itself. The app's origin is therefore the trusted
-boundary, and it runs only Kandelo's own code: guest web previews run on
-a separate preview origin (see [Guest web previews run on their own
-origin](#guest-web-previews-run-on-their-own-origin), including what that
-does not isolate). The gate applies to every request it handles that targets the
-configured CORS proxy, whichever origin the proxy is on: the kernel
-worker's own proxy requests, a page or worker script's, and the
-cross-origin `GET`/`HEAD` requests it wraps in the proxy itself.
+edge. What it guarantees: only Kandelo's kernel-worker script can
+present a grant tag and vouch for it, so a page script, a guest web
+preview, or a worker started from any other script cannot send
+credentials through the proxy. What it does not guarantee: any script
+the app's origin runs can still start a genuine kernel worker of its own
+and answer that kernel's credential prompt itself. The app's origin is
+therefore the trusted boundary, and it runs only Kandelo's own code:
+guest web previews run on a separate preview origin (see [Guest web
+previews run on their own
+origin](#guest-web-previews-run-on-their-own-origin), including what
+that does not isolate). The gate applies to every request it handles
+that targets the configured CORS proxy, whichever origin the proxy is
+on: the kernel worker's own proxy requests, a page or worker script's,
+and the cross-origin `GET`/`HEAD` requests it wraps in the proxy itself.
 
 - A request that carries a credential field or the opt-in
-  `X-Cors-Proxy-Allowed-Request-Headers` without `X-Kandelo-Credential-Grant`
-  gets `403 Forbidden` with a short plain-text reason. The body never
-  contains a tag.
-- A tag is accepted only on an HTTPS target through the configured proxy,
-  and only from a dedicated worker on the app's origin whose script is
-  exactly the kernel worker's entry: same origin and path, which the build
-  injects into the service worker (`<base>@fs/…/browser-kernel-worker-entry.ts`
-  on a development server, `<base>assets/browser-kernel-worker-entry-<hash>.js`
-  in a production build or `vite preview`). Windows (pages, frames, guest
-  previews) and workers started from any other script, including `blob:`
-  and `data:` URLs, are refused without being asked anything. A tag on
-  any other request gets `403`.
+  `X-Cors-Proxy-Allowed-Request-Headers` without
+  `X-Kandelo-Credential-Grant` gets `403 Forbidden` with a short
+  plain-text reason. The body never contains a tag.
+- A tag is accepted only on an HTTPS target through the configured
+  proxy or, on a development server, the credential relay, and only
+  from a dedicated worker on the app's origin whose
+  script is exactly the kernel worker's entry: same origin and path,
+  which the build injects into the service worker
+  (`<base>@fs/…/browser-kernel-worker-entry.ts` on a development server,
+  `<base>assets/browser-kernel-worker-entry-<hash>.js` in a production
+  build or `vite preview`). Windows (pages, frames, guest previews) and
+  workers started from any other script, including `blob:` and `data:`
+  URLs, are refused without being asked anything. A tag on any other
+  request gets `403`.
 - Before it accepts a tag it has not yet verified for that client and
-  origin, the service worker asks the kernel workers over the same-origin
-  `BroadcastChannel` `kandelo-credential-grants`:
-  `{ type: "credential-grant-verify", id, tokenHash, origin, replyUrl }`.
+  origin, the service worker asks the kernel workers over the
+  same-origin `BroadcastChannel` `kandelo-credential-grants`: `{ type:
+  "credential-grant-verify", id, tokenHash, origin, replyUrl }`.
   `tokenHash` is the SHA-256 of the token, base64url without padding, so
-  a listener learns nothing it could use as a tag. The kernel worker that
-  holds the token answers (any same-origin listener can hear the question,
-  but only the requesting client's answer counts, and that client is the
-  kernel worker's script). It POSTs
+  a listener learns nothing it could use as a tag. The kernel worker
+  that holds the token answers (any same-origin listener can hear the
+  question, but only the requesting client's answer counts, and that
+  client is the kernel worker's script). It POSTs
   `{ type: "credential-grant-verified", id, valid }` to `replyUrl`
   (`<scope>__kandelo_credential_grant_reply`), where `valid` is
-  `CredentialGrants.verify(token, origin)`: the kernel still records that
-  grant for its process, and the grant's destinations include the
+  `CredentialGrants.verify(token, origin)`: the kernel still records
+  that grant for its process, and the grant's destinations include the
   origin. The service worker accepts the answer only when the browser
   stamps its fetch with the client id of the client that sent the tagged
   request. No answer within 5 seconds, or `valid: false`, means `403`.
@@ -1749,44 +1824,46 @@ cross-origin `GET`/`HEAD` requests it wraps in the proxy itself.
   verified for it. The same tag from any other client is refused without
   asking. The cache holds at most 256 tags and evicts the oldest. An
   entry is dropped when the kernel worker announces
-  `{ type: "credential-grant-ended", tokenHash }` (revocation, exec, exit,
-  machine teardown, or finding that the kernel ended the grant), when any
-  later verification finds the entry's client gone, when it is evicted,
-  and whenever the service worker's state resets, after an update or an
-  idle restart. The next request then asks again. Any same-origin context
-  can post `credential-grant-ended` for a hash it heard on the channel;
-  that only forces the service worker to ask again. There is no expiry. The cache cannot extend a grant, because the kernel worker
-  attaches a tag only after the kernel confirms the grant for that very
-  request.
+  `{ type: "credential-grant-ended", tokenHash }` (revocation, exec,
+  exit, machine teardown, or finding that the kernel ended the grant),
+  when any later verification finds the entry's client gone, when it is
+  evicted, and whenever the service worker's state resets, after an
+  update or an idle restart. The next request then asks again. Any
+  same-origin context can post `credential-grant-ended` for a hash it
+  heard on the channel; that only forces the service worker to ask
+  again. There is no expiry. The cache cannot extend a grant, because
+  the kernel worker attaches a tag only after the kernel confirms the
+  grant for that very request.
 - A verified request is projected like any other, except that
   `Authorization` and `ChatGPT-Account-ID` pass and the service worker
   writes `X-Cors-Proxy-Allowed-Request-Headers: Authorization` itself,
   only when `Authorization` is present. It removes
-  `X-Kandelo-Credential-Grant`, so the proxy and the destination see only
-  the opt-in and the credentials. `Cookie`, `Cookie2` and
+  `X-Kandelo-Credential-Grant`, so the proxy and the destination see
+  only the opt-in and the credentials. `Cookie`, `Cookie2` and
   `Proxy-Authorization` are refused even with a grant. The proxy session
   token (`X-Kandelo-Proxy-Session`) is not a guest credential: it is the
   app's own quota token, which the session transport attaches, and a
   caller's value is dropped as before.
 - A proxy answers with a third party's bytes, so the service worker
   serves a request to the configured proxy, to the development CORS
-  relay's path (`__kandelo_cors_proxy`), or to the
-  [development credential relay](#development-credential-relay), only to
-  `fetch()` (`request.destination` empty). A load as a
-  document, frame, script, worker, style or anything else gets `403`.
-  From a same-origin proxy such a load would run a third party's code
-  with the app's authority, for example as a worker posing as Kandelo
-  code. Both development relays themselves refuse a request whose
-  `Sec-Fetch-Dest` is present and not `empty`, and mark every answer
-  `Content-Security-Policy: sandbox` and `X-Content-Type-Options: nosniff`,
-  for loads the service worker does not see. A fetch the service worker
-  passes on reaches a relay as `empty`, so in a controlled page the
-  service worker's check is the one that holds.
+  relay's path (`__kandelo_cors_proxy`), or to the [development
+  credential relay](#development-credential-relay), only to `fetch()`
+  (`request.destination` empty). A load as a document, frame, script,
+  worker, style or anything else gets `403`. From a same-origin proxy
+  such a load would run a third party's code with the app's authority,
+  for example as a worker posing as Kandelo code. Both development
+  relays themselves refuse a request whose `Sec-Fetch-Dest` is present
+  and not `empty`, and mark every answer
+  `Content-Security-Policy: sandbox` and
+  `X-Content-Type-Options: nosniff`, for loads the service worker does
+  not see. A fetch the service worker passes on reaches a relay as
+  `empty`, so in a controlled page the service worker's check is the one
+  that holds.
 
-Why a broadcast question and a fetch answer: measured on 2026-10-29
-with Playwright's Chromium, Firefox and WebKit, a module dedicated
-worker's fetches reach the service worker as a `worker` client in all
-three engines. Chromium, however, delivers no `Client.postMessage()` to a
+Why a broadcast question and a fetch answer: measured on 2026-10-29 with
+Playwright's Chromium, Firefox and WebKit, a module dedicated worker's
+fetches reach the service worker as a `worker` client in all three
+engines. Chromium, however, delivers no `Client.postMessage()` to a
 dedicated worker, because it has no `navigator.serviceWorker` in
 workers; WebKit and Firefox do deliver it. A `BroadcastChannel` message
 reaches workers in all three, the answering fetch carries its sender's
@@ -1797,38 +1874,102 @@ The gate's boundaries. It sees only requests from clients the service
 worker controls. A page loaded with a forced reload (which bypasses the
 service worker), an embedder that runs `BrowserKernel` without this
 service worker, and, observed only with Playwright's bundled Firefox so
-far, the fetches a dedicated worker makes in its first moments all
-reach the network unintercepted. There the kernel worker's own refusal
-is the only gate. A granted request sent that way names
+far, the fetches a dedicated worker makes in its first moments all reach
+the network unintercepted. There the kernel worker's own refusal is the
+only gate. A granted request sent that way names
 `X-Kandelo-Credential-Grant` in its CORS preflight, and neither the
 Playground nor the Spacefast proxy allows that field, so it fails the
 preflight visibly; only the field's name, never the token, leaves the
 browser. A CORS proxy must never allow `X-Kandelo-Credential-Grant`.
-Guest web previews run on the preview origin and never reach this
-gate as Kandelo windows; their cross-origin reads come back through the
+Guest web previews run on the preview origin and never reach this gate
+as Kandelo windows; their cross-origin reads come back through the
 owning tab as credentialless page fetches, which the gate treats like
 any window's. The Node host has no service worker (see below).
 
 With a handler that allows, a granted guest request now reaches the
 configured proxy with its credentials and the opt-in and without the
 tag, in Chromium, Firefox and WebKit, against a local proxy
-(`apps/browser-demos/test/credential-gate.spec.ts`), and the same
-holds in the browser app after "Allow for this process"
-(`apps/browser-demos/test/credential-request-dialog.spec.ts`, a
-declared test program against a local proxy). Codex itself does not
-reach its service through the default Playground proxy yet: its
-preflight does not allow Codex's fields. The Spacefast proxy allows them
-and exposes the response fields Codex reads, but a Codex turn through a
-deployed Spacefast proxy has not been verified, and Spacefast ends any
-proxied response 30 seconds after dispatch, so a model turn that streams
-longer is cut (see the proxy's README).
-On a loopback development server, requests to
-OpenAI's origins take the same path to the
-[development credential relay](#development-credential-relay) instead,
-which carries credentials only for a granted process.
-On Node, programs open
-real sockets, so credentials flow as on any Unix machine and no grant
-is consulted (a documented host boundary).
+(`apps/browser-demos/test/credential-gate.spec.ts`), and the same holds
+in the browser app after "Allow for this process"
+(`apps/browser-demos/test/credential-request-dialog.spec.ts`, a declared
+test program against a local proxy). Codex itself does not reach its
+service through the default Playground proxy yet: its preflight does not
+allow Codex's fields. The Spacefast proxy allows them and exposes the
+response fields Codex reads, but a Codex turn through a deployed
+Spacefast proxy has not been verified. On a loopback development server,
+requests to OpenAI's origins take the same path to the [development
+credential relay](#development-credential-relay) instead, which carries
+credentials only for a granted process.
+
+Both public proxies have hosting boundaries that cut long streamed
+responses, such as a Codex model turn's server-sent events. They belong
+to the hosting platforms, not to the proxy code, and the proxies cannot
+raise them:
+
+- **Spacefast Functions** stop a request 30 seconds after dispatching
+  it, and the limit bounds the whole response, streamed body included,
+  not just the time to the first byte. A model turn that streams longer
+  is cut, and Codex's retry meets the same limit. This was read from
+  Spacefast's runtime source, not measured live (see the [proxy's
+  README](../apps/spacefast-cors-proxy/README.md#spacefasts-30-second-functions-limit)).
+- **The Playground proxy on WP Cloud** buffered responses in Kandelo's
+  2026-10-27 probe: a streamed response arrived only when it completed,
+  and a 150-second response got `504 Gateway Timeout` at 120 seconds.
+
+On Node, programs open real sockets, so credentials flow as on any Unix
+machine and no grant is consulted: there is no proxy and no
+service-worker gate on that host (a documented host boundary). A Node
+embedder's `onCredentialRequest` answer still changes the kernel's grant
+record, but nothing on Node enforces it, and every Node question says
+so: `CredentialRequest.enforcement` is `"none"` there and
+`"proxy-gate"` in the browser. An embedder that shows Node's questions
+must not present them as a permission. Node questions name no
+intermediary either: their `CredentialRequest.transport` says every
+destination is reached directly (`"direct"`).
+
+**What a credential grant does not protect.** A grant decides which
+process may send the credential request fields (`Authorization`,
+`ChatGPT-Account-ID`) through Kandelo's CORS proxy and credential relay.
+It governs header fields, not data, and nothing more:
+
+- A token stored in a guest file is ordinary data. Codex keeps its
+  tokens in `~/.codex/auth.json`; any process of the same guest user
+  can read that file and send the token in a request body, a query or
+  an ordinary header field to any HTTPS origin, granted or not.
+- Credentials carried in request bodies need no grant. Codex's
+  device-code sign-in, code exchange and token refresh send the code or
+  refresh token in their bodies, so a program can sign in, obtain tokens
+  and send them out without ever being asked.
+- A grant does not vouch for the program. A declared program is
+  identified by its path; the prompt warns when that file changed after
+  boot, but a malicious image, or a file placed at a declared path
+  before boot, is asked about under the declaration's title like the
+  real program.
+- It does not separate processes of the same user from each other.
+- It does not cover a guest web preview's own requests. A preview is an
+  ordinary page on the preview origin, and no grant covers what it
+  sends. Requests for its own machine go to the machine's web server,
+  headers included. A cross-origin `GET` or `HEAD` it makes is re-issued
+  by the owning tab (`proxy-fetch`) without credentials and with only
+  `Accept`, `Accept-Language`, `Content-Language`, `If-Modified-Since`,
+  `If-None-Match`, `If-Range` and `Range` kept, so an `Authorization`
+  field it set is dropped there. Every other request leaves the user's
+  browser directly from the preview origin, with whatever header fields
+  the page set, under the browser's CORS rules: a cross-origin request
+  with any other method (the preview worker does not intercept it), and
+  a `GET` or `HEAD` the worker cannot hand to the owning tab (the
+  machine is offline, the owner's read failed, or the worker cannot tell
+  which machine's page sent it). Refusing those in the preview worker
+  would protect nothing: a page does not need the worker to send them.
+
+**Undeclared programs cannot send credential fields in a browser
+machine.** Declarations are read from the image once, at boot, and
+frozen. A program without one, such as `git` pushing with a token in an
+`Authorization` field or `curl -u`, is refused before dispatch every
+time, with no prompt to answer, in any browser machine. This is a
+documented gap, not a decision about those programs: the way to send
+credentials from a browser machine today is a package declaration in the
+image.
 
 #### Byte-range reads through the proxy
 
@@ -2261,7 +2402,22 @@ own origin.
 | Playwright | `http://127.0.0.1:5401` (`KANDELO_PLAYWRIGHT_PORT`) | `http://127.0.0.1:5402` (that port + 1) |
 | Production build | as deployed | `./run.sh build-browser --preview-origin ORIGIN --app-origin ORIGIN` writes the preview bundle to `<out>-preview`; serve it at the same scope on the preview origin |
 | Spacefast | `https://<label>.space.fast` | a second, public Space: `node scripts/deploy-spacefast.mjs --space ... --preview-space ...` (see `apps/spacefast-cors-proxy/README.md`) |
-| WP Cloud (`kandelo.dev`) | `https://kandelo.dev` | needs a second hostname (for example `preview.kandelo.dev`); not provisioned yet, so web previews are unavailable there until it is |
+| WP Cloud (`kandelo.dev`, deployed by hand) | `https://kandelo.dev` | not deployed yet: either `https://preview.kandelo.dev` (same site) or `https://kandelo.site` (another site), a separate WP Cloud site; see "Production pair" and "Choosing a preview origin" below |
+
+**Production pair.** `kandelo.dev` (the app, deployed by hand) will
+pair with a preview origin on a separate WP Cloud site. Either layout
+works: `https://preview.kandelo.dev`, a subdomain on the same site, or
+`https://kandelo.site`, a different registrable domain. "Choosing a
+preview origin" below gives the trade-off; what the preview site must
+serve is the same for both. No preview site is deployed yet. Until a
+deployment's preview origin exists and the app is built for it with
+`--preview-origin`, web previews in that deployment show the explicit
+"This deployment has no isolated preview origin" error; they are never
+served from the app's origin instead.
+`./run.sh build-browser` writes the preview bundle's files but no server
+configuration for WP Cloud (only the Spacefast packager writes
+`_headers` and `_redirects`), so that site has to send the response
+fields and the `computer/*` redirect described next.
 
 The preview origin serves only `<scope>preview-service-worker.js`,
 `<scope>__kandelo_preview/relay.html` and `relay.js` (built with the app
@@ -2280,25 +2436,47 @@ domain for stronger process isolation.
 **Residual risks and boundaries.**
 
 - One preview origin serves every machine in the browser profile. This
-  isolates guests from Kandelo, not from each other: a guest page can
-  script another machine's preview frames it can reach (above), load
-  another machine's pages (which that machine's owner answers with its
-  cookies), script the relay frame of the tab it runs in (forging relay
-  messages to that tab, and reading the secrets of that tab's machines:
-  the same-tab residual above), and unregister the preview worker (which
-  the relays undo within about two seconds). It cannot bind or close a
-  machine of another tab. The Kandelo page treats every message from the
-  preview origin as untrusted, and nothing it answers reaches more than a
-  guest could through that machine's preview URL. Per-machine origins
-  (`<name>.preview…`) would close the cross-machine reads and the
-  same-tab residual; they need wildcard DNS and TLS, which Spacefast plans
-  gate today.
+  isolates guests from Kandelo, not from each other. The worker refuses
+  the requests it can attribute to another machine's page (above), but a
+  guest page that sets out to reach another machine still can, because
+  everything on the origin is same-origin to it:
+  - it can create a frame of another machine's address with no
+    referrer (`referrerpolicy="no-referrer"`): a new frame's navigation
+    names no client in any engine, so the worker cannot attribute it, and
+    the guest can then script that frame and send requests from it as
+    that machine, which that machine's owner answers with its cookies;
+  - in Firefox and WebKit, it can navigate its own frames to another
+    machine's address with no referrer (or a `history.pushState`
+    referrer under that machine), for the same reason;
+  - it can make requests from an `about:blank` or `about:srcdoc` frame it
+    creates (Firefox and WebKit control `about:blank`), whose first
+    request decides its machine unless its referrer, which the guest
+    controls, names one;
+  - after the worker restarts, it recovers a document's machine from
+    the document's current URL, which `history.pushState` can change, and
+    it cannot place workers at all until they make a request;
+  - it can script another machine's preview frames it can reach (above),
+    script the relay frame of the tab it runs in (forging relay messages
+    to that tab, and reading the secrets of that tab's machines: the
+    same-tab residual above), unregister the preview worker (which the
+    relays undo within about two seconds), and fill the preview worker's
+    blob-document limits, which all machines share, evicting other
+    machines' blob documents (see "Blob-URL iframes" below).
+
+  It cannot bind or close a machine of another tab, and it learns no
+  machine's name from worker broadcasts. The Kandelo page treats every
+  message from the preview origin as untrusted, and nothing it answers
+  reaches more than a guest could through that machine's preview URL.
+  Per-machine origins (`<name>.preview…`) would close the cross-machine
+  reads and writes and the same-tab residual; they need wildcard DNS and
+  TLS, which Spacefast plans gate today.
 - Same-site cross-origin frames may share a renderer process in Chromium
   (site isolation is per site), and the guest frame is
   `crossOriginIsolated` in Firefox and WebKit, which do not gate it with
   the `cross-origin-isolated` permissions policy. Spectre-class reads of
   the Kandelo process are not excluded; a preview origin on a different
-  registrable domain is the mitigation where a deployment can afford it.
+  registrable domain is the mitigation where a deployment can afford it
+  (see "Choosing a preview origin").
 - **Changed capability (Chromium):** a guest page is no longer
   `crossOriginIsolated` in Chromium, which gates that on the
   `cross-origin-isolated` permissions policy that the cross-origin preview
@@ -2309,13 +2487,97 @@ domain for stronger process isolation.
   `cross-origin-isolated`: that would hand guests the high-resolution
   timers and shared memory that make the Spectre-class risk above worse,
   and no guest needs it yet. Firefox and WebKit still isolate the frame.
-- Playwright's Chromium runs with third-party storage partitioning
-  disabled, so Chromium test results do not prove shipped Chrome's
-  partitioning behavior; the viewer shell is the path that does not depend
-  on it.
+- Playwright's own Chromium defaults pass
+  `--disable-features=...,ThirdPartyStoragePartitioning,...`. The
+  repository's `chromium` project passes its own `--disable-features`,
+  and Chromium keeps only the last copy of that switch, so that project
+  runs partitioned (measured 2026-10-30: a top-level preview-origin tab
+  did not see storage a framed guest wrote). A Chromium launched with
+  Playwright's defaults alone runs unpartitioned, so its results do not
+  prove shipped Chrome's partitioning behavior; the viewer shell is the
+  path that does not depend on it.
 - Bodies are fully buffered, as before. Service workers never see
   WebSockets, so a guest's WebSocket is not bridged. EventSource gets
   buffered responses.
+
+#### Choosing a preview origin
+
+Kandelo supports two layouts for the preview origin, and each deployment
+chooses one. A *site* is a scheme plus a registrable domain: the part of
+the host a browser treats as one owner, by the
+[Public Suffix List](https://publicsuffix.org/). `preview.kandelo.dev` is
+on the same site as `kandelo.dev`; `kandelo.site` is on another site.
+Both are a different *origin* from the app, so in both layouts the
+same-origin policy, the frame sandbox and everything above keep guest
+scripts out of the Kandelo page. What differs is how browsers treat the
+preview frames: frames on another site are *third-party*, which privacy
+settings restrict, and same-site frames share the site's cookies.
+
+| | Same-site subdomain (`preview.kandelo.dev`) | Cross-site domain (`kandelo.site`) |
+|---|---|---|
+| Browsers that restrict third-party storage | Preview frames are not third-party. Every setting measured (below) leaves previews working, Firefox's "All cross-site cookies" included. | Preview frames are third-party. Every default and privacy preset measured still works: those engines partition the preview worker and storage under Kandelo's site instead of denying them. Firefox's opt-in Custom setting "All cross-site cookies" denies them storage; previews cannot start and the pane says why (below). |
+| Cookie scope and `SameSite` | A guest page can set cookies with `Domain=kandelo.dev`, which `kandelo.dev` then receives ("cookie tossing"), and can read any such cookie `kandelo.dev` sets without `HttpOnly`. Its requests to `kandelo.dev` count as same-site, so `SameSite=Lax` or `Strict` does not tell them from Kandelo's own. | Guests cannot set or read cookies for Kandelo's domain, and their requests to Kandelo are cross-site, so `SameSite` cookies are not sent with them. |
+| Process isolation | Chromium isolates processes by site, so guest frames may share the Kandelo page's renderer process; Spectre-class reads of it are not excluded (see "Residual risks and boundaries"). | Browsers that isolate sites in separate processes (Chromium, Firefox) can keep guest frames out of the Kandelo page's process. Not measured here. |
+
+**Measured** (2026-10-30, macOS): a real nginx machine, a probe page with
+external CSS and JavaScript loaded in the owner's preview frame and in the
+viewer shell, under each browser setting below. Same-site was
+`http://127.0.0.1:<port>` with `http://127.0.0.1:<port+1>`; cross-site was
+`http://127.0.0.1:<port>` with `http://localhost:<port+1>`, which
+browsers treat as different sites. Both layouts passed every setting
+except one, which failed only cross-site:
+
+- Chromium 153 (Playwright), with storage partitioning on and off, with
+  "Block third-party cookies", and with `--test-third-party-cookie-phaseout`.
+- Google Chrome 156: a fresh default profile, Playwright's off-the-record
+  context, "Block third-party cookies", and the phase-out switch.
+- Brave 1.98 (Chromium 156), fresh profile, default Shields, headless.
+- Firefox 155 (Playwright) and stock Firefox 159: Total Cookie Protection
+  (Firefox's default) and Enhanced Tracking Protection "Strict".
+- WebKit 26.6 (Playwright), defaults (third-party cookies blocked).
+- **Failed cross-site only:** Firefox 155 and 159 with Custom "All
+  cross-site cookies" (`network.cookie.cookieBehavior=1`). Registering
+  the preview worker fails with `SecurityError` ("The operation is
+  insecure.").
+
+Not measured: native Safari on macOS or iOS (only Playwright's WebKit
+build), including Safari's "Block all cookies"; Brave with Shields
+"Aggressive" or "Block all cookies", or in a headed profile; real Chrome
+Incognito windows; Firefox Private Browsing and any browser's "Block all
+cookies", which also block the app's own origin; real registrable domains
+over HTTPS (`kandelo.dev` with either preview origin) and the WP Cloud
+PHP host (the matrix used the static bundle); top-level visits to the
+preview origin; and whether a per-site exception that allows the preview
+origin's cookies brings previews back under "All cross-site cookies".
+
+**When the browser denies the preview origin storage**, the relay
+reports the `SecurityError` from registering the preview worker, and the
+preview pane shows: "This browser blocks storage for the preview origin
+`<origin>`, so web previews can't start. Allow cookies and site data for
+`<origin>`, or use a Kandelo deployment whose preview origin is on the
+same site as Kandelo." followed by the browser's own message. Kandelo
+reads the failure from the registration, never from the user agent.
+Every other relay failure keeps its own message ("The preview origin
+could not start: ..."). `test/preview-storage-blocked.spec.ts` runs
+Firefox with "All cross-site cookies" against a server of either layout:
+cross-site it expects that message, same-site the rendered preview.
+
+**For deployers.** `kandelo.dev` may use `preview.kandelo.dev` or
+`kandelo.site`; the build, the files and the checks under "Production
+pair" are the same. Choose same-site when previews should work under
+every browser setting measured. Its cost is cookie scope, which stays
+small only while `kandelo.dev` keeps two rules: it sets no cookie with a
+`Domain=` attribute (host-only cookies are not visible to the
+subdomain), and nothing it serves relies on `SameSite` to tell its own
+requests from a guest's. Choose cross-site when those rules cannot hold,
+or when keeping guests off the site matters more than users who block all
+cross-site cookies; those users see the message above and can change the
+setting. On Spacefast the default pair,
+`https://<label>.space.fast` with `https://<label>-preview.space.fast`,
+is same-site: `space.fast` is not on the Public Suffix List, so every
+Space on it shares the one site `space.fast`, other people's Spaces
+included. A cross-site pair there needs the preview Space on another
+domain, such as a custom domain.
 
 ### Blob-URL iframes (service-worker boundary)
 
@@ -2332,34 +2594,38 @@ would fail even though nginx serves them correctly over the bridge.
 `public/blob-iframe-interceptor.js` is a framework-free helper that the
 owning tab's `PreviewBridgeHost` inserts first in the `<head>` of guest
 HTML documents (its source is injected into the app at build time as
-`__KANDELO_BLOB_IFRAME_INTERCEPTOR__`), so it applies to every guest app.
-It hooks `Blob`, `URL.createObjectURL` and the `HTMLIFrameElement` `src`
-setter and `setAttribute`. When an iframe's `src` is set to a blob URL
-whose content is a `text/html` string, the helper posts that HTML to the
-preview service worker (`preview-blob-document`, with an unguessable
+`__KANDELO_BLOB_IFRAME_INTERCEPTOR__`), so it applies to every guest
+app. It hooks `Blob`, `URL.createObjectURL` and the `HTMLIFrameElement`
+`src` setter and `setAttribute`. When an iframe's `src` is set to a blob
+URL whose content is a `text/html` string, the helper posts that HTML to
+the preview service worker (`preview-blob-document`, with an unguessable
 128-bit id) and points the iframe at
-`<scope>computer/<name>/__kandelo_blob/<id>` instead. The posted HTML has
-the helper itself injected first in its `<head>`, as in every guest page,
-so a blob iframe or keepalive fetch inside the canvas is handled too. The
-worker serves the document to requests under the same machine's path,
-with the creator's base URL when the document names none (as an
-`about:srcdoc` document would have resolved), for as long as the blob URL
-lives: until the app revokes the URL (the helper passes
+`<scope>computer/<name>/__kandelo_blob/<id>` instead. The posted HTML
+has the helper itself injected first in its `<head>`, as in every guest
+page, so a blob iframe or keepalive fetch inside the canvas is handled
+too. The worker serves the document to requests under the same machine's
+path, with the creator's base URL when the document names none (as an
+`about:srcdoc` document would have resolved), for as long as the blob
+URL lives: until the app revokes the URL (the helper passes
 `preview-blob-revoked` on), the creating document goes away, or it sits
 unread for an hour. A reload or a history visit to the canvas shows it
-again, as it would for a live blob URL. Each document may be at most
-16 MiB of UTF-8, all of them together at most 64 MiB and 64 documents
-(the oldest go first), and at most 32 ids may wait for a document that
-has not arrived yet (beyond that an unknown id is a `404` at once). The
-documents live in the worker's memory, so a worker restart loses them,
-and a reload after that shows a `404`. The canvas is then an
-ordinary navigation the worker controls in every engine; nothing depends
-on how an engine treats `blob:` or `about:srcdoc` documents inside a
-sandboxed cross-origin frame. Reading `iframe.src` still returns the blob
-URL the app assigned. The path `__kandelo_blob/` under a machine therefore
-never reaches the guest's server. The helper used to render such iframes
-from `srcdoc`; inside the sandboxed preview frame Firefox did not give
-that `about:srcdoc` document a service-worker controller, and Chromium does
+again, as it would for a live blob URL. Each document may be at most 16
+MiB of UTF-8, all of them together at most 64 MiB and 64 documents (the
+oldest go first), and at most 32 ids may wait for a document that has
+not arrived yet (beyond that an unknown id is a `404` at once). These
+limits are shared by every machine on the preview origin, not kept per
+machine, so one machine's guest can evict another machine's documents or
+use up the waiting ids; that is part of guests not being isolated from
+each other (see "Residual risks and boundaries" above). The documents
+live in the worker's memory, so a worker restart loses them, and a
+reload after that shows a `404`. The canvas is then an ordinary
+navigation the worker controls in every engine; nothing depends on how
+an engine treats `blob:` or `about:srcdoc` documents inside a sandboxed
+cross-origin frame. Reading `iframe.src` still returns the blob URL the
+app assigned. The path `__kandelo_blob/` under a machine therefore never
+reaches the guest's server. The helper used to render such iframes from
+`srcdoc`; inside the sandboxed preview frame Firefox did not give that
+`about:srcdoc` document a service-worker controller, and Chromium does
 not control the `blob:` canvas in a cross-origin frame (both measured
 2026-10-29).
 

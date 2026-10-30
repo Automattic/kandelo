@@ -299,6 +299,15 @@ production Vite build, and checks the result. Upload the contents of the
 output directory (default `apps/browser-demos/dist/`) so it is served at
 exactly the chosen base.
 
+Guest web previews (WordPress, nginx, any server inside a machine) run on
+a second origin so their scripts cannot reach the Kandelo page. Add
+`--preview-origin ORIGIN --app-origin ORIGIN` to also write the preview
+origin's bundle to `<out>-preview`, and serve it at the same base on that
+origin. A build without them refuses to open web previews; it never
+serves guests from the app's origin. See
+[guest web previews](docs/browser-support.md#guest-web-previews-run-on-their-own-origin)
+for what the preview origin must send and the planned production pair.
+
 WP Cloud can keep serving this static build with the portable PHP signalling
 endpoint (`--signalling-url /signalling/piplet.php`) and its chosen CORS proxy.
 Spacefast is an optional host: package the static build with its Functions

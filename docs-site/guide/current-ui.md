@@ -121,4 +121,9 @@ configured proxy boundaries, and repeats `Range` as
 strips `Range` before it reaches the proxy.
 Anonymous bodyless GETs may omit other fields with a diagnostic. Requests that
 would lose credentials, a body, or state-changing semantics fail before proxy
-dispatch. Direct browser requests and Node.js-host networking are unchanged.
+dispatch. `Authorization` and `ChatGPT-Account-ID` are relayed only for a
+process the user allowed in Kandelo's credential prompt (a per-process
+credential grant), and only to the origins its package declared. A
+credentialed HTTPS request with no CORS proxy configured is refused rather
+than sent directly. Node.js-host networking is unchanged: programs there open
+real sockets, and nothing gates their credentials.

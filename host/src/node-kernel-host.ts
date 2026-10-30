@@ -877,7 +877,7 @@ export class NodeKernelHost {
   /**
    * The credential grant id the kernel records for `pid`: 0 when it holds
    * none, null when the process is absent or has exited. Mirrors
-   * `BrowserKernelHost.getCredentialGrant`.
+   * `BrowserKernel.getCredentialGrant`.
    */
   async getCredentialGrant(pid: number): Promise<number | null> {
     const requestId = this._nextRequestId++;
@@ -891,7 +891,7 @@ export class NodeKernelHost {
   /**
    * End `pid`'s credential grant now, in the kernel and the host. Resolves
    * with the kernel's grant id afterwards (0, or null for a gone process).
-   * Mirrors `BrowserKernelHost.revokeCredentialGrant`.
+   * Mirrors `BrowserKernel.revokeCredentialGrant`.
    */
   async revokeCredentialGrant(pid: number): Promise<number | null> {
     const requestId = this._nextRequestId++;

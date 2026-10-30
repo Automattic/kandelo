@@ -1,8 +1,8 @@
 /**
  * Main-thread side of the credential prompt: hands the kernel worker's
  * `credential_request` to the embedder's `onCredentialRequest` handler and
- * posts the answer back. Shared by `NodeKernelHost` and `BrowserKernelHost`
- * so both hosts deny the same way:
+ * posts the answer back. Shared by `NodeKernelHost` and `BrowserKernel` so
+ * both hosts deny the same way:
  *
  * - no handler: deny at once (embedders that never ask never grant);
  * - a handler that throws, rejects, or resolves anything but `true`: deny,

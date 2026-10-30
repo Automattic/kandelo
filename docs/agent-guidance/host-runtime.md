@@ -66,6 +66,8 @@ further out. Its bytes cross into the preview origin's service worker, which
 guest pages share: hand it exact, unshared copies of response bodies, never
 a view of kernel or guest memory, and keep the machine's cookie jar and
 response shaping in the owning tab (`apps/browser-demos/lib/preview/`). The
+preview origin's own files live in `apps/browser-demos/preview-origin/`.
+Never serve guest pages same-origin with the app, even as a fallback. The
 host's `fetchInKernel` is unchanged and remains the only path into the
 machine's server on both hosts.
 
@@ -239,9 +241,43 @@ and the host-side grant id (`peekCredentialGrantId`, no kernel entry)
 when `send` hands it bytes, treat bytes from more than one writer as
 ungranted, and ask `credentialGrantFor(pid, grantId, origin)` only when
 it dispatches, outside any kernel entry
-(`host/src/networking/request-attribution.ts`). Refuse ungranted,
-cleartext, and proxyless credentials visibly; never strip them and send
-the request.
+(`host/src/networking/request-attribution.ts`). Attribute TLS requests
+only on a connection the engine negotiated as TLS 1.2; the record
+framing the attribution follows holds for no other version. Refuse
+ungranted, cleartext, and proxyless credentials visibly; never strip
+them and send the request. A grant is the only way a credential request
+field (`Authorization`, `ChatGPT-Account-ID`) leaves a browser machine
+through Kandelo's proxy path; it does not cover tokens in files or
+request bodies, which are ordinary data. Never add a credential field to
+the proxy profile, never let a proxy allow-list or forward
+`X-Kandelo-Credential-Grant`, and never add a second permission
+(site-wide, per-program, remembered) beside the kernel's record. See
+`browser-and-user.md` for the proxy and service-worker invariants.
+
+The launch policy is shared by both entries and must stay identical on
+both: it records each declared program's file identity at boot and flags
+a prompt when the file the image was executed from (`kernel_get_exe_stat`,
+never a fresh look at the path) differs (`programChangedSinceBoot`), keeps
+at most eight questions open per machine
+(`MAX_OPEN_CREDENTIAL_QUESTIONS`, denying the rest and reporting them at
+most once per five seconds), and
+stamps every question with the host's `enforcement` and `transport`,
+the only values that differ between the entries. `transport` names the
+intermediary that would receive the credentials; compute it from the
+validated configuration the network backends actually send through
+(`browserCredentialTransport(corsProxy)` in the browser entry,
+`directCredentialTransport` on Node), never from a hardcoded or
+app-supplied label.
+
+The Node host has no CORS proxy, request projection or service-worker
+gate: guest programs open real sockets and TLS sessions, so credentials
+flow as on any Unix machine. Node still asks `onCredentialRequest` and
+records grants, for host parity, and marks each question
+`enforcement: "none"` so an embedder does not present it as a
+permission. This is a documented host boundary
+(`docs/architecture.md`, "Credential grants"), not a missing Node gate;
+keep docs and reports saying so, and keep the prompt and grant behavior
+identical on both hosts.
 
 Stdio descriptor type is chosen when the process is created. Hosts that launch
 without a PTY must create fds 0, 1, and 2 as pipe-backed descriptors so

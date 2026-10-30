@@ -1897,8 +1897,10 @@ rather than simulated Ctrl+C input. No guest ABI or syscall changed.
 ### Credential grants
 
 A credential grant is the user's permission for one running image of one
-process to send account credentials to the fixed HTTPS origins its package
-declared in `/etc/kandelo/credential-requests.d/*.json`
+process to send account credentials, as credential request fields
+(`Authorization`, `ChatGPT-Account-ID`) on Kandelo's proxy path, to the
+fixed HTTPS origins its package declared in
+`/etc/kandelo/credential-requests.d/*.json`
 (`host/src/credential-requests.ts`). The kernel's process table is the
 authority: `Process::credential_grant` holds the grant id the host issued,
 read and written through `kernel_get_credential_grant` and
@@ -1913,7 +1915,11 @@ Both kernel workers run the same policy (`host/src/credential-grants.ts`):
    once through the kernel-owned filesystem and freezes the result. Guest
    writes to the directory later change nothing. A missing directory means
    no declarations; any other entry that is not a regular `*.json` file, or
-   a malformed file, fails the boot.
+   a malformed file, fails the boot. It also records each declared
+   program's file identity then (device, inode, size, modification and
+   change times, from the kernel's inspection stat,
+   `CentralizedKernelWorker.rootfsFileIdentity`), or that it did not
+   exist.
 2. Every path that commits an image, the host's root spawn, a guest
    `posix_spawn` and exec, then asks the kernel which file the image runs
    (`kernel_get_exe_path`, what `/proc/<pid>/exe` reads, symlinks
@@ -1926,11 +1932,23 @@ Both kernel workers run the same policy (`host/src/credential-grants.ts`):
    file moved back to the declared path after another file was executed
    under that name does not pass as the one recorded at boot.
 3. For a declared program, the worker posts `credential_request` (pid,
-   title, program, argv, parent chain, destinations, and the embedder's
-   description of where the image came from) to the main thread, whose
-   `onCredentialRequest` handler answers with `credential_answer`. No
-   handler, or one that throws, rejects or resolves anything but `true`,
-   denies.
+   title, program, argv, parent chain, destinations, the embedder's
+   description of where the image came from, whether the executed file's
+   identity differs from the one recorded at boot,
+   `programChangedSinceBoot`, and what the answer controls on this host,
+   `enforcement`: `"proxy-gate"` in the browser, `"none"` on Node, and
+   which intermediary each destination's credentials would pass through,
+   `transport`, computed from the host's own proxy and relay
+   configuration by `host/src/credential-transport.ts`: the CORS proxy
+   or development credential relay by origin and path in the browser,
+   `"none"` for a browser kernel with no proxy, `"direct"` on Node) to
+   the main thread, whose `onCredentialRequest` handler answers with
+   `credential_answer`. No handler, or one that throws, rejects or
+   resolves anything but `true`, denies. At most eight questions are
+   open per kernel worker (`MAX_OPEN_CREDENTIAL_QUESTIONS`); a launch
+   beyond that is denied without asking and reported, so a guest that
+   starts declared programs in a loop cannot queue questions without
+   bound.
 4. With `launch = "wait"` the launch awaits the answer before the process
    worker starts, so the image runs no instruction first. With
    `"continue"` it starts at once, and an allow is applied only if the
@@ -1975,8 +1993,13 @@ before exec'ing a declared program must not leave under the new image's
 grant. On a TLS connection the backend follows the guest's TLS record
 framing, so each decrypted application-data record keeps the writers of
 the ciphertext that carried it, and the TLS handshake's writer never
-counts. A request whose bytes more than one (process, grant) wrote, or
-whose writer is unknown, belongs to no one and is never granted.
+counts. That framing holds only for TLS 1.2 (TLS 1.3 also carries
+encrypted handshake messages in application-data records), so the
+backend reads the negotiated version from the engine's ServerHello and
+attributes no request on a connection whose version is anything else or
+cannot be read. A request whose bytes more than one (process, grant)
+wrote, or whose writer is unknown, belongs to no one and is never
+granted.
 
 **When a request is granted.** The backend decides when it dispatches
 the finished request, not when the bytes arrive: dispatch runs on the
@@ -1995,10 +2018,11 @@ described in [browser
 support](browser-support.md#per-process-credential-grants).
 
 **The service-worker gate.** In the browser app, the service worker
-checks credentialed proxy requests a second time, independently of the
-kernel worker, and removes the grant's tag before a request leaves the
-browser. To verify a tag it asks over a same-origin `BroadcastChannel`;
-the kernel worker that holds the tag answers with
+checks credentialed requests to the CORS proxy and to the development
+credential relay a second time, independently of the kernel worker, and
+removes the grant's tag before a request leaves the browser. To verify a
+tag it asks over a same-origin `BroadcastChannel`; the kernel worker
+that holds the tag answers with
 `CredentialGrants.verify(token, origin)`, which enters the kernel
 (`host/src/credential-gate.ts`, run outside any kernel entry and retried
 while the gate is busy). It answers by a fetch whose client id the
@@ -2006,16 +2030,23 @@ browser vouches for, and the service worker accepts a tag and an answer
 only from a worker running exactly the kernel worker's entry script,
 whose URL the build injects. Any script the app's origin runs can still
 start a genuine kernel worker and answer its prompt, so the app's origin
-remains a trusted boundary; it runs only Kandelo's own code, because guest
-web previews run on a separate preview origin. `CredentialGrants` reports every grant it drops, so
-the kernel worker can tell the service worker to forget it. The
-protocol, cache rule and engine evidence are in [browser
-support](browser-support.md#per-process-credential-grants).
+remains a trusted boundary; it runs only Kandelo's own code, because
+guest web previews run on a separate preview origin. `CredentialGrants`
+reports every grant it drops, so the kernel worker can tell the service
+worker to forget it. The protocol, cache rule and engine evidence are in
+[browser support](browser-support.md#per-process-credential-grants).
 
 On Node, programs open real sockets and TLS sessions themselves, so there
 is no proxy or request path to gate: credentials flow as on any Unix
-machine, and the prompt and grant exist there for host parity. This is a
-documented host boundary, not a Node-side gate.
+machine, and the prompt and grant exist there for host parity. A Node
+embedder's answer changes the kernel's grant record and nothing else,
+which each question states (`enforcement: "none"`). This is a documented
+host boundary, not a Node-side gate.
+
+A grant governs credential request fields on Kandelo's proxy path, not
+data: a token in a guest file or a request body is ordinary data any
+process of the same user can send. See [what a credential grant does not
+protect](browser-support.md#per-process-credential-grants).
 
 ### clone() (threads)
 

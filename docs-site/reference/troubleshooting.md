@@ -64,7 +64,11 @@ and `X-Cors-Proxy-Range`, plus, for signed-in Codex,
 `x-openai-fedramp`, `x-openai-product-sku`, and `x-openai-subagent`
 (a request that carries one the proxy does not allow fails its
 preflight). It must relay a `Content-Encoding: zstd` request body
-byte-for-byte, without decoding it, and stream responses as they arrive. Kandelo sends a byte range in both `Range` and
+byte-for-byte, without decoding it, and stream responses as they arrive.
+It must never allow `X-Kandelo-Credential-Grant`: Kandelo's service
+worker removes that tag after verifying a process's credential grant, so
+a request that still carries it skipped that check and must fail its
+preflight. Kandelo sends a byte range in both `Range` and
 `X-Cors-Proxy-Range` with the same value, so the proxy must forward one of
 them to the target as `Range` and must not forward `X-Cors-Proxy-Range`
 itself. A proxy that ignores both answers ranged reads with the whole entity;

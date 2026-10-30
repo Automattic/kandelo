@@ -63,6 +63,57 @@ or persistent storage. Changes to the preview path must keep
 `apps/browser-demos/test/preview-isolation.spec.ts` and
 `preview-service-worker.spec.ts` passing on all three engines; see
 `docs/browser-support.md`, "Guest web previews run on their own origin".
+The preview origin's own files (its service worker, relay page and
+relay script) live in `apps/browser-demos/preview-origin/`; the app-side
+bridge, relay client, cookie jar and name commitment live in
+`apps/browser-demos/lib/preview/`. A deployment without a preview origin
+has no web previews; that is the documented failure, not a gap to fill
+with same-origin serving. A deployment may put its preview origin on the
+app's site or on another site (`docs/browser-support.md`, "Choosing a
+preview origin"); keep both working. When the browser denies the preview
+origin storage, the pane must say so from the relay's real failure (the
+`SecurityError` from registering the preview worker), never from the user
+agent; `apps/browser-demos/test/preview-storage-blocked.spec.ts` covers it
+on both layouts.
+
+Credential request fields (`Authorization`, `ChatGPT-Account-ID`) leave
+a browser machine through Kandelo's proxy and relay path only for a
+process holding a kernel-recorded per-process credential grant
+(`Process::credential_grant`; see `docs/architecture.md`, "Credential
+grants"). Nothing else lets those fields through: no site-wide approval,
+no remembered allow, no per-program or per-package permission. The grant
+governs header fields, not data: a token stored in a guest file (Codex's
+`~/.codex/auth.json`) or carried in a request body (device-code sign-in,
+token refresh) is ordinary data that any process of the same guest user
+can read and send, granted or not. Never describe the grant as
+protecting a token from other guest processes, a malicious image, or a
+binary placed at a declared path; `docs/browser-support.md`, "What a
+credential grant does not protect", is the authoritative list. Keep
+these invariants:
+
+- Never add a credential field (`Authorization`, `ChatGPT-Account-ID`,
+  `Cookie`, `Proxy-Authorization`, ...) to Kandelo's proxy profile; the
+  profile parser refuses one, and only the grant path relays a
+  credential. A CORS proxy or relay may accept a credential field only
+  because Kandelo's kernel worker and service worker refuse every
+  credential without a verified grant; do not add credential fields to a
+  proxy's allow-list or forwarding for any other caller or path.
+- Never allow-list `X-Kandelo-Credential-Grant` in any CORS proxy's
+  preflight or forward it. The service worker removes the tag after
+  verifying it, so a request that still carries it skipped that gate and
+  must fail visibly at the proxy.
+- Never strip an ungranted credential and send the request anyway;
+  refuse it before dispatch.
+- The Node host has no CORS proxy and no service-worker gate: programs
+  open real sockets, so the prompt and grant exist there for host parity
+  only, and every Node question says so (`enforcement: "none"`; the
+  browser's say `"proxy-gate"`). That is a documented host boundary; do
+  not describe Node as gating credentials.
+- A request is attributed to its writer only on a connection whose
+  engine negotiated TLS 1.2, whose record framing the attribution
+  follows; any other or unknown version means no request on that
+  connection is granted. Keep that fail-closed check if the engine
+  changes.
 
 The service worker's credential gate is a second gate behind the kernel
 worker's, not a replacement for it. Keep it accepting tags only from the
@@ -90,12 +141,24 @@ cover it.
 The credential prompt belongs to the app, behind
 `KernelHost.setCredentialRequestHandler`. Keep it in Kandelo's own UI,
 never in terminal output; keep deny the default (no handler, Escape, a
-withdrawn question, a replaced handler, a detached kernel); keep Allow
-disarmed for its input delay after every question appears, queued ones
-included, so input aimed elsewhere cannot answer it; never add a
-"remember" choice or any persistent grant state; and keep the program
-path and the image's provenance visible, because a declared program is
-identified only by its path. The image source the app passes
+withdrawn question, a replaced handler, a detached kernel); keep Allow,
+and the choices that answer for more than one question, disarmed for the
+input delay after every question appears, queued ones included, so input
+aimed elsewhere cannot answer it; never add a "remember" choice that
+allows or any persistent grant state (the one remembered choice, "Don't
+allow, and stop asking for this machine", only denies and lives in
+memory until the machine goes away); keep a flood of questions bounded
+(the kernel worker's per-machine cap, "Deny all waiting" for a burst,
+and "stop asking" as the only choice that ends an endless launch loop)
+so a guest cannot keep the user from the terminal; keep the program path and
+the image's provenance visible, because a declared program is
+identified only by its path; and keep the intermediary each credentialed
+request passes through (`CredentialRequest.transport`: the CORS proxy or
+development relay by origin and path, "cannot be sent" with no proxy,
+"directly" on Node) and the fact that its operator can read the
+credentials in the dialog's main body, never only under Details. When the program's file changed after boot
+(`programChangedSinceBoot`), say so prominently and never credit the
+file to the image. The image source the app passes
 (`credentialImageSource`) must be where the bytes were actually fetched
 from, never something the image says about itself.
 `apps/browser-demos/test/credential-request-dialog.spec.ts` covers it on
