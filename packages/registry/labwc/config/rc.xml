@@ -1,0 +1,25 @@
+<labwc_config>
+  <theme>
+    <font name="sans" size="10" />
+    <titlebar>
+      <layout>menu:iconify,max,close</layout>
+      <showTitle>yes</showTitle>
+    </titlebar>
+  </theme>
+  <keyboard>
+    <keybind key="C-Return"><action name="Execute" command="foot" /></keybind>
+    <keybind key="C-S-e"><action name="Exit" /></keybind>
+    <keybind key="W-Return"><action name="Execute" command="foot" /></keybind>
+    <keybind key="A-Tab"><action name="NextWindow" /></keybind>
+    <keybind key="A-F4"><action name="Close" /></keybind>
+    <keybind key="W-S-q"><action name="Exit" /></keybind>
+  </keyboard>
+  <mouse>
+    <default />
+    <context name="Root">
+      <mousebind button="Right" action="Press">
+        <action name="ShowMenu" menu="root-menu" />
+      </mousebind>
+    </context>
+  </mouse>
+</labwc_config>
