@@ -27,7 +27,8 @@ function begin(s: GlOwnedResultStore, owner: GlResultOwner, token: bigint, op: n
 it("copies input once, executes once, and keeps result bytes independent from workspace and poll copies", () => {
   const s = store(), owner = open(s,7,11)!, input = new Uint8Array(new SharedArrayBuffer(4)); input.set([1,2,3,4]);
   expect(begin(s,owner,0x20_0000_0000_0001n,9,input,4)).toBe("admitted"); input.fill(0);
-  expect(begin(s,owner,0x20_0000_0000_0001n,9,new Uint8Array([99]),4)).toBe("existing");
+  expect(begin(s,owner,0x20_0000_0000_0001n,9,new Uint8Array([99]),4)).toBe("rejected");
+  expect(begin(s,owner,0x20_0000_0000_0001n,9,new Uint8Array([1,2,3,4]),4)).toBe("existing");
   expect(begin(s,owner,0x20_0000_0000_0001n,10,input,4)).toBe("rejected");
   for (let i=0;i<4;i++) expect(s.poll(owner,0x20_0000_0000_0001n)).toEqual({state:"pending"});
   const execution = s.take(owner,0x20_0000_0000_0001n)!;
@@ -478,4 +479,26 @@ it("committed source release preserves an independent waiter until its own final
   expect(waiter.poll(null)).toBe(true); waiter.release(); expect(deletion).toHaveBeenCalledTimes(1);
   expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"retired",mode:"commit",accepted:true});
   expect(deletion).toHaveBeenCalledTimes(1); f.execution.release(); f.registry.unbind(7);
+});
+
+
+it("authenticates the original bounded input view through Ready and revokes byte matching only after actual retirement",()=>{
+  const s=store(),owner=open(s,7,11)!,source=new Uint8Array([99,1,2,3,4,88]);
+  expect(begin(s,owner,1n,9,source.subarray(1,5),4)).toBe("admitted");source.fill(0);
+  const charged=s.retainedBytes;
+  for(const input of [new Uint8Array([1,2,3,5]),new Uint8Array([1,2,3]),{} as Uint8Array])
+    expect(begin(s,owner,1n,9,input,4)).toBe("rejected");
+  const equal=new Uint8Array([77,1,2,3,4,66]).subarray(1,5);
+  Object.defineProperty(equal,"byteLength",{get:()=>{throw new Error("forged getter must not run");}});
+  expect(begin(s,owner,1n,9,equal,4)).toBe("existing");
+  const detached=new Uint8Array([1,2,3,4]);structuredClone(detached.buffer,{transfer:[detached.buffer]});
+  expect(begin(s,owner,1n,9,detached,4)).toBe("rejected");
+  const execution=s.take(owner,1n)!;execution.output.set([4,3,2,1]);expect(execution.complete(4)).toBe(true);
+  expect(begin(s,owner,1n,9,equal,4)).toBe("existing");expect(s.retainedBytes).toBe(charged);
+  expect(s.poll(owner,1n)).toEqual({state:"ready",rc:4,bytes:new Uint8Array([4,3,2,1])});
+  expect(s.cancel(owner,1n)).toBe(true);
+  expect(begin(s,owner,1n,9,equal,4)).toBe("existing");expect(s.retainedBytes).toBe(charged);
+  expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"retired",mode:"cancel",accepted:true});
+  expect(s.retainedBytes).toBe(0);expect(begin(s,owner,1n,9,equal,4)).toBe("rejected");
+  expect(s.poll(owner,1n)).toEqual({state:"retired",mode:"cancel",accepted:true});
 });

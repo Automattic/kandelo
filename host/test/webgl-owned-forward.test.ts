@@ -389,3 +389,36 @@ it("factory rejects a synchronous scheduler override before executing native wor
   inline=false;f.serverPort.fire(message);await rendererTurn();f.client.drain(8);
   expect(f.client.poll(f.owner,1n).state).toBe("ready");await closeFactory(f);
 });
+
+
+it("rejects changed paired Begin inputs through lost admission ACK and Ready without new bytes or native effects",async()=>{
+  const f=await fixture();let dropBegin=true;
+  f.serverPort.drop=data=>{const m=data as {type:string;control?:string};
+    if(m.type==="gl_owned_reply" && m.control==="begin" && dropBegin){dropBegin=false;return true;}return false;};
+  const original=words(0x0d33),changed=words(0x0d32);
+  expect(f.begin(1n,O.QOP_GET_INTEGERV,original,4)).toBe(true);
+  const charged=f.client.retainedBytes;expect(charged).toBe(12);
+  f.client.drain(8);expect(f.client.admission(f.owner,1n)).toBe("awaiting-native-admission");
+  // Also exercise the real authenticated receiver with a changed wire body,
+  // rather than relying only on the paired client's local refusal.
+  const first=f.clientPort.sent.find(value=>(value as {type:string}).type==="gl_owned_control") as object;
+  const tampered={...first,bytes:encodeQueryRequest({control:"begin",token:1n,begin:{
+    op:O.QOP_GET_INTEGERV,input:changed,capacity:4,context:21,hasCurrent:true,draw:0,read:0}}).buffer};
+  const replies=f.serverPort.sent.length;f.serverPort.fire(tampered);expect(f.serverPort.sent).toHaveLength(replies);
+  const sent=f.clientPort.sent.length;
+  expect(f.begin(1n,O.QOP_GET_INTEGERV,changed,4)).toBe(false);
+  expect(f.clientPort.sent).toHaveLength(sent);expect(f.client.retainedBytes).toBe(charged);
+  f.drain();const ready=f.client.poll(f.owner,1n);expect(ready).toEqual({state:"ready",rc:4,bytes:words(4096)});
+  const nativeReads=f.log.filter(value=>value===`parameter:${0x0d33}`).length;
+  expect(nativeReads).toBeGreaterThan(0);
+  const readyReplies=f.serverPort.sent.length;f.serverPort.fire(tampered);expect(f.serverPort.sent).toHaveLength(readyReplies);
+  expect(f.begin(1n,O.QOP_GET_INTEGERV,changed,4)).toBe(false);
+  expect(f.begin(1n,O.QOP_GET_INTEGERV,original,4)).toBe(true);
+  f.drain();expect(f.client.poll(f.owner,1n)).toEqual(ready);
+  expect(f.log.filter(value=>value===`parameter:${0x0d33}`)).toHaveLength(nativeReads);
+  expect(f.client.retainedBytes).toBe(charged);
+  f.client.control(f.owner,1n,"commit");f.drain();expect(f.client.retainedBytes).toBe(0);
+  expect(f.begin(1n,O.QOP_GET_INTEGERV,original,4)).toBe(false);
+  expect(f.client.poll(f.owner,1n)).toEqual({state:"retired",mode:"commit",accepted:true});
+  f.dispose();
+});

@@ -141,8 +141,12 @@ export class GlNativeQueryAdapter {
     if (request.control==="begin") {
       const b=request.begin!;
       if (receipt) {
-        if (receipt.op!==b.op || receipt.capacity!==b.capacity || receipt.hasCurrent!==b.hasCurrent
-          || receipt.context!==b.context || receipt.draw!==b.draw || receipt.read!==b.read) return {error:E.EINVAL};
+        if (receipt.state==="retired" || receipt.op!==b.op || receipt.capacity!==b.capacity || receipt.hasCurrent!==b.hasCurrent
+          || receipt.context!==b.context || receipt.draw!==b.draw || receipt.read!==b.read
+          || (receipt.stored && !this.store.matchesRequest(owner,request.token,b.op,b.input,b.capacity))) return {error:E.EINVAL};
+        // A failed admission rollback has no stored/executable query. Its only
+        // remaining capability is cancellation of already captured resources;
+        // a repeated Begin cannot retry capture or execute a new body.
       } else {
         const preentry=this.preentry(owner,b);
         if (preentry.state==="terminal") return this.rejected(request,preentry.error);

@@ -544,7 +544,8 @@ export class GlOwnedForwardClient {
     const existing=entry.receipts.get(token);
     if(existing)return existing.begin.op===begin.op && existing.begin.capacity===begin.capacity
       && existing.begin.hasCurrent===begin.hasCurrent && existing.begin.context===begin.context
-      && existing.begin.draw===begin.draw && existing.begin.read===begin.read;
+      && existing.begin.draw===begin.draw && existing.begin.read===begin.read
+      && this.store.matchesRequest(owner,token,begin.op,begin.input,begin.capacity);
     // Validate before reserving/copying. The store owns the frozen first input;
     // retries cannot replace it even if their caller buffer changes.
     try {encodeQueryRequest({control:"begin",token,begin});} catch {return false;}

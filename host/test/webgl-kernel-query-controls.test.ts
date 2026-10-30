@@ -103,3 +103,26 @@ it("retains actual failed cleanup and terminal ACK metadata until independently 
   expect(f.kernel.forgetGlQueryControlsAfterKernelLifecycle(7)).toBe(true);
   expect(f.invoke({control:"poll",token:1n},4,"cancel")).toEqual({error:-2});
 });
+
+
+it.each([4,8] as const)("rejects changed first-input retries through the actual %s-byte private import without replacing custody",pointerWidth=>{
+  const f=fixture(pointerWidth),capture=vi.spyOn(f.kernel.gl,"retainSubmitExecution");
+  const initial=f.begin(1n),input=new Uint8Array(4);
+  const original={...initial,begin:{...initial.begin,input}};
+  const changed={...initial,begin:{...initial.begin,input:new Uint8Array([1,0,0,0])}};
+  f.binding.errors.push(0x501);
+  expect(f.invoke(original)).toEqual({phase:"pending"});
+  expect(f.invoke(changed)).toEqual({error:-22});
+  expect(f.invoke(original)).toEqual({phase:"pending"});
+  expect(capture).toHaveBeenCalledOnce();expect(f.binding.errors).toEqual([0x501]);
+  f.kernel.drainGlQueryControls(4);
+  const ready=f.invoke({control:"poll",token:1n});expect(ready).toMatchObject({phase:"ready",result:4});
+  expect(f.invoke(changed)).toEqual({error:-22});expect(f.invoke(original)).toEqual(ready);
+  expect(f.invoke({control:"poll",token:1n})).toEqual(ready);expect(f.binding.errors).toEqual([0x501]);
+  expect(capture).toHaveBeenCalledOnce();
+  expect(f.invoke({control:"commit",token:1n},4,"commit")).toEqual({phase:"retired",mode:"commit",accepted:true});
+  expect(f.binding.errors).toEqual([]);
+  expect(f.invoke(original)).toEqual({error:-22});
+  expect(f.invoke({control:"commit",token:1n},4,"commit")).toEqual({phase:"retired",mode:"commit",accepted:true});
+  f.kernel.gl.unbind(7,11);
+});

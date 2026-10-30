@@ -294,6 +294,22 @@ export class GlOwnedResultStore {
   private record(owner: GlResultOwner, token: bigint): ResultRecord | undefined {
     return this.owner(owner)?.requests.get(token);
   }
+  /** A Begin retry proves the exact admitted first bytes. The existing charged
+   * copy is the authority; do not retain another payload or revive bytes after
+   * physical retirement. Getters and views are checked with captured intrinsics
+   * so a detached or forged caller view cannot authenticate a replacement. */
+  matchesRequest(owner: GlResultOwner, token: bigint, op: number, input: Uint8Array, capacity: number): boolean {
+    const record=this.record(owner,token), retained=record?.input;
+    if (!record || !retained || record.op!==op || record.capacity!==capacity) return false;
+    try {
+      const size=apply(arrayLength,input,[]) as number;
+      if (size!==retained.byteLength) return false;
+      const source=new Uint8Array(apply(arrayBuffer,input,[]) as ArrayBufferLike,
+        apply(arrayOffset,input,[]) as number,size);
+      for(let index=0;index<size;index++)if(source[index]!==retained[index])return false;
+      return true;
+    } catch { return false; }
+  }
   /** Custody is captured before admission, so queued work cannot select a
    * later context/drawable. Explicit null is for copied-byte-only operations;
    * rejection leaves any supplied native/remote custody with the caller. */
@@ -304,7 +320,7 @@ export class GlOwnedResultStore {
     // Retry can observe an existing receipt, but can never replace its input,
     // result capacity or operation using a changed request header.
     const existing = entry.requests.get(token);
-    if (existing) return existing.state !== "retired" && existing.op === op && existing.capacity === capacity
+    if (existing) return this.matchesRequest(owner,token,op,input,capacity)
       && (custody === null || custody === existing.custody) ? "existing" : "rejected";
     if (custody === undefined || (custody instanceof GlRemoteResultCustody ? !custody.matches(owner,token)
       : custody !== null && !custody.matches(owner))) return "rejected";

@@ -10391,3 +10391,56 @@ public query path. Other inventory gaps remain open. No ABI epoch, generated
 ABI output, import/export, control wire, sentinel or public EAGAIN activation
 changed. Normal products, full Rust tests, application browser and
 browser-memory validation were not run by this source increment.
+
+### Exact owned-query Begin replay authority (2026-10-30)
+
+Owned query retries now authenticate their input against the first admitted,
+independently copied bytes. Previously the store, native adapter and paired
+forward client compared operation/capacity and source scalars but accepted a
+changed body under an existing token. The original operation still executed,
+but a changed request could observe an acknowledgement for different bytes.
+
+The shared store now compares the actual byte range (including offset and
+length) using its already charged first-input copy. Native and forwarded retry
+paths use that same authority before native execution or another send. A
+mismatch returns a truthful refusal while retaining the original request,
+result, ticket and cleanup capabilities. No second retained payload, digest,
+guest view, request slot or retained-byte charge is introduced. Exact retries
+remain valid through queued/running, Ready and unacknowledged retirement
+states. A physical retirement ACK still releases all copied bytes; later Begin
+cannot recreate them or execute another query. Poll/Commit/Cancel/Forget and
+terminal ACK semantics remain unchanged. Failed admission rollback has no
+stored/executable query; repeated Begin can only observe its existing cleanup
+state and cannot recapture resources or run a new body.
+
+Evidence in the isolated `.context/graphics-current-conformance` checkout,
+based on `0defe8954a`:
+
+| Check | Result | Private log |
+| --- | --- | --- |
+| Final causal controls against original implementation | 4 fail: changed bytes accepted by store, actual 32/64-bit private imports and paired renderer | `admission-input-final-before.log` |
+| Complete graphics source gate | 1046 passed, 44 files, no skips | `admission-input-graphics.log` |
+| Strict changed dependency graph with repository bundler resolution | passed | `admission-input-types-bundler.log` |
+| Canonical host JavaScript/declarations | passed | `admission-input-host-build.log` |
+| Evidence registry | 644 files agree | `admission-input-evidence-registry.log` |
+
+Controls exercise changed same-length bytes, offset views, detached/forged
+views, an authenticated changed wire body at the real paired receiver, lost
+Begin ACK, transition to Ready, exactly-once native capture/execution and
+candidate publication, unchanged budget through failed retries, and zero
+payload/rejected late Begin after real retirement. The original controls and
+all implementation bytes are restored after the causal before run. This is
+source/model evidence, not guest copyout, rendering, conformance, memory
+reclamation or performance proof. Noncanonical direct project/NodeNext type
+invocations failed on repository configuration/dependency declarations; their
+raw logs are retained privately, and they are not substitutes for the passing
+repository-resolution graph and canonical declaration build.
+
+Public association, Rust opaque intent/channel scheduling, real owned-query
+copyout activation, complete lifecycle physical receivers/fault containment,
+queued outbound command admission, broader typed publication candidates,
+raw-default retention and actual EGL server waits remain ordinary open work.
+No public async/sentinel behavior, import/export, protocol or ABI epoch changes.
+No normal SDK/package/image products, full Rust tests, browser/application or
+browser-memory jobs were run in this increment. Existing libc-test submodule
+dirt was preserved, and the active primary/Kms build checkouts were untouched.
