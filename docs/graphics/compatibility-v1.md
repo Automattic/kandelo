@@ -10330,3 +10330,64 @@ its normal main-thread scheduler is not activated by this batch. Other ordinary
 baseline gaps listed above remain open. No ABI epoch, import/export, control
 wire or public EAGAIN behavior changed. No normal products, full Rust suite,
 application browsers or browser-memory job ran here.
+
+### Default owned renderer factory turns (2026-10-30)
+
+The optional owned path in the actual `setupMainForward` factory now supplies
+its existing `GlOwnedForwardRetirements` holder as the default later-turn
+scheduler. The holder already owns the real endpoint/controller/native cleanup
+capabilities. It accepts only an issued retained controller epoch, captures
+`setTimeout`/`clearTimeout` at construction, and coalesces scalar work hints
+into a one-shot next-turn task. This task visits at most 32 actual controllers
+in FIFO order, then continues only actual native/command quota-runnable work.
+Elapsed time, Pending replies and failed cleanup never establish completion
+or cause timer polling. Unexpected driver/allocation failure remains visible
+and retains actual custody without an automatic retry loop.
+
+Authenticated control admission, scalar retirement and closure/release events
+request this real driver. Explicit external `queueDrain` overrides remain
+available; their exceptions are visible, and synchronous/reentrant drain
+attempts fail before native execution. Disposal retains the actual listener
+and holder until authenticated cleanup/release acknowledgement; cancelling a
+task is never treated as that proof.
+
+Causal composition found two connected lifecycle defects. A lost closing ACK
+plus failed native cleanup made duplicate endpoint-close notices continually
+wake the shared worker (10 drains grew to 15 over five otherwise idle test
+turns). Duplicate notices now retransmit the closing ACK without recreating a
+scalar intent or waking unchanged owner state. Separately, newly admitted
+scalar retirement after the last query Forget had no worker work signal.
+First/new and explicitly renewed pending scalar intent now notify the existing
+exact owner work registration. An already completed exact source on an
+irrevocably closed owner remains idempotent. These changes preserve actual
+receiver/source custody rather than inferring cleanup from a successful post.
+
+Source evidence from `.context/graphics-renderer-turns`, based on `43acfe4598`:
+
+| Check | Result | Private log |
+| --- | --- | --- |
+| Factory cases before the default connection | 2 fail: Pending/stalled command queue | `renderer-turns-before.log` |
+| Coupled worker/factory close case before duplicate-notice repair | fail: repeated drains while closing ACK is lost and cleanup fails | `renderer-closing-before.log` |
+| Complete graphics source gate | 1042 passed, 44 files, no skips | `renderer-turns-source-accepted.log` |
+| Strict worker/renderer graph and canonical host JavaScript/declarations | passed | `renderer-turns-types-host.log` |
+| Entry, full runtime memory ownership and fatal-export audits | 43 passed | `renderer-turns-authority-audits.log` |
+| Evidence registry | 644 files agree | `renderer-turns-evidence-registry.log` |
+
+The added controls use the actual exported factory and same endpoint/submit
+queue, including private kernel import and shared worker turns at both pointer
+widths with no manual drains, 70 endpoint fairness, later command execution,
+failed cleanup with explicit renewed work, lost ACK, stale/invalid authority,
+captured timer intrinsics, visible override failure, rejected inline draining,
+last-query Forget and real authenticated receiver release. This is source/model
+evidence, not real browser rendering, guest scheduling, memory reclamation or
+performance evidence.
+
+Public association and Rust opaque intent/channel scheduling, public owned
+query parking, generic retry wakeups, complete process/worker shutdown and
+failure containment, and real EGL server waits remain ordinary open work.
+This default driver applies when an owned endpoint is explicitly supplied; it
+does not activate owned association in the normal host or replace the legacy
+public query path. Other inventory gaps remain open. No ABI epoch, generated
+ABI output, import/export, control wire, sentinel or public EAGAIN activation
+changed. Normal products, full Rust tests, application browser and
+browser-memory validation were not run by this source increment.

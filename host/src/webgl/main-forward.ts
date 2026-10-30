@@ -171,8 +171,12 @@ export function setupMainForward(
   const reg = new GlContextRegistry();
   const queue = new SubmitQueue(undefined,
     binding => binding.gl ? reg.retainSubmitExecution(binding, muxer(binding.gl)) : null);
+  // The actual receiver holder owns scheduling as well as cleanup custody.
+  // Capture only that narrow authority, never the structural options object.
+  const holder=owned?.retirements;
+  const queueDrain=owned?.queueDrain ?? (holder ? (epoch:number)=>{holder.requestDrain(epoch);} : undefined);
   const ownedQueries = owned ? new GlOwnedMainForwardController(owned.endpoint,pid,reg,owned.bos,muxers,
-    owned.limits,owned.retirements,queue,owned.queueDrain) : null;
+    owned.limits,owned.retirements,queue,queueDrain) : null;
 
   let disposing=false,legacyDisposed=false;
   const finishDispose=()=>{

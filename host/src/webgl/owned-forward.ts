@@ -1,5 +1,6 @@
 /** Optional owned query transport. This composes the real renderer adapter;
  * it does not enable public pending syscalls or infer completion from timeouts. */
+import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { GlNativeQueryAdapter } from "./native-query-adapter.js";
 import { GlOwnedResultStore, GlRemoteResultCustody, GlResultPeer,
   type GlResultOwner, type GlResultLimits, type GlResultPoll, type GlResultMode, type GlResultExecution } from "./owned-result.js";
@@ -25,6 +26,7 @@ type Grant = Route & {epoch:number;registration:number};
 type Wire = Route & {type:string;epoch?:number;registration?:number;bytes?:ArrayBuffer;control?:QueryControl;token?:bigint;error?:number;
   retirement?:GlForwardRetirementKind;sequence?:number;source?:number;complete?:boolean;endpointRegistration?:number};
 const CAP = 65536;
+const apply=Reflect.apply;
 let epochSerial = 0;
 let clientRegistrationSerial = 0;
 function positive(value:unknown):value is number {return Number.isSafeInteger(value) && (value as number)>0;}
@@ -48,13 +50,60 @@ function expected(control:QueryControl,token:bigint,capacity:number,mode:GlResul
 export class GlOwnedForwardRetirements {
   private controllers=new Set<GlOwnedMainForwardController>();
   private cursor=0;
+  private requested=new Set<GlOwnedMainForwardController>();
+  private task:ReturnType<typeof setTimeout>|null=null;
+  private running=false;
+  private readonly scheduler=globalThis;
+  private readonly schedule=setTimeout;
+  private readonly cancel=clearTimeout;
   constructor(private maximum:number) {if(!Number.isSafeInteger(maximum)||maximum<0)throw new RangeError("invalid owned renderer budget");}
   retain(controller:GlOwnedMainForwardController):boolean {
     if(this.controllers.has(controller))return true;
     if(this.controllers.size>=this.maximum)return false;
     this.controllers.add(controller);return true;
   }
-  release(controller:GlOwnedMainForwardController):void {if(controller.released)this.controllers.delete(controller);}
+  release(controller:GlOwnedMainForwardController):void {
+    if(!controller.released)return;
+    this.controllers.delete(controller);this.requested.delete(controller);
+    if(!this.requested.size && this.task!==null) {
+      apply(this.cancel,this.scheduler,[this.task]);this.task=null;
+    }
+  }
+  /** Exact issued epoch selects an already retained actual receiver. A task is
+   * only a later-turn work hint; neither its firing nor cancellation is ACK. */
+  requestDrain(epoch:number):boolean {
+    for(const controller of this.controllers)if(controller.matchesDrainEpoch(epoch)) {
+      this.requested.add(controller);this.scheduleTurn();return true;
+    }
+    return false;
+  }
+  private scheduleTurn():void {
+    if(this.task!==null || this.running || !this.requested.size)return;
+    // Capture both timer intrinsics at holder construction. This one-shot
+    // macrotask is shared Node/browser policy, never a cleanup polling timer.
+    this.task=apply(this.schedule,this.scheduler,[()=>this.runTurn(),0]);
+  }
+  private runTurn():void {
+    this.task=null;this.running=true;
+    let completed=false;
+    try {
+      // A bounded FIFO of actual controllers gives newly requested peers a
+      // turn before a quota-runnable controller goes around again.
+      const ready=[...this.requested].slice(0,32);
+      for(const controller of ready) {
+        this.requested.delete(controller);
+        if(!this.controllers.has(controller) || controller.released)continue;
+        const result=controller.drain(1);
+        if(!controller.released && (result.nativeRunnable || result.commands==="runnable"))this.requested.add(controller);
+      }
+      completed=true;
+    } finally {
+      this.running=false;
+      // Unexpected allocation/driver failure remains visible and retains real
+      // receiver custody, but must not manufacture an automatic retry loop.
+      if(completed)this.scheduleTurn();
+    }
+  }
   drain(maxVisits:number):number {
     if(!Number.isSafeInteger(maxVisits)||maxVisits<0)return 0;
     let visits=0;const controllers=[...this.controllers];
@@ -66,7 +115,7 @@ export class GlOwnedForwardRetirements {
   get retainedEndpoints():number {return this.controllers.size;}
 }
 export type GlOwnedMainForwardOptions={endpoint:GlOwnedForwardEndpoint;limits:GlResultLimits;retirements:GlOwnedForwardRetirements;
-  bos:GbmBoRegistry;queueDrain?:(epoch:number)=>void};
+  bos:GbmBoRegistry;/** Explicit external scheduler override; throws remain visible. */queueDrain?:(epoch:number)=>void};
 type ServerReceipt = {capacity:number;entered:boolean;ready:boolean;rejected:number|null;mode:GlResultMode|null;terminal:QueryReceiptReply|null};
 type ServerRetirement={sequence:number;source:number;receiver:GlForwardNativeRetirement|null};
 type RetirementSlots<T>={context:T;surface:T;session:T};
@@ -95,6 +144,8 @@ export class GlOwnedMainForwardController {
   private legacy=new Map<number,{operations:GlOperationStream;receiver:GlForwardNativeRetirement;retiring:boolean}>();
   private detached=false;
   private onMessage:(event:MessageEvent)=>void;
+  private requesting=0;
+  private draining=false;
   constructor(private endpoint:GlOwnedForwardEndpoint,private pid:number,private registry:GlContextRegistry,
     bos:GbmBoRegistry,private muxers:WeakMap<WebGL2RenderingContext,GlMuxer>,private limits:GlResultLimits,
     private retirements:GlOwnedForwardRetirements,private submits:SubmitQueue,private queueDrain?:(epoch:number)=>void) {
@@ -111,6 +162,12 @@ export class GlOwnedMainForwardController {
     try {endpoint.addEventListener("message",this.onMessage);} catch(error) {
       this.detached=true;retirements.release(this);throw error;
     }
+  }
+  matchesDrainEpoch(epoch:number):boolean {return !this.detached && this.epoch===epoch;}
+  private requestWork():void {
+    this.requesting++;
+    try {this.queueDrain?.(this.epoch);}
+    finally {this.requesting--;}
   }
   private send(message:unknown):void {try {this.endpoint.postMessage(message);} catch {/* Lost ACK never drops native authority. */}}
   private receive(data:unknown):void {
@@ -141,11 +198,11 @@ export class GlOwnedMainForwardController {
         if(message.endpointRegistration!==this.endpointRegistration || this.owners.size)return;
         this.endpointRelease=message.endpointRegistration;
         for(const session of this.legacy.keys())this.retireLegacy(session);
-        this.finishEndpointRelease();return;
+        this.finishEndpointRelease();this.requestWork();return;
       }
       if(message.type==="gl_owned_endpoint_closed" && this.closing && message.epoch===this.epoch
         && message.endpointRegistration===this.endpointRegistration) {
-        this.finishClosing();return;
+        this.finishClosing();this.requestWork();return;
       }
     }
     if(!routeValid(message,this.pid))return;
@@ -176,6 +233,8 @@ export class GlOwnedMainForwardController {
       this.owners.delete(message.sessionId);this.maybeRelease();return;
     }
     if(message.type==="gl_owned_forget_owner") {
+      let failure:unknown;
+      try {
       if(owner.forgotten) {this.send({...owner.grant,type:"gl_owned_owner_forgotten"});return;}
       if(!owner.closed) {owner.closed=true;this.adapter.retireOwner(owner.owner);}
       // Only clean scalar metadata can disappear. The authenticated client
@@ -186,6 +245,8 @@ export class GlOwnedMainForwardController {
       if(!this.adapter.forgetOwner(owner.owner))return;
       this.records-=owner.receipts.size;owner.receipts.clear();owner.forgotten=true;
       this.send({...owner.grant,type:"gl_owned_owner_forgotten"});this.maybeRelease();return;
+      } catch(error) {failure=error;throw error;}
+      finally {if(!isKernelExportFailure(failure))this.requestWork();}
     }
     if(owner.forgotten)return;
     if(message.type==="gl_owned_retire") {
@@ -211,15 +272,14 @@ export class GlOwnedMainForwardController {
           ??new GlForwardNativeRetirement(message.retirement,message.source!,this.pid,owner.owner.sessionId,owner.owner.operations);
         slot.source=message.source!;slot.sequence=message.sequence;
       }
-      this.retireScalar(owner,message.retirement,slot);return;
+      this.retireScalar(owner,message.retirement,slot);this.requestWork();return;
     }
     if(message.type!=="gl_owned_control")return;
     const bytes=independentBytes(message.bytes,48+CAP);if(!bytes)return;
     let request;
     try {request=decodeQueryRequest(bytes);} catch {return;}
-    // This scalar hook must enqueue a later renderer turn, never synchronously
-    // drain from inside message admission. It is also retried for lost ACKs.
-    try {this.queueDrain?.(this.epoch);} catch {/* Explicit bounded drain remains available. */}
+    let failure:unknown;
+    try {
     let receipt=owner.receipts.get(request.token);
     if(!receipt) {
       if(request.token<=owner.floor || this.records>=this.limits.maxRequests)return;
@@ -293,6 +353,13 @@ export class GlOwnedMainForwardController {
       this.reply(owner,"poll",request.token,receipt,{phase:"retiring",mode:"cancel"});
     } else this.send({...owner.grant,type:"gl_owned_reply",control:request.control,bytes:buffer(result.bytes)});
     if(request.control==="forget" && response.phase==="retired") {owner.receipts.delete(request.token);this.records--;}
+    } catch(error) {failure=error;throw error;}
+    finally {
+      // An uncertain native response still owns admitted custody. Schedule only
+      // after admission, never drain reentrantly; override failures propagate.
+      // A branded fatal must remain fatal and must not restart the renderer.
+      if(!isKernelExportFailure(failure))this.requestWork();
+    }
   }
   private rejectOpen(message:Wire):void {
     this.send({type:"gl_owned_open_rejected",pid:this.pid,sessionId:message.sessionId,
@@ -314,9 +381,12 @@ export class GlOwnedMainForwardController {
   /** A bounded round visits native records twice and dispatches at most N real
    * frames between them, so an accepted prefix can unblock its query in this
    * turn. Remaining native receipts are not evidence of runnable work: retry
-   * on real controls/wakeups or explicit retirement attempts, never a timer. */
-  drain(maxVisits:number):{nativeVisits:number;commandResult:number;commands:ReturnType<typeof glSubmitQueueDisposition>} {
-    if(!Number.isSafeInteger(maxVisits)||maxVisits<0)return {nativeVisits:0,commandResult:-22,commands:"blocked"};
+   * on real controls/wakeups or explicit retirement attempts, never elapsed time. */
+  drain(maxVisits:number):{nativeVisits:number;nativeRunnable:boolean;commandResult:number;commands:ReturnType<typeof glSubmitQueueDisposition>} {
+    if(!Number.isSafeInteger(maxVisits)||maxVisits<0)return {nativeVisits:0,nativeRunnable:false,commandResult:-22,commands:"blocked"};
+    if(this.requesting || this.draining)throw new Error("Owned renderer drain requires a later non-reentrant turn");
+    this.draining=true;
+    try {
     let selected:GlBinding|null=null;
     const muxerFor=(binding:GlBinding)=>{selected=binding;return binding.gl ? this.muxers.get(binding.gl)??null : null;};
     let nativeVisits=this.adapter.drain(maxVisits);
@@ -342,7 +412,8 @@ export class GlOwnedMainForwardController {
     if(this.endpointReleased && !this.endpointReleaseAcknowledged)this.send({type:"gl_owned_endpoint_released",pid:this.pid,
       epoch:this.epoch,endpointRegistration:this.endpointReleased});
     this.maybeRelease();
-    return {nativeVisits,commandResult,commands:glSubmitQueueDisposition(this.submits,muxerFor)};
+    return {nativeVisits,nativeRunnable:this.adapter.runnableAfterDrain,commandResult,commands:glSubmitQueueDisposition(this.submits,muxerFor)};
+    } finally {this.draining=false;}
   }
   /** Session unbind closes admission but leaves exact retirement controls live. */
   retireSession(session:number,roots=false):void {
@@ -360,6 +431,7 @@ export class GlOwnedMainForwardController {
       this.submits.removeSession(this.pid,session);
       receiver.revoke(this.registry,this.muxers);receiver.retry(this.muxers);
     }
+    this.requestWork();
   }
   hasSession(session:number):boolean {return this.owners.has(session);}
   /** Reserve real scalar custody before legacy native source creation. The
@@ -377,12 +449,13 @@ export class GlOwnedMainForwardController {
   retireLegacy(session:number):boolean {
     const entry=this.legacy.get(session);if(!entry)return false;
     entry.retiring=true;this.submits.removeSession(this.pid,session);
-    entry.receiver.revoke(this.registry,this.muxers);entry.receiver.retry(this.muxers);return true;
+    entry.receiver.revoke(this.registry,this.muxers);entry.receiver.retry(this.muxers);this.requestWork();return true;
   }
   close():void {
     this.closing=true;
     if(this.endpointRegistration)this.noticeClosing();
     else this.finishClosing(); // No associated client ever acquired admission.
+    this.requestWork();
   }
   private finishEndpointRelease():void {
     if(!this.endpointRelease)return;
@@ -509,11 +582,17 @@ export class GlOwnedForwardClient {
     const entry=this.session(session);if(!entry || !retirementKind(kind) || !Number.isInteger(source) || source<0 || source>0xffff_ffff
       || (kind==="session" ? source!==0 : source===0))return false;
     const slot=entry.retirements[kind];
-    if(slot.state!=="empty" && slot.state!=="complete")return slot.source===source;
+    if(slot.state!=="empty" && slot.state!=="complete") {
+      if(slot.source!==source)return false;
+      this.notifyWork(entry);return true; // Explicit renewed same-source retry.
+    }
+    // Closed admission cannot create a replacement native source. Keep its
+    // exact completed retirement proof rather than manufacture another intent.
+    if(entry.closed && slot.state==="complete" && slot.source===source)return true;
     if(entry.serial===Number.MAX_SAFE_INTEGER)return false;
     slot.sequence=++entry.serial;slot.source=source;slot.state="queued";
     if(kind==="session")this.retireOwner(entry.owner);
-    return true;
+    this.notifyWork(entry);return true;
   }
   retirementComplete(owner:GlResultOwner):boolean {
     const entry=this.owners.get(owner);if(!entry?.closed)return false;
@@ -564,14 +643,17 @@ export class GlOwnedForwardClient {
           endpointRegistration:this.endpointRegistration});return;
       }
       if(message.type==="gl_owned_endpoint_closing" && message.epoch===this.endpointEpoch) {
+        const changed=!this.endpointClosed;
         this.endpointClosed=true;
         // Reserve actual cleanup intent before acknowledging admission closure.
         // This is not a native cleanup ACK: each session still waits for its
         // actual receiver and all accepted query retirement acknowledgements.
-        for(const entry of this.owners.values()) {
+        if(changed)for(const entry of this.owners.values()) {
           this.queueRetirement(entry.owner.sessionId,"session",0);
           this.notifyOwner(entry);
         }
+        // Retransmit the closing ACK, but duplicate notices must neither
+        // manufacture a new scalar intent nor wake unchanged failed cleanup.
         this.post({type:"gl_owned_endpoint_closed",pid:this.pid,epoch:this.endpointEpoch,
           endpointRegistration:this.endpointRegistration});
         if(!this.owners.size) {this.endpointReleasing=true;this.releaseEndpoint();}

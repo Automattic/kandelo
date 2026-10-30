@@ -1,5 +1,6 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { GbmBoRegistry } from "../src/dri/registry.js";
+import type { GlOwnedForwardRetirements } from "../src/webgl/owned-forward.js";
 import { GlOperationStream } from "../src/webgl/operation-stream.js";
 import { createMainForwardChannel, setupMainForward, type GlForwardMessage } from "../src/webgl/main-forward.js";
 import { encodeQueryRequest } from "../src/webgl/query-receipt-codec.js";
@@ -24,7 +25,7 @@ class Endpoint {
 }
 const words=(...values:number[])=>{const b=new Uint8Array(values.length*4),v=new DataView(b.buffer);values.forEach((x,i)=>v.setUint32(i*4,x,true));return b;};
 const limits={maxOwners:4,maxRequests:8,maxRetainedBytes:4096};
-async function fixture() {
+async function fixture(automatic=false,holder?:GlOwnedForwardRetirements,scheduler?:(epoch:number)=>void) {
   const module=await import("../src/webgl/owned-forward.js");
   const clientPort=new Endpoint(),serverPort=new Endpoint();clientPort.other=serverPort;serverPort.other=clientPort;
   let blocked=false,serial=0,selected:object|null=null;
@@ -41,8 +42,9 @@ async function fixture() {
     readPixels:(_x:number,_y:number,_w:number,_h:number,_f:number,_t:number,bytes:Uint8Array)=>{reads.push(selected);log.push("read");bytes.fill(7);},
   },{get:(target,key)=>Reflect.get(target,key)??(()=>null)}) as unknown as WebGL2RenderingContext;
   const canvas={width:4,height:3,getContext:()=>gl} as unknown as HTMLCanvasElement;
-  const retirements=new module.GlOwnedForwardRetirements(2),drainRequests:number[]=[];
-  const dispose=setupMainForward(serverPort,canvas,7,{endpoint:serverPort,limits,retirements,bos:new GbmBoRegistry(),queueDrain:epoch=>drainRequests.push(epoch)});
+  const retirements=holder??new module.GlOwnedForwardRetirements(2),drainRequests:number[]=[];
+  const dispose=setupMainForward(serverPort,canvas,7,{endpoint:serverPort,limits,retirements,bos:new GbmBoRegistry(),
+    ...(scheduler?{queueDrain:scheduler}:automatic?{}:{queueDrain:(epoch:number)=>{drainRequests.push(epoch);}})});
   const channel=createMainForwardChannel(clientPort as {postMessage(message:GlForwardMessage):void},7);
   expect(channel.onCreateContext(11,undefined,21)).toBe(0);
   expect(channel.onMakeCurrent!({drawSurfaceId:0,readSurfaceId:0,width:4,height:3},11)).toBe(0);
@@ -297,4 +299,93 @@ it("refuses a premature Commit before native entry without poisoning later cance
   f.client.control(f.owner,1n,"cancel");f.client.drain(8);
   expect(f.client.poll(f.owner,1n)).toEqual({state:"retired",mode:"cancel",accepted:true});
   expect(f.log).toEqual([]);f.dispose();
+});
+
+async function rendererTurn():Promise<void> {await new Promise<void>(resolve=>setTimeout(resolve,0));}
+it("factory schedules actual native query work on a later renderer turn without a drain callback",async()=>{
+  const f=await fixture(true);f.begin(1n);f.client.drain(8);
+  expect(f.log.filter(value=>value==="finish")).toEqual([]);await rendererTurn();
+  f.client.drain(8);expect(f.client.poll(f.owner,1n).state).toBe("ready");expect(f.log.filter(value=>value==="finish")).toHaveLength(1);
+  f.client.control(f.owner,1n,"cancel");f.client.drain(8);await closeFactory(f);
+});
+it("factory resumes the real command queue after query publication without another submit",async()=>{
+  const f=await fixture(true);f.begin(1n);f.client.drain(8);
+  const bytes=new Uint8Array(8),view=new DataView(bytes.buffer);view.setUint16(0,O.OP_CLEAR,true);view.setUint16(2,4,true);view.setUint32(4,0x4000,true);
+  f.channel.onSubmit(bytes,11);await rendererTurn();f.client.drain(8);
+  expect(f.log.filter(value=>value==="finish")).toHaveLength(1);expect(f.log.filter(value=>value==="clear")).toEqual([]);
+  f.client.control(f.owner,1n,"commit");f.client.drain(8);await rendererTurn();
+  expect(f.log.filter(value=>value==="clear")).toHaveLength(1);await closeFactory(f);
+});
+
+async function closeFactory(f:Awaited<ReturnType<typeof fixture>>):Promise<void> {
+  const state=f.client.poll(f.owner,1n);
+  if(state.state==="pending" || state.state==="ready")f.client.control(f.owner,1n,"cancel");
+  f.client.drain(8);await rendererTurn();f.client.drain(8);
+  expect(f.client.poll(f.owner,1n).state).toBe("retired");expect(f.client.forget(f.owner,1n)).toBe(true);
+  f.client.retireOwner(f.owner);f.client.forgetOwner(f.owner);f.dispose();
+  for(let i=0;i<3;i++){f.client.drain(8);await rendererTurn();}
+  expect(f.client.dispose()).toBe(true);expect(f.serverPort.listeners.size).toBe(0);
+}
+it("factory gives every actual endpoint a bounded fair turn past the shared holder quota",async()=>{
+  const {GlOwnedForwardRetirements}=await import("../src/webgl/owned-forward.js"),holder=new GlOwnedForwardRetirements(72);
+  const peers:Awaited<ReturnType<typeof fixture>>[]=[];
+  for(let i=0;i<70;i++){const f=await fixture(true,holder);peers.push(f);f.begin(1n);f.client.drain(8);}
+  const count=()=>peers.reduce((sum,f)=>sum+f.log.filter(value=>value==="finish").length,0);
+  expect(count()).toBe(0);await rendererTurn();expect(count()).toBe(32);
+  await rendererTurn();await rendererTurn();expect(count()).toBe(70);
+  for(const f of peers){f.client.drain(8);expect(f.client.poll(f.owner,1n).state).toBe("ready");await closeFactory(f);}
+  expect(holder.retainedEndpoints).toBe(0);
+});
+it("factory keeps failed cleanup after disposal, sleeps, and honors a real renewed retirement control",async()=>{
+  const f=await fixture(true),drain=vi.spyOn(f.dispose.ownedQueries!,"drain");
+  f.begin(1n);f.client.drain(8);await rendererTurn();f.client.drain(8);f.block(true);f.dispose();
+  f.client.drain(8);await rendererTurn();f.client.drain(8);await rendererTurn();
+  expect(f.retirements.retainedEndpoints).toBe(1);expect(f.serverPort.listeners.size).toBeGreaterThan(0);expect(f.live.size).toBeGreaterThan(0);
+  const attempts=drain.mock.calls.length;for(let i=0;i<3;i++)await rendererTurn();expect(drain).toHaveBeenCalledTimes(attempts);
+  f.block(false);f.client.drain(8);await rendererTurn();await closeFactory(f);
+  expect(f.retirements.retainedEndpoints).toBe(0);expect(f.live.size).toBe(0);
+});
+it("factory retains uncertain ACKs without a timer retry loop and rejects invalid or stale work authority",async()=>{
+  const f=await fixture(true),drain=vi.spyOn(f.dispose.ownedQueries!,"drain");f.begin(1n);f.client.drain(8);await rendererTurn();f.client.drain(8);await rendererTurn();
+  const original=f.clientPort.sent.find(message=>(message as {type:string}).type==="gl_owned_control") as Record<string,unknown>;
+  const settled=drain.mock.calls.length;
+  for(const change of [{pid:9},{registration:999999},{epoch:999999},{clientRegistration:999999},{bytes:new ArrayBuffer(48+65537)}])f.serverPort.fire({...original,...change});
+  expect(f.retirements.requestDrain(999999)).toBe(false);for(let i=0;i<3;i++)await rendererTurn();expect(drain).toHaveBeenCalledTimes(settled);
+  f.serverPort.drop=data=>{const message=data as {type:string;control?:string};return message.type==="gl_owned_reply" && message.control==="commit";};
+  f.client.control(f.owner,1n,"commit");f.client.drain(8);await rendererTurn();
+  expect(f.client.poll(f.owner,1n).state).toBe("retiring");const uncertain=drain.mock.calls.length;
+  for(let i=0;i<3;i++)await rendererTurn();expect(drain).toHaveBeenCalledTimes(uncertain);
+  f.serverPort.drop=null;f.client.drain(8);await rendererTurn();expect(f.client.poll(f.owner,1n).state).toBe("retired");
+  await closeFactory(f);expect(f.retirements.requestDrain(original.epoch as number)).toBe(false);expect(f.retirements.retainedEndpoints).toBe(0);
+});
+it("factory captures timer intrinsics and cancels only after authenticated actual receiver release",async()=>{
+  const f=await fixture(true),timer=setTimeout;
+  const schedule=vi.spyOn(globalThis,"setTimeout").mockImplementation(()=>{throw new Error("late schedule replacement");});
+  const cancel=vi.spyOn(globalThis,"clearTimeout").mockImplementation(()=>{throw new Error("late cancel replacement");});
+  try {
+    f.begin(1n);f.client.drain(8);f.client.control(f.owner,1n,"cancel");f.client.drain(8);f.client.forget(f.owner,1n);
+    f.client.retireOwner(f.owner);f.client.forgetOwner(f.owner);f.dispose();
+    expect(f.client.dispose()).toBe(true);expect(f.retirements.retainedEndpoints).toBe(0);expect(f.live.size).toBe(0);
+    await new Promise<void>(resolve=>timer(resolve,0));expect(f.log.filter(value=>value==="finish")).toEqual([]);
+    expect(schedule).not.toHaveBeenCalled();expect(cancel).not.toHaveBeenCalled();
+  } finally {schedule.mockRestore();cancel.mockRestore();}
+});
+it("factory exposes override scheduling failure while retaining actual admitted work for renewed scheduling",async()=>{
+  let failed=true,holder:GlOwnedForwardRetirements|undefined;
+  const f=await fixture(true,undefined,epoch=>{if(failed)throw new Error("renderer scheduler refused");holder!.requestDrain(epoch);});holder=f.retirements;
+  f.begin(1n);f.client.drain(8);const message=f.clientPort.sent.find(value=>(value as {type:string}).type==="gl_owned_control")!;
+  expect(()=>f.serverPort.fire(message)).toThrow("renderer scheduler refused");
+  expect(f.dispose.ownedQueries!.pendingRequests).toBe(1);expect(f.retirements.retainedEndpoints).toBe(1);expect(f.log.filter(value=>value==="finish")).toEqual([]);
+  failed=false;f.serverPort.fire(message);await rendererTurn();f.client.drain(8);
+  expect(f.client.poll(f.owner,1n).state).toBe("ready");expect(f.log.filter(value=>value==="finish")).toHaveLength(1);await closeFactory(f);
+});
+
+it("factory rejects a synchronous scheduler override before executing native work",async()=>{
+  let inline=true,controller:NonNullable<ReturnType<typeof setupMainForward>["ownedQueries"]>|undefined,holder:GlOwnedForwardRetirements|undefined;
+  const f=await fixture(true,undefined,epoch=>{if(inline)controller!.drain(1);else holder!.requestDrain(epoch);});
+  controller=f.dispose.ownedQueries!;holder=f.retirements;f.begin(1n);f.client.drain(8);
+  const message=f.clientPort.sent.find(value=>(value as {type:string}).type==="gl_owned_control")!;
+  expect(()=>f.serverPort.fire(message)).toThrow("later non-reentrant turn");expect(f.log.filter(value=>value==="finish")).toEqual([]);
+  inline=false;f.serverPort.fire(message);await rendererTurn();f.client.drain(8);
+  expect(f.client.poll(f.owner,1n).state).toBe("ready");await closeFactory(f);
 });

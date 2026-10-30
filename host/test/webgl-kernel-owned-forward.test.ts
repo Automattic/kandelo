@@ -19,13 +19,13 @@ class Endpoint {
   removeEventListener(_type:"message",listener:(event:MessageEvent)=>void):void {this.listeners.delete(listener);}
 }
 const limits={maxOwners:8,maxRequests:16,maxRetainedBytes:4096};
-function fixture(width:4|8,automatic=false) {
-  const memory=new WebAssembly.Memory({initial:2,maximum:2}),wakes:unknown[][]=[],ownerWakes:unknown[][]=[];
+function fixture(width:4|8,automatic=false,factoryScheduler=false) {
+  const memory=new WebAssembly.Memory({initial:2,maximum:2}),wakes:unknown[][]=[],ownerWakes:unknown[][]=[],fatals:Error[]=[];
   const kernel=createWasmPosixKernelTestHarness({io:{} as any,memory,pointerWidth:width,
     callbacks:{getProcessMemory:()=>memory,onGlQueryWake:(...args:unknown[])=>wakes.push(args),onGlQueryOwnerWake:(...args:unknown[])=>ownerWakes.push(args)},
     instance:createKernelScratchTestInstance(width,memory,()=>({}),()=>4096)});
   if(automatic) {
-    const worker=createCentralizedKernelWorkerTestDouble();installKernelWorkerTestScratch(worker,memory,4096,width);
+    const worker=createCentralizedKernelWorkerTestDouble({callbacks:{onKernelFatal:error=>{fatals.push(error);}}});installKernelWorkerTestScratch(worker,memory,4096,width);
     worker.testAuthority.replaceKernelForScratchBoundaryTest(kernel);
   }
   const env=(kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>}).env;
@@ -40,10 +40,10 @@ function fixture(width:4|8,automatic=false) {
   const retirements=new GlOwnedForwardRetirements(2);
   let rendererScheduled=false,rendererPaused=false;
   const dispose=setupMainForward(receiver,{width:4,height:3,getContext:()=>gl} as unknown as HTMLCanvasElement,7,
-    {endpoint:receiver,bos:new GbmBoRegistry(),limits,retirements,queueDrain:()=>{
+    {endpoint:receiver,bos:new GbmBoRegistry(),limits,retirements,...(factoryScheduler?{}:{queueDrain:()=>{
       if(!automatic || rendererScheduled || rendererPaused)return;rendererScheduled=true;
       setImmediate(()=>{rendererScheduled=false;dispose.ownedQueries!.drain(16);});
-    }});
+    }})});
   const client=new GlOwnedForwardClient(sender,7,limits,(...args:unknown[])=>wakes.push(args));
   const channel=createMainForwardChannel(sender,7,0,client);
   const legacyQuery=vi.spyOn(channel,"onQuery");kernel.gl.attachMainForward(7,channel);
@@ -62,7 +62,7 @@ function fixture(width:4|8,automatic=false) {
   const drain=()=>{kernel.drainGlQueryControls(16);dispose.ownedQueries!.drain(16);kernel.drainGlQueryControls(16);};
   const submit=()=>{const bytes=new Uint8Array(memory.buffer,32768,8),v=new DataView(bytes.buffer,bytes.byteOffset,8);
     v.setUint16(0,O.OP_CLEAR,true);v.setUint16(2,4,true);v.setUint32(4,0x4000,true);return env.host_gl_submit(7,p(0),p(8),11);};
-  return {pauseRenderer:(value:boolean)=>{rendererPaused=value;},kernel,memory,env,p,client,sender,receiver,dispose,retirements,invoke,begin,drain,submit,log,live,legacyQuery,wakes,ownerWakes,channel,gl,block:(value:boolean)=>{blocked=value;}};
+  return {fatals,pauseRenderer:(value:boolean)=>{rendererPaused=value;},kernel,memory,env,p,client,sender,receiver,dispose,retirements,invoke,begin,drain,submit,log,live,legacyQuery,wakes,ownerWakes,channel,gl,block:(value:boolean)=>{blocked=value;}};
 }
 it.each([4,8] as const)("routes private owned controls through the real %s-byte kernel import and paired receiver",width=>{
   const f=fixture(width);expect(f.submit()).toBe(0);expect(f.invoke(f.begin())).toEqual({phase:"pending"});
@@ -293,4 +293,57 @@ it("retains failed actual renderer cleanup after query retirement without spinni
   f.block(false);f.invoke({control:"cancel",token:1n},0,"cancel");
   for(let i=0;i<8;i++)await new Promise<void>(resolve=>setImmediate(resolve));
   expect(f.client.hasBarrier(11)).toBe(false);expect(f.live.size).toBe(0);f.dispose();
+});
+
+it.each([4,8] as const)("composes the actual %s-byte private kernel import, worker turn and default renderer factory without manual drains",async width=>{
+  const f=fixture(width,true,true);expect(f.submit()).toBe(0);expect(f.invoke(f.begin())).toEqual({phase:"pending"});
+  f.env.host_gl_destroy_context(7,21);expect(f.kernel.gl.get(7,11)?.contextId).toBeNull();
+  for(let i=0;i<8;i++)await new Promise<void>(resolve=>setTimeout(resolve,0));
+  expect(f.invoke({control:"poll",token:1n})).toMatchObject({phase:"ready",result:0});expect(f.log).toEqual(["clear","finish"]);
+  f.invoke({control:"cancel",token:1n},0,"cancel");for(let i=0;i<8;i++)await new Promise<void>(resolve=>setTimeout(resolve,0));
+  expect(f.invoke({control:"cancel",token:1n},0,"cancel")).toEqual({phase:"retired",mode:"cancel",accepted:true});
+  expect(f.live.size).toBe(0);expect(f.kernel.prepareGlQueryControlTeardown(7)).toBe(true);
+  f.invoke({control:"forget",token:1n},0,"cancel");f.env.host_gl_unbind(7,11);
+  for(let i=0;i<4;i++)await new Promise<void>(resolve=>setTimeout(resolve,0));
+  expect(f.kernel.forgetGlQueryControlsAfterKernelLifecycle(7)).toBe(true);f.dispose();
+  for(let i=0;i<4;i++)await new Promise<void>(resolve=>setTimeout(resolve,0));expect(f.retirements.retainedEndpoints).toBe(0);
+});
+
+it("does not spin the real worker/factory on duplicate closing notices with a lost closing ACK and failed cleanup",async()=>{
+  const f=fixture(4,true,true),drain=vi.spyOn(f.dispose.ownedQueries!,"drain");f.invoke(f.begin());
+  for(let i=0;i<8;i++)await new Promise<void>(resolve=>setTimeout(resolve,0));f.invoke({control:"poll",token:1n});
+  f.sender.drop=message=>message.type==="gl_owned_endpoint_closed";f.block(true);f.dispose();
+  try {
+    for(let i=0;i<10;i++)await new Promise<void>(resolve=>setTimeout(resolve,0));
+    expect(f.retirements.retainedEndpoints).toBe(1);expect(f.live.size).toBeGreaterThan(0);const waiting=drain.mock.calls.length;
+    for(let i=0;i<5;i++)await new Promise<void>(resolve=>setTimeout(resolve,0));expect(drain).toHaveBeenCalledTimes(waiting);
+  } finally {
+    f.sender.drop=null;f.block(false);f.invoke({control:"cancel",token:1n},0,"cancel");
+    for(let i=0;i<8;i++)await new Promise<void>(resolve=>setTimeout(resolve,0));
+    expect(f.invoke({control:"forget",token:1n},0,"cancel")).toEqual({phase:"retired",mode:"cancel",accepted:true});
+    expect(f.kernel.prepareGlQueryControlTeardown(7)).toBe(true);f.env.host_gl_unbind(7,11);
+    for(let i=0;i<4;i++)await new Promise<void>(resolve=>setTimeout(resolve,0));expect(f.kernel.forgetGlQueryControlsAfterKernelLifecycle(7)).toBe(true);f.dispose();
+    for(let i=0;i<4;i++)await new Promise<void>(resolve=>setTimeout(resolve,0));
+  }
+  expect(f.fatals).toEqual([]);expect(f.retirements.retainedEndpoints).toBe(0);
+});
+
+it("schedules newly admitted scalar retirement after the last query Forget without another query",async()=>{
+  const f=fixture(4,true,true);f.invoke(f.begin());for(let i=0;i<8;i++)await new Promise<void>(resolve=>setTimeout(resolve,0));
+  f.invoke({control:"poll",token:1n});f.invoke({control:"cancel",token:1n},0,"cancel");
+  for(let i=0;i<8;i++)await new Promise<void>(resolve=>setTimeout(resolve,0));
+  expect(f.invoke({control:"cancel",token:1n},0,"cancel")).toEqual({phase:"retired",mode:"cancel",accepted:true});
+  expect(f.invoke({control:"forget",token:1n},0,"cancel")).toEqual({phase:"retired",mode:"cancel",accepted:true});
+  for(let i=0;i<4;i++)await new Promise<void>(resolve=>setTimeout(resolve,0));expect(f.client.pendingRequests).toBe(0);
+  try {
+    f.env.host_gl_destroy_context(7,21);expect(f.live.size).toBeGreaterThan(0);
+    for(let i=0;i<8;i++)await new Promise<void>(resolve=>setTimeout(resolve,0));
+    expect(f.live.size).toBe(0);expect(f.receiver.sent).toContainEqual(expect.objectContaining({type:"gl_owned_retired",retirement:"context",source:21,complete:true}));
+  } finally {
+    f.kernel.prepareGlQueryControlTeardown(7);f.env.host_gl_unbind(7,11);
+    for(let i=0;i<4;i++)await new Promise<void>(resolve=>setTimeout(resolve,0));
+    expect(f.kernel.forgetGlQueryControlsAfterKernelLifecycle(7)).toBe(true);f.dispose();
+    for(let i=0;i<4;i++)await new Promise<void>(resolve=>setTimeout(resolve,0));
+  }
+  expect(f.fatals).toEqual([]);expect(f.retirements.retainedEndpoints).toBe(0);
 });
