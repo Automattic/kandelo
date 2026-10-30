@@ -10248,3 +10248,39 @@ isolated source. Evidence is in
 `.context/git-admin-cache-fix/.context/git-admin-evidence/`.
 Normal package reuse under the new portable keys has not yet been
 validated; the serving1c16 preview is unchanged by this tooling repair.
+
+### Sustained pointer-frame consumer1c16 (2026-10-30)
+
+Headless Chromium153 job
+`pointer-frame-persistent-new-native2x-12-1030-193245-26b6` passes in6m46s
+against the immutable5665 runtime. One page/context/Sway machine completes
+all six motion/idle cycles at native2880x1620/DPR2. All14400 commands
+produce trusted page moves, without overflow or page/console errors.
+The same Sway101/SFWBar109/Foot110 and KMS owner survive. Own source,
+receipt, SDK32/64, selected kernel and all93 owners/245 members remain
+unchanged before/after. Workload, after-collector and after-guard all exit0.
+
+Motion periods take40.522–40.940s for2400 requested moves; the blank
+control already establishes that this driver does not achieve120Hz.
+Coarse accepted-flip differences are754–832 during motion and19–20
+during idle, without a progressive decline across this run. These are
+admissions sampled through a4Hz UI, not unique frames, cursor latency,
+FPS, GPU durations or proof of guest receipt of every event. Davao's
+separate normal build6373 is active throughout; user/other native load
+is uncontrolled. This is a sustained functional observation, not a quiet
+speed/no-regression comparison or a resolution of the Brave report.
+
+An earlier candidate launch bfd0 fails in2s before browser startup: its
+receipt hash helper receives a string where it expects a Path. That
+sealed failure is retained. Fresh private r2 normalizes the path argument,
+validates the actual receipt/HTTP provenance read-only, and passes syntax
+and one-case collection before launch. The six-window spec and all
+render/process/source assertions remain unchanged. Reports, screenshots,
+raw input timing and coherence evidence are under
+`.context/pointer-frame-persistent-probe-r2/`; bfd0 remains under the
+original `.context/pointer-frame-persistent-probe/` inputs/job record.
+No test or validation result is replaced by the successful run. Browser
+test load is released after26b6; the other workspace's build remains
+active. Actual Brave feedback, full GUI/Start/focus/lifecycle acceptance,
+all-engine browser-memory, POSIX, benchmarks and the graphics inventory
+remain open.
