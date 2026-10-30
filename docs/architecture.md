@@ -3995,6 +3995,18 @@ Signals are delivered at syscall boundaries. When a process has a pending signal
    `siglongjmp` then applies the jump buffer's saved mask when requested.
 5. If the signal interrupted a blocking syscall, EINTR is returned
 
+Internal owned graphics queries require an earlier termination check. A
+terminating default signal preflights every task's query receipt before
+consuming its queued instance or changing mask-wait and handler bookkeeping.
+The Rust `try_*` signal helpers return `SignalProgress::PendingOwned` or
+`ProtocolFaultOwned` while native cleanup is unproven; both retain the queued
+signal, process resources and existing signal state. Only acknowledged query
+retirement permits termination. Caught, ignored, stop and continue actions do
+not cancel graphics queries. Legacy delivery calls and the host-free default
+signal consumer fail closed if they bypass that ordering. These are internal
+integration guards: public graphics parking and the host's resumable signal
+scheduling are not enabled by them.
+
 PTY input follows the same completion path as other signal ingress on both
 Node and browser hosts. After the line discipline queues an ISIG signal to
 the foreground process group, the host drains kernel wakeup events and

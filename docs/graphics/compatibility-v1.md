@@ -9655,3 +9655,32 @@ ordering, remaining typed mutation candidates and actual forced cleanup or
 containment remain ordinary implementation work. Current normal cage/sway
 products and acceptance run independently on the frozen landing branch;
 follow-up rendered guests, CTS, browser-memory and conformance remain pending.
+
+### Generic signal retirement ordering (2026-10-29)
+
+Runtime-core's actual queued delivery, direct termination and default-action
+paths now expose internal `SignalProgress` results. A terminating default
+preflights every task's owned query before consuming the signal or clearing
+mask-wait/handler bookkeeping. Pending, transport failure, malformed replies
+and a foreign token's late acknowledgment preserve the actual queued signal,
+old masks, handler depths, process status and OFD pins. Legacy calls fail
+closed before those effects. The host-free dequeue guard also protects the
+kernel's separate default branch; resumable kernel signal scheduling must
+use the typed preflight before that consumer. Caught/ignored/stop/continue
+semantics do not cancel a query.
+
+Declared-shell checks pass 43 focused cases (eight new query/signal cases,
+34 existing signal cases and one wait-signal case), plus a Wasm32 runtime-core
+compile check. The tests use actual signal queues, query requests, retry
+tokens, OFD pins and scripted HostIO receipts. A first fixture assertion used
+the leader's absent ThreadInfo instead of its actual live-task identity; it
+was corrected before the passing repeat. Evidence:
+`.context/signal-query-retirement-focused.log` and
+`.context/signal-query-retirement-wasm.log` in the VMA alias.
+
+This closes the source ordering gap; kernel-held resumable signal intent,
+worker/forward scheduling and actual teardown custody or fatal containment
+remain integration work. No public pending/sentinel interpretation, export,
+import or ABI change is enabled. Full combined Rust/ABI gates, normal products,
+real browser delivery, browser-memory and POSIX conformance remain unrun for
+this increment and required before public async activation.
