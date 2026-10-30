@@ -3,6 +3,8 @@ import { gotoMachine } from "./support/kandelo-machine";
 import { typePhysicalText } from "./support/physical-typing";
 import { runTerminalCommand } from "./support/terminal-command";
 
+test.use({ headless: true });
+
 const canvas = (page: Page) => page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
 const owner = async (page: Page) => Number(await page.locator(".kmachine-primary .kmodeset-surface")
   .getAttribute("data-kms-owner-pid"));
@@ -89,7 +91,7 @@ function isLauncher(paint: Paint): boolean {
 }
 
 test.describe("ScummVM's ordinary Wayland GLES launcher inside Sway", () => {
-  test.use({ headless: true, deviceScaleFactor: 1, viewport: { width: 1440, height: 1000 } });
+  test.use({ deviceScaleFactor: 1, viewport: { width: 1440, height: 1000 } });
 
   test("paints the launcher, handles its dialog and quits without taking the compositor's DRM master", async ({ page }) => {
     test.setTimeout(480_000);
