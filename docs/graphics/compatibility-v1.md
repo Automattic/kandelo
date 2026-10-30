@@ -9750,3 +9750,60 @@ TypeScript checking has no changed-test errors and the same existing
 `kernel-host.ts:2404` error as the exact baseline test. Actual rendered
 geometry and execution remain pending the normal SFWBar5 candidate.
 Source/static evidence is `.context/sfwbar-pager-acceptance/HANDOFF.md`.
+
+### Normal SFWBar5 preview and first consumers (2026-10-30)
+
+Normal job `preview5662-c87f9e-build-1030-151829-acd9` completes all stages
+in 27m25s at clean detached `c87f9e20d5805398afcd266e40db46e7a5c5b935`:
+full shell/rootfs/host composition, C SDK32/64, freshness, all 93 owners /
+245 members and selected-normal-kernel ABI snapshot checks. Source,
+SDK/kernel and consumed helpers remain unchanged. The immutable
+experimental preview is `http://127.0.0.1:5662/`; serving starts before
+GUI acceptance. It contains the SFWBar5 focus and theme-image changes.
+Owner-manifest SHA256 is
+`b54d294b2af395a1560511e0da08070a7295ffc875e59fd25046a6aae31ab58f`.
+SFWBar is 35,598,946 bytes, SHA256
+`4d0dd2ac977502d65afc701a93138197abe30569806bfb53caad134a416eae02`;
+appmenu remains 28,437 bytes, SHA256
+`bf403667d198890c8a04edcc148106f97940c29c89ca7c2ca68f2307c318f449`.
+
+Consumer job `preview5662-chromium-sfwbar-1030-154630-bf1e` finishes red
+in 3m54s with unchanged source, SDKs, kernel and all 93/245 artifact
+identities. Normal Node help and actual main/side-module admission pass.
+Both headless Chromium panels paint readable native workspace/task labels.
+Sway's real checked IPC captures workspace1 then workspace2 while the
+same Foot ID5/PID110 remains on workspace1. The retained1 glyph is
+identical, but the new test compares four outer button-border pixels as
+if they were text. Their brightness crosses its fixed threshold when
+focus changes; `gray` and `focusedNext` pass, `sameInk` fails. The
+workspace return click and native menu are not reached in this run.
+A bounded glyph-interior test repair remains required, without lowering
+text thresholds or replacing actual IPC/window/click assertions.
+
+Labwc changes the actual title to FIRST but does not satisfy its red
+marker assertion. The retained screenshot does not show the earlier
+`prrrrr...` failure. Input delivery versus output/rendering cause is not
+yet established for this cohort. No menu/focus/close/cooperative-exit
+acceptance or performance improvement is claimed. Complete evidence is
+`.context/preview5662-acceptance/`, including `result-summary.json` and
+both original failure traces. The earlier1c80 preview remains separate.
+
+The glyph-interior repair is implemented in the test source. A one-pixel
+outer ring is excluded from both glyph masks; full button geometry,
+background checks and all brightness/IPC/click/window assertions remain.
+Running the actual source callback on the two retained normal screenshots
+reproduces the original failure and passes the repaired comparison.
+Blank, the actual captured2 glyph and white-fill controls still fail.
+Six-case discovery and generated-command syntax pass; focused typing
+matches the same existing baseline error. This is offline test evidence,
+not a new browser pass. Evidence is
+`.context/sfwbar-pager-interior-proof/HANDOFF.md`.
+
+The Labwc trace retains 84 requested physical key calls matching the
+expected command, without duplicate API requests. This does not prove
+identical guest bytes. Its FIRST title proves partial output processing;
+57 subsequent paint results retain red0 while panel clock and accepted
+flips advance. The failing PTY/parser/raster/commit/content layer remains
+unknown. Console evidence is limited and does not establish complete
+worker diagnostics. `.context/labwc-c87-marker-review/review.md` retains
+that distinction and the actual trace/keyboard/paint observations.

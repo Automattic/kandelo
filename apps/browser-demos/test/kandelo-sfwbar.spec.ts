@@ -148,18 +148,21 @@ async function paint(page: Page, savedPager?: PagerCell): Promise<Paint> {
       r.x >= start.x + start.width && r.x <= start.x + start.width + 8
       && Math.abs(r.y - start.y) <= 8 && r.height >= start.height - 12
       && r.height <= start.height + 4 && r.width < 200 && r.textRows === 1) : undefined;
-    const pager: PagerCell | null = pagerRect ? { ...pagerRect,
-      ink: Array.from({ length: pagerRect.height }, (_, y) => {
+    const cellInk = (rect: Rect) => Array.from({ length: rect.height }, (_, y) => {
         let row = "";
-        for (let x = 0; x < pagerRect.width; x++) row += ink[(pagerRect.y + y) * width + pagerRect.x + x];
+        // Rounded button-border pixels change with focus independently of
+        // the label. Preserve the full cell for geometry/background checks,
+        // but compare only its true interior with the unchanged ink threshold.
+        for (let x = 0; x < rect.width; x++) row += x > 0 && y > 0
+          && x < rect.width - 1 && y < rect.height - 1 ? ink[(rect.y + y) * width + rect.x + x] : 0;
         return row;
-      }) } : null;
+      });
+    const pager: PagerCell | null = pagerRect ? { ...pagerRect, ink: cellInk(pagerRect) } : null;
     let returnPager: Paint["returnPager"] = null;
     if (savedPager) {
       if (savedPager.x + savedPager.width > width || savedPager.y + savedPager.height > height)
         throw new Error("saved pager left the rendered output");
-      const current = savedPager.ink.map((row, y) => Array.from(row, (_, x) =>
-        String(ink[(savedPager.y + y) * width + savedPager.x + x])).join(""));
+      const current = cellInk(savedPager);
       const near = (mask: string[], x: number, y: number) => {
         for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++)
           if (mask[y + dy]?.[x + dx] === "1") return true;
