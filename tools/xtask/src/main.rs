@@ -62,6 +62,8 @@
 //!                         `check` keeps source tags and tests/runtime-workarounds entries
 //!                         consistent, `run` runs the self-judging reproductions, and
 //!                         `list` prints the weekly report.
+//!   test-baseline         Record suite results with input identities, inspect
+//!                         freshness, and classify only against current main evidence.
 //!   set-build-commit      Stamp `[build].commit = <sha>` into one
 //!                         `packages/registry/<name>/package.toml`. Used by the
 //!                         publish flow to record source provenance.
@@ -101,6 +103,7 @@ mod runtime_workarounds;
 mod source_archive_cache;
 mod source_extract;
 mod stamp_abi_contract;
+mod test_baseline;
 mod update_pkg_manifest;
 mod util;
 
@@ -111,7 +114,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: vfs, dump-abi, check-program-env-imports, bundle-program, build-deps, compute-cache-key-sha, workspace-closure-sha, vfs-image, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, cache-gc, verify-fresh, runtime-workarounds check|list|run"
+                "subcommands: vfs, dump-abi, check-program-env-imports, bundle-program, build-deps, compute-cache-key-sha, workspace-closure-sha, vfs-image, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, archive-extract-member, set-build-commit, local-build, check-determinism, bootstrap, clean, cache-gc, verify-fresh, test-baseline, runtime-workarounds check|list|run"
             );
             return ExitCode::from(2);
         }
@@ -144,6 +147,7 @@ fn main() -> ExitCode {
         "abi-program-digest" => stamp_abi_contract::run_print(&rest),
         "runtime-workarounds" => runtime_workarounds::run(rest),
         "verify-fresh" => local_build::run_verify_fresh(rest),
+        "test-baseline" => test_baseline::run(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
             return ExitCode::from(2);

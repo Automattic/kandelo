@@ -2,6 +2,11 @@
 
 Repo-local build/release utilities. Subcommands:
 
+- `test-baseline capture|record|status|classify|summarize|check-reads|import-history`
+  — record suite failures with source/artifact/environment identities,
+  inspect freshness, and classify only against eligible main evidence.
+  See [the evidence contract](../../tests/baselines/README.md).
+
 - `dump-abi` — regenerate `abi/snapshot.json` from authoritative sources.
 - `check-package-imports [--require-startup] <wasm>...` — audit process
   imports against shared host declarations and the current SDK's typed

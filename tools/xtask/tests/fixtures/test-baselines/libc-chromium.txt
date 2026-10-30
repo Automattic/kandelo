@@ -1,0 +1,26 @@
+XFAIL functional/pthread_cancel (expected — timeout)
+PASS  functional/pthread_cond (706ms)
+
+XFAIL regression/malloc-brk-fail (expected — exit 1)
+PASS  regression/malloc-oom (3034ms)
+
+XFAIL regression/syscall-sign-extend (expected — exit 1)
+XFAIL regression/tls_get_new-dtv (expected — exit 132)
+
+PASS  regression/uselocale-0 (342ms)
+
+XFAIL math/acosh (expected — exit 1)
+PASS  math/acoshf (384ms)
+
+PASS:    306
+FAIL:    0
+XFAIL:   18
+XPASS:   0
+BUILD:   0
+ERROR:   0
+TIMEOUT: 0
+TOTAL:   324
+
+── PASS (306) ──
+  PASS  functional/argv
+  PASS  functional/basename

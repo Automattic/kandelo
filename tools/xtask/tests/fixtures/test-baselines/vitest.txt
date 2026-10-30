@@ -1,0 +1,14 @@
+ FAIL  ../scripts/check-image-demo-config.test.mjs > baked-equals-tracked > classifies every real tracked source as composed XOR single-source
+AssertionError: packages/registry/redis-vfs/redis-demo.json composed: expected false not to be false // Object.is equality
+ ❯ ../scripts/check-image-demo-config.test.mjs:132:53
+    130|       const inComposed = COMPOSED_TRACKED_SOURCES.has(relPath);
+
+ FAIL  ../scripts/check-image-demo-config.test.mjs > baked-equals-tracked > compares every single-source tracked file against a matching synthetic image
+Error: packages/registry/redis-vfs/redis-demo.json is tracked but the baked-equals-tracked check does not know which image bakes it in — add it to SINGLE_SOURCE_IMAGE_ARTIFACTS or COMPOSED_TRACKED_SOURCES in scripts/check-image-demo-config.ts
+ ❯ checkBakedEqualsTracked ../scripts/check-image-demo-config.ts:283:13
+    281|     const artifactRelPath = SINGLE_SOURCE_IMAGE_ARTIFACTS[relPath];
+
+ Test Files  15 failed | 580 passed | 6 skipped (601)
+      Tests  30 failed | 5291 passed | 21 skipped (5342)
+   Start at  09:28:28
+   Duration  1267.32s (tests 88%, import 11%)

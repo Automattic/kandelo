@@ -1,0 +1,27 @@
+FAIL  basic/pthread/pthread_getcpuclockid (exit 1)
+PASS  basic/pthread/pthread_getschedparam (317ms)
+
+FAIL  basic/syslog/closelog (exit 1)
+PASS  basic/syslog/openlog (353ms)
+
+FAIL  basic/syslog/syslog (exit 1)
+PASS  basic/termios/cfgetispeed (341ms)
+
+FAIL  basic/unistd/fpathconf (exit 1)
+PASS  basic/unistd/fsync (345ms)
+
+FAIL  basic/unistd/pathconf (exit 1)
+PASS  basic/unistd/pause (1325ms)
+
+PASS:    5028
+FAIL:    21
+XFAIL:   13
+XPASS:   9
+BUILD:   0
+SKIP:    50
+ERROR:   0
+TIMEOUT: 0
+TOTAL:   5121
+
+── FAIL (21) ──
+  FAIL  basic/pthread/pthread_getcpuclockid

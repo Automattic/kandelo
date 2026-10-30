@@ -1,0 +1,27 @@
+TIME  limits/_POSIX2_BC_BASE_MAX (timeout)
+  exit: 124
+
+TIME  limits/_POSIX2_BC_DIM_MAX (timeout)
+  exit: 124
+
+TIME  limits/_POSIX2_BC_SCALE_MAX (timeout)
+  exit: 124
+
+TIME  limits/_POSIX2_BC_STRING_MAX (timeout)
+  exit: 124
+
+TIME  limits/_POSIX2_CHARCLASS_NAME_MAX (timeout)
+  exit: 124
+
+PASS:    3691
+FAIL:    19
+XFAIL:   4
+XPASS:   0
+BUILD:   0
+SKIP:    50
+TIMEOUT: 1357
+TOTAL:   5121
+
+── FAIL (19) ──
+  FAIL  basic/pthread/pthread_getcpuclockid
+  FAIL  basic/strings/ffsll
