@@ -6,6 +6,9 @@ import { readFileSync } from "node:fs";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { extractZipEntry, parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 
+// Browser checks must never take the user's desktop focus.
+test.use({ headless: true });
+
 /** Show the Internals syslog, the demo canvas, or the machine's terminal.
  *  Internals is an overlay toggle in the dock; showing another view means
  *  closing it and selecting that view. */
@@ -317,7 +320,7 @@ test("Kandelo sway tiles foot terminals under swaybar with wlroots' GLES2 render
 
 for (const deviceScaleFactor of [1, 2]) {
   test.describe(`Sway logical desktop at ${deviceScaleFactor}x`, () => {
-    test.use({ headless: true, deviceScaleFactor, viewport: { width: 1100, height: 650 } });
+    test.use({ deviceScaleFactor, viewport: { width: 1100, height: 650 } });
     test("keeps readable fonts, actual output scale and click targets on a small pane", async ({ page }) => {
       test.setTimeout(300_000);
       // These are the normal resolver-owned archive bytes mounted by the
