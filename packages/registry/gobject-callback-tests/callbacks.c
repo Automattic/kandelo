@@ -26,3 +26,34 @@ GType contract_flags_type(void) {
   type=g_flags_register_static("ContractFlags",values); }
  return type;
 }
+
+/* Class virtuals omit closure data; connected handlers retain it, including
+ * swapped handlers. All pointers are non-NULL and distinguishable. */
+GObject *contract_argument;
+guint signal_class_count, signal_handler_count;
+void virtual_object(GObject *instance, GObject *argument) {
+ g_assert_true(instance == contract_instance);
+ g_assert_true(argument == contract_argument);
+ ++signal_class_count; ++callback_count;
+}
+void normal_object(GObject *instance, GObject *argument, gpointer data) {
+ g_assert_true(instance == contract_instance);
+ g_assert_true(argument == contract_argument);
+ g_assert_true(data == &contract_cookie);
+ ++signal_handler_count; ++callback_count;
+}
+void swapped_object(gpointer data, GObject *argument, GObject *instance) {
+ normal_object(instance, argument, data);
+}
+void virtual_realize(GObject *instance) {
+ g_assert_true(instance == contract_instance);
+ ++signal_class_count; ++callback_count;
+}
+void normal_realize(GObject *instance, gpointer data) {
+ g_assert_true(instance == contract_instance);
+ g_assert_true(data == &contract_cookie);
+ ++signal_handler_count; ++callback_count;
+}
+void swapped_realize(gpointer data, GObject *instance) {
+ normal_realize(instance, data);
+}

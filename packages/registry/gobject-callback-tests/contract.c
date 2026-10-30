@@ -10,9 +10,11 @@ typedef struct {
 #define SLOT(name,ctype,gtype,result) ctype (*name)(gpointer instance,gint argument);
  CASES(SLOT)
 #undef SLOT
+ void (*object_signal)(GObject *instance, GObject *argument);
+ void (*realize_signal)(GObject *instance);
 } ContractObjectClass;
 G_DEFINE_TYPE(ContractObject,contract_object,G_TYPE_OBJECT)
-static guint signal_ids[7];
+static guint signal_ids[7], object_signal_id, realize_signal_id;
 static void contract_object_init(ContractObject *self) { (void)self; }
 static void contract_object_class_init(ContractObjectClass *klass) {
  guint i=0;
@@ -22,6 +24,14 @@ static void contract_object_class_init(ContractObjectClass *klass) {
  G_STRUCT_OFFSET(ContractObjectClass,name),NULL,NULL,NULL,gtype,1,G_TYPE_INT);
  CASES(INSTALL)
 #undef INSTALL
+ klass->object_signal = virtual_object;
+ klass->realize_signal = virtual_realize;
+ object_signal_id = g_signal_new("object-signal", G_TYPE_FROM_CLASS(klass),
+  G_SIGNAL_RUN_LAST, G_STRUCT_OFFSET(ContractObjectClass, object_signal),
+  NULL, NULL, NULL, G_TYPE_NONE, 1, G_TYPE_OBJECT);
+ realize_signal_id = g_signal_new("realize-signal", G_TYPE_FROM_CLASS(klass),
+  G_SIGNAL_RUN_LAST, G_STRUCT_OFFSET(ContractObjectClass, realize_signal),
+  NULL, NULL, NULL, G_TYPE_NONE, 0);
 }
 static void check_value(guint which,const GValue *value) {
  switch(which) {
@@ -78,6 +88,52 @@ static void virtual_case(guint which,gboolean valist) {
   g_value_unset(&result);g_value_unset(&params[0]);g_value_unset(&params[1]);
  }
 }
+/* Exercise generated VOID__OBJECT / VOID__VOID marshallers and the separate
+ * class meta path through real signal emission. Route0 is class-only; routes
+ * 1/2 add normal/swapped handlers and verify disconnect-by-function identity. */
+static void signal_emit_once(gboolean object, gboolean valist) {
+ guint id = object ? object_signal_id : realize_signal_id;
+ if (valist) {
+  if (object) g_signal_emit(contract_instance, id, 0, contract_argument);
+  else g_signal_emit(contract_instance, id, 0);
+ } else {
+  GValue values[2] = {G_VALUE_INIT, G_VALUE_INIT};
+  g_value_init(&values[0], G_TYPE_OBJECT);
+  g_value_set_object(&values[0], contract_instance);
+  if (object) {
+   g_value_init(&values[1], G_TYPE_OBJECT);
+   g_value_set_object(&values[1], contract_argument);
+  }
+  g_signal_emitv(values, id, 0, NULL);
+  if (object) g_value_unset(&values[1]);
+  g_value_unset(&values[0]);
+ }
+}
+static void signal_case(gboolean object, gboolean valist, guint route) {
+ GCallback handler = NULL;
+ const gchar *name = object ? "object-signal" : "realize-signal";
+ g_assert_cmpuint(route, <, 3);
+ contract_argument = g_object_new(G_TYPE_OBJECT, NULL);
+ g_assert_true(contract_argument != contract_instance);
+ if (route) {
+  handler = object ? (route == 2 ? G_CALLBACK(swapped_object) : G_CALLBACK(normal_object))
+                   : (route == 2 ? G_CALLBACK(swapped_realize) : G_CALLBACK(normal_realize));
+  g_signal_connect_data(contract_instance, name, handler, &contract_cookie,
+                        NULL, route == 2 ? G_CONNECT_SWAPPED : G_CONNECT_DEFAULT);
+ }
+ signal_emit_once(object, valist);
+ g_assert_cmpuint(signal_class_count, ==, 1);
+ g_assert_cmpuint(signal_handler_count, ==, route ? 1 : 0);
+ if (route)
+  g_assert_cmpuint(g_signal_handlers_disconnect_by_func(contract_instance, handler,
+                                                       &contract_cookie), ==, 1);
+ signal_emit_once(object, valist);
+ g_assert_cmpuint(signal_class_count, ==, 2);
+ g_assert_cmpuint(signal_handler_count, ==, route ? 1 : 0);
+ g_assert_cmpuint(callback_count, ==, route ? 3 : 2);
+ g_object_unref(contract_argument);
+ contract_argument = NULL;
+}
 static gboolean quit_source(gpointer data) { ++*(guint*)data;return G_SOURCE_REMOVE; }
 static void source_case(void) {
  guint called=0;GSource *source=g_idle_source_new();GMainContext *context=g_main_context_new();
@@ -125,6 +181,12 @@ int main(int argc,char **argv) {
  CASES(TYPE)
 #undef TYPE
  g_assert_cmpint(argc,==,3);guint which=(guint)g_ascii_strtoull(argv[2],NULL,10);g_assert_cmpuint(which,<,7);
+ if(!strcmp(argv[1],"signal-object-value") || !strcmp(argv[1],"signal-object-va") ||
+    !strcmp(argv[1],"signal-realize-value") || !strcmp(argv[1],"signal-realize-va")) {
+  signal_case(g_str_has_prefix(argv[1], "signal-object-"), g_str_has_suffix(argv[1], "-va"), which);
+  g_object_unref(contract_instance);
+  g_print("GOBJECT_CALLBACK_OK %s %u\n",argv[1],which);return 0;
+ }
  if(!strcmp(argv[1],"ffi-raw"))ffi_case(which);
  else if(!strcmp(argv[1],"generic-value"))generic_case(which,FALSE,FALSE);
  else if(!strcmp(argv[1],"generic-va"))generic_case(which,FALSE,TRUE);

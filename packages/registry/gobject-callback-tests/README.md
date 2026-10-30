@@ -29,6 +29,15 @@ Raw ffi separates the return buffer contract from GLib value conversion.
 Class signal emit-va exercises the normal optimized dispatch when eligible;
 this is not instrumentation-based coverage of every internal branch.
 
+Twelve further signal cases exercise VOID__OBJECT and VOID__VOID through both
+emitv and emit-va: class-only, normal connected, and swapped connected routes.
+Class callbacks have no trailing data; connected callbacks check non-NULL
+instance/argument/userdata identity. Disconnect-by-function/data must remove
+exactly the connected handler while subsequent class dispatch still runs.
+These62 contract cases are separate from the ten upstream targets. The twelve
+new cases require a fresh normal fixture build; prior50-case evidence does not
+validate them.
+
 Ten pinned upstream GObject targets use original assertions/test selection:
 type, basic-signals, signals, closure, defaultiface, dynamictype, accumulator,
 object, references, signal-handler. Same current normal GLib source patches

@@ -1,7 +1,7 @@
 script_path = "packages/registry/gobject-callback-tests/build-gobject-callback-tests.sh"
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "b43d8a4ea2d8f1ba4f8df691744ad9a97d7587dd"
-revision = 1
+revision = 2
 inputs = [
   "packages/registry/gobject-callback-tests/build-gobject-callback-tests.sh",
   "packages/registry/gobject-callback-tests/contract.h",

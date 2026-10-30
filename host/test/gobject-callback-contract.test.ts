@@ -29,6 +29,16 @@ describe("actual GObject/libffi callback ABI boundaries",()=>{
    expect(result.hostDiagnostics).toEqual([]);
   },30_000);
  }
+ for(const mode of ["signal-object-value","signal-object-va","signal-realize-value","signal-realize-va"])
+  for(let route=0;route<3;route++){
+   it(`${mode} ${["class-only","normal","swapped"][route]}`,async()=>{
+    const result=await runCentralizedProgram({programPath:program("contract"),
+     argv:["/bin/gobject-contract",mode,String(route)],env:[],useDefaultRootfs:false,timeout:20_000});
+    expect(result.exitCode,`${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain(`GOBJECT_CALLBACK_OK ${mode} ${route}`);
+    expect(result.hostDiagnostics).toEqual([]);
+   },30_000);
+  }
  it("GSource closure ref/dispatch/unref",async()=>{
   const result=await runCentralizedProgram({programPath:program("contract"),
    argv:["/bin/gobject-contract","source-closure"],env:[],useDefaultRootfs:false,timeout:20_000});

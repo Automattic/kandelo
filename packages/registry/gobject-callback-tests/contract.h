@@ -22,4 +22,12 @@ GType contract_flags_type(void);
  ctype virtual_##name(gpointer instance, gint argument);
 CASES(DECLARE)
 #undef DECLARE
+extern GObject *contract_argument;
+extern guint signal_class_count, signal_handler_count;
+void virtual_object(GObject *instance, GObject *argument);
+void normal_object(GObject *instance, GObject *argument, gpointer data);
+void swapped_object(gpointer data, GObject *argument, GObject *instance);
+void virtual_realize(GObject *instance);
+void normal_realize(GObject *instance, gpointer data);
+void swapped_realize(gpointer data, GObject *instance);
 #endif

@@ -9547,6 +9547,39 @@ remain open. No new working SFWBar preview or performance improvement is
 claimed. The next normal candidate will be built in an immutable preview
 checkout so experimental access can precede broader acceptance.
 
+GTK8 now integrates a reviewed shared signal-contract repair. It retains
+direct helper signatures and adds exact connected adapters, including
+swapped argument order, boolean draw results and Cairo closure cleanup.
+Registration, function lookup and disconnect identities change together;
+saved handler-ID cleanup remains intact. The bounded scope includes52
+family adapters, the drag-destination hooks and Inspector hierarchy
+callback. All43 complete patched source units match strict zero-fuzz,
+zero-offset application, and all original comments remain unchanged.
+The52 family adapters compile against actual GTK headers in41 extracted
+type-control units. This is not a complete GTK library build or lifecycle
+result. Exact scope and exclusions are in
+`packages/registry/gtk3/tests/signal-contract-audit.md`.
+
+The GObject fixture revision2 adds twelve class/normal/swapped void-object
+and realize cases through emitv and emit-va, including non-NULL argument
+delivery and disconnect behavior. A separate-unit diagnostic passes62/62
+against the recorded normal GLib6/libffi3 libraries and complete SDK32
+inventory. Fresh normal fixture publication remains required. Existing
+upstream assertions are unchanged; the six broader failures remain open.
+The GTK before/after real-library invalid-widget entry controls are still
+being instrumented; their runtime results are pending. No repaired
+SFWBar startup, workspace or performance result is claimed yet.
+
+Evidence is under
+`.context/gtk-signal-contracts/.context/signal-contracts/`: final patch
+SHA256 `6792287cf8e2a1a83ddbf07c6157492e0e36e9b8f1888c169805647a4cb9323d`,
+`strict-final-proof.json`, `comment-preservation-proof.json`,
+`runtime-gobject-signals.json`, `gobject-provisioning-proof.json` and
+`handoff-source-manifest.json`. Independent review verifies the scoped
+argument/return/identity changes and preservation of all43 units' comments.
+GTK revision8 and fixture revision2 invalidate normal cache inputs; the
+single unpublished ABI family remains56/3/17/21.
+
 ### Desktop feedback and immediate landing order (2026-10-30)
 
 User feedback on the b43 preview reports a missing numbered Sway workspace
