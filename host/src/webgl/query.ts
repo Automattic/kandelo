@@ -1,3 +1,4 @@
+import { interruptUniformUpload } from "./uniform-upload.js";
 import { repairNativeState } from "./native-recovery.js";
 import { reconcileClientArrayRestore } from "./client-array.js";
 import { querySurfaceCapabilities } from "./surface-capabilities.js";
@@ -117,6 +118,7 @@ export function runGlQuery(
   input: Uint8Array,
   out: Uint8Array,
 ): number {
+  if (interruptUniformUpload(b)) return -5;
   if ((op === O.QOP_FINISH || op === O.QOP_FLUSH) && (input.byteLength !== 0 || out.byteLength !== 0)) return -22;
   if (op === O.QOP_SURFACE_CAPABILITIES) {
     if (input.byteLength !== 0 || out.byteLength !== 16) return -22;

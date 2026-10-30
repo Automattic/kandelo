@@ -87,7 +87,12 @@ static GLuint uniform_test_program(void) {
         "uniform float f1; uniform vec2 f2; uniform vec3 f3; uniform vec4 f4;"
         "uniform int i1; uniform ivec2 i2; uniform ivec3 i3; uniform ivec4 i4;"
         "uniform mat2 m2; uniform mat3 m3; uniform mat4 m4; uniform vec4 tail[3];"
-        "void main() { float x=f1+f2.x+f3.x+f4.x+float(i1+i2.x+i3.x+i4.x)"
+        "uniform float af1[2]; uniform vec2 af2[2]; uniform vec3 af3[2]; uniform vec4 af4[2];"
+        "uniform int ai1[2]; uniform ivec2 ai2[2]; uniform ivec3 ai3[2]; uniform ivec4 ai4[2];"
+        "uniform mat2 am2[2]; uniform mat3 am3[2]; uniform mat4 am4[2];"
+        "void main() { float x=af1[0]+af1[1]+af2[0].x+af2[1].x+af3[0].x+af3[1].x+af4[0].x+af4[1].x"
+        "+float(ai1[0]+ai1[1]+ai2[0].x+ai2[1].x+ai3[0].x+ai3[1].x+ai4[0].x+ai4[1].x)"
+        "+am2[0][0][0]+am2[1][0][0]+am3[0][0][0]+am3[1][0][0]+am4[0][0][0]+am4[1][0][0]+f1+f2.x+f3.x+f4.x+float(i1+i2.x+i3.x+i4.x)"
         "+m2[0][0]+m3[0][0]+m4[0][0]+tail[0].x+tail[1].x+tail[2].x; gl_Position=vec4(x); }",
         "precision mediump float; void main() { gl_FragColor = vec4(1.0); }",
     };
@@ -177,6 +182,59 @@ static void positive_uniforms(GLuint program) {
     glUniform4fv(tail,4,f);no_error();
     glUniform4fv(INT_MAX,0,unreadable);expected_error(GL_INVALID_OPERATION);
     puts("OK GLES positive uniforms: type, zero count and array tails");
+}
+
+static void large_uniforms(GLuint program) {
+    void (*const fv[])(GLint,GLsizei,const GLfloat *)={glUniform1fv,glUniform2fv,glUniform3fv,glUniform4fv};
+    void (*const iv[])(GLint,GLsizei,const GLint *)={glUniform1iv,glUniform2iv,glUniform3iv,glUniform4iv};
+    void (*const matrix[])(GLint,GLsizei,GLboolean,const GLfloat *)={glUniformMatrix2fv,glUniformMatrix3fv,glUniformMatrix4fv};
+    const char *names[]={"af1","af2","af3","af4","ai1","ai2","ai3","ai4","am2","am3","am4"};
+    for(unsigned i=0;i<11;i++) {
+        const unsigned components=i<8?i%4+1:i==8?4:i==9?9:16;
+        const GLsizei count=(65535u-8u)/(components*4u)+2;
+        const size_t elements=(size_t)count*components;
+        void *data=malloc(elements*4u);CHECK(data);
+        const int integer=i>=4 && i<8;
+        for(size_t j=0;j<elements;j++) {
+            if(integer)((GLint *)data)[j]=(GLint)(j%19)-4;
+            else ((GLfloat *)data)[j]=(GLfloat)(j%19)+.25f;
+        }
+        const GLint location=glGetUniformLocation(program,names[i]);CHECK(location>=0);no_error();
+        if(i<4)fv[i](location,count,data);else if(i<8)iv[i-4](location,count,data);else matrix[i-8](location,count,GL_FALSE,data);
+        no_error();
+#ifdef GLES_VALIDATE_RENDERED_PIXELS
+        /* Actual driver reads cover both accepted array elements; all excess
+         * source values were ignored by the bounded host transaction. */
+        for(unsigned element=0;element<2;element++) {
+            char name[16];snprintf(name,sizeof name,"%s[%u]",names[i],element);
+            GLfloat values[17]={0};values[16]=91;
+            GLint indexed=glGetUniformLocation(program,name);CHECK(indexed>=0);
+            glGetUniformfv(program,indexed,values);no_error();CHECK(values[16]==91);
+            for(unsigned j=0;j<components;j++) {
+                const unsigned index=element*components+j;
+                const GLfloat expected=integer?(GLfloat)((GLint)(index%19)-4):(GLfloat)(index%19)+.25f;
+                CHECK(values[j]==expected);
+            }
+        }
+#endif
+        /* Whole-call count/type rejection must not change a non-array prefix. */
+        if(i==0) {
+            GLint scalar=glGetUniformLocation(program,"f1");CHECK(scalar>=0);
+            glUniform1f(scalar,7);no_error();glUniform1fv(scalar,count,data);expected_error(GL_INVALID_OPERATION);
+            GLint integer_array=glGetUniformLocation(program,"ai1");CHECK(integer_array>=0);
+            const GLint prior[2]={9,10};glUniform1iv(integer_array,2,prior);no_error();
+            glUniform1fv(integer_array,count,data);expected_error(GL_INVALID_OPERATION);
+#ifdef GLES_VALIDATE_RENDERED_PIXELS
+            GLfloat value=0;glGetUniformfv(program,scalar,&value);no_error();CHECK(value==7);
+            for(unsigned element=0;element<2;element++) {
+                GLint indexed=glGetUniformLocation(program,element?"ai1[1]":"ai1[0]"),unchanged=0;CHECK(indexed>=0);
+                glGetUniformiv(program,indexed,&unchanged);no_error();CHECK(unchanged==prior[element]);
+            }
+#endif
+        }
+        free(data);
+    }
+    puts("OK GLES large uniform transactions: 11 setters and ignored array tails");
 }
 
 static void uniforms_without_program(void) {
@@ -326,6 +384,7 @@ int main(void) {
     matrix_arguments();
     vector_arguments();
     positive_uniforms(uniform_program);
+    large_uniforms(uniform_program);
     glUseProgram(0);
     glDeleteProgram(uniform_program);
     no_error();

@@ -8,6 +8,7 @@ import { repairNativeState, retireNativeRepair, retireNativeObject, reserveNativ
 import { checkedGlCall } from "./program-objects.js";
 import { captureNativeGlErrors } from "./errors.js";
 import { destroyTextureView, destroyRenderbufferView } from "./image-storage.js";
+import type { GlUniformUpload } from "./uniform-upload.js";
 import type { GlUniformLookup } from "./uniform-queries.js";
 import type { GlSurfaceCreation } from "./surface-create.js";
 /**
@@ -96,6 +97,8 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlC
   /** Undefined means no driver savepoint; null captures the zero binding.
    * This pin survives submit boundaries and is never a public object name. */
   savedClientArrayBuffer: WebGLBuffer | null | undefined;
+  uniformUpload: GlUniformUpload | null;
+  uniformUploadSerial: number;
   uniformLookup: GlUniformLookup | null;
   uniformLookupSerial: number;
   shaderUpload: GlShaderSourceUpload | null;
@@ -317,6 +320,8 @@ export class GlContextRegistry {
       currentDrawable: null,
       hasBeenCurrent: false,
       savedClientArrayBuffer: undefined,
+      uniformUpload: null,
+      uniformUploadSerial: 0,
       uniformLookup: null,
       uniformLookupSerial: 0,
       undefinedDefaultFbo: null,
@@ -473,7 +478,7 @@ export class GlContextRegistry {
     const target = this.get(pid,targetSession), source = this.get(pid,sourceSession);
     if (!target || !source || target === source || !target.gl || target.gl !== source.gl
         || target.contextId === null || source.contextId === null || target.hasBeenCurrent || target.savedClientArrayBuffer !== undefined
-        || target.uniformLookup !== null || target.objects.members.size !== 1) return false;
+        || target.uniformUpload !== null || target.uniformLookup !== null || target.objects.members.size !== 1) return false;
     const names = target.objects;
     if (names.bufferRetirements.size || names.imageRetirements.size || names.buffers.size || names.bufferStores.size || names.textures.size || names.shaders.size || names.programs.size
         || names.rbos.size || names.imageSources.size || names.textureViews.size || names.renderbufferViews.size || names.uniformMetadata.size || names.uniformLocationNames.size || names.uniformLocations.size || names.foreignTextures.size
@@ -681,6 +686,8 @@ export class GlContextRegistry {
 function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>, cleanup?: NativeRetirement): void {
   const gl = b.gl;
   if (gl) retireNativeRepair(gl, b.shadow);
+  b.uniformUpload = null;
+  b.uniformUploadSerial = 0;
   b.uniformLookup = null;
   b.uniformLookupSerial = 0;
   b.shaderUpload = null;

@@ -18,6 +18,7 @@
  * returns a negative errno so `GLIO_SUBMIT` can fail like any other
  * ioctl-style device operation instead of hiding the failure in host code.
  */
+import { interruptUniformUpload, runUniformUpload, uniformUploadOp, validUniformUploadPayload } from "./uniform-upload.js";
 import { acceptedUniformCount } from "./uniform-setters.js";
 import { imageTextureOperation, imageRenderbufferStorage, prepareImageDraw } from "./image-storage.js";
 import { repairNativeState } from "./native-recovery.js";
@@ -99,8 +100,9 @@ export function decodeAndDispatch(
   // Validate the entire batch before the first observable mutation. A bad
   // trailing record must not leave a partially executed, rejected batch.
   const validation = validateCommandBuffer(b.cmdbufView, offset, length);
-  if (validation !== GL_SUBMIT_OK) return validation;
+  if (validation !== GL_SUBMIT_OK) {b.uniformUpload=null;return validation;}
   const result = walkCommandBuffer(b.cmdbufView, offset, length, (payload, op) => {
+    if (!uniformUploadOp(op) && interruptUniformUpload(b)) return GL_SUBMIT_OK;
     try {
       if (!repairNativeState(b.gl!) || !reconcileClientArrayRestore(b,b.gl!)) return GL_SUBMIT_EIO;
       if (storage && !storage.before()) return GL_SUBMIT_EIO;
@@ -112,8 +114,9 @@ export function decodeAndDispatch(
       return GL_SUBMIT_EIO;
     }
   });
-  if (result < 0) requestClientArrayRestore(b);
+  if (result < 0) {b.uniformUpload=null;requestClientArrayRestore(b);}
   if (!repairNativeState(b.gl) || !reconcileClientArrayRestore(b,b.gl)) {
+    b.uniformUpload=null;
     requestClientArrayRestore(b);
     return GL_SUBMIT_EIO;
   }
@@ -305,6 +308,7 @@ function normalizeTextureInternalFormat(internal: number, format: number, type: 
 }
 
 function validPayload(op: number, v: DataView): boolean {
+  if (uniformUploadOp(op)) return validUniformUploadPayload(op,v);
   switch (op) {
     case O.OP_BEGIN_CLIENT_ARRAY:
     case O.OP_END_CLIENT_ARRAY:
@@ -474,6 +478,12 @@ function dispatch(
   p: number,
   op: number,
 ): boolean | void {
+  if (uniformUploadOp(op)) {
+    runUniformUpload(b,op,v,(original,payload)=>{dispatch(gl,b,payload,0,original);});
+    return;
+  }
+  if (interruptUniformUpload(b)) return;
+
   const error = stateArgumentError(op, v);
   if (error !== 0) {
     recordGlError(b, error);

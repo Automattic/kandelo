@@ -1,3 +1,4 @@
+import { interruptUniformUpload } from "./uniform-upload.js";
 import { queryOperationKind } from "./operation-stream.js";
 import { blitPresentTarget } from "./present-target.js";
 import { prepareSurfaceCreation, validSurfaceCreation, type GlSurfaceCreation } from "./surface-create.js";
@@ -168,7 +169,13 @@ export function setupMainForward(
       catch { /* Refused malformed requests have no reply authority. */ }
       return;
     }
-    try { switch (msg.type) {
+    try {
+      if (kind && interruptUniformUpload(b)) {
+        try { if ("mailbox" in msg) completeGlForwardQuery(msg.mailbox,-5,new Uint8Array()); }
+        catch { /* No valid reply authority. */ }
+        return;
+      }
+      switch (msg.type) {
       case "gl_forward_create_surface": {
         try {
           if (!glForwardRequestPending(msg.mailbox)) return;

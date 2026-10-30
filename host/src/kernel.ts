@@ -1,3 +1,4 @@
+import { interruptUniformUpload } from "./webgl/uniform-upload.js";
 import { cpuImageKey } from "./webgl/cpu-image-storage.js";
 import { drawGpuScanout, readGpuScanout } from "./webgl/kms-scanout.js";
 import { captureNativeGlErrors } from "./webgl/errors.js";
@@ -2890,6 +2891,7 @@ export class WasmPosixKernel {
           const operation = b?.operations.tryBeginImmediate("make-current");
           if (b && !operation) return -5;
           try {
+          if (b && interruptUniformUpload(b)) return -5;
           if (ctxId === 0) {
             if (drawId !== 0 || readId !== 0) return -22;
             // Revoking a kernel binding does not alter the cached native
@@ -3009,6 +3011,7 @@ export class WasmPosixKernel {
           const operation = b.operations.tryBeginImmediate("present");
           if (!operation) return -5;
           try {
+          if (interruptUniformUpload(b)) return -5;
           if (!b.gl && !b.forward) return -5;
           if (!this.prepareForeignRetirements(b)) return -5;
           if (b?.gl?.isContextLost()) return -5; // EIO
@@ -3076,6 +3079,7 @@ export class WasmPosixKernel {
           const operation = b.operations.tryBeginImmediate(queryOperationKind(op));
           if (!operation) return -5;
           try {
+          if (interruptUniformUpload(b)) return -5;
           let inputLength: number;
           let outputLength: number;
           let outputDestination: RustLentKernelDestination | null = null;

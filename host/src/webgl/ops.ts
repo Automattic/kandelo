@@ -140,6 +140,11 @@ export const OP_UNIFORM3IV = 0x040C;
 export const OP_UNIFORM4IV = 0x040D;
 export const OP_UNIFORM_MATRIX2FV = 0x040E;
 export const OP_UNIFORM_MATRIX3FV = 0x040F;
+// Same unpublished epoch: atomic bounded large-uniform transactions.
+export const OP_UNIFORM_UPLOAD_BEGIN = 0x0410;
+export const OP_UNIFORM_UPLOAD_CHUNK = 0x0411;
+export const OP_UNIFORM_UPLOAD_COMMIT = 0x0412;
+export const OP_UNIFORM_UPLOAD_CANCEL = 0x0413;
 export const OP_DELETE_RENDERBUFFERS = 0x0708;
 export const OP_DRAW_BUFFER = 0x0709;
 export const OP_DRAW_BUFFERS = 0x070A;

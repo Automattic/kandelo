@@ -1,3 +1,5 @@
+import { runUniformUpload } from "../src/webgl/uniform-upload.js";
+import * as UniformOps from "../src/webgl/ops.js";
 import { expect, it, vi } from "vitest";
 import { GlContextRegistry, type GlBinding } from "../src/webgl/registry.js";
 import { GlMuxer } from "../src/webgl/muxer.js";
@@ -442,4 +444,21 @@ it("a forwarded peer query cannot switch physical selectors inside another sessi
     fire({type:"gl_forward_submit",pid:8,sessionId:0,bytes});
     expect(nested).toEqual([-5]); expect(tail).toBe(true); expect(query()).toBe(4);
   } finally { dispose(); f.registry.unbind(7); }
+});
+
+
+it("retires pending uniform staging with its exact accepted execution owner",()=>{
+  const f=fixture(),b=f.binding,program={} as WebGLProgram;
+  b.programs.set(20,program);b.currentProgram=b.shadow.currentProgram=program;b.currentProgramId=20;
+  b.uniformLocations.set(1,{} as WebGLUniformLocation);b.uniformLocationPrograms.set(1,20);
+  b.uniformMetadata.set(1,{executable:program,type:0x1406,array:true,remaining:2});
+  runUniformUpload(b,UniformOps.OP_UNIFORM_UPLOAD_BEGIN,
+    new DataView(new Uint32Array([1,UniformOps.OP_UNIFORM1FV,1,20000,0]).buffer),()=>{});
+  const pending=b.uniformUpload;expect(pending?.payload?.byteLength).toBe(16);
+  f.queue.enqueue(b,frame());f.registry.destroyContext(7,11);
+  const replacement=f.registry.get(7,11)!;
+  expect(replacement).not.toBe(b);expect(replacement.uniformUpload).toBeNull();
+  expect(b.uniformUpload).toBe(pending);
+  f.queue.removeSession(7,11);expect(b.uniformUpload).toBeNull();
+  expect(f.queue.pendingRetirements).toBe(0);f.registry.unbind(7,11);
 });

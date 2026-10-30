@@ -9073,3 +9073,91 @@ the existing omission of inherited GL command state (EINVAL).
 Normal artifacts, guest/browser tests, memory and conformance suites remain
 unrun for this increment. It is an internal ownership step, not evidence
 that asynchronous queries or EGL server waits are supported.
+
+### Atomic large uniform transfer source increment (2026-10-29)
+
+The follow-up replaces the one-record uniform-array limit with bounded
+asynchronous BEGIN/CHUNK/COMMIT/CANCEL commands for all eleven vector and
+matrix signatures. The original signature, location, total count and transpose
+travel with BEGIN. Every chunk carries the original signature, whole-element
+offset and count. Context-owned monotonic tokens reject replay and wrap;
+stale traffic cannot cancel a newer transfer. Existing small records remain.
+The Khronos [uniform contract](https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glUniform.xml)
+requires non-array count/type/location errors to leave storage unchanged and
+requires excess array elements to be ignored. Independently executing chunks
+would permit an invalid or interrupted call to change a prefix, so the host
+stages only the reflected accepted array tail and makes one native setter call
+at a complete COMMIT. No element-location arithmetic, per-setter synchronous
+query, optimistic C reflection cache or allocation for ignored tail data is
+introduced. C validates complete source-span arithmetic before publishing or
+reading and copies bounded whole-element chunks across ordinary submissions.
+
+COMMIT checks the exact native location, immutable reflection, accepted native
+executable, logical program, context, object group and native renderer captured
+at BEGIN. An incomplete/rejected call makes no native uniform write. Allocation
+failure retains only a bounded rejection tombstone while its records drain.
+Cancellation is replay-safe and cleanup requires no new allocation. A failed
+ordinary flush queues cancellation for the encoder's greatest upload token in
+the reset buffer, including when the final COMMIT failed after the setter had
+returned. Later valid commands therefore execute after retirement instead of
+being lost to an abandoned partial transfer. This promises no native prefix
+update; a lost acknowledgement after an already executed COMMIT does not imply
+that the complete native setter was rolled back.
+
+The per-session operation stream first protects accepted command prefixes.
+Once that prefix drains, an unrelated same-context command/query/present or
+current change cancels and visibly refuses an incomplete transfer before that
+operation's native effects. It does not block sharing peers. A shared peer's
+successful relink invalidates captured location authority; failed relink and
+deleted-current executables retain their accepted metadata. Pending storage is
+released with exact context/accepted-execution retirement, without retaining a
+guest memory view or asynchronous caller output.
+
+All eleven newly authored legal calls above one TLV fail against pinned
+`d63b24588a9abb341a3e8c54e54f41ccebd49fa2` with the old false out-of-memory
+result. The native suite passes 241 cases after implementation, including
+protected complete source buffers, exact original signatures/counts/chunk
+bytes, a 1.2 MB multi-submission call, a 2.4 MB mid-setter failed submission,
+and post-return final-COMMIT failure followed by successful command recovery.
+No per-setter current-program query is made. Prior oversized-count guards now
+exercise actual pointer-span overflow; one TLV is no longer treated as a
+platform resource boundary. Evidence is the positive-uniform checkout's
+`.context/uniform-large-native-baseline-d63.log` and
+`.context/uniform-large-native-complete2.log`.
+
+The complete pure graphics gate passes 828 tests in 35 files. The dedicated
+transaction file passes 28 cases, covering every signature, interior array
+locations, ignored tails, non-array/type rejection before mutation, zero and
+inactive calls, allocation failure, missing/duplicate/reordered/mismatched
+continuations, token cancellation/replay/wrap, native rejection, exact authority,
+actual shared-peer relink, malformed packed commands and context retirement.
+Native and main-forward entry controls also prove that accepted prefixes keep
+ownership, then incomplete calls refuse query/present/current changes without
+native effects; peers stay independent. Logs are
+`.context/uniform-large-host-complete.log` and
+`.context/uniform-large-source-complete.log`. These are C device-double and
+real host decoder/native-model evidence, not driver rendering or CTS acceptance.
+The sorted evidence-class registry also agrees with all 632 collected files
+(`.context/uniform-large-evidence-classes.log`).
+
+Normal both-width guests are prepared with actual GLSL arrays of two elements
+and valid counts above each signature's record ceiling, which exercises legal
+ignored tails without exceeding driver uniform capacity. Browser variants
+query every accepted vector/matrix component in both elements and require
+unchanged non-array storage and unchanged integer-array storage after rejected
+large count/type calls. The existing real framebuffer pixel assertions remain.
+Node explicitly models the active reflection; it does not claim native value
+or pixel evidence. Normal SDK rebuilds, both-width guest execution, actual
+three-engine driver behavior, broader upstream CTS and combined memory/POSIX
+conformance are still pending for this increment.
+
+Four hand-mirrored additive tags, `0x0410` through `0x0413`, join the existing
+unpublished epoch 56/3/17/21. The mirror/uniqueness source gate passes, but no
+ABI dump/check or generated-output claim is made here. The parent normal build
+must use current Rust xtask/kernel inputs for
+`scripts/check-abi-version.sh update` and its check, covering the snapshot,
+ABI constants, generated limit/process/channel/marshalling/thread/spawn/OSS/
+clipboard headers, host ABI module and host-import list. No old release xtask
+or prior artifact's ABI stamp establishes that claim. The C/host argument-error
+flag unification and remaining G05/G09 lifecycle/query/CTS inventory stay
+ordinary open work; no new hard platform boundary is asserted.

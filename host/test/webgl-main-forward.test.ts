@@ -1,3 +1,4 @@
+import { runUniformUpload } from "../src/webgl/uniform-upload.js";
 import { describe, expect, it, vi } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import {
@@ -560,4 +561,37 @@ it("preserves a zero-sized forwarded pbuffer and flushes it without a canvas bli
   expect(waitForGlForwardQuery(mailbox).rc).toBe(0); expect(blits).toBe(0);
   expect(viewport.at(-1)).toEqual([0,0,0,0]); expect(storage[0].slice(3,5)).toEqual([1,1]);
   expect([canvas.width,canvas.height]).toEqual([8,6]); dispose();
+});
+
+
+it.each(["query","present","make-current"])("forwarded %s refuses an incomplete uniform call without blocking a peer",kind=>{
+  const worker=new FakeWorker(),stub=new RecordingGl();
+  let owner:ReturnType<GlContextRegistry["get"]>;
+  const get=GlContextRegistry.prototype.get;
+  const capture=vi.spyOn(GlContextRegistry.prototype,"get").mockImplementation(function(this:GlContextRegistry,pid,session){
+    const binding=get.call(this,pid,session);if(pid===7 && session===0 && binding)owner=binding;return binding;
+  });
+  const gl=fakeCanvas(stub).canvas.getContext("webgl2");
+  const canvas={width:4,height:3,getContext:()=>gl} as unknown as HTMLCanvasElement;
+  const dispose=setupMainForward(worker,canvas,7);
+  const channel=createMainForwardChannel({postMessage:message=>worker.fire(message)},7);
+  try {
+    expect(channel.onCreateContext(0)).toBe(0);const b=owner!;
+    const program={} as WebGLProgram;b.programs.set(20,program);b.currentProgram=b.shadow.currentProgram=program;b.currentProgramId=20;
+    b.uniformLocations.set(1,{} as WebGLUniformLocation);b.uniformLocationPrograms.set(1,20);
+    b.uniformMetadata.set(1,{executable:program,type:0x1406,array:true,remaining:2});
+    runUniformUpload(b,O.OP_UNIFORM_UPLOAD_BEGIN,new DataView(new Uint32Array([1,O.OP_UNIFORM1FV,1,20000,0]).buffer),()=>{});
+    const pending=b.uniformUpload;
+    // A different logical session remains independent between command frames.
+    expect(channel.onCreateContext(1)).toBe(0);
+    expect(channel.onQuery!(O.QOP_GET_ERROR,new Uint8Array(),4,1).rc).toBe(4);
+    expect(b.uniformUpload).toBe(pending);
+    const native=vi.spyOn(stub,"getError"),before=native.mock.calls.length;
+    const call=()=>kind==="query"?channel.onQuery!(O.QOP_GET_ERROR,new Uint8Array(),4,0).rc:
+      kind==="present"?channel.onPresent!(0):channel.onMakeCurrent!({drawSurfaceId:0,readSurfaceId:0,width:0,height:0},0);
+    const ticket=b.operations.reserve("commands")!;
+    expect(call()).toBe(-5);expect(b.uniformUpload).toBe(pending);ticket.cancel();
+    expect(call()).toBe(-5);expect(b.uniformUpload).toBeNull();expect(b.errors).toEqual([0x502]);
+    expect(native.mock.calls).toHaveLength(before);expect(b.operations.pending).toBe(0);native.mockRestore();
+  }finally{dispose();capture.mockRestore();}
 });

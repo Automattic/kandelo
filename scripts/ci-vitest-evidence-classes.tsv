@@ -499,6 +499,7 @@ host/test/webgl-submit-snapshot.test.ts	source-only
 host/test/webgl-surface-resources.test.ts	source-only
 host/test/webgl-surface-storage-lease.test.ts	source-only
 host/test/webgl-texture-zero.test.ts	source-only
+host/test/webgl-uniform-upload.test.ts	source-only
 host/test/webmcp-guest-listing.test.ts	source-only
 host/test/webmcp-launch.test.ts	source-only
 host/test/webmcp-observations.test.ts	source-only

@@ -4157,6 +4157,10 @@ pub mod gl {
     pub const OP_UNIFORM4IV: u16 = 0x040D;
     pub const OP_UNIFORM_MATRIX2FV: u16 = 0x040E;
     pub const OP_UNIFORM_MATRIX3FV: u16 = 0x040F;
+    pub const OP_UNIFORM_UPLOAD_BEGIN: u16 = 0x0410;
+    pub const OP_UNIFORM_UPLOAD_CHUNK: u16 = 0x0411;
+    pub const OP_UNIFORM_UPLOAD_COMMIT: u16 = 0x0412;
+    pub const OP_UNIFORM_UPLOAD_CANCEL: u16 = 0x0413;
     pub const OP_DELETE_RENDERBUFFERS: u16 = 0x0708;
     pub const OP_DRAW_BUFFER: u16 = 0x0709;
     pub const OP_DRAW_BUFFERS: u16 = 0x070A;
@@ -5956,6 +5960,10 @@ mod gl_tests {
             OP_UNIFORM4F,
             OP_UNIFORM_MATRIX4FV,
             OP_UNIFORM4FV,
+            OP_UNIFORM_UPLOAD_BEGIN,
+            OP_UNIFORM_UPLOAD_CHUNK,
+            OP_UNIFORM_UPLOAD_COMMIT,
+            OP_UNIFORM_UPLOAD_CANCEL,
             OP_ENABLE_VERTEX_ATTRIB_ARRAY,
             OP_DISABLE_VERTEX_ATTRIB_ARRAY,
             OP_VERTEX_ATTRIB_POINTER,

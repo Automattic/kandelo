@@ -284,6 +284,7 @@ struct wpk_gles_context {
     GLenum generate_mipmap_hint, fragment_derivative_hint;
     uint32_t next_shader_upload;
     uint32_t next_uniform_lookup;
+    uint32_t next_uniform_upload;
     GLuint array_buffer;
     uint64_t array_serial;
     struct wpk_object_name *array_object;
@@ -391,7 +392,19 @@ static int flush_commands(void) {
                                  .length = (uint32_t)(g_cursor - base) };
     int rc = ioctl(fd, GLIO_SUBMIT, &si);
     g_cursor = base;
-    if (rc != 0) raise_client_error(GL_INVALID_OPERATION);
+    if (rc != 0) {
+        raise_client_error(GL_INVALID_OPERATION);
+        const uint32_t token = _wpk_gl_current_encoder()->next_uniform_upload;
+        if (token) {
+            /* A final COMMIT may have been queued by an earlier API call.
+             * Retire every possibly observed upload up to our greatest token
+             * before any subsequent valid command, even when failure happens
+             * after that setter returned. Future CANCEL is replay-safe. */
+            uint8_t *cleanup = base;
+            w_u16(&cleanup,OP_UNIFORM_UPLOAD_CANCEL);w_u16(&cleanup,4);w_u32(&cleanup,token);
+            g_cursor = cleanup;
+        }
+    }
     return rc;
 }
 int _wpk_gl_flush_checked(void) { return flush_commands(); }
@@ -2880,34 +2893,80 @@ void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffse
     EMIT_END()
 }
 
+/* One API call may span many command submissions. Stage the complete call
+ * at the host before any native setter, preserving whole-call type/count
+ * rejection and array-tail semantics without a client reflection cache. */
+static void emit_large_uniform(uint16_t op, GLint location, GLsizei count,
+                               GLboolean transpose, const void *value,
+                               uint32_t components) {
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    if (state->next_uniform_upload == UINT32_MAX) {
+        raise_client_error(GL_OUT_OF_MEMORY); return;
+    }
+    const uint32_t token = ++state->next_uniform_upload;
+    uint8_t *cursor = reserve(24);
+    if (!cursor) return;
+    w_u16(&cursor,OP_UNIFORM_UPLOAD_BEGIN); w_u16(&cursor,20);
+    w_u32(&cursor,token); w_u32(&cursor,op); w_i32(&cursor,location);
+    w_u32(&cursor,(uint32_t)count); w_u32(&cursor,transpose);
+    g_cursor=cursor;
+    const uint32_t maximum=(WPK_GL_MAX_TLV_PAYLOAD-16u)/(components*4u);
+    for(uint32_t offset=0;offset<(uint32_t)count;) {
+        const uint32_t remaining=(uint32_t)count-offset;
+        const uint32_t n=remaining<maximum?remaining:maximum, bytes=n*components*4u;
+        cursor=reserve(20u+bytes);
+        if(!cursor) goto cancel;
+        w_u16(&cursor,OP_UNIFORM_UPLOAD_CHUNK); w_u16(&cursor,(uint16_t)(16u+bytes));
+        w_u32(&cursor,token); w_u32(&cursor,op); w_u32(&cursor,offset); w_u32(&cursor,n);
+        memcpy(cursor,(const uint8_t *)value+(size_t)offset*components*4u,bytes);
+        cursor+=bytes;g_cursor=cursor;offset+=n;
+    }
+    cursor=reserve(8);
+    if(!cursor) goto cancel;
+    w_u16(&cursor,OP_UNIFORM_UPLOAD_COMMIT);w_u16(&cursor,4);w_u32(&cursor,token);
+    g_cursor=cursor;return;
+cancel:
+    /* Failed submission already queued allocation-free token retirement in
+     * flush_commands; a missing encoder is reclaimed through context teardown. */
+    return;
+}
+
+static int uniform_source_span(const void *value, GLsizei count, uint32_t components) {
+    const uint64_t bytes=(uint64_t)(uint32_t)count*components*4u;
+    if(bytes>SIZE_MAX || (uintptr_t)value>UINTPTR_MAX-(uintptr_t)bytes) {
+        raise_client_error(GL_OUT_OF_MEMORY);return 0;
+    }
+    return 1;
+}
+
 /* An inactive location ignores data, not an invalid sizei argument. Validate
  * count first; zero and ignored calls must not read even an invalid pointer.
  * Positive zero-count calls still publish their original-op header so the
  * host can judge the accepted executable, location and signature in order.
  * Vector records have an eight-byte header, unlike matrix records' twelve. */
-static uint32_t uniform_vector_length(GLint location, GLsizei count,
+static uint64_t uniform_vector_length(GLint location, GLsizei count,
                                       const void *value, uint32_t components) {
     if (count < 0) {
         raise_client_error(GL_INVALID_VALUE);
-        return UINT32_MAX;
+        return UINT64_MAX;
     }
-    if (!uniform_location_accepted(location)) return UINT32_MAX;
+    if (!uniform_location_accepted(location)) return UINT64_MAX;
     if (count && !value) {
         raise_client_error(GL_INVALID_VALUE);
-        return UINT32_MAX;
+        return UINT64_MAX;
     }
-    if ((uint32_t)count > (WPK_GL_MAX_TLV_PAYLOAD - 8u) / (4u * components)) {
-        raise_client_error(GL_OUT_OF_MEMORY);
-        return UINT32_MAX;
-    }
-    return (uint32_t)count * components;
+    if (!uniform_source_span(value,count,components)) return UINT64_MAX;
+    return (uint64_t)(uint32_t)count * components;
 }
 
 static void emit_uniform_fv(uint16_t op, GLint location, GLsizei count,
                             const GLfloat *value, uint32_t components) {
-    uint32_t n = uniform_vector_length(location, count, value, components);
-    if (n == UINT32_MAX) return;
-    EMIT_BEGIN(op, 8u + n * 4u)
+    uint64_t n = uniform_vector_length(location, count, value, components);
+    if (n == UINT64_MAX) return;
+    if (n > (WPK_GL_MAX_TLV_PAYLOAD-8u)/4u) {
+        emit_large_uniform(op,location,count,GL_FALSE,value,components); return;
+    }
+    EMIT_BEGIN(op, 8u + (uint32_t)n * 4u)
     w_i32(&_c, location);
     w_u32(&_c, (uint32_t)count);
     for (uint32_t i = 0; i < n; i++) w_f32(&_c, value[i]);
@@ -2916,17 +2975,20 @@ static void emit_uniform_fv(uint16_t op, GLint location, GLsizei count,
 
 static void emit_uniform_iv(uint16_t op, GLint location, GLsizei count,
                             const GLint *value, uint32_t components) {
-    uint32_t n = uniform_vector_length(location, count, value, components);
-    if (n == UINT32_MAX) return;
-    EMIT_BEGIN(op, 8u + n * 4u)
+    uint64_t n = uniform_vector_length(location, count, value, components);
+    if (n == UINT64_MAX) return;
+    if (n > (WPK_GL_MAX_TLV_PAYLOAD-8u)/4u) {
+        emit_large_uniform(op,location,count,GL_FALSE,value,components); return;
+    }
+    EMIT_BEGIN(op, 8u + (uint32_t)n * 4u)
     w_i32(&_c, location);
     w_u32(&_c, (uint32_t)count);
     for (uint32_t i = 0; i < n; i++) w_i32(&_c, value[i]);
     EMIT_END()
 }
 
-/* ES2 requires non-transposed matrices. Bound the complete TLV before
- * multiplying or reading the source, including counts whose products wrap. */
+/* ES2 requires non-transposed matrices. Check the complete source span before
+ * multiplying or reading it, then use bounded transport for larger arrays. */
 static void emit_uniform_matrix(uint16_t op, GLint location, GLsizei count,
                                 GLboolean transpose, const GLfloat *value,
                                 uint32_t components) {
@@ -2939,9 +3001,9 @@ static void emit_uniform_matrix(uint16_t op, GLint location, GLsizei count,
         raise_client_error(GL_INVALID_VALUE);
         return;
     }
-    if ((uint32_t)count > (WPK_GL_MAX_TLV_PAYLOAD - 12u) / (4u * components)) {
-        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
-        return;
+    if (!uniform_source_span(value,count,components)) return;
+    if ((uint64_t)(uint32_t)count*components > (WPK_GL_MAX_TLV_PAYLOAD-12u)/4u) {
+        emit_large_uniform(op,location,count,transpose,value,components); return;
     }
     uint32_t n = (uint32_t)count * components;
     EMIT_BEGIN(op, 12u + n * 4u)

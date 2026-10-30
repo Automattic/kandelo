@@ -133,7 +133,7 @@ The source WebGL contract suite also compiles selected current native C
 cases through this harness, captures actual submitted bytes and replays them
 through the browser decoder. Its float/fixed and maximum-index client-array cases are cross-layer
 source evidence, not guest execution or unmodified CTS. Selection uses
-`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 227 cases.
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 241 cases.
 `KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
 file for those test-only replays. Each browser test owns and removes its
 private trace directory.
@@ -748,5 +748,20 @@ The native `encoder-uniform-zero-headers` case protects an unreadable page and
 null sources across all eleven vector/matrix signatures, requiring only the
 original command header and no current-program query. These are encoder/host
 model checks. The normal `gles-hints` guest additionally uses active real GLSL
-uniform declarations; execution after the positive-location increment remains
-required. Larger valid-array transport beyond one command record remains open.
+uniform declarations; execution after the source increments remains required. Larger arrays use the
+transaction transport described below.
+
+
+Large uniform calls use bounded BEGIN/CHUNK/COMMIT/CANCEL command records.
+The host validates the original count/type before staging only the accepted
+reflected tail; it performs one native setter after a complete transfer with
+unchanged executable/location/context authority. Failed flushes queue replay-safe
+retirement before later valid commands. Native cases cover all eleven signatures,
+protected source ends, exact chunk bytes, multiple submissions and failure both
+during and after the setter. Host source cases additionally cover bad counts and
+types without prefix updates, ignored tails, continuation ordering, allocation,
+token replay/wrap, shared relink, native rejection and retirement. Native and
+forwarded query/present/current tests check refusal without native effects after
+an interrupted call while sharing peers stay independent. Normal both-width
+`gles-hints` guests are prepared to read actual accepted array values in browsers
+and retain their independent framebuffer pixels; execution remains required.

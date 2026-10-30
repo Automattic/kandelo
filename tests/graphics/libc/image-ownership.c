@@ -330,6 +330,12 @@ static unsigned string_queries, uniform_commands;
 static GLint last_uniform_location;
 static uint32_t last_uniform_count, last_uniform_transpose;
 static uint16_t last_uniform_payload;
+#ifdef OP_UNIFORM_UPLOAD_BEGIN
+static uint32_t uniform_stream_token,uniform_stream_op,uniform_stream_total,uniform_stream_cursor,uniform_stream_stride;
+static unsigned uniform_stream_begins,uniform_stream_chunks,uniform_stream_commits,uniform_stream_cancels,uniform_stream_recovery_clears,fail_submit_on;
+static const uint8_t *uniform_stream_expected;
+static size_t uniform_stream_expected_size;
+#endif
 static unsigned image_failure, image_queries, fail_image_storage, image_pixel_updates;
 static unsigned bind_failure, bind_queries;
 static unsigned buffer_bind_failure, buffer_delete_failure;
@@ -732,6 +738,9 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             assert(fwrite(commands+frame->offset,1,frame->length,trace) == frame->length && !fclose(trace));
         }
         if (fail_submit) { errno = EIO; return -1; }
+#ifdef OP_UNIFORM_UPLOAD_BEGIN
+        if (fail_submit_on && submit_batches==fail_submit_on) {fail_submit_on=0;errno=EIO;return -1;}
+#endif
         struct gl_submit_info *submit = arg;
         protocol_trace(1,0,commands+submit->offset,submit->length,0);
         egl_trace(5, fd, commands + submit->offset, submit->length);
@@ -749,6 +758,34 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             assert(at + 4 + len <= end);
             uint32_t words[2] = {0};
             memcpy(words, commands + at + 4, len < 8 ? len : 8);
+#ifdef OP_UNIFORM_UPLOAD_BEGIN
+            if(op==OP_CLEAR && uniform_stream_expected)uniform_stream_recovery_clears++;
+            if(op>=OP_UNIFORM_UPLOAD_BEGIN && op<=OP_UNIFORM_UPLOAD_CANCEL) {
+                uint32_t header[5]={0};memcpy(header,commands+at+4,len<20?len:20);
+                if(op==OP_UNIFORM_UPLOAD_BEGIN) {
+                    assert(len==20 && header[0] && header[2]==37 && header[3] && !header[4]);
+                    assert(header[0]>uniform_stream_token);
+                    uniform_stream_token=header[0];uniform_stream_op=header[1];uniform_stream_total=header[3];uniform_stream_cursor=0;
+                    uniform_stream_stride=uniform_stream_op==OP_UNIFORM_MATRIX4FV?64:uniform_stream_op==OP_UNIFORM_MATRIX3FV?36:
+                        uniform_stream_op==OP_UNIFORM_MATRIX2FV?16:uniform_stream_op==OP_UNIFORM4FV?16:
+                        uniform_stream_op>=OP_UNIFORM1FV && uniform_stream_op<=OP_UNIFORM3FV?(uniform_stream_op-OP_UNIFORM1FV+1)*4:
+                        (uniform_stream_op-OP_UNIFORM1IV+1)*4;
+                    assert(uniform_stream_expected_size==(size_t)uniform_stream_total*uniform_stream_stride);
+                    uniform_stream_begins++;
+                } else if(op==OP_UNIFORM_UPLOAD_CHUNK) {
+                    assert(header[0]==uniform_stream_token && header[1]==uniform_stream_op && header[2]==uniform_stream_cursor);
+                    assert(header[3] && header[3]<=uniform_stream_total-uniform_stream_cursor);
+                    const size_t bytes=(size_t)header[3]*uniform_stream_stride;
+                    assert(len==16+bytes && !memcmp(commands+at+20,uniform_stream_expected+(size_t)uniform_stream_cursor*uniform_stream_stride,bytes));
+                    uniform_stream_cursor+=header[3];uniform_stream_chunks++;
+                } else if(op==OP_UNIFORM_UPLOAD_COMMIT) {
+                    assert(len==4 && header[0]==uniform_stream_token && uniform_stream_cursor==uniform_stream_total);
+                    uniform_stream_commits++;uniform_stream_total=0;
+                } else {
+                    assert(len==4 && header[0]==uniform_stream_token);uniform_stream_cancels++;uniform_stream_total=0;
+                }
+            }
+#endif
 #ifdef OP_BEGIN_CLIENT_ARRAY
             if (op == OP_BEGIN_CLIENT_ARRAY) {
                 assert(len == 0 && !slot->array_saved);
@@ -3637,6 +3674,51 @@ int main(int argc, char **argv) {
         assert(allocation_count() == 0);
         printf("PASS %s\n", argv[1]); return 0;
     }
+    if (!strncmp(argv[1], "encoder-uniform-large-", 22)) {
+        (void)prepare_native_uniform_program();
+        const int final_failure=!strcmp(argv[1]+22,"final-failure");
+        const int streaming=!strcmp(argv[1]+22,"stream")||final_failure,failure=!strcmp(argv[1]+22,"failure");
+        const unsigned variant=streaming||failure?0:(unsigned)strtoul(argv[1]+22,NULL,10); assert(variant<11);
+        void (*const fv[])(GLint,GLsizei,const GLfloat *)={glUniform1fv,glUniform2fv,glUniform3fv,glUniform4fv};
+        void (*const iv[])(GLint,GLsizei,const GLint *)={glUniform1iv,glUniform2iv,glUniform3iv,glUniform4iv};
+        void (*const matrix[])(GLint,GLsizei,GLboolean,const GLfloat *)={glUniformMatrix2fv,glUniformMatrix3fv,glUniformMatrix4fv};
+        const unsigned width=variant<8?variant%4+1:variant==8?4:variant==9?9:16;
+        const GLsizei count=failure?600000:streaming?300000:(65535u-8u)/(width*4u)+2;
+        const size_t bytes=(size_t)count*width*4u,page=(size_t)sysconf(_SC_PAGESIZE);
+        const size_t readable=(bytes+page-1)/page*page;
+        unsigned char *mapping=mmap(NULL,readable+page,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANON,-1,0);
+        assert(mapping!=MAP_FAILED && !mprotect(mapping+readable,page,PROT_NONE));
+        unsigned char *data=mapping+readable-bytes;
+        for(size_t i=0;i<bytes/4;i++) {
+            if(variant>=4 && variant<8)((GLint *)data)[i]=(GLint)(i%701)-350;
+            else ((GLfloat *)data)[i]=(GLfloat)(i%701)+.25f;
+        }
+#ifdef OP_UNIFORM_UPLOAD_BEGIN
+        uniform_stream_expected=data;uniform_stream_expected_size=bytes;
+        const unsigned old_submits=submit_batches,old_queries=current_program_queries;
+        if(failure)fail_submit_on=submit_batches+2;
+#endif
+        if(variant<4) fv[variant](37,count,(const GLfloat *)data);
+        else if(variant<8) iv[variant-4](37,count,(const GLint *)data);
+        else matrix[variant-8](37,count,GL_FALSE,(const GLfloat *)data);
+#ifdef OP_UNIFORM_UPLOAD_BEGIN
+        if(final_failure) {fail_submit_on=submit_batches+1;glFlush();}
+#endif
+        assert(glGetError()==(failure||final_failure?GL_INVALID_OPERATION:GL_NO_ERROR));
+        if(final_failure)glClear(GL_COLOR_BUFFER_BIT);
+        if(failure||final_failure)assert(glGetError()==GL_NO_ERROR); /* Flush the queued CANCEL after the local failure flag. */
+#ifdef OP_UNIFORM_UPLOAD_BEGIN
+        assert(current_program_queries==old_queries && uniform_stream_begins==1 && uniform_stream_chunks>=2);
+        if(failure||final_failure)assert(!uniform_stream_commits && uniform_stream_cancels==1);
+        else assert(uniform_stream_commits==1 && !uniform_stream_cancels);
+        assert(submit_batches>=old_submits+(streaming||failure?2:1));
+        assert(!uniform_stream_total);
+        if(final_failure)assert(uniform_stream_recovery_clears==1);
+#endif
+        assert(!munmap(mapping,readable+page));
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count()==0); printf("PASS %s\n",argv[1]);return 0;
+    }
     if (!strcmp(argv[1], "encoder-uniform-zero-headers")) {
         (void)prepare_native_uniform_program();
         void (*const fv[])(GLint, GLsizei, const GLfloat *) = {glUniform1fv,glUniform2fv,glUniform3fv,glUniform4fv};
@@ -3715,7 +3797,8 @@ int main(int argc, char **argv) {
                 VECTOR_CALL(-1, INT_MAX, fguard, iguard);
                 assert(glGetError() == GL_NO_ERROR);
                 for (unsigned j = 0; j < 4; ++j) {
-                    VECTOR_CALL(37, oversized[j], fguard, iguard);
+                    VECTOR_CALL(37, oversized[j], (const GLfloat *)(UINTPTR_MAX & ~(uintptr_t)3u),
+                                (const GLint *)(UINTPTR_MAX & ~(uintptr_t)3u));
                     assert(glGetError() == GL_OUT_OF_MEMORY && glGetError() == GL_NO_ERROR);
                 }
             }
@@ -3790,7 +3873,7 @@ int main(int argc, char **argv) {
                 setters[i](-1, INT_MAX, GL_FALSE, guard);
                 assert(glGetError() == GL_NO_ERROR);
                 for (unsigned j = 0; j < 4; ++j) {
-                    setters[i](37, oversized[j], GL_FALSE, guard);
+                    setters[i](37, oversized[j], GL_FALSE, (const GLfloat *)(UINTPTR_MAX & ~(uintptr_t)3u));
                     assert(glGetError() == GL_OUT_OF_MEMORY && glGetError() == GL_NO_ERROR);
                 }
             }
