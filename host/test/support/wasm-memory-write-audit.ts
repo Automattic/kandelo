@@ -7593,6 +7593,7 @@ function isOrdinaryTestHarness(relativePath: string): boolean {
     relativePath === "scripts/check-fork-memory-artifact.ts" ||
     relativePath === "host/vitest.config.ts" ||
     relativePath === "host/vitest.browser-memory.config.ts" ||
+    relativePath === "host/vitest.graphics.config.ts" ||
     relativePath.startsWith("host/test/") ||
     relativePath.includes("/test/") ||
     /\.(?:test|spec)\.(?:[cm]?[jt]s|[jt]sx)$/.test(relativePath)
