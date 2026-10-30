@@ -2,7 +2,8 @@
  * Where this deployment serves guest web previews.
  *
  * The build injects `__KANDELO_PREVIEW_ORIGIN__` (see the preview-origin
- * plugin in `vite.config.ts`):
+ * plugin, `vite/preview-origin.ts`), with the preview host's `relayPath`
+ * (`__kandelo_preview/relay.html`, or `relay.php` on a PHP host):
  * - `{ kind: "origin", origin }`: an exact preview origin
  *   (`KANDELO_PREVIEW_ORIGIN` at build or dev-server start);
  * - `{ kind: "port-offset", offset }`: the Vite dev and preview servers, which
@@ -13,9 +14,11 @@
  *   they never fall back to Kandelo's own origin.
  */
 
+import { PREVIEW_RELAY_PATH } from "./protocol";
+
 export type PreviewOriginConfig =
-  | { kind: "origin"; origin: string }
-  | { kind: "port-offset"; offset: number }
+  | { kind: "origin"; origin: string; relayPath?: string }
+  | { kind: "port-offset"; offset: number; relayPath?: string }
   | null;
 
 declare const __KANDELO_PREVIEW_ORIGIN__: PreviewOriginConfig | undefined;
@@ -50,6 +53,14 @@ export function configuredPreviewOrigin(pageUrl = window.location.href): string 
     ? null
     : __KANDELO_PREVIEW_ORIGIN__;
   return resolvePreviewOrigin(config, pageUrl);
+}
+
+/** The relay page's path under the scope on this deployment's preview origin. */
+export function configuredPreviewRelayPath(): string {
+  const config = typeof __KANDELO_PREVIEW_ORIGIN__ === "undefined"
+    ? null
+    : __KANDELO_PREVIEW_ORIGIN__;
+  return config?.relayPath ?? PREVIEW_RELAY_PATH;
 }
 
 /** Source of `public/blob-iframe-interceptor.js`, injected at build time. */

@@ -19,8 +19,9 @@
  */
 (function () {
   "use strict";
-  // Injected by the build (apps/browser-demos/vite.config.ts):
-  // { protocolVersion, kandeloOrigins: [exact origins], kandeloOriginPattern }.
+  // Injected by the build (apps/browser-demos/vite/preview-origin.ts):
+  // { protocolVersion, kandeloOrigins: [exact origins], kandeloOriginPattern,
+  //   relayPath, workerFile }; the last two depend on the host.
   var PREVIEW_CONFIG = "__KANDELO_PREVIEW_ORIGIN_CONFIG__";
   var PROTOCOL_VERSION = 3;
   var ENSURE_INTERVAL_MS = 2000;
@@ -57,7 +58,7 @@
     });
   }
 
-  if (config.protocolVersion !== PROTOCOL_VERSION) {
+  if (config.protocolVersion !== PROTOCOL_VERSION || typeof config.workerFile !== "string") {
     toParent({ type: "preview-relay-failed", error: "this preview origin is not configured" });
     return;
   }
@@ -68,7 +69,7 @@
 
   var scope = new URL("../", location.href).pathname;
   var scopeUrl = new URL(scope, location.href).href;
-  var workerUrl = new URL(scope + "preview-service-worker.js", location.href).href;
+  var workerUrl = new URL(scope + config.workerFile, location.href).href;
 
   // The deployment's worker can change under a live tab: a deploy with new
   // worker bytes, the browser's update check, or a guest page (they share

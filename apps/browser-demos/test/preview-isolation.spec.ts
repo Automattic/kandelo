@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { runTerminalCommand } from "./support/terminal-command";
+import { PREVIEW_HOST_LAYOUTS, previewHostFromEnvironment } from "../vite/preview-origin";
 import {
   gotoMachineOrSkip,
   machineAppPrefix,
@@ -16,6 +17,11 @@ import {
  * its document root through the machine's own shell, and loads it through the
  * app's preview URL bar. The probe's own script reports what it could reach;
  * the report arrives over postMessage, the only channel a guest has.
+ *
+ * The server's preview host decides the worker's script name:
+ * `KANDELO_PREVIEW_HOST=php` runs the PHP bundle under `php -S`, and with a
+ * cross-site `KANDELO_PREVIEW_ORIGIN` (`http://localhost:<port>` beside the
+ * app's `127.0.0.1`) this proves the WP Cloud-style pair locally.
  *
  * See docs/browser-support.md, "Guest web previews run on their own origin".
  */
@@ -166,6 +172,10 @@ test("preview cannot reach the Kandelo page", async ({ page, context }) => {
   await address.press("Enter");
 
   const report = await nextReport(page, "kandelo-preview-probe");
+  test.info().annotations.push({
+    type: "preview",
+    description: `guest ${report.origin} controlled by ${report.data.controller}`,
+  });
   // The guest runs on an origin of its own...
   expect(report.origin).not.toBe(kandeloOrigin);
   expect(report.data.origin).toBe(report.origin);
@@ -176,7 +186,9 @@ test("preview cannot reach the Kandelo page", async ({ page, context }) => {
   // ...and its pages are served by the preview origin's own service worker,
   // never by Kandelo's.
   expect(report.data.controller).toBe(
-    `${report.origin}${new URL(kandeloUrl).pathname.replace(/[^/]*$/, "")}preview-service-worker.js`,
+    `${report.origin}${new URL(kandeloUrl).pathname.replace(/[^/]*$/, "")}${
+      PREVIEW_HOST_LAYOUTS[previewHostFromEnvironment()].workerFile
+    }`,
   );
   // Its own subresources still load: the stylesheet applied, and the report
   // itself came from its external script.

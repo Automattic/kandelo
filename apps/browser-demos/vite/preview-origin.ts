@@ -19,10 +19,21 @@
  *   be served) and `KANDELO_APP_ORIGIN` (the only origin its relay accepts)
  *   together; the bundle is written beside the app output. Without them the
  *   app has no preview origin and refuses to open web previews.
+ *
+ * Hosts (`KANDELO_PREVIEW_HOST`, see `PREVIEW_HOST_LAYOUTS`):
+ * - `static` (default): the files above, for a host that adds
+ *   `PREVIEW_ORIGIN_HEADERS` to every response (Vite's listener, a Spacefast
+ *   Space with the `_headers` from `spacefastPreviewSiteFiles`).
+ * - `php`: PHP scripts that send those headers themselves, for a host that
+ *   runs PHP but may not let a site set headers on static files (WP Cloud).
+ *   Their URLs end in `.php`, so the app is built with the same host and
+ *   asks for `relay.php`. `vite` runs this bundle under `php -S` itself.
  */
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Plugin, PreviewServer, ViteDevServer } from "vite";
@@ -31,6 +42,32 @@ import type { Plugin, PreviewServer, ViteDevServer } from "vite";
 // (preview-bridge.test.ts checks).
 export const PREVIEW_PROTOCOL_VERSION = 3;
 
+/** How the preview origin's server delivers the bundle and its headers. */
+export type PreviewHost = "static" | "php";
+
+/**
+ * Where the relay page and the preview service worker live, relative to the
+ * deployment scope, for each host. The relay stays one directory below the
+ * scope (it finds the scope as `../`). The `static` paths are the ones
+ * `lib/preview/protocol.ts` names (preview-bridge.test.ts checks).
+ */
+export const PREVIEW_HOST_LAYOUTS: Readonly<Record<PreviewHost, {
+  relayPath: string;
+  workerFile: string;
+}>> = {
+  static: { relayPath: "__kandelo_preview/relay.html", workerFile: "preview-service-worker.js" },
+  php: { relayPath: "__kandelo_preview/relay.php", workerFile: "preview-service-worker.php" },
+};
+
+/** `KANDELO_PREVIEW_HOST`, `static` when unset. */
+export function previewHostFromEnvironment(): PreviewHost {
+  const value = process.env.KANDELO_PREVIEW_HOST?.trim() || "static";
+  if (value !== "static" && value !== "php") {
+    throw new Error(`KANDELO_PREVIEW_HOST must be "static" or "php", not ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
 /** Injected into the relay and the preview service worker. */
 export interface PreviewOriginBundleConfig {
   protocolVersion: number;
@@ -38,12 +75,16 @@ export interface PreviewOriginBundleConfig {
   kandeloOrigins: string[];
   /** Optional anchored pattern for Spacefast version hosts of the app. */
   kandeloOriginPattern: string | null;
+  /** This host's relay page, relative to the scope. */
+  relayPath: string;
+  /** This host's preview service worker script, in the scope directory. */
+  workerFile: string;
 }
 
 /** What the app is told (see lib/preview/config.ts). */
 export type AppPreviewOriginConfig =
-  | { kind: "origin"; origin: string }
-  | { kind: "port-offset"; offset: number }
+  | { kind: "origin"; origin: string; relayPath: string }
+  | { kind: "port-offset"; offset: number; relayPath: string }
   | null;
 
 const SOURCE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../preview-origin");
@@ -86,16 +127,23 @@ export function spacefastVersionHostPattern(appOrigin: string): string | null {
   return `^https://${escape(match[1]!)}--v[0-9]+\\.${escape(match[2]!)}$`;
 }
 
-export function previewBundleConfig(appOrigin: string): PreviewOriginBundleConfig {
+export function previewBundleConfig(
+  appOrigin: string,
+  host: PreviewHost = "static",
+): PreviewOriginBundleConfig {
   const origin = exactOrigin(appOrigin, "KANDELO_APP_ORIGIN");
   return {
     protocolVersion: PREVIEW_PROTOCOL_VERSION,
     kandeloOrigins: [origin],
     kandeloOriginPattern: spacefastVersionHostPattern(origin),
+    ...PREVIEW_HOST_LAYOUTS[host],
   };
 }
 
-/** The bundle's files with `config` injected, keyed by scope-relative path. */
+/**
+ * The `static` bundle's files with `config` injected, keyed by
+ * scope-relative path. (`phpPreviewSiteFiles` repackages them.)
+ */
 export function previewBundleFiles(config: PreviewOriginBundleConfig): Record<string, string> {
   const files: Record<string, string> = {};
   for (const [relative, source] of Object.entries(PREVIEW_BUNDLE_FILES)) {
@@ -112,7 +160,11 @@ function injectConfig(text: string, config: PreviewOriginBundleConfig): string {
   return text.replace(CONFIG_PLACEHOLDER, JSON.stringify(config));
 }
 
-/** Headers for every preview-origin response. */
+/**
+ * Headers for every preview-origin response, on every host. The relay's
+ * first load comes before any preview service worker exists, so the server
+ * itself must send them.
+ */
 export const PREVIEW_ORIGIN_HEADERS: Readonly<Record<string, string>> = {
   // The Kandelo page is cross-origin isolated: a frame it embeds must opt
   // into COEP and allow cross-origin embedding. No frame-ancestors or
@@ -120,6 +172,10 @@ export const PREVIEW_ORIGIN_HEADERS: Readonly<Record<string, string>> = {
   "Cross-Origin-Embedder-Policy": "require-corp",
   "Cross-Origin-Resource-Policy": "cross-origin",
   "Origin-Agent-Cluster": "?1",
+  // Every file is served with its real type; never guess one.
+  "X-Content-Type-Options": "nosniff",
+  // A deploy must reach open tabs: the relay and worker carry the protocol
+  // version and the app origin, which must match the app's.
   "Cache-Control": "no-store",
 };
 
@@ -190,6 +246,126 @@ export function spacefastPreviewSiteFiles(scope: string, appOrigin: string): Rec
   };
 }
 
+function phpString(value: string): string {
+  return `'${value.replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
+}
+
+/**
+ * The start of every PHP entry point: the shared headers, sent by PHP so
+ * they do not depend on the host's static-file configuration.
+ */
+function phpPreamble(purpose: string): string {
+  const fields = Object.entries(PREVIEW_ORIGIN_HEADERS)
+    .map(([name, value]) => `    ${phpString(`${name}: ${value}`)},\n`)
+    .join("");
+  return `<?php
+// Kandelo guest-preview origin: ${purpose}
+// Generated by apps/browser-demos/vite/preview-origin.ts for
+// \`./run.sh build-browser --preview-host php\`; rebuild it, do not edit it.
+// PHP sends every response field itself, so this works on a host that
+// cannot set headers on static files. See docs/browser-support.md,
+// "Guest web previews run on their own origin".
+header_remove('X-Powered-By');
+foreach ([
+${fields}] as $field) {
+    header($field);
+}
+$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+`;
+}
+
+/**
+ * One file's bytes behind the preamble. They follow `__halt_compiler()`,
+ * so PHP never parses them and serves them exactly.
+ */
+function phpFileEntry(purpose: string, contentType: string, body: string): string {
+  return `${phpPreamble(purpose)}if ($method !== 'GET' && $method !== 'HEAD') {
+    http_response_code(405);
+    header('Allow: GET, HEAD');
+    exit;
+}
+header(${phpString(`Content-Type: ${contentType}`)});
+if ($method === 'GET') {
+    echo file_get_contents(__FILE__, false, null, __COMPILER_HALT_OFFSET__);
+}
+exit;
+__halt_compiler();${body}`;
+}
+
+/** relay.html with relay.js inlined: one PHP-served document. */
+function inlineRelayDocument(html: string, script: string): string {
+  const tag = '<script src="relay.js"></script>';
+  if (html.split(tag).length !== 2) throw new Error("relay.html must load relay.js exactly once");
+  if (/<\/script|<!--/i.test(script)) throw new Error("relay.js cannot be inlined into relay.html");
+  return html.replace(tag, () => `<script>\n${script}</script>`);
+}
+
+/**
+ * The preview bundle for a PHP host such as WP Cloud: the same relay and
+ * worker bytes behind PHP entry points (paths from
+ * `PREVIEW_HOST_LAYOUTS.php`), plus `index.php`, which sends a top-level
+ * visit to `<scope>computer/*` to the viewer shell on the canonical app
+ * origin. `index.php` sees those visits only where the host routes requests
+ * for missing paths to it (WordPress-style hosting, `php -S`); elsewhere
+ * they get the host's own 404.
+ */
+export function phpPreviewSiteFiles(
+  config: PreviewOriginBundleConfig,
+  scope: string,
+): Record<string, string> {
+  const layout = PREVIEW_HOST_LAYOUTS.php;
+  if (config.relayPath !== layout.relayPath || config.workerFile !== layout.workerFile) {
+    throw new Error("The PHP preview bundle needs a configuration built for the php host");
+  }
+  if (!/^\/(?:.*\/)?$/.test(scope)) throw new Error(`The scope must start and end with "/": ${scope}`);
+  const app = exactOrigin(config.kandeloOrigins[0] ?? "", "app origin");
+  const files = previewBundleFiles(config);
+  const relay = inlineRelayDocument(files["__kandelo_preview/relay.html"]!, files["__kandelo_preview/relay.js"]!);
+  return {
+    [layout.workerFile]: phpFileEntry(
+      "the preview service worker.",
+      "text/javascript; charset=utf-8",
+      files["preview-service-worker.js"]!,
+    ),
+    [layout.relayPath]: phpFileEntry(
+      "the relay page each Kandelo tab frames.",
+      "text/html; charset=utf-8",
+      relay,
+    ),
+    "index.php": `${phpPreamble("the viewer-shell redirect for computer/* and 404s.")}$scope = ${phpString(scope)};
+$app = ${phpString(app)};
+$uri = (string) ($_SERVER['REQUEST_URI'] ?? '/');
+$path = parse_url($uri, PHP_URL_PATH);
+$query = parse_url($uri, PHP_URL_QUERY);
+$path = is_string($path) ? $path : '';
+$machines = $scope . 'computer';
+if ($path === $machines || strncmp($path, $machines . '/', strlen($machines) + 1) === 0) {
+    if ($method === 'GET' || $method === 'HEAD') {
+        header('Location: ' . $app . $path . (is_string($query) ? '?' . $query : ''), true, 302);
+        exit;
+    }
+    http_response_code(405);
+    header('Content-Type: text/html; charset=utf-8');
+    echo '<!doctype html><title>Open this page in Kandelo</title>',
+        '<p>A form was submitted to a Kandelo computer outside Kandelo, and it cannot be replayed.</p>';
+    exit;
+}
+http_response_code(404);
+header('Content-Type: text/plain; charset=utf-8');
+echo "Not a Kandelo preview-origin file\\n";
+`,
+  };
+}
+
+/** Write `files` (scope-relative paths) under `directory`. */
+function writeFiles(directory: string, files: Record<string, string>): void {
+  for (const [relative, text] of Object.entries(files)) {
+    const file = path.join(directory, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text);
+  }
+}
+
 function isLoopbackHttpOrigin(origin: string): boolean {
   const url = new URL(origin);
   return url.protocol === "http:" &&
@@ -204,19 +380,35 @@ function isLoopbackHttpOrigin(origin: string): boolean {
  */
 export function appPreviewOriginConfig(command: "serve" | "build"): AppPreviewOriginConfig {
   const configured = process.env.KANDELO_PREVIEW_ORIGIN?.trim();
+  const { relayPath } = PREVIEW_HOST_LAYOUTS[previewHostFromEnvironment()];
   if (configured === "off") return null;
-  if (configured) return { kind: "origin", origin: exactOrigin(configured, "KANDELO_PREVIEW_ORIGIN") };
-  return command === "serve" ? { kind: "port-offset", offset: 1 } : null;
+  if (configured) {
+    return { kind: "origin", origin: exactOrigin(configured, "KANDELO_PREVIEW_ORIGIN"), relayPath };
+  }
+  return command === "serve" ? { kind: "port-offset", offset: 1, relayPath } : null;
 }
 
+
 const VIEWER_HTML_RELATIVE = "pages/kandelo/viewer.html";
+
+/**
+ * When the `php -S` serving each preview port last exited. Process-wide, not
+ * per plugin instance: Vite loads a fresh copy of this module for every
+ * restart, and the outgoing and incoming servers share the port.
+ */
+const phpPreviewExits: Map<number, Promise<void>> = ((globalThis as {
+  __kandeloPhpPreviewExits?: Map<number, Promise<void>>;
+}).__kandeloPhpPreviewExits ??= new Map());
 
 /**
  * Vite plugin: the preview origin for `vite` and `vite preview`, the viewer
  * shell for `<base>computer/*` documents on the app origin, and the preview
  * bundle for production builds.
  */
-export function previewOriginPlugin(): Plugin {
+export function previewOriginPlugin(options: {
+  /** The PHP that runs a php-host bundle under `vite` (KANDELO_PREVIEW_HOST=php). */
+  findPhp: () => Promise<string>;
+}): Plugin {
   let base = "/";
   let root = process.cwd();
   let outDir = "dist";
@@ -230,6 +422,7 @@ export function previewOriginPlugin(): Plugin {
     // Read the configuration now, with the environment the server was
     // created under, not whatever it holds when the socket starts listening.
     const configured = appPreviewOriginConfig("serve");
+    const previewHost = previewHostFromEnvironment();
     httpServer.once("listening", () => {
       const address = httpServer.address() as AddressInfo | null;
       if (!address || typeof address === "string") return;
@@ -249,11 +442,21 @@ export function previewOriginPlugin(): Plugin {
         previewPort = appPort + 1;
       }
       const appOrigins = [`http://127.0.0.1:${appPort}`, `http://localhost:${appPort}`];
-      const files = previewBundleFiles({
+      const bundleConfig: PreviewOriginBundleConfig = {
         protocolVersion: PREVIEW_PROTOCOL_VERSION,
         kandeloOrigins: appOrigins,
         kandeloOriginPattern: null,
-      });
+        ...PREVIEW_HOST_LAYOUTS[previewHost],
+      };
+      const host = typeof address.address === "string" && address.address !== "::" &&
+          address.address !== "0.0.0.0"
+        ? address.address
+        : undefined;
+      if (previewHost === "php") {
+        startPhpListener(httpServer, logger, bundleConfig, host, previewPort);
+        return;
+      }
+      const files = previewBundleFiles(bundleConfig);
       const listener = http.createServer((request, response) => {
         servePreviewOriginRequest(request, response, {
           scope: base,
@@ -268,10 +471,6 @@ export function previewOriginPlugin(): Plugin {
           `Guest previews are unavailable: the preview origin could not listen on port ${previewPort}: ${error.message}`,
         );
       });
-      const host = typeof address.address === "string" && address.address !== "::" &&
-          address.address !== "0.0.0.0"
-        ? address.address
-        : undefined;
       listener.listen(previewPort, host, () => {
         logger.info(`Guest preview origin: http://${host ?? "localhost"}:${previewPort}${base}`);
       });
@@ -281,6 +480,64 @@ export function previewOriginPlugin(): Plugin {
         listener.close();
         listener.closeAllConnections();
       });
+    });
+  }
+
+  /**
+   * The PHP bundle under PHP's built-in server, which routes a missing path
+   * to `index.php` as WordPress-style hosting does.
+   */
+  function startPhpListener(
+    httpServer: http.Server,
+    logger: { info(message: string): void; error(message: string): void },
+    bundleConfig: PreviewOriginBundleConfig,
+    host: string | undefined,
+    previewPort: number,
+  ): void {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "kandelo-preview-php-"));
+    writeFiles(path.join(directory, base), phpPreviewSiteFiles(bundleConfig, base));
+    let closed = false;
+    let stop = () => {};
+    // A restart stops the outgoing server's `php -S` and starts this one on
+    // the same port. Killing a process does not free its port at once, so
+    // wait for the previous one to exit rather than race it for the port.
+    const previousExit = phpPreviewExits.get(previewPort) ?? Promise.resolve();
+    let markExited!: () => void;
+    const exited = new Promise<void>((resolve) => { markExited = resolve; });
+    phpPreviewExits.set(previewPort, exited);
+    httpServer.once("close", () => {
+      closed = true;
+      stop();
+      fs.rmSync(directory, { recursive: true, force: true });
+    });
+    Promise.all([options.findPhp(), previousExit]).then(([php]) => {
+      if (closed) {
+        markExited();
+        return;
+      }
+      const child = spawn(php, ["-S", `${host ?? "0.0.0.0"}:${previewPort}`, "-t", directory], {
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      child.once("error", (error) => {
+        markExited();
+        logger.error(`Guest previews are unavailable: could not run ${php}: ${error.message}`);
+      });
+      let stderr = "";
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderr = (stderr + chunk.toString()).slice(-2000);
+      });
+      child.once("exit", (code, signal) => {
+        markExited();
+        if (closed) return;
+        logger.error(
+          `Guest previews are unavailable: php -S on port ${previewPort} exited (${code ?? signal}): ${stderr.trim()}`,
+        );
+      });
+      stop = () => child.kill();
+      logger.info(`Guest preview origin (PHP bundle, ${php} -S): http://${host ?? "localhost"}:${previewPort}${base}`);
+    }, (error: Error) => {
+      markExited();
+      logger.error(`Guest previews are unavailable: no PHP to serve the php preview bundle: ${error.message}`);
     });
   }
 
@@ -363,7 +620,13 @@ export function previewOriginPlugin(): Plugin {
       if (command !== "build") return;
       const previewOrigin = process.env.KANDELO_PREVIEW_ORIGIN?.trim();
       const appOrigin = process.env.KANDELO_APP_ORIGIN?.trim();
-      if ((!previewOrigin || previewOrigin === "off") && !appOrigin) return;
+      const previewHost = previewHostFromEnvironment();
+      if ((!previewOrigin || previewOrigin === "off") && !appOrigin) {
+        if (previewHost !== "static") {
+          throw new Error(`KANDELO_PREVIEW_HOST=${previewHost} needs KANDELO_PREVIEW_ORIGIN and KANDELO_APP_ORIGIN`);
+        }
+        return;
+      }
       if (!previewOrigin || !appOrigin) {
         throw new Error(
           "A production preview origin needs both KANDELO_PREVIEW_ORIGIN and KANDELO_APP_ORIGIN",
@@ -373,11 +636,11 @@ export function previewOriginPlugin(): Plugin {
         throw new Error("KANDELO_PREVIEW_ORIGIN must differ from KANDELO_APP_ORIGIN");
       }
       const target = process.env.KANDELO_PREVIEW_OUT_DIR?.trim() || `${outDir}-preview`;
-      for (const [relative, text] of Object.entries(previewBundleFiles(previewBundleConfig(appOrigin)))) {
-        const file = path.join(target, relative);
-        fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.writeFileSync(file, text);
-      }
+      const bundleConfig = previewBundleConfig(appOrigin, previewHost);
+      writeFiles(
+        target,
+        previewHost === "php" ? phpPreviewSiteFiles(bundleConfig, base) : previewBundleFiles(bundleConfig),
+      );
     },
   };
 }

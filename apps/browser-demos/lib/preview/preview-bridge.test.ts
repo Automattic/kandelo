@@ -25,7 +25,10 @@ import {
   machineNameHash,
   secretProvesMachineName,
 } from "./protocol";
-import { PREVIEW_PROTOCOL_VERSION as BUNDLE_PROTOCOL_VERSION } from "../../vite/preview-origin";
+import {
+  PREVIEW_HOST_LAYOUTS,
+  PREVIEW_PROTOCOL_VERSION as BUNDLE_PROTOCOL_VERSION,
+} from "../../vite/preview-origin";
 import { rewriteSameHostUrls, translateFramePolicy } from "./response-shaping";
 
 const PREVIEW = "http://127.0.0.1:5402";
@@ -679,9 +682,21 @@ test("the classic preview scripts mirror the protocol constants", async () => {
   const kandeloWorker = readFileSync(new URL("../../public/service-worker.js", import.meta.url), "utf8");
   assert.ok(kandeloWorker.includes(`var MACHINE_NAME_PATTERN = /${MACHINE_NAME_PATTERN.source}/;`));
   assert.ok(kandeloWorker.includes(`var LEGACY_MACHINE_NAME_PATTERN = /${LEGACY_MACHINE_NAME_PATTERN.source}/;`));
-  assert.ok(worker.includes(`"${PREVIEW_RELAY_PATH}"`));
-  assert.ok(relay.includes(`"${PREVIEW_SERVICE_WORKER_PATH}"`));
-  assert.ok(worker.includes(`var WORKER_FILE = "${PREVIEW_SERVICE_WORKER_PATH}";`));
+  // The page's static-host paths are the build's static layout, and the
+  // worker's fallback when its injected configuration is unusable.
+  assert.deepEqual(PREVIEW_HOST_LAYOUTS.static, {
+    relayPath: PREVIEW_RELAY_PATH,
+    workerFile: PREVIEW_SERVICE_WORKER_PATH,
+  });
+  assert.ok(worker.includes(`relayPath: "${PREVIEW_RELAY_PATH}",`));
+  assert.ok(worker.includes(`workerFile: "${PREVIEW_SERVICE_WORKER_PATH}",`));
+  // Each host's relay sits one directory below the scope: the relay finds
+  // the scope as "../".
+  for (const layout of Object.values(PREVIEW_HOST_LAYOUTS)) {
+    assert.match(layout.relayPath, /^[^/]+\/[^/]+$/);
+    assert.match(layout.workerFile, /^[^/]+$/);
+  }
+  assert.ok(relay.includes('new URL(scope + config.workerFile, location.href)'));
   const interceptor = readFileSync(new URL("../../public/blob-iframe-interceptor.js", import.meta.url), "utf8");
   assert.match(interceptor, new RegExp(`var PROTOCOL_VERSION = ${PREVIEW_PROTOCOL_VERSION};`));
   const name = MACHINE_NAME_PATTERN.source.replace(/^\^/, "").replace(/\$$/, "");

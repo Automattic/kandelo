@@ -20,9 +20,14 @@
 /** Every message carries `v`; both bundles must be deployed together. */
 export const PREVIEW_PROTOCOL_VERSION = 3;
 
-/** Relay page, relative to the deployment scope on the preview origin. */
+/**
+ * Relay page, relative to the deployment scope on the preview origin, on a
+ * static host. A PHP host serves `relay.php` instead; the build tells the app
+ * which (`relayPath` in lib/preview/config.ts, from `PREVIEW_HOST_LAYOUTS` in
+ * vite/preview-origin.ts).
+ */
 export const PREVIEW_RELAY_PATH = "__kandelo_preview/relay.html";
-/** Preview service worker script, relative to the deployment scope. */
+/** Preview service worker script, relative to the deployment scope (static host). */
 export const PREVIEW_SERVICE_WORKER_PATH = "preview-service-worker.js";
 
 /**
@@ -192,8 +197,12 @@ export function machinePathPrefix(scope: string, name: string): string {
   return `${scope}computer/${name}/`;
 }
 
-export function previewRelayUrl(previewOrigin: string, scope: string): string {
-  return `${previewOrigin}${scope}${PREVIEW_RELAY_PATH}`;
+export function previewRelayUrl(
+  previewOrigin: string,
+  scope: string,
+  relayPath = PREVIEW_RELAY_PATH,
+): string {
+  return `${previewOrigin}${scope}${relayPath}`;
 }
 
 export function isMachineName(value: unknown): value is string {

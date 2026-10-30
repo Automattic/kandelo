@@ -28,6 +28,7 @@ import {
   previewRelayUrl,
   type PreviewRefusalCode,
 } from "./protocol";
+import { configuredPreviewRelayPath } from "./config";
 
 const RELAY_READY_TIMEOUT_MS = 20_000;
 const BIND_TIMEOUT_MS = 10_000;
@@ -127,7 +128,7 @@ export class PreviewRelay {
     // The relay learns which Kandelo origin embeds it from document.referrer
     // and checks it against its build-time allow list.
     this.frame.referrerPolicy = "origin";
-    this.frame.src = previewRelayUrl(previewOrigin, scope);
+    this.frame.src = previewRelayUrl(previewOrigin, scope, configuredPreviewRelayPath());
     document.body.append(this.frame);
   }
 

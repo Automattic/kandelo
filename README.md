@@ -303,10 +303,15 @@ Guest web previews (WordPress, nginx, any server inside a machine) run on
 a second origin so their scripts cannot reach the Kandelo page. Add
 `--preview-origin ORIGIN --app-origin ORIGIN` to also write the preview
 origin's bundle to `<out>-preview`, and serve it at the same base on that
-origin. A build without them refuses to open web previews; it never
-serves guests from the app's origin. See
+origin. `--preview-host php` builds that bundle as PHP scripts that send
+their own headers, for a PHP host such as WP Cloud. A build without them
+refuses to open web previews; it never serves guests from the app's
+origin. The preview origin may be a subdomain on the app's site
+(`preview.kandelo.dev`) or a separate domain (`kandelo.site`); see
 [guest web previews](docs/browser-support.md#guest-web-previews-run-on-their-own-origin)
-for what the preview origin must send and the planned production pair.
+for what the preview origin must send and
+[choosing a preview origin](docs/browser-support.md#choosing-a-preview-origin)
+for the trade-off.
 
 WP Cloud can keep serving this static build with the portable PHP signalling
 endpoint (`--signalling-url /signalling/piplet.php`) and its chosen CORS proxy.

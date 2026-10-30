@@ -18,10 +18,13 @@ import path from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createServer, type ViteDevServer } from "vite";
+import { findSignallingPhp } from "../vite/dev-signalling";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(HERE, "../../..");
 const PREVIEW_ORIGIN_MODULE = path.resolve(HERE, "../vite/preview-origin.ts");
 const CONVERGENCE_MODULE = path.resolve(HERE, "../vite/restart-convergence.ts");
+const SIGNALLING_MODULE = path.resolve(HERE, "../vite/dev-signalling.ts");
 
 let previousPreviewOrigin: string | undefined;
 let previousPreviewHost: string | undefined;
@@ -94,10 +97,11 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs: number): Promis
 function configSource(options: { port: number; root: string; plugins: boolean; marker: string }): string {
   const imports = options.plugins
     ? `import { previewOriginPlugin } from ${JSON.stringify(PREVIEW_ORIGIN_MODULE)};\n` +
-      `import { restartConvergencePlugin } from ${JSON.stringify(CONVERGENCE_MODULE)};\n`
+      `import { restartConvergencePlugin } from ${JSON.stringify(CONVERGENCE_MODULE)};\n` +
+      `import { findSignallingPhp } from ${JSON.stringify(SIGNALLING_MODULE)};\n`
     : "";
   const plugins = options.plugins
-    ? `[restartConvergencePlugin(), previewOriginPlugin()]`
+    ? `[restartConvergencePlugin(), previewOriginPlugin({ findPhp: () => findSignallingPhp(${JSON.stringify(REPO_ROOT)}) })]`
     : "[]";
   return `${imports}
 await new Promise((resolve) => setTimeout(resolve, 800));
@@ -185,5 +189,37 @@ test("a config change that lands during a restart is not lost", async () => {
     );
   } finally {
     await server.close();
+  }
+});
+
+test("restarts hand the PHP preview origin's port from one php -S to the next", async (t) => {
+  try {
+    await findSignallingPhp(REPO_ROOT);
+  } catch (error) {
+    t.skip(`no PHP for the php preview bundle: ${String(error)}`);
+    return;
+  }
+  process.env.KANDELO_PREVIEW_HOST = "php";
+  try {
+    const { port, server } = await startServer(true);
+    const answers = () => previewStatus(port + 1, "preview-service-worker.php");
+    try {
+      assert.ok(await waitFor(async () => await answers() === 200, 15_000));
+      for (let restart = 1; restart <= 3; restart++) {
+        await server.restart();
+        assert.ok(
+          await waitFor(async () => await answers() === 200, 15_000),
+          `the PHP preview origin answers after restart ${restart}`,
+        );
+      }
+    } finally {
+      await server.close();
+    }
+    assert.ok(
+      await waitFor(async () => await answers() === null, 10_000),
+      "closing the dev server stops its php -S",
+    );
+  } finally {
+    delete process.env.KANDELO_PREVIEW_HOST;
   }
 });

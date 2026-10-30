@@ -2398,40 +2398,156 @@ own origin.
 
 | Environment | App origin | Preview origin |
 |---|---|---|
-| `vite` / `vite preview` (including `./run.sh browser`) | `http://<host>:<port>` | the same host at `<port>+1`, served by the Vite plugin in `apps/browser-demos/vite/preview-origin.ts`; override with `KANDELO_PREVIEW_ORIGIN` |
+| `vite` / `vite preview` (including `./run.sh browser`) | `http://<host>:<port>` | the same host at `<port>+1`, served by the Vite plugin in `apps/browser-demos/vite/preview-origin.ts`; override with `KANDELO_PREVIEW_ORIGIN`; `KANDELO_PREVIEW_HOST=php` serves the PHP bundle under `php -S` instead |
 | Playwright | `http://127.0.0.1:5401` (`KANDELO_PLAYWRIGHT_PORT`) | `http://127.0.0.1:5402` (that port + 1) |
-| Production build | as deployed | `./run.sh build-browser --preview-origin ORIGIN --app-origin ORIGIN` writes the preview bundle to `<out>-preview`; serve it at the same scope on the preview origin |
+| Production build | as deployed | `./run.sh build-browser --preview-origin ORIGIN --app-origin ORIGIN [--preview-host static\|php]` writes the preview bundle to `<out>-preview`; serve it at the same scope on the preview origin |
 | Spacefast | `https://<label>.space.fast` | a second, public Space: `node scripts/deploy-spacefast.mjs --space ... --preview-space ...` (see `apps/spacefast-cors-proxy/README.md`) |
-| WP Cloud (`kandelo.dev`, deployed by hand) | `https://kandelo.dev` | not deployed yet: either `https://preview.kandelo.dev` (same site) or `https://kandelo.site` (another site), a separate WP Cloud site; see "Production pair" and "Choosing a preview origin" below |
+| WP Cloud (`kandelo.dev`, deployed by hand) | `https://kandelo.dev` | not deployed yet: either `https://preview.kandelo.dev` (same site) or `https://kandelo.site` (another site), a separate WP Cloud site serving the PHP bundle (`--preview-host php`); see "Production pair" and "Choosing a preview origin" below |
+
+The preview origin serves only the preview service worker, the relay page
+each Kandelo tab frames (built with the app origin injected), and a
+redirect from `<scope>computer/*` to the viewer shell. Every response
+carries COEP `require-corp`, CORP `cross-origin`,
+`Origin-Agent-Cluster: ?1`, `X-Content-Type-Options: nosniff` and
+`Cache-Control: no-store`, and nothing that forbids framing
+(`X-Frame-Options`, `frame-ancestors`): the relay and guest pages are
+framed by Kandelo. The server itself must send these: Kandelo's page is
+cross-origin isolated, so the browser refuses a cross-origin frame whose
+response lacks COEP and CORP, and the relay's first load comes before any
+preview service worker exists to add them.
+
+Letting any site frame the preview origin is safe only because browsers
+partition service workers and storage by top-level site. A preview-origin
+frame under another site's page gets that partition's own registration,
+which holds no owner's port, so it reaches no machine; only frames under a
+Kandelo page share the owner tab's partition. Current Chrome, Firefox and
+Safari partition this way by default. Chromium can be told not to (the
+`ThirdPartyStoragePartitioningBlockedForOrigins` enterprise policy, for
+one), and Playwright's own Chromium defaults turn partitioning off (see
+"Residual risks and boundaries" below). In such a browser,
+another site that knows a running machine's name (it is in every shared
+link) could frame that machine's pages under the user's live preview
+worker, and post forms into that frame, answered with the machine's
+cookies: the worker treats a navigation from an unknown site like a new
+frame Kandelo opened. Kandelo does not detect an unpartitioned browser.
+
+`no-store` lets a deploy reach open tabs at once; the relay and worker
+carry the protocol version and the app origin, which must match the
+app's. A private Spacefast Space's access
+page forbids framing, so a preview Space must be public. The preview
+origin must not be approved for the CORS proxy. The development and
+test defaults use a same-site preview origin (the app's host at port + 1);
+a deployment chooses either layout, as "Choosing a preview origin" below
+describes.
+
+**Preview hosts.** `--preview-host` picks how the bundle gets those
+headers; the app is built for the same host, because it decides the relay
+page's URL:
+
+| `--preview-host` | Files in `<out>-preview` | The host must |
+|---|---|---|
+| `static` (default) | `preview-service-worker.js`, `__kandelo_preview/relay.html`, `__kandelo_preview/relay.js` | add the headers above to every response and redirect `<scope>computer/*` (Spacefast: the `_headers` and `_redirects` its packager writes) |
+| `php` | `preview-service-worker.php`, `__kandelo_preview/relay.php` (the relay page with its script inline), `index.php` | run PHP. Each script sends the headers itself, so the host needs no header configuration. `index.php` sends `computer/*` visits to the viewer shell, but only where the host routes requests for missing paths to it, as WordPress-style hosting and `php -S` do; elsewhere those visits get the host's own 404 |
+
+The `php` scripts hold their file's bytes after `__halt_compiler()` and
+send them unchanged; they need no other file, no rewrite rule and no PHP
+extension. They answer `GET` and `HEAD` and refuse other methods with
+`405`.
+
+The `computer/*` redirect is a convenience, not a dependency: a top-level
+visit to the preview origin happens only when a guest link opens a new
+tab or a preview-origin URL is pasted, and the shareable address is the
+app origin's viewer shell anyway. Without it such a visit gets a `404`
+instead of a redirect.
 
 **Production pair.** `kandelo.dev` (the app, deployed by hand) will
 pair with a preview origin on a separate WP Cloud site. Either layout
 works: `https://preview.kandelo.dev`, a subdomain on the same site, or
 `https://kandelo.site`, a different registrable domain. "Choosing a
-preview origin" below gives the trade-off; what the preview site must
-serve is the same for both. No preview site is deployed yet. Until a
-deployment's preview origin exists and the app is built for it with
-`--preview-origin`, web previews in that deployment show the explicit
-"This deployment has no isolated preview origin" error; they are never
-served from the app's origin instead.
-`./run.sh build-browser` writes the preview bundle's files but no server
-configuration for WP Cloud (only the Spacefast packager writes
-`_headers` and `_redirects`), so that site has to send the response
-fields and the `computer/*` redirect described next.
+preview origin" below gives the trade-off; the steps are the same for
+both. No preview site is deployed yet. Until a deployment's preview origin
+exists and the app is built for it with `--preview-origin`, web previews
+in that deployment show the explicit "This deployment has no isolated
+preview origin" error; they are never served from the app's origin
+instead.
 
-The preview origin serves only `<scope>preview-service-worker.js`,
-`<scope>__kandelo_preview/relay.html` and `relay.js` (built with the app
-origin injected), and a redirect from `<scope>computer/*` to the viewer
-shell. Every response carries COEP `require-corp`, CORP `cross-origin`
-and `Origin-Agent-Cluster: ?1`, and nothing that forbids framing
-(`X-Frame-Options`, `frame-ancestors`): the relay and guest pages are
-framed by Kandelo. A private Spacefast Space's access page forbids framing,
-so a preview Space must be public. The preview origin must not be approved
-for the CORS proxy. The defaults choose a same-site preview origin, so
-Firefox automation can drive the frame and top-level preview tabs reach
-the worker in Chromium and Firefox; correctness does not depend on it
-(the viewer shell), and a deployment may choose a different registrable
-domain for stronger process isolation.
+The PHP bundle has run only under PHP's built-in server (`php -S`), not on
+WP Cloud itself: whether WP Cloud passes PHP's response headers through
+unchanged, adds its own (an `X-Frame-Options` would break the frame), or
+routes missing paths to `index.php` is unverified. Check each with `curl`
+before relying on the pair. To deploy it:
+
+1. Choose the preview origin, then build both bundles from one checkout,
+   in the dev shell:
+
+   ```bash
+   PREVIEW_ORIGIN=https://preview.kandelo.dev   # or https://kandelo.site
+   ./run.sh build-browser --out "$PWD/dist-kandelo-dev" \
+     --signalling-url /signalling/piplet.php \
+     --preview-origin "$PREVIEW_ORIGIN" --app-origin https://kandelo.dev \
+     --preview-host php
+   ```
+
+   This writes the app to `dist-kandelo-dev/` and the preview bundle to
+   `dist-kandelo-dev-preview/`. Both carry preview protocol version 3;
+   deploy them together, or previews fail with a version mismatch.
+2. Upload the contents of `dist-kandelo-dev-preview/` to the document
+   root of the preview origin's WP Cloud site, so that
+   `$PREVIEW_ORIGIN/__kandelo_preview/relay.php` is that file. Nothing
+   else is needed on that site; it must not run WordPress or anything
+   else on the same origin, since every page there shares the guests'
+   origin.
+3. Check the preview site before the app points at it:
+
+   ```bash
+   curl -sI "$PREVIEW_ORIGIN/__kandelo_preview/relay.php"
+   curl -sI "$PREVIEW_ORIGIN/preview-service-worker.php"
+   curl -sI "$PREVIEW_ORIGIN/computer/test/"
+   ```
+
+   The first two must answer `200` with `Content-Type: text/html;
+   charset=utf-8` and `Content-Type: text/javascript; charset=utf-8`
+   respectively, and both must carry
+   `Cross-Origin-Embedder-Policy: require-corp`,
+   `Cross-Origin-Resource-Policy: cross-origin`,
+   `Origin-Agent-Cluster: ?1`, `X-Content-Type-Options: nosniff` and
+   `Cache-Control: no-store`, with no `X-Frame-Options` and no
+   `Content-Security-Policy` naming `frame-ancestors`. A `Cache-Control`
+   from a cache in front of PHP that overrides `no-store` delays deploys
+   from reaching open tabs. The third should answer `302` with
+   `Location: https://kandelo.dev/computer/test/`; a `404` means WP Cloud
+   does not route missing paths to `index.php`, and previews still work
+   (see above).
+4. Upload the contents of `dist-kandelo-dev/` to `kandelo.dev` as before.
+   The app gets cross-origin isolation from its own service worker, not
+   from server headers, as it does today.
+5. Open a machine with a web server (the nginx image) on
+   `https://kandelo.dev` and load its preview in Chromium, Firefox and
+   WebKit. A failure to reach the preview origin shows "The preview origin
+   <preview origin> did not answer" in the preview pane, and a browser
+   that denies the preview origin storage shows "This browser blocks
+   storage for the preview origin <preview origin>".
+
+Locally, the same pair runs cross-site, with the Vite plugin serving the
+PHP bundle under `php -S` (PHP found as for the development signalling
+server: `KANDELO_SIGNALLING_PHP`, `php` on `PATH`, then
+`apps/signalling/tools.nix`):
+
+```bash
+cd apps/browser-demos
+KANDELO_PREVIEW_ORIGIN=http://localhost:5462 KANDELO_PREVIEW_HOST=php \
+  npx vite --host 127.0.0.1 --port 5461
+```
+
+`127.0.0.1` and `localhost` are different sites, as `kandelo.dev` and
+`kandelo.site` are; drop `KANDELO_PREVIEW_ORIGIN` for the same-site
+layout, as `kandelo.dev` and `preview.kandelo.dev` are.
+`test/preview-isolation.spec.ts` run against such a server
+(`KANDELO_PLAYWRIGHT_PORT=5461` with the same two variables) loads a
+guest page with CSS and JavaScript from a booted nginx machine through
+the PHP bundle in Chromium and WebKit; in Firefox the guest page
+renders, but Playwright's Firefox driver cannot automate a cross-site
+frame, so that spec cannot finish there.
 
 **Residual risks and boundaries.**
 

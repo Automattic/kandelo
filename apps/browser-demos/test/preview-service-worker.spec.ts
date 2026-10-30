@@ -12,6 +12,7 @@ import { createServer, type Server } from "node:http";
 import { machineIdentityFor } from "../lib/preview/machine-names";
 import {
   PREVIEW_PROTOCOL_VERSION,
+  PREVIEW_HOST_LAYOUTS,
   previewBundleFiles,
   servePreviewOriginRequest,
 } from "../vite/preview-origin";
@@ -226,6 +227,7 @@ test.beforeAll(async () => {
     protocolVersion: PREVIEW_PROTOCOL_VERSION,
     kandeloOrigins: [APP],
     kandeloOriginPattern: null,
+    ...PREVIEW_HOST_LAYOUTS.static,
   });
 });
 

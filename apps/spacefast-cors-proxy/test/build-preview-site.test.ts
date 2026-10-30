@@ -31,7 +31,8 @@ test("preview packager adds isolation headers and the viewer-shell redirect, not
   const headers = await readFile(join(output, "_headers"), "utf8");
   assert.match(headers, /^\/\*\n/);
   for (const line of ["Cross-Origin-Embedder-Policy: require-corp", "Cross-Origin-Resource-Policy: cross-origin",
-    "Origin-Agent-Cluster: ?1"]) assert.ok(headers.includes(line), line);
+    "Origin-Agent-Cluster: ?1", "X-Content-Type-Options: nosniff", "Cache-Control: no-store",
+  ]) assert.ok(headers.includes(line), line);
   // The relay and guest pages are framed by Kandelo: never forbid framing.
   assert.doesNotMatch(headers, /frame-ancestors|X-Frame-Options/i);
   assert.equal(await readFile(join(output, "_redirects"), "utf8"),

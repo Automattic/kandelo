@@ -42,7 +42,7 @@ import {
 import { DEFAULT_BROWSER_CORS_PROXY_CONFIG, DEVELOPMENT_CREDENTIAL_RELAY_ORIGINS } from "./lib/browser-cors-proxy";
 import { createProxySessionTransport } from "../../host/src/networking/cors-proxy-session";
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
-import { devSignallingServer } from "./vite/dev-signalling";
+import { devSignallingServer, findSignallingPhp } from "./vite/dev-signalling";
 import { batchedFsServePath, devLazyAssets } from "./vite/dev-lazy-assets";
 import { createCredentialRelayHandler } from "./vite/credential-relay";
 import {
@@ -1190,7 +1190,8 @@ export default defineConfig(() => {
       injectCorsProxyConfig(),
       devCorsProxyMiddleware(),
       devSignallingServer(repoRoot),
-      previewOriginPlugin(),
+      // The same PHP as the development signalling server.
+      previewOriginPlugin({ findPhp: () => findSignallingPhp(repoRoot) }),
     ],
     server: {
       host: "127.0.0.1",

@@ -6,7 +6,8 @@
  * read or drive the Kandelo page, its storage or its credential prompt. This
  * worker owns `<scope>computer/<name>/…` and forwards each request to the
  * Kandelo tab that owns machine `<name>`, over a MessagePort that tab handed
- * over through its hidden relay frame (`__kandelo_preview/relay.html`). It
+ * over through its hidden relay frame (`__kandelo_preview/relay.html`, or
+ * `relay.php` on a PHP host). It
  * holds no cookies and no persistent state: the owning tab keeps the cookie
  * jar and shapes every response. See docs/browser-support.md, "Guest web
  * previews run on their own origin", and apps/browser-demos/lib/preview/.
@@ -44,8 +45,10 @@
  */
 "use strict";
 
-// Injected by the build (apps/browser-demos/vite.config.ts):
-// { protocolVersion, kandeloOrigins: [exact origins], kandeloOriginPattern }.
+// Injected by the build (apps/browser-demos/vite/preview-origin.ts):
+// { protocolVersion, kandeloOrigins: [exact origins], kandeloOriginPattern,
+//   relayPath, workerFile }; the last two depend on the host (the `static`
+// paths, or `.php` entry points on a PHP host).
 var PREVIEW_CONFIG = "__KANDELO_PREVIEW_ORIGIN_CONFIG__";
 var PROTOCOL_VERSION = 3;
 var NAME_PATTERN = /^[a-z]{2,12}-[a-z]{2,12}-[a-z]{2,12}-[a-z2-7]{20}$/;
@@ -77,12 +80,20 @@ var MAX_OWNER_SEQS = 1024;
 var config = PREVIEW_CONFIG && typeof PREVIEW_CONFIG === "object" &&
     Array.isArray(PREVIEW_CONFIG.kandeloOrigins) &&
     PREVIEW_CONFIG.kandeloOrigins.length > 0 &&
-    PREVIEW_CONFIG.protocolVersion === PROTOCOL_VERSION
+    PREVIEW_CONFIG.protocolVersion === PROTOCOL_VERSION &&
+    typeof PREVIEW_CONFIG.relayPath === "string" &&
+    typeof PREVIEW_CONFIG.workerFile === "string"
   ? PREVIEW_CONFIG
   : null;
+// The static host's paths stand in when the configuration is unusable; the
+// worker then answers machine requests with "not configured" (below).
+var LAYOUT = config || {
+  relayPath: "__kandelo_preview/relay.html",
+  workerFile: "preview-service-worker.js",
+};
 
 var SCOPE_PATH = new URL(self.registration.scope).pathname;
-var WORKER_FILE = "preview-service-worker.js";
+var WORKER_FILE = LAYOUT.workerFile;
 
 function isKandeloOrigin(origin) {
   if (!config) return false;
@@ -106,7 +117,7 @@ function isDeploymentWorker() {
 var deploymentWorker = isDeploymentWorker();
 var COMPUTER_ROOT = SCOPE_PATH + "computer";
 var COMPUTER_BASE = COMPUTER_ROOT + "/";
-var RELAY_PATH = SCOPE_PATH + "__kandelo_preview/relay.html";
+var RELAY_PATH = SCOPE_PATH + LAYOUT.relayPath;
 
 // name -> { port, ownerClientId, pending: Map(id -> settle), ownerCheckedAt }
 var bridges = new Map();
@@ -1061,7 +1072,7 @@ self.addEventListener("fetch", function (event) {
     return;
   }
 
-  if (url.pathname === RELAY_PATH || url.pathname === SCOPE_PATH + "preview-service-worker.js") {
+  if (url.pathname === RELAY_PATH || url.pathname === SCOPE_PATH + WORKER_FILE) {
     return;
   }
 
