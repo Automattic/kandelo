@@ -153,14 +153,12 @@ fn playwright_suites(suites: &[Value], parents: &[String], out: &mut Cases) -> R
                 let outcome = match status {
                     "expected" => "expected-fail",
                     "flaky" => "intermittent",
+                    // Playwright also calls interrupted attempts "skipped".
+                    "skipped" | "unexpected" if observed.last() == Some(&"interrupted") => "error",
                     "skipped" => "skip",
                     "unexpected" if observed.last() == Some(&"passed") => "unexpected-pass",
                     "unexpected" if observed.last() == Some(&"timedOut") => "timeout",
-                    "unexpected"
-                        if observed.is_empty() || observed.last() == Some(&"interrupted") =>
-                    {
-                        "error"
-                    }
+                    "unexpected" if observed.is_empty() => "error",
                     "unexpected" => "fail",
                     _ => return Err(format!("unknown Playwright status: {status}")),
                 };

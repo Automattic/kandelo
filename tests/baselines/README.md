@@ -77,10 +77,14 @@ Build xtask as described in its [README](../../tools/xtask/README.md), then
 import one finished process report (replace RUN_DIR with its directory):
 
 ```bash
-scripts/dev-shell.sh target/aarch64-apple-darwin/debug/xtask \
-  test-failures vitest RUN_DIR/report.json RUN_DIR/context.json \
-  > RUN_DIR/failures.json
+scripts/dev-shell.sh bash -c '
+  target/aarch64-apple-darwin/debug/xtask \
+    test-failures vitest RUN_DIR/report.json RUN_DIR/context.json \
+    > RUN_DIR/failures.json
+'
 ```
+
+Keep redirection inside the dev shell so startup banners stay out of JSON.
 
 Formats are `vitest` (JSON), `playwright` (JSON), and `conformance` (text).
 The output contains supplied context, the source-report hash, and sorted
@@ -111,6 +115,7 @@ to the Vitest/Playwright JSON importer.
 Playwright retry statuses are preserved in `observed`; mixed outcomes are
 intermittent. Terminal outcomes use the final attempt's diagnostic;
 intermittent results retain a failure diagnostic after a passing retry.
+Interrupted attempts are run errors; intentional skips remain skips.
 Vitest JSON omits retry history: retain console evidence and
 document observed retries separately, without inventing rates. Conformance
 `FLAKE-*` labels annotate known-flaky tests after a single attempt; preserve

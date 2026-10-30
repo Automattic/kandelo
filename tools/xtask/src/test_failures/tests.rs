@@ -242,3 +242,23 @@ fn playwright_retry_diagnostics_match_the_recorded_outcome() {
         assert_eq!(case["reason"], reason);
     }
 }
+
+#[test]
+fn playwright_aggregate_skips_preserve_interrupted_attempts() {
+    for (observed, outcome) in [
+        (vec!["interrupted"], "error"),
+        (vec!["skipped"], "skip"),
+        (vec![], "skip"),
+    ] {
+        let report = json!({"stats":{"expected":0},"errors":[],"suites":[{
+            "title":"file","specs":[{"file":"a.spec.ts","title":"case","tests":[{
+                "projectName":"webkit","expectedStatus":"passed","status":"skipped",
+                "results":observed.iter().map(|s| json!({"status":s})).collect::<Vec<_>>()
+            }]}]
+        }]});
+        let parsed = parse("playwright", &report.to_string(), Path::new("/repo")).unwrap();
+        let case = &parsed["cases"]["[webkit] a.spec.ts > file > case"];
+        assert_eq!(case["outcome"], outcome);
+        assert_eq!(case["observed"], json!(observed));
+    }
+}
