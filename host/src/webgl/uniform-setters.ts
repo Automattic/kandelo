@@ -1,3 +1,4 @@
+import { publishedUniformLocation } from "./object-group.js";
 import type { GlBinding } from "./registry.js";
 import { currentProgramName, recordGlError } from "./program-objects.js";
 import * as O from "./ops.js";
@@ -12,8 +13,8 @@ export function acceptedUniformCount(b: GlBinding, op: number, v: DataView, p: n
   const reject=()=>{recordGlError(b,0x502);return null;};
   if(!program) return reject();
   if(location===-1) return 0;
-  const meta=b.uniformMetadata.get(location);
-  if(!meta || !b.uniformLocations.has(location) || b.uniformLocationPrograms.get(location)!==program
+  const record=publishedUniformLocation(b,location), meta=record?.metadata;
+  if(!meta || record?.program!==program
       || meta.executable!==b.currentProgram) return reject();
   const scalar=op<=O.OP_UNIFORM4F;
   const count=scalar?1:v.getUint32(p+4,true);

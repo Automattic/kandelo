@@ -1,3 +1,4 @@
+import { publishedUniformLocation } from "./object-group.js";
 import { interruptUniformUpload } from "./uniform-upload.js";
 import { repairNativeState } from "./native-recovery.js";
 import { reconcileClientArrayRestore } from "./client-array.js";
@@ -475,8 +476,8 @@ export function runGlQuery(
         const fail = (error: number) => { recordGlError(b,error); return -22; };
         const program = b.programs.get(name);
         if (!program) return fail(b.shaders.has(name) ? 0x502 : 0x501);
-        const location = b.uniformLocations.get(index);
-        if (!location || b.uniformLocationPrograms.get(index) !== name) return fail(0x502);
+        const location = publishedUniformLocation(b,index)?.native;
+        if (!location || publishedUniformLocation(b,index)?.program !== name) return fail(0x502);
         let linked = false, value: unknown;
         if (!checkedGlCall(b,() => { linked = !!gl.getProgramParameter(program,0x8b82); })) return -5;
         if (!linked) return fail(0x502);
@@ -499,7 +500,7 @@ export function runGlQuery(
     case O.QOP_GET_UNIFORMIV: {
       if (input.byteLength < 8 || out.byteLength < 4) return -22;
       const prog = b.programs.get(inDv.getUint32(0, true));
-      const loc = b.uniformLocations.get(inDv.getInt32(4, true)) ?? null;
+      const loc = publishedUniformLocation(b,inDv.getInt32(4, true))?.native ?? null;
       const value = prog && loc ? gl.getUniform(prog, loc) : null;
       return writeNumericValues(outDv, out.byteLength, value, op === O.QOP_GET_UNIFORMFV, 0);
     }

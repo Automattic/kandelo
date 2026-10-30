@@ -54,12 +54,10 @@ export function finalizeProgram(b: GlBinding, name: number): void {
 }
 
 function invalidateProgramLocations(b: GlBinding, name: number): void {
-  for (const [location, owner] of b.uniformLocationPrograms) {
-    if (owner !== name) continue;
-    b.uniformLocationPrograms.delete(location);
-    b.uniformLocations.delete(location);
-    b.uniformLocationNames.delete(location);
-    b.uniformMetadata.delete(location);
+  for (const [location, record] of b.uniformLocationRecords) {
+    if (record.program !== name) continue;
+    if (record.state === "reserved") record.state = "invalid";
+    else b.uniformLocationRecords.delete(location);
   }
 }
 

@@ -608,8 +608,7 @@ it.each(["query","present","make-current"])("forwarded %s refuses an incomplete 
   try {
     expect(channel.onCreateContext(0)).toBe(0);const b=owner!;
     const program={} as WebGLProgram;b.programs.set(20,program);b.currentProgram=b.shadow.currentProgram=program;b.currentProgramId=20;
-    b.uniformLocations.set(1,{} as WebGLUniformLocation);b.uniformLocationPrograms.set(1,20);
-    b.uniformMetadata.set(1,{executable:program,type:0x1406,array:true,remaining:2});
+    b.uniformLocationRecords.set(1,{program:20,canonical:"value",native:{} as WebGLUniformLocation,metadata:{executable:program,type:0x1406,array:true,remaining:2},state:"published",references:0});
     runUniformUpload(b,O.OP_UNIFORM_UPLOAD_BEGIN,new DataView(new Uint32Array([1,O.OP_UNIFORM1FV,1,20000,0]).buffer),()=>{});
     const pending=b.uniformUpload;
     // A different logical session remains independent between command frames.

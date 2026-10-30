@@ -88,8 +88,8 @@ function setup() {
   send(O.OP_LINK_PROGRAM, [20]);
   send(O.OP_USE_PROGRAM, [20]);
   const original = native.current!;
-  b.uniformLocations.set(1, {} as WebGLUniformLocation);
-  b.uniformLocationPrograms.set(1, 20);
+  b.uniformLocationRecords.set(1,{program:20,canonical:"seed",native:{} as WebGLUniformLocation,metadata:{executable:original,type:0x8b52,array:false,remaining:1},state:"published",references:0});
+  b.nextUniformLoc=1;
   return { b, gl, native, registry, send, query, original };
 }
 
@@ -181,7 +181,7 @@ describe("program link attempts and installed executables", () => {
       send(op,[location,2,...(matrix?[0]:[]),...Array(components*2).fill(0)]);
       expect(query(O.QOP_GET_ERROR)).toBe(0x502);
     }
-    b.uniformMetadata.set(location,{...b.uniformMetadata.get(location)!,type:0x8b60});
+    b.uniformLocationRecords.get(location)!.metadata={...b.uniformLocationRecords.get(location)!.metadata,type:0x8b60};
     send(op,words);expect(query(O.QOP_GET_ERROR)).toBe(type===0x1404?0:0x502);
   });
   it.each([1,2,3,4])("allows both float and integer signatures for boolean width %s",n=>{
@@ -196,18 +196,18 @@ describe("program link attempts and installed executables", () => {
     const {b,native}=setup();native.uniforms=[{name:"lights[2].colors[0]",size:4,type:0x8b52},
       {name:"lights[1].enabled",size:1,type:0x8b56}];
     const location=uniformLocation(b,20,"lights[0002].colors[0003]")!;
-    expect(b.uniformMetadata.get(location)).toEqual({executable:b.currentProgram,type:0x8b52,array:true,remaining:1});
+    expect(b.uniformLocationRecords.get(location)?.metadata).toEqual({executable:b.currentProgram,type:0x8b52,array:true,remaining:1});
     const field=uniformLocation(b,20,"lights[1].enabled")!;
-    expect(b.uniformMetadata.get(field)?.array).toBe(false);
+    expect(b.uniformLocationRecords.get(field)?.metadata?.array).toBe(false);
   });
   it("preserves metadata through failed use, failed relink and deleted-current ownership",()=>{
     const {b,native,send,query,original}=setup();const location=uniformLocation(b,20,"color")!;
     send(O.OP_CREATE_PROGRAM,[21]);send(O.OP_USE_PROGRAM,[21]);expect(query(O.QOP_GET_ERROR)).toBe(0x502);
     (b.shaders.get(11) as unknown as Shader).compiled=false;send(O.OP_LINK_PROGRAM,[20]);
     send(O.OP_UNIFORM1FV,[location,0]);expect(query(O.QOP_GET_ERROR)).toBe(0);
-    expect(b.uniformMetadata.get(location)?.executable).toBe(original);
+    expect(b.uniformLocationRecords.get(location)?.metadata?.executable).toBe(original);
     send(O.OP_DELETE_PROGRAM,[20]);send(O.OP_UNIFORM1FV,[location,0]);expect(query(O.QOP_GET_ERROR)).toBe(0);
-    send(O.OP_USE_PROGRAM,[0]);expect(b.uniformMetadata.has(location)).toBe(false);
+    send(O.OP_USE_PROGRAM,[0]);expect(b.uniformLocationRecords.has(location)).toBe(false);
     expect(native.deleted.has(original)).toBe(true);
   });
   it("rejects a newer program executable's location against an older shared current executable",()=>{
@@ -216,18 +216,40 @@ describe("program link attempts and installed executables", () => {
     linkProgramRetainingExecutable(peer,20);
     expect(parent.b.currentProgram).toBe(parent.original);
     const fresh=uniformLocation(peer,20,"color")!;
-    expect(parent.b.uniformMetadata.has(old)).toBe(false);
-    expect(parent.b.uniformMetadata.get(fresh)?.executable).not.toBe(parent.original);
+    expect(parent.b.uniformLocationRecords.has(old)).toBe(false);
+    expect(parent.b.uniformLocationRecords.get(fresh)?.metadata?.executable).not.toBe(parent.original);
     parent.send(O.OP_UNIFORM1FV,[fresh,0]);expect(parent.query(O.QOP_GET_ERROR)).toBe(0x502);
     useProgramIfAccepted(parent.b,20);parent.send(O.OP_UNIFORM1FV,[fresh,0]);expect(parent.query(O.QOP_GET_ERROR)).toBe(0);
-    parent.registry.destroyContext(1,0);parent.registry.destroyContext(1,12);expect(peer.uniformMetadata.size).toBe(0);
+    parent.registry.destroyContext(1,0);parent.registry.destroyContext(1,12);expect(peer.uniformLocationRecords.size).toBe(0);
   });
-  it("rolls back every location map if immutable metadata publication fails",()=>{
+  it("does not publish a location record if its allocation fails",()=>{
     const {b}=setup();const before=b.nextUniformLoc;
-    b.uniformMetadata.set=()=>{throw new Error("allocation failed");};
+    b.uniformLocationRecords.set=()=>{throw new Error("allocation failed");};
     expect(uniformLocation(b,20,"color")).toBeNull();expect(b.errors).toEqual([0x505]);
     expect(b.nextUniformLoc).toBe(before);
-    for(const map of [b.uniformLocations,b.uniformLocationPrograms,b.uniformLocationNames,b.uniformMetadata]) expect(map.has(before+1)).toBe(false);
+    for(const map of [b.uniformLocationRecords]) expect(map.has(before+1)).toBe(false);
+  });
+  it("does not expose reserved or invalid location records to setters or value queries",()=>{
+    const {b,native,send,query}=setup();const location=uniformLocation(b,20,"color")!;
+    const record=b.uniformLocationRecords.get(location)!;
+    for(const state of ["reserved","invalid"] as const) {
+      record.state=state;
+      send(O.OP_UNIFORM1F,[location,0]);expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+      expect(uniformReply(b,20,location).status).toBe(1);expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+      expect(native.uniformWrites).toBe(0);
+    }
+    record.state="published";send(O.OP_UNIFORM1F,[location,0]);expect(query(O.QOP_GET_ERROR)).toBe(0);
+    expect(native.uniformWrites).toBe(1);
+  });
+  it("invalidates an unpublished reservation without making its old native location usable",()=>{
+    const parent=setup(),peer=sharePeer(parent);
+    const location=uniformLocation(parent.b,20,"color")!,record=parent.b.uniformLocationRecords.get(location)!;
+    record.state="reserved";record.references=1;
+    linkProgramRetainingExecutable(peer,20);
+    expect(record.state).toBe("invalid");expect(parent.b.uniformLocationRecords.get(location)).toBe(record);
+    parent.send(O.OP_UNIFORM1F,[location,0]);expect(parent.query(O.QOP_GET_ERROR)).toBe(0x502);
+    const fresh=uniformLocation(peer,20,"color")!;expect(fresh).toBeGreaterThan(location);
+    expect(peer.uniformLocationRecords.get(fresh)?.native).not.toBe(record.native);
   });
 
   it("keeps transpose errors observable before zero-count or inactive no-ops",()=>{
@@ -401,16 +423,16 @@ describe("program link attempts and installed executables", () => {
     expect(parent.b.uniformLookup?.bytes.length).toBe(32);expect(peer.uniformLookup?.bytes.length).toBe(64);
     const text=new TextEncoder().encode("color");expect(lookup(peer,0,2,text.length,text).status).toBe(0);expect(peer.uniformLookup).toBeNull();
     lookup(peer,1,3,64);parent.registry.destroyContext(1,0);expect(parent.b.uniformLookup).toBeNull();expect(peer.uniformLookup?.bytes.length).toBe(64);
-    parent.registry.destroyContext(1,12);expect(peer.uniformLookup).toBeNull();expect(peer.uniformLocationNames.size).toBe(0);
+    parent.registry.destroyContext(1,12);expect(peer.uniformLookup).toBeNull();expect(peer.uniformLocationRecords.size).toBe(0);
   });
   it("rejects a program retired during a name transfer and preserves location state on allocation failure",()=>{
     const {b,native}=setup();b.nextUniformLoc=1;lookup(b,1,1,1);lookup(b,2,1,0,new Uint8Array([65]));b.programs.delete(20);
     expect(lookup(b,3,1).status).toBe(1);expect(b.uniformLookup).toBeNull();expect(b.errors.pop()).toBe(0x501);
     const program=native.createProgram()!;program.linked=true;b.programs.set(20,program);
-    const set=b.uniformLocationNames.set.bind(b.uniformLocationNames);b.uniformLocationNames.set=()=>{throw new Error("allocation rejected");};
+    const set=b.uniformLocationRecords.set.bind(b.uniformLocationRecords);b.uniformLocationRecords.set=()=>{throw new Error("allocation rejected");};
     const text=new TextEncoder().encode("color");expect(lookup(b,0,2,text.length,text).status).toBe(1);
-    expect(b.nextUniformLoc).toBe(1);expect(b.uniformLocations.has(2)).toBe(false);expect(b.uniformLocationPrograms.has(2)).toBe(false);expect(b.errors.pop()).toBe(0x505);
-    b.uniformLocationNames.set=set;expect(lookup(b,0,3,text.length,text).location).toBe(2);
+    expect(b.nextUniformLoc).toBe(1);expect(b.uniformLocationRecords.has(2)).toBe(false);expect(b.uniformLocationRecords.has(2)).toBe(false);expect(b.errors.pop()).toBe(0x505);
+    b.uniformLocationRecords.set=set;expect(lookup(b,0,3,text.length,text).location).toBe(2);
   });
   it("returns an existing location at counter exhaustion and rejects new indices without wrapping",()=>{
     const {b}=setup();b.nextUniformLoc=1;const text=new TextEncoder().encode("color");const first=lookup(b,0,1,text.length,text).location;
@@ -465,8 +487,8 @@ describe("program link attempts and installed executables", () => {
     for(const [name,location,error] of [[0,1,0x501],[10,1,0x502],[20,-1,0x502],[20,99,0x502]]) {
       const result=uniformReply(b,name,location);expect(result.status).toBe(1);expect(result.count).toBe(0);expect(b.errors.pop()).toBe(error);
     }
-    b.uniformLocationPrograms.set(1,99);expect(uniformReply(b).status).toBe(1);expect(b.errors.pop()).toBe(0x502);
-    b.uniformLocationPrograms.set(1,20);original.linked=false;expect(uniformReply(b).status).toBe(1);expect(b.errors.pop()).toBe(0x502);
+    b.uniformLocationRecords.get(1)!.program=99;expect(uniformReply(b).status).toBe(1);expect(b.errors.pop()).toBe(0x502);
+    b.uniformLocationRecords.get(1)!.program=20;original.linked=false;expect(uniformReply(b).status).toBe(1);expect(b.errors.pop()).toBe(0x502);
     original.linked=true;native.getUniform=()=>{native.error=0x502;return new Float32Array(16).fill(42);};
     expect(uniformReply(b).status).toBe(1);expect(b.errors.pop()).toBe(0x502);
   });
@@ -475,7 +497,7 @@ describe("program link attempts and installed executables", () => {
     (peer.shaders.get(11) as unknown as Shader).compiled=false;
     linkProgramRetainingExecutable(peer,20);expect(uniformReply(parent.b).status).toBe(1);expect(parent.b.errors.pop()).toBe(0x502);
     (peer.shaders.get(11) as unknown as Shader).compiled=true;
-    linkProgramRetainingExecutable(peer,20);expect(parent.b.uniformLocations.has(1)).toBe(false);
+    linkProgramRetainingExecutable(peer,20);expect(parent.b.uniformLocationRecords.has(1)).toBe(false);
     expect(uniformReply(parent.b).status).toBe(1);expect(parent.b.errors.pop()).toBe(0x502);
   });
   it("rejects malformed uniform requests before writing and rejects impossible native widths",()=>{
@@ -530,7 +552,7 @@ describe("program link attempts and installed executables", () => {
     expect(query(O.QOP_GET_INTEGERV, [0x8b8d])).toBe(20);
     expect(original.linked).toBe(true);
     expect(native.current).toBe(original);
-    expect(b.uniformLocations.has(1)).toBe(true);
+    expect(b.uniformLocationRecords.has(1)).toBe(true);
     const muxer = new GlMuxer(gl);
     muxer.switchTo({ shadow: { ...b.shadow, currentProgram: null }, errors: [] });
     muxer.switchTo(b);
@@ -557,7 +579,7 @@ describe("program link attempts and installed executables", () => {
     expect(native.current).toBe(replacement);
     expect(native.deleted.has(original)).toBe(true);
     expect(native.deletions.get(original)).toBe(1);
-    expect(b.uniformLocations.has(1)).toBe(false);
+    expect(b.uniformLocationRecords.has(1)).toBe(false);
     expect(query(O.QOP_GET_INTEGERV, [0x8b8d])).toBe(20);
     send(O.OP_UNIFORM1F, [1, 0]);
     expect(query(O.QOP_GET_ERROR)).toBe(0x502);
@@ -575,7 +597,7 @@ describe("program link attempts and installed executables", () => {
     expect(native.current).toBe(b.programs.get(20));
     expect(native.current).not.toBe(original);
     expect(native.deleted.has(original)).toBe(true);
-    expect(b.uniformLocations.has(1)).toBe(false);
+    expect(b.uniformLocationRecords.has(1)).toBe(false);
   });
 
   it("can relink a deletion-pending current program with deletion-pending shaders", () => {
@@ -600,7 +622,7 @@ describe("program link attempts and installed executables", () => {
     expect(query(O.QOP_GET_ERROR)).toBe(0x505);
     expect(b.programs.get(20)).toBe(original);
     expect(native.current).toBe(original);
-    expect(b.uniformLocations.has(1)).toBe(true);
+    expect(b.uniformLocationRecords.has(1)).toBe(true);
   });
 
   it("destroys both failed-link state and its retained executable on context teardown", () => {

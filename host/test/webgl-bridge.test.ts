@@ -181,9 +181,7 @@ function seedUniform(b: ReturnType<typeof setupBinding>["b"], type=0x8b5c, locat
   b.programs.set(1, program);
   b.shadow.currentProgram = b.currentProgram = program;
   b.currentProgramId = 1;
-  b.uniformLocations.set(location, { kind: "uloc", name: "u" } as unknown as WebGLUniformLocation);
-  b.uniformLocationPrograms.set(location, 1);
-  b.uniformMetadata.set(location,{executable:program,type,array:true,remaining:4});
+  b.uniformLocationRecords.set(location,{program:1,canonical:"u",native:{kind:"uloc",name:"u"} as unknown as WebGLUniformLocation,metadata:{executable:program,type,array:true,remaining:4},state:"published",references:0});
 }
 
 it("preserves legacy extension queries and gates new capabilities by table version", () => {
@@ -1216,9 +1214,7 @@ describe("cmdbuf decoder — TLV walker", () => {
     t.view.setUint32(m.p + 4, 1, true);
     t.view.setUint32(m.p + 8, 0, true);
     for (let i = 0; i < 16; i++) t.view.setFloat32(m.p + 12 + i * 4, mat[i], true);
-    b.uniformLocations.set(2,{} as WebGLUniformLocation);
-    b.uniformLocationPrograms.set(2,1);
-    b.uniformMetadata.set(2,{executable:b.currentProgram!,type:0x8b52,array:false,remaining:1});
+    b.uniformLocationRecords.set(2,{program:1,canonical:"u2",native:{} as WebGLUniformLocation,metadata:{executable:b.currentProgram!,type:0x8b52,array:false,remaining:1},state:"published",references:0});
     const u = t.op(O.OP_UNIFORM4FV, 8 + 4 * 4);
     t.view.setInt32(u.p, 2, true);
     t.view.setUint32(u.p + 4, 1, true);
@@ -1576,7 +1572,7 @@ describe("query handler", () => {
     expect(runGlQuery(b, O.QOP_GET_UNIFORM_LOC, inp, o1)).toBe(4);
     const idx1 = new DataView(o1.buffer).getInt32(0, true);
     expect(idx1).toBe(1);
-    expect(b.uniformLocations.has(1)).toBe(true);
+    expect(b.uniformLocationRecords.has(1)).toBe(true);
 
     const o2 = out(4);
     expect(runGlQuery(b, O.QOP_GET_UNIFORM_LOC, inp, o2)).toBe(4);
@@ -1584,7 +1580,7 @@ describe("query handler", () => {
     expect(idx2).toBe(idx1);
 
     // Removing the live record must never recycle its published index.
-    b.uniformLocations.delete(1);
+    b.uniformLocationRecords.delete(1);
     const o3 = out(4);
     expect(runGlQuery(b, O.QOP_GET_UNIFORM_LOC, inp, o3)).toBe(4);
     expect(new DataView(o3.buffer).getInt32(0, true)).toBe(2);

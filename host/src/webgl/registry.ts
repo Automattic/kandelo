@@ -482,7 +482,7 @@ export class GlContextRegistry {
         || target.uniformUpload !== null || target.uniformLookup !== null || target.objects.members.size !== 1) return false;
     const names = target.objects;
     if (names.bufferRetirements.size || names.imageRetirements.size || names.buffers.size || names.bufferStores.size || names.textures.size || names.shaders.size || names.programs.size
-        || names.rbos.size || names.imageSources.size || names.textureViews.size || names.renderbufferViews.size || names.uniformMetadata.size || names.uniformLocationNames.size || names.uniformLocations.size || names.foreignTextures.size
+        || names.rbos.size || names.imageSources.size || names.textureViews.size || names.renderbufferViews.size || names.uniformLocationRecords.size || names.foreignTextures.size
         || names.retiredTextures.size || names.retiredBuffers.size || names.retiredRenderbuffers.size
         || names.shaderDeletePending.size || names.programDeletePending.size) return false;
     // Reserve membership before removing the old owner; allocation failure
@@ -733,8 +733,7 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
       if (cleanup && !accepted) throw new Error("Renderbuffer retirement remains pending");
       if (cleanup) for (const [name,value] of b.rbos) if (value === object) b.rbos.delete(name);
     }
-    for (const map of [b.buffers,b.textures,b.shaders,b.programs,b.rbos,b.uniformLocations,
-      b.uniformLocationPrograms,b.uniformLocationNames,b.uniformMetadata,b.programShaders,b.programAttributeBindings,b.foreignTextures,b.shaderSources]) map.clear();
+    for (const map of [b.buffers,b.textures,b.shaders,b.programs,b.rbos,b.uniformLocationRecords,b.programShaders,b.programAttributeBindings,b.foreignTextures,b.shaderSources]) map.clear();
     b.imageSources.clear();
     b.shaderDeletePending.clear(); b.programDeletePending.clear();
   } else {

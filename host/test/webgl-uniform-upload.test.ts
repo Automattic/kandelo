@@ -170,8 +170,8 @@ describe("atomic large uniform uploads",()=>{
     for(const change of ["executable","location","metadata","context","group"]){
       const t=setup();t.begin(1);t.chunk(0,t.bits([1]));
       if(change==="executable")t.b.currentProgram={} as WebGLProgram;
-      if(change==="location")t.b.uniformLocations.set(t.location,{} as WebGLUniformLocation);
-      if(change==="metadata")t.b.uniformMetadata.set(t.location,{...t.b.uniformMetadata.get(t.location)!});
+      if(change==="location")t.b.uniformLocationRecords.get(t.location)!.native={} as WebGLUniformLocation;
+      if(change==="metadata")t.b.uniformLocationRecords.get(t.location)!.metadata={...t.b.uniformLocationRecords.get(t.location)!.metadata};
       if(change==="context")t.b.contextId=22;
       if(change==="group")t.b.objects={...t.b.objects};
       t.commit();expect(t.calls,change).toEqual([]);expect(t.b.errors).toEqual([0x502]);expect(t.b.uniformUpload).toBeNull();
@@ -189,7 +189,7 @@ describe("atomic large uniform uploads",()=>{
     const peer=t.registry.get(1,3)!;peer.gl=t.gl;peer.contextId=22;
     expect(t.registry.shareObjects(1,3,2)).toBe(true);t.native.linkSucceeds=true;
     linkProgramRetainingExecutable(peer,20);
-    expect(t.b.currentProgram).toBe(t.program);expect(t.b.uniformMetadata.has(t.location)).toBe(false);
+    expect(t.b.currentProgram).toBe(t.program);expect(t.b.uniformLocationRecords.has(t.location)).toBe(false);
     t.commit();expect(t.calls).toEqual([]);expect(t.b.errors).toEqual([0x502]);expect(t.b.uniformUpload).toBeNull();
     t.registry.destroyContext(1,3);t.registry.destroyContext(1,2);
   });

@@ -9557,3 +9557,25 @@ native C 247 and normal ABI checks remain tied to `67824a11b8`; this import
 increment changes no Rust or Wasm ABI surface. It does not enable a public
 pending result, complete two-sided error handling on the legacy path, or
 establish guest/browser/memory/conformance evidence for this increment.
+
+### Uniform-location publication foundation
+
+The host now stores each uniform location in one authoritative typed record,
+including native identity, named program, canonical path, immutable reflection
+and explicit reserved/published/invalid state. Setters, uploads and value queries
+accept published records only. Successful relinking invalidates unpublished
+reservations without exposing them; retired published IDs remain monotonic.
+Immediate queries keep existing public behavior, including aliases and failed
+allocation, using one record insertion rather than four partial map updates.
+
+Focused source evidence: 349/349 cases in seven files, zero skips, in positive
+checkout `.context/location-record-focused-final.log`. Two added controls reject
+reserved/invalid records through actual setters and value queries and retain an
+invalid reservation across a shared-peer relink. Bare host `tsc --noEmit` is not
+a passing gate: `.context/location-record-tsc.log` retains existing browser,
+OpenSSL root-directory and three graphics dependency diagnostics on this older
+base. The parent's newer dependency annotations and canonical combined check
+remain necessary. This is a publication foundation; retained query preparation,
+program-generation pins, owned adapter adoption, normal guests, real browsers,
+CTS and combined conformance remain open. No ABI or public pending behavior is
+activated by this change.

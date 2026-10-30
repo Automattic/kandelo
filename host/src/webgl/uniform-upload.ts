@@ -1,3 +1,4 @@
+import { publishedUniformLocation } from "./object-group.js";
 import type { GlBinding } from "./registry.js";
 import type { GlUniformMetadata } from "./object-group.js";
 import { acceptedUniformCount } from "./uniform-setters.js";
@@ -77,7 +78,7 @@ export function runUniformUpload(b: GlBinding, command: number, view: DataView,
     // requested bytes or replacing its first GL error with continuation errors.
     const pending: GlUniformUpload={token,op,location,total,cursor:0,stride,payload:null,
       gl:b.gl,context:b.contextId,objects:b.objects,executable:b.currentProgram,program:currentProgramName(b),
-      nativeLocation:b.uniformLocations.get(location),metadata:b.uniformMetadata.get(location)};
+      nativeLocation:publishedUniformLocation(b,location)?.native,metadata:publishedUniformLocation(b,location)?.metadata};
     b.uniformUpload=pending;
     if (total>0x7fffffff) {recordGlError(b,0x501);return;}
     const original=new DataView(new ArrayBuffer(header));
@@ -115,7 +116,7 @@ export function runUniformUpload(b: GlBinding, command: number, view: DataView,
   if (!pending.payload) return;
   if (pending.gl!==b.gl || pending.context!==b.contextId || pending.objects!==b.objects
       || pending.executable!==b.currentProgram || pending.program!==currentProgramName(b)
-      || pending.nativeLocation!==b.uniformLocations.get(pending.location)
-      || pending.metadata!==b.uniformMetadata.get(pending.location)) {invalid();return;}
+      || pending.nativeLocation!==publishedUniformLocation(b,pending.location)?.native
+      || pending.metadata!==publishedUniformLocation(b,pending.location)?.metadata) {invalid();return;}
   checkedGlCall(b,()=>commit(pending.op,new DataView(pending.payload!.buffer)));
 }

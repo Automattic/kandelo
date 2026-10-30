@@ -708,8 +708,7 @@ it.each(["query","present","make-current"])("refuses %s before native effects wh
   kernel.gl.attachCanvas(7,{width:4,height:3,getContext:()=>gl} as unknown as OffscreenCanvas);
   expect(create(7,21,11)).toBe(0);const b=kernel.gl.get(7,11)!;
   const program={} as WebGLProgram;b.programs.set(20,program);b.currentProgram=b.shadow.currentProgram=program;b.currentProgramId=20;
-  b.uniformLocations.set(1,{} as WebGLUniformLocation);b.uniformLocationPrograms.set(1,20);
-  b.uniformMetadata.set(1,{executable:program,type:0x1406,array:true,remaining:2});
+  b.uniformLocationRecords.set(1,{program:20,canonical:"value",native:{} as WebGLUniformLocation,metadata:{executable:program,type:0x1406,array:true,remaining:2},state:"published",references:0});
   const begin=new DataView(new Uint32Array([1,O.OP_UNIFORM1FV,1,20000,0]).buffer);
   runUniformUpload(b,O.OP_UNIFORM_UPLOAD_BEGIN,begin,()=>{throw new Error("unexpected commit");});
   const owner=b.uniformUpload;expect(owner?.payload?.byteLength).toBe(16);

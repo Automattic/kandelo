@@ -68,19 +68,17 @@ export function uniformLocation(b: GlBinding, name: number, text: string): numbe
     const metadata=reflectedUniform(b,program,nativeText);
     if (!metadata) return null;
     const canonical = nativeText.replace(/\[0\]$/,"");
-    for (const [index,known] of b.uniformLocationNames) {
-      if (known === canonical && b.uniformLocationPrograms.get(index) === name && b.uniformMetadata.get(index)?.executable === program && b.uniformLocations.has(index)) return index;
+    for (const [index,known] of b.uniformLocationRecords) {
+      if (known.state !== "invalid" && known.canonical === canonical && known.program === name && known.metadata.executable === program) {
+        known.state = "published";
+        b.nextUniformLoc = Math.max(b.nextUniformLoc,index);
+        return index;
+      }
     }
-    if (b.nextUniformLoc >= 0x7fffffff) { recordGlError(b,0x505); return null; }
-    const index = b.nextUniformLoc+1;
-    try {
-      b.uniformLocations.set(index,native);
-      b.uniformLocationPrograms.set(index,name);
-      b.uniformLocationNames.set(index,canonical);
-      b.uniformMetadata.set(index,metadata);
-    } catch(error) {
-      b.uniformLocations.delete(index); b.uniformLocationPrograms.delete(index); b.uniformLocationNames.delete(index); b.uniformMetadata.delete(index); throw error;
-    }
+    let index = b.nextUniformLoc+1;
+    while (b.uniformLocationRecords.has(index)) index++;
+    if (index > 0x7fffffff) { recordGlError(b,0x505); return null; }
+    b.uniformLocationRecords.set(index,{program:name,canonical,native,metadata,state:"published",references:0});
     b.nextUniformLoc = index;
     return index;
   } catch { recordGlError(b,0x505); return null; }
