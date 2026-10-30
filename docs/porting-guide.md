@@ -1240,8 +1240,8 @@ fifty separate-unit argument/return/source cases plus ten pinned upstream
 GObject targets. Build through the normal resolver using the commands in
 `packages/registry/gobject-callback-tests/README.md` before running the
 host test in the declared dev shell. Missing artifacts fail.
-The focused diagnostic matrix passes with the shared repairs, but the
-new normal package's combined build/run remains pending. Upstream
+The normal SourceOnly run passes all fifty focused cases and four upstream
+targets; six upstream targets still fail, so the combined gate remains red. Upstream
 generic-marshaller and all-types cases already reproduce accepted
 signatures that abort in the current libffi dispatcher. Keep those
 failures and original assertions visible until their contracts work.

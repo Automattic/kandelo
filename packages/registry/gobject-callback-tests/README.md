@@ -1,16 +1,22 @@
 # Shared GObject callback ABI gate
 
-Build through the declared resolver in the dev shell:
+Prepare the normal SourceOnly test-support projection in the dev shell:
 
 ```sh
-cargo xtask build-deps --source-only --arch wasm32 \
-  --binaries-dir "$PWD/local-binaries" resolve gobject-callback-tests
+scripts/dev-shell.sh ./run.sh local-build --all
+scripts/dev-shell.sh bash -c '
+  export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+  export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
+  cd host
+  npx vitest run test/gobject-callback-contract.test.ts
+'
 ```
 
-This publishes a claimed local generation through the normal resolver.
-`./run.sh local-build --all` also includes this test-support package in
-the complete SourceOnly projection; it is not a `run.sh build` target.
-Run `scripts/dev-shell.sh bash -c 'cd host && npx vitest run test/gobject-callback-contract.test.ts'`.
+Build and run with the same resolution policy. A standalone
+`build-deps --source-only resolve` compiles the package, but does not publish
+the complete SourceOnly projection used by this host gate. Combining that
+build with default-policy artifact metadata selects different cache keys.
+This package is not a `run.sh build` target.
 Missing normal artifacts fail; no skip-if-missing or private header/library
 replacement. This is a wasm32 CPU gate, not browser/compositor acceptance.
 
@@ -38,8 +44,13 @@ admission, raw unary registrations in upstream testcommon.h, interface signal
 paths, complete notifications/GTest fixture lifecycle, GIO async/cancellation,
 module/listener dispatch and actual compositor lifecycle. Failures are ordinary
 gaps to resolve; do not remove targets or weaken upstream assertions for green.
-The standalone callback matrix before/after evidence is private diagnostic
-proof; this new normal package's build/run remains pending until review.
+The normal SourceOnly run at 8a9c9cdb3e passes all fifty contract cases and
+four upstream targets. Six upstream targets still fail: basic-signals,
+signals, closure, defaultiface, dynamictype and accumulator. They remain
+required ordinary gaps; the combined gate is red, with no skipped cases.
+This run used a bounded normal engine set containing the fixture, kernel
+and complete declared library closure, published as one SourceOnly
+projection. No archive or header substitutions were used.
 
 Provenance: GLib2.84.4 official archive pinned by manifest SHA256; existing
 shared port patches are explicit build inputs. New fixture code is Apache2.0;

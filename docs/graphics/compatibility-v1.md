@@ -9444,8 +9444,26 @@ GLib6 integrates those two shared repairs. A normal
 `gobject-callback-tests` recipe and prepared-product host runner retain
 the fifty separate-unit cases plus ten pinned upstream GObject targets;
 missing artifacts fail and upstream assertions are unchanged. Its normal
-build and execution remain pending. The existing strict GTK14 controls,
+SourceOnly build produces all eleven outputs. The coherent actual Node
+run passes all fifty focused cases plus type, object, references and
+signal-handler. Six upstream targets fail: basic-signals, signals,
+closure, defaultiface, dynamictype and accumulator. The combined result
+is 54/60, zero skipped; it remains red. The libffi all-types missing
+dispatcher is reproduced again, alongside further signature traps.
+These are ordinary remaining baseline gaps. The existing strict GTK14 controls,
 package metadata/script syntax and integration whitespace checks pass.
+
+Exact normal evidence is job
+`glib-normal-contract-8a9c-v4-1030-124613-bc71`, source8a9c9cdb3e,
+`.context/glib-normal-contract-8a9c9cdb3e-v4/result-summary.json` and its
+unmodified verbose log. The preceding standalone normal resolve built
+all outputs but its 60 host cases were rejected before guest execution:
+the producer used SourceOnly keys and the runner used default-policy
+metadata. A subsequent launch omitted a required engine argument and
+performed no graph work. Both failed preparations are retained; neither
+is callback execution evidence. The corrected engine set publishes the
+fixture, kernel and complete declared library closure into one normal
+SourceOnly projection and runs the host gate under that same policy.
 
 The in-tree libffi generated signature families are incomplete. Actual
 upstream `generic-marshaller-1` and `all-types` controls get `FFI_OK` for
