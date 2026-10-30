@@ -146,11 +146,18 @@ export const SHELL_LAZY_ARCHIVE_SPECS = withArchiveAddresses([
   },
 ] as const);
 
-/** Data the canonical shell can load on first use: trust roots, speech and desktops.
+/** Data the canonical shell can load on first use: trust roots, speech, cursors and desktops.
  * Kept separate from the shared tool archives: service-image builders do not
  * declare espeak-ng or wayland-demo and must not acquire those dependencies.
  */
 export const SHELL_LAZY_DATA_ARCHIVE_SPECS = withArchiveAddresses([
+  {
+    id: "cursor-theme",
+    dependency: "bibata-cursor-theme",
+    resolverPath: "programs/wasm32/bibata-cursor-theme.zip",
+    mountPrefix: "/usr/share/",
+    requiredMember: "icons/default/index.theme",
+  },
   {
     id: "ca-certificates",
     dependency: "ca-certificates",

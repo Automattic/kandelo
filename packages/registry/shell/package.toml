@@ -8,6 +8,7 @@ kernel_abi = 56
 depends_on = [
   "rootfs@0.1.0",
   "ca-certificates@0.1.0",
+  "bibata-cursor-theme@2.0.7",
   "bash@5.2.37",
   "fbdoom@0.1.0",
   "modeset@0.1.0",

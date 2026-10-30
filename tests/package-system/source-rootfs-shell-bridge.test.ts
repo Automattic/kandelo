@@ -312,6 +312,11 @@ function fixturePaths(root: string) {
     mkdirSync(dir, { recursive: true });
     dependencyRoots.set(dependency, dir);
   }
+  writeFileSync(join(dependencyRoots.get("bibata-cursor-theme")!, "bibata-cursor-theme.zip"),
+    zipSync({
+      "icons/default/index.theme": new TextEncoder().encode("[Icon Theme]\nInherits=Bibata-Modern-Ice\n"),
+      "icons/Bibata-Modern-Ice/cursors/left_ptr": new TextEncoder().encode("cursor data fixture"),
+    }));
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (ROOTFS_LAZY_IDS.has(spec.id)) continue;
     const dependency = spec.id === "git-remote-http"
@@ -792,7 +797,8 @@ describe("canonical source-rootfs shell", () => {
     );
     for (const spec of SHELL_LAZY_DATA_ARCHIVE_SPECS) {
       const source = spec.id === "ca-certificates" ? paths.caBundlePath
-        : spec.id === "desktop-data" ? paths.desktopDataPath : paths.espeakNgDataPath;
+        : spec.id === "desktop-data" ? paths.desktopDataPath
+        : spec.id === "cursor-theme" ? paths.resolveArtifact(spec.resolverPath, spec.dependency) : paths.espeakNgDataPath;
       const bytes = readFileSync(source);
       expect(fs.isPathDeferred(`${spec.mountPrefix}${spec.requiredMember}`)).toBe(true);
       expect(composed.archives.find(({ uri }) => uri === spec.archiveUrl))

@@ -1666,6 +1666,9 @@ export async function buildSourceRootfsShellImage(
   // open/read triggers a verified first-use fetch on both Node and browser.
   removeEagerShellCaBundle(fs, caBundle);
   const dataArchivePaths = {
+    // The standard default theme reaches compositor and client cursor
+    // loaders through /usr/share/icons, including their scaled variants.
+    "cursor-theme": inputs.resolveArtifact("programs/wasm32/bibata-cursor-theme.zip", "bibata-cursor-theme"),
     "ca-certificates": inputs.caBundlePath,
     "desktop-data": inputs.desktopDataPath,
     "espeak-ng-data": inputs.espeakNgDataPath,

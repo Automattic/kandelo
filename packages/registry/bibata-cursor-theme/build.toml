@@ -1,0 +1,13 @@
+script_path = "packages/registry/bibata-cursor-theme/build-bibata-cursor-theme.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 1
+publication_state = "pending"
+inputs = [
+  "packages/registry/bibata-cursor-theme/build-bibata-cursor-theme.sh",
+  "packages/registry/bibata-cursor-theme/pack-theme.py",
+  "packages/registry/bibata-cursor-theme/COPYING",
+  "packages/registry/bibata-cursor-theme/NOTICE",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+]

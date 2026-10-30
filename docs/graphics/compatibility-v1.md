@@ -9328,3 +9328,58 @@ full-frame scanout path is unchanged: a commit-counter-only shortcut
 would incorrectly hide writes through live mappings. The tiny theme-less
 fallback cursor and Cage's missing initial density policy are separate
 unfinished distribution fixes. No user-visible smoothness is claimed.
+
+### Cage density and shared cursor theme (2026-10-30)
+
+Cage lacked the initial density policy already used by Sway and Labwc.
+Its first modeset now chooses scale from the selected native mode and
+truthful connector millimetres, validates the combined state and loads
+the cursor theme after commit. Invalid or aspect-only physical sizes
+retain scale one; later explicit output-management requests remain
+authoritative. Cage revision advances from two to three.
+
+Both wlroots and libwayland's theme-less fallbacks copy a fixed 10 by 16
+pointer regardless of requested size. The distribution now supplies the
+unmodified Bibata Modern Ice 2.0.7 compiled theme through a normal data
+package and the shell's lazy archive at `/usr/share/`. Standard default
+inheritance reaches compositor and client cursor loaders. The upstream
+artist, exact GPLv3 text and pinned editable source are preserved. Shell
+revision advances from 66 to 67; program56/host3/GL17/fork21 stay fixed.
+
+The actual extracted Cage initialization/request handlers pass 54 mode
+cases, explicit later scales and three backend failure controls. Original
+source has 21 wrong-density results and 57 aggregate failed checks. Both
+unmodified pinned Xcursor file loaders select the real 24/48/64/72/96
+images and all 145 names/89 aliases; request 25 selects 24 and empty
+theme roots fail. Two independent packs are byte-identical: 4,510,631
+bytes, SHA256
+`db755f32db4f790df0cc81f07c0e598a14ac4d74c1e9cd2e690a4920c9127950`.
+The actual ZIP planner and Rust image writer preserve all 89 links,
+deferred target inode identity and archive digest across save/load.
+Normal isolated metadata generation confirms the canonical package path.
+Exact evidence is `.context/cage-cursor-hidpi/.context/HANDOFF.md`.
+
+These controls ran against the isolated 808a13235f source and unchanged
+relevant paths after integrating f092ab5607. Normal package/shell rebuild,
+full composition bridge, Node sessions, actual three-engine cursor alpha
+bounds and Cage/client scales, hotspot/click geometry, software fallback
+above the truthful 64-pixel hardware cursor limit and combined
+browser-memory remain required. The bounded headless plan is in
+`packages/registry/cage/tests/HEADLESS-ACCEPTANCE.md`. No working preview
+or improvement in cursor latency is claimed from these controls.
+
+### Generic SDL Wayland draw/presentation discriminator (2026-10-30)
+
+A diagnostic built through the frozen be9dd62d1b SDK and exact normal
+SDL2 dependency closure reproduces ScummVM's empty mapped client with
+ordinary opaque GLES2 quadrant clears. Real headless Chromium sees none
+of the four colors. Public `glReadPixels` returns all expected opaque
+RGBA values in 24 samples before/after three swaps, including resize;
+six observations report complete logical framebuffer zero, and SDL/GL
+report no swap errors. Source drawing is working; the downstream
+copy/export/import/composition path remains an ordinary defect whose
+exact owning stage is not yet established. No application bypass is
+added. Evidence is `.context/scumm-gles-readback-probe/result-summary.json`
+and its actual stdout, screenshot, build input hashes and browser log.
+The preceding frozen cohort identity check is unchanged; these are
+diagnostic results, not consumer rendering or graphics completion.

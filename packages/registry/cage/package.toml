@@ -44,6 +44,25 @@ name = "pkg-config"
 version_constraint = ">=0.29.2"
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
+# The initial-scale regression extracts real upstream C with Python and
+# compiles its native backend boundary before the target compositor.
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.11"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "clang"
+version_constraint = ">=21.0"
+probe = { args = ["--version"], version_regex = "clang version (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "patch"
+version_constraint = ">=2.7"
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
 [source]
 url = "https://github.com/cage-kiosk/cage/releases/download/v0.3.1/cage-0.3.1.tar.gz"
 sha256 = "edafc173b6f56a3e1564933e272a54aaa9fe158d330e6a415d57b44ab880fe2b"
