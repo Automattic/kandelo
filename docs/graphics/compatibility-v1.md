@@ -9040,3 +9040,36 @@ It is reattached without opening Finder. The selected Sortix checkout
 `/Volumes/KandeloCaseBuild/moscow-vma-fragments-os-test` is pristine at
 `7e8f0082ab0b58ad3383a8abbf47dc4b40dcf25d`; current-worktree SDK, kernel
 and overrides remain required for the later normal conformance run.
+
+## Internal Rust query ownership foundation (2026-10-29)
+
+The synchronous GLIO_QUERY path captures its validated opcode, copied input,
+original output address/capacity, pointer width and exact process/thread,
+OFD, session, display, context and draw/read surface identities in one owned
+request. It reuses the existing query input/output allocations; immediate
+queries do not register a blocked
+retry or allocate a retry token. The publication step freshly probes the
+original destination capacity and permits only one dispatch and publication.
+All negative immediate host responses, including EAGAIN, remain EIO.
+
+The same request can own a retained kernel target through BlockingRetryState.
+Its OFD pin follows the existing exact-token release, thread, exec, exit and
+process-removal cleanup paths. Fork carries neither the request nor that pin.
+This type owns only kernel bytes and the exact OFD reference. It cannot admit
+or claim to clean up deferred native/forwarded host work; adding that authority
+requires the reviewed host receipt and acknowledged cleanup-transfer bridge.
+Syscall72 remains absent from the retry mapping, and public EGL server waits
+remain unfinished. No new public operation, host import or ABI epoch is added.
+
+Focused native validation passes 10 existing query preflight cases and five
+owned-request cases: publication after destination revocation, exact OFD
+selection through fd reuse, immutable input and one execution/publication,
+foreign/stale owner rejection, thread/exec/exit/removal cleanup, and fork
+excluding requests and their extra pins. The Wasm32 kernel compile check
+passes. Private evidence is in `gl-query-receipt-confirm.log` in the VMA
+checkout; an earlier fork-fixture errno expectation was corrected to match
+the existing omission of inherited GL command state (EINVAL).
+
+Normal artifacts, guest/browser tests, memory and conformance suites remain
+unrun for this increment. It is an internal ownership step, not evidence
+that asynchronous queries or EGL server waits are supported.

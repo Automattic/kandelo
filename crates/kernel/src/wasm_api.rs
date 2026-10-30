@@ -4502,6 +4502,8 @@ fn retain_blocking_retry_target(syscall_nr: u32, args: &[i64; 6]) -> Result<(), 
         // retries, so a pin taken now would never be released.
         crate::blocked_retry::BlockingRetryOperation::Fcntl
         | crate::blocked_retry::BlockingRetryOperation::Flock => {}
+        // No public ioctl retry is enabled before the complete result bridge.
+        crate::blocked_retry::BlockingRetryOperation::GlQuery => return Err(Errno::EIO),
         crate::blocked_retry::BlockingRetryOperation::Read
         | crate::blocked_retry::BlockingRetryOperation::Write
         | crate::blocked_retry::BlockingRetryOperation::Pread

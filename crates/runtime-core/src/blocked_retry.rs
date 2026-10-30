@@ -42,6 +42,9 @@ pub enum BlockingRetryOperation {
     MsgSend,
     MsgReceive,
     Semop,
+    /// Internal retained GL request; syscall72 remains unmapped until the
+    /// complete native/forward asynchronous bridge is implemented.
+    GlQuery,
 }
 
 impl BlockingRetryOperation {
@@ -153,6 +156,9 @@ pub struct StableOfdTarget {
 /// preventing a second caller from decrementing the same kernel-owned pin.
 pub enum BlockingRetryTarget {
     Ofd(StableOfdTarget),
+    /// Kernel payload and exact OFD pin only. This type cannot own deferred
+    /// host work; that requires a reviewed cleanup-transfer capability.
+    GlQuery(crate::gl_query_request::GlQueryRequest),
     OfdPair {
         input: StableOfdTarget,
         output: StableOfdTarget,
@@ -225,6 +231,7 @@ pub struct PendingSysvMessage {
 impl BlockingRetryTarget {
     fn supports(&self, operation: BlockingRetryOperation) -> bool {
         match self {
+            Self::GlQuery(_) => operation == BlockingRetryOperation::GlQuery,
             Self::Ofd(_) => {
                 operation.is_single_ofd() && operation != BlockingRetryOperation::Sendmsg
             }
