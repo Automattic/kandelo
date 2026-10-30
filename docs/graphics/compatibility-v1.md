@@ -8930,6 +8930,7 @@ controls pass afterward. Source, exact commands and main comparison are in
 .context/rootfs-target-closure/.context/rootfs-target-handoff.md. Actual
 standalone rootfs execution with the repair remains integration validation.
 
+
 ### Combined desktop source preparation (2026-10-30)
 
 The desktop integration retains SFWBar's bottom panel and Sway's separate
@@ -8940,3 +8941,18 @@ ring and standalone rootfs dependency selection. These prepared source
 changes do not alter the still-running 664 normal image/consumer cohort;
 its source and identities remain fixed until completion. Combined normal
 artifacts and actual rendered validation are required after integration.
+
+### Standalone rootfs normal-build proof (2026-10-30)
+
+Exact clean repair source f5a8438d47 passes normal job
+rootfs-standalone-proof-1030-052812-6739 in 3m55s. The declared dependency
+setup and public kernel build establish an actual narrow projection
+without rootfs, byacc or flex. The repaired public `./run.sh build rootfs`
+then succeeds in 25s, selecting its real dependency closure and producing
+the canonical image. Both selected parser executables and canonical image
+are present and hashed; source remains clean. The same shared normal
+cache and selected-artifact rules are used, with no copied or restamped
+outputs. Exact statuses, initial/final projections and actual byte records
+are in .context/rootfs-target-closure/.context/rootfs-standalone-proof.
+This closes the standalone orchestration reproduction; it does not supply
+rendered desktop, browser-memory or POSIX acceptance for other changes.
