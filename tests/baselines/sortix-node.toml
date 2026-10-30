@@ -23,14 +23,10 @@ node = "unknown (dev-shell banner says Node 24, exact version not retained)"
 os = "unknown (historical macOS run; exact release not retained)"
 
 [totals]
-error = 0
 expected-fail = 4
 fail = 19
-pass = 3691
 skip = 50
 timeout = 1357
-total = 5121
-unexpected-pass = 0
 
 [tests]
 "basic/aio/aio_cancel" = { outcome = "timeout", reason = "TIME: timeout", attempts = 1, adverse = 1 }

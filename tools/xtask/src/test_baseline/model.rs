@@ -41,6 +41,17 @@ pub struct Parsed {
     pub warnings: Vec<String>,
 }
 
+impl Parsed {
+    /// Passing observations are transient inputs for retries and reruns, not
+    /// persisted results. Keep only positive anomaly counts and named cases.
+    pub fn anomalies(mut self) -> Self {
+        self.totals
+            .retain(|key, count| !matches!(key.as_str(), "pass" | "total") && *count > 0);
+        self.tests.retain(|_, test| test.outcome != "pass");
+        self
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
@@ -127,6 +138,7 @@ pub struct Baseline {
 
 impl Baseline {
     pub fn from_run(evidence: Evidence, parsed: Parsed) -> Self {
+        let parsed = parsed.anomalies();
         Self {
             schema: 1,
             suite: evidence.suite.clone(),
@@ -134,11 +146,7 @@ impl Baseline {
             evidence: vec![evidence],
             totals: parsed.totals,
             warnings: parsed.warnings,
-            tests: parsed
-                .tests
-                .into_iter()
-                .filter(|(_, v)| v.outcome != "pass")
-                .collect(),
+            tests: parsed.tests,
         }
     }
 

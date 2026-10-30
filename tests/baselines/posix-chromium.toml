@@ -27,12 +27,7 @@ playwright = "unknown (not retained)"
 [totals]
 error = 1
 expected-fail = 3
-fail = 0
-pass = 173
 skip = 2
-timeout = 0
-total = 179
-unexpected-pass = 0
 
 [tests]
 "mlock/12-1" = { outcome = "expected-fail", reason = "observed XFAIL (expected — exit 1); expectations remain owned by the runner at the recorded commit", attempts = 1, adverse = 1 }

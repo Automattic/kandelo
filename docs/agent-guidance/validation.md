@@ -87,6 +87,9 @@ A baseline records reality and never turns a failing run green. Its
 failures remain failures to fix or explain. Expected-failure lists and
 their checked reasons remain authoritative in the conformance runners;
 baseline records neither add allowances nor override those lists.
+Persist only failures and anomalies, with positive anomaly counts.
+Omit ordinary passing cases, success counts and overall test counts.
+Passing observations may be parsed transiently to establish retry rates.
 
 Before classifying a branch failure, fetch `origin/main` and check
 `test-baseline status` against a clean main checkout and its actual

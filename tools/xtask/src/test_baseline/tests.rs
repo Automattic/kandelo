@@ -268,6 +268,12 @@ fn targeted_rerun_retains_failure_and_observed_rate() {
 #[test]
 fn sorted_inline_exception_rows_roundtrip_and_omit_plain_passes() {
     let p = model::Parsed {
+        totals: BTreeMap::from([
+            ("pass".into(), 9),
+            ("total".into(), 10),
+            ("fail".into(), 1),
+            ("error".into(), 0),
+        ]),
         tests: BTreeMap::from([
             (
                 "z\"name".into(),
@@ -277,11 +283,15 @@ fn sorted_inline_exception_rows_roundtrip_and_omit_plain_passes() {
         ]),
         ..Default::default()
     };
+    let summary = p.clone().anomalies();
+    assert_eq!(summary.totals, BTreeMap::from([("fail".into(), 1)]));
+    assert!(!summary.tests.contains_key("a"));
     let b = Baseline::from_run(historical(), p);
     let text = render(&b).unwrap();
     assert!(!text.contains("outcome = \"pass\""));
     let reread: Baseline = toml::from_str(&text).unwrap();
     assert_eq!(reread.tests, b.tests);
+    assert_eq!(reread.totals, summary.totals);
 }
 
 #[test]

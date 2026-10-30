@@ -25,13 +25,7 @@ os = "unknown (historical macOS run; exact release not retained)"
 playwright = "unknown (not retained)"
 
 [totals]
-error = 0
 expected-fail = 18
-fail = 0
-pass = 306
-timeout = 0
-total = 324
-unexpected-pass = 0
 
 [tests]
 "functional/pthread_cancel" = { outcome = "expected-fail", reason = "observed XFAIL (expected — timeout); expectations remain owned by the runner at the recorded commit", attempts = 1, adverse = 1 }

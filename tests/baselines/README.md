@@ -6,6 +6,13 @@ expectations, runner verdicts, or exit codes. Generate the TOML files with
 and their checked reasons remain owned by the runners, including
 `scripts/sortix-expectations.sh` and `scripts/xfail-reasons.sh`.
 
+Persist only failures and anomalies: expected failures, unexpected passes,
+timeouts, errors, skips and intermittent results. Ordinary passing tests,
+success counts and overall test counts are omitted. Parsers consume passing
+events temporarily to establish retry rates; they do not become stored
+success records. Small successful examples in parser fixtures test that
+filtering and retry detection work.
+
 ## Initial records: historical, not eligible for classification
 
 The seven initial records come from main at `e4bca8639e`, the comparison
@@ -19,15 +26,15 @@ load measurements were not retained. Unknown fields remain unknown.
 source commit happens to match a checkout. No full suites were run to
 establish current baselines or exclusion policies in this change.
 
-| Record | Historical runner totals |
+| Record | Historical failures and anomalies |
 |---|---|
-| Vitest / Node | 5,291 passed, 30 failed, 21 skipped |
-| Sortix / Node | 3,691 passed, 19 failed, 1,357 timeouts, 4 expected failures, 50 skipped |
-| Open POSIX / Chromium | 173 passed, 3 expected failures, 1 unresolved, 2 skipped |
-| libc-test / Chromium | 306 passed, 18 expected failures |
-| Sortix / Chromium | 5,028 passed, 21 failed, 9 unexpected passes, 13 expected failures, 50 skipped |
-| Playwright / Chromium, selected specs | 28 passed, 27 failed |
-| Playwright / WebKit, selected specs | 19 passed, 21 failed, 15 skipped |
+| Vitest / Node | 30 failed, 21 skipped |
+| Sortix / Node | 19 failed, 1,357 timeouts, 4 expected failures, 50 skipped |
+| Open POSIX / Chromium | 3 expected failures, 1 unresolved, 2 skipped |
+| libc-test / Chromium | 18 expected failures |
+| Sortix / Chromium | 21 failed, 9 unexpected passes, 13 expected failures, 50 skipped |
+| Playwright / Chromium, selected specs | 27 failed |
+| Playwright / WebKit, selected specs | 21 failed, 15 skipped |
 
 The Node Sortix log records an infrastructure failure: runtime tests
 timed out while rebuilding the program-index checker. Its large number
@@ -72,7 +79,7 @@ verification commands through `scripts/dev-shell.sh`.
 | `record --append` | Add a targeted main rerun with the same input digest and environment |
 | `status` | Print current or stale, with changed paths/components when available; return nonzero for stale records |
 | `classify` | Label branch failures against a current main record; refuse stale records |
-| `summarize` | Parse historical or branch logs for inspection without claiming equivalence |
+| `summarize` | Show only failures and anomalies from a log without claiming equivalence |
 | `check-reads` | Check a trace's hash and binding, and reject any read of an excluded path |
 | `import-history` | Verify all seed log hashes, then regenerate historical records |
 
@@ -203,7 +210,7 @@ configuration, including its complete read inventory. The rerun may
 read a subset, but cannot add unknown inputs. Append using `record
 --append` and fresh capture evidence. Mixed observations become
 `intermittent`, with `adverse / attempts`; a later pass never deletes an
-earlier failure. Initial totals remain the original run's totals.
+earlier failure. Anomaly counts remain the original run's counts.
 For a passing Vitest rerun, use its existing `--reporter=verbose` option
 so the parser can name the passing test. Default summary counts cannot
 identify it. Skipped/unselected rerun cases do not establish attempts.

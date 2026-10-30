@@ -25,13 +25,9 @@ os = "unknown (historical macOS run; exact release not retained)"
 playwright = "unknown (not retained)"
 
 [totals]
-error = 0
 expected-fail = 13
 fail = 21
-pass = 5028
 skip = 50
-timeout = 0
-total = 5121
 unexpected-pass = 9
 
 [tests]

@@ -26,9 +26,7 @@ playwright = "unknown (not retained)"
 
 [totals]
 fail = 21
-pass = 19
 skip = 15
-total = 55
 
 [tests]
 "test/dri-egl-resize.spec.ts > SDL preserves first-frame geometry and alpha blending after window and context replacement" = { outcome = "timeout", reason = "Test timeout of 120000ms exceeded.", attempts = 1, adverse = 1 }

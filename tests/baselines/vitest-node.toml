@@ -24,9 +24,7 @@ os = "unknown (historical macOS run; exact release not retained)"
 
 [totals]
 fail = 30
-pass = 5291
 skip = 21
-total = 5342
 
 [tests]
 "host/test/audio-integration.test.ts > audio integration > paces SDL through the production dedicated Node kernel worker" = { outcome = "fail", reason = "AssertionError: expected 5370.112915999998 to be less than 5000", attempts = 1, adverse = 1 }
