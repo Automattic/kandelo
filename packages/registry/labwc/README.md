@@ -2,7 +2,8 @@
 
 This recipe targets native Wayland stacking with server-side decorated
 windows, a root menu and foot as the configured terminal. The shell image and
-gallery compose a `labwc -s foot` session with the normal package outputs.
+gallery compose a labwc session with the normal package outputs and an
+explicit foot configuration.
 Runtime validation is in progress; no working Kandelo desktop session is
 claimed yet.
 
@@ -21,7 +22,16 @@ Xwayland, systemd-session integration, translations, man-page generation and
 upstream tests are explicitly disabled. These are upstream feature selections,
 not substitutes for missing Kandelo APIs. Both installed executables actually
 fork and use normal manifest-driven instrumentation. The recipe adds no target
-identity flags, platform stubs, source patches or shared runtime changes.
+identity flags, platform stubs or shared runtime changes.
+
+The initial-output patch applies distribution policy before the first modeset:
+round the lower of the two native pixel/mm densities to a multiple of 96 DPI,
+with a minimum scale of 1. Unknown, invalid and known aspect-only physical
+sizes retain scale 1. This handles small high-density outputs without changing
+connector metadata. Later explicit output-management requests keep their
+chosen scale. The focused native check executes the actual patched upstream
+initial configuration; normal artifact and real-session validation of this
+revision remain required.
 
 The rc.xml uses built-in decoration defaults and mouse bindings. Super+Return
 or Ctrl+Return starts foot, Alt+Tab cycles windows, Alt+F4 closes the focused
@@ -30,6 +40,11 @@ and host interception of Super shortcuts. Right-clicking the desktop opens
 the supplied root menu. The shell image supplies foot, fonts/fontconfig
 configuration and a shell, and unpacks the declared XKB and libinput archives
 into their normal guest locations.
+
+Every supplied terminal launch uses `/etc/xdg/labwc/foot.ini`. It includes the
+normal `/usr/share/kandelo/foot/foot.ini` terminal/worker defaults and explicitly
+sets a 14-point font with `dpi-aware=no`, so font size follows output scale.
+This leaves labwc's rc.xml and menu lookup under `/etc/xdg/labwc` intact.
 
 Build through the normal resolver in the declared shell:
 

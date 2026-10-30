@@ -7,9 +7,9 @@
     </titlebar>
   </theme>
   <keyboard>
-    <keybind key="C-Return"><action name="Execute" command="foot" /></keybind>
+    <keybind key="C-Return"><action name="Execute" command="foot --config=/etc/xdg/labwc/foot.ini" /></keybind>
     <keybind key="C-S-e"><action name="Exit" /></keybind>
-    <keybind key="W-Return"><action name="Execute" command="foot" /></keybind>
+    <keybind key="W-Return"><action name="Execute" command="foot --config=/etc/xdg/labwc/foot.ini" /></keybind>
     <keybind key="A-Tab"><action name="NextWindow" /></keybind>
     <keybind key="A-F4"><action name="Close" /></keybind>
     <keybind key="W-S-q"><action name="Exit" /></keybind>

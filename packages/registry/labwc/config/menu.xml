@@ -1,6 +1,6 @@
 <openbox_menu>
   <menu id="root-menu" label="Kandelo">
-    <item label="Terminal"><action name="Execute" command="foot" /></item>
+    <item label="Terminal"><action name="Execute" command="foot --config=/etc/xdg/labwc/foot.ini" /></item>
     <separator />
     <item label="Reconfigure"><action name="Reconfigure" /></item>
     <item label="Exit"><action name="Exit" /></item>

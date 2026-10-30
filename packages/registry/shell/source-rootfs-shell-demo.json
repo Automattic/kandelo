@@ -263,7 +263,7 @@
         ]
       },
       "init": {
-        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/local/bin/labwc -s foot"
+        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/local/bin/labwc -s 'foot --config=/etc/xdg/labwc/foot.ini'"
       },
       "presentation": {
         "bootPrimary": "syslog",

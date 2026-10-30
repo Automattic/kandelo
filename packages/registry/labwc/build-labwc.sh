@@ -27,6 +27,7 @@ PKG_CONFIG_PATH="$DEP_PKG_CONFIG_PATH" wasm32posix-pkg-config \
     --atleast-version=2.46.0 librsvg-2.0
 
 kandelo_package_stage_primary_source labwc "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
+patch --fuzz=0 -p1 -d "$SRC_DIR" < "$SCRIPT_DIR/patches/0001-initial-scale-from-connector-density.patch"
 rm -rf "$BUILD_DIR"
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     if [ -n "$(find "$INSTALL_DIR" -mindepth 1 -print -quit)" ]; then
@@ -62,5 +63,6 @@ install_local_binary labwc "$BUILD_DIR/labwc.wasm" labwc.wasm
 install_local_binary labwc "$BUILD_DIR/labnag.wasm" labnag.wasm
 install_local_runtime_file labwc "$SCRIPT_DIR/config/rc.xml" labwc-rc.xml
 install_local_runtime_file labwc "$SCRIPT_DIR/config/menu.xml" labwc-menu.xml
+install_local_runtime_file labwc "$SCRIPT_DIR/config/foot.ini" labwc-foot.ini
 install_local_runtime_file labwc "$XKB_DATA" xkeyboard-config.zip
 install_local_runtime_file labwc "$INPUT_DATA" libinput-quirks.zip

@@ -51,6 +51,12 @@ version_constraint = ">=3.11"
 probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
+[[host_tools]]
+name = "patch"
+version_constraint = ">=2.7"
+probe = { args = ["--version"], version_regex = "patch (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
 [source]
 url = "https://github.com/labwc/labwc/archive/refs/tags/0.20.2.tar.gz"
 sha256 = "fae023b6fe022f7057556707a17cdb2d98e0138c5dffaedaa1dade975699f9e8"
@@ -80,6 +86,10 @@ guest_path = "/etc/xdg/labwc/rc.xml"
 [[runtime_files]]
 artifact = "labwc-menu.xml"
 guest_path = "/etc/xdg/labwc/menu.xml"
+
+[[runtime_files]]
+artifact = "labwc-foot.ini"
+guest_path = "/etc/xdg/labwc/foot.ini"
 
 [[runtime_files]]
 artifact = "xkeyboard-config.zip"

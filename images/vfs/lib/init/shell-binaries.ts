@@ -210,6 +210,14 @@ export const SHELL_LAZY_BINARY_SPECS = [
     mode: 0o644,
   },
   {
+    id: "labwc-foot-config",
+    dependency: "labwc",
+    resolverPath: "programs/labwc/labwc-foot.ini",
+    vfsPath: "/etc/xdg/labwc/foot.ini",
+    symlinks: [],
+    mode: 0o644,
+  },
+  {
     id: "sway-config",
     dependency: "sway",
     resolverPath: "programs/sway/sway.conf",
