@@ -34,6 +34,12 @@
 
 #include "gl_abi.h"
 #include "gbm_window.h"
+#if defined(__APPLE__)
+#define WPK_WAYLAND_OPTIONAL __attribute__((weak_import))
+#else
+#define WPK_WAYLAND_OPTIONAL __attribute__((weak))
+#endif
+#include "wayland-native.h"
 __attribute__((weak)) int _wpk_gbm_window_acquire(const void *, void **, struct wpk_gbm_frame *);
 __attribute__((weak)) int _wpk_gbm_window_prepare(void *, struct wpk_gbm_frame *);
 __attribute__((weak)) void _wpk_gbm_window_finish(void *, int);
@@ -46,8 +52,10 @@ void glEGLImageTargetTexture2DOES(GLenum target, void *image);
 void glEGLImageTargetRenderbufferStorageOES(GLenum target, void *image);
 
 struct egl_generation;
+enum egl_native_kind {NATIVE_DEFAULT,NATIVE_GBM,NATIVE_WAYLAND};
 struct egl_display_record {
     EGLDisplay handle;
+    enum egl_native_kind native_kind;
     const void *native_device;
     uint64_t native_identity;
     struct egl_generation *active;
@@ -106,11 +114,12 @@ struct egl_surface_record {
     int delete_pending, gbm_window, pbuffer;
     EGLint largest_pbuffer, mipmap_texture;
     EGLint render_buffer, gl_colorspace, config_id;
-    void *native_window, *gbm_lease;
+    void *native_window, *gbm_lease, *wayland_lease;
     struct egl_surface_record *next;
 };
 struct egl_generation {
     int fd, display_fd, native_fd, initialized, terminate_pending;
+    void *wayland_hold;
     struct egl_display_record *display;
     uint32_t id, pending_surface_target_bo;
     uint32_t pbuffer_limits[3];
@@ -121,10 +130,14 @@ struct egl_generation {
     struct egl_sync_record *syncs;
     struct egl_generation *next;
 };
-static struct egl_generation *g_generations;
+static struct egl_generation *g_generations, *g_generation_releases;
+static void free_generation_locked(struct egl_generation *generation) {
+    if(!generation->wayland_hold) {free(generation);return;}
+    generation->next=g_generation_releases;g_generation_releases=generation;
+}
 static struct egl_surface_record *g_surface_releases;
 static void free_surface_record_locked(struct egl_surface_record *surface) {
-    if (!surface->gbm_lease) { free(surface); return; }
+    if (!surface->gbm_lease && !surface->wayland_lease) { free(surface); return; }
     surface->next = g_surface_releases;
     g_surface_releases = surface;
 }
@@ -154,13 +167,19 @@ static void lock_context(void) {
 static void unlock_context(void) {
     int cancel_state = g_context_cancel_state;
     struct egl_surface_record *releases = g_surface_releases;
-    g_surface_releases = NULL;
+    struct egl_generation *generations=g_generation_releases;
+    g_surface_releases = NULL;g_generation_releases=NULL;
     pthread_mutex_unlock(&g_context_mutex);
     while (releases) {
         struct egl_surface_record *surface = releases;
         releases = surface->next;
-        _wpk_gbm_window_release(surface->gbm_lease);
+        if(surface->gbm_lease)_wpk_gbm_window_release(surface->gbm_lease);
+        if(surface->wayland_lease)_wpk_wlegl_release(surface->wayland_lease);
         free(surface);
+    }
+    while(generations) {
+        struct egl_generation *generation=generations;generations=generation->next;
+        _wpk_wl_display_release(generation->wayland_hold);free(generation);
     }
     pthread_setcancelstate(cancel_state, NULL);
 }
@@ -250,25 +269,25 @@ static struct egl_generation *active_generation(EGLDisplay dpy) {
     struct egl_display_record *display = display_record(dpy);
     return display ? display->active : NULL;
 }
-static EGLDisplay native_display(const void *native) {
+static EGLDisplay native_display(const void *native,int gbm_only) {
     if (!native) return EGL_DPY_HANDLE;
     lock_context();
     EGLDisplay result = EGL_NO_DISPLAY;
     int fd;
     uint64_t identity;
-    if (!_wpk_gbm_device_metadata || !_wpk_gbm_device_metadata(native, &fd, &identity)) {
-        g_last_error = EGL_BAD_PARAMETER;
-        goto done;
-    }
+    enum egl_native_kind kind;
+    if(_wpk_gbm_device_metadata && _wpk_gbm_device_metadata(native,&fd,&identity))kind=NATIVE_GBM;
+    else if(!gbm_only && _wpk_wl_display_metadata && _wpk_wl_display_metadata(native,&identity))kind=NATIVE_WAYLAND;
+    else {g_last_error=EGL_BAD_PARAMETER;goto done;}
     struct egl_display_record *head = atomic_load_explicit(&g_native_displays,
         memory_order_relaxed);
     for (struct egl_display_record *p = head; p; p = p->next) {
-        if (p->native_identity == identity) { result = p->handle; goto done; }
+        if (p->native_kind==kind && p->native_identity == identity) { result = p->handle; goto done; }
     }
     struct egl_display_record *display = g_next_object_handle ? calloc(1, sizeof *display) : NULL;
     if (!display) { g_last_error = EGL_BAD_ALLOC; goto done; }
     *display = (struct egl_display_record){.handle = (EGLDisplay)g_next_object_handle++,
-        .native_device = native, .native_identity = identity, .next = head};
+        .native_kind=kind,.native_device = native, .native_identity = identity, .next = head};
     atomic_store_explicit(&g_native_displays, display, memory_order_release);
     result = display->handle;
 done:
@@ -276,7 +295,7 @@ done:
     return result;
 }
 EGLDisplay eglGetDisplay(EGLNativeDisplayType display_id) {
-    return native_display((const void *)(uintptr_t)display_id);
+    return native_display((const void *)(uintptr_t)display_id,0);
 }
 
 /* GBM's default native display is implementation-selected. Explicit native
@@ -291,7 +310,7 @@ EGLDisplay eglGetPlatformDisplay(EGLenum platform, void *native,
         g_last_error = EGL_BAD_ATTRIBUTE;
         return EGL_NO_DISPLAY;
     }
-    return native_display(native);
+    return native_display(native,1);
 }
 
 /* EGL_EXT_platform_base spelling of eglGetPlatformDisplay, with an
@@ -321,78 +340,48 @@ static EGLBoolean initialize_locked(EGLDisplay dpy, EGLint *major, EGLint *minor
     }
     retire_generations_locked();
     if (generation && generation->initialized) {
+        if(generation->wayland_hold && !_wpk_wl_display_alive(generation->wayland_hold)) {
+            g_last_error=EGL_NOT_INITIALIZED;return EGL_FALSE;
+        }
         if (major) *major = 1;
         if (minor) *minor = 5;
         return EGL_TRUE;
     }
-    int native_fd;
-    if (display == &g_default_display) {
-        native_fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
-    } else {
-        native_fd = _wpk_gbm_device_acquire_fd
-            ? _wpk_gbm_device_acquire_fd(display->native_device, display->native_identity)
-            : -1;
+    generation=NULL;
+    int native_fd=-1,display_fd=-1,fd=-1;
+    void *p=MAP_FAILED;
+    EGLint failure=EGL_NOT_INITIALIZED;
+    if(display->native_kind==NATIVE_WAYLAND) {
+        generation=calloc(1,sizeof *generation);
+        if(!generation) {g_last_error=EGL_BAD_ALLOC;return EGL_FALSE;}
+        if(!_wpk_wl_display_acquire || !_wpk_wl_display_release || !_wpk_wl_display_alive
+          || !(generation->wayland_hold=_wpk_wl_display_acquire(display->native_device,display->native_identity)))goto fail;
+        native_fd=open("/dev/dri/card0",O_RDWR|O_CLOEXEC);
+    }else if(display==&g_default_display)native_fd=open("/dev/dri/card0",O_RDWR|O_CLOEXEC);
+    else native_fd=_wpk_gbm_device_acquire_fd
+        ? _wpk_gbm_device_acquire_fd(display->native_device,display->native_identity) : -1;
+    if(native_fd<0)goto fail;
+    /* A Wayland socket is never DRM-file authority. Its native generation
+     * owns a separate real DRM file and a retained exact connection lease. */
+    display_fd=open(WPK_GL_DEVICE,O_RDWR|O_CLOEXEC);
+    if(display_fd<0)goto fail;
+    struct gl_init_info root={WPK_GL_OP_VERSION,WPK_GL_SESSION_DISPLAY,native_fd,0};
+    if(ioctl(display_fd,GLIO_INIT,&root)!=0) {
+        fprintf(stderr,"eglInitialize: GLIO_INIT(op_version=%u) failed: errno=%d\n",
+            (unsigned)WPK_GL_OP_VERSION,errno);goto fail;
     }
-    if (native_fd < 0) { g_last_error = EGL_NOT_INITIALIZED; return EGL_FALSE; }
-    /* The root owns GL state on its render file. A separate retained native
-     * duplicate preserves exact DRM-file authority even when the caller
-     * closes its GBM fd or terminates EGL with a context still current. */
-    int display_fd = open(WPK_GL_DEVICE, O_RDWR | O_CLOEXEC);
-    if (display_fd < 0) {
-        close(native_fd);
-        g_last_error = EGL_NOT_INITIALIZED;
-        return EGL_FALSE;
+    fd=open(WPK_GL_DEVICE,O_RDWR|O_CLOEXEC);
+    struct gl_init_info object={WPK_GL_OP_VERSION,WPK_GL_SESSION_OBJECTS,display_fd,root.display_id};
+    if(fd<0 || ioctl(fd,GLIO_INIT,&object)!=0)goto fail;
+    p=mmap(NULL,WPK_GL_CMDBUF_LEN,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);
+    if(p==MAP_FAILED) {
+        fprintf(stderr,"eglInitialize: cmdbuf mmap(len=%u) failed: errno=%d\n",
+            (unsigned)WPK_GL_CMDBUF_LEN,errno);goto fail;
     }
-
-    struct gl_init_info root = {WPK_GL_OP_VERSION,WPK_GL_SESSION_DISPLAY,native_fd,0};
-    if (ioctl(display_fd, GLIO_INIT, &root) != 0) {
-        fprintf(stderr,
-                "eglInitialize: GLIO_INIT(op_version=%u) failed: errno=%d\n",
-                (unsigned)WPK_GL_OP_VERSION, errno);
-        close(display_fd); close(native_fd);
-        g_last_error = EGL_NOT_INITIALIZED;
-        return EGL_FALSE;
-    }
-    int fd = open(WPK_GL_DEVICE, O_RDWR | O_CLOEXEC);
-    struct gl_init_info object = {WPK_GL_OP_VERSION,WPK_GL_SESSION_OBJECTS,display_fd,root.display_id};
-    if (fd < 0 || ioctl(fd,GLIO_INIT,&object) != 0) {
-        if (fd >= 0) close(fd);
-        close(display_fd); close(native_fd); g_last_error = EGL_NOT_INITIALIZED; return EGL_FALSE;
-    }
-
-    // Map the cmdbuf here, not in eglMakeCurrent, so the host's
-    // gl_bind fires before any subsequent GLIO_CREATE_CONTEXT. The
-    // host registry's pendingCanvases drain runs on bind, and
-    // gl_create_context relies on `b.canvas` being set — without an
-    // early bind the context is built with no canvas attached and
-    // the OffscreenCanvas placeholder stays blank.
-    void *p = mmap(NULL, WPK_GL_CMDBUF_LEN, PROT_READ | PROT_WRITE,
-                   MAP_SHARED, fd, 0);
-    if (p == MAP_FAILED) {
-        fprintf(stderr,
-                "eglInitialize: cmdbuf mmap(len=%u) failed: errno=%d\n",
-                (unsigned)WPK_GL_CMDBUF_LEN, errno);
-        close(fd);
-        close(display_fd); close(native_fd);
-        g_last_error = EGL_NOT_INITIALIZED;
-        return EGL_FALSE;
-    }
-    generation = calloc(1, sizeof *generation);
-    if (!generation) {
-        munmap(p, WPK_GL_CMDBUF_LEN);
-        close(fd); close(display_fd); close(native_fd);
-        g_last_error = EGL_BAD_ALLOC;
-        return EGL_FALSE;
-    }
-    struct egl_session *session = calloc(1, sizeof *session);
-    if (!session) {
-        free(generation);
-        munmap(p, WPK_GL_CMDBUF_LEN);
-        close(fd);
-        close(display_fd); close(native_fd);
-        g_last_error = EGL_BAD_ALLOC;
-        return EGL_FALSE;
-    }
+    if(!generation)generation=calloc(1,sizeof *generation);
+    if(!generation) {failure=EGL_BAD_ALLOC;goto fail;}
+    struct egl_session *session=calloc(1,sizeof *session);
+    if(!session) {failure=EGL_BAD_ALLOC;goto fail;}
     *session =
         (struct egl_session){.generation = generation, .fd = fd, .base = 1, .cmdbuf_base = p};
     generation->sessions = session;
@@ -408,6 +397,13 @@ static EGLBoolean initialize_locked(EGLDisplay dpy, EGLint *major, EGLint *minor
     if (major) *major = 1;
     if (minor) *minor = 5;
     return EGL_TRUE;
+fail:
+    if(p!=MAP_FAILED)munmap(p,WPK_GL_CMDBUF_LEN);
+    if(fd>=0)close(fd);
+    if(display_fd>=0)close(display_fd);
+    if(native_fd>=0)close(native_fd);
+    if(generation)free_generation_locked(generation);
+    g_last_error=failure;return EGL_FALSE;
 }
 
 enum config_match { CFG_MINIMUM, CFG_EXACT, CFG_BOOLEAN, CFG_COLOR, CFG_CAVEAT,
@@ -828,6 +824,10 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
     } else if (win && _wpk_gbm_surface_dimensions) {
         is_gbm = _wpk_gbm_surface_dimensions((void *)win, &request.attrs.width, &request.attrs.height);
     }
+    if((generation->display->native_kind==NATIVE_GBM && !is_gbm)
+      || (generation->display->native_kind==NATIVE_WAYLAND && is_gbm)) {
+        g_last_error=EGL_BAD_NATIVE_WINDOW;return EGL_NO_SURFACE;
+    }
     EGLint render_buffer = EGL_BACK_BUFFER, gl_colorspace = EGL_GL_COLORSPACE_LINEAR;
     for (const EGLint *a = list; a && a[0] != EGL_NONE; a += 2) {
         if (a[0] == EGL_WIDTH && a[1] >= 0)
@@ -860,6 +860,7 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
         return EGL_NO_SURFACE;
     }
     EGLint error = EGL_BAD_ALLOC;
+    int wayland_prepared=0;
     struct egl_session *session = object_session(generation, 0);
     if (!session)
         goto fail;
@@ -883,12 +884,23 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
         request.attrs.width = frame.width;
         request.attrs.height = frame.height;
     }
-    if (!target && !is_gbm && win && _wpk_wlegl_bo_handle) {
-        target = _wpk_wlegl_bo_handle((void *)win);
-        if (target && _wpk_wlegl_device_fd)
-            source_fd = _wpk_wlegl_device_fd((void *)win);
-        if (target && _wpk_wlegl_dimensions)
-            _wpk_wlegl_dimensions((void *)win, &request.attrs.width, &request.attrs.height);
+    if(!is_gbm && win && _wpk_wlegl_acquire && _wpk_wlegl_prepare && _wpk_wlegl_finish && _wpk_wlegl_release) {
+        struct wpk_wlegl_frame frame;
+        const struct egl_display_record *display=generation->display;
+        const void *native_display=display->native_kind==NATIVE_WAYLAND ? display->native_device : NULL;
+        if(!_wpk_wlegl_acquire((void *)win,native_display,display->native_identity,&surface->wayland_lease,&frame)) {
+            error=EGL_BAD_NATIVE_WINDOW;goto fail;
+        }
+        wayland_prepared=1;target=frame.handle;source_fd=frame.fd;
+        request.attrs.width=frame.width;request.attrs.height=frame.height;
+    }else if(generation->display->native_kind==NATIVE_WAYLAND) {
+        error=EGL_BAD_NATIVE_WINDOW;goto fail;
+    }else if(!target && !is_gbm && win && _wpk_wlegl_bo_handle) {
+        // Existing non-Wayland embedders can supply their own safe metadata
+        // hooks; the actual Wayland implementation always uses retained holds.
+        target=_wpk_wlegl_bo_handle((void *)win);
+        if(target && _wpk_wlegl_device_fd)source_fd=_wpk_wlegl_device_fd((void *)win);
+        if(target && _wpk_wlegl_dimensions)_wpk_wlegl_dimensions((void *)win,&request.attrs.width,&request.attrs.height);
     }
     uint32_t local_target = target ? transfer_bo_handle(source_fd, session->fd, target) : 0;
     if (target && !local_target)
@@ -912,15 +924,17 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
                                            .render_buffer = render_buffer,
                                            .gl_colorspace = gl_colorspace,
                                            .native_window = (void *)win,
-                                           .gbm_lease = surface->gbm_lease};
+                                           .gbm_lease = surface->gbm_lease,.wayland_lease=surface->wayland_lease};
     /* GBM windows have no Wayland attach/commit hook. */
     surface->gbm_window = is_gbm;
     surface->next = generation->surfaces;
     generation->surfaces = surface;
     session->surface_used = 1;
     generation->pending_surface_target_bo = 0;
+    if(wayland_prepared)_wpk_wlegl_finish(surface->wayland_lease,0);
     return surface->handle;
 fail:
+    if(wayland_prepared)_wpk_wlegl_finish(surface->wayland_lease,0);
     free_surface_record_locked(surface);
     retire_empty_sessions(generation);
     g_last_error = error;
@@ -996,40 +1010,34 @@ EGLSurface eglCreatePlatformWindowSurfaceEXT(EGLDisplay dpy, EGLConfig config, v
     return surface;
 }
 int _wpk_egl_window_retarget(void *window) {
-    lock_context();
-    int accepted = 1;
-    for (struct egl_generation *g = g_generations; g; g = g->next) {
-        for (struct egl_surface_record *p = g->surfaces; p; p = p->next) {
-            if (!window || p->native_window != window || p->gbm_window)
-                continue;
-            uint32_t target = _wpk_wlegl_bo_handle ? _wpk_wlegl_bo_handle(window) : 0;
-            if (!target) {
-                accepted = 0;
-                goto done;
-            }
-            int source_fd = _wpk_wlegl_device_fd ? _wpk_wlegl_device_fd(window) : g->fd;
-            uint32_t local_target = transfer_bo_handle(source_fd, p->session->fd, target);
-            if (!local_target) {
-                accepted = 0;
-                goto done;
-            }
-            _wpk_gl_flush();
-            struct gl_surface_attrs attrs = {
-                .kind = WPK_SURFACE_DEFAULT, .config_id = 1, .reserved = {local_target, 0, 0, 0}};
-            if (_wpk_wlegl_dimensions)
-                _wpk_wlegl_dimensions(window, &attrs.width, &attrs.height);
-            accepted = ioctl(p->session->fd, GLIO_UPDATE_SURFACE, &attrs) == 0;
-            release_transferred_bo(g, source_fd, p->session->fd, local_target);
-            if (accepted && attrs.width && attrs.height) {
-                p->width = attrs.width;
-                p->height = attrs.height;
-            }
-            goto done;
+    lock_context();int accepted=1;void *active=NULL;
+    for(struct egl_generation *g=g_generations;g;g=g->next)for(struct egl_surface_record *p=g->surfaces;p;p=p->next) {
+        if(!window || p->native_window!=window || p->gbm_window)continue;
+        struct wpk_wlegl_frame frame;
+        uint32_t target;int source_fd;
+        if(p->wayland_lease) {
+            if(!_wpk_wlegl_prepare(p->wayland_lease,&frame)) {accepted=0;goto done;}
+            active=p->wayland_lease;target=frame.handle;source_fd=frame.fd;
+        }else {
+            target=_wpk_wlegl_bo_handle ? _wpk_wlegl_bo_handle(window) : 0;
+            source_fd=_wpk_wlegl_device_fd ? _wpk_wlegl_device_fd(window) : g->fd;
+            frame.width=frame.height=0;
+            if(_wpk_wlegl_dimensions)_wpk_wlegl_dimensions(window,&frame.width,&frame.height);
         }
+        if(!target) {accepted=0;goto done;}
+        uint32_t local=transfer_bo_handle(source_fd,p->session->fd,target);
+        if(!local) {accepted=0;goto done;}
+        _wpk_gl_flush();
+        struct gl_surface_attrs attrs={.kind=WPK_SURFACE_DEFAULT,.config_id=1,
+            .width=frame.width,.height=frame.height,.reserved={local,0,0,0}};
+        accepted=ioctl(p->session->fd,GLIO_UPDATE_SURFACE,&attrs)==0;
+        release_transferred_bo(g,source_fd,p->session->fd,local);
+        if(accepted && attrs.width && attrs.height) {p->width=attrs.width;p->height=attrs.height;}
+        goto done;
     }
 done:
-    unlock_context();
-    return accepted;
+    if(active)_wpk_wlegl_finish(active,0);
+    unlock_context();return accepted;
 }
 EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLContext handle) {
     lock_context();
@@ -1375,7 +1383,10 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface handle) {
         if (!p || !context || g_thread_binding.generation != g || g_thread_binding.draw != p)
             g_last_error = EGL_BAD_SURFACE;
         else {
-            if (_wpk_gl_flush_checked() != 0)
+            struct wpk_wlegl_frame frame;
+            int prepared=p->wayland_lease && _wpk_wlegl_prepare(p->wayland_lease,&frame);
+            if(p->wayland_lease && !prepared)g_last_error=EGL_BAD_NATIVE_WINDOW;
+            else if (_wpk_gl_flush_checked() != 0)
                 g_last_error = current_binding_error();
             else if (p->gbm_lease)
                 result = swap_gbm_window_locked(g, p) ? EGL_TRUE : EGL_FALSE;
@@ -1384,9 +1395,12 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface handle) {
             else if (ioctl(context->session->fd, GLIO_PRESENT, NULL) != 0)
                 g_last_error = current_binding_error();
             else {
-                if (p->native_window && !p->gbm_window && _wpk_wlegl_present)
+                if (!p->wayland_lease && p->native_window && !p->gbm_window && _wpk_wlegl_present)
                     _wpk_wlegl_present(p->native_window);
                 result = EGL_TRUE;
+            }
+            if(prepared && !_wpk_wlegl_finish(p->wayland_lease,result==EGL_TRUE)) {
+                g_last_error=EGL_BAD_NATIVE_WINDOW;result=EGL_FALSE;
             }
         }
     }
@@ -1494,7 +1508,7 @@ static void retire_pending_resources_locked(struct egl_generation *g) {
         link = &(*link)->next;
     if (*link)
         *link = g->next;
-    free(g);
+    free_generation_locked(g);
 }
 static void retire_generations_locked(void) {
     for (struct egl_generation *p = g_generations, *next; p; p = next) {

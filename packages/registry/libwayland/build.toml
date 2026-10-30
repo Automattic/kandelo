@@ -1,7 +1,7 @@
 script_path = "packages/registry/libwayland/build-libwayland.sh"
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "1dc10fcc1761475964c0108628a800c3c5e468e5"
-revision    = 3
+revision    = 4
 
 # The hand-curated config.h is part of the cache key: editing it (e.g.
 # flipping a HAVE_* to track a sysroot change) must invalidate cached
@@ -12,6 +12,8 @@ inputs = [
   "packages/registry/libwayland/build-libwayland.sh",
   "packages/registry/libwayland/src/config.h",
   "libc/glue/libwayland-egl.c",
+  "libc/glue/wayland-client-lifetime.inc",
+  "libc/glue/wayland-native.h",
   "libc/glue/gl_abi.h",
   "libc/glue/wayland-egl-include/wayland-egl.h",
   "libc/glue/wayland-egl-include/wayland-egl-core.h",

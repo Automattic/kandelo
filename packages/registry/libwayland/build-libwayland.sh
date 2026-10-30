@@ -152,7 +152,19 @@ PROTO_OBJ="$(compile wayland-protocol.c)"
 SHARED_OBJS=("$UTIL_OBJ" "$CONN_OBJ" "$OS_OBJ" "$PROTO_OBJ")
 
 echo "==> Compiling client TU..."
-CLIENT_OBJ="$(compile wayland-client.c)"
+# Keep upstream connection/transport implementation intact. The appended
+# private bridge can retain its actual display/proxy records and distinguish
+# live native handles without probing arbitrary caller pointers.
+CLIENT_WRAPPER="$BUILD_DIR/wayland-client-owned.c"
+cat > "$CLIENT_WRAPPER" <<EOF
+#define wl_display_connect _wpk_upstream_display_connect
+#define wl_display_connect_to_fd _wpk_upstream_display_connect_to_fd
+#define wl_display_disconnect _wpk_upstream_display_disconnect
+#include "$WLSRC/wayland-client.c"
+#include "$REPO_ROOT/libc/glue/wayland-client-lifetime.inc"
+EOF
+CLIENT_OBJ="$BUILD_DIR/wayland-client.o"
+wasm32posix-cc -c "${CFLAGS[@]}" -I"$REPO_ROOT/libc/glue" "$CLIENT_WRAPPER" -o "$CLIENT_OBJ"
 
 echo "==> Compiling server TUs..."
 SERVER_MAIN_OBJ="$(compile wayland-server.c)"
