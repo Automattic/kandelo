@@ -560,8 +560,10 @@ All eleven cases execute and fail unchanged `8152b269f6`: ten at missing API
 resolution and one at valid pbuffer sRGB creation. This is inventory/behavior
 evidence, not eleven independently reproduced ownership defects.
 
-The separate actual-GBM source fixture uses provisioned public DRM headers
-and a DRM allocation double. It verifies live metadata, format/usage,
+The separate actual-GBM source fixture resolves current public DRM headers
+through the normal source-only libdrm package and uses a DRM allocation
+double. It does not require a legacy libdrm install in the SDK sysroot.
+It verifies live metadata, format/usage,
 foreign/protected-page pointers, unchanged output on rejection, retirement
 and cleanup after partial constructor failure. It also checks device-file
 retention through public device destruction, with UndefinedBehaviorSanitizer
@@ -688,7 +690,8 @@ double under UBSan. It checks live native handles, allocation rollback,
 modifier pointer/count validation, layout rejection before allocation,
 linear plane-count queries, fourcc names and legacy name aliases. It also
 compares all 38 public header functions against the compiled object's
-external definitions. It needs the normal provisioned public DRM headers.
+external definitions. The normal resolver provisions its public DRM headers
+from the current libdrm package; it never reads a stale sysroot dependency.
 This is source/API evidence, not SDK guest execution, rendered GBM
 front/back storage or complete GBM compatibility.
 

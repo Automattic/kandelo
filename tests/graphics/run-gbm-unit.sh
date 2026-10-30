@@ -3,11 +3,14 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 output_dir="$(mktemp -d "$repo_root/.context/graphics-gbm.XXXXXX")"
 trap 'rm -rf "$output_dir"' EXIT
-# Use only the provisioned public DRM headers, not sysroot libc headers,
-# when compiling the actual GBM source for the native test process.
+# Use public DRM headers from the current resolver-owned package, not sysroot
+# libc headers or a legacy dependency install that a fresh checkout lacks.
+host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+libdrm_prefix="$(cd "$repo_root" && cargo run -p xtask --target "$host_target" \
+    --quiet -- build-deps resolve libdrm --arch wasm32 --source-only)"
 mkdir -p "$output_dir/include/drm"
-cp "$repo_root/sysroot/include/libdrm/xf86drm.h" "$output_dir/include/"
-cp "$repo_root/sysroot/include/drm/"*.h "$output_dir/include/drm/"
+cp "$libdrm_prefix/include/libdrm/xf86drm.h" "$output_dir/include/"
+cp "$libdrm_prefix/include/drm/"*.h "$output_dir/include/drm/"
 cp "$repo_root/libc/musl-overlay/include/gbm.h" "$output_dir/include/"
 cp "$repo_root/libc/glue/gbm_window.h" "$output_dir/include/"
 [ $# -le 1 ] || { echo "Usage: $0 [git-ref]" >&2; exit 1; }
