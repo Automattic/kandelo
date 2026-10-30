@@ -1780,8 +1780,15 @@ cancellation. Once cleanup starts, abandonment must await its real retirement
 acknowledgment. Abandoned exec/spawn instructions also cancel their exact
 prepared target through the ordinary target/OFD cleanup path. Normal exec or
 removal invalidates an old intent; its token cannot cancel a replacement
-image's resources. The existing prepared-target cancel path's ignored release
-error remains an ordinary cleanup gap, not new retryable cleanup proof.
+image's resources. Prepared-target cancel proves final regular-file OFD and
+cross-process handle ownership before attempting a final host close once.
+Success creates exact preclosed custody for normal OFD retirement without a
+second native close. An ambiguous error retains the sealed target and OFD;
+it cannot be read, retained, committed, retried by raw fd, discarded through
+process teardown or mistaken for an absent target. Registry abandonment stays
+faulted and cannot Forget it. Resolving Uncertain requires real host custody
+or explicit containment. Other executable-release sites still have ordinary
+error-retention gaps; this is not a general close transaction implementation.
 Kernel-held intent exports, effect receivers and worker scheduling still need
 integration before public asynchronous graphics activation.
 

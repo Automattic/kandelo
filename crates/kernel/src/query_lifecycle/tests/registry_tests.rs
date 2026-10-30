@@ -731,3 +731,344 @@ fn init_reap_retains_the_actual_child_completion_until_take() {
     assert!(reap.removal.adopted_zombies.is_empty());
     registry.forget(handle).unwrap();
 }
+
+#[test]
+fn failed_final_close_keeps_target_ofd_and_registry_owner_quarantined() {
+    let (mut table, mut host, pid, base, _guard) = fixture();
+    let (target, idx) = prepare(
+        &mut table,
+        pid,
+        PreparedExecOwner::Process {
+            pid,
+            caller_tid: pid,
+            generation: 0,
+        },
+        base,
+    );
+    let mut registry = IntentRegistry::for_test(1, 1);
+    let handle = registry
+        .admit(
+            &table,
+            Request::Exec {
+                pid,
+                tid: pid,
+                target,
+            },
+        )
+        .unwrap();
+    host.close_error = Some(Errno::EIO);
+    let result = registry.abandon(handle, &mut table, &mut host);
+    let target_present = table
+        .get(pid)
+        .unwrap()
+        .prepared_exec_targets
+        .get(target)
+        .is_ok();
+    let ofd_present = table.get(pid).unwrap().ofd_table.get(idx).is_some();
+    let forget = registry.forget(handle);
+    assert!(
+        result.as_ref().is_ok_and(|snapshot| matches!(
+            snapshot.status,
+            Status::Abandoning { fault: true, .. }
+        )) && ofd_present
+            && forget == Err(Errno::EBUSY),
+        "lost cleanup custody: result={result:?} target_present={target_present} ofd_present={ofd_present} forget={forget:?} close_attempts={:?}",
+        host.closed
+    );
+    let proc = table.get(pid).unwrap();
+    assert!(
+        proc.prepared_exec_targets
+            .retained_identity(target)
+            .unwrap()
+            .retiring
+    );
+    assert_eq!(proc.ofd_table.get(idx).unwrap().ref_count, 1);
+    assert!(matches!(
+        proc.prepared_exec_targets.get(target),
+        Err(Errno::EBUSY)
+    ));
+    let id = proc.ofd_table.get(idx).unwrap().ofd_id;
+    let (proc, locks) = table.process_and_advisory_locks(pid).unwrap();
+    assert_eq!(proc.ofd_table.try_inc_ref_exact(idx, id), Err(Errno::EBUSY));
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| proc.ofd_table.inc_ref(idx)))
+            .is_err()
+    );
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| proc.ofd_table.dec_ref(idx)))
+            .is_err()
+    );
+    assert_eq!(
+        syscalls::release_prepared_exec_ofd_with_locks(
+            proc,
+            locks,
+            &mut host,
+            OpenFileDescRef(idx)
+        ),
+        Err(Errno::EBUSY)
+    );
+    assert_eq!(proc.ofd_table.get(idx).unwrap().ref_count, 1);
+    for _ in 0..2 {
+        assert_eq!(
+            registry.step(handle, &mut table, &mut host).unwrap().status,
+            Status::Abandoning {
+                query_cleanup_started: false,
+                fault: true
+            }
+        );
+        let (proc, locks) = table.process_and_advisory_locks(pid).unwrap();
+        assert_eq!(
+            crate::exec_target::cancel(proc, locks, &mut host, pid, target),
+            Err(Errno::EIO)
+        );
+    }
+    assert_eq!(
+        host.closed,
+        [base],
+        "uncertain error never authorizes raw-fd retry"
+    );
+}
+
+#[test]
+fn successful_final_preclose_runs_normal_retirement_without_second_close() {
+    let (mut table, mut host, pid, base, _guard) = fixture();
+    let (target, idx) = prepare(
+        &mut table,
+        pid,
+        PreparedExecOwner::Process {
+            pid,
+            caller_tid: pid,
+            generation: 0,
+        },
+        base,
+    );
+    let (proc, locks) = table.process_and_advisory_locks(pid).unwrap();
+    crate::exec_target::cancel(proc, locks, &mut host, pid, target).unwrap();
+    assert_eq!(host.closed, [base]);
+    assert!(proc.ofd_table.get(idx).is_none());
+    assert!(
+        proc.prepared_exec_targets
+            .retained_identity(target)
+            .is_err()
+    );
+    assert_eq!(
+        crate::exec_target::cancel(proc, locks, &mut host, pid, target),
+        Err(Errno::EINVAL)
+    );
+    assert_eq!(host.closed, [base]);
+}
+
+#[test]
+fn nonfinal_local_and_real_fork_shared_references_do_not_preclose() {
+    for fork in [false, true] {
+        let (mut table, mut host, pid, base, _guard) = fixture();
+        let (target, idx) = prepare(
+            &mut table,
+            pid,
+            PreparedExecOwner::Process {
+                pid,
+                caller_tid: pid,
+                generation: 0,
+            },
+            base,
+        );
+        let proc = table.get_mut(pid).unwrap();
+        let id = proc.ofd_table.get(idx).unwrap().ofd_id;
+        proc.ofd_table.try_inc_ref_exact(idx, id).unwrap();
+        let fd = proc.fd_table.alloc(OpenFileDescRef(idx), 0).unwrap();
+        let child = if fork {
+            Some(table.fork_process_for_caller(pid, pid).unwrap())
+        } else {
+            None
+        };
+        if fork {
+            let (proc, locks) = table.process_and_advisory_locks(pid).unwrap();
+            syscalls::sys_close_with_locks(proc, locks, &mut host, fd).unwrap();
+            assert_eq!(proc.ofd_table.get(idx).unwrap().ref_count, 1);
+        }
+        host.close_error = Some(Errno::EIO);
+        let (proc, locks) = table.process_and_advisory_locks(pid).unwrap();
+        crate::exec_target::cancel(proc, locks, &mut host, pid, target).unwrap();
+        assert!(host.closed.is_empty());
+        assert_eq!(
+            host.close_error,
+            Some(Errno::EIO),
+            "no native close attempted"
+        );
+        host.close_error = None;
+        let last_pid = child.unwrap_or(pid);
+        let (proc, locks) = table.process_and_advisory_locks(last_pid).unwrap();
+        syscalls::sys_close_with_locks(proc, locks, &mut host, fd).unwrap();
+        assert_eq!(host.closed, [base]);
+    }
+}
+
+#[test]
+fn quarantined_target_cannot_read_or_close_a_reused_native_number() {
+    let (mut table, mut host, pid, base, _guard) = fixture();
+    let (old, old_idx) = prepare(
+        &mut table,
+        pid,
+        PreparedExecOwner::Process {
+            pid,
+            caller_tid: pid,
+            generation: 0,
+        },
+        base,
+    );
+    host.close_error = Some(Errno::EIO);
+    {
+        let (proc, locks) = table.process_and_advisory_locks(pid).unwrap();
+        assert_eq!(
+            crate::exec_target::cancel(proc, locks, &mut host, pid, old),
+            Err(Errno::EIO)
+        );
+    }
+    // A backend may have consumed its native fd before returning EIO. A new
+    // actual target can then legitimately carry the same numeric host handle.
+    let (replacement, new_idx) = prepare(
+        &mut table,
+        pid,
+        PreparedExecOwner::Process {
+            pid,
+            caller_tid: pid,
+            generation: 0,
+        },
+        base,
+    );
+    assert_ne!(old_idx, new_idx);
+    let proc = table.get_mut(pid).unwrap();
+    assert_ne!(
+        proc.ofd_table.get(old_idx).unwrap().ofd_id,
+        proc.ofd_table.get(new_idx).unwrap().ofd_id
+    );
+    let mut bytes = [0xa5; 8];
+    assert_eq!(
+        crate::exec_target::read(proc, &mut host, pid, old, 0, &mut bytes),
+        Err(Errno::EBUSY)
+    );
+    assert_eq!(bytes, [0xa5; 8]);
+    assert!(host.preads.is_empty());
+    assert_eq!(crate::exec_target::size(proc, pid, old), Err(Errno::EBUSY));
+    assert_eq!(
+        crate::exec_target::artifact_bytes(proc, pid, old),
+        Err(Errno::EBUSY)
+    );
+    let (proc, locks) = table.process_and_advisory_locks(pid).unwrap();
+    assert_eq!(
+        crate::exec_target::commit_process(proc, locks, &mut host, pid, pid, old),
+        Err(Errno::EBUSY)
+    );
+    assert_eq!(
+        crate::exec_target::cancel(proc, locks, &mut host, pid, old),
+        Err(Errno::EIO)
+    );
+    assert_eq!(host.closed, [base]);
+    crate::exec_target::cancel(proc, locks, &mut host, pid, replacement).unwrap();
+    assert_eq!(
+        host.closed,
+        [base, base],
+        "only the independently owned replacement closes next"
+    );
+    assert_eq!(
+        crate::exec_target::cancel(proc, locks, &mut host, pid, old),
+        Err(Errno::EIO)
+    );
+    assert_eq!(host.closed, [base, base]);
+    assert!(
+        proc.prepared_exec_targets
+            .retained_identity(old)
+            .unwrap()
+            .retiring
+    );
+}
+
+#[test]
+fn uncertain_target_containment_precedes_lifecycle_and_signal_mutation() {
+    let (mut table, mut host, pid, base, _guard) = fixture();
+    let (target, _) = prepare(
+        &mut table,
+        pid,
+        PreparedExecOwner::Process {
+            pid,
+            caller_tid: pid,
+            generation: 0,
+        },
+        base,
+    );
+    let mut registry = IntentRegistry::for_test(1, 1);
+    let remove = registry
+        .admit(&table, Request::Remove { pid, reap: false })
+        .unwrap();
+    host.close_error = Some(Errno::EIO);
+    let (proc, locks) = table.process_and_advisory_locks(pid).unwrap();
+    crate::exec_target::cancel(proc, locks, &mut host, pid, target).unwrap_err();
+    proc.caught_handler_depth = 3;
+    proc.raise_signal(15);
+    assert_eq!(
+        crate::signal::try_deliver_pending_signals_with_locks(proc, locks, &mut host),
+        crate::signal::SignalProgress::ProtocolFaultOwned
+    );
+    assert!(proc.signals.is_pending(15));
+    assert_eq!(proc.caught_handler_depth, 3);
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::signal::dequeue_signal_for(proc, pid, 15)
+        }))
+        .is_err()
+    );
+    assert!(proc.signals.is_pending(15));
+    assert_eq!(
+        syscalls::commit_exec_state_with_locks(proc, locks, &mut host, pid),
+        Err(Errno::EBUSY)
+    );
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            syscalls::sys_exit_with_locks(proc, locks, &mut host, 42)
+        }))
+        .is_err()
+    );
+    assert_eq!(proc.state, ProcessState::Running);
+    assert_eq!(proc.exit_status, 0);
+    assert_eq!(proc.caught_handler_depth, 3);
+    let mut wire = [0xa5; 256];
+    assert_eq!(
+        crate::fork::serialize_fork_state(proc, &mut wire),
+        Err(Errno::EBUSY)
+    );
+    assert_eq!(wire, [0xa5; 256]);
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::exec_target::drain_prepared_exec_targets(proc, locks, &mut host)
+        }))
+        .is_err()
+    );
+    assert!(
+        proc.prepared_exec_targets
+            .retained_identity(target)
+            .unwrap()
+            .retiring
+    );
+    assert_eq!(
+        registry.step(remove, &mut table, &mut host).unwrap().status,
+        Status::Refused(Errno::EBUSY)
+    );
+    assert!(table.remove_process(pid).is_none());
+    assert_eq!(table.fork_process_for_caller(pid, pid), Err(Errno::EBUSY));
+    assert_eq!(table.get(pid).unwrap().state, ProcessState::Running);
+    assert_eq!(host.closed, [base]);
+}
+
+#[test]
+fn prepared_target_native_close_has_one_transaction_entry_point() {
+    let target_source = include_str!("../../../../runtime-core/src/exec_target.rs");
+    // All executable target access/close must use the typed OFD transaction;
+    // direct raw-number HostIO closes here bypass its retained custody proof.
+    let start = target_source.find("pub fn cancel(").unwrap();
+    let end = target_source[start..].find("fn metadata_matches(").unwrap() + start;
+    assert!(!target_source[start..end].contains("host.host_close("));
+    let snapshot = include_str!("../../../../runtime-core/src/fork.rs");
+    let start = snapshot.find("pub fn serialize_fork_state(").unwrap();
+    let body = &snapshot[start..];
+    assert!(body.find("has_retiring()").unwrap() < body.find("Writer::new").unwrap());
+}

@@ -740,7 +740,9 @@ impl ProcessTable {
         if pid == SYNTHETIC_INIT_PID {
             return None;
         }
-        if self.processes.get(&pid)?.blocked_retries.has_external_query_receipts() {
+        if self.processes.get(&pid)?.blocked_retries.has_external_query_receipts()
+            || self.processes.get(&pid)?.prepared_exec_targets.has_retiring()
+        {
             // No HostIO exists here. Keep the actual process/OFD/receipt owner
             // until host-aware preflight proves retirement; IDs are not custody.
             return None;
@@ -1377,6 +1379,9 @@ impl ProcessTable {
     ) -> Result<u32, Errno> {
         let (serialized_parent, caller_blocked, mut dri_mappings) = {
             let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+            if parent.prepared_exec_targets.has_retiring() {
+                return Err(Errno::EBUSY);
+            }
             if matches!(
                 parent.state,
                 crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
@@ -1471,6 +1476,9 @@ impl ProcessTable {
         // Snapshot inheritable parent state under an immutable borrow.
         let inherit = {
             let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
+            if parent.prepared_exec_targets.has_retiring() {
+                return Err(Errno::EBUSY);
+            }
             if matches!(
                 parent.state,
                 crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo

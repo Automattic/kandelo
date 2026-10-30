@@ -1251,6 +1251,9 @@ fn commit_exec_state_impl(
     host: &mut dyn HostIO,
     caller_tid: Option<u32>,
 ) -> Result<(), Errno> {
+    if proc.prepared_exec_targets.has_retiring() {
+        return Err(Errno::EBUSY);
+    }
     if matches!(
         proc.state,
         crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo
@@ -6144,10 +6147,23 @@ fn sys_close_impl(
 /// path would trade the reuse bug for leaked or half-closed resources.
 fn release_ofd_reference_impl(
     proc: &mut Process,
-    mut locks: Option<&mut AdvisoryLockManager>,
+    locks: Option<&mut AdvisoryLockManager>,
     host: &mut dyn HostIO,
     idx: usize,
 ) -> Result<(), Errno> {
+    release_ofd_reference_with_preclosed(proc, locks, host, idx, None)
+}
+
+fn release_ofd_reference_with_preclosed(
+    proc: &mut Process,
+    mut locks: Option<&mut AdvisoryLockManager>,
+    host: &mut dyn HostIO,
+    idx: usize,
+    preclosed: Option<&PreparedExecPreclosed>,
+) -> Result<(), Errno> {
+    if proc.ofd_table.get(idx).is_some_and(|ofd| ofd.exec_close_quarantined) {
+        return Err(Errno::EBUSY);
+    }
     let (host_handle, file_type, status_flags, dir_host_handle, ofd_id) = {
         let ofd = proc.ofd_table.get(idx).ok_or(Errno::EBADF)?;
         (
@@ -6408,7 +6424,12 @@ fn release_ofd_reference_impl(
                     // If the handle was never shared (not in the refcount table),
                     // host_handle_close_ref returns true immediately.
                     release_final_ofd_locks(locks.as_deref_mut(), ofd_id);
-                    host.host_close(host_handle)?;
+                    // A prepared target may have completed this exact close
+                    // while retaining the OFD. Never close its numeric handle
+                    // twice: the backend can already have reused that number.
+                    if preclosed.is_none() {
+                        host.host_close(host_handle)?;
+                    }
                 }
             }
         }
@@ -6460,6 +6481,122 @@ pub fn release_prepared_exec_ofd_with_locks(
     ofd_ref: OpenFileDescRef,
 ) -> Result<(), Errno> {
     release_ofd_reference_impl(proc, Some(locks), host, ofd_ref.0)
+}
+
+/// Actual successful HostIO close custody, minted only after the one attempt
+/// succeeds. It is not Clone and never contains authority to close a number
+/// again. The sealed prepared target keeps this proof until normal OFD release.
+pub struct PreparedExecPreclosed {
+    pid: u32,
+    token: u32,
+    ofd_idx: usize,
+    ofd_id: crate::lock::OfdId,
+    host_handle: i64,
+}
+
+/// Return whether cancellation needs its one final native close. Nonfinal
+/// references and kernel regular-file backings use ordinary reference release.
+pub(crate) fn prepared_exec_cancel_needs_preclose(
+    proc: &Process,
+    token: u32,
+    ofd_ref: OpenFileDescRef,
+    id: crate::lock::OfdId,
+) -> Result<bool, Errno> {
+    let target = proc.prepared_exec_targets.retained_identity(token)?;
+    if target.ofd_ref.0 != ofd_ref.0 || target.ofd_id != id {
+        return Err(Errno::EBADF);
+    }
+    let ofd = proc.ofd_table.get(ofd_ref.0).ok_or(Errno::EBADF)?;
+    if ofd.ofd_id != id || ofd.file_type != FileType::Regular || ofd.ref_count == 0 {
+        return Err(Errno::EBADF);
+    }
+    if ofd.dri_state.is_some() || ofd.dir_host_handle >= 0 {
+        return Err(Errno::EBUSY);
+    }
+    if ofd.ref_count > 1 {
+        return Ok(false);
+    }
+    // These are separate kernel-owned references and must be absent when the
+    // target claims the final local reference. Refuse inconsistent accounting.
+    if proc
+        .fd_table
+        .iter()
+        .any(|(_, fd)| fd.ofd_ref.0 == ofd_ref.0)
+        || proc.exe.is_some_and(|exe| exe.0 == ofd_ref.0)
+    {
+        return Err(Errno::EBUSY);
+    }
+    let h = ofd.host_handle;
+    if h <= 2
+        || crate::procfs::is_procfs_buf_handle(h)
+        || crate::descriptor_backing::is_synthetic_regular_handle(h)
+        || crate::tmpfs::is_tmpfs_file_handle(h)
+        || crate::rootfs::is_rootfs_file_handle(h)
+        || !crate::ofd::host_handle_is_final_reference(h)
+    {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+pub(crate) fn preclose_prepared_exec_target(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    token: u32,
+    ofd_ref: OpenFileDescRef,
+    id: crate::lock::OfdId,
+) -> Result<PreparedExecPreclosed, Errno> {
+    if !prepared_exec_cancel_needs_preclose(proc, token, ofd_ref, id)? {
+        return Err(Errno::EBUSY);
+    }
+    let host_handle = proc
+        .ofd_table
+        .get(ofd_ref.0)
+        .ok_or(Errno::EBADF)?
+        .host_handle;
+    host.host_close(host_handle)?;
+    Ok(PreparedExecPreclosed {
+        pid: proc.pid,
+        token,
+        ofd_idx: ofd_ref.0,
+        ofd_id: id,
+        host_handle,
+    })
+}
+
+pub(crate) fn release_preclosed_prepared_exec_target(
+    proc: &mut Process,
+    locks: &mut AdvisoryLockManager,
+    host: &mut dyn HostIO,
+    proof: &PreparedExecPreclosed,
+) -> Result<(), Errno> {
+    if proc.pid != proof.pid {
+        return Err(Errno::ESRCH);
+    }
+    let target = proc.prepared_exec_targets.retained_identity(proof.token)?;
+    let ofd = proc.ofd_table.get(proof.ofd_idx).ok_or(Errno::EBADF)?;
+    if target.ofd_ref.0 != proof.ofd_idx
+        || target.ofd_id != proof.ofd_id
+        || ofd.ofd_id != proof.ofd_id
+        || ofd.host_handle != proof.host_handle
+        || !prepared_exec_cancel_needs_preclose(proc, proof.token, target.ofd_ref, target.ofd_id)?
+    {
+        return Err(Errno::EBADF);
+    }
+    proc.ofd_table
+        .clear_exec_close_quarantine(proof.ofd_idx, proof.ofd_id)?;
+    let result =
+        release_ofd_reference_with_preclosed(proc, Some(locks), host, proof.ofd_idx, Some(proof));
+    if result.is_err()
+        && proc
+            .ofd_table
+            .get(proof.ofd_idx)
+            .is_some_and(|ofd| ofd.ofd_id == proof.ofd_id)
+    {
+        proc.ofd_table
+            .quarantine_exec_close(proof.ofd_idx, proof.ofd_id)?;
+    }
+    result
 }
 
 fn stable_ofd_target(proc: &Process, fd: i32) -> Result<StableOfdTarget, Errno> {
@@ -12418,6 +12555,8 @@ fn cleanup_process_for_exit(
     mut locks: Option<&mut AdvisoryLockManager>,
     host: &mut dyn HostIO,
 ) {
+    assert!(!proc.prepared_exec_targets.has_retiring(),
+        "uncertain executable close requires real host cleanup containment");
     assert_eq!(preflight_gl_query_teardown(proc, host, None), GlQueryTeardown::Ready,
         "owned GL cleanup requires host-aware exit scheduling before image retirement");
     proc.epoll_waits.clear();

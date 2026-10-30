@@ -93,6 +93,25 @@ pub struct PreparedExecTarget {
     observed_bytes: Vec<u8>,
     observed_ranges: Vec<(usize, usize)>,
     content_drifted: bool,
+    retirement: TargetRetirement,
+}
+
+enum TargetRetirement {
+    Live,
+    Closing,
+    Preclosed(crate::syscalls::PreparedExecPreclosed),
+    /// The native close may have consumed the handle before returning an
+    /// error. Never probe/close that numeric handle again without a real host
+    /// receiver. Keep both the target and OFD as quarantined cleanup custody.
+    Uncertain(Errno),
+}
+
+#[derive(Clone, Copy)]
+pub struct PreparedExecIdentity {
+    pub owner: PreparedExecOwner,
+    pub ofd_ref: OpenFileDescRef,
+    pub ofd_id: OfdId,
+    pub retiring: bool,
 }
 
 impl PreparedExecTarget {
@@ -128,6 +147,7 @@ impl PreparedExecTarget {
             observed_bytes,
             observed_ranges: Vec::new(),
             content_drifted: false,
+            retirement: TargetRetirement::Live,
         })
     }
 
@@ -365,18 +385,46 @@ impl PreparedExecLedger {
     }
 
     pub fn get(&self, token: u32) -> Result<&PreparedExecTarget, Errno> {
-        self.entries.get(&token).ok_or(Errno::EINVAL)
+        let target = self.entries.get(&token).ok_or(Errno::EINVAL)?;
+        if !matches!(target.retirement, TargetRetirement::Live) {
+            return Err(Errno::EBUSY);
+        }
+        Ok(target)
     }
 
     pub fn get_mut(&mut self, token: u32) -> Result<&mut PreparedExecTarget, Errno> {
+        self.get(token)?;
         self.entries.get_mut(&token).ok_or(Errno::EINVAL)
     }
 
     pub fn take(&mut self, token: u32) -> Result<PreparedExecTarget, Errno> {
+        self.get(token)?;
         self.entries.remove(&token).ok_or(Errno::EINVAL)
     }
 
+    /// Scalar cleanup identity, never executable-byte or raw native-handle
+    /// access. A sealed target must not look like an absent/consumed token.
+    pub fn retained_identity(&self, token: u32) -> Result<PreparedExecIdentity, Errno> {
+        let target = self.entries.get(&token).ok_or(Errno::EINVAL)?;
+        Ok(PreparedExecIdentity {
+            owner: target.owner,
+            ofd_ref: target.ofd_ref,
+            ofd_id: target.ofd_id,
+            retiring: !matches!(target.retirement, TargetRetirement::Live),
+        })
+    }
+
+    pub fn has_retiring(&self) -> bool {
+        self.entries
+            .values()
+            .any(|target| !matches!(target.retirement, TargetRetirement::Live))
+    }
+
     pub fn drain(&mut self) -> impl Iterator<Item = PreparedExecTarget> + '_ {
+        assert!(
+            !self.has_retiring(),
+            "uncertain executable cleanup needs real host containment"
+        );
         core::mem::take(&mut self.entries).into_values()
     }
 
@@ -739,12 +787,98 @@ pub fn cancel(
     owner_pid: u32,
     token: u32,
 ) -> Result<(), Errno> {
-    {
-        let target = proc.prepared_exec_targets.get(token)?;
-        owner_matches_ledger_pid(target.owner(), owner_pid)?;
+    let (ofd_ref, id) = {
+        let target = proc
+            .prepared_exec_targets
+            .entries
+            .get(&token)
+            .ok_or(Errno::EINVAL)?;
+        owner_matches_ledger_pid(target.owner, owner_pid)?;
+        match target.retirement {
+            TargetRetirement::Uncertain(error) => return Err(error),
+            TargetRetirement::Closing => return Err(Errno::EBUSY),
+            _ => (),
+        }
+        (target.ofd_ref, target.ofd_id)
+    };
+    if matches!(
+        proc.prepared_exec_targets
+            .entries
+            .get(&token)
+            .unwrap()
+            .retirement,
+        TargetRetirement::Live
+    ) {
+        let preclose =
+            crate::syscalls::prepared_exec_cancel_needs_preclose(proc, token, ofd_ref, id)?;
+        // Seal before entering HostIO, not after the callback returns. A
+        // synchronous reentry must never read/commit this executable handle.
+        proc.prepared_exec_targets
+            .entries
+            .get_mut(&token)
+            .unwrap()
+            .retirement = TargetRetirement::Closing;
+        if preclose {
+            proc.ofd_table.quarantine_exec_close(ofd_ref.0, id)?;
+            match crate::syscalls::preclose_prepared_exec_target(proc, host, token, ofd_ref, id) {
+                Ok(proof) => {
+                    proc.prepared_exec_targets
+                        .entries
+                        .get_mut(&token)
+                        .unwrap()
+                        .retirement = TargetRetirement::Preclosed(proof)
+                }
+                Err(error) => {
+                    proc.prepared_exec_targets
+                        .entries
+                        .get_mut(&token)
+                        .unwrap()
+                        .retirement = TargetRetirement::Uncertain(error);
+                    return Err(error);
+                }
+            }
+        } else {
+            // No final native close can happen on this proven nonfinal or
+            // kernel-backed regular reference. Preserve its normal teardown.
+            if let Err(error) =
+                crate::syscalls::release_prepared_exec_ofd_with_locks(proc, locks, host, ofd_ref)
+            {
+                proc.prepared_exec_targets
+                    .entries
+                    .get_mut(&token)
+                    .unwrap()
+                    .retirement = TargetRetirement::Uncertain(error);
+                return Err(error);
+            }
+            proc.prepared_exec_targets.entries.remove(&token).unwrap();
+            return Ok(());
+        }
     }
-    let target = proc.prepared_exec_targets.take(token)?;
-    release_target(proc, locks, host, &target);
+    // Move actual proof custody onto this synchronous Rust stack while the
+    // target/OFD remain sealed in their owners. A failed normal retirement
+    // restores that same proof; no copied receipt or raw-number retry exists.
+    let TargetRetirement::Preclosed(proof) = core::mem::replace(
+        &mut proc
+            .prepared_exec_targets
+            .entries
+            .get_mut(&token)
+            .unwrap()
+            .retirement,
+        TargetRetirement::Closing,
+    ) else {
+        unreachable!()
+    };
+    if let Err(error) =
+        crate::syscalls::release_preclosed_prepared_exec_target(proc, locks, host, &proof)
+    {
+        proc.prepared_exec_targets
+            .entries
+            .get_mut(&token)
+            .unwrap()
+            .retirement = TargetRetirement::Preclosed(proof);
+        return Err(error);
+    }
+    proc.prepared_exec_targets.entries.remove(&token).unwrap();
     Ok(())
 }
 
@@ -903,6 +1037,9 @@ pub fn commit_process(
     caller_tid: u32,
     token: u32,
 ) -> Result<(), Errno> {
+    if proc.prepared_exec_targets.has_retiring() {
+        return Err(Errno::EBUSY);
+    }
     let target = proc.prepared_exec_targets.take(token)?;
     let validation = target
         .owner()
@@ -945,6 +1082,9 @@ pub fn commit_spawn(
     child_pid: u32,
     token: u32,
 ) -> Result<(), Errno> {
+    if proc.prepared_exec_targets.has_retiring() {
+        return Err(Errno::EBUSY);
+    }
     let target = proc.prepared_exec_targets.take(token)?;
     let validation = target
         .owner()
@@ -979,6 +1119,9 @@ pub fn attach_exe_path(
     host: &mut dyn HostIO,
     path: &[u8],
 ) -> Result<(), Errno> {
+    if proc.prepared_exec_targets.has_retiring() {
+        return Err(Errno::EBUSY);
+    }
     let opened = crate::syscalls::open_prepared_exec_target(
         proc,
         host,
@@ -1012,6 +1155,9 @@ pub fn attach_exe_host_handle(
     handle: i64,
     name: &[u8],
 ) -> Result<(), Errno> {
+    if proc.prepared_exec_targets.has_retiring() {
+        return Err(Errno::EBUSY);
+    }
     if handle < 0 {
         return Err(Errno::EBADF);
     }

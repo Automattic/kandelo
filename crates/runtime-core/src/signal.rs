@@ -124,6 +124,9 @@ pub fn preflight_default_signal_action(
 }
 
 fn preflight_signal_termination(proc: &mut Process, host: &mut dyn HostIO) -> SignalProgress<()> {
+    if proc.prepared_exec_targets.has_retiring() {
+        return SignalProgress::ProtocolFaultOwned;
+    }
     match crate::syscalls::preflight_gl_query_teardown(proc, host, None) {
         crate::syscalls::GlQueryTeardown::Ready => SignalProgress::Complete(()),
         crate::syscalls::GlQueryTeardown::PendingOwned => SignalProgress::PendingOwned,
@@ -280,7 +283,8 @@ pub fn dequeue_signal_for(proc: &mut Process, tid: u32, signum: u32) -> (u32, u6
                 default_action(signum),
                 DefaultAction::Terminate | DefaultAction::CoreDump
             )
-            || !proc.blocked_retries.has_external_query_receipts(),
+            || !(proc.blocked_retries.has_external_query_receipts()
+                || proc.prepared_exec_targets.has_retiring()),
         "terminating signal dequeue requires completed query cleanup"
     );
     if proc.state == ProcessState::Stopped && signum == wasm_posix_shared::signal::SIGKILL {

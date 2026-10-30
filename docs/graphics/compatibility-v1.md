@@ -9757,6 +9757,46 @@ actual teardown custody or fatal containment remain integration work. Combined
 Rust/ABI, normal products, browser/browser-memory and conformance validation
 remain required before public async activation.
 
+### Prepared-target final-close custody (2026-10-29)
+
+An actual-path failure control reproduced that cancel swallowed `host_close`
+EIO, erased target/OFD ownership and let registry abandonment Forget it.
+Final native cancellation now first proves exact regular-file target/OFD
+identity, one local reference with no descriptor/executable alias and final
+ownership in the existing cross-process host-ref authority. Nonfinal or
+kernel-backed references preserve normal successful release behavior.
+
+The target and OFD are sealed before the one native close attempt. Successful
+HostIO acceptance creates a non-Clone exact preclosed proof, allowing normal
+OFD/advisory-lock teardown without closing the number a second time. An errno
+is ambiguous: the backend can have consumed its primary fd before reporting
+a companion-close error. The actual target and OFD remain quarantined, with
+no raw-number retry, re-probe, new reference, byte access, commit, false
+Abandoned state or Forget. Process removal, exec, fork/spawn serialization,
+exit and terminating-signal consumers refuse before consuming that holder.
+Unrelated newly opened targets can reuse the same native number safely.
+
+Focused declared-shell checks pass 37 kernel cases (including six new failure,
+success, shared-reference, reuse, containment and source-guard cases), 30
+runtime exec-target cases, 43 signal cases, 22 OFD cases and 49 fork cases.
+Actual Wasm32 kernel compilation passes. VMA logs use
+`.context/exec-target-close-custody-{kernel,runtime,signal,ofd,fork,wasm}.log`;
+the original failing control and patch are saved privately as
+`.context/exec-target-close-custody-repro.{log,patch}`. The source guard was
+narrowed from an overbroad module-wide close assertion to the actual cancel
+transaction; attach-executable setup cleanup remains explicitly out of scope.
+
+This closes cancel's lost-custody/false-success path, not uncertain physical
+cleanup. A real host receiver must distinguish consumed, provably unattempted
+and uncertain native operations before resolution or containment can release
+the holder. Other release sites, including failed prepare/probe/commit,
+competing-target drain, executable replacement and ordinary final close,
+retain separate error-retention gaps. These are ordinary implementation and
+integration work, not platform boundaries. No HostIO method/import, export,
+wire tag, ABI bump or public pending activation is added. Combined Rust/ABI,
+normal artifacts, real browser delivery, browser-memory and POSIX conformance
+remain required; browser launches are currently held at the user's request.
+
 ### Retryable shader/program creation and link rollback
 
 Shader/program creation and replacement linking now reserve fixed native deletion

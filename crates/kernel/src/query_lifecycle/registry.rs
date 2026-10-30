@@ -347,13 +347,19 @@ impl IntentRegistry {
         let mut target_cancelled = false;
         let mut invalidated = false;
         if let Some(exact) = entry.exec {
-            match proc.prepared_exec_targets.get(exact.token) {
+            match proc.prepared_exec_targets.retained_identity(exact.token) {
                 Ok(target)
-                    if target.ofd_ref().0 == exact.ofd_idx
-                        && target.ofd_id() == exact.ofd_id
-                        && target.owner() == exact.owner =>
+                    if target.ofd_ref.0 == exact.ofd_idx
+                        && target.ofd_id == exact.ofd_id
+                        && target.owner == exact.owner =>
                 {
-                    ()
+                    if target.retiring {
+                        live.status = Status::Abandoning {
+                            query_cleanup_started: live.query_cleanup_started,
+                            fault: true,
+                        };
+                        return Ok(entry.snapshot());
+                    }
                 }
                 Ok(_) => {
                     live.status = Status::Abandoning {
@@ -368,7 +374,15 @@ impl IntentRegistry {
                 let (proc, locks) = table
                     .process_and_advisory_locks(entry.owner.pid)
                     .ok_or(Errno::ESRCH)?;
-                crate::exec_target::cancel(proc, locks, host, entry.owner.pid, exact.token)?;
+                if crate::exec_target::cancel(proc, locks, host, entry.owner.pid, exact.token)
+                    .is_err()
+                {
+                    live.status = Status::Abandoning {
+                        query_cleanup_started: live.query_cleanup_started,
+                        fault: true,
+                    };
+                    return Ok(entry.snapshot());
+                }
                 target_cancelled = true;
             }
         }

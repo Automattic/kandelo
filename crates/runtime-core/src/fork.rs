@@ -978,6 +978,9 @@ fn u32_to_handler(v: u32) -> SignalHandler {
 /// Returns the number of bytes written on success, or `Errno::ENOMEM` if
 /// the buffer is too small.
 pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Errno> {
+    if proc.prepared_exec_targets.has_retiring() {
+        return Err(Errno::EBUSY);
+    }
     let mut w = Writer::new(buf);
 
     // ── Header (12 bytes) ──
@@ -1420,6 +1423,7 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
         let dri_state = read_dri_state(&mut r, ofd_id)?;
         let input_state = read_input_state(&mut r)?;
         let mut ofd = OpenFileDesc {
+            exec_close_quarantined: false,
             ofd_id,
             file_id,
             file_type,
@@ -2128,6 +2132,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
         let dri_state = read_dri_state(&mut r, ofd_id)?;
         let input_state = read_input_state(&mut r)?;
         let mut ofd = OpenFileDesc {
+            exec_close_quarantined: false,
             ofd_id,
             file_id,
             file_type,

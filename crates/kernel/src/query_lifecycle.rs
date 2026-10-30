@@ -130,6 +130,9 @@ impl Intent {
         if proc.exec_generation != self.generation {
             return Err(Errno::ESRCH);
         }
+        if proc.prepared_exec_targets.has_retiring() {
+            return Err(Errno::EBUSY);
+        }
         match self.request {
             Request::Exec { pid, tid, target } => {
                 Ok(proc.prepared_exec_targets.get(target).is_ok_and(|t| {
@@ -307,6 +310,8 @@ mod tests {
         replies: VecDeque<Result<Vec<u8>, i32>>,
         controls: Vec<Control>,
         closed: Vec<i64>,
+        close_error: Option<Errno>,
+        preads: Vec<i64>,
     }
     impl Host {
         fn new() -> Self {
@@ -314,6 +319,8 @@ mod tests {
                 replies: VecDeque::new(),
                 controls: Vec::new(),
                 closed: Vec::new(),
+                close_error: None,
+                preads: Vec::new(),
             }
         }
         fn reply(&mut self, token: i64, control: Control, mode: Option<Mode>, reply: Reply) {
@@ -378,6 +385,9 @@ mod tests {
     impl HostIO for Host {
         fn host_close(&mut self, h: i64) -> Result<(), Errno> {
             self.closed.push(h);
+            if let Some(error) = self.close_error.take() {
+                return Err(error);
+            }
             Ok(())
         }
         fn host_read(&mut self, _: i64, _: &mut [u8]) -> Result<usize, Errno> {
@@ -395,7 +405,8 @@ mod tests {
         fn host_fstatfs(&mut self, _: i64) -> Result<WasmStatfs, Errno> {
             Ok(statfs())
         }
-        fn host_pread(&mut self, _: i64, out: &mut [u8], offset: i64) -> Result<usize, Errno> {
+        fn host_pread(&mut self, handle: i64, out: &mut [u8], offset: i64) -> Result<usize, Errno> {
+            self.preads.push(handle);
             let offset = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
             let bytes = IMAGE.get(offset..).ok_or(Errno::EINVAL)?;
             let len = out.len().min(bytes.len());
