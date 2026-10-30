@@ -9255,3 +9255,56 @@ imports require no guest products. VMA evidence is in
 `.context/query-receipt-evidence.log`. Normal product builds, real native and
 forwarded query delivery, browser-memory, ABI snapshot and conformance suites
 remain unrun for this increment; this is not bridge completion.
+
+#### Integrated receipt and existing-fence source gates (2026-10-29)
+
+Combined source `960a65b27c` includes the large-uniform overlap repair,
+acknowledged owned-result retirement, genuine retained existing-fence custody,
+strict Rust/host receipt codecs and the current base's GBM harness repair.
+Job `graphics-combined-receipt-1029-205201-9a9f` exits zero after 4m14s:
+
+| Gate | Exact combined result |
+|---|---|
+| Canonical host build | JavaScript and declarations pass |
+| Graphics source | 873/873, 37 files, zero skips |
+| Complete Vitest evidence registry | 637 files agree |
+| Full Rust workspace | 3,387 passed, zero failed or ignored, 98 result groups |
+| Normal ABI regeneration and consistency check | Pass; no tracked generated output changes |
+
+Logs are primary `.context/graphics-combined-v2-{host,registry,source,rust,abi-update,abi-check}.log`.
+The unchanged unpublished epoch is program 56 / host 3 / GL table 17 / fork 21.
+The ABI check's program-rebuild notice compares this epoch with main; it does
+not authorize using old programs. Normal current-source artifacts remain
+required. The prior `04ab151e12` combined check passes all 241 native C cases;
+their C implementation, public GBM headers, native fixture sources and libdrm
+recipe are unchanged at this source. The initial GBM harness fails on the
+fresh primary checkout's absent legacy sysroot header. Its repair resolves the
+current source-only package, normally provisions SDK/libdrm, and then passes
+all 38 public symbols plus metadata, modifier, format and retained CPU-mapping
+checks. Before/after logs are `.context/graphics-combined-receipt-gbm.log` and
+`.context/graphics-combined-receipt-gbm-after.log`. No validation input is copied
+from another checkout or falsely restamped.
+
+Existing-fence custody from `c42e61a561` is integrated as `28ad73b49c`.
+It captures a genuinely minted native lease and exact source session/ledger,
+without requiring replacement current-context state. Status can retain its
+actual source after creator retirement. Release changes the public fence only
+on Commit; Cancel preserves it. Failed native cleanup keeps actual custody and
+budget for retry, and independent waiters keep their own references. These are
+source-model behaviors, not a live asynchronous delivery claim. The lane's
+803-case source result and strict dependency check are recorded in CPU checkout
+`.context/owned-fence-lease-handoff.md`; the combined result above includes them.
+Forced custody transfer, actual native/forwarded delivery and public server waits
+remain ordinary open implementation work.
+
+Current landing head is `0b0b69b196`. Its early Node run uses a separate clean
+checkout and normal package/SDK/fixture preparation. An initial attempt fails
+before tests because the image writer's projection-owner name is not a package
+bootstrap target; the corrected run lets the normal graph provision that side
+module automatically. No compositor result is claimed for the failed launch.
+The older frozen full product run remains at `85c56d342d`. A queued stage waits
+for that writer, checks source cleanliness, moves to current landing source and
+runs normal full products, Rust, ABI, consumer/browser/memory and libc/POSIX/
+Sortix acceptance. A requested stop prevents automatic restart. Earlier Sway
+whole-test timeouts and the incomplete five-file static audit remain retained
+and unresolved until their exact current acceptance gates complete.
