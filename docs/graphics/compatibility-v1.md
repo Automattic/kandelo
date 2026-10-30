@@ -9179,3 +9179,50 @@ without any native write from the abandoned prefix. Evidence is
 No C, opcode, ABI or generated file changes are involved. Full source, normal
 SDK/guest/browser and combined conformance gates were not rerun for this audit;
 those checks remain in the parent integration phase.
+
+#### Resumed combined Rust, ABI and receipt checkpoint (2026-10-29)
+
+At combined source `7d93136073`, job
+`graphics-resumed-rust-abi-1029-203011-af57` passes the full Rust workspace
+selection: 3,382 passed, zero failed and zero ignored across 98 result groups.
+It then regenerates the ABI snapshot and all normal generated declarations,
+and passes the ABI consistency check. The complete job exits zero after
+10m17s. Regeneration changes no tracked generated output; the recorded diff
+contains only the pre-existing Sortix submodule dirt. This uses the current
+Rust sources and normal xtask/kernel build, with no stale release override.
+The unpublished program 56 / host 3 / GL table 17 / fork 21 epoch is unchanged.
+Logs are `.context/graphics-resumed-{rust,abi-update,abi-check}.log` in the
+primary checkout. Matching normal linked SDK/program/image execution for the
+new large-uniform increment remains required; source checks do not prove it.
+
+The ordered copied-result foundation from `7dafd863a5` is now integrated.
+Admission requires exact registered pid/session/operation-ledger authority,
+bounded independent input/workspace/result bytes, and explicit native execution
+or remote cleanup custody. Head execution occurs once; Ready is distinct from
+publication. Failed native retirement retains actual handles and budget, and
+remote retirement requires exact peer/owner/token/mode acknowledgment. A bounded
+scalar terminal record survives a lost acknowledgment response until explicit
+Forget; Unknown never establishes cleanup. No live production pending branch,
+public EGL wait, import, control wire or ABI change is activated by this model.
+
+The source lane passes 795/795 across 35 graphics files with zero skips and
+its complete evidence registry agrees with 632 files. The acknowledgment-loss
+causal controls fail before repair and all 30 focused cases pass afterward.
+A strict dependency check passes with the exact temporary narrow-renderbuffer
+helper overlay, reversed before the agent commit; the parent already contains
+that helper fix. Exact commands and logs are in CPU checkout
+`.context/owned-result-handoff.md`. These are lane results, not a claim that
+the newly combined follow-up has passed its normal build, rendering, memory or
+conformance gates. Retained existing-fence custody, forced cleanup transfer and
+the actual Rust/worker/native/forwarded bridge remain ordinary implementation
+work before public waits can be enabled.
+
+Both draft PRs retain the delivery split: #1574 owns compositor infrastructure
+and its actual acceptance gates, while #1594 owns the remaining baseline.
+Current landing source is `2ccda51d7d`. Its frozen normal product build still
+runs from earlier verified-recipe source `85c56d342d`; later host fixes require
+normal current-source rebuild and acceptance. Clang is a real canonical-shell
+and guest-NetHack dependency, so a narrower compositor bootstrap cannot replace
+the unmodified full browser-memory gate. Narrow Node feedback can run first
+in a separate checkout with current kernel/SDK/packages/fixtures. No artifacts
+are copied or restamped, and earlier Node timeouts remain unexplained.
