@@ -131,7 +131,7 @@ describe("SDL_mixer playwave /dev/dsp integration fixture", () => {
       'sha256 = "938dff531d00ace2296557a6599abe6f34599e2f34f0a4a08a397e2ccac8b8f7"',
     );
     expect(manifest).toContain(
-      'depends_on = ["sdl2@2.32.10", "libwayland@1.24.0", "libxkbcommon@1.7.0", "libffi@0.1.0"]',
+      'depends_on = ["sdl2-mixer@2.8.2", "sdl2@2.32.10", "libwayland@1.24.0", "libxkbcommon@1.7.0", "libffi@0.1.0"]',
     );
     expect(manifest).toContain('name = "playwave"');
     expect(manifest).toContain('wasm = "playwave.wasm"');
@@ -148,7 +148,7 @@ describe("SDL_mixer playwave /dev/dsp integration fixture", () => {
     expect(manifest).toContain('version_constraint = ">=7.71.0"');
   });
 
-  it("builds unmodified upstream playwave with only WAVE support", () => {
+  it("builds unmodified upstream playwave against the declared SDL_mixer package", () => {
     const build = source(
       "packages/registry/sdl2-mixer-playwave/build-sdl2-mixer-playwave.sh",
     );
@@ -159,23 +159,45 @@ describe("SDL_mixer playwave /dev/dsp integration fixture", () => {
     expect(build).not.toMatch(/\bpatch\b/);
     expect(build).toContain('source "$REPO_ROOT/sdk/activate.sh"');
     expect(build).toContain("WASM_POSIX_DEP_OUT_DIR");
-    expect(build).toContain("WASM_POSIX_DEP_SDL2_DIR");
-    expect(build).toContain("--enable-music-wave");
-    for (const decoder of [
-      "cmd",
-      "mod",
-      "midi",
-      "gme",
-      "ogg",
-      "flac",
-      "mp3",
-      "opus",
-      "wavpack",
-    ]) {
-      expect(build).toContain(`--disable-music-${decoder}`);
-    }
-    expect(build).toContain("make -j");
-    expect(build).toContain("build/playwave");
+    // Every include and library prefix comes from a declared dependency.
+    expect(build).toContain("for dep in SDL2_MIXER SDL2 LIBWAYLAND LIBXKBCOMMON LIBFFI");
+    expect(build).toContain('key="WASM_POSIX_DEP_${dep}_DIR"');
+    expect(build).toContain("wasm32posix-pkg-config --cflags --static --libs SDL2_mixer");
+    expect(build).toContain('"$SRC/playwave.c"');
     expect(build).toContain("scripts/run-wasm-fork-instrument.sh");
+  });
+
+  it("builds the reusable SDL_mixer with only upstream-bundled decoders", () => {
+    const manifest = source("packages/registry/sdl2-mixer/package.toml");
+    expect(manifest).toContain(
+      'sha256 = "938dff531d00ace2296557a6599abe6f34599e2f34f0a4a08a397e2ccac8b8f7"',
+    );
+    const build = source("packages/registry/sdl2-mixer/build-sdl2-mixer.sh");
+    expect(existsSync(join(repoRoot, "packages/registry/sdl2-mixer/patches"))).toBe(false);
+    expect(build).not.toMatch(/\bpatch\b/);
+    for (const enabled of [
+      "music-wave",
+      "music-ogg-stb",
+      "music-flac-drflac",
+      "music-mp3-minimp3",
+    ]) {
+      expect(build).toContain(`--enable-${enabled}`);
+    }
+    // External codec libraries would be separate declared dependencies,
+    // never host libraries for configure to discover by accident.
+    for (const disabled of [
+      "music-cmd",
+      "music-mod",
+      "music-midi",
+      "music-gme",
+      "music-ogg-vorbis",
+      "music-ogg-tremor",
+      "music-flac-libflac",
+      "music-mp3-mpg123",
+      "music-opus",
+      "music-wavpack",
+    ]) {
+      expect(build).toContain(`--disable-${disabled}`);
+    }
   });
 });

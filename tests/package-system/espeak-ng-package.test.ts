@@ -109,7 +109,12 @@ describe("espeak-ng package contract", () => {
   it("builds the archive deterministically so the cache key follows the data", () => {
     const build = source("packages/registry/espeak-ng/build-espeak-ng.sh");
 
-    expect(build).toContain("compression=zipfile.ZIP_STORED");
+    // Deflated at a fixed level since the speech data became a lazy archive
+    // (#1561). Determinism comes from that fixed level with the pinned
+    // dev-shell zlib, sorted members, and a fixed timestamp and mode.
+    expect(build).toContain("compression=zipfile.ZIP_DEFLATED, compresslevel=9");
+    expect(build).toContain("strict_timestamps=True");
+    expect(build).toContain("info.external_attr = (stat.S_IFREG | 0o644) << 16");
     expect(build).toContain("timestamp = (1980, 1, 1, 0, 0, 0)");
     expect(build).toContain("key=lambda item: item.as_posix()");
   });

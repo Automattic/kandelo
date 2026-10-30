@@ -64,9 +64,9 @@ STAMP="$SYSROOT/.kandelo-dri-stubs.input-hash"
 # bootstrap can call this script on every sysroot resync and it costs
 # nothing when the archives already match the tree.
 ABI_VERSION="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
-    "$REPO_ROOT/crates/shared/src/lib.rs")"
+    "$REPO_ROOT/crates/program-abi/src/lib.rs")"
 if [ -z "$ABI_VERSION" ]; then
-    echo "Error: could not read ABI_VERSION from crates/shared/src/lib.rs" >&2
+    echo "Error: could not read ABI_VERSION from crates/program-abi/src/lib.rs" >&2
     exit 1
 fi
 DRI_INPUT_HASH="$(repo_input_hash "$REPO_ROOT" \

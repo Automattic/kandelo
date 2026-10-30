@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
-import { existsSync } from "node:fs";
+import { beforeAll, describe, expect, it } from "vitest";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { NodeKernelHost } from "../src/node-kernel-host";
+import { resolveBinary } from "../src/binary-resolver";
+import { ABI_SYSCALLS } from "../src/generated/abi";
+import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 /**
@@ -42,4 +46,141 @@ describe.skipIf(!existsSync(binary))("kernel-owned sleeps", () => {
     expect(stdout).toContain("PASS");
     expect(exitCode).toBe(0);
   }, 40_000);
+});
+
+describe("PTY signals versus kernel-owned sleeps", () => {
+  // Resolving the programs and composing the image take seconds under load;
+  // keep them outside the timed interactive session.
+  let rootfsImage: Uint8Array;
+  beforeAll(async () => {
+    const image = KandeloImageFs.create();
+    image.mkdir("/bin", 0o755);
+    image.mkdir("/tmp", 0o1777);
+    image.writeFile("/bin/bash", readFileSync(resolveBinary("programs/bash.wasm")), 0o755);
+    image.writeFile("/bin/sleep", readFileSync(resolveBinary("programs/coreutils.wasm")), 0o755);
+    rootfsImage = await image.saveImage();
+  }, 120_000);
+
+  it("interrupts a foreground sleep and returns status 130 to the interactive shell", async () => {
+    let output = "";
+    let sleepingPid: number | undefined;
+    const exits = new Map<number, number | undefined>();
+    const diagnostics: string[] = [];
+    const host = new NodeKernelHost({
+      rootfsImage,
+      onPtyOutput: (_pid, data) => { output += new TextDecoder().decode(data); },
+      onHostDiagnostic: (event) => diagnostics.push(event.message),
+      onProcessEvent: (event) => {
+        if (event.kind === "exit") exits.set(event.pid, event.exitStatus);
+      },
+    });
+    await host.init();
+    const unsubscribe = host.subscribeSyscalls((event) => {
+      if (event.nr === ABI_SYSCALLS.Nanosleep || event.nr === ABI_SYSCALLS.ClockNanosleep) {
+        sleepingPid = event.pid;
+      }
+    });
+    try {
+      const shell = await host.spawnFromVfs("/bin/bash", ["bash", "--noprofile", "--norc", "-i"], {
+        pty: true,
+        env: ["PATH=/bin", "HOME=/", "PS1=INTERRUPT_PROMPT> ", "TERM=dumb"],
+      });
+      await expect.poll(() => output).toContain("INTERRUPT_PROMPT> ");
+      output = "";
+      host.ptyWrite(shell.pid, new TextEncoder().encode("sleep 30\n"));
+      // Observe the syscall the kernel parked, not an arbitrary launch delay.
+      await expect.poll(() => sleepingPid).toBeDefined();
+      const started = performance.now();
+      host.ptyWrite(shell.pid, new Uint8Array([3]));
+      await expect.poll(() => output, { timeout: 1_000, intervals: [10] }).toContain("INTERRUPT_PROMPT> ");
+      expect(performance.now() - started).toBeLessThan(1_000);
+      await expect.poll(() => exits.get(sleepingPid!)).toBe(130);
+      output = "";
+      host.ptyWrite(shell.pid, new TextEncoder().encode("printf 'INTERRUPT_%s:%s\\n' STATUS \"$?\"\n"));
+      await expect.poll(() => output).toContain("INTERRUPT_STATUS:130");
+      host.ptyWrite(shell.pid, new TextEncoder().encode("exit\n"));
+      await shell.exit;
+      expect(diagnostics).toEqual([]);
+    } finally {
+      unsubscribe();
+      await host.destroy();
+    }
+  }, 30_000);
+
+  it("stops a foreground sleep with Ctrl-Z, then resumes it with fg or ends it with kill", async () => {
+    const SIGCONT = 18;
+    let output = "";
+    let sleepingPid: number | undefined;
+    let shellPid: number | undefined;
+    let shellSentSigcont = false;
+    const exits = new Map<number, number | undefined>();
+    const diagnostics: string[] = [];
+    const host = new NodeKernelHost({
+      rootfsImage,
+      onPtyOutput: (_pid, data) => { output += new TextDecoder().decode(data); },
+      onHostDiagnostic: (event) => diagnostics.push(event.message),
+      onProcessEvent: (event) => {
+        if (event.kind === "exit") exits.set(event.pid, event.exitStatus);
+      },
+    });
+    await host.init();
+    const unsubscribe = host.subscribeSyscalls((event) => {
+      if (event.nr === ABI_SYSCALLS.Nanosleep || event.nr === ABI_SYSCALLS.ClockNanosleep) {
+        sleepingPid = event.pid;
+      }
+      if (event.pid === shellPid && event.nr === ABI_SYSCALLS.Kill && Number(event.args[1]) === SIGCONT) {
+        shellSentSigcont = true;
+      }
+    });
+    const suspendParkedSleep = async () => {
+      output = "";
+      sleepingPid = undefined;
+      host.ptyWrite(shellPid!, new TextEncoder().encode("sleep 30\n"));
+      await expect.poll(() => sleepingPid).toBeDefined();
+      const started = performance.now();
+      host.ptyWrite(shellPid!, new Uint8Array([0x1a]));
+      // Job control reports the stop and the shell prompts again at once,
+      // instead of when the sleep's deadline passes.
+      await expect.poll(() => output, { timeout: 1_000, intervals: [10] }).toMatch(/Stopped[\s\S]*SUSPEND_PROMPT> /);
+      expect(performance.now() - started).toBeLessThan(1_000);
+      expect(exits.has(sleepingPid!)).toBe(false);
+      return sleepingPid!;
+    };
+    try {
+      const shell = await host.spawnFromVfs("/bin/bash", ["bash", "--noprofile", "--norc", "-i"], {
+        pty: true,
+        env: ["PATH=/bin", "HOME=/", "PS1=SUSPEND_PROMPT> ", "TERM=dumb"],
+      });
+      shellPid = shell.pid;
+      await expect.poll(() => output).toContain("SUSPEND_PROMPT> ");
+
+      // fg continues the stopped sleep in the foreground: once the shell
+      // has sent SIGCONT, Ctrl-C reaches the sleep and ends it.
+      const resumed = await suspendParkedSleep();
+      output = "";
+      shellSentSigcont = false;
+      host.ptyWrite(shell.pid, new TextEncoder().encode("fg\n"));
+      await expect.poll(() => shellSentSigcont).toBe(true);
+      const interrupted = performance.now();
+      host.ptyWrite(shell.pid, new Uint8Array([3]));
+      await expect.poll(() => output, { timeout: 1_000, intervals: [10] }).toContain("SUSPEND_PROMPT> ");
+      expect(performance.now() - interrupted).toBeLessThan(1_000);
+      await expect.poll(() => exits.get(resumed)).toBe(130);
+
+      // kill %1 ends a stopped job: SIGTERM, then the SIGCONT that lets a
+      // stopped process act on it.
+      const killed = await suspendParkedSleep();
+      output = "";
+      host.ptyWrite(shell.pid, new TextEncoder().encode("kill %1; wait %1; printf 'SUSPEND_%s:%s\\n' STATUS \"$?\"\n"));
+      await expect.poll(() => output).toContain("SUSPEND_STATUS:143");
+      await expect.poll(() => exits.get(killed)).toBe(143);
+
+      host.ptyWrite(shell.pid, new TextEncoder().encode("exit\n"));
+      await shell.exit;
+      expect(diagnostics).toEqual([]);
+    } finally {
+      unsubscribe();
+      await host.destroy();
+    }
+  }, 60_000);
 });

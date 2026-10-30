@@ -1,6 +1,6 @@
 //! Exception recipe wire format and reserved runtime hooks.
 
-use wasm_posix_shared::abi::{
+use wasm_posix_program_abi::abi::{
     WPK_FORK_EXCEPTION_CODEC_HEADER_SIZE, WPK_FORK_EXCEPTION_CODEC_IMPORT_MODULE,
     WPK_FORK_EXCEPTION_CODEC_SECTION, WPK_FORK_EXCEPTION_CODEC_TAG_RECORD_SIZE,
     WPK_FORK_EXCEPTION_CODEC_VERSION, WPK_FORK_EXCEPTION_EXPORT_ABORT,

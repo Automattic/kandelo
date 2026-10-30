@@ -1,4 +1,5 @@
-import type { BigIntStats } from "node:fs";
+import { lstatSync, type BigIntStats } from "node:fs";
+import { join } from "node:path";
 import { ACCESS_MODES, FILE_MODES } from "../generated/abi";
 import type { StatResult } from "../types";
 
@@ -46,6 +47,21 @@ const S_IFMT = FILE_MODES.S_IFMT;
 const S_IFREG = FILE_MODES.S_IFREG;
 const S_IFDIR = FILE_MODES.S_IFDIR;
 const S_IFLNK = FILE_MODES.S_IFLNK;
+
+/**
+ * The native inode of a directory entry, for `d_ino`. Node's `Dirent` has no
+ * inode, so read it the way `lstat` will: the entry itself, not a symlink's
+ * target. An entry removed since the directory was read reports 0, which
+ * readers treat as the deleted entry it now is.
+ */
+export function nativeEntryInode(directory: string, name: string): bigint {
+  try {
+    return lstatSync(join(directory, name), { bigint: true }).ino;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0n;
+    throw error;
+  }
+}
 
 export function modeAfterRegularFileMutation(
   mode: number,

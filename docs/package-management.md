@@ -68,6 +68,15 @@ programs, we need:
 
 ## Local DAG build
 
+Default builds select the packages consumed by both hosts. Browser imports
+and image dependency declarations are joined with the Node runner's literal
+`optionalBinary` declarations in `examples/run-example.ts`. Each alternative
+is selected because the runner resolves every declared path at startup; a
+local-file fallback declared with `snapshotOptionalBinaryWithFallback` stays
+a developer fixture rather than becoming a package demand. The supply check
+also verifies those package members are published in the authoritative
+projection. Artifact admission rules remain the same for both hosts.
+
 From the repository root, build what the supported products demand with:
 
 ```bash
@@ -1249,8 +1258,11 @@ unsupported-platform error rather than using a weaker pathname-based digest.
 Program packages that use fork instrumentation also hash the
 fork-instrument host tool inputs (`crates/fork-instrument`, the
 target-unfiltered non-dev Cargo dependency closure selected from the
-workspace lockfile, and the wrapper/build scripts). The dependency closure is
-the union across build-host target predicates: package cache paths do not have
+workspace lockfile, and the wrapper/build scripts). The instrumenter depends
+only on `crates/program-abi` for program-visible constants and types;
+`crates/shared` re-exports those declarations for existing Rust consumers.
+Kernel-host-only edits to shared therefore do not re-key instrumented
+programs. The dependency closure is the union across build-host target predicates: package cache paths do not have
 a build-host dimension, so filtering through the current macOS or Linux host
 would give identical source trees different identities. Programs that declare
 `fork_instrumentation = "disabled"` do not hash that tooling.
@@ -1380,6 +1392,12 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_DEP_<KEY>_SRC_DIR`       | SourceOnlyV1 direct source dependencies only: a fresh sealed per-consumer extraction below the same resolver-owned source-input root, disjoint from recipe work and output. `<KEY>` is exactly `K_` followed by the uppercase hexadecimal encoding of the package name's UTF-8 bytes (`foo-bar` → `K_666F6F2D626172`). Default source-kind dependencies retain the legacy uppercased-name spelling. |
 | `WASM_POSIX_BUILD_GIT_<NAME>_DIR`    | Read-only detached checkout for a `build.toml` `[[git_inputs]]` declaration. `<NAME>` is the injective uppercase form of the validated lowercase name.                                                                                                                                                                                           |
 | `WASM_POSIX_BUILD_GIT_<NAME>_COMMIT` | Exact declared commit corresponding to that checkout.                                                                                                                                                                                                                                                                                            |
+
+`local-build` passes its current executable as `WASM_POSIX_XTASK_BIN` to
+recipes. Runtime-file metadata queries reuse that source-built driver rather
+than compiling another xtask inside every recipe's private Cargo roots.
+Standalone callers still prepare xtask through Cargo and use its reported
+artifact path.
 
 Scripts that accept the optional sealed-build roots should source
 `scripts/package-build-roots.sh`. Explicit source, work, and output roots must
@@ -1624,7 +1642,8 @@ build runs them on the build machine, so what they generate describes the
 build machine rather than the wasm32 target. NetHack's `makedefs` named the
 maintainer's OS in the game's banner and wrote 8-byte `long` fields that the
 32-bit game reads as 4 bytes. A recipe can instead run its whole build, helpers
-included, inside a Kandelo machine through the guest toolchain:
+included, inside a Kandelo machine through the guest toolchain, as
+`packages/registry/nethack` now does:
 
 ```bash
 source "$REPO_ROOT/scripts/guest-build.sh"

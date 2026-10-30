@@ -160,7 +160,7 @@ process, VFS, memory, device, or root-cause debugging behavior.
 
 Every incompatible ABI change requires a version bump and a regenerated
 `abi/snapshot.json` in the same change: `ABI_VERSION` in
-`crates/shared/src/lib.rs` for a change programs can observe, or the
+`crates/program-abi/src/lib.rs` for a change programs can observe, or the
 kernel-host version (`HOST_ADAPTER_VERSION`) for a change only the kernel and
 host can see. Do not ship incompatible ABI changes under an existing version.
 
@@ -383,6 +383,12 @@ authorship before restacking, rebasing, amending, cherry-picking, or squashing;
 keep contributors as authors of derived commits and the restacker as committer.
 Use co-author trailers for materially combined work, and verify attribution
 with `git range-diff` and `git log --format=fuller` before force-pushing.
+
+Credit people, not tools. Commits and PR descriptions never credit an AI
+model, agent, or coding tool: no `Co-authored-by:` trailer for Claude,
+ChatGPT, Codex, or any other assistant, and no "Generated with" line. The
+checked-in `.claude/settings.json` turns off Claude Code's default
+attribution; agents on other clients must leave it out themselves.
 
 Documentation is part of the platform contract. Do not describe aspirational
 behavior as supported behavior, and do not use documentation to create a

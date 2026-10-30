@@ -1709,11 +1709,15 @@ neutralizes this class of issue. It hooks `Blob`/`URL.createObjectURL` and the
 document, which the service worker *does* control). It is idempotent and a no-op
 unless a text/html blob URL is used as an iframe src. The service worker inlines
 it (via the `"__BLOB_IFRAME_INTERCEPTOR__"` build-time placeholder, mirroring
-`"__CORS_PROXY_CONFIG__"`) into the `<head>` of bridged HTML documents without
-a Content Security Policy, so it applies to app demos, not just WordPress.
+`"__CORS_PROXY_CONFIG__"`) into the `<head>` of bridged HTML documents whose
+Content Security Policy, if any, allows it, so it applies to app demos, not
+just WordPress.
 Documents carrying a
-`Content-Security-Policy` response header retain their declared script policy:
-the bridge does not inject the inline helper or change that header. The
+`Content-Security-Policy` response header that governs scripts (a
+`script-src-elem`, `script-src` or `default-src` directive) retain their
+declared script policy: the bridge does not inject the inline helper or change
+that header. A policy that does not govern scripts, such as WordPress admin's
+`frame-ancestors 'self'`, still gets the helper. The
 blob-iframe adapter is therefore unavailable in those documents; ordinary
 HTML, assets, requests and same-origin iframes still use the bridge.
 
@@ -1854,13 +1858,14 @@ trust. Adding a package to an image needs only the image recipe and the
 package's entry in the supported set.
 
 Binaries the browser app imports directly (`@binaries/...`) are the other
-consumer. Each must be an output of a package in
+consumer. The Node CLI's literal `optionalBinary` built-ins are consumers
+too, including each alternative entry point. Each must be an output of a package in
 `packages/sets/local-supported.toml`;
 `scripts/check-browser-binary-supply.ts` enforces this, and
 `tests/package-system/browser-binary-supply.test.ts` runs it in CI. A
-default `./run.sh local-build` selects the owners of those imports beside
+default `./run.sh local-build` selects the owners of those host demands beside
 the active products. After every supported-tree build the engine also
-checks the published projection: each browser import, the kernel, rootfs
+checks the published projection: each host program demand, the kernel, rootfs
 and image-writer artifacts, and every lazy body each product image
 references must be present at its declared size, or setup fails naming the
 path and its consumer. Optional gallery globs are outside this rule; their
@@ -3308,6 +3313,40 @@ thread-patching export scans (`host/src/worker-main.ts`) share one
 Other host code still constructs decoders per call. A recurrence elsewhere
 would be evidence for the hypothesis and a reason to build the standalone
 reduction, not a reason to avoid `TextDecoder` as a rule.
+
+### WebKit page-process crash when thread workers end
+
+This is a confirmed WebKit defect, recorded in the runtime workaround
+registry as
+[`JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN`](../tests/runtime-workarounds/JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN/entry.md).
+JavaScriptCore crashes the web content process (`SIGSEGV` in
+`JSWebAssemblyInstance::updateMatchingCachedMemoriesConcurrently`) when one
+thread grows a shared `WebAssembly.Memory` by at least one page while
+another thread destroys an instance that imports it, whether its worker is
+terminated or closed or the garbage collector frees it. Standalone pages
+with no Kandelo code crash Playwright's WebKit every time; Chromium and
+Firefox run them clean.
+
+Every Kandelo pthread binds one instance to its process memory in its own
+worker, and the rest of the process keeps growing that memory, so an
+exiting thread used to crash the tab. On WebKit only (detected from the
+user agent), process and thread workers now keep every instance bound to
+process memory until the worker ends, and an exited thread's idle worker is
+terminated with its process at exit, exec, forced termination or destroy.
+Its slot is still reclaimed when the thread exits, and workers are never
+reused. The cost is one idle worker per thread a process has created, held
+until that process ends. Chromium, Firefox and Node.js terminate thread
+workers as soon as the thread exits.
+
+### Firefox crash when a Worker ends a starting classic Worker
+
+Playwright's Firefox 155 crashes its content process when a dedicated
+Worker terminates a nested classic Worker that is still starting. Module
+Workers do not crash, and Kandelo creates only module Workers on Firefox (its
+kernel Worker and every process and thread Worker), so Kandelo is not
+affected and has no workaround for it. Nested Workers must stay module
+Workers. The standalone reproduction and measurements are in
+[`docs/measurements/2026-10-28-firefox-nested-classic-worker-termination.md`](measurements/2026-10-28-firefox-nested-classic-worker-termination.md).
 
 ### Compiler engine limits
 

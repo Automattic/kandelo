@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/shared",
+    "crates/program-abi",
     "crates/runtime-core",
     "crates/kandelo-image-module",
     "crates/kernel",

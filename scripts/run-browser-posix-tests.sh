@@ -26,23 +26,15 @@ BUILD_DIR="$POSIX_TEST/build"
 # ── Expected failures (same as Node.js version) ──────────────────
 
 EXPECTED_FAIL=(
-    # Wasm limitations: sigaltstack
-    sigaltstack/1-1
-    sigaltstack/2-1
-    sigaltstack/3-1
-    sigaltstack/6-1
-    sigaltstack/7-1
-    sigaltstack/8-1
+    # Mirrors scripts/run-posix-tests.sh. The sigaltstack, kill and sigqueue
+    # entries left both lists once those tests passed on Node and in the
+    # browser; keep the two lists in step.
     # munmap: wasm can't revoke page access — see docs/wasm-limitations.md §6
     munmap/1-1
     munmap/1-2
-    # Not implemented / stubs
+    # mlock() succeeds for an unprivileged caller whose RLIMIT_MEMLOCK is 0;
+    # the test expects EPERM. Kandelo does not enforce RLIMIT_MEMLOCK.
     mlock/12-1
-    # Process/permission model
-    kill/2-2
-    kill/3-1
-    sigqueue/3-1
-    sigqueue/12-1
 )
 
 # ── Browser-specific expected failures ──────────────────────────
@@ -109,6 +101,8 @@ FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 
 # Stamp each compiled test program with this checkout's ABI-contract digest.
 source "$REPO_ROOT/scripts/abi-contract-stamp.sh"
+# shellcheck source=scripts/browser-runner-accounting.sh
+source "$REPO_ROOT/scripts/browser-runner-accounting.sh"
 
 instrument_wasm() {
     local wasm="$1"
@@ -249,8 +243,18 @@ if [ ${#WASM_FILES[@]} -gt 0 ]; then
     RESULT_FILE=$(mktemp)
     trap "rm -f '$RESULT_FILE'" EXIT
 
+    # Keep the runner's stderr: a server or browser startup error is the
+    # only explanation a run with missing results has.
+    RUNNER_RC=0
+    set +e
+    # --data-prefix stages each program in the guest filesystem under the
+    # path its argv[0] names, as the Node runner's fixture does; tests that
+    # exec themselves (sigaltstack/9-1) need that file to exist.
     npx tsx scripts/browser-test-runner.ts --json --timeout "$TEST_TIMEOUT" \
-        "${WASM_FILES[@]}" > "$RESULT_FILE" 2>/dev/null || true
+        --data-prefix "$BUILD_DIR" \
+        "${WASM_FILES[@]}" > "$RESULT_FILE"
+    RUNNER_RC=$?
+    set -e
 
     idx=0
     while IFS= read -r line; do
@@ -329,6 +333,12 @@ if [ ${#WASM_FILES[@]} -gt 0 ]; then
             fi
         fi
     done < "$RESULT_FILE"
+
+    if [ "$idx" -lt "${#TEST_META[@]}" ]; then
+        record_missing_browser_results "$idx" "$RUNNER_RC" "${TEST_META[@]}"
+    else
+        record_runner_exit_after_results "$RUNNER_RC" "browser-runner"
+    fi
 fi
 
 # ── Summary ────────────────────────────────────────────────────────
@@ -363,7 +373,10 @@ if [ ${#RESULTS[@]} -gt 0 ]; then
     done
 fi
 
-if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $ERROR_COUNT -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
+# The same failure classes as the Node.js runner (scripts/run-posix-tests.sh),
+# plus ERROR: a test the browser runner never ran.
+if [ $FAIL -gt 0 ] || [ $XPASS -gt 0 ] || [ $BUILD_FAIL -gt 0 ] || [ $UNRESOLVED -gt 0 ] \
+    || [ $ERROR_COUNT -gt 0 ] || [ $TIMEOUT_COUNT -gt 0 ]; then
     exit 1
 fi
 exit 0

@@ -5,7 +5,7 @@ kernel changes that interface in a way that breaks old binaries, running an
 old binary against a new kernel would silently corrupt state. To prevent
 this, the project maintains:
 
-1. A single integer [`ABI_VERSION`](../crates/shared/src/lib.rs) that every
+1. A single integer [`ABI_VERSION`](../crates/program-abi/src/lib.rs) that every
    compiled binary carries and the kernel exports.
 2. A structural snapshot of the ABI surface at
    [`abi/snapshot.json`](../abi/snapshot.json), regenerated from source.
@@ -1554,7 +1554,7 @@ imports 77 host functions, down from 82.
 VFS image binding (not in the structural snapshot):
 
 - An image must carry the kernel lazy-linkage section `KLZY` (container flag
-  bit 4, `VFS_IMAGE_FLAG_HAS_KERNEL_LAZY`; layout in `crates/shared/src/lib.rs`)
+  bit 4, `VFS_IMAGE_FLAG_HAS_KERNEL_LAZY`; layout in `crates/program-abi/src/lib.rs`)
   so the kernel can learn every lazy file's real size and archive membership
   without parsing the host-side JSON sections. Images written before ABI 49
   have none and are refused; rebuild them.
@@ -2049,7 +2049,7 @@ valid.
 authoritative Rust sources and the freshly-built kernel `.wasm`. It
 captures:
 
-- `abi_version` — the integer [`ABI_VERSION`](../crates/shared/src/lib.rs).
+- `abi_version` — the integer [`ABI_VERSION`](../crates/program-abi/src/lib.rs).
 - `abi_surfaces` — which surface each other section belongs to:
   `program` (bound into every program's `kandelo.abi.contract` digest) or
   `kernel_host` (checked only between the kernel and the host). See
@@ -2203,7 +2203,7 @@ scripts/dev-shell.sh bash scripts/check-abi-version.sh update
 # 3. Inspect the diff. If it's empty, the change didn't touch the ABI.
 #    If it is only an additive-compatible change, commit the snapshot
 #    without bumping ABI_VERSION. If it changes existing ABI surface,
-#    bump ABI_VERSION in crates/shared/src/lib.rs in the same commit.
+#    bump ABI_VERSION in crates/program-abi/src/lib.rs in the same commit.
 # 4. Verify.
 scripts/dev-shell.sh bash scripts/check-abi-version.sh
 ```
@@ -2274,6 +2274,12 @@ binary whose custom-section version does not match the kernel's
 `__abi_version` export.
 
 ### Which changes force a program rebuild
+
+The numeric program ABI and fork artifact declarations live in
+`crates/program-abi`. `crates/shared` re-exports them, while the fork
+instrumenter depends on the smaller crate directly. Moving declarations does
+not change their values, the snapshot, or the program digest; changing
+kernel-host-only metadata in shared no longer invalidates instrumenter inputs.
 
 A built program carries two facts the host checks before running it: the
 ABI version in `wasm-posix-abi` (and its `__abi_version` export), which

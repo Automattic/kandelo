@@ -64,8 +64,8 @@ pub(super) fn reserve_boundary(
     inputs.types.push(FuncType::new([], []));
     let ordinal = u32::try_from(inputs.imports.len())?;
     inputs.imports.push(PlannedImport {
-        module: wasm_posix_shared::abi::WPK_FORK_FRAME_IMPORT_MODULE.into(),
-        name: wasm_posix_shared::abi::WPK_FORK_BOUNDARY_IMPORT.into(),
+        module: wasm_posix_program_abi::abi::WPK_FORK_FRAME_IMPORT_MODULE.into(),
+        name: wasm_posix_program_abi::abi::WPK_FORK_BOUNDARY_IMPORT.into(),
         ty: EntityType::Function(ty),
     });
     Ok(Some(ordinal))

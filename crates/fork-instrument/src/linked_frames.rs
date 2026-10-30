@@ -6,7 +6,7 @@
 //! page.
 
 use std::fmt;
-use wasm_posix_shared::abi;
+use wasm_posix_program_abi::abi;
 
 /// WebAssembly linear-memory allocation granularity.
 pub const WASM_PAGE_SIZE: u64 = 64 * 1024;

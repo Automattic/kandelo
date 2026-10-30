@@ -14,7 +14,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 
 const REPO_ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
 const BROWSER_DIR = resolve(REPO_ROOT, "apps/browser-demos");
-// Different from test-runner's 5199. --strictPort makes a taken port fail
+// A fixed default port. --strictPort makes a taken port fail
 // loudly instead of letting Vite move while page.goto keeps loading this
 // port. Override with KANDELO_BROWSER_MARIADB_TEST_RUNNER_PORT.
 const VITE_PORT = Number(

@@ -239,7 +239,7 @@ export interface PlatformIO {
    */
   readdir(
     handle: number,
-  ): { name: string; type: number; ino: number } | null;
+  ): { name: string; type: number; ino: number | bigint } | null;
 
   // File operations
   ftruncate(handle: number, length: number): void;

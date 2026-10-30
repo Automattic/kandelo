@@ -14,16 +14,39 @@ import { chromium, type Browser, type Page } from "playwright";
 import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createServer } from "node:net";
 
 const REPO_ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
 const BROWSER_DIR = resolve(REPO_ROOT, "apps/browser-demos");
-// A different default port than the demo tests use. --strictPort makes a
-// taken port fail loudly: without it Vite silently moves to the next free
-// port while every page.goto below still loads this one, so the run would
-// test whatever server already listens here. Choose a free port with
-// KANDELO_BROWSER_TEST_RUNNER_PORT when running several runners at once.
-const VITE_PORT = Number(process.env.KANDELO_BROWSER_TEST_RUNNER_PORT ?? 5199);
+// Several worktrees on one machine run these suites at once. A fixed default
+// port (formerly 5199) let one run's server take the port another run's
+// section needed, and that section silently did not run. So each run asks
+// the OS for a free loopback port; KANDELO_BROWSER_TEST_RUNNER_PORT pins one
+// instead, and a pinned port that is taken fails loudly. --strictPort is
+// always passed: without it Vite silently moves to the next free port while
+// every page.goto below still loads the requested one, so the run would test
+// whatever server already listens there.
+const PINNED_PORT = process.env.KANDELO_BROWSER_TEST_RUNNER_PORT
+  ? Number(process.env.KANDELO_BROWSER_TEST_RUNNER_PORT)
+  : undefined;
+// An unpinned port can be taken between choosing it and Vite binding it.
+const FREE_PORT_ATTEMPTS = 5;
+// apps/browser-demos/vite.config.ts binds this address.
+const VITE_HOST = "127.0.0.1";
+let vitePort = PINNED_PORT;
 const DEFAULT_TIMEOUT = 30_000;
+
+function freeLoopbackPort(): Promise<number> {
+  return new Promise((resolvePort, reject) => {
+    const server = createServer();
+    server.on("error", reject);
+    server.listen(0, VITE_HOST, () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      server.close(() => (port ? resolvePort(port) : reject(new Error("no free loopback port"))));
+    });
+  });
+}
 
 interface TestResult {
   file: string;
@@ -37,7 +60,27 @@ interface TestResult {
 
 let viteAlive = false;
 
+// Start Vite on this run's port. A run keeps its port across restarts; an
+// unpinned port that another process took moves to a fresh one.
 async function startViteServer(): Promise<ChildProcess> {
+  if (PINNED_PORT !== undefined) return startViteOnPort(PINNED_PORT);
+  let lastError: unknown;
+  for (let attempt = 0; attempt < FREE_PORT_ATTEMPTS; attempt++) {
+    const port = vitePort ?? await freeLoopbackPort();
+    try {
+      const proc = await startViteOnPort(port);
+      vitePort = port;
+      return proc;
+    } catch (err) {
+      lastError = err;
+      if (!/already in use/i.test(String(err))) throw err;
+      vitePort = undefined;
+    }
+  }
+  throw lastError;
+}
+
+function startViteOnPort(port: number): Promise<ChildProcess> {
   return new Promise((resolvePromise, reject) => {
     const proc = spawn(
       "npx",
@@ -46,7 +89,7 @@ async function startViteServer(): Promise<ChildProcess> {
         "--config",
         resolve(BROWSER_DIR, "vite.config.ts"),
         "--port",
-        String(VITE_PORT),
+        String(port),
         "--strictPort",
       ],
       {
@@ -97,7 +140,8 @@ async function startViteServer(): Promise<ChildProcess> {
 }
 
 async function waitForTestRunner(page: Page, timeout = 30_000): Promise<void> {
-  await page.goto(`http://localhost:${VITE_PORT}/pages/test-runner/`);
+  if (vitePort === undefined) throw new Error("Vite server is not running");
+  await page.goto(`http://${VITE_HOST}:${vitePort}/pages/test-runner/`);
   await page.waitForFunction(
     () => (window as any).__testRunnerReady === true,
     {},
@@ -136,6 +180,16 @@ function buildDataFiles(
     path: `${cwd}/${testName}`,
     useWasmBytes: true,
   });
+
+  // A test that dlopens its own shared library (basic/dlfcn/*) finds it
+  // beside itself, as the Node runner's fixture stages it.
+  const sharedLibrary = resolve(dataPrefix, testName + ".so");
+  if (existsSync(sharedLibrary)) {
+    dataFiles.push({
+      path: `${cwd}/${testName}.so`,
+      data: Array.from(readFileSync(sharedLibrary)),
+    });
+  }
 
   // Add the .c source file if it exists
   if (sourceDir) {

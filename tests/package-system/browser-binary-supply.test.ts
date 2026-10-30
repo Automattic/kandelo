@@ -5,6 +5,9 @@ import {
   classifyUnsupplied,
   demandedPackages,
   mergeDemands,
+  hostProgramDemands,
+  nodeRunnerDemands,
+  nodeRunnerDemandsFromSource,
   supportedPackageNames,
   unpublishedBinaryDemands,
   unsuppliedBinaryDemands,
@@ -34,7 +37,31 @@ describe("browser binary supply", () => {
     expect(binaries).not.toContain("programs/wasm32/fbtest.wasm");
     // The shell's lazy programs reach the browser through the image, not as
     // imports, so the browser app no longer names them.
-    expect(binaries).not.toContain("programs/wasm32/termchat.wasm");
+    expect(binaries).not.toContain("programs/wasm32/termchat/termchat.wasm");
+  });
+
+  it("selects the Node runner's built-ins including both Node entry points", () => {
+    const binaries = nodeRunnerDemands(repoRoot).map((demand) => demand.binary);
+    expect(binaries).toContain("programs/wasm32/spidermonkey-node.wasm");
+    expect(binaries).toContain("programs/wasm32/node.wasm");
+    expect(binaries).not.toContain("programs/wasm32/echo.wasm");
+    expect(hostProgramDemands(repoRoot).map((demand) => demand.binary)).toEqual(
+      expect.arrayContaining(binaries),
+    );
+    expect(unsuppliedBinaryDemands(repoRoot)).toEqual([]);
+  });
+
+  it("discovers new declarations without executing the Node CLI", () => {
+    const source = `
+      throw new Error("must never execute");
+      // optionalBinary("programs/comment.wasm")
+      const newer = optionalBinary("programs/new.wasm", "programs/wasm64/other.wasm");
+      const local = snapshotOptionalBinaryWithFallback("examples/local.wasm", "programs/local.wasm");
+    `;
+    expect(nodeRunnerDemandsFromSource(source).map((demand) => demand.binary)).toEqual([
+      "programs/wasm32/new.wasm", "programs/wasm64/other.wasm",
+    ]);
+    expect(() => nodeRunnerDemandsFromSource("const x = optionalBinary(path);")).toThrow("literal");
   });
 
   it("names each import's owning package for a default build's selection", () => {
@@ -135,16 +162,16 @@ note = 'literal #string'
 
   it("reports a binary whose producer the supported set does not build", () => {
     const demands = [
-      { binary: "programs/wasm32/termchat.wasm", consumers: ["SHELL_LAZY_BINARY_SPECS termchat"] },
+      { binary: "programs/wasm32/termchat/termchat.wasm", consumers: ["SHELL_LAZY_BINARY_SPECS termchat"] },
       { binary: "programs/wasm32/tmux.wasm", consumers: ["browser @binaries import"] },
       { binary: "programs/wasm32/ghost.wasm", consumers: ["browser @binaries import"] },
     ];
     const owners = new Map([
-      ["programs/wasm32/termchat.wasm", { packageName: "termchat" }],
+      ["programs/wasm32/termchat/termchat.wasm", { packageName: "termchat" }],
       ["programs/wasm32/tmux.wasm", { packageName: "tmux" }],
     ]);
     expect(classifyUnsupplied(demands, owners, new Set(["tmux"]))).toEqual([
-      "programs/wasm32/termchat.wasm: produced by termchat, which " +
+      "programs/wasm32/termchat/termchat.wasm: produced by termchat, which " +
         "packages/sets/local-supported.toml does not build " +
         "(needed by SHELL_LAZY_BINARY_SPECS termchat)",
       "programs/wasm32/ghost.wasm: no registry package declares this output " +

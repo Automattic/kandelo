@@ -13,7 +13,10 @@ import { OwnedJobs } from "./owned-jobs";
  */
 
 import { BrowserProcessMemoryFactory } from "./browser-process-memory-factory";
-import { runtimeMemoryProfileSignals } from "./runtime-memory-profile";
+import {
+  isJavaScriptCoreUserAgent,
+  runtimeMemoryProfileSignals,
+} from "./runtime-memory-profile";
 import { installBrowserSetImmediatePolyfill } from "./browser-immediate-polyfill";
 
 installBrowserSetImmediatePolyfill();
@@ -331,6 +334,26 @@ interface ThreadWorkerInfo {
 const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
 const threadExits = new ThreadExitCoordinator();
 
+// [RUNTIME-WORKAROUND: JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN]
+// JavaScriptCore crashes when a sibling grows process memory while an
+// instance importing it is destroyed. There, an exited pthread's Worker keeps
+// its instances (wasm-instance-retention.ts) and is terminated only with its
+// process: at exit, exec, forced termination or destroy, once no thread of
+// that process can grow the memory. The thread's slot and channel are still
+// reclaimed at memory_quiescent; only the idle Worker outlives the thread.
+// Thread workers make the same decision from the same user agent.
+const exitedThreadWorkersOutliveThreads =
+  isJavaScriptCoreUserAgent(navigator.userAgent);
+const exitedThreadWorkers = new Map<number, ThreadWorkerInfo["worker"][]>();
+
+async function terminateExitedThreadWorkers(pid: number): Promise<void> {
+  const workers = exitedThreadWorkers.get(pid);
+  if (!workers) return;
+  exitedThreadWorkers.delete(pid);
+  await Promise.all(workers.map((worker) =>
+    terminateTrackedWorker(worker, THREADED_WORKER_TERMINATION_SETTLE_MS)));
+}
+
 async function waitForWorkerQuiescence(
   quiescence: WorkerQuiescence,
 ): Promise<boolean> {
@@ -440,7 +463,10 @@ async function terminateThreadWorkers(
   requireExecRetirement = false,
 ): Promise<boolean> {
   const threads = threadWorkers.get(pid);
-  if (!threads) return true;
+  if (!threads) {
+    await terminateExitedThreadWorkers(pid);
+    return true;
+  }
   threadWorkers.delete(pid);
   const quiescence = await Promise.all(
     threads.map((thread) =>
@@ -462,6 +488,8 @@ async function terminateThreadWorkers(
     );
     threadExits.release(pid, t.channelOffset);
   }
+  // After the live threads, so none of them can grow the memory meanwhile.
+  await terminateExitedThreadWorkers(pid);
   return allQuiescent;
 }
 const ptyByPid = new Map<number, number>();
@@ -665,6 +693,12 @@ function terminatePoisonedKernelWorker(error: Error): void {
       for (const thread of threads) {
         intentionallyTerminated.add(thread.worker as object);
         void thread.worker.terminate();
+      }
+    }
+    for (const workers of exitedThreadWorkers.values()) {
+      for (const worker of workers) {
+        intentionallyTerminated.add(worker as object);
+        void worker.terminate();
       }
     }
     queueMicrotask(() => {
@@ -3401,7 +3435,16 @@ async function handleClone(
     } else if (m.type === "memory_quiescent" && m.tid === tid) {
       threadEntry.quiescent = true;
       threadEntry.workerQuiescence.settle();
-      void terminateThreadEntry();
+      if (exitedThreadWorkersOutliveThreads && isCurrentThreadGeneration()) {
+        // [RUNTIME-WORKAROUND: JSC-SHARED-MEMORY-GROW-INSTANCE-TEARDOWN]
+        // Reclaim the slot now; the Worker ends with its process.
+        const exited = exitedThreadWorkers.get(pid) ?? [];
+        exited.push(threadWorker);
+        exitedThreadWorkers.set(pid, exited);
+        void reclaimThread();
+      } else {
+        void terminateThreadEntry();
+      }
     } else if ((m as { type?: string }).type === "error") {
       // worker-main posted {type:"error"} — instantiation failure, top-level
       // throw, etc. Without this the parent's pthread_join blocks forever.
@@ -3908,6 +3951,7 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
     }
     threadWorkers.delete(pid);
   }
+  await terminateExitedThreadWorkers(pid);
 
   // Terminate main process worker
   if (info?.worker) {
@@ -4159,6 +4203,9 @@ async function performDestroy() {
       );
     }
   }
+  for (const pid of [...exitedThreadWorkers.keys()]) {
+    await terminateExitedThreadWorkers(pid);
+  }
   await waitForProcessTeardowns();
   // A process teardown can yield while exec installs a successor. Sweep the
   // exact current objects and retry only transactions whose phase threw.
@@ -4374,16 +4421,16 @@ async function handleHttpRequestMessage(msg: {
     return;
   }
   try {
-    const response = await (msg.hostname === undefined
-      ? kernelWorker.sendHttpRequest.bind(kernelWorker)
-      : remoteSegmentRuntime.fetchHttp.bind(remoteSegmentRuntime, msg.hostname))(
-      msg.port,
-      msg.request,
-      {
-        timeoutMs: msg.timeoutMs,
-        maxResponseBytes: msg.maxResponseBytes,
-      },
-    );
+    const options = {
+      timeoutMs: msg.timeoutMs,
+      maxResponseBytes: msg.maxResponseBytes,
+    };
+    // A hostname names a machine on the Kandelo network; without one the
+    // request is for this machine. Call each directly: binding kernelWorker
+    // into a free function would let it escape the entry root.
+    const response = msg.hostname === undefined
+      ? await kernelWorker.sendHttpRequest(msg.port, msg.request, options)
+      : await remoteSegmentRuntime.fetchHttp(msg.hostname, msg.port, msg.request, options);
     respond(msg.requestId, response);
   } catch (e) {
     respondError(msg.requestId, e instanceof Error ? e.message : String(e));

@@ -42,7 +42,10 @@ async function canvasAdvances(page: Page): Promise<boolean> {
  * the browser, so a desktop that keeps animating afterwards proves the
  * rebuild path end to end.
  */
-test("the webgl2 scanout presenter survives a GPU process crash", async ({ page }) => {
+test("the webgl2 scanout presenter survives a GPU process crash", async ({ page, browserName }) => {
+  // Only Chromium can lose a real WebGL context on demand (its GPU process
+  // crash hook); WebKit and Firefox expose no such test API.
+  test.skip(browserName !== "chromium", "needs chrome.gpuBenchmarking.crashGpuProcess");
   test.setTimeout(300_000);
 
   // The Wayland desktop is not listed in the gallery (Omarchy is the

@@ -60,8 +60,13 @@ async function terminalText(page: Page): Promise<string> {
 
 /** Show the terminal and wait until `pattern` appears in it. */
 async function expectTerminal(page: Page, pattern: RegExp, timeout: number) {
-  await openSurface(page, "Terminal");
-  await expect.poll(() => terminalText(page), { timeout }).toMatch(pattern);
+  // Select the terminal on every read: when a program starts presenting, the
+  // app hands the view to its display (#1551), and a hidden xterm keeps its
+  // old rows in the DOM.
+  await expect.poll(async () => {
+    await openSurface(page, "Terminal");
+    return terminalText(page);
+  }, { timeout }).toMatch(pattern);
 }
 
 /** A theme reload can scroll its initiating command off screen before the
