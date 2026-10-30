@@ -9940,3 +9940,61 @@ Quiet headless unprofiled and separate worker-CPU diagnostic cohorts are
 prepared for Cage/Sway/Labwc with explicit native-mode and artifact
 identity checks. No actual performance result or fix is established yet.
 The full browser, memory, POSIX and graphics baseline gates remain open.
+
+
+### First quiet desktop baseline (2026-10-30)
+
+Headless Chromium153 job
+`preview5663-86dbd4708b-unprofiled-r3-1030-172336-e007` passes all three
+default-client cases in1m41s against unchanged normal86db/preview5663.
+Actual mode is1440x810 at DPR1 for Cage, Sway and Labwc, using the
+program-owned WebGL2 path. Each completes10s idle and10s pointer motion,
+40 actual move commands and40 trusted page pointer events. Selected
+compositor/client process identities survive unchanged; no page errors
+are recorded. Source, SDK, selected kernel and all93 owners/245 members
+remain unchanged after the consumer.
+
+The public counter changes below span the first through last coarse
+250ms samples, not the complete phase. Accepted flips count ioctl
+admissions; pump presentations are not unique scene frames. Neither is
+an input-to-pixel latency or frames-per-second measurement.
+
+| Desktop/default clients | Idle accepted flips / pump | Motion accepted flips / pump |
+| --- | --- | --- |
+| Cage/wlterm | 0 / 625 | 39 / 522 |
+| Sway/Foot and SFWBar | 2 / 625 | 42 / 610 |
+| Labwc/Foot and SFWBar | 1 / 609 | 42 / 610 |
+
+This is one native DPR1 cohort, not an isolated compositor comparison,
+high-rate cursor responsiveness proof, before/after improvement or the
+user's2818x1584 case. Actual Chromium metadata reports ANGLE Metal on
+Apple M5 Max; that browser-wide metadata does not establish the physical
+device of an individual KMS context. The canonical headless flags are
+retained. Browser.getBrowserCommandLine is specifically unavailable
+without enable-automation; the real SystemInfo response supplies its
+command-line string instead, with the original method failure retained.
+Other metadata errors remain fatal.
+
+The preceding r2 workload fails before timed phases: Cage's selected
+launcher terminal lacks WLTERM_READY, and the other two cases reject
+that unavailable metadata method. Its raw reports remain retained. The
+private driver repair removes the launcher-log prerequisite while
+retaining actual-canvas shell-content readiness, exact mode/owner and
+process checks. It does not explain the absent log or repair a product.
+Both drivers retain the exact original timed phase body.
+
+Separate worker-CPU job
+`preview5663-86dbd4708b-worker-cpu-r4-1030-172541-55e7` finishes1 in1m26s.
+Cage/Labwc retain raw idle/motion profiles, but observer cleanup fails;
+Sway reaches a historical-worker-count limit before phases. Actual
+artifact coherence still passes. This diagnostic is invalid, not a
+performance acceptance result. Profiler cleanup ordering and separate
+live/history attachment limits need correction before a fresh cohort.
+No product performance fix or established slowdown cause is claimed.
+
+Raw baselines are in
+`.context/desktop-performance-probe/cohorts/preview5663-86dbd4708b-unprofiled-r3/`;
+wrapper summaries, source/SDK/artifact captures and all retained failures
+are in `.context/preview5663-performance/runs/`. Full SFWBar GUI,
+ScummVM rendering, Firefox/WebKit, browser-memory, POSIX and the remaining
+graphics inventory gates remain open.
