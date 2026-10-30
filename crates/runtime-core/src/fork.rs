@@ -3685,10 +3685,11 @@ mod tests {
             42,
             KmsFb {
                 bo_id: bo,
-                width: 64,
-                height: 64,
+                width: 60,
+                height: 63,
                 pixel_format: 0x34325241, // AR24
                 stride: 64 * 4,
+                offset: 16,
             },
         );
         proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
@@ -3702,7 +3703,7 @@ mod tests {
 
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
-        let child = deserialize_fork_state(&buf[..written], 99).unwrap();
+        let mut child = deserialize_fork_state(&buf[..written], 99).unwrap();
 
         // The relink shares the parent's table; the wire carries no copy
         // and takes no bo reference for one.
@@ -3713,6 +3714,13 @@ mod tests {
             Some(1)
         );
 
+        drop(child_kms);
+        child.ofd_table.link_shared_states_from(&proc.ofd_table, |id| {
+            crate::dri::with_registry(|r| r.decref(id));
+        }).unwrap();
+        let relinked = child.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
+        assert_eq!(relinked.fbs.borrow().get(&42).unwrap().offset, 16);
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 1);
         crate::dri::with_registry(|r| r.decref(bo));
     }
 

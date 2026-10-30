@@ -6,6 +6,9 @@ import { readFileSync } from "node:fs";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { extractZipEntry, parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 
+// Browser checks must never take the user's desktop focus.
+test.use({ headless: true });
+
 /** Show the Internals syslog, the demo canvas, or the machine's terminal.
  *  Internals is an overlay toggle in the dock; showing another view means
  *  closing it and selecting that view. */
@@ -126,17 +129,18 @@ async function barHeight(out: Output): Promise<number> {
     const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
     bitmap.close();
     return Array.from({ length: image.height }, (_, y) => {
-      let black = 0;
+      let background = 0;
       for (let x = 0; x < image.width; x++) {
         const p = (y * image.width + x) * 4;
-        if (image.data[p] < 20 && image.data[p + 1] < 20 && image.data[p + 2] < 20) black++;
+        if ([0, 1, 2].every(channel => Math.abs(image.data[p + channel] - 50) <= 3)) background++;
       }
-      return black / image.width;
+      return background / image.width;
     });
   }, png.toString("base64"));
   // Read the actual painted bar boundary, not a fixed font-dependent height.
-  // The status text occupies less than half a row; foot/wallpaper is lighter.
-  const boundary = rows.findIndex(black => black < 0.5);
+  // The shipped /etc/sway/config sets background #323232. Text occupies
+  // less than half a row; the foot client and its blue title differ.
+  const boundary = rows.findIndex(background => background < 0.5);
   expect(boundary, "swaybar has painted a nonempty top band").toBeGreaterThan(0);
   return boundary * height / rows.length;
 }
@@ -317,8 +321,51 @@ test("Kandelo sway tiles foot terminals under swaybar with wlroots' GLES2 render
 
 for (const deviceScaleFactor of [1, 2]) {
   test.describe(`Sway logical desktop at ${deviceScaleFactor}x`, () => {
-    test.use({ headless: true, deviceScaleFactor, viewport: { width: 1100, height: 650 } });
-    test("keeps readable fonts, actual output scale and click targets on a small pane", async ({ page }) => {
+    test.use({
+      deviceScaleFactor, viewport: { width: 1100, height: 650 },
+      page: async ({ page, playwright, browserName, channel, launchOptions,
+        contextOptions, baseURL, viewport, extraHTTPHeaders, proxy }, use, testInfo) => {
+        // Context DPR emulation alone leaves Chromium/Firefox's native
+        // device-pixel box at 1x. Keep the ordinary browser for the 1x case
+        // and WebKit's unchanged CSS*DPR fallback path.
+        if (deviceScaleFactor !== 2 || browserName === "webkit") {
+          await use(page);
+          return;
+        }
+        const browser = await playwright[browserName].launch({
+          ...launchOptions, channel, headless: true,
+          ...(browserName === "chromium" ? {
+            args: [...(launchOptions.args ?? []), "--force-device-scale-factor=2"],
+          } : {
+            firefoxUserPrefs: {
+              ...launchOptions.firefoxUserPrefs, "layout.css.devPixelsPerPx": "2.0",
+            },
+          }),
+        });
+        try {
+          const context = await browser.newContext({
+            ...contextOptions, baseURL, viewport, deviceScaleFactor, extraHTTPHeaders, proxy,
+          });
+          const nativePage = await context.newPage();
+          try {
+            await use(nativePage);
+          } finally {
+            if (testInfo.status !== testInfo.expectedStatus) {
+              try {
+                await testInfo.attach("native-density-page", {
+                  body: await nativePage.screenshot({ timeout: 5_000 }), contentType: "image/png",
+                });
+              } catch (error) {
+                testInfo.annotations.push({ type: "screenshot unavailable", description: String(error) });
+              }
+            }
+          }
+        } finally {
+          await browser.close();
+        }
+      },
+    });
+    test("keeps readable fonts, actual output scale and click targets on a small pane", async ({ page, browserName }, testInfo) => {
       test.setTimeout(300_000);
       // These are the normal resolver-owned archive bytes mounted by the
       // shell image at /usr/share/kandelo, not a test-only substitute config.
@@ -338,6 +385,36 @@ for (const deviceScaleFactor of [1, 2]) {
 
       await gotoMachine(page, "sway");
       await openSurface(page, "Demo");
+      const canvas = canvasLocator(page);
+      await canvas.waitFor({ state: "visible", timeout: 30_000 });
+      // Establish density from the actual browser measurement independently
+      // of the connector/output being tested. WebKit lacks this native box
+      // and retains the production CSS*DPR fallback.
+      const pixels = await canvas.evaluate(element => new Promise<{
+        cssWidth: number; cssHeight: number; width?: number; height?: number; dpr: number;
+      }>(resolve => {
+        const observer = new ResizeObserver(([entry]) => {
+          const native = entry.devicePixelContentBoxSize?.[0];
+          observer.disconnect();
+          resolve({ cssWidth: entry.contentRect.width, cssHeight: entry.contentRect.height,
+            width: native?.inlineSize, height: native?.blockSize, dpr: devicePixelRatio });
+        });
+        observer.observe(element);
+      }));
+      await testInfo.attach("native-density-measurement", {
+        body: JSON.stringify(pixels), contentType: "application/json",
+      });
+      expect(pixels.dpr).toBe(deviceScaleFactor);
+      expect(pixels.cssWidth).toBeGreaterThan(0);
+      expect(pixels.cssHeight).toBeGreaterThan(0);
+      if (browserName !== "webkit") {
+        expect(pixels.width, "native device-pixel width").toBeDefined();
+        expect(pixels.height, "native device-pixel height").toBeDefined();
+      }
+      if (pixels.width !== undefined && pixels.height !== undefined) {
+        expect(Math.abs(pixels.width - pixels.cssWidth * deviceScaleFactor)).toBeLessThanOrEqual(1);
+        expect(Math.abs(pixels.height - pixels.cssHeight * deviceScaleFactor)).toBeLessThanOrEqual(1);
+      }
       await expect.poll(() => chipText(page), { timeout: 180_000 }).toMatch(/webgl2-gl/i);
       const out = await output(page);
       await expect.poll(async () => isFoot(await meanColor(page, await middle(out))),

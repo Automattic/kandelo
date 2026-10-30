@@ -4680,6 +4680,8 @@ pub mod dri {
 
     /// `_IOWR('d', 0xa7, drm_mode_get_connector)`.
     pub const DRM_IOCTL_MODE_GETCONNECTOR: u32 = 0xc050_64a7;
+    /// `_IOWR('d', 0xad, drm_mode_fb_cmd)` — metadata and a fresh GEM handle.
+    pub const DRM_IOCTL_MODE_GETFB: u32 = 0xc01c_64ad;
 
     /// `_IOWR('d', 0xaf, u32)` — drop fb id.
     pub const DRM_IOCTL_MODE_RMFB: u32 = 0xc004_64af;
@@ -4710,6 +4712,8 @@ pub mod dri {
 
     /// `_IOWR('d', 0xb6, drm_mode_get_plane)`.
     pub const DRM_IOCTL_MODE_GETPLANE: u32 = 0xc020_64b6;
+    /// `_IOWR('d', 0xb7, drm_mode_set_plane)`.
+    pub const DRM_IOCTL_MODE_SETPLANE: u32 = 0xc030_64b7;
 
     /// `_IOWR('d', 0xb9, drm_mode_obj_get_properties)`.
     pub const DRM_IOCTL_MODE_OBJ_GETPROPERTIES: u32 = 0xc020_64b9;
@@ -4748,6 +4752,7 @@ pub mod dri {
     pub const DRM_MODE_OBJECT_ENCODER: u32 = 0xe0e0_e0e0;
     pub const DRM_MODE_OBJECT_PROPERTY: u32 = 0xb0b0_b0b0;
     pub const DRM_MODE_OBJECT_PLANE: u32 = 0xeeee_eeee;
+    pub const DRM_MODE_OBJECT_FB: u32 = 0xfbfb_fbfb;
 
     pub const DRM_MODE_PROP_RANGE: u32 = 1 << 1;
     pub const DRM_MODE_PROP_IMMUTABLE: u32 = 1 << 2;
@@ -4964,6 +4969,37 @@ pub mod dri {
         pub count_format_types: u32, // 20  in/out
         pub format_type_ptr: u64,    // 24  in
                                      // total: 32
+    }
+
+    /// Linux `struct drm_mode_set_plane`, including 16.16 source geometry.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeSetPlane {
+        pub plane_id: u32,
+        pub crtc_id: u32,
+        pub fb_id: u32,
+        pub flags: u32,
+        pub crtc_x: i32,
+        pub crtc_y: i32,
+        pub crtc_w: u32,
+        pub crtc_h: u32,
+        pub src_x: u32,
+        pub src_y: u32,
+        pub src_h: u32,
+        pub src_w: u32,
+    }
+
+    /// Linux legacy single-plane framebuffer metadata, 28 bytes.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeFbCmd {
+        pub fb_id: u32,
+        pub width: u32,
+        pub height: u32,
+        pub pitch: u32,
+        pub bpp: u32,
+        pub depth: u32,
+        pub handle: u32,
     }
 
     /// `struct drm_mode_obj_get_properties`. 32 bytes (4 bytes of tail pad).
@@ -5826,6 +5862,7 @@ mod dri_tests {
         assert_eq!(DRM_MODE_CONNECTED, 1);
         assert_eq!(DRM_EVENT_VBLANK, 1);
         assert_eq!(DRM_EVENT_FLIP_COMPLETE, 2);
+        assert_eq!(DRM_MODE_OBJECT_FB, 0xfbfb_fbfb);
     }
 
     #[test]
@@ -5833,6 +5870,12 @@ mod dri_tests {
         assert_eq!(size_of::<WpkDrmSetClientCap>(), 16);
         assert_eq!(size_of::<WpkDrmModeGetPlaneRes>(), 16);
         assert_eq!(size_of::<WpkDrmModeGetPlane>(), 32);
+        assert_eq!(size_of::<WpkDrmModeSetPlane>(), 48);
+        assert_eq!(size_of::<WpkDrmModeFbCmd>(), 28);
+        assert_eq!(core::mem::offset_of!(WpkDrmModeFbCmd, handle), 24);
+        assert_eq!(core::mem::offset_of!(WpkDrmModeSetPlane, crtc_x), 16);
+        assert_eq!(core::mem::offset_of!(WpkDrmModeSetPlane, src_h), 40);
+        assert_eq!(core::mem::offset_of!(WpkDrmModeSetPlane, src_w), 44);
         assert_eq!(size_of::<WpkDrmModeObjGetProperties>(), 32);
         assert_eq!(size_of::<WpkDrmModeObjSetProperty>(), 24);
         assert_eq!(size_of::<WpkDrmModeConnectorSetProperty>(), 16);
@@ -5873,6 +5916,10 @@ mod dri_tests {
             DRM_IOCTL_MODE_GETPLANE,
             ioc(iowr, d, 0xb6, size_of::<WpkDrmModeGetPlane>() as u32)
         );
+        assert_eq!(DRM_IOCTL_MODE_SETPLANE,
+            ioc(iowr, d, 0xb7, size_of::<WpkDrmModeSetPlane>() as u32));
+        assert_eq!(DRM_IOCTL_MODE_GETFB,
+            ioc(iowr, d, 0xad, size_of::<WpkDrmModeFbCmd>() as u32));
         assert_eq!(
             DRM_IOCTL_MODE_OBJ_GETPROPERTIES,
             ioc(iowr, d, 0xb9, size_of::<WpkDrmModeObjGetProperties>() as u32)

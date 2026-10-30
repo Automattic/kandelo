@@ -138,9 +138,9 @@ reproduction and correct observable failure; none is inferred from a stub.
 | B01 | GBM allocation/import/export and plane metadata | Dumb/GPU tiers and modifier admission use checked metadata; borrowed surface leases preserve old GPU storage after public retirement/ID reuse. Explicit CPU layout mirrors retain native/mapped siblings. Distinct GBM wrappers over one duplicated/transferred DRM file now share GEM-name lifetime while retaining separate private descriptors; focused both-width/three-engine guests pass. Full negative/lifecycle and combined validation remain open | GBM, DRM BOs, host registry | SDK guest fixtures both widths; unsupported format/flags | partial |
 | B02 | GBM map/unmap coherence and authority | Kernel-owned mapping BO references and live-parent fork/vfork inheritance; independent host aliases by process/address with post-clone priming, changed-run publication, and successful frozen-retry/kernel-wait visibility boundaries. Partial munmap trims/splits retain canonical offsets and references across fork, including anonymous reuse of the hole; focused both-width Node/browser checks pass. Fixed anonymous/private-file and new device replacement retire only affected intervals; DRI/PRIME admission flushes old aliases before same-BO population, with allocator/reference rollback on rejection. Both-width Node/three-engine guest evidence is recorded below. Device mremap shrink/no-op retain backing; growth has Linux GEM EFAULT behavior. Broader remap flags/partial-file coverage, cleanup/failure and final combined conformance remain open | GBM, kernel maps, DRI registry | Importer writes, stale readers, unmap/exit/exec; browser pixels | partial |
 | B03 | Surface ring lock/release/destroy ownership | Retained EGL leases and a bounded GPU pool publish a top-row-first copy only after accepted swaps, preserving the private render back and locked fronts. Rendered retention/exhaustion/retirement and asymmetric KMS visibility/orientation pass both guest widths in all three engines, through WebGL and 2D scanout. WRITE/LINEAR/CURSOR fronts retain CPU storage with a private GPU render back, with normal both-width/three-engine image and scanout evidence below. Forwarding and broader combined validation remain open | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks; asymmetric KMS pixels | partial |
-| K01 | Single display resources and consistent object IDs | Integrated dynamic mode catalog, properties and device-wide IDs; broader device/host validation pending | kernel dri/kms, host mode metadata | Rust ioctl and Node mode tests; preserve preferred/catalog semantics | partial |
+| K01 | Single display resources and consistent object IDs | Integrated dynamic mode catalog, properties and device-wide IDs. Negotiated cursor plane discovery, immutable Cursor type and current state now have focused native evidence; normal upstream cursor assignment remains pending | kernel dri/kms, host mode metadata | Rust ioctl and Node mode tests; preserve preferred/catalog semantics | partial |
 | K02 | Probe all nested outputs before writing | Property, enum and expanded connector outputs now preprobe all destinations; focused Rust regressions pass | syscall nested-output helpers | Valid first/invalid later buffers, unchanged sentinels and top-level bytes | open |
-| K03 | Shared OFD GEM/FB authority, PRIME and final references | Shared GEM namespace/allocator, KMS FBs and inherited graphics cleanup/BO holds are implemented; final combined guest validation and remaining KMS-file authority gaps stay open | OFD, process/fork/spawn/exec/close, BO registry | Rust + real Node lifecycle/dup/fork/spawn tests | open |
+| K03 | Shared OFD GEM/FB authority, PRIME and final references | Shared GEM namespace/allocator, KMS FBs and inherited graphics cleanup/BO holds are implemented. Device-wide GETFB returns fresh master-only handles; creator-only removal and cross-file cursor cleanup have focused native evidence. Final combined guest validation and remaining KMS-file authority gaps stay open | OFD, process/fork/spawn/exec/close, BO registry | Rust + real Node lifecycle/dup/fork/spawn tests | open |
 | K04 | Legacy modeset/flip/vblank/master handoff | Main display owner and cleanup; cage changes automatic master and CLOSEFB | KMS, host scanout | Pending flip drop/exit/crash/master replacement, no stale event/scanout | partial |
 | K05 | GPU scanout, CPU fallback and context loss | Device-wide render-node-first resources are independent of master. Selected GPU framebuffers use native blit or owned readback for a 2D/different native display. Focused three-engine rendering passes; complete format views, CPU/GPU coherence and lost-resource reconstruction remain open | host GPU registry/present target/KMS pump | Render imports to scanout; orientation/pixels three engines | partial |
 | H01 | Command framing, complete validation and bounded results | Owned bounded submission snapshots make structural validation and dispatch observe the same bytes in native and forwarded paths; one-shot frames restore cached views and discard on purge. Source execution leases retain revoked context owners and owned drawable allocations independently; borrowed GPU allocations also have independent source leases; drain remains synchronous pending per-work drawable selection and server-wait ordering. Kernel query dispatch preprobes nonempty guest destinations, rejects nonzero reserved fields/null inputs, and rejects oversized host replies without copying output. Focused Rust/host source evidence is recorded below; complete guest coverage remains open | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
@@ -10088,3 +10088,102 @@ ScummVM graphics warning using actual physical-key input and captured guest
 files. ScummVM exits zero despite `Could not load any graphics mode`, so a
 successful exit cannot substitute for visible application rendering.
 Evidence: `.context/gbm-fork-aliases/.context/scummvm-sway-reproduction.txt`.
+
+
+### Negotiated cursor-plane discovery and legacy GETFB (2026-10-30)
+
+The source now exposes cursor plane 10, alongside primary plane 4, to
+universal-plane clients when the host negotiated cursor transport. Its
+immutable `type` is Cursor, its only format is ARGB8888, and its possible
+CRTC mask is one. GETPLANE reports the framebuffer actually retained by
+legacy CURSOR/CURSOR2 or cursor SETPLANE, including an internal legacy
+cursor framebuffer identity. Fixed object/property IDs 1–9 remain intact;
+new framebuffer IDs begin above 10. No atomic capability is added.
+
+This fixes a concrete discovery gap: wlroots 0.20.2 assigns its cursor
+plane from the discovered immutable type; without one it reports
+`Hardware cursor not supported`. Its legacy cursor path also calls GETFB
+before installing the returned GEM handle. GETFB now reads authoritative
+device-wide framebuffer metadata. Only the exact current master receives
+a fresh GEM handle, with its own BO reference in the actual shared file
+namespace; an unauthorized file receives metadata with handle zero.
+There is no CAP_SYS_ADMIN exception because Kandelo exposes no such
+capability. RMFB/CLOSEFB still require an entry in the caller's creator
+file table. These rules follow Linux's
+[framebuffer implementation](https://raw.githubusercontent.com/torvalds/linux/master/drivers/gpu/drm/drm_framebuffer.c).
+
+A weak device index resolves the existing shared framebuffer table rather
+than copying its mutable authority. Cursor state retains an immutable
+framebuffer descriptor and its actual file-owned BO hold. Creator RMFB or
+final close removes an active cursor even when another master file
+installed it; CLOSEFB leaves an active plane alive. Hiding, replacing,
+dropping master and final close release the cursor hold. Deferred hide
+cleanup checks both the grant and still-disabled actual plane, so it
+cannot hide a replacement image in either the same or a newer grant.
+
+Cursor SETPLANE uses the existing negotiated cursor transport and accepts
+full packed CPU ARGB8888 views up to 64×64. It rejects offsets, padded
+rows, crop and scale before replacing state or references. Disabling
+ignores CRTC/geometry as Linux does. Primary SETPLANE returns EOPNOTSUPP;
+legacy SETCRTC/PAGE_FLIP remain its supported path. Framebuffer metadata
+now preserves the accepted byte offset, including normal fork relink and
+spawn aliasing; the wire still carries no duplicate framebuffer table.
+General scanout offset/custom-view rendering is an ordinary open gap,
+not a platform boundary. GETFB2 is not implemented by this batch.
+
+Focused evidence in the detached cursor-discovery checkout:
+
+- `kms-cursor-before.log`: the actual discovery control fails before the
+  implementation (one plane instead of two), not a compile failure.
+- `kms-cursor-native-final.log`: 43 native KMS controls pass, including
+  actual GETFB→CURSOR, fresh/duplicate-file handle ownership, device-wide
+  read with creator-only removal, cross-file cleanup, CLOSEFB retention,
+  geometry/offset rejection, immutable type and nested-pointer preflight.
+  The extra delayed-cleanup control first failed against a grant-only
+  guard (`kms-cursor-delayed-before.log`); the final guard preserves an
+  actual replacement cursor installed before old cleanup is delivered.
+- `kms-cursor-fork.log` and `kms-cursor-spawn.log`: one focused control
+  each passes, preserving the nonzero offset and exact BO reference count
+  through actual fork relink and spawn sharing.
+
+`kms-cursor-objects.log` passes four namespace/property controls, and
+`kms-cursor-fork-process.log` passes the actual process-fork reference
+settlement control with the preserved nonzero offset.
+`kms-cursor-shared.log` passes 10 shared DRM layout/number controls;
+`kms-cursor-contract.log` passes 13 ioctl-contract controls.
+
+New standard requests are GETFB InOut28 and SETPLANE In48, with shared
+layout/number controls and xtask snapshot source coverage. Program 56 /
+host 3 / GL 17 / fork 21 remain fixed in this unpublished batch. Normal
+ABI/generated-output regeneration, kernel builds, actual upstream
+wlroots cursor assignment, Node/browser rendering and memory/conformance
+checks remain integration gates. Cursor latency has not been measured;
+this source/native evidence does not establish its cause or improvement.
+
+### Sway native-density test setup (2026-10-30)
+
+Standalone headless measurements with no Kandelo code distinguish native
+pixel density from context DPR emulation. Chromium 153.0.8010.12 and
+Firefox 155 report a 965x500 device-pixel content box for a 965x500 CSS
+canvas even when the context reports DPR 2. Chromium's native launch scale
+2 and Firefox's native layout density 2 instead report 1930x1000 with the
+same CSS box. WebKit 26.6 exposes no device-pixel content box in this probe,
+so its existing CSS-times-DPR fallback path remains unchanged. This is
+observed test setup behavior, not a browser fault or a production workaround.
+
+The Sway 2x cases now own headless native-density browsers for Chromium
+and Firefox, preserving project launch settings and matching context DPR.
+The ordinary 1x and WebKit context paths are unchanged. An independent
+canvas ResizeObserver delivery checks native density before the connector
+mode assertions; the original output IPC scale, rendered input and teardown
+checks remain. Manual-context failures attach the actual page screenshot.
+
+Source validation passes TypeScript syntax transpilation and canonical
+Playwright discovery of all nine Sway cases across three engines. Evidence:
+`.context/sway-native-density/.context/sway-density-syntax.log`,
+`sway-density-list.log`, `resize-native-control-project.log`, and
+`resize-native-firefox-pref.log`; Chromium's standalone matrix is in
+`.context/gbm-cpu-fronts/.context/resize-native-standalone.log`.
+These checks do not establish repaired Sway rendering or input. Normal
+consumer execution remains an integration gate; application, host sizing,
+artifacts and ABI are unchanged by this test-only correction.
