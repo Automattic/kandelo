@@ -1028,6 +1028,10 @@ export class WasmPosixKernel {
     (pid,session,registration)=>this.callbacks.onGlQueryOwnerWake?.(pid,session,registration),
     (pid,session,registration)=>this.callbacks.onGlQueryWork?.(pid,session,registration));
 
+  /** Private worker receipt routing, frozen before first native admission. */
+  prepareGlQueryControlOwner(pid:number,session:number) {return this.gl_query_controls.prepareOwner(pid,session);}
+  ownsGlQueryControlOwner(owner:import("./webgl/owned-result.js").GlResultOwner):boolean {return this.gl_query_controls.owns(owner);}
+
   drainGlQueryControls(maxVisits:number):number {
     if(!Number.isSafeInteger(maxVisits)||maxVisits<0)return 0;
     let visits=this.gl_query_controls.drain(maxVisits);

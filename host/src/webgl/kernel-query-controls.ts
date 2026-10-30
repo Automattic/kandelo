@@ -31,6 +31,55 @@ export class GlKernelQueryControls {
     this.limits=Object.freeze({...limits});
     this.native=new GlNativeQueryAdapter(registry,bos,muxers,this.limits,wake);
   }
+  /** Freeze the actual endpoint/native owner before the first possibly
+   * uncertain Begin. Only a known live exact binding may mint this authority;
+   * later controls and wakes use the same object, never a latest-owner lookup. */
+  prepareOwner(pid:number,session:number):{owner:GlResultOwner}|{error:number} {
+    if (!Number.isInteger(pid)||pid<1||pid>0x7fff_ffff||!Number.isInteger(session)||session<1||session>0xffff_ffff) return {error:E.EINVAL};
+    const result=this.ensureOwner(pid,session);
+    return "error" in result?result:{owner:result.owner};
+  }
+  owns(owner:GlResultOwner):boolean {return this.owners.get(`${owner.pid}/${owner.sessionId}`)?.owner===owner;}
+  private ensureOwner(pid:number,session:number):Owner|{error:number} {
+    const key=`${pid}/${session}`;
+    let authority=this.owners.get(key);
+    const binding=this.registry.get(pid,session);
+    if (!binding||authority?.closed||authority&&authority.owner.operations!==binding.operations) return {error:E.EACCES};
+    const backend=binding.forward ? binding.forward.ownedQueries : this.native;
+    if(!backend)return {error:E.ENOSYS};
+    if(authority && authority.backend!==backend)return {error:E.EACCES};
+    // Queued outbound command admission is deliberately not enabled in this
+    // private increment. Refuse a new forwarded query before effects while
+    // any earlier local operation/scalar retirement barrier is outstanding.
+    if(backend instanceof GlOwnedForwardClient && (binding.operations.immediateState()!=="idle"
+      || backend.hasBarrier(session)))return {error:E.EBUSY};
+    try {
+      if (binding.gl&&!this.muxers.has(binding.gl)) this.muxers.set(binding.gl,new GlMuxer(binding.gl));
+    }catch{return {error:E.ENOMEM};}
+    if (!authority) {
+      if(this.owners.size>=this.limits.maxOwners)return {error:E.ENOMEM};
+      if(backend instanceof GlOwnedForwardClient) {
+        if(!this.clients.has(backend) && this.clients.size>=this.limits.maxOwners)return {error:E.ENOMEM};
+        // Retain the actual endpoint driver before registration can send an
+        // Open. Even failed central metadata allocation must not orphan it.
+        try {this.clients.add(backend);}catch{return {error:E.ENOMEM};}
+      }
+      const owner=backend instanceof GlOwnedForwardClient ? backend.register(session,binding.operations) : backend.register(pid,session);
+      if (!owner) return {error:E.ENOMEM};
+      if(backend instanceof GlOwnedForwardClient) {
+        backend.watchOwner(owner,(pid,session,registration)=>{
+          this.ownerWake?.(pid,session,registration);this.workWake?.(pid,session,registration);
+        });
+        backend.watchWork(owner,this.workWake);
+      }
+      try {
+        authority={owner,backend,closed:false,forgotten:false,records:new Map()};this.owners.set(key,authority);
+      }catch{
+        backend.retireOwner(owner);backend.forgetOwner(owner);return {error:E.ENOMEM};
+      }
+    }
+    return authority!;
+  }
   control(pid:number,session:number,bytes:Uint8Array,replyCapacity:number):Reply {
     if (!Number.isInteger(pid)||pid<1||pid>0x7fff_ffff||!Number.isInteger(session)||session<1||session>0xffff_ffff)
       return {error:E.EINVAL};
@@ -47,42 +96,10 @@ export class GlKernelQueryControls {
     const reject=(error:number):Reply=>({bytes:encodeQueryReply({phase:"rejected",error},
       {control:"begin",token:request.token,capacity})});
     if (request.control==="begin"&&!record) {
-      const binding=this.registry.get(pid,session);
-      if (!binding||authority?.closed||authority&&authority.owner.operations!==binding.operations) return reject(E.EACCES);
-      const backend=binding.forward ? binding.forward.ownedQueries : this.native;
-      if(!backend)return reject(E.ENOSYS);
-      if(authority && authority.backend!==backend)return reject(E.EACCES);
-      // Queued outbound command admission is deliberately not enabled in this
-      // private increment. Refuse a new forwarded query before effects while
-      // any earlier local operation/scalar retirement barrier is outstanding.
-      if(backend instanceof GlOwnedForwardClient && (binding.operations.immediateState()!=="idle"
-        || backend.hasBarrier(session)))return reject(E.EBUSY);
       if (this.count>=this.limits.maxRequests) return reject(E.ENOMEM);
-      try {
-        if (binding.gl&&!this.muxers.has(binding.gl)) this.muxers.set(binding.gl,new GlMuxer(binding.gl));
-      }catch{return reject(E.ENOMEM);}
-      if (!authority) {
-        if(this.owners.size>=this.limits.maxOwners)return reject(E.ENOMEM);
-        if(backend instanceof GlOwnedForwardClient) {
-          if(!this.clients.has(backend) && this.clients.size>=this.limits.maxOwners)return reject(E.ENOMEM);
-          // Retain the actual endpoint driver before registration can send an
-          // Open. Even failed central metadata allocation must not orphan it.
-          try {this.clients.add(backend);}catch{return reject(E.ENOMEM);}
-        }
-        const owner=backend instanceof GlOwnedForwardClient ? backend.register(session,binding.operations) : backend.register(pid,session);
-        if (!owner) return reject(E.ENOMEM);
-        if(backend instanceof GlOwnedForwardClient) {
-          backend.watchOwner(owner,(pid,session,registration)=>{
-            this.ownerWake?.(pid,session,registration);this.workWake?.(pid,session,registration);
-          });
-          backend.watchWork(owner,this.workWake);
-        }
-        try {
-          authority={owner,backend,closed:false,forgotten:false,records:new Map()};this.owners.set(key,authority);
-        }catch{
-          backend.retireOwner(owner);backend.forgetOwner(owner);return reject(E.ENOMEM);
-        }
-      }
+      const prepared=this.ensureOwner(pid,session);
+      if ("error" in prepared) return reject(prepared.error);
+      authority=prepared;
       try {
         record={capacity,mode:null,phase:null,result:null,admitted:false};authority.records.set(request.token,record);this.count++;
       }catch{return reject(E.ENOMEM);}

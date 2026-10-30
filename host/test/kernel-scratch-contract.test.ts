@@ -1079,6 +1079,26 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
 
 const auditAllowances: AuditAllowance[] = [
   {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#beginOwnedGlQuery::kernel-export-direct-use::capture(channel.pid,row.tid,Number(fd),header)",
+    disposition: "kernel-control",
+    why: "Private admission consumes an exact task binding and a full u64 guest address copied from the registered pending mailbox. Rust reads the target-width header through actual HostIO process-memory authority and owns its copied request before returning a token; this is not a kernel pointer or borrowed scratch span.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#beginOwnedGlQuery::kernel-export-direct-use::session(channel.pid,row.tid,token)",
+    disposition: "kernel-control",
+    why: "Inspect only the immutable captured session for the exact pid/task/token and exec generation before native Begin. The scalar result freezes the existing host owner route; it exposes no kernel memory or callable authority.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#drainOwnedGlQueryChannels::kernel-export-direct-use::advance(row.channel.pid,row.tid,row.token,row.cancel?1:0)",
+    disposition: "kernel-control",
+    why: "One exact captured-token receipt step runs under a fresh canonical entry after channel/registration/request validation. Rust owns all input/results and fresh guest copyout; the packed scalar outcome conveys neither a kernel pointer nor cleanup authority on Pending/fault.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#drainOwnedGlQueryChannels::kernel-export-direct-use::release(row.channel.pid,row.tid,row.token)",
+    disposition: "kernel-control",
+    why: "Release uses only the exact completed token after original channel publication or abandonment. Rust refuses last-OFD-reference cleanup before effects and retains that request/pin; the call exposes no pointer or borrowed memory and cannot renew query execution.",
+  },
+  {
     key: "host/src/kernel.ts::WasmPosixKernel.init::kernel-export-direct-use::configureCursor(KMS_CURSOR_PROTOCOL_VERSION)",
     disposition: "kernel-control",
     why: "Startup negotiates the scalar cursor protocol 2 constant through the gated instance before publishing the initialized kernel. The call receives no pointer and exposes no memory view; cursor records use the entry-scoped scratch path instead.",

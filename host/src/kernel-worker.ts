@@ -1,4 +1,6 @@
 import { KMS_CURSOR_RECORD_BYTES } from "./dri/kms-cursor-protocol.js";
+import type { GlResultOwner } from "./webgl/owned-result.js";
+import { GLIO_QUERY } from "./webgl/ops.js";
 import { mergeChangedByteRuns } from "./shared-byte-runs";
 import { KmsCursorPlane } from "./dri/cursor-plane";
 import { scanoutFormat, snapshotScanout, scanoutRgba } from "./dri/scanout-format";
@@ -289,6 +291,9 @@ const kernelEntryIntrinsicDataViewSetBigInt64 =
   KernelEntryIntrinsicDataView.prototype.setBigInt64;
 const kernelEntryIntrinsicDataViewSetUint32 =
   KernelEntryIntrinsicDataView.prototype.setUint32;
+const kernelEntryIntrinsicDataViewGetUint32 = KernelEntryIntrinsicDataView.prototype.getUint32;
+const kernelEntryIntrinsicDataViewGetBigInt64 = KernelEntryIntrinsicDataView.prototype.getBigInt64;
+const kernelEntryIntrinsicDataViewGetBigUint64 = KernelEntryIntrinsicDataView.prototype.getBigUint64;
 const kernelEntryIntrinsicAtomics = Atomics;
 const kernelEntryIntrinsicAtomicsLoad = Atomics.load;
 const kernelEntryIntrinsicAtomicsStore = Atomics.store;
@@ -2390,6 +2395,9 @@ interface ThreadTransportStateTestResult {
 }
 
 interface CentralizedKernelWorkerTestAuthority {
+  beginOwnedGlQueryForTest(witness:ChannelInfo):bigint;
+  retryOwnedGlQueryForTest(witness:ChannelInfo,cancel?:boolean):void;
+  ownedGlQueryStateForTest(witness:ChannelInfo):Readonly<{token:bigint;terminal:number|null;published:boolean;dirty:boolean;preparationFailure:OwnedGlQueryChannel["preparationFailure"]}>|null;
   initializeKernelForTest(options: {
     readonly instance: WebAssembly.Instance;
     readonly gate: KernelEntryGate;
@@ -2525,6 +2533,25 @@ interface KernelWorkerEntryContext {
    */
   readonly invokeSerializedHostOperation:
     <T>(operation: () => T) => T;
+}
+
+interface OwnedGlQueryChannel {
+  readonly channel:ChannelInfo;
+  readonly registration:ProcessRegistration;
+  readonly arguments:readonly bigint[];
+  readonly flags:number;
+  readonly kernel:WasmPosixKernel;
+  readonly generation:number;
+  readonly tid:number;
+  token:bigint;
+  session:number;
+  owner:GlResultOwner|null;
+  preparationFailure:{kind:"owner"|"session";errno:number}|{kind:"exception"}|null;
+  cancel:boolean;
+  abandoned:boolean;
+  terminal:number|null;
+  published:boolean;
+  dirty:boolean;
 }
 
 const centralizedKernelWorkerTestCapability = {};
@@ -2923,6 +2950,8 @@ export class CentralizedKernelWorker {
   #glQueryDrainHandle: ReturnType<typeof setImmediate> | null = null;
   #glQueryBackendGeneration = 0;
   readonly #glQueryDrainIngress = {};
+  readonly #ownedGlQueries=new Map<ChannelInfo,OwnedGlQueryChannel>();
+  #ownedGlQueryCursor=0;
   /**
    * Maps a pthread syscall mailbox to its kernel/libc thread id.
    *
@@ -3405,6 +3434,7 @@ export class CentralizedKernelWorker {
     this.#promiseThen = Promise.prototype.then;
     this.#kernel = new WasmPosixKernel(config, io, {
       onGlQueryWork: () => this.#requestGlQueryDrain(),
+      onGlQueryWake:(pid,session,registration,token)=>this.#wakeOwnedGlQuery(pid,session,registration,token),
       // Process-lifecycle callbacks are handled by the kernel worker: the
       // kernel returns EAGAIN and JS performs the host-side action.
       getProcessMemory: (pid: number): WebAssembly.Memory | undefined => {
@@ -3678,6 +3708,27 @@ export class CentralizedKernelWorker {
 
   #createTestAuthority(): CentralizedKernelWorkerTestAuthority {
     const methods: CentralizedKernelWorkerTestAuthority = {
+      beginOwnedGlQueryForTest:(witness)=>{
+        let token=0n;
+        this.#runImmediateKernelEntry("private owned GL query admission",entry=>{
+          const channel=this.#registeredPendingMainChannelForCopybackTest(witness.pid,witness,"private owned GL query");
+          token=this.#beginOwnedGlQuery(channel,entry);
+          return undefined;
+        });
+        return token;
+      },
+      retryOwnedGlQueryForTest:(witness,cancel=false)=>{
+        this.#runImmediateKernelEntry("private owned GL query renewed work",()=>{
+          const row=this.#ownedGlQueries.get(witness);
+          if(!row)throw new Error("no exact owned GL query channel");
+          row.cancel ||= cancel;row.dirty=true;this.#requestGlQueryDrain();
+          return undefined;
+        });
+      },
+      ownedGlQueryStateForTest:(witness)=>{
+        const row=this.#ownedGlQueries.get(witness);
+        return row?Object.freeze({token:row.token,terminal:row.terminal,published:row.published,dirty:row.dirty,preparationFailure:row.preparationFailure}):null;
+      },
       initializeKernelForTest: (options: {
         readonly instance: WebAssembly.Instance;
         readonly gate: KernelEntryGate;
@@ -4924,7 +4975,10 @@ export class CentralizedKernelWorker {
         const wake = () => {
           if (generation === this.#glQueryBackendGeneration) this.#requestGlQueryDrain();
         };
-        kernel.mergeCallbacks({ onGlQueryWork: wake });
+        kernel.mergeCallbacks({ onGlQueryWork: wake,
+          onGlQueryWake:(pid,session,registration,token)=>{
+            if(generation===this.#glQueryBackendGeneration)this.#wakeOwnedGlQuery(pid,session,registration,token);
+          } });
         this.#kernel = kernel;
       },
       replaceTcpScratchForScratchBoundaryTest: (scratch): void => {
@@ -10065,6 +10119,8 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     entry: KernelWorkerEntryContext,
   ): void {
+    const query=this.#ownedGlQueries.get(channel);
+    if(query) {query.abandoned=true;query.cancel=true;query.dirty=true;this.#requestGlQueryDrain();}
     this.retireChannelListener(channel);
     const retrySnapshot = this.blockingRetrySnapshots.get(channel);
     if (retrySnapshot) {
@@ -10611,10 +10667,11 @@ export class CentralizedKernelWorker {
         this.#glQueryDrainHandle = null;
         this.#runScheduledListenerRoot("owned GL query turn", () => {
           if (!this.#initialized) return;
-          this.#runOrDeferKernelEntry("drain owned GL queries", () => {
+          this.#runOrDeferKernelEntry("drain owned GL queries", (entry) => {
             this.#glQueryDrainPending = false;
             this.#kernel.drainGlQueryControls(32);
-            if (this.#kernel.glQueryWorkRunnableAfterDrain()) {
+            this.#drainOwnedGlQueryChannels(entry,32);
+            if (this.#kernel.glQueryWorkRunnableAfterDrain() || [...this.#ownedGlQueries.values()].some(row=>row.dirty && row.generation===this.#glQueryBackendGeneration)) {
               this.#requestGlQueryDrain();
             }
             return undefined;
@@ -10626,6 +10683,126 @@ export class CentralizedKernelWorker {
         "owned GL query scheduling failed", cause,
       ));
     }
+  }
+
+  /** Private actual-channel driver. Public ioctl dispatch does not call this
+   * until lifecycle intent and final-OFD physical receivers are implemented. */
+  #beginOwnedGlQuery(channel:ChannelInfo,entry:KernelWorkerEntryContext):bigint {
+    if(!this.isRegisteredChannel(channel)||this.processes.get(channel.pid)?.memory!==channel.memory
+      ||kernelEntryIntrinsicApply(kernelEntryIntrinsicAtomicsLoad,kernelEntryIntrinsicAtomics,
+        [new KernelEntryIntrinsicInt32Array(kernelEntryMemoryBuffer(channel.memory),channel.channelOffset),CH_STATUS/KERNEL_ENTRY_I32_BYTES])!==CH_PENDING)
+      throw new Error("owned query requires exact pending registered channel");
+    if(this.#ownedGlQueries.has(channel)||this.#ownedGlQueries.size>=1024)throw new Error("owned query channel capacity/binding busy");
+    const view=new KernelEntryIntrinsicDataView(kernelEntryMemoryBuffer(channel.memory),channel.channelOffset);
+    const word=(offset:number)=>kernelEntryIntrinsicApply(kernelEntryIntrinsicDataViewGetBigInt64,view,[offset,true]) as bigint;
+    const syscall=kernelEntryIntrinsicApply(kernelEntryIntrinsicDataViewGetUint32,view,[CH_SYSCALL,true]) as number;
+    const fd=word(CH_ARGS),request=word(CH_ARGS+CH_ARG_SIZE);
+    const header=kernelEntryIntrinsicApply(kernelEntryIntrinsicDataViewGetBigUint64,view,[CH_ARGS+2*CH_ARG_SIZE,true]) as bigint;
+    if(syscall!==ABI_SYSCALLS.Ioctl || request!==BigInt(GLIO_QUERY) || fd<0n || fd>0x7fff_ffffn
+      || (this.processes.get(channel.pid)?.ptrWidth===4 && header>0xffff_ffffn))throw new TypeError("not an exact target-width GL query channel");
+    const exports=this.#kernelInstanceForEntry(entry).exports;
+    const capture=exports.kernel_gl_query_capture as ((pid:number,tid:number,fd:number,header:bigint)=>bigint)|undefined;
+    const session=exports.kernel_gl_query_session as ((pid:number,tid:number,token:bigint)=>bigint)|undefined;
+    if(!capture||!session||!exports.kernel_gl_query_advance||!exports.kernel_gl_query_release)throw new Error("kernel lacks private owned query interface");
+    // Reserve actual channel custody before Rust can publish a token. No view
+    // or caller callback is stored; the exact existing registration is held.
+    const args:bigint[]=[];
+    for(let index=0;index<6;index++)kernelEntryIntrinsicApply(kernelEntryIntrinsicArrayPush,args,[word(CH_ARGS+index*CH_ARG_SIZE)]);
+    kernelEntryIntrinsicObjectFreeze(args);
+    const flags=kernelEntryIntrinsicApply(kernelEntryIntrinsicDataViewGetUint32,view,[CH_REQUEST_FLAGS,true]) as number;
+    const row:OwnedGlQueryChannel={channel,registration:this.processes.get(channel.pid)!,arguments:args,flags,
+      kernel:this.#kernel,generation:this.#glQueryBackendGeneration,
+      tid:this.guestTidForChannel(channel),token:0n,session:0,owner:null,preparationFailure:null,cancel:false,abandoned:false,terminal:null,published:false,dirty:false};
+    this.#ownedGlQueries.set(channel,row);
+    this.#bindKernelTidForChannel(channel,entry);
+    const token=capture(channel.pid,row.tid,Number(fd),header);
+    if(typeof token!=="bigint"||token===0n||token< -4095n)throw new Error("invalid owned query capture status");
+    if(token<0n){this.#ownedGlQueries.delete(channel);return token;}
+    row.token=token;channel.handling=true;
+    try {
+      const source=session(channel.pid,row.tid,token);
+      if(source>0n&&source<=0xffff_ffffn) {
+        row.session=Number(source);
+        const prepared=entry.invokeSerializedHostOperation(()=>row.kernel.prepareGlQueryControlOwner(channel.pid,row.session));
+        if("error" in prepared)row.preparationFailure={kind:"owner",errno:prepared.error};
+        else row.owner=prepared.owner;
+      } else row.preparationFailure={kind:"session",errno:Number(-source)};
+      if(!row.owner)row.cancel=true;
+    } catch(error) {
+      // A failed setup after capture still owns an unsent Rust request/pin.
+      // Schedule cancellation before propagating; fatal gate failure keeps
+      // the same row contained rather than falsely acknowledging cleanup.
+      row.cancel=true;row.dirty=true;this.#requestGlQueryDrain();
+      row.preparationFailure={kind:"exception"};
+      if(isKernelExportFailure(error))throw error;
+    }
+    // Failed preparation can only cancel the still-unsent Rust receipt. The
+    // actual route is frozen BEFORE the first possibly uncertain Begin.
+    row.dirty=true;
+    // Capture returned already: this is a second sequential kernel call in
+    // the same entry, never reentry from an import. Actual work executes on a
+    // later turn, but native source/storage admission cannot be overtaken.
+    this.#drainOwnedGlQueryChannels(entry,1,row);
+    this.#requestGlQueryDrain();
+    return token;
+  }
+
+  #ownedGlQueryRequestCurrent(row:OwnedGlQueryChannel):boolean {
+    const channel=row.channel;
+    if(this.processes.get(channel.pid)!==row.registration || row.registration.memory!==channel.memory
+      ||!this.isRegisteredChannel(channel)||this.guestTidForChannel(channel)!==row.tid)return false;
+    const view=new KernelEntryIntrinsicDataView(kernelEntryMemoryBuffer(channel.memory),channel.channelOffset);
+    const read=(offset:number)=>kernelEntryIntrinsicApply(kernelEntryIntrinsicDataViewGetUint32,view,[offset,true]) as number;
+    if(read(CH_STATUS)!==CH_PENDING || read(CH_SYSCALL)!==ABI_SYSCALLS.Ioctl || read(CH_REQUEST_FLAGS)!==row.flags)return false;
+    for(let index=0;index<row.arguments.length;index++) {
+      if(row.arguments[index]!==kernelEntryIntrinsicApply(kernelEntryIntrinsicDataViewGetBigInt64,view,[CH_ARGS+index*CH_ARG_SIZE,true]))return false;
+    }
+    return true;
+  }
+
+  #wakeOwnedGlQuery(pid:number,session:number,registration:number,token:bigint):void {
+    for(const row of this.#ownedGlQueries.values()) {
+      if(row.generation!==this.#glQueryBackendGeneration||row.kernel!==this.#kernel||row.token!==token
+        ||row.channel.pid!==pid||row.session!==session||row.owner?.registration!==registration
+        ||!row.kernel.ownsGlQueryControlOwner(row.owner))continue;
+      row.dirty=true;this.#requestGlQueryDrain();
+    }
+  }
+
+  #drainOwnedGlQueryChannels(entry:KernelWorkerEntryContext,quota:number,initial?:OwnedGlQueryChannel):void {
+    const rows=initial?[initial]:[...this.#ownedGlQueries.values()];
+    if(!rows.length)return;
+    let visits=0;
+    for(let index=0;index<rows.length && visits<quota;index++) {
+      const row=rows[(this.#ownedGlQueryCursor+index)%rows.length]!;
+      if(!row.dirty||row.token<=0n||row.generation!==this.#glQueryBackendGeneration||row.kernel!==this.#kernel)continue;
+      row.dirty=false;visits++;
+      if(!this.#ownedGlQueryRequestCurrent(row)) {
+        row.abandoned=true;row.cancel=true;
+      }
+      const exports=this.#kernelInstanceForEntry(entry).exports;
+      if(row.terminal===null) {
+        const advance=exports.kernel_gl_query_advance as (pid:number,tid:number,token:bigint,cancel:number)=>bigint;
+        const value=advance(row.channel.pid,row.tid,row.token,row.cancel?1:0);
+        if(typeof value!=="bigint"||value<0n||value>0xffff_ffff_ffff_ffffn)throw new Error("invalid owned query advance status");
+        const phase=Number(value>>32n),errno=Number(value&0xffff_ffffn);
+        if(phase>4 || (phase!==0&&phase!==3&&errno!==0))throw new Error("malformed owned query disposition");
+        if(phase===4)row.dirty=true;
+        if(phase!==3)continue; // Refusal/fault/Pending retain actual custody.
+        row.terminal=errno;
+        if(row.abandoned)row.published=true;
+        else {
+          this.completeChannelRaw(row.channel,errno===0?0:-1,errno,entry);
+          continue; // Actual publication (including SIGCONT) schedules release.
+        }
+      }
+      if(!row.published)continue;
+      const release=exports.kernel_gl_query_release as (pid:number,tid:number,token:bigint)=>number;
+      const result=release(row.channel.pid,row.tid,row.token);
+      if(result===0)this.#ownedGlQueries.delete(row.channel);
+      // Last-pin EBUSY and other failures remain owned, without busy retry.
+    }
+    if(!initial)this.#ownedGlQueryCursor=(this.#ownedGlQueryCursor+Math.max(1,visits))%rows.length;
   }
 
   #registerImmediate(
@@ -14397,6 +14574,15 @@ export class CentralizedKernelWorker {
       );
     }
 
+    const ownedQuery=this.#ownedGlQueries.get(channel);
+    if(ownedQuery && ownedQuery.terminal!==null && !ownedQuery.published && !this.#ownedGlQueryRequestCurrent(ownedQuery)) {
+      // The result belongs to the frozen request, never a reused PENDING
+      // mailbox or replacement registration, even when Memory is identical.
+      ownedQuery.abandoned=true;ownedQuery.published=true;ownedQuery.dirty=true;
+      this.#requestGlQueryDrain();
+      return;
+    }
+
     channel.handling = false;
     const buffer = kernelEntryMemoryBuffer(channel.memory);
     const processView = new KernelEntryIntrinsicDataView(
@@ -14427,6 +14613,10 @@ export class CentralizedKernelWorker {
       kernelEntryIntrinsicAtomics,
       [i32View, statusIndex, CH_COMPLETE],
     );
+    const query=this.#ownedGlQueries.get(channel);
+    if(query && query.terminal!==null && !query.published) {
+      query.published=true;query.dirty=true;this.#requestGlQueryDrain();
+    }
     kernelEntryIntrinsicApply(
       kernelEntryIntrinsicAtomicsNotify,
       kernelEntryIntrinsicAtomics,

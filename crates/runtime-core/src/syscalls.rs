@@ -6777,6 +6777,28 @@ pub fn capture_retained_gl_query(
     retain_gl_query_request_inner(proc, locks, host, tid, request, true)
 }
 
+/// Private host entry: copy the actual guest header once without narrowing a
+/// wasm64 process address to the kernel's pointer width. No borrowed guest or
+/// kernel scratch view survives capture.
+pub fn capture_retained_gl_query_at(
+    proc: &mut Process, locks: &mut AdvisoryLockManager, host: &mut dyn HostIO,
+    tid: u32, fd: i32, header_address: u64,
+) -> Result<i64, Errno> {
+    if !proc.is_live_explicit_tid(tid) || proc.blocked_retries.bound_tid() != Some(tid)
+        || current_tid_for_process(proc) != tid { return Err(Errno::ESRCH); }
+    if proc.blocked_retries.has_binding_for_tid(tid) { return Err(Errno::EBUSY); }
+    let size = match proc.pointer_width { 4 => 24, 8 => 40, _ => return Err(Errno::EINVAL) };
+    if header_address == 0 || header_address.checked_add(size as u64).is_none()
+        || (proc.pointer_width == 4 && header_address + size as u64 > u32::MAX as u64 + 1) {
+        return Err(Errno::EFAULT);
+    }
+    let mut header = [0u8;40];
+    if host.proc_read_bytes(proc.pid as i32, header_address, &mut header[..size]) != 0 {
+        return Err(Errno::EFAULT);
+    }
+    capture_retained_gl_query(proc, locks, host, tid, fd, &header[..size])
+}
+
 fn retain_gl_query_request_inner(
     proc: &mut Process, locks: &mut AdvisoryLockManager, host: &mut dyn HostIO,
     tid: u32, mut request: crate::gl_query_request::GlQueryRequest, prepare_receipt: bool,
@@ -6884,6 +6906,45 @@ fn validate_retained_gl_query(proc: &Process, tid: u32, token: i64) -> Result<()
         || owner.exec_generation!=proc.exec_generation {return Err(Errno::EACCES);}
     if proc.ofd_table.get(owner.target.ofd_idx).is_none_or(|ofd| ofd.ofd_id!=owner.target.ofd_id) {return Err(Errno::EBADF);}
     Ok(())
+}
+
+/// Inspect immutable captured source authority; never resolve a caller fd or
+/// replacement current context. This is valid during same-generation cleanup.
+pub fn retained_gl_query_session(proc: &Process, tid: u32, token: i64) -> Result<u32, Errno> {
+    validate_retained_gl_query(proc, tid, token)?;
+    let binding=proc.blocked_retries.binding_for_token(token).ok_or(Errno::ENOENT)?;
+    let BlockingRetryTarget::GlQuery(request)=&binding.target else {unreachable!()};
+    Ok(request.owner().session_id)
+}
+
+pub fn retained_gl_query_retiring(proc: &Process, tid: u32, token: i64) -> Result<bool, Errno> {
+    validate_retained_gl_query(proc, tid, token)?;
+    let binding=proc.blocked_retries.binding_for_token(token).ok_or(Errno::ENOENT)?;
+    let BlockingRetryTarget::GlQuery(request)=&binding.target else {unreachable!()};
+    Ok(request.owned_retiring())
+}
+
+/// Private release after channel publication. This deliberately cannot consume
+/// the final DRI reference: final-device effects still lack an ACK-capable
+/// physical receiver. EBUSY retains the exact completed request and pin without
+/// issuing those void cleanup imports. Public parking must remain disabled.
+pub fn release_completed_gl_query(
+    proc: &mut Process, locks: &mut AdvisoryLockManager, host: &mut dyn HostIO,
+    tid: u32, token: i64,
+) -> Result<(), Errno> {
+    validate_retained_gl_query(proc, tid, token)?;
+    let binding=proc.blocked_retries.binding_for_token(token).ok_or(Errno::ENOENT)?;
+    let BlockingRetryTarget::GlQuery(request)=&binding.target else {unreachable!()};
+    if request.owned_completion().is_none() { return Err(Errno::EBUSY); }
+    let ofd=proc.ofd_table.get(request.owner().target.ofd_idx).ok_or(Errno::EBADF)?;
+    if ofd.ref_count <= 1 || ofd.exec_close_quarantined { return Err(Errno::EBUSY); }
+    let index=request.owner().target.ofd_idx;
+    let binding=proc.blocked_retries.take_exact(tid, token)?;
+    drop(binding);
+    // Nonfinal DRI release runs normal reference accounting only. Do not
+    // couple this terminal token consumption to unrelated deferred SCM_RIGHTS
+    // cleanup callbacks that could fail after the query pin was released.
+    release_ofd_reference_impl(proc,Some(locks),host,index)
 }
 
 /// Callable internal receipt engine, deliberately absent from syscall72 and
@@ -58833,6 +58894,54 @@ impl HostIO for RelSymlinkMock {
             unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr().cast(), info); }
             bytes
         }
+    }
+
+    #[test]
+    fn retained_query_guest_header_capture_and_completed_pin_release_are_exact() {
+        use crate::gl_query_request::GlQueryProgress as P;
+        for width in [4,8] {
+            let (mut table,mut host,pid,fd)=gl_query_bridge_fixture(width);
+            let header=gl_query_bridge_header(width,wasm_posix_shared::gl::QOP_GET_STRING,64,12);
+            host.proc_memory[4096..4096+header.len()].copy_from_slice(&header);
+            let (proc,locks)=table.process_and_advisory_locks(pid).unwrap();
+            let target=stable_ofd_target(proc,fd).unwrap();
+            assert_eq!(capture_retained_gl_query_at(proc,locks,&mut host,pid,fd,0x1_0000_1000),Err(Errno::EFAULT));
+            assert_eq!(proc.blocked_retries.binding_count(),0);
+            let token=capture_retained_gl_query_at(proc,locks,&mut host,pid,fd,4096).unwrap();
+            let session=retained_gl_query_session(proc,pid,token).unwrap();
+            assert_ne!(session,0);
+            host.proc_memory[4096..4096+header.len()].fill(0xff);
+            assert_eq!(release_completed_gl_query(proc,locks,&mut host,pid,token),Err(Errno::EBUSY));
+            assert_eq!(cancel_retained_gl_query(proc,&mut host,pid,token),Ok(P::Complete(Err(Errno::EINTR))));
+            assert!(host.gl_control_calls.is_empty());
+            assert_eq!(retained_gl_query_session(proc,pid,token),Ok(session));
+            release_completed_gl_query(proc,locks,&mut host,pid,token).unwrap();
+            assert_eq!(proc.blocked_retries.binding_count(),0);
+            assert_eq!(proc.ofd_table.get(target.ofd_idx).unwrap().ref_count,1);
+            assert!(host.gl_unbind_sessions.is_empty());
+        }
+    }
+
+    #[test]
+    fn retained_query_last_pin_after_fd_close_reuse_cannot_discard_device_cleanup() {
+        use crate::gl_query_request::GlQueryProgress as P;
+        let (mut table,mut host,pid,fd)=gl_query_bridge_fixture(4);
+        let header=gl_query_bridge_header(4,wasm_posix_shared::gl::QOP_GET_STRING,64,12);
+        let (proc,locks)=table.process_and_advisory_locks(pid).unwrap();
+        let target=stable_ofd_target(proc,fd).unwrap();
+        let token=capture_retained_gl_query(proc,locks,&mut host,pid,fd,&header).unwrap();
+        let session=retained_gl_query_session(proc,pid,token).unwrap();
+        sys_close_with_locks(proc,locks,&mut host,fd).unwrap();
+        assert_eq!(sys_open(proc,&mut host,b"/dev/null",O_RDWR,0).unwrap(),fd);
+        assert_eq!(cancel_retained_gl_query(proc,&mut host,pid,token),Ok(P::Complete(Err(Errno::EINTR))));
+        for _ in 0..3 {
+            assert_eq!(release_completed_gl_query(proc,locks,&mut host,pid,token),Err(Errno::EBUSY));
+            assert_eq!(proc.blocked_retries.binding_count(),1);
+            assert_eq!(retained_gl_query_session(proc,pid,token),Ok(session));
+            assert_eq!(proc.ofd_table.get(target.ofd_idx).unwrap().ofd_id,target.ofd_id);
+            assert_eq!(proc.ofd_table.get(target.ofd_idx).unwrap().ref_count,1);
+        }
+        assert!(host.gl_control_calls.is_empty());assert!(host.gl_unbind_sessions.is_empty());
     }
 
     #[test]

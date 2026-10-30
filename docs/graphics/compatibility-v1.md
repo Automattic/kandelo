@@ -10508,3 +10508,100 @@ No export/import, shared layout, generated ABI output, sentinel, control wire
 or ABI epoch changed. Program56 / host3 / GL17 / fork21 remain fixed. No normal
 SDK/package/image/kernel product, full Rust suite, application browser,
 browser-memory or POSIX conformance run was performed by this increment.
+
+### Private actual-kernel owned-query channel bridge (2026-10-30)
+
+The private shared Node/browser worker now connects the real Rust capture and
+receipt engine to an exact registered syscall channel and the existing native
+or forwarded control router. Public syscall72 dispatch, its retry classifier,
+generic ioctl snapshots and public asynchronous query activation remain
+unchanged. A positive private capture token means retained intent custody,
+never query success. The private fixture executes an actual compiler-produced
+kernel Wasm; it does not establish normal SDK/image or browser acceptance.
+
+Four indefinitely optional kernel exports are additive under the existing
+program56 / host3 / GL17 / fork21 family:
+
+- `kernel_gl_query_capture(pid, tid, fd, guest_header:u64) -> i64` consumes
+  the exact one-shot task binding and reads the target-width guest header
+  through actual process-memory authority. A wasm32 kernel does not truncate
+  a wasm64 guest header address. Capture returns a positive token or negative
+  errno before native admission.
+- `kernel_gl_query_session(pid, tid, token:i64) -> i64` inspects immutable
+  captured source authority, including same-generation cleanup; it never
+  resolves a replacement fd/header/current context.
+- `kernel_gl_query_advance(pid, tid, token:i64, cancel:u32) -> i64` performs
+  one nonblocking control step. High32 dispositions are rejection0,
+  PendingOwned1, ProtocolFaultOwned2, Complete3 and newly runnable retirement4;
+  low32 is positive errno or zero. Disposition4 belongs only to the fresh
+  transition preparing the first Commit/Cancel, including Begin returning
+  Ready. A repeated Retiring state or failed control cannot mint another
+  runnable turn. Copyout and strict Retired/Forget handling remain solely in
+  the existing Rust engine.
+- `kernel_gl_query_release(pid, tid, token:i64) -> i32` releases a completed
+  query pin only while another reference to that exact OFD remains. **A
+  last-reference release returns EBUSY and retains the request, token, OFD and
+  original host registration without final-device effects. An ACK-capable
+  final-OFD physical-effects receiver is still missing.** This is an ordinary
+  incomplete lifecycle dependency and a blocker for public parking, not a
+  supported indefinite wait or a platform boundary.
+
+Before first Begin, the worker retains the exact ProcessRegistration object,
+ChannelInfo, memory identity, task, original six mailbox argument words and
+request flags, Rust token/session, backend generation and actual host owner
+registration. First native admission runs sequentially after capture returns
+inside the original gate; storage capture precedes later current/retirement
+operations. Later notifications contain scalars only and must match that exact
+owner/session/token/generation. Pending/fault/failed-cleanup observations never
+self-poll. Actual renewed work and fresh retirement transitions receive bounded
+fair later turns; no import/message callback re-enters Rust.
+
+The driver validates the original registration and pending request before
+advance and actual mailbox publication. A reused or altered mailbox receives
+no old completion. Postcapture preparation failures retain scalar cause
+classification and schedule unsent cancellation; branded kernel failures keep
+fatal containment and actual custody. The temporary private cancellation
+result is not a future public mapping of every preparation error to EINTR.
+Ready remains unpublished candidate state until actual Rust fresh copyout and
+Commit. Channel completion waits for strict native retirement, and pin release
+waits for the original mailbox publication (including stopped-task deferral).
+
+Focused evidence is recorded in `.context/graphics-current-conformance`:
+
+| Check | Result | Private log |
+| --- | --- | --- |
+| Actual focused kernel Wasm build | passed | `owned-channel-kernel-build.log` |
+| Canonical ABI generation from that Wasm | four additive optional exports only | `owned-channel-abi-update.log` |
+| Existing plus new retained Rust controls, final release implementation | 16 passed | `owned-channel-rust-final.log` |
+| Actual kernel/import/native-candidate/channel controls, rebuilt final kernel | 14 passed | `owned-channel-actual-kernel-release.log` |
+| Complete graphics source gate | 1046 passed, 44 files, no skips | `owned-channel-graphics.log` |
+| Strict shared worker and complete actual-kernel fixture types | passed | `owned-channel-types-release.log` |
+| Canonical host JavaScript/declarations | passed | `owned-channel-host-build.log` |
+| Exact test evidence registry | 645 files agree | `owned-channel-evidence-release.log` |
+| Full runtime ownership and entry-context audits | 120 passed; complete graph 103.8s, unchanged 180s watchdog | `owned-channel-audits-final.log` |
+| Kernel lifecycle/source and pointer contracts | 45 + 4 passed | `owned-channel-kernel-tests.log` |
+| Canonical built-Wasm ABI check | passed | `owned-channel-abi-check.log` |
+| Initial-WIP channel/memory-only predicate before stronger request identity | two executed controls fail on old completion into reused mailbox | `owned-channel-mailbox-before.log` |
+
+The prepared-product fixture defaults to the normal binary resolver. This
+focused run explicitly selects the actual local compiler output through
+`KANDELO_TEST_OWNED_QUERY_KERNEL_WASM` at
+`target/wasm32-unknown-unknown/release/kandelo_kernel.wasm`; it uses no manually
+copied normal artifacts. It exercises both guest pointer widths, high64 header refusal
+without narrowing, lost Begin/Commit replies, actual fresh-copyout EFAULT,
+mailbox replacement and final-ACK races, preparation exceptions, retained
+source context, exact and foreign scalar wakes, first retirement after an
+already-Ready Begin, failed-cleanup no-spin, and a real kernel-created peer
+thread closing/reusing the original fd while the last query pin stays held.
+The already-Ready edge uses the actual retained native candidate/store and
+forces its head ready before returning Begin, rather than fabricating reply
+success or cleanup acknowledgement.
+
+Still open: the ACK-capable final-OFD physical receiver above; full lifecycle
+intent scheduling and old-memory teardown; actual kernel-to-forwarded-renderer
+combined delivery; public typed admission/error and cancellation publication;
+all unsupported mutating query candidate families; public EGL server waits and
+the remaining baseline inventory. Normal SDK/package/image products, full
+Rust/POSIX/CTS, real Node/browser consumer, browser-memory and performance
+acceptance remain integration requirements. This increment runs none of those
+normal consumer suites and makes no performance or rendering claim.

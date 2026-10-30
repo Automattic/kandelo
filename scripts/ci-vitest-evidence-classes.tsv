@@ -220,6 +220,7 @@ host/test/kernel-ipc-shmat-entry.test.ts	source-only
 host/test/kernel-large-transfer-protocol.test.ts	source-only
 host/test/kernel-late-channel.test.ts	prepared-product
 host/test/kernel-network-cleanup-entry.test.ts	source-only
+host/test/kernel-owned-query-channel.test.ts	prepared-product
 host/test/kernel-process-registration-entry.test.ts	source-only
 host/test/kernel-public-entry-roots.test.ts	source-only
 host/test/kernel-public-scratch.test.ts	source-only

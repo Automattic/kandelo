@@ -7905,6 +7905,74 @@ pub extern "C" fn kernel_set_current_tid(pid: u32, tid: u32) -> i32 {
     }
 }
 
+/// Private owned-query admission; not syscall72 dispatch or public parking.
+/// The guest header is a full-width guest address, never kernel scratch. The
+/// exact one-shot task binding is consumed on every normal return.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_gl_query_capture(pid: u32, tid: u32, fd: i32, guest_header: u64) -> i64 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let result = (|| {
+        if !table.has_current_tid_binding(pid) || table.current_tid() != tid {
+            return Err(Errno::ESRCH);
+        }
+        let (proc,locks)=table.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
+        syscalls::capture_retained_gl_query_at(proc,locks,&mut WasmHostIO,tid,fd,guest_header)
+    })();
+    table.clear_current_tid_binding();
+    result.unwrap_or_else(|error| -(error as i64))
+}
+
+/// Immutable session of the exact captured token, including during cleanup.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_gl_query_session(pid: u32, tid: u32, token: i64) -> i64 {
+    let _gkl=GklGuard::acquire();
+    let table=unsafe { &*PROCESS_TABLE.0.get() };
+    table.get(pid).ok_or(Errno::ESRCH)
+        .and_then(|proc|syscalls::retained_gl_query_session(proc,tid,token))
+        .map(i64::from).unwrap_or_else(|error|-(error as i64))
+}
+
+/// One nonblocking private step. High32: 0 rejection, 1 pending-owned,
+/// 2 protocol-fault-owned, 3 complete, 4 newly runnable retirement control.
+/// Low32: positive errno, otherwise zero.
+/// No pending/fault observation releases custody or authorizes channel success.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_gl_query_advance(pid: u32, tid: u32, token: i64, cancel: u32) -> i64 {
+    use crate::gl_query_request::GlQueryProgress as P;
+    let _gkl=GklGuard::acquire();
+    let table=unsafe { &mut *PROCESS_TABLE.0.get() };
+    let result=(|| {
+        if cancel>1 {return Err(Errno::EINVAL);}
+        let proc=table.get_mut(pid).ok_or(Errno::ESRCH)?;
+        let was_retiring=syscalls::retained_gl_query_retiring(proc,tid,token)?;
+        let progress=if cancel==1 {syscalls::cancel_retained_gl_query(proc,&mut WasmHostIO,tid,token)?}
+        else {syscalls::step_retained_gl_query(proc,&mut WasmHostIO,tid,token)?};
+        let runnable=cancel==0 && !was_retiring && syscalls::retained_gl_query_retiring(proc,tid,token)?;
+        Ok((progress,runnable))
+    })();
+    let (phase,error)=match result {
+        Err(error)=>(0u32,error as u32),
+        Ok((P::PendingOwned,true))=>(4,0),
+        Ok((P::PendingOwned,false))=>(1,0),
+        Ok((P::ProtocolFaultOwned,_))=>(2,0),
+        Ok((P::Complete(outcome),_))=>(3,outcome.err().map_or(0,|error|error as u32)),
+    };
+    ((u64::from(phase)<<32)|u64::from(error)) as i64
+}
+
+/// Release only a completed query pin with another live OFD reference.
+/// Last-reference EBUSY deliberately retains token/request/OFD: an acknowledged
+/// final-device effects receiver remains required before public activation.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_gl_query_release(pid: u32, tid: u32, token: i64) -> i32 {
+    let _gkl=GklGuard::acquire();
+    let table=unsafe { &mut *PROCESS_TABLE.0.get() };
+    table.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)
+        .and_then(|(proc,locks)|syscalls::release_completed_gl_query(proc,locks,&mut WasmHostIO,tid,token))
+        .map_or_else(|error|-(error as i32),|()|0)
+}
+
 /// Return the retry authority created by the task's first blocking result.
 ///
 /// The syscall number is normalized to its scalar execution family, so a

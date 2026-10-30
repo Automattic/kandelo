@@ -184,6 +184,17 @@ fn receipt_codec_errno(error: wire::CodecError) -> Errno {
 }
 
 impl GlQueryRequest {
+    pub(crate) fn owned_completion(&self) -> Option<Result<(), Errno>> {
+        match self.receipt.as_ref()?.phase {
+            ReceiptPhase::Done(outcome) => Some(outcome),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn owned_retiring(&self) -> bool {
+        self.receipt.as_ref().is_some_and(|receipt| matches!(receipt.phase,ReceiptPhase::Retiring {..}))
+    }
+
     /// True until a validated terminal ACK proves actual cleanup. This includes
     /// an uncertain Begin return: a transport error cannot revoke admission.
     pub fn owns_external_receipt(&self) -> bool {

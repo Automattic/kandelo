@@ -9,6 +9,9 @@
  * `OP_VERSION` newer than its supported table with `ENOSYS`.
  */
 
+/** Private driver selection mirrors shared::gl::GLIO_QUERY. */
+export const GLIO_QUERY = 0x49;
+
 // --- cmdbuf opcodes (TLV: u16 op, u16 payload_len, payload) ----------------
 
 export const OP_CLEAR                       = 0x0001;
