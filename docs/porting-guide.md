@@ -1237,8 +1237,9 @@ coverage, or describe these limits as unavoidable Wasm boundaries.
 The `gobject-callback-tests` package and
 `host/test/gobject-callback-contract.test.ts` provide a durable CPU gate:
 fifty separate-unit argument/return/source cases plus ten pinned upstream
-GObject targets. Build with `./run.sh build gobject-callback-tests` before
-running the host test in the declared dev shell. Missing artifacts fail.
+GObject targets. Build through the normal resolver using the commands in
+`packages/registry/gobject-callback-tests/README.md` before running the
+host test in the declared dev shell. Missing artifacts fail.
 The focused diagnostic matrix passes with the shared repairs, but the
 new normal package's combined build/run remains pending. Upstream
 generic-marshaller and all-types cases already reproduce accepted

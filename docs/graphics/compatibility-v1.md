@@ -9474,3 +9474,35 @@ identities. Its immutable experimental preview is served on local port
 bounds and responsiveness remain unvalidated. This cohort includes the
 cursor repairs and GTK6's known later SFWBar crash. Older previews remain
 unchanged.
+
+### Desktop feedback and immediate landing order (2026-10-30)
+
+User feedback on the b43 preview reports a missing numbered Sway workspace
+bar and slow cursor/rendering in all three desktops, especially Cage.
+The supplied 8.185-second recording shows Cage at 2818 by 1584, with the
+display's last-frame statistic around 370,000 microseconds. This is a
+reported symptom, not a controlled performance comparison or proof that
+resolution alone causes the delay. After SFWBar integration, the next
+priority is profiling and repairing the rendering/input path in a quiet
+validation window. No broader libffi replacement is added to that immediate
+desktop landing prerequisite.
+
+The SFWBar Sway integration replaces the built-in bar, while its initial
+common layout omitted a workspace pager. The source now includes the
+native unpinned pager, using real Sway IPC workspace state and native
+activation. Labwc can use its actual ext-workspace names. SFWBar revision
+four invalidates the configuration output; no synthetic workspace state
+is added. The known GTK startup failure still prevents this panel from
+appearing in the immutable b43 preview. Rebuilt menu/workspace/input and
+lifecycle acceptance remain pending.
+
+A separate headless Chromium 153.0.8010.12 geometry observation at b43
+passes six cases across Cage/Sway/Labwc at DPR1/2: real cursor silhouettes
+measure 18 by 22 and 36 by 44 device pixels respectively, or 18 by 22 CSS
+pixels at both scales. All six normal compositor exits release master.
+Normal mode/resize observations are 1280 by 720 and 2560 by 1440. Later
+DPR1 captures show actual rendered shells and text beams; their partial
+refinement hits a private terminal selector error and is not a six-case
+pass. Protocol ownership, client buffer scale, DPR2 client refinement,
+hotspots, browser-memory and responsiveness remain unvalidated. Evidence
+is `.context/cursor-preview-acceptance/HANDOFF.md` and retained screenshots.

@@ -61,3 +61,10 @@ Normal package and image builds, Node sessions, real headless Chromium,
 Firefox and WebKit menu/launch/focus/close checks, and repeated memory
 switching remain validation gates. No payload, memory or performance
 measurement is claimed yet.
+
+The common panel includes a native workspace pager. Sway supplies its real
+numbered workspaces through IPC; clicking uses its ordinary workspace
+activation command. Labwc supplies its configured workspace names through
+the existing ext-workspace protocol. No synthetic workspace pins or focus
+state are supplied. The normal rebuilt panel and workspace click round trip
+remain required consumer checks.

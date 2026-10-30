@@ -1,6 +1,15 @@
 # Shared GObject callback ABI gate
 
-Build through the normal package graph: `./run.sh build gobject-callback-tests`.
+Build through the declared resolver in the dev shell:
+
+```sh
+cargo xtask build-deps --source-only --arch wasm32 \
+  --binaries-dir "$PWD/local-binaries" resolve gobject-callback-tests
+```
+
+This publishes a claimed local generation through the normal resolver.
+`./run.sh local-build --all` also includes this test-support package in
+the complete SourceOnly projection; it is not a `run.sh build` target.
 Run `scripts/dev-shell.sh bash -c 'cd host && npx vitest run test/gobject-callback-contract.test.ts'`.
 Missing normal artifacts fail; no skip-if-missing or private header/library
 replacement. This is a wasm32 CPU gate, not browser/compositor acceptance.
