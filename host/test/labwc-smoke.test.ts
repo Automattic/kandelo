@@ -62,7 +62,7 @@ describe("labwc — real decorated floating sessions", () => {
       onStderr: (_pid, data) => { stderr += new TextDecoder().decode(data); },
     });
     const dump = () => `${stdout}\n--- stderr ---\n${stderr}`;
-    const event = (device: number, type: number, code: number, value: number) => {
+    const event = (device: 0 | 1, type: number, code: number, value: number) => {
       host.injectInputEvent(device, type, code, value);
       host.injectInputEvent(device, 0, 0, 0);
     };
