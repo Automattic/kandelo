@@ -9895,3 +9895,33 @@ wire/ABI change, forwarded uniform admission or kernel copyout integration is
 activated. Copyout cancellation is modeled with receipt Cancel; actual kernel
 fault/lost-delivery integration, normal artifacts, real browsers, CTS,
 browser-memory and POSIX validation remain required on the combined tree.
+
+### Combined registry, rollback and native uniform checkpoint (2026-10-29)
+
+At `70c8d7f865`, the combined follow-up includes generic signal retirement
+ordering, actual kernel-held lifecycle intents, retryable shader/program
+rollback, optional owned forwarding and native uniform candidate adoption.
+Declared-shell canonical host JavaScript/declaration build passes. The
+complete graphics source gate passes 993/993 in 42 files with zero skips;
+the evidence registry agrees on 642 files. Full Rust workspace validation
+excluding the separately completed xtask passes 3,425 cases in 98 result
+groups, with zero failed or ignored. Actual Wasm32 kernel compilation,
+normal ABI regeneration/checking and all 170 ownership/entry audit cases
+pass. Audit deadlines are unchanged. Generated outputs are unchanged.
+
+The foreground driver exits zero. Source-owned and generated-output guards
+both produce empty diffs; only the two pre-existing external fixture paths
+are excluded from the source-owned guard. User fixture and `.serena/` state
+remain preserved. Logs have the `.context/graphics-registry-combined-`
+prefix: `host`, `source`, `registry`, `rust`, `wasm`, `abi-update`,
+`abi-check`, `audit`, `source-diff` and `generated-diff`.
+
+This validates the integrated source checkpoint, not normal guest rendering
+of the remaining baseline. Program ABI 56 / host 3 / GL 17 / fork 21 remain
+fixed. Current landing `0b0b69b196` separately passes the untraced 25-case
+Node selection and six three-engine rendered compositor sessions above.
+Its full normal products, gallery, browser-memory and conformance stage
+remains queued behind the existing normal artifact writer. Public
+asynchronous query activation, remaining mutation families, worker/lifecycle
+receivers, server waits and the rest of the baseline inventory remain
+ordinary implementation and validation work.
