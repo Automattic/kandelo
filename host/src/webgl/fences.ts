@@ -19,8 +19,16 @@ type Fence = {
 export class GlFenceCandidate {
   constructor(private store: GlFenceOwner, private fence: Fence) {}
   get token(): number { return this.fence.token; }
+  get context(): WebGL2RenderingContext { return this.fence.owner.gl!; }
   publish(): boolean { return this.store.publish(this.fence); }
   cancel(): void { this.store.cancel(this.fence); }
+  /** A deferred result retains this candidate until native deletion completes.
+   * Its caller captures the selected renderer's errors before retrying. */
+  cancelRetirement(): boolean {
+    if (this.fence.published) return true;
+    this.store.cancel(this.fence);
+    return retireNativeRetirement(this.fence.retirement);
+  }
 }
 
 /** A waiter owns this lease independently of the public handle and creator.

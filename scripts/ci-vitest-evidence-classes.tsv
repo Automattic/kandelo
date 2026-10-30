@@ -487,6 +487,7 @@ host/test/webgl-main-forward.test.ts	source-only
 host/test/webgl-muxer.test.ts	source-only
 host/test/webgl-op-contract.test.ts	source-only
 host/test/webgl-operation-stream.test.ts	source-only
+host/test/webgl-owned-result.test.ts	source-only
 host/test/webgl-present-target.test.ts	source-only
 host/test/webgl-program-link.test.ts	source-only
 host/test/webgl-registry.test.ts	source-only

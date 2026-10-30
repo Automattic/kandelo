@@ -32,6 +32,7 @@ export class GlSubmitExecution {
   private readonly sessionId: number;
   private muxer: WeakRef<GlMuxer>;
   admitted = false;
+  get context(): WebGL2RenderingContext | null { return this.contextLease?.context ?? null; }
 
   private constructor(readonly binding: GlBinding, muxer: GlMuxer) {
     this.muxer = new WeakRef(muxer);
