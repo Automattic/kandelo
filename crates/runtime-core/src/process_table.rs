@@ -3067,6 +3067,24 @@ mod wait_tests {
     }
 
     #[test]
+    fn limbo_leader_reports_no_host_timers_to_take() {
+        let mut table = ProcessTable::new();
+        assert_eq!(table.create_process().unwrap(), 100);
+        assert_eq!(table.fork_process_for_caller(100, 100).unwrap(), 101);
+        assert_eq!(table.fork_process_for_caller(100, 100).unwrap(), 102);
+        table.processes.get_mut(&101).unwrap().pgid = 101;
+        table.processes.get_mut(&102).unwrap().pgid = 101;
+        table.processes.get_mut(&101).unwrap().state = ProcessState::Exited;
+
+        table.reap_process(101).expect("reap group leader");
+
+        assert_eq!(
+            table.get_mut(101).unwrap().take_host_timer_cleanup(1),
+            Err(Errno::ESRCH),
+        );
+    }
+
+    #[test]
     fn remove_process_does_not_create_limbo_record() {
         let mut table = ProcessTable::new();
         assert_eq!(table.create_process().unwrap(), 100);

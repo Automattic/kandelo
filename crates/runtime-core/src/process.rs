@@ -1927,10 +1927,16 @@ impl Process {
     /// alarm or POSIX timer remains attached to this process. Build the exact
     /// batch before mutating either side so allocation or ID conversion failure
     /// cannot leave a partially drained cleanup transaction.
+    ///
+    /// A reaped group leader's limbo record is not the process: its timers
+    /// ended with the reaped process, so it reports ESRCH like an absent pid.
     pub fn take_host_timer_cleanup(
         &mut self,
         max_posix_timer_ids: usize,
     ) -> Result<HostTimerCleanup, Errno> {
+        if self.state == ProcessState::Limbo {
+            return Err(Errno::ESRCH);
+        }
         let timer_count = self
             .posix_timers
             .iter()
