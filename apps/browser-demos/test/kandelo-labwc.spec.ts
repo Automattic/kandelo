@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { gotoMachine } from "./support/kandelo-machine";
+import { typePhysicalText } from "./support/physical-typing";
 import { footFrame, menuChange, type Frame } from "./support/labwc-frame";
 
 // These real-rendering checks must never claim the user's desktop focus.
@@ -68,8 +69,15 @@ test("Kandelo labwc moves decorated foot windows, changes focus and exits cleanl
   let first: Frame;
   await expect.poll(async () => {
     first = await footFrame(page);
-    return first.foot !== null && first.ink > 200;
+    return first.foot !== null;
   }, { timeout: 180_000, intervals: [1_000] }).toBe(true);
+  // The initial prompt is short. Require executed, rendered output instead
+  // of assuming it occupies an arbitrary number of white pixels.
+  await typePhysicalText(page, "printf '\\033[41mLABWC_RENDERED_READY\\033[0m\\n'\n", { delay: 40 });
+  await expect.poll(async () => {
+    const frame = await footFrame(page);
+    return frame.ink > 200 && frame.red > 200;
+  }, { timeout: 60_000 }).toBe(true);
   first = await footFrame(page);
   const bounds = first.foot!;
   // A floating client leaves root visible; this must not be a fullscreen
@@ -78,7 +86,7 @@ test("Kandelo labwc moves decorated foot windows, changes focus and exits cleanl
   expect(bounds.height).toBeLessThan(first.height - 20);
   expect(bounds.y).toBeGreaterThan(12);
   await footProcesses(page, 1);
-  await page.keyboard.type("mark=first\n", { delay: 40 });
+  await typePhysicalText(page, "mark=first\n", { delay: 40 });
 
   // Drag the server-side title, above the client background. The renderer
   // must move the same-sized client, exposing root at its original position.
@@ -125,11 +133,11 @@ test("Kandelo labwc moves decorated foot windows, changes focus and exits cleanl
   // focus change reached the intended PTY, not only a repaint or key echo.
   await page.keyboard.press("Control+Enter");
   await footProcesses(page, 2);
-  await page.keyboard.type("mark=second\n", { delay: 40 });
+  await typePhysicalText(page, "mark=second\n", { delay: 40 });
   await page.keyboard.press("Alt+Tab");
-  await page.keyboard.type("echo FIRST:$mark > /tmp/labwc-first\n", { delay: 40 });
+  await typePhysicalText(page, "echo FIRST:$mark > /tmp/labwc-first\n", { delay: 40 });
   await page.keyboard.press("Alt+Tab");
-  await page.keyboard.type("echo SECOND:$mark > /tmp/labwc-second\n", { delay: 40 });
+  await typePhysicalText(page, "echo SECOND:$mark > /tmp/labwc-second\n", { delay: 40 });
   await page.keyboard.press("Control+Shift+E");
 
   // Observe real display release and automatic return to the launching shell.
@@ -138,7 +146,7 @@ test("Kandelo labwc moves decorated foot windows, changes focus and exits cleanl
   await expect(page.getByLabel("Computer views").getByRole("button", { name: "Terminal", exact: true }))
     .toHaveAttribute("aria-current", "true", { timeout: 60_000 });
   await page.locator(".xterm").first().click();
-  await page.keyboard.type("echo labwc-exit=$?; cat /tmp/labwc-first /tmp/labwc-second\n", { delay: 40 });
+  await typePhysicalText(page, "echo labwc-exit=$?; cat /tmp/labwc-first /tmp/labwc-second\n", { delay: 40 });
   await expect.poll(() => terminalText(page), { timeout: 30_000 }).toMatch(/labwc-exit=0/);
   await expect.poll(() => terminalText(page), { timeout: 30_000 }).toContain("FIRST:first");
   await expect.poll(() => terminalText(page), { timeout: 30_000 }).toContain("SECOND:second");

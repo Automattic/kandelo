@@ -8376,3 +8376,26 @@ The existing browser spec replaces its fixed 16-pixel bar crop with the
 actual painted bar boundary and adds explicit 1x/2x small-pane cases.
 Normal artifact and combined runtime validation remain integration gates.
 Program 56 / host 3 / GL 17 / fork 21 remain fixed.
+
+### Desktop validation checkpoint (2026-10-30)
+
+The normal labwc shell/image and host build at `03ecd82c2e` completed:
+`labwc-products-1030-001314-959b` passed all 162 build nodes; the canonical
+rootfs build `labwc-canonical-rootfs-1030-003056-c4f5` also passed. The first
+actual headless Chromium desktop case, `labwc-rendered-chromium-1030-003540-ecc7`,
+failed its initial white-pixel threshold. Its retained screenshot shows a
+real decorated foot window and short shell prompt. That is evidence of
+initial paint, not completed menu, input, focus or teardown validation.
+The test now requires executed ANSI-coloured terminal output, and sends
+physical Shift transitions through the shared input helper. The same
+physical typing repair applies to raw evdev commands in the repeated
+memory switch case; its existing memory budgets and cycle counts remain.
+These revised desktop and memory cases still require execution.
+
+A separate headless normal Sway session at `0b0b69b196` reproduced the
+reported ScummVM graphics-mode failure. Actual captured guest stderr
+contains `Could not load any graphics mode`; ScummVM nevertheless exits
+zero, so exit status alone cannot establish a repaired launch. Evidence:
+`.context/gbm-fork-aliases/.context/scummvm-sway-reproduction.txt` and
+`.png`. The shared EGL native display/window lifetime repair is being
+validated separately; no ScummVM-specific bypass is used.
