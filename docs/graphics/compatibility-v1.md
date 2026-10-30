@@ -9896,3 +9896,47 @@ Evidence lives in
 reverse-dependency/image build is still running. Actual SFWBar browser
 acceptance and performance measurement remain pending; this CPU gate
 proves the property-binding repair, not compositor or speed claims.
+
+
+### Normal notifier preview and later input failure (2026-10-30)
+
+Normal producer `preview5663-86dbd4708b-build-1030-162558-fac8`
+finishes0 in41m00s at86db. The complete desktop/image/host graph,
+normal wasm32/wasm64 SDKs, freshness and selected-kernel ABI checks pass.
+All93 owners/245 members are captured through the normal collector;
+owner manifest SHA256 is
+`32a90a516cb923aaa3d3b4adf3e10c0aab613c830c66f7e1b531f0da7d4e9cc9`.
+The actual fixture and desktop closures share the same four core library
+dependency identities. Immutable preview5663 is available before full
+browser acceptance. It includes the notifier repair, not a newly measured
+performance improvement.
+
+Headless Chromium consumer
+`preview5663-chromium-sfwbar-1030-170739-e312` finishes1 in3m01s.
+Node help and actual application-menu module admission pass. Source,
+SDK, kernel and all93 owner/245 member identities remain unchanged.
+Sway passes the first marker, real workspace1-to2 IPC, retained pager
+comparison and click return to1. The panel and FIRST task survive the
+previous cleanup crash. The next shell query fails127: the trace shows
+`bash: fw_snap: command not found`, while the requested physical key
+sequence begins KeyS, KeyF, KeyW. The missing initial character explains
+that failed lookup; the input/focus/queue layer responsible remains
+unknown. There is no evidence that the shell helper disappeared or its
+inner IPC command failed. The original failure is retained without a
+helper redefinition or added delay.
+
+Labwc still fails its first terminal marker, with red0 despite the FIRST
+title and painted panel. Requested key calls do not establish guest
+bytes. Menu, application refocus, close and cooperative exit remain
+unaccepted. Sway trace SHA256 is
+`42d76a225f0c730f5a2a5b688927545ff6f6404a4304595e98d7964fda839b63`;
+Labwc trace SHA256 is
+`6db6567683961710f2304b32cb3241956336654b8dbd2e5ddf3cbb35a312749e`.
+Evidence is `.context/preview5663-acceptance/` and
+`.context/preview5663-sway-return-review/HANDOFF.md`.
+
+The user-facing build is available at `http://127.0.0.1:5663/`.
+Quiet headless unprofiled and separate worker-CPU diagnostic cohorts are
+prepared for Cage/Sway/Labwc with explicit native-mode and artifact
+identity checks. No actual performance result or fix is established yet.
+The full browser, memory, POSIX and graphics baseline gates remain open.
