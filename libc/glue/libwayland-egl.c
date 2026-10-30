@@ -184,6 +184,8 @@ static int alloc_buffer(struct wpk_wlegl *w, struct wl_egl_window *win,
 
     struct zwp_linux_buffer_params_v1 *params =
         zwp_linux_dmabuf_v1_create_params(w->dmabuf);
+    /* The exported descriptor is still ours if proxy allocation failed. */
+    if (!params) { close(prime); return -1; }
     zwp_linux_buffer_params_v1_add(
         params, prime, 0, 0, stride,
         (uint32_t)(DRM_FORMAT_MOD_LINEAR >> 32),

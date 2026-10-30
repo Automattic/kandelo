@@ -22,7 +22,7 @@ struct gbm_bo {
     struct gbm_device *device;
     uint32_t width;
 };
-static int descriptors[16], exported[16], fail_device, fail_bo, fail_export, fail_buffer,
+static int descriptors[16], exported[16], fail_device, fail_bo, fail_export, fail_params, fail_buffer,
     reject_retarget, destroy_during_retarget;
 static unsigned opens, closed, bo_created, bo_destroyed;
 static int window_open(const char *path, int flags, ...) {
@@ -106,12 +106,14 @@ static unsigned roundtrips,fail_roundtrip;
 struct wl_proxy *wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
                                         const struct wl_interface *interface, uint32_t version,
                                         uint32_t flags, ...) {
-    (void)proxy;
+    assert(proxy);
     (void)opcode;
     (void)version;
     if (flags & WL_MARSHAL_FLAG_DESTROY)
         return NULL;
     if (!interface)
+        return NULL;
+    if (interface == &zwp_linux_buffer_params_v1_interface && fail_params)
         return NULL;
     if (interface == &wl_buffer_interface && fail_buffer)
         return NULL;
@@ -173,6 +175,11 @@ int main(void) {
         assert(surface_holds==0 && opens==closed);
     }
     fail_roundtrip=0;
+    fail_params=1;
+    assert(!wl_egl_window_create((void *)&proxies[126],32,24));
+    assert(surface_holds==0 && opens==closed && bo_created==bo_destroyed);
+    for(unsigned i=0;i<16;i++)assert(!descriptors[i] && !exported[i]);
+    fail_params=0;
     struct wl_egl_window *native=wl_egl_window_create((void *)&proxies[126],32,24);
     assert(native && surface_holds==1);
     struct wpk_wlegl *owned=native->driver_private;
@@ -183,7 +190,7 @@ int main(void) {
     assert(_wpk_wlegl_finish(lease,0));
 #define backend (*owned)
 #define window (*native)
-    assert(descriptors[0] && opens==1);
+    assert(descriptors[0] && opens==closed+1);
     assert(_wpk_wlegl_device_fd(&window) == 100 && _wpk_wlegl_bo_handle(&window) == 101);
     wl_egl_window_resize(&window, 80, 48, 0, 0);
     assert(descriptors[0] && descriptors[1] && backend.retired_gbm && window.attached_width == 80);
@@ -192,16 +199,18 @@ int main(void) {
     reject_retarget = 0;
     assert(_wpk_wlegl_device_fd(&window) == 101 && window.attached_width == 80);
     assert(!descriptors[0] && descriptors[1] && !descriptors[2]);
-    for (int failure = 0; failure < 4; failure++) {
+    for (int failure = 0; failure < 5; failure++) {
         fail_device = failure == 0;
         fail_bo = failure == 1;
         fail_export = failure == 2;
-        fail_buffer = failure == 3;
+        fail_params = failure == 3;
+        fail_buffer = failure == 4;
         wl_egl_window_resize(&window, 96, 64, 0, 0);
         assert(_wpk_wlegl_device_fd(&window) == 101 && window.attached_width == 80 &&
                descriptors[1]);
+        for(unsigned i=0;i<16;i++)assert(!exported[i]);
     }
-    fail_device = fail_bo = fail_export = fail_buffer = 0;
+    fail_device = fail_bo = fail_export = fail_params = fail_buffer = 0;
     wl_egl_window_resize(&window, 96, 64, 0, 0);
     assert(window.attached_width == 96 && backend.retired_gbm && descriptors[1]);
     _wpk_wlegl_present(&window);

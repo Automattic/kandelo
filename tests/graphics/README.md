@@ -237,7 +237,9 @@ scripts/dev-shell.sh bash tests/graphics/run-wayland-client-unit.sh /path/to/res
 Its real socket-pair case validates attach/damage/commit encoding, both
 surface-destroy/disconnect orders, deferred descriptor cleanup, invalid
 pointers, stale identities and identity exhaustion. The window-double case
-also destroys the public window during successful and failed retargeting.
+also rejects buffer-params proxy allocation failure during creation and
+resize, checks exported descriptor cleanup, and destroys the public window
+during successful and failed retargeting.
 The EGL/GLES device-double suite covers registered Wayland initialization,
 failed admission rollback, exact native window/source matching, swapping,
 disconnect rejection and final release. These are native source proofs;
