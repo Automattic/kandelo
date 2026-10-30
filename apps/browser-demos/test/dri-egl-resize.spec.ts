@@ -9,21 +9,33 @@ import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 
 test.use({ serviceWorkers: "block" });
 
-test("SDL preserves first-frame geometry and alpha blending after window and context replacement", async ({ page, baseURL }) => {
-  test.setTimeout(120_000);
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+const root = fileURLToPath(new URL("../../../", import.meta.url));
+let fixture: ReturnType<typeof compileSdkFixture> | undefined;
+
+// The guest is a real SDK build of an SDL2 program linked against the
+// resolved packages and fork-instrumented, which takes minutes on a loaded
+// machine. Build it outside the test's own budget, which then covers only
+// the guest's run.
+test.beforeAll(() => {
+  test.setTimeout(600_000);
   const target = execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (.+)$/m)![1];
   const xtask = process.env.WASM_POSIX_XTASK_BIN ?? resolve(root, "target", target, "release/xtask");
   const paths = ["sdl2", "libwayland", "libxkbcommon", "libffi"].map(name =>
     execFileSync(xtask, ["build-deps", "resolve", name, "--arch", "wasm32"],
       { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim());
-  const { programPath, cleanup } = compileSdkFixture(
+  fixture = compileSdkFixture(
     new URL("../../../host/test/fixtures/sdl2-window-resize.c", import.meta.url), [
       `-I${paths[0]}/include/SDL2`, ...paths.map(path => `-L${path}/lib`),
       "-lSDL2", "-lwayland-client", "-lwayland-egl", "-lwayland-cursor", "-lxkbcommon",
       "-lffi", "-lgbm", "-ldrm", "-lEGL", "-lGLESv2", "-lm",
     ], { forkInstrument: true },
   );
+});
+test.afterAll(() => fixture?.cleanup());
+
+test("SDL preserves first-frame geometry and alpha blending after window and context replacement", async ({ page, baseURL }) => {
+  test.setTimeout(120_000);
+  const { programPath } = fixture!;
   try {
     const image = KandeloImageFs.create();
     image.setImageCapacity(16 * 1024 * 1024);
@@ -111,6 +123,5 @@ test("SDL preserves first-frame geometry and alpha blending after window and con
     expect(await page.evaluate(() => (globalThis as any).__resizeExit)).toBe(0);
   } finally {
     await page.evaluate(() => (globalThis as any).__resizeKernel?.destroy());
-    cleanup();
   }
 });
