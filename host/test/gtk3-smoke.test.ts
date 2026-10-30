@@ -1,6 +1,6 @@
 /**
- * PR24 gate (GTK3 leg): unmodified GTK 3.24.34, wayland backend only,
- * runs as a real Wayland client under wlcompositor.
+ * PR24 gate (GTK3 leg): packaged GTK 3.24.34, wayland backend only,
+ * runs as the session client of cage, the wlroots kiosk compositor.
  *
  * The flow, and what each step proves:
  *
@@ -11,27 +11,21 @@
  *     shapes the label text through the PR23 render stack and GTK
  *     paints it into a wl_shm buffer (cairo image surface);
  *   - the window's first draw fires — the "GTK3-SMOKE: draw" marker;
- *   - the compositor samples the composited pixels (COMPOSITE_SAMPLE)
- *     and flips, proving GTK's buffer crossed the process boundary;
- *   - the smoke quits its main loop and exits 0; the compositor exits
- *     0 once it disconnects.
+ *   - wlroots reads GTK's buffer by mapping the pool's PRIME fd; a
+ *     failed mapping is a protocol error that disconnects the client;
+ *   - the smoke quits its main loop and exits 0, and cage exits with its
+ *     status.
  *
- * Skips if any binary is missing (bare checkout — gtk3_smoke.wasm is
- * built by scripts/build-programs.sh, which resolves the gtk3 package
- * closure).
+ * Requires the normal program build and gtk3 package closure; missing
+ * supported binaries fail resolution.
  */
 import { describe, expect, it } from "vitest";
-import {
-  copyFileSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../src/node-kernel-host";
-import { tryResolveBinary } from "../src/binary-resolver";
-import { makeHostScratchTempRoot } from "./centralized-test-helper";
+import { resolveBinary } from "../src/binary-resolver";
+import { WLROOTS_ENV, compositorBytes, requireSession, sessionRootfs } from "./wlroots-session";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, "../..");
@@ -40,14 +34,21 @@ const INCONSOLATA = join(
   "third_party/Inconsolata-Regular.ttf",
 );
 
-const compositorBin = tryResolveBinary("programs/wayland-demo/wlcompositor.wasm");
-const gtkSmokeBin = tryResolveBinary("programs/gtk3_smoke.wasm");
-const hasBinaries = !!compositorBin && !!gtkSmokeBin;
+const gtkSmokeBin = resolveBinary("programs/gtk3_smoke.wasm");
+requireSession("cage");
 
-function loadBytes(path: string): ArrayBuffer {
-  const buf = readFileSync(path);
-  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-}
+const FONT_DIR = "/usr/share/fonts";
+const FONTS_CONF = `<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
+<fontconfig>
+  <dir>${FONT_DIR}</dir>
+  <cachedir>/tmp/fontconfig</cachedir>
+  <alias>
+    <family>sans-serif</family>
+    <prefer><family>Inconsolata</family></prefer>
+  </alias>
+</fontconfig>
+`;
 
 async function waitFor(
   ref: { value: string },
@@ -63,38 +64,24 @@ async function waitFor(
   throw new Error(`timed out waiting for "${needle}".\n${context()}`);
 }
 
-describe("gtk3 — unmodified GTK 3.24 wayland client on wlcompositor", () => {
-  it.skipIf(!hasBinaries)(
-    "maps a window, renders a label, composites, exits clean",
+describe("gtk3 — packaged GTK 3.24 wayland client on cage", () => {
+  it(
+    "maps a window, renders a label, exits clean",
     async () => {
-      const compositorBytes = loadBytes(compositorBin!);
-      const gtkBytes = loadBytes(gtkSmokeBin!);
-
-      const root = makeHostScratchTempRoot("kandelo-gtk3-");
-      const fontDir = join(root, "fonts");
-      const cacheDir = join(root, "cache");
-      mkdirSync(fontDir);
-      mkdirSync(cacheDir);
-      copyFileSync(INCONSOLATA, join(fontDir, "Inconsolata-Regular.ttf"));
-      const confPath = join(root, "fonts.conf");
-      writeFileSync(
-        confPath,
-        `<?xml version="1.0"?>
-<!DOCTYPE fontconfig SYSTEM "fonts.dtd">
-<fontconfig>
-  <dir>${fontDir}</dir>
-  <cachedir>${cacheDir}</cachedir>
-  <alias>
-    <family>sans-serif</family>
-    <prefer><family>Inconsolata</family></prefer>
-  </alias>
-</fontconfig>
-`,
-      );
-
       const out = { value: "" };
       const err = { value: "" };
+      const diagnostics: unknown[] = [];
       const host = new NodeKernelHost({
+        rootfsImage: await sessionRootfs("cage", [
+          { path: "/usr/bin/gtk3_smoke", bytes: new Uint8Array(readFileSync(gtkSmokeBin!)), mode: 0o755 },
+          {
+            path: `${FONT_DIR}/Inconsolata-Regular.ttf`,
+            bytes: new Uint8Array(readFileSync(INCONSOLATA)),
+            mode: 0o644,
+          },
+          { path: "/etc/fonts/fonts.conf", bytes: new TextEncoder().encode(FONTS_CONF), mode: 0o644 },
+        ]),
+        onHostDiagnostic: diagnostic => diagnostics.push(diagnostic),
         onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
         onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
       });
@@ -103,51 +90,26 @@ describe("gtk3 — unmodified GTK 3.24 wayland client on wlcompositor", () => {
       try {
         await host.init();
 
-        const compExit = host.spawn(compositorBytes, ["wlcompositor"], {
-          env: ["WLC_LAYOUT=dwindle"],
-        });
-        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
-
-        const gtkExit = host.spawn(gtkBytes, ["gtk3_smoke"], {
-          env: [
-            "HOME=/root",
-            "XDG_RUNTIME_DIR=/tmp",
-            "GDK_BACKEND=wayland",
-            "XKB_CONFIG_ROOT=/tmp",
-            `FONTCONFIG_FILE=${confPath}`,
-          ],
+        const cageExit = host.spawn(compositorBytes("cage"), ["cage", "--", "/usr/bin/gtk3_smoke"], {
+          env: [...WLROOTS_ENV, "HOME=/root", "GDK_BACKEND=wayland"],
         });
 
-        await waitFor(out, "CLIENT_CONNECTED count=1", 30_000, dump);
         await waitFor(out, "GTK3-SMOKE: init backend=GdkWaylandDisplay", 30_000, dump);
         await waitFor(out, "GTK3-SMOKE: draw", 30_000, dump);
-        await waitFor(out, "COMPOSITE_SAMPLE", 30_000, dump);
 
-        const gtkCode = await Promise.race([
-          gtkExit,
+        const cageCode = await Promise.race([
+          cageExit,
           new Promise<number>((_, reject) =>
-            setTimeout(() => reject(new Error(`gtk3_smoke timed out.\n${dump()}`)), 30_000)),
+            setTimeout(() => reject(new Error(`cage timed out.\n${dump()}`)), 30_000)),
         ]);
-        expect(gtkCode, `gtk3_smoke exit.\n${dump()}`).toBe(0);
+        expect(cageCode, `cage exit.\n${dump()}`).toBe(0);
         expect(out.value).toContain("GTK3-SMOKE: exit");
-
-        // The window's pixels reached the compositor: gdk-wayland backs its
-        // wl_shm pool with a gbm prime-fd dumb bo, so every buffer imports.
-        // A memfd-backed pool (upstream's default) fails here instead, once
-        // per buffer, and the window composites as nothing.
-        expect(err.value, `a client buffer failed to import.\n${dump()}`)
-          .not.toContain("gbm_bo_import");
-
-        const compCode = await Promise.race([
-          compExit,
-          new Promise<number>((_, reject) =>
-            setTimeout(() => reject(new Error(`compositor timed out.\n${dump()}`)), 10_000)),
-        ]);
-        expect(compCode, `compositor exit.\n${dump()}`).toBe(0);
-        expect(out.value).toContain("COMPOSITOR_LAST_CLIENT_GONE");
+        expect(err.value, `the client was disconnected.\n${dump()}`)
+          .not.toContain("error in client communication");
       } finally {
-        await host.destroy().catch(() => {});
+        await host.destroy();
       }
+      expect(diagnostics).toEqual([]);
     },
     120_000,
   );

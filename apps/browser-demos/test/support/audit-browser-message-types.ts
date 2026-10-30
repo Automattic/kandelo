@@ -3,11 +3,12 @@ import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 /** Guard declared payloads; dynamic RPC values also need the browser probe. */
-export function auditBrowserMessageTypes(candidate = "KernelToMainMessage"): string[] {
+export function auditBrowserMessageTypes(candidate = "KernelToMainMessage | GlForwardMessage"): string[] {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
   const virtualFile = resolve(root, "__memory_boundary_type_probe.ts");
   const source = `
     import type { KernelToMainMessage } from "../../host/src/browser-kernel-protocol";
+    import type { GlForwardMessage } from "../../host/src/webgl/main-forward";
     type Candidate = ${candidate};
     type GuestMemory = WebAssembly.Memory;
     type SharedBacking = SharedArrayBuffer;
@@ -50,7 +51,13 @@ export function auditBrowserMessageTypes(candidate = "KernelToMainMessage"): str
       return;
     }
     if (checker.isTypeAssignableTo(type, shared)) {
-      if (path !== "fb_bind.pixels") failures.push(`${path}: unreviewed SharedArrayBuffer payload`);
+      if (path !== "fb_bind.pixels" && path !== "gl_forward_query.mailbox"
+          && path !== "gl_forward_create_context.mailbox"
+          && path !== "gl_forward_make_current.mailbox"
+          && path !== "gl_forward_create_surface.mailbox"
+          && path !== "gl_forward_present.mailbox") {
+        failures.push(`${path}: unreviewed SharedArrayBuffer payload`);
+      }
       return;
     }
     const symbol = type.getSymbol();

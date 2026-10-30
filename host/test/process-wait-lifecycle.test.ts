@@ -934,6 +934,10 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(onExit).toHaveBeenCalledWith(42, 137);
   });
 
+  // Child-wait retirement belongs to Rust; wait_park tests cover actual
+  // normal/SIGTERM/SIGKILL transitions for wait4 and waitid, including a
+  // surviving unrelated waiter. No host waitingForChild list remains.
+
   it("cooperatively quiesces a signaled vfork borrower at its pending channel", () => {
     const memory = createSharedMemory();
     const channel = createChannel(42, memory);

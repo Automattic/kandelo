@@ -1,0 +1,20 @@
+# The sway machine's session. The machine sets XDG_CONFIG_HOME to
+# /usr/share/kandelo, so sway reads this file and foot reads
+# the explicit Sway terminal configuration below. It is upstream's default
+# configuration plus what a browser tab needs.
+include /etc/sway/config
+
+# Output scale controls the logical grid; these are readable logical sizes.
+font pango:monospace 12
+set $term foot --config=/usr/share/kandelo/sway/foot.ini
+# Override the included binding as well: variables expand while parsing it.
+bindsym --no-warn $mod+Return exec $term
+
+# A browser keeps some Super chords for itself (Cmd+Shift+Q quits the
+# browser on macOS), so the terminal, close and exit chords also work
+# with Ctrl.
+bindsym Ctrl+Return exec $term
+bindsym Ctrl+Shift+q kill
+bindsym Ctrl+Shift+e exec swaynag -t warning -m 'Exit sway? This ends the Wayland session.' -B 'Yes, exit sway' 'swaymsg exit'
+
+exec $term

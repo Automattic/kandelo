@@ -12,7 +12,7 @@ kind = "library"
 # no dynamic modules.
 name = "gtk3"
 version = "3.24.34"
-kernel_abi = 17
+kernel_abi = 56
 depends_on = [
   "glib@2.84.4",
   "atk@2.36.0",
@@ -24,11 +24,11 @@ depends_on = [
   "harfbuzz@10.1.0",
   "fontconfig@2.15.0",
   "freetype@2.13.3",
-  "pixman@0.42.2",
+  "pixman@0.46.4",
   "libpng@1.6.43",
   "libwayland@1.24.0",
-  "libxkbcommon@1.7.0",
-  "wayland-protocols@1.45",
+  "libxkbcommon@1.13.2",
+  "wayland-protocols@1.47",
   "libffi@0.1.0",
   "zlib@1.3.1",
   "libcxx@21.1.7",

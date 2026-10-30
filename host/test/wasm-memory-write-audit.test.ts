@@ -5149,6 +5149,7 @@ describe("WebAssembly memory write audit", () => {
       const runtime = path.join(root, "runtime");
       mkdirSync(runtime, { recursive: true });
       const expected = [
+        "host/src/vitest.graphics.config.ts",
         "runtime/a.ts",
         "runtime/b.tsx",
         "runtime/c.mts",
@@ -5157,6 +5158,7 @@ describe("WebAssembly memory write audit", () => {
         "runtime/f.jsx",
         "runtime/g.mjs",
         "runtime/h.cjs",
+        "runtime/vitest.graphics.config.ts",
         "scripts/resolve-binary.ts",
       ];
       for (const relative of expected) {
@@ -5195,6 +5197,9 @@ describe("WebAssembly memory write audit", () => {
       for (const relative of [
         "crates/fork-instrument/tests/fixtures/private-module.mjs",
         "scripts/check-fork-memory-artifact.ts",
+        "host/vitest.config.ts",
+        "host/vitest.browser-memory.config.ts",
+        "host/vitest.graphics.config.ts",
       ]) {
         mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
         writeFileSync(path.join(root, relative), "export {};\n");

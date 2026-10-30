@@ -1079,9 +1079,9 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
 
 const auditAllowances: AuditAllowance[] = [
   {
-    key: "host/src/kernel.ts::WasmPosixKernel.init::kernel-export-direct-use::configureCursor(1)",
+    key: "host/src/kernel.ts::WasmPosixKernel.init::kernel-export-direct-use::configureCursor(KMS_CURSOR_PROTOCOL_VERSION)",
     disposition: "kernel-control",
-    why: "Startup negotiates a scalar protocol version through the gated instance before publishing the initialized kernel. The call receives no pointer and exposes no memory view; cursor records use the entry-scoped scratch path instead.",
+    why: "Startup negotiates the scalar cursor protocol 2 constant through the gated instance before publishing the initialized kernel. The call receives no pointer and exposes no memory view; cursor records use the entry-scoped scratch path instead.",
   },
   {
     key: 'host/src/browser-process-memory-factory.ts::createProcessMemory::wasm-memory-authority::new WebAssembly.Memory(request.ptrWidth === 8 ? { initial: BigInt(request.initialPages), maximum: BigInt(request.maximumPages), shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor : { initial: request.initialPages, maximum: request.maximumPages, shared: true, })',
@@ -1607,6 +1607,11 @@ const auditAllowances: AuditAllowance[] = [
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( resultPtr, resultLen, "host_getaddrinfo destination", )',
     disposition: "rust-lent",
     why: "The address lookup import authenticates the untouched result pointer and capacity before the resolver runs.",
+  },
+  {
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination(attrsPtr, GL_SURFACE_WIRE_BYTES, "surface creation reply")',
+    disposition: "rust-lent",
+    why: "Rust lends its mutable, fixed-size surface wire Vec for this synchronous import. The host checks the exact generated length and reserves the bounded destination before renderer effects; the copied width/height reply is written through that same token without an await or retained view.",
   },
   {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( outPtr, outLen, "host_gl_query destination", )',

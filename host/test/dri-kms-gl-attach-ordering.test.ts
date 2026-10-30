@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { createWasmPosixKernelTestHarness, WasmPosixKernel } from "../src/kernel";
+import { createWasmPosixKernelTestHarness, getKernelGraphicsAccess, WasmPosixKernel } from "../src/kernel";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
 /**
@@ -51,8 +51,10 @@ function fakeCanvas(width = 300, height = 150): {
   // context needs the few calls that target makes. None of them is under
   // test here; they only have to succeed.
   const glCtx = {
+    isContextLost: () => false,
+    getError: () => 0,
     getExtension: () => null,
-    getParameter: () => null,
+    getParameter: (p:number) => p === 0x84e0 ? 0x84c0 : null,
     createTexture: () => ({}),
     createFramebuffer: () => ({}),
     createRenderbuffer: () => ({}),
@@ -77,6 +79,17 @@ function fakeCanvas(width = 300, height = 150): {
 
 const PID = 101;
 
+it("stands down GPU scanout after native context loss without terminating the machine", () => {
+  const { kernel } = harness({});
+  vi.spyOn(kernel.gl, "gpuBo").mockReturnValue({
+    gl: { isContextLost: () => true }, w: 640, h: 480,
+  } as any);
+  const canvas = { getContext: () => { throw new Error("Lost storage must not reach the display"); } };
+  expect(getKernelGraphicsAccess(kernel).gpuScanout(
+    { bo_id: 1, width: 640, height: 480 } as any, canvas as any, true,
+  )).toBeNull();
+});
+
 it.each([false, true])("rebuilds a recreated EGL window before drawing (new context: %s)", (newContext) => {
   let drawFramebuffer: unknown = null;
   let contextLost = false;
@@ -84,7 +97,7 @@ it.each([false, true])("rebuilds a recreated EGL window before drawing (new cont
   const deletedRenderbuffers: unknown[] = [];
   const gl = new Proxy({
     ...fakeCanvas().getContext() as object,
-    getParameter: (p: number) => p === 0x8ca6 ? drawFramebuffer : null,
+    getParameter: (p: number) => p === 0x84e0 ? 0x84c0 : p === 0x8ca6 ? drawFramebuffer : null,
     bindFramebuffer: (target: number, fbo: unknown) => {
       if (target === 0x8d40 || target === 0x8ca9) drawFramebuffer = fbo;
     },
@@ -105,10 +118,10 @@ it.each([false, true])("rebuilds a recreated EGL window before drawing (new cont
     getKmsDisplaySize: () => ({ width: 640, height: 480 }),
     onKmsGlPresented: (crtc: number) => presented.push(crtc),
   });
-  kernel.gl.bind({ pid: PID, cmdbufAddr: 128, cmdbufLen: 0 });
+  kernel.gl.bind({ displayFileId: 1n, pid: PID, cmdbufAddr: 128, cmdbufLen: 0 });
   const binding = kernel.gl.get(PID)!;
   binding.cmdbufView = new Uint8Array(memory.buffer, 128, 0);
-  imports.env.host_kms_set_master(PID);
+  imports.env.host_kms_set_master(PID, 1n, 1n);
   imports.env.host_kms_addfb(PID, 10, 100, 640, 480, 0x34325258, 2560);
   imports.env.host_kms_set_fb(PID, 1, 10);
   imports.env.host_gl_create_context(PID, 1, 0, 0);
@@ -118,18 +131,22 @@ it.each([false, true])("rebuilds a recreated EGL window before drawing (new cont
   expect(drawFramebuffer).toBe(oldTarget);
 
   // SDL can recreate the window surface while retaining its GL context.
-  imports.env.host_gl_destroy_surface(PID, 1);
+  binding.surfaceId = 71; // Existing kernel-issued surface identity.
+  imports.env.host_gl_destroy_surface(PID, 71);
   expect(deletedRenderbuffers).toContain(oldDepthStencil);
   if (newContext) imports.env.host_gl_destroy_context(PID, 1);
-  const attrs = new DataView(memory.buffer, 64, 20);
+  const attrs = new DataView(memory.buffer, 64, 36);
+  attrs.setUint32(0, 1, true); attrs.setUint32(12, 1, true);
   attrs.setUint32(4, 800, true);
   attrs.setUint32(8, 600, true);
-  imports.env.host_gl_create_surface(PID, 2, 64, 20);
+  expect(imports.env.host_gl_create_surface(PID, 2, 64, 36)).toBe(0);
   if (newContext) imports.env.host_gl_create_context(PID, 2, 0, 0);
   // SDL creates the resized EGL surface/context before its next SETCRTC.
   // The old scanout must not override that new drawable and clear the
   // completed first frame when the new FB is finally latched.
-  expect([canvas.width, canvas.height]).toEqual([800, 600]);
+  // Private storage accepts the size without resizing another context's canvas.
+  if (newContext) expect([canvas.width, canvas.height]).toEqual([800, 600]);
+  else expect([canvas.width, canvas.height]).toEqual([640, 480]);
   expect([binding.presentTarget!.w, binding.presentTarget!.h]).toEqual([800, 600]);
   expect(binding.presentTarget, "the next frame needs a target before any draws").not.toBeNull();
   expect(binding.presentTarget!.fbo).not.toBe(oldTarget);
@@ -153,12 +170,12 @@ describe("KMS GL canvas auto-attach — ordering independence", () => {
       getKmsCrtcIds: () => [1],
       markKmsCanvasGlOwned: () => {},
     });
-    kernel.gl.bind({ pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+    kernel.gl.bind({ displayFileId: 1n, pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
 
     // SDL2 acquires DRM master early, then creates its GL context and
     // compiles shaders BEFORE the first drmModeSetCrtc (which the KMSDRM
     // backend defers to the first SwapWindow). No host_kms_set_fb yet.
-    imports.env.host_kms_set_master(PID);
+    imports.env.host_kms_set_master(PID, 1n, 1n);
     imports.env.host_gl_create_context(PID, 1, 0, 0);
 
     const b = kernel.gl.get(PID)!;
@@ -176,9 +193,9 @@ describe("KMS GL canvas auto-attach — ordering independence", () => {
       getKmsCrtcIds: () => [1],
       markKmsCanvasGlOwned: () => {},
     });
-    kernel.gl.bind({ pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+    kernel.gl.bind({ displayFileId: 1n, pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
 
-    imports.env.host_kms_set_master(PID);
+    imports.env.host_kms_set_master(PID, 1n, 1n);
     imports.env.host_kms_addfb(PID, 10, 100, 1920, 1080, 0x34325258, 7680);
     imports.env.host_kms_set_fb(PID, 1, 10);
     imports.env.host_gl_create_context(PID, 1, 0, 0);
@@ -197,9 +214,9 @@ describe("KMS GL canvas auto-attach — ordering independence", () => {
       getKmsCrtcIds: () => [1],
       markKmsCanvasGlOwned: () => {},
     });
-    kernel.gl.bind({ pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+    kernel.gl.bind({ displayFileId: 1n, pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
 
-    imports.env.host_kms_set_master(PID);
+    imports.env.host_kms_set_master(PID, 1n, 1n);
     imports.env.host_gl_create_context(PID, 1, 0, 0);
     // Context built against the default-sized canvas; now the program
     // adds its real FB and points the CRTC at it.
@@ -210,42 +227,32 @@ describe("KMS GL canvas auto-attach — ordering independence", () => {
     expect(canvas.height).toBe(1080);
   });
 
-  it("requires DRM master at eglCreateContext: a context created before SET_MASTER is a silent no-op window (M2)", () => {
-    // Documents the fix's ordering dependency. The shipped SDL2 KMSDRM
-    // backend acquires DRM master during video init, BEFORE
-    // eglCreateContext (verified with live host instrumentation:
-    // host_kms_set_master fires before host_gl_create_context), so this
-    // window is never entered in practice. But a program that deferred
-    // drmSetMaster until its first frame would create+compile against a
-    // null GL context here, and the later set_fb attach could not
-    // retroactively re-run those compiles — a silent black screen.
+  it("requires an explicit context retry after a renderer becomes available", () => {
     const canvas = fakeCanvas(1920, 1080);
+    let available = false;
     const { kernel, imports } = harness({
-      getKmsCanvas: (crtc: number) => (crtc === 1 ? canvas : undefined),
+      getKmsCanvas: (crtc: number) => (available && crtc === 1 ? canvas : undefined),
       getKmsCrtcIds: () => [1],
       markKmsCanvasGlOwned: () => {},
     });
-    kernel.gl.bind({ pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+    kernel.gl.bind({ displayFileId: 1n, pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+    expect(imports.env.host_gl_create_context(PID, 1, 0, 0)).toBe(-19);
+    const b = kernel.gl.get(PID)!;
+    expect(b.gl).toBeNull();
+    expect(b.contextId).toBeNull();
+    expect(b.canvas).toBeNull();
 
-    // Context created while the pid holds neither master nor an FB: the
-    // fix cannot resolve a canvas, so b.gl stays null and every GLES call
-    // (including shader compiles) silently no-ops.
-    imports.env.host_gl_create_context(PID, 1, 0, 0);
-    let b = kernel.gl.get(PID)!;
-    expect(b.gl, "no canvas attachable without master → silent no-op window").toBeNull();
-    expect(b.canvas ?? null, "no canvas attached").toBeNull();
-
-    // Master + FB arriving later DO build the context via the set_fb hook,
-    // but this is too late for shaders already compiled against the null
-    // context — which is exactly why the fix depends on master-first.
-    imports.env.host_kms_set_master(PID);
+    available = true;
+    imports.env.host_kms_set_master(PID, 1n, 1n);
     imports.env.host_kms_addfb(PID, 10, 100, 1920, 1080, 0x34325258, 7680);
     imports.env.host_kms_set_fb(PID, 1, 10);
-    b = kernel.gl.get(PID)!;
-    expect(
-      b.gl,
-      "set_fb hook builds the context late; earlier GLES calls were already lost",
-    ).not.toBeNull();
+    // Failed creation cannot become successful behind the guest's back
+    // when a later modeset supplies a canvas. Only a new request can do so.
+    expect(b.gl).toBeNull();
+    expect(b.contextId).toBeNull();
+    expect(imports.env.host_gl_create_context(PID, 2, 0, 0)).toBe(0);
+    expect(b.gl).not.toBeNull();
+    expect(b.contextId).toBe(2);
   });
 
   it("does not mark the canvas GL-owned if getContext('webgl2') returns null", () => {
@@ -261,9 +268,9 @@ describe("KMS GL canvas auto-attach — ordering independence", () => {
         markedCrtc = crtc;
       },
     });
-    kernel.gl.bind({ pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+    kernel.gl.bind({ displayFileId: 1n, pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
 
-    imports.env.host_kms_set_master(PID);
+    imports.env.host_kms_set_master(PID, 1n, 1n);
     imports.env.host_gl_create_context(PID, 1, 0, 0);
 
     const b = kernel.gl.get(PID)!;
@@ -283,6 +290,27 @@ describe("KMS GL canvas auto-attach — ordering independence", () => {
  * nothing recorded, so it returned early every time.
  */
 describe("KMS GL canvas release — the claim is handed back", () => {
+  it("keeps the canvas claimed until the last session in a process retires", () => {
+    const owned: number[] = [], released: number[] = [];
+    const canvas = fakeCanvas(640, 480);
+    const { kernel, imports } = harness({
+      getKmsCanvas: () => canvas, getKmsCrtcIds: () => [1],
+      markKmsCanvasGlOwned: (id: number) => owned.push(id),
+      markKmsCanvasGlReleased: (id: number) => released.push(id),
+    });
+    imports.env.host_kms_set_master(PID, 1n, 1n);
+    for (const sessionId of [11, 12]) {
+      kernel.gl.bind({ displayFileId: 1n, pid: PID, sessionId, cmdbufAddr: 0, cmdbufLen: 0 });
+      expect(imports.env.host_gl_create_context(PID, sessionId + 20, 0, 0, sessionId)).toBe(0);
+    }
+    expect(owned).toEqual([1]);
+    imports.env.host_gl_unbind(PID, 11);
+    expect(released).toEqual([]);
+    expect(kernel.gl.get(PID, 12)!.claimedKmsCrtc).toBe(1);
+    imports.env.host_gl_unbind(PID, 12);
+    expect(released).toEqual([1]);
+  });
+
   function claimed(): {
     kernel: WasmPosixKernel & Record<string, any>;
     imports: { env: Record<string, (...args: any[]) => any> };
@@ -298,8 +326,8 @@ describe("KMS GL canvas release — the claim is handed back", () => {
         released.push(crtc);
       },
     });
-    kernel.gl.bind({ pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
-    imports.env.host_kms_set_master(PID);
+    kernel.gl.bind({ displayFileId: 1n, pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+    imports.env.host_kms_set_master(PID, 1n, 1n);
     imports.env.host_gl_create_context(PID, 1, 0, 0);
     expect(kernel.gl.get(PID)!.claimedKmsCrtc, "the claim is recorded").toBe(1);
     return { kernel, imports, released };
@@ -331,4 +359,25 @@ describe("KMS GL canvas release — the claim is handed back", () => {
     kernel.releaseProcessViews(PID);
     expect(released).toEqual([1]);
   });
+});
+
+
+it("creates a render-file context without granting another file's scanout authority", () => {
+  const canvas = fakeCanvas(640, 480);
+  let claims = 0;
+  const { kernel, imports } = harness({
+    getKmsCanvas: (crtc: number) => crtc === 1 ? canvas : undefined,
+    getKmsCrtcIds: () => [1],
+    markKmsCanvasGlOwned: () => { claims++; },
+  });
+  imports.env.host_kms_set_master(PID, 1n, 1n);
+  kernel.gl.bind({ displayFileId: 2n, pid: PID, cmdbufAddr: 0, cmdbufLen: 0 });
+  expect(imports.env.host_gl_create_context(PID, 1, 0, 0)).toBe(0);
+  const binding = kernel.gl.get(PID)!;
+  expect(binding.gl).not.toBeNull();
+  expect(binding.canvas).toBeNull();
+  expect(binding.claimedKmsCrtc).toBeNull();
+  expect(claims).toBe(0);
+  expect(kernel.kms.getMasterFileId()).toBe(1n);
+  expect(kernel.kms.isMasterFile(binding.displayFileId)).toBe(false);
 });

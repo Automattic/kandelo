@@ -9,10 +9,8 @@
 # compile the handful of core TUs directly with a hand-curated config.h
 # (src/config.h) and the generated protocol glue.
 #
-# The version MUST stay coherent with:
-#   - packages/registry/wayland-protocols/xml/wayland.xml (wayland 1.24.0)
-#   - the host wayland-scanner (flake.nix, 1.24.0)
-# so the wire opcodes/interfaces match. See
+# The version MUST stay coherent with the host wayland-scanner (flake.nix,
+# 1.24.0) so the wire opcodes/interfaces match. See
 # docs/plans/2026-07-08-dri-wayland-compositor-plan.md §3.
 #
 # libwayland's only libffi use is wl_closure_invoke; on wasm32 every
@@ -28,7 +26,7 @@
 #     WASM_POSIX_DEP_SOURCE_URL                  # tarball URL
 #     WASM_POSIX_DEP_SOURCE_SHA256               # expected sha256
 #     WASM_POSIX_DEP_LIBFFI_DIR                  # libffi shim prefix (ffi.h)
-#     WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR   # vendored protocol XML (xml/)
+#     WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR   # wayland-protocols prefix (linux-dmabuf XML)
 
 set -euo pipefail
 
@@ -62,15 +60,10 @@ done
 LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set (invoke via cargo xtask build-deps resolve libwayland)}"
 PROTO_SRC="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set (invoke via cargo xtask build-deps resolve libwayland)}"
 LIBDRM_PREFIX="${WASM_POSIX_DEP_LIBDRM_DIR:?resolver did not provide the direct libdrm dependency}"
-WAYLAND_XML="$PROTO_SRC/xml/wayland.xml"
 test -f "$LIBDRM_PREFIX/include/drm/drm_fourcc.h"
 
 if [ ! -f "$LIBFFI_PREFIX/include/ffi.h" ]; then
     echo "ERROR: libffi shim header not found at $LIBFFI_PREFIX/include/ffi.h" >&2
-    exit 1
-fi
-if [ ! -f "$WAYLAND_XML" ]; then
-    echo "ERROR: vendored wayland.xml not found at $WAYLAND_XML" >&2
     exit 1
 fi
 
@@ -103,6 +96,7 @@ find "$INSTALL_DIR" -mindepth 1 -delete
 mkdir -p "$BUILD_DIR" "$INSTALL_DIR/lib" "$INSTALL_DIR/include"
 
 WLSRC="$SRC_DIR/src"
+WAYLAND_XML="$SRC_DIR/protocol/wayland.xml"
 
 # --- Generate config.h + wayland-version.h ------------------------------
 # config.h lives at the source root (wayland-os.c does #include "../config.h").
@@ -118,7 +112,7 @@ sed -e "s/@WAYLAND_VERSION_MAJOR@/$VMAJOR/g" \
     -e "s/@WAYLAND_VERSION@/$WL_VERSION/g" \
     "$WLSRC/wayland-version.h.in" > "$WLSRC/wayland-version.h"
 
-# --- Generate protocol glue from the vendored core wayland.xml ----------
+# --- Generate protocol glue from the core wayland.xml -------------------
 # `public-code` (upstream's choice for the shipped libs) exports the
 # wl_*_interface symbols so consumers linking the archive resolve them.
 echo "==> Generating protocol glue with $(wayland-scanner --version 2>&1 | head -1)..."
@@ -158,7 +152,19 @@ PROTO_OBJ="$(compile wayland-protocol.c)"
 SHARED_OBJS=("$UTIL_OBJ" "$CONN_OBJ" "$OS_OBJ" "$PROTO_OBJ")
 
 echo "==> Compiling client TU..."
-CLIENT_OBJ="$(compile wayland-client.c)"
+# Keep upstream connection/transport implementation intact. The appended
+# private bridge can retain its actual display/proxy records and distinguish
+# live native handles without probing arbitrary caller pointers.
+CLIENT_WRAPPER="$BUILD_DIR/wayland-client-owned.c"
+cat > "$CLIENT_WRAPPER" <<EOF
+#define wl_display_connect _wpk_upstream_display_connect
+#define wl_display_connect_to_fd _wpk_upstream_display_connect_to_fd
+#define wl_display_disconnect _wpk_upstream_display_disconnect
+#include "$WLSRC/wayland-client.c"
+#include "$REPO_ROOT/libc/glue/wayland-client-lifetime.inc"
+EOF
+CLIENT_OBJ="$BUILD_DIR/wayland-client.o"
+wasm32posix-cc -c "${CFLAGS[@]}" -I"$REPO_ROOT/libc/glue" "$CLIENT_WRAPPER" -o "$CLIENT_OBJ"
 
 echo "==> Compiling server TUs..."
 SERVER_MAIN_OBJ="$(compile wayland-server.c)"
@@ -211,7 +217,7 @@ echo "==> Compiling + archiving libwayland-egl.a..."
 GLUE_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)/libc/glue"
 EGL_GEN="$BUILD_DIR/egl-gen"
 mkdir -p "$EGL_GEN"
-DMABUF_XML="$PROTO_SRC/xml/linux-dmabuf-v1.xml"
+DMABUF_XML="$PROTO_SRC/share/wayland-protocols/stable/linux-dmabuf/linux-dmabuf-v1.xml"
 wayland-scanner private-code  "$DMABUF_XML" "$EGL_GEN/linux-dmabuf-v1-protocol.c"
 wayland-scanner client-header "$DMABUF_XML" "$EGL_GEN/linux-dmabuf-v1-client-protocol.h"
 EGL_CFLAGS=(
@@ -249,6 +255,12 @@ for h in wayland-egl.h wayland-egl-core.h wayland-egl-backend.h; do
 done
 cp "$CURSOR_SRC/wayland-cursor.h" "$INSTALL_DIR/include/wayland-cursor.h"
 
+# --- Core protocol XML ---------------------------------------------------
+# Upstream installs wayland.xml in the wayland-scanner.pc pkgdatadir;
+# compositors generate their server glue from it.
+mkdir -p "$INSTALL_DIR/share/wayland"
+cp "$WAYLAND_XML" "$INSTALL_DIR/share/wayland/wayland.xml"
+
 # --- pkg-config .pc files (step 12b) -----------------------------------
 # SDL2's configure gates the Wayland backend on
 #   $PKG_CONFIG --exists 'wayland-client >= 1.18' wayland-scanner \
@@ -263,6 +275,8 @@ echo "==> Writing pkg-config .pc files..."
 PC_DIR="$INSTALL_DIR/lib/pkgconfig"
 mkdir -p "$PC_DIR"
 
+# Both archives call ffi_call in connection.o, so a static link needs
+# libffi, as upstream's Requires.private says.
 cat > "$PC_DIR/wayland-client.pc" <<EOF
 prefix=$INSTALL_DIR
 libdir=\${prefix}/lib
@@ -272,6 +286,20 @@ Name: Wayland Client
 Description: Wayland client side library
 Version: $WL_VERSION
 Libs: -L\${libdir} -lwayland-client
+Requires.private: libffi
+Cflags: -I\${includedir}
+EOF
+
+cat > "$PC_DIR/wayland-server.pc" <<EOF
+prefix=$INSTALL_DIR
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: Wayland Server
+Description: Server side implementation of the Wayland protocol
+Version: $WL_VERSION
+Libs: -L\${libdir} -lwayland-server
+Requires.private: libffi
 Cflags: -I\${includedir}
 EOF
 

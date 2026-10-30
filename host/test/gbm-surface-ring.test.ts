@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { resolveBinary } from "../src/binary-resolver";
 
-const programBinary = tryResolveBinary("programs/gbm_surface_smoke.wasm");
+const programBinary = resolveBinary("programs/gbm_surface_smoke.wasm");
 
-describe("libgbm 2-BO surface ring", () => {
-  it.skipIf(!programBinary)(
-    "lock/release/has_free_buffers transitions match mesa semantics",
+describe("libgbm surface before rendering", () => {
+  it(
+    "requires a produced frame before a front buffer can be locked",
     async () => {
       const result = await runCentralizedProgram({
         programPath: programBinary!,

@@ -7,6 +7,7 @@
 
 pub mod bo;
 pub mod cursor;
+pub mod kms;
 pub mod master;
 pub mod modes;
 
@@ -56,7 +57,7 @@ pub fn drain_pending_flips_for_process(
 ) {
     for (_idx, ofd) in proc.ofd_table.iter_mut() {
         let id = ofd.ofd_id;
-        let Some(kms) = ofd.kms_mut() else { continue };
+        let Some(mut kms) = ofd.kms_mut() else { continue };
         if kms.pending_flips.is_empty() {
             continue;
         }

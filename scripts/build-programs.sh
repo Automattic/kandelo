@@ -417,8 +417,8 @@ fi
 # Resolve libwayland (+ its deps libffi + wayland-protocols) and copy
 # its client/server archives, the libffi shim archive, and the public
 # headers into the sysroot when there are any wl_*.c programs to build.
-# libwayland's protocol glue is generated at resolve time from the
-# vendored wayland.xml by the flake's wayland-scanner, so this step needs
+# libwayland's protocol glue is generated at resolve time from its own
+# protocol/wayland.xml by the flake's wayland-scanner, so this step needs
 # the dev shell (scripts/dev-shell.sh) on PATH. Re-resolved every run —
 # the resolver is cached, so it's cheap when nothing changed. See
 # docs/plans/2026-07-08-dri-wayland-compositor-plan.md (PR3).
@@ -633,11 +633,11 @@ if ls "$REPO_ROOT"/programs/libevdev_*.c >/dev/null 2>&1; then
 
     stage_sysroot_file "$LIBEVDEV_PREFIX/lib/libevdev.a" "$SYSROOT/lib/libevdev.a"
     mkdir -p "$SYSROOT/include/libevdev"
-    stage_sysroot_file "$LIBEVDEV_PREFIX/include/libevdev/libevdev.h" "$SYSROOT/include/libevdev/libevdev.h"
+    stage_sysroot_file "$LIBEVDEV_PREFIX/include/libevdev-1.0/libevdev/libevdev.h" "$SYSROOT/include/libevdev/libevdev.h"
 fi
 
 # Resolve mtdev and copy its archive + headers into the sysroot when
-# there are any mtdev_*.c programs to build. mtdev is the link-only
+# there are any mtdev_*.c programs to build. mtdev is the protocol-A
 # multitouch dependency of the real libinput port (PR5). Same
 # cached-resolve contract as the blocks above. See
 # docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5b).
@@ -652,28 +652,27 @@ if ls "$REPO_ROOT"/programs/mtdev_*.c >/dev/null 2>&1; then
     stage_sysroot_file "$MTDEV_PREFIX/include/mtdev-plumbing.h" "$SYSROOT/include/mtdev-plumbing.h"
 fi
 
-# Resolve libudev and copy its archive + header into the sysroot when
-# there are any libudev_*.c programs to build. libudev is the input_id
-# classification shim the real libinput port (PR5) needs to accept
-# devices. Same cached-resolve contract as the blocks above. See
-# docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5b).
+# Resolve libudev-zero and copy its archive + header into the sysroot
+# when there are any libudev_*.c programs to build. libudev-zero is the
+# libudev the real libinput port (PR5) classifies devices with, from the
+# kernel's /sys tree. Same cached-resolve contract as the blocks above.
 if ls "$REPO_ROOT"/programs/libudev_*.c >/dev/null 2>&1; then
-    echo "==> Resolving libudev for libudev programs..."
+    echo "==> Resolving libudev-zero for libudev programs..."
     HOST_TRIPLE="$(rustc -vV | awk '/^host/ {print $2}')"
-    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libudev >/dev/null)
-    LIBUDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libudev)"
+    (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libudev-zero >/dev/null)
+    LIBUDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libudev-zero)"
 
     stage_sysroot_file "$LIBUDEV_PREFIX/lib/libudev.a" "$SYSROOT/lib/libudev.a"
     stage_sysroot_file "$LIBUDEV_PREFIX/include/libudev.h" "$SYSROOT/include/libudev.h"
 fi
 
 # Resolve libinput (real 1.25.0) for the libinput smoke. This is the real
-# path-backend library the Wayland compositor will use (PR5c). The smoke is
+# library the Wayland compositor uses (PR5c). The smoke is
 # built in a dedicated pass after the program loop (build_program can't add
 # the real header's -I), and links the real archive from its cache prefix by
 # full path — deliberately NOT via a $SYSROOT/lib/libinput.a copy — so the
 # sysroot carries no libinput identity. Its deps
-# (libevdev + libudev shim + mtdev stub) resolve transitively; we capture
+# (libevdev + libudev-zero + mtdev) resolve transitively; we capture
 # each prefix for the smoke's link line. See
 # docs/plans/2026-07-08-dri-wayland-compositor-plan.md §5 (PR5c).
 LIBINPUT_REAL_PREFIX=""
@@ -683,7 +682,7 @@ if ls "$REPO_ROOT"/programs/libinput_smoke.c >/dev/null 2>&1; then
     (cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps resolve libinput >/dev/null)
     LIBINPUT_REAL_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libinput)"
     LIBINPUT_LIBEVDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libevdev)"
-    LIBINPUT_LIBUDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libudev)"
+    LIBINPUT_LIBUDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path libudev-zero)"
     LIBINPUT_MTDEV_PREFIX="$(cd "$REPO_ROOT" && cargo run -p xtask --target "$HOST_TRIPLE" --quiet -- build-deps path mtdev)"
 fi
 
@@ -701,7 +700,7 @@ for src in "$REPO_ROOT/programs/"*.c; do
             # copies only as runtime test fixtures.
             build_program "$src" "$TEST_FIXTURE_DIR/wasm32"
             ;;
-        modeset.c|dri-modeset.c|dumb_roundtrip.c|gbm_surface_smoke.c)
+        modeset.c|dri-modeset.c|dumb_roundtrip.c|egl_dmabuf_smoke.c|egl_image_ownership.c|gbm_surface_smoke.c)
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a"
             ;;
@@ -900,12 +899,12 @@ for src in "$REPO_ROOT/programs/"*.c; do
                 "$SYSROOT/lib/libevdev.a"
             ;;
         mtdev_smoke.c)
-            # Link-only proof of the mtdev stub + not-protocol-A check.
+            # Link proof of mtdev + not-protocol-A check.
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libmtdev.a"
             ;;
         libudev_input_id_smoke.c)
-            # input_id classification through the libudev shim's real API.
+            # input_id classification through libudev-zero's libudev API.
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libudev.a"
             ;;
@@ -996,7 +995,7 @@ fi
 # Wayland compositor (PR6): a standalone libwayland *server* (wlcompositor)
 # plus a raw libwayland-client test client (wlclient-test), built as two
 # binaries. Both compile in the xdg-shell protocol glue that wayland-scanner
-# (flake) generates from the vendored XML; the server also links real
+# (flake) generates from the resolved protocol XML; the server also links real
 # libinput (PR5) + libxkbcommon (PR4) + libgbm/libdrm for card0 compositing.
 # Dedicated pass (not build_program): it needs the generated -I dir, the real
 # <libinput.h> from its cache prefix, and a multi-archive link line. Files
@@ -1012,12 +1011,15 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     wlc_resolve libwayland
     wlc_resolve libxkbcommon
     wlc_resolve libinput
+    wlc_resolve wlr-protocols
     WLC_LIBWL="$(wlc_path libwayland)"
+    WLC_WP_XML="$(wlc_path wayland-protocols)/share/wayland-protocols"
+    WLC_WLR_XML="$(wlc_path wlr-protocols)/share/wlr-protocols"
     WLC_LIBFFI="$(wlc_path libffi)"
     WLC_LIBXKB="$(wlc_path libxkbcommon)"
     WLC_LIBINPUT="$(wlc_path libinput)"
     WLC_LIBEVDEV="$(wlc_path libevdev)"
-    WLC_LIBUDEV="$(wlc_path libudev)"
+    WLC_LIBUDEV="$(wlc_path libudev-zero)"
     WLC_MTDEV="$(wlc_path mtdev)"
 
     # Public headers on the sysroot include path (idempotent — the wl_*/xkb_*
@@ -1036,10 +1038,10 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     done
 
     # Generate xdg-shell {server,client} headers + shared private-code from
-    # the vendored protocol XML. Kept out of programs/ so it isn't globbed.
+    # the resolved protocol XML. Kept out of programs/ so it isn't globbed.
     WLC_GEN="$REPO_ROOT/local-binaries/wlcompositor-gen"
     mkdir -p "$WLC_GEN"
-    XDG_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/xdg-shell.xml"
+    XDG_XML="$WLC_WP_XML/stable/xdg-shell/xdg-shell.xml"
     wayland-scanner private-code  "$XDG_XML" "$WLC_GEN/xdg-shell-protocol.c"
     wayland-scanner server-header "$XDG_XML" "$WLC_GEN/xdg-shell-server-protocol.h"
     wayland-scanner client-header "$XDG_XML" "$WLC_GEN/xdg-shell-client-protocol.h"
@@ -1047,7 +1049,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     # Same for zwp_linux_dmabuf_v1 (PR11): the compositor's GPU-tier client
     # buffer path. Server side is compiled into wlcompositor; the client
     # header + private-code drive wldmabuf-test.
-    DMABUF_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/linux-dmabuf-v1.xml"
+    DMABUF_XML="$WLC_WP_XML/stable/linux-dmabuf/linux-dmabuf-v1.xml"
     wayland-scanner private-code  "$DMABUF_XML" "$WLC_GEN/linux-dmabuf-v1-protocol.c"
     wayland-scanner server-header "$DMABUF_XML" "$WLC_GEN/linux-dmabuf-v1-server-protocol.h"
     wayland-scanner client-header "$DMABUF_XML" "$WLC_GEN/linux-dmabuf-v1-client-protocol.h"
@@ -1055,7 +1057,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     # Same for zxdg_decoration_manager_v1 (PR14e): server-side decoration
     # negotiation. The compositor forces SERVER_SIDE so tiled clients drop CSD;
     # the client header + private-code drive wlclient-test's decoration request.
-    DECOR_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/xdg-decoration-unstable-v1.xml"
+    DECOR_XML="$WLC_WP_XML/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml"
     wayland-scanner private-code  "$DECOR_XML" "$WLC_GEN/xdg-decoration-v1-protocol.c"
     wayland-scanner server-header "$DECOR_XML" "$WLC_GEN/xdg-decoration-v1-server-protocol.h"
     wayland-scanner client-header "$DECOR_XML" "$WLC_GEN/xdg-decoration-v1-client-protocol.h"
@@ -1063,7 +1065,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     # Same for zwlr_layer_shell_v1 (PR15): the shell-component protocol. The
     # compositor anchors bars/launchers with it; kbar + klauncher are its
     # clients, and it is what upstream Waybar/mako speak too.
-    LAYER_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/wlr-layer-shell-unstable-v1.xml"
+    LAYER_XML="$WLC_WLR_XML/unstable/wlr-layer-shell-unstable-v1.xml"
     wayland-scanner private-code  "$LAYER_XML" "$WLC_GEN/wlr-layer-shell-v1-protocol.c"
     wayland-scanner server-header "$LAYER_XML" "$WLC_GEN/wlr-layer-shell-v1-server-protocol.h"
     wayland-scanner client-header "$LAYER_XML" "$WLC_GEN/wlr-layer-shell-v1-client-protocol.h"
@@ -1071,7 +1073,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     # Same for wp_presentation (PR19): frame-timing feedback off the existing
     # PAGE_FLIP timestamps. foot uses it for frame pacing; clients without it
     # fall back to wl_surface.frame.
-    PTIME_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/presentation-time.xml"
+    PTIME_XML="$WLC_WP_XML/stable/presentation-time/presentation-time.xml"
     wayland-scanner private-code  "$PTIME_XML" "$WLC_GEN/presentation-time-protocol.c"
     wayland-scanner server-header "$PTIME_XML" "$WLC_GEN/presentation-time-server-protocol.h"
     wayland-scanner client-header "$PTIME_XML" "$WLC_GEN/presentation-time-client-protocol.h"
@@ -1080,27 +1082,27 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     # wp_fractional_scale_manager_v1 (PR24): the logical-output geometry and
     # crop/scale surface GTK3, Waybar and mako query. The compositor answers
     # with the fixed scale-1 fullscreen output.
-    XDGOUT_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/xdg-output-unstable-v1.xml"
+    XDGOUT_XML="$WLC_WP_XML/unstable/xdg-output/xdg-output-unstable-v1.xml"
     wayland-scanner private-code  "$XDGOUT_XML" "$WLC_GEN/xdg-output-v1-protocol.c"
     wayland-scanner server-header "$XDGOUT_XML" "$WLC_GEN/xdg-output-v1-server-protocol.h"
     wayland-scanner client-header "$XDGOUT_XML" "$WLC_GEN/xdg-output-v1-client-protocol.h"
-    VIEWPORTER_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/viewporter.xml"
+    VIEWPORTER_XML="$WLC_WP_XML/stable/viewporter/viewporter.xml"
     wayland-scanner private-code  "$VIEWPORTER_XML" "$WLC_GEN/viewporter-protocol.c"
     wayland-scanner server-header "$VIEWPORTER_XML" "$WLC_GEN/viewporter-server-protocol.h"
     wayland-scanner client-header "$VIEWPORTER_XML" "$WLC_GEN/viewporter-client-protocol.h"
-    FRACSCALE_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/fractional-scale-v1.xml"
+    FRACSCALE_XML="$WLC_WP_XML/staging/fractional-scale/fractional-scale-v1.xml"
     wayland-scanner private-code  "$FRACSCALE_XML" "$WLC_GEN/fractional-scale-v1-protocol.c"
     wayland-scanner server-header "$FRACSCALE_XML" "$WLC_GEN/fractional-scale-v1-server-protocol.h"
     wayland-scanner client-header "$FRACSCALE_XML" "$WLC_GEN/fractional-scale-v1-client-protocol.h"
 
     # Same for zwlr_data_control_manager_v1: the clipboard protocol a
     # windowless tool sets the selection through. wlclip-test drives it.
-    DATACTL_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/wlr-data-control-unstable-v1.xml"
+    DATACTL_XML="$WLC_WLR_XML/unstable/wlr-data-control-unstable-v1.xml"
     wayland-scanner private-code  "$DATACTL_XML" "$WLC_GEN/wlr-data-control-v1-protocol.c"
     wayland-scanner server-header "$DATACTL_XML" "$WLC_GEN/wlr-data-control-v1-server-protocol.h"
     wayland-scanner client-header "$DATACTL_XML" "$WLC_GEN/wlr-data-control-v1-client-protocol.h"
     # Its standardized successor, ext_data_control_v1, which kclipd speaks.
-    EXTDATACTL_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/ext-data-control-v1.xml"
+    EXTDATACTL_XML="$WLC_WP_XML/staging/ext-data-control/ext-data-control-v1.xml"
     wayland-scanner private-code  "$EXTDATACTL_XML" "$WLC_GEN/ext-data-control-v1-protocol.c"
     wayland-scanner server-header "$EXTDATACTL_XML" "$WLC_GEN/ext-data-control-v1-server-protocol.h"
     wayland-scanner client-header "$EXTDATACTL_XML" "$WLC_GEN/ext-data-control-v1-client-protocol.h"
@@ -1108,11 +1110,11 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     # hyprland_global_shortcuts_v1: the lock screen, the idle monitor and
     # the keybinds Quickshell's shell registers. The Hyprland XML comes from
     # the hyprland-protocols package.
-    LOCK_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/ext-session-lock-v1.xml"
+    LOCK_XML="$WLC_WP_XML/staging/ext-session-lock/ext-session-lock-v1.xml"
     wayland-scanner private-code  "$LOCK_XML" "$WLC_GEN/ext-session-lock-v1-protocol.c"
     wayland-scanner server-header "$LOCK_XML" "$WLC_GEN/ext-session-lock-v1-server-protocol.h"
     wayland-scanner client-header "$LOCK_XML" "$WLC_GEN/ext-session-lock-v1-client-protocol.h"
-    IDLE_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/ext-idle-notify-v1.xml"
+    IDLE_XML="$WLC_WP_XML/staging/ext-idle-notify/ext-idle-notify-v1.xml"
     wayland-scanner private-code  "$IDLE_XML" "$WLC_GEN/ext-idle-notify-v1-protocol.c"
     wayland-scanner server-header "$IDLE_XML" "$WLC_GEN/ext-idle-notify-v1-server-protocol.h"
     wayland-scanner client-header "$IDLE_XML" "$WLC_GEN/ext-idle-notify-v1-client-protocol.h"

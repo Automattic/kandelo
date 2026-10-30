@@ -51,6 +51,7 @@ describe("GbmBoRegistry — SAB-backed bo store", () => {
     });
     reg.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
     reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 1, memA);
     fillPattern(memA, BO_ADDR, BO_SIZE, 0x10);
     reg.unbind(100, 1, BO_ADDR, BO_SIZE); // flushes memA → SAB
 
@@ -68,6 +69,7 @@ describe("GbmBoRegistry — SAB-backed bo store", () => {
     });
     reg.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
     reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 1, memA);
     fillPattern(memA, BO_ADDR, BO_SIZE, 0x21);
     reg.unbind(100, 1, BO_ADDR, BO_SIZE);
 
@@ -87,6 +89,7 @@ describe("GbmBoRegistry — SAB-backed bo store", () => {
     });
     reg.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
     reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 1, memA);
     fillPattern(memA, BO_ADDR, BO_SIZE, 0x42);
     reg.unbind(100, 1, BO_ADDR, BO_SIZE);
 
@@ -106,6 +109,7 @@ describe("GbmBoRegistry — SAB-backed bo store", () => {
     });
     reg.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
     reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 1, memParent);
     fillPattern(memParent, BO_ADDR, BO_SIZE, 0xa5);
 
     // Parent has NOT unbound. Child binds + primes.
@@ -190,6 +194,7 @@ describe("GbmBoRegistry — SAB-backed bo store", () => {
 
     reg.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
     reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 1, memA);
     fillPattern(memA, BO_ADDR, BO_SIZE, 0x33);
     reg.unbind(100, 1, BO_ADDR, BO_SIZE);
 
@@ -206,7 +211,9 @@ describe("GbmBoRegistry — SAB-backed bo store", () => {
     });
     reg.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
     reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 1, memA);
     reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(200, 1, memB);
 
     fillPattern(memA, BO_ADDR, BO_SIZE, 0x42);
     fillPattern(memB, BO_ADDR, BO_SIZE, 0x42); // both writers agree
@@ -242,7 +249,9 @@ describe("GbmBoRegistry — SAB-backed bo store", () => {
       stride: 64,
     });
     reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 1, memParent);
     reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(200, 1, memChild);
     fillPattern(memParent, BO_ADDR, BO_SIZE, 0x61);
 
     reg.releaseProcess(100);
@@ -274,6 +283,7 @@ describe("GbmBoRegistry — SAB-backed bo store", () => {
       stride: 64,
     });
     reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 1, mem);
 
     reg.releaseProcess(100);
 
@@ -308,7 +318,9 @@ describe("GbmBoRegistry — foreign-texture coherence helpers", () => {
   it("syncToSab publishes a writer without flushing an unchanged stale reader", () => {
     const { memA, memB, reg } = twoPidSetup();
     reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 1, memA);
     reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(200, 1, memB);
     fillPattern(memA, BO_ADDR, BO_SIZE, 0x11);
     reg.primeBindFromSab(200, 1, memB);
     fillPattern(memA, BO_ADDR, BO_SIZE, 0x30); // newer writer frame; B stays unchanged
@@ -319,11 +331,13 @@ describe("GbmBoRegistry — foreign-texture coherence helpers", () => {
   });
 
   it("hasStaleableImports tracks concurrent mappings without assuming a writer", () => {
-    const { reg } = twoPidSetup();
+    const { reg, memA, memB } = twoPidSetup();
     reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 1, memA);
     expect(reg.hasStaleableImports(100)).toBe(false); // only one mapping
     expect(reg.hasStaleableImports(200)).toBe(false); // not bound yet
     reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(200, 1, memB);
     expect(reg.hasStaleableImports(200)).toBe(true);
     reg.unbind(100, 1);
     expect(reg.hasStaleableImports(200)).toBe(false); // nothing left to go stale from
@@ -350,7 +364,9 @@ describe("GbmBoRegistry — foreign-texture coherence helpers", () => {
   it("syncImportsForPid delivers the creator's latest bytes into the importer's mapping", () => {
     const { memA, memB, reg } = twoPidSetup();
     reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 1, memA);
     reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(200, 1, memB);
     // The creator paints AFTER both binds — without the coherence pass
     // the importer only ever sees its bind-time snapshot.
     fillPattern(memA, BO_ADDR, BO_SIZE, 0x42);
@@ -359,20 +375,26 @@ describe("GbmBoRegistry — foreign-texture coherence helpers", () => {
   });
 
   it("hasStaleableImports tracks bindings through bind, unbind, release and destroy", () => {
-    const { reg } = twoPidSetup();
+    const { reg, memA, memB } = twoPidSetup();
     reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 1, memA);
     reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(200, 1, memB);
     expect(reg.hasStaleableImports(300)).toBe(false); // maps nothing
     expect(reg.hasStaleableImports(200)).toBe(true);
-    reg.bind(200, 1, BO_ADDR, BO_SIZE);               // re-bind: not double-counted
+    reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(200, 1, memB);               // re-bind: not double-counted
     reg.unbind(200, 1);
     expect(reg.hasStaleableImports(200)).toBe(false);
     reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(200, 1, memB);
     reg.destroy(100, 1);                              // the bo goes away entirely
     expect(reg.hasStaleableImports(200)).toBe(false);
     reg.create({ pid: 100, bo_id: 2, size: BO_SIZE, w: 16, h: 16, stride: 64 });
     reg.bind(100, 2, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 2, memA);
     reg.bind(200, 2, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(200, 2, memB);
     reg.releaseProcess(200);
     expect(reg.hasStaleableImports(200)).toBe(false);
   });
@@ -392,7 +414,9 @@ describe("GbmBoRegistry — foreign-texture coherence helpers", () => {
     });
     reg.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
     reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 1, memA);
     reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(200, 1, memB);
     fillPattern(memA, BO_ADDR, BO_SIZE, 0x51);   // the creator's final frame
     reg.releaseProcess(100);
     creatorAlive = false;
@@ -414,6 +438,7 @@ it("exec flushes the old mapping and permits the retained GEM handle to bind new
   const reg = new GbmBoRegistry({ getProcessMemory: () => active });
   reg.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
   reg.bind(100, 1, BO_ADDR, BO_SIZE);
+  reg.primeBindFromSab(100, 1, old);
   fillPattern(old, BO_ADDR, BO_SIZE, 0x61);
   reg.releaseProcessMappings(100);
   expect(reg.get(100, 1)).toBeDefined();
@@ -455,4 +480,212 @@ it("merges importer writes and disjoint changes in one page while preserving sta
   expect(reg.pixelView(1)![8]).toBe(30);
   reg.destroy(200, 1);
   expect(reg.pixelView(1)).toBeUndefined();
+});
+
+describe("device writes into mapped CPU storage", () => {
+  it("refreshes every mapped reader and its publication snapshot", () => {
+    const memories = new Map([[100, newMemory()], [200, newMemory()]]);
+    const reg = new GbmBoRegistry({getProcessMemory: pid => memories.get(pid)});
+    reg.create({pid:100,bo_id:1,size:16,w:2,h:2,stride:8});
+    reg.bind(100,1,8,16); reg.primeBindFromSab(100,1,memories.get(100)!);
+    reg.bind(200,1,32,16); reg.primeBindFromSab(200,1,memories.get(200)!);
+    fillPattern(memories.get(100)!,8,16,90);
+    const pixels = Uint8Array.from({length:16}, (_, index) => index + 1);
+    expect(reg.publishDevicePixels(1,pixels)).toBe(true);
+    expect(readPattern(memories.get(100)!,8,16)).toEqual(pixels);
+    expect(readPattern(memories.get(200)!,32,16)).toEqual(pixels);
+    reg.syncToSab(1);
+    expect(reg.pixelView(1)).toEqual(pixels);
+    pixels.fill(0);
+    expect(reg.pixelView(1)).toEqual(Uint8Array.from({length:16},(_,index)=>index+1));
+  });
+  it("rejects short input and any stale mapping before changing canonical or peer bytes", () => {
+    const a = newMemory(), b = new WebAssembly.Memory({initial:2,maximum:2,shared:true});
+    const memories = new Map([[100,a],[200,b]]);
+    const reg = new GbmBoRegistry({getProcessMemory: pid => memories.get(pid)});
+    reg.create({pid:100,bo_id:1,size:16,w:2,h:2,stride:8});
+    reg.bind(100,1,8,16); reg.primeBindFromSab(100,1,memories.get(100)!);
+    reg.bind(200,1,65536,16); reg.primeBindFromSab(200,1,memories.get(200)!);
+    expect(reg.publishDevicePixels(1,new Uint8Array(15))).toBe(false);
+    expect(reg.publishDevicePixels(99,new Uint8Array(16))).toBe(false);
+    memories.set(200,newMemory());
+    expect(reg.publishDevicePixels(1,new Uint8Array(16).fill(9))).toBe(false);
+    expect(reg.pixelView(1)).toEqual(new Uint8Array(16));
+    expect(readPattern(a,8,16)).toEqual(new Uint8Array(16));
+    expect(readPattern(b,65536,16)).toEqual(new Uint8Array(16));
+  });
+});
+
+it("does not publish device pixels into a mapping awaiting mmap zero-fill",()=>{
+  const a=new WebAssembly.Memory({initial:1,maximum:1,shared:true});
+  const b=new WebAssembly.Memory({initial:1,maximum:1,shared:true});
+  const reg=new GbmBoRegistry({getProcessMemory:pid=>pid===1?a:b});
+  reg.create({pid:1,bo_id:1,size:16,w:2,h:2,stride:8});
+  reg.bind(1,1,0,16);reg.primeBindFromSab(1,1,a);
+  reg.bind(2,1,0,16); // Worker has not completed mmap's zero-fill/prime fence.
+  const frame=new Uint8Array(16).fill(7);
+  expect(reg.publishDevicePixels(1,frame)).toBe(true);
+  new Uint8Array(b.buffer,0,16).fill(0); // Normal pending mmap zero-fill.
+  reg.syncToSab(1); // A device/readiness tick must not publish that zero-fill.
+  expect(reg.pixelView(1)).toEqual(frame);
+  reg.primeBindFromSab(2,1,b);
+  expect(new Uint8Array(b.buffer,0,16)).toEqual(frame);
+});
+
+it("keeps both mappings of one BO in the same process authoritative",()=>{
+  const memory=new WebAssembly.Memory({initial:1,maximum:1});
+  const registry=new GbmBoRegistry({getProcessMemory:()=>memory});
+  registry.create({pid:7,bo_id:41,size:16,w:2,h:2,stride:8});
+  registry.bind(7,41,1024,16);registry.primeBindFromSab(7,41,memory);
+  registry.bind(7,41,2048,16);registry.primeBindFromSab(7,41,memory);
+  const first=new Uint8Array(memory.buffer,1024,16),second=new Uint8Array(memory.buffer,2048,16);
+  first[0]=71;registry.syncToSab(41);
+  expect(registry.pixelView(41)![0]).toBe(71);
+  second[1]=81;registry.syncToSab(41);
+  expect([...registry.pixelView(41)!].slice(0,2)).toEqual([71,81]);
+  registry.syncImportsForPid(7,memory);
+  expect([...first].slice(0,2)).toEqual([71,81]);expect([...second].slice(0,2)).toEqual([71,81]);
+});
+
+it("retires exactly one mapping and primes the requested address after zero-fill",()=>{
+  const memory=new WebAssembly.Memory({initial:1,maximum:1});
+  const registry=new GbmBoRegistry({getProcessMemory:()=>memory});
+  registry.create({pid:7,bo_id:41,size:16,w:2,h:2,stride:8});
+  registry.pixelView(41)!.fill(42);
+  registry.bind(7,41,1024,16);registry.bind(7,41,2048,16);
+  registry.primeBindFromSab(7,41,memory,1024);
+  expect([...new Uint8Array(memory.buffer,1024,16)]).toEqual(Array(16).fill(42));
+  expect([...new Uint8Array(memory.buffer,2048,16)]).toEqual(Array(16).fill(0));
+  registry.syncToSab(41);expect([...registry.pixelView(41)!]).toEqual(Array(16).fill(42));
+  registry.primeBindFromSab(7,41,memory,2048);
+  registry.unbind(7,41,1024);
+  expect(registry.findBindingByAddr(7,1024)).toBeUndefined();
+  expect(registry.findBindingByAddr(7,2048)).toBe(41);
+  new Uint8Array(memory.buffer,2048,16)[0]=91;registry.syncToSab(41);
+  expect(registry.pixelView(41)![0]).toBe(91);
+  registry.releaseProcessMappings(7);expect(registry.findBindingByAddr(7,2048)).toBeUndefined();
+});
+
+it("primes inherited aliases only after clone bytes are ready and rejects an invalid sibling atomically",()=>{
+  const parent=new WebAssembly.Memory({initial:1,maximum:1});
+  const child=new WebAssembly.Memory({initial:1,maximum:1});
+  const registry=new GbmBoRegistry({getProcessMemory:pid=>pid===7?parent:child});
+  registry.create({pid:7,bo_id:41,size:16,w:2,h:2,stride:8});
+  registry.bind(7,41,1024,16);registry.primeBindFromSab(7,41,parent,1024);
+  new Uint8Array(parent.buffer,1024,16).fill(71);
+  registry.bind(8,41,1024,16);registry.bind(8,41,65530,16);
+  new Uint8Array(child.buffer,1024,16).fill(123);
+  expect(registry.primeProcessMappings(8,child)).toBe(false);
+  expect([...new Uint8Array(child.buffer,1024,16)]).toEqual(Array(16).fill(123));
+  registry.syncToSab(41);expect([...registry.pixelView(41)!]).toEqual(Array(16).fill(71));
+  registry.unbind(8,41,65530);expect(registry.primeProcessMappings(8,child)).toBe(true);
+  expect([...new Uint8Array(child.buffer,1024,16)]).toEqual(Array(16).fill(71));
+  new Uint8Array(child.buffer,1024,16)[1]=81;registry.syncImportsForPid(7,parent);
+  expect([...new Uint8Array(parent.buffer,1024,2)]).toEqual([71,81]);
+});
+
+it("retains canonical offsets and coherence in both partial-unmap fragments", () => {
+  const page = 65536;
+  const memory = new WebAssembly.Memory({initial: 4, maximum: 4, shared: true});
+  const bytes = new Uint8Array(memory.buffer);
+  const registry = new GbmBoRegistry({getProcessMemory: pid => pid === 100 ? memory : undefined});
+  registry.create({pid: 100, bo_id: 901, size: 3*page, w: 256, h: 192, stride: 1024});
+  registry.pixelView(901)![0] = 17;
+  registry.pixelView(901)![page] = 29;
+  registry.pixelView(901)![2*page] = 59;
+  expect(registry.bind(100,901,page,3*page)).toBe(0);
+  registry.primeBindFromSab(100,901,memory,page);
+  registry.unbind(100,901,2*page,page);
+  expect(registry.get(100,901)?.binding).toEqual({addr:3*page,len:page,boOffset:2*page});
+  bytes[2*page] = 88; // This removed page no longer owns any device bytes.
+  bytes[3*page] = 99;
+  registry.syncToSab(901);
+  expect(registry.pixelView(901)![page]).toBe(29);
+  expect(registry.pixelView(901)![2*page]).toBe(99);
+  const device = registry.pixelView(901)!.slice(); device[0]=41; device[2*page]=61;
+  expect(registry.publishDevicePixels(901,device)).toBe(true);
+  expect(bytes[page]).toBe(41);
+  expect(bytes[2*page]).toBe(88);
+  expect(bytes[3*page]).toBe(61);
+  const child = new WebAssembly.Memory({initial:2,maximum:2,shared:true});
+  expect(registry.bind(101,901,page,page,2*page)).toBe(0);
+  expect(registry.primeProcessMappings(101,child)).toBe(true);
+  expect(new Uint8Array(child.buffer)[page]).toBe(61);
+});
+
+it("preserves a pending reader created while retiring another alias", () => {
+  const page = 65536;
+  const memory = new WebAssembly.Memory({initial: 5, maximum: 5});
+  const bytes = new Uint8Array(memory.buffer);
+  const registry = new GbmBoRegistry({getProcessMemory: () => memory});
+  registry.create({pid: 100, bo_id: 902, size: 2*page, w: 256, h: 128, stride: 1024});
+  registry.pixelView(902)![page] = 17;
+  for (const addr of [page, 3*page]) {
+    registry.bind(100,902,addr,2*page);
+    registry.primeBindFromSab(100,902,memory,addr);
+  }
+  bytes[2*page] = 59;
+  registry.unbind(100,902,page,3*page);
+  expect(bytes[4*page]).toBe(17);
+  expect(registry.hasStaleableImports(100)).toBe(true);
+  registry.syncImportsForPid(100,memory);
+  expect(bytes[4*page]).toBe(59);
+});
+
+it("retires replaced VMA bytes before a different BO can overwrite them", () => {
+  const page=65536, memory=new WebAssembly.Memory({initial:6,maximum:6});
+  const bytes=new Uint8Array(memory.buffer);
+  const registry=new GbmBoRegistry({getProcessMemory:()=>memory});
+  registry.create({pid:100,bo_id:910,size:3*page,w:256,h:192,stride:1024});
+  registry.create({pid:100,bo_id:911,size:page,w:256,h:64,stride:1024});
+  registry.bind(100,910,page,3*page);
+  registry.primeBindFromSab(100,910,memory,page);
+  bytes[page]=41;bytes[2*page]=55;bytes[3*page]=61;
+  registry.pixelView(911)![0]=99;
+  expect(registry.bind(100,911,2*page,page,0,page)).toBe(0);
+  bytes.fill(0,2*page,3*page); // Normal mmap population happens after bind admission.
+  registry.primeBindFromSab(100,911,memory,2*page);
+  registry.syncToSab(910);
+  expect(registry.pixelView(910)![page]).toBe(55);
+  expect(registry.get(100,910)?.binding).toEqual({addr:3*page,len:page,boOffset:2*page});
+  bytes[2*page]=101;registry.syncToSab(911);
+  const device=registry.pixelView(910)!.slice();
+  device[0]=31;device[page]=77;device[2*page]=93;
+  expect(registry.publishDevicePixels(910,device)).toBe(true);
+  expect([bytes[page],bytes[2*page],bytes[3*page]]).toEqual([31,101,93]);
+  expect(registry.pixelView(911)![0]).toBe(101);
+  registry.destroy(100,910);
+  expect(registry.get(100,911)?.binding).toEqual({addr:2*page,len:page});
+});
+
+it("flushes overlapping aliases before the same BO is remapped and zero-filled", () => {
+  const page=65536, memory=new WebAssembly.Memory({initial:6,maximum:6});
+  const bytes=new Uint8Array(memory.buffer);
+  const registry=new GbmBoRegistry({getProcessMemory:()=>memory});
+  registry.create({pid:100,bo_id:912,size:3*page,w:256,h:192,stride:1024});
+  registry.bind(100,912,page,3*page);
+  registry.primeBindFromSab(100,912,memory,page);
+  bytes[page]=41;bytes[2*page]=55;bytes[3*page]=61;
+  expect(registry.bind(100,912,2*page,3*page,0,3*page)).toBe(0);
+  bytes.fill(0,2*page,5*page);
+  registry.primeBindFromSab(100,912,memory,2*page);
+  expect([bytes[2*page],bytes[3*page],bytes[4*page]]).toEqual([41,55,61]);
+  bytes[2*page]=88;registry.syncImportsForPid(100,memory);
+  expect(bytes[page]).toBe(88);
+  expect(registry.get(100,912)?.binding).toEqual({addr:2*page,len:3*page});
+});
+
+it("preserves all prior VMA metadata when a replacement observer rejects admission", () => {
+  const page=65536, memory=new WebAssembly.Memory({initial:6,maximum:6});
+  const registry=new GbmBoRegistry({getProcessMemory:()=>memory});
+  registry.create({pid:100,bo_id:913,size:3*page,w:256,h:192,stride:1024});
+  registry.create({pid:100,bo_id:914,size:page,w:256,h:64,stride:1024});
+  registry.bind(100,913,page,3*page);registry.primeBindFromSab(100,913,memory,page);
+  const remove=registry.onChange(()=>{throw new Error("rejected observer");});
+  let result=-1;
+  try {result=registry.bind(100,914,2*page,page,0,page);} catch {}
+  remove();
+  expect(result).toBeLessThan(0);
+  expect(registry.get(100,913)?.binding).toEqual({addr:page,len:3*page});
+  expect(registry.get(100,914)?.binding).toBeNull();
 });

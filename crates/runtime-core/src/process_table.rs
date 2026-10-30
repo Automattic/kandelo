@@ -458,24 +458,13 @@ pub fn bump_inherited_resource_refcounts(
 }
 
 /// Incref every DRI bo referenced by the child's inherited card0 / renderD128
-/// / prime-fd OFDs — GEM-handle maps, KMS framebuffers, and prime-bo bindings.
+/// / prime-fd OFDs — GEM-handle maps and prime-bo bindings. KMS framebuffers
+/// are not per-copy: the clone shares the parent's `SharedKmsFbs`.
 ///
-/// **Spawn-only**, deliberately NOT folded into
-/// [`bump_inherited_resource_refcounts`]: unlike pipes/sockets/PTYs (whose
-/// refcount bumps live solely in that shared helper), DRI bos are increfed on
-/// the *fork* path inside deserialize (`fork::read_dri_fd_state` /
-/// `read_kms_fd_state` / the PrimeBo arm). `spawn_child`, however, builds the
-/// child by value-cloning the parent's `ofd_table` and never deserializes, so
-/// its inherited DRI OFDs carry no registry ref. Calling this from
-/// `bump_inherited_resource_refcounts` would double-incref on `fork_process`
-/// (deserialize + bump). Keeping it spawn-local balances the child's
-/// eventual close-path decref (`dri_release_ofd_state`) exactly once.
-///
-/// Without this, a `posix_spawn`'d client that inherits the compositor's
-/// `O_CLOEXEC` card0 fd (carrying the scanout bo's GEM handle + KMS
-/// framebuffer) decrefs those bos on exec with no matching incref, tombstoning
-/// the compositor's still-live scanout bo in the global `BoRegistry` and
-/// freezing the desktop under a `gbm_bo_map` EINVAL flood.
+/// Spawn clones the live GEM and framebuffer namespaces; those table entries
+/// already own their BO references. Only copied cursor and PRIME sidecars need
+/// another reference. Fork obtains those references while deserializing, then
+/// settles temporary GEM snapshot references when relinking the live namespace.
 fn bump_inherited_dri_bos(child: &Process) {
     for (_idx, ofd) in child.ofd_table.iter() {
         let Some(dri_state) = ofd.dri_state.as_deref() else {
@@ -485,22 +474,42 @@ fn bump_inherited_dri_bos(child: &Process) {
             crate::ofd::DriOfdState::PrimeBo(p) => {
                 reg.incref(p.bo_id);
             }
-            crate::ofd::DriOfdState::RenderNode(dri) => {
-                for bo_id in dri.handles.values() {
-                    reg.incref(*bo_id);
-                }
+            crate::ofd::DriOfdState::RenderNode(_) => {}
+            crate::ofd::DriOfdState::Card { .. } => {}
+        });
+    }
+}
+
+/// A fallible fork preparation owns CPU mapping references until the child
+/// record adopts them. Parent mappings retain a reference during rollback,
+/// so this guard never needs an external final-destruction notification.
+struct DriMappingInheritance(Vec<crate::process::DriBoBinding>);
+impl DriMappingInheritance {
+    fn acquire(parent: &Process) -> Result<Self, Errno> {
+        let mut bindings = Vec::new();
+        bindings.try_reserve_exact(parent.dri_bindings.len()).map_err(|_| Errno::ENOMEM)?;
+        bindings.extend_from_slice(&parent.dri_bindings);
+        crate::dri::with_registry(|registry| {
+            for (index, binding) in bindings.iter().enumerate() {
+                if bindings[..index].iter().any(|old| old.bo_id == binding.bo_id) { continue; }
+                let count = u32::try_from(bindings.iter().filter(|other| other.bo_id == binding.bo_id).count())
+                    .map_err(|_| Errno::EOVERFLOW)?;
+                registry.get(binding.bo_id).ok_or(Errno::EINVAL)?.refcount.checked_add(count).ok_or(Errno::EOVERFLOW)?;
             }
-            crate::ofd::DriOfdState::Card { dri, kms } => {
-                for bo_id in dri.handles.values() {
-                    reg.incref(*bo_id);
-                }
-                for fb in kms.fbs.values() {
-                    reg.incref(fb.bo_id);
-                }
-                if let Some(bo) = kms.cursor_bo {
-                    reg.incref(bo);
-                }
+            for binding in &bindings {
+                assert!(registry.incref(binding.bo_id).is_some(), "preflighted CPU mapping fork reference");
             }
+            Ok(())
+        })?;
+        Ok(Self(bindings))
+    }
+    fn take(&mut self) -> Vec<crate::process::DriBoBinding> { core::mem::take(&mut self.0) }
+}
+impl Drop for DriMappingInheritance {
+    fn drop(&mut self) {
+        crate::dri::with_registry(|registry| for binding in &self.0 {
+            let count = registry.decref(binding.bo_id).expect("prepared CPU mapping reference");
+            assert!(count > 0, "live parent retains the mapping during fork rollback");
         });
     }
 }
@@ -746,11 +755,17 @@ impl ProcessTable {
         let mut host_net_closes: Vec<i32> = Vec::new();
         // A trapped process or failed launch may never execute close().
         // Retire the same kernel references as close, before discarding OFDs.
-        let mut dri_effects = Vec::new();
+        let mut dri_effects = crate::syscalls::collect_dri_mapping_releases(core::mem::take(&mut proc.dri_bindings));
+        dri_effects.extend(crate::syscalls::collect_process_gl_image_release_effects(&mut proc));
         let dri_ofds: Vec<_> = proc.ofd_table.iter()
             .filter_map(|(idx, ofd)| ofd.dri_state.as_ref().map(|_| idx)).collect();
         for idx in dri_ofds {
-            let state = proc.ofd_table.get_mut(idx).unwrap().dri_state.take();
+            let mut state = proc.ofd_table.get_mut(idx).unwrap().dri_state.take();
+            if let Some(state) = state.as_deref_mut() {
+                dri_effects.extend(crate::syscalls::collect_owned_gl_image_release_effects(
+                    pid as i32, state,
+                ));
+            }
             dri_effects.extend(crate::syscalls::collect_dri_release_effects(pid as i32, idx, state));
         }
 
@@ -986,6 +1001,7 @@ impl ProcessTable {
         let mut deferred_lock_state_changed = false;
         while let Some(release) = crate::pipe::pop_deferred_in_flight_release() {
             let released = crate::pipe::release_deferred_in_flight_resource(release);
+            dri_effects.extend(released.dri_effects);
             if let Some(handle) = released.host_close {
                 host_closes.push(handle);
             }
@@ -1354,7 +1370,7 @@ impl ProcessTable {
         caller_tid: u32,
         mode: wasm_posix_shared::fork_contract::Mode,
     ) -> Result<u32, Errno> {
-        let (serialized_parent, caller_blocked) = {
+        let (serialized_parent, caller_blocked, mut dri_mappings) = {
             let parent = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?;
             if matches!(
                 parent.state,
@@ -1374,9 +1390,11 @@ impl ProcessTable {
             if parent.vfork_child && mode == wasm_posix_shared::fork_contract::Mode::Vfork {
                 return Err(Errno::EAGAIN);
             }
+            let mappings = DriMappingInheritance::acquire(parent)?;
             (
                 serialize_fork_state_with_growing_buffer(parent)?,
                 parent.blocked_for(caller_tid),
+                mappings,
             )
         };
 
@@ -1396,6 +1414,12 @@ impl ProcessTable {
                 .get(&parent_pid)
                 .ok_or(Errno::ESRCH)?
                 .ofd_table,
+            |bo| crate::dri::with_registry(|registry| {
+                // The matching live parent handle still owns a reference.
+                let before = registry.get(bo).expect("live parent GEM BO").refcount;
+                assert!(before >= 2, "fork snapshot must own a duplicate GEM reference");
+                assert_eq!(registry.decref(bo), Some(before - 1));
+            }),
         )?;
         // POSIX fork leaves one thread in the child, and that thread inherits
         // the mask of the task that called fork rather than the process
@@ -1412,6 +1436,9 @@ impl ProcessTable {
         // return the same fds as the parent did when re-running
         // pre-fork code). Spawn doesn't replay, so this stays fork-local.
         child.fork_pipe_replay = build_fork_pipe_replay(&child);
+        // Mapping identity comes from the live parent, not serialized guest
+        // state. Descriptors can already be closed while mappings survive.
+        child.dri_bindings = dri_mappings.take();
 
         self.processes.insert(child_pid, child);
 
@@ -2770,6 +2797,30 @@ mod wait_tests {
         assert_eq!(table.get(parent_pid).unwrap().pointer_width, 4);
         let child_pid = table.fork_process_for_caller(parent_pid, parent_pid).unwrap();
         assert_eq!(table.get(child_pid).unwrap().pointer_width, 4);
+    }
+
+    #[test]
+    fn fork_inherits_cpu_mapping_ownership_without_any_open_descriptor() {
+        use wasm_posix_shared::fork_contract::Mode;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for mode in [Mode::Fork, Mode::Vfork] {
+            crate::dri::bo::reset_registry();
+            let mut table = ProcessTable::new();
+            let parent_pid = table.create_process().unwrap();
+            let bo = crate::dri::with_registry(|registry| registry.try_alloc(4,4,32).unwrap().id);
+            table.get_mut(parent_pid).unwrap().dri_bindings.push(crate::process::DriBoBinding {addr:65536,len:65536,bo_id:bo,bo_offset:0});
+            let child_pid = table.fork_process_for_caller_with_mode(parent_pid,parent_pid,mode).unwrap();
+            let bindings = &table.get(child_pid).unwrap().dri_bindings;
+            assert_eq!(bindings.len(),1); assert_eq!((bindings[0].addr,bindings[0].len,bindings[0].bo_id),(65536,65536,bo));
+            assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).unwrap().refcount),2);
+            let parent = table.remove_process(parent_pid).unwrap();
+            assert!(parent.dri_effects.contains(&crate::syscalls::DriReleaseEffect::UnbindBo {bo_id:bo,addr:65536,len:65536}));
+            assert!(!parent.dri_effects.contains(&crate::syscalls::DriReleaseEffect::DestroyBo(bo)));
+            assert_eq!(crate::dri::with_registry(|registry| registry.get(bo).unwrap().refcount),1);
+            let child = table.remove_process(child_pid).unwrap();
+            assert!(child.dri_effects.contains(&crate::syscalls::DriReleaseEffect::DestroyBo(bo)));
+            assert!(crate::dri::with_registry(|registry| registry.get(bo).is_none()));
+        }
     }
 
     #[test]

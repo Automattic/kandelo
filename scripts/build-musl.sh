@@ -86,9 +86,9 @@ INPUT_HASH="$(kandelo_musl_input_hash "$REPO_ROOT" "$ARCH" "$CC" "$CALLTYPES_PLU
 if [ "$ENSURE" = 1 ] && [ "${KANDELO_BOOTSTRAP_FORCE_REBUILD:-0}" != 1 ] && \
     kandelo_musl_is_current "$SYSROOT" "$INPUT_HASH"; then
     echo "==> $ARCH musl sysroot is current ($INPUT_HASH)"
-    if [ "$CORE_ONLY" = 0 ] && [ "$ARCH" = wasm32posix ]; then
-        bash "$REPO_ROOT/scripts/build-dri-stubs.sh"
-        bash "$REPO_ROOT/scripts/build-gles-stubs.sh"
+    if [ "$CORE_ONLY" = 0 ]; then
+        bash "$REPO_ROOT/scripts/build-dri-stubs.sh" --arch "$ARCH"
+        bash "$REPO_ROOT/scripts/build-gles-stubs.sh" --arch "$ARCH"
     fi
     exit 0
 fi
@@ -460,10 +460,10 @@ SYSROOT="$FINAL_SYSROOT"
 # ---------------------------------------------------------------
 # 10. Build platform graphics/DRI stub libraries
 # ---------------------------------------------------------------
-if [ "$ARCH" = "wasm32posix" ] && [ "$CORE_ONLY" = 0 ]; then
+if [ "$CORE_ONLY" = 0 ]; then
     echo "==> Building platform graphics stubs..."
-    bash "$REPO_ROOT/scripts/build-dri-stubs.sh"
-    bash "$REPO_ROOT/scripts/build-gles-stubs.sh"
+    bash "$REPO_ROOT/scripts/build-dri-stubs.sh" --arch "$ARCH"
+    bash "$REPO_ROOT/scripts/build-gles-stubs.sh" --arch "$ARCH"
 fi
 
 # ---------------------------------------------------------------

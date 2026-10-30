@@ -1,0 +1,65 @@
+# Per-library manifest for xkeyboard-config. See docs/package-management.md.
+#
+# xkeyboard-config 2.48 is the XKB keyboard description database: the
+# rules, keycodes, types, compat and symbols files libxkbcommon reads when
+# a program compiles a keymap from RMLVO names (xkb_keymap_new_from_names,
+# default evdev/pc105/us). Kandelo's libxkbcommon looks for it at
+# /usr/share/X11/xkb (its -Dxkb-config-root).
+#
+# The package is data only: no code is compiled for the target, so it is
+# a library whose outputs are files, the same shape libinput uses for its
+# device quirks. The tree is published twice:
+#   share/X11/xkb               the installed tree, for host-side readers
+#   share/xkeyboard-config.zip  the same tree packed as one declared file;
+#                               image builders unpack it at /usr/share/X11/xkb
+# A consuming program package republishes the zip as a [[runtime_files]]
+# entry, as wayland-demo does for libinput-quirks.zip.
+
+kind = "library"
+
+name = "xkeyboard-config"
+version = "2.48"
+kernel_abi = 52
+depends_on = []
+
+[[host_tools]]
+name = "meson"
+version_constraint = ">=1.4.0"
+install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "ninja"
+version_constraint = ">=1.8"
+install_hints = { darwin = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh" }
+
+# Generates the rules files (rules.generator) and packs the declared zip.
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.11"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+# Generates the evdev.lst and base.lst listings (rules/xml2lst.pl).
+[[host_tools]]
+name = "perl"
+version_constraint = ">=5.0.0"
+probe = { args = ["-e", "print $^V"], version_regex = "v(\\d+\\.\\d+\\.\\d+)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[source]
+url = "https://www.x.org/releases/individual/data/xkeyboard-config/xkeyboard-config-2.48.tar.xz"
+sha256 = "b77041324f0109f77161ee43743fe04baa485866af8460d31e476ad3f7648fd5"
+provider = "archive"
+
+[license]
+spdx = "HPND AND MIT"
+url = "https://gitlab.freedesktop.org/xkeyboard-config/xkeyboard-config/-/blob/xkeyboard-config-2.48/COPYING"
+
+[build]
+script_path = "packages/registry/xkeyboard-config/build-xkeyboard-config.sh"
+
+[outputs]
+files = [
+  "share/X11/xkb/rules/evdev",
+  "share/xkeyboard-config.zip",
+]

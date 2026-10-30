@@ -4772,7 +4772,7 @@ fn fd_flags() -> [(&'static str, u32); 2] {
     [("FD_CLOEXEC", FD_CLOEXEC), ("FD_CLOFORK", FD_CLOFORK)]
 }
 
-fn fcntl_commands() -> [(&'static str, u32); 15] {
+fn fcntl_commands() -> [(&'static str, u32); 16] {
     use shared::fcntl_cmd::*;
 
     [
@@ -4786,6 +4786,7 @@ fn fcntl_commands() -> [(&'static str, u32); 15] {
         ("F_SETLKW", F_SETLKW),
         ("F_SETOWN", F_SETOWN),
         ("F_GETOWN", F_GETOWN),
+        ("F_DUPFD_QUERY", F_DUPFD_QUERY),
         ("F_DUPFD_CLOEXEC", F_DUPFD_CLOEXEC),
         ("F_DUPFD_CLOFORK", F_DUPFD_CLOFORK),
         ("F_OFD_GETLK", F_OFD_GETLK),
@@ -5582,14 +5583,15 @@ fn channel_signal_area() -> Value {
 
 fn marshalled_structs() -> Value {
     use shared::dri::{
-        WpkDrmBindForeignTexture, WpkDrmEventVblank, WpkDrmGemClose, WpkDrmGetCap,
+        WpkDrmBindForeignTexture, WpkDrmImportImage, WpkDrmEventVblank, WpkDrmGemClose, WpkDrmGetCap,
         WpkDrmGpuBoCreate, WpkDrmModeCardRes, WpkDrmModeCreateDumb, WpkDrmModeCrtcPageFlip,
         WpkDrmModeDestroyDumb, WpkDrmModeFbCmd2, WpkDrmModeGetConnector, WpkDrmModeGetCrtc,
         WpkDrmModeGetEncoder, WpkDrmModeMapDumb, WpkDrmModeModeinfo, WpkDrmPrimeHandle,
         WpkDrmVersion, WpkDrmWaitVblankReply, WpkDrmWaitVblankRequest,
+        WpkDrmModeFbCmd, WpkDrmModeSetPlane,
     };
     use shared::fbdev::{FbBitfield, FbFixScreenInfo, FbVarScreenInfo};
-    use shared::gl::{GlContextAttrs, GlQueryInfo, GlSubmitInfo, GlSurfaceAttrs};
+    use shared::gl::{GlContextAttrs, GlInitInfo, GlMakeCurrent, GlQueryInfo, GlQueryInfo64, GlSubmitInfo, GlSurfaceAttrs, GlSurfaceFrontCopyInfo};
     use shared::oss::{AudioBufInfo, CountInfo};
     use shared::pcm::PcmSharedControl;
     use shared::{
@@ -5825,14 +5827,24 @@ fn marshalled_structs() -> Value {
         }),
     );
     structs.insert(
+        "GlInitInfo".into(),
+        struct_layout!(GlInitInfo { op_version, role, display_fd, display_id }),
+    );
+    structs.insert(
         "GlSubmitInfo".into(),
         struct_layout!(GlSubmitInfo { offset, length }),
+    );
+    structs.insert(
+        "GlMakeCurrent".into(),
+        struct_layout!(GlMakeCurrent { context_id, draw_surface_id, read_surface_id }),
     );
     structs.insert(
         "GlContextAttrs".into(),
         struct_layout!(GlContextAttrs {
             client_version,
-            reserved
+            share_context_id,
+            reserved,
+            context_id
         }),
     );
     structs.insert(
@@ -5846,6 +5858,12 @@ fn marshalled_structs() -> Value {
         }),
     );
     structs.insert(
+        "GlSurfaceFrontCopyInfo".into(),
+        struct_layout!(GlSurfaceFrontCopyInfo {
+            kind, width, height, config_id, target_reserved, copy_target_bo, format, pitch
+        }),
+    );
+    structs.insert(
         "GlQueryInfo".into(),
         struct_layout!(GlQueryInfo {
             op,
@@ -5854,6 +5872,13 @@ fn marshalled_structs() -> Value {
             out_buf_ptr,
             out_buf_len,
             reserved
+        }),
+    );
+    structs.insert(
+        "GlQueryInfo64".into(),
+        struct_layout!(GlQueryInfo64 {
+            op, padding0, in_buf_ptr, in_buf_len, padding1,
+            out_buf_ptr, out_buf_len, reserved
         }),
     );
     structs.insert(
@@ -5914,6 +5939,10 @@ fn marshalled_structs() -> Value {
             format,
             usage
         }),
+    );
+    structs.insert(
+        "WpkDrmImportImage".into(),
+        struct_layout!(WpkDrmImportImage { bo_handle, ctx_id, width, height, format, pitch, offset, source }),
     );
     structs.insert(
         "WpkDrmBindForeignTexture".into(),
@@ -6006,6 +6035,13 @@ fn marshalled_structs() -> Value {
             possible_clones
         }),
     );
+    structs.insert("WpkDrmModeFbCmd".into(), struct_layout!(WpkDrmModeFbCmd {
+        fb_id, width, height, pitch, bpp, depth, handle
+    }));
+    structs.insert("WpkDrmModeSetPlane".into(), struct_layout!(WpkDrmModeSetPlane {
+        plane_id, crtc_id, fb_id, flags, crtc_x, crtc_y, crtc_w, crtc_h,
+        src_x, src_y, src_h, src_w
+    }));
     structs.insert(
         "WpkDrmModeFbCmd2".into(),
         struct_layout!(WpkDrmModeFbCmd2 {
@@ -8844,7 +8880,7 @@ mod tests {
         assert_eq!(metadata["open_flags"].as_array().unwrap().len(), 16);
         assert_eq!(metadata["at_flags"].as_array().unwrap().len(), 4);
         assert_eq!(metadata["fd_flags"].as_array().unwrap().len(), 2);
-        assert_eq!(metadata["fcntl_commands"].as_array().unwrap().len(), 15);
+        assert_eq!(metadata["fcntl_commands"].as_array().unwrap().len(), 16);
         assert_eq!(metadata["access_modes"].as_array().unwrap().len(), 4);
         assert_eq!(metadata["statfs_flags"].as_array().unwrap().len(), 1);
         assert_eq!(metadata["file_modes"].as_array().unwrap().len(), 24);
@@ -8859,6 +8895,7 @@ mod tests {
             ("at_flags", "AT_EMPTY_PATH", json!(0x1000)),
             ("fd_flags", "FD_CLOFORK", json!(2)),
             ("fcntl_commands", "F_DUPFD_CLOFORK", json!(1028)),
+            ("fcntl_commands", "F_DUPFD_QUERY", json!(1027)),
             ("access_modes", "X_OK", json!(1)),
             ("statfs_flags", "ST_NOSUID", json!(2)),
             ("file_modes", "S_IFREG", json!(0o100000)),

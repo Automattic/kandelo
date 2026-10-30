@@ -249,4 +249,3 @@ describe("Kandelo exchange (Node host)", () => {
     }
   }, 60_000);
 });
-

@@ -1,0 +1,12 @@
+script_path = "packages/registry/swaybg/build-swaybg.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = "UNPUBLISHED"
+revision    = 1
+
+inputs = [
+  "packages/registry/swaybg/build-swaybg.sh",
+  "sdk/meson/wasm32posix.ini",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/wasm-artifact-guards.sh",
+]

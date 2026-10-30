@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ABI_SYSCALLS,
   CH_SYSCALL,
+  CH_REQUEST_FLAGS,
+  CHANNEL_REQUEST_FLAG_OPAQUE_RECORD,
   CH_SIG_BASE,
   CH_SIG_SIGNUM,
   CH_SIG_SI_CODE,
@@ -96,6 +98,28 @@ describe("exec worker retirement marker", () => {
     expect(view.getUint32(channelOffset + CH_SYSCALL, true)).toBe(ABI_SYSCALLS.Getpid);
     expect(view.getUint32(channelOffset + CH_SIG_SI_CODE, true)).toBe(EXIT_RETIRE_SIGNAL_CODE);
     expect(isExecRetirementMarker(view, channelOffset)).toBe(false);
+  });
+
+  it("publishes a fresh raw exit after an unhandled record request is torn down", () => {
+    const memory = new WebAssembly.Memory({ initial: 2, maximum: 2, shared: true });
+    const channelOffset = 64;
+    const view = new DataView(memory.buffer);
+    // Machine teardown may complete a PENDING request before dispatch has
+    // consumed its flags. The exit import must not inherit that record path.
+    view.setUint32(channelOffset + CH_REQUEST_FLAGS, CHANNEL_REQUEST_FLAG_OPAQUE_RECORD, true);
+    const imports = buildKernelImportsForTest(memory, channelOffset, 4);
+    const flags: number[] = [];
+    const wait = vi.spyOn(Atomics, "wait").mockImplementation(() => {
+      flags.push(view.getUint32(channelOffset + CH_REQUEST_FLAGS, true));
+      return "not-equal";
+    });
+    try {
+      expect(() => (imports.kernel_exit as CallableFunction)(137)).toThrow(WebAssembly.RuntimeError);
+      expect(flags).toEqual([0]);
+      expect(view.getUint32(channelOffset + CH_SYSCALL, true)).toBe(ABI_SYSCALLS.Exit);
+    } finally {
+      wait.mockRestore();
+    }
   });
 
 });

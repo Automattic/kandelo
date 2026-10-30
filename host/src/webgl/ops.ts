@@ -31,6 +31,8 @@ export const OP_DELETE_BUFFERS              = 0x0101;
 export const OP_BIND_BUFFER                 = 0x0102;
 export const OP_BUFFER_DATA                 = 0x0103;
 export const OP_BUFFER_SUB_DATA             = 0x0104;
+export const OP_BEGIN_CLIENT_ARRAY           = 0x0105;
+export const OP_END_CLIENT_ARRAY             = 0x0106;
 
 export const OP_GEN_TEXTURES                = 0x0200;
 export const OP_DELETE_TEXTURES             = 0x0201;
@@ -106,7 +108,7 @@ export const QOP_FINISH                = 0x0E;
 
 /** Bumped in lockstep with `shared::gl::OP_VERSION`. The kernel's
  *  `GLIO_INIT` accepts versions 1 through this value. */
-export const OP_VERSION = 2;
+export const OP_VERSION = 17;
 
 // Additive GLES entry points used by native renderers; existing tags stay stable.
 export const OP_BLEND_EQUATION = 0x000F;
@@ -145,3 +147,65 @@ export const OP_READ_BUFFER = 0x070B;
 export const QOP_GET_ACTIVE_UNIFORM = 0x000F;
 export const QOP_GET_UNIFORMFV = 0x0010;
 export const QOP_GET_UNIFORMIV = 0x0011;
+
+// Op-table v3: logical object/state queries and sparse index usage.
+export const QOP_GET_BUFFER_PARAMETER = 0x0012;
+export const QOP_GET_VERTEX_ATTRIBIV = 0x0013;
+export const QOP_GET_VERTEX_ATTRIBFV = 0x0014;
+export const QOP_IS_OBJECT = 0x0015;
+export const QOP_IS_ENABLED = 0x0016;
+export const QOP_GET_INDEX_USAGE = 0x0017;
+
+// Op-table v4: remaining GLES2 core object queries.
+export const QOP_GET_ACTIVE_ATTRIB = 0x0018;
+export const QOP_GET_ATTACHED_SHADERS = 0x0019;
+export const QOP_GET_SHADER_SOURCE = 0x001A;
+export const QOP_GET_FB_ATTACHMENT = 0x001B;
+export const QOP_GET_RENDERBUFFER_PARAMETER = 0x001C;
+export const QOP_GET_TEX_PARAMETER = 0x001D;
+export const OP_VALIDATE_PROGRAM = 0x030B;
+
+// V5: acknowledged, transactional large shader source upload.
+export const QOP_SHADER_SOURCE_UPLOAD = 0x001E;
+
+// V7: checked uniform values, independent of client reflection caches.
+export const QOP_GET_UNIFORM_VALUES = 0x001F;
+
+// V8: checked active reflection and bounded name-lookup transactions.
+export const QOP_GET_ACTIVE_UNIFORM_INFO = 0x0020;
+export const QOP_LOOKUP_UNIFORM = 0x0021;
+
+// V9: checked texture/renderbuffer binds before C reference publication.
+export const QOP_BIND_IMAGE_OBJECT = 0x0022;
+
+// V10: logical image target/storage state; checked source token replies.
+export const QOP_IMAGE_TARGET = 0x0023;
+export const QOP_IMAGE_SOURCE_STATE = 0x0024;
+
+// V11: implicit bound image identity plus backend-ordered storage revision.
+export const QOP_BOUND_IMAGE_TARGET = 0x0025;
+export const QOP_BOUND_IMAGE_STATE = 0x0026;
+
+// V12: acknowledged image object deletion and framebuffer attachment.
+export const QOP_IMAGE_OBJECT_DELETE = 0x0027;
+export const QOP_IMAGE_ATTACHMENT = 0x0028;
+
+// V12: allocation-only opcode plus unchanged texture/RBO storage payload.
+export const QOP_IMAGE_STORAGE = 0x0029;
+
+// V13: framebuffer bind acknowledgement before C container selection changes.
+export const QOP_BIND_FRAMEBUFFER = 0x002A;
+
+// V14: buffer bind acknowledgement before C pointer/binding interpretation.
+export const QOP_BIND_BUFFER = 0x002B;
+
+// V15: buffer deletion acknowledgement before C references are released.
+export const QOP_DELETE_BUFFER = 0x002C;
+// V16: immutable surface limits before any logical context is current.
+export const QOP_SURFACE_CAPABILITIES = 0x002D;
+
+// V17: retained native fences with caller-known cancellation identities.
+export const QOP_CREATE_FENCE = 0x002E;
+export const QOP_FENCE_STATUS = 0x002F;
+export const QOP_RELEASE_FENCE = 0x0030;
+export const QOP_FLUSH = 0x0031;

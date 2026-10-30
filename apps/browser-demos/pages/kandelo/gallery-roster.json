@@ -63,6 +63,14 @@
     },
     {
       "product": "browser-main-shell",
+      "profile": "cage"
+    },
+    {
+      "product": "browser-main-shell",
+      "profile": "sway"
+    },
+    {
+      "product": "browser-main-shell",
       "profile": "omarchy"
     },
     {

@@ -23,9 +23,10 @@
 //!     (where `UPPER` is the dep name upper-cased with `-` → `_`),
 //!     the resolved cache path of that dep's `{lib,include,…}`.
 //!   * `WASM_POSIX_DEP_PKG_CONFIG_PATH` — colon-joined list of every
-//!     *transitively*-resolved lib's `lib/pkgconfig/` directory (only
-//!     paths that actually contain such a directory are included; libs
-//!     without pkgconfig — e.g. ncurses — are skipped). Consumers
+//!     *transitively*-resolved lib's `lib/pkgconfig/` and `share/pkgconfig/`
+//!     directories, pkg-config's own default pair (only directories that
+//!     exist are included; libs without pkgconfig — e.g. ncurses — are
+//!     skipped). Consumers
 //!     prepend it to `PKG_CONFIG_PATH` so pkg-config can chase
 //!     `Requires.private` chains across the whole dep graph.
 //!
@@ -10409,8 +10410,8 @@ fn try_fetch_without_deps(
 ///
 /// The transitive set lets the caller compose
 /// `WASM_POSIX_DEP_PKG_CONFIG_PATH` for the build script: every node
-/// gets every descendant's `lib/pkgconfig/` dir, which mirrors how
-/// pkg-config follows `Requires.private` chains.
+/// gets every descendant's pkgconfig dirs, which mirrors how pkg-config
+/// follows `Requires.private` chains.
 ///
 /// Deduped via `BTreeSet` so a diamond dep (`libZ -> {libA, libB} ->
 /// libCommon`) only contributes `libCommon`'s path once.
@@ -10953,12 +10954,14 @@ fn ensure_built_uncached(
 
 /// Build the `WASM_POSIX_DEP_PKG_CONFIG_PATH` value for a build script.
 ///
-/// Joins every transitive lib path's `lib/pkgconfig/` subdirectory with
-/// `:` — POSIX's standard search-path separator, and what pkg-config
-/// itself uses for `PKG_CONFIG_PATH`. Paths whose `lib/pkgconfig/`
-/// directory doesn't exist (e.g. ncurses, libs that ship no .pc file)
-/// are skipped: handing pkg-config a list of nonexistent search paths
-/// clutters diagnostics with no benefit.
+/// Joins every transitive lib path's `lib/pkgconfig/` and
+/// `share/pkgconfig/` subdirectories with `:` — POSIX's standard
+/// search-path separator, and what pkg-config itself uses for
+/// `PKG_CONFIG_PATH`. pkg-config searches both under a prefix:
+/// architecture-independent packages such as wayland-protocols install
+/// their `.pc` under `share/`. Directories that don't exist (e.g. ncurses,
+/// libs that ship no .pc file) are skipped: handing pkg-config a list of
+/// nonexistent search paths clutters diagnostics with no benefit.
 ///
 /// Returns an empty string when no transitive lib ships pkgconfig. The
 /// caller still sets the env var to that empty string, keeping the
@@ -10966,14 +10969,9 @@ fn ensure_built_uncached(
 fn compose_pkgconfig_path(paths: &BTreeSet<PathBuf>) -> String {
     paths
         .iter()
-        .filter_map(|p| {
-            let pc = p.join("lib").join("pkgconfig");
-            if pc.is_dir() {
-                Some(pc.to_string_lossy().into_owned())
-            } else {
-                None
-            }
-        })
+        .flat_map(|p| [p.join("lib").join("pkgconfig"), p.join("share").join("pkgconfig")])
+        .filter(|pc| pc.is_dir())
+        .map(|pc| pc.to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join(":")
 }
@@ -12548,7 +12546,7 @@ fn materialize_direct_dependencies(
 ///
 /// `pkgconfig_path` is the pre-composed value for
 /// `WASM_POSIX_DEP_PKG_CONFIG_PATH` — a colon-joined list of every
-/// transitive lib's `lib/pkgconfig/` dir. Always set, even when empty,
+/// transitive lib's `lib/pkgconfig/` and `share/pkgconfig/` dirs. Always set, even when empty,
 /// so the contract for build scripts stays uniform.
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum CacheProvenanceSnapshot {
@@ -14874,7 +14872,8 @@ fn build_into_cache(
 }
 
 /// Replace every occurrence of `tmp` with `canonical` inside
-/// installed `.pc` and `.la` files under `tmp/lib/…`. Runs while
+/// installed `.pc` and `.la` files under `tmp/lib/…` and the `.pc` files
+/// under `tmp/share/pkgconfig/`. Runs while
 /// the tree still lives at `tmp` so the observable canonical cache
 /// entry never contains a stale temp path.
 ///
@@ -14890,8 +14889,8 @@ fn rewrite_install_prefix_paths(tmp: &Path, canonical: &Path) -> Result<(), Stri
     }
     let lib_dir = tmp.join("lib");
     rewrite_dir(&lib_dir, &tmp_s, &canonical_s)?;
-    let pc_dir = lib_dir.join("pkgconfig");
-    rewrite_dir(&pc_dir, &tmp_s, &canonical_s)?;
+    rewrite_dir(&lib_dir.join("pkgconfig"), &tmp_s, &canonical_s)?;
+    rewrite_dir(&tmp.join("share").join("pkgconfig"), &tmp_s, &canonical_s)?;
     Ok(())
 }
 
@@ -27078,6 +27077,41 @@ libs = ["lib/libBar.a"]
     // path. These tests pin that behaviour.
 
     #[test]
+    fn share_pkgconfig_prefix_is_rewritten_to_canonical_path() {
+        let root = tempdir("sharepc-reg");
+        let cache = tempdir("sharepc-cache");
+        write_lib(
+            &root,
+            "libSharePc",
+            "1.0.0",
+            &[],
+            r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/share/pkgconfig"
+cat > "$WASM_POSIX_DEP_OUT_DIR/share/pkgconfig/libSharePc.pc" <<PCEOF
+prefix=$WASM_POSIX_DEP_OUT_DIR
+pkgdatadir=\${prefix}/share/libSharePc
+Name: libSharePc
+Version: 1.0.0
+PCEOF
+"#,
+            r#"[outputs]
+pkgconfig = ["share/pkgconfig/libSharePc.pc"]
+"#,
+        );
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libSharePc").unwrap();
+
+        let canonical =
+            ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
+
+        let pc = std::fs::read_to_string(canonical.join("share/pkgconfig/libSharePc.pc")).unwrap();
+        assert!(
+            pc.contains(&format!("prefix={}", canonical.display())),
+            "share/pkgconfig prefix must point at the canonical cache path; got:\n{pc}"
+        );
+    }
+
+    #[test]
     fn pkgconfig_prefix_is_rewritten_to_canonical_path() {
         let root = tempdir("pc-rewrite-reg");
         let cache = tempdir("pc-rewrite-cache");
@@ -27527,6 +27561,55 @@ libs = ["lib/libBaz.a"]
 
         let reg = Registry { roots: vec![root] };
         let m = reg.load("libBaz").unwrap();
+        ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
+    }
+
+    /// An architecture-independent dependency installs its `.pc` under
+    /// `share/pkgconfig/`, the second directory pkg-config searches under
+    /// a prefix. The consumer's `WASM_POSIX_DEP_PKG_CONFIG_PATH` carries it.
+    #[test]
+    fn pkg_config_path_includes_share_pkgconfig() {
+        let root = tempdir("pcshare-reg");
+        let cache = tempdir("pcshare-cache");
+        write_lib(
+            &root,
+            "libData",
+            "1.0.0",
+            &[],
+            r#"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/share/pkgconfig"
+cat > "$WASM_POSIX_DEP_OUT_DIR/share/pkgconfig/libData.pc" <<'PCEOF'
+Name: libData
+Version: 1.0.0
+PCEOF
+"#,
+            r#"[outputs]
+pkgconfig = ["share/pkgconfig/libData.pc"]
+"#,
+        );
+        write_lib(
+            &root,
+            "libUser",
+            "1.0.0",
+            &["libData@1.0.0"],
+            r#"
+case "$WASM_POSIX_DEP_PKG_CONFIG_PATH" in
+    *libData*share/pkgconfig*) : ;;
+    *)
+        echo "WASM_POSIX_DEP_PKG_CONFIG_PATH lacks libData's share/pkgconfig: $WASM_POSIX_DEP_PKG_CONFIG_PATH" >&2
+        exit 1
+        ;;
+esac
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+touch "$WASM_POSIX_DEP_OUT_DIR/lib/libUser.a"
+"#,
+            r#"[outputs]
+libs = ["lib/libUser.a"]
+"#,
+        );
+
+        let reg = Registry { roots: vec![root] };
+        let m = reg.load("libUser").unwrap();
         ensure_built(&m, &reg, TEST_ARCH, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
     }
 
@@ -34575,6 +34658,13 @@ spdx = "TestLicense"
             return;
         }
 
+        // WHY: the public resolve preflight may first build the native SDK
+        // driver, whose Cargo cache follows HOME. Provision that prerequisite
+        // before replacing HOME/XDG solely to detect ordinary package-cache
+        // access; the child still performs the normal freshness check.
+        crate::local_build::ensure_package_sysroot(&repo_root(), default_target_arch().unwrap())
+            .unwrap();
+
         let registry_root = tempdir("source-handoff-public-cli-registry");
         let (archive, digest) = fixture_source_archive(&registry_root);
         write_source_archive_fixture(&registry_root, "consumer-source", &archive, &digest);
@@ -34632,7 +34722,9 @@ printf 'PUBLIC\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/out.a"
         assert!(selected_base.join("source-archives/sha256").is_dir());
         assert!(
             !ordinary_cache_home.exists() && !ordinary_home.exists(),
-            "source-only CLI consulted an ordinary cache default",
+            "source-only CLI consulted an ordinary cache default:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
         );
 
         let origin_trap = registry_root.join("top-level-origin-must-not-open.tar.gz");

@@ -1,0 +1,41 @@
+# Per-library manifest consumed by `cargo xtask build-deps`.
+# Schema: see docs/package-management.md.
+
+kind = "library"
+
+# Seat management library (libseat.a) from seatd. wlroots requires it.
+# Built through upstream's meson build with the SDK cross file. Kandelo
+# has no logind and no seatd daemon, so consumers select the noop backend
+# with LIBSEAT_BACKEND=noop; it open()s device nodes directly. Upstream
+# refuses a noop-only build, so the seatd client backend is also built.
+# The logind and builtin backends and the seatd server are disabled.
+name = "libseat"
+version = "0.9.3"
+kernel_abi = 52
+
+[[host_tools]]
+name = "meson"
+version_constraint = ">=1.4.0"
+install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "ninja"
+version_constraint = ">=1.8"
+install_hints = { darwin = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh" }
+
+[source]
+url = "https://git.sr.ht/~kennylevinsen/seatd/archive/0.9.3.tar.gz"
+sha256 = "302564d54d8e28191fadfd734f2675ecb0c9e0615a58011b89ef15dfa4dbaa96"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://git.sr.ht/~kennylevinsen/seatd/tree/0.9.3/item/LICENSE"
+
+[build]
+script_path = "packages/registry/libseat/build-libseat.sh"
+
+[outputs]
+libs = ["lib/libseat.a"]
+headers = ["include/libseat.h"]
+pkgconfig = ["lib/pkgconfig/libseat.pc"]

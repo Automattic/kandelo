@@ -3,6 +3,9 @@ type MaybeExtensionProvider = {
 };
 
 const WEBGL2_CORE_GLES2_EXTENSIONS = [
+  // The host supplies an incomplete default framebuffer for surfaceless EGL
+  // bindings, including undefined status and native framebuffer errors.
+  "GL_OES_surfaceless_context",
   // WebGL2 has full non-power-of-two texture support. Expose the equivalent
   // GLES2 extension so native renderers keep NPOT mipmaps and wrap/filter
   // behavior instead of falling back to ES2's restricted NPOT path.

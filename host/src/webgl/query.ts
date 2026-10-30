@@ -1,3 +1,6 @@
+import { repairNativeState } from "./native-recovery.js";
+import { reconcileClientArrayRestore } from "./client-array.js";
+import { querySurfaceCapabilities } from "./surface-capabilities.js";
 /**
  * Synchronous GL query handler invoked by `host_gl_query`.
  *
@@ -16,9 +19,22 @@
  * delete and would collide). Indices are number-keyed for clean u32
  * round-tripping.
  */
+import { validImageStorageRequest, executeImageStorageRequest } from "./bridge.js";
+import { canonicalTexture, canonicalRenderbuffer, imageSourceToken, importImageStorage, boundImageState } from "./image-storage.js";
+import { collectRetiredImages, deleteImageObject, attachImageObject, bindFramebufferObject } from "./image-references.js";
+import { bindImageObject } from "./image-bindings.js";
+import { runUniformLookup, uniformLocation } from "./uniform-queries.js";
+import { checkedQueryReply, runStateQuery } from "./state-query.js";
+import { runObjectQuery } from "./object-query.js";
+import { runShaderSourceUpload } from "./shader-source.js";
+import { collectRetiredBuffers, deleteBufferNames } from "./buffer-references.js";
+import { bindBufferObject, canonicalBuffer } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
 import { getGlesExtensionString } from "./capabilities.js";
+import { checkedGlCall, currentProgramName, recordGlError } from "./program-objects.js";
+import { captureNativeGlErrors } from "./errors.js";
+import { boundFramebuffer, isDefaultFramebuffer, validFramebufferTarget, GL_FRAMEBUFFER_UNDEFINED } from "./framebuffer.js";
 
 const GL_VENDOR = 0x1F00;
 const GL_RENDERER = 0x1F01;
@@ -101,15 +117,111 @@ export function runGlQuery(
   input: Uint8Array,
   out: Uint8Array,
 ): number {
+  if ((op === O.QOP_FINISH || op === O.QOP_FLUSH) && (input.byteLength !== 0 || out.byteLength !== 0)) return -22;
+  if (op === O.QOP_SURFACE_CAPABILITIES) {
+    if (input.byteLength !== 0 || out.byteLength !== 16) return -22;
+    if (!b.gl) return -1;
+    captureNativeGlErrors(b.gl,b);
+    return querySurfaceCapabilities(b.gl,input,out);
+  }
   if (!b.gl) return -1;
   const gl = b.gl;
+  if (!repairNativeState(gl) || !reconcileClientArrayRestore(b,gl)) return -5;
+  if (op === O.QOP_LOOKUP_UNIFORM) return runUniformLookup(b,input,out);
+  if (op === O.QOP_SHADER_SOURCE_UPLOAD) return runShaderSourceUpload(b,input,out);
   const inDv = new DataView(input.buffer, input.byteOffset, input.byteLength);
   const outDv = new DataView(out.buffer, out.byteOffset, out.byteLength);
+
+  if (op === O.QOP_DELETE_BUFFER) {
+    if (input.byteLength !== 4 || out.byteLength !== 12) return -22;
+    return checkedQueryReply(b, out, 4, payload => {
+      if (!deleteBufferNames(b, [inDv.getUint32(0, true)])) return -5;
+      collectRetiredBuffers(b);
+      new DataView(payload.buffer).setUint32(0, 1, true);
+      return 4;
+    });
+  }
+  if (op === O.QOP_BIND_BUFFER) {
+    if (input.byteLength !== 8 || out.byteLength !== 12) return -22;
+    return checkedQueryReply(b, out, 4, payload => {
+      if (!bindBufferObject(b, inDv.getUint32(0, true), inDv.getUint32(4, true))) return -5;
+      collectRetiredBuffers(b);
+      new DataView(payload.buffer).setUint32(0, 1, true);
+      return 4;
+    });
+  }
+  if (op === O.QOP_BIND_FRAMEBUFFER) {
+    if (input.byteLength !== 8 || out.byteLength !== 12) return -22;
+    return checkedQueryReply(b, out, 4, payload => {
+      if (!bindFramebufferObject(b, inDv.getUint32(0, true), inDv.getUint32(4, true))) return -5;
+      collectRetiredImages(b);
+      new DataView(payload.buffer).setUint32(0, 1, true);
+      return 4;
+    });
+  }
+  if (op === O.QOP_IMAGE_STORAGE) {
+    if (out.byteLength !== 12 || !validImageStorageRequest(input)) return -22;
+    return checkedQueryReply(b, out, 4, payload => {
+      if (!executeImageStorageRequest(b, input)) return -5;
+      new DataView(payload.buffer).setUint32(0, 1, true);
+      return 4;
+    });
+  }
+  if (op === O.QOP_IMAGE_OBJECT_DELETE || op === O.QOP_IMAGE_ATTACHMENT) {
+    if (input.byteLength !== (op === O.QOP_IMAGE_OBJECT_DELETE ? 8 : 24) || out.byteLength !== 12) return -22;
+    return checkedQueryReply(b, out, 4, payload => {
+      const kind = inDv.getUint32(0, true);
+      const accepted = op === O.QOP_IMAGE_OBJECT_DELETE ? deleteImageObject(b, kind, inDv.getUint32(4, true)) :
+        attachImageObject(b, kind, inDv.getUint32(4, true), inDv.getUint32(8, true), inDv.getUint32(12, true), inDv.getUint32(16, true), inDv.getInt32(20, true));
+      if (!accepted) return -5;
+      collectRetiredImages(b);
+      new DataView(payload.buffer).setUint32(0, 1, true);
+      return 4;
+    });
+  }
+  if (op === O.QOP_BOUND_IMAGE_TARGET || op === O.QOP_BOUND_IMAGE_STATE) {
+    if (input.byteLength !== (op === O.QOP_BOUND_IMAGE_TARGET ? 12 : 8) || out.byteLength !== 16) return -22;
+    return checkedQueryReply(b, out, 8, payload => {
+      const result = new DataView(payload.buffer);
+      const state = boundImageState(b, inDv.getUint32(0, true), inDv.getUint32(4, true),
+        op === O.QOP_BOUND_IMAGE_TARGET ? inDv.getUint32(8, true) : undefined);
+      if (!state) return -5;
+      result.setUint32(0, state.source, true);
+      result.setUint32(4, state.revision, true);
+      return 8;
+    });
+  }
+  if(op===O.QOP_IMAGE_TARGET||op===O.QOP_IMAGE_SOURCE_STATE){
+    if(input.byteLength!==(op===O.QOP_IMAGE_TARGET?12:8)||out.byteLength!==12)return -22;
+    return checkedQueryReply(b,out,4,payload=>{
+      const result=new DataView(payload.buffer);
+      const kind=inDv.getUint32(0,true),name=inDv.getUint32(4,true);
+      if(op===O.QOP_IMAGE_TARGET&&!importImageStorage(b,kind,name,inDv.getUint32(8,true)))return -5;
+      const source=imageSourceToken(b,kind,name);
+      if(source===null){recordGlError(b,0x502);return -5;}
+      result.setUint32(0,source,true);return 4;
+    });
+  }
+  if (op === O.QOP_BIND_IMAGE_OBJECT) {
+    if (input.byteLength !== 12 || out.byteLength !== 12) return -22;
+    return checkedQueryReply(b,out,4,payload => {
+      if (!bindImageObject(b,inDv.getUint32(0,true),inDv.getUint32(4,true),inDv.getUint32(8,true))) return -5;
+      collectRetiredImages(b);
+      new DataView(payload.buffer).setUint32(0,1,true);
+      return 4;
+    });
+  }
+
+  const state = runStateQuery(b,op,input,out);
+  if (state !== undefined) return state;
+  const object = runObjectQuery(b,op,input,out);
+  if (object !== undefined) return object;
 
   switch (op) {
     case O.QOP_GET_ERROR:
       if (out.byteLength < 4) return -22;
-      outDv.setUint32(0, gl.getError(), true);
+      captureNativeGlErrors(gl, b);
+      outDv.setUint32(0, b.errors.shift() ?? 0, true);
       return 4;
 
     // in: u32 name, optional u32 opVersion for extensions;
@@ -134,17 +246,14 @@ export function runGlQuery(
     case O.QOP_GET_INTEGERV: {
       if (input.byteLength < 4 || out.byteLength < 4) return -22;
       const pname = inDv.getUint32(0, true);
-      if (pname === GL_CURRENT_PROGRAM) {
-        outDv.setInt32(0, nameForObject(b.programs, b.currentProgram), true);
-        return 4;
-      }
       if (pname === GL_VIEWPORT) {
         return writeNumericValues(outDv, out.byteLength, b.shadow.viewport, false, pname);
       }
       if (pname === GL_SCISSOR_BOX) {
         return writeNumericValues(outDv, out.byteLength, b.shadow.scissor.rect, false, pname);
       }
-      const value = gl.getParameter(pname);
+      let value: unknown;
+      if (!checkedGlCall(b, () => { value = queryParameter(b, pname); })) return -22;
       return writeNumericValues(outDv, out.byteLength, value, false, pname);
     }
 
@@ -158,7 +267,8 @@ export function runGlQuery(
       if (pname === GL_SCISSOR_BOX) {
         return writeNumericValues(outDv, out.byteLength, b.shadow.scissor.rect, true, pname);
       }
-      const value = gl.getParameter(pname);
+      let value: unknown;
+      if (!checkedGlCall(b, () => { value = queryParameter(b, pname); })) return -22;
       return writeNumericValues(outDv, out.byteLength, value, true, pname);
     }
 
@@ -168,16 +278,10 @@ export function runGlQuery(
       const programName = inDv.getUint32(0, true);
       const nameLen = inDv.getUint32(4, true);
       if (input.byteLength < 8 + nameLen) return -22;
-      const program = b.programs.get(programName);
-      const uniformName = new TextDecoder().decode(input.subarray(8, 8 + nameLen));
-      const loc = program ? gl.getUniformLocation(program, uniformName) : null;
-      if (loc) {
-        const idx = ++b.nextUniformLoc;
-        b.uniformLocations.set(idx, loc);
-        outDv.setInt32(0, idx, true);
-      } else {
-        outDv.setInt32(0, -1, true);
-      }
+      const text = new TextDecoder().decode(new Uint8Array(input.subarray(8,8+nameLen)));
+      const location = uniformLocation(b,programName,text);
+      if (location === null) return -22;
+      outDv.setInt32(0,location,true);
       return 4;
     }
 
@@ -203,7 +307,10 @@ export function runGlQuery(
         return 4;
       }
       const pname = inDv.getUint32(4, true);
-      const v = pname === GL_INFO_LOG_LENGTH
+      const sourceLength = b.shaderSources.get(sh)?.length ?? 0;
+      const v = pname === 0x8b80 ? b.shaderDeletePending.has(inDv.getUint32(0, true))
+        : pname === 0x8b88 ? (sourceLength ? sourceLength+1 : 0)
+        : pname === GL_INFO_LOG_LENGTH
         ? ((gl.getShaderInfoLog(sh) ?? "").length + 1)
         : gl.getShaderParameter(sh, pname);
       outDv.setInt32(0, typeof v === "boolean" ? (v ? 1 : 0) : Number(v ?? 0), true);
@@ -236,13 +343,16 @@ export function runGlQuery(
       }
       const pname = inDv.getUint32(4, true);
       let v: unknown;
-      if (pname === GL_INFO_LOG_LENGTH) {
+      if (pname === 0x8b80) {
+        v = b.programDeletePending.has(inDv.getUint32(0, true));
+      } else if (pname === GL_INFO_LOG_LENGTH) {
         v = (gl.getProgramInfoLog(prog) ?? "").length + 1;
-      } else if (pname === GL_ACTIVE_UNIFORM_MAX_LENGTH) {
-        const n = Number(gl.getProgramParameter(prog, GL_ACTIVE_UNIFORMS) ?? 0);
+      } else if (pname === GL_ACTIVE_UNIFORM_MAX_LENGTH || pname === 0x8b8a) {
+        const attributes = pname === 0x8b8a;
+        const n = Number(gl.getProgramParameter(prog, attributes ? 0x8b89 : GL_ACTIVE_UNIFORMS) ?? 0);
         let max = 0;
         for (let i = 0; i < n; i++) {
-          const info = gl.getActiveUniform(prog, i);
+          const info = attributes ? gl.getActiveAttrib(prog, i) : gl.getActiveUniform(prog, i);
           if (info) max = Math.max(max, info.name.length + 1);
         }
         v = max;
@@ -280,7 +390,7 @@ export function runGlQuery(
       const type = normalizeHalfFloatType(inDv.getUint32(20, true));
       // WebGL2 readPixels requires the destination view to match `type`.
       const view = readPixelsViewForType(type, out);
-      gl.readPixels(x, y, w, h, format, type, view);
+      if (!checkedGlCall(b, () => { gl.readPixels(x, y, w, h, format, type, view); })) return -22;
       copyReadPixelsResult(view, out);
       // gl.readPixels writes into `out` directly. Bytes-written depends
       // on (format,type,w,h); the kernel cap (`MAX_QUERY_OUT_LEN`) is
@@ -305,14 +415,26 @@ export function runGlQuery(
 
     // glFinish. The query is answered after the host has decoded every
     // earlier command, so finishing the context here completes them all.
+    case O.QOP_FLUSH:
+      return checkedGlCall(b, () => {
+        if (gl.isContextLost()) throw new Error("Cannot flush a lost renderer");
+        gl.flush();
+        if (gl.isContextLost()) throw new Error("Renderer lost during flush");
+      }) ? 0 : -5;
     case O.QOP_FINISH:
-      gl.finish();
-      return 0;
+      return checkedGlCall(b, () => {
+        if (gl.isContextLost()) throw new Error("Cannot finish a lost renderer");
+        gl.finish();
+        if (gl.isContextLost()) throw new Error("Renderer lost during completion");
+      }) ? 0 : -5;
 
     // in: u32 target; out: u32 status
     case O.QOP_CHECK_FB_STATUS: {
       if (input.byteLength < 4 || out.byteLength < 4) return -22;
-      const status = gl.checkFramebufferStatus(inDv.getUint32(0, true));
+      const target = inDv.getUint32(0, true);
+      const surface = target === 0x8ca8 ? b.currentDrawable?.readSurfaceId : b.currentDrawable?.drawSurfaceId;
+      const status = validFramebufferTarget(target) && surface === 0 && isDefaultFramebuffer(b, boundFramebuffer(b, target))
+        ? GL_FRAMEBUFFER_UNDEFINED : gl.checkFramebufferStatus(target);
       outDv.setUint32(0, status, true);
       return 4;
     }
@@ -340,6 +462,35 @@ export function runGlQuery(
       return 12 + nameLen;
     }
 
+    // V7: one checked reply contains the width and values of one element.
+    // Program/location ownership lives in the shared group, not a C cache.
+    case O.QOP_GET_UNIFORM_VALUES: {
+      if (input.length !== 12 || out.length < 76) return -22;
+      const name = inDv.getUint32(0,true), index = inDv.getInt32(4,true), integer = inDv.getUint32(8,true);
+      if (integer > 1) return -22;
+      return checkedQueryReply(b,out,68,payload => {
+        const fail = (error: number) => { recordGlError(b,error); return -22; };
+        const program = b.programs.get(name);
+        if (!program) return fail(b.shaders.has(name) ? 0x502 : 0x501);
+        const location = b.uniformLocations.get(index);
+        if (!location || b.uniformLocationPrograms.get(index) !== name) return fail(0x502);
+        let linked = false, value: unknown;
+        if (!checkedGlCall(b,() => { linked = !!gl.getProgramParameter(program,0x8b82); })) return -5;
+        if (!linked) return fail(0x502);
+        if (!checkedGlCall(b,() => { value = gl.getUniform(program,location); })) return -5;
+        if (value == null || !(typeof value === "number" || typeof value === "boolean" || Array.isArray(value) || ArrayBuffer.isView(value))) return fail(0x502);
+        const values = normalizeNumericValues(value,0);
+        if (![1,2,3,4,9,16].includes(values.length)) return fail(0x502);
+        const result = new DataView(payload.buffer);
+        result.setUint32(0,values.length,true);
+        for (let i=0;i<values.length;i++) {
+          if (integer) result.setInt32(4+i*4,integerQueryValue(values[i],0),true);
+          else result.setFloat32(4+i*4,values[i],true);
+        }
+        return payload.length;
+      });
+    }
+
     // in: u32 programName, i32 locationIndex; out: f32 values[]
     case O.QOP_GET_UNIFORMFV:
     case O.QOP_GET_UNIFORMIV: {
@@ -363,6 +514,38 @@ function nameForObject<T>(objects: Map<number, T>, object: T | null): number {
   return 0;
 }
 
+/** Native objects never cross the GLES numeric query protocol. Name zero
+ * includes host-owned default-FBO redirects absent from the guest map. */
+function queryParameter(b: GlBinding, pname: number): unknown {
+  if (pname === GL_CURRENT_PROGRAM) return currentProgramName(b);
+  // WebGL exposes source compilation and its compressed-format vector, but
+  // does not expose GLES's binary-compiler and vector-count query enums.
+  if (pname === 0x8df8) return []; // SHADER_BINARY_FORMATS: no binary loader
+  if (pname === 0x8df9) return 0; // NUM_SHADER_BINARY_FORMATS
+  if (pname === 0x8dfa) return true; // SHADER_COMPILER
+  if (pname === 0x86a2) { // NUM_COMPRESSED_TEXTURE_FORMATS
+    return (b.gl!.getParameter(0x86a3) as Uint32Array).length;
+  }
+  const value = b.gl!.getParameter(pname);
+  switch (pname) {
+    case 0x8894: // ARRAY_BUFFER_BINDING
+    case 0x8895: // ELEMENT_ARRAY_BUFFER_BINDING (VAO-local)
+      return value ? nameForObject(b.buffers, canonicalBuffer(b,value as WebGLBuffer))
+        || b.retiredBuffers.get(canonicalBuffer(b,value as WebGLBuffer)) || 0 : 0;
+    case 0x8069: // TEXTURE_BINDING_2D
+    case 0x8514: // TEXTURE_BINDING_CUBE_MAP
+      return nameForObject(b.textures, value ? canonicalTexture(b,value as WebGLTexture) : null)
+        || (value ? b.retiredTextures.get(canonicalTexture(b,value as WebGLTexture)) : 0) || 0;
+    case 0x8ca6: // FRAMEBUFFER_BINDING
+    case 0x8caa: // READ_FRAMEBUFFER_BINDING
+      return nameForObject(b.fbos, value as WebGLFramebuffer | null);
+    case 0x8ca7: // RENDERBUFFER_BINDING
+      return nameForObject(b.rbos, value ? canonicalRenderbuffer(b,value as WebGLRenderbuffer) : null)
+        || (value ? b.retiredRenderbuffers.get(canonicalRenderbuffer(b,value as WebGLRenderbuffer)) : 0) || 0;
+    default: return value;
+  }
+}
+
 function writeLengthPrefixedString(
   out: Uint8Array,
   outDv: DataView,
@@ -384,12 +567,33 @@ function writeNumericValues(
   pname: number,
 ): number {
   const values = normalizeNumericValues(value, pname);
-  const count = Math.min(values.length, Math.floor(outLen / 4));
+  const count = values.length;
+  if (count > Math.floor(outLen / 4)) return -22;
   for (let i = 0; i < count; i++) {
     if (asFloat) outDv.setFloat32(i * 4, values[i], true);
-    else outDv.setInt32(i * 4, values[i] | 0, true);
+    else outDv.setInt32(i * 4, integerQueryValue(values[i], pname), true);
   }
   return count * 4;
+}
+
+// GLES2 section 6.1.2: floating state rounds to nearest, while normalized
+// color/depth state uses the signed INT conversion in table 4.4. Integer
+// names, enums and masks retain their 32-bit representation. In particular,
+// an all-ones stencil mask must not be mistaken for a large floating value.
+const normalizedQueryState = new Set([0x0c22, 0x8005, 0x0b70, 0x0b73]);
+const floatingQueryState = new Set([
+  0x0b21, 0x846d, 0x846e, 0x8038, 0x2a00, 0x80aa,
+]);
+
+function integerQueryValue(value: number, pname: number): number {
+  if (normalizedQueryState.has(pname)) {
+    return Math.trunc((Math.min(1, Math.max(-1, value)) * 0xffffffff - 1) / 2);
+  }
+  // pname zero denotes a uniform result, rather than ordinary Get state.
+  if (pname === 0 || floatingQueryState.has(pname)) {
+    return Math.min(0x7fffffff, Math.max(-0x80000000, Math.round(value)));
+  }
+  return value | 0;
 }
 
 function normalizeNumericValues(value: unknown, pname: number): number[] {

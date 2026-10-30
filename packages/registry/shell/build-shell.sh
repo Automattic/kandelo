@@ -117,6 +117,8 @@ OMARCHYDESKTOP="$WAYLAND_DEMO_DIR/omarchydesktop"
 DESKTOP_DATA="$WAYLAND_DEMO_DIR/kandelo-desktop-data.zip"
 # libinput's device quirks, unpacked by the composer at /usr/share/libinput.
 LIBINPUT_QUIRKS="$WAYLAND_DEMO_DIR/libinput-quirks.zip"
+# The xkeyboard-config rules, unpacked by the composer at /usr/share/X11/xkb.
+XKEYBOARD_CONFIG="$WAYLAND_DEMO_DIR/xkeyboard-config.zip"
 ESPEAK_NG_DATA="$ESPEAK_NG_DIR/espeak-ng-data.zip"
 DEMO_CONFIG="$SCRIPT_DIR/source-rootfs-shell-demo.json"
 DEMO_PROFILE_OVERLAY="$SCRIPT_DIR/source-rootfs-shell-demo-profiles.json"
@@ -129,6 +131,7 @@ require_regular_file "wldesktop dependency output" "$WLDESKTOP"
 require_regular_file "omarchydesktop dependency output" "$OMARCHYDESKTOP"
 require_regular_file "desktop data dependency output" "$DESKTOP_DATA"
 require_regular_file "libinput quirks dependency output" "$LIBINPUT_QUIRKS"
+require_regular_file "xkeyboard-config dependency output" "$XKEYBOARD_CONFIG"
 require_regular_file "espeak-ng data dependency output" "$ESPEAK_NG_DATA"
 require_regular_file "main-shell demo config" "$DEMO_CONFIG"
 require_regular_file "source-rootfs demo profile overlay" "$DEMO_PROFILE_OVERLAY"
@@ -157,6 +160,7 @@ TMPDIR="$TSX_TMP" PATH="$DECLARED_TOOL_PATH" \
     --omarchydesktop "$OMARCHYDESKTOP" \
     --desktop-data "$DESKTOP_DATA" \
     --libinput-quirks "$LIBINPUT_QUIRKS" \
+    --xkeyboard-config "$XKEYBOARD_CONFIG" \
     --espeak-ng-data "$ESPEAK_NG_DATA" \
     --demo-config "$DEMO_CONFIG" \
     --demo-profile-overlay "$DEMO_PROFILE_OVERLAY" \

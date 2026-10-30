@@ -1,5 +1,9 @@
+import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import { describe, expect, it } from "vitest";
 import { GlMuxer } from "../src/webgl/muxer.js";
+import { GlContextRegistry } from "../src/webgl/registry.js";
+import { runGlQuery } from "../src/webgl/query.js";
+import * as O from "../src/webgl/ops.js";
 import {
   defaultShadow,
   GL_BLEND,
@@ -16,6 +20,8 @@ import {
 } from "../src/webgl/shadow.js";
 
 class RecordingGl {
+  pendingErrors: number[] = [];
+  getError() { return this.pendingErrors.shift() ?? 0; }
   colorMask(...a: boolean[]) { this.log.push(["colorMask", a]); }
   depthMask(...a: boolean[]) { this.log.push(["depthMask", a]); }
   stencilFuncSeparate(...a: number[]) { this.log.push(["stencilFuncSeparate", a]); }
@@ -57,7 +63,7 @@ class RecordingGl {
 }
 
 function newTarget() {
-  return { shadow: defaultShadow() };
+  return { shadow: defaultShadow(), errors: [] as number[] };
 }
 
 function mk(): { gl: RecordingGl; mux: GlMuxer } {
@@ -66,7 +72,74 @@ function mk(): { gl: RecordingGl; mux: GlMuxer } {
   return { gl, mux };
 }
 
+it("replays renderbuffer aliases from a narrow state owner", () => {
+  const { gl, mux } = mk();
+  const logical = {}, native = {};
+  const direct = newTarget();
+  direct.shadow.renderbuffer = logical;
+  mux.switchTo(direct);
+  expect(gl.callsOf("bindRenderbuffer").at(-1)).toEqual([0x8d41, logical]);
+
+  const aliased = { ...newTarget(), renderbufferViews: new Map([
+    [logical, { native, source: null }],
+  ]) };
+  aliased.shadow.renderbuffer = logical;
+  mux.switchTo(aliased);
+  expect(gl.callsOf("bindRenderbuffer").at(-1)).toEqual([0x8d41, native]);
+});
+
 describe("GlMuxer.switchTo", () => {
+  it("keeps native errors with the outgoing owner across a switch", () => {
+    const { gl, mux } = mk();
+    const a = newTarget(), b = newTarget();
+    mux.switchTo(a);
+    gl.pendingErrors.push(0x500, 0x501);
+    mux.switchTo(b);
+    expect(b.errors).toEqual([]);
+    expect(gl.getError()).toBe(0);
+    expect(a.errors).toEqual([0x500, 0x501]);
+  });
+
+  it("captures errors before invalidation loses the owner's identity", () => {
+    const { gl, mux } = mk();
+    const a = newTarget(), b = newTarget();
+    mux.switchTo(a);
+    a.errors.push(0x500);
+    gl.pendingErrors.push(0x500, 0x502);
+    mux.invalidateCurrent();
+    mux.switchTo(b);
+    expect(a.errors).toEqual([0x500, 0x502]);
+    expect(b.errors).toEqual([]);
+    expect(gl.getError()).toBe(0);
+  });
+
+  it("retains error ownership after a failed drain without blocking cleanup", () => {
+    const { gl, mux } = mk();
+    const a = newTarget(), b = newTarget();
+    mux.switchTo(a);
+    const readError = gl.getError.bind(gl);
+    gl.getError = () => { throw new Error("renderer failed"); };
+    expect(() => mux.invalidateCurrent()).not.toThrow();
+    expect(() => mux.switchTo(b)).toThrow("renderer failed");
+    gl.pendingErrors.push(0x502);
+    gl.getError = readError;
+    mux.switchTo(b);
+    expect(a.errors).toEqual([0x502]);
+    expect(b.errors).toEqual([]);
+  });
+
+  it("discards errors from unowned host operations and bounds failed drains", () => {
+    const { gl, mux } = mk();
+    const a = newTarget(), b = newTarget();
+    gl.pendingErrors.push(0x500);
+    mux.switchTo(a);
+    expect(a.errors).toEqual([]);
+    gl.getError = () => 0x502;
+    expect(() => mux.switchTo(b)).toThrow("did not clear");
+    expect(a.errors).toEqual([0x502]);
+    expect(b.errors).toEqual([]);
+  });
+
   it("gives each binding its own default vertex array", () => {
     // Two programs sharing one WebGL context must not share vertex
     // attribute state: GL gives every context its own vertex array 0.
@@ -118,13 +191,27 @@ describe("GlMuxer.switchTo", () => {
     expect(gl.callsOf("useProgram")).toEqual([[prog]]);
   });
 
-  it("bindFramebuffer always targets FRAMEBUFFER (draw+read)", () => {
+  it("restores a shared draw/read framebuffer with one bind", () => {
     const { gl, mux } = mk();
     const fbo = { id: 13 };
     const t = newTarget();
     t.shadow.fbo = fbo as unknown as WebGLFramebuffer;
+    t.shadow.readFbo = t.shadow.fbo;
     mux.switchTo(t);
     expect(gl.callsOf("bindFramebuffer")).toEqual([[GL_FRAMEBUFFER, fbo]]);
+  });
+
+  it("restores distinct read and draw framebuffer bindings", () => {
+    const { gl, mux } = mk();
+    const a = newTarget(), b = newTarget();
+    a.shadow.fbo = { draw: 1 } as WebGLFramebuffer;
+    a.shadow.readFbo = { read: 1 } as WebGLFramebuffer;
+    mux.switchTo(a); mux.switchTo(b); mux.switchTo(a);
+    expect(gl.callsOf("bindFramebuffer")).toEqual([
+      [GL_FRAMEBUFFER,a.shadow.fbo],[0x8ca8,a.shadow.readFbo],
+      [GL_FRAMEBUFFER,null],
+      [GL_FRAMEBUFFER,a.shadow.fbo],[0x8ca8,a.shadow.readFbo],
+    ]);
   });
 
   it("scissor enabled → gl.enable; disabled → gl.disable; rect is always replayed", () => {
@@ -181,7 +268,9 @@ describe("GlMuxer.switchTo", () => {
 
     const activeCalls = gl.callsOf("activeTexture").map((c) => (c as number[])[0]);
     expect(activeCalls).toEqual([...Array.from({length: 32}, (_, i) => GL_TEXTURE0 + i), GL_TEXTURE0 + 5]);
-    expect(gl.callsOf("bindTexture")).toEqual(t.shadow.textureUnits.map(tex => [GL_TEXTURE_2D, tex]));
+    expect(gl.callsOf("bindTexture")).toEqual(t.shadow.textureUnits.flatMap((tex, unit) => [
+      [GL_TEXTURE_2D, tex], [0x8513, t.shadow.cubeTextureUnits[unit]],
+    ]));
   });
 
   it("pixelStorei replays unpack and pack alignment", () => {
@@ -193,6 +282,7 @@ describe("GlMuxer.switchTo", () => {
     expect(gl.callsOf("pixelStorei")).toEqual([
       [GL_UNPACK_ALIGNMENT, 1],
       [GL_PACK_ALIGNMENT, 8],
+      ...t.shadow.pixelStore.entries(),
     ]);
   });
 
@@ -254,4 +344,52 @@ describe("GlMuxer.switchTo", () => {
     ]);
   });
 
+});
+
+for (const sameOwner of [true,false]) it(`repairs before a cached or different muxer owner can run (same owner: ${sameOwner})`, () => {
+  const {gl,mux} = mk(), reg = new GlContextRegistry();
+  reg.bind({pid:1,cmdbufAddr:0,cmdbufLen:0}); const b = reg.get(1)!;
+  b.gl = gl as unknown as WebGL2RenderingContext;
+  const framebuffer = {};
+  b.fbos.set(17,framebuffer); b.shadow.fbo = b.shadow.readFbo = framebuffer;
+  mux.switchTo(b);
+  let rejected = false, block = true;
+  const bind = gl.bindFramebuffer.bind(gl);
+  gl.bindFramebuffer = (target,value) => {
+    if (rejected && block && value === framebuffer) { gl.pendingErrors.push(0x502); return; }
+    bind(target,value);
+  };
+  Object.assign(gl,{deleteFramebuffer() { rejected = true; gl.pendingErrors.push(0x505); }});
+  const out = new Uint8Array(12);
+  expect(runGlQuery(b,O.QOP_IMAGE_OBJECT_DELETE,new Uint8Array(new Uint32Array([3,17]).buffer),out)).toBe(12);
+  expect([...new Uint32Array(out.buffer)]).toEqual([1,0,0x47514c33]);
+  const target = sameOwner ? b : newTarget(); const viewports = gl.callsOf("viewport").length;
+  expect(() => mux.switchTo(target)).toThrow("restoration remains pending");
+  expect(gl.callsOf("viewport").length).toBe(viewports);
+  if (!sameOwner) expect(target.errors).toEqual([]);
+  block = false; mux.switchTo(target);
+  expect(gl.callsOf("viewport").length).toBe(viewports+1);
+  expect(gl.callsOf("bindFramebuffer")).toContainEqual([0x8ca9,framebuffer]);
+  expect(gl.callsOf("bindFramebuffer")).toContainEqual([0x8ca8,framebuffer]);
+  expect(b.errors).toContain(0x505); expect(b.errors).toContain(0x502);
+});
+
+for (const sameOwner of [true,false]) it(`publishes client-array completion before muxer replay (same owner: ${sameOwner})`, () => {
+  const {gl,mux} = mk(), reg = new GlContextRegistry(); reg.bind({pid:1,cmdbufAddr:0,cmdbufLen:4});
+  const b = reg.get(1)!, saved = {}, temporary = {};
+  b.gl = gl as unknown as WebGL2RenderingContext; b.shadow.arrayBuffer = temporary;
+  b.savedClientArrayBuffer = saved; b.cmdbufView = new Uint8Array(new Uint16Array([O.OP_END_CLIENT_ARRAY,0]).buffer);
+  mux.switchTo(b);
+  const bind = gl.bindBuffer.bind(gl); let block = true;
+  gl.bindBuffer = (...args) => {if(block && args[0]===0x8892 && args[1]===saved){gl.pendingErrors.push(0x502);return;}bind(...args);};
+  expect(decodeAndDispatch(b,0,4)).toBe(-5);
+  expect(b.shadow.arrayBuffer).toBe(temporary); expect(b.savedClientArrayBuffer).toBe(saved);
+  const target = sameOwner ? b : newTarget(), calls = gl.callsOf("viewport").length;
+  expect(()=>mux.switchTo(target)).toThrow("restoration remains pending");
+  expect(gl.callsOf("viewport").length).toBe(calls);
+  block = false; mux.switchTo(target);
+  if (!sameOwner) { expect(b.shadow.arrayBuffer).toBe(temporary); expect(target.errors).toEqual([]); mux.switchTo(b); }
+  expect(b.shadow.arrayBuffer).toBe(saved); expect(b.savedClientArrayBuffer).toBeUndefined();
+  expect(gl.callsOf("bindBuffer").at(-1)).toEqual([0x8892,saved]);
+  expect(b.clientArrayRestore).toBeUndefined(); expect(b.clientArrayEndRequested).toBe(false);
 });

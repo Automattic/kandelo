@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>CopyTexSubImage2D followed by TexImage2D</title>
+<pre id="result">Running</pre>
+<script>
+// Standalone WebGL2. No Kandelo imports, protocol, Wasm or guest memory.
+try {
+ const canvas=document.createElement('canvas');canvas.width=canvas.height=4;
+ const gl=canvas.getContext('webgl2',{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true});
+ if(!gl)throw Error('WebGL2 unavailable');
+ function run(copy){
+  const sourceTexture=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,sourceTexture);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,2,2,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+  const source=gl.createFramebuffer();gl.bindFramebuffer(gl.FRAMEBUFFER,source);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,sourceTexture,0);
+  if(gl.checkFramebufferStatus(gl.FRAMEBUFFER)!==gl.FRAMEBUFFER_COMPLETE)throw Error('source incomplete');
+  gl.clearColor(0,1,0,1);gl.clear(gl.COLOR_BUFFER_BIT);
+  const texture=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,texture);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,2,2,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  if(copy)gl.copyTexSubImage2D(gl.TEXTURE_2D,0,0,0,0,0,2,2);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,new Uint8Array([0,0,255,255]));
+  const read=gl.createFramebuffer();gl.bindFramebuffer(gl.READ_FRAMEBUFFER,read);
+  gl.framebufferTexture2D(gl.READ_FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,texture,0);
+  if(gl.checkFramebufferStatus(gl.READ_FRAMEBUFFER)!==gl.FRAMEBUFFER_COMPLETE)throw Error('destination incomplete');
+  const pixels=new Uint8Array(4);gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixels);
+  const error=gl.getError();
+  gl.bindFramebuffer(gl.FRAMEBUFFER,null);gl.bindTexture(gl.TEXTURE_2D,null);
+  gl.deleteFramebuffer(read);gl.deleteFramebuffer(source);gl.deleteTexture(texture);gl.deleteTexture(sourceTexture);
+  return {pixels:[...pixels],error};
+ }
+ const sized=run(true),control=run(false),blue=[0,0,255,255],green=[0,255,0,255];
+ const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+ const verdict=sized.error||control.error||!same(control.pixels,blue)?'inconclusive'
+  :same(sized.pixels,green)?'reproduced':same(sized.pixels,blue)?'not-reproduced':'inconclusive';
+ const details={sized,control,renderer:gl.getParameter(gl.RENDERER),expected:blue};
+ window.__reproVerdict={verdict,details:JSON.stringify(details)};
+ document.querySelector('#result').textContent=JSON.stringify(window.__reproVerdict,null,2);
+} catch(error){window.__reproVerdict={verdict:'inconclusive',details:{error:String(error)}};}
+</script>

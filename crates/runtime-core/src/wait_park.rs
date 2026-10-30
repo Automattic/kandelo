@@ -1280,6 +1280,41 @@ mod tests {
     }
 
     #[test]
+    fn process_exit_retires_its_child_waits_without_touching_live_waiters() {
+        use crate::wait_child::{ChildWait, P_ALL};
+        use wasm_posix_shared::{signal::{SIGKILL, SIGTERM}, wait::WEXITED};
+
+        for signal in [None, Some(SIGTERM), Some(SIGKILL)] {
+            for wait in [
+                ChildWait::wait4(-1, 0, 0, 0).unwrap(),
+                ChildWait::waitid(P_ALL, 0, WEXITED, 8, 0).unwrap(),
+            ] {
+                let live = with(|parks| {
+                    *parks = Parks::new();
+                    parks.park(42, 42, WaitKind::ChildWait { options: 0 },
+                        vec![WakeSource::ChildEvent { parent: 42 }], None,
+                        Resume::Child(wait)).unwrap();
+                    child_wait(parks, 7, 7)
+                });
+                let mut process = Process::new(42);
+                assert!(match signal {
+                    Some(signal) => process.record_signal_exit(signal),
+                    None => process.record_normal_exit(0),
+                });
+                with(|parks| {
+                    assert_eq!(parks.len(), 1);
+                    assert!(!parks.cancel_task(42, 42), "dead image has no wait");
+                    assert!(parks.take_completions().is_empty());
+                    assert!(parks.cancel_task(7, 7), "live waiter survives");
+                    let done = parks.take_completions();
+                    assert_eq!(done.len(), 1);
+                    assert_eq!((done[0].generation, done[0].pid), (live, 7));
+                });
+            }
+        }
+    }
+
+    #[test]
     fn child_waiters_are_offered_only_after_a_child_change() {
         let mut parks = Parks::new();
         let generation = child_wait(&mut parks, 5, 5);

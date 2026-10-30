@@ -131,10 +131,13 @@ describe("parseGalleryRoster", () => {
       "wordpress-mariadb",
       "doom",
       "quake",
+      "freeciv",
       "modeset",
       "sdl2",
       "scummvm",
       "love",
+      "cage",
+      "sway",
       "omarchy",
     ]);
     // The floating Wayland desktop left the gallery when Omarchy joined it;

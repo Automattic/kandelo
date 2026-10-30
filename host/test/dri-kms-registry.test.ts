@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { snapshotScanout, scanoutRgba } from "../src/dri/scanout-format";
 import { KmsCursorPlane } from "../src/dri/cursor-plane.js";
 import { GbmBoRegistry } from "../src/dri/registry.js";
 import { KmsRegistry, buildVirtualConnectorMode } from "../src/dri/kms-registry.js";
@@ -38,14 +39,21 @@ describe("KmsRegistry", () => {
     expect(kms.flipCount()).toBe(2);
   });
 
-  it("setMasterPid / dropMaster / isMasterPid", () => {
+  it("uses exact file and grant identity independently of presenter PID", () => {
     const kms = new KmsRegistry(new GbmBoRegistry());
-    expect(kms.isMasterPid(7)).toBe(false);
-    kms.setMasterPid(7);
-    expect(kms.isMasterPid(7)).toBe(true);
-    expect(kms.isMasterPid(8)).toBe(false);
-    kms.dropMaster();
-    expect(kms.isMasterPid(7)).toBe(false);
+    expect(kms.isMasterFile(1n)).toBe(false);
+    expect(kms.setMaster(7, 1n, 1n)).toBe(true);
+    expect(kms.isMasterFile(1n)).toBe(true);
+    expect(kms.isMasterFile(2n)).toBe(false);
+    expect(kms.dropMaster(2n, 1n)).toBe(false);
+    expect(kms.dropMaster(1n, 2n)).toBe(false);
+    expect(kms.isMasterFile(1n)).toBe(true);
+    expect(kms.dropMaster(1n, 1n)).toBe(true);
+    expect(kms.isMasterFile(1n)).toBe(false);
+    expect(kms.setMaster(7, 1n, 1n)).toBe(false);
+    expect(kms.setMaster(8, 1n, 2n)).toBe(true);
+    expect(kms.dropMaster(1n, 1n)).toBe(false);
+    expect(kms.getMasterPid()).toBe(8);
   });
 
   it("scanoutBytes returns the bo's pixel SAB for the bound CRTC", () => {
@@ -74,6 +82,7 @@ describe("KmsRegistry", () => {
     const bos = new GbmBoRegistry({ getProcessMemory: (p) => p === 7 ? mem : undefined });
     bos.create({ pid: 7, bo_id: 100, size: 4096, w: 32, h: 32, stride: 128 });
     bos.bind(7, 100, 0, 4096);
+    bos.primeBindFromSab(7, 100, mem, 0);
 
     const kms = new KmsRegistry(bos);
     kms.addFb(fb(10, 100));
@@ -147,7 +156,7 @@ it("snapshots premultiplied cursor pixels and moves independently of scanout", (
   bos.create({ pid: 7, bo_id: 1, size: 16, w: 2, h: 2, stride: 8 });
   bos.pixelView(1)!.set([0, 32, 64, 128, 0, 0, 255, 255]);
   const kms = new KmsRegistry(bos);
-  kms.setMasterPid(7);
+  kms.setMaster(7, 1n, 1n);
   kms.setCursor(7, 3, 1, 2, 2, 30, 40, 1, 1);
   const shown = kms.cursorSnapshot();
   expect(Array.from(shown.pixels!.slice(0, 8))).toEqual([128, 64, 0, 128, 255, 0, 0, 255]);
@@ -162,7 +171,7 @@ it("snapshots premultiplied cursor pixels and moves independently of scanout", (
   expect(shown.pixels![0]).toBe(128); // Detached snapshots stay immutable.
   expect(kms.cursorSnapshot()).toBe(updated);
   expect(kms.flipCount()).toBe(0);
-  kms.dropMaster();
+  kms.dropMaster(1n, 1n);
   expect(kms.cursorSnapshot().pixels).toBeNull();
   expect(kms.cursorSnapshot().version).toBeGreaterThan(shown.version);
 });
@@ -225,6 +234,7 @@ it("refreshes the live cursor producer without flushing beyond the packed image"
   const bos = new GbmBoRegistry({ getProcessMemory: pid => pid === 7 ? memory : undefined });
   bos.create({ pid: 7, bo_id: 1, size: 4096, w: 32, h: 32, stride: 128 });
   bos.bind(7, 1, 0, 4096);
+  bos.primeBindFromSab(7, 1, memory, 0);
   const mapped = new Uint8Array(memory.buffer);
   mapped.set([0, 0, 255, 255]);
   mapped[16] = 42;
@@ -242,31 +252,73 @@ it("refreshes the live cursor producer without flushing beyond the packed image"
 });
 
 
-it("consumes full cursor records without recopying motion images or resurrecting retired owners", () => {
+it("consumes complete grant-scoped cursor records without resurrecting retired storage", () => {
   const bos = new GbmBoRegistry();
   bos.create({ pid: 7, bo_id: 1, size: 16, w: 2, h: 2, stride: 8 });
   bos.pixelView(1)!.set([0, 0, 255, 255]);
   const kms = new KmsRegistry(bos);
-  const record = (words: number[]) => {
-    const bytes = new Uint8Array(32);
-    const view = new DataView(bytes.buffer);
-    words.forEach((word, i) => view.setUint32(i * 4, word, true));
+  const record = (lease: bigint, words: number[]) => {
+    const bytes = new Uint8Array(40), view = new DataView(bytes.buffer);
+    view.setBigUint64(0, lease, true);
+    words.forEach((word, i) => view.setUint32(8 + i * 4, word, true));
     return bytes;
   };
-  kms.setMasterPid(7);
-  kms.applyCursorRecord(record([7, 1, 2, 2, 30, 40, -3, 1]));
+  kms.setMaster(7, 1n, 1n);
+  kms.applyCursorRecord(record(1n, [1, 2, 2, 30, 40, -3, 1]));
   const pixels = kms.cursorSnapshot().pixels;
   expect(pixels).not.toBeNull();
-  kms.applyCursorRecord(record([7, 1, 2, 2, -5, 70, -3, 1]));
+  kms.applyCursorRecord(record(1n, [1, 2, 2, -5, 70, -3, 1]));
   expect(kms.cursorSnapshot()).toMatchObject({ x: -5, y: 70, hotX: -3 });
   expect(kms.cursorSnapshot().pixels).toBe(pixels);
-  kms.dropMaster();
+  kms.dropMaster(1n, 1n);
   bos.destroy(7, 1);
-  kms.applyCursorRecord(record([7, 1, 2, 2, 30, 40, 0, 0]));
+  // Rejected before reading the dead BO's pixels.
+  kms.applyCursorRecord(record(1n, [1, 2, 2, 30, 40, 0, 0]));
   expect(kms.cursorSnapshot().pixels).toBeNull();
-  kms.setMasterPid(8);
-  kms.applyCursorRecord(record([8, 0, 0, 0, 1, 2, 0, 0]));
+  kms.setMaster(8, 1n, 2n);
+  kms.applyCursorRecord(record(2n, [0, 0, 0, 1, 2, 0, 0]));
   expect(kms.cursorSnapshot()).toMatchObject({ x: 1, y: 2, pixels: null });
-  kms.applyCursorRecord(record([0, 0, 0, 0, 0, 0, 0, 0]));
-  expect(kms.cursorSnapshot().pixels).toBeNull();
+  kms.applyCursorRecord(record(0n, [0, 0, 0, 0, 0, 0, 0]));
+  kms.applyCursorRecord(record(1n, [1, 2, 2, 30, 40, 0, 0]));
+  expect(kms.cursorSnapshot()).toMatchObject({ x: 1, y: 2, pixels: null });
+  expect(kms.dropMaster(1n, 1n)).toBe(false);
+  expect(kms.setMaster(7, 1n, 1n)).toBe(false);
+  expect(kms.getMasterPid()).toBe(8);
+});
+
+
+describe("DRM scanout pixel layouts", () => {
+  it.each([
+    ["XRGB8888", 0x34325258, [3, 2, 1, 0, 6, 5, 4, 0]],
+    ["ARGB8888", 0x34325241, [3, 2, 1, 64, 6, 5, 4, 128]],
+    ["XBGR8888", 0x34324258, [1, 2, 3, 0, 4, 5, 6, 0]],
+    ["ABGR8888", 0x34324241, [1, 2, 3, 64, 4, 5, 6, 128]],
+  ] as const)("decodes %s without confusing channel order or row padding", (_name, pixel_format, bytes) => {
+    const source = new Uint8Array(new SharedArrayBuffer(12));
+    source.set([...bytes.slice(0, 4), 99, 99, ...bytes.slice(4), 99, 99]);
+    const packed = snapshotScanout({ width: 1, height: 2, pitch: 6, pixel_format }, source);
+    expect(packed.buffer).toBeInstanceOf(ArrayBuffer);
+    expect(Array.from(scanoutRgba(pixel_format, packed))).toEqual([1, 2, 3, 255, 4, 5, 6, 255]);
+    source.fill(0);
+    expect(Array.from(packed)).toEqual(bytes);
+  });
+
+  it("expands little-endian RGB565 endpoints and ignores padding", () => {
+    const source = new Uint8Array([0, 248, 224, 7, 31, 0, 99, 99, 255, 255, 0, 0, 16, 132]);
+    const packed = snapshotScanout({ width: 3, height: 2, pitch: 8, pixel_format: 0x36314752 }, source);
+    expect(Array.from(scanoutRgba(0x36314752, packed))).toEqual([
+      255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255,
+      255, 255, 255, 255, 0, 0, 0, 255, 132, 130, 132, 255,
+    ]);
+  });
+
+  it("rejects unknown formats and incomplete geometry before copying", () => {
+    const fb = { width: 2, height: 2, pitch: 8, pixel_format: 0x34324241 };
+    for (const geometry of [
+      { ...fb, pixel_format: 0 }, { ...fb, width: 0 }, { ...fb, height: -1 },
+      { ...fb, pitch: 7 }, { ...fb, width: 1.5 }, { ...fb, height: Number.MAX_SAFE_INTEGER },
+    ]) expect(() => snapshotScanout(geometry, new Uint8Array(16))).toThrow(RangeError);
+    expect(() => snapshotScanout(fb, new Uint8Array(15))).toThrow(RangeError);
+    expect(() => scanoutRgba(0x36314752, new Uint8Array(3))).toThrow(RangeError);
+  });
 });

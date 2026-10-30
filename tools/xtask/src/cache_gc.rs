@@ -21,13 +21,14 @@
 //!   exclusive and non-blocking, and skips when a build holds it. Entries are
 //!   renamed into a trash directory under the cache root while the lock is
 //!   held, then deleted after it is released.
-//! * **ABI.** `--below-abi N` also collects unprotected generations built
-//!   for a kernel ABI below `N`, which no current kernel can run. A library
-//!   or program generation's name carries its ABI (`...-abi<N>-<key>`; see
+//! * **ABI.** `--below-abi N` / `--above-abi N` also collect unprotected
+//!   generations built for a kernel ABI below / above `N`. The upper bound
+//!   supports retiring unpublished development ABIs after consolidation.
+//!   A library or program generation's name carries its ABI (`...-abi<N>-<key>`; see
 //!   `canonical_path`). Generations named before that segment existed were
 //!   built for [`UNNAMED_GENERATION_MAX_ABI`] or older, so a floor above it
 //!   collects them too; a lower floor leaves them to the age rule.
-//! * **Ordinary cache.** A manual `--below-abi` run also scans the ordinary
+//! * **Ordinary cache.** A manual ABI-filtered run also scans the ordinary
 //!   resolver's top-level libs/programs for old ABI generations and abandoned
 //!   stages/downloads. Without reliable last-use tracking there, age and size
 //!   eviction cannot prove disuse. Explicit source-cache isolation suppresses
@@ -69,7 +70,7 @@ pub(crate) const AUTO_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60)
 /// Crash debris and orphaned sidecars younger than this are left alone: a
 /// build on older code (which takes no GC lock) may be creating them now.
 pub(crate) const DEBRIS_MIN_AGE: Duration = DAY;
-/// `--max-size` and `--below-abi` never evict a generation used more
+/// `--max-size`, `--below-abi` and `--above-abi` never evict a generation used more
 /// recently than this: a build on code older than this module takes no GC
 /// lock and registers no root, so recent use is its only protection.
 pub(crate) const BUDGET_MIN_AGE: Duration = DAY;
@@ -353,6 +354,9 @@ pub(crate) struct GcPolicy {
     /// `--below-abi`: also collect unprotected generations built for a
     /// kernel ABI below this.
     pub(crate) below_abi: Option<u32>,
+    /// `--above-abi`: also collect unprotected generations built for a
+    /// kernel ABI strictly above this. Unnamed generations cannot prove it.
+    pub(crate) above_abi: Option<u32>,
     pub(crate) debris_min_age: Duration,
     pub(crate) budget_min_age: Duration,
 }
@@ -363,9 +367,14 @@ impl GcPolicy {
             max_age,
             max_size,
             below_abi: None,
+            above_abi: None,
             debris_min_age: DEBRIS_MIN_AGE,
             budget_min_age: BUDGET_MIN_AGE,
         }
+    }
+
+    fn has_abi_filter(&self) -> bool {
+        self.below_abi.is_some() || self.above_abi.is_some()
     }
 
     fn automatic() -> Self {
@@ -419,10 +428,14 @@ pub(crate) struct GcPlan {
     pub(crate) generations_below_abi_kept: usize,
     pub(crate) below_abi_protected_bytes: u64,
     pub(crate) below_abi_recent_bytes: u64,
-    /// Library/program generations named without an ABI that `--below-abi`
-    /// could not settle: their ABI is at most `UNNAMED_GENERATION_MAX_ABI`,
-    /// which is not below the requested floor. Only the age and size rules
-    /// apply to them.
+    /// Built for an ABI above `--above-abi` but kept by a live root or
+    /// recent use, with allocated sizes split by the protecting rule.
+    pub(crate) generations_above_abi_kept: usize,
+    pub(crate) above_abi_protected_bytes: u64,
+    pub(crate) above_abi_recent_bytes: u64,
+    /// Legacy library/program generations without an exact ABI that were
+    /// not selected by an ABI rule using `UNNAMED_GENERATION_MAX_ABI`.
+    /// Only age and size apply; never infer an upper-bound match.
     pub(crate) generations_abi_unknown: usize,
     pub(crate) live_roots: usize,
     pub(crate) unrecognized_entries: usize,
@@ -455,7 +468,7 @@ fn generation_is_protected(generation: &ScannedGeneration, protected: &BTreeSet<
 enum CacheLayout {
     SourceOnly,
     /// The ordinary resolver has no last-use/root tracking. Only an explicit
-    /// ABI floor can evict its generations; age and size cannot prove disuse.
+    /// ABI filter can evict its generations; age and size cannot prove disuse.
     Binary,
 }
 
@@ -845,7 +858,7 @@ fn plan_with_layout(
             plan.generations_recent += 1;
         }
     }
-    if let Some(floor) = policy.below_abi {
+    if policy.has_abi_filter() {
         for (index, generation) in generations.iter().enumerate() {
             // Source generations serve every ABI (their keys omit it).
             if generation.kind == "sources" || evicted.contains(&index) {
@@ -853,27 +866,47 @@ fn plan_with_layout(
             }
             let (abi, named) = match generation_named_abi(&generation.basename) {
                 Some(abi) => (abi, true),
-                // Named before names carried an ABI: built for at most
-                // `UNNAMED_GENERATION_MAX_ABI`, which settles any floor
-                // above it.
-                None if UNNAMED_GENERATION_MAX_ABI < floor => (UNNAMED_GENERATION_MAX_ABI, false),
+                // Legacy names establish only a maximum ABI, not an exact
+                // value. That can prove a below-floor match, never above.
+                None if policy
+                    .below_abi
+                    .is_some_and(|floor| UNNAMED_GENERATION_MAX_ABI < floor) =>
+                {
+                    (UNNAMED_GENERATION_MAX_ABI, false)
+                }
                 None => {
                     plan.generations_abi_unknown += 1;
                     continue;
                 }
             };
-            if abi >= floor {
+            let below = policy.below_abi.filter(|floor| abi < *floor);
+            let above = policy.above_abi.filter(|ceiling| named && abi > *ceiling);
+            let (direction, flag, bound) = if let Some(floor) = below {
+                ("below", "--below-abi", floor)
+            } else if let Some(ceiling) = above {
+                ("above", "--above-abi", ceiling)
+            } else {
                 continue;
-            }
+            };
             let unused_for = age(now, generation.last_use);
-            if generation_is_protected(generation, &protected) || unused_for < policy.budget_min_age
-            {
-                plan.generations_below_abi_kept += 1;
+            let protected = generation_is_protected(generation, &protected);
+            if protected || unused_for < policy.budget_min_age {
                 let bytes = measured(sizes, &generation.path);
-                if generation_is_protected(generation, &protected) {
-                    plan.below_abi_protected_bytes += bytes;
-                } else {
-                    plan.below_abi_recent_bytes += bytes;
+                if below.is_some() {
+                    plan.generations_below_abi_kept += 1;
+                    if protected {
+                        plan.below_abi_protected_bytes += bytes;
+                    } else {
+                        plan.below_abi_recent_bytes += bytes;
+                    }
+                }
+                if above.is_some() {
+                    plan.generations_above_abi_kept += 1;
+                    if protected {
+                        plan.above_abi_protected_bytes += bytes;
+                    } else {
+                        plan.above_abi_recent_bytes += bytes;
+                    }
                 }
                 continue;
             }
@@ -886,7 +919,7 @@ fn plan_with_layout(
             };
             reasons.insert(
                 index,
-                format!("{built_for}, below --below-abi {floor}; no live checkout references it"),
+                format!("{built_for}, {direction} {flag} {bound}; no live checkout references it"),
             );
         }
     }
@@ -1145,7 +1178,7 @@ fn collect_with_layout(
             warnings: Vec::new(),
         }));
     }
-    if policy.max_size.is_some() || policy.below_abi.is_some() {
+    if policy.max_size.is_some() || policy.has_abi_filter() {
         // Warm the size memo before locking; see the doc comment.
         let _ = plan_with_layout(base, policy, now, &mut sizes, layout)?;
     }
@@ -1340,13 +1373,14 @@ pub(crate) fn parse_size(value: &str) -> Result<u64, String> {
     Ok((number * multiplier as f64) as u64)
 }
 
-const USAGE: &str = "usage: xtask cache-gc [--apply] [--max-age-days N] [--max-size SIZE] [--below-abi N] [--source-cache-root PATH] [--binary-cache-root PATH]";
+const USAGE: &str = "usage: xtask cache-gc [--apply] [--max-age-days N] [--max-size SIZE] [--below-abi N] [--above-abi N] [--source-cache-root PATH] [--binary-cache-root PATH]";
 
 pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     let mut apply = false;
     let mut max_age_days = days(DEFAULT_MAX_AGE);
     let mut max_size = None;
     let mut below_abi = None;
+    let mut above_abi = None;
     let mut root = None;
     let mut binary_root = None;
     let mut iter = args.into_iter();
@@ -1375,16 +1409,17 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
                     })?;
             }
             "--max-size" => max_size = Some(parse_size(&value("--max-size")?)?),
-            "--below-abi" => {
-                below_abi = Some(
-                    value("--below-abi")?
-                        .parse::<u32>()
-                        .ok()
-                        .filter(|abi| *abi >= 1)
-                        .ok_or_else(|| {
-                            "--below-abi must be a whole ABI version >= 1".to_string()
-                        })?,
-                );
+            "--below-abi" | "--above-abi" => {
+                let abi = value(&flag)?
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|abi| *abi >= 1)
+                    .ok_or_else(|| format!("{flag} must be a whole ABI version >= 1"))?;
+                if flag == "--below-abi" {
+                    below_abi = Some(abi);
+                } else {
+                    above_abi = Some(abi);
+                }
             }
             "--source-cache-root" | "--binary-cache-root" => {
                 let path = PathBuf::from(value(&flag)?);
@@ -1404,9 +1439,9 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
             _ => return Err(format!("unexpected argument {arg:?}\n{USAGE}")),
         }
     }
-    if binary_root.is_some() && below_abi.is_none() {
+    if binary_root.is_some() && below_abi.is_none() && above_abi.is_none() {
         return Err(
-            "--binary-cache-root requires --below-abi; the ordinary cache has no last-use tracking"
+            "--binary-cache-root requires --below-abi or --above-abi; the ordinary cache has no last-use tracking"
                 .to_string(),
         );
     }
@@ -1414,7 +1449,8 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     // machine-wide binary cache. It can be selected explicitly alongside it.
     let isolated_source = root.is_some() || std::env::var_os("KANDELO_SOURCE_CACHE_ROOT").is_some();
     let binary_root = binary_root.or_else(|| {
-        (below_abi.is_some() && !isolated_source).then(crate::build_deps::default_cache_root)
+        ((below_abi.is_some() || above_abi.is_some()) && !isolated_source)
+            .then(crate::build_deps::default_cache_root)
     });
     let base = match root {
         Some(root) => root,
@@ -1428,6 +1464,7 @@ pub(crate) fn run(args: Vec<String>) -> Result<(), String> {
     };
     let mut policy = GcPolicy::manual(Duration::from_secs(max_age_days * DAY.as_secs()), max_size);
     policy.below_abi = below_abi;
+    policy.above_abi = above_abi;
     let mut caches = vec![(base, CacheLayout::SourceOnly)];
     if let Some(binary_root) = binary_root {
         let binary_root = if binary_root.exists() {
@@ -1498,13 +1535,27 @@ fn print_report(base: &Path, policy: &GcPolicy, report: &GcReport, layout: Cache
         base.display()
     );
     if layout == CacheLayout::Binary {
-        println!("  policy: ordinary cache; collect only generations below ABI {} and abandoned debris; no age or size eviction", policy.below_abi.unwrap());
+        let bounds = [
+            policy.below_abi.map(|floor| format!("below ABI {floor}")),
+            policy
+                .above_abi
+                .map(|ceiling| format!("above ABI {ceiling}")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" or ");
+        println!("  policy: ordinary cache; collect only generations {bounds} and abandoned debris; no age or size eviction");
     } else {
         println!(
-            "  policy: collect generations no live checkout references and unused for >= {} days{}{}",
+            "  policy: collect generations no live checkout references and unused for >= {} days{}{}{}",
             days(policy.max_age),
             match policy.below_abi {
                 Some(floor) => format!(", or built for an ABI below {floor}"),
+                None => String::new(),
+            },
+            match policy.above_abi {
+                Some(ceiling) => format!(", or built for an ABI above {ceiling}"),
                 None => String::new(),
             },
             match policy.max_size {
@@ -1529,6 +1580,16 @@ fn print_report(base: &Path, policy: &GcPolicy, report: &GcReport, layout: Cache
         println!(
             "  below ABI {floor} kept on disk: {} protected by live roots, {} used within the last day",
             human_bytes(plan.below_abi_protected_bytes), human_bytes(plan.below_abi_recent_bytes)
+        );
+    }
+    if let Some(ceiling) = policy.above_abi {
+        println!(
+            "  above ABI {ceiling}: {} kept (protected by a live root or used within the last day), {} legacy generations not selected by an ABI rule",
+            plan.generations_above_abi_kept, plan.generations_abi_unknown
+        );
+        println!(
+            "  above ABI {ceiling} kept on disk: {} protected by live roots, {} used within the last day",
+            human_bytes(plan.above_abi_protected_bytes), human_bytes(plan.above_abi_recent_bytes)
         );
     }
     let mut by_category = BTreeMap::<Category, (usize, u64)>::new();

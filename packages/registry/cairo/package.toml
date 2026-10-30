@@ -14,7 +14,7 @@ name = "cairo"
 version = "1.18.6"
 kernel_abi = 17
 depends_on = [
-  "pixman@0.42.2",
+  "pixman@0.46.4",
   "freetype@2.13.3",
   "fontconfig@2.15.0",
   "libpng@1.6.43",
@@ -24,7 +24,7 @@ depends_on = [
 
 [[host_tools]]
 name = "meson"
-version_constraint = ">=1.3.0"
+version_constraint = ">=1.4.0"
 install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
 
 [[host_tools]]

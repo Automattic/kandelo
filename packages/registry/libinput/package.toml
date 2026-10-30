@@ -1,58 +1,29 @@
 # Per-library manifest for libinput. See docs/package-management.md.
 #
-# Ports libinput 1.25.0 (libinput.a) to wasm32-posix-kernel — the REAL
-# libinput core, path backend only. libinput opens explicit /dev/input/event* nodes via libinput_path_add_device,
-# runs the evdev capability machine (built on libevdev), classifies
-# devices through the libudev input_id shim, and turns the raw
-# `struct input_event` stream into libinput pointer/keyboard/touch
-# events on an epoll+timerfd event loop (all present in the kernel).
-#
-# Scope: the 35 path-backend TUs (src_libfilter + src_libinput core +
-# util + quirks), DROPPING src/udev-seat.c — the udev enumerate/monitor
-# seat backend. The Wayland compositor drives the path backend only.
-# SDL2 does not use libinput: it is built with --disable-libudev and
-# reads evdev directly.
-#
-# FOLLOW-UP: its libudev and mtdev dependencies are shims, the build
-# bypasses meson, and one patch adapts to a missing DMI identity; all are
-# listed in docs/package-management.md ("Packages that are not real upstream builds yet").
-#
-# We bypass upstream's meson build (its feature probes target the build
-# host, not the wasm sysroot) and compile the core TUs directly with a
-# hand-curated config.h — the same pattern as libxkbcommon / libevdev.
+# libinput 1.28.1 (libinput.a) turns `/dev/input/event*` streams into
+# pointer, keyboard, touch, tablet and gesture events on an
+# epoll+timerfd event loop. Built through upstream's meson build with the
+# SDK cross file, with both seat backends: udev (libudev-zero, which
+# enumerates and watches devices through /sys and the uevent netlink
+# socket) and path. No libwacom, tools, tests or docs. pkg-config name
+# `libinput`.
 
 kind = "library"
 
 name = "libinput"
-version = "1.25.0"
-kernel_abi = 17
-# libevdev owns the evdev fd + capability probing; the libudev shim
-# supplies ID_INPUT* classification (path backend rejects untagged
-# devices); mtdev is a link-only stub (protocol-A multitouch, never
-# entered for the kernel's single-touch virtual devices).
-depends_on = ["libevdev@1.13.3", "libudev@0.1.0", "mtdev@0.1.0"]
+version = "1.28.1"
+kernel_abi = 47
+depends_on = ["libevdev@1.13.3", "libudev-zero@1.0.5", "mtdev@1.1.7"]
 
-[source]
-# libinput 1.25.0. The gitlab auto-archive is behind an Anubis JS-PoW
-# wall that curl cannot clear; the Ubuntu `orig` tarball is the
-# byte-identical tree (sha256 matches the gitlab archive) and its pool
-# mirror is durable. 1.26+ adds Lua plugins — pinned to 1.25.0 to avoid.
-url = "http://archive.ubuntu.com/ubuntu/pool/main/libi/libinput/libinput_1.25.0.orig.tar.gz"
-sha256 = "f7e8425f185cadba5761d0a1dae6be041750d351163ffa04adc5b9a79a13c0ec"
-provider = "archive"
+[[host_tools]]
+name = "meson"
+version_constraint = ">=1.4.0"
+install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
 
-[license]
-spdx = "MIT"
-url = "https://gitlab.freedesktop.org/libinput/libinput/-/blob/1.25.0/COPYING"
-
-[build]
-script_path = "packages/registry/libinput/build-libinput.sh"
-
-[outputs]
-libs = ["lib/libinput.a"]
-headers = ["include/libinput.h"]
-# quirks/*.quirks packed as one zip; consumers unpack it at /usr/share/libinput.
-files = ["share/libinput-quirks.zip"]
+[[host_tools]]
+name = "ninja"
+version_constraint = ">=1.8"
+install_hints = { darwin = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh" }
 
 # Packs the device-quirks data into its declared zip.
 [[host_tools]]
@@ -61,9 +32,31 @@ version_constraint = ">=3.11"
 probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
 
-# Applies patches/0001 (quirks: empty DMI identity where none exists).
+# Applies patches/*.patch.
 [[host_tools]]
 name = "patch"
 version_constraint = ">=2.7"
 probe = { args = ["--version"], version_regex = "patch (\\d+\\.\\d+(?:\\.\\d+)?)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[source]
+# The gitlab auto-archive is behind an Anubis JS-PoW wall that curl cannot
+# clear; the Ubuntu `orig` tarball is the byte-identical tree (sha256
+# matches the gitlab archive) and its pool mirror is durable.
+url = "http://archive.ubuntu.com/ubuntu/pool/main/libi/libinput/libinput_1.28.1.orig.tar.gz"
+sha256 = "a13f8c9a7d93df3c85c66afd135f0296701d8d32f911991b7aa4273fdd6a42a3"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://gitlab.freedesktop.org/libinput/libinput/-/blob/1.28.1/COPYING"
+
+[build]
+script_path = "packages/registry/libinput/build-libinput.sh"
+
+[outputs]
+libs = ["lib/libinput.a"]
+headers = ["include/libinput.h"]
+pkgconfig = ["lib/pkgconfig/libinput.pc"]
+# quirks/*.quirks packed as one zip; consumers unpack it at /usr/share/libinput.
+files = ["share/libinput-quirks.zip"]

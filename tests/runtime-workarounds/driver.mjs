@@ -186,6 +186,10 @@ function firefoxHome(name) {
 
 function launch(engine, home, timeoutMs) {
   const options = { headless: true, timeout: timeoutMs };
+  // Match the product browser gate. The legacy headless shell and Chromium's
+  // new headless channel can use different WebGL backends and give different
+  // verdicts for the same graphics reproduction.
+  if (engine.name() === 'chromium') options.channel = 'chromium';
   if (home) options.env = { ...process.env, CFFIXED_USER_HOME: home };
   return engine.launch(options);
 }

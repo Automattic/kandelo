@@ -5044,6 +5044,8 @@ describe("kernel scratch transfer capacity regressions", () => {
     [4, 0x8004_5430, 4, 0x00],
     [4, 0xc024_6400, 36, 0x4b],
     [8, 0xc040_6400, 64, 0x4b],
+    [4, 0x49, 24, 0x4b],
+    [8, 0x49, 40, 0x4b],
   ] as const)(
     "stages the exact wasm%s ioctl request 0x%s capacity",
     (pointerWidth, request, size, expectedInputByte) => {
@@ -5256,7 +5258,6 @@ describe("kernel scratch transfer capacity regressions", () => {
   });
 
   it.each([
-    [0x49, 24],
     [0xc024_6400, 36],
   ] as const)(
     "rejects wasm64 ioctl 0x%s before a lossy layout conversion",

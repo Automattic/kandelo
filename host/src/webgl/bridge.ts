@@ -18,8 +18,23 @@
  * returns a negative errno so `GLIO_SUBMIT` can fail like any other
  * ioctl-style device operation instead of hiding the failure in host code.
  */
+import { imageTextureOperation, imageRenderbufferStorage, prepareImageDraw } from "./image-storage.js";
+import { repairNativeState } from "./native-recovery.js";
+import { bindImageObject } from "./image-bindings.js";
+import { beginClientArray, endClientArray, reconcileClientArrayRestore, requestClientArrayRestore } from "./client-array.js";
+import { capabilityEnabled } from "./state-query.js";
+import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
+import { installShaderSource } from "./shader-source.js";
+import { drawGlesElements } from "./index-data.js";
+import { installVertexAttribute } from "./vertex-data.js";
+import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
+import { checkedGlCall, currentProgramName, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted } from "./program-objects.js";
+import { stateArgumentError } from "./state-validation.js";
+import { combinedTextureUnits, maxViewport } from "./limits.js";
 import * as O from "./ops.js";
+import { collectRetiredImages, deleteRenderbufferName, deleteTextureName, deleteFramebufferName, attachImageObject, bindFramebufferObject } from "./image-references.js";
+import { activeVertexArray, collectRetiredBuffers, defaultVertexArray, deleteBufferNames, vertexAttribute } from "./buffer-references.js";
 import {
   GL_BACK,
   GL_FRONT,
@@ -61,6 +76,10 @@ function updateStencilFaces(
   if (face === GL_BACK || face === GL_FRONT_AND_BACK) update(shadow.stencil.back);
 }
 
+function clampUnit(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
 let glBridgeFailureLogs = 0;
 function logGlBridgeFailure(phase: string, op: number, err: unknown): void {
   if (glBridgeFailureLogs >= 20) return;
@@ -73,17 +92,33 @@ export function decodeAndDispatch(
   b: GlBinding,
   offset: number,
   length: number,
+  storage?: {before: () => boolean; after: () => boolean},
 ): number {
   if (!b.cmdbufView || !b.gl) return GL_SUBMIT_OK;
-  return walkCommandBuffer(b.cmdbufView, offset, length, (payload, op) => {
+  // Validate the entire batch before the first observable mutation. A bad
+  // trailing record must not leave a partially executed, rejected batch.
+  const validation = validateCommandBuffer(b.cmdbufView, offset, length);
+  if (validation !== GL_SUBMIT_OK) return validation;
+  const result = walkCommandBuffer(b.cmdbufView, offset, length, (payload, op) => {
     try {
-      dispatch(b.gl!, b, payload, 0, op);
+      if (!repairNativeState(b.gl!) || !reconcileClientArrayRestore(b,b.gl!)) return GL_SUBMIT_EIO;
+      if (storage && !storage.before()) return GL_SUBMIT_EIO;
+      try { dispatch(b.gl!, b, payload, 0, op); }
+      finally { if (storage && !storage.after()) return GL_SUBMIT_EIO; }
       return GL_SUBMIT_OK;
     } catch (err) {
       logGlBridgeFailure("submit", op, err);
       return GL_SUBMIT_EIO;
     }
   });
+  if (result < 0) requestClientArrayRestore(b);
+  if (!repairNativeState(b.gl) || !reconcileClientArrayRestore(b,b.gl)) {
+    requestClientArrayRestore(b);
+    return GL_SUBMIT_EIO;
+  }
+  collectRetiredImages(b);
+  collectRetiredBuffers(b);
+  return result;
 }
 
 export function validateCommandBuffer(
@@ -270,6 +305,9 @@ function normalizeTextureInternalFormat(internal: number, format: number, type: 
 
 function validPayload(op: number, v: DataView): boolean {
   switch (op) {
+    case O.OP_BEGIN_CLIENT_ARRAY:
+    case O.OP_END_CLIENT_ARRAY:
+      return exact(v,0);
     case O.OP_CLEAR:
     case O.OP_ENABLE:
     case O.OP_DISABLE:
@@ -283,6 +321,7 @@ function validPayload(op: number, v: DataView): boolean {
     case O.OP_DELETE_SHADER:
     case O.OP_CREATE_PROGRAM:
     case O.OP_LINK_PROGRAM:
+    case O.OP_VALIDATE_PROGRAM:
     case O.OP_USE_PROGRAM:
     case O.OP_DELETE_PROGRAM:
     case O.OP_ENABLE_VERTEX_ATTRIB_ARRAY:
@@ -409,13 +448,58 @@ function validPayload(op: number, v: DataView): boolean {
   }
 }
 
+/** Allocation-only checked requests prefix an unchanged command payload with
+ * its opcode. Validate complete spans before replies or native side effects. */
+export function validImageStorageRequest(input: Uint8Array): boolean {
+  if (input.byteLength < 4) return false;
+  const view = new DataView(input.buffer, input.byteOffset, input.byteLength), op = view.getUint32(0, true);
+  if (op === O.OP_TEX_IMAGE_2D) {
+    if (input.byteLength !== 40 || view.getUint32(36, true) !== 0) return false;
+  } else if (op === O.OP_RENDERBUFFER_STORAGE) {
+    if (input.byteLength !== 20) return false;
+  } else return false;
+  return validPayload(op, new DataView(input.buffer, input.byteOffset + 4, input.byteLength - 4));
+}
+/** Execute an allocation request after validImageStorageRequest succeeds. */
+export function executeImageStorageRequest(b: GlBinding, input: Uint8Array): boolean {
+  const view = new DataView(input.buffer, input.byteOffset, input.byteLength);
+  return dispatch(b.gl!, b, new DataView(input.buffer, input.byteOffset + 4, input.byteLength - 4), 0, view.getUint32(0, true)) === true;
+}
+
 function dispatch(
   gl: WebGL2RenderingContext,
   b: GlBinding,
   v: DataView,
   p: number,
   op: number,
-): void {
+): boolean | void {
+  const error = stateArgumentError(op, v);
+  if (error !== 0) {
+    recordGlError(b, error);
+    return;
+  }
+  switch (op) {
+    case O.OP_TEX_IMAGE_2D: case O.OP_TEX_SUB_IMAGE_2D:
+    case O.OP_COMPRESSED_TEX_IMAGE_2D: case O.OP_COMPRESSED_TEX_SUB_IMAGE_2D:
+    case O.OP_COPY_TEX_IMAGE_2D: case O.OP_COPY_TEX_SUB_IMAGE_2D:
+      if (!prepareTextureOperation(b,v.getUint32(p,true),true)) return;
+      break;
+    case O.OP_TEX_PARAMETERI: case O.OP_TEX_PARAMETERF:
+      if (!validGlesTextureParameter(v.getUint32(p+4,true))) { recordGlError(b,0x500); return; }
+      if (!prepareTextureOperation(b,v.getUint32(p,true))) return;
+      break;
+    case O.OP_GENERATE_MIPMAP:
+      if (!prepareTextureOperation(b,v.getUint32(p,true))) return;
+      break;
+  }
+  if (op >= O.OP_UNIFORM1I && op <= O.OP_UNIFORM_MATRIX3FV) {
+    const location = v.getInt32(p, true);
+    if (location !== -1 && (!b.uniformLocations.has(location) ||
+        b.uniformLocationPrograms.get(location) !== currentProgramName(b))) {
+      recordGlError(b, 0x502); // INVALID_OPERATION
+      return;
+    }
+  }
   switch (op) {
     // ----- state ----------------------------------------------------------
     case O.OP_CLEAR:
@@ -423,18 +507,21 @@ function dispatch(
       return;
     case O.OP_CLEAR_COLOR:
       b.shadow.clearColor = [
-        v.getFloat32(p, true), v.getFloat32(p + 4, true),
-        v.getFloat32(p + 8, true), v.getFloat32(p + 12, true),
+        clampUnit(v.getFloat32(p, true)), clampUnit(v.getFloat32(p + 4, true)),
+        clampUnit(v.getFloat32(p + 8, true)), clampUnit(v.getFloat32(p + 12, true)),
       ];
       gl.clearColor(...b.shadow.clearColor);
       return;
-    case O.OP_VIEWPORT:
+    case O.OP_VIEWPORT: {
+      const maximum = maxViewport(gl);
       b.shadow.viewport = [
         v.getInt32(p, true), v.getInt32(p + 4, true),
-        v.getInt32(p + 8, true), v.getInt32(p + 12, true),
+        Math.min(v.getInt32(p + 8, true), maximum?.[0] ?? Infinity),
+        Math.min(v.getInt32(p + 12, true), maximum?.[1] ?? Infinity),
       ];
       gl.viewport(...b.shadow.viewport);
       return;
+    }
     case O.OP_SCISSOR: {
       const x = v.getInt32(p, true);
       const y = v.getInt32(p + 4, true);
@@ -446,26 +533,28 @@ function dispatch(
     }
     case O.OP_ENABLE: {
       const cap = v.getUint32(p, true);
-      gl.enable(cap);
+      if (capabilityEnabled(b,cap) === undefined) { recordGlError(b,0x500); return; }
+      if (!checkedGlCall(b, () => gl.enable(cap))) return;
       setCap(b.shadow, cap, true);
       return;
     }
     case O.OP_DISABLE: {
       const cap = v.getUint32(p, true);
-      gl.disable(cap);
+      if (capabilityEnabled(b,cap) === undefined) { recordGlError(b,0x500); return; }
+      if (!checkedGlCall(b, () => gl.disable(cap))) return;
       setCap(b.shadow, cap, false);
       return;
     }
     case O.OP_BLEND_FUNC: {
       const s = v.getUint32(p, true), d = v.getUint32(p + 4, true);
-      gl.blendFunc(s, d);
+      if (!checkedGlCall(b, () => gl.blendFunc(s, d))) return;
       b.shadow.blendFunc = { srcRGB: s, dstRGB: d, srcA: s, dstA: d };
       return;
     }
     case O.OP_BLEND_FUNC_SEPARATE: {
       const srcRGB = v.getUint32(p, true), dstRGB = v.getUint32(p + 4, true);
       const srcA = v.getUint32(p + 8, true), dstA = v.getUint32(p + 12, true);
-      gl.blendFuncSeparate(srcRGB, dstRGB, srcA, dstA);
+      if (!checkedGlCall(b, () => gl.blendFuncSeparate(srcRGB, dstRGB, srcA, dstA))) return;
       b.shadow.blendFunc = { srcRGB, dstRGB, srcA, dstA };
       return;
     }
@@ -484,10 +573,10 @@ function dispatch(
     }
     case O.OP_BLEND_COLOR:
       b.shadow.blendColor = [
-        v.getFloat32(p, true),
-        v.getFloat32(p + 4, true),
-        v.getFloat32(p + 8, true),
-        v.getFloat32(p + 12, true),
+        clampUnit(v.getFloat32(p, true)),
+        clampUnit(v.getFloat32(p + 4, true)),
+        clampUnit(v.getFloat32(p + 8, true)),
+        clampUnit(v.getFloat32(p + 12, true)),
       ];
       gl.blendColor(...b.shadow.blendColor);
       return;
@@ -614,49 +703,40 @@ function dispatch(
       gl.pixelStorei(pname, param);
       if (pname === GL_UNPACK_ALIGNMENT) b.shadow.unpackAlignment = param;
       else if (pname === GL_PACK_ALIGNMENT) b.shadow.packAlignment = param;
+      else if (b.shadow.pixelStore.has(pname) && param >= 0) b.shadow.pixelStore.set(pname, param);
       return;
     }
 
     // ----- buffers --------------------------------------------------------
     // Payload: u32 n, u32 names[n]
-    case O.OP_GEN_BUFFERS: {
-      const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        const buf = gl.createBuffer();
-        if (buf) b.buffers.set(name, buf);
-      }
-      return;
-    }
+    // Name reservations belong to the C namespace owner. GPU objects acquire
+    // state on first bind; a delayed reservation must never recreate or
+    // replace an object already realized (or deleted) by a sharing peer.
+    case O.OP_GEN_BUFFERS: return;
+
     case O.OP_DELETE_BUFFERS: {
       const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        const obj = b.buffers.get(name);
-        if (obj) gl.deleteBuffer(obj);
-        if (obj === b.shadow.arrayBuffer) b.shadow.arrayBuffer = null;
-        b.buffers.delete(name);
-      }
+      deleteBufferNames(b,Array.from({length:n},(_,i) => v.getUint32(p+4+i*4,true)));
       return;
     }
-    case O.OP_BIND_BUFFER: {
-      const target = v.getUint32(p, true);
-      const buffer = b.buffers.get(v.getUint32(p + 4, true)) ?? null;
-      gl.bindBuffer(target, buffer);
-      if (target === GL_ARRAY_BUFFER) b.shadow.arrayBuffer = buffer;
+    case O.OP_BEGIN_CLIENT_ARRAY:
+      beginClientArray(b); return;
+    case O.OP_END_CLIENT_ARRAY:
+      endClientArray(b); return;
+    case O.OP_BIND_BUFFER:
+      bindBufferObject(b,v.getUint32(p,true),v.getUint32(p+4,true));
       return;
-    }
     // Payload: u32 target, u32 dataLen, u8 data[dataLen], u32 usage
     case O.OP_BUFFER_DATA: {
       const target = v.getUint32(p, true);
       const byteLength = v.getUint32(p + 4, true);
       if (v.byteLength === 12) {
         const usage = v.getUint32(p + 8, true);
-        gl.bufferData(target, byteLength, usage);
+        replaceBufferData(b,target,byteLength,usage);
       } else {
         const usage = v.getUint32(p + 8 + byteLength, true);
         const data = copyBytes(v, p + 8, byteLength);
-        gl.bufferData(target, data, usage);
+        replaceBufferData(b,target,data,usage);
       }
       return;
     }
@@ -666,40 +746,23 @@ function dispatch(
       const dstOff = v.getInt32(p + 4, true);
       const dataLen = v.getUint32(p + 8, true);
       const data = copyBytes(v, p + 12, dataLen);
-      gl.bufferSubData(target, dstOff, data);
+      updateBufferData(b,target,dstOff,data);
       return;
     }
 
     // ----- textures -------------------------------------------------------
-    case O.OP_GEN_TEXTURES: {
-      const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        const tex = gl.createTexture();
-        if (tex) b.textures.set(name, tex);
-      }
-      return;
-    }
+    case O.OP_GEN_TEXTURES: return;
+
     case O.OP_DELETE_TEXTURES: {
       const n = v.getUint32(p, true);
       for (let i = 0; i < n; i++) {
         const name = v.getUint32(p + 4 + i * 4, true);
-        const obj = b.textures.get(name);
-        if (obj) gl.deleteTexture(obj);
-        b.shadow.textureUnits = b.shadow.textureUnits.map(tex => tex === obj ? null : tex);
-        b.textures.delete(name);
+        deleteTextureName(b,name);
       }
       return;
     }
     case O.OP_BIND_TEXTURE: {
-      const target = v.getUint32(p, true);
-      const texName = v.getUint32(p + 4, true);
-      const tex = b.textures.get(texName) ?? null;
-      gl.bindTexture(target, tex);
-      const unit = b.shadow.activeTexture;
-      if (unit >= 0 && unit < b.shadow.textureUnits.length) {
-        b.shadow.textureUnits[unit] = tex;
-      }
+      bindImageObject(b,1,v.getUint32(p,true),v.getUint32(p+4,true));
       return;
     }
     // Payload: u32 target, i32 level, i32 internalFormat, i32 width,
@@ -718,11 +781,10 @@ function dispatch(
       const data = dataLen === 0
         ? null
         : copyPixels(v, p + 36, dataLen, type);
-      gl.texImage2D(
+      return imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.texImage2D(
         target, level, normalizeTextureInternalFormat(internalFormat, format, type), width, height, border,
         format, type, data,
-      );
-      return;
+      ),v.getInt32(p+4,true)!==0);
     }
     // Payload: u32 target, i32 level, i32 xoff, i32 yoff, i32 width,
     //          i32 height, u32 format, u32 type,
@@ -738,9 +800,9 @@ function dispatch(
       const type = normalizeTextureType(v.getUint32(p + 28, true));
       const dataLen = v.getUint32(p + 32, true);
       const data = copyPixels(v, p + 36, dataLen, type);
-      gl.texSubImage2D(
+      imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.texSubImage2D(
         target, level, xoff, yoff, width, height, format, type, data,
-      );
+      ));
       return;
     }
     case O.OP_TEX_PARAMETERI:
@@ -759,17 +821,24 @@ function dispatch(
       return;
     case O.OP_ACTIVE_TEXTURE: {
       const unit = v.getUint32(p, true);
+      const index = unit - GL_TEXTURE0;
+      if (index < 0 || index >= combinedTextureUnits(gl)) {
+        recordGlError(b, 0x500); // INVALID_ENUM
+        return;
+      }
       gl.activeTexture(unit);
-      b.shadow.activeTexture = unit - GL_TEXTURE0;
+      b.shadow.activeTexture = index;
+      while (b.shadow.textureUnits.length <= index) b.shadow.textureUnits.push(null);
+      while (b.shadow.cubeTextureUnits.length <= index) b.shadow.cubeTextureUnits.push(null);
       return;
     }
     case O.OP_GENERATE_MIPMAP:
-      gl.generateMipmap(v.getUint32(p, true));
+      imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.generateMipmap(v.getUint32(p,true)));
       return;
     case O.OP_COMPRESSED_TEX_IMAGE_2D: {
       const dataLen = v.getUint32(p + 24, true);
       const data = copyBytes(v, p + 28, dataLen);
-      gl.compressedTexImage2D(
+      imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.compressedTexImage2D(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
         v.getUint32(p + 8, true),
@@ -777,13 +846,13 @@ function dispatch(
         v.getInt32(p + 16, true),
         v.getInt32(p + 20, true),
         data,
-      );
+      ),v.getInt32(p+4,true)!==0);
       return;
     }
     case O.OP_COMPRESSED_TEX_SUB_IMAGE_2D: {
       const dataLen = v.getUint32(p + 28, true);
       const data = copyBytes(v, p + 32, dataLen);
-      gl.compressedTexSubImage2D(
+      imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.compressedTexSubImage2D(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
         v.getInt32(p + 8, true),
@@ -792,11 +861,11 @@ function dispatch(
         v.getInt32(p + 20, true),
         v.getUint32(p + 24, true),
         data,
-      );
+      ));
       return;
     }
     case O.OP_COPY_TEX_IMAGE_2D:
-      gl.copyTexImage2D(
+      imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.copyTexImage2D(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
         v.getUint32(p + 8, true),
@@ -805,10 +874,10 @@ function dispatch(
         v.getInt32(p + 20, true),
         v.getInt32(p + 24, true),
         v.getInt32(p + 28, true),
-      );
+      ),v.getInt32(p+4,true)!==0);
       return;
     case O.OP_COPY_TEX_SUB_IMAGE_2D:
-      gl.copyTexSubImage2D(
+      imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.copyTexSubImage2D(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
         v.getInt32(p + 8, true),
@@ -817,7 +886,7 @@ function dispatch(
         v.getInt32(p + 20, true),
         v.getInt32(p + 24, true),
         v.getInt32(p + 28, true),
-      );
+      ));
       return;
 
     // ----- shaders / programs --------------------------------------------
@@ -841,9 +910,10 @@ function dispatch(
       // Uint8Array — also detaches from SAB grow races.
       const srcBytes = new Uint8Array(srcLen);
       srcBytes.set(new Uint8Array(v.buffer, v.byteOffset + p + 8, srcLen));
-      const src = new TextDecoder().decode(srcBytes);
       const sh = b.shaders.get(name);
-      if (sh) gl.shaderSource(sh, src);
+      if (!sh) { recordGlError(b,b.programs.has(name) ? 0x502 : 0x501); return; }
+      b.shaderUpload = null;
+      installShaderSource(b,sh,srcBytes);
       return;
     }
     case O.OP_COMPILE_SHADER: {
@@ -851,40 +921,57 @@ function dispatch(
       if (sh) gl.compileShader(sh);
       return;
     }
+    case O.OP_VALIDATE_PROGRAM: {
+      const name = v.getUint32(p,true), program = b.programs.get(name);
+      if (!program) { recordGlError(b,b.shaders.has(name) ? 0x502 : 0x501); return; }
+      checkedGlCall(b, () => gl.validateProgram(program));
+      return;
+    }
     case O.OP_DELETE_SHADER: {
       const name = v.getUint32(p, true);
       const sh = b.shaders.get(name);
-      if (sh) gl.deleteShader(sh);
-      b.shaders.delete(name);
+      if (!sh) { if (name !== 0) recordGlError(b, 0x501); return; }
+      if (!b.shaderDeletePending.has(name)) {
+        // Keep the native shader attachable while logical programs retain
+        // it, including a replacement native program for current relinking.
+        b.shaderDeletePending.add(name);
+        finalizeShader(b, name);
+      }
       return;
     }
     case O.OP_CREATE_PROGRAM: {
       const name = v.getUint32(p, true);
       const prog = gl.createProgram();
-      if (prog) b.programs.set(name, prog);
+      if (prog) {
+        b.programs.set(name, prog);
+        b.programShaders.set(name, new Set());
+      }
       return;
     }
     case O.OP_ATTACH_SHADER: {
-      const prog = b.programs.get(v.getUint32(p, true));
-      const sh = b.shaders.get(v.getUint32(p + 4, true));
-      if (prog && sh) gl.attachShader(prog, sh);
+      const programName = v.getUint32(p, true), shaderName = v.getUint32(p + 4, true);
+      const prog = b.programs.get(programName), sh = b.shaders.get(shaderName);
+      if (!prog || !sh) { recordGlError(b, 0x501); return; }
+      if (b.programShaders.get(programName)?.has(shaderName)) { recordGlError(b, 0x502); return; }
+      if (checkedGlCall(b, () => gl.attachShader(prog, sh))) {
+        let attached = b.programShaders.get(programName);
+        if (!attached) { attached = new Set(); b.programShaders.set(programName, attached); }
+        attached.add(shaderName);
+      }
       return;
     }
     case O.OP_LINK_PROGRAM: {
-      const prog = b.programs.get(v.getUint32(p, true));
-      if (prog) gl.linkProgram(prog);
+      linkProgramRetainingExecutable(b, v.getUint32(p, true));
       return;
     }
     case O.OP_USE_PROGRAM: {
-      const prog = b.programs.get(v.getUint32(p, true)) ?? null;
-      gl.useProgram(prog);
-      b.currentProgram = prog;
-      b.shadow.currentProgram = prog;
+      useProgramIfAccepted(b, v.getUint32(p, true));
       return;
     }
     // Payload: u32 program, u32 index, u32 nameLen, u8 name[nameLen]
     case O.OP_BIND_ATTRIB_LOCATION: {
-      const prog = b.programs.get(v.getUint32(p, true));
+      const programName = v.getUint32(p, true);
+      const prog = b.programs.get(programName);
       const index = v.getUint32(p + 4, true);
       const nameLen = v.getUint32(p + 8, true);
       // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
@@ -893,20 +980,30 @@ function dispatch(
       const nameBytes = new Uint8Array(nameLen);
       nameBytes.set(new Uint8Array(v.buffer, v.byteOffset + p + 12, nameLen));
       const name = new TextDecoder().decode(nameBytes);
-      if (prog) gl.bindAttribLocation(prog, index, name);
+      if (prog && checkedGlCall(b, () => gl.bindAttribLocation(prog, index, name))) {
+        let attributes = b.programAttributeBindings.get(programName);
+        if (!attributes) { attributes = new Map(); b.programAttributeBindings.set(programName, attributes); }
+        attributes.set(name, index);
+      }
       return;
     }
     case O.OP_DELETE_PROGRAM: {
       const name = v.getUint32(p, true);
       const prog = b.programs.get(name);
-      if (prog) gl.deleteProgram(prog);
-      b.programs.delete(name);
+      if (!prog) { if (name !== 0) recordGlError(b, 0x501); return; }
+      b.programDeletePending.add(name);
+      finalizeProgram(b, name);
       return;
     }
     case O.OP_DETACH_SHADER: {
-      const prog = b.programs.get(v.getUint32(p, true));
-      const sh = b.shaders.get(v.getUint32(p + 4, true));
-      if (prog && sh) gl.detachShader(prog, sh);
+      const programName = v.getUint32(p, true), shaderName = v.getUint32(p + 4, true);
+      const prog = b.programs.get(programName), sh = b.shaders.get(shaderName);
+      if (!prog || !sh) { recordGlError(b, 0x501); return; }
+      if (!b.programShaders.get(programName)?.has(shaderName)) { recordGlError(b, 0x502); return; }
+      if (checkedGlCall(b, () => gl.detachShader(prog, sh))) {
+        b.programShaders.get(programName)!.delete(shaderName);
+        finalizeShader(b, shaderName);
+      }
       return;
     }
 
@@ -1024,12 +1121,18 @@ function dispatch(
     }
 
     // ----- vertex attribs / draws -----------------------------------------
-    case O.OP_ENABLE_VERTEX_ATTRIB_ARRAY:
-      gl.enableVertexAttribArray(v.getUint32(p, true));
+    case O.OP_ENABLE_VERTEX_ATTRIB_ARRAY: {
+      const index = v.getUint32(p,true);
+      if (!checkedGlCall(b, () => gl.enableVertexAttribArray(index))) return;
+      activeVertexArray(b).attributes.set(index,{...vertexAttribute(b,index),enabled:true});
       return;
-    case O.OP_DISABLE_VERTEX_ATTRIB_ARRAY:
-      gl.disableVertexAttribArray(v.getUint32(p, true));
+    }
+    case O.OP_DISABLE_VERTEX_ATTRIB_ARRAY: {
+      const index = v.getUint32(p,true);
+      if (!checkedGlCall(b, () => gl.disableVertexAttribArray(index))) return;
+      activeVertexArray(b).attributes.set(index,{...vertexAttribute(b,index),enabled:false});
       return;
+    }
     // Payload: u32 index, i32 size, u32 type, u32 normalizedBool,
     //          i32 stride, i32 offset
     case O.OP_VERTEX_ATTRIB_POINTER: {
@@ -1039,10 +1142,21 @@ function dispatch(
       const normalized = v.getUint32(p + 12, true) !== 0;
       const stride = v.getInt32(p + 16, true);
       const off = v.getInt32(p + 20, true);
-      gl.vertexAttribPointer(index, size, type, normalized, stride, off);
+      const attribute = {buffer:b.shadow.arrayBuffer && canonicalBuffer(b,b.shadow.arrayBuffer),enabled:vertexAttribute(b,index).enabled,
+        size,type,normalized,stride,offset:off};
+      const vao = activeVertexArray(b);
+      let attributes: typeof vao.attributes;
+      try { attributes = new Map(vao.attributes); attributes.set(index,attribute); }
+      catch { recordGlError(b,0x505); return; }
+      if (!installVertexAttribute(b,index,attribute)) return;
+      vao.attributes = attributes;
       return;
     }
     case O.OP_DRAW_ARRAYS:
+      if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }
+      if (v.getUint32(p,true) > 6) { recordGlError(b,0x500); return; }
+      if (v.getInt32(p+4,true) < 0 || v.getInt32(p+8,true) < 0) { recordGlError(b,0x501); return; }
+      if (!prepareBufferDraw(b,false)||!prepareImageDraw(b)) return;
       gl.drawArrays(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
@@ -1050,12 +1164,9 @@ function dispatch(
       );
       return;
     case O.OP_DRAW_ELEMENTS:
-      gl.drawElements(
-        v.getUint32(p, true),
-        v.getInt32(p + 4, true),
-        v.getUint32(p + 8, true),
-        v.getUint32(p + 12, true),
-      );
+      if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }
+      if(!prepareImageDraw(b))return;
+      drawGlesElements(b,v.getUint32(p,true),v.getInt32(p+4,true),v.getUint32(p+8,true),v.getUint32(p+12,true));
       return;
     // Payload: u32 index, f32 x, f32 y, f32 z, f32 w
     case O.OP_VERTEX_ATTRIB_4FV:
@@ -1077,8 +1188,11 @@ function dispatch(
       const n = v.getUint32(p, true);
       for (let i = 0; i < n; i++) {
         const name = v.getUint32(p + 4 + i * 4, true);
-        const vao = gl.createVertexArray();
-        if (vao) b.vaos.set(name, vao);
+        if (!name || b.vaos.has(name)) { recordGlError(b,0x502); continue; }
+        let vao: WebGLVertexArrayObject | null = null;
+        if (checkedGlCall(b, () => { vao = gl.createVertexArray(); }) && vao) {
+          b.vaos.set(name,vao); b.vertexArrays.set(name,defaultVertexArray());
+        } else recordGlError(b,0x505);
       }
       return;
     }
@@ -1087,16 +1201,24 @@ function dispatch(
       for (let i = 0; i < n; i++) {
         const name = v.getUint32(p + 4 + i * 4, true);
         const obj = b.vaos.get(name);
-        if (obj) gl.deleteVertexArray(obj);
+        if (obj && !checkedGlCall(b, () => gl.deleteVertexArray(obj))) continue;
+        if (obj && name === b.vertexArrayId) {
+          gl.bindVertexArray(b.shadow.defaultVao);
+          b.shadow.vao = null; b.vertexArrayId = 0;
+        }
         b.vaos.delete(name);
+        if (name) b.vertexArrays.delete(name);
       }
       return;
     }
     case O.OP_BIND_VERTEX_ARRAY: {
-      const vao = b.vaos.get(v.getUint32(p, true)) ?? null;
+      const name = v.getUint32(p,true), vao = b.vaos.get(name) ?? null;
+      if (name !== 0 && !vao) { recordGlError(b,0x502); return; }
       // Vertex array 0 is this binding's own default (see GlShadowState).
-      gl.bindVertexArray(vao ?? b.shadow.defaultVao);
+      if (!checkedGlCall(b, () => gl.bindVertexArray(vao ?? b.shadow.defaultVao))) return;
       b.shadow.vao = vao;
+      b.vertexArrayId = name;
+      activeVertexArray(b);
       return;
     }
 
@@ -1112,83 +1234,43 @@ function dispatch(
     }
     case O.OP_DELETE_FRAMEBUFFERS: {
       const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        const obj = b.fbos.get(name);
-        if (obj) gl.deleteFramebuffer(obj);
-        b.fbos.delete(name);
-      }
+      for (let i = 0; i < n; i++) deleteFramebufferName(b,v.getUint32(p+4+i*4,true));
       return;
     }
-    case O.OP_BIND_FRAMEBUFFER: {
-      const target = v.getUint32(p, true);
-      const name = v.getUint32(p + 4, true);
-      let fbo = b.fbos.get(name) ?? null;
-      // GPU-tier producer redirect: "bind default framebuffer 0" (the
-      // client's window) becomes "render into the target bo's FBO" so a
-      // routed client's output lands in the bo the compositor samples.
-      // Only name 0 is remapped — a real FBO name the client generated
-      // (offscreen ping-pong, etc.) is honored as-is.
-      if (fbo === null && name === 0 && b.renderTargetFbo) {
-        fbo = b.renderTargetFbo;
-      }
-      gl.bindFramebuffer(target, fbo);
-      if (target !== GL_READ_FRAMEBUFFER) b.shadow.fbo = fbo;
+    case O.OP_BIND_FRAMEBUFFER:
+      bindFramebufferObject(b,v.getUint32(p,true),v.getUint32(p+4,true));
       return;
-    }
     // Payload: u32 target, u32 attachment, u32 textarget, u32 textureName,
     //          i32 level
-    case O.OP_FRAMEBUFFER_TEXTURE_2D: {
-      const target = v.getUint32(p, true);
-      const attachment = v.getUint32(p + 4, true);
-      const textarget = v.getUint32(p + 8, true);
-      const tex = b.textures.get(v.getUint32(p + 12, true)) ?? null;
-      const level = v.getInt32(p + 16, true);
-      gl.framebufferTexture2D(target, attachment, textarget, tex, level);
+    case O.OP_FRAMEBUFFER_TEXTURE_2D:
+      attachImageObject(b,1,v.getUint32(p,true),v.getUint32(p+4,true),v.getUint32(p+8,true),v.getUint32(p+12,true),v.getInt32(p+16,true));
       return;
-    }
-    case O.OP_GEN_RENDERBUFFERS: {
-      const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        const rbo = gl.createRenderbuffer();
-        if (rbo) b.rbos.set(name, rbo);
-      }
-      return;
-    }
+    case O.OP_GEN_RENDERBUFFERS: return;
+
     case O.OP_DELETE_RENDERBUFFERS: {
       const n = v.getUint32(p, true);
       for (let i = 0; i < n; i++) {
         const name = v.getUint32(p + 4 + i * 4, true);
-        const obj = b.rbos.get(name);
-        if (obj) gl.deleteRenderbuffer(obj);
-        if (obj === b.shadow.renderbuffer) b.shadow.renderbuffer = null;
-        b.rbos.delete(name);
+        deleteRenderbufferName(b,name);
       }
       return;
     }
-    case O.OP_BIND_RENDERBUFFER:
-      b.shadow.renderbuffer = b.rbos.get(v.getUint32(p + 4, true)) ?? null;
-      gl.bindRenderbuffer(v.getUint32(p, true), b.shadow.renderbuffer);
+    case O.OP_BIND_RENDERBUFFER: {
+      bindImageObject(b,2,v.getUint32(p,true),v.getUint32(p+4,true));
       return;
+    }
     // Payload: u32 target, u32 internalformat, i32 width, i32 height
     case O.OP_RENDERBUFFER_STORAGE:
-      gl.renderbufferStorage(
+      return imageRenderbufferStorage(b,()=>gl.renderbufferStorage(
         v.getUint32(p, true),
         v.getUint32(p + 4, true),
         v.getInt32(p + 8, true),
         v.getInt32(p + 12, true),
-      );
-      return;
+      ));
     // Payload: u32 target, u32 attachment, u32 rbtarget, u32 rboName
-    case O.OP_FRAMEBUFFER_RENDERBUFFER: {
-      const target = v.getUint32(p, true);
-      const attachment = v.getUint32(p + 4, true);
-      const rbtarget = v.getUint32(p + 8, true);
-      const rbo = b.rbos.get(v.getUint32(p + 12, true)) ?? null;
-      gl.framebufferRenderbuffer(target, attachment, rbtarget, rbo);
+    case O.OP_FRAMEBUFFER_RENDERBUFFER:
+      attachImageObject(b,2,v.getUint32(p,true),v.getUint32(p+4,true),v.getUint32(p+8,true),v.getUint32(p+12,true),0);
       return;
-    }
     case O.OP_DRAW_BUFFER: {
       gl.drawBuffers([v.getUint32(p, true)]);
       return;

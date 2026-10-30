@@ -3,6 +3,7 @@ import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import { GlMuxer } from "../src/webgl/muxer.js";
 import * as O from "../src/webgl/ops.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
+import { runGlQuery } from "../src/webgl/query.js";
 import {
   defaultShadow,
   GL_BLEND,
@@ -18,6 +19,10 @@ import {
 } from "../src/webgl/shadow.js";
 
 class StubGl {
+  getError() { return 0; }
+  getParameter(name: number): unknown {
+    return name === 0x0d3a ? new Int32Array([16384, 16384]) : 32;
+  }
   colorMask(...a: boolean[]) {  }
   depthMask(...a: boolean[]) {  }
   stencilFuncSeparate(...a: number[]) {  }
@@ -112,6 +117,89 @@ describe("GlShadowState — defaults", () => {
 });
 
 describe("cmdbuf decoder — shadow writes", () => {
+  it("records the driver-clamped viewport dimensions", () => {
+    const b=setupBinding();
+    b.gl!.getParameter=() => new Int32Array([4096,3072]);
+    const t=new Tlv(b.cmdbufView!.buffer), record=t.op(O.OP_VIEWPORT,16);
+    [1,2,5000,5000].forEach((word,i) => t.view.setInt32(record.p+i*4,word,true));
+    expect(decodeAndDispatch(b,0,t.p)).toBe(0);
+    expect(b.shadow.viewport).toEqual([1,2,4096,3072]);
+  });
+
+  it("rejects texture units beyond the native combined-unit limit", () => {
+    const b=setupBinding();
+    b.gl!.getParameter=() => 48;
+    const active=vi.spyOn(b.gl!,"activeTexture");
+    const t=new Tlv(b.cmdbufView!.buffer), record=t.op(O.OP_ACTIVE_TEXTURE,4);
+    t.view.setUint32(record.p,GL_TEXTURE0+48,true);
+    expect(decodeAndDispatch(b,0,t.p)).toBe(0);
+    expect(b.shadow.activeTexture).toBe(0);
+    expect(active).not.toHaveBeenCalled();
+    const reply=new Uint8Array(4);
+    expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),reply)).toBe(4);
+    expect(new DataView(reply.buffer).getUint32(0,true)).toBe(0x500);
+  });
+
+  it.each(["none", "invalidate", "reset-and-invalidate"])("clears higher unused units after %s", (invalidation) => {
+    const first=setupBinding(), second=setupBinding();
+    second.gl=first.gl;
+    first.gl!.getParameter=() => 48;
+    let active=0;
+    const nativeBindings=new Map<number,unknown>();
+    first.gl!.activeTexture=(unit: number) => { active=unit-GL_TEXTURE0; };
+    first.gl!.bindTexture=(target: number, texture: unknown) => {
+      if(target===0x0de1) nativeBindings.set(active,texture);
+    };
+    const object={} as WebGLTexture;
+    first.textures.set(1,object);
+    const mux=new GlMuxer(first.gl!);
+    mux.switchTo(first);
+    const t=new Tlv(first.cmdbufView!.buffer);
+    let record=t.op(O.OP_ACTIVE_TEXTURE,4);
+    t.view.setUint32(record.p,GL_TEXTURE0+40,true);
+    record=t.op(O.OP_BIND_TEXTURE,8);
+    t.view.setUint32(record.p,0x0de1,true); t.view.setUint32(record.p+4,1,true);
+    expect(decodeAndDispatch(first,0,t.p)).toBe(0);
+    expect(nativeBindings.get(40)).toBe(object);
+    if (invalidation === "reset-and-invalidate") first.shadow = defaultShadow();
+    if (invalidation !== "none") mux.invalidateCurrent();
+    mux.switchTo(second);
+    expect(nativeBindings.get(40)).toBeNull();
+    mux.switchTo(first);
+    expect(nativeBindings.get(40)).toBe(invalidation === "reset-and-invalidate" ? null : object);
+  });
+  it.each([O.OP_CLEAR_COLOR, O.OP_BLEND_COLOR])("clamps color state for command %i", (op) => {
+    const b = setupBinding();
+    const t = new Tlv(b.cmdbufView!.buffer), record = t.op(op, 16);
+    [-1, 2, 0.25, 0.5].forEach((value, i) => t.view.setFloat32(record.p + i * 4, value, true));
+    expect(decodeAndDispatch(b, 0, t.p)).toBe(0);
+    expect(op === O.OP_CLEAR_COLOR ? b.shadow.clearColor : b.shadow.blendColor)
+      .toEqual([0, 1, 0.25, 0.5]);
+  });
+  it.each([
+    [O.OP_VIEWPORT,[0,0,-1,16],0x501],
+    [O.OP_SCISSOR,[0,0,16,-1],0x501],
+    [O.OP_DEPTH_FUNC,[0],0x500],
+    [O.OP_CULL_FACE,[0],0x500],
+    [O.OP_FRONT_FACE,[0],0x500],
+    [O.OP_LINE_WIDTH,[0],0x501],
+    [O.OP_BLEND_EQUATION_SEPARATE,[0,0x8006],0x500],
+    [O.OP_BLEND_FUNC,[1,0x0308],0x500], // saturate is a source-only factor
+    [O.OP_BLEND_FUNC_SEPARATE,[1,0,0,0xffffffff],0x500],
+    [O.OP_PIXEL_STOREI,[GL_PACK_ALIGNMENT,3],0x501],
+    [O.OP_PIXEL_STOREI,[0x0cf3,-1],0x501],
+    [O.OP_ENABLE,[0x8c89],0x500], // GLES3 rasterizer-discard is not GLES2
+  ])("invalid state command %i preserves the complete owner shadow", (op, words, error) => {
+    const b=setupBinding(), before=structuredClone(b.shadow);
+    const t=new Tlv(b.cmdbufView!.buffer);
+    const record=t.op(op as number,(words as number[]).length*4);
+    (words as number[]).forEach((word,i) => t.view.setInt32(record.p+i*4,word,true));
+    expect(decodeAndDispatch(b,0,t.p)).toBe(0);
+    expect(b.shadow).toEqual(before);
+    const reply=new Uint8Array(4);
+    expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),reply)).toBe(4);
+    expect(new DataView(reply.buffer).getUint32(0,true)).toBe(error);
+  });
   it("OP_VIEWPORT writes shadow.viewport", () => {
     const b = setupBinding();
     const t = new Tlv(b.cmdbufView!.buffer);
@@ -379,4 +467,55 @@ describe("cmdbuf decoder — shadow writes", () => {
     decodeAndDispatch(b, 0, t.p);
     expect(b.shadow.fbo).toBe(b.fbos.get(13)!);
   });
+});
+
+it("keeps cube and 2D texture bindings independent on the same unit", () => {
+  const b = setupBinding();
+  const commands = new Tlv(b.cmdbufView!.buffer as ArrayBuffer);
+  let record = commands.op(O.OP_GEN_TEXTURES, 12);
+  commands.view.setUint32(record.p, 2, true);
+  commands.view.setUint32(record.p + 4, 11, true);
+  commands.view.setUint32(record.p + 8, 12, true);
+  record = commands.op(O.OP_BIND_TEXTURE, 8);
+  commands.view.setUint32(record.p, 0x0de1, true);
+  commands.view.setUint32(record.p + 4, 11, true);
+  record = commands.op(O.OP_BIND_TEXTURE, 8);
+  commands.view.setUint32(record.p, 0x8513, true);
+  commands.view.setUint32(record.p + 4, 12, true);
+  expect(decodeAndDispatch(b, 0, commands.p)).toBe(0);
+  expect(b.shadow.textureUnits[0]).toBe(b.textures.get(11));
+  const gl = b.gl!;
+  const bind = vi.spyOn(gl, "bindTexture");
+  new GlMuxer(gl).switchTo(b);
+  expect(bind).toHaveBeenCalledWith(0x0de1, b.textures.get(11));
+  expect(bind).toHaveBeenCalledWith(0x8513, b.textures.get(12));
+});
+
+it("restores dither and pixel-store state across a shared context switch", () => {
+  const a = setupBinding(), b = setupBinding();
+  b.gl = a.gl;
+  const commands = new Tlv(a.cmdbufView!.buffer as ArrayBuffer);
+  let record = commands.op(O.OP_DISABLE, 4);
+  commands.view.setUint32(record.p, 0x0bd0, true);
+  for (const [key, value] of [[0x0cf2, 7], [0x0cf3, 2], [0x0cf4, 1], [0x0d02, 9]]) {
+    record = commands.op(O.OP_PIXEL_STOREI, 8);
+    commands.view.setUint32(record.p, key, true);
+    commands.view.setInt32(record.p + 4, value, true);
+  }
+  expect(decodeAndDispatch(a, 0, commands.p)).toBe(0);
+  const gl = a.gl!;
+  const pixelStore = vi.spyOn(gl, "pixelStorei");
+  const enable = vi.spyOn(gl, "enable"), disable = vi.spyOn(gl, "disable");
+  const muxer = new GlMuxer(gl);
+  muxer.switchTo(a);
+  expect(disable).toHaveBeenCalledWith(0x0bd0);
+  expect(pixelStore).toHaveBeenCalledWith(0x0cf2, 7);
+  expect(pixelStore).toHaveBeenCalledWith(0x0cf3, 2);
+  expect(pixelStore).toHaveBeenCalledWith(0x0cf4, 1);
+  expect(pixelStore).toHaveBeenCalledWith(0x0d02, 9);
+  pixelStore.mockClear();
+  muxer.switchTo(b);
+  expect(enable).toHaveBeenCalledWith(0x0bd0);
+  for (const key of [0x0cf2, 0x0cf3, 0x0cf4, 0x0d02])
+    expect(pixelStore).toHaveBeenCalledWith(key, 0);
 });

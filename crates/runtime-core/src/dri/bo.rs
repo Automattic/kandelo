@@ -44,6 +44,9 @@ pub enum BoTier {
 #[derive(Debug, Clone)]
 pub struct GbmBo {
     pub id: BoId,
+    pub width: u32,
+    pub height: u32,
+    pub bpp: u32,
     pub stride: u32,
     pub size: u64,
     pub refcount: u32,
@@ -90,6 +93,9 @@ impl BoRegistry {
         self.next_id = self.next_id.checked_add(1)?;
         let bo = GbmBo {
             id,
+            width,
+            height,
+            bpp,
             stride,
             size,
             refcount: 1,
@@ -266,6 +272,7 @@ mod tests {
             // 17px @ 8bpp → naive 17 bytes; rounds to 20.
             let bo2 = r.alloc(17, 1, 8);
             assert_eq!(bo2.stride, 20);
+            assert_eq!((bo2.width, bo2.height), (17, 1));
             let id2 = bo2.id;
             r.decref(id2);
         });

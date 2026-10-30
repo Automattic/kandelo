@@ -1,11 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { resolveBinary } from "../src/binary-resolver";
 
-const programBinary = tryResolveBinary("programs/libdrm-kms-smoke.wasm");
+const programBinary = resolveBinary("programs/libdrm-kms-smoke.wasm");
 
 describe("dri libdrm KMS wrappers", () => {
-  it.skipIf(!programBinary)(
+  it(
     "GetResources/GetConnector/GetEncoder/GetCrtc/AddFB2/RmFB + SetMaster/DropMaster round-trip",
     async () => {
       const result = await runCentralizedProgram({

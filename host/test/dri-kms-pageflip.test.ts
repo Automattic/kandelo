@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { runCentralizedProgram } from "./centralized-test-helper";
-import { tryResolveBinary } from "../src/binary-resolver";
+import { resolveBinary } from "../src/binary-resolver";
 
-const programBinary = tryResolveBinary("programs/kms-pageflip-smoke.wasm");
+const programBinary = resolveBinary("programs/kms-pageflip-smoke.wasm");
 
 const EVENT_LINE = /event type=(\d+) length=(\d+) user_data=0x([0-9a-f]+) seq=(\d+) crtc=(\d+)/;
 
 describe("dri kms page-flip → vblank event round-trip", () => {
-  it.skipIf(!programBinary)(
+  it(
     "PAGE_FLIP delivers DRM_EVENT_FLIP_COMPLETE via poll(POLLIN) + read",
     async () => {
       const result = await runCentralizedProgram({

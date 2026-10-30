@@ -136,6 +136,12 @@ fn below_abi(floor: u32) -> GcPolicy {
     policy
 }
 
+fn above_abi(ceiling: u32) -> GcPolicy {
+    let mut policy = policy();
+    policy.above_abi = Some(ceiling);
+    policy
+}
+
 fn apply(cache: &Cache, policy: &GcPolicy) -> GcReport {
     match collect(&cache.base, policy, true, SystemTime::now()).unwrap() {
         GcOutcome::Completed(report) => report,
@@ -821,4 +827,164 @@ fn identical_basenames_in_different_kinds_do_not_share_sidecar_eviction() {
     apply(&cache, &policy());
     assert!(!old.exists());
     assert!(recent.is_dir() && recent_receipt.exists());
+}
+
+#[test]
+fn above_abi_collects_strictly_newer_library_program_generations_and_sidecars() {
+    let cache = cache();
+    let future_lib = abi_generation(&cache, "libs", "zlib", 55, &key(100), 2 * DAY);
+    let future_program = abi_generation(&cache, "programs", "bash", 59, &key(101), 2 * DAY);
+    let boundary = abi_generation(&cache, "libs", "zlib", 54, &key(102), 2 * DAY);
+    let older = abi_generation(&cache, "programs", "bash", 53, &key(103), 2 * DAY);
+    let sidecar = receipt(&future_lib, &key(100));
+    apply(&cache, &policy());
+    assert!(future_lib.is_dir() && future_program.is_dir());
+    let report = apply(&cache, &above_abi(54));
+    assert!(!future_lib.exists() && !future_program.exists() && !sidecar.exists());
+    assert!(boundary.is_dir() && older.is_dir());
+    assert_eq!(report.plan.generations_recent, 2);
+    let removed: Vec<_> = report
+        .plan
+        .candidates
+        .iter()
+        .filter(|candidate| candidate.category == Category::Generation)
+        .collect();
+    assert_eq!(removed.len(), 2);
+    assert!(removed
+        .iter()
+        .all(|candidate| candidate.reason.contains("above --above-abi 54")));
+}
+
+#[test]
+fn above_abi_preserves_roots_recent_use_and_running_builds_in_both_layouts() {
+    for layout in [CacheLayout::SourceOnly, CacheLayout::Binary] {
+        let cache = if layout == CacheLayout::SourceOnly {
+            cache()
+        } else {
+            binary_cache()
+        };
+        let protected = abi_generation(&cache, "libs", "zlib", 59, &key(104), 90 * DAY);
+        let _checkout = live_checkout(&cache, &[&key(104)]);
+        let recent = abi_generation(&cache, "programs", "bash", 58, &key(105), HOUR);
+        let eligible = abi_generation(&cache, "libs", "zlib", 57, &key(106), 2 * DAY);
+        let lock = CacheUseLock::acquire_shared(&cache.base, "above ABI test").unwrap();
+        assert!(matches!(
+            collect_with_layout(&cache.base, &above_abi(54), true, SystemTime::now(), layout)
+                .unwrap(),
+            GcOutcome::Skipped
+        ));
+        assert!(eligible.is_dir());
+        drop(lock);
+        let GcOutcome::Completed(report) =
+            collect_with_layout(&cache.base, &above_abi(54), true, SystemTime::now(), layout)
+                .unwrap()
+        else {
+            panic!("collection skipped")
+        };
+        assert!(!eligible.exists());
+        assert!(protected.is_dir() && recent.is_dir());
+        assert_eq!(report.plan.generations_above_abi_kept, 2);
+        assert_eq!(
+            report.plan.above_abi_protected_bytes,
+            disk_usage(&protected)
+        );
+        assert_eq!(report.plan.above_abi_recent_bytes, disk_usage(&recent));
+    }
+}
+
+#[test]
+fn above_abi_never_infers_a_match_for_unnamed_or_source_generations() {
+    let cache = cache();
+    let unnamed = generation(&cache, "libs", "zlib", &key(107), 2 * DAY);
+    fs::create_dir_all(cache.compiled.join("sources")).unwrap();
+    let source = abi_generation(&cache, "sources", "upstream", 59, &key(108), 2 * DAY);
+    let report = apply(&cache, &above_abi(1));
+    assert!(unnamed.is_dir() && source.is_dir());
+    assert!(report.plan.candidates.is_empty());
+    assert_eq!(report.plan.generations_abi_unknown, 1);
+}
+
+#[test]
+fn above_abi_and_below_abi_collect_the_union_outside_the_bounds() {
+    let cache = cache();
+    let entries: Vec<_> = (53..=57)
+        .map(|abi| abi_generation(&cache, "libs", "zlib", abi, &key(abi), 2 * DAY))
+        .collect();
+    let mut bounds = below_abi(54);
+    bounds.above_abi = Some(56);
+    let report = apply(&cache, &bounds);
+    assert!(!entries[0].exists() && !entries[4].exists());
+    assert!(entries[1..4].iter().all(|path| path.is_dir()));
+    assert_eq!(report.plan.generations_recent, 3);
+}
+
+#[test]
+fn overlapping_abi_filters_count_protections_without_duplicate_eviction() {
+    let cache = cache();
+    let protected = abi_generation(&cache, "libs", "zlib", 55, &key(112), 90 * DAY);
+    let _checkout = live_checkout(&cache, &[&key(112)]);
+    let eligible = abi_generation(&cache, "programs", "bash", 55, &key(113), 2 * DAY);
+    let mut bounds = below_abi(56);
+    bounds.above_abi = Some(54);
+    let report = apply(&cache, &bounds);
+    assert!(protected.is_dir() && !eligible.exists());
+    assert_eq!(report.plan.generations_below_abi_kept, 1);
+    assert_eq!(report.plan.generations_above_abi_kept, 1);
+    assert_eq!(
+        report.plan.above_abi_protected_bytes,
+        disk_usage(&protected)
+    );
+    assert_eq!(
+        report.plan.below_abi_protected_bytes,
+        disk_usage(&protected)
+    );
+    assert_eq!(
+        report
+            .plan
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.category == Category::Generation
+                && candidate.path == eligible)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn above_abi_does_not_replace_source_only_age_collection() {
+    let cache = cache();
+    let older = abi_generation(&cache, "libs", "zlib", 53, &key(109), 90 * DAY);
+    let recent_future = abi_generation(&cache, "libs", "zlib", 59, &key(110), HOUR);
+    let report = apply(&cache, &above_abi(54));
+    assert!(
+        !older.exists(),
+        "ABI filters supplement the existing age policy"
+    );
+    assert!(recent_future.is_dir());
+    assert!(report
+        .plan
+        .candidates
+        .iter()
+        .any(|candidate| candidate.path == older && candidate.reason.starts_with("unused for")));
+}
+
+#[test]
+fn above_abi_handles_the_largest_abi_without_overflow() {
+    let cache = cache();
+    let highest = abi_generation(&cache, "libs", "zlib", u32::MAX, &key(111), 2 * DAY);
+    apply(&cache, &above_abi(u32::MAX));
+    assert!(highest.is_dir());
+    apply(&cache, &above_abi(u32::MAX - 1));
+    assert!(!highest.exists());
+}
+
+#[test]
+fn above_abi_rejects_missing_invalid_and_overflowing_values() {
+    for value in ["0", "-1", "forty", "", "4294967296"] {
+        let error = run(vec!["--above-abi".to_string(), value.to_string()]).unwrap_err();
+        assert!(error.contains("--above-abi"), "{value:?}: {error}");
+    }
+    assert!(run(vec!["--above-abi".to_string()])
+        .unwrap_err()
+        .contains("needs a value"));
 }

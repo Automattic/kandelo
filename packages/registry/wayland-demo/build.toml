@@ -18,22 +18,10 @@ inputs = [
   "examples/libs/libkwl/build.sh",
   "examples/libs/libkwl/src/kwl.c",
   "examples/libs/libkwl/include/kwl.h",
-  "packages/registry/wayland-protocols/xml/xdg-shell.xml",
   "programs/klauncher.c",
   "programs/notify-send.c",
   "programs/kclipd.c",
   "libc/musl-overlay/include/kandelo/clipboard.h",
-  "packages/registry/wayland-protocols/xml/linux-dmabuf-v1.xml",
-  "packages/registry/wayland-protocols/xml/xdg-decoration-unstable-v1.xml",
-  "packages/registry/wayland-protocols/xml/wlr-layer-shell-unstable-v1.xml",
-  "packages/registry/wayland-protocols/xml/wlr-data-control-unstable-v1.xml",
-  "packages/registry/wayland-protocols/xml/ext-data-control-v1.xml",
-  "packages/registry/wayland-protocols/xml/presentation-time.xml",
-  "packages/registry/wayland-protocols/xml/xdg-output-unstable-v1.xml",
-  "packages/registry/wayland-protocols/xml/viewporter.xml",
-  "packages/registry/wayland-protocols/xml/fractional-scale-v1.xml",
-  "packages/registry/wayland-protocols/xml/ext-session-lock-v1.xml",
-  "packages/registry/wayland-protocols/xml/ext-idle-notify-v1.xml",
   "packages/registry/wayland-demo/desktops/data/applications/clock.desktop",
   "packages/registry/wayland-demo/desktops/data/applications/nano.desktop",
   "packages/registry/wayland-demo/desktops/data/applications/nethack.desktop",
@@ -61,6 +49,8 @@ inputs = [
   "packages/registry/wayland-demo/desktops/data/foot/foot.ini",
   "packages/registry/wayland-demo/desktops/hyprland/wlcompositor.conf",
   "packages/registry/wayland-demo/desktops/data/omarchy/wlcompositor.conf",
+  "packages/registry/wayland-demo/desktops/data/sway/config",
+  "packages/registry/wayland-demo/desktops/data/sway/foot.ini",
   "packages/registry/wayland-demo/desktops/data/themes/catppuccin/theme.conf",
   "packages/registry/wayland-demo/desktops/data/themes/everforest/theme.conf",
   "packages/registry/wayland-demo/desktops/data/themes/gruvbox/theme.conf",
@@ -80,4 +70,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = ""
-revision    = 7
+revision    = 9

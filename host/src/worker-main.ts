@@ -532,6 +532,10 @@ function buildKernelImports(
       }
       view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Exit, true);
       view.setBigInt64(base + CH_ARGS, BigInt(status), true);
+      // Teardown can wake a request before dispatch consumes its flags.
+      // Exit is a fresh raw request, never that prior opaque record or
+      // cancellation point; inheriting those flags can reject the exit.
+      view.setUint32(base + CH_REQUEST_FLAGS, 0, true);
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
       Atomics.notify(i32, (base + CH_STATUS) / 4, 1);

@@ -40,7 +40,7 @@
       "wait_contract"
     ]
   },
-  "abi_version": 55,
+  "abi_version": 56,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -1388,7 +1388,7 @@
       }
     ],
     "manifest": {
-      "abi_version": 55,
+      "abi_version": 56,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -1397,7 +1397,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 2,
+      "required_host_adapter_version": 3,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -1577,7 +1577,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 2,
+    "version": 3,
     "worker_features": [
       {
         "bit": 2,
@@ -1851,11 +1851,23 @@
       "wasm32Size": 4,
       "wasm64Size": 4
     },
+    "1074029585": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
     "1074291721": {
       "argKind": "pointer",
       "direction": "in",
       "wasm32Size": 8,
       "wasm64Size": 8
+    },
+    "1074816013": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 16,
+      "wasm64Size": 16
     },
     "17920": {
       "argKind": "pointer",
@@ -1990,6 +2002,12 @@
       "wasm64Size": 4
     },
     "2147767344": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "2147771394": {
       "argKind": "pointer",
       "direction": "out",
       "wasm32Size": 4,
@@ -2223,6 +2241,12 @@
       "wasm32Size": 4,
       "wasm64Size": 4
     },
+    "3221775568": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 8,
+      "wasm64Size": 8
+    },
     "3222037549": {
       "argKind": "pointer",
       "direction": "inout",
@@ -2247,7 +2271,25 @@
       "wasm32Size": 16,
       "wasm64Size": 16
     },
+    "3222299819": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
+    "3222299820": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
     "3222299827": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
+    "3222299829": {
       "argKind": "pointer",
       "direction": "inout",
       "wasm32Size": 16,
@@ -2277,13 +2319,49 @@
       "wasm32Size": 24,
       "wasm64Size": 24
     },
+    "3222824122": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 24,
+      "wasm64Size": 24
+    },
+    "3222824134": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 24,
+      "wasm64Size": 24
+    },
     "3223086243": {
       "argKind": "pointer",
       "direction": "in",
       "wasm32Size": 28,
       "wasm64Size": 28
     },
+    "3223086253": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 28,
+      "wasm64Size": 28
+    },
     "3223348402": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 32,
+      "wasm64Size": 32
+    },
+    "3223348406": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 32,
+      "wasm64Size": 32
+    },
+    "3223348409": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 32,
+      "wasm64Size": 32
+    },
+    "3223348450": {
       "argKind": "pointer",
       "direction": "inout",
       "wasm32Size": 32,
@@ -2301,6 +2379,12 @@
       "wasm32Size": 36,
       "wasm64Size": 36
     },
+    "3224396983": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 48,
+      "wasm64Size": 48
+    },
     "3225445376": {
       "argKind": "pointer",
       "direction": "inout",
@@ -2308,6 +2392,12 @@
       "wasm64Size": 64
     },
     "3225445536": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 64,
+      "wasm64Size": 64
+    },
+    "3225445546": {
       "argKind": "pointer",
       "direction": "inout",
       "wasm32Size": 64,
@@ -2393,9 +2483,9 @@
     },
     "64": {
       "argKind": "pointer",
-      "direction": "in",
-      "wasm32Size": 4,
-      "wasm64Size": 4
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
     },
     "65": {
       "argKind": "none",
@@ -2405,7 +2495,7 @@
     },
     "66": {
       "argKind": "pointer",
-      "direction": "in",
+      "direction": "inout",
       "wasm32Size": 16,
       "wasm64Size": 16
     },
@@ -2417,9 +2507,9 @@
     },
     "68": {
       "argKind": "pointer",
-      "direction": "in",
-      "wasm32Size": 32,
-      "wasm64Size": 32
+      "direction": "inout",
+      "wasm32Size": 36,
+      "wasm64Size": 36
     },
     "69": {
       "argKind": "none",
@@ -2428,10 +2518,10 @@
       "wasm64Size": 0
     },
     "70": {
-      "argKind": "none",
-      "direction": "none",
-      "wasm32Size": 0,
-      "wasm64Size": 0
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 12,
+      "wasm64Size": 12
     },
     "71": {
       "argKind": "pointer",
@@ -2449,7 +2539,13 @@
       "argKind": "pointer",
       "direction": "in",
       "wasm32Size": 24,
-      "wasm64Size": null
+      "wasm64Size": 40
+    },
+    "74": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 32,
+      "wasm64Size": 32
     }
   },
   "ioctl_request_families": [
@@ -3947,7 +4043,7 @@
       "kind": "func",
       "module": "env",
       "name": "host_gbm_bo_bind",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -3989,7 +4085,7 @@
       "kind": "func",
       "module": "env",
       "name": "host_gl_bind",
-      "signature": "(i32,i32,i32) -> ()"
+      "signature": "(i32,i32,i32,i32,i64) -> ()"
     },
     {
       "kind": "func",
@@ -4001,13 +4097,13 @@
       "kind": "func",
       "module": "env",
       "name": "host_gl_create_context",
-      "signature": "(i32,i32,i32,i32) -> ()"
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
       "module": "env",
       "name": "host_gl_create_surface",
-      "signature": "(i32,i32,i32,i32) -> ()"
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -4019,37 +4115,49 @@
       "kind": "func",
       "module": "env",
       "name": "host_gl_destroy_surface",
-      "signature": "(i32,i32) -> ()"
-    },
-    {
-      "kind": "func",
-      "module": "env",
-      "name": "host_gl_make_current",
       "signature": "(i32,i32,i32) -> ()"
     },
     {
       "kind": "func",
       "module": "env",
+      "name": "host_gl_import_image",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gl_make_current",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
       "name": "host_gl_present",
-      "signature": "(i32) -> (i32)"
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
       "module": "env",
       "name": "host_gl_query",
-      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
       "module": "env",
       "name": "host_gl_submit",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
       "module": "env",
       "name": "host_gl_unbind",
-      "signature": "(i32) -> ()"
+      "signature": "(i32,i32) -> ()"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gl_update_surface",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -4079,7 +4187,7 @@
       "kind": "func",
       "module": "env",
       "name": "host_kms_drop_master",
-      "signature": "(i32) -> ()"
+      "signature": "(i32,i64,i64) -> ()"
     },
     {
       "kind": "func",
@@ -4103,7 +4211,7 @@
       "kind": "func",
       "module": "env",
       "name": "host_kms_set_master",
-      "signature": "(i32) -> ()"
+      "signature": "(i32,i64,i64) -> ()"
     },
     {
       "kind": "func",
@@ -4654,12 +4762,67 @@
           "span": 4
         },
         {
-          "name": "reserved",
+          "name": "share_context_id",
           "offset": 4,
-          "span": 12
+          "span": 4
+        },
+        {
+          "name": "reserved",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "context_id",
+          "offset": 12,
+          "span": 4
         }
       ],
       "size": 16
+    },
+    "GlInitInfo": {
+      "fields": [
+        {
+          "name": "op_version",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "role",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "display_fd",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "display_id",
+          "offset": 12,
+          "span": 4
+        }
+      ],
+      "size": 16
+    },
+    "GlMakeCurrent": {
+      "fields": [
+        {
+          "name": "context_id",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "draw_surface_id",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "read_surface_id",
+          "offset": 8,
+          "span": 4
+        }
+      ],
+      "size": 12
     },
     "GlQueryInfo": {
       "fields": [
@@ -4695,6 +4858,51 @@
         }
       ],
       "size": 24
+    },
+    "GlQueryInfo64": {
+      "fields": [
+        {
+          "name": "op",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "padding0",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "in_buf_ptr",
+          "offset": 8,
+          "span": 8
+        },
+        {
+          "name": "in_buf_len",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "padding1",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "out_buf_ptr",
+          "offset": 24,
+          "span": 8
+        },
+        {
+          "name": "out_buf_len",
+          "offset": 32,
+          "span": 4
+        },
+        {
+          "name": "reserved",
+          "offset": 36,
+          "span": 4
+        }
+      ],
+      "size": 40
     },
     "GlSubmitInfo": {
       "fields": [
@@ -4737,6 +4945,51 @@
           "name": "reserved",
           "offset": 16,
           "span": 16
+        }
+      ],
+      "size": 32
+    },
+    "GlSurfaceFrontCopyInfo": {
+      "fields": [
+        {
+          "name": "kind",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "width",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "height",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "config_id",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "target_reserved",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "copy_target_bo",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "format",
+          "offset": 24,
+          "span": 4
+        },
+        {
+          "name": "pitch",
+          "offset": 28,
+          "span": 4
         }
       ],
       "size": 32
@@ -5394,6 +5647,51 @@
       ],
       "size": 16
     },
+    "WpkDrmImportImage": {
+      "fields": [
+        {
+          "name": "bo_handle",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "ctx_id",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "width",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "height",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "format",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "pitch",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "offset",
+          "offset": 24,
+          "span": 4
+        },
+        {
+          "name": "source",
+          "offset": 28,
+          "span": 4
+        }
+      ],
+      "size": 32
+    },
     "WpkDrmModeCardRes": {
       "fields": [
         {
@@ -5538,6 +5836,46 @@
         }
       ],
       "size": 4
+    },
+    "WpkDrmModeFbCmd": {
+      "fields": [
+        {
+          "name": "fb_id",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "width",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "height",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "pitch",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "bpp",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "depth",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "handle",
+          "offset": 24,
+          "span": 4
+        }
+      ],
+      "size": 28
     },
     "WpkDrmModeFbCmd2": {
       "fields": [
@@ -5853,6 +6191,71 @@
         }
       ],
       "size": 68
+    },
+    "WpkDrmModeSetPlane": {
+      "fields": [
+        {
+          "name": "plane_id",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "crtc_id",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "fb_id",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "flags",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "crtc_x",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "crtc_y",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "crtc_w",
+          "offset": 24,
+          "span": 4
+        },
+        {
+          "name": "crtc_h",
+          "offset": 28,
+          "span": 4
+        },
+        {
+          "name": "src_x",
+          "offset": 32,
+          "span": 4
+        },
+        {
+          "name": "src_y",
+          "offset": 36,
+          "span": 4
+        },
+        {
+          "name": "src_h",
+          "offset": 40,
+          "span": 4
+        },
+        {
+          "name": "src_w",
+          "offset": 44,
+          "span": 4
+        }
+      ],
+      "size": 48
     },
     "WpkDrmPrimeHandle": {
       "fields": [
@@ -11268,6 +11671,10 @@
       {
         "name": "F_GETOWN",
         "value": 9
+      },
+      {
+        "name": "F_DUPFD_QUERY",
+        "value": 1027
       },
       {
         "name": "F_DUPFD_CLOEXEC",

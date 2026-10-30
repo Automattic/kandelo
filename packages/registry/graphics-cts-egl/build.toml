@@ -1,0 +1,5 @@
+script_path = "packages/registry/graphics-cts-egl/build-graphics-cts-egl.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "d51ac6d2ce658e9a775d1118db6fbcf49ba510cb"
+revision = 1
+inputs = ["tests/graphics/cts", "tests/graphics/verify-cts-source.py", "packages/registry/graphics-cts-egl", "scripts/package-build-roots.sh"]

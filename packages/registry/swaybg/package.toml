@@ -1,0 +1,52 @@
+kind = "program"
+
+# swaybg, the wallpaper client sway starts for each output's `bg`. Built
+# through upstream's meson build with the SDK cross file. Without
+# gdk-pixbuf, so it reads PNG images through cairo; without man pages.
+name = "swaybg"
+version = "1.2.1"
+kernel_abi = 52
+depends_on = [
+  "libwayland@1.24.0",
+  "wayland-protocols@1.47",
+  "cairo@1.18.6",
+]
+
+[[host_tools]]
+name = "meson"
+version_constraint = ">=1.4.0"
+install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "ninja"
+version_constraint = ">=1.8"
+install_hints = { darwin = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "wayland-scanner"
+version_constraint = ">=1.24"
+probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh" }
+
+# Native module versions are checked by the recipe; preflight probes
+# pkg-config itself, consistently across consumers.
+[[host_tools]]
+name = "pkg-config"
+version_constraint = ">=0.29.2"
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[source]
+url = "https://github.com/swaywm/swaybg/releases/download/v1.2.1/swaybg-1.2.1.tar.gz"
+sha256 = "6af1fdf0e57b1cc5345febed786b761fea0e170943a82639f94cfaed7df84f8f"
+provider = "archive"
+
+[license]
+spdx = "MIT"
+url = "https://github.com/swaywm/swaybg/blob/v1.2.1/LICENSE"
+
+[build]
+script_path = "packages/registry/swaybg/build-swaybg.sh"
+
+[[outputs]]
+name = "swaybg"
+wasm = "swaybg.wasm"

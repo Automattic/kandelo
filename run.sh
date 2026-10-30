@@ -2506,10 +2506,10 @@ cmd_rebuild() {
     info "Rebuild complete"
 }
 
-# `./run.sh cache-gc [--apply] [--max-age-days N] [--max-size SIZE] [--below-abi N]` —
+# `./run.sh cache-gc [--apply] [--max-age-days N] [--max-size SIZE] [--below-abi N] [--above-abi N]` —
 # garbage-collect the SourceOnly build cache this checkout uses
-# (KANDELO_SOURCE_CACHE_ROOT, else the machine-wide shared cache). --below-abi
-# also collects old ordinary-cache generations and debris unless isolated by
+# (KANDELO_SOURCE_CACHE_ROOT, else the machine-wide shared cache). ABI filters
+# also collect ordinary-cache generations and debris unless isolated by
 # a source-cache override; --binary-cache-root explicitly selects that cache.
 # A dry run
 # unless --apply; the policy and its safety rules live in `xtask cache-gc`

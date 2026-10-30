@@ -578,6 +578,22 @@ pub(crate) fn bootstrap_target_to_selection(target: &str) -> Selection {
     }
 }
 
+/// Single host targets still need the engine inputs their scripts consume.
+/// Keep this plan in the dispatch path so a standalone target has the same
+/// package authority as its whole-tree counterpart.
+fn bootstrap_host_step_plan(name: &'static str) -> Vec<(&'static str, Vec<String>)> {
+    let mut steps = Vec::new();
+    match name {
+        // A published tree can contain only a narrow prior selection. The
+        // canonical composer must get its own complete registered closure.
+        "rootfs" => steps.push(("engine", vec!["rootfs".to_string()])),
+        "host-dist" => steps.push(("engine", vec!["kernel".to_string()])),
+        _ => {}
+    }
+    steps.push((name, Vec::new()));
+    steps
+}
+
 /// Whether a bare `xtask bootstrap <target>` package selection needs the
 /// wasm64 musl sysroot provisioned before the engine builds it, mirroring
 /// the historical "64" suffix convention `select_graph_dependencies` already
@@ -923,22 +939,10 @@ pub(crate) fn run_bootstrap(args: Vec<String>) -> Result<(), String> {
             Ok(())
         }
         Selection::HostStep(name) => {
-            // The old `need_host` built the kernel before the TypeScript host
-            // (`host/dist` embeds/tests against it); preserve that edge for a
-            // standalone `bootstrap host` the same way `bootstrap_step_plan`
-            // preserves it for the whole-tree path by ordering "engine"
-            // before "host-dist".
-            if name == "host-dist" {
-                run_bootstrap_step(
-                    &repo,
-                    "engine",
-                    jobs,
-                    rebuild,
-                    verify_cache,
-                    vec!["kernel".to_string()],
-                )?;
+            for (step, products) in bootstrap_host_step_plan(name) {
+                run_bootstrap_step(&repo, step, jobs, rebuild, verify_cache, products)?;
             }
-            run_bootstrap_step(&repo, name, jobs, rebuild, verify_cache, Vec::new())
+            Ok(())
         }
         Selection::Package(name) => {
             // Preserve the exact universal prerequisite set every `run.sh`
@@ -8586,6 +8590,51 @@ materialization = "lazy"
         assert_eq!(
             bootstrap_target_to_selection("sdk"),
             Selection::HostStep("sdk")
+        );
+    }
+
+    #[test]
+    fn bootstrap_rootfs_provisions_its_real_package_closure_before_composition() {
+        let repo = crate::repo_root();
+        let graph =
+            load_and_plan(&repo, &repo.join(SUPPORTED_SET_REL), &fixed_registry(&repo)).unwrap();
+        let required = select_graph_dependencies(&graph, &["rootfs".to_string()])
+            .unwrap()
+            .into_keys()
+            .collect::<BTreeSet<_>>();
+        // These are real parsers declared by the current rootfs manifest,
+        // rather than the historical posix-utils-lite placeholder outputs.
+        assert!(required.contains(&PlanNodeV1::package("byacc", "wasm32")));
+        assert!(required.contains(&PlanNodeV1::package("flex", "wasm32")));
+        let Selection::HostStep(name) = bootstrap_target_to_selection("rootfs") else {
+            panic!("rootfs must retain its canonical host image step");
+        };
+        let mut provisioned = BTreeSet::new();
+        let mut composed = false;
+        for (step, products) in bootstrap_host_step_plan(name) {
+            if step == "engine" {
+                assert!(!composed, "package publication must precede composition");
+                provisioned.extend(
+                    select_graph_dependencies(&graph, &products)
+                        .unwrap()
+                        .into_keys(),
+                );
+            } else if step == "rootfs" {
+                assert!(
+                    required.is_subset(&provisioned),
+                    "standalone rootfs has not selected its required packages: {:?}",
+                    required.difference(&provisioned).collect::<Vec<_>>()
+                );
+                composed = true;
+            }
+        }
+        assert!(
+            composed,
+            "canonical host/wasm rootfs composition must remain"
+        );
+        assert_eq!(
+            provisioned, required,
+            "do not select unrelated desktop/tools"
         );
     }
 

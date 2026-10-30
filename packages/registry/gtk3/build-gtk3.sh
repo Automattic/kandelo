@@ -10,11 +10,8 @@
 # The wayland protocol glue is generated at build time by the host
 # wayland-scanner (flake.nix) from two places: XML bundled in the GTK
 # tarball (gtk-shell, gtk-primary-selection, server-decoration) and
-# XML from the vendored wayland-protocols source package. GTK's
-# Makefile expects the latter in the upstream share/wayland-protocols
-# layout (stable/<name>/<name>.xml, unstable/<name>/<file>.xml), so
-# the script stages that layout and points a local
-# wayland-protocols.pc at it.
+# XML from the wayland-protocols package, which configure finds through
+# its wayland-protocols.pc pkgdatadir.
 #
 # Honors the dep-resolver build-script contract (see
 # docs/package-management.md). When invoked via
@@ -39,7 +36,7 @@
 #     WASM_POSIX_DEP_LIBPNG_DIR                 # resolved libpng prefix
 #     WASM_POSIX_DEP_LIBWAYLAND_DIR             # resolved libwayland prefix
 #     WASM_POSIX_DEP_LIBXKBCOMMON_DIR           # resolved libxkbcommon prefix
-#     WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR  # staged protocol XML
+#     WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR  # resolved wayland-protocols prefix
 
 set -euo pipefail
 
@@ -85,7 +82,7 @@ LIBFFI_PREFIX="${WASM_POSIX_DEP_LIBFFI_DIR:?WASM_POSIX_DEP_LIBFFI_DIR not set}"
 ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set}"
 LIBCXX_PREFIX="${WASM_POSIX_DEP_LIBCXX_DIR:?WASM_POSIX_DEP_LIBCXX_DIR not set}"
 LIBICONV_PREFIX="${WASM_POSIX_DEP_LIBICONV_DIR:?WASM_POSIX_DEP_LIBICONV_DIR not set}"
-PROTOCOLS_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set}/xml"
+WAYLAND_PROTOCOLS_PREFIX="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set}"
 
 # --- Stage verified source ---
 if [ ! -d "$SRC_DIR" ]; then
@@ -99,6 +96,9 @@ if [ ! -d "$SRC_DIR" ]; then
     # arguments; wasm's typed call_indirect traps on them. See
     # docs/porting-guide.md "Callback casts that change arity".
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-callback-arity.patch"
+    # Match the getter definition and declaration: wasm calls have exact arity.
+    # Upstream fix: GNOME/gtk 022c36a1379d82b4212a298ed6eaec02bc0ed7f1.
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/fix-slowdown-prototype.patch"
     # GDK backs its wl_shm pools with memfd_create/shm_open. A memfd is
     # private to the process that made it here, so the compositor's
     # gbm_bo_import(GBM_BO_IMPORT_FD) rejects the fd and the window shows
@@ -126,33 +126,8 @@ mkdir -p "$BUILD_DIR"
 # libcloudproviders probe a hard requirement. Omitting the flag keeps
 # the integration off.
 
-# --- wayland-protocols datadir layout + .pc -----------------------------
-# gdk/wayland/Makefile.am resolves each protocol as
-# $(WAYLAND_PROTOCOLS_DATADIR)/{stable,unstable}/<name>/<file>.xml.
-WP_DATADIR="$BUILD_DIR/wayland-protocols"
-stage_protocol() {
-    local stability="$1" name="$2" file="$3"
-    mkdir -p "$WP_DATADIR/$stability/$name"
-    cp "$PROTOCOLS_XML/$file" "$WP_DATADIR/$stability/$name/$file"
-}
-stage_protocol stable xdg-shell xdg-shell.xml
-stage_protocol unstable xdg-shell xdg-shell-unstable-v6.xml
-stage_protocol unstable pointer-gestures pointer-gestures-unstable-v1.xml
-stage_protocol unstable xdg-foreign xdg-foreign-unstable-v1.xml
-stage_protocol unstable tablet tablet-unstable-v2.xml
-stage_protocol unstable xdg-output xdg-output-unstable-v1.xml
-stage_protocol unstable keyboard-shortcuts-inhibit keyboard-shortcuts-inhibit-unstable-v1.xml
-stage_protocol unstable primary-selection primary-selection-unstable-v1.xml
-
 PC_DIR="$BUILD_DIR/pkgconfig"
 mkdir -p "$PC_DIR"
-cat > "$PC_DIR/wayland-protocols.pc" <<EOF
-pkgdatadir=$WP_DATADIR
-
-Name: Wayland Protocols
-Description: Wayland protocol XML for wasm32-posix-kernel (vendored)
-Version: 1.45
-EOF
 
 # iso-codes is a data-only package (language/country names for the
 # font chooser); gtk's configure probes the module. Absent data at
@@ -174,6 +149,9 @@ for prefix in "$GLIB_PREFIX" "$ATK_PREFIX" "$PANGO_PREFIX" "$CAIRO_PREFIX" \
               "$LIBXKBCOMMON_PREFIX"; do
     PC_PATH="$PC_PATH:$prefix/lib/pkgconfig"
 done
+# wayland-protocols is data-only: upstream installs its .pc under
+# share/pkgconfig.
+PC_PATH="$PC_PATH:$WAYLAND_PROTOCOLS_PREFIX/share/pkgconfig"
 # cairo and pango are meson-built static libraries, so their .pc files
 # list every link dependency as a public Requires (zlib, pixman,
 # libxml2 via fontconfig, ...). pkg-config needs the whole closure,

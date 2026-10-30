@@ -314,13 +314,13 @@ build_example_program() {
     local wasm="$REPO_ROOT/examples/${name}.wasm"
 
     [ -f "$src" ] || return 0
-    if [ -f "$wasm" ] && [ "$wasm" -nt "$src" ]; then
-        return 0
-    fi
-
+    # This helper is part of the guest spawn closure. Source mtime alone
+    # cannot prove its ABI, syscall glue or SDK inputs are current. Build
+    # it for this run, then stamp only the newly linked artifact.
     "$WASM32_CC" "${CFLAGS[@]}" \
         "$src" \
-        -o "$wasm" 2>/tmp/libc-test-build-err.txt
+        -o "$wasm" 2>/tmp/libc-test-build-err.txt &&
+        abi_contract_stamp "$wasm"
 }
 
 # ── Run a single test ───────────────────────────────────────

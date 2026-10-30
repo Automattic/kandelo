@@ -44,6 +44,7 @@ pub mod mqueue;
 pub mod msghdr;
 pub mod net_readiness;
 pub mod netif;
+pub mod netlink;
 pub mod ofd;
 pub mod path;
 pub mod complete_copy;
@@ -63,6 +64,7 @@ pub mod signal;
 pub mod socket;
 pub mod spawn;
 pub mod syscalls;
+pub mod sysfs;
 pub mod terminal;
 pub mod tmpfs;
 #[cfg(test)]

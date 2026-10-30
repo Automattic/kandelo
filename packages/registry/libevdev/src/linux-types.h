@@ -9,8 +9,8 @@
  * aliases the bundled headers reference, mapped onto stdint types, so the
  * bundled set is self-consistent without touching the sysroot.
  *
- * build-libevdev.sh copies this to the bundled include tree as
- * linux/types.h before compiling.
+ * build-libevdev.sh copies this to a private include directory as
+ * linux/types.h and passes that directory to meson in c_args.
  */
 #ifndef LIBEVDEV_WASM_LINUX_TYPES_H
 #define LIBEVDEV_WASM_LINUX_TYPES_H
