@@ -9986,3 +9986,47 @@ skips, `.context/executable-filter-source.log`; strict lifecycle graph checking
 passes in `.context/executable-filter-strict.log`. No forced-GC, real driver,
 normal artifact, browser or conformance evidence is added by this source batch.
 No ABI, public query activation or new cleanup registry is introduced.
+
+### Combined executable cleanup checkpoint (2026-10-29)
+
+At `a6b309e26b`, executable-eligibility cleanup remains armed across failed
+ownership inspection. Prepared executable cancellation also seals the actual
+target and open file description before its single native close attempt.
+An uncertain close retains custody instead of retrying a reused descriptor;
+physical resolution of uncertain ownership remains an implementation gap.
+
+The declared-shell logs `.context/graphics-close-combined-*` record canonical
+host JavaScript/declaration build, 1,001/1,001 graphics cases in 42 files
+without skips, evidence registry agreement, and 3,431 Rust cases in 98
+result groups without failures or ignored tests. Actual Wasm32 kernel
+compilation, normal ABI regeneration/check and all 170 ownership/entry audit
+cases pass. Source-owned and generated-output diff logs are empty. The
+foreground session is no longer available for a separate driver exit-status
+claim. These source checks do not establish normal guest compatibility.
+
+The user explicitly resumed browser checks with headless Playwright only.
+The older mixed coordinator was intentionally stopped after its completed
+normal products, 239 program fixtures, Freeciv case and 25 Node cases;
+its final 137 is an intentional stop, not a test result. Its queued successor
+was canceled with 143. Current landing source `0b0b69b196` is running the
+complete acceptance sequence as job
+`cage-sway-headless-landing-1029-234259-30a4`. An explicit headless wrapper
+covers the rendered selection; the unmodified browser-memory gate also has
+its launch settings checked before execution. No acceptance result is
+claimed while that job remains live.
+
+A separate headless Chromium check boots both current cage/sway gallery
+profiles on the persistent local server at `http://127.0.0.1:5630/`, observes
+actual GLES2 display ownership and nonblank rendered canvases, and records
+no page errors. Evidence is the fork checkout's
+`.context/demo-urls-verified.json`, `.context/check-cage-sway-demo-url.log`
+and `.context/demo-{cage,sway}-verified.png`. The first private check failed
+only because its renderer-label comparison was case-sensitive; its log is
+preserved as `.context/check-cage-sway-demo-url-first.log`. This quick URL
+verification supplements the earlier six full compositor cases; it does
+not replace their input, exit, or three-engine assertions.
+
+The user has requested a real labwc port now. That package and its normal
+shell/gallery consumer are being developed separately from the cage/sway
+landing. A working labwc session is not yet established, and no labwc
+performance or memory claim is made.
