@@ -3352,8 +3352,11 @@ export class WasmPosixKernel {
               source.pointer,
               source.length,
             );
-            const copy = sliceUint8Array(processView);
-            this.#writeKernelBytes(destination, copy);
+            // WHY: this import consumes the authenticated Rust destination
+            // synchronously. Copy straight into that allocation; a second
+            // independent snapshot would duplicate every shared-mapping read.
+            // The process view never escapes this disposable worker or call.
+            this.#writeKernelBytes(destination, processView);
             return 0;
           } catch {
             return -14;

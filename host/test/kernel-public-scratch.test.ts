@@ -1164,6 +1164,58 @@ describe("Rust-owned host import ranges", () => {
     )).toBe(-14);
   });
 
+  it.each([4, 8] as const)(
+    "copies a large process range into an independent wasm%s Rust destination",
+    (pointerWidth) => {
+      const processMemory = new WebAssembly.Memory({ initial: 1 });
+      const { kernel, memory } = fullKernelHarness({}, {
+        getProcessMemory: () => processMemory,
+      }, pointerWidth);
+      const imports = kernel.testAuthority.buildImportObject(memory) as {
+        env: Record<string, (...args: any[]) => any>;
+      };
+      const length = 48 * 1024 + 3;
+      const source = new Uint8Array(processMemory.buffer, 31, length);
+      for (let i = 0; i < length; i++) source[i] = (i * 37) & 255;
+      const expected = source.slice();
+      new Uint8Array(memory.buffer).fill(0xa5, 4095, 4097 + length);
+
+      expect(imports.env.host_proc_read_bytes(
+        7, 31n, pointerWidth === 8 ? 4096n : 4096, length,
+      )).toBe(0);
+      source.fill(0);
+      expect(new Uint8Array(memory.buffer, 4096, length)).toEqual(expected);
+      expect(new Uint8Array(memory.buffer)[4095]).toBe(0xa5);
+      expect(new Uint8Array(memory.buffer)[4096 + length]).toBe(0xa5);
+    },
+  );
+
+  it.each([4, 8] as const)(
+    "rechecks the wasm%s Rust allocation after process lookup grows memory",
+    (pointerWidth) => {
+      const processMemory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+      const memory = new WebAssembly.Memory({ initial: 2, maximum: 3 });
+      const { kernel } = fullKernelHarness({}, {
+        getProcessMemory: () => {
+          memory.grow(1);
+          processMemory.grow(1);
+          new Uint8Array(processMemory.buffer, 65568, 4).set([9, 8, 7, 6]);
+          return processMemory;
+        },
+      }, pointerWidth, memory);
+      const imports = kernel.testAuthority.buildImportObject(memory) as {
+        env: Record<string, (...args: any[]) => any>;
+      };
+      new Uint8Array(memory.buffer).fill(0xa5, 4095, 4101);
+
+      expect(imports.env.host_proc_read_bytes(
+        7, 65568n, pointerWidth === 8 ? 4096n : 4096, 4,
+      )).toBe(0);
+      expect(new Uint8Array(memory.buffer, 4095, 6))
+        .toEqual(new Uint8Array([0xa5, 9, 8, 7, 6, 0xa5]));
+    },
+  );
+
   it("rejects a guest address above 4 GiB instead of aliasing its low bits", () => {
     // The regression the `u64` widening exists to make impossible: a wasm64
     // guest address whose low 32 bits name a perfectly valid offset in the

@@ -1848,7 +1848,31 @@ pub fn merge_changed_byte_runs(
 
 /// Whether any byte of `source` differs from `snapshot`.
 pub fn range_differs_from_snapshot(source: &[u8], snapshot: &[u8]) -> bool {
+    // Keep native and short-range comparisons on their existing slice path.
+    // Large wasm32 mappings use scalar words without alignment assumptions,
+    // target SIMD features, or reading beyond either slice.
+    #[cfg(target_arch = "wasm32")]
+    if source.len() >= 256 && source.len() == snapshot.len() {
+        return snapshot_words_differ(source, snapshot);
+    }
     source != snapshot
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+fn snapshot_words_differ(source: &[u8], snapshot: &[u8]) -> bool {
+    if source.len() != snapshot.len() {
+        return true;
+    }
+    let mut source_words = source.chunks_exact(8);
+    let mut snapshot_words = snapshot.chunks_exact(8);
+    for (source_word, snapshot_word) in source_words.by_ref().zip(snapshot_words.by_ref()) {
+        if u64::from_ne_bytes(source_word.try_into().unwrap())
+            != u64::from_ne_bytes(snapshot_word.try_into().unwrap())
+        {
+            return true;
+        }
+    }
+    source_words.remainder() != snapshot_words.remainder()
 }
 
 impl FileBacking {
@@ -4236,6 +4260,63 @@ mod shared_mapping_tests {
     }
 
     // -- run-diff primitives ---------------------------------------------
+
+    #[test]
+    fn snapshot_comparison_preserves_empty_and_unequal_lengths() {
+        for len in 0..=136 {
+            let bytes = vec![7u8; len];
+            assert!(!range_differs_from_snapshot(&bytes, &bytes));
+            assert!(!snapshot_words_differ(&bytes, &bytes));
+            for other_len in [len + 1, len + 7] {
+                let other = vec![7u8; other_len];
+                assert!(range_differs_from_snapshot(&bytes, &other));
+                assert!(range_differs_from_snapshot(&other, &bytes));
+                assert!(snapshot_words_differ(&bytes, &other));
+                assert!(snapshot_words_differ(&other, &bytes));
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_word_comparison_checks_every_unaligned_byte_and_tail() {
+        for len in 0..=136 {
+            for source_offset in 0..8 {
+                let source: Vec<u8> = (0..len + source_offset)
+                    .map(|i| (i * 73 + 11) as u8)
+                    .collect();
+                let source = &source[source_offset..];
+                for snapshot_offset in 0..8 {
+                    let mut backing = vec![0u8; len + snapshot_offset];
+                    let snapshot = &mut backing[snapshot_offset..];
+                    snapshot.copy_from_slice(source);
+                    assert!(!snapshot_words_differ(source, snapshot));
+                    for at in 0..len {
+                        snapshot[at] ^= 1;
+                        assert!(
+                            snapshot_words_differ(source, snapshot),
+                            "missed byte {at} of length {len} at offsets {source_offset}/{snapshot_offset}"
+                        );
+                        snapshot[at] ^= 1;
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn snapshot_word_comparison_checks_page_sized_and_partial_page_ranges() {
+        for len in [255, 256, 257, 511, 512, 4095, 4096, 4097, 16384] {
+            let source: Vec<u8> = (0..len).map(|i| (i * 73 + 11) as u8).collect();
+            let mut snapshot = source.clone();
+            assert!(!snapshot_words_differ(&source, &snapshot));
+            for at in [0, 7, 8, 63, 64, len / 2, len - 1] {
+                snapshot[at] ^= 1;
+                assert!(snapshot_words_differ(&source, &snapshot));
+                snapshot[at] ^= 1;
+            }
+            assert_eq!(snapshot, source);
+        }
+    }
 
     #[test]
     fn changed_runs_finds_only_differing_spans() {

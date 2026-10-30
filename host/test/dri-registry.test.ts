@@ -11,6 +11,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { GbmBoRegistry } from "../src/dri/registry.js";
+import { mergeChangedByteRuns } from "../src/shared-byte-runs.js";
 
 const BO_SIZE = 4096;
 const BO_ADDR = 0;
@@ -688,4 +689,103 @@ it("preserves all prior VMA metadata when a replacement observer rejects admissi
   expect(result).toBeLessThan(0);
   expect(registry.get(100,913)?.binding).toEqual({addr:page,len:3*page});
   expect(registry.get(100,914)?.binding).toBeNull();
+});
+
+
+describe("shared-byte changed-run scan", () => {
+  class RecordedDestination extends Uint8Array {
+    writes: [number, number][] = [];
+    override set(values: ArrayLike<number>, offset = 0): void {
+      this.writes.push([offset, values.length]);
+      super.set(values, offset);
+    }
+  }
+
+  // Independent per-byte oracle: it decides publications before invoking the
+  // implementation and never groups/copies data to derive expected contents.
+  function checkMerge(source: Uint8Array, sourceOffset: number, snapshot: Uint8Array,
+    snapshotOffset: number, len: number, destinationOffset: number): void {
+    const destination = new RecordedDestination(len + destinationOffset + 9);
+    destination.fill(0xc7); // Newer canonical bytes must survive unchanged readers.
+    const expected = Uint8Array.from(destination);
+    const writes: [number, number][] = [];
+    const sourceBefore = Uint8Array.from(source), snapshotBefore = Uint8Array.from(snapshot);
+    let changed = false;
+    for (let i = 0; i < len; i++) {
+      if (source[sourceOffset + i] !== snapshot[snapshotOffset + i]) {
+        expected[destinationOffset + i] = source[sourceOffset + i];
+        changed = true;
+        const last = writes.at(-1);
+        if (last && last[0] + last[1] === destinationOffset + i) last[1]++;
+        else writes.push([destinationOffset + i, 1]);
+      }
+    }
+    expect(mergeChangedByteRuns(source, sourceOffset, snapshot, snapshotOffset,
+      destination, destinationOffset, len)).toBe(changed);
+    expect(Uint8Array.from(destination)).toEqual(expected);
+    expect(destination.writes).toEqual(writes);
+    expect(source).toEqual(sourceBefore);
+    expect(snapshot).toEqual(snapshotBefore);
+  }
+
+  it("matches a byte oracle at word, prefix, tail and view boundaries", () => {
+    for (const len of [0, 1, 2, 3, 4, 5, 7, 8, 15, 16, 63, 64, 65, 66, 67, 68, 127, 128, 129, 255, 256, 257, 258, 259, 260, 4093, 4096, 4099]) {
+      for (let sourceAlignment = 0; sourceAlignment < 4; sourceAlignment++) {
+        for (let snapshotAlignment = 0; snapshotAlignment < 4; snapshotAlignment++) {
+          const source = new Uint8Array(new SharedArrayBuffer(len + 24), sourceAlignment, len + 16);
+          const snapshot = new Uint8Array(new ArrayBuffer(len + 24), snapshotAlignment, len + 16);
+          source.fill(0x31); snapshot.fill(0x31);
+          checkMerge(source, 3, snapshot, 5, len, 7);
+          // Differences on both sides of the range must not be published.
+          source[2] = 0xaa; source[3 + len] = 0xbb;
+          for (const relative of [0, 1, 2, 3, 4, 31, 32, 62, 63, 64, len - 3, len - 2, len - 1]) {
+            if (relative >= 0 && relative < len) source[3 + relative] ^= 0x5a;
+          }
+          checkMerge(source, 3, snapshot, 5, len, 7);
+        }
+      }
+    }
+  });
+
+  it("matches an independent scalar oracle on deterministic sparse/dense random ranges", () => {
+    let seed = 0x1ac29f03;
+    const next = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return seed >>> 0; };
+    for (let trial = 0; trial < 1500; trial++) {
+      const len = next() % 513, a = next() % 8, b = next() % 8;
+      const sourceOffset = next() % 8, snapshotOffset = next() % 8;
+      const source = new Uint8Array(trial % 2 ? new SharedArrayBuffer(len + 32) : new ArrayBuffer(len + 32), a, len + 20);
+      const snapshot = new Uint8Array(new ArrayBuffer(len + 32), b, len + 20);
+      source.fill(0x4e); snapshot.fill(0x91);
+      for (let i = 0; i < len; i++) {
+        source[sourceOffset + i] = snapshot[snapshotOffset + i] = next() & 255;
+        if (next() % (trial % 2 ? 3 : 37) === 0) source[sourceOffset + i] ^= 0x8b;
+      }
+      checkMerge(source, sourceOffset, snapshot, snapshotOffset, len, next() % 8);
+    }
+  });
+
+  it("reads current shared Wasm buffers after growth without retaining a previous view", () => {
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 3, shared: true });
+    const before = new Uint8Array(memory.buffer, 3, 513);
+    const snapshot = new Uint8Array(new ArrayBuffer(516), 3, 513);
+    before.fill(0x19); snapshot.fill(0x19);
+    checkMerge(before, 0, snapshot, 0, 513, 1);
+    memory.grow(1);
+    const after = new Uint8Array(memory.buffer, 65536 + 3, 513);
+    after.fill(0x19); after[0] = 0x5a; after[512] = 0x6b;
+    checkMerge(after, 0, snapshot, 0, 513, 2);
+    before[259] = 0x7c;
+    checkMerge(before, 0, snapshot, 0, 513, 3);
+  });
+
+  it("does not retain detached unshared Wasm views across growth", () => {
+    const memory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+    const old = new Uint8Array(memory.buffer, 1, 512), snapshot = new Uint8Array(new ArrayBuffer(513), 1, 512);
+    checkMerge(old, 0, snapshot, 0, 512, 0);
+    memory.grow(1);
+    expect(old.length).toBe(0);
+    const current = new Uint8Array(memory.buffer, 65536 + 1, 512);
+    current[255] = 0x42; current[511] = 0x53;
+    checkMerge(current, 0, snapshot, 0, 512, 0);
+  });
 });

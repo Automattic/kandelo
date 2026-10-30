@@ -9998,3 +9998,57 @@ wrapper summaries, source/SDK/artifact captures and all retained failures
 are in `.context/preview5663-performance/runs/`. Full SFWBar GUI,
 ScummVM rendering, Firefox/WebKit, browser-memory, POSIX and the remaining
 graphics inventory gates remain open.
+
+
+### Valid worker diagnostic and shared-mapping candidate (2026-10-30)
+
+Fresh headless diagnostic
+`preview5663-86dbd4708b-worker-cpu-r5-1030-173149-ca49` passes all three
+cases in1m54s at1440x810/DPR1. Observer cleanup succeeds, with no recorded
+safety violations; all93 owners/245 members, SDKs and selected kernel
+remain unchanged. Live attachments are bounded separately from retained
+worker history, and explicit child-first detach requests, acknowledgements
+and events replace the broken observer cleanup. The original r4 failure
+remains retained. Observer cleanup does not prove guest exit or reaping.
+
+Whole raw kernel profiles repeatedly sample shared-mapping reconciliation,
+process-byte copying and changed-byte scans; native GL error queries also
+appear. Cage motion has3332 mergeChangedByteRuns samples among8704 total,
+including3475 idle samples. Sway/Labwc profiles have large function4045
+and host_proc_read_bytes/sliceUint8Array sample populations under shared
+mapping synchronization. The exact stripped kernel does not name4045;
+no Rust symbol is invented. These are whole-profile samples, including
+clock/marker guard bands, not CPU utilization, GPU time, input latency or
+exact phase attribution. Startup itself was not profiled. The user was
+also trying the preview; external host/GPU activity was not continuously
+controlled, so this is no quiet-host speed comparison.
+
+The user now prioritizes performance/startup over broader graphics work.
+A candidate reduces work within the existing coherence model: process
+reads copy straight into the authenticated Rust allocation synchronously,
+large wasm32 snapshot comparisons use safe eight-byte words, and aligned
+host changed-run scans skip equal words while preserving exact changed
+bytes. No synchronization boundary, mapped alias, final publication,
+memory-ownership check, syscall behavior, target SIMD feature or ABI is
+removed or changed. Native/short Rust comparisons retain their original
+path after standalone controls showed regressions from replacing them.
+
+Focused evidence so far:76 host allocation/address/memory-growth tests,
+110 native Rust memory/shared-mapping tests,903168 standalone Wasm
+comparison checks and38 pure DRI/changed-run tests pass. One canonical
+DRI attempt refuses changing program-index inputs before loading tests;
+its zero-test failure is retained. The pure DRI run does not build or boot
+a guest and is not normal-product evidence. Standalone page comparison
+measurements support trying the candidate but do not establish application
+speed. Exploratory host measurements show an unaligned fallback regression
+and overlap with validation; they remain unsuitable as quiet performance
+evidence and are a retention risk for the candidate.
+
+Normal candidate kernel/desktop builds, actual browser startup/menu/input
+before/after, HiDPI/high-rate cohorts, all Node/browser benchmark suites,
+browser-memory and relevant POSIX conformance are pending. The currently
+served5663 build still contains the original memory paths. A fresh preview
+will be announced as soon as it serves, before full validation completes.
+Raw evidence: `.context/preview5663-performance/runs/`,
+`.context/memory-byte-compare/`, `.context/shared-byte-runs-perf/` and
+`.context/process-read-copy-focused.log`.

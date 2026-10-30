@@ -560,6 +560,11 @@ pointer and capacity valid for that synchronous import, so
 `checkedWasmImportMemoryRange` normalizes the raw wasm32/wasm64 import value
 and `WasmPosixKernel.writeKernelBytes` checks that range and the producer's
 intrinsic byte span without claiming it came from the scratch allocator.
+A process-to-kernel read copies directly into this authenticated allocation
+within the synchronous import. It retains neither an intermediate full-range
+JavaScript snapshot nor a process-memory view after that call. The destination
+still rechecks allocation capacity, memory identity and generation before its
+one-use publication, including after memory growth during process lookup.
 Process memory,
 framebuffers, and explicit shared-memory mappings keep their own ownership
 models. A TypeScript-compiler-backed JavaScript/TypeScript repository audit
@@ -2073,8 +2078,13 @@ way, backed by the memfd's kernel pages. File mappings on any backend that
 cannot provide stable identity return `ENOTSUP`; `MAP_PRIVATE` is unaffected.
 File bytes past the current EOF are zero-filled or discarded on refresh/writeback rather than
 raising Linux's `SIGBUS`, and writes made outside Kandelo's file syscall paths
-are not detected. The boundary scans are on the syscall hot path; no performance
-claim is made without before/after Node and browser benchmarks.
+are not detected. Large wasm32 snapshot comparisons use safe eight-byte chunks and an exact
+byte tail; native and smaller comparisons retain slice equality. Host changed-run
+merging can skip equal aligned words, but still publishes only individually
+changed bytes. These comparisons do not add dirty-store tracking or omit any
+publication boundary, alias or final writer. The boundary scans are on the
+syscall hot path; no application performance claim is made without before/after
+Node and browser benchmarks.
 
 Every spawn or exec computes a fresh layout from the target binary's memory
 import and `__heap_base`; the brk, mmap, control-channel, allocator, and kernel
