@@ -1,0 +1,75 @@
+From: Brandon Payton <brandon@happycode.net>
+Subject: [PATCH] Derive automatic integer scale from connector density
+
+Treat density consistently on small outputs and at exact integer DPI
+multiples. Physical connector dimensions are rounded to millimetres, so
+strictly greater than 192 DPI is not a stable test for a 2x display.
+Unknown and aspect-only physical sizes retain the original scale-1 fallback.
+This is an explicit desktop scaling policy, not a replacement for truthful
+mode/physical-size reporting or a platform syscall workaround.
+
+--- a/sway/config/output.c
++++ b/sway/config/output.c
+@@ -1,6 +1,7 @@
+ #include <assert.h>
+ #include <drm_fourcc.h>
+ #include <stdbool.h>
++#include <math.h>
+ #include <string.h>
+ #include <sys/socket.h>
+ #include <sys/wait.h>
+@@ -398,10 +399,8 @@
+ 		(output->phys_width == 16 && output->phys_height == 10);
+ }
+ 
+-// The minimum DPI at which we turn on a scale of 2
+-#define HIDPI_DPI_LIMIT (2 * 96)
+-// The minimum screen height at which we turn on a scale of 2
+-#define HIDPI_MIN_HEIGHT 1200
++// One logical pixel at scale 1 corresponds to the standard 96-DPI grid.
++#define REFERENCE_DPI 96
+ // 1 inch = 25.4 mm
+ #define MM_PER_INCH 25.4
+ 
+@@ -420,20 +419,16 @@
+ 			break;
+ 		}
+ 	}
+-	enum wl_output_transform transform = output->transform;
+-	if (pending->committed & WLR_OUTPUT_STATE_TRANSFORM) {
+-		transform = pending->transform;
+-	}
+-	wlr_box_transform(&box, &box, transform, box.width, box.height);
+-
++	// Mode and physical dimensions use the same native panel axes. Density
++	// is independent of the logical transform applied to the desktop.
+ 	int width = box.width;
+ 	int height = box.height;
+ 
+-	if (height < HIDPI_MIN_HEIGHT) {
++	if (width <= 0 || height <= 0) {
+ 		return 1;
+ 	}
+ 
+-	if (output->phys_width == 0 || output->phys_height == 0) {
++	if (output->phys_width <= 0 || output->phys_height <= 0) {
+ 		return 1;
+ 	}
+ 
+@@ -443,11 +438,11 @@
+ 
+ 	double dpi_x = (double) width / (output->phys_width / MM_PER_INCH);
+ 	double dpi_y = (double) height / (output->phys_height / MM_PER_INCH);
+-	if (dpi_x <= HIDPI_DPI_LIMIT || dpi_y <= HIDPI_DPI_LIMIT) {
+-		return 1;
+-	}
+-
+-	return 2;
++	// Nearest integer scale tolerates connector dimensions rounded to whole
++	// millimetres. A small high-density output still needs a readable logical
++	// grid; screen height is not a measure of pixel density.
++	double scale = round(fmin(dpi_x, dpi_y) / REFERENCE_DPI);
++	return scale < 1 ? 1 : (int)scale;
+ }
+ 
+ static enum render_bit_depth bit_depth_from_format(uint32_t render_format) {

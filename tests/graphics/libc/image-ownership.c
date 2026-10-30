@@ -20,6 +20,7 @@
 #include <pthread.h>
 #include "gl_abi.h"
 #include "gbm_window.h"
+#include "wayland-native.h"
 /* Wire tag is independent of the selected production revision in baseline runs. */
 #define GRAPHICS_SURFACE_CAPABILITIES 0x002du
 /* Existing bridge entry points; this fixture does not advertise GLES3. */
@@ -108,6 +109,10 @@ static unsigned allocation_count(void) {
 
 /* A small native-window identity exercises the real EGL resize hook. */
 static int native_window, record_windows[3];
+static const void *wayland_native_display=(void *)(uintptr_t)0x576100u;
+static int wayland_native_live=1,native_window_live=1,native_window_active;
+static uint64_t wayland_native_identity=1;
+static unsigned native_window_holds,native_window_presents;
 static uint32_t native_window_bo;
 static int native_window_fd = 10;
 static uint32_t native_window_width = 64, native_window_height = 32;
@@ -125,6 +130,25 @@ int _wpk_wlegl_dimensions(void *window, uint32_t *width, uint32_t *height) {
     return 1;
 }
 void _wpk_wlegl_present(void *window) { (void)window; }
+int _wpk_wlegl_prepare(void *lease,struct wpk_wlegl_frame *frame) {
+    if(lease!=&native_window || !native_window_live || !wayland_native_live || native_window_active)return 0;
+    native_window_active=1;
+    *frame=(struct wpk_wlegl_frame){.fd=native_window_fd,.handle=native_window_bo,
+        .width=native_window_width,.height=native_window_height};return 1;
+}
+int _wpk_wlegl_acquire(const void *window,const void *display,uint64_t identity,void **lease,struct wpk_wlegl_frame *frame) {
+    if(window!=&native_window || (display && (display!=wayland_native_display || identity!=wayland_native_identity))
+      || !_wpk_wlegl_prepare((void *)window,frame))return 0;
+    native_window_holds++;*lease=(void *)window;return 1;
+}
+int _wpk_wlegl_finish(void *lease,int present) {
+    assert(lease==&native_window && native_window_holds && native_window_active);
+    native_window_active=0;
+    if(present) {if(!native_window_live || !wayland_native_live)return 0;native_window_presents++;}
+    return 1;
+}
+void _wpk_wlegl_release(void *lease) {assert(lease==&native_window && native_window_holds);native_window_holds--;}
+
 int _wpk_gbm_surface_dimensions(const void *window, uint32_t *w, uint32_t *h) {
     for (unsigned i = 0; i < 3; i++)
         if (window == &record_windows[i]) {
@@ -495,10 +519,23 @@ static int native_image_bind(struct device_slot *slot, unsigned kind, GLenum tar
     return 1;
 }
 
-/* This executable models render sessions without linking GBM devices.
- * Real native-device lookup is covered by the actual GBM and guest tests. */
+static unsigned wayland_holds;
+void *_wpk_wl_display_acquire(const void *native,uint64_t identity) {
+    if(native!=wayland_native_display || !wayland_native_live || identity!=wayland_native_identity)return NULL;
+    wayland_holds++;return &wayland_holds;
+}
+int _wpk_wl_display_alive(void *hold) {assert(hold==&wayland_holds && wayland_holds);return wayland_native_live;}
+void _wpk_wl_display_release(void *hold) {assert(hold==&wayland_holds && wayland_holds);wayland_holds--;}
+int _wpk_wl_display_metadata(const void *native,uint64_t *identity) {
+    if(native!=wayland_native_display || !wayland_native_live)return 0;
+    *identity=wayland_native_identity;return 1;
+}
+
+/* A second native kind deliberately has the same identity counter value.
+ * Real native-device storage lookup remains covered by actual GBM tests. */
 int _wpk_gbm_device_metadata(const void *native, int *fd, uint64_t *identity) {
-    (void)native; (void)fd; (void)identity; return 0;
+    if(native!=(void *)(uintptr_t)0x576200u)return 0;
+    *fd=10;*identity=wayland_native_identity;return 1;
 }
 int _wpk_gbm_device_acquire_fd(const void *native, uint64_t identity) {
     (void)native; (void)identity; errno = EINVAL; return -1;
@@ -1778,6 +1815,53 @@ static GLuint prepare_native_uniform_program(void) {
 int main(int argc, char **argv) {
     assert(argc == 2);
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (!strcmp(argv[1], "display-wayland-window")) {
+        EGLDisplay client=eglGetDisplay((EGLNativeDisplayType)(uintptr_t)wayland_native_display);
+        assert(client!=EGL_NO_DISPLAY && eglInitialize(client,NULL,NULL));
+        native_window_bo=77;
+        EGLSurface window=eglCreateWindowSurface(client,(EGLConfig)1,(EGLNativeWindowType)(uintptr_t)&native_window,NULL);
+        assert(window!=EGL_NO_SURFACE && native_window_holds==1 && !native_window_active);
+        EGLint attrs[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
+        EGLContext context=eglCreateContext(client,(EGLConfig)1,EGL_NO_CONTEXT,attrs);assert(context!=EGL_NO_CONTEXT);
+        assert(eglMakeCurrent(client,window,window,context));
+        assert(eglSwapBuffers(client,window) && native_window_presents==1 && !native_window_active);
+        wayland_native_live=0;
+        assert(!eglSwapBuffers(client,window) && eglGetError()==EGL_BAD_NATIVE_WINDOW);
+        assert(native_window_presents==1 && native_window_holds==1 && wayland_holds==1);
+        assert(eglDestroySurface(client,window) && eglDestroyContext(client,context));
+        assert(eglReleaseThread() && eglTerminate(client));
+        assert(native_window_holds==0 && wayland_holds==0);
+        puts("PASS display-wayland-window");return 0;
+    }
+    if (!strcmp(argv[1], "display-wayland")) {
+        EGLDisplay client=eglGetDisplay((EGLNativeDisplayType)(uintptr_t)wayland_native_display);
+        assert(client!=EGL_NO_DISPLAY && client!=dpy);
+        EGLDisplay gbm=eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR,(void *)(uintptr_t)0x576200u,NULL);
+        assert(gbm!=EGL_NO_DISPLAY && gbm!=client && gbm!=dpy);
+        assert(eglGetDisplay((EGLNativeDisplayType)0x576200u)==gbm);
+        assert(eglGetDisplay((EGLNativeDisplayType)1)==EGL_NO_DISPLAY);
+        assert(eglGetError()==EGL_BAD_PARAMETER);
+        assert(eglGetDisplay((EGLNativeDisplayType)(uintptr_t)wayland_native_display)==client);
+        assert(eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR,(void *)wayland_native_display,NULL)==EGL_NO_DISPLAY);
+        assert(eglGetError()==EGL_BAD_PARAMETER);
+        // Native admission must unwind the exact connection hold on either
+        // object-session failure or later metadata allocation failure.
+        fail_display_join=1;
+        assert(!eglInitialize(client,NULL,NULL) && eglGetError()==EGL_NOT_INITIALIZED);
+        assert(wayland_holds==0);fail_display_join=0;
+        calloc_before_failure=1;
+        assert(!eglInitialize(client,NULL,NULL) && eglGetError()==EGL_BAD_ALLOC);
+        assert(wayland_holds==0);calloc_before_failure=-1;
+        assert(eglInitialize(client,NULL,NULL) && wayland_holds==1);
+        wayland_native_live=0;
+        assert(!eglInitialize(client,NULL,NULL) && eglGetError()==EGL_NOT_INITIALIZED);
+        assert(eglTerminate(client) && wayland_holds==0);
+        assert(eglGetDisplay((EGLNativeDisplayType)(uintptr_t)wayland_native_display)==EGL_NO_DISPLAY);
+        assert(eglGetError()==EGL_BAD_PARAMETER);
+        wayland_native_live=1;wayland_native_identity++;
+        assert(eglGetDisplay((EGLNativeDisplayType)(uintptr_t)wayland_native_display)!=client);
+        puts("PASS display-wayland");return 0;
+    }
     if (!strcmp(argv[1], "config-validation")) {
         EGLint value = 17;
         assert(!eglGetConfigAttrib(dpy, (EGLConfig)1, EGL_RED_SIZE, &value));

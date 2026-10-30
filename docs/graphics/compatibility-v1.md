@@ -10030,3 +10030,61 @@ The user has requested a real labwc port now. That package and its normal
 shell/gallery consumer are being developed separately from the cage/sway
 landing. A working labwc session is not yet established, and no labwc
 performance or memory claim is made.
+
+### Sway density policy and readable defaults (2026-10-30)
+
+Sway's generic automatic scale policy now rounds measured native connector
+DPI/96 instead of requiring both DPI axes strictly above 192 and a
+1200-pixel output height. Unknown, invalid and aspect-only physical sizes
+still select scale 1. No mode, synthetic physical dimension, evdev range,
+SDL behavior, renderer or browser-specific DPI environment is changed.
+Sway's production UI font is 12pt; its separate terminal config selects
+14pt with `dpi-aware=no`, through both terminal bindings and startup. The
+shared 12pt terminal config remains unchanged. The actual desktop archive
+assembly places `sway/foot.ini` at the shell archive mount's declared
+`/usr/share/kandelo/sway/foot.ini` path.
+
+Focused source evidence uses the manifest-verified Sway 1.12 archive and
+compiles its actual output-scale functions in the declared shell. The
+unpatched source fails the native density controls; the patched source
+passes the full focused matrix, including small 2x outputs, millimetre
+rounding, pending modes, rotation and unknown/aspect-only fallback. The
+actual recipe's archive phase separately verifies UI12/foot14 membership
+and preserved shared foot12. Browser TypeScript transpilation checks syntax
+only. Logs: `.context/sway-hidpi-before.log`, `sway-hidpi-after.log`, and
+`sway-hidpi-final.log` in the file-alias checkout.
+
+Normal Sway/wayland-demo/shell artifacts, browser 1x/2x rendering/input/IPC,
+full browser-memory and conformance are not run by this focused batch.
+The existing browser spec replaces its fixed 16-pixel bar crop with the
+actual painted bar boundary and adds explicit 1x/2x small-pane cases.
+Normal artifact and combined runtime validation remain integration gates.
+Program 56 / host 3 / GL 17 / fork 21 remain fixed.
+
+### Registered Wayland native ownership checkpoint (2026-10-30)
+
+Commit `dca2752353` brings the shared native display/window lifetime repair
+into this landing branch. Only actual registered live Wayland connection
+identities are admitted through `eglGetDisplay`. Display generations own
+separate DRM files and retained connection leases; native windows retain
+the original surface proxy and allocation through disconnect, destruction
+and deferred EGL cleanup. Explicit GBM platform selection remains typed.
+No additional ABI number or extension advertisement is introduced.
+
+The independently validated source commit `aae31469e5` passed 249 native
+EGL/GLES cases, actual pinned upstream socket/proxy lifetime tests, native
+window resize/rollback tests, GBM retention controls and wasm32 object
+compilation. Its parent includes additional follow-up fixtures. The landing
+branch's distinct native inventory is 214 cases; all 214 pass after the
+cherry-pick. Evidence is retained in
+`.context/landing-evidence-fix/.context/wayland-egl-landing-native.log` and
+`.context/gbm-cpu-fronts/.context/wayland-egl-native-handoff.md`.
+These are native source controls, not a rebuilt ScummVM rendering claim.
+Normal SDK/package/image rebuilds, real ScummVM rendering inside Sway,
+repeated browser-memory and combined conformance remain required.
+
+The pre-repair normal `0b0b69b196` Sway session reproduces the reported
+ScummVM graphics warning using actual physical-key input and captured guest
+files. ScummVM exits zero despite `Could not load any graphics mode`, so a
+successful exit cannot substitute for visible application rendering.
+Evidence: `.context/gbm-fork-aliases/.context/scummvm-sway-reproduction.txt`.

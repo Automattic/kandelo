@@ -135,7 +135,7 @@ The source WebGL contract suite also compiles selected current native C
 cases through this harness, captures actual submitted bytes and replays them
 through the browser decoder. Its float/fixed and maximum-index client-array cases are cross-layer
 source evidence, not guest execution or unmodified CTS. Selection uses
-`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 247 cases.
+`KANDELO_GRAPHICS_LIBC_CASES`; the default invocation runs all 249 cases.
 `KANDELO_GRAPHICS_COMMAND_TRACE` appends submitted command bytes to a supplied
 file for those test-only replays. Each browser test owns and removes its
 private trace directory.
@@ -229,8 +229,43 @@ scripts/dev-shell.sh bash tests/graphics/run-wayland-window-unit.sh /path/to/ins
 
 This check uses the provisioned SDK headers and dev-shell wayland-scanner.
 The optional XML argument defaults to its installed path under sysroot.
+Optional arguments 2 and 3 select private, verified Wayland and libdrm source
+roots for headers when the SDK has not installed the Wayland headers yet.
 It executes the actual native-window C source with UBSan; it does not run
 Wayland peers, normal guest artifacts or a compositor.
+
+The normal libwayland recipe appends a private connection/proxy lifetime
+bridge to its pinned upstream client translation unit. `eglGetDisplay`
+recognizes only a registered live Wayland connection or GBM device;
+explicit GBM platform selection still accepts only GBM. Wayland identities
+never wrap or repeat. An EGL generation retains its exact connection and
+opens its own DRM file, rather than treating the Wayland socket as DRM
+file authority. Public disconnect revokes native admission immediately;
+actual connection storage remains owned through native-window/EGL cleanup.
+The native window holds its original surface proxy, independently of the
+public proxy/window lifetime, and validates handles by registry membership
+before accessing their storage. Resize rollback preserves the accepted
+allocation without restoring a concurrently revoked public window.
+
+`run-wayland-client-unit.sh` checks the real upstream client, closure and
+socket code plus that bridge. Supply the normal resolver's immutable
+Wayland source archive; the runner rechecks its manifest SHA-256 before
+private extraction:
+
+```bash
+scripts/dev-shell.sh bash tests/graphics/run-wayland-client-unit.sh /path/to/resolver/source-archive/payload
+```
+
+Its real socket-pair case validates attach/damage/commit encoding, both
+surface-destroy/disconnect orders, deferred descriptor cleanup, invalid
+pointers, stale identities and identity exhaustion. The window-double case
+also rejects buffer-params proxy allocation failure during creation and
+resize, checks exported descriptor cleanup, and destroys the public window
+during successful and failed retargeting.
+The EGL/GLES device-double suite covers registered Wayland initialization,
+failed admission rollback, exact native window/source matching, swapping,
+disconnect rejection and final release. These are native source proofs;
+normal rebuilt guest consumers and real rendering remain separate gates.
 
 The ABI 58 driver-level sharing source case constructs contexts through
 native host imports and forwarding, using the reviewed share-context/

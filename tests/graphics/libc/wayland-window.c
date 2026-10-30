@@ -22,8 +22,8 @@ struct gbm_bo {
     struct gbm_device *device;
     uint32_t width;
 };
-static int descriptors[16], exported[16], fail_device, fail_bo, fail_export, fail_buffer,
-    reject_retarget;
+static int descriptors[16], exported[16], fail_device, fail_bo, fail_export, fail_params, fail_buffer,
+    reject_retarget, destroy_during_retarget;
 static unsigned opens, closed, bo_created, bo_destroyed;
 static int window_open(const char *path, int flags, ...) {
     assert(!strcmp(path, WPK_GL_DEVICE) && (flags & O_CLOEXEC));
@@ -99,20 +99,28 @@ const struct wl_interface zwp_linux_buffer_params_v1_interface = {
     .name = "zwp_linux_buffer_params_v1", .version = 1};
 static int proxies[128];
 static unsigned next_proxy;
+static struct wl_proxy *registry_proxy;
+static const struct wl_registry_listener *registry_callbacks;
+static void *registry_data;
+static unsigned roundtrips,fail_roundtrip;
 struct wl_proxy *wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
                                         const struct wl_interface *interface, uint32_t version,
                                         uint32_t flags, ...) {
-    (void)proxy;
+    assert(proxy);
     (void)opcode;
     (void)version;
     if (flags & WL_MARSHAL_FLAG_DESTROY)
         return NULL;
     if (!interface)
         return NULL;
+    if (interface == &zwp_linux_buffer_params_v1_interface && fail_params)
+        return NULL;
     if (interface == &wl_buffer_interface && fail_buffer)
         return NULL;
     assert(next_proxy < 128);
-    return (struct wl_proxy *)&proxies[next_proxy++];
+    struct wl_proxy *result=(struct wl_proxy *)&proxies[next_proxy++];
+    if(interface==&wl_registry_interface)registry_proxy=result;
+    return result;
 }
 uint32_t wl_proxy_get_version(struct wl_proxy *proxy) {
     (void)proxy;
@@ -124,9 +132,7 @@ void wl_proxy_set_queue(struct wl_proxy *proxy, struct wl_event_queue *queue) {
     (void)queue;
 }
 int wl_proxy_add_listener(struct wl_proxy *proxy, void (**listener)(void), void *data) {
-    (void)proxy;
-    (void)listener;
-    (void)data;
+    if(proxy==registry_proxy) {registry_callbacks=(const struct wl_registry_listener *)listener;registry_data=data;}
     return 0;
 }
 struct wl_display *wl_proxy_get_display(struct wl_proxy *proxy) {
@@ -137,24 +143,54 @@ struct wl_event_queue *wl_display_create_queue(struct wl_display *display) {
 }
 void wl_event_queue_destroy(struct wl_event_queue *queue) { (void)queue; }
 int wl_display_roundtrip_queue(struct wl_display *display, struct wl_event_queue *queue) {
-    (void)display;
-    (void)queue;
-    return 0;
+    (void)display;(void)queue;
+    if(registry_callbacks) {
+        const struct wl_registry_listener *listener=registry_callbacks;registry_callbacks=NULL;
+        listener->global(registry_data,(struct wl_registry *)registry_proxy,1,"zwp_linux_dmabuf_v1",3);
+    }
+    return ++roundtrips==fail_roundtrip ? -1 : 0;
 }
+static int surface_live=1;
+static unsigned surface_holds;
+static uint64_t surface_identity=1;
+void *_wpk_wl_surface_acquire(const void *surface,const void **display,uint64_t *identity) {
+    if(surface!=&proxies[126] || !surface_live)return NULL;
+    *display=&proxies[125];*identity=surface_identity;surface_holds++;return &surface_holds;
+}
+int _wpk_wl_surface_alive(void *hold) {assert(hold==&surface_holds && surface_holds);return surface_live;}
+int _wpk_wl_surface_present(void *hold,void *buffer,int width,int height) {
+    assert(hold==&surface_holds && surface_holds && buffer && width>0 && height>0);return surface_live;
+}
+void _wpk_wl_surface_release(void *hold) {assert(hold==&surface_holds && surface_holds);surface_holds--;}
 int _wpk_egl_window_retarget(void *window) {
     assert(_wpk_wlegl_device_fd(window) >= 100 && _wpk_wlegl_bo_handle(window));
+    if(destroy_during_retarget)wl_egl_window_destroy(window);
     return !reject_retarget;
 }
 
 int main(void) {
-    struct wpk_wlegl backend = {.dmabuf = (void *)&proxies[127]};
-    struct wl_egl_window window = {.width = 32,
-                                   .height = 24,
-                                   .attached_width = 32,
-                                   .attached_height = 24,
-                                   .driver_private = &backend,
-                                   .surface = (void *)&proxies[126]};
-    assert(!alloc_buffer(&backend, &window, 32, 24) && descriptors[0] && opens == 1);
+    for(unsigned failure=1;failure<=2;failure++) {
+        roundtrips=0;fail_roundtrip=failure;
+        assert(!wl_egl_window_create((void *)&proxies[126],32,24));
+        assert(surface_holds==0 && opens==closed);
+    }
+    fail_roundtrip=0;
+    fail_params=1;
+    assert(!wl_egl_window_create((void *)&proxies[126],32,24));
+    assert(surface_holds==0 && opens==closed && bo_created==bo_destroyed);
+    for(unsigned i=0;i<16;i++)assert(!descriptors[i] && !exported[i]);
+    fail_params=0;
+    struct wl_egl_window *native=wl_egl_window_create((void *)&proxies[126],32,24);
+    assert(native && surface_holds==1);
+    struct wpk_wlegl *owned=native->driver_private;
+    void *lease=NULL;struct wpk_wlegl_frame frame;
+    assert(!_wpk_wlegl_acquire((void *)1,&proxies[125],surface_identity,&lease,&frame));
+    assert(!_wpk_wlegl_acquire(native,&proxies[125],surface_identity+1,&lease,&frame));
+    assert(_wpk_wlegl_acquire(native,&proxies[125],surface_identity,&lease,&frame));
+    assert(_wpk_wlegl_finish(lease,0));
+#define backend (*owned)
+#define window (*native)
+    assert(descriptors[0] && opens==closed+1);
     assert(_wpk_wlegl_device_fd(&window) == 100 && _wpk_wlegl_bo_handle(&window) == 101);
     wl_egl_window_resize(&window, 80, 48, 0, 0);
     assert(descriptors[0] && descriptors[1] && backend.retired_gbm && window.attached_width == 80);
@@ -163,21 +199,50 @@ int main(void) {
     reject_retarget = 0;
     assert(_wpk_wlegl_device_fd(&window) == 101 && window.attached_width == 80);
     assert(!descriptors[0] && descriptors[1] && !descriptors[2]);
-    for (int failure = 0; failure < 4; failure++) {
+    for (int failure = 0; failure < 5; failure++) {
         fail_device = failure == 0;
         fail_bo = failure == 1;
         fail_export = failure == 2;
-        fail_buffer = failure == 3;
+        fail_params = failure == 3;
+        fail_buffer = failure == 4;
         wl_egl_window_resize(&window, 96, 64, 0, 0);
         assert(_wpk_wlegl_device_fd(&window) == 101 && window.attached_width == 80 &&
                descriptors[1]);
+        for(unsigned i=0;i<16;i++)assert(!exported[i]);
     }
-    fail_device = fail_bo = fail_export = fail_buffer = 0;
+    fail_device = fail_bo = fail_export = fail_params = fail_buffer = 0;
     wl_egl_window_resize(&window, 96, 64, 0, 0);
     assert(window.attached_width == 96 && backend.retired_gbm && descriptors[1]);
     _wpk_wlegl_present(&window);
     assert(!backend.retired_gbm && !descriptors[1]);
-    free_buffer(&backend);
+    surface_live=0;
+    assert(!_wpk_wlegl_prepare(lease,&frame));
+    wl_egl_window_destroy(native);
+    assert(_wpk_wlegl_bo_handle(native)==0 && _wpk_wlegl_device_fd(native)==-1);
+    assert(!_wpk_wlegl_dimensions((void *)1,&frame.width,&frame.height));
+    assert(surface_holds==1 && bo_created>bo_destroyed);
+    wl_egl_window_destroy(native); // revoked raw pointer is never dereferenced
+    _wpk_wlegl_release(lease);
+    assert(surface_holds==0);
+    surface_live=1;surface_identity++;
+    native=wl_egl_window_create((void *)&proxies[126],16,16);assert(native);
+    assert(!_wpk_wlegl_acquire(native,&proxies[125],surface_identity-1,&lease,&frame));
+    assert(_wpk_wlegl_acquire(native,&proxies[125],surface_identity,&lease,&frame));
+    assert(_wpk_wlegl_finish(lease,1));_wpk_wlegl_release(lease);wl_egl_window_destroy(native);
+    assert(surface_holds==0);
+    // Reentrant public destruction during an EGL retarget cannot free the
+    // allocation being resized or restore a revoked owner on rollback.
+    for(int rejected=0;rejected<2;rejected++) {
+        native=wl_egl_window_create((void *)&proxies[126],16,16);assert(native);
+        assert(_wpk_wlegl_acquire(native,&proxies[125],surface_identity,&lease,&frame));
+        assert(_wpk_wlegl_finish(lease,0));
+        destroy_during_retarget=1;reject_retarget=rejected;
+        wl_egl_window_resize(native,24,24,0,0);
+        destroy_during_retarget=reject_retarget=0;
+        assert(_wpk_wlegl_device_fd(native)==-1 && !_wpk_wlegl_prepare(lease,&frame));
+        assert(surface_holds==1);
+        _wpk_wlegl_release(lease);assert(surface_holds==0);
+    }
     assert(opens == closed && bo_created == bo_destroyed);
     for (unsigned i = 0; i < 16; i++)
         assert(!descriptors[i] && !exported[i]);
