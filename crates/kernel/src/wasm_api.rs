@@ -43,10 +43,13 @@ use crate::process_snapshot_wire::{
 };
 use crate::signal::{
     apply_default_signal_action_with_locks, deliver_pending_signals_for_tid_with_locks,
-    deliver_pending_signals_with_locks, dequeue_signal_for, terminate_process_by_signal_with_locks,
+    deliver_pending_signals_with_locks, dequeue_signal_for,
     DefaultSignalOutcome,
 };
 use crate::syscalls;
+use crate::query_lifecycle::{
+    self, Completion as QueryLifecycleCompletion, Request as QueryLifecycleRequest,
+};
 
 // ---------------------------------------------------------------------------
 // 1. Host function imports
@@ -3090,34 +3093,52 @@ fn finish_init_reap(reap: crate::process_table::InitReap) {
 /// is not an exited child of init.
 fn reap_for_init_and_cleanup(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.reap_for_init(pid) {
-        Some(reap) => {
+    if table.get(pid).is_none() {
+        return -(Errno::ECHILD as i32);
+    }
+    match query_lifecycle::legacy(
+        table,
+        &mut WasmHostIO,
+        QueryLifecycleRequest::ReapInit { pid },
+    ) {
+        Ok(QueryLifecycleCompletion::InitReaped(reap)) => {
             finish_init_reap(reap);
             0
         }
-        None => -(Errno::ECHILD as i32),
+        Ok(_) => unreachable!("init reap lifecycle completion"),
+        Err(error) => -(error as i32),
     }
 }
 
 fn remove_process_and_cleanup(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.remove_process(pid) {
-        Some(result) => {
+    match query_lifecycle::legacy(
+        table,
+        &mut WasmHostIO,
+        QueryLifecycleRequest::Remove { pid, reap: false },
+    ) {
+        Ok(QueryLifecycleCompletion::Removed(result)) => {
             finish_removed_process(pid, result);
             0
         }
-        None => -(Errno::ESRCH as i32),
+        Ok(_) => unreachable!("remove lifecycle completion"),
+        Err(error) => -(error as i32),
     }
 }
 
 fn reap_process_and_cleanup(pid: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.reap_process(pid) {
-        Some(result) => {
+    match query_lifecycle::legacy(
+        table,
+        &mut WasmHostIO,
+        QueryLifecycleRequest::Remove { pid, reap: true },
+    ) {
+        Ok(QueryLifecycleCompletion::Removed(result)) => {
             finish_removed_process(pid, result);
             0
         }
-        None => -(Errno::ESRCH as i32),
+        Ok(_) => unreachable!("reap lifecycle completion"),
+        Err(error) => -(error as i32),
     }
 }
 
@@ -3145,6 +3166,18 @@ fn reap_process_and_cleanup(pid: u32) -> i32 {
 pub extern "C" fn kernel_publish_process_exit(pid: u32) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Some(proc) = table.get_mut(pid) {
+        if proc.blocked_retries.has_external_query_receipts()
+            && proc.state != crate::process::ProcessState::Exited
+        {
+            return -(Errno::EINVAL as i32);
+        }
+        assert_eq!(
+            syscalls::preflight_gl_query_teardown(proc, &mut WasmHostIO, None),
+            syscalls::GlQueryTeardown::Ready,
+            "owned query publication requires pending intent scheduling"
+        );
+    }
     let publication = match table.publish_process_exit(pid) {
         Ok(publication) => Some(publication),
         Err(Errno::ESRCH) => None,
@@ -3476,13 +3509,14 @@ pub extern "C" fn kernel_take_process_timer_cleanup(
 pub extern "C" fn kernel_mark_process_signaled(pid: u32, signum: u32) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    match table.process_and_advisory_locks(pid) {
-        Some((proc, advisory_locks)) => {
-            let mut host = WasmHostIO;
-            terminate_process_by_signal_with_locks(proc, advisory_locks, &mut host, signum);
-            0
-        }
-        None => -(Errno::ESRCH as i32),
+    match query_lifecycle::legacy(
+        table,
+        &mut WasmHostIO,
+        QueryLifecycleRequest::SignalExit { pid, signum },
+    ) {
+        Ok(QueryLifecycleCompletion::Signaled) => 0,
+        Ok(_) => unreachable!("signal exit lifecycle completion"),
+        Err(error) => -(error as i32),
     }
 }
 
@@ -4359,46 +4393,35 @@ pub extern "C" fn kernel_exec_target_cancel(owner_pid: u32, target: u32) -> i32 
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_exec_commit(pid: u32, caller_tid: u32, target: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let (proc, advisory_locks) = match table.process_and_advisory_locks(pid) {
-        Some(pair) => pair,
-        None => return -(Errno::ESRCH as i32),
-    };
-    let mut host = WasmHostIO;
-    match crate::exec_target::commit_process(
-        proc,
-        advisory_locks,
-        &mut host,
-        pid,
-        caller_tid,
-        target,
+    match query_lifecycle::legacy(
+        table,
+        &mut WasmHostIO,
+        QueryLifecycleRequest::Exec {
+            pid,
+            tid: caller_tid,
+            target,
+        },
     ) {
-        Ok(()) => 0,
+        Ok(QueryLifecycleCompletion::Exec) => 0,
+        Ok(_) => unreachable!("exec lifecycle completion"),
         Err(error) => -(error as i32),
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kernel_spawn_exec_commit(
-    parent_pid: u32,
-    child_pid: u32,
-    target: u32,
-) -> i32 {
+pub extern "C" fn kernel_spawn_exec_commit(parent_pid: u32, child_pid: u32, target: u32) -> i32 {
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let parent_exists = table.get(parent_pid).is_some();
-    let (child, advisory_locks) = match table.process_and_advisory_locks(child_pid) {
-        Some(pair) if parent_exists && pair.0.ppid == parent_pid => pair,
-        _ => return -(Errno::ESRCH as i32),
-    };
-    let mut host = WasmHostIO;
-    match crate::exec_target::commit_spawn(
-        child,
-        advisory_locks,
-        &mut host,
-        parent_pid,
-        child_pid,
-        target,
+    match query_lifecycle::legacy(
+        table,
+        &mut WasmHostIO,
+        QueryLifecycleRequest::SpawnExec {
+            parent: parent_pid,
+            child: child_pid,
+            target,
+        },
     ) {
-        Ok(()) => 0,
+        Ok(QueryLifecycleCompletion::Exec) => 0,
+        Ok(_) => unreachable!("spawn exec lifecycle completion"),
         Err(error) => -(error as i32),
     }
 }
@@ -7915,12 +7938,13 @@ pub extern "C" fn kernel_blocking_retry_release(pid: u32, tid: u32, token: i64) 
     }
     let _gkl = GklGuard::acquire();
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-    let Some((proc, locks)) = table.process_and_advisory_locks(pid) else {
-        return -(Errno::ESRCH as i32);
-    };
-    let mut host = WasmHostIO;
-    match syscalls::release_blocking_retry_binding(proc, locks, &mut host, tid, token) {
-        Ok(()) => 0,
+    match query_lifecycle::legacy(
+        table,
+        &mut WasmHostIO,
+        QueryLifecycleRequest::ReleaseRetry { pid, tid, token },
+    ) {
+        Ok(QueryLifecycleCompletion::RetryReleased) => 0,
+        Ok(_) => unreachable!("retry lifecycle completion"),
         Err(error) => -(error as i32),
     }
 }
@@ -11496,22 +11520,28 @@ pub fn kernel_mprotect(addr: usize, len: usize, prot: u32) -> i32 {
 fn commit_current_task_exit(status: i32) -> i32 {
     let committed_status;
     {
-        let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
-        if unsafe { host_is_thread_worker() } != 0 {
-            // Thread exit: don't destroy shared process state (FDs, pipes, etc.).
-            // Just set exit status and return — the guest import traps after
-            // the host completes its exit-channel handshake.
-            proc.exit_status = status & 0xff;
-            proc.exit_signal = 0;
-        } else {
-            let mut host = WasmHostIO;
-            syscalls::sys_exit_with_locks(proc, advisory_locks, &mut host, status);
-        }
-        committed_status = proc.exit_status;
-    } // _gkl dropped here — GKL released
-    // Consume task authority before deferred descriptor cleanup can invoke a
-    // host callback. Cleanup needs no process identity, and a callback trap
-    // must not leave the exited task available to a later dispatch.
+        let _gkl = GklGuard::acquire();
+        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+        let pid = table.current_pid();
+        let tid = table.current_tid();
+        let thread_worker = unsafe { host_is_thread_worker() } != 0;
+        committed_status = match query_lifecycle::legacy(
+            table,
+            &mut WasmHostIO,
+            QueryLifecycleRequest::Exit {
+                pid,
+                tid,
+                status,
+                thread_worker,
+            },
+        ) {
+            Ok(QueryLifecycleCompletion::Exit(status)) => status,
+            Ok(_) => unreachable!("exit lifecycle completion"),
+            Err(_) => panic!("no current task for exit commit"),
+        };
+    }
+    // These effects belong only to a completed exit. A pending/faulting
+    // intent cannot clear the task binding or publish exit as completed.
     unsafe { &mut *PROCESS_TABLE.0.get() }.clear_current_tid_binding();
     finish_machine_scm_rights_cleanup_if_pending();
     release_orphaned_ofd_locks();
@@ -14748,10 +14778,14 @@ fn kernel_thread_exit_in_table(
     pid: u32,
     tid: u32,
 ) -> Result<usize, Errno> {
-    let (proc, locks) = pt.process_and_advisory_locks(pid).ok_or(Errno::ESRCH)?;
-    let mut host = WasmHostIO;
-    syscalls::cleanup_exiting_thread_with_state(proc, locks, &mut host, tid)
-        .map(|thread| thread.ctid_ptr)
+    match query_lifecycle::legacy(
+        pt,
+        &mut WasmHostIO,
+        QueryLifecycleRequest::ThreadExit { pid, tid },
+    )? {
+        QueryLifecycleCompletion::ThreadExit(ctid) => Ok(ctid),
+        _ => unreachable!("thread exit lifecycle completion"),
+    }
 }
 
 #[cfg(test)]

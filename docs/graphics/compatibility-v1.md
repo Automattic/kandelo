@@ -9589,3 +9589,40 @@ Logs: `.context/graphics-location-record-combined-{host,source}.log`.
 Typed uniform-query candidates, executable pins and adapter adoption remain
 in progress; record migration alone does not establish retained lookup
 publication or normal linked guest behavior.
+
+### Kernel lifecycle wrapper ordering (2026-10-29)
+
+Kernel wrappers now share a non-Clone internal lifecycle intent capturing the
+existing process exec generation and exact target, task, retry token, status
+or removal mode. Pending/faulted query retirement leaves that intent resumable
+and its actual resources in the process table. Exec/spawn preflight precedes
+PreparedExecTarget consumption; exit status, signal bookkeeping, thread/CTID
+publication, retry release and remove/reap effects follow acknowledged cleanup.
+An intent from an older exec generation cannot cancel a replacement image's
+receipt. Ordinary exec still drains competing prepared targets at commit.
+
+Existing exports have no typed pending result contract. Their one-shot wrappers
+fail closed on unresolved ownership before lifecycle mutation, rather than
+returning exit success, a cleared TID or a misleading absent-process result.
+The internal driver is callable and tested; no new export, public pending
+interpretation, opcode or ABI epoch is enabled. A future kernel-held opaque
+intent handle and typed step result need review. Host code cannot retain a
+Rust intent directly. Same-generation abandoned intents still require explicit
+prepared-target cancellation or normal process cleanup; old-generation scalar
+intent metadata may retire after normal exec has invalidated its targets.
+
+Focused declared-shell validation passes 19 kernel checks: ten causal driver
+cases, five existing source guards and four channel-pointer contracts. The
+actual Wasm32 kernel compile check passes. Tests exercise real kernel table
+identities, prepared executable leases, query receipts and cleanup effects;
+they do not duplicate a separate lifecycle model. VMA evidence is
+`.context/kernel-query-lifecycle-final.log` and
+`.context/kernel-query-lifecycle-wasm-final.log`. Initial test-fixture API/type
+mismatches were corrected before the passing runs.
+
+Generic runtime-core signal delivery still reaches its void terminating path;
+that path must route through pending intent scheduling before activation.
+Worker/forwarded scheduling, actual cleanup transfer or containment, normal
+combined artifacts, full Rust/ABI checks, real browser delivery, browser-memory
+and conformance remain required. These are ordinary remaining integration
+work, not platform boundaries or completed async support.
