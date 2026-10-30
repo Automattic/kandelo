@@ -3813,6 +3813,7 @@ mod tests {
         use crate::process_table::ProcessTable;
         use crate::spawn::SpawnAttrs;
 
+        let _g_master = crate::dri::master::lock_for_test();
         let _g = crate::dri::bo::TEST_REGISTRY_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3842,10 +3843,11 @@ mod tests {
             42,
             KmsFb {
                 bo_id: bo,
-                width: 64,
-                height: 64,
+                width: 60,
+                height: 63,
                 pixel_format: 0x34325241, // AR24
                 stride: 64 * 4,
+                offset: 16,
             },
         );
         parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
@@ -3877,6 +3879,8 @@ mod tests {
         let fbs = |pid: u32| table.get(pid).unwrap().ofd_table.get(ofd_idx).unwrap().kms().unwrap().fbs.clone();
         assert_eq!(fbs(parent_pid).borrow().len(), 1);
         assert_eq!(fbs(child_pid).borrow().len(), 1);
+        assert_eq!(fbs(parent_pid).borrow().get(&42).unwrap().offset, 16);
+        assert_eq!(fbs(child_pid).borrow().get(&42).unwrap().offset, 16);
         assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 2);
         assert!(table.remove_process(child_pid).unwrap().dri_effects.is_empty());
         assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 2);
@@ -3934,6 +3938,7 @@ mod tests {
         use crate::ofd::{DriFdState, DriOfdState, KmsFb, KmsFdState};
         use crate::process_table::ProcessTable;
 
+        let _g_master = crate::dri::master::lock_for_test();
         let _g = crate::dri::bo::TEST_REGISTRY_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -3961,10 +3966,11 @@ mod tests {
             42,
             KmsFb {
                 bo_id: bo,
-                width: 64,
-                height: 64,
+                width: 60,
+                height: 63,
                 pixel_format: 0x34325241, // AR24
                 stride: 64 * 4,
+                offset: 16,
             },
         );
         parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
@@ -4023,10 +4029,11 @@ mod tests {
             42,
             KmsFb {
                 bo_id: bo,
-                width: 64,
-                height: 64,
+                width: 60,
+                height: 63,
                 pixel_format: 0x34325241, // AR24
                 stride: 64 * 4,
+                offset: 16,
             },
         );
         parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =

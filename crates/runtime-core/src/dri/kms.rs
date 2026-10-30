@@ -4,10 +4,12 @@
 //! one id space, and clients such as wlroots read a property with
 //! `DRM_MODE_OBJECT_ANY`, so no two objects here share an id. The card
 //! offers the legacy (non-atomic) interface: properties Linux marks
-//! atomic-only are not listed.
+//! atomic-only are not listed. Mutable device state is confined to the
+//! kernel syscall executor, just like the master and BO registries.
 
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use alloc::collections::BTreeMap;
 
 use wasm_posix_shared::dri::*;
 use wasm_posix_shared::Errno;
@@ -22,6 +24,8 @@ pub const PROP_EDID: u32 = 6;
 pub const PROP_DPMS: u32 = 7;
 pub const PROP_LINK_STATUS: u32 = 8;
 pub const PROP_NON_DESKTOP: u32 = 9;
+pub const CURSOR_PLANE_ID: u32 = 10;
+pub const CURSOR_PLANE_FORMATS: [u32; 1] = [DRM_FORMAT_ARGB8888];
 
 /// The pixel formats `DRM_IOCTL_MODE_ADDFB2` accepts for scanout.
 pub const PRIMARY_PLANE_FORMATS: [u32; 5] = [
@@ -113,8 +117,9 @@ pub fn object_type(id: u32) -> Option<u32> {
         CRTC_ID => Some(DRM_MODE_OBJECT_CRTC),
         ENCODER_ID => Some(DRM_MODE_OBJECT_ENCODER),
         CONNECTOR_ID => Some(DRM_MODE_OBJECT_CONNECTOR),
-        PRIMARY_PLANE_ID => Some(DRM_MODE_OBJECT_PLANE),
+        PRIMARY_PLANE_ID | CURSOR_PLANE_ID => Some(DRM_MODE_OBJECT_PLANE),
         PROP_PLANE_TYPE..=PROP_NON_DESKTOP => Some(DRM_MODE_OBJECT_PROPERTY),
+        _ if framebuffer(id).is_some() => Some(DRM_MODE_OBJECT_FB),
         _ => None,
     }
 }
@@ -153,6 +158,14 @@ pub fn property_value(prop_id: u32) -> u64 {
     }
 }
 
+pub fn object_property_value(obj_id: u32, prop_id: u32) -> u64 {
+    if obj_id == CURSOR_PLANE_ID && prop_id == PROP_PLANE_TYPE {
+        DRM_PLANE_TYPE_CURSOR
+    } else {
+        property_value(prop_id)
+    }
+}
+
 /// Set a property through the legacy interface. Only DPMS is mutable
 /// there; a value outside the enum, an immutable property, or a
 /// property the object does not carry fails with `EINVAL`.
@@ -188,7 +201,7 @@ pub fn magic_was_issued(magic: u32) -> bool {
 
 /// Framebuffers share the one mode-object id space, so their ids start
 /// after the fixed objects and are unique across open files.
-static NEXT_FB_ID: AtomicU32 = AtomicU32::new(PROP_NON_DESKTOP + 1);
+static NEXT_FB_ID: AtomicU32 = AtomicU32::new(CURSOR_PLANE_ID + 1);
 
 pub fn allocate_fb_id() -> Result<u32, Errno> {
     NEXT_FB_ID
@@ -222,12 +235,49 @@ pub fn crtc_mode() -> Option<WpkDrmModeModeinfo> {
     unsafe { *CRTC_MODE.0.get() }
 }
 
+/// Authoritative cursor framebuffer and position for the current master grant.
+/// The DRM file's cursor_bo owns its BO reference. An internally allocated
+/// legacy cursor framebuffer has a real identity but no user file-table entry.
+#[derive(Clone, Debug, Default)]
+pub struct CursorPlaneState {
+    pub lease_id: u64,
+    pub fb_id: u32,
+    pub fb: Option<crate::ofd::KmsFb>,
+    pub x: i32,
+    pub y: i32,
+    pub hot_x: i32,
+    pub hot_y: i32,
+    pub owner: crate::ofd::WeakKmsFile,
+}
+
+struct GlobalCursor(UnsafeCell<Option<CursorPlaneState>>);
+unsafe impl Sync for GlobalCursor {}
+static CURSOR: GlobalCursor = GlobalCursor(UnsafeCell::new(None));
+
+pub fn cursor_plane() -> Option<CursorPlaneState> {
+    let grant = super::master::current()?;
+    unsafe { &*CURSOR.0.get() }.as_ref()
+        .filter(|state| state.lease_id == grant.lease_id).cloned()
+}
+
+pub fn set_cursor_plane(state: CursorPlaneState) {
+    assert_eq!(super::master::current().map(|g| g.lease_id), Some(state.lease_id));
+    unsafe { *CURSOR.0.get() = Some(state) };
+}
+
+pub fn clear_cursor_plane(lease_id: u64) {
+    let state = unsafe { &mut *CURSOR.0.get() };
+    if state.as_ref().is_some_and(|state| state.lease_id == lease_id) {
+        *state = None;
+    }
+}
+
 /// An fb that `CLOSEFB` dropped while the CRTC scanned it out. Linux keeps
 /// such an fb alive on the plane until the next modeset or flip.
 pub struct ClosedScanout {
     pub pid: i32,
     pub fb_id: u32,
-    pub bo_id: crate::dri::BoId,
+    pub fb: crate::ofd::KmsFb,
 }
 
 struct GlobalClosedScanout(UnsafeCell<Option<ClosedScanout>>);
@@ -240,10 +290,37 @@ pub fn replace_closed_scanout(closed: Option<ClosedScanout>) -> Option<ClosedSca
     unsafe { core::mem::replace(&mut *CLOSED_SCANOUT.0.get(), closed) }
 }
 
+struct GlobalFramebufferIndex(UnsafeCell<BTreeMap<u32, crate::ofd::WeakKmsFbs>>);
+unsafe impl Sync for GlobalFramebufferIndex {}
+static FRAMEBUFFERS: GlobalFramebufferIndex = GlobalFramebufferIndex(UnsafeCell::new(BTreeMap::new()));
+
+pub fn register_framebuffer(id: u32, owner: crate::ofd::WeakKmsFbs) {
+    assert!(unsafe { &mut *FRAMEBUFFERS.0.get() }.insert(id, owner).is_none());
+}
+
+pub fn unregister_framebuffer(id: u32) {
+    unsafe { &mut *FRAMEBUFFERS.0.get() }.remove(&id);
+}
+
+/// GETFB uses device-wide identity, while RMFB/CLOSEFB still require a
+/// reference in the caller's file table (drm_framebuffer.c:drm_mode_closefb).
+pub fn framebuffer(id: u32) -> Option<crate::ofd::KmsFb> {
+    if let Some(fb) = unsafe { &*FRAMEBUFFERS.0.get() }.get(&id).and_then(|owner| owner.lookup(id)) {
+        return Some(fb);
+    }
+    if let Some(state) = cursor_plane().filter(|state| state.fb_id == id) {
+        return state.fb;
+    }
+    unsafe { &*CLOSED_SCANOUT.0.get() }.as_ref()
+        .filter(|closed| closed.fb_id == id).map(|closed| closed.fb)
+}
+
 #[cfg(test)]
 pub fn reset_for_test() {
     DPMS.store(DRM_MODE_DPMS_ON, Ordering::Relaxed);
-    NEXT_FB_ID.store(PROP_NON_DESKTOP + 1, Ordering::Relaxed);
+    NEXT_FB_ID.store(CURSOR_PLANE_ID + 1, Ordering::Relaxed);
+    unsafe { *CURSOR.0.get() = None };
+    unsafe { &mut *FRAMEBUFFERS.0.get() }.clear();
     set_crtc_fb(0);
     set_crtc_mode(None);
     replace_closed_scanout(None);
@@ -255,7 +332,8 @@ mod tests {
 
     #[test]
     fn object_ids_are_unique_across_types() {
-        let ids = [CRTC_ID, ENCODER_ID, CONNECTOR_ID, PRIMARY_PLANE_ID];
+        let _master = super::super::master::lock_for_test();
+        let ids = [CRTC_ID, ENCODER_ID, CONNECTOR_ID, PRIMARY_PLANE_ID, CURSOR_PLANE_ID];
         for (i, a) in ids.iter().enumerate() {
             for b in &ids[i + 1..] {
                 assert_ne!(a, b);
@@ -266,6 +344,7 @@ mod tests {
 
     #[test]
     fn find_object_checks_the_type() {
+        let _master = super::super::master::lock_for_test();
         assert_eq!(find_object(CONNECTOR_ID, DRM_MODE_OBJECT_ANY), Ok(DRM_MODE_OBJECT_CONNECTOR));
         assert_eq!(find_object(CONNECTOR_ID, DRM_MODE_OBJECT_CRTC), Err(Errno::ENOENT));
         assert_eq!(find_object(99, DRM_MODE_OBJECT_ANY), Err(Errno::ENOENT));
@@ -273,12 +352,14 @@ mod tests {
 
     #[test]
     fn encoders_carry_no_properties() {
+        let _master = super::super::master::lock_for_test();
         assert_eq!(object_properties(ENCODER_ID, DRM_MODE_OBJECT_ANY), Err(Errno::EINVAL));
         assert_eq!(object_properties(CRTC_ID, DRM_MODE_OBJECT_CRTC), Ok(&[][..]));
     }
 
     #[test]
     fn only_dpms_is_settable_and_only_to_an_enum_value() {
+        let _master = super::super::master::lock_for_test();
         reset_for_test();
         assert_eq!(
             set_property(CONNECTOR_ID, DRM_MODE_OBJECT_CONNECTOR, PROP_DPMS, DRM_MODE_DPMS_OFF),

@@ -6,6 +6,9 @@ import { readFileSync } from "node:fs";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { extractZipEntry, parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 
+// Browser checks must never take the user's desktop focus.
+test.use({ headless: true });
+
 /** Show the Internals syslog, the demo canvas, or the machine's terminal.
  *  Internals is an overlay toggle in the dock; showing another view means
  *  closing it and selecting that view. */
@@ -126,17 +129,18 @@ async function barHeight(out: Output): Promise<number> {
     const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
     bitmap.close();
     return Array.from({ length: image.height }, (_, y) => {
-      let black = 0;
+      let background = 0;
       for (let x = 0; x < image.width; x++) {
         const p = (y * image.width + x) * 4;
-        if (image.data[p] < 20 && image.data[p + 1] < 20 && image.data[p + 2] < 20) black++;
+        if ([0, 1, 2].every(channel => Math.abs(image.data[p + channel] - 50) <= 3)) background++;
       }
-      return black / image.width;
+      return background / image.width;
     });
   }, png.toString("base64"));
   // Read the actual painted bar boundary, not a fixed font-dependent height.
-  // The status text occupies less than half a row; foot/wallpaper is lighter.
-  const boundary = rows.findIndex(black => black < 0.5);
+  // The shipped /etc/sway/config sets background #323232. Text occupies
+  // less than half a row; the foot client and its blue title differ.
+  const boundary = rows.findIndex(background => background < 0.5);
   expect(boundary, "swaybar has painted a nonempty top band").toBeGreaterThan(0);
   return boundary * height / rows.length;
 }
@@ -317,7 +321,7 @@ test("Kandelo sway tiles foot terminals under swaybar with wlroots' GLES2 render
 
 for (const deviceScaleFactor of [1, 2]) {
   test.describe(`Sway logical desktop at ${deviceScaleFactor}x`, () => {
-    test.use({ headless: true, deviceScaleFactor, viewport: { width: 1100, height: 650 } });
+    test.use({ deviceScaleFactor, viewport: { width: 1100, height: 650 } });
     test("keeps readable fonts, actual output scale and click targets on a small pane", async ({ page }) => {
       test.setTimeout(300_000);
       // These are the normal resolver-owned archive bytes mounted by the

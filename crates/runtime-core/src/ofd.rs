@@ -410,13 +410,14 @@ pub struct DriFdState {
 
 /// A KMS framebuffer object — i.e. one slot in the per-fd `fbs` map,
 /// keyed by the `fb_id` MODE_ADDFB2 returned.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KmsFb {
     pub bo_id: crate::dri::BoId,
     pub width: u32,
     pub height: u32,
     pub pixel_format: u32,
     pub stride: u32,
+    pub offset: u32,
 }
 
 /// Exact-ownership handle to one card0 OFD's framebuffer table.
@@ -433,6 +434,7 @@ pub struct KmsFb {
 pub struct SharedKmsFbs(Rc<RefCell<BTreeMap<u32, KmsFb>>>);
 
 impl SharedKmsFbs {
+    pub fn downgrade(&self) -> WeakKmsFbs { WeakKmsFbs(Rc::downgrade(&self.0)) }
     pub fn borrow(&self) -> core::cell::Ref<'_, BTreeMap<u32, KmsFb>> {
         self.0.borrow()
     }
@@ -445,6 +447,19 @@ impl SharedKmsFbs {
     /// process still holds the OFD.
     pub fn into_last(self) -> Option<BTreeMap<u32, KmsFb>> {
         Rc::try_unwrap(self.0).ok().map(RefCell::into_inner)
+    }
+}
+
+/// Device object lookup may find a file's framebuffer without retaining the
+/// file or duplicating its authoritative immutable framebuffer metadata.
+#[derive(Clone)]
+pub struct WeakKmsFbs(Weak<RefCell<BTreeMap<u32, KmsFb>>>);
+
+impl WeakKmsFbs {
+    pub fn lookup(&self, id: u32) -> Option<KmsFb> {
+        let table = self.0.upgrade()?;
+        let result = table.borrow().get(&id).copied();
+        result
     }
 }
 
@@ -484,10 +499,24 @@ impl From<KmsFdState> for SharedKmsFile {
     fn from(state: KmsFdState) -> Self { Self(Rc::new(RefCell::new(state))) }
 }
 impl SharedKmsFile {
+    pub fn downgrade(&self) -> WeakKmsFile { WeakKmsFile(Rc::downgrade(&self.0)) }
     pub fn borrow(&self) -> core::cell::Ref<'_, KmsFdState> { self.0.borrow() }
     pub fn borrow_mut(&self) -> core::cell::RefMut<'_, KmsFdState> { self.0.borrow_mut() }
     pub fn into_last(self) -> Option<KmsFdState> {
         Rc::try_unwrap(self.0).ok().map(RefCell::into_inner)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct WeakKmsFile(Weak<RefCell<KmsFdState>>);
+
+impl WeakKmsFile {
+    /// The plane belongs to its actual master file, even when an owning
+    /// framebuffer is removed by a different DRM file.
+    pub fn take_cursor_bo(&self) -> Result<Option<u32>, Errno> {
+        let file = self.0.upgrade().ok_or(Errno::EBADF)?;
+        let bo = file.borrow_mut().cursor_bo.take();
+        Ok(bo)
     }
 }
 

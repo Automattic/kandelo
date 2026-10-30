@@ -5588,6 +5588,7 @@ fn marshalled_structs() -> Value {
         WpkDrmModeDestroyDumb, WpkDrmModeFbCmd2, WpkDrmModeGetConnector, WpkDrmModeGetCrtc,
         WpkDrmModeGetEncoder, WpkDrmModeMapDumb, WpkDrmModeModeinfo, WpkDrmPrimeHandle,
         WpkDrmVersion, WpkDrmWaitVblankReply, WpkDrmWaitVblankRequest,
+        WpkDrmModeFbCmd, WpkDrmModeSetPlane,
     };
     use shared::fbdev::{FbBitfield, FbFixScreenInfo, FbVarScreenInfo};
     use shared::gl::{GlContextAttrs, GlInitInfo, GlMakeCurrent, GlQueryInfo, GlQueryInfo64, GlSubmitInfo, GlSurfaceAttrs, GlSurfaceFrontCopyInfo};
@@ -6034,6 +6035,13 @@ fn marshalled_structs() -> Value {
             possible_clones
         }),
     );
+    structs.insert("WpkDrmModeFbCmd".into(), struct_layout!(WpkDrmModeFbCmd {
+        fb_id, width, height, pitch, bpp, depth, handle
+    }));
+    structs.insert("WpkDrmModeSetPlane".into(), struct_layout!(WpkDrmModeSetPlane {
+        plane_id, crtc_id, fb_id, flags, crtc_x, crtc_y, crtc_w, crtc_h,
+        src_x, src_y, src_h, src_w
+    }));
     structs.insert(
         "WpkDrmModeFbCmd2".into(),
         struct_layout!(WpkDrmModeFbCmd2 {
