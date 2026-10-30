@@ -30,9 +30,8 @@ substitute successful no-ops for those services.
 
 The callback patches supply complete GTK signal signatures, boolean
 event results and GLib source callback results. Adapter functions retain
-helper signatures used by direct callers. Native calling conventions can
-tolerate omitted arguments;
-WebAssembly's typed indirect calls cannot. Clean patch application and
+helper signatures used by direct callers. The complete types are required
+by the callback APIs and WebAssembly's typed indirect calls. Patch application and
 Wasm32 syntax/type controls pass, with the original three type controls
 and six further registration controls failing on the original source.
 Five ignored Wayland event callbacks also use their generated protocol
@@ -40,6 +39,14 @@ argument lists instead of casting a zero-argument handler. Separate
 translation-unit Wasm32 controls trap on all five original registrations
 and return normally with the replacements. These checks do not establish
 a working application.
+
+Collection and trigger registrations use typed adapters that preserve the
+direct helper interfaces and stable callback identities for removal.
+Popup associations use object-bound unmap/destroy handlers and a retained
+snapshot during collapse; cleanup receives the actual stored list data.
+The [popup regression runner](test/README.md) verifies the pinned source
+archive and exercises the actual source with native GLib/GObject signals.
+It proves ownership transitions, separately from rendered GTK behavior.
 
 Normal package and image builds, Node sessions, real headless Chromium,
 Firefox and WebKit menu/launch/focus/close checks, and repeated memory

@@ -9039,3 +9039,83 @@ commands: .context/sfwbar-wayland-callbacks/check-sdk.log, invoke-sdk.log
 and handoff.md. These controls prove the callback repair, while the
 original Labwc event identity and combined GUI acceptance still require
 the separate normal-image protocol capture and rebuild.
+
+### SFWBar original Wayland failure identified (2026-10-30)
+
+Normal isolated source 6647846dda completes desktop products, canonical
+rootfs, ABI and freshness in job
+sfwbar-diagnostic-products-664-1030-060502-3b6a (12m44s). The temporary
+5656 diagnostic server uses that frozen source and real resolver output.
+Its actual SFWBar main and appmenu module match the original failed 664
+cohort byte-for-byte. A 14.5s headless Chromium observation starts the
+unchanged program from normal Labwc foot with only WAYLAND_DEBUG logging
+and requires a new captured signature fault before reading its stderr.
+
+GDK's output description, logical position and size events succeed in
+that same invocation. SFWBar's own xdg-output object then receives its
+name successfully, followed by `zxdg_output_v1.description`; that last
+event immediately precedes the new signature fault. The listener source
+casts zero-argument monitor_noop to a three-argument description handler,
+matching the exact recorded void-three-i32 indirect-call signature. This
+identifies the package callback defect and confirms that patch 0003
+repairs the failing registration; generic Wayland/libffi dispatch is not
+the cause. Normal rebuilt GUI/menu acceptance remains required.
+
+Actual selected source, all owners, SDK and artifact identities agree
+before/after this diagnostic. One extra after capture omitted the prior
+resolver-policy environment; its raw record differs only in that context
+metadata and capture time. A new capture with the explicit identical
+policy matches. Both records are retained. The private diagnostic server
+is stopped after browser closure; the independent cursor preview remains.
+Evidence: .context/sfwbar-startup-observe/labwc/runtime-causality.md,
+protocol.txt, diagnostic-identities.json and trace; all-owner records in
+.context/kms-cursor-discovery/.context/sfwbar-diagnostic-664-*.json.
+
+### SFWBar popup ownership and remaining callback batch (2026-10-30)
+
+The package's window association destructor receives stored GList** data
+but originally treats it as a widget. Its unmap handlers also duplicate,
+retain dead receivers, miss destroyed/unmapped references and leave live
+list iteration exposed to synchronous removal. The portable source patch
+uses the correct destructor datum, object-bound unmap/destroy handlers,
+idempotent membership transitions and a separately retained traversal.
+It preserves ordinary widget operations and last-reference notification.
+
+The tracked packages/registry/sfwbar/test/run-window-lifecycle.sh accepts
+the exact manifest source archive, verifies its SHA-256, extracts only
+into scratch and applies actual package patches without fuzz. It compiles
+the complete upstream window.c against native GLib/GObject 2.86.3 with
+UBSan and a narrow Gtk surface fixture. Signals, weak receiver lifetime,
+data destruction and lists are real GLib/GObject operations. A test-only
+live-object boundary diagnoses bad callback data before unsafe access.
+All ten upstream controls fail with diagnosed assertions; a destructor-
+only intermediate still fails all ten; all ten complete repairs pass.
+Controls include self-reference, legacy registration normalization and
+reentrant sibling destruction. Wrong archives fail before extraction.
+The tracked runner also passes against the complete five-patch stack;
+per-case results are in .context/sfwbar-window-lifecycle-tracked-results.
+Private ASan controls stall before their first fixture marker for both
+variants and provide no source or runtime-defect evidence; logs remain.
+Evidence: .context/sfwbar-window-lifecycle/handoff.md and portable-final.log.
+
+The remaining collection/trigger review adds eight typed adapters at
+fourteen registration/removal sites while retaining direct helper APIs.
+These cover workspace commits, three mirror updates, stable base-widget
+trigger identity, tray construction and switcher triggers. Labwc's actual
+protocol capture advertises ext-workspace v1, so those workspace callbacks
+are part of startup even without a pager. No protocol or widget feature
+is disabled. All 35 full-source/type/audit controls pass; all eight
+original callback invocations trap in separate-translation-unit Wasm32
+controls, while all eight repaired calls forward and return correctly.
+The workspace control uses actual workspace state/focus/invalidation
+code; seven GUI adapter controls use explicitly scoped callee effect
+doubles and do not establish GTK rendering. Source and commands:
+.context/sfwbar-collection-callbacks/handoff.md.
+
+Normal job sfwbar-combined-ae502-1030-061746-6feb is deliberately stopped
+with signal 15 after 19m to batch these tested package repairs before
+SFWBar instrumentation. Completed normal dependency outputs are retained.
+The job does not complete products or run consumers. Final combined
+normal SDK/package/image, real desktop interactions, browser-memory and
+relevant conformance remain required; these native/source controls do not
+close them. No ABI number or compatibility advertisement changes.
