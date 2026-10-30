@@ -9847,3 +9847,16 @@ Full current landing products, gallery acceptance, browser-memory and POSIX
 conformance remain required. Follow-up source increments through `5eea9ca9f4`
 have their individual evidence above; latest combined validation remains
 pending. No ABI increment or public asynchronous activation is included.
+
+The provisioned repeat `cage-sway-rendered-current-1029-225521-080b`
+succeeded in 3m34s. All six real rendered sessions pass: cage and sway in
+Chromium, Firefox and WebKit, with input and cooperative exit assertions.
+Final status is `browser=0` / `identities=0`. Before/after source, kernel,
+SDK, metadata, aggregate and all nine selected owner inventories are
+identical; only collection time differs. Evidence:
+`.context/cage-sway-early-rendered2-artifacts-before.json`, its `-after.json`
+peer and the file-alias checkout's `.context/cage-sway-early-rendered2.log`.
+Normal bootstrap materialized verified swaybg/coreutils entries; no hand
+copy or restamp occurred. This passes the focused rendered contract at
+`0b0b69b196`, not the full gallery/browser-memory/conformance acceptance.
+Historical failures and the two preceding setup failures remain retained.
