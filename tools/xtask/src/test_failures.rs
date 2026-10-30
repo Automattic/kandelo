@@ -2,17 +2,22 @@
 use regex::Regex;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, fs};
+use std::{collections::BTreeMap, fs, path::Path};
 
 type Cases = BTreeMap<String, Value>;
 
-fn add(out: &mut Cases, id: String, outcome: &str, reason: &str) {
-    out.entry(id).or_insert_with(|| {
-        json!({
-            "outcome": outcome,
-            "reason": reason.split_whitespace().collect::<Vec<_>>().join(" ")
-        })
-    });
+fn add(out: &mut Cases, id: String, outcome: &str, reason: &str) -> Result<(), String> {
+    if out.contains_key(&id) {
+        return Err(format!(
+            "duplicate case ID: {id}; keep the raw report or select distinct cases"
+        ));
+    }
+    out.insert(
+        id,
+        json!({"outcome": outcome,
+        "reason": reason.split_whitespace().collect::<Vec<_>>().join(" ")}),
+    );
+    Ok(())
 }
 
 fn array<'a>(value: &'a Value, key: &str) -> Result<&'a Vec<Value>, String> {
@@ -40,15 +45,18 @@ fn conformance(text: &str) -> Result<Value, String> {
         // Grouped lists repeat the primary results with less detail.
         if let Some(c) = row.captures(line.trim_end()) {
             let outcome = match &c[1] {
-                "FAIL" | "XFAIL-MISMATCH" => "fail",
+                "FAIL" | "XFAIL-MISMATCH" | "FLAKE-FAIL" => "fail",
                 "XFAIL" => "expected-fail",
                 "XPASS" => "unexpected-pass",
                 "SKIP" => "skip",
-                "TIME" | "TIMEOUT" => "timeout",
-                label if label.starts_with("FLAKE-") => "intermittent",
+                "TIME" | "TIMEOUT" | "FLAKE-TIME" => "timeout",
+                "FLAKE-PASS" => "known-flaky-pass",
                 _ => "error",
             };
-            add(&mut cases, c[2].into(), outcome, line);
+            add(&mut cases, c[2].into(), outcome, line)?;
+            if c[1].starts_with("FLAKE-") {
+                cases.get_mut(&c[2]).unwrap()["known_flaky"] = json!(true);
+            }
         }
         if let Some(c) = count.captures(line.trim()) {
             let n: u64 = c[2].parse().map_err(|e| format!("invalid count: {e}"))?;
@@ -63,13 +71,20 @@ fn conformance(text: &str) -> Result<Value, String> {
     Ok(json!({"counts": counts, "cases": cases}))
 }
 
-fn vitest(report: &Value) -> Result<Value, String> {
+fn vitest(report: &Value, root: &Path) -> Result<Value, String> {
     let total = report["numTotalTests"]
         .as_u64()
         .ok_or("missing numTotalTests")?;
     let mut out = Cases::new();
     for file in array(report, "testResults")? {
-        let name = string(file, "name")?;
+        let path = Path::new(string(file, "name")?);
+        let name = if path.is_absolute() {
+            path.strip_prefix(root)
+                .map_err(|_| "file outside context.repo_root; supply the root used by this run")?
+        } else {
+            path
+        }
+        .to_string_lossy();
         for case in array(file, "assertionResults")? {
             let status = string(case, "status")?;
             if status == "passed" {
@@ -90,7 +105,7 @@ fn vitest(report: &Value) -> Result<Value, String> {
                 format!("{name} > {}", string(case, "fullName")?),
                 outcome,
                 reason,
-            );
+            )?;
         }
         // Import/collection errors can fail a file without failing a named test.
         if file["status"] == "failed" && file["message"].as_str().is_some_and(|s| !s.is_empty()) {
@@ -99,7 +114,7 @@ fn vitest(report: &Value) -> Result<Value, String> {
                 format!("{name} > [file error]"),
                 "error",
                 string(file, "message")?,
-            );
+            )?;
         }
     }
     if total == 0 || report["success"] == false && out.is_empty() {
@@ -108,7 +123,7 @@ fn vitest(report: &Value) -> Result<Value, String> {
             "[runner]".into(),
             "error",
             "run unsuccessful or collected zero tests; inspect raw log",
-        );
+        )?;
     }
     Ok(json!({"cases": out}))
 }
@@ -158,7 +173,7 @@ fn playwright_suites(suites: &[Value], parents: &[String], out: &mut Cases) -> R
                             .or_else(|| r["errors"][0]["message"].as_str())
                     })
                     .unwrap_or(status);
-                add(out, id.clone(), outcome, reason);
+                add(out, id.clone(), outcome, reason)?;
                 out.get_mut(&id).unwrap()["observed"] = json!(observed);
             }
         }
@@ -173,13 +188,13 @@ fn playwright_suites(suites: &[Value], parents: &[String], out: &mut Cases) -> R
     Ok(())
 }
 
-fn parse(format: &str, text: &str) -> Result<Value, String> {
+fn parse(format: &str, text: &str, root: &Path) -> Result<Value, String> {
     if format == "conformance" {
         return conformance(text);
     }
     let report: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
     match format {
-        "vitest" => vitest(&report),
+        "vitest" => vitest(&report, root),
         "playwright" => {
             let expected = report["stats"]["expected"]
                 .as_u64()
@@ -192,7 +207,7 @@ fn parse(format: &str, text: &str) -> Result<Value, String> {
                     format!("[runner error {i}]"),
                     "error",
                     string(error, "message")?,
-                );
+                )?;
             }
             if expected == 0 && out.is_empty() {
                 add(
@@ -200,12 +215,31 @@ fn parse(format: &str, text: &str) -> Result<Value, String> {
                     "[runner]".into(),
                     "error",
                     "zero-test report; inspect raw log",
-                );
+                )?;
             }
             Ok(json!({"cases": out}))
         }
         _ => Err("format must be conformance, vitest, or playwright".into()),
     }
+}
+
+fn recorded(format: &str, text: &str, context: Value) -> Result<Value, String> {
+    let exit = context["exit_code"]
+        .as_i64()
+        .ok_or("context.exit_code must record the runner exit status")?;
+    let default_root = crate::repo_root();
+    let root = context["repo_root"]
+        .as_str()
+        .map(Path::new)
+        .unwrap_or(&default_root);
+    let mut result = parse(format, text, root)?;
+    // JSON reporters can omit unhandled errors even when assertions passed.
+    if exit != 0 {
+        result["cases"]["[runner exit]"] = json!({"outcome":"error",
+            "reason": format!("runner exited {exit}; inspect the console log for errors omitted by the reporter")});
+    }
+    result["context"] = context;
+    Ok(result)
 }
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
@@ -221,11 +255,11 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     if !context.is_object() {
         return Err("context must be a JSON object".into());
     }
-    let mut result = parse(
+    let mut result = recorded(
         &args[0],
         std::str::from_utf8(&raw).map_err(|e| e.to_string())?,
+        context,
     )?;
-    result["context"] = context;
     result["source_sha256"] = json!(format!("{:x}", Sha256::digest(&raw)));
     // One sorted case per line keeps generated JSON reviewable in Git.
     let cases = result.as_object_mut().unwrap().remove("cases").unwrap();

@@ -77,8 +77,10 @@ the order of repeated values.
 `tests/baselines/` keeps failure evidence, not test allowances. See its
 [recording workflow](../../tests/baselines/README.md). Record failures,
 expected failures, unexpected passes, skips, timeouts, runner errors and
-intermittent results; omit ordinary passes and success counters. Existing
-conformance expectation lists still own accepted failures and reasons.
+intermittent results; omit ordinary passes and success counters. Store each
+main run or targeted rerun separately; never replace unrelated evidence
+with a partial report. Existing conformance expectation lists still own
+accepted failures and reasons.
 
 Consult recorded failures before repeating an expensive main run. Compare
 names, reasons, host, command and recorded commit; a known name alone does
@@ -87,6 +89,9 @@ the relevant failures on main through the normal build path. Historical
 results must be described as historical. Records never turn a failed run
 green, and there is no freshness check or merge requirement.
 
+Use `KANDELO_TEST_REPORT_DIR` inside the dev shell to record JSON and
+console output from each normal Vitest/browser suite process. Keep the
+recorded exit code: JSON alone can omit Vitest unhandled errors.
 Keep raw logs and record provenance: commit, date, selection/command,
 host/runtime versions and load when available. Do not fill unknown historical
 fields from today's environment. Treat load-related failures as anomalies

@@ -1,6 +1,6 @@
 # Failure evidence
 
-Keep failures and anomalies here, one file per suite and host. These are
+Keep failures and anomalies here as separate observations of each run. These are
 observations to investigate, not allowances that make a failing run green.
 The conformance runners' expectation lists remain authoritative.
 
@@ -36,44 +36,81 @@ These are historical observations, not claims about today's main.
 
 ## Recording a new run
 
-Keep the raw report in `.context/`. For Vitest and Playwright, use their
-existing JSON reporters instead of parsing console layouts. For example,
-append these options to the normal selected-test commands:
+Opt into the existing JSON reporters through the normal suite wrapper.
+Set the directory inside the dev shell (outer environment variables are
+not generally passed through):
 
 ```bash
-# From host/; retain both configured human/health reporters.
-npx vitest run TEST_SELECTION \
-  --reporter=default --reporter=./test/support/suite-health-reporter.ts \
-  --reporter=json --outputFile.json="$PWD/../.context/vitest.json"
-
-# From apps/browser-demos/; choose a unique port as usual.
-PLAYWRIGHT_JSON_OUTPUT_NAME="$PWD/../../.context/playwright.json" \
-  npx playwright test TEST_SELECTION --project=chromium --reporter=list,json
+scripts/dev-shell.sh bash -c '
+  export KANDELO_TEST_REPORT_DIR="$PWD/.context/reports"
+  bash scripts/ci-run-test-suite.sh vitest 1/2
+'
 ```
 
-Replace `TEST_SELECTION` with the intended tests. Preserve the runner's exit
-code; successful importing does not mean the tests passed. Record each
-process separately so shards or isolated reruns do not overwrite reports.
-Conformance runners retain their existing text output and verdicts.
+The `vitest` and `browser` groups capture each test process separately,
+including isolated cases and Bun runs. Each gets a unique directory with
+`report.json`, `console.log`, and `context.json` containing its exit code,
+command, working directory, repository root, commit and start time.
+Relative report directories resolve against the repository root. Capture
+is disabled when `KANDELO_TEST_REPORT_DIR` is unset; normal verdicts and
+suite partitions are preserved. A process killed before completion may
+leave only its console log; do not import an older report in its place.
 
-Write a context JSON object with the observed suite, host, commit, date,
-command/selection, exit code, and any known versions/load. Unknown fields
-may be omitted. Build xtask as described in its [README](../../tools/xtask/README.md),
-then import a finished report:
+For targeted commands, use the same thin wrapper from the normal test
+working directory, with `KANDELO_TEST_REPORT_DIR` set inside the dev shell:
+
+```bash
+# From host/; replace TEST_SELECTION with the intended tests.
+bash ../scripts/record-test-report.sh vitest npx vitest run TEST_SELECTION
+# From apps/browser-demos/; choose a unique port as usual.
+bash ../../scripts/record-test-report.sh playwright \
+  npx playwright test TEST_SELECTION --project=chromium
+```
+
+Conformance runners retain their text output. Keep that log and write a
+context JSON object with `exit_code`, suite, host, commit, date and command.
+Include `repo_root` for the worktree used by the run; Vitest absolute file
+names are normalized against it so identities match across worktrees.
+Known versions/load can be added; do not invent unknown historical fields.
+
+Build xtask as described in its [README](../../tools/xtask/README.md), then
+import one finished process report (replace RUN_DIR with its directory):
 
 ```bash
 scripts/dev-shell.sh target/aarch64-apple-darwin/debug/xtask \
-  test-failures vitest .context/vitest.json .context/run-context.json \
-  > .context/vitest-node.json
+  test-failures vitest RUN_DIR/report.json RUN_DIR/context.json \
+  > RUN_DIR/failures.json
 ```
 
 Formats are `vitest` (JSON), `playwright` (JSON), and `conformance` (text).
-Review the generated JSON, then copy it into this directory. It contains
-supplied context, the source-report hash, and sorted nonpassing cases.
-The historical Vitest/Playwright text excerpts are intentionally not inputs
-to the JSON importer. Do not hand-edit generated outcomes.
+The output contains supplied context, the source-report hash, and sorted
+nonpassing cases. **A nonzero exit is also retained as a run error**:
+Vitest JSON can claim success while omitting an unhandled error. This run
+error records the failed exit, not a separate diagnosed infrastructure bug.
+Keep the console log to investigate it. Successful importing never means
+the tests passed. Duplicate nonpassing IDs are rejected rather than
+silently merged; retain the raw report or rerun distinct selections.
+
+## Keeping evidence across PRs
+
+Review new anomalies before committing them. Keep each main observation
+under `tests/baselines/<recorded-commit>/<suite>-<host>-<run-id>.json`, using
+the unique run directory name as the run ID. Keep branch reports separate
+in `.context/`; use main-run evidence to establish pre-existing failures.
+Never overwrite an earlier record with a targeted rerun or another shard:
+absence from a partial report does not establish that a test passed. A
+rerun adds an observation and does not refresh the rest of the inventory.
+Do not commit ordinary clean runs or edit generated outcomes by hand.
+If JSON omits the diagnostic or retry history, commit the relevant raw
+console failure/anomaly excerpt beside it as a `.log` file. This includes
+Vitest unhandled errors: the local `context.console_log` path alone is not
+durable evidence. Omit routine passing output from committed excerpts.
+The initial `.log` excerpts remain historical records; they are not inputs
+to the Vitest/Playwright JSON importer.
 
 Playwright retry statuses are preserved in `observed`; mixed outcomes are
-intermittent. Vitest's JSON reporter does not expose retry history: retain
-the raw console log and document observed retries separately, without
-inventing rates. No freshness machinery, enforcement, or CI gate is added.
+intermittent. Vitest JSON omits retry history: retain console evidence and
+document observed retries separately, without inventing rates. Conformance
+`FLAKE-*` labels annotate known-flaky tests after a single attempt; preserve
+the actual failure/timeout (or `known-flaky-pass`) with `known_flaky: true`.
+No freshness machinery, enforcement, or CI gate is added.
