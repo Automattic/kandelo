@@ -17,6 +17,10 @@ const arrayOffset = Object.getOwnPropertyDescriptor(arrayPrototype,"byteOffset")
 const arrayLength = Object.getOwnPropertyDescriptor(arrayPrototype,"byteLength")!.get!;
 const setBytes = Uint8Array.prototype.set;
 const MAX_TOKEN = 0x7fff_ffff_ffff_ffffn;
+// Notifications identify a registration without carrying its object. Never
+// recycle that scalar across native stores or replacement forward clients in
+// one kernel realm; exact object/ledger checks still grant actual authority.
+let ownerRegistrationSerial = 0;
 export type GlResultLimits = Readonly<{ maxOwners: number; maxRequests: number; maxRetainedBytes: number }>;
 export type GlResultMode = "commit" | "cancel";
 export type GlResultPoll = { state: "unknown" | "pending" }
@@ -263,7 +267,6 @@ export class GlResultExecution {
  * No Wasm/SharedArrayBuffer memory ceiling or callback is retained here. */
 export class GlOwnedResultStore {
   private owners = new Map<number,OwnerRecord>();
-  private ownerSerial = 0;
   private count = 0;
   private bytes = 0;
   private limits: GlResultLimits;
@@ -277,11 +280,11 @@ export class GlOwnedResultStore {
       return entry.closed || entry.owner.operations !== operations ? null : entry.owner;
     if (!(operations instanceof GlOperationStream) || !Number.isInteger(pid) || pid < 1 || pid > 0x7fff_ffff || !Number.isInteger(sessionId)
       || sessionId < 1 || sessionId > 0xffff_ffff || this.owners.size >= this.limits.maxOwners
-      || this.ownerSerial === Number.MAX_SAFE_INTEGER) return null;
+      || ownerRegistrationSerial === Number.MAX_SAFE_INTEGER) return null;
     try {
-      const owner = new GlResultOwner(this.ownerSerial + 1,pid,sessionId,operations);
+      const owner = new GlResultOwner(++ownerRegistrationSerial,pid,sessionId,operations);
       this.owners.set(owner.registration,{owner,closed:false,highWater:0n,requests:new Map()});
-      this.ownerSerial++; return owner;
+      return owner;
     } catch { return null; }
   }
   private owner(owner: GlResultOwner): OwnerRecord | undefined {

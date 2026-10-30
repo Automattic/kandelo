@@ -11,6 +11,7 @@ import { destroyTextureView, destroyRenderbufferView } from "./image-storage.js"
 import type { GlUniformUpload } from "./uniform-upload.js";
 import { replaceUniformLookup, type GlUniformLookup } from "./uniform-queries.js";
 import type { GlSurfaceCreation } from "./surface-create.js";
+import type { GlOwnedForwardClient } from "./owned-forward.js";
 /**
  * Tracks live `/dev/dri/renderD128` GLES sessions reported by the kernel.
  *
@@ -72,9 +73,10 @@ export type GlBindingInput = {
 /** Bytes handed to `onSubmit` are non-shared — the caller copies them
  *  out of the SAB-backed cmdbuf so the channel may transfer the buffer. */
 export type GlForwardChannel = {
+  readonly ownedQueries?: GlOwnedForwardClient;
   /** Zero acknowledges a live renderer; negative errno leaves no context. */
   onCreateContext(sessionId?: number, shareSessionId?: number, contextId?: number): number;
-  onDestroyContext(sessionId?: number): void;
+  onDestroyContext(sessionId?: number, contextId?: number): void;
   onCreateSurface?(surface: GlSurfaceCreation, sessionId?: number): {rc: number; width: number; height: number};
   onDestroySurface?(surfaceId: number, sessionId?: number): void;
   onUnbind?(sessionId: number): void;
@@ -198,6 +200,7 @@ export class GlContextExecutionLease {
     catch { return null; }
   }
   get context(): WebGL2RenderingContext | null { return this.#record?.gl ?? null; }
+  get retired(): boolean { return this.#record?.retired ?? false; }
   get binding(): GlBinding {
     if (!this.#record || this.#released) throw new Error("Context execution lease is released");
     return this.#record.binding;

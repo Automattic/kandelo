@@ -137,7 +137,7 @@ it("keeps actual renderer custody and listener through failing retirement after 
 
 it("recovers lost owner-open and owner-forgotten replies without dropping cleanup authority",async()=>{
   const f=await fixture();let lost=true;f.serverPort.drop=data=>{const m=data as {type:string};if(m.type==="gl_owned_owner_forgotten" && lost){lost=false;return true;}return false;};
-  f.begin(1n);f.drain();f.client.control(f.owner,1n,"cancel");f.drain();f.client.retireOwner(f.owner);f.dispose();
+  f.begin(1n);f.drain();f.client.control(f.owner,1n,"cancel");f.drain();f.client.retireOwner(f.owner);f.dispose();f.drain();
   f.client.forgetOwner(f.owner);expect(f.retirements.retainedEndpoints).toBe(1);expect(f.client.dispose()).toBe(false);
   f.client.forgetOwner(f.owner);expect(f.retirements.retainedEndpoints).toBe(0);expect(f.client.dispose()).toBe(true);
 });
@@ -209,7 +209,8 @@ it("recovers a lost Open acknowledgement after server admission has closed",asyn
   f.serverPort.drop=data=>(data as {type:string;sessionId:number}).type==="gl_owned_opened" && (data as {sessionId:number}).sessionId===12;
   const owner=f.client.register(12,operations)!;expect(owner).not.toBeNull();f.client.retireOwner(owner);f.dispose();
   expect(f.client.forgetOwner(owner)).toBe(false);expect(f.client.dispose()).toBe(false);
-  f.serverPort.drop=null;expect(f.client.forgetOwner(owner)).toBe(true);
+  f.serverPort.drop=null;f.drain();expect(f.client.retirementComplete(owner)).toBe(true);
+  expect(f.client.forgetOwner(owner)).toBe(true);
   // The original owner also has a real open grant, even with no query records.
   f.client.retireOwner(f.owner);expect(f.client.forgetOwner(f.owner)).toBe(true);
   expect(f.retirements.retainedEndpoints).toBe(0);expect(f.client.dispose()).toBe(true);
@@ -276,11 +277,15 @@ it("reports quota-ready commands separately from blocked/retiring work without a
 });
 
 it("repeats a lost owner-retirement notice until the client requests the exact Cancel mode",async()=>{
-  const f=await fixture();f.begin(1n);f.client.drain(8);f.dispose.ownedQueries!.drain(8);f.dispose();
-  let drop=true;f.serverPort.drop=data=>{const m=data as {type:string;control?:string};if(m.type==="gl_owned_reply" && m.control==="poll" && drop){drop=false;return true;}return false;};
+  const f=await fixture();f.begin(1n);f.client.drain(8);f.dispose.ownedQueries!.drain(8);
+  let drop=true;f.serverPort.drop=data=>{const m=data as {type:string;control?:string};
+    if(m.type==="gl_owned_closing")return true;
+    if(m.type==="gl_owned_reply" && m.control==="poll" && drop){drop=false;return true;}return false;};
+  f.dispose.ownedQueries!.retireSession(11);
   f.client.drain(8);expect(f.client.poll(f.owner,1n)).toEqual({state:"pending"});
   f.client.drain(8);expect(f.client.poll(f.owner,1n)).toEqual({state:"retiring",mode:"cancel"});
   f.client.drain(8);expect(f.client.poll(f.owner,1n)).toEqual({state:"retired",mode:"cancel",accepted:true});
+  f.serverPort.drop=null;f.dispose();f.drain();
   f.client.retireOwner(f.owner);f.client.forgetOwner(f.owner);expect(f.retirements.retainedEndpoints).toBe(0);
 });
 

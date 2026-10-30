@@ -795,6 +795,7 @@ export interface KernelCallbacks {
   /** Durable owned-query state changed. Schedule a later worker turn; never
    * reenter Rust from this callback or retain a guest-memory view. */
   onGlQueryWake?: (pid:number,session:number,registration:number,token:bigint)=>void;
+  onGlQueryOwnerWake?: (pid:number,session:number,registration:number)=>void;
   onAlarm?: (seconds: number) => number;
   onPosixTimer?: (timerId: number, signo: number, valueMs: number, intervalMs: number) => number;
   onNetListen?: (fd: number, port: number, addr: [number, number, number, number]) => number;
@@ -1020,9 +1021,16 @@ export class WasmPosixKernel {
   // These private controls remain disconnected from public ioctl parking.
   private gl_query_controls=new GlKernelQueryControls(this.gl,this.bos,this.gl_muxers,
     {maxOwners:256,maxRequests:1024,maxRetainedBytes:8*1024*1024},
-    (pid,session,registration,token)=>this.callbacks.onGlQueryWake?.(pid,session,registration,token));
+    (pid,session,registration,token)=>this.callbacks.onGlQueryWake?.(pid,session,registration,token),
+    (pid,session,registration)=>this.callbacks.onGlQueryOwnerWake?.(pid,session,registration));
 
-  drainGlQueryControls(maxVisits:number):number {return this.gl_query_controls.drain(maxVisits);}
+  drainGlQueryControls(maxVisits:number):number {
+    if(!Number.isSafeInteger(maxVisits)||maxVisits<0)return 0;
+    let visits=this.gl_query_controls.drain(maxVisits);
+    this.drainGlSubmits(maxVisits);
+    visits+=this.gl_query_controls.drainNative(maxVisits);
+    return visits;
+  }
   prepareGlQueryControlTeardown(pid:number):boolean {return this.gl_query_controls.prepareTeardown(pid);}
   forgetGlQueryControlsAfterKernelLifecycle(pid:number):boolean {return this.gl_query_controls.forgetAfterKernelLifecycle(pid);}
   // Physical GPU resource ownership is device-wide, independent of DRM master
@@ -1052,6 +1060,21 @@ export class WasmPosixKernel {
       this.gl_muxers.set(gl, muxer);
     }
     return muxer;
+  }
+
+  private drainGlSubmits(maxFrames=Infinity):number {
+    return drainSubmitQueue(this.gl_submit_queue,
+      binding=>binding.gl ? this.glMuxerFor(binding.gl) : null,
+      (binding,offset,length)=>{
+        const capture=(gl:WebGL2RenderingContext)=>this.gl_muxers.get(gl)?.captureCurrentErrors();
+        return decodeAndDispatch(binding,offset,length,{
+          before:()=>{
+            if(!this.gl.cpuImages.prepare(binding,this.bos,capture))return false;
+            this.gl.cpuImages.begin(binding);return true;
+          },
+          after:()=>this.gl.cpuImages.publish(binding,this.bos,capture),
+        });
+      },maxFrames);
   }
 
 
@@ -2781,7 +2804,7 @@ export class WasmPosixKernel {
           // revoked public slot; process/session unbind still cancels them.
           if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
           this.gl.destroyContext(pid, b.sessionId);
-          b.forward?.onDestroyContext(b.sessionId);
+          b.forward?.onDestroyContext(b.sessionId,ctxId);
         },
         host_gl_create_surface: (
           pid: number, surfaceId: number,
@@ -2945,6 +2968,9 @@ export class WasmPosixKernel {
         ): number => {
           const b = this.gl.get(pid, sessionId);
           if (!b) return -5; // EIO: kernel/host GL state diverged.
+          // This private-only increment refuses before command admission;
+          // accepted outbound command queueing needs its own typed model.
+          if(b.forward?.ownedQueries?.hasBarrier(b.sessionId))return -16;
           if (!b.forward && !b.gl) return 0;
           let submission: { offset: number; length: number; end: number };
           try {
@@ -2993,24 +3019,7 @@ export class WasmPosixKernel {
           }
           try { this.gl_submit_queue.enqueue(b,frame); }
           catch { frame.discard(); return -12; }
-          return drainSubmitQueue(
-            this.gl_submit_queue,
-            (bb) => {
-              if (!bb.gl) return null;
-              return this.glMuxerFor(bb.gl);
-            },
-            (bb, off, len) => {
-              const capture = (gl: WebGL2RenderingContext) => this.gl_muxers.get(gl)?.captureCurrentErrors();
-              return decodeAndDispatch(bb, off, len, {
-                before: () => {
-                  if (!this.gl.cpuImages.prepare(bb, this.bos, capture)) return false;
-                  this.gl.cpuImages.begin(bb);
-                  return true;
-                },
-                after: () => this.gl.cpuImages.publish(bb, this.bos, capture),
-              });
-            },
-          );
+          return this.drainGlSubmits();
         },
         host_gl_present: (pid: number, sessionId?: number): number => {
           // A lost WebGL context silently no-ops every GL call, so a

@@ -12,7 +12,7 @@ import { isFenceQuery, validFenceQuery, prepareFenceQuery, type PreparedFenceQue
 import { querySurfaceCapabilities, surfaceCapabilityRenderer } from "./surface-capabilities.js";
 import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH } from "./ops.js";
 import { GlMuxer } from "./muxer.js";
-import { GlOwnedMainForwardController, type GlOwnedMainForwardOptions } from "./owned-forward.js";
+import { GlOwnedMainForwardController, GlOwnedForwardClient, type GlOwnedMainForwardOptions } from "./owned-forward.js";
 import { prepareCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable, type GlDrawableBinding } from "./current.js";
 import {
   completeGlForwardQuery, createGlForwardQueryMailbox, glForwardQueryCapacity,
@@ -52,7 +52,11 @@ function validKernelContextId(id: number): boolean {
  * storage are the only data that may cross to the persistent main realm. */
 export function createMainForwardChannel(
   port: { postMessage(message: GlForwardMessage): void }, pid: number, defaultSessionId = 0,
+  ownedClient?: GlOwnedForwardClient,
 ): GlForwardChannel {
+  if(ownedClient && (!(ownedClient instanceof GlOwnedForwardClient) || !ownedClient.matchesEndpoint(port,pid)))
+    throw new Error("Owned query client requires the same ordered endpoint and pid");
+  const blocked=(session:number)=>ownedClient?.hasBarrier(session)??false;
   let mailbox: SharedArrayBuffer | null = null;
   function request(outLen: number, send: (mailbox: SharedArrayBuffer) => void) {
     try {
@@ -66,7 +70,9 @@ export function createMainForwardChannel(
     }
   }
   return {
+    ...(ownedClient ? {ownedQueries:ownedClient} : {}),
     onCreateContext(sessionId = defaultSessionId, shareSessionId?: number, contextId?: number) {
+      if(ownedClient?.hasCreationBarrier() || blocked(sessionId))return -16;
       if (shareSessionId !== undefined && (!Number.isInteger(shareSessionId) || shareSessionId < 0 || shareSessionId > 0xffff_ffff)) return -22;
       if (contextId !== undefined && !validKernelContextId(contextId)) return -22;
       const { rc } = request(0, mailbox => {
@@ -85,6 +91,7 @@ export function createMainForwardChannel(
       return rc;
     },
     onCreateSurface(surface, sessionId = defaultSessionId) {
+      if(ownedClient?.hasCreationBarrier() || blocked(sessionId))return {rc:-16,width:0,height:0};
       const copy = {surfaceId:surface.surfaceId,kind:surface.kind,width:surface.width,height:surface.height,
         configId:surface.configId,targetBoId:surface.targetBoId};
       if (!validSurfaceCreation(copy) || copy.targetBoId !== 0) return {rc:-22,width:0,height:0};
@@ -97,10 +104,23 @@ export function createMainForwardChannel(
       return {rc:0,width:reply.getUint32(0,true),height:reply.getUint32(4,true)};
     },
     onDestroySurface(surfaceId, sessionId = defaultSessionId) {
+      if(ownedClient?.hasSession(sessionId)) {
+        if(!ownedClient.queueRetirement(sessionId,"surface",surfaceId))throw new Error("Forwarded surface retirement slot unavailable");
+        return;
+      }
+      if(ownedClient && !ownedClient.legacyReady())throw new Error("Forwarded surface retirement endpoint unavailable");
       port.postMessage({type:"gl_forward_destroy_surface",pid,sessionId,surfaceId});
     },
-    onDestroyContext(sessionId = defaultSessionId) { port.postMessage({ type: "gl_forward_destroy_context", pid, sessionId }); },
+    onDestroyContext(sessionId = defaultSessionId, contextId?:number) {
+      if(ownedClient?.hasSession(sessionId)) {
+        if(contextId===undefined || !ownedClient.queueRetirement(sessionId,"context",contextId))throw new Error("Forwarded context retirement source unavailable");
+        return;
+      }
+      if(ownedClient && !ownedClient.legacyReady())throw new Error("Forwarded context retirement endpoint unavailable");
+      port.postMessage({ type: "gl_forward_destroy_context", pid, sessionId });
+    },
     onMakeCurrent(drawable, sessionId = defaultSessionId) {
+      if(blocked(sessionId))return -16;
       // Copy only reviewed scalars. Spreading a structurally compatible
       // caller object could send extra guest-memory fields to browser main.
       const copy = {
@@ -113,11 +133,23 @@ export function createMainForwardChannel(
       })).rc;
     },
     onPresent(sessionId = defaultSessionId) {
+      if(blocked(sessionId))return -16;
       return request(0, mailbox => port.postMessage({type:"gl_forward_present",pid,sessionId,mailbox})).rc;
     },
-    onUnbind(sessionId) { port.postMessage({ type: "gl_forward_unbind", pid, sessionId }); },
-    onSubmit(bytes, sessionId = defaultSessionId) { port.postMessage({ type: "gl_forward_submit", pid, sessionId, bytes: bytes.slice() }); },
+    onUnbind(sessionId) {
+      if(ownedClient?.hasSession(sessionId)) {
+        if(!ownedClient.queueRetirement(sessionId,"session",0))throw new Error("Forwarded session retirement slot unavailable");
+        return;
+      }
+      if(ownedClient && !ownedClient.legacyReady())throw new Error("Forwarded session retirement endpoint unavailable");
+      port.postMessage({ type: "gl_forward_unbind", pid, sessionId });
+    },
+    onSubmit(bytes, sessionId = defaultSessionId) {
+      if(blocked(sessionId))throw new Error("Forwarded command admission is blocked by owned work");
+      port.postMessage({ type: "gl_forward_submit", pid, sessionId, bytes: bytes.slice() });
+    },
     onQuery(op, input, outLen, sessionId = defaultSessionId) {
+      if(blocked(sessionId))return {rc:-16,bytes:new Uint8Array()};
       if (input.byteLength > GL_FORWARD_QUERY_MAX_BYTES || !Number.isSafeInteger(outLen)
           || outLen < 0 || outLen > GL_FORWARD_QUERY_MAX_BYTES) {
         return { rc: -22, bytes: new Uint8Array() };
@@ -142,7 +174,21 @@ export function setupMainForward(
   const ownedQueries = owned ? new GlOwnedMainForwardController(owned.endpoint,pid,reg,owned.bos,muxers,
     owned.limits,owned.retirements,queue,owned.queueDrain) : null;
 
+  let disposing=false,legacyDisposed=false;
+  const finishDispose=()=>{
+    if(legacyDisposed || (ownedQueries && !ownedQueries.legacyClosed))return;
+    legacyDisposed=true;worker.removeEventListener("message",onMessage);
+    for(const b of reg.list()) {
+      const contexts=b.fences.contexts();if(b.gl)contexts.add(b.gl);
+      for(const gl of contexts)muxers.get(gl)?.invalidateCurrent();
+    }
+    queue.removePid(pid);
+    if(!ownedQueries)reg.unbind(pid);
+    // The owned controller retains typed native retirement for every legacy
+    // session reserved before source creation; it owns cleanup retries.
+  };
   const onMessage = (e: MessageEvent) => {
+    if(disposing && ownedQueries?.legacyClosed) {finishDispose();return;}
     const msg = e.data as GlForwardMessage;
     if (!msg || typeof msg !== "object" || msg.pid !== pid) return;
     if (!Number.isInteger(msg.sessionId) || msg.sessionId < 0 || msg.sessionId > 0xffff_ffff) return;
@@ -168,6 +214,11 @@ export function setupMainForward(
         try { completeGlForwardQuery(msg.mailbox, -5, new Uint8Array()); } catch { /* no reply authority */ }
         return;
       }
+    }
+    if(b && ownedQueries && (msg.type==="gl_forward_create_context" || msg.type==="gl_forward_create_surface" || capabilities)
+      && !ownedQueries.reserveLegacy(b)) {
+      try {completeGlForwardQuery(msg.mailbox,-16,new Uint8Array());}catch {/* No reply authority. */}
+      return;
     }
     if (!b) {
       if (msg.type === "gl_forward_create_context" || msg.type === "gl_forward_query"
@@ -394,7 +445,8 @@ export function setupMainForward(
         return;
       }
       case "gl_forward_unbind": {
-        ownedQueries?.retireSession(msg.sessionId);
+        if(ownedQueries?.hasSession(msg.sessionId)) {ownedQueries.retireSession(msg.sessionId,true);return;}
+        if(ownedQueries?.retireLegacy(msg.sessionId))return;
         const contexts = b.fences.contexts();
         if (b.gl) contexts.add(b.gl);
         for (const gl of contexts) muxers.get(gl)?.invalidateCurrent();
@@ -407,17 +459,10 @@ export function setupMainForward(
 
   worker.addEventListener("message", onMessage);
   const dispose = () => {
-    // Native receipt controls retain their own listener until actual cleanup
-    // and the paired client's retirement acknowledgement complete.
-    ownedQueries?.close();
-    worker.removeEventListener("message", onMessage);
-    for (const b of reg.list()) {
-      const contexts = b.fences.contexts();
-      if (b.gl) contexts.add(b.gl);
-      for (const gl of contexts) muxers.get(gl)?.invalidateCurrent();
-    }
-    queue.removePid(pid);
-    reg.unbind(pid);
+    disposing=true;
+    // Until the authenticated client closes admission, retain this actual
+    // receiver and roots: earlier accepted legacy posts must still arrive.
+    ownedQueries?.close();finishDispose();
   };
   return Object.assign(dispose,{ownedQueries});
 }
