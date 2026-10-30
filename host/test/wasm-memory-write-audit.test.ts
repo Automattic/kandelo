@@ -194,6 +194,8 @@ describe("WebAssembly memory write audit", () => {
 
   it.each([
     "const { module } = await WebAssembly.instantiate(bytes, {});",
+    "const { [key]: instance } = await WebAssembly.instantiate(bytes, {});",
+    "const { ['instance']: instance } = await WebAssembly.instantiate(bytes, {});",
     "const { instance, [key]: other } = await WebAssembly.instantiate(bytes, {});",
     "const { instance, module } = await WebAssembly.instantiate(bytes, {});",
     "const { instance, ...rest } = await WebAssembly.instantiate(bytes, {});",

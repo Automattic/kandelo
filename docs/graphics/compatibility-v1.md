@@ -10067,3 +10067,11 @@ package fixture is excluded from the audit. Both earlier failures remain
 in `.context/memory-performance-authority-checks.log` and
 `.context/memory-performance-authority-classification-rerun.log`; final
 evidence is `.context/memory-performance-authority-single-binding-rerun.log`.
+
+Further negative controls reproduce an audit-only computed-key fallback:
+`{ [key]: instance }` was incorrectly treated as the static `instance`
+property. Selecting the property node before inspecting its name closes
+that gap. Both computed-key controls fail before repair; the final
+canonical two-file rerun passes110/110 with zero skips, recorded in
+`.context/memory-performance-authority-computed-key-rerun.log`. This does
+not change the frozen737 performance runtime.

@@ -4507,8 +4507,9 @@ export function auditWasmMemoryWrites(options: AuditOptions): AuditResult {
           }
           const instances = current.name.elements.filter((element) =>
             !element.dotDotDotToken &&
-            (propertyNameText(element.propertyName) ??
-              propertyNameText(element.name)) === "instance"
+            // An unknown computed key must not inherit the local name's
+            // authority: { [key]: instance } may select another property.
+            propertyNameText(element.propertyName ?? element.name) === "instance"
           );
           const instance = instances.length === 1 ? instances[0] : undefined;
           return instance &&
