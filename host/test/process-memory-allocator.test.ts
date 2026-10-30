@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { WASM_PAGE_SIZE } from "../src/constants";
 import {
   acquireForkMemoryClone,
-  copyArrayBufferInChunks,
+  copyIntoZeroedArrayBuffer,
   createProcessMemoryRetirementPressureHook,
   deriveProcessMemoryRetirementAdmissionThresholds,
   ProcessMemoryAllocator,
@@ -588,17 +588,29 @@ describe("ProcessMemoryAllocator", () => {
     });
   });
 
-  it("copies across bounded view boundaries", () => {
+  it("copies across bounded view boundaries and zero chunks", () => {
     const source = new ArrayBuffer(17);
     const destination = new ArrayBuffer(17);
     new Uint8Array(source).set(
-      Array.from({ length: 17 }, (_, index) => index + 1),
+      Array.from({ length: 17 }, (_, index) => (index >> 2) % 2 ? 0 : index + 1),
     );
-    copyArrayBufferInChunks(destination, source, 4);
+    copyIntoZeroedArrayBuffer(destination, source, 4);
     expect(new Uint8Array(destination)).toEqual(new Uint8Array(source));
     expect(() =>
-      copyArrayBufferInChunks(new ArrayBuffer(16), source, 4)
+      copyIntoZeroedArrayBuffer(new ArrayBuffer(16), source, 4)
     ).toThrow();
-    expect(() => copyArrayBufferInChunks(destination, source, 0)).toThrow();
+    expect(() => copyIntoZeroedArrayBuffer(destination, source, 0)).toThrow();
+    expect(() => copyIntoZeroedArrayBuffer(destination, source, 6)).toThrow();
+  });
+
+  it("does not write the destination chunks whose source is all zero", () => {
+    const source = new ArrayBuffer(12);
+    const destination = new ArrayBuffer(12);
+    new Uint8Array(source).set([1, 2, 3, 4], 8);
+    new Uint8Array(destination).fill(0xff);
+    copyIntoZeroedArrayBuffer(destination, source, 4);
+    expect([...new Uint8Array(destination)]).toEqual([
+      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 1, 2, 3, 4,
+    ]);
   });
 });
